@@ -245,7 +245,15 @@ those legacy artifacts explicitly.
 A parameter edit from the artifact panel posts to
 `POST /api/cad/projects/[projectId]/parameters`, which rebuilds the existing
 program with the new values, re-validates, and publishes a new artifact version.
-No CAD code runs in the browser.
+The rebuild has a 90-second kernel deadline and the same worker memory limit as
+generation. No CAD code runs in the browser.
+
+Print-bed constraints apply to each individual body in its current orientation.
+An assembled layout larger than the bed produces
+`assembly_layout_exceeds_printer_bed` as a warning when every body fits; it does
+not force the model to shrink an otherwise printable assembly. A body exceeding
+the bed remains an `exceeds_printer_bed` error. This check does not establish
+print-in-place suitability or a complete slicer layout.
 
 ---
 
@@ -283,12 +291,14 @@ against an adversary who controls the source. Specifically:
 - The worker runs as the same OS user as Breadboard, with that user's file
   permissions. Nothing prevents it reading a file it can name — only the import
   allowlist and the restricted builtins make naming one hard.
-- There is no seccomp, AppContainer, job object, or container. A CPython escape
+- There is no seccomp, AppContainer, or security container. A CPython escape
   from the restricted namespace (they are found periodically) would reach the
   user's account.
-- Memory is not capped. A program can make the machine swap before the timeout
-  fires; the timeout and the single-threaded OCCT settings bound it in practice,
-  not by enforcement.
+- On Windows, each disposable worker establishes a Job Object before loading
+  the CAD kernel, with a 2 GiB process/tree commit limit. Failure to establish
+  that limit refuses geometry execution. The executor independently enforces
+  its wall-clock deadline. This resource limit is not a security sandbox.
+  POSIX deployments still require supervisor/container memory limits.
 - Network access is not blocked at the OS level. It is blocked by the import
   allowlist and the guarded importer, which is a language-level control.
 - The AST guard is a denylist over a language designed for dynamic behaviour.
@@ -296,8 +306,9 @@ against an adversary who controls the source. Specifically:
 
 `executor.py` is structured so a stronger boundary can replace the process spawn
 without touching anything above it: everything crosses as a JSON job file plus a
-JSON result file in one directory. A container, a Windows job object with a
-memory cap, or a Firecracker microVM would slot in at `execute()`.
+JSON result file in one directory. A security container or Firecracker microVM
+could add filesystem/network isolation at `execute()`; Windows workers already
+use Job Objects for resource limits.
 
 Residual risks worth stating plainly: a malicious *model* (not a mistaken one)
 is out of scope; a compromised CAD service could return fabricated measurements,

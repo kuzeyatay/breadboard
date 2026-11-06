@@ -263,7 +263,7 @@ export async function copyGardenFolder(input: {
 }
 
 /**
- * Move one note (identified by its basename slug) into `toFolder`; an empty
+ * Move one note (identified by its relative path or unique basename) into `toFolder`; an empty
  * destination means the Garden root. Notes keep their basename slug, so Quartz's
  * shortest-path link resolution keeps every existing `[[wikilink]]` working.
  */
@@ -272,43 +272,49 @@ export async function moveGardenDocument(input: {
   clusterSlug: string;
   slug: unknown;
   toFolder: unknown;
-}): Promise<{ slug: string; folder: string; relPath: string }> {
+}): Promise<{ slug: string; folder: string; relPath: string; previousRelPath: string }> {
   const contentPath = contentRoot();
   const clusterDir = gardenDirectory(input.clusterSlug, contentPath);
   if (typeof input.slug !== "string" || !input.slug.trim()) {
     throw new GardenFilesystemError("slug is required", 400);
   }
 
-  const requestedSlug = input.slug.replace(/\\/g, "/").split("/").pop()!.replace(/\.md$/i, "").trim();
-  const beforeMove = walkClusterMarkdown(clusterDir).find(item => item.entry.replace(/\.md$/i, "") === requestedSlug);
+  const requestedPath = input.slug.replace(/\\/g, "/").replace(/\.md$/i, "").trim();
+  const requestedSlug = requestedPath.split("/").pop()!;
+  const exactPath = requestedPath.includes("/") || /\.md$/i.test(input.slug);
+  const findDocument = () => {
+    const matches = walkClusterMarkdown(clusterDir).filter(item => exactPath
+      ? item.relPath.replace(/\.md$/i, "") === requestedPath
+      : item.entry.replace(/\.md$/i, "") === requestedSlug);
+    if (matches.length > 1) throw new GardenFilesystemError("Use the document's full path to move it", 409);
+    return matches[0];
+  };
+  // Existing folders retain their disk spelling (including EM1's numbered
+  // sections). Normalize only new folder names, as creation does.
+  let folder = normalizeGardenFolder(input.toFolder);
+  if (typeof input.toFolder === "string" && input.toFolder) {
+    try { folder = existingGardenFolder(clusterDir, input.toFolder); }
+    catch (error) { if (!(error instanceof GardenFilesystemError) || error.status !== 404) throw error; }
+  }
+  const beforeMove = findDocument();
 
   const lease = acquireStructureMutationLease(
     contentPath,
     input.clusterSlug,
     "move-document",
-    [beforeMove?.relPath ?? "", normalizeGardenFolder(input.toFolder)],
+    [beforeMove?.relPath ?? "", folder],
   );
-  let moved: { slug: string; folder: string; relPath: string };
+  let moved: { slug: string; folder: string; relPath: string; previousRelPath: string };
   try {
-    const folder = normalizeGardenFolder(input.toFolder);
     const targetDir = resolveFolderDir(clusterDir, folder);
-
-    const wantSlug = input.slug
-      .replace(/\\/g, "/")
-      .split("/")
-      .pop()!
-      .replace(/\.md$/i, "")
-      .trim();
-
-    const found = walkClusterMarkdown(clusterDir).find(
-      (item) => item.entry.replace(/\.md$/i, "") === wantSlug,
-    );
+    const wantSlug = requestedSlug;
+    const found = findDocument();
     if (!found) throw new GardenFilesystemError("Document not found", 404);
 
     const destPath = path.join(targetDir, found.entry);
     assertGardenMutationWritePaths(lease, clusterDir, [found.relPath, path.relative(clusterDir, destPath)]);
     if (path.resolve(destPath) === path.resolve(found.filePath)) {
-      return { slug: wantSlug, folder, relPath: found.relPath };
+      return { slug: wantSlug, folder, relPath: found.relPath, previousRelPath: found.relPath };
     }
     if (fs.existsSync(destPath)) {
       throw new GardenFilesystemError(
@@ -327,14 +333,14 @@ export async function moveGardenDocument(input: {
 
     const relPath = path.relative(clusterDir, destPath).replace(/\\/g, "/");
     refreshClusterIndex(contentPath, input.clusterSlug, { migrateSources: false });
-    moved = { slug: wantSlug, folder, relPath };
+    moved = { slug: wantSlug, folder, relPath, previousRelPath: found.relPath };
   } finally {
     lease.release();
   }
-  await publishQuartzAfterMutation(
+  void publishQuartzAfterMutation(
     `move document ${input.clusterSlug}/${moved.slug} -> ${moved.folder || "root"}`,
     { userId: input.userId, gardenSlug: input.clusterSlug },
-  );
+  ).catch(error => console.error("[garden] Document moved; publication failed:", error));
   return moved;
 }
 

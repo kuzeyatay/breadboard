@@ -5,6 +5,7 @@ import { ArrowUpRight, CalendarDays, ChevronUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import OverflowMarquee from "@/app/components/overflow-marquee";
 import { useStartupLoading } from "@/app/components/startup-readiness";
+import { readTerminalData } from "@/lib/terminal-data-client";
 import type { CalendarCollection, CalendarOccurrence } from "@/lib/calendar/types";
 import { formatShortDate, formatTimeRange, monthAbbreviation } from "@/lib/calendar/format";
 import { addDays, dateOf, nowStamp, startOfDay, todayDate } from "@/lib/calendar/wallclock";
@@ -12,8 +13,9 @@ import { BrowserSketchOutline } from "./browser-home-widgets";
 import { DockPopover } from "./browser-dock-popovers";
 import styles from "./browser-dock-popovers.module.css";
 
-export default function BrowserHomeCalendar({ open, onOpenChange }: {
+export default function BrowserHomeCalendar({ open, onOpenChange, active = true }: {
   open: boolean;
+  active?: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
   const cardRef = useRef<HTMLButtonElement>(null);
@@ -21,9 +23,10 @@ export default function BrowserHomeCalendar({ open, onOpenChange }: {
   const [now, setNow] = useState<string | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [retry, setRetry] = useState(0);
-  useStartupLoading(status === "loading");
+  useStartupLoading(active && status === "loading");
 
   useEffect(() => {
+    if (!active) return;
     let disposed = false;
     let request: AbortController | null = null;
 
@@ -32,11 +35,10 @@ export default function BrowserHomeCalendar({ open, onOpenChange }: {
       request?.abort();
       const controller = new AbortController();
       request = controller;
-      const options = { cache: "no-store" as const, signal: controller.signal };
       const today = todayDate();
       setNow(nowStamp());
       try {
-        const calendarsResponse = await fetch("/api/calendar/calendars", options);
+        const calendarsResponse = await readTerminalData("/api/calendar/calendars", controller.signal);
         if (!calendarsResponse.ok) throw new Error("Calendar unavailable");
         const { calendars } = await calendarsResponse.json() as { calendars: CalendarCollection[] };
         const visibleIds = calendars.filter((calendar) => calendar.visible).map((calendar) => calendar.id);
@@ -47,7 +49,7 @@ export default function BrowserHomeCalendar({ open, onOpenChange }: {
             to: dateOf(addDays(startOfDay(today), 6)),
             calendarIds: visibleIds.join(","),
           });
-          const response = await fetch(`/api/calendar/events?${params}`, options);
+          const response = await readTerminalData(`/api/calendar/events?${params}`, controller.signal);
           if (!response.ok) throw new Error("Calendar unavailable");
           const body = await response.json() as { occurrences: CalendarOccurrence[] };
           if (!Array.isArray(body.occurrences)) throw new Error("Calendar unavailable");
@@ -74,7 +76,7 @@ export default function BrowserHomeCalendar({ open, onOpenChange }: {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
     };
-  }, [retry]);
+  }, [retry, active]);
 
   const today = now ? dateOf(now) : null;
   const upcoming = now ? occurrences

@@ -18,12 +18,22 @@ const until = async (probe, label) => {
   throw Error('Timed out: ' + label);
 };
 const serve = async () => {
+  let active = 0; let peak = 0;
   const server = http.createServer((req, res) => {
+    if (req.url.startsWith('/recovery-storm')) {
+      active++; peak = Math.max(peak, active);
+      res.on('close', () => { active--; });
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<!doctype html><title>Recovered tab</title><body>Ready</body>');
+      }, 100);
+      return;
+    }
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end('<!doctype html><html><head><title>Chat fixture</title></head><body>Healthy chat storage</body></html>');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { server, origin: 'http://127.0.0.1:' + server.address().port };
+  return { server, origin: 'http://127.0.0.1:' + server.address().port, peak: () => peak };
 };
 app.whenReady().then(async () => {
   const old = await serve();
@@ -42,7 +52,7 @@ app.whenReady().then(async () => {
   await manager.showDashboard(old.origin + '/dashboard');
   const main = manager.window;
   main.setBounds({ x: -12000, y: -12000, width: 900, height: 700 });
-  const command = value => manager.tabs.handleCommand(main.webContents, value);
+  const command = value => manager.tabs.handleCommand(manager.page(main), value);
   const healthyUrl = old.origin + '/gardens/health?chat=831#message';
   const failedUrl = old.origin + '/gardens/health?chat=843';
   await command({ type: 'open', url: healthyUrl, background: true });
@@ -54,6 +64,9 @@ app.whenReady().then(async () => {
   await until(() => webContents.getAllWebContents().some(c => c.getURL() === external.origin + '/external'), 'external browser');
   const browser = webContents.getAllWebContents().find(c => c.getURL() === external.origin + '/external');
   const browserId = browser.id;
+  const storm = Array.from({ length: 8 }, (_, index) => `/recovery-storm?tab=${index}`);
+  for (const url of storm) await command({ type: 'open', url: old.origin + url, background: true });
+  await until(() => storm.every(url => webContents.getAllWebContents().some(c => c.getURL() === old.origin + url && !c.isLoading())), 'old background tabs');
   // One workspace still shows its old document; the other is already retrying.
   old.server.closeAllConnections();
   await new Promise(resolve => old.server.close(resolve));
@@ -71,6 +84,8 @@ app.whenReady().then(async () => {
   assert.equal(browser.isDestroyed(), false);
   assert.equal(browser.id, browserId);
   assert.equal(browser.getURL(), external.origin + '/external');
+  await until(() => storm.every(url => webContents.getAllWebContents().some(c => c.getURL() === next.origin + url && !c.isLoading())), 'bounded background recovery');
+  assert.ok(next.peak() <= 2, `recovery opened ${next.peak()} documents simultaneously`);
   await until(() => webContents.getAllWebContents().some(c => c.getURL() === next.origin + '/browser'), 'browser toolbar rebinding');
   assert.equal(await healthy.executeJavaScript("fetch('/api/chat-sessions').then(r => r.status)"), 200);
   await until(() => readTabSession(dir).windows.some(w => w.tabs.some(t => t.kind === 'dashboard' && t.url === '/gardens/health?chat=831#message')), 'durable relative chat path');

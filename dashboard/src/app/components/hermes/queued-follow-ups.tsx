@@ -426,7 +426,7 @@ export function useQueuedFollowUps({
           role="group"
           aria-label="Queued messages"
           data-queue-empty={visibleQueued.length === 0 ? "" : undefined}
-          className="space-y-0.5 py-0.5 outline-none empty:py-0"
+          className="bb-composer-queue space-y-0.5 py-0.5 outline-none empty:py-0"
           onKeyDown={(event) => {
             if (
               event.defaultPrevented || event.nativeEvent.isComposing ||
@@ -449,7 +449,8 @@ export function useQueuedFollowUps({
             );
             const fileNames = item.attachments
               .filter((attachment) => attachment.type !== "image")
-              .map((attachment) => attachment.name);
+              .map((attachment) => attachment.pdfPage
+                ? `Viewing page ${attachment.pdfPage.pageNumber}` : attachment.name);
             const itemDescription =
               item.text ||
               (images.length === 1

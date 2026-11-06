@@ -351,7 +351,7 @@ test("HyperFrames is a registered runtime agent with a plain-language palette en
   assert.equal(agent?.acceptsAttachments, false);
 
   const hub = source("src/app/components/hermes/command-hub.tsx");
-  assert.match(hub, /Makes a short video from a description/);
+  assert.match(hub, /Create animated videos from a description and download them as MP4s/);
   assert.match(hub, /hyperframes-entry/);
 });
 

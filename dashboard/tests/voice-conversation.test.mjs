@@ -4,6 +4,8 @@ import test from "node:test";
 
 import {
   VOICE_DOUBLE_TAP_MS,
+  VOICE_PROGRESS_DELAY_MS,
+  VOICE_PROGRESS_INTERVAL_MS,
   VOICE_MIN_SPEECH_MS,
   VOICE_NO_SPEECH_MS,
   VOICE_SILENCE_HOLD_MS,
@@ -27,6 +29,7 @@ import {
 
 const source = (relativePath) => fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
+const chrome = source('../src/app/components/use-voice-stage-chrome.ts');
 const overlay = source("../src/app/components/voice-conversation-overlay.tsx");
 const composer = source("../src/app/components/assistant-composer.tsx");
 const dictation = source("../src/app/components/speech-dictation-button.tsx");
@@ -151,10 +154,10 @@ test("the answer read out is the newest assistant message", () => {
   assert.notEqual(replyKey(messages), replyKey(messages.slice(0, 2)));
 });
 
-function narrationHarness(startIndex = 0) {
+function narrationHarness(startIndex = 0, options = {}) {
   const spoken = [], idle = [], errors = [], completions = [];
   const queue = createVoiceNarrationQueue({
-    startIndex,
+    startIndex, ...options,
     speak(item, signal) {
       spoken.push({ ...item, signal });
       return new Promise((resolve, reject) => completions.push({ resolve, reject }));
@@ -169,10 +172,13 @@ const flushNarration = () => new Promise((resolve) => setImmediate(resolve));
 const searchNote = 'Searching your recent chats for “fitness journey.”';
 const retryNote = 'No exact match. Trying the likely gym, fat-loss, and nutrition terms.';
 
-test("voice reads completed thinking updates during generation and queues the final answer in order", async () => {
+test("voice speaks occasional progress then prioritizes the final answer", async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const h = narrationHarness();
   const message = { role: 'assistant', content: 'An unfinished answer', progressNotes: [searchNote] };
   assert.equal(h.queue.update([message], true), false);
+  assert.deepEqual(h.spoken, []);
+  t.mock.timers.tick(VOICE_PROGRESS_DELAY_MS);
   assert.deepEqual(h.spoken.map(item => item.text), [searchNote]);
   message.progressNotes.push(retryNote);
   h.queue.update([message], true);
@@ -183,21 +189,21 @@ test("voice reads completed thinking updates during generation and queues the fi
   assert.equal(h.spoken.length, 1, 'the final answer must not interrupt progress audio');
   h.completions[0].resolve();
   await flushNarration();
-  assert.deepEqual(h.spoken.map(item => item.text), [searchNote, retryNote]);
+  assert.deepEqual(h.spoken.map(item => item.text), [searchNote, message.content]);
   assert.deepEqual(h.idle, [], 'do not reopen the microphone between queued messages');
   h.completions[1].resolve();
   await flushNarration();
-  assert.equal(h.spoken[2].kind, 'answer');
-  assert.equal(h.spoken[2].text, message.content);
-  h.completions[2].resolve();
-  await flushNarration();
+  t.mock.timers.tick(30_000);
+  assert.equal(h.spoken.length, 2, 'obsolete status must not play after the answer');
   assert.deepEqual(h.idle, [true]);
 });
 
-test("gaps between thinking updates keep waiting for the answer", async () => {
+test("progress updates are spaced apart and keep waiting for the answer", async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const h = narrationHarness();
   const message = { role: 'assistant', content: '', progressNotes: [searchNote] };
   h.queue.update([message], true);
+  t.mock.timers.tick(VOICE_PROGRESS_DELAY_MS);
   h.completions[0].resolve();
   await flushNarration();
   assert.deepEqual(h.idle, [false]);
@@ -205,10 +211,14 @@ test("gaps between thinking updates keep waiting for the answer", async () => {
   assert.equal(h.spoken.length, 1);
   message.progressNotes.push(retryNote);
   h.queue.update([message], true);
+  assert.equal(h.spoken.length, 1);
+  t.mock.timers.tick(VOICE_PROGRESS_INTERVAL_MS);
   assert.equal(h.spoken[1].text, retryNote);
+  h.queue.cancel();
 });
 
-test("voice skips history, user notes, empty notes and raw reasoning", async () => {
+test("voice skips history, user notes, empty notes and raw reasoning", async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const h = narrationHarness(2);
   const messages = [
     { role: 'user', content: 'old question' },
@@ -217,6 +227,7 @@ test("voice skips history, user notes, empty notes and raw reasoning", async () 
     { role: 'assistant', content: '', reasoning: 'Raw reasoning', progressNotes: [' ', searchNote, ` ${searchNote} `], delegatedAgentPreamble: searchNote },
   ];
   h.queue.update(messages, true);
+  t.mock.timers.tick(VOICE_PROGRESS_DELAY_MS);
   h.completions[0].resolve();
   await flushNarration();
   assert.deepEqual(h.spoken.map(item => item.text), [searchNote]);
@@ -242,8 +253,11 @@ test("interrupting cancels pending speech and ignores late completion callbacks"
   assert.deepEqual(h.errors, []);
 });
 
-test("a failed progress message does not lose subsequent updates or the answer", async () => {
+test("a failed progress message does not lose the answer", async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const h = narrationHarness();
+  h.queue.update([{ role: 'assistant', content: '', progressNotes: [searchNote] }], true);
+  t.mock.timers.tick(VOICE_PROGRESS_DELAY_MS);
   h.queue.update([{ role: 'assistant', content: 'Final answer', progressNotes: [searchNote] }], false);
   h.completions[0].reject(new Error('Speech unavailable'));
   await flushNarration();
@@ -273,7 +287,7 @@ test('answering a question keeps watching the same assistant message without rep
   await flushNarration();
   assert.equal(queue.update(messages, false), true);
   await flushNarration();
-  assert.deepEqual(spoken, [retryNote, 'Train three days a week.']);
+  assert.deepEqual(spoken, ['Train three days a week.']);
 });
 
 test('tool questions and spoken answers stay in order as the same assistant message continues', () => {
@@ -467,7 +481,7 @@ test("a spoken turn is sent as an ordinary chat message", () => {
     composer,
     /if \(pendingVoiceSendRef\.current === null \|\| pendingVoiceSendRef\.current !== value\) return;/,
   );
-  assert.match(composer, /onSubmitRef\.current\(\);/);
+  assert.match(composer, /onSubmitRef\.current\(pendingVoiceOptionsRef\.current\);/);
   assert.match(composer, /const sendSpokenTurn = useCallback\(/);
   assert.match(composer, /onOpenVoiceMode=\{voiceMessages \? \(greet = false\) => \{ setGreetVoice\(greet\); setVoiceOpen\(true\); \} : undefined\}/);
   assert.match(composer, /<VoiceConversationOverlay/);
@@ -482,21 +496,18 @@ test("the voice screen talks to the chat and takes the whole screen", () => {
   assert.match(overlay, /'\/api\/speech\/transcribe'/);
   assert.match(overlay, /'\/api\/speech\/synthesize'/);
   assert.match(overlay, /prepareLocalSpeech\(cloudController\.signal\)/);
-  assert.match(overlay, /playSpeechBlob/);
+  assert.match(overlay, /playSpeechResponse/);
   assert.match(overlay, /onSendRef\.current\(text\)/);
   // Escape closes, and closing tears the microphone and playback down.
   assert.match(overlay, /event\.key === 'Escape'/);
   assert.match(overlay, /stopSpeechPlayback\(\);\s*\n\s*releaseMicrophone\(\);/);
-  // Answers are spoken once, when they have settled.
+  // The queue owns sentence streaming and final-turn completion.
   assert.match(overlay, /narration\.update\(messages, busy\)/);
   assert.match(overlay, /if \(answered\) \{\s*awaitingRef\.current = false;/);
 });
 
-test("voice mode prepares the selected speech provider before it starts listening", () => {
-  assert.match(
-    overlay,
-    /const cloud = await subscriptionSelected\(cloudController\.signal\);[\s\S]*?if \(!cloud\) await prepareLocalSpeech\(cloudController\.signal\);[\s\S]*?serviceReady = true;[\s\S]*?requestForegroundMicrophone/,
-  );
+test("voice mode keeps provider and microphone failures retryable", () => {
+  // Startup while preparation is pending is exercised in the browser tests.
   assert.match(overlay, /\[401, 403, 409\]\.includes\(response\.status\)[\s\S]*?enterStage\('unavailable'\)/);
   assert.match(overlay, /stage === 'blocked' \|\| stage === 'unavailable'/);
 });
@@ -571,10 +582,10 @@ test("talking swells the circle; it never takes the circle away", () => {
 test("the screen owns the whole window, chrome and scrollbars included", () => {
   // The desktop shell's caption strip: the web half through a data attribute,
   // the native buttons in it through the bridge, and back to the theme after.
-  assert.match(overlay, /root\.dataset\.voiceStage = 'open'/);
-  assert.match(overlay, /shell\?\.setTheme\?\.\('voice'\)/);
+  assert.match(chrome, /root\.dataset\.voiceStage = 'open'/);
+  assert.match(chrome, /shell\?\.setTheme\?\.\('voice'\)/);
   assert.match(
-    overlay,
+    chrome,
     /setTheme\?\.\(root\.dataset\.theme === 'dark' \? 'dark' : 'light'\)[\s\S]*?paintShell\(false\);\s*delete root\.dataset\.voiceStage;/,
   );
   assert.match(
@@ -616,4 +627,43 @@ test("every chat that hosts the composer can be talked to", () => {
   assert.match(gardenAssistant, /voiceMessages=\{messages\}/);
   assert.match(workspace, /voiceMessages=\{messages\}/);
   assert.match(hermesPanel, /voiceMessages=\{messages\}/);
+});
+
+
+test('quick answers discard pending progress and burst updates collapse to the latest useful note', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const h = narrationHarness(); t.after(() => h.queue.cancel());
+  const message = { role: 'assistant', content: '', progressNotes: [searchNote, retryNote, 'Thinking...', '{"query":"raw"}'] };
+  h.queue.update([message], true); t.mock.timers.tick(VOICE_PROGRESS_DELAY_MS - 1);
+  assert.deepEqual(h.spoken, []);
+  message.content = 'Here is the answer.'; h.queue.update([message], false);
+  t.mock.timers.tick(30_000);
+  assert.deepEqual(h.spoken.map(item => item.text), [message.content]);
+  const slow = narrationHarness(); t.after(() => slow.queue.cancel());
+  slow.queue.update([{ ...message, content: '' }], true); t.mock.timers.tick(VOICE_PROGRESS_DELAY_MS);
+  assert.deepEqual(slow.spoken.map(item => item.text), [retryNote]);
+});
+
+test('queued sentences become connected phrases and keep every answer word', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = narrationHarness(0, { streamAnswers: true }); t.after(() => h.queue.cancel());
+  const first = 'This is the first complete sentence. ';
+  const rest = 'Here is a second connected sentence. And this is the third complete sentence. The tail.';
+  h.queue.update([{ role: 'assistant', content: first + 'Here' }], true);
+  t.mock.timers.tick(240);
+  h.queue.update([{ role: 'assistant', content: first + rest }], true);
+  h.queue.update([{ role: 'assistant', content: first + rest }], false);
+  assert.deepEqual(h.spoken.map(item => item.text), [first.trim()]);
+  h.completions[0].resolve(); await flushNarration();
+  assert.equal(h.spoken[1].text, rest);
+  h.completions[1].resolve(); await flushNarration(); assert.deepEqual(h.idle, [true]);
+});
+
+test('an empty finished run returns the floor instead of staying on Thinking', async () => {
+  const h = narrationHarness();
+  const messages = [{ role: 'assistant', content: '' }];
+  assert.equal(h.queue.update(messages, false), false);
+  h.queue.update(messages, true); assert.equal(h.queue.update(messages, false), true);
+  assert.match(h.errors[0], /without an answer/);
+  h.completions[0].resolve(); await flushNarration(); assert.deepEqual(h.idle, [true]);
 });

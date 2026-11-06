@@ -105,6 +105,7 @@ export default function InlineInteractiveVisualizer({ artifact }: Props) {
 
   return (
     <article
+      data-inline-visualizer
       className="relative mt-3 min-w-0"
       aria-label={`${artifact.title} interactive visualization`}
     >

@@ -7,6 +7,9 @@ export interface VoiceCompanionBridge {
   open(): Promise<boolean>;
   close(): Promise<void>;
   setMinimized?(minimized: boolean): Promise<boolean>;
+  fullscreen?(): Promise<boolean>;
+  setFullscreen?(fullscreen: boolean): Promise<boolean>;
+  onFullscreen?(callback: (fullscreen: boolean) => void): () => void;
   ready?(): Promise<boolean>;
   onMinimized?(callback: (minimized: boolean) => void): () => void;
   getScreenContextAccess?(): Promise<import('../browser-terminal').BrowserTerminalAccess | null>;

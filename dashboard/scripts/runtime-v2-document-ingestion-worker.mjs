@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -37,6 +38,7 @@ const PUBLIC_INGEST_MODEL_QUOTA_FAILURE =
 // whole fix. Fixed wording, like the warnings above, so the boundary holds.
 const PUBLIC_INGEST_CONCEPT_EXTRACTION_FAILURE =
   "The document was read, but building its summary and concepts failed, so nothing was added to the garden. Resume the upload to try again.";
+const PUBLIC_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u;
 const INGEST_RECOVERY_PROTOCOL_VERSION = 1;
 const INGEST_RECOVERY_MANIFEST_FILE = "recovery.json";
 const INGEST_RECOVERY_SOURCE_FILE = "source";
@@ -81,6 +83,23 @@ function waitForRetryDelay(delayMs, signal) {
     }, delayMs);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/** Name what holds the garden, so a long wait is explainable. */
+export function gardenBusyNote(conflict) {
+  const jobId = typeof conflict?.jobId === "string" ? conflict.jobId : "";
+  const buildId = typeof conflict?.buildId === "string" ? conflict.buildId : "";
+  let owner = "another Garden update";
+  if (jobId.startsWith("learn_job_")) {
+    owner = buildId.startsWith("recovery:")
+      ? "Learn to finish restoring this garden"
+      : "Learn to finish its current step";
+  } else if (jobId.startsWith("mutation:document-ingestion")) {
+    owner = "another upload to this garden";
+  } else if (jobId.startsWith("content:")) {
+    owner = "a note save";
+  }
+  return `Waiting for ${owner}…`;
 }
 
 export async function retryGardenMutationBusy(
@@ -142,24 +161,6 @@ function hasExactKeys(value, keys) {
   return (
     actual.length === expected.length &&
     actual.every((key, index) => key === expected[index])
-  );
-}
-
-function samePath(left, right) {
-  const normalizedLeft = path.resolve(left);
-  const normalizedRight = path.resolve(right);
-  return process.platform === "win32"
-    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
-    : normalizedLeft === normalizedRight;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return (
-    relative === "" ||
-    (!relative.startsWith(`..${path.sep}`) &&
-      relative !== ".." &&
-      !path.isAbsolute(relative))
   );
 }
 
@@ -832,9 +833,19 @@ export function isConceptExtractionFailure(error) {
 
 /** The one public sentence a failed ingestion is reported with. */
 export function publicIngestFailureMessage(classification = {}) {
-  if (classification.providerQuota === true) return PUBLIC_INGEST_MODEL_QUOTA_FAILURE;
+  const model =
+    typeof classification.model === "string" && PUBLIC_MODEL_ID.test(classification.model)
+      ? classification.model
+      : null;
+  if (classification.providerQuota === true) {
+    return model
+      ? `Model ${model} and its fallbacks were rate-limited or out of credits, so the document could not be processed. Add provider credits or wait for the usage limit to reset, or choose another model, then retry the upload.`
+      : PUBLIC_INGEST_MODEL_QUOTA_FAILURE;
+  }
   if (classification.conceptExtraction === true) {
-    return PUBLIC_INGEST_CONCEPT_EXTRACTION_FAILURE;
+    return model
+      ? `The document was read, but model ${model} failed while building its summary and concepts, so nothing was added to the garden. Resume the upload to try again.`
+      : PUBLIC_INGEST_CONCEPT_EXTRACTION_FAILURE;
   }
   return SANITIZED_RUNTIME_FAILURE_MESSAGE;
 }
@@ -1466,8 +1477,7 @@ async function runRuntimeV2DocumentIngestionWorker() {
         ),
       {
         signal: abortController.signal,
-        onBusy: () =>
-          progress.note("Waiting for another Garden update to finish…"),
+        onBusy: (error) => progress.note(gardenBusyNote(error?.conflict)),
       },
     );
     const journalRecovery = recoveries.find(
@@ -1555,8 +1565,7 @@ async function runRuntimeV2DocumentIngestionWorker() {
         ),
       {
         signal: abortController.signal,
-        onBusy: () =>
-          progress.note("Waiting for another Garden update to finish…"),
+        onBusy: (error) => progress.note(gardenBusyNote(error?.conflict)),
       },
     );
     knowledgeWriteTransactionOutcome = "active";
@@ -1703,7 +1712,11 @@ async function runRuntimeV2DocumentIngestionWorker() {
       // Classification is advisory; the sanitized message remains the default.
     }
     const conceptExtraction = !providerQuota && isConceptExtractionFailure(failure);
-    const publicMessage = publicIngestFailureMessage({ providerQuota, conceptExtraction });
+    const publicMessage = publicIngestFailureMessage({
+      providerQuota,
+      conceptExtraction,
+      model: launch.request.model,
+    });
     let recoveryId = null;
     if (openedBlob) {
       // Before the terminal event: Runtime may delete the staged blob as soon

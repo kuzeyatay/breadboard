@@ -60,6 +60,7 @@ import {
   reserveAgentLaunchRequestSlot,
 } from "@/lib/hermes/agent-launch-store.ts";
 import { MAX_PARALLEL_AGENT_LAUNCHES } from "@/lib/hermes/agent-launch.ts";
+import { unifiedWorkflowSelectionAllows, unifiedWorkflowRepeatsCompletedWork } from "@/lib/workflows/unified-command.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -139,6 +140,13 @@ export async function POST(request: Request) {
     const awaitResult = true;
 
     const surface = session.surface as CapabilitySurface;
+    const dispatch = parseRuntimeRunDispatch(run);
+    if (!unifiedWorkflowSelectionAllows(dispatch.workflowSelection, agentId)) {
+      throw new ApiError(403, "agent_launch_workflow_scope", "That specialist is outside the workflow selected for this turn. Select it directly in Agents to use it.");
+    }
+    if (unifiedWorkflowRepeatsCompletedWork(dispatch.workflowCompletedWork, agentId, brief)) {
+      throw new ApiError(409, "agent_launch_workflow_job_completed", "That specialist already completed this job for the workflow. Use its result and continue only unfinished work.");
+    }
     const launchable = modelLaunchableRuntimeAgents(surface);
     const agent = launchable.find((candidate) => candidate.id === agentId);
     if (!agent) {
@@ -188,7 +196,6 @@ export async function POST(request: Request) {
         `A reason is required: one line naming what ${agent.name} reaches that this turn does not — a mailbox, a repository, a browser, a persistent workspace, a file kind. If you cannot name one, do not launch; answer the request yourself.`,
       );
     }
-    const dispatch = parseRuntimeRunDispatch(run);
     const queuedAgents = listAgentLaunchRequestsAfter({ runId: run.id, afterId: 0 });
     // A slash-prefixed brief is a capability expression, not a self-contained
     // instruction for an isolated specialist. Reject it at the tool boundary

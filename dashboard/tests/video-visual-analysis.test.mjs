@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   augmentSourceMarkdown,
   evenlySample,
+  hasCompletedVisualAnalysis,
+  kickPendingVisualAnalyses,
   transcriptWindow,
 } from "../src/lib/scriberr/visual-analysis.ts";
 
@@ -66,6 +69,13 @@ test("the source note gains source_images, a what-the-video-shows section, and t
   // Re-running replaces the frontmatter list instead of duplicating it.
   const again = augmentSourceMarkdown({ markdown: out, analysis: "x", frames: [{ url: "/em/assets/lecture-3-page-001.png", timestamp: "0:00", seconds: 0 }], transcript: null });
   assert.equal((again.match(/^source_images:/gm) ?? []).length, 1);
+  assert.equal(hasCompletedVisualAnalysis(out), true);
+  assert.equal(hasCompletedVisualAnalysis(markdown), false);
+});
+
+test("a durable visual analysis can resume at publication without rerunning Watch", () => {
+  assert.match(moduleSource, /if \(hasCompletedVisualAnalysis\(fs\.readFileSync\(sourcePath, "utf8"\)\)\) \{/);
+  assert.match(moduleSource, /await deps\.publish\(`video visual analysis for \$\{sourceSlug\}`,[\s\S]*?job\.userId\);/);
 });
 
 test("a failed reading is never published as what the video shows", () => {
@@ -84,4 +94,43 @@ test("a failed reading is never published as what the video shows", () => {
   // And the job says it failed rather than reporting Complete with an error
   // tucked into a field nobody reads.
   assert.match(moduleSource, /deps\.store\.transition\(job\.id, "failed", \{/);
+});
+
+test("every Watch-selected frame is saved and optional description failure does not lose the video", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "watch-frames-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sourcePath = path.join(root, "course/sources/lecture.md");
+  fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+  fs.writeFileSync(sourcePath, '---\ntitle: Lecture\n---\n## Transcript\nAll the lecture text.\n');
+  const frame = path.join(root, "watch.png");
+  fs.writeFileSync(frame, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC1cAAAAASUVORK5CYII=", "base64"));
+  const job = { id: `frames-${path.basename(root)}`, userId: 1, gardenId: "course", status: "analyzing_visuals", analysis: "watch",
+    sourceSlug: "lecture", outputRelativePath: "sources/lecture.md", inputKind: "youtube", canonicalUrl: "https://example.test/lecture" };
+  let finish;
+  const completed = new Promise(resolve => { finish = resolve; });
+  const store = {
+    listJobsForCluster: () => [job], getJob: () => job,
+    transition: (_id, state) => { job.status = state; if (["completed", "failed"].includes(state)) finish(state); },
+  };
+  let described = 0;
+  let published = 0;
+  const logs = [];
+  kickPendingVisualAnalyses({ store, contentPath: root, ffmpegPath: "unused", log: message => logs.push(message),
+    runWatch: async () => ({ report: "", chatmockAnalysis: "The board changes at every timestamp.",
+      framePaths: Array.from({ length: 31 }, (_, i) => ({ path: frame, timestamp: `0:${String(i).padStart(2, "0")}` })) }),
+    describeSource: async (userId, garden, source) => {
+      assert.deepEqual([userId, garden, source], [1, "course", "sources/lecture.md"]);
+      described++;
+      throw new Error("description service is offline");
+    },
+    publish: async () => { published++; },
+  }, 1);
+  assert.equal(await completed, "completed");
+  assert.equal(described, 1);
+  assert.equal(published, 1);
+  assert.equal(fs.readdirSync(path.join(root, "course/assets")).length, 31);
+  const markdown = fs.readFileSync(sourcePath, "utf8");
+  assert.equal((markdown.match(/^### Frame /gm) ?? []).length, 31);
+  assert.match(markdown, /### Frame 31 \(00:00:30\)/);
+  assert.match(logs.join("\n"), /descriptions are pending/);
 });

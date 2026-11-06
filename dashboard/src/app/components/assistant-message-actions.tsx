@@ -17,6 +17,7 @@ import {
 import { createPortal } from "react-dom";
 import { Reply } from "lucide-react";
 import StarMessageButton from "./star-message-button";
+import SkillUsageSummary from "@/app/components/hermes/skill-usage-summary";
 import EvidencePanel from "@/app/components/hermes/evidence-panel";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import { useHumanizerMode } from "@/app/components/use-humanizer-mode";
@@ -28,7 +29,9 @@ import {
   formatChatClockTime,
 } from "@/lib/chat-time-separators";
 import type { VerificationSummary } from "@/lib/hermes/evidence";
-import { playSpeechBlob, stopSpeechPlayback } from "@/lib/speech/playback";
+import { playSpeechBlob, playSpeechResponse, stopSpeechPlayback } from "@/lib/speech/playback";
+import { loadSpeechSettings } from "@/lib/speech/settings-client";
+import { playVoicePassages } from "@/lib/speech/voice-playback";
 import {
   type AnswerSignalKind,
   clearAnswerRating,
@@ -453,6 +456,9 @@ export default function AssistantMessageActions({
   async function toggleSpeech() {
     setSpeechMessage(null);
     if (speechState === "playing") {
+      // A passage-by-passage reading would otherwise go on to the next one.
+      speechAbortRef.current?.abort();
+      speechAbortRef.current = null;
       stopSpeechPlayback();
       setSpeechState("idle");
       return;
@@ -484,14 +490,33 @@ export default function AssistantMessageActions({
         if (mountedRef.current) setSpeechState("playing");
         return;
       }
-      const response = await speechRequest("/api/speech/synthesize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(await speechError(response));
-      const audio = await response.blob();
+      const synthesize = async (passage: string, signal: AbortSignal) => {
+        const response = await speechRequest("/api/speech/synthesize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: passage }),
+          signal,
+        });
+        if (!response.ok) throw new Error(await speechError(response));
+        return response;
+      };
+      // OpenAI (web) makes each reading a ChatGPT turn, so the whole answer
+      // in one request is heard only once all of it has been turned into
+      // audio. Short passages, the next prepared while one plays, start
+      // speaking after the first sentence or two, as voice mode does.
+      if ((await loadSpeechSettings(controller.signal)).settings.speechProvider === "openaiweb") {
+        await playVoicePassages(text, {
+          signal: controller.signal,
+          synthesize,
+          play: (response, signal, onProgress) => {
+            if (mountedRef.current) setSpeechState("playing");
+            return playSpeechResponse(response, signal, onProgress);
+          },
+        });
+        if (mountedRef.current) setSpeechState("idle");
+        return;
+      }
+      const audio = await (await synthesize(text, controller.signal)).blob();
       controller.signal.throwIfAborted();
       await playSpeechBlob(audio, () => {
         if (mountedRef.current) setSpeechState("idle");
@@ -622,6 +647,8 @@ export default function AssistantMessageActions({
   }
 
   const actions = (
+    <>
+    <SkillUsageSummary capabilities={verification?.capabilities} onInspect={() => setEvidenceOpen(true)} />
     <div className="mt-2 flex flex-wrap items-center gap-0.5" aria-label="Assistant response actions">
       <button
         type="button"
@@ -821,6 +848,7 @@ export default function AssistantMessageActions({
         </time>
       ) : null}
     </div>
+    </>
   );
 
   if (suppressActions) return null;

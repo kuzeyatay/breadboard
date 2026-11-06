@@ -129,6 +129,7 @@ test("Claude authentication is owned by the official Claude Code CLI", () => {
 
 test("Claude subscription model ids are stable and isolated from other subscriptions", () => {
   assert.deepEqual([...claudeCode.CLAUDE_CODE_MODELS], [
+    "claude-opus-5-5",
     "claude-opus-5",
     "claude-sonnet-5",
     "claude-haiku-4-5-20251001",

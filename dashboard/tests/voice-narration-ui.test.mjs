@@ -8,7 +8,7 @@ import { chromium } from 'playwright';
 import { speakableText } from '../src/lib/speech/voice-conversation.ts';
 import { splitSpeechPassages } from '../src/lib/speech/passages.ts';
 
-test('voice mode speaks thinking updates, queues answers, and cancels late audio for both providers', { timeout: 60_000 }, async () => {
+test('voice mode speaks thinking updates, queues answers, and cancels late audio for both providers', { timeout: 90_000 }, async () => {
   const root = fileURLToPath(new URL('../', import.meta.url));
   const bundle = await esbuild.build({
     stdin: { resolveDir: root, loader: 'tsx', contents: `
@@ -88,12 +88,19 @@ test('voice mode speaks thinking updates, queues answers, and cancels late audio
     define: { 'process.env.NODE_ENV': '"production"' },
     plugins: [{ name: 'voice-fixture', setup(build) {
       const stubs = {
+        '@/lib/speech/voice-cues': `export const playVoiceCue=()=>{};`,
         '@/lib/speech/clap/audio-focus': 'export const requestForegroundMicrophone = () => navigator.mediaDevices.getUserMedia(); export function stopForegroundStream(stream) { stream?.getTracks().forEach(track=>track.stop()); } export const holdForegroundAudio = () => () => {};',
         '@/lib/speech/clap-wake': 'export const holdClapWake = () => () => {};',
         '@/lib/speech/microphone-access': 'export const describeMicrophoneBlock = () => null;',
         '@/lib/speech/prepare-client': 'export async function prepareLocalSpeech() {} export const speechErrorMessage = (error, fallback) => error?.message || fallback;',
         '@/lib/speech/request-client': `export async function speechRequest(url, options) {
-          if (url.endsWith('/transcribe')) return Response.json({text:window.transcript});
+          if (url.endsWith('/transcribe')) {
+            if(window.delayTranscript)await new Promise((resolve,reject)=>{
+              window.transcriptStarted=true;
+              options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true});
+            });
+            return Response.json({text:window.transcript});
+          }
           const text = JSON.parse(options.body).text; window.synthesized.push(text);
           if (window.failGreeting) throw new Error('Fixture greeting reader failed.');
           if (window.delaySynthesis) await new Promise(resolve=>window.releaseSynthesis=resolve);
@@ -136,6 +143,92 @@ test('voice mode speaks thinking updates, queues answers, and cancels late audio
   let browser;
   try {
     browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
+    {
+      const context = await browser.newContext();
+      const page = await context.newPage(), priority = await context.newPage();
+      const errors = []; page.on('pageerror', error => errors.push(error.message));
+      await priority.route('**/priority', route => route.fulfill({ contentType: 'text/html', body: '<input id="target">' }));
+      await priority.goto(`http://127.0.0.1:${server.address().port}/priority`);
+      await priority.evaluate(() => { window.channel = new BroadcastChannel('breadboard:dictation-priority'); });
+      await page.goto(`http://127.0.0.1:${server.address().port}/?cloud&compact`);
+      await page.locator('.voice-stage[data-stage="listening"]').waitFor();
+      const connections = await page.evaluate(() => window.cloudConnections);
+      await page.evaluate(() => { window.delayClose = true; });
+      await priority.evaluate(() => window.channel.postMessage({ id: 'dictation-check', holds: 1 }));
+      await page.locator('[data-dictation-paused=true]').waitFor();
+      await page.waitForFunction(() => typeof window.releaseClose === 'function');
+      assert.equal(await page.evaluate(() => window.tracks.every(track => track.readyState === 'ended')), true);
+      assert.match(await page.locator('.voice-note').textContent(), /Paused for dictation/);
+      await priority.evaluate(() => window.channel.postMessage({ id: 'dictation-check', holds: 0 }));
+      await page.waitForTimeout(100);
+      assert.equal(await page.evaluate(() => window.cloudConnections), connections, 'quick key release must still wait for old connection cleanup');
+      await page.evaluate(() => window.releaseClose());
+      await page.locator('.voice-stage[data-stage="listening"]').waitFor();
+      assert.equal(await page.evaluate(() => window.cloudConnections), connections + 1);
+      assert.equal(await page.evaluate(() => window.played.length), 0, 'resuming cannot replay a greeting or the old answer');
+      assert.equal(await page.evaluate(() => window.sent.length), 0, 'pausing never sends captured speech');
+      await page.getByRole('button', { name: 'Pause listening', exact: true }).click();
+      await priority.evaluate(() => window.channel.postMessage({ id: 'dictation-check', holds: 1 }));
+      await page.locator('[data-dictation-paused=true]').waitFor();
+      await priority.evaluate(() => window.channel.postMessage({ id: 'dictation-check', holds: 0 }));
+      await page.waitForFunction(count => window.cloudConnections === count, connections + 2);
+      await page.locator('.voice-stage[data-stage="paused"]').waitFor();
+      assert.equal(await page.evaluate(() => window.cloudListening), false, 'manual pause remains paused');
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+    {
+      const page = await browser.newPage();
+      await page.clock.install();
+      await page.goto(`http://127.0.0.1:${server.address().port}/?local&skip-greet`);
+      await page.waitForFunction(() => typeof window.releaseSynthesis === 'function');
+      await page.clock.fastForward(24_000);
+      await page.evaluate(() => window.releaseSynthesis());
+      await page.waitForFunction(() => window.played.length === 1);
+      await page.clock.fastForward(2_000);
+      assert.equal(await page.getByRole('button', { name: 'Skip greeting and listen', exact: true }).count(), 1,
+        'a greeting delivered near the provider deadline can finish playing');
+      assert.doesNotMatch(await page.locator('.voice-note').textContent() ?? '', /greeting timed out/i);
+      await page.evaluate(() => window.completeSpeech());
+      await page.waitForFunction(() => !document.querySelector('button[aria-label="Skip greeting and listen"]'));
+      assert.equal(await page.locator('.voice-stage').getAttribute('data-stage'), 'listening');
+      await page.close();
+    }
+    {
+      const page = await browser.newPage();
+      await page.goto(`http://127.0.0.1:${server.address().port}/?local&skip-greet`);
+      await page.waitForFunction(() => typeof window.releaseSynthesis === 'function');
+      await page.evaluate(() => window.say());
+      await page.locator('.voice-stage[data-stage="thinking"]').waitFor();
+      assert.equal(await page.getByRole('button', { name: 'Skip greeting and listen', exact: true }).count(), 0,
+        'speech cancels a slow greeting even when the native detector is unavailable');
+      await page.evaluate(() => window.releaseSynthesis());
+      await page.waitForTimeout(100);
+      assert.equal(await page.evaluate(() => window.played.length), 0, 'late greeting audio cannot play over the answer');
+      assert.equal(await page.evaluate(() => window.sent.length), 1);
+      await page.close();
+    }
+    {
+      const page = await browser.newPage();
+      await page.clock.install();
+      await page.addInitScript(() => {
+        AbortSignal.timeout = ms => { const controller = new AbortController(); setTimeout(() => controller.abort(new DOMException('Speech timed out', 'TimeoutError')), ms); return controller.signal; };
+        window.delayTranscript = true;
+      });
+      await page.goto(`http://127.0.0.1:${server.address().port}/?local`);
+      await page.locator('.voice-stage[data-stage="listening"]').waitFor();
+      await page.evaluate(() => window.say());
+      await page.waitForFunction(() => window.transcriptStarted);
+      await page.locator('.voice-stage[data-stage="transcribing"]').waitFor();
+      await page.clock.fastForward(25_100);
+      await page.locator('.voice-stage[data-stage="listening"]').waitFor();
+      assert.equal(await page.evaluate(() => window.sent.length), 0, 'a timed-out recording must not submit a stale question');
+      assert.equal(await page.evaluate(() => window.tracks.filter(track => track.readyState === 'live').length), 1);
+      await page.evaluate(() => { window.delayTranscript = false; window.say(); });
+      await page.locator('.voice-stage[data-stage="thinking"]').waitFor();
+      assert.equal(await page.evaluate(() => window.sent.length), 1, 'the next spoken turn works after a stalled transcription');
+      await page.close();
+    }
     for (const provider of ['local', 'cloud']) for (const failure of ['fail', 'timeout', 'skip']) {
       const page = await browser.newPage();
       const errors = [];
@@ -195,6 +288,7 @@ test('voice mode speaks thinking updates, queues answers, and cancels late audio
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
       await page.goto(`http://127.0.0.1:${server.address().port}/?${provider}${compact ? '&compact' : ''}`);
+      await page.clock.install();
       const caption = () => page.locator(compact ? '.voice-widget-message-assistant' : '.voice-caption-text').last();
       const stage = state => page.locator(`.voice-stage[data-stage="${state}"]`).waitFor();
       const played = count => page.waitForFunction(count => window.played.length === count, count);
@@ -244,6 +338,8 @@ test('voice mode speaks thinking updates, queues answers, and cancels late audio
       assert.equal(await caption().textContent(), first);
       await page.evaluate(({ first, second }) => window.updateAnswer('Partial answer', [first, second]), { first, second });
       await page.evaluate(() => window.completeSpeech());
+      await stage('thinking');
+      await page.clock.fastForward(12_000);
       await played(2);
       await page.evaluate(() => window.completeSpeech());
       await stage('thinking');
@@ -266,7 +362,7 @@ test('voice mode speaks thinking updates, queues answers, and cancels late audio
       await stage('listening');
       await page.getByRole('button', { name: 'Expand voice assistant' }).click();
 
-      // Interrupt while a progress message is playing and the answer is queued.
+      // Interrupt a completed answer; late progress is never played afterward.
       await page.evaluate(() => window.say());
       await stage('thinking');
       if (!compact) assert.equal(await caption().textContent(), 'Find my fitness chats');
@@ -360,8 +456,8 @@ test('voice mode speaks thinking updates, queues answers, and cancels late audio
       await stage('listening');
       await page.setViewportSize({ width: 1000, height: 600 });
 
-      // A tall block the voice omits must not count as reading time. Follow
-      // prose after that block using its actual position in the rendered page.
+      // Code contributes to the spoken script. Follow prose after a tall block
+      // using its actual position without matching code words into later prose.
       await page.evaluate(() => window.say());
       await stage('thinking');
       const codeReply = [

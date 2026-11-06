@@ -171,6 +171,60 @@ test("Quartz rotation acquires the replacement before releasing the visible view
   assert.deepEqual(state.events.at(-1), { type: "release", id: "lease-2" });
 });
 
+test("32 simultaneous readers share one native lease and closing one cannot stop the others", async () => {
+  const state = freshLeaseState();
+  const views = Array.from({ length: 32 }, (_, i) => `reader-${i}`);
+  await Promise.all(views.map(view => quartzLease.renewQuartzViewLease(71, view)));
+  assert.equal(state.events.filter(event => event.type === 'acquire').length, 1);
+  assert.equal(state.events.filter(event => event.type === 'publish-ready').length, 1);
+  await Promise.all(views.slice(0, -1).map(view => quartzLease.releaseQuartzViewLease(71, view)));
+  assert.equal(state.events.filter(event => event.type === 'release').length, 0);
+  await quartzLease.renewQuartzViewLease(71, views.at(-1));
+  await quartzLease.releaseQuartzViewLease(71, views.at(-1));
+  assert.equal(state.events.filter(event => event.type === 'release').length, 1);
+});
+
+test("simultaneous reader heartbeats rotate their shared lease only once", async () => {
+  const state = freshLeaseState(), start = Date.now();
+  await Promise.all(['a', 'b', 'c'].map(view => quartzLease.renewQuartzViewLease(72, view, start)));
+  await Promise.all(['a', 'b', 'c'].map(view => quartzLease.renewQuartzViewLease(72, view,
+    start + quartzLease.QUARTZ_VIEW_LEASE_ROTATION_MS + 1)));
+  assert.deepEqual(state.events.map(event => event.type), ['publish-ready', 'acquire', 'acquire', 'release']);
+  await Promise.all(['a', 'b', 'c'].map(view => quartzLease.releaseQuartzViewLease(72, view)));
+  assert.equal(state.events.filter(event => event.type === 'release').length, 2);
+});
+
+test("an abandoned reader expires without releasing another user's or a renewed reader's lease", async t => {
+  const state = freshLeaseState();
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+  await quartzLease.renewQuartzViewLease(73, 'abandoned');
+  await quartzLease.renewQuartzViewLease(73, 'reading');
+  await quartzLease.renewQuartzViewLease(74, 'other-user');
+  t.mock.timers.tick(60_000);
+  await quartzLease.renewQuartzViewLease(73, 'reading');
+  await quartzLease.renewQuartzViewLease(74, 'other-user');
+  t.mock.timers.tick(10_001);
+  // Wait behind queued expiry work on the same user's serialization lane.
+  await quartzLease.releaseQuartzViewLease(73, 'already-gone');
+  assert.equal(state.events.filter(event => event.type === 'release').length, 0);
+  await quartzLease.releaseQuartzViewLease(73, 'reading');
+  assert.deepEqual(state.events.at(-1), { type: 'release', id: 'lease-1' });
+  await quartzLease.releaseQuartzViewLease(74, 'other-user');
+  assert.deepEqual(state.events.at(-1), { type: 'release', id: 'lease-2' });
+});
+
+test("expired view metadata does not exhaust the bound and denied views cannot evict an existing reader", async () => {
+  const state = freshLeaseState(), start = Date.now();
+  const views = Array.from({ length: 256 }, (_, i) => `bounded-${i}`);
+  await Promise.all(views.map(view => quartzLease.renewQuartzViewLease(75, view, start)));
+  await assert.rejects(quartzLease.renewQuartzViewLease(75, 'overflow', start), { status: 429 });
+  await quartzLease.renewQuartzViewLease(75, views[0], start);
+  assert.equal(state.events.filter(event => event.type === 'acquire').length, 1);
+  await quartzLease.renewQuartzViewLease(75, 'new-reader', start + quartzLease.QUARTZ_VIEW_HOLD_TTL_MS + 1);
+  await quartzLease.releaseQuartzViewLease(75, 'new-reader');
+  assert.equal(state.events.filter(event => event.type === 'release').length, 1);
+});
+
 test("Quartz does not start the static service when cold publication fails", async () => {
   const state = freshLeaseState();
   state.publishError = new Error("publisher unavailable");

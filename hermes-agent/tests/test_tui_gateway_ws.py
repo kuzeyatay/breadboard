@@ -9,6 +9,36 @@ from tui_gateway import server
 from tui_gateway import ws as ws_mod
 
 
+def test_ws_surrogate_payload_does_not_disconnect_other_chats():
+    """A sliced tool excerpt must survive live delivery AND result recovery."""
+    async def scenario():
+        received = []
+
+        class Utf8WS:
+            async def send_text(self, line):
+                # A real ASGI WebSocket encodes here; a list-only fake hides
+                # the production UnicodeEncodeError and poisoned connection.
+                received.append(json.loads(line.encode("utf-8").decode("utf-8")))
+
+        transport = ws_mod.WSTransport(Utf8WS(), asyncio.get_running_loop())
+        payload = {"text": "Answer with math U0001d435 and emoji U0001f642", "completed_tools": [
+            {"result": {"excerpt": "cut symbol \ud835", "low": "\udc35"}}
+        ]}
+        live = {"method": "event", "params": {
+            "type": "message.complete", "session_id": "lecture", "payload": payload,
+        }}
+        assert await asyncio.to_thread(transport.write, live)
+        recovery = {"id": "recovery", "result": {"state": "completed", "payload": payload}}
+        assert await transport.write_async(recovery)
+        other_chat = {"id": "study-chat", "result": {"text": "Independent answer"}}
+        assert await transport.write_async(other_chat)
+        assert received == [live, recovery, other_chat]
+        assert not transport._closed
+        transport.close()
+
+    asyncio.run(scenario())
+
+
 def test_ws_startup_starts_background_mcp_discovery(monkeypatch):
     """The desktop app and dashboard chat reach the agent through this WS
     sidecar, not through tui_gateway.entry.main() (which spawns the discovery
@@ -42,6 +72,32 @@ def test_ws_startup_starts_background_mcp_discovery(monkeypatch):
         server._sessions.clear()
 
     assert calls == [{"logger": ws_mod._log, "thread_name": "tui-ws-mcp-discovery"}]
+
+
+def test_turn_result_surrogate_round_trips_over_real_websocket(monkeypatch):
+    from starlette.applications import Starlette
+    from starlette.routing import WebSocketRoute
+    from starlette.testclient import TestClient
+
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **kw: None)
+    payload = {"text": "Saved lecture answer", "status": "complete",
+               "completed_tools": [{"result": {"excerpt": "math \ud835"}}]}
+    monkeypatch.setitem(server._sessions, "unicode-recovery", {
+        "history_lock": threading.Lock(), "running": False,
+        "last_turn_result": {"turn_id": "msg_unicode", "payload": payload},
+    })
+    app = Starlette(routes=[WebSocketRoute('/ws', ws_mod.handle_ws)])
+    with TestClient(app) as client, client.websocket_connect('/ws') as socket:
+        assert socket.receive_json()['params']['type'] == 'gateway.ready'
+        for request_id in ('first-recovery', 'next-request'):
+            socket.send_json({"jsonrpc": "2.0", "id": request_id,
+                              "method": "session.turn_result", "params": {
+                                  "session_id": "unicode-recovery", "turn_id": "msg_unicode",
+                              }})
+            result = socket.receive_json()
+            assert result['id'] == request_id
+            assert result['result']['state'] == 'completed'
+            assert result['result']['payload'] == payload
 
 
 def _run_disconnect(monkeypatch, seed):

@@ -1,11 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { atomicWriteFile } from "./runtime-config";
-import { isTranslationLanguage, notificationOrigin, translationSite, type BrowserPreferences, type BrowserPreferenceCommand } from "../shared/browser-preferences";
+import { isTranslationLanguage, isBrowserMediaPermission, isBrowserMediaPermissionList, notificationOrigin, translationSite, type BrowserMediaPermission, type BrowserPreferences, type BrowserPreferenceCommand } from "../shared/browser-preferences";
 
 /** The same persistent profile owns browser cookies and notification grants. */
 export class BrowserPreferenceStore {
-  private value: BrowserPreferences = { notificationsEnabled: true, sites: {}, translationLanguage: "en" };
+  private value: BrowserPreferences = { notificationsEnabled: true, organizationSidebarEnabled: true, sites: {}, translationLanguage: "en" };
   private readError = false;
   constructor(private readonly directory: string, private readonly log: (message: string) => void = () => {}) {
     try {
@@ -21,16 +21,27 @@ export class BrowserPreferenceStore {
             (translationSite(`https://${site}`) !== site && translationSite(`http://${site}`) !== site) || !isTranslationLanguage(language))) {
         throw new Error("Invalid translation preferences");
       }
-      this.value = { ...value, translationSites };
+      const mediaSites = value.mediaSites ?? {};
+      if (typeof mediaSites !== "object" || Array.isArray(mediaSites) ||
+          Object.entries(mediaSites).some(([origin, permissions]) => notificationOrigin(origin) !== origin ||
+            !permissions || typeof permissions !== "object" || Array.isArray(permissions) ||
+            Object.entries(permissions).some(([kind, permission]) => !isBrowserMediaPermission(kind) ||
+              (permission !== "granted" && permission !== "denied")))) {
+        throw new Error("Invalid media permissions");
+      }
+      this.value = { ...value, organizationSidebarEnabled: value.organizationSidebarEnabled !== false, translationSites, mediaSites };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         this.readError = true;
         this.value.notificationsEnabled = false;
-        log("Browser preferences could not be read; notification grants remain disabled.");
+        log("Browser preferences could not be read; site grants remain disabled.");
       }
     }
   }
-  snapshot(): BrowserPreferences { return { ...this.value, sites: { ...this.value.sites }, translationSites: { ...this.value.translationSites } }; }
+  snapshot(): BrowserPreferences {
+    return { ...this.value, sites: { ...this.value.sites }, translationSites: { ...this.value.translationSites },
+      mediaSites: Object.fromEntries(Object.entries(this.value.mediaSites ?? {}).map(([origin, permissions]) => [origin, { ...permissions }])) };
+  }
   translationLanguageFor(url: string): string | undefined {
     const site = translationSite(url);
     return site && Object.hasOwn(this.value.translationSites ?? {}, site) ? this.value.translationSites![site] : undefined;
@@ -47,13 +58,28 @@ export class BrowserPreferenceStore {
     const origin = notificationOrigin(url);
     return !this.value.notificationsEnabled || !origin ? "denied" : this.value.sites[origin] ?? "default";
   }
+  mediaPermission(url: string, kind: BrowserMediaPermission): NotificationPermission {
+    const origin = notificationOrigin(url);
+    return this.readError || !origin ? "denied" : this.value.mediaSites?.[origin]?.[kind] ?? "default";
+  }
   update(command: BrowserPreferenceCommand): boolean {
     if (this.readError) return false;
     const next = this.snapshot();
-    if (command.type === "browser-notifications-enabled") next.notificationsEnabled = command.enabled;
+    if (command.type === "browser-organization-enabled") next.organizationSidebarEnabled = command.enabled;
+    else if (command.type === "browser-notifications-enabled") next.notificationsEnabled = command.enabled;
     else if (command.type === "browser-translation-language") {
       if (!isTranslationLanguage(command.language)) return false;
       next.translationLanguage = command.language;
+    } else if (command.type === "browser-media-permission") {
+      if (notificationOrigin(command.origin) !== command.origin || !isBrowserMediaPermissionList(command.media) ||
+          !["default", "granted", "denied"].includes(command.permission)) return false;
+      const permissions = next.mediaSites![command.origin] ?? {};
+      for (const kind of command.media) {
+        if (command.permission === "default") delete permissions[kind];
+        else permissions[kind] = command.permission;
+      }
+      if (Object.keys(permissions).length) next.mediaSites![command.origin] = permissions;
+      else delete next.mediaSites![command.origin];
     } else {
       if (notificationOrigin(command.origin) !== command.origin) return false;
       if (command.permission === "default") delete next.sites[command.origin];

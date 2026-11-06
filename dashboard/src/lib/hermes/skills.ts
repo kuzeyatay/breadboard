@@ -55,6 +55,8 @@ function isReviewedLocalUpstreamId(upstreamId: string | undefined): boolean {
   );
 }
 const DEDICATED_RUNTIME_FIRST_PARTY_SKILLS = new Set([
+  "veo",
+  "multisim-agent",
   // earthtojake/text-to-cad is artifact engineering, not repository software
   // engineering. Its manifests necessarily contain Python/XML/CLI examples;
   // classifying those examples as app coding would make the CAD procedures

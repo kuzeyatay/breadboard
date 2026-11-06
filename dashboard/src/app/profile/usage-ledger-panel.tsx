@@ -266,12 +266,12 @@ export default function UsageLedgerPanel() {
         `/api/chatmock/usage-ledger?since=${encodeURIComponent(since)}&limit=400`,
         { cache: "no-store" },
       );
-      if (!response.ok) throw new Error("The usage ledger could not be read.");
+      if (!response.ok) throw new Error("Could not load usage.");
       const payload = (await response.json()) as LedgerReport;
       setReport(payload);
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The usage ledger could not be read.");
+      setError(cause instanceof Error ? cause.message : "Could not load usage.");
     } finally {
       setLoading(false);
     }
@@ -318,15 +318,15 @@ export default function UsageLedgerPanel() {
     <section className="neu-surface-raised rounded-2xl border border-gray-800 p-5">
       <header className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-white">Where the usage went</h2>
+          <h2 className="text-sm font-semibold text-white">Usage breakdown</h2>
           <p className="mt-0.5 text-xs text-gray-500">
             {report?.unavailable
-              ? "ChatMock has no usage ledger yet — restart it to start recording."
+              ? "Usage tracking is unavailable. Restart Breadboard to try again."
               : total
                 ? `${report?.summary.requests ?? 0} requests · ${compact(total.total)} tokens (${compact(total.output)} written) across ${accounts.length} account${accounts.length === 1 ? "" : "s"}.`
                 : loading
-                  ? "Reading the ledger…"
-                  : "Nothing was spent in this window."}
+                  ? "Loading usage…"
+                  : "No usage in this period."}
           </p>
         </div>
         <div className="flex gap-1" role="tablist" aria-label="Usage window">
@@ -499,7 +499,7 @@ export default function UsageLedgerPanel() {
 
       {!loading && !error && !report?.unavailable && rows.length === 0 && accounts.length === 0 && (
         <p className="text-xs text-gray-600">
-          No request finished in this window. Rows appear as soon as a chat, council seat, Learn task or voice session completes.
+          Usage appears here after a chat, learning task, or voice session finishes.
         </p>
       )}
     </section>

@@ -72,27 +72,32 @@ app.whenReady().then(async () => {
   // Other pages never become the connection's target, even after activation.
   page.backgroundThrottling = true;
   await manager.handleCommand(chrome, { type: 'browser', url: origin + '/page-other' });
+  await until(() => {
+    const host = manager.hosts.get(window.id);
+    return !host.pending && host.presentedId === host.activeId;
+  });
   assert.match((await readBrowserTerminal(access)).text, /page-two live content/);
   // The grant keeps targeting the original view after it has been detached.
-  // Capturing it must not temporarily reveal it or steal focus from this tab.
+  // Capturing it must render fresh pixels without selecting or focusing it.
   await until(async () => await page.executeJavaScript('document.visibilityState') === 'hidden');
-  await page.executeJavaScript(`window.captureVisibilityChanges = [];
-    document.addEventListener('visibilitychange', () => captureVisibilityChanges.push(document.visibilityState));`);
-  const visibilityBefore = await page.executeJavaScript('document.visibilityState');
+  const selectedBeforeCapture = manager.stateFor(chrome).activeId;
+  const focusBeforeCapture = webContents.getFocusedWebContents()?.id;
   let captureFocusEvents = 0;
   const focusedDuringCapture = () => { captureFocusEvents++; };
   page.on('focus', focusedDuringCapture);
-  try {
-    const background = await readBrowserTerminal(access, 'screenshot');
+  await page.executeJavaScript("document.body.style.background = '#20c060'");
+  for (const background of await Promise.all([readBrowserTerminal(access, 'screenshot'), readBrowserTerminal(access, 'screenshot')])) {
     assert.match(background.url, /page-two$/);
-  } catch (error) {
-    // A detached view is allowed to have no pixels; it must stay detached.
-    assert.match(error.message, /screenshot is empty|surface not available/);
+    const image = nativeImage.createFromDataURL(background.screenshot.dataUrl);
+    assert.ok(image.getSize().width > 500 && image.getSize().height > 300);
+    const pixel = image.resize({ width: 1, height: 1 }).toBitmap();
+    assert.ok(pixel[1] > pixel[0] + 50 && pixel[1] > pixel[2] + 80, 'fresh green pixels from the linked background page');
   }
   page.removeListener('focus', focusedDuringCapture);
   assert.equal(captureFocusEvents, 0);
-  assert.equal(await page.executeJavaScript('document.visibilityState'), visibilityBefore);
-  assert.deepEqual(await page.executeJavaScript('captureVisibilityChanges'), []);
+  assert.equal(manager.stateFor(chrome).activeId, selectedBeforeCapture);
+  assert.equal(webContents.getFocusedWebContents()?.id, focusBeforeCapture);
+  await until(async () => await page.executeJavaScript('document.visibilityState') === 'hidden');
   const forbidden = await fetch(`http://127.0.0.1:${access.port}/browser-terminal`, { method: 'POST', headers: { Authorization: `Bearer ${access.token}`, Origin: origin }, body: '{"action":"read"}' });
   assert.equal(forbidden.status, 403);
   await assert.rejects(readBrowserTerminal({ ...access, token: '0'.repeat(64) }), /expired/);

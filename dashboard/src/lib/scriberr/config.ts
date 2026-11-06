@@ -19,6 +19,8 @@ export interface VideoTranscriptionConfig {
   /** Transcription parameters forwarded to Scriberr's start endpoint. */
   scriberrModelFamily: string;
   scriberrModel: string;
+  scriberrDevice: "cpu" | "cuda";
+  scriberrComputeType: "default" | "float16" | "float32" | "int8";
   /** WhisperX inference batch size. Lower values trade speed for bounded memory. */
   scriberrBatchSize: number;
   scriberrLanguage: string | null;
@@ -65,6 +67,15 @@ function stringFromEnv(value: string | undefined): string | null {
   return trimmed ? trimmed : null;
 }
 
+function choiceFromEnv<const T extends string>(
+  value: string | undefined,
+  choices: readonly T[],
+  fallback: T,
+): T {
+  const normalized = (value ?? "").trim().toLowerCase();
+  return choices.includes(normalized as T) ? (normalized as T) : fallback;
+}
+
 function normalizeBaseUrl(value: string | undefined, fallback: string): string {
   const trimmed = (value ?? "").trim() || fallback;
   const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
@@ -81,6 +92,11 @@ export function loadVideoTranscriptionConfig(
   const tempDir =
     stringFromEnv(env.VIDEO_TRANSCRIPTION_TEMP_DIR) ??
     path.join(os.tmpdir(), "breadboard-video-transcription");
+  const scriberrDevice = choiceFromEnv(
+    env.SCRIBERR_DEVICE,
+    ["cpu", "cuda"] as const,
+    "cpu",
+  );
 
   return {
     enabled: boolFromEnv(env.VIDEO_TRANSCRIPTION_ENABLED, true),
@@ -107,6 +123,12 @@ export function loadVideoTranscriptionConfig(
     scriberrModelFamily:
       stringFromEnv(env.SCRIBERR_MODEL_FAMILY) ?? "whisper",
     scriberrModel: stringFromEnv(env.SCRIBERR_MODEL) ?? "small",
+    scriberrDevice,
+    scriberrComputeType: choiceFromEnv(
+      env.SCRIBERR_COMPUTE_TYPE,
+      ["default", "float16", "float32", "int8"] as const,
+      scriberrDevice === "cuda" ? "float16" : "int8",
+    ),
     scriberrBatchSize: intFromEnv(env.SCRIBERR_BATCH_SIZE, 4, {
       min: 1,
       max: 64,

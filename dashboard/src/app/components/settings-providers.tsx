@@ -238,7 +238,7 @@ export default function SettingsProviders() {
         <div className="pt-1">
           <h3 className="text-sm font-medium text-[var(--ink-heading)]">Pay-per-token providers</h3>
           <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-            An API key you pay for by usage, rather than a plan you already subscribe to.
+            Connect a service that charges by usage with an API key.
           </p>
         </div>
       ) : null}

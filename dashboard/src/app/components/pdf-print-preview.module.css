@@ -1,0 +1,59 @@
+.dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: min(1120px, calc(100vw - 32px));
+  height: min(900px, calc(100dvh - 32px));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #46584a;
+  border-radius: 12px;
+  background: #17211b;
+  color: #edf2ed;
+  box-shadow: 0 24px 100px #0008;
+  font: 13px/1.5 system-ui, sans-serif;
+}
+.dialog::backdrop { background: #0009; }
+.layout { display: flex; flex-direction: column; height: 100%; }
+.header, .toolbar, .footer, .actions, .pageField, .zoom { display: flex; align-items: center; gap: 12px; }
+.header { padding: 16px 20px; border-bottom: 1px solid #344438; }
+.heading { min-width: 0; flex: 1; }
+.heading h2 { margin: 0; font-size: 17px; font-weight: 600; }
+.heading p { margin: 3px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #b9c6bb; }
+.toolbar { padding: 12px 20px; flex-wrap: wrap; }
+.dialog button, .dialog select, .dialog input {
+  border: 1px solid #526356; border-radius: 5px; background: #202e25; color: inherit;
+  padding: 7px 11px; font: inherit;
+}
+.dialog button { cursor: pointer; white-space: nowrap; }
+.dialog button:hover:not(:disabled) { background: #304337; }
+.dialog button:disabled, .dialog input:disabled { opacity: .45; cursor: default; }
+.dialog :focus-visible { outline: 2px solid #aad8b5; outline-offset: 3px; }
+.pageField { gap: 7px; }
+.pageField input { width: 54px; text-align: center; }
+.zoom { margin-left: auto; gap: 7px; }
+.progress { height: 2px; flex-shrink: 0; background: transparent; }
+.progress[data-busy="true"] { background: #8dbd97; animation: pulse 1s ease-in-out infinite alternate; }
+.preview { flex: 1; min-height: 0; overflow: auto; background: #0d1510; border: 16px solid #0d1510; }
+.sheet { width: max-content; min-width: 100%; min-height: 100%; display: grid; place-items: center; }
+.sheet canvas { display: block; flex-shrink: 0; background: white; box-shadow: 0 4px 18px #0007; }
+.status { padding: 7px 20px; min-height: 34px; color: #b9c6bb; font-size: 12px; }
+.status [role="alert"] { color: #ffd1c8; }
+.footer { padding: 14px 20px; border-top: 1px solid #344438; justify-content: space-between; }
+.footer p { max-width: 470px; color: #b9c6bb; margin: 0; font-size: 12px; }
+.actions { flex-shrink: 0; }
+.dialog .primary { color: #122117; background: #b8dabd; border-color: #b8dabd; font-weight: 600; }
+.dialog .primary:hover:not(:disabled) { background: #cce6cf; }
+@keyframes pulse { from { opacity: .35; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .progress { animation: none !important; } }
+@media (max-width: 640px) {
+  .dialog { width: calc(100vw - 12px); height: calc(100dvh - 12px); }
+  .header, .toolbar, .footer { padding: 12px; }
+  .toolbar { gap: 8px; }
+  .toolbar button { padding: 6px; }
+  .zoom { margin-left: 0; }
+  .footer { flex-direction: column; align-items: stretch; gap: 12px; }
+  .actions { justify-content: flex-end; }
+}

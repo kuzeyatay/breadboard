@@ -27,7 +27,7 @@
 //     scriberr/                   <- docker-compose only (optional Docker mode)
 //     shared/                     <- static shared assets
 
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -1615,6 +1615,7 @@ log("staging finite-worker production dependency closures");
     "jszip",
     "katex",
     "mathjax-full",
+    "playwright-core",
     "better-sqlite3",
     "axios",
     "uuid",
@@ -1670,6 +1671,35 @@ log("staging finite-worker production dependency closures");
   }
   writeSourceCommitReceipt(googleImagesTarget, googleImagesCommit);
 
+  // Subscription video uses a reviewed, unmodified Flow MCP and its login
+  // extension. Ship the full production dependency closure beside the entrypoint.
+  {
+    const { verifyGoogleFlowSource } = await import("../../scripts/google-flow-integrity.mjs");
+    const pin = verifyGoogleFlowSource(repoRoot);
+    const source = path.join(repoRoot, "google-flow-mcp");
+    const target = path.join(stagingRoot, "google-flow-mcp");
+    if (!fs.existsSync(path.join(source, "dist", "index.js"))) {
+      fail("Google Flow is not built. Run node scripts/setup-veo.mjs before packaging.");
+    }
+    // Compile from the verified sources, never package an obsolete dist folder.
+    execFileSync(process.execPath, [path.join(source, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.json"], { cwd: source, stdio: "inherit", windowsHide: true });
+    freshDir(target);
+    for (const directory of ["dist", "extension"]) copyTree(path.join(source, directory), path.join(target, directory));
+    for (const file of ["package.json", "LICENSE", "AGENTS.md", "INSTALL.md"]) fs.copyFileSync(path.join(source, file), path.join(target, file));
+    const manifest = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8"));
+    const copied = new Set();
+    for (const dependency of Object.keys(manifest.dependencies ?? {})) {
+      const resolved = resolvePortableDependency(source, dependency);
+      if (!resolved) fail(`The Google Flow runtime cannot resolve ${dependency}.`);
+      copyPortableDependency({ name: dependency, source: resolved, target: path.join(target, "node_modules", ...dependency.split("/")), copiedSet: copied });
+    }
+    fs.mkdirSync(path.join(stagingRoot, "scripts"), { recursive: true });
+    for (const script of ["launch-google-flow.mjs", "google-flow-browser.mjs", "connect-google-flow.mjs"]) {
+      fs.copyFileSync(path.join(repoRoot, "scripts", script), path.join(stagingRoot, "scripts", script));
+    }
+    writeSourceCommitReceipt(target, pin.commit);
+  }
+
   // Runtime V2 service/worker entrypoints live under app-services/dashboard,
   // outside the standalone server tree. Materialize only the direct package
   // closures those entrypoints import at that exact Node resolution root.
@@ -1683,7 +1713,7 @@ log("staging finite-worker production dependency closures");
   // Clicky's Electron-owned mouse input uses the same bundled N-API FFI as
   // dashboard workers. Keep its native platform dependency outside the ASAR.
   copyDependency("koffi", sourceModules, runtimeServiceModules, runtimeServiceModules, runtimeServiceCopied);
-  for (const dependency of ["mqtt", "basic-ftp"]) {
+  for (const dependency of ["mqtt", "basic-ftp", "parse5"]) {
     copyDependency(dependency, sourceModules, runtimeServiceModules, runtimeServiceModules, runtimeServiceCopied);
   }
   copyTree(path.join(repoRoot, "dashboard", "third-party", "bambu-printer-mcp"), path.join(stagingRoot, "dashboard", "third-party", "bambu-printer-mcp"));
@@ -2289,7 +2319,11 @@ for (const entry of [
   "quartz-publication-contract.mjs",
   "runtime-v2-quartz-static-service.mjs",
   "quartz-canonical-reader-bridge.mjs",
+  "quartz-reader-shell.mjs",
   "runtime-v2-background-worker.mjs",
+  "runtime-v2-source-repair-worker.mjs",
+  "source-repair-release.mjs",
+  "source-repair-worker-imports.mjs",
   "runtime-v2-background-executor.mjs",
   "runtime-v2-gateway-http.mjs",
   "runtime-v2-telegram-gateway-service.mjs",
@@ -2405,6 +2439,8 @@ for (const entry of [
   "runtime-v2-deep-research-worker.mjs",
   "runtime-v2-openscience-worker.mjs",
   "runtime-v2-openwork-worker.mjs",
+  "runtime-v2-paths.mjs",
+  "runtime-v2-bulk-paths.mjs",
   "runtime-v2-outer-agent-worker-core.mjs",
   "runtime-v2-outer-agent-adapters.mjs",
   "runtime-v2-system-location-worker.mjs",
@@ -3011,6 +3047,12 @@ for (const entry of [
   if (!fs.existsSync(source)) continue;
   copyTree(source, path.join(quartzTarget, entry), (rel) => rel.startsWith(".git"));
 }
+// Quartz builds from its staged template after installation. Carry the shared
+// converter into that template so it does not depend on dashboard source files.
+fs.copyFileSync(
+  path.join(repoRoot, "dashboard", "src", "lib", "latex-delimiters.ts"),
+  path.join(quartzTarget, "quartz", "util", "latexDelimiters.ts"),
+);
 // Quartz is relocated independently of dashboard worker-src in packaged apps.
 // Keep one source for wheel behavior, and close the template's local import.
 const quartzVisualScripts = path.join(quartzTarget, "quartz", "components", "scripts");

@@ -23,9 +23,35 @@ import { Virtualizer } from "@tanstack/virtual-core";
 
 import {
   CHAT_OVERSCAN,
+  chatViewportRange,
   chatRowKey,
   estimateChatRowHeight,
 } from "../src/app/components/chat/chat-row-identity.ts";
+
+test("overscan is bounded by screen height for textbook-sized answers", () => {
+  const sizes = [18_000, 100, 5_400, 100, 3_100, 260, 15_530];
+  assert.deepEqual(chatViewportRange({ startIndex: 6, endIndex: 6, count: 7, overscan: 6 }, 900,
+    index => sizes[index]), [4, 5, 6]);
+  assert.deepEqual(chatViewportRange({ startIndex: 2, endIndex: 3, count: 7, overscan: 6 }, 900,
+    index => sizes[index]), [0, 1, 2, 3, 4]);
+  assert.deepEqual(chatViewportRange({ startIndex: 8, endIndex: 9, count: 20, overscan: 6 }, 900,
+    () => 40), Array.from({ length: 14 }, (_, index) => index + 2));
+  assert.deepEqual(chatViewportRange({ startIndex: 2, endIndex: 3, count: 7, overscan: 0 }, 900,
+    () => 100), [2, 3]);
+});
+
+test("the visible answer's offscreen portion counts toward the overscan budget", () => {
+  const range = { startIndex: 3, endIndex: 3, count: 7, overscan: 6 };
+  const rowSize = () => 18_000;
+  assert.deepEqual(chatViewportRange(range, 900, rowSize,
+    { offset: 24_000, firstStart: 20_000, lastEnd: 38_000 }), [3]);
+  assert.deepEqual(chatViewportRange(range, 900, rowSize,
+    { offset: 20_500, firstStart: 20_000, lastEnd: 38_000 }), [2, 3]);
+  assert.deepEqual(chatViewportRange(range, 900, rowSize,
+    { offset: 36_600, firstStart: 20_000, lastEnd: 38_000 }), [3, 4]);
+  assert.deepEqual(chatViewportRange({ ...range, endIndex: 4 }, 900, rowSize,
+    { offset: 37_500, firstStart: 20_000, lastEnd: 56_000 }), [3, 4]);
+});
 
 const dashboardRoot = path.resolve(fileURLToPath(import.meta.url), "..", "..");
 

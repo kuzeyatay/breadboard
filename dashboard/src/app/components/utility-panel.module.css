@@ -1,0 +1,49 @@
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgb(7 13 10 / 22%);
+}
+
+.panel {
+  position: fixed;
+  z-index: 91;
+  top: calc(var(--breadboard-titlebar-height, 0px) + 24px);
+  right: max(24px, env(safe-area-inset-right, 0px));
+  bottom: max(24px, env(safe-area-inset-bottom, 0px));
+  width: min(480px, calc(100vw - 48px));
+  max-height: 900px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 28px;
+  /* An opaque themed surface avoids filtering the animated desktop every frame. */
+  background: var(--paper-surface);
+  box-shadow: 0 20px 64px rgb(0 0 0 / 20%), inset 0 1px 0 rgb(255 255 255 / 16%);
+  color: var(--ink-heading);
+  font-family: var(--font-source-sans), -apple-system, BlinkMacSystemFont, sans-serif;
+  animation: arrive 140ms ease-out;
+}
+
+.header { display: flex; align-items: center; justify-content: space-between; flex: none; gap: 12px; padding: 24px 24px 16px; }
+.heading { margin: 0; font-size: 26px; line-height: 1.2; font-weight: 650; letter-spacing: -.6px; }
+.description { flex: none; margin: 0; padding: 0 24px 18px; color: var(--ink-muted); font-size: 13px; line-height: 1.5; }
+.scrollArea { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 2px 24px 24px; }
+.iconButton { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--ink-heading) 7%, var(--paper-surface)); color: var(--ink-muted); cursor: pointer; touch-action: manipulation; }
+.iconButton:disabled { opacity: .45; cursor: not-allowed; }
+.panel button:focus-visible, .panel a:focus-visible { outline: 2px solid var(--neu-focus); outline-offset: 3px; }
+@media (hover: hover) { .iconButton:hover { background: color-mix(in srgb, var(--ink-heading) 12%, var(--paper-surface)); color: var(--ink-heading); } }
+@media (max-width: 600px) {
+  .panel { top: calc(var(--breadboard-titlebar-height, 0px) + 12px); right: 12px; bottom: max(12px, env(safe-area-inset-bottom, 0px)); width: calc(100vw - 24px); border-radius: 24px; }
+  .header { padding: 20px 16px 14px; gap: 8px; }
+  .heading { font-size: 24px; }
+  .description { padding: 0 16px 16px; }
+  .scrollArea { padding: 2px 16px 20px; }
+}
+@media (max-width: 360px) { .heading { font-size: 22px; } }
+/* Visible on the first frame; no fade from an invisible panel. */
+@keyframes arrive { from { transform: translateX(8px); } }
+@media (prefers-reduced-motion: reduce) { .panel { animation: none; } }

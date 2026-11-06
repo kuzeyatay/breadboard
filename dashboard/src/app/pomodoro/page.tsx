@@ -1,13 +1,17 @@
 import type { Metadata } from "next";
-import { Newsreader } from "next/font/google";
+import localFont from "next/font/local";
 import PaintPomodoro from "@/app/components/paint-pomodoro";
 
 // Newsreader ≈ the Met serif used by PaintPomodoro; Source Sans 3 is already
 // loaded app-wide for the sans face.
-const newsreader = Newsreader({
-  subsets: ["latin"],
-  style: ["normal", "italic"],
+const newsreader = localFont({
+  src: [
+    { path: "../fonts/newsreader/Newsreader[opsz,wght].ttf", weight: "200 800", style: "normal" },
+    { path: "../fonts/newsreader/Newsreader-Italic[opsz,wght].ttf", weight: "200 800", style: "italic" },
+  ],
   variable: "--font-newsreader",
+  display: "swap",
+  adjustFontFallback: "Times New Roman",
 });
 
 export const metadata: Metadata = {

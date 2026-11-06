@@ -1,10 +1,12 @@
 import type { MenuItemConstructorOptions } from "electron";
 
-export type TabContextAction = "duplicate" | "new-right" | "reload" | "anchor" | "copy-link" |
+export type TabContextAction = "duplicate" | "new-right" | "reload" | "anchor" | "highlight" | "keep-loaded" | "copy-link" |
   "close" | "close-others" | "close-right" | "reopen";
 
 export interface TabContextMenuState {
   anchored: boolean;
+  highlighted?: boolean;
+  keepLoaded?: boolean;
   private: boolean;
   hasLink: boolean;
   canCloseOthers: boolean;
@@ -26,6 +28,8 @@ export function tabContextMenuTemplate(
     item("reload", "Reload tab"),
     { type: "separator" },
     item("anchor", state.anchored ? "Unanchor tab" : "Anchor tab", !state.private),
+    { ...item("highlight", "Highlight tab"), type: "checkbox", checked: state.highlighted === true },
+    { ...item("keep-loaded", "Never offload tab"), type: "checkbox", checked: state.keepLoaded === true },
     item("copy-link", "Copy tab link", state.hasLink),
     { type: "separator" },
     item("close", "Close tab", !state.anchored),

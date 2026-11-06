@@ -1,10 +1,12 @@
 const SPEECH_RECONNECT_DELAYS_MS = [300, 750, 1_500, 3_000] as const;
 
 let voiceboxPreparation: Promise<void> | null = null;
+let preparedUntil = 0;
 
 /** A provider change must not wait on an earlier local cold start. */
 export function resetSpeechPreparation(): void {
   voiceboxPreparation = null;
+  preparedUntil = 0;
 }
 
 function nestedMessage(value: unknown): string | null {
@@ -15,6 +17,9 @@ function nestedMessage(value: unknown): string | null {
 }
 
 export function speechErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.name === 'TimeoutError') {
+    return 'Speech took too long to respond. Please try again.';
+  }
   const message = nestedMessage(error);
   if (!message) return fallback;
   if (/^(?:failed to fetch|fetch failed|networkerror\b)/iu.test(message)) {
@@ -82,6 +87,8 @@ function waitForCaller<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T>
  * settings so opening two surfaces cannot create duplicate cold starts.
  */
 export function prepareLocalSpeech(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError(signal));
+  if (Date.now() < preparedUntil) return Promise.resolve();
   if (!voiceboxPreparation) {
     const request = (async () => {
       const response = await fetchSpeechApi("/api/speech/prepare", {
@@ -96,7 +103,10 @@ export function prepareLocalSpeech(signal?: AbortSignal): Promise<void> {
     const clear = () => {
       if (voiceboxPreparation === request) voiceboxPreparation = null;
     };
-    void request.then(clear, clear);
+    void request.then(() => {
+      if (voiceboxPreparation === request) preparedUntil = Date.now() + 30_000;
+      clear();
+    }, clear);
   }
   return waitForCaller(voiceboxPreparation, signal);
 }

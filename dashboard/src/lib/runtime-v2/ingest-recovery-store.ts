@@ -77,6 +77,7 @@ export interface PublicIngestRecovery {
     "parseWithVlm" | "parseWithAnydoc" | "isHandwriting" | "generateMap" | "model"
   >;
   readonly resumedJobId: string | null;
+  readonly resumedState: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -331,7 +332,10 @@ export function markIngestRecoveryResumed({
   return next;
 }
 
-export function publicIngestRecovery(record: IngestRecoveryRecord): PublicIngestRecovery {
+export function publicIngestRecovery(
+  record: IngestRecoveryRecord,
+  resumedState: string | null = null,
+): PublicIngestRecovery {
   return {
     recoveryId: record.recoveryId,
     filename: record.filename,
@@ -347,5 +351,6 @@ export function publicIngestRecovery(record: IngestRecoveryRecord): PublicIngest
       model: record.request.model,
     },
     resumedJobId: record.resumedJobId,
+    resumedState,
   };
 }

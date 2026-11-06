@@ -61,5 +61,45 @@ app.whenReady().then(async () => {
   assert.equal(await run("document.getElementById('p80').textContent"), "Actualizado", "restore preserves live edits");
   assert.equal(await run("document.getElementById('p81').textContent"), "Texto 81");
   assert.equal(await run("document.getElementById('inline').textContent"), "Visita nuestro sitio ahora.");
+
+  // A real GitHub-origin document, with a deliberately destructive translator,
+  // proves identifiers are protected before any provider/cache sees them.
+  const profile = `<!doctype html><html lang="en"><body>
+    <a href="/kuzeyatay"><span id="breadcrumb">kuzeyatay</span></a>
+    <h1 class="vcard-names"><span id="name" class="p-name vcard-fullname" itemprop="name">Kuzey</span>
+      <span id="username" class="p-nickname vcard-username" itemprop="additionalName">kuzeyatay</span></h1>
+    <a id="repository" href="/kuzeyatay/focuspals">focuspals</a>
+    <a id="author" href="/another-user" data-hovercard-type="user">Rose</a>
+    <a id="overview" href="/kuzeyatay">Overview</a>
+    <p id="english" lang="en-US">Popular repositories</p>
+    <p id="foreign" lang="tr">Merhaba dünya</p>
+    <div itemscope itemtype="https://schema.org/Person"><span id="person" itemprop="name">Deniz</span></div>
+    <div class="h-card"><span id="card" class="p-name">Summer</span></div>
+    <div id="language-shadow" lang="en"></div>
+  </body></html>`;
+  await page.session.protocol.handle("https", () => new Response(profile, { headers: { "Content-Type": "text/html; charset=utf-8" } }));
+  await page.loadURL("https://github.com/kuzeyatay");
+  await run(`document.querySelector('#language-shadow').attachShadow({mode:'open'}).innerHTML='<p>Already English</p><p lang="es">Hola mundo</p>'`);
+  const sameLanguage = await translate("collect", { language: "en" });
+  assert.deepEqual(sameLanguage.map(segment => segment.text), ["Merhaba dünya", "Hola mundo"],
+    "English pages retain their text, while explicitly foreign text (including shadow roots) still translates");
+  await translate("apply", sameLanguage.map(segment => ({ id: segment.id, text: "Hello world" })));
+  assert.equal(await run("document.querySelector('#name').textContent"), "Kuzey");
+  assert.equal(await run("document.querySelector('#username').textContent"), "kuzeyatay");
+  await translate("restore");
+  const identityIds = ["name", "username", "breadcrumb", "repository", "author", "person", "card"];
+  const identityText = () => run(`(${JSON.stringify(identityIds)}).map(id=>document.getElementById(id).textContent)`);
+  const originalIdentities = await identityText();
+  const otherLanguage = await translate("collect", { language: "nl" });
+  assert.ok(otherLanguage.some(segment => segment.text === "Overview"), "ordinary navigation remains translatable");
+  assert.ok(otherLanguage.some(segment => segment.text === "Popular repositories"));
+  for (const text of originalIdentities) assert.ok(!otherLanguage.some(segment => segment.text === text), `${text} never leaves as a translation segment`);
+  await translate("apply", otherLanguage.map(segment => ({ id: segment.id, text: "CORRUPTED" })));
+  assert.deepEqual(await identityText(), originalIdentities, "even bad provider results cannot rename people or repositories");
+  await run(`const link=document.createElement('a');link.href='/new-user';link.textContent='new-user';document.body.append(link)`);
+  assert.deepEqual(await translate("collect", { language: "nl" }), [], "dynamically added account links remain literal");
+  await translate("restore");
+  assert.equal(await run("document.querySelector('#overview').textContent"), "Overview");
+  assert.equal(await run("document.querySelector('#foreign').textContent"), "Merhaba dünya");
   fs.writeFileSync(path.join(dir, "passed.json"), JSON.stringify({ passed: true }));
 }).catch(error => { console.error(error); app.exit(1); });

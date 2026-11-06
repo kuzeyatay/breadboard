@@ -1,3 +1,4 @@
+import { isBareProviderError } from "../provider-error.ts";
 // Shared SSE relay: turns an authorized runtime session's Hermes event
 // subscription into a browser SSE stream of normalized events, and persists the
 // finalized assistant turn exactly once (idempotent across reconnects). Used by
@@ -5,9 +6,9 @@
 // route so the streaming + persistence policy lives in one place.
 
 import { leastPrivilegeDecision } from "./dispatch-core.ts";
-import { mergeExplanationUsage, type ExplanationReviewReport } from "./explanation-review.ts";
-import { reviewRuntimeExplanation } from "./explanation-review-runtime.ts";
+import { productSearchTurnEvent } from "../product-search/turn.ts";
 import db from "../db.ts";
+import { persistAssistantProgress } from "../conversations/live-progress.ts";
 import { recordQuestionNotification, resolveQuestionNotification } from "../chat-notifications/questions.ts";
 import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import { runtimeStartupResourceFailure } from "../agent-runtime/startup-error.ts";
@@ -26,6 +27,7 @@ import {
   PRE_DISPATCH_STREAM_TIMEOUT_MS,
   runtimeIdentityKey,
   streamSupervisorDecision,
+  streamSupervisorTiming,
   STREAM_SUPERVISOR_POLL_MS,
 } from "./stream-supervisor.ts";
 import { RUN_HEARTBEAT_INTERVAL_MS } from "./run-liveness.ts";
@@ -46,7 +48,11 @@ import {
 import { getResearchState } from "../research/store.ts";
 import { finishActiveRuntimeRun } from "./run-store.ts";
 import { scheduleLoopxTickForConversation } from "../loopx/conversation-tick.ts";
-import { accountGoalModeTurn, readGoalModeState } from "../goal-mode.ts";
+import { accountGoalModeTurn, readGoalModeState, goalModeSection, goalTokensForUsage } from "../goal-mode.ts";
+import { scheduleGoalContinuation } from "../goal-continuation.ts";
+import { recordTaskRecoveryOutcome, scheduleTaskRecovery } from "./task-recovery.ts";
+import { recoveryToolFailure } from "./task-recovery-policy.ts";
+import { missingRunArtifact } from "./artifact-completion.ts";
 import { scheduleDurableExtractionForConversation } from "../mem0/conversation-extraction.ts";
 import { scheduleMemoryProfileSynthesisForConversation } from "../conversations/memory-profile.ts";
 import {
@@ -62,7 +68,6 @@ import {
 import { hermesMessageId } from "./message-id.ts";
 import {
   associateArtifactToolCall,
-  hasReadyArtifactForRun,
   listArtifactEventsAfter,
 } from "./artifact-store.ts";
 import {
@@ -242,16 +247,20 @@ function driveSessionEventPump(
   // An event stream that closes without an explicit terminal runtime status is
   // a failure, not a completed answer.
   let finalStatus = "failed";
-  let failure: { code: string; message: string } | undefined;
+  let failure: { code: string; message: string; recoverable?: boolean } | undefined;
   let tokenUsage: unknown;
-  let explanationReview: ExplanationReviewReport | undefined;
   let stableAnswerEmitted = false;
+  let lostRunOwnership = false;
   // The browser deliberately opens this stream before POSTing the prompt so
   // the first text delta cannot be missed. That means there may not be an
   // active run yet, and the upstream session can still deliver a trailing idle
   // event from its previous turn. Bind lazily to the first durable run created
   // after the stream opens and do not let a zero-output idle event finalize it.
   let streamRun = getActiveRuntimeRun(session.row.id);
+  // Persistence can seal a turn before its upstream terminal event arrives.
+  // A voice follow-up opens SSE before submitting its next turn. Reusing this
+  // pump in that gap replays the old answer and strands the new listener.
+  sink.reuseWhile(() => !streamRun || getActiveRuntimeRun(session.row.id)?.id === streamRun.id);
   const activeRunReference = () => {
     // The SSE connection is established before the prompt POST. Re-read the
     // durable run lazily so Hermes recovery receives the turn identity even
@@ -269,6 +278,7 @@ function driveSessionEventPump(
         : undefined,
       instruction: dispatch.runtimeText ?? streamRun.instruction,
       submitted: Boolean(dispatch.submittedAt),
+      submittedAt: dispatch.submittedAt,
     };
   };
   let assistantMessageId = activeRunReference().messageId;
@@ -282,8 +292,8 @@ function driveSessionEventPump(
   let pendingRebind: AuthorizedRuntimeSession | null = null;
   let sawRuntimeEvent = false;
   let silentStreamTimedOut = false;
-  const streamOpenedAt = Date.now();
-  let lastRuntimeEventAt = streamOpenedAt;
+  let subscriptionOpenedAt = Date.now();
+  let lastRuntimeEventAt = subscriptionOpenedAt;
   // A permission request is answered by a person, so the runtime is expected to
   // say nothing at all until they do. Anything else the runtime sends means the
   // request was resolved and the turn is moving again.
@@ -372,19 +382,7 @@ function driveSessionEventPump(
     ) {
       return requirements[0];
     }
-    return requirements.find(
-      (requirement) =>
-        !hasReadyArtifactForRun({
-          runId: streamRun!.id,
-          conversationId: conversationId!,
-          assistantClientMessageId: assistantClientMessageId!,
-          kind: requirement.kind,
-          rendererId: requirement.rendererId,
-          sourceSkill: requirement.sourceSkill,
-          readyEventType: requirement.readyEventType,
-          previewRequired: requirement.previewRequired,
-        }),
-    ) ?? null;
+    return conversationId === null ? null : missingRunArtifact(streamRun, conversationId);
   };
   let gardenGroundingHydrated = false;
   const hydrateGardenGrounding = () => {
@@ -456,6 +454,7 @@ function driveSessionEventPump(
     // still cold-starting.
     if (streamRun || dispatchDeadline !== null) return;
     dispatchDeadline = setTimeout(() => {
+      dispatchDeadline = null;
       streamRun ??= getActiveRuntimeRun(session.row.id);
       if (!streamRun) {
         abandonedBeforeDispatch = true;
@@ -470,10 +469,14 @@ function driveSessionEventPump(
       event: NormalizedAgentEvent | { type: string; [k: string]: unknown },
     ) => {
       if (event.type === "error") {
-        const payload = event.payload as { code?: string; message?: string } | undefined;
-        if (payload?.message) failure = { code: payload.code ?? "runtime_error", message: payload.message };
+        const payload = event.payload as { code?: string; message?: string; recoverable?: boolean } | undefined;
+        if (payload?.message) failure = { code: payload.code ?? "runtime_error", message: payload.message, recoverable: payload.recoverable };
       }
       sink.emit(encoder.encode(encodeSseEvent(event)));
+      // The turn is complete even while the upstream iterator is unwinding.
+      // Retire its replay buffer now so a quick spoken follow-up cannot attach
+      // to the previous answer. The pump still owns its asynchronous cleanup.
+      if (event.type === "done" || event.type === "cancelled") sink.close();
     };
     const promoteNarrationFallback = () => {
       if (!assistantText.trim() && narrationSegments.length) {
@@ -514,7 +517,7 @@ function driveSessionEventPump(
         timestamp: new Date().toISOString(),
         payload: {
           replacementText: assistantText,
-          usage: tokenUsage,
+          usage: normalizeChatTokenUsage(tokenUsage),
           ...(uiResources.length ? { uiResources } : {}),
         },
       });
@@ -530,7 +533,8 @@ function driveSessionEventPump(
     // run still has an owner.
     const supervisor = setInterval(() => {
       const refreshed = persisted ? null : currentRuntimeIdentity(session.row.id);
-      const submitted = activeRunReference().submitted === true;
+      const active = activeRunReference();
+      const submitted = active.submitted === true;
       // Claim the run for as long as this pump is driving it. Everything else
       // that could take the run over reads this stamp, so a pump that stops
       // beating — because its process died — is the signal that releases the
@@ -549,8 +553,12 @@ function driveSessionEventPump(
         currentIdentity: refreshed ? runtimeIdentityKey(refreshed) : null,
         sawRuntimeEvent,
         submitted,
-        elapsedMs: now - streamOpenedAt,
-        msSinceLastEvent: now - lastRuntimeEventAt,
+        ...streamSupervisorTiming({
+          now,
+          subscriptionOpenedAt,
+          submittedAt: active.submittedAt,
+          lastRuntimeEventAt,
+        }),
         awaitingPermission,
         finalized: persisted,
         timedOut: silentStreamTimedOut,
@@ -659,6 +667,7 @@ function driveSessionEventPump(
           toolName: event.payload.toolName,
           success: event.payload.success,
           summary: event.payload.summary,
+          ...(event.payload.success ? {} : { failure: recoveryToolFailure(event.payload) }),
           completedAt: event.timestamp,
         });
         for (const resource of event.payload.uiResources ?? []) {
@@ -739,6 +748,16 @@ function driveSessionEventPump(
           emit(event);
         }
       };
+      let productSearchHydrated = false;
+      const hydrateProductSearch = () => {
+        if (productSearchHydrated || !streamRun) return;
+        productSearchHydrated = true;
+        const search = parseRuntimeRunDispatch(streamRun).productSearch;
+        if (!search) return;
+        const event = productSearchTurnEvent(search, session.hermesSessionId, streamRun.id);
+        recordCompletedTool(event);
+        emit(event);
+      };
       const reconcileCompletedTerminalCommands = () => {
         if (terminalCommandsReconciled || !streamRun) return;
         terminalCommandsReconciled = true;
@@ -768,6 +787,10 @@ function driveSessionEventPump(
       };
       const finalize = (status: string) => {
         if (persisted) return;
+        if (lostRunOwnership || (streamRun && getActiveRuntimeRun(session.row.id)?.id !== streamRun.id)) {
+          lostRunOwnership = true;
+          return;
+        }
         persisted = true;
         finalStatus = status;
         setRuntimeStatus(session.row.id, status);
@@ -780,7 +803,6 @@ function driveSessionEventPump(
         // to emit: a delegation the agent asked for in its last breath belongs
         // in this answer's provenance even if the client never saw the event.
         const verification = assessVerification(assistantText, evidence, {
-          explanationReview,
           geographicGroundingRequired: geographicGroundingRequired(),
           webGroundingRequired: webGroundingAppliesToCompletion(),
           externalAgents: externalAgentsForTurn(),
@@ -844,8 +866,8 @@ function driveSessionEventPump(
         }
         // Goal's accounting belongs at the same boundary as the upstream Stop
         // hook: a dispatched turn has actually ended and its result is now
-        // durable. If the agent called update_goal during this turn, the state
-        // is complete and the helper intentionally leaves it untouched.
+        // durable. Completion preserves its status while still recording the
+        // final turn's usage; repeated terminal events cannot charge it twice.
         if (session.row.conversation_id !== null && streamRun) {
           const goalMode = parseRuntimeRunDispatch(streamRun).goalMode;
           if (goalMode?.enabled) {
@@ -868,6 +890,14 @@ function driveSessionEventPump(
                   conversationPublicId: conversation.public_id,
                   goalId,
                   startedAt: streamRun.started_at,
+                  runId: streamRun.id,
+                  tokensUsed: goalTokensForUsage(tokenUsage),
+                  automatic: goalMode.automatic,
+                  toolCalls: toolCalls.length,
+                  failureCode: failure?.code,
+                  failureMessage: failure?.message,
+                  outcome: status === "idle" ? "completed" : status === "aborted" ? "cancelled" :
+                    /usage.limit|quota|rate.limit/i.test(failure?.code ?? "") ? "usage_limited" : "error",
                 });
               } catch {
                 recordAuditEvent({
@@ -879,6 +909,19 @@ function driveSessionEventPump(
                 });
               }
             }
+          }
+        }
+        if (streamRun && parseRuntimeRunDispatch(streamRun).taskRecovery) {
+          try {
+            const lineage = [streamRun.id, ...(parseRuntimeRunDispatch(streamRun).taskRecovery?.previousRunIds ?? [])];
+            const artifacts = [...new Set(lineage.flatMap(runId => listArtifactEventsAfter({ runId, afterId: 0 }))
+              .filter(event => event.status === "ready")
+              .map(event => `${event.artifactId}:${event.version}`))].sort();
+            recordTaskRecoveryOutcome({ runId: streamRun.id, status, failure, tools: toolCalls, artifacts });
+          } catch {
+            // Recovery bookkeeping must not leave the original runtime active.
+            recordAuditEvent({ eventType: "task.recovery_accounting_failed",
+              runtimeSessionId: session.row.id, payload: { runId: streamRun.id } });
           }
         }
         finishActiveRuntimeRun(
@@ -992,6 +1035,10 @@ function driveSessionEventPump(
         boundIdentity = runtimeIdentityKey(session);
         runtime = getAgentRuntimeByKind(session.runtimeKind);
         runtimeSubscription = new AbortController();
+        subscriptionOpenedAt = Date.now();
+        lastRuntimeEventAt = subscriptionOpenedAt;
+        sawRuntimeEvent = false;
+        awaitingPermission = false;
         recordAuditEvent({
           eventType: "session.stream_rebound",
           runtimeSessionId: session.row.id,
@@ -1004,6 +1051,7 @@ function driveSessionEventPump(
 
     try {
         hydrateGardenGrounding();
+        hydrateProductSearch();
         // Replays lifecycle events already committed before the browser managed
         // to attach, making refresh/reconnect deterministic and idempotent.
         emitArtifactEvents();
@@ -1023,6 +1071,7 @@ function driveSessionEventPump(
             assistantMessageId ??= activeRunReference().messageId;
           }
           hydrateGardenGrounding();
+          hydrateProductSearch();
           if (streamRun) clearDispatchDeadline();
 
           // Events received before the message POST has created its run belong
@@ -1042,7 +1091,8 @@ function driveSessionEventPump(
                 : /search|extract/.test(event.payload.toolName) ? "Searching" : "Using tools")
               : event.type === "tool.completed" ? "Waiting for model response"
               : event.type === "reasoning.status" ? event.payload.label : undefined;
-            const usage = event.type === "assistant.usage" ? normalizeChatTokenUsage(event.payload.usage) : null;
+            const usage = event.type === "assistant.usage"
+              ? normalizeChatTokenUsage(event.payload.usage) : null;
             if (label || usage) {
               db.prepare(`UPDATE conversation_messages SET
                 metadata=json_patch(COALESCE(metadata, '{}'), ?),
@@ -1070,6 +1120,20 @@ function driveSessionEventPump(
             // permanently as a progress note; otherwise emitStableAnswer shows
             // it once as the final response.
             forwardEvent = false;
+            // Speech can consume public words as they arrive. Keep this on a
+            // separate channel: the chat bubble still waits for classification,
+            // and private reasoning never enters the speech stream. A segment
+            // index lets playback continue after tools without repeating prose.
+            if (parseRuntimeRunDispatch(streamRun).voice === true &&
+                getRuntimeRun(streamRun.id)?.status === "active") {
+              emit({
+                type: "assistant.voice.delta",
+                sessionId: event.sessionId,
+                messageId: event.messageId,
+                timestamp: event.timestamp,
+                payload: { text: assistantText, segment: narrationSegments.length },
+              });
+            }
           } else if (event.type === "assistant.segment") {
             if (
               assistantMessageId &&
@@ -1082,6 +1146,7 @@ function driveSessionEventPump(
             // segment itself is forwarded only after that classification, so
             // clients can present it as a permanent progress note without ever
             // drawing it in the answer bubble first.
+            event.payload.progressIndex = narrationSegments.length;
             if (event.payload.streamed) {
               const sealed = assistantText.trim()
                 ? assistantText
@@ -1094,6 +1159,7 @@ function driveSessionEventPump(
             sawTurnOutput = true;
           } else if (event.type === "reasoning.status") {
             if (event.payload.detail) {
+              event.payload.detailOffset = reasoning.length;
               reasoning = event.payload.detailMode === "replace"
                 ? event.payload.detail
                 : reasoning + event.payload.detail;
@@ -1101,6 +1167,30 @@ function driveSessionEventPump(
           } else if (event.type === "assistant.usage") {
             if (!event.messageId || !assistantMessageId || event.messageId === assistantMessageId) {
               tokenUsage = event.payload.usage;
+              event.payload.usage = normalizeChatTokenUsage(tokenUsage);
+              const dispatch = streamRun ? parseRuntimeRunDispatch(streamRun) : null;
+              if (streamRun && dispatch?.goalMode?.enabled && dispatch.conversationPublicId) {
+                const before = readGoalModeState(dispatch.conversationPublicId);
+                if (before && (before.status === "active" || before.status === "budget_limited")) {
+                  const progress = accountGoalModeTurn({ conversationPublicId: dispatch.conversationPublicId,
+                    goalId: dispatch.goalMode.goalId ?? before.goal_id, runId: streamRun.id,
+                    startedAt: streamRun.started_at, tokensUsed: goalTokensForUsage(tokenUsage), finished: false });
+                  if (before.status === "active" && progress?.status === "budget_limited") {
+                    try { await getAgentRuntimeByKind(session.runtimeKind).steerRun({
+                      externalSessionId: session.externalSessionId, liveSessionId: session.liveSessionId,
+                      workspaceKey: session.workspaceKey, directory: session.activeDirectory,
+                      messageId: dispatch.clientMessageId, clientRequestId: `goal-budget:${progress.goal_id}`,
+                      agentName: session.row.agent_name,
+                      text: goalModeSection(progress),
+                    }); } catch {
+                      // The runtime may already be idle when final usage arrives.
+                      // The persisted budget boundary still prevents another turn.
+                      recordAuditEvent({ eventType: "goal_mode.budget_steer_failed",
+                        runtimeSessionId: session.row.id, payload: { runId: streamRun.id } });
+                    }
+                  }
+                }
+              }
             } else continue;
           } else if (event.type === "assistant.completed") {
             if (
@@ -1111,7 +1201,10 @@ function driveSessionEventPump(
             ) {
               continue;
             }
-            tokenUsage = event.payload.usage;
+            if (typeof event.payload.text === "string") {
+              assistantText = event.payload.text;
+            }
+            if (normalizeChatTokenUsage(event.payload.usage)) tokenUsage = event.payload.usage;
             // Completion metadata is emitted together with the stable answer
             // at the terminal status below. Forwarding it here would let the
             // browser settle before the response text is committed.
@@ -1180,7 +1273,7 @@ function driveSessionEventPump(
               if (missingArtifact) {
                 assistantText =
                   missingArtifact.sourceSkill === "office"
-                    ? "The requested Office file was not published as an artifact before this turn ended. Please retry the request."
+                    ? "The requested Office file was not published as an artifact before this turn ended."
                     : "The required visualizer was not published before this turn ended.";
                 emitStableAnswer();
                 emit({
@@ -1217,33 +1310,40 @@ function driveSessionEventPump(
               }
             }
           }
-          if (event.type === "session.status" && event.payload.status === "idle" && sawTurnOutput) {
-            const checked = await reviewRuntimeExplanation({
-              runId: streamRun.id, answer: assistantText, evidence,
-              onStage: () => {
-                lastRuntimeEventAt = Date.now();
-                emit({ type: "reasoning.status", sessionId: session.hermesSessionId,
-                  timestamp: new Date().toISOString(), payload: { label: "Checking explanation coverage" } });
-              },
+          if (event.type === "session.status" && event.payload.status === "idle" && sawTurnOutput && isBareProviderError(assistantText)) {
+            emit({
+              type: "error", sessionId: session.hermesSessionId,
+              timestamp: new Date().toISOString(),
+              payload: { code: "provider_error", message: assistantText.trim(), recoverable: true },
             });
-            if (!checked) event.payload.status = "aborted";
-            else {
-              assistantText = checked.answer;
-              explanationReview = checked.report;
-              tokenUsage = mergeExplanationUsage(tokenUsage, checked.usage);
+            event.payload.status = "failed";
+          }
+          if (event.type === "session.status" && event.payload.status === "idle" && sawTurnOutput) {
+            // Finish the owned answer before publishing terminal idle.
+            forwardEvent = false;
+            promoteNarrationFallback();
+            if (getRuntimeRun(streamRun.id)?.status !== "active") {
+              lostRunOwnership = true;
+              return;
             }
           }
           if (
             event.type === "session.status" &&
-            (event.payload.status === "idle" ||
-              event.payload.status === "aborted" ||
-              event.payload.status === "failed") &&
-            // A fresh subscription can replay the previous turn's idle frame.
-            // Do not consume this turn's one stable-answer emission before it
-            // has produced anything.
-            (event.payload.status !== "idle" || sawTurnOutput)
+            (event.payload.status === "aborted" || event.payload.status === "failed")
           ) {
             emitStableAnswer();
+          }
+          if (
+            session.row.conversation_id &&
+            (event.type === "assistant.segment" ||
+              (event.type === "reasoning.status" && event.payload.detail)) &&
+            getRuntimeRun(streamRun.id)?.status === "active"
+          ) {
+            persistAssistantProgress({
+              conversationId: session.row.conversation_id,
+              clientMessageId: parseRuntimeRunDispatch(streamRun).clientMessageId ?? "",
+              ...(event.type === "reasoning.status" ? { reasoning } : { progressNotes: narrationSegments }),
+            });
           }
           if (forwardEvent) emit(event);
           emitArtifactEvents();
@@ -1264,12 +1364,17 @@ function driveSessionEventPump(
                   runId: streamRun.id,
                   clientMessageId: parseRuntimeRunDispatch(streamRun).clientMessageId ?? null,
                 });
+                if (getRuntimeRun(streamRun.id)?.status !== "active") {
+                  lostRunOwnership = true;
+                  return;
+                }
               }
               emitArtifactEvents();
               // Last chance: after this the stream closes, and an unemitted
               // launch would be a run the agent believes it started.
               emitAgentLaunchRequests();
               emitStableAnswer();
+              emit(event);
               // The answer is never rewritten here any more. An unmet web
               // obligation is reported through the verification summary
               // emitted immediately below, which the evidence panel renders;
@@ -1281,7 +1386,6 @@ function driveSessionEventPump(
                 sessionId: session.hermesSessionId,
                 timestamp: new Date().toISOString(),
                 payload: assessVerification(assistantText, evidence, {
-                  explanationReview,
                   geographicGroundingRequired: geographicGroundingRequired(),
                   webGroundingRequired: webGroundingAppliesToCompletion(),
                   externalAgents: externalAgentsForTurn(),
@@ -1332,7 +1436,7 @@ function driveSessionEventPump(
       } finally {
         clearDispatchDeadline();
         clearInterval(supervisor);
-        if (abandonedBeforeDispatch) {
+        if (abandonedBeforeDispatch || lostRunOwnership) {
           sink.close();
           return;
         }
@@ -1353,6 +1457,12 @@ function driveSessionEventPump(
         });
         finalize(finalStatus);
         sink.close();
+        if (session.row.conversation_id !== null && streamRun &&
+            parseRuntimeRunDispatch(streamRun).goalMode?.enabled) {
+          scheduleGoalContinuation(session.row.conversation_id, streamRun.id);
+        } else if (session.row.conversation_id !== null && streamRun) {
+          scheduleTaskRecovery(session.row.conversation_id, streamRun.id);
+        }
       }
     })();
 }

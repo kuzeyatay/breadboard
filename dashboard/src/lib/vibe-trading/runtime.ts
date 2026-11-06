@@ -185,10 +185,9 @@ async function probe(): Promise<VibeTradingHealth> {
     serviceRunning = await externalServiceRunning(endpoint.url, endpoint.apiKey);
   }
 
-  const installed =
-    lifecycle !== null
-      ? lifecycle !== "installation-unavailable"
-      : Boolean(python);
+  // A registered, stopped controller is not evidence that its managed Python
+  // environment has been provisioned.
+  const installed = Boolean(python) && lifecycle !== "installation-unavailable";
   const available =
     Boolean(endpoint) &&
     installed &&

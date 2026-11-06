@@ -10,6 +10,7 @@ async function updateContentMeta() {
   if (!slug || slug === "tags/index" || slug.startsWith("tags/")) return
   let metadata = document.querySelector<HTMLElement>(".content-meta")
   if (metadata?.dataset.readingTime === "false") return
+  if (metadata?.dataset.canonicalSlug === slug) return
   const title = document.querySelector("h1.article-title")
   if (!title) return
 
@@ -17,6 +18,8 @@ async function updateContentMeta() {
     const index = await fetchData
     if (document.body.dataset.slug !== slug) return
     metadata = document.querySelector<HTMLElement>(".content-meta")
+    // A canonical response may have arrived while the older index was loading.
+    if (metadata?.dataset.canonicalSlug === slug) return
     const isFolder = slug.endsWith("/index")
     const prefix = slug.slice(0, -"index".length)
     const pages = isFolder

@@ -37,7 +37,9 @@ import {
 import type { VoxDirectorRequest } from "./identity.ts";
 import type { VoxStyle } from "./types.ts";
 
-const REQUEST_TIMEOUT_MS = 180_000;
+// Structured beat and motion plans can take several minutes at high reasoning
+// effort. Match the long-form planning window used by the CAD model client.
+const REQUEST_TIMEOUT_MS = 600_000;
 
 export class VoxModelError extends Error {
   readonly code: string;
@@ -78,6 +80,9 @@ async function callTool(
   messages: ChatMessage[],
   tool: ToolDefinition,
 ): Promise<unknown> {
+  if (target.signal?.aborted) {
+    throw new VoxModelError("aborted", "The run was stopped before the model answered.");
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const onAbort = () => controller.abort();
@@ -120,6 +125,17 @@ async function callTool(
     } catch {
       throw new VoxModelError("invalid_json", "The model returned malformed JSON.");
     }
+  } catch (error) {
+    if (target.signal?.aborted) {
+      throw new VoxModelError("aborted", "The run was stopped before the model answered.");
+    }
+    if (controller.signal.aborted) {
+      throw new VoxModelError(
+        "model_timeout",
+        `The model did not finish the production plan within ${REQUEST_TIMEOUT_MS / 60_000} minutes. Try a lower reasoning effort or retry the run.`,
+      );
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
     target.signal?.removeEventListener("abort", onAbort);

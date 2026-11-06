@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath } from "./runtime-v2-paths.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -9,11 +10,6 @@ const ENTRYPOINT = fileURLToPath(import.meta.url);
 function fail(message) { throw new Error(message); }
 function isRecord(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
 function exact(value, keys) { return isRecord(value) && Object.keys(value).sort().join(",") === [...keys].sort().join(","); }
-function samePath(left, right) {
-  const a = path.resolve(left); const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
 export function validateRuntimeV2ThoughtTopologyRequest(value) {
   if (!exact(value, ["protocolVersion", "operation", "clusterId", "revision", "queueJobId"]) ||
       value.protocolVersion !== 1 || value.operation !== "build-thought-topology" ||

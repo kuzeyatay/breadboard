@@ -4,6 +4,7 @@ import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
 import type { MouseEvent, ReactElement, ReactNode } from "react";
 import { desktopTabsBridge, openInDesktopTab } from "@/lib/desktop-browser-tabs";
 import { useDesktopTabsEnabled } from "./use-desktop-tabs";
+import { SideChatMenuItem } from "./side-chat-context";
 
 /**
  * The one look every right-click menu in the dashboard shares: a small flat
@@ -49,6 +50,7 @@ export function ContextMenuSurface({
           className={CONTEXT_MENU_CONTENT_CLASS}
         >
           {menu}
+          <SideChatMenuItem className={CONTEXT_MENU_ITEM_CLASS} />
         </ContextMenuPrimitive.Content>
       </ContextMenuPrimitive.Portal>
     </ContextMenuPrimitive.Root>
@@ -103,20 +105,17 @@ export function OpenInNewTabItem({
   );
 }
 
-function openBrowserWindow(event: MouseEvent<HTMLAnchorElement>, href: string): void {
-  // The desktop shell turns any `target="_blank"` into a Breadboard window of
-  // its own, so the anchor is left alone there. A browser would make a tab of
-  // it; asking for a popup is what makes it a window instead.
-  if (desktopTabsBridge()) return;
+function openNewWindow(event: MouseEvent<HTMLAnchorElement>, href: string): void {
+  // Explicit popup intent keeps this distinct from ordinary blank-target
+  // links, which both the desktop shell and browsers open as tabs.
   event.preventDefault();
   const absolute = new URL(href, window.location.href).toString();
   window.open(absolute, "_blank", "popup,noopener,noreferrer");
 }
 
 /**
- * A menu row that opens `href` in a new window. It is a real anchor with
- * `target="_blank"`: the desktop shell
- * turns that into a new Breadboard window.
+ * A menu row that explicitly requests a separate window. The anchor keeps
+ * its destination available to browser link controls and assistive tools.
  */
 export function OpenInNewWindowItem({
   href,
@@ -129,7 +128,7 @@ export function OpenInNewWindowItem({
         target="_blank"
         rel="noopener noreferrer"
         className={CONTEXT_MENU_ITEM_CLASS}
-        onClick={(event) => openBrowserWindow(event, href)}
+        onClick={(event) => openNewWindow(event, href)}
       >
         {children}
       </a>

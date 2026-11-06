@@ -82,7 +82,7 @@ export default function SettingsElevenLabsSpeech({ credentials, voiceId, model, 
     <section className="space-y-4 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4" aria-label="ElevenLabs speech">
       <div>
         <h3 className="text-sm font-medium text-[var(--ink-heading)]">ElevenLabs speech</h3>
-        <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">Use your ElevenLabs voices for conversations, dictation, Clicky, and response playback. Text and recordings are sent to ElevenLabs. Your ElevenLabs plan and API usage charges apply.</p>
+        <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">Use your ElevenLabs voices for conversations, dictation, and response playback. Text and recordings are sent to ElevenLabs. Your ElevenLabs plan and API usage charges apply.</p>
       </div>
       <div className="space-y-2">
         <p role="status" className="text-xs leading-5 text-[var(--ink)]">{credentials?.error || (configured ? credentials?.source === "environment" ? "Using the server’s ElevenLabs API key." : "ElevenLabs API key saved." : "Add an ElevenLabs API key to get started.")}</p>
@@ -126,7 +126,7 @@ export default function SettingsElevenLabsSpeech({ credentials, voiceId, model, 
           <textarea aria-label="Preview text" rows={2} className={`${fieldClass} mt-1`} value={previewText} onChange={(event) => onPreviewText(event.target.value)} />
         </label>
         <button type="button" className={buttonClass} disabled={!configured || !voiceId || !enabled || !previewText.trim()} onClick={onPreview}>Preview voice</button>
-        <p className="text-xs leading-5 text-[var(--ink-muted)]">Dictation uses Scribe v2. Longer responses are split automatically for playback. Your other providers’ voices stay saved when you switch.</p>
+        <p className="text-xs leading-5 text-[var(--ink-muted)]">Your other providers’ voices stay saved when you switch.</p>
       </fieldset>
       {error ? <p role="alert" className="rounded-xl bg-[var(--paper-strong)] px-3 py-2 text-xs leading-5 text-[var(--ink)]">{error}</p> : null}
     </section>

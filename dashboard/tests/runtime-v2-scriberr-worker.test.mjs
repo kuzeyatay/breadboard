@@ -222,6 +222,9 @@ test("development worker projects only non-secret Scriberr inference settings", 
     path.join(dashboard, ".env.local"),
     [
       "SCRIBERR_MODEL=small.en",
+      "SCRIBERR_DEVICE=cuda",
+      "SCRIBERR_COMPUTE_TYPE=float16",
+      "SCRIBERR_BATCH_SIZE=4",
       "SCRIBERR_LANGUAGE='en'",
       "SCRIBERR_DIARIZATION=false",
       "SCRIBERR_API_TOKEN=must-not-cross",
@@ -232,10 +235,19 @@ test("development worker projects only non-secret Scriberr inference settings", 
   try {
     assert.deepEqual(
       projectDevelopmentScriberrSettings(root, env).sort(),
-      ["SCRIBERR_DIARIZATION", "SCRIBERR_LANGUAGE"],
+      [
+        "SCRIBERR_BATCH_SIZE",
+        "SCRIBERR_COMPUTE_TYPE",
+        "SCRIBERR_DEVICE",
+        "SCRIBERR_DIARIZATION",
+        "SCRIBERR_LANGUAGE",
+      ],
     );
     assert.equal(env.SCRIBERR_MODEL, "large-v3");
     assert.equal(env.SCRIBERR_LANGUAGE, "en");
+    assert.equal(env.SCRIBERR_DEVICE, "cuda");
+    assert.equal(env.SCRIBERR_COMPUTE_TYPE, "float16");
+    assert.equal(env.SCRIBERR_BATCH_SIZE, "4");
     assert.equal(env.SCRIBERR_DIARIZATION, "false");
     assert.equal(env.SCRIBERR_API_TOKEN, undefined);
     assert.equal(env.OPENAI_API_KEY, undefined);
@@ -406,6 +418,42 @@ test("retry refuses an inputless failed upload without advancing its generation"
   assert.equal(updated.status, "failed");
   assert.equal(updated.errorCode, "media_missing");
   assert.equal(updated.runtimeGeneration, 14);
+});
+
+test("retry resubmits a cancelled upload when its durable media checkpoint exists", async () => {
+  const store = fakeStore(legacyJob({
+    inputKind: "upload",
+    status: "cancelled",
+    mediaTempPath: "runtime-v2/services/scriberr-garden/media/lecture/media.mp3",
+    runtimeGeneration: 4,
+    runtimeJobId: "job_cancelled",
+    runtimeIdempotencyKey: "scriberr-garden-v2:3:cancelled:4",
+    cancelRequested: true,
+    errorCode: "cancelled",
+    errorMessage: "The transcription job was cancelled.",
+  }));
+  let submission;
+  const control = fakeControl({
+    submit: async (_authority, value) => {
+      submission = value;
+      return snapshot({ jobId: "job_retry_1" });
+    },
+  });
+
+  const updated = await client.retryScriberrRuntimeJob({
+    store,
+    jobId: store.current().id,
+    control,
+    env: {},
+  });
+
+  assert.equal(updated.status, "queued");
+  assert.equal(updated.cancelRequested, false);
+  assert.equal(updated.errorCode, null);
+  assert.equal(updated.runtimeGeneration, 5);
+  assert.equal(updated.runtimeJobId, "job_retry_1");
+  assert.equal(submission.requestPayload.operation, "retry");
+  assert.deepEqual(submission.inputUploads, []);
 });
 
 test("probe output is accepted only with matching worker identity and sequence", async () => {

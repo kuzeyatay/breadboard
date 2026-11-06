@@ -23,7 +23,7 @@ function evaluateLearnPrompts() {
   const names = [
     "LEARNER_VOICE_RULES", "TITLE_RULES", "SCOPE_CONTRACT_PROMPT", "TOPIC_MAP_PROMPT",
     "OVERVIEW_PROMPT", "DEPTH_RULES", "ANTI_AIISM_RULES", "PLACEHOLDER_FREE_PROSE_RULES",
-    "SUBSECTION_PROMPT", "SUBSECTION_REPAIR_PROMPT",
+    "SUBSECTION_PROMPT", "SUBSECTION_REPAIR_PROMPT", "RESTATED_SOURCE_FORMULAS_MARKER_EXAMPLE",
   ];
   const declarations = ast.statements.filter((node) => ts.isVariableStatement(node)
     && node.declarationList.declarations.some((declaration) => names.includes(declaration.name.getText(ast))));
@@ -41,29 +41,33 @@ test("every Learn authoring prompt receives the shared teaching requirements, in
     assert.doesNotMatch(prompts[name], /under.*1100/, name);
   }
   for (const name of ["SUBSECTION_PROMPT", "SUBSECTION_REPAIR_PROMPT"]) {
-    assert.match(prompts[name], /at least 1400 words of real explanatory prose, with no upper word limit/, name);
+    assert.match(prompts[name], /at least 1400 words of real explanatory prose/, name);
+    assert.doesNotMatch(prompts[name], /seven minutes has not gone deep enough/, name);
   }
-  for (const name of ["SCOPE_CONTRACT_PROMPT", "TOPIC_MAP_PROMPT"]) {
+  for (const name of ["TOPIC_MAP_PROMPT"]) {
     assert.ok(prompts[name].includes(pedagogy.LEARN_FOUNDATION_PLANNING_RULES), name);
     assert.ok(prompts[name].includes(pedagogy.LEARN_LENGTH_PLANNING_RULES), name);
     assert.doesNotMatch(prompts[name], /"expectedWordRange":\s*\[700,\s*1100\]/, name);
   }
   assert.doesNotMatch(prompts.OVERVIEW_PROMPT, /at least.*1400 words/);
+  assert.match(prompts.SCOPE_CONTRACT_PROMPT, /scope inventory, not the lesson plan/);
+  assert.match(prompts.SCOPE_CONTRACT_PROMPT, /Do not promote material into background/);
+  assert.ok(!prompts.SCOPE_CONTRACT_PROMPT.includes(pedagogy.LEARN_LENGTH_PLANNING_RULES));
 });
 
-test("writers, planners, and the critic all hold the course to one line of reasoning with how, why, and where-from", () => {
+test("writers, planners, and the critic teach a complete argument without inventing mechanisms for definitions", () => {
   // Writer-side: the shared foundation rules carry the depth requirements, so
   // every page prompt and the critic inherit them through the interpolation
   // checked above.
   const prompts = evaluateLearnPrompts();
   const rules = pedagogy.LEARN_FOUNDATION_RULES;
   assert.match(rules, /Teach one line of reasoning/);
-  assert.match(rules, /before "electromagnetism" the reader meets charge/);
-  assert.match(rules, /If a page cannot afford to explain a term, it cannot afford to use it/);
-  assert.match(rules, /how it works .*why it is so or why it was needed .*where it comes from/);
+  assert.match(rules, /meanings the reader has actually established/);
+  assert.match(rules, /For a mechanism, show the steps that make it work/);
+  assert.match(rules, /not an invented mechanism or a compulsory history lesson/);
   assert.match(rules, /Use origins when they carry meaning/);
   assert.match(rules, /no invented dates, attributions, or anecdotes/);
-  assert.match(rules, /Depth before breadth/);
+  assert.match(rules, /complete line of reasoning promised by the page's question/);
   assert.match(rules, /The assigned material is the floor, not the ceiling/);
   assert.match(rules, /`> \[!info\]` callout marked as beyond this course's material/);
   assert.match(rules, /never a formula, number, or derivation the sources do not carry/);
@@ -72,25 +76,25 @@ test("writers, planners, and the critic all hold the course to one line of reaso
 
   const planning = pedagogy.LEARN_FOUNDATION_PLANNING_RULES;
   assert.match(planning, /Plan one line of reasoning, not a table of contents/);
-  assert.match(planning, /"Work, Potential, Energy, and Current"/);
-  assert.match(planning, /starts from the most elementary observable thing/);
+  assert.match(planning, /do not split mechanically/);
+  assert.match(planning, /a concrete situation the declared learner can follow/);
   assert.match(planning, /one assigned section as roughly one conceptual move/);
 
   const review = pedagogy.LEARN_FOUNDATION_REVIEW_RULES;
-  assert.match(review, /never given its mechanism, its reason .*, or its origin/);
-  assert.match(review, /"electromagnetism" before charge, electric effect, and magnetic effect/);
+  assert.match(review, /Name the exact step the learner cannot reproduce/);
+  assert.match(review, /depends on an untaught meaning/);
   assert.match(review, /are permitted orientation, not source gaps/);
   // Length is governed by substance in both directions: no padding to a
   // target, and restatement is flagged for removal rather than tolerated.
   assert.match(review, /Report restatement as a warning-severity "other" issue/);
   assert.match(review, /asking for its removal, not its rewording/);
   assert.match(rules, /never compress to meet a word count or reading-time target/);
-  // Intuition and logic precede mathematics; Feynman-style explanation is the
-  // endorsed mode, and the critic reports an equation that arrives first.
-  assert.match(rules, /Intuition and logic come before mathematics, every time/);
-  assert.match(rules, /they could guess its form/);
+  // Equations need meanings and reasoning; definitions and measured laws
+  // must not be forced into invented first-principles derivations.
+  assert.match(rules, /Motivate mathematics with the question it helps answer/);
+  assert.match(rules, /rather than inventing a derivation/);
   assert.match(rules, /Explain the way Feynman explained/);
-  assert.match(review, /a formula that introduces an idea rather than confirming one/);
+  assert.match(review, /Distinguish definitions, chosen examples, empirical laws, and derived results/);
   assert.match(review, /Report contrastive-negation teaching/);
   // Every prompt that produces learner-facing prose carries the banned-pattern
   // block, including the overview and the planner's section purposes.
@@ -102,22 +106,14 @@ test("writers, planners, and the critic all hold the course to one line of reaso
 
   const source = fs.readFileSync(new URL("../src/lib/learn.ts", import.meta.url), "utf8");
   assert.match(source, /\\`> \[!info\]\\` for one connection beyond this course's material/);
-  assert.match(source, /Three or more comma-separated topics in a title is a planning error/);
   assert.doesNotMatch(source, /Good: [^\n]*"Accuracy, Latency, Energy, and Spike Count"/);
 });
 
-test("a topic-list title is sent back to the planner as a unit to split", async () => {
-  const { topicListTitleProblem } = await import("../src/lib/learn-utils.ts");
-  const source = fs.readFileSync(new URL("../src/lib/learn.ts", import.meta.url), "utf8");
-  assert.match(source, /modelAuthoredUnitTitleProblems\(learningUnits, publishedLearningUnitIds\)/);
-  assert.match(source, /if \(publishedUnitIds\.has\(unit\.id\)\) continue;/);
-  assert.match(topicListTitleProblem("Work, Potential, Energy, and Current"), /lists 4 topics/);
-  assert.match(topicListTitleProblem("4. Gradient, Divergence, Curl, and Integral Theorems"), /split it into the units it hides/);
-  assert.match(topicListTitleProblem("Materials, Interfaces, and Capacitors"), /lists 3 topics/);
-  assert.equal(topicListTitleProblem("The Leaky Integrate-and-Fire Neuron"), null);
-  assert.equal(topicListTitleProblem("Charge, and What It Does at a Distance"), null);
-  assert.equal(topicListTitleProblem("How Accuracy, Latency, and Energy Trade Off"), null);
-  assert.equal(topicListTitleProblem("Why Gauss's Law Needs Symmetry"), null);
+test("learner titles retain related concepts without being mechanically split or shortened", async () => {
+  const { sanitizeLearnerTitle } = await import("../src/lib/learn-utils.ts");
+  for (const title of ["Geometry, angles, and trigonometry", "Dot products, cross products, and projections", "How Accuracy, Latency, and Energy Trade Off"]) {
+    assert.equal(sanitizeLearnerTitle(title), title);
+  }
 });
 
 function fixture(t) {

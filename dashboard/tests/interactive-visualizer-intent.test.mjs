@@ -6,6 +6,19 @@ const select = (text, priorMessages) => visualizerCommandText({
   text, priorMessages, surface: "dashboard_terminal", authenticated: true,
 });
 
+test("engineering simulation requests do not acquire a mandatory HTML visualizer", () => {
+  for (const text of [
+    "Design a 10 kHz sine-wave oscillator with limiters, user-controlled output power and filters. Build and actually simulate the circuit using the available native circuit simulator. Return the netlist, schematic, waveform and CSV/report links.",
+    "Build and simulate an RC low-pass filter with a 1 kHz cutoff.",
+    "Simulate this transistor amplifier and measure gain and output power.",
+    "Simulation of a MOSFET switching circuit using ngspice",
+  ]) {
+    assert.deepEqual(select(text), { text, automatic: false }, text);
+    assert.equal(select("retry", [{ role: "user", content: text }]).automatic, false);
+  }
+  assert.equal(select("Create an interactive simulation of an RC filter with a capacitance slider.").automatic, true);
+});
+
 test("questions about visualizer software do not require an artifact", () => {
   for (const text of [
     "is there an open source version of googles interactive visualizer that appears embedded inside a chat",

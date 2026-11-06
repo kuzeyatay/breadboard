@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -10,6 +11,19 @@ const read = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
 
 const agents = ["openwork", "openscience", "money-printer", "wardrobe"];
 const leasedRunManagers = ["wardrobe"];
+
+test("OpenWork setup can bootstrap before its mutable server runtime is installed", () => {
+  const manifest = JSON.parse(read("../desktop/runtime-v2/manifests/services.json"));
+  const openwork = manifest.services.find((service) => service.id === "openwork");
+  for (const mode of ["lean", "hot"]) {
+    const profile = openwork.launchProfiles.find((profile) => profile.modes.includes(mode));
+    // This gateway serves status and stop before the managed setup job can run.
+    // Requiring that job's output here makes first-time setup unreachable.
+    assert.ok(profile.installProbe.files.some((file) =>
+      file.path === "dashboard/scripts/runtime-v2-agent-service.mjs"));
+    assert.deepEqual(profile.installProbe.files.filter((file) => file.authority === "data-root"), []);
+  }
+});
 
 test("legacy shared managers lease services while finite workers use held endpoints", () => {
   for (const agent of leasedRunManagers) {
@@ -115,6 +129,8 @@ test("completed OpenWork artifacts stay durable while Wardrobe galleries can wak
 });
 
 test("the Runtime wrapper starts independently and refuses unauthenticated control", async (t) => {
+  const unprepared = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-unprepared-openwork-"));
+  t.after(() => fs.rmSync(unprepared, { recursive: true, force: true }));
   const tokenNames = {
     openwork: "BREADBOARD_OPENWORK_SERVICE_TOKEN",
     openscience: "BREADBOARD_OPENSCIENCE_SERVICE_TOKEN",
@@ -136,7 +152,13 @@ test("the Runtime wrapper starts independently and refuses unauthenticated contr
       ["scripts/runtime-v2-agent-service.mjs", "--agent", agent, "--port", String(port)],
       {
         cwd: root,
-        env: { ...process.env, [tokenNames[agent]]: token },
+        env: {
+          ...process.env,
+          [tokenNames[agent]]: token,
+          ...(agent === "openwork"
+            ? { OPENWORK_SERVER_RUNTIME_ROOT: path.join(unprepared, "openwork-runtime") }
+            : {}),
+        },
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       },
@@ -181,6 +203,17 @@ test("the Runtime wrapper starts independently and refuses unauthenticated contr
     assert.equal(accepted.status, 200, agent);
     const acceptedBody = await accepted.json();
     assert.equal(acceptedBody.ok, true, agent);
+    if (agent === "openwork") {
+      assert.equal(acceptedBody.result.setup.prepared, false);
+      assert.equal(acceptedBody.result.setup.ready, false);
+      assert.ok(acceptedBody.result.availability.missing.includes("server"));
+      const stopped = await fetch(`${origin}/v1/stop`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ scope: { userId: 1 } }),
+      });
+      assert.equal(stopped.status, 200, "setup can stop an unprepared OpenWork service");
+    }
 
     const unsealed = await fetch(`${origin}/v1/status`, {
       method: "POST",

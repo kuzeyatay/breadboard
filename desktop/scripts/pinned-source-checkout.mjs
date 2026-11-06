@@ -44,7 +44,7 @@ export function assertPinnedCleanCheckout({
   const independentCheckout =
     reportedRoot && canonicalPath(reportedRoot) === canonicalPath(sourceRoot);
   if (!independentCheckout && allowVendoredSnapshot && reportedRoot) {
-    const relativeSource = path.relative(reportedRoot, sourceRoot);
+    const relativeSource = path.relative(fs.realpathSync.native(reportedRoot), fs.realpathSync.native(sourceRoot));
     if (
       !relativeSource ||
       relativeSource.startsWith(`..${path.sep}`) ||
@@ -130,8 +130,8 @@ export function pinnedSourceTree(sourceRoot, relativePath) {
     throw new Error(`Pinned source Git root is unavailable: ${sourceRoot}`);
   }
 
-  const target = path.resolve(sourceRoot, relativePath);
-  const repositoryRelative = path.relative(reportedRoot, target);
+  const target = path.resolve(fs.realpathSync.native(sourceRoot), relativePath);
+  const repositoryRelative = path.relative(fs.realpathSync.native(reportedRoot), target);
   if (
     repositoryRelative.startsWith(`..${path.sep}`) ||
     path.isAbsolute(repositoryRelative)

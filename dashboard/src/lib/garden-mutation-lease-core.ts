@@ -92,9 +92,30 @@ export function acquireGardenMutationLease(
       ingestionRecovery: options.ingestionRecovery,
       refuseStaleProcessBoundTakeover:
         options.recoverStaleProcessBoundLease !== true,
+      recoverStaleIngestionContent: options.recoverStaleProcessBoundLease === true,
     },
   );
-  if (!acquired.acquired) throw new GardenMutationBusyError(acquired.conflict);
+  if (!acquired.acquired) {
+    // Uploads do not wait for a Learn build: they write beside it and Learn's
+    // publication carries their files into the garden it swaps in.
+    if (
+      /^document-ingestion(?:-recovery|-commit-recovery)?$/.test(operation) &&
+      acquired.conflict.scope === "learn-output" &&
+      options.processBoundStaleMs !== undefined
+    ) {
+      const beside = acquireGardenContentLease(resolvedGarden, {
+        ingestion: {
+          jobId: `mutation:${operation}:${ownerId}`,
+          processBoundStaleMs: options.processBoundStaleMs,
+          ingestionRecovery: options.ingestionRecovery,
+          recoverStale: options.recoverStaleProcessBoundLease === true,
+        },
+      });
+      if (beside.acquired) return beside.lease;
+      throw new GardenMutationBusyError(beside.conflict);
+    }
+    throw new GardenMutationBusyError(acquired.conflict);
+  }
   return acquired.lease;
 }
 

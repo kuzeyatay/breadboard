@@ -1,3 +1,6 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
+import { managedVenvRoot, runtimeBulkDataRoot } from "./runtime-v2-bulk-paths.mjs";
+export { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -45,18 +48,6 @@ export function boundedText(value, maximumBytes) {
   return typeof value === "string" &&
     Buffer.byteLength(value, "utf8") <= maximumBytes &&
     !/\p{Cc}/u.test(value);
-}
-
-export function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
-export function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" ||
-    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 export function directDirectory(candidate, root, message) {
@@ -206,8 +197,9 @@ export function prepareRuntimeV2SubsAiLayout(entrypoint, launch, options = {}) {
   if (options.requireSource && !root) {
     failSubsAiWorker("The staged subsai source is unavailable.");
   }
-  const venv = path.join(dataRoot, "runtime-v2", "services", "subsai", ".venv");
-  const python = optionalPython(venv, dataRoot);
+  const bulkRoot = runtimeBulkDataRoot(dataRoot);
+  const venv = managedVenvRoot(dataRoot, "subsai");
+  const python = optionalPython(venv, venv);
   if (options.requirePython && !python) {
     failSubsAiWorker("The managed subsai Python environment is unavailable.");
   }
@@ -253,6 +245,7 @@ export function prepareRuntimeV2SubsAiLayout(entrypoint, launch, options = {}) {
   if (!uv) delete process.env.UV_PATH;
   if (!mediaBin) delete process.env.BREADBOARD_RUNTIME_V2_MEDIA_BIN;
   process.env.BREADBOARD_DATA_DIR = dataRoot;
+  process.env.BREADBOARD_BULK_DATA_DIR = bulkRoot;
   process.env.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR = development ? dashboardRoot : "";
   process.env.BREADBOARD_REPO_ROOT = appRoot;
   process.env.BREADBOARD_QA_MODE = "1";

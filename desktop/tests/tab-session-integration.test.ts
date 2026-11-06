@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-test("real Electron restarts restore only anchors beside one fresh New tab", {
+test("real Electron restarts restore all tabs without accumulating New tabs or reopening closed tabs", {
   skip: process.platform !== "win32",
 }, () => {
   const desktop = path.resolve(__dirname, "../..");
@@ -14,7 +14,7 @@ test("real Electron restarts restore only anchors beside one fresh New tab", {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   try {
-    for (const phase of ["save", "restore", "verify-unanchored"]) {
+    for (const phase of ["save", "restore", "verify-unanchored", "verify-closed"]) {
       const run = spawnSync(path.join(desktop, "node_modules/electron/dist/electron.exe"), [fixture, dir, phase], {
         cwd: desktop, env, encoding: "utf8", windowsHide: true, timeout: 45_000,
       });

@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -38,19 +39,6 @@ function exactRecord(value, keys) {
 function boundedText(value, maximumBytes) {
   return typeof value === "string" && value.trim() === value && value.length > 0 &&
     Buffer.byteLength(value, "utf8") <= maximumBytes && !/\p{Cc}/u.test(value);
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" || (
-    relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
-  );
 }
 
 function directFile(candidate) {

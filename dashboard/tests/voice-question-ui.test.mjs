@@ -13,7 +13,7 @@ test('voice companion speaks tool questions, hears their answers and narrates th
     stdin: { resolveDir: root, loader: 'tsx', contents: `
       import React from 'react'; import {createRoot} from 'react-dom/client';
       import VoicePage from './src/app/voice/page';
-      window.played=[]; window.sent=[]; window.answers=[]; window.processors=[]; window.streams=[];
+      window.played=[]; window.sent=[]; window.sentOptions=[]; window.answers=[]; window.processors=[]; window.streams=[];
       window.closedVoice=0;
       window.voiceCompanion={state:async()=>true,close:async()=>{window.closedVoice++;},onOpen:callback=>{window.openVoice=()=>callback(true);return()=>{};}};
       window.cloud=new URLSearchParams(location.search).has('cloud');
@@ -40,6 +40,7 @@ test('voice companion speaks tool questions, hears their answers and narrates th
       createRoot(document.getElementById('root')).render(<VoicePage/>);
     ` },
     bundle: true, write: false, format: 'iife', platform: 'browser',
+    loader: { '.css': 'empty', '.module.css': 'empty' },
     define: { 'process.env.NODE_ENV': '"production"' },
     plugins: [{ name: 'voice-fixtures', setup(build) {
       build.onResolve({ filter: /(use-agent-session|use-assistant-intelligence|chat-notification-inbox|voice-assistant-runtime|subscription-live|prepare-client|request-client)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
@@ -52,8 +53,9 @@ test('voice companion speaks tool questions, hears their answers and narrates th
             const [state,setState]=useState({messages:[],runState:'idle',sessionId:'voice-test',loadingSession:false});
             window.updateSession=patch=>setState(current=>({...current,...patch}));
             window.complete=text=>setState(current=>({...current,runState:'completed',messages:current.messages.map(m=>m.role==='assistant'?{...m,content:text}:m)}));
-            return {...state,send:async text=>{
+            return {...state,send:async (text,options)=>{
               window.sent.push(text);
+              window.sentOptions.push(options);
               if(state.pendingClarification){
                 window.answers.push({requestId:state.pendingClarification.requestId,text});
                 setState(current=>({...current,pendingClarification:null,runState:'running',messages:[...current.messages,{role:'user',content:text,clientMessageId:'clarify:'+state.pendingClarification.requestId}]}));
@@ -75,13 +77,17 @@ test('voice companion speaks tool questions, hears their answers and narrates th
         }`;
         else if (modulePath.endsWith('use-assistant-intelligence')) contents = 'export const useAssistantIntelligence=()=>({model:"fixture",reasoningEffort:"low"});';
         else if (modulePath.endsWith('voice-assistant-runtime')) contents = 'export default function Runtime(){return null;}';
-        else contents = 'export function setActiveChatNotificationTarget(){}';
+        else contents = 'export function registerChatNotificationTarget(){return()=>{}}';
         return { contents, loader: 'js', resolveDir: root };
       });
     } }],
   });
   const css = fs.readFileSync(path.join(root, 'src/app/globals.css'), 'utf8');
   const server = http.createServer((req, res) => {
+    if (req.url === '/api/profile/voice-assistant') {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ preferences: { readAloudNotifications: false, alwaysOnVoiceAssistant: false, startVoiceOnStartup: true, voiceModel: 'anthropic/claude-sonnet-4-5' }, effectiveVoiceModel: 'anthropic/claude-sonnet-4-5' }));return;
+    }
     if (req.url === '/app.js') { res.setHeader('Content-Type', 'text/javascript'); res.end(bundle.outputFiles[0].text); }
     else if (req.url === '/style.css') { res.setHeader('Content-Type', 'text/css'); res.end(css.slice(css.indexOf('.voice-stage {'))); }
     else { res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><html><head><link rel="stylesheet" href="/style.css"><style>body{margin:0;font-family:Arial}*{box-sizing:border-box}button{font:inherit}p{margin:0}</style></head><body><main id="root"></main><script src="/app.js"></script></body></html>'); }
@@ -101,6 +107,7 @@ test('voice companion speaks tool questions, hears their answers and narrates th
       assert.equal(await page.locator('.voice-widget-name,.voice-widget-hint').count(), 0);
       await page.evaluate(() => window.say('I want help with fitness.'));
       await page.waitForFunction(() => window.sent.length === 1);
+      assert.deepEqual(await page.evaluate(() => window.sentOptions[0]), { model: 'anthropic/claude-sonnet-4-5', voice: true });
       const transcript = page.getByRole('log', { name: 'Conversation transcript' });
       assert.equal(await transcript.innerText(), 'I want help with fitness.');
       const question = 'What do you want help with first?';
@@ -158,29 +165,32 @@ test('voice companion speaks tool questions, hears their answers and narrates th
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       await page.screenshot({ path: path.join(artifacts, `small-${cloud ? 'cloud' : 'local'}.png`) });
 
-      // The exact spoken close request from the reported bug must wait for
-      // the farewell audio, then close the native companion and microphone.
+      // Negated close requests still reach the model. An explicit close is a
+      // local control and releases the microphone without waiting for a model.
       const sentBeforeGoodbye = await page.evaluate(() => window.sent.length);
-      await page.evaluate(() => window.say('[sigh] You can close yourself now'));
+      await page.evaluate(() => window.say('Do not close yourself now.'));
       await page.waitForFunction(count => window.sent.length === count + 1, sentBeforeGoodbye);
-      await page.evaluate(() => window.complete('Goodbye, Kuzey.'));
-      await page.waitForFunction(() => window.played.at(-1) === 'Goodbye, Kuzey.');
-      assert.equal(await page.evaluate(() => window.closedVoice), 0, 'do not cut off the farewell');
+      await page.evaluate(() => window.complete('I am still here.'));
+      await page.waitForFunction(() => window.played.at(-1) === 'I am still here.');
+      assert.equal(await page.evaluate(() => window.closedVoice), 0);
       await page.evaluate(() => window.finishSpeech());
+      await page.getByRole('button', { name: 'Pause listening' }).waitFor();
+      await page.evaluate(() => window.say('[sigh] You can close yourself now'));
       await page.waitForFunction(() => window.closedVoice === 1);
+      assert.equal(await page.evaluate(() => window.sent.length), sentBeforeGoodbye + 1);
       await page.getByRole('dialog', { name: 'Voice conversation' }).waitFor({ state: 'detached' });
       await page.waitForFunction(() => window.streams.every(stream => stream.getTracks()[0].readyState === 'ended'));
 
-      // Reopening starts a fresh conversation. Interrupting a farewell cancels
-      // its pending close, so old completion callbacks cannot close a new turn.
+      // Reopening starts a fresh conversation. Late playback completion after
+      // an interruption must not close or take over the new turn.
       await page.evaluate(() => window.openVoice());
-      await page.waitForFunction(() => window.played.at(-1) !== 'Goodbye, Kuzey.');
+      await page.waitForFunction(() => window.played.at(-1) !== 'I am still here.');
       await page.evaluate(() => window.finishSpeech());
       await page.getByRole('button', { name: 'Pause listening' }).waitFor();
-      await page.evaluate(() => window.say('Goodbye.'));
+      await page.evaluate(() => window.say('Tell me about squats.'));
       await page.waitForFunction(count => window.sent.length === count + 2, sentBeforeGoodbye);
-      await page.evaluate(() => window.complete('See you later.'));
-      await page.waitForFunction(() => window.played.at(-1) === 'See you later.');
+      await page.evaluate(() => window.complete('Start with your feet shoulder width apart.'));
+      await page.waitForFunction(() => window.played.at(-1) === 'Start with your feet shoulder width apart.');
       await page.getByRole('button', { name: 'Interrupt and speak' }).click();
       await page.getByRole('button', { name: 'Pause listening' }).waitFor();
       await page.evaluate(() => window.finishSpeech());

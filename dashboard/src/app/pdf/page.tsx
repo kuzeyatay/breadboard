@@ -74,7 +74,6 @@ export default async function GenericPdfPage({
       <PdfViewerClient
         title={fileName}
         browserTitle={fileName}
-        kicker="PDF"
         sourceUrl={sourceUrl}
         readOnly
         fastRead={getNavbarShortcuts(userId).fastRead}

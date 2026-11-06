@@ -1,0 +1,8 @@
+/* The native view grows to fit address suggestions. Absolute dropdowns do
+   not contribute to document height, so the overflow-hidden body must fill
+   that viewport instead of clipping at the bottom of the bookmarks bar. */
+html,
+body,
+#root {
+  height: 100%;
+}

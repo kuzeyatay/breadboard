@@ -94,7 +94,7 @@ test("3D camera preserves screen-plane dragging and scatters large scopes into a
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 });
 
-test("3D is the only visible viewer and preserves orbit, text, navigation, filters and XYZ pinning", { timeout: 120_000 }, async (t) => {
+test("3D is the only visible viewer and preserves orbit, text, navigation, filters and XYZ pinning", { timeout: 180_000 }, async (t) => {
   const executablePath = [
     "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
     "C:/Program Files/Microsoft/Edge/Application/msedge.exe", "/usr/bin/chromium",
@@ -166,7 +166,7 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
       const state = window.__breadboardThoughtTopologyDebug;
       return state?.nodes?.a && state.viewSettled && (state.dimension ?? "2d") === mode;
     }, mode);
-    // Explicitly pause the default spin for deterministic geometry assertions.
+    // Pause any explicitly enabled spin for deterministic geometry assertions.
     // The startup behavior is exercised separately on both production surfaces.
     const spin = page.getByRole("button", { name: "Spin", exact: true });
     if (mode === "3d" && pauseSpin && await spin.count() && await spin.getAttribute("aria-pressed") === "true") {
@@ -186,7 +186,9 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
   for (const surface of ["quartz", "profile"]) {
     await page.goto(`http://127.0.0.1:${server.address().port}/?topologyTest=1&surface=${surface}`);
     await ready("3d", false);
-    assert.equal(await page.getByRole("button", { name: "Spin", exact: true }).getAttribute("aria-pressed"), "true", "spin starts enabled");
+    const startupSpin = page.getByRole("button", { name: "Spin", exact: true });
+    assert.equal(await startupSpin.getAttribute("aria-pressed"), "false", "spin is opt-in so an open map can rest");
+    await startupSpin.click();
     const startupYaw = (await debug()).camera.yaw;
     await page.waitForFunction((yaw) => window.__breadboardThoughtTopologyDebug.camera.yaw > yaw + 0.01, startupYaw);
     const spinFrames = await page.evaluate(() => new Promise(resolve => {
@@ -427,5 +429,59 @@ test("3D is the only visible viewer and preserves orbit, text, navigation, filte
   for (const point of Object.values(large.nodes)) {
     assert.ok(point.x >= 0 && point.x <= 1280 && point.y >= 0 && point.y <= 800, "auto-fit contains the large cloud");
   }
+
+  // Filtering normally redistributes the remaining nodes over a full sphere.
+  // The previous slice of the complete map remains an explicit, saved option.
+  const filters = page.getByRole("button", { name: /^Filters(?:\s*\d+)?$/ });
+  const filteredLayout = page.getByLabel("Filtered layout", { exact: true });
+  await filters.click();
+  await page.screenshot({ path: path.join(screenshotDirectory, "filtered-layout-control.png") });
+  assert.equal(await filteredLayout.inputValue(), "sphere", "filtered views default to a full sphere");
+  for (const [section, firstNode] of [[2, 300], [3, 450], [4, 530], [5, 570]]) {
+    await page.getByRole("checkbox", { name: new RegExp(`^Section ${section} `) }).uncheck();
+    await page.waitForFunction((id) => !window.__breadboardThoughtTopologyDebug.worldNodes[id], `large:${firstNode}`);
+    await ready("3d");
+  }
+  const filtered = await debug();
+  assert.equal(Object.keys(filtered.worldNodes).length, 302, "only the Garden, one folder, and its pages remain");
+  const assertRound = (state) => {
+    assert.deepEqual(state.worldNodes["garden:garden"], { x: 0, y: 0, z: 0 });
+    assert.deepEqual(state.nodes["garden:garden"], { x: 640, y: 400 });
+    const points = Object.values(state.worldNodes);
+    const spans = ["x", "y", "z"].map((axis) => {
+      const values = points.map((p) => p[axis]);
+      const min = Math.min(...values), max = Math.max(...values);
+      assert.ok(min < -max * 0.65 && max < -min * 1.5, `${axis} fills both sides of the Garden`);
+      return max - min;
+    });
+    assert.ok(Math.min(...spans) / Math.max(...spans) > 0.75, `filtered cloud stays round: ${spans}`);
+  };
+  assertRound(filtered);
+  assert.notEqual(filtered.worldNodes.a.z, large.worldNodes.a.z, "visible pages receive new spherical homes");
+  await filters.click();
+  await page.screenshot({ path: path.join(screenshotDirectory, "filtered-full-sphere.png") });
+  await filters.click();
+  await filteredLayout.selectOption("cross-section");
+  await page.waitForFunction((z) => window.__breadboardThoughtTopologyDebug.worldNodes.a.z === z, large.worldNodes.a.z);
+  await ready("3d");
+  const crossSection = await debug();
+  for (const [id, point] of Object.entries(crossSection.worldNodes)) {
+    assert.equal(point.z, large.worldNodes[id].z, `${id} retains its original depth in cross-section mode`);
+  }
+  await filters.click();
+  await page.screenshot({ path: path.join(screenshotDirectory, "filtered-cross-section.png") });
+  await page.evaluate(() => window.remount());
+  await ready("3d");
+  await filters.click();
+  assert.equal(await filteredLayout.inputValue(), "cross-section", "layout choice survives reopening");
+  assert.deepEqual((await debug()).worldNodes, crossSection.worldNodes);
+  await filteredLayout.selectOption("sphere");
+  await page.waitForFunction((z) => window.__breadboardThoughtTopologyDebug.worldNodes.a.z === z, filtered.worldNodes.a.z);
+  await ready("3d");
+  assertRound(await debug());
+  await page.getByRole("button", { name: "Show all", exact: true }).click();
+  await page.waitForFunction(() => Boolean(window.__breadboardThoughtTopologyDebug.worldNodes["large:599"]));
+  await ready("3d");
+  assert.deepEqual((await debug()).worldNodes, large.worldNodes, "clearing filters restores the full map");
   assert.deepEqual(errors, []);
 });

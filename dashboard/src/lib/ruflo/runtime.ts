@@ -12,6 +12,7 @@
 // user's objective through a command-line parser.
 
 import { repositoryRoot } from "../runtime-paths.ts";
+import { runtimeProcessPath } from "../../../scripts/runtime-v2-paths.mjs";
 import {
   externalRuntimeAccess,
   externalRuntimeFilesystem as fs,
@@ -164,8 +165,8 @@ export function resolveRufloLauncher(
       : findExecutable(configured, env);
     if (resolved) {
       return {
-        command: isScript ? process.execPath : resolved,
-        args: isScript ? [resolved] : [],
+        command: runtimeProcessPath(isScript ? process.execPath : resolved),
+        args: isScript ? [runtimeProcessPath(resolved)] : [],
         source: "configured",
         version,
       };
@@ -174,7 +175,7 @@ export function resolveRufloLauncher(
 
   if (cloneIsBuilt(root)) {
     const entry = path.join(root, "bin", "cli.js");
-    return { command: process.execPath, args: [entry], source: "clone", version };
+    return { command: runtimeProcessPath(process.execPath), args: [runtimeProcessPath(entry)], source: "clone", version };
   }
 
   // The published CLI package ships a prebuilt `dist/`, so an unbuilt clone
@@ -183,8 +184,8 @@ export function resolveRufloLauncher(
   const npx = bundledNpxCli();
   if (!npx) return null;
   return {
-    command: process.execPath,
-    args: [npx, "--yes", `@claude-flow/cli@${version}`],
+    command: runtimeProcessPath(process.execPath),
+    args: [runtimeProcessPath(npx), "--yes", `@claude-flow/cli@${version}`],
     source: "registry",
     version,
   };

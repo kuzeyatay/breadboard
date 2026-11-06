@@ -16,7 +16,7 @@ const LEARN_ACTIONS = ['plan', 'generate', 'regenerate', 'rebuild', 'confirm'];
 
 test('the resolver reads the user preference and never lets a lookup fail a run', () => {
   assert.match(resolver, /getHermesUserSettings\(userId\)/);
-  assert.match(resolver, /normalizeAssistantModelId\(settings\.defaultModel\) \?\? DEFAULT_MODEL/);
+  assert.match(resolver, /normalizeAssistantModelId\(settings\.fallbackModel\) \?\? DEFAULT_MODEL/);
   // A signed-out or broken lookup falls back rather than throwing.
   assert.match(resolver, /catch \{\s*return DEFAULT_MODEL;/);
   assert.match(resolver, /if \(typeof userId !== "number"/);
@@ -85,7 +85,7 @@ test('Learn overrides accept concrete model IDs and fall back only when omitted'
 
 test('Learn requires an explicit model when the profile default is disabled', () => {
   for (const body of [{}, {model: 'none'}, {model: ' none '}]) {
-    assert.throws(() => resolveLearnRequestModel(body, 'none'), /No default model is selected/);
+    assert.throws(() => resolveLearnRequestModel(body, 'none'), /No fallback model is selected/);
   }
   assert.equal(resolveLearnRequestModel({model: 'gpt-6-astra'}, 'none'), 'gpt-6-astra');
 });

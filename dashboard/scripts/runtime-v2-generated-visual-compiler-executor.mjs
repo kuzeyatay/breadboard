@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath } from "./runtime-v2-paths.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -25,12 +26,6 @@ function boundedText(value, maximumBytes) {
     value.length > 0 &&
     Buffer.byteLength(value, "utf8") <= maximumBytes &&
     !/\p{Cc}/u.test(value);
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function directFile(candidate) {

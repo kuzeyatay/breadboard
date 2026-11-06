@@ -21,7 +21,9 @@ const workerPath = path.join(
 );
 const source = (relativePath) =>
   fs.readFileSync(path.join(dashboardRoot, relativePath), "utf8");
-const JOB_ID = "job_deep_research_1";
+// Use the real native identity shape throughout creation, replay, cancellation
+// and durable worker completion; a short fixture used to hide a 64-byte cap.
+const JOB_ID = `job_${"a".repeat(64)}`;
 const SERVICE_SECRET = "deep-research-runtime-test-capability-000001";
 const CREATED_AT = "2026-08-26T10:00:00.000Z";
 

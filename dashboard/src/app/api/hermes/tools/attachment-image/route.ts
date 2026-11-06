@@ -37,7 +37,7 @@ export async function POST(request: Request) {
     const body = await readJsonBody(request, 4096);
     const args = body.args && typeof body.args === "object" && !Array.isArray(body.args)
       ? body.args as Record<string, unknown> : {};
-    const data = await inspectAttachedImage(messages, args);
+    const data = await inspectAttachedImage(messages, args, { userId: session.user_id });
     if (request.signal.aborted || getActiveRuntimeRun(session.id)?.id !== run.id) {
       throw new ApiError(409, "image_stopped", "The image request was stopped.");
     }

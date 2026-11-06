@@ -1,3 +1,4 @@
+import { onObjectDispose } from "../../util/objectLifecycle"
 // @ts-ignore -- Quartz's inline compiler resolves ?raw imports as source text.
 import sandboxRuntime from "./generatedVisualSandbox.inline.js?raw"
 import { withInteractiveVisualizerWheelZoom } from "../../../../dashboard/src/lib/hermes/interactive-visualizer-wheel"
@@ -230,7 +231,7 @@ function hydrate(code: HTMLElement): HTMLElement {
       const height = typeof event.data.height === "number" ? event.data.height : 480
       frame.style.height = `${Math.max(300, Math.min(4800, height + 4))}px`
     } else if (event.data.event === "runtime-error") {
-      status.textContent = "The visualization stopped safely after a runtime error."
+      status.textContent = "The visualization stopped because of an error."
       frame.hidden = true
       frame.insertAdjacentElement(
         "afterend",
@@ -239,7 +240,7 @@ function hydrate(code: HTMLElement): HTMLElement {
     }
   }
   window.addEventListener("message", listener)
-  window.addCleanup(() => window.removeEventListener("message", listener))
+  onObjectDispose(card, () => window.removeEventListener("message", listener))
   const forwardTheme = (event?: CustomEvent<{ theme?: unknown }>) => {
     const eventTheme = event?.detail?.theme
     const theme = eventTheme === "dark" || eventTheme === "light" ? eventTheme : currentTheme()
@@ -251,7 +252,7 @@ function hydrate(code: HTMLElement): HTMLElement {
     )
   }
   document.addEventListener("themechange", forwardTheme as EventListener)
-  window.addCleanup(() =>
+  onObjectDispose(card, () =>
     document.removeEventListener("themechange", forwardTheme as EventListener),
   )
   frame.addEventListener(
@@ -277,7 +278,7 @@ function hydrate(code: HTMLElement): HTMLElement {
     },
     { once: true },
   )
-  window.addCleanup(() => {
+  onObjectDispose(card, () => {
     if (nativeRuntime)
       frame.contentWindow?.postMessage(
         { protocol: nativeProtocol, channel: "standalone", type: "host-dispose" },
@@ -287,8 +288,10 @@ function hydrate(code: HTMLElement): HTMLElement {
   return card
 }
 
-document.addEventListener("nav", () => {
-  const nodes = document.querySelectorAll(
+const breadboardGeneratedVisualEditorHydrate = (event: Event) => {
+  const root: ParentNode = (event as CustomEvent).detail?.root ?? document
+
+  const nodes = root.querySelectorAll(
     "code.breadboard-generated-visual-block",
   ) as NodeListOf<HTMLElement>
   for (const code of nodes) {
@@ -297,4 +300,6 @@ document.addEventListener("nav", () => {
     host.dataset.bgvBound = "true"
     host.replaceWith(hydrate(code))
   }
-})
+}
+document.addEventListener("nav", breadboardGeneratedVisualEditorHydrate)
+document.addEventListener("bb:hydrate-objects", breadboardGeneratedVisualEditorHydrate)

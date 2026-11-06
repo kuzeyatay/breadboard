@@ -6,7 +6,6 @@ import { authOptions } from '@/lib/auth-options';
 import BackLink from '@/app/components/back-link';
 import { getReadableCluster } from '@/app/actions/clusters';
 import NewNoteButton from '@/app/components/new-note-button';
-import MarkdownToPdfButton from '@/app/components/markdown-to-pdf-button';
 import FastReadButton from '@/app/components/fastread-button';
 import NavbarFlowerWind from '@/app/components/navbar-flower-wind';
 import { resolveGardenNoteSlug } from '@/lib/garden-note-navigation';
@@ -18,6 +17,7 @@ import {
   getNavbarShortcuts,
 } from '@/lib/profile/navbar-shortcuts-store.ts';
 import GardenClient from './garden-client';
+import GardenSettingsButton from '../garden-settings-button';
 
 // Metadata and the page must read the same saved name and enforce the same access.
 const getGardenPageData = cache(async (clusterSlug: string) => {
@@ -90,7 +90,7 @@ export default async function GardenPage({
         <div className="relative z-10 flex items-center gap-2">
           {cluster.isOwner && <NewNoteButton clusterSlug={clusterSlug} />}
           {fastRead && <FastReadButton clusterSlug={clusterSlug} initialNote={canonicalNote} />}
-          <MarkdownToPdfButton clusterSlug={clusterSlug} initialNote={canonicalNote} />
+          <GardenSettingsButton quartzOrigin={new URL(resolveQuartzBaseUrl()).origin} />
         </div>
       </header>
 

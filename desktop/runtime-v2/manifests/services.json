@@ -1012,18 +1012,6 @@
               {
                 "authority": "app-root",
                 "path": "dashboard/scripts/learn-worker-import-hook.mjs"
-              },
-              {
-                "authority": "data-root",
-                "path": "openwork-runtime/apps/server/src/cli.ts"
-              },
-              {
-                "authority": "data-root",
-                "path": "openwork-runtime/apps/server/node_modules/@opencode-ai/sdk/package.json"
-              },
-              {
-                "authority": "data-root",
-                "path": "openwork-runtime/breadboard-source.json"
               }
             ]
           },
@@ -2724,6 +2712,10 @@
               {
                 "authority": "app-root",
                 "path": "dashboard/scripts/quartz-canonical-reader-bridge.mjs"
+              },
+              {
+                "authority": "app-root",
+                "path": "dashboard/scripts/quartz-reader-shell.mjs"
               }
             ]
           },

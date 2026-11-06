@@ -13,6 +13,7 @@ import { withCouncil } from "@/lib/council";
 import { mlxText } from "@/lib/document-structure/mlx";
 import {
   cleanGeneratedText,
+  attachPresentationSourcePreview,
   extractDocumentKnowledge,
   normalizeSourceFileIdentity,
   scanClusterKnowledge,
@@ -41,6 +42,7 @@ import {
   anydocFormatForExtension,
   anydocPageLabel,
 } from "@/lib/anydoc/formats";
+import { renderWindowsMetafileToPng } from "@/lib/anydoc/render-windows-metafile";
 import {
   getVlmOcrConfig,
   type VlmOcrConfig,
@@ -64,8 +66,11 @@ import type { FigureSaver } from "@/lib/vlm-ocr/figures";
 import type { VlmOcrTask } from "@/lib/vlm-ocr/prompts";
 import { probeVlmOcrServer } from "@/lib/vlm-ocr/server";
 import { spotPageTextLines } from "@/lib/vlm-ocr/spotting";
+import { locateOcrText } from "@/lib/ocr-positioning";
 import { toBreadboardMarkdown } from "@/lib/vlm-ocr/quartz-safe";
+import { enrichGardenSourceVisuals } from "@/lib/garden-visual-enrichment";
 import type { IngestUploadFile } from "@/lib/ingest-upload";
+import { renderPresentationPdf } from "@/lib/office/presentation-pdf";
 
 interface PdfScreenshotPage {
   pageNumber: number;
@@ -1442,13 +1447,14 @@ function saveDataUrlAsset({
   };
 }
 
-function saveUploadedPdfAsset({
+function saveUploadedDocumentAsset({
   contentPath,
   clusterSlug,
   baseName,
   buffer,
   createdFilePaths,
   knowledgeWriteTransaction,
+  extension = "pdf",
 }: {
   contentPath: string;
   clusterSlug: string;
@@ -1456,11 +1462,12 @@ function saveUploadedPdfAsset({
   buffer: Buffer;
   createdFilePaths?: string[];
   knowledgeWriteTransaction?: KnowledgeWriteTransaction;
+  extension?: "pdf" | "pptx";
 }): { filePath: string; relativePath: string } {
   const assetDir = path.join(contentPath, clusterSlug.trim(), "assets");
   ensureTrackedIngestionDirectory(assetDir, knowledgeWriteTransaction);
   const fileBase = slugify(`${baseName}-source`);
-  const filePath = uniqueAssetPath(assetDir, fileBase, "pdf");
+  const filePath = uniqueAssetPath(assetDir, fileBase, extension);
   writeTrackedIngestionAsset(filePath, buffer, knowledgeWriteTransaction);
   createdFilePaths?.push(filePath);
   return {
@@ -1534,15 +1541,17 @@ function anydocImageSaver({
     try {
       const assetDir = path.join(contentPath, clusterSlug.trim(), "assets");
       ensureTrackedIngestionDirectory(assetDir, knowledgeWriteTransaction);
+      const png = renderWindowsMetafileToPng(data, mediaType);
+      const savedBytes = png ?? data;
       const ext =
-        mediaType.split("/")[1]?.split("+")[0]?.toLowerCase() || "png";
+        png ? "png" : mediaType.split("/")[1]?.split("+")[0]?.toLowerCase() || "png";
       const label = `image-${String(index).padStart(3, "0")}`;
       const filePath = uniqueAssetPath(
         assetDir,
         slugify(`${baseName}-${label}`),
         ext.replace(/[^a-z0-9]/g, "") || "png",
       );
-      writeTrackedIngestionAsset(filePath, data, knowledgeWriteTransaction);
+      writeTrackedIngestionAsset(filePath, savedBytes, knowledgeWriteTransaction);
       createdFilePaths.push(filePath);
       return `/${clusterSlug.trim()}/assets/${path.basename(filePath)}`;
     } catch (error) {
@@ -2045,37 +2054,37 @@ function isAbortError(error: unknown): boolean {
 }
 
 /**
- * Ask the VLM where each text line sits on the given pages. Pages are
- * re-rendered in the same bounded subprocess batches as the parse, and a page
- * whose spotting fails simply has no boxes: the text layer then spreads that
- * page's words evenly instead of failing the upload.
- *
- * Returns nothing at all when the OCR server is not up. The handwriting path
- * reaches here without ever having started it, and spotting is not worth a
- * model download on its own.
+ * Locate text in bounded render batches. Handwriting uses the same provider
+ * as its transcription, without depending on a separately running local VLM.
+ * The local VLM path retains its official line-spotting task. Failed pages keep
+ * their OCR notes but receive no fabricated selection geometry.
  */
 async function spotOcrTextLines({
   sourceFilePath,
-  pageNumbers,
+  pages,
+  locate,
   signal,
   emit,
 }: {
   sourceFilePath: string;
-  pageNumbers: number[];
+  pages: OcrTextLayerPage[];
+  locate?: Parameters<typeof locateOcrText>[0]["locate"];
   signal?: AbortSignal;
   emit: (step: string) => void;
 }): Promise<{ lines: Map<number, OcrTextLine[]>; failedPages: number }> {
   const lines = new Map<number, OcrTextLine[]>();
-  const wanted = new Set(pageNumbers);
+  const wanted = new Map(pages.map((page) => [page.pageNumber, page]));
   if (wanted.size === 0) return { lines, failedPages: 0 };
 
   const config = getVlmOcrConfig();
-  if (!config.enabled) return { lines, failedPages: 0 };
-  const probe = await probeVlmOcrServer(config);
-  if (!probe.ok) return { lines, failedPages: 0 };
+  if (!locate) {
+    if (!config.enabled) return { lines, failedPages: wanted.size };
+    const probe = await probeVlmOcrServer(config);
+    if (!probe.ok) return { lines, failedPages: wanted.size };
+  }
 
-  const first = Math.min(...wanted);
-  const last = Math.max(...wanted);
+  const first = Math.min(...wanted.keys());
+  const last = Math.max(...wanted.keys());
   let done = 0;
   let failedPages = 0;
   for (
@@ -2107,17 +2116,28 @@ async function spotOcrTextLines({
         done += 1;
         emit(`Locating OCR text on pages (${done}/${wanted.size})…`);
         try {
-          const spotted = await spotPageTextLines({
-            config,
-            dataUrl: page.dataUrl,
-            signal,
-          });
+          const spotted = locate
+            ? await locateOcrText({
+                text: wanted.get(page.pageNumber)!.text,
+                dataUrl: page.dataUrl,
+                signal,
+                locate,
+              })
+            : await spotPageTextLines({ config, dataUrl: page.dataUrl, signal });
           if (spotted.length > 0) lines.set(page.pageNumber, spotted);
           else failedPages += 1;
         } catch (error) {
           if (isAbortError(error)) throw error;
           failedPages += 1;
+          if (isUsageLimitError(error)) {
+            return { lines, failedPages: wanted.size - lines.size };
+          }
         }
+      }
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      for (let page = batchFirst; page <= batchLast; page += 1) {
+        if (wanted.has(page) && !lines.has(page)) failedPages += 1;
       }
     } finally {
       collectReleasedPdfBatchMemory();
@@ -2131,7 +2151,7 @@ async function spotOcrTextLines({
  * stays byte-for-byte as it arrived — Learn hashes it and anchors against it —
  * so the OCR text layer goes into `<name>-searchable.pdf`, which is the file
  * the PDF viewer opens. Each page's words sit over their print when the VLM
- * could spot them; otherwise they are spread evenly down the page.
+ * could locate them; pages without positions retain only their scanned image.
  */
 async function writeSearchablePdfAsset({
   pages,
@@ -2144,6 +2164,7 @@ async function writeSearchablePdfAsset({
   knowledgeWriteTransaction,
   signal,
   emit,
+  locate,
 }: {
   pages: OcrTextLayerPage[];
   buffer: Buffer;
@@ -2155,6 +2176,7 @@ async function writeSearchablePdfAsset({
   knowledgeWriteTransaction?: KnowledgeWriteTransaction;
   signal?: AbortSignal;
   emit: (step: string) => void;
+  locate?: Parameters<typeof locateOcrText>[0]["locate"];
 }): Promise<{ relativePath?: string; warning: string }> {
   let usable = pages.filter(
     (page) => Number.isInteger(page.pageNumber) && page.text.trim().length > 0,
@@ -2186,13 +2208,14 @@ async function writeSearchablePdfAsset({
   try {
     spotted = await spotOcrTextLines({
       sourceFilePath,
-      pageNumbers: usable.map((page) => page.pageNumber),
+      pages: usable,
+      locate,
       signal,
       emit,
     });
   } catch (error) {
     if (isAbortError(error)) throw error;
-    // Boxes are an improvement, not a requirement: the layer is still written.
+    // Keep the source notes even when localization is unavailable.
   }
 
   throwIfRequestAborted(signal);
@@ -2201,6 +2224,7 @@ async function writeSearchablePdfAsset({
   try {
     layered = await embedOcrTextLayer({
       pdf: buffer,
+      requirePositions: true,
       pages: usable.map((page) => ({
         ...page,
         lines: spotted.lines.get(page.pageNumber),
@@ -2213,7 +2237,7 @@ async function writeSearchablePdfAsset({
     };
   }
   if (layered.pagesWritten === 0) {
-    return { warning: "" };
+    return { warning: "OCR notes were saved, but PDF text selection is unavailable because the text could not be located on the page." };
   }
 
   const assetDir = path.join(contentPath, clusterSlug.trim(), "assets");
@@ -2230,12 +2254,12 @@ async function writeSearchablePdfAsset({
   );
   createdFilePaths?.push(filePath);
 
-  const unpositioned = layered.pagesWritten - layered.positionedPages;
+  const unpositioned = usable.length - layered.positionedPages;
   return {
     relativePath: `/${clusterSlug.trim()}/assets/${path.basename(filePath)}`,
     warning:
       unpositioned > 0
-        ? `The OCR text layer on ${unpositioned} of ${layered.pagesWritten} page${layered.pagesWritten === 1 ? "" : "s"} is searchable but not aligned to the print${spotted.lines.size === 0 ? " (the OCR model server was not available to locate lines)" : ""}.`
+        ? `OCR notes were saved, but text selection is unavailable on ${unpositioned} of ${usable.length} pages because their text could not be located.`
         : "",
   };
 }
@@ -2438,6 +2462,28 @@ export async function runIngest({
     filename,
   );
   if (existingSource) {
+    // Older PPTX ingestion kept only text. Re-upload once to attach the missing
+    // viewer to the same source; its lessons, flags, slug and chat stay intact.
+    if (ext === "pptx" && !existingSource.sourcePdf && knowledgeWriteTransaction) {
+      emit("Adding a PDF viewer to the existing PowerPoint source…");
+      const buffer = await fileBytes();
+      const pdf = await renderPresentationPdf(buffer, request.signal);
+      throwIfRequestAborted(request.signal);
+      const assetOptions = {
+        contentPath, clusterSlug: normalizedClusterSlug, baseName: nameWithoutExt,
+        createdFilePaths, knowledgeWriteTransaction,
+      };
+      const preview = saveUploadedDocumentAsset({ ...assetOptions, buffer: pdf });
+      const original = saveUploadedDocumentAsset({ ...assetOptions, buffer, extension: "pptx" });
+      attachPresentationSourcePreview(
+        path.join(contentPath, normalizedClusterSlug, existingSource.relPath),
+        preview.relativePath, original.relativePath, knowledgeWriteTransaction,
+      );
+      return {
+        success: true, filename, slug: existingSource.slug, sourceRelPath: existingSource.relPath,
+        wordCount: existingSource.wordCount, topicCount: 0, imageCount: 0, mapGenerated: false,
+      };
+    }
     emit(`${filename} is already in Documents — skipping duplicate upload.`);
     return {
       success: true,
@@ -2461,6 +2507,7 @@ export async function runIngest({
   let screenshotWarning = "";
   let visionError = "";
   let sourcePdfPath: string | undefined;
+  let sourcePresentationPath: string | undefined;
   // OCR text-layer twin of the upload; the viewer opens it in place of the original.
   let searchablePdfPath: string | undefined;
   let skipKnowledgeExtraction = false;
@@ -2498,7 +2545,7 @@ export async function runIngest({
     // A PDF keeps its original beside the note: anydoc reads the text layer,
     // not the rendered page, so the source is the only way back to the layout.
     if (ext === "pdf") {
-      sourcePdfPath = saveUploadedPdfAsset({
+      sourcePdfPath = saveUploadedDocumentAsset({
         contentPath,
         clusterSlug: normalizedClusterSlug,
         baseName: nameWithoutExt,
@@ -2623,7 +2670,7 @@ export async function runIngest({
   } else if (ext === "pdf") {
     throwIfRequestAborted(request.signal);
     const buffer = await fileBytes();
-    const sourcePdf = saveUploadedPdfAsset({
+    const sourcePdf = saveUploadedDocumentAsset({
       contentPath,
       clusterSlug: normalizedClusterSlug,
       baseName: nameWithoutExt,
@@ -2854,6 +2901,19 @@ export async function runIngest({
                 : transcription.warning;
             }
             const searchable = await writeSearchablePdfAsset({
+              locate: async ({ prompt, dataUrl, signal }) => {
+                const response = await client!.chat.completions.create(
+                  withCouncil({
+                    model,
+                    messages: [{ role: "user", content: [
+                      { type: "image_url", image_url: { url: dataUrl } },
+                      { type: "text", text: prompt },
+                    ] }],
+                  }, { taskType: "ocr" }),
+                  { signal, timeout: 180_000, maxRetries: 0 },
+                );
+                return response.choices[0]?.message?.content ?? "";
+              },
               pages: transcription.pages
                 .map((page, index) => ({
                   pageNumber: pageNumberFromLabel(page.label) ?? index + 1,
@@ -3082,6 +3142,24 @@ export async function runIngest({
     pages = [{ label: ext === "md" ? "Markdown" : "Text", text: plainText }];
   }
 
+  // Both the direct and AnyDoc readers retain the same slide preview. Keep the
+  // original deck separately so the PDF viewer never changes its identity.
+  if (ext === "pptx") {
+    emit("Preparing PowerPoint slides for the PDF viewer…");
+    const buffer = await fileBytes();
+    const pdf = await renderPresentationPdf(buffer, request.signal);
+    throwIfRequestAborted(request.signal);
+    sourcePdfPath = saveUploadedDocumentAsset({
+      contentPath, clusterSlug: normalizedClusterSlug, baseName: nameWithoutExt,
+      buffer: pdf, createdFilePaths, knowledgeWriteTransaction,
+    }).relativePath;
+    sourcePresentationPath = saveUploadedDocumentAsset({
+      contentPath, clusterSlug: normalizedClusterSlug, baseName: nameWithoutExt,
+      buffer, extension: "pptx", createdFilePaths, knowledgeWriteTransaction,
+    }).relativePath;
+    markdownText += `\n\n## Source files\n\n[Original PowerPoint](${sourcePresentationPath}) · [Slide PDF](${sourcePdfPath})`;
+  }
+
   // ── Hidden-content scan ──────────────────────────────────────────────────
   //
   // The last stage of reading the document, and deliberately the last one that
@@ -3216,6 +3294,7 @@ export async function runIngest({
       // between "scanned and clean" and "uploaded before this stage existed".
       ...(safetyReport ? safetyFrontmatter(safetyReport) : {}),
       ...(searchablePdfPath ? { searchable_pdf: searchablePdfPath } : {}),
+      ...(sourcePresentationPath ? { source_presentation: sourcePresentationPath } : {}),
     },
     abortSignal: request.signal,
     createdFilePaths: createdMarkdownPaths,
@@ -3223,6 +3302,10 @@ export async function runIngest({
     onProgress: emit,
   });
   const imageCount = pages.filter((page) => page.imagePath).length;
+  const visualDescriptions = await enrichGardenSourceVisuals({ contentPath,
+    gardenSlug: normalizedClusterSlug, sourceRelPath: saved.sourceRelPath,
+    client: generateMap && !skipKnowledgeExtraction ? client : null, model,
+    signal: request.signal, onProgress: emit });
 
   for (const checkpointPath of [
     completedVlmCheckpointPath,
@@ -3247,6 +3330,7 @@ export async function runIngest({
     imageCount,
     figureCount,
     visionError: visionError || undefined,
+    visualDescriptions,
     screenshotWarning: screenshotWarning || undefined,
     hiddenContentWarning: safetyReport?.message || undefined,
     hiddenContentVerdict: safetyReport?.verdict,

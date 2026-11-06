@@ -6,14 +6,16 @@ import type {
   BrowserHistorySnapshot,
   BrowserDownloadCommand,
   BrowserDownloadsSnapshot,
+  DownloadSettingsState,
+  DownloadSettingsResult,
   ChatgptWebTabRequest,
   ChatgptWebTabResult,
-  ClickyLaunchResult,
-  ClickyLauncherState,
   DesktopNotificationToast,
   NotificationOverlaySize,
   OpenLocalPathRequest,
   OpenLocalPathResult,
+  SavePdfDownloadRequest,
+  SavePdfDownloadResult,
   TabsCommand,
   TabsState,
   WindowThemeSchedule,
@@ -44,8 +46,14 @@ export const PRELOAD_IPC_CHANNELS = {
   closeTeachController: "breadboard:close-teach-controller",
   getTabsState: "breadboard:get-tabs-state",
   getBrowserTerminalAccess: "breadboard:get-browser-terminal-access",
+  spotifyRequest: "breadboard:spotify-request",
+  readTerminalData: "breadboard:read-terminal-data",
+  cancelTerminalData: "breadboard:cancel-terminal-data",
+  textHighlightRequest: "breadboard:text-highlight-request",
   tabsCommand: "breadboard:tabs-command",
   tabsState: "breadboard:tabs-state",
+  browserInlineAnswerState: "breadboard:browser-inline-answer-state",
+  browserInlineAnswerAction: "breadboard:browser-inline-answer-action",
   notificationToast: "breadboard:notification-toast",
   notificationOverlayVisibility: "breadboard:notification-overlay-visibility",
   getBrowserNavigation: "breadboard:get-browser-navigation",
@@ -65,9 +73,10 @@ export const PRELOAD_IPC_CHANNELS = {
   setBrowserRecentSearches: "breadboard:set-browser-recent-searches",
   getBrowserDownloads: "breadboard:get-browser-downloads",
   browserDownloadCommand: "breadboard:browser-download-command",
-  getClickyState: "breadboard:get-clicky-state",
-  launchClicky: "breadboard:launch-clicky",
-  openClickyProject: "breadboard:open-clicky-project",
+  savePdfDownload: "breadboard:save-pdf-download",
+  getDownloadSettings: "breadboard:get-download-settings",
+  setDownloadPrompt: "breadboard:set-download-prompt",
+  chooseDownloadDirectory: "breadboard:choose-download-directory",
   openLocalPath: "breadboard:open-local-path",
 } as const;
 
@@ -105,12 +114,34 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
     for (const listener of startupListeners) listener(state as StartupStateView);
   });
   const tabsListeners = new Set<(state: TabsState) => void>();
+  const inlineStateListeners = new Set<(state: unknown) => void>();
+  const inlineActionListeners = new Set<(action: unknown) => void>();
+  ipcRenderer.on(PRELOAD_IPC_CHANNELS.browserInlineAnswerState, (_event, state) => { for (const listener of inlineStateListeners) listener(state); });
+  ipcRenderer.on(PRELOAD_IPC_CHANNELS.browserInlineAnswerAction, (_event, action) => { for (const listener of inlineActionListeners) listener(action); });
   const historyListeners = new Set<() => void>();
   ipcRenderer.on(PRELOAD_IPC_CHANNELS.browserHistoryChanged, () => {
     for (const listener of historyListeners) listener();
   });
   ipcRenderer.on(PRELOAD_IPC_CHANNELS.tabsState, (_event, state) => {
-    for (const listener of tabsListeners) listener(state as TabsState);
+    const tabs = state as TabsState;
+    if (typeof document !== "undefined") {
+      const apply = () => {
+        document.documentElement.dataset.persistentWindowShell = String(tabs.persistentShell === true);
+        const activeGroup = tabs.groups?.find(group => group.split && !group.collapsed && tabs.tabs.find(tab => tab.id === tabs.activeId)?.groupId === group.id);
+        const foreground = tabs.selfId === tabs.activeId || tabs.selfId === tabs.presentedId ||
+          Boolean(activeGroup && tabs.tabs.some(tab => tab.id === tabs.selfId && tab.groupId === activeGroup.id));
+        document.documentElement.dataset.desktopTabActive = String(foreground);
+        if (!document.getElementById("breadboard-window-shell-style")) {
+          const style = document.createElement("style");
+          style.id = "breadboard-window-shell-style";
+          style.textContent = 'html[data-persistent-window-shell="true"]{--breadboard-titlebar-height:0px!important}html[data-persistent-window-shell="true"] :is(.desktop-title-bar,.bb-nav-progress){display:none!important}[data-desktop-tab-active="false"] *,[data-desktop-tab-active="false"] *::before,[data-desktop-tab-active="false"] *::after{animation-play-state:paused!important}';
+          document.head?.append(style);
+        }
+      };
+      if (document.documentElement) apply();
+      else document.addEventListener("DOMContentLoaded", apply, { once: true });
+    }
+    for (const listener of tabsListeners) listener(tabs);
   });
   const notificationListeners = new Set<(notice: DesktopNotificationToast) => void>();
   let notificationOverlayVisible = false;
@@ -234,9 +265,22 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getTabsState) as Promise<TabsState>,
     getBrowserTerminalAccess: (): Promise<{ port: number; token: string } | null> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getBrowserTerminalAccess) as Promise<{ port: number; token: string } | null>,
+    spotifyRequest: (request: Record<string, unknown>): Promise<{ status: number; body: string }> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.spotifyRequest, request) as Promise<{ status: number; body: string }>,
+    readTerminalData: (id: string, path: string): Promise<{ status: number; body: string }> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.readTerminalData, { id, path }) as Promise<{ status: number; body: string }>,
+    cancelTerminalData: (id: string): void => { void ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.cancelTerminalData, id).catch(() => undefined); },
+    textHighlightRequest: (body: string): Promise<{ status: number; body: string }> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.textHighlightRequest, body) as Promise<{ status: number; body: string }>,
     onTabsState: (listener: (state: TabsState) => void): (() => void) => {
       tabsListeners.add(listener);
       return () => tabsListeners.delete(listener);
+    },
+    onBrowserInlineAnswerState: (listener: (state: unknown) => void): (() => void) => {
+      inlineStateListeners.add(listener); return () => inlineStateListeners.delete(listener);
+    },
+    onBrowserInlineAnswerAction: (listener: (action: unknown) => void): (() => void) => {
+      inlineActionListeners.add(listener); return () => inlineActionListeners.delete(listener);
     },
     /** Resolves false when the window could not do what was asked. */
     tabs: (command: TabsCommand): Promise<boolean> =>
@@ -313,21 +357,14 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getBrowserDownloads) as Promise<BrowserDownloadsSnapshot>,
     browserDownloadCommand: (command: BrowserDownloadCommand): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.browserDownloadCommand, command) as Promise<{ ok: boolean; error?: string }>,
-    /** Readiness for the native macOS Clicky companion. */
-    getClickyState: (): Promise<ClickyLauncherState> =>
-      ipcRenderer.invoke(
-        PRELOAD_IPC_CHANNELS.getClickyState,
-      ) as Promise<ClickyLauncherState>,
-    /** Launch the built Clicky app without accepting a renderer-supplied path. */
-    launchClicky: (): Promise<ClickyLaunchResult> =>
-      ipcRenderer.invoke(
-        PRELOAD_IPC_CHANNELS.launchClicky,
-      ) as Promise<ClickyLaunchResult>,
-    /** Open the cloned Xcode project when Clicky still needs its first build. */
-    openClickyProject: (): Promise<ClickyLaunchResult> =>
-      ipcRenderer.invoke(
-        PRELOAD_IPC_CHANNELS.openClickyProject,
-      ) as Promise<ClickyLaunchResult>,
+    savePdfDownload: (request: SavePdfDownloadRequest): Promise<SavePdfDownloadResult> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.savePdfDownload, request) as Promise<SavePdfDownloadResult>,
+    getDownloadSettings: (): Promise<DownloadSettingsState> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getDownloadSettings) as Promise<DownloadSettingsState>,
+    setDownloadPrompt: (enabled: boolean): Promise<DownloadSettingsResult> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.setDownloadPrompt, enabled) as Promise<DownloadSettingsResult>,
+    chooseDownloadDirectory: (): Promise<DownloadSettingsResult> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.chooseDownloadDirectory) as Promise<DownloadSettingsResult>,
     /** Open a produced folder in the file explorer, or reveal a produced file. */
     openLocalPath: (request: OpenLocalPathRequest): Promise<OpenLocalPathResult> =>
       ipcRenderer.invoke(
@@ -339,10 +376,100 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
 
 export type BreadboardDesktopApi = ReturnType<typeof createDesktopApi>;
 
+/** Runs in the page world; keep this function self-contained for serialization. */
+export function installBackgroundReadPriority(): void {
+  const host = window as typeof window & { __breadboardBackgroundReadPriority?: boolean };
+  if (host.__breadboardBackgroundReadPriority ||
+      !/^https?:$/.test(location.protocol) || !/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname)) return;
+  host.__breadboardBackgroundReadPriority = true;
+  const nativeFetch = window.fetch;
+  // Restored native views can report "visible" even when their tab is folded.
+  // Use the shell's tab identity. Ordinary fetches have a higher Chromium
+  // priority than async bootstrap scripts; a workspace full of polling tabs
+  // can otherwise starve every script/PDF reader on the six HTTP/1 sockets.
+  window.fetch = function (input: RequestInfo | URL, init?: RequestInit) {
+    if (document.documentElement?.dataset.desktopTabActive === "false" && init?.priority === undefined) {
+      try {
+        const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+        const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+        if (url.origin === location.origin && (method === "GET" || method === "HEAD")) {
+          return nativeFetch.call(this, input, { ...init, priority: "low" });
+        }
+      } catch { /* Let fetch report malformed input with its normal semantics. */ }
+    }
+    // Preserve writes, streaming bodies, signals, credentials, explicit
+    // priorities and external requests. No request is cancelled or deferred.
+    return nativeFetch.call(this, input, init);
+  };
+}
+
+/** Publish the native CAD navigation hint without requiring a dashboard rebuild.
+ * Keep this self-contained: it runs in the renderer's isolated preload world.
+ * It advertises only the canvas, never the surrounding chat or parameter UI.
+ */
+export function installCadNavigationHint(): () => void {
+  const prefix = "Breadboard CAD | ";
+  let point: { x: number; y: number } | null = null;
+  let original = "";
+  let published: string | null = null;
+  const release = () => {
+    if (published !== null && document.title === published) document.title = original;
+    published = null;
+  };
+  const update = () => {
+    const hit = point && document.elementFromPoint(point.x, point.y);
+    const editing = document.activeElement?.closest(
+      "input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox']",
+    );
+    if (!hit || hit.tagName !== "CANVAS" || !hit.closest('[aria-label="CAD viewer"]') ||
+        !document.hasFocus() || document.hidden || editing) {
+      release();
+      return;
+    }
+    // Newer dashboard viewers can publish the same hint. Let their scoped
+    // lifecycle own it rather than nesting prefixes or restoring their title.
+    if (published === null && document.title.startsWith(prefix)) return;
+    if (published === null || document.title !== published) original = document.title;
+    published = prefix + (original || "Breadboard");
+    if (document.title !== published) document.title = published;
+  };
+  const move = (event: PointerEvent) => {
+    if (event.pointerType !== "mouse" && event.pointerType !== "pen") return;
+    point = { x: event.clientX, y: event.clientY };
+    update();
+  };
+  const leave = () => { point = null; release(); };
+  document.addEventListener("pointermove", move, true);
+  document.addEventListener("pointerdown", move, true);
+  document.addEventListener("focusin", update);
+  document.addEventListener("visibilitychange", leave);
+  document.documentElement.addEventListener("pointerleave", leave);
+  window.addEventListener("blur", leave);
+  const timer = window.setInterval(update, 100);
+  return () => {
+    window.clearInterval(timer);
+    document.removeEventListener("pointermove", move, true);
+    document.removeEventListener("pointerdown", move, true);
+    document.removeEventListener("focusin", update);
+    document.removeEventListener("visibilitychange", leave);
+    document.documentElement.removeEventListener("pointerleave", leave);
+    window.removeEventListener("blur", leave);
+    release();
+  };
+}
+
 if (typeof process !== "undefined" && typeof process.versions.electron === "string") {
   const electron = require("electron") as typeof import("electron");
   electron.contextBridge.exposeInMainWorld(
     "breadboardDesktop",
     createDesktopApi(electron.ipcRenderer as IpcRenderer),
   );
+  void electron.webFrame.executeJavaScript(`(${installBackgroundReadPriority.toString()})()`)
+    .catch(() => { /* A document replaced during preload needs no installation. */ });
+  const installCadHint = () => {
+    const dispose = installCadNavigationHint();
+    window.addEventListener("pagehide", dispose, { once: true });
+  };
+  if (document.documentElement) installCadHint();
+  else document.addEventListener("DOMContentLoaded", installCadHint, { once: true });
 }

@@ -3,7 +3,8 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { app, BrowserWindow, webContents } = require('electron');
+const { app, BrowserWindow, webContents, ipcMain } = require('electron');
+const { IPC_CHANNELS } = require('../../dist/shared/ipc-contract.js');
 const { TabManager } = require('../../dist/main/tab-manager.js');
 const [dir] = process.argv.slice(2);
 app.setPath('userData', path.join(dir, 'profile'));
@@ -46,18 +47,20 @@ app.whenReady().then(async () => {
     theme: () => 'light', openWindow: () => {}, log: console.log,
   });
   manager.setBrowserUrl(origin + '/browser');
+  for (const name of ['getBrowserBookmarks','getBrowserRecentSearches']) ipcMain.handle(IPC_CHANNELS[name], () => []);
+  ipcMain.handle(IPC_CHANNELS.getBrowserDownloads, () => ({items:[],error:null}));
   const window = new BrowserWindow({ show: false, width: 1000, height: 750, webPreferences: { preload, contextIsolation: true, sandbox: true } });
-  manager.attach(window);
-  await window.loadURL(origin + '/dashboard');
+  manager.attach(window, true);
+  await manager.baseContents(window).loadURL(origin + '/dashboard');
   window.showInactive();
-  assert.equal(await manager.handleCommand(window.webContents, { type: 'browser', url: videoOrigin }), true);
+  assert.equal(await manager.handleCommand(manager.baseContents(window), { type: 'browser', url: videoOrigin }), true);
   let page;
   await until(() => {
     page = webContents.getAllWebContents().find(contents => contents.getURL() === videoOrigin + '/');
     return page && !page.isLoading();
   }, 'video page');
   const pageView = () => window.contentView.children.find(view => view.webContents?.id === page.id);
-  await until(pageView, 'video view attached');
+  await until(() => pageView() && !manager.hosts.get(window.id).pending, 'video view presented');
   const originalBounds = window.getBounds();
   const normalPageBounds = pageView().getBounds();
   assert.ok(normalPageBounds.y > 0, 'toolbar has space before fullscreen');
@@ -121,7 +124,7 @@ app.whenReady().then(async () => {
   const activeId = manager.stateFor(shell).activeId;
   assert.equal(manager.handleCommand(shell, { type: 'activate', id: 1 }), true);
   await until(() => !window.isFullScreen(), 'switching tab exits video fullscreen');
-  manager.handleCommand(window.webContents, { type: 'activate', id: activeId });
+  manager.handleCommand(manager.baseContents(window), { type: 'activate', id: activeId });
   await until(pageView, 'video tab restored');
   // Chromium applies fullscreen DOM changes at a rendering step; detached
   // WebContentsViews resume those steps when the tab is attached again.

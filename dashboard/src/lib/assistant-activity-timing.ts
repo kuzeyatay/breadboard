@@ -37,6 +37,7 @@ export function assistantResponseElapsedMs(input: {
   reportedDurationMs?: number;
   /** Durable beginning of the whole response, retained across chat switches. */
   responseStartedAt?: string;
+  responseCompletedAt?: string;
   /** Start of a live phase, such as an external-agent hand-off. */
   activePhaseStartedAt?: string;
   /** Monotonic client fallback when restored phase metadata is unavailable. */
@@ -57,6 +58,12 @@ export function assistantResponseElapsedMs(input: {
     return carried + Math.max(0, input.reportedDurationMs);
   }
 
+  const responseEnd = timestamp(input.responseCompletedAt);
+  const responseStart = timestamp(input.responseStartedAt);
+  if (!input.active && responseEnd !== null && responseStart !== null) {
+    return carried + Math.max(0, responseEnd - responseStart);
+  }
+
   const starts = [
     ...input.activities.map((activity) => timestamp(activity.startedAt)),
     // Activities are rebuilt when a live chat is reopened. The assistant row
@@ -72,7 +79,7 @@ export function assistantResponseElapsedMs(input: {
       .map((activity) => timestamp(activity.completedAt))
       .filter((value): value is number => value !== null);
     const completedAt = completions.length ? Math.max(...completions) : null;
-    const end = input.active ? input.now : (completedAt ?? input.now);
+    const end = input.active ? input.now : (responseEnd ?? completedAt ?? input.now);
     return carried + Math.max(0, end - startedAt);
   }
 

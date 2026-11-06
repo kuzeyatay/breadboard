@@ -3,6 +3,40 @@ import test from 'node:test';
 import { assessImageRouting, evaluateImageRouting } from '../scripts/evaluate-image-routing.mjs';
 
 const call = (query, count) => ({ type: 'function', function: { name: 'image_search', arguments: JSON.stringify({ query, count }) } });
+const gardenCall = (args = {}) => ({ type: 'function', function: { name: 'garden_get_source_figure',
+  arguments: JSON.stringify({ query: 'inverting amplifier', scope: 'all', ...args }) } });
+
+test('Garden-first routing rejects active-only searches and premature web searches', () => {
+  const scenario = { search: true, searchTool: 'garden_get_source_figure', subjects: [['inverting'], ['amplifier']] };
+  assert.equal(assessImageRouting(scenario, { tool_calls: [gardenCall()] }).passed, true);
+  for (const calls of [
+    [call('inverting amplifier schematic', 1)],
+    [gardenCall(), call('inverting amplifier schematic', 1)],
+    [gardenCall({ scope: 'active' })],
+    [gardenCall({ scope: undefined })],
+    [gardenCall({ gardenId: 'electronics' })],
+    [gardenCall({ slug: 'op-amps' })],
+    [gardenCall({ query: 'non-inverting circuit' })],
+  ]) assert.equal(assessImageRouting(scenario, { tool_calls: calls }).passed, false);
+  assert.equal(assessImageRouting({ search: false }, { tool_calls: [gardenCall()] }).passed, false);
+});
+
+test('evaluation prefers available Garden lookup and permits an explicit web source', async () => {
+  const report = await evaluateImageRouting({ model: 'test-model', prompt: 'policy',
+    tools: ['image_search', 'garden_get_source_figure'].map(name => ({ type: 'function', function: { name } })),
+    scenarios: [
+      { id: 'implicit', search: true, request: 'What does an inverting amplifier look like?' },
+      { id: 'web', search: true, searchTool: 'image_search', request: 'Search the web. Skip Gardens.' },
+    ],
+    fetcher: async (_url, init) => {
+      const request = JSON.parse(init.body).messages.at(-1).content;
+      return Response.json({ choices: [{ message: { tool_calls: [request.startsWith('Search')
+        ? call('inverting amplifier schematic', 1) : gardenCall()] } }] });
+    },
+  });
+  assert.equal(report.passed, 2);
+  assert.equal(report.failed, 0);
+});
 test('routing evaluator catches omitted searches, invented subjects and invalid counts', () => {
   const scenario = { search: true, subjects: [['robert downey', 'rdj']] };
   assert.equal(assessImageRouting(scenario, { content: 'He has brown hair.' }).passed, false);

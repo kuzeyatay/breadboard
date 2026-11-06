@@ -23,37 +23,15 @@ import {
   type AppTheme,
 } from '@/lib/app-theme';
 
-interface GraphNode {
-  slug: string;
-  title: string;
-  type: string;
-  sourceFile: string;
-  locations: string[];
-  wordCount: number;
-  excerpt: string;
-}
-
-interface GraphEdge {
-  source: string;
-  target: string;
-  relation: string;
-}
-
-interface TreeItem {
-  source: GraphNode;
-  topics: GraphNode[];
-}
-
+// The map itself is drawn by the Quartz preview; this panel needs only counts.
 interface GraphResponse {
   revision: string;
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-  tree: TreeItem[];
-  orphanTopics: GraphNode[];
+  nodeCount: number;
   stats: {
     documents: number;
     topics: number;
     textbookPages: number;
+    conceptPages: number;
     conceptNodes: number;
     learningPages: number;
     generatedNotes: number;
@@ -87,7 +65,6 @@ interface Props {
   refreshKey: string;
   sourceLibrary?: ReactNode;
   showInternalConceptGraph?: boolean;
-  savedLinkCount?: number;
 }
 
 type PreviewStatus = 'loading' | 'ready' | 'error';
@@ -99,14 +76,12 @@ interface PreviewState {
 
 const emptyResponse: GraphResponse = {
   revision: '',
-  nodes: [],
-  edges: [],
-  tree: [],
-  orphanTopics: [],
+  nodeCount: 0,
   stats: {
     documents: 0,
     topics: 0,
     textbookPages: 0,
+    conceptPages: 0,
     conceptNodes: 0,
     learningPages: 0,
     generatedNotes: 0,
@@ -187,7 +162,6 @@ function KnowledgeGraph({
   refreshKey,
   sourceLibrary,
   showInternalConceptGraph = false,
-  savedLinkCount,
 }: Props) {
   const [data, setData] = useState<GraphResponse | null>(null);
   // Panel width is the single source of truth: the inner edge drags it to any
@@ -251,7 +225,7 @@ function KnowledgeGraph({
     serverPreviewCurrent;
   const serverRefreshKey = `${gardenRevision}:${topologyRevision}:${publishedRevision}`;
   const quartzLease = useQuartzViewLease(
-    sidebarOpen && !loading && graph.nodes.length > 0 && previewTheme !== null && previewFreshnessReady,
+    sidebarOpen && !loading && graph.nodeCount > 0 && previewTheme !== null && previewFreshnessReady,
   );
 
   // The edge sits on the panel's own left border rather than beside it in the
@@ -287,9 +261,12 @@ function KnowledgeGraph({
 
   useEffect(() => {
     let cancelled = false;
-    const params = new URLSearchParams({ clusterSlug });
+    // refreshKey changes as soon as the document list first loads; abort the
+    // superseded read so a large garden's graph is not downloaded and parsed twice.
+    const controller = new AbortController();
+    const params = new URLSearchParams({ clusterSlug, summary: '1' });
     if (showInternalConceptGraph) params.set('includeInternalConcepts', '1');
-    fetch(`/api/knowledge-graph?${params.toString()}`, { cache: 'no-store' })
+    fetch(`/api/knowledge-graph?${params.toString()}`, { cache: 'no-store', signal: controller.signal })
       .then((r) => (r.ok ? r.json() : emptyResponse))
       .then((g: GraphResponse) => {
         if (cancelled) return;
@@ -303,7 +280,7 @@ function KnowledgeGraph({
         }
       })
       .catch(() => { if (!cancelled) setData(emptyResponse); });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); };
   }, [clusterSlug, refreshKey, showInternalConceptGraph]);
 
   useEffect(() => {
@@ -347,7 +324,7 @@ function KnowledgeGraph({
     let disposed = false;
     let inFlight = false;
     const controller = new AbortController();
-    const graphParams = new URLSearchParams({ clusterSlug });
+    const graphParams = new URLSearchParams({ clusterSlug, summary: '1' });
     if (showInternalConceptGraph) graphParams.set('includeInternalConcepts', '1');
     const graphUrl = `/api/knowledge-graph?${graphParams.toString()}`;
     const revisionParams = new URLSearchParams({ clusterSlug, revisionOnly: '1' });
@@ -497,7 +474,7 @@ function KnowledgeGraph({
     if (
       !sidebarOpen ||
       loading ||
-      graph.nodes.length === 0 ||
+      graph.nodeCount === 0 ||
       !previewFreshnessReady ||
       !quartzLease.ready ||
       previewStatus === 'ready'
@@ -513,7 +490,7 @@ function KnowledgeGraph({
 
     return () => window.clearTimeout(timer);
   }, [
-    graph.nodes.length,
+    graph.nodeCount,
     loading,
     previewFreshnessReady,
     previewStatus,
@@ -536,13 +513,13 @@ function KnowledgeGraph({
         <div className="px-4 pt-3 pb-1 border-b border-gray-800 shrink-0">
           <div className="grid grid-cols-4 gap-2 mb-3">
             {[
-              { value: graph.stats.documents, label: 'Sources' },
-              { value: graph.stats.textbookPages ?? graph.stats.topics, label: 'Pages' },
-              { value: graph.stats.conceptNodes ?? 0, label: 'Concepts' },
-              { value: savedLinkCount ?? graph.stats.links, label: 'Links' },
-            ].map(({ value, label }) => (
-              <div key={label}>
-                <p className="text-lg font-semibold text-white tabular-nums">{value}</p>
+              { value: graph.stats.documents, label: 'Sources', detail: 'Uploaded source documents' },
+              { value: graph.stats.textbookPages, label: 'Lessons', detail: 'Lessons published by Learn' },
+              { value: graph.stats.conceptPages ?? 0, label: 'Concepts', detail: 'Source-derived concept pages' },
+              { value: graph.stats.links, label: 'Connections', detail: 'Connections between Garden pages' },
+            ].map(({ value, label, detail }) => (
+              <div key={label} title={detail} aria-label={`${detail}: ${value}`}>
+                <p className="text-lg font-semibold text-white tabular-nums">{value.toLocaleString('en')}</p>
                 <p className="text-[11px] text-gray-600">{label}</p>
               </div>
             ))}
@@ -556,7 +533,7 @@ function KnowledgeGraph({
           >
             {loading ? (
               <ThoughtTopologyLoadingDots label="Loading garden preview" />
-            ) : graph.nodes.length === 0 ? (
+            ) : graph.nodeCount === 0 ? (
               <div className="h-full flex items-center justify-center text-xs text-gray-700 px-8 text-center">
                 Upload a source to grow the map.
               </div>

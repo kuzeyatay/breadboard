@@ -14,11 +14,13 @@
 // were the part worth having.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import * as Popover from "@radix-ui/react-popover";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import { ARTIFACT_CATEGORIES, artifactCategory, type ArtifactCategory } from "@/lib/generated/artifact-reference";
 import styles from "./artifact-panel.module.css";
 import ArtifactCardContent from "./artifact-card-content";
-import { useLearnArtifacts, artifactVersionKey } from "./use-learn-artifacts";
+import AttachmentPreviewDialog from "@/app/components/attachment-preview-dialog";
+import { artifactVersionKey } from "./use-learn-artifacts";
 import {
   filterArtifactsForArchive,
   filterArtifactsForSearch,
@@ -343,52 +345,51 @@ function HighlightBar({
 function ArtifactColorPalette({
   artifact,
   onChoose,
-  onClose,
 }: {
   artifact: PresentedArtifact;
   onChoose: (highlight: string | null) => void;
-  onClose: () => void;
 }) {
-  const paletteRef = useRef<HTMLDivElement>(null);
-  useDismissOnOutside(paletteRef, onClose);
-
   return (
-    <div
-      ref={paletteRef}
-      role="menu"
-      aria-label={`Choose ${artifact.title} color`}
-      className="absolute left-0 top-6 z-30 w-32 rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] p-2 shadow-[0_10px_26px_rgba(0,0,0,0.18)]"
-    >
-      <div className="grid grid-cols-5 gap-1.5">
-        {CHAT_HIGHLIGHTS.map((highlight) => (
+    <Popover.Portal>
+      <Popover.Content
+        aria-label={`Choose ${artifact.title} color`}
+        side="bottom"
+        align="end"
+        sideOffset={6}
+        collisionPadding={8}
+        // Keep the square focused so a second click can still attach the artifact.
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        className={`${styles.palette} z-[70] w-32 rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] p-2 shadow-[0_10px_26px_rgba(0,0,0,0.18)]`}
+      >
+        <div className="grid grid-cols-5 gap-1.5">
+          {CHAT_HIGHLIGHTS.map((highlight) => (
+            <button
+              key={highlight.id}
+              type="button"
+              onClick={() => onChoose(highlight.id)}
+              aria-label={`Color ${artifact.title} ${highlight.label}`}
+              aria-pressed={artifact.highlight === highlight.id}
+              title={highlight.label}
+              className={`h-4 w-4 rounded border transition-transform hover:scale-110 ${
+                artifact.highlight === highlight.id
+                  ? "border-[var(--ink-heading)]"
+                  : "border-[var(--line-strong)]"
+              }`}
+              style={{ backgroundColor: highlight.color }}
+            />
+          ))}
+        </div>
+        {artifact.highlight ? (
           <button
-            key={highlight.id}
             type="button"
-            role="menuitemradio"
-            onClick={() => onChoose(highlight.id)}
-            aria-label={`Color ${artifact.title} ${highlight.label}`}
-            aria-checked={artifact.highlight === highlight.id}
-            title={highlight.label}
-            className={`h-4 w-4 rounded border transition-transform hover:scale-110 ${
-              artifact.highlight === highlight.id
-                ? "border-[var(--ink-heading)]"
-                : "border-[var(--line-strong)]"
-            }`}
-            style={{ backgroundColor: highlight.color }}
-          />
-        ))}
-      </div>
-      {artifact.highlight ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => onChoose(null)}
-          className="mt-2 w-full rounded border border-[var(--line)] px-2 py-1 text-[10px] text-[var(--ink-muted)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink)]"
-        >
-          Clear
-        </button>
-      ) : null}
-    </div>
+            onClick={() => onChoose(null)}
+            className="mt-2 w-full rounded border border-[var(--line)] px-2 py-1 text-[10px] text-[var(--ink-muted)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink)]"
+          >
+            Clear
+          </button>
+        ) : null}
+      </Popover.Content>
+    </Popover.Portal>
   );
 }
 
@@ -427,7 +428,6 @@ export default function ArtifactPanel({
   onToggleArtifactAttachment,
   onArchiveCountChange,
 }: ArtifactPanelProps) {
-  const learnArtifacts = useLearnArtifacts(sourceSurface === "garden_chat" ? gardenSlug : null);
   const [artifacts, setArtifacts] = useState<PresentedArtifact[]>([]);
   const [hasLoadedArtifacts, setHasLoadedArtifacts] = useState(false);
   const [openColorPaletteId, setOpenColorPaletteId] = useState<string | null>(null);
@@ -809,12 +809,10 @@ export default function ArtifactPanel({
           onRefresh={() => {
             setMenuPosition(null);
             void refresh();
-            learnArtifacts.refresh();
           }}
         />
       ) : null}
 
-      {learnArtifacts.error ? <p role="alert" className="m-3 text-xs text-red-700">{learnArtifacts.error} <button type="button" className="underline" onClick={learnArtifacts.refresh}>Retry</button></p> : null}
       {error ? <p className="m-3 rounded-md bg-red-50 p-2 text-xs text-red-700">{error}</p> : null}
 
       <div className={styles.list}>
@@ -859,7 +857,6 @@ export default function ArtifactPanel({
           const attached = attachedArtifactIds?.has(artifact.id) ?? false;
           const attaching = attachingArtifactIds?.has(artifact.id) ?? false;
           const attachmentSelectionBusy = (attachingArtifactIds?.size ?? 0) > 0;
-          const includedInLearn = learnArtifacts.artifacts.some(item => artifactVersionKey(item) === artifactVersionKey(artifact));
           const highlight = chatHighlight(artifact.highlight);
           const rowInner = <ArtifactCardContent artifact={artifact} showVersion />;
           const openClasses =
@@ -897,9 +894,12 @@ export default function ArtifactPanel({
                 />
               ) : null}
               {mode === "idle" && pdfHref ? (
-                <a href={pdfHref} className={openClasses} title={`Open ${artifact.title} in the PDF viewer`}>
+                <AttachmentPreviewDialog
+                  source={{ kind: "pdf", name: artifact.title, href: pdfHref }}
+                  className={openClasses}
+                >
                   {rowInner}
-                </a>
+                </AttachmentPreviewDialog>
               ) : mode === "idle" && videoHref ? (
                 <a href={videoHref} className={openClasses} title={`Play ${artifact.title} in the video player`}>
                   {rowInner}
@@ -927,75 +927,74 @@ export default function ArtifactPanel({
               )}
               {mode === "idle" ? (
                 <div className={styles.actions}>
-                  <button
-                    type="button"
-                    data-row-menu-button
-                    onClick={() =>
-                      handleArtifactColorButtonClick(
-                        artifact,
-                        Boolean(
-                          onToggleArtifactAttachment &&
-                          artifact.downloadAvailable &&
-                          !attachmentSelectionBusy,
-                        ),
-                      )
-                    }
-                    className={`flex h-5 w-5 items-center justify-center rounded border bg-[var(--paper-raised)] transition-[border-color,box-shadow,transform,opacity] hover:border-[var(--botanical)] active:scale-[0.96] ${
-                      attached
-                        ? "border-[var(--botanical)] ring-2 ring-[var(--botanical)]/70 ring-offset-1 ring-offset-[var(--paper-surface)]"
-                        : "border-[var(--line-strong)]"
-                    } ${attaching ? "cursor-wait opacity-50" : "cursor-pointer"}`}
-                    title={`${highlight ? `Colored ${highlight.label}. ` : ""}${
-                      onToggleArtifactAttachment
-                        ? artifact.downloadAvailable
-                          ? attached
-                            ? "Selected for chat; click twice to remove."
-                            : "Click twice to select for chat."
-                          : "This artifact cannot be selected for chat."
-                        : ""
-                    } Click once to choose a color.`}
-                    aria-label={
-                      onToggleArtifactAttachment
-                        ? attached
-                          ? "Artifact color; selected for chat"
-                          : "Artifact color; click twice to select for chat"
-                        : "Artifact color"
-                    }
-                    aria-pressed={onToggleArtifactAttachment ? attached : undefined}
-                    aria-expanded={openColorPaletteId === artifactVersionKey(artifact)}
+                  <Popover.Root
+                    open={openColorPaletteId === artifactVersionKey(artifact)}
+                    onOpenChange={(open) => {
+                      if (!open) setOpenColorPaletteId(null);
+                    }}
                   >
-                    {attaching ? (
-                      <span
-                        aria-hidden="true"
-                        className="h-2.5 w-2.5 animate-spin rounded-full border border-current border-r-transparent"
-                      />
-                    ) : (
-                      <span
-                        className="h-3 w-3 rounded-sm border border-[var(--line-strong)]"
-                        style={{ backgroundColor: highlight?.color ?? "transparent" }}
-                      />
-                    )}
-                  </button>
-                  {sourceSurface === "garden_chat" && gardenSlug ? (
-                    <button type="button" className={styles.learn}
-                      disabled={!learnArtifacts.loaded || Boolean(learnArtifacts.busy)}
-                      aria-pressed={includedInLearn}
-                      aria-label={`${includedInLearn ? "Remove" : "Add"} ${artifact.title} v${artifact.version} ${includedInLearn ? "from" : "to"} Learn`}
-                      title="Learn decides whether this artifact helps its lessons"
-                      onClick={() => void learnArtifacts.toggle(artifact)}>
-                      {learnArtifacts.busy === artifactVersionKey(artifact) ? "…" : includedInLearn ? "✓ Learn" : "+ Learn"}
-                    </button>
-                  ) : null}
-                  {openColorPaletteId === artifactVersionKey(artifact) ? (
+                    <Popover.Trigger asChild>
+                      <button
+                        type="button"
+                        data-row-menu-button
+                        onClick={(event) => {
+                          // The delayed handler distinguishes color selection from
+                          // attaching; prevent the trigger's immediate toggle.
+                          event.preventDefault();
+                          handleArtifactColorButtonClick(
+                            artifact,
+                            Boolean(
+                              onToggleArtifactAttachment &&
+                              artifact.downloadAvailable &&
+                              !attachmentSelectionBusy,
+                            ),
+                          );
+                        }}
+                        className={`flex h-5 w-5 items-center justify-center rounded border bg-[var(--paper-raised)] transition-[border-color,box-shadow,transform,opacity] hover:border-[var(--botanical)] active:scale-[0.96] ${
+                          attached
+                            ? "border-[var(--botanical)] ring-2 ring-[var(--botanical)]/70 ring-offset-1 ring-offset-[var(--paper-surface)]"
+                            : "border-[var(--line-strong)]"
+                        } ${attaching ? "cursor-wait opacity-50" : "cursor-pointer"}`}
+                        title={`${highlight ? `Colored ${highlight.label}. ` : ""}${
+                          onToggleArtifactAttachment
+                            ? artifact.downloadAvailable
+                              ? attached
+                                ? "Selected for chat; click twice to remove."
+                                : "Click twice to select for chat."
+                              : "This artifact cannot be selected for chat."
+                            : ""
+                        } Click once to choose a color.`}
+                        aria-label={
+                          onToggleArtifactAttachment
+                            ? attached
+                              ? "Artifact color; selected for chat"
+                              : "Artifact color; click twice to select for chat"
+                            : "Artifact color"
+                        }
+                        aria-pressed={onToggleArtifactAttachment ? attached : undefined}
+                        aria-expanded={openColorPaletteId === artifactVersionKey(artifact)}
+                      >
+                        {attaching ? (
+                          <span
+                            aria-hidden="true"
+                            className="h-2.5 w-2.5 animate-spin rounded-full border border-current border-r-transparent"
+                          />
+                        ) : (
+                          <span
+                            className="h-3 w-3 rounded-sm border border-[var(--line-strong)]"
+                            style={{ backgroundColor: highlight?.color ?? "transparent" }}
+                          />
+                        )}
+                      </button>
+                    </Popover.Trigger>
                     <ArtifactColorPalette
                       artifact={artifact}
                       onChoose={(next) => {
                         setOpenColorPaletteId(null);
                         void updateArtifactHighlight(artifact, next);
                       }}
-                      onClose={() => setOpenColorPaletteId(null)}
                     />
-                  ) : null}
+                  </Popover.Root>
                 </div>
               ) : null}
             </div>

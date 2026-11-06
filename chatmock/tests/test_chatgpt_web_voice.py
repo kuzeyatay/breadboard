@@ -37,6 +37,7 @@ class VoicePage:
         self.recent = recent
         self.expressions: List[str] = []
         self.hidden: List[str] = []
+        self.events: "queue.Queue[Dict[str, Any]]" = queue.Queue()
 
     def evaluate(self, expression: str, **_: Any) -> Any:
         self.expressions.append(expression)
@@ -80,6 +81,9 @@ class WebVoiceBase(unittest.TestCase):
         self.addCleanup(web.reset_for_tests)
         web_voice.reset_for_tests()
         self.addCleanup(web_voice.reset_for_tests)
+        done_wait = patch.object(web_voice, "STREAM_DONE_WAIT_SECONDS", 0.05)
+        done_wait.start()
+        self.addCleanup(done_wait.stop)
         web._write_state(
             signedIn=True,
             email="person@example.com",
@@ -94,7 +98,7 @@ class WebVoiceBase(unittest.TestCase):
         """Each ChatGPT turn answers with the next text in ``answers``."""
         started: List[Dict[str, Any]] = []
 
-        def begin(model, prompt, effort, images=None, *, temporary=True):
+        def begin(model, prompt, effort, images=None, *, temporary=True, soft=False):
             started.append({"model": model, "prompt": prompt, "temporary": temporary})
             return page, f"turn-{len(started)}"
 
@@ -188,7 +192,7 @@ class ReadAloudTests(WebVoiceBase):
         page = VoicePage(synthesized=[audio_result()])
         calls: List[int] = []
 
-        def begin(model, prompt, effort, images=None, *, temporary=True):
+        def begin(model, prompt, effort, images=None, *, temporary=True, soft=False):
             calls.append(1)
             if len(calls) == 1:
                 raise web.ProviderError("ChatGPT did not accept the message (not_ready).", status_code=502)
@@ -208,7 +212,7 @@ class ReadAloudTests(WebVoiceBase):
     def test_a_refused_send_is_never_sent_again(self) -> None:
         calls: List[int] = []
 
-        def begin(model, prompt, effort, images=None, *, temporary=True):
+        def begin(model, prompt, effort, images=None, *, temporary=True, soft=False):
             calls.append(1)
             raise web.ProviderError("ChatGPT did not accept the message (not_accepted).", status_code=502)
 
@@ -283,6 +287,22 @@ class ReadAloudTests(WebVoiceBase):
         self.assertIn('"conv-listed"', page.hidden[0])
         # The rendered page, which can still show the previous chat, is never asked.
         self.assertFalse(any("data-message-id" in expression or "location.pathname" in expression for expression in page.expressions))
+
+    def test_ids_from_the_streams_late_end_skip_the_chat_list(self) -> None:
+        # The reader returned from the rendered page; the stream's own end,
+        # naming the chat, arrives just after (measured 2026-10-07).
+        page = VoicePage(
+            synthesized=[audio_result()],
+            stored=[{"status": 200, "messageId": "msg-streamed", "text": "Hello.", "finished": True}],
+        )
+        page.events.put({"type": "done", "turn": "turn-other", "conversationId": "conv-other"})
+        page.events.put({"type": "done", "turn": "turn-1", "conversationId": "conv-streamed", "messageId": "msg-streamed"})
+        self.turns(page, ["Hello."], message_id=None, conversation_id=None)
+        web_voice.synthesize("Hello.", "vale")
+        request = next(expression for expression in page.expressions if "/backend-api/synthesize" in expression)
+        self.assertIn('"conversation_id": "conv-streamed"', request)
+        self.assertFalse(any("/backend-api/conversations?" in expression for expression in page.expressions))
+        self.assertIn('"conv-streamed"', page.hidden[0])
 
     def test_a_refused_reading_still_hides_its_chat_and_says_why(self) -> None:
         deleted = {"detail": {"message": "Conversation has been deleted. Start a new chat.", "code": "conversation_deleted"}}

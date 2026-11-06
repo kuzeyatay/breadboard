@@ -1,8 +1,9 @@
-/** Prepare a local photo for the appearance preferences, without sending it anywhere. */
+import { MAX_SAVED_BACKGROUND_LENGTH } from "./page-appearance-persistence.ts";
+
+/** Prepare a local photo before saving it with the appearance preferences. */
 export const WALLPAPER_UPLOAD_ACCEPT = "image/jpeg,image/png,image/webp,image/avif,.jpg,.jpeg,.png,.webp,.avif";
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_EDGE = 2560;
-const MAX_DATA_URL_LENGTH = 400_000;
 
 export async function prepareWallpaperUpload(file: File): Promise<string> {
   const supported = /^image\/(jpeg|png|webp|avif)$/i.test(file.type)
@@ -35,7 +36,7 @@ export async function prepareWallpaperUpload(file: File): Promise<string> {
       context.imageSmoothingQuality = "high";
       context.drawImage(image, 0, 0, width, height);
       const result = canvas.toDataURL("image/webp", 0.85);
-      if (result.startsWith("data:image/") && result.length <= MAX_DATA_URL_LENGTH) return result;
+      if (result.startsWith("data:image/") && result.length <= MAX_SAVED_BACKGROUND_LENGTH) return result;
       width = Math.max(1, Math.round(width * 0.75));
       height = Math.max(1, Math.round(height * 0.75));
     }

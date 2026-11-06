@@ -84,7 +84,7 @@ function fixture({ operation = "export", scope } = {}) {
       : Buffer.from(`${JSON.stringify({
           protocolVersion: 1,
           title: "Folder notes",
-          documents: [{ content: "# One\nFirst note", title: "One" }],
+          documents: [{ content: "# One\nFirst note", title: "One", folderTitle: "Folder notes" }],
         })}\n`, "utf8");
     const relativePath = `runtime/jobs/${identity.jobId}/inputs/${blobId}/payload`;
     const absolutePath = path.join(dataRoot, ...relativePath.split("/"));
@@ -363,6 +363,64 @@ test("a fresh Markdown PDF worker renders a sealed folder bundle and exits", asy
     assert.equal(bytes.subarray(0, 5).toString("ascii"), "%PDF-");
   } finally {
     fs.rmSync(current.dataRoot, { recursive: true, force: true });
+  }
+});
+
+test("chat PDF workers embed scoped Garden figures and refuse missing or unauthorized images", { timeout: 90_000 }, async () => {
+  const sharp = (await import("sharp")).default;
+  const { getDocument, OPS } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  for (const scenario of ["valid", "missing", "corrupt", "other-garden", "no-garden"]) {
+    const current = fixture({ operation: "command", scope: {
+      userId: 17, gardenId: scenario === "no-garden" ? null : "garden-one", conversationId: "conv_office_test",
+    } });
+    try {
+      const assets = path.join(current.dataRoot, "quartz", "content", "garden-one", "assets");
+      fs.mkdirSync(assets, { recursive: true });
+      await sharp({ create: { width: 120, height: 80, channels: 3, background: "#346b52" } }).png().toFile(path.join(assets, "circuit.png"));
+      fs.writeFileSync(path.join(assets, "corrupt.png"), "not an image");
+      const garden = scenario === "other-garden" ? "garden-two" : "garden-one";
+      if (scenario === "other-garden") {
+        const otherAssets = path.join(current.dataRoot, "quartz", "content", garden, "assets");
+        fs.mkdirSync(otherAssets, { recursive: true });
+        fs.copyFileSync(path.join(assets, "circuit.png"), path.join(otherAssets, "circuit.png"));
+      }
+      const filename = scenario === "missing" ? "missing.png" : scenario === "corrupt" ? "corrupt.png" : "circuit.png";
+      const content = `# Circuit exercise\nFind the current.\n\n![Circuit](/${garden}/assets/${filename})\n\nFinal instruction.`;
+      const bytes = Buffer.from(content);
+      fs.writeFileSync(path.join(current.jobRoot, "input.json"), JSON.stringify({
+        operation: "artifact-render", rendererId: "pdf", title: "Circuit exercise", filename: "exercise.pdf",
+        // Caller metadata cannot grant access to another Garden.
+        metadata: { style: "academic", clusterSlug: garden, gardenId: garden },
+      }));
+      const relativePath = `runtime/jobs/${current.identity.jobId}/inputs/blob_markdown/payload`;
+      const inputPath = path.join(current.dataRoot, relativePath);
+      fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+      fs.writeFileSync(inputPath, bytes);
+      const manifestPath = path.join(current.attemptRoot, "start.json");
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      manifest.inputBlobs = [{ blobId: "blob_markdown", relativePath, sizeBytes: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"), displayName: "source.md", mediaType: "text/markdown" }];
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+      const run = await runWorker(current);
+      if (scenario !== "valid") {
+        assert.equal(run.exit.code, 1, `${scenario}: ${run.stderr}`);
+        assert.match(run.stdout + run.stderr, /PDF image could not be embedded/);
+        assert.equal(fs.existsSync(path.join(current.jobRoot, "result.json")), false);
+        assert.deepEqual(fs.readdirSync(path.join(current.attemptRoot, "workspace")), []);
+        continue;
+      }
+      assert.equal(run.exit.code, 0, run.stderr);
+      const result = JSON.parse(fs.readFileSync(path.join(current.jobRoot, "result.json"), "utf8"));
+      const pdf = await getDocument({ data: new Uint8Array(fs.readFileSync(path.join(current.dataRoot, result.result.outputRelativePath))) }).promise;
+      try {
+        const page = await pdf.getPage(1);
+        const ops = await page.getOperatorList();
+        assert.equal(ops.fnArray.filter(op => op === OPS.paintImageXObject || op === OPS.paintInlineImageXObject).length, 1);
+        const text = (await page.getTextContent()).items.map(item => item.str ?? "").join(" ");
+        assert.match(text, /Final\s+instruction/);
+        assert.doesNotMatch(text, /\[Image:/);
+      } finally { await pdf.destroy(); }
+    } finally { fs.rmSync(current.dataRoot, { recursive: true, force: true }); }
   }
 });
 

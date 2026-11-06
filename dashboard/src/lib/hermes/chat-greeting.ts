@@ -285,6 +285,7 @@ function rotateMany<T>(
   salt: string,
   context: GreetingContext,
   familyOf: (item: T) => string,
+  eligible: ReadonlySet<T>,
 ): T[] {
   if (items.length === 0) return [];
   const offset = fingerprint(`${salt}:${context.audience}`);
@@ -294,6 +295,7 @@ function rotateMany<T>(
 
   for (let step = 0; step < items.length && picked.length < count; step += 1) {
     const item = items[(start + step) % items.length];
+    if (!eligible.has(item)) continue;
     const family = familyOf(item);
     if (families.has(family)) continue;
     families.add(family);
@@ -301,6 +303,7 @@ function rotateMany<T>(
   }
   for (let step = 0; step < items.length && picked.length < count; step += 1) {
     const item = items[(start + step) % items.length];
+    if (!eligible.has(item)) continue;
     if (picked.includes(item)) continue;
     picked.push(item);
   }
@@ -1391,12 +1394,16 @@ export function resolveChatGreeting(input: ChatGreetingInput): ChatGreeting {
 
 export function resolveChatSuggestions(input: ChatGreetingInput): string[] {
   const context = buildContext(input);
-  const eligible = eligiblePool(suggestionPool(context), context);
+  const pool = suggestionPool(context);
+  const eligible = new Set(eligiblePool(pool, context));
+  // Walk the stable pool, then apply time-of-day eligibility. Changing the
+  // pool length at an hour boundary otherwise resets the walk and repeats cards.
   return rotateMany(
-    eligible,
+    pool,
     CHAT_SUGGESTION_COUNT,
     "suggestion",
     context,
     (candidate) => candidate.family,
+    eligible,
   ).map((candidate) => candidate.text(context));
 }

@@ -10,6 +10,8 @@ Prose being the default is not a ban on structure. Choose the shape the reader w
 
 When the user asks for a table, honor the requested table while designing it to fit the visible message width without horizontal scrolling. Include only columns that help answer the question, use short plain-language headers, keep each cell to one compact fact or phrase, and put qualifications or explanation in prose outside the table. Let cell text wrap naturally; never insert HTML such as `<br>` to control a cell's layout. Avoid wide timeline grids with mostly empty cells. If the requested information needs many columns or long cell text, split it into two or more narrow tables, transpose it into a compact field/value table, or group rows under short tables with clear labels. As a default, use no more than four columns; use a fifth only when every cell is very short. Never depend on a table scrollbar to make the answer readable.
 
+For citations, copy the exact navigable `href` or `location` supplied by a tool or source context. Garden documents open in the Garden reader through `/garden/<garden>?note=<encoded-page-path>`. Do not invent `garden:`, `file:`, `sandbox:`, bare filesystem paths, empty destinations, or placeholder `#` links. If no usable destination is available, give the source title and section as plain text instead of a clickable link. Preserve supplied web URLs and PDF reader links.
+
 # mannered_prose
 
 Apply this guidance whenever drafting, rewriting, editing, or reviewing prose, including chat replies, documents, artifacts, Garden pages, emails, reports, and other writing tasks. Check the finished prose against it before returning the result.

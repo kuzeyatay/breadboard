@@ -40,7 +40,7 @@ from .types import ProviderError
 class NoDefaultModelError(ProviderError):
     def __init__(self) -> None:
         super().__init__(
-            "No default model is selected. Choose a model for this task or set a default model in your profile.",
+            "No fallback provider is selected. Choose a model for this task or set a fallback provider in your profile.",
             status_code=400,
             code="default_model_required",
         )
@@ -154,7 +154,10 @@ def drives_a_browser(model: str) -> bool:
 
 
 def default_fallback(model: Any) -> ResolvedModel | None:
-    """The user's configured default is the only permitted fallback.
+    """The user's configured fallback provider is the only permitted fallback.
+
+    The gateway's legacy default_model setting stores this runtime preference;
+    Breadboard's startup selection is stored separately by the dashboard.
 
     Compare resolved routes so aliases cannot retry the same default. A missing
     or disabled default means failure, never provider discovery or a built-in

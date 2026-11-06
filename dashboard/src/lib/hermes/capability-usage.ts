@@ -36,7 +36,7 @@ export interface CapabilityUse {
   selection: CapabilitySelection;
   /** Why an automatic selection fired, in the user's terms. */
   reason?: string;
-  /** Tool calls attributed to it. Zero means selected but never actually used. */
+  /** Recorded calls attributed to it. Guidance loading is reported separately. */
   calls: number;
   /** How many of those failed. */
   failures: number;
@@ -44,6 +44,8 @@ export interface CapabilityUse {
   command?: string;
   /** The specific actions taken through it — connection tool names, mostly. */
   actions?: string[];
+  /** Reviewed instructions were supplied to this turn; independent of tool calls. */
+  guidanceLoaded?: boolean;
 }
 
 /**
@@ -71,6 +73,7 @@ export interface TurnCapabilitySelection {
     name?: string;
     selection: "requested" | "automatic";
     reason?: string;
+    guidanceLoaded?: boolean;
   }>;
   /** Connections the user named with a slash command. */
   connections?: Array<{ slug: string; name?: string }>;
@@ -96,6 +99,11 @@ interface ToolOwner {
  * skill having been selected.
  */
 const TOOL_OWNERS: Record<string, ToolOwner> = {
+  breadboard_use: {
+    kind: "skill",
+    id: "breadboard-use",
+    label: "Breadboard use",
+  },
   computer_use: {
     kind: "skill",
     id: "computer-use",
@@ -251,6 +259,7 @@ interface Accumulated {
   calls: number;
   failures: number;
   actions: string[];
+  guidanceLoaded?: boolean;
 }
 
 const KIND_ORDER: Record<CapabilityKind, number> = {
@@ -321,7 +330,7 @@ export function summarizeCapabilityUse(input: {
 
   for (const skill of selection.skills ?? []) {
     if (!skill?.slug) continue;
-    upsert(
+    const entry = upsert(
       "skill",
       skill.slug,
       skill.name?.trim() || labelForSlug(skill.slug),
@@ -330,6 +339,7 @@ export function summarizeCapabilityUse(input: {
         ? skill.reason?.trim() || AUTOMATIC_SELECTION_REASONS[skill.slug]
         : undefined,
     );
+    if (skill.guidanceLoaded) entry.guidanceLoaded = true;
   }
   for (const connection of selection.connections ?? []) {
     if (!connection?.slug) continue;
@@ -361,6 +371,7 @@ export function summarizeCapabilityUse(input: {
     if (!open?.slug) continue;
     const entry = upsert("skill", open.slug, labelForSlug(open.slug), "agent");
     entry.calls += 1;
+    entry.guidanceLoaded = true;
     if (!entry.actions.includes("opened")) entry.actions.push("opened");
   }
 
@@ -409,6 +420,7 @@ export function summarizeCapabilityUse(input: {
         ...(entry.reason ? { reason: entry.reason } : {}),
         calls: entry.calls,
         failures: entry.failures,
+        ...(entry.guidanceLoaded ? { guidanceLoaded: true } : {}),
         ...(command ? { command } : {}),
         ...(entry.actions.length ? { actions: entry.actions } : {}),
       } satisfies CapabilityUse;
@@ -452,6 +464,7 @@ export function turnCapabilitySelection(input: {
       const name = input.skillNames?.get(invocation.slug);
       return {
         slug: invocation.slug,
+        guidanceLoaded: true,
         ...(name ? { name } : {}),
         selection: automatic.has(invocation.slug)
           ? ("automatic" as const)

@@ -1,9 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { TAB_CHROME_PROBE, waitForTabChrome } from "../src/main/tab-chrome";
-import { REVEAL_FRAME_PROBE, runInDocument, waitForRevealFrame } from "../src/main/first-paint";
+import { allowBackgroundFrames, REVEAL_FRAME_PROBE, runInDocument, waitForRevealFrame } from "../src/main/first-paint";
 
 /** A page that is DOM-ready but whose document never stops loading. Electron's
  * `webContents.executeJavaScript` parks every call behind `did-stop-loading`
@@ -57,7 +55,7 @@ test("a cancelled reveal ends the tab-chrome wait immediately", async () => {
 
 test("the reveal-frame probe also runs in the current document", async () => {
   const page = streamingPage(true);
-  await waitForRevealFrame(page, 500);
+  assert.equal(await waitForRevealFrame(page, 500), true);
   assert.equal(page.parked.length, 0);
   assert.deepEqual(page.frameCalls, [REVEAL_FRAME_PROBE]);
 });
@@ -78,12 +76,54 @@ test("a page without a main frame falls back to the contents", async () => {
   assert.deepEqual(calls, ["1", "2"]);
 });
 
-test("a tab reveal bounds every wait after DOM-ready under one ceiling", () => {
-  const source = fs.readFileSync(path.resolve(__dirname, "..", "..", "src", "main", "tab-manager.ts"), "utf8");
-  const reveal = source.slice(source.indexOf("private async reveal("), source.indexOf("private async frameReady("));
-  const race = reveal.indexOf("await Promise.race([");
-  assert.ok(race > 0);
-  assert.ok(reveal.indexOf("waitForTabChrome(") > race, "the tab-chrome wait must sit inside the ceiling race");
-  assert.ok(reveal.indexOf("this.frameReady(tab)") > race, "the frame wait must sit inside the ceiling race");
-  assert.doesNotMatch(reveal, /tab\.contents\.executeJavaScript/);
+test("a timed-out or discarded document never confirms a reveal frame", async () => {
+  const page = { isDestroyed: () => false, executeJavaScript: () => new Promise(() => {}) };
+  assert.equal(await waitForRevealFrame(page, 20), false);
+  assert.equal(await waitForRevealFrame({ ...page, executeJavaScript: async () => { throw new Error("Document replaced"); } }), false);
+  assert.equal(await waitForRevealFrame({ ...page, isDestroyed: () => true }), false);
+});
+
+test("a foreground frame can arrive late, but cancellation retires its handoff", async () => {
+  let finish!: () => void;
+  const page = {
+    isDestroyed: () => false,
+    executeJavaScript: () => new Promise<void>(resolve => { finish = resolve; }),
+  };
+  const controller = new AbortController();
+  let settled = false;
+  const wait = waitForRevealFrame(page, null, controller.signal).then(ready => { settled = true; return ready; });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(settled, false);
+  finish();
+  assert.equal(await wait, true);
+
+  const cancelled = waitForRevealFrame(page, null, controller.signal);
+  controller.abort();
+  assert.equal(await cancelled, false);
+  finish();
+  assert.equal(await cancelled, false, "late completion cannot turn cancellation into success");
+});
+
+test("overlapping startup and reveal waits restore throttling only after both finish", async () => {
+  for (const initiallyThrottled of [true, false]) {
+    let throttled = initiallyThrottled;
+    let finish!: () => void;
+    const page = {
+      isDestroyed: () => false,
+      getBackgroundThrottling: () => throttled,
+      setBackgroundThrottling: (value: boolean) => { throttled = value; },
+      executeJavaScript: () => new Promise<void>(resolve => { finish = resolve; }),
+    };
+    const startupDone = allowBackgroundFrames(page);
+    const controller = new AbortController();
+    const reveal = waitForRevealFrame(page, null, controller.signal);
+    startupDone();
+    assert.equal(throttled, false, "startup cleanup cannot starve a pending reveal");
+    controller.abort();
+    assert.equal(await reveal, false);
+    assert.equal(throttled, initiallyThrottled);
+    finish();
+    await Promise.resolve();
+    assert.equal(throttled, initiallyThrottled, "late frames cannot release the same lease twice");
+  }
 });

@@ -1,4 +1,5 @@
 import { SELECTED_TEXT_SCOPE_PROMPT } from "./chat-text-selection.ts";
+import { normalizeChatMessageAttachments, reusableChatAttachments, type ChatAttachment } from "./chat-attachments.ts";
 
 export type QuartzAssistantSelectionMode = "chat" | "inline";
 
@@ -13,6 +14,8 @@ export interface QuartzAssistantSelectionRequest {
   pageSlug?: string;
   /** An explicit retry carries the original question with its excerpt. */
   question?: string;
+  /** Images pasted into the hosted page question editor. */
+  attachments?: ChatAttachment[];
   /** Response selections carry their own source instead of inheriting the page. */
   sourceMessageId?: string;
   sourceResponse?: string;
@@ -24,6 +27,8 @@ export interface QuartzInlineAnswerUpdate {
   pageSlug?: string;
   question: string;
   answer: string;
+  thinking?: string;
+  progressNotes?: string[];
   state: "pending" | "streaming" | "complete" | "error";
   responseDurationMs?: number;
 }
@@ -64,6 +69,8 @@ export function normalizeQuartzAssistantSelection(
   const suffix = boundedText(record.suffix, MAX_CONTEXT_CHARS);
   const pageSlug = boundedText(record.pageSlug, 400)?.trim();
   const question = boundedText(record.question, 8_000)?.trim();
+  const attachments = reusableChatAttachments(normalizeChatMessageAttachments(record.attachments))
+    .filter(attachment => attachment.type === "image" && attachment.context !== "pdf");
   const sourceMessageId = boundedText(record.sourceMessageId, 128);
   const sourceResponse = sourceMessageId && OPAQUE_ID.test(sourceMessageId)
     ? boundedText(record.sourceResponse, 20_000) : undefined;
@@ -79,6 +86,7 @@ export function normalizeQuartzAssistantSelection(
     ...(suffix ? { suffix } : {}),
     ...(pageSlug ? { pageSlug } : {}),
     ...(question ? { question } : {}),
+    ...(attachments.length ? { attachments } : {}),
     ...(sourceMessageId && OPAQUE_ID.test(sourceMessageId) ? { sourceMessageId, sourceResponse } : {}),
   };
 }

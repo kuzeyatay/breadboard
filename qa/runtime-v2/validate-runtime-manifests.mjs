@@ -1045,6 +1045,7 @@ for (const entry of [
   "runtime-v2-python-agent-probe-worker-core.mjs",
   "runtime-v2-agent-reach-worker.mjs",
   "runtime-v2-agent-tars-worker.mjs",
+  "runtime-v2-paths.mjs",
   "runtime-v2-outer-agent-worker-core.mjs",
   "runtime-v2-outer-agent-adapters.mjs",
   "runtime-v2-system-location-worker.mjs",

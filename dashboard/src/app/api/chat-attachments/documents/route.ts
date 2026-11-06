@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { requireUserId } from "@/lib/server-auth";
+import { requireUserId, requireReadableCluster } from "@/lib/server-auth";
+import { gardenPdfReference, readGardenPdfPages } from "@/lib/pdf-garden-reading.ts";
 import { ApiError, apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
 import {
   DOCUMENT_FILENAME_HEADER,
@@ -80,12 +81,38 @@ export async function POST(request: Request) {
       throw new ApiError(400, "document_body_required", "No document was received.");
     }
 
+    let ocrPages: number[] | undefined;
+    const requestedPages = request.headers.get("x-pdf-ocr-pages");
+    if (requestedPages !== null) {
+      let pages: unknown;
+      try { pages = JSON.parse(requestedPages); } catch { /* Validated below. */ }
+      if (format !== "pdf" || !Array.isArray(pages) || pages.length > 8 ||
+          pages.some(page => !Number.isSafeInteger(page) || page < 1)) {
+        throw new ApiError(400, "invalid_pdf_ocr_pages", "Choose up to eight valid PDF pages to read.");
+      }
+      ocrPages = [...new Set(pages as number[])];
+    }
     const stored = await writeDocumentBlob({ userId, format, body: request.body });
 
     if (format === "pdf") {
-      const reading = await readPdfAttachment(fs.readFileSync(stored.path), {
+      const bytes = fs.readFileSync(stored.path);
+      const source = gardenPdfReference(request);
+      let pageReadings: Record<number, string> | undefined;
+      try {
+        if (source && process.env.QUARTZ_CONTENT_PATH) {
+          const cluster = requireReadableCluster(userId, source.clusterSlug);
+          pageReadings = readGardenPdfPages({ ...source, clusterSlug: cluster.slug,
+            contentPath: process.env.QUARTZ_CONTENT_PATH, bytes }) ?? undefined;
+        }
+      } catch (error) {
+        removeDocumentBlob({ userId, blobId: stored.blobId });
+        throw error;
+      }
+      const reading = await readPdfAttachment(bytes, {
         signal: request.signal,
         handwriting: request.headers.get("x-document-handwriting") === "true",
+        ocrPages,
+        pageReadings,
       }).catch((error) => {
         removeDocumentBlob({ userId, blobId: stored.blobId });
         throw new ApiError(422, "document_read_failed", error instanceof Error ? error.message : "The PDF could not be read. Retry the attachment.");

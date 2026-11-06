@@ -9,8 +9,9 @@ import {
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
 import db from "@/lib/db";
-import { ensureGardenResponseBranches, readGardenResponseBranches } from "@/lib/conversations/garden-response-branches";
-import type { VerificationSummary } from "@/lib/hermes/evidence";
+import { readChatRuntimeControl } from "@/lib/hermes/chat-runtime-control.ts";
+import { ensureGardenResponseBranches, projectGardenResponseBranches, readGardenResponseBranches, trimGardenResponseBranchesForTransport } from "@/lib/conversations/garden-response-branches";
+import { trimVerificationForTransport, type VerificationSummary } from "@/lib/hermes/evidence";
 import {
   normalizeChatMessageAttachments,
   type ChatMessageAttachment,
@@ -89,6 +90,7 @@ interface ChatSessionRow {
   conversation_id?: number | null;
   conversation_public_id?: string | null;
   temporary?: number | null;
+  archived_at?: string | null;
   owner_username?: string | null;
 }
 
@@ -180,10 +182,24 @@ function chatHistorySurface(value: unknown): ChatHistorySurface {
   return value === "assistant" ? "assistant" : "garden_chat";
 }
 
+// Each message runs ~17 helpers below over the same tool_calls text, and each
+// used to JSON.parse it again. Reuse the last few parses, only for the current
+// synchronous read (cleared on the next microtask): results are never shared
+// between requests, and a garden's whole tool_calls are never held at once.
+const recentJsonParses = new Map<string, unknown>();
+function parseJson(value: string): unknown {
+  if (recentJsonParses.has(value)) return recentJsonParses.get(value);
+  const parsed: unknown = JSON.parse(value);
+  if (recentJsonParses.size === 0) queueMicrotask(() => recentJsonParses.clear());
+  recentJsonParses.set(value, parsed);
+  if (recentJsonParses.size > 4) recentJsonParses.delete(recentJsonParses.keys().next().value as string);
+  return parsed;
+}
+
 function parseSources(value: string | null): string[] {
   if (!value) return [];
   try {
-    const parsed = JSON.parse(value);
+    const parsed = parseJson(value);
     return Array.isArray(parsed)
       ? parsed.filter((item) => typeof item === "string")
       : [];
@@ -195,7 +211,7 @@ function parseSources(value: string | null): string[] {
 function parseTokenUsage(value: string | null): ChatTokenUsage | undefined {
   if (!value) return undefined;
   try {
-    return normalizeChatTokenUsage(JSON.parse(value)) ?? undefined;
+    return normalizeChatTokenUsage(parseJson(value)) ?? undefined;
   } catch {
     return undefined;
   }
@@ -206,7 +222,7 @@ function parseVerification(
 ): VerificationSummary | undefined {
   if (!value) return undefined;
   try {
-    const parsed = JSON.parse(value) as { verification?: unknown };
+    const parsed = parseJson(value) as { verification?: unknown };
     const verification = parsed?.verification;
     if (!verification || typeof verification !== "object") return undefined;
     const state = (verification as { state?: unknown }).state;
@@ -220,7 +236,8 @@ function parseVerification(
       ].includes(String(state))
     )
       return undefined;
-    return verification as VerificationSummary;
+    // This read feeds browsers only; the raw tool payloads stay in the DB.
+    return trimVerificationForTransport(verification as VerificationSummary);
   } catch {
     return undefined;
   }
@@ -229,7 +246,7 @@ function parseVerification(
 function parseResponseDuration(value: string | null): number | undefined {
   if (!value) return undefined;
   try {
-    const parsed = JSON.parse(value) as { responseDurationMs?: unknown };
+    const parsed = parseJson(value) as { responseDurationMs?: unknown };
     const duration = Number(parsed?.responseDurationMs);
     return Number.isFinite(duration) && duration >= 0
       ? Math.trunc(duration)
@@ -242,7 +259,7 @@ function parseResponseDuration(value: string | null): number | undefined {
 function parseThinking(value: string | null): string | undefined {
   if (!value) return undefined;
   try {
-    const parsed = JSON.parse(value) as { reasoning?: unknown };
+    const parsed = parseJson(value) as { reasoning?: unknown };
     return typeof parsed?.reasoning === "string" && parsed.reasoning.trim()
       ? parsed.reasoning
       : undefined;
@@ -254,7 +271,7 @@ function parseThinking(value: string | null): string | undefined {
 function parseProgressNotes(value: string | null): string[] {
   if (!value) return [];
   try {
-    const parsed = JSON.parse(value) as { progressNotes?: unknown };
+    const parsed = parseJson(value) as { progressNotes?: unknown };
     return Array.isArray(parsed?.progressNotes)
       ? parsed.progressNotes
           .filter(
@@ -271,7 +288,7 @@ function parseProgressNotes(value: string | null): string[] {
 function parseResponseCompletedAt(value: string | null): string | undefined {
   if (!value) return undefined;
   try {
-    const parsed = JSON.parse(value) as { responseCompletedAt?: unknown };
+    const parsed = parseJson(value) as { responseCompletedAt?: unknown };
     return typeof parsed.responseCompletedAt === "string" &&
       Number.isFinite(Date.parse(parsed.responseCompletedAt))
       ? parsed.responseCompletedAt
@@ -284,7 +301,7 @@ function parseResponseCompletedAt(value: string | null): string | undefined {
 function parsePendingPermissions(value: string | null): Array<Record<string, unknown>> {
   if (!value) return [];
   try {
-    const parsed = JSON.parse(value) as { pendingPermissions?: unknown };
+    const parsed = parseJson(value) as { pendingPermissions?: unknown };
     return Array.isArray(parsed?.pendingPermissions)
       ? parsed.pendingPermissions.filter(
           (item): item is Record<string, unknown> =>
@@ -299,7 +316,7 @@ function parsePendingPermissions(value: string | null): Array<Record<string, unk
 function parseGenerativeUiResources(value: string | null): GenerativeUiResource[] {
   if (!value) return [];
   try {
-    const parsed = JSON.parse(value) as { uiResources?: unknown };
+    const parsed = parseJson(value) as { uiResources?: unknown };
     return normalizeGenerativeUiResources(parsed?.uiResources);
   } catch {
     return [];
@@ -309,7 +326,7 @@ function parseGenerativeUiResources(value: string | null): GenerativeUiResource[
 function parseInternalAgentContinuation(value: string | null): boolean {
   if (!value) return false;
   try {
-    const parsed = JSON.parse(value) as { internalAgentContinuation?: unknown };
+    const parsed = parseJson(value) as { internalAgentContinuation?: unknown };
     return parsed?.internalAgentContinuation === true;
   } catch {
     return false;
@@ -323,7 +340,7 @@ function parseClarificationAnswer(
   if (clientMessageId?.startsWith("clarify:")) return true;
   if (!value) return false;
   try {
-    const parsed = JSON.parse(value) as { clarificationAnswer?: unknown };
+    const parsed = parseJson(value) as { clarificationAnswer?: unknown };
     return parsed?.clarificationAnswer === true;
   } catch {
     return false;
@@ -333,7 +350,7 @@ function parseClarificationAnswer(
 function parseSelectedText(value: string | null): string | undefined {
   if (!value) return undefined;
   try {
-    const parsed = JSON.parse(value) as { selectedText?: unknown };
+    const parsed = parseJson(value) as { selectedText?: unknown };
     if (typeof parsed?.selectedText !== "string") return undefined;
     return parsed.selectedText.trim().slice(0, 4_000) || undefined;
   } catch {
@@ -344,7 +361,7 @@ function parseSelectedText(value: string | null): string | undefined {
 function parseBranchGroupId(value: string | null): string | undefined {
   if (!value) return undefined;
   try {
-    const parsed = JSON.parse(value) as { branchGroupId?: unknown };
+    const parsed = parseJson(value) as { branchGroupId?: unknown };
     return typeof parsed?.branchGroupId === "string"
       ? parsed.branchGroupId.trim().slice(0, 200) || undefined
       : undefined;
@@ -358,7 +375,7 @@ function parseTextSelection(
 ): ChatTextSelectionReference | undefined {
   if (!value) return undefined;
   try {
-    const parsed = JSON.parse(value) as { textSelection?: unknown };
+    const parsed = parseJson(value) as { textSelection?: unknown };
     return normalizeChatTextSelectionReference(parsed?.textSelection) ?? undefined;
   } catch {
     return undefined;
@@ -370,7 +387,7 @@ function parseInlineSelection(
 ): QuartzInlineSelectionReference | undefined {
   if (!value) return undefined;
   try {
-    const parsed = JSON.parse(value) as { inlineSelection?: unknown };
+    const parsed = parseJson(value) as { inlineSelection?: unknown };
     const selection = parsed?.inlineSelection;
     if (!selection || typeof selection !== "object" || Array.isArray(selection)) {
       return undefined;
@@ -407,7 +424,7 @@ function parseExternalAgentFields(
   // replaced by the agent's answer.
   if (!value || role !== "assistant") return {};
   try {
-    const parsed = JSON.parse(value);
+    const parsed = parseJson(value);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? externalAgentMessageFields(parsed as Record<string, unknown>)
       : {};
@@ -427,7 +444,7 @@ function parseAttachmentFields(
 > {
   if (!value) return {};
   try {
-    const parsed = JSON.parse(value) as Record<string, unknown>;
+    const parsed = parseJson(value) as Record<string, unknown>;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
       return {};
     const attachmentNames = Array.isArray(parsed.attachmentNames)
@@ -513,7 +530,7 @@ async function readSessions(
       .prepare(
         `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
                 cs.conversation_id, c.public_id AS conversation_public_id,
-                c.temporary AS temporary,
+                c.temporary AS temporary, c.archived_at AS archived_at,
                 u.username AS owner_username
          FROM chat_sessions cs
          JOIN users u ON u.id = cs.user_id
@@ -531,7 +548,7 @@ async function readSessions(
       .prepare(
         `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
                 cs.conversation_id, c.public_id AS conversation_public_id,
-                c.temporary AS temporary
+                c.temporary AS temporary, c.archived_at AS archived_at
          FROM chat_sessions cs
          LEFT JOIN conversations c ON c.id = cs.conversation_id
          WHERE cs.cluster_id = ? AND cs.user_id = ? AND cs.history_surface = ?${sessionFilter}${historyFilter}
@@ -547,7 +564,7 @@ async function readSessions(
       .prepare(
         `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
                 cs.conversation_id, c.public_id AS conversation_public_id,
-                c.temporary AS temporary
+                c.temporary AS temporary, c.archived_at AS archived_at
          FROM chat_sessions cs
          LEFT JOIN conversations c ON c.id = cs.conversation_id
          WHERE cs.cluster_id = ? AND cs.history_surface = ?${sessionFilter}${historyFilter}
@@ -690,14 +707,16 @@ async function readSessions(
   const latestAssistantVersions = readLatestAssistantVersions(ids);
   ensureGardenResponseBranches(db);
 
-  return rows.map(({ conversation_public_id: conversationId, temporary, ...row }) => ({
+  return rows.map(({ conversation_public_id: conversationId, temporary, archived_at, ...row }) => ({
     ...row,
     conversationId: conversationId ?? null,
     temporary: Number(temporary ?? 0) === 1,
+    archived: archived_at != null,
     ownerUsername: row.owner_username ?? undefined,
     isOwn: row.user_id === currentUserId,
-    messages: bySession.get(row.id) ?? [],
-    branchGroups: readGardenResponseBranches(db, row.id),
+    messages: projectGardenResponseBranches(bySession.get(row.id) ?? []),
+    runtimeControl: row.user_id === currentUserId ? readChatRuntimeControl(db, row.id) : null,
+    branchGroups: trimGardenResponseBranchesForTransport(readGardenResponseBranches(db, row.id)),
     latestAssistantVersion: latestAssistantVersions.get(row.id) ?? null,
     active:
       running.has(row.id) ||
@@ -728,7 +747,7 @@ function readSessionSummaries(
               u.username AS owner_username,
               c.id AS conversation_row_id, c.public_id AS conversation_public_id,
               c.pinned_at AS pinned_at, c.highlight AS highlight,
-              c.temporary AS temporary
+              c.temporary AS temporary, c.archived_at AS archived_at
        FROM chat_sessions cs
        JOIN users u ON u.id = cs.user_id
        LEFT JOIN conversations c ON c.id = cs.conversation_id
@@ -794,6 +813,7 @@ function readSessionSummaries(
     ownerUsername: row.owner_username ?? undefined,
     conversationId: row.conversation_public_id,
     pinned: row.pinned_at !== null,
+    archived: row.archived_at != null,
     // An unknown slug (an older palette, a hand-edited row) presents as no
     // highlight rather than as a color the rail cannot paint.
     highlight: isChatHighlight(row.highlight) ? row.highlight : null,
@@ -914,7 +934,7 @@ export async function POST(request: Request) {
     .prepare(
       `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
               cs.conversation_id, c.public_id AS conversation_public_id,
-              c.temporary AS temporary
+              c.temporary AS temporary, c.archived_at AS archived_at
        FROM chat_sessions cs
        LEFT JOIN conversations c ON c.id = cs.conversation_id
        WHERE cs.id = ?`,

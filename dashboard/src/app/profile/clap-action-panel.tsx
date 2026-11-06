@@ -67,7 +67,7 @@ export default function ClapActionPanel({ initial, userId, control = 'clap' }: {
       {error && <p role="alert" className="mt-3 text-xs text-red-400">{error}</p>}
       {notice && <p role="status" className="mt-3 text-xs text-green-500">{notice}</p>}
       <div className="mt-4 flex items-start justify-between gap-3 border-t border-gray-800 pt-3">
-        <p className="text-xs text-gray-500">For other requests, the agent chooses the tools and opens a chat where you can follow its progress.</p>
+        <p className="text-xs text-gray-500">Other requests open in a chat so you can follow along.</p>
         <button type="button" disabled={Boolean(busy)} onClick={() => void save(snap ? DEFAULT_SNAP_ACTION : DEFAULT_CLAP_ACTION)} className="shrink-0 text-xs text-gray-400 underline underline-offset-2 disabled:opacity-50">{snap ? 'Restore Snap by manifest' : 'Restore dictation default'}</button>
       </div>
     </section></div>

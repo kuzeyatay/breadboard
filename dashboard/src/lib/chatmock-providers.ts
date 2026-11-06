@@ -199,7 +199,8 @@ export async function verifyProvider(
   };
 }
 
-export async function setDefaultModel(
+/** ChatMock's legacy `default` setting is Breadboard's runtime fallback. */
+export async function setFallbackModel(
   incoming: Request,
   model: string | null,
 ): Promise<ChatmockProviderState> {
@@ -208,6 +209,9 @@ export async function setDefaultModel(
     body: JSON.stringify({ model }),
   })) as ChatmockProviderState;
 }
+
+// Compatibility for the gateway settings endpoint; never use for startup picks.
+export const setDefaultModel = setFallbackModel;
 
 export async function setChatModel(
   incoming: Request,
@@ -311,6 +315,8 @@ export interface ChatgptWebTabRequestRow {
   reset: boolean;
   /** Which of ChatMock's pages: "interactive" (chat) or "batch" (Learn, council). */
   lane?: string;
+  /** ChatGPT voice: lend the page the microphone (true) or take it back. */
+  microphone?: boolean;
   requestedAt: string;
 }
 
@@ -335,13 +341,14 @@ export async function pollChatgptWebTabRequests(
   return {
     requests: rows.flatMap((row): ChatgptWebTabRequestRow[] => {
       if (!row || typeof row !== "object") return [];
-      const { nonce, foreground, reset, lane, requestedAt } = row as Record<string, unknown>;
+      const { nonce, foreground, reset, lane, microphone, requestedAt } = row as Record<string, unknown>;
       if (typeof nonce !== "string" || !/^[0-9a-f]{32}$/.test(nonce)) return [];
       return [{
         nonce,
         foreground: foreground === true,
         reset: reset === true,
         ...(typeof lane === "string" && CHATGPT_WEB_LANE.test(lane) ? { lane } : {}),
+        ...(typeof microphone === "boolean" ? { microphone } : {}),
         requestedAt: typeof requestedAt === "string" ? requestedAt : "",
       }];
     }),

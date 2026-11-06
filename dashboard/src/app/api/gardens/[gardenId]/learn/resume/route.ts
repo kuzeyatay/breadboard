@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
-import { LearnPauseConflictError, resumeLatestLearnJob } from "@/lib/learn";
+import {
+  getLearnStatusSnapshot,
+  LearnPauseConflictError,
+  resumeLatestLearnJob,
+} from "@/lib/learn";
+import { learnResumeRejection } from "@/lib/learn-auto-resume";
+import { runtimeLearnWorkerIsLive } from "@/lib/learn-operation-runtime-v2";
 import {
   InvalidLearnRouteBodyError,
   readLearnRouteJsonObject,
@@ -28,6 +34,20 @@ export async function POST(
       typeof body.expectedJobId === "string" && body.expectedJobId.trim()
         ? body.expectedJobId.trim()
         : undefined;
+    // A row that still claims an active status resumes to itself, so confirm
+    // the worker it names is actually alive before reporting success.
+    const latestStatus = getLearnStatusSnapshot({
+      gardenId: cluster.slug,
+      contentPath,
+    }).job?.status;
+    if (latestStatus) {
+      const rejection = learnResumeRejection({
+        status: latestStatus,
+        workerLive: await runtimeLearnWorkerIsLive(contentPath, cluster.slug),
+      });
+      if (rejection) return NextResponse.json({ error: rejection }, { status: 409 });
+    }
+
     const job = resumeLatestLearnJob({
       gardenId: cluster.slug,
       contentPath,

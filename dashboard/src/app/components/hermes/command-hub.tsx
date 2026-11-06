@@ -1,5 +1,7 @@
 "use client";
 
+import { skillProductDescription } from "@/lib/hermes/skill-product-copy.ts";
+
 import {
   forwardRef,
   useEffect,
@@ -84,12 +86,24 @@ import {
 } from "@/lib/spotify-agent/identity.ts";
 import SkillsCatalogPanel from "./skills-catalog-panel";
 import WorkflowTemplatesPanel from "./workflow-templates-panel";
+import { UnifiedWorkflowsPanel } from "./unified-workflows-panel";
+import { AgentManagerPanel } from "./agent-manager-panel";
+import { TRADINGAGENTS_COMMAND } from "@/lib/tradingagents/identity.ts";
+import { VIDEO_USE_COMMAND } from "@/lib/video-use/identity.ts";
 import ReferenceChatsPanel from "./reference-chats-panel";
+import BotsPanel from "../bots/bots-panel";
+import LoadingRows from "./loading-rows";
+import { loadCachedBots } from "@/lib/bots/client-cache";
 import ReloadableFetchError from "@/app/components/reloadable-fetch-error";
 import FavoriteBox, {
   DEFAULT_CAPABILITY_HIGHLIGHT_COLOR,
   capabilityHighlightStyle,
 } from "./favorite-box";
+
+function preloadBots() {
+  // Like Skills, the panel is ready with the picker; only its data needs warming.
+  void loadCachedBots().catch(() => undefined);
+}
 
 // Loaded only when the operator is opened, so the composer stays light.
 const BrowserOperatorDialog = dynamic(
@@ -172,7 +186,7 @@ const MIGRATION_KEY = "breadboard:prompt-library:server-migrated:v1";
 
 // App connections moved to Settings → Connections: signing an account in is
 // setup, done once, not something you pick mid-request.
-type PaletteTab = "skill" | "workflow" | "agent" | "prompt" | "reference";
+type PaletteTab = "skill" | "workflow" | "agent" | "bot" | "prompt" | "reference";
 type DetailView =
   | "new-prompt"
   | "manage-prompts"
@@ -226,6 +240,7 @@ function commandItemForAgencyAgent(agent: PublicAgencyAgent): CommandHubItem {
 
 export interface CommandHubHandle {
   handleKeyDown: (event: KeyboardEvent<HTMLElement>) => boolean;
+  openTab: (tab: 'skill' | 'reference') => void;
   /**
    * Open one agent's settings panel without going through the palette. The
    * request forms that replace the message field need it: they say "change the
@@ -237,6 +252,8 @@ export interface CommandHubHandle {
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onToggleSearch?: () => void;
+  searchOpen?: boolean;
   onSelect: (item: CommandHubItem) => void;
   /** Stages one of the user's saved automations in the chat composer. */
   onRunWorkflow?: (workflow: LocalWorkflowSummary) => void;
@@ -264,11 +281,7 @@ interface Props {
   onSelectCareerOps?: () => void;
   /** When provided, selecting OpenExecutive inserts its canonical command. */
   onSelectOpenExecutive?: () => void;
-  /**
-   * Kept for composer compatibility with direct `/agents:trading-agent`
-   * invocations. Trading Agent is intentionally not a user-selectable palette
-   * entry; Super Agent can route a firm analysis to it directly.
-   */
+  /** Selects the existing structured instrument-analysis form. */
   onSelectTradingAgents?: () => void;
   /**
    * Shorts, like Trading Agent, is selected rather than typed after: it takes a
@@ -457,26 +470,13 @@ function AgentSettingsButton({ name, onOpen }: { name: string; onOpen: () => voi
   );
 }
 
-function LoadingRows() {
-  return (
-    <div className="space-y-2 p-2" aria-label="Loading capabilities">
-      {[0, 1, 2].map((item) => (
-        <div key={item} className="animate-pulse rounded-xl px-3 py-3 motion-reduce:animate-none">
-          <span className="block min-w-0 space-y-2">
-            <span className="block h-3 w-2/5 rounded bg-[var(--paper-strong)]" />
-            <span className="block h-2.5 w-4/5 rounded bg-[var(--paper-strong)]" />
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 export const CommandHub = forwardRef<CommandHubHandle, Props>(
   function CommandHub(
     {
       open,
       onOpenChange,
+      onToggleSearch,
+      searchOpen = false,
       onSelect,
       onRunWorkflow,
       onSelectReference,
@@ -490,6 +490,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       onSelectMusicProducer,
       onSelectCareerOps,
       onSelectOpenExecutive,
+      onSelectTradingAgents,
       onSelectShorts,
       onSelectFormsmith,
       onSelectVibeTrading,
@@ -545,6 +546,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     const [error, setError] = useState<string | null>(null);
     const [activeIndex, setActiveIndex] = useState(0);
     const [agentDirectoryOpen, setAgentDirectoryOpen] = useState(false);
+    const [agentManagerOpen, setAgentManagerOpen] = useState(false);
     const [agencyAgents, setAgencyAgents] = useState<CommandHubItem[]>([]);
     const [agencyAgentsLoading, setAgencyAgentsLoading] = useState(false);
     const [agencyAgentsLoaded, setAgencyAgentsLoaded] = useState(false);
@@ -628,6 +630,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
           .catch(() => undefined);
         void loadCachedSkillsCatalog(skillsCatalogUrl({ surface })).catch(() => undefined);
         void loadAgencyAgents();
+        preloadBots();
       }, 1_000);
       return () => window.clearTimeout(timer);
       // `loadAgencyAgents` deliberately reads the load flags from this render;
@@ -645,6 +648,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       setQuery("");
       setActiveIndex(0);
       void loadPalette();
+      preloadBots();
       if (tab === "agent") void loadAgencyAgents();
       window.setTimeout(() => searchRef.current?.focus(), 0);
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -706,7 +710,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       const normalized = query.trim().toLowerCase();
       const filtered = normalized
         ? source.filter((item) =>
-            `${item.token} ${item.name} ${item.description} ${item.category ?? ""} ${item.source ?? ""} ${item.searchTerms ?? ""}`
+            `${item.token} ${item.name} ${item.description} ${skillProductDescription(item)} ${item.category ?? ""} ${item.source ?? ""} ${item.searchTerms ?? ""}`
               .toLowerCase()
               .includes(normalized),
           )
@@ -760,7 +764,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     const agencyDirectoryItems = useMemo(
       () => tab === "agent"
         ? tabItems.filter(
-            (item) => item.slug !== ARIS_AGENT_SLUG && item.slug !== SPOTIFY_AGENT_SLUG,
+            (item) => item.slug !== ARIS_AGENT_SLUG && item.slug !== SPOTIFY_AGENT_SLUG && !item.token.startsWith("workflows:"),
           )
         : tabItems,
       [tab, tabItems],
@@ -836,6 +840,8 @@ const showCareerOps =
         FORMSMITH_COMMAND,
         "shaper shape 3d model mesh glb reconstruct reconstruction picture photo image object geometry scan",
       );
+    const showTradingAgents = surface !== "quartz_ai" && Boolean(onSelectTradingAgents) &&
+      matchesAgentSearch("Trading Agent", TRADINGAGENTS_COMMAND, "markets instrument stock symbol analysts debate risk");
     const showVibeTrading =
       surface !== "quartz_ai" &&
       Boolean(onSelectVibeTrading) &&
@@ -1111,6 +1117,9 @@ const showCareerOps =
         "globe earth satellite satellites aircraft flights ships vessels earthquakes fires cameras cctv osint world map live tracking thermal night vision spy view",
       );
     const hasVisibleAgents =
+      (surface === "dashboard_terminal" && matchesAgentSearch("Video Use", VIDEO_USE_COMMAND, "edit video clips subtitles")) ||
+      showPraxist ||
+      showTradingAgents ||
       showGodsEye ||
       showAgentTars ||
       showAgentBrowser ||
@@ -1163,6 +1172,27 @@ const showCareerOps =
       onSelect(item);
       setQuery("");
       onOpenChange(false);
+    }
+
+    function openAgentSettings(id: string) {
+      const custom: Record<string, () => void> = {
+        "agent-tars": () => setBrowserOperatorOpen(true),
+        "agent-reach": () => setAgentReachSettingsOpen(true),
+        "socials-manager": () => setSocialsManagerSettingsOpen(true),
+        hyperframes: () => setHyperframesSettingsOpen(true),
+        resource2skill: () => setResource2SkillSettingsOpen(true),
+        matraix: () => setMatraixSettingsOpen(true),
+        "bolt-slides": () => setBoltSlidesSettingsOpen(true),
+        classroom: () => setClassroomSettingsOpen(true),
+        "gods-eye": () => setGodsEyeSettingsOpen(true),
+        openmontage: () => setOpenMontageSettingsOpen(true),
+        openscience: () => setOpenscienceSettingsOpen(true),
+        openwork: () => setOpenworkSettingsOpen(true),
+        wardrobe: () => setWardrobeSettingsOpen(true),
+        "inbox-zero": () => setInboxZeroSettingsOpen(true),
+      };
+      if (custom[id]) custom[id]();
+      else setAgentSettingsFor(id);
     }
 
     function chooseCatalogSkill(skill: {
@@ -1250,11 +1280,14 @@ const showCareerOps =
         detail ||
         tab === "skill" ||
         tab === "workflow" ||
+        tab === "bot" ||
         tab === "reference" ||
         (tab === "agent" && !agentDirectoryOpen)
       ) {
         return false;
       }
+      // Let row controls (including prompt settings) handle their own keys.
+      if (event.target instanceof Element && event.target.closest("button")) return false;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         const direction = event.key === "ArrowDown" ? 1 : -1;
@@ -1271,6 +1304,7 @@ const showCareerOps =
 
     useImperativeHandle(ref, () => ({
       handleKeyDown,
+      openTab: (nextTab) => { setTab(nextTab); onOpenChange(true); },
       openAgentSettings: (agentId: string) => setAgentSettingsFor(agentId),
     }));
 
@@ -1402,6 +1436,7 @@ const showCareerOps =
       { id: "skill", label: "Skills" },
       { id: "workflow", label: "Workflows" },
       { id: "agent", label: "Agents" },
+      { id: "bot", label: "Bots" },
       { id: "prompt", label: "Prompts" },
       { id: "reference", label: "Reference" },
     ];
@@ -1428,9 +1463,11 @@ const showCareerOps =
     function selectTab(nextTab: PaletteTab) {
       setTab(nextTab);
       setAgentDirectoryOpen(false);
+      setAgentManagerOpen(false);
       setQuery("");
       setActiveIndex(0);
       if (nextTab === "agent") void loadAgencyAgents();
+      if (nextTab === "bot") preloadBots();
     }
 
     async function toggleAgentDirectory() {
@@ -1467,6 +1504,7 @@ const showCareerOps =
         : "sm:absolute sm:inset-x-auto sm:bottom-full sm:left-0 sm:mb-3 sm:h-[min(620px,72vh)] sm:w-[min(600px,calc(100vw-2rem))]";
 
     function warmPalette() {
+      preloadBots();
       void loadCachedCommandResponse<CommandResponse>(paletteUrl).catch(() => undefined);
       void loadCachedSkillsCatalog(skillsCatalogUrl({ surface })).catch(() => undefined);
       if (!agencyAgentsLoaded && !agencyAgentsLoading) void loadAgencyAgents();
@@ -1476,15 +1514,15 @@ const showCareerOps =
       <div className="relative shrink-0">
         <button
           type="button"
-          onClick={() => onOpenChange(!open)}
+          onClick={() => onToggleSearch ? onToggleSearch() : onOpenChange(!open)}
           onPointerEnter={warmPalette}
           onFocus={warmPalette}
           disabled={disabled}
           className={`neu-button-icon flex items-center justify-center rounded-full font-mono text-lg text-[var(--ink)] transition hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:opacity-40 ${compact ? "h-9 w-9" : "h-11 w-11"}`}
           title="Use a capability"
           aria-label="Open capabilities"
-          aria-expanded={open}
-          aria-haspopup="dialog"
+          aria-expanded={open || searchOpen}
+          aria-haspopup={onToggleSearch ? 'listbox' : 'dialog'}
         >
           /
         </button>
@@ -1536,7 +1574,14 @@ const showCareerOps =
               ) : null}
 
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2">
-                {(tab === "agent" || tab === "prompt") && !detail ? (
+                {tab === "agent" && !detail && surface !== "quartz_ai" ? (
+                  <div className="mb-3 flex items-center gap-2 px-1">
+                    <button type="button" aria-pressed={!agentManagerOpen} onClick={() => setAgentManagerOpen(false)} className="rounded-lg px-3 py-2 text-xs font-medium hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">Choose an agent</button>
+                    <button type="button" aria-pressed={agentManagerOpen} onClick={() => { setAgentManagerOpen(true); setAgentDirectoryOpen(false); }} className="rounded-lg px-3 py-2 text-xs font-medium hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">Manage agents</button>
+                    <button ref={agentPreferencesTriggerRef} type="button" onClick={() => setAgentPreferencesOpen(true)} className="ml-auto rounded-lg px-2 py-2 text-xs text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">Selection preferences</button>
+                  </div>
+                ) : null}
+                {(tab === "agent" || tab === "prompt") && !detail && !agentManagerOpen ? (
                   <div className="relative mb-3">
                     <svg
                       aria-hidden
@@ -1559,15 +1604,28 @@ const showCareerOps =
                       placeholder={
                         tab === "agent" ? "Search agents" : "Search prompts"
                       }
-                      className={`neu-control w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] py-2.5 pl-9 ${tab === "agent" ? "pr-12" : "pr-3"} text-sm text-[var(--ink)] outline-none focus:border-[var(--botanical)]`}
+                      className="neu-control w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] py-2.5 pl-9 pr-12 text-sm text-[var(--ink)] outline-none focus:border-[var(--botanical)]"
                       aria-label={
                         tab === "agent" ? "Search agents" : "Search prompts"
                       }
                     />
-                    {tab === "agent" ? <button ref={agentPreferencesTriggerRef} type="button" onClick={() => setAgentPreferencesOpen(true)} aria-label="Agent selection settings" title="Agent selection settings" aria-haspopup="dialog" className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)] active:scale-[0.97]"><Settings2 size={16} strokeWidth={1.6} /></button> : null}
+                    {tab === "agent" ? <button type="button" onClick={() => { setAgentManagerOpen(true); setAgentDirectoryOpen(false); }} aria-label="Agent manager settings" title="Manage agent downloads and setup" className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)] active:scale-[0.97]"><Settings2 size={16} strokeWidth={1.6} /></button> : null}
+                    {tab === "prompt" ? (
+                      <button
+                        type="button"
+                        onClick={() => { setDetail("manage-prompts"); setDetailMessage(null); }}
+                        aria-label="Saved prompts settings"
+                        title="Manage saved prompts"
+                        className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+                      >
+                        <Settings2 size={16} strokeWidth={1.6} />
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
-                {tab === "skill" && !detail ? (
+                {tab === "agent" && agentManagerOpen && !detail ? (
+                  <AgentManagerPanel onOpenAgentSettings={openAgentSettings} onChanged={() => void loadPalette(true)} />
+                ) : tab === "skill" && !detail ? (
                   <SkillsCatalogPanel
                     runtimeSessionId={sessionId ?? null}
                     surface={surface}
@@ -1590,6 +1648,8 @@ const showCareerOps =
                     highlightColors={highlightColors}
                     onHighlightChange={(upstreamId, color) => setHighlightId(`skill:${upstreamId}`, color)}
                   />
+                ) : tab === "bot" && !detail ? (
+                  <BotsPanel onNavigate={() => onOpenChange(false)} />
                 ) : tab === "workflow" && !detail ? (
                   <WorkflowTemplatesPanel
                     onRunWorkflow={onRunWorkflow ? (workflow) => {
@@ -1617,8 +1677,28 @@ const showCareerOps =
                   />
                 ) : tab === "agent" && !detail ? (
                   <>
+                    <UnifiedWorkflowsPanel query={query} surface={surface} onSelect={choose} />
+                    <h3 className="px-3 py-2 text-sm font-medium text-[var(--ink-heading)]">Specialist agents</h3>
                     <ul role="listbox" aria-label="Agents" className="divide-y divide-[var(--line)]">
                     {[
+                    ...(surface === "dashboard_terminal" && matchesAgentSearch("Video Use", VIDEO_USE_COMMAND, "edit video clips subtitles") ? [{ name: "Video Use", node: (
+                      <li key="agent-video-use" className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]">
+                        <button id="video-use-entry" type="button" onClick={() => choose({ id: "runtime-agent:video-use", kind: "agent", slug: "agents:video-use", token: "agents:video-use", name: "Video Use", description: "Edit an attached video.", installed: true, enabled: true, healthy: true })} className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]">
+                          <span className="block font-mono text-sm font-medium text-[var(--ink-heading)]">{VIDEO_USE_COMMAND}</span>
+                          <span className="mt-0.5 block text-xs text-[var(--ink)]">Edit a supplied video’s cuts, framing, pacing and captions. Attach a video or open its artifact in the editor.</span>
+                        </button>
+                        <AgentSettingsButton name="Video Use" onOpen={() => setAgentSettingsFor("video-use")} />
+                      </li>
+                    ) }] : []),
+                    ...(showTradingAgents ? [{ name: "Trading Agent", node: (
+                      <li key="agent-trading-agent" className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]">
+                        <button id="trading-agent-entry" type="button" onClick={() => { onSelectTradingAgents?.(); onOpenChange(false); }} className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]">
+                          <span className="block font-mono text-sm font-medium text-[var(--ink-heading)]">{TRADINGAGENTS_COMMAND}</span>
+                          <span className="mt-0.5 block text-xs text-[var(--ink)]">Analyze a stock or other investment from competing viewpoints, including risks. Choose a symbol and date.</span>
+                        </button>
+                        <AgentSettingsButton name="Trading Agent" onOpen={() => setAgentSettingsFor("trading-agent")} />
+                      </li>
+                    ) }] : []),
                     ...(showSpotifyAgent && spotifyAgent
                       ? [{ name: "Spotify", node: (
                       <li key="agent-spotify"
@@ -1635,7 +1715,7 @@ const showCareerOps =
                             {SPOTIFY_AGENT_COMMAND}
                           </span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Finds music, manages playlists and the library, and controls Spotify Connect playback.
+                            Find music, manage playlists, and control Spotify playback.
                           </span>
                         </button>
                         <FavoriteBox
@@ -1664,7 +1744,7 @@ const showCareerOps =
                             </span>
                           </span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Takes a research project from idea to report: finds papers, plans experiments, checks conclusions, and produces work you can review.
+                            Research an idea, plan experiments, and produce a report you can review.
                           </span>
                         </button>
                         <FavoriteBox
@@ -1724,7 +1804,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{AGENT_BROWSER_SLASH_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Opens a real browser to visit sites, click buttons, fill forms, and gather information while showing each step in chat.
+                            Browse websites, fill forms, and gather information. Follow each step in chat.
                           </span>
                         </button>
                         <FavoriteBox
@@ -1752,7 +1832,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{AGENT_REACH_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Finds current information across social platforms, video sites, GitHub, RSS, and the open web, then answers with links to its sources.
+                            Search social platforms, video sites, GitHub, and the web for answers with sources.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -1787,7 +1867,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{MEETING_NOTES_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Turns a meeting recording into who was there, what was decided, what is due and what happens next. Attach a recording, record one here, or paste a transcript.
+                            Turn a meeting recording or transcript into notes, decisions, and action items.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -1822,7 +1902,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{GET_DOC_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Finds academic papers from a title or a description, lists what each one is, and saves the free PDFs to your artifacts with one click.
+                            Find academic papers and save available free PDFs.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -1929,7 +2009,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{CAREER_OPS_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Paste a job posting to get it scored against your CV, or ask for a tailored CV, a cover letter, interview prep, or where every application stands.
+                            Match jobs to your CV, tailor applications, prepare for interviews, and track your job search.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -1964,7 +2044,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{OPENEXECUTIVE_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Runs an executive team of specialists to analyze complex decisions, challenge assumptions, and turn the result into an actionable recommendation.
+                            Get advice on business decisions from a team of specialists.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -1999,7 +2079,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{SHORTS_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Turns a long video into short vertical clips of its best moments — it listens to the whole thing, picks the parts worth posting, and crops each one to follow the speaker. Asks for a video instead of a message.
+                            Choose a video to turn its highlights into vertical clips that follow the speaker.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2034,7 +2114,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{FORMSMITH_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Turns one JPEG, PNG, or WebP picture into a rotatable 3D GLB with the local ShapeR model. Accepts a picture instead of a message.
+                            Choose a JPEG, PNG, or WebP image to create a 3D model you can rotate and download.
                           </span>
                         </button>
                         <FavoriteBox
@@ -2062,7 +2142,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{VIBE_TRADING_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Ask a finance question in plain words and it does the work: pulls market data, builds and backtests a strategy, tests a factor, or checks a thesis — and shows the numbers behind the answer.
+                            Research markets, test trading strategies, and check investment ideas against data.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2097,7 +2177,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{STOCK_ANALYST_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Answers a question about a named stock with live prices, charts, news and its own strategy playbooks — across mainland China, Hong Kong, the US, Japan, Korea and Taiwan.
+                            Analyze stocks using live prices, charts, and news across Asian and US markets.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2132,7 +2212,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{DEER_FLOW_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Give it a job rather than a question: it plans, searches, writes files in its own workspace, hands parts off to helper agents, and comes back with the work and the documents it produced.
+                            Delegate a task that needs research, writing, or several steps. Get the finished work back in chat.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2168,7 +2248,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{DEEP_RESEARCH_SLASH_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Investigates a question through several rounds of web research, compares the evidence, and returns a detailed report with sources.
+                            Investigate a question through several rounds of web research and get a report with sources.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2203,7 +2283,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{OPENPLANTER_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Breaks a complex problem into connected questions, investigates each one, and shows a visual map, findings, and suggested changes in chat.
+                            Investigate a complex problem and map its questions, findings, and suggested changes.
                           </span>
                         </button>
                         <FavoriteBox
@@ -2231,7 +2311,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{SOCIALS_MANAGER_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Drafts a tailored post for each connected social platform and saves every version for review. You decide which drafts to schedule.
+                            Draft posts for each social platform. Review them before choosing what to schedule.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2266,7 +2346,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{HARDWARE_BLUEPRINT_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Turns a hardware idea into a checked circuit: a wiring diagram, a schematic, a parts list, step-by-step assembly, and firmware that uses the same pins.
+                            Turn a hardware idea into circuit diagrams, a parts list, assembly steps, and firmware.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2301,7 +2381,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{PARAMETRIC_CAD_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Designs a dimensioned, 3D-printable part: parametric CAD source built through a real kernel, checked geometry, an interactive preview, and STEP, STL, GLB and 3MF to download.
+                            Design a dimensioned 3D part with an interactive preview and STEP, STL, GLB, or 3MF downloads.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2336,7 +2416,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{HYPERFRAMES_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Makes a short video from a description — writes the animation, checks it in a browser, renders an MP4, and plays it in chat.
+                            Create animated videos from a description and download them as MP4s.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2371,7 +2451,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{RESOURCE2SKILL_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Builds polished Web, PowerPoint, Excel, Blender, or audio artifacts with Microsoft&apos;s distilled multimodal skill libraries.
+                            Create web pages, presentations, spreadsheets, Blender projects, and audio.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2406,7 +2486,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{BOLT_SLIDES_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Builds a presentation you can actually present &mdash; every slide a live web page, with click-builds, annotation, and a presenter view.
+                            Create interactive presentations with annotations and a presenter view.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2441,7 +2521,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{GODS_EYE_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Aims a photorealistic live globe &mdash; aircraft, ships, satellites, quakes, cameras &mdash; at whatever you name, framed right in the chat.
+                            Explore a 3D globe with live aircraft, ships, satellites, earthquakes, and cameras.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2476,7 +2556,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{CLASSROOM_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Teaches a topic or your attached documents as an interactive classroom &mdash; slides with an AI teacher, quizzes, simulations, and project work.
+                            Turn a topic or your documents into lessons with an AI teacher, quizzes, and simulations.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2511,7 +2591,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{MATRAIX_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Puts your idea, wording, or price to a sampled population of simulated people and reports how they split, and why.
+                            Test an idea, wording, or price with simulated people and compare their responses.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2546,7 +2626,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{OPENMONTAGE_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Runs a full video production from one brief — picks a pipeline, writes the script and scene plan, sources or generates the assets, cuts the edit, and renders the film.
+                            Produce a video from a brief, including the script, visuals, and final edit.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2581,7 +2661,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{OPENWORK_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Does the work inside your OpenWork workspace — its skills and connected services — and hands back anything it made.
+                            Complete tasks using the files, skills, and connected apps in your OpenWork workspace.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2616,7 +2696,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{INBOX_ZERO_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Works through your real email — finds and summarizes threads, drafts and sends replies, archives, labels and unsubscribes, and sets up rules that sort mail for you. Asks before it sends anything.
+                            Find and summarize emails, draft replies, and organize your inbox. Asks before sending.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2651,7 +2731,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{MAX_RESEARCH_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Combines web research, Feynman-ranked papers, experiments and an autonomous R&amp;D project, then reconciles the findings into one answer. Takes tens of minutes.
+                            Combine web research, academic papers, and experiments for a thorough answer. Takes tens of minutes.
                           </span>
                         </button>
                         <FavoriteBox
@@ -2679,7 +2759,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{OPENSCIENCE_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Takes a research question and works it through — reads the literature, writes and runs the code, and tells you what it found.
+                            Investigate a research question through literature, code, and experiments.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2714,7 +2794,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{PRAXIST_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Runs an existing measurable Praxist task project through its multi-agent, multi-generation research loop. Add the absolute task directory after the command.
+                            Run an existing Praxist research project. Add its full folder path after the command.
                           </span>
                         </button>
                         <FavoriteBox
@@ -2742,7 +2822,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{VIMAX_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Turns an idea into a film — writes the story and screenplay, casts and draws the characters, storyboards every shot, and plays the result back as an animatic.
+                            Turn an idea into a story, characters, and a storyboard preview of your film.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2777,7 +2857,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{VOX_DIRECTOR_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Explains a topic in a short narrated video — a torn-paper collage poster for each beat, its pieces flying into place, read aloud and rendered on this machine.
+                            Explain a topic with a narrated, animated paper-collage video.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2812,7 +2892,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{MONEY_PRINTER_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Turns a topic into a finished short video — writes the script, reads it aloud, finds stock footage to match, adds subtitles and music, and hands you an MP4.
+                            Create a short video with a script, narration, stock footage, subtitles, and music.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2847,7 +2927,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{LEGAL_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Attach contracts, filings or a data room and say what you need — a review, an issues list, a memo, a draft. Reads every document, cites where each point comes from, and hands back the finished Word, Excel or PowerPoint file. A draft for a lawyer to check, not legal advice.
+                            Review legal documents or draft memos with source references. Attach your files and describe the task. Drafts need a lawyer’s review; not legal advice.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2882,7 +2962,7 @@ const showCareerOps =
                         >
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{WARDROBE_COMMAND}</span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Attach photos of your clothes — worn, hung up or laid out. Finds each garment, cuts it out on its own, makes a photo of you wearing it, and files the piece in a wardrobe you can browse.
+                            Organize photos of your clothes and create images of you wearing them.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -2949,7 +3029,7 @@ const showCareerOps =
                             {CODEX_COMMAND}
                           </span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Uses Codex to read, edit, and test the local project linked to this Garden, with its progress and result shown in chat.
+                            Use Codex to build, fix, and test the project linked to this Garden.
                           </span>
                         </button>
                         <FavoriteBox
@@ -2979,7 +3059,7 @@ const showCareerOps =
                             {RUFLO_COMMAND}
                           </span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
-                            Coordinates several coding workers on larger changes in the linked project, covering planning, implementation, and review in one run.
+                            Use a team of coding agents to plan, implement, and review larger changes in the linked project.
                           </span>
                         </button>
                         <AgentSettingsButton
@@ -3048,15 +3128,15 @@ const showCareerOps =
                     <ul className="mt-3 space-y-2">{data?.groups.prompts.map((item) => <li key={item.id} className="rounded-xl bg-[var(--paper-surface)] p-3"><div className="flex items-start gap-3"><div className="min-w-0 flex-1"><p className="text-sm font-medium text-[var(--ink-heading)]">{item.name}</p><p className="mt-1 line-clamp-3 text-xs text-[var(--ink-muted)]">{item.content ?? item.description}</p><p className="mt-2 text-[10px] text-[var(--ink-muted)]">{item.category ?? "Custom"} · {item.isDefault ? "Breadboard default" : "Your prompt"}</p></div><div className="flex shrink-0 gap-1"><button type="button" onClick={() => editPrompt(item)} className="rounded-lg px-2 py-1 text-xs text-[var(--botanical)]">{item.isDefault ? "Use as copy" : "Edit"}</button><button type="button" onClick={() => duplicatePrompt(item)} className="rounded-lg px-2 py-1 text-xs text-[var(--botanical)]">Duplicate</button>{item.isDefault ? null : <button type="button" onClick={() => void deleteSavedPrompt(item)} className="rounded-lg px-2 py-1 text-xs text-[#9a4438]">Delete</button>}</div></div></li>)}</ul>
                   </div>
                 ) : detail === "new-prompt" ? (
-                  <div className="p-3">
+                  <div data-enter-submit-scope className="p-3">
                     <div className="flex items-center gap-3"><button type="button" onClick={() => setDetail("manage-prompts")} className="text-xs text-[var(--botanical)]">← Back</button><h3 className="font-semibold text-[var(--ink-heading)]">{editingPromptId ? "Edit prompt" : "Create a prompt"}</h3><button type="button" onClick={() => setDetail("manage-prompts")} className="ml-auto text-xs text-[var(--botanical)]">Manage prompts</button></div>
                     <label className="mt-4 block text-xs font-medium">Title<input autoFocus value={promptTitle} onChange={(event) => setPromptTitle(event.target.value)} className="neu-control mt-1.5 w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--botanical)]" placeholder="Research synthesis" /></label>
                     <label className="mt-3 block text-xs font-medium">Category<input value={promptCategory} onChange={(event) => setPromptCategory(event.target.value)} className="neu-control mt-1.5 w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2.5 text-sm" /></label>
                     <label className="mt-3 block text-xs font-medium">Prompt<textarea value={promptContent} onChange={(event) => setPromptContent(event.target.value)} rows={7} className="mt-1.5 w-full resize-y rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--botanical)]" placeholder="Describe the reusable instruction…" /></label>
-                    <p className="mt-2 text-[11px] text-[var(--ink-muted)]">Prompts organize instructions but never grant tools, connections, or implementation capability.</p>
+                    <p className="mt-2 text-[11px] text-[var(--ink-muted)]">Choose a saved prompt to edit it before sending.</p>
                     {detailMessage ? <p role="status" className="mt-3 text-xs text-[#8a6f00]">{detailMessage}</p> : null}
                     <div className="mt-4 flex flex-wrap items-center gap-3">
-                      <button type="button" disabled={!promptTitle.trim() || !promptContent.trim()} onClick={() => void savePrompt()} className="neu-button-accent rounded-xl bg-[var(--botanical)] px-4 py-2.5 text-sm font-medium text-white disabled:opacity-40">Save prompt</button>
+                      <button data-enter-submit type="button" disabled={!promptTitle.trim() || !promptContent.trim()} onClick={() => void savePrompt()} className="neu-button-accent rounded-xl bg-[var(--botanical)] px-4 py-2.5 text-sm font-medium text-white disabled:opacity-40">Save prompt</button>
                     </div>
                   </div>
                 ) : tabItems.length ? (
@@ -3093,15 +3173,9 @@ const showCareerOps =
                               )}
                               <span className="min-w-0 flex-1">
                                 <span className="flex items-center gap-2">
-                                  {item.kind === "prompt" ? (
-                                    <span className="block truncate break-all font-mono text-sm font-medium text-[var(--ink-heading)]">
-                                      /{item.token ?? item.slug ?? item.name}
-                                    </span>
-                                  ) : (
-                                    <span className="truncate text-sm font-medium text-[var(--ink-heading)]">{item.name}</span>
-                                  )}
+                                  <span className="truncate text-sm font-medium text-[var(--ink-heading)]">{item.name}</span>
                                 </span>
-                                <span className={`mt-0.5 block text-xs text-[var(--ink-muted)] ${item.kind === "agent" ? "line-clamp-2" : "truncate"}`}>{item.description}</span>
+                                <span className={`mt-0.5 block text-xs text-[var(--ink-muted)] ${item.kind === "agent" ? "line-clamp-2" : "truncate"}`}>{skillProductDescription(item)}</span>
                                 {item.kind === "agent" && item.vibe ? (
                                   <span className="mt-1 block truncate text-[10px] italic text-[var(--ink-muted)]">{item.vibe}</span>
                                 ) : null}
@@ -3117,6 +3191,17 @@ const showCareerOps =
                                 ) : null}
                               </span>
                             </button>
+                            {item.kind === "prompt" ? (
+                              <button
+                                type="button"
+                                onClick={() => editPrompt(item)}
+                                aria-label={`Edit ${item.name}`}
+                                title={`Edit ${item.name}`}
+                                className="neu-button-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] hover:text-[var(--botanical)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+                              >
+                                <SettingsSlidersIcon />
+                              </button>
+                            ) : null}
                             <FavoriteBox
                               color={highlightColor}
                               onColorChange={(color) => setHighlight(item, color)}
@@ -3134,7 +3219,7 @@ const showCareerOps =
                         ? <span aria-hidden>↝</span>
                         : tab === "reference"
                           ? <CapabilityIcon kind="mcp" />
-                          : <CapabilityIcon kind={tab} />}
+                          : <CapabilityIcon kind={tab === "bot" ? "agent" : tab} />}
                     </span>
                     <p className="mt-3 text-sm font-medium text-[var(--ink-heading)]">
                       {query
@@ -3153,7 +3238,7 @@ const showCareerOps =
                   </div>
                 )}
               </div>
-              {(agencyAgentsNotice ?? data?.notices?.agents) && tab === "agent" && !detail && !agentDirectoryOpen ? <p className="border-t border-[var(--line)] px-4 py-2 text-[11px] text-[#8a6f00]">{agencyAgentsNotice ?? data?.notices?.agents}</p> : null}
+              {(agencyAgentsNotice ?? data?.notices?.agents) && tab === "agent" && !detail && !agentDirectoryOpen && !agentManagerOpen ? <p className="border-t border-[var(--line)] px-4 py-2 text-[11px] text-[#8a6f00]">{agencyAgentsNotice ?? data?.notices?.agents}</p> : null}
             </section>
             {agentDirectoryOpen && tab === "agent" && !detail ? (
               <aside
@@ -3252,7 +3337,7 @@ const showCareerOps =
                                     <span className="flex items-center gap-2">
                                       <span className="truncate font-mono text-sm font-medium text-[var(--ink-heading)]">/{item.token}</span>
                                     </span>
-                                      <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink-muted)]">{item.description}</span>
+                                      <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink-muted)]">{skillProductDescription(item)}</span>
                                       {item.vibe ? (
                                         <span className="mt-1 block truncate text-[10px] italic text-[var(--ink-muted)]">{item.vibe}</span>
                                       ) : null}

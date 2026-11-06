@@ -106,6 +106,9 @@ export const RUNTIME_PRODUCT_ENVIRONMENT_NAMES = [
   "SCRIBERR_POLL_INTERVAL_MS",
   "SCRIBERR_MODEL_FAMILY",
   "SCRIBERR_MODEL",
+  "SCRIBERR_DEVICE",
+  "SCRIBERR_COMPUTE_TYPE",
+  "SCRIBERR_BATCH_SIZE",
   "SCRIBERR_LANGUAGE",
   "SCRIBERR_DIARIZATION",
   "VIDEO_TRANSCRIPTION_DELETE_SCRIBERR_JOBS",
@@ -328,6 +331,7 @@ export interface RuntimeBootstrapInput {
   /** Immutable executable and launch-manifest root derived by Electron main. */
   readonly runtimeRoot: string;
   readonly dataRoot: string;
+  readonly bulkRoot?: string;
   readonly configRoot: string;
 }
 
@@ -530,6 +534,7 @@ export class RuntimeProcess {
       appRoot: normalizeAbsolutePath(options.bootstrap.appRoot, "appRoot"),
       runtimeRoot: normalizeAbsolutePath(options.bootstrap.runtimeRoot, "runtimeRoot"),
       dataRoot: normalizeAbsolutePath(options.bootstrap.dataRoot, "dataRoot"),
+      ...(options.bootstrap.bulkRoot ? {bulkRoot: normalizeAbsolutePath(options.bootstrap.bulkRoot, "bulkRoot")} : {}),
       configRoot: normalizeAbsolutePath(options.bootstrap.configRoot, "configRoot"),
     });
     this.#timeouts = Object.freeze({
@@ -761,6 +766,25 @@ export class RuntimeProcess {
    * Stops admission and asks Runtime V2 to drain. Process exit is awaited by
    * `stop()`, which owns the bounded direct-root fallback.
    */
+  async quiesceForRepair(): Promise<{ workers: number; leases: number }> {
+    this.#requireReady("quiesce for repair");
+    const value = await this.#controlJson("/v1/lifecycle/quiesce", "POST", true);
+    if (!isRecord(value) || value["ok"] !== true ||
+        !Number.isSafeInteger(value["workers"]) || Number(value["workers"]) < 0 ||
+        !Number.isSafeInteger(value["leases"]) || Number(value["leases"]) < 0) {
+      throw new RuntimeProcessError("PROTOCOL_VIOLATION", "Invalid repair quiet-boundary response.");
+    }
+    requireExactKeys(value, ["ok", "workers", "leases"], "repair quiet boundary");
+    return { workers: Number(value["workers"]), leases: Number(value["leases"]) };
+  }
+
+  async resumeAfterRepairDeferral(): Promise<void> {
+    this.#requireReady("resume after repair deferral");
+    const value = await this.#controlJson("/v1/lifecycle/resume", "POST", true);
+    if (!isRecord(value) || value["ok"] !== true) throw new RuntimeProcessError("PROTOCOL_VIOLATION", "Invalid repair admission response.");
+    requireExactKeys(value, ["ok"], "repair admission response");
+  }
+
   beginShutdown(): Promise<void> {
     if (this.#shutdownPromise) return this.#shutdownPromise;
     this.#requireReady("begin shutdown");
@@ -1123,6 +1147,7 @@ function encodeBootstrap(input: RuntimeBootstrapInput): string {
     appRoot: input.appRoot,
     runtimeRoot: input.runtimeRoot,
     dataRoot: input.dataRoot,
+    ...(input.bulkRoot ? {bulkRoot: input.bulkRoot} : {}),
     configRoot: input.configRoot,
   } as const;
   const line = `${JSON.stringify(record)}\n`;

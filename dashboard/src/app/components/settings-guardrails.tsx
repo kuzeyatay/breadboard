@@ -190,12 +190,9 @@ export default function SettingsGuardrails() {
 
       <div className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-4 py-4">
         <div>
-          <p className="text-sm font-medium text-[var(--ink-heading)]">Mask PII in outbound messages</p>
+          <p className="text-sm font-medium text-[var(--ink-heading)]">Hide personal details</p>
           <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
-            Replaces emails, phone numbers, card numbers, IBANs, IP addresses and US Social
-            Security numbers with tokens like <code>&lt;EMAIL_ADDRESS&gt;</code> before a
-            WhatsApp or Telegram reply is sent. Runs locally — nothing leaves this machine to
-            do it.
+            Hides email addresses, phone numbers, card numbers, IBANs, IP addresses, and US Social Security numbers using labels such as <code>&lt;EMAIL_ADDRESS&gt;</code> in WhatsApp and Telegram replies. This check runs on your device.
           </p>
         </div>
         <label className="flex items-center gap-2 text-xs text-[var(--ink-muted)]">
@@ -205,7 +202,7 @@ export default function SettingsGuardrails() {
             onChange={(event) => void toggleScrub(event.target.checked)}
             disabled={busy !== null}
           />
-          Scrub PII from outbound messages
+          Hide personal details in outgoing replies
         </label>
       </div>
 

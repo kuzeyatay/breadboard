@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath } from "./runtime-v2-paths.mjs";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -13,12 +14,6 @@ function fail(message, code = "chatmock_login_failed") {
   const error = new Error(message);
   error.code = code;
   throw error;
-}
-
-function samePath(left, right, platform = process.platform) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function directFile(filePath, label, platform = process.platform) {

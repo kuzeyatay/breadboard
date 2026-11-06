@@ -85,7 +85,7 @@ test("Learn planning outwaits the provider websocket and receipt grace by defaul
   );
   assert.match(
     learnSource,
-    /CHATMOCK_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT",\s*3_600,/,
+    /CHATMOCK_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT",\s*7_200,/,
     "large Learn repairs must retain a provider window above the observed 30-minute boundary",
   );
   assert.match(
@@ -822,7 +822,10 @@ describe("Learn validation, reads, and publication contracts", () => {
     const formulaDossierSource = sourceOf(namedFunction("requiredSourceFormulaDossierEntries"));
     assert.match(formulaDossierSource, /anchor\.exactText\?\.trim\(\)/);
     assert.match(formulaDossierSource, /verbatim canonical equation transcription/);
-    assert.match(learnSource, /dossier\.requiredSourceFormulas is an exact-copy checklist/);
+    // Since 2026-10-08 a relation is displayed once: verbatim when it fits, or
+    // restated in the lesson's notation and listed in the marker line.
+    assert.match(learnSource, /dossier\.requiredSourceFormulas lists the source relations this page must teach/);
+    assert.match(learnSource, /restated-source-formulas/);
     assert.match(learnSource, /If failedProblems includes missing-source-formula/);
 
     const literalFormulaSheet = sourceOf(namedFunction("withVerbatimSourceFormulaCopySheet"));
@@ -2458,8 +2461,8 @@ describe("Learn recovery and Clear transaction boundaries", () => {
     );
     assert.equal(
       recoverySource.match(/commitRecoveredLearnJobTerminalState\(/g)?.length,
-      2,
-      "both superseded and rolled-back abandoned jobs must reconcile usage",
+      3,
+      "superseded, map-kept, and rolled-back abandoned jobs must all reconcile usage",
     );
   });
 

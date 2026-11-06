@@ -1,3 +1,4 @@
+import { agencyAgentProductDescription } from "./agency-agent-product-copy.ts";
 import { load as loadYaml, JSON_SCHEMA } from "js-yaml";
 import {
   externalRuntimeLstat,
@@ -633,7 +634,7 @@ export function presentAgencyAgent(agent: AgencyAgentDefinition): PublicAgencyAg
     id: agent.id,
     slug: agent.slug,
     name: agent.name,
-    description: agent.description,
+    description: agencyAgentProductDescription(agent),
     division: agent.division,
     divisionLabel: agent.divisionLabel,
     divisionIcon: agent.divisionIcon,

@@ -196,3 +196,44 @@ test("an already-failed stream still releases its reader lock", async () => {
   });
   assert.deepEqual(calls, ["cancel", "release"]);
 });
+
+test("terminal cleanup releases an open stream without waiting for cancellation", { timeout: 1_000 }, async () => {
+  let cancelled = false;
+  let finishCancellation;
+  const body = new ReadableStream({
+    cancel() {
+      cancelled = true;
+      return new Promise(resolve => { finishCancellation = resolve; });
+    },
+  });
+  const reader = body.getReader();
+  const pendingRead = reader.read();
+  let timer;
+  try {
+    await Promise.race([
+      disposeAgentStreamReader(reader),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("completion is waiting for network cleanup")), 100);
+      }),
+    ]);
+    assert.equal(cancelled, true);
+    assert.equal(body.locked, false);
+    assert.deepEqual(await pendingRead, { done: true, value: undefined });
+  } finally {
+    clearTimeout(timer);
+    finishCancellation?.();
+  }
+});
+
+test("a late cancellation rejection cannot undo completion", async () => {
+  let rejectCancellation;
+  const body = new ReadableStream({
+    cancel() {
+      return new Promise((_, reject) => { rejectCancellation = reject; });
+    },
+  });
+  const cleanup = disposeAgentStreamReader(body.getReader());
+  rejectCancellation(new Error("connection closed during cleanup"));
+  await cleanup;
+  assert.equal(body.locked, false);
+});

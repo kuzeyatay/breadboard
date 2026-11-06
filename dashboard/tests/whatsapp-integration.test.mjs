@@ -114,7 +114,7 @@ test("a WhatsApp turn runs on the owner's selected model, not the hardcoded defa
   // is the selection. Omitting it silently routes to DEFAULT_MODEL, which is a
   // different model than the app itself answers with.
   assert.match(inbound, /getHermesUserSettings\(settings\.ownerUserId\)/);
-  assert.match(inbound, /model: preference\.defaultModel/);
+  assert.match(inbound, /model: preference\.fallbackModel/);
   assert.match(inbound, /reasoningEffort: preference\.reasoningEffort/);
   assert.ok(
     inbound.indexOf("getHermesUserSettings(") < inbound.indexOf("startConversationTurn("),

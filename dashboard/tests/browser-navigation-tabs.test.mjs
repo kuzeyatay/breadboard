@@ -99,7 +99,7 @@ test("a tab is named after the place it shows, not the product", async () => {
   assert.equal(tabLabel("", at("/dashboard?theme=light")), "Dashboard");
   assert.equal(tabLabel("breadboard", at("/")), "Dashboard");
   assert.equal(tabLabel("Plan — breadboard", at("/plan")), "Plan");
-  assert.equal(tabLabel("Profile — breadboard", at("/profile")), "Profile");
+  assert.equal(tabLabel("Profile — breadboard", at("/profile")), "Settings");
   assert.equal(tabLabel("Organization — breadboard", at("/buzz")), "Organization");
   assert.equal(tabLabel("breadboard", at("/buzz")), "Organization");
   assert.equal(tabLabel("breadboard", at("/gardens/breadboard-dev")), "Breadboard dev");
@@ -112,6 +112,17 @@ test("a tab is named after the place it shows, not the product", async () => {
   assert.equal(describeTabUrl(at("/pdf?src=%2Fapi%2Ffiles%2Fnotes.pdf")).kind, "pdf");
   assert.equal(tabLabel("notes.pdf", at("/pdf?src=%2Fapi%2Ffiles%2Fnotes.pdf")), "notes.pdf");
   assert.equal(describeTabUrl("not a url").label, "New tab");
+});
+
+test("Settings names both current and legacy desktop tabs consistently", async () => {
+  const { tabLabel, describeTabUrl } = await import("../src/lib/desktop-browser-tabs.ts");
+  for (const route of ["/settings", "/profile"]) {
+    const url = `http://127.0.0.1:3000${route}`;
+    assert.equal(describeTabUrl(url).label, "Settings");
+    assert.equal(tabLabel("breadboard", url), "Settings");
+    assert.equal(tabLabel("Profile — breadboard", url), "Settings");
+    assert.equal(tabLabel("Settings — breadboard", url), "Settings");
+  }
 });
 
 test("the Organization page publishes the same name to the desktop tab", () => {
@@ -136,7 +147,7 @@ test("Ctrl+T opens on the places there are to go, not on a copy of the page", ()
   assert.match(page, /title: "New tab — breadboard"/);
   assert.match(page, /getClusters\(userId\)/);
   const client = read("../src/app/new-tab/new-tab-client.tsx");
-  for (const href of ['"/dashboard"', '"/plan"', '"/buzz"', '"/profile"']) {
+  for (const href of ['"/dashboard"', '"/plan"', '"/buzz"', '"/settings"']) {
     assert.ok(client.includes(href), `new tab offers ${href}`);
   }
   assert.match(client, /\/gardens\/\$\{garden\.slug\}/);
@@ -167,7 +178,7 @@ test("a new tab greets the user with a stable, randomly selected addressee", () 
   assert.match(client, /useNewTabAddressee\(initialAddressee, greetingOwnerKey\)/);
   assert.match(client, /<NewTabGreeting addressee=\{addressee\}/);
   assert.match(greeting, /const PREFIX = "Where to, "/);
-  assert.match(greeting, /useGreetingTypewriter\(target, target\)/);
+  assert.match(greeting, /useGreetingTypewriter\(target, target, /);
 });
 
 test("the app New tab shares the Browser home quote and dock", () => {

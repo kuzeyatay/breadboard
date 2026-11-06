@@ -26,19 +26,19 @@ const dashboardPage = read("src/app/dashboard/page.tsx");
 const dashboardShell = read("src/app/dashboard/dashboard-page-shell.tsx");
 const dashboardClient = read("src/app/dashboard/dashboard-client.tsx");
 
-test("one profile default supplies the fallback for chats and background generation", () => {
+test("startup and fallback providers have separate profile controls", () => {
   assert.match(client, /<DefaultModelPanel \/>/);
   assert.equal(client.indexOf("<DefaultModelPanel />"), client.lastIndexOf("<DefaultModelPanel />"));
-  assert.doesNotMatch(client, /BackgroundModelPanel/);
+  assert.match(client, /<FallbackModelPanel \/>/);
   const panel = read("src/app/profile/default-model-panel.tsx");
-  assert.match(panel, /background tasks, including Thought Topology/);
-  assert.match(panel, /Chat and Learn choices override this default/);
+  assert.match(panel, /for background tasks/);
+  assert.match(panel, /The model selected when Breadboard starts/);
 });
 
 test("the profile chip is the way in, and it is a link rather than a label", () => {
-  assert.match(navbar, /href="\/profile"/);
+  assert.match(navbar, /href="\/settings"/);
   assert.match(navbar, /\{username \|\| email\}/, "it still shows who you are");
-  assert.match(navbar, /<NavigationLink newTab label="Profile"\s+href="\/profile"/, "opens in a tab and keeps its link menu");
+  assert.match(navbar, /<NavigationLink newTab label="Settings"\s+href="\/settings"/, "opens in a tab and keeps its link menu");
 });
 
 test("the navbar no longer carries the account actions", () => {
@@ -49,20 +49,21 @@ test("the navbar no longer carries the account actions", () => {
 
 test("the page is behind auth and comes back to itself after signing in", () => {
   assert.match(page, /getServerSession\(authOptions\)/);
-  assert.match(page, /redirect\("\/auth\/login\?callbackUrl=\/profile"\)/);
-  assert.match(page, /readProfileStats\(db, userId\)/, "stats are read for the session's user");
+  assert.match(page, /redirect\("\/auth\/login\?callbackUrl=\/settings"\)/);
+  assert.match(page, /readProfileStats(?:Cached)?\(db, userId\)/, "stats are read for the session's user");
   assert.doesNotMatch(client, /from "@\/lib\/db"/, "and never from the browser");
 });
 
 test("the page offers a back link, restarting, signing out, and inviting", () => {
-  assert.match(client, /<BackLink[\s\S]*?fallbackHref="\/dashboard"/);
+  assert.match(client, /<BackLink[\s\S]*?fallbackHref="\/new-tab"/);
   assert.match(client, /function RestartBreadboardButton\(\)/);
   assert.match(client, /breadboardRestartControl\(\)/);
   assert.match(client, />\{busy \? "Restarting…" : "Restart Breadboard"\}<\/span>/);
-  assert.match(client, /signOut\(\{ callbackUrl: "\/auth\/login" \}\)/);
+  assert.match(client, /<SignOutButton/);
+  assert.match(read("src/app/components/sign-out-button.tsx"), /await signOutOfWorkspace\(\)/);
   assert.ok(
     client.indexOf("<RestartBreadboardButton />") <
-      client.indexOf('onClick={() => signOut({ callbackUrl: "/auth/login" })}'),
+      client.indexOf("<SignOutButton"),
     "restart sits to the left of sign out",
   );
   assert.match(client, /fetch\("\/api\/invites", \{ method: "POST" \}\)/);
@@ -102,10 +103,6 @@ test("the optional navbar entries obey their settings", () => {
   assert.ok(planGuardIndex > 0, "Plan is configurable too");
   assert.ok(planLinkIndex > planGuardIndex, "and its link sits inside the guard");
 
-  const clickyGuardIndex = navbar.indexOf("{shortcuts.clicky && <ClickyShortcut />}");
-  assert.ok(clickyGuardIndex > 0, "Clicky is configurable from the same profile panel");
-  assert.ok(clickyGuardIndex < planGuardIndex, "and sits beside Plan in the navbar");
-
   assert.match(
     navbar,
     /shortcuts = DEFAULT_NAVBAR_SHORTCUTS/,
@@ -126,7 +123,8 @@ test("a seat with no page of its own still gets a row", () => {
 });
 
 test("the profile page owns the switches and reaches its own route", () => {
-  assert.match(client, /NAVBAR_SHORTCUTS\.map/, "one catalog drives both sides");
+  assert.match(client, /visibleShortcuts = NAVBAR_SHORTCUTS\.filter/, "settings derive their visible entries from the shared catalog");
+  assert.match(client, /visibleShortcuts\.map/, "settings render those entries");
   assert.match(client, /role="switch"/);
   assert.match(client, /fetch\("\/api\/profile\/navbar-shortcuts", \{/);
   assert.match(client, /method: "PATCH"/);
@@ -136,18 +134,10 @@ test("the profile page owns the switches and reaches its own route", () => {
   assert.match(shortcutsRoute, /requireUserId/, "scoped to the caller");
 });
 
-test("the profile launches the native Clicky companion and explains prompt launch", () => {
-  assert.match(client, /function ClickyPanel\(\)/);
-  assert.match(client, /clickyDesktopControl\(\)/);
-  assert.match(client, /"Launch Clicky"/);
-  assert.match(client, /"Open in Xcode"/);
-  assert.match(client, /launch Clicky/);
-  assert.match(client, /<ClickyPanel \/>/);
-});
 
 test("the profile can hide navbar flowers without removing the grass animation", () => {
   assert.match(page, /initialNavbarFlowers=\{getNavbarFlowers\(userId\)\}/);
-  assert.match(client, /label="Show flowers in the top navbar"/);
+  assert.match(client, /label="Show flowers in the navigation bar"/);
   assert.match(client, /body: JSON\.stringify\(\{ flowers: optimistic \}\)/);
   assert.match(client, /<NavbarFlowerWind showFlowers=\{showNavbarFlowers\} \/>/);
   assert.match(navbar, /<NavbarFlowerWind showFlowers=\{showFlowers\} \/>/);
@@ -237,7 +227,7 @@ test("an enabled current location persists across restarts and refreshes through
     /initializationRefresh \?\?= hydrateCurrentLocationPreference\(\)\.then\(\(\) =>\s*refreshCurrentLocationAtInitialization\(\)/,
     "React remount checks cannot duplicate the initialization request",
   );
-  assert.match(client, /It refreshes automatically while enabled\./);
+  assert.match(client, /Updates automatically while enabled\./);
 });
 
 test("a shell whose browser cannot locate falls back to the operating system", () => {
@@ -270,7 +260,7 @@ test("the profile no longer carries the product-about essay", () => {
 });
 
 test("the model card sits directly below cost without the old caveat essay", () => {
-  const costCard = client.indexOf('title="What it cost to answer you"');
+  const costCard = client.indexOf('title="Response usage"');
   const modelCard = client.indexOf("<ModelPanel cost={stats.cost} />");
   const containingStackEnd = client.indexOf("</Packed>", costCard);
 
@@ -296,8 +286,8 @@ test("the stats shown are ones no other surface already answers", () => {
     "When you work",
     "Where you work",
     "Most used phrases",
-    "What came out of it",
-    "What it cost to answer you",
+    "Your results",
+    "Response usage",
   ]) {
     assert.ok(client.includes(marker), `the page shows "${marker}"`);
   }

@@ -32,6 +32,9 @@ test("internal paths follow the dashboard port while browser addresses retain th
   assert.equal(restoredTabUrl(browser, "http://127.0.0.1:4000"), tab.url);
   assert.equal(saveTab({ ...tab, url: "file:///startup.html" }, "http://127.0.0.1:3000"), null);
   assert.equal(saveTab({ ...tab, url: "", browser: {} }, "http://127.0.0.1:3000")?.url, "");
+  assert.equal(saveTab({ ...tab, keepLoaded: true }, "http://127.0.0.1:3000")?.keepLoaded, true);
+  assert.equal(saveTab({ ...tab, keepLoaded: true, browser: {} }, "http://127.0.0.1:3000")?.keepLoaded, true);
+  assert.equal("keepLoaded" in saveTab(tab, "http://127.0.0.1:3000")!, false);
 });
 
 test("session files retain duplicates, ordering, selected tabs and anchors, and tolerate corrupt data", () => {

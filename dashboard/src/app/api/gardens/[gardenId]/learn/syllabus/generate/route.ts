@@ -7,7 +7,7 @@ import {
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
 import {
   createChatmockClient,
-  scanClusterKnowledge,
+  scanClusterKnowledgeCooperatively,
   writeDocumentKnowledge,
 } from "@/lib/knowledge";
 import {
@@ -65,7 +65,7 @@ export async function POST(
     // not open with units no uploaded document supports.
     let gardenDocuments: SyllabusGardenContextDocument[] = [];
     try {
-      gardenDocuments = scanClusterKnowledge(contentPath, cluster.slug)
+      gardenDocuments = (await scanClusterKnowledgeCooperatively(contentPath, cluster.slug))
         .nodes.filter((node) => node.type === "source-document")
         .map((node) => ({ title: node.title, description: node.description }));
     } catch {

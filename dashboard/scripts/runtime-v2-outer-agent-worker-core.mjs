@@ -1,3 +1,5 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
+import { managedModelCacheEnvironment } from "./runtime-v2-bulk-paths.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -45,18 +47,6 @@ function isRecord(value) {
 function exactRecord(value, keys) {
   return isRecord(value) &&
     Object.keys(value).sort().join(",") === [...keys].sort().join(",");
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" ||
-    (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
 function readBoundedJson(filePath, maximumBytes, label) {
@@ -353,7 +343,13 @@ function startStopInput(onStop, onFault) {
   };
 }
 
-function sourceLayout(dataRoot) {
+export function outerAgentModelCacheEnvironment(agentKind, dataRoot, environment = process.env) {
+  // Coding, browser and remote-only specialists must still work without D.
+  return ["deep-tutor", "deer-flow", "openexecutive", "shorts", "resource2skill", "openmontage", "matraix", "legal", "money-printer", "vibe-trading", "stock-analyst"].includes(agentKind)
+    ? managedModelCacheEnvironment(dataRoot, environment) : {};
+}
+
+function sourceLayout(dataRoot, agentKind) {
   const developmentDashboardRoot = path.dirname(path.dirname(ENTRYPOINT_PATH));
   const appRoot = path.dirname(developmentDashboardRoot);
   const developmentSourceRoot = path.join(developmentDashboardRoot, "src");
@@ -373,6 +369,7 @@ function sourceLayout(dataRoot) {
   process.env.BREADBOARD_REPO_ROOT = appRoot;
   process.env.QUARTZ_CONTENT_PATH ||= path.join(dataRoot, "quartz", "content");
   process.env.NODE_ENV = development ? "development" : "production";
+  Object.assign(process.env, outerAgentModelCacheEnvironment(agentKind, dataRoot));
   process.chdir(dashboardRoot);
   return { sourceRoot };
 }
@@ -701,7 +698,7 @@ export async function runRuntimeV2OuterAgentWorker(adapterId) {
   console.log = (...values) => console.error(...values);
   console.info = (...values) => console.error(...values);
   const launch = loadRuntimeV2OuterAgentLaunch({ adapterId });
-  const { sourceRoot } = sourceLayout(launch.dataRoot);
+  const { sourceRoot } = sourceLayout(launch.dataRoot, adapterId);
   await import(pathToFileURL(path.join(path.dirname(ENTRYPOINT_PATH), "learn-worker-import-hook.mjs")).href);
   const events = createRuntimeV2WorkerEventWriter(launch.identity, {
     heartbeatStage: "agent-execution",

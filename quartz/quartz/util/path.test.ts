@@ -2,6 +2,44 @@ import test, { describe } from "node:test"
 import * as path from "./path"
 import assert from "node:assert"
 import { FullSlug, TransformOptions, SimpleSlug } from "./path"
+import fs from "node:fs"
+import os from "node:os"
+import nodePath from "node:path"
+
+describe("tag filenames", () => {
+  test("ordinary and hierarchical tag URLs stay unchanged", () => {
+    assert.strictEqual(path.slugTag("Circuit analysis/Small signal"), "Circuit-analysis/Small-signal")
+  })
+
+  test("long tag names are bounded, distinct and stable", () => {
+    const prefix = "Explain the relationship between the selected channels and collision probability ".repeat(5)
+    const first = path.slugTag(prefix + "first")
+    const second = path.slugTag(prefix + "second")
+    assert(Buffer.byteLength(first + ".html") <= 255)
+    assert.notStrictEqual(first, second)
+    assert.strictEqual(path.slugTag(prefix + "first"), first)
+    assert.strictEqual(path.slugTag(first), first)
+  })
+
+  test("Unicode segments and Windows reserved names produce writable filenames", () => {
+    const directory = fs.mkdtempSync(nodePath.join(os.tmpdir(), "quartz-tags-"))
+    try {
+      for (const tag of ["電磁気学".repeat(100), "CON", "LPT1.txt", "a:b", 'quoted<name>"', "trailing."]) {
+        const slug = path.slugTag(tag)
+        assert(Buffer.byteLength(slug + ".html") <= 255)
+        assert(!/[<>:"\\|?*]/.test(slug))
+        assert.strictEqual(path.slugTag(slug), slug)
+        const output = nodePath.join(directory, slug + ".html")
+        fs.writeFileSync(output, "tag page")
+        assert.strictEqual(fs.readFileSync(output, "utf8"), "tag page")
+      }
+      assert.notStrictEqual(path.slugTag("a:b"), path.slugTag("a-b"))
+    } finally {
+      assert(nodePath.resolve(directory).startsWith(nodePath.resolve(os.tmpdir()) + nodePath.sep))
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})
 
 describe("typeguards", () => {
   test("isSimpleSlug", () => {

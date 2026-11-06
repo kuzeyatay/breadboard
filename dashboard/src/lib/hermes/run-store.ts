@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import db from "../db.ts";
 import { isRuntimeRunAbandoned } from "./run-liveness.ts";
+import { releaseBreadboardRun } from "./breadboard-use.ts";
 import type { TurnCapabilitySelection } from "./capability-usage.ts";
 import type { ExternalAgentCall } from "./evidence.ts";
-import type { ExplanationReviewResult } from "./explanation-review.ts";
-import type { ExplanationTurnContext } from "./explanation-turn.ts";
+import type { ProductSearchTurn } from "../product-search/turn.ts";
+import type { UnifiedWorkflowSelection, UnifiedWorkflowCompletedWork } from "../workflows/unified-command.ts";
+import type { TaskRecoveryState } from "./task-recovery.ts";
 
 export type RuntimeRunStatus = "active" | "completed" | "cancelled" | "error";
 
@@ -29,11 +31,20 @@ export interface RuntimeArtifactRequirement {
 }
 
 export interface RuntimeRunDispatch {
-  explanationContext?: ExplanationTurnContext;
-  /** Durable answer and review receipt, reused when finalization reconnects. */
-  explanationReview?: { inputHash: string; result: ExplanationReviewResult };
+  /** Durable recovery of this request, also available outside explicit Goal mode. */
+  taskRecovery?: TaskRecoveryState;
+  /** Authenticated workflow selection, retained for specialist launch checks. */
+  workflowSelection?: UnifiedWorkflowSelection;
+  /** Server-derived completed jobs in this workflow, never a client grant. */
+  workflowCompletedWork?: UnifiedWorkflowCompletedWork[];
+  /** Actual pre-answer product search, retained for carousel restoration. */
+  productSearch?: ProductSearchTurn;
+  /** Read-only recovery of drafts retained by the retired teaching framework. */
+  teachingDrafts?: Array<{ target: string; markdown: string; repairCount: number; error?: string }>;
   conversationPublicId?: string;
   clientMessageId?: string;
+  /** Enables a separate speech stream without changing stable chat rendering. */
+  voice?: boolean;
   runtimeText?: string;
   model?: { providerID: string; modelID: string };
   modelIdentity?: { modelID: string };
@@ -48,6 +59,13 @@ export interface RuntimeRunDispatch {
   goalMode?: {
     goalId: string | null;
     enabled: true;
+    automatic?: boolean;
+    previousRunIds?: string[];
+    context?: { activeGardenSlug?: string; activePageSlug?: string; selectedDocumentIds?: string[] };
+    superAgent?: boolean;
+    personalize?: boolean;
+    adhdMode?: boolean;
+    yoloMode?: boolean;
   };
   /** Durable products that must exist before this run may report completion. */
   requiredArtifacts?: RuntimeArtifactRequirement[];
@@ -324,6 +342,15 @@ export function finishRuntimeRun(
        WHERE id = ? AND status = 'active'`,
     )
     .run(status, now.toISOString(), id);
+  if (result.changes > 0) {
+    const owner = db.prepare(`SELECT r.runtime_session_id, s.user_id
+      FROM hermes_runs r JOIN hermes_runtime_sessions s ON s.id = r.runtime_session_id
+      WHERE r.id = ?`).get(id) as { runtime_session_id: number; user_id: number | null } | undefined;
+    if (owner?.user_id) {
+      void releaseBreadboardRun(id, String(owner.runtime_session_id), owner.user_id)
+        .catch(() => console.warn("Could not close this response's temporary browser tabs."));
+    }
+  }
   return result.changes > 0;
 }
 
@@ -373,7 +400,12 @@ export function markRuntimeRunSubmitted(
     );
     return result.changes > 0;
   });
-  return mark();
+  // Reserve the writer before reading the dispatch snapshot. A worker commit
+  // between this SELECT and UPDATE makes a deferred WAL transaction fail with
+  // SQLITE_BUSY_SNAPSHOT immediately, even with a busy timeout. At this point
+  // Hermes already accepted the prompt, so that failure would incorrectly
+  // mark a running answer as failed in the PDF assistant.
+  return mark.immediate();
 }
 
 export function getSteerRequest(

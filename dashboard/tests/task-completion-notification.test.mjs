@@ -169,6 +169,7 @@ test("completion notification stays silent for the focused chat", () => {
 
 test("chat completions and failures notify through persistent minimal notices", () => {
   const toast = source("../src/app/components/toast.tsx");
+  const styles = source("../src/app/globals.css");
   const notificationApi = source("../src/lib/chat-notifications/store.ts");
   const session = source("../src/app/components/hermes/use-agent-session.ts");
   const garden = source("../src/app/gardens/[clusterSlug]/workspace-client.tsx");
@@ -180,27 +181,25 @@ test("chat completions and failures notify through persistent minimal notices", 
 
   assert.match(toast, /TASK_COMPLETION_NOTIFICATION_EVENT/);
   assert.match(toast, /t\.title/);
-  assert.match(toast, /bg-\[var\(--paper-surface\)\]/);
-  assert.match(toast, /size-2/);
+  assert.match(styles, /\.bb-toast-card \{[\s\S]*?background: color-mix\(in srgb, var\(--paper-surface\)/);
   assert.match(toast, /bg-\[var\(--botanical\)\]/);
-  assert.match(toast, /bg-\[var\(--danger\)\]/);
   assert.match(toast, /dismissChatToasts/);
-  assert.match(toast, /aria-label=\{toast.question \? 'Open chat to answer' : 'Open this chat'\}/);
-  assert.match(toast, /↗/);
-  assert.match(toast, /w-\[min\(36rem,calc\(100vw-2rem\)\)\]/);
-  assert.match(toast, /max-h-\[min\(42vh,24rem\)\] overflow-y-auto/);
-  assert.match(toast, /whitespace-pre-wrap break-words/);
+  assert.match(toast, /aria-label="Open this chat"/);
+  assert.match(toast, /<ArrowUpRight/);
+  assert.match(toast, /w-\[min\(30rem,calc\(100vw-2rem\)\)\]/);
+  assert.match(toast, /max-h-\[min\(42vh,24rem\)\] overflow-x-hidden overflow-y-auto/);
+  assert.match(toast, /<ChatMarkdown content=\{response\}/);
   assert.match(toast, /Reply to this chat/);
   assert.match(toast, /sendChatNotificationReply\(toast\.target, message\)/);
   const replyHandler =
-    toast.match(/async function handleReply[\s\S]*?\n  \}/)?.[0] ?? "";
+    toast.match(/async function submitReply[\s\S]*?\n  \}/)?.[0] ?? "";
+  assert.ok(replyHandler, "the background reply handler must exist");
   assert.doesNotMatch(replyHandler, /window\.location|sessionStorage|queueChatNotificationReply/);
   assert.match(toast, /aria-label="Dismiss message"/);
-  assert.match(toast, /<span aria-hidden>\u00d7<\/span>/);
+  assert.match(toast, /<X size=\{13\}/);
   assert.doesNotMatch(toast, />\s*Dismiss\s*</);
-  assert.match(toast, /grid-cols-\[minmax\(0,1fr\)_auto\] items-stretch/);
-  assert.match(toast, /min-h-16 self-stretch/);
-  assert.match(toast, /fetch\('\/api\/chat-notifications', \{\s*cache: 'no-store'/);
+  assert.match(toast, /grid-cols-\[minmax\(0,1fr\)_auto\] items-center/);
+  assert.match(toast, /fetch\(notificationCenter \? '\/api\/chat-notifications\?center=1' : '\/api\/chat-notifications', \{\s*cache: 'no-store'/);
   assert.match(toast, /method: 'POST'/);
   assert.match(toast, /keepalive: true/);
   // Dismissals live on the account, never in a browser's storage.
@@ -208,11 +207,12 @@ test("chat completions and failures notify through persistent minimal notices", 
   assert.match(toast, /chatNotificationHref/);
   assert.match(toast, /CHAT_NOTIFICATION_OPENED_EVENT/);
   assert.match(toast, /CHAT_RESPONSE_SEEN_EVENT/);
-  assert.match(toast, /isChatNotificationTargetViewed/);
+  assert.match(toast, /isChatNotificationRecordViewed/);
   assert.doesNotMatch(toast, /line-clamp/);
   assert.doesNotMatch(toast, /setTimeout/);
-  // Permission requests have a bell; ordinary completion cards keep their dot.
+  // Chat headings identify their source without a decorative status dot.
   const completionCard = toast.slice(toast.indexOf('function ToastCard('));
+  assert.doesNotMatch(completionCard, /size-2 shrink-0 rounded-full/);
   assert.doesNotMatch(completionCard, /<svg/);
   assert.doesNotMatch(toast, /neu-inset/);
   assert.doesNotMatch(toast, /bg-gray-950/);
@@ -222,7 +222,8 @@ test("chat completions and failures notify through persistent minimal notices", 
   assert.match(garden, /locallyAnnouncedChatResponses/);
   assert.match(garden, /notifyFinishedGardenChat\(chat\.id, chat\.title\)/);
   assert.match(garden, /latestAssistantResponse/);
-  assert.match(garden, /dismissChatToasts\(target\)/);
+  assert.match(garden, /dismissChatToasts\(\{\s*surface: "garden_chat",\s*gardenSlug: clusterSlug,\s*chatId,/);
+  assert.match(garden, /openChatById\(target\.chatId\)/);
   assert.match(garden, /onOpenChat=\{openChatFromNotification\}/);
   assert.doesNotMatch(garden, /onReplyToChat=/);
   assert.match(

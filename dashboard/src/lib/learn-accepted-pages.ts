@@ -16,10 +16,16 @@ import path from "node:path";
 import type { VisualizationPublicationOutcome } from "./visualization-opportunities.ts";
 
 export const ACCEPTED_PAGES_RELATIVE_PATH = path.join(".breadboard", "Internal", "learn-accepted-pages.json");
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 export interface AcceptedPageReceipt {
   inputHash: string;
+  /** The same inputs without the earlier lessons' prose. A rewritten earlier
+   * lesson must not discard later accepted lessons (telecom-1, 2026-10-06:
+   * one rewritten lesson cascaded into rewriting every later one). */
+  stableInputHash?: string;
+  /** Integrity of the exact accepted text and its review inputs. */
+  bodyHash?: string;
   /** The accepted lesson body after interactive-visual reconciliation, before frontmatter. */
   pageBody: string;
   visualIds: string[];
@@ -48,6 +54,8 @@ function stableJson(value: unknown): string {
 export function acceptedPageInputHash(input: {
   pageRelPath: string;
   dossier: unknown;
+  /** Actual earlier prose and the teaching gate version, not just plan labels. */
+  teachingContextHash?: string;
   assignedVisualIds: readonly string[];
   taughtEarlier: readonly string[];
   taughtLater: readonly string[];
@@ -77,10 +85,19 @@ export function readAcceptedPage(
   stagingGardenDir: string,
   pageRelPath: string,
   inputHash: string,
+  stableInputHash?: string,
 ): AcceptedPageReceipt | null {
   const receipt = readAcceptedPages(stagingGardenDir)[pageRelPath];
-  if (!receipt || receipt.inputHash !== inputHash) return null;
+  if (!receipt) return null;
+  // Exact inputs, or the same inputs apart from earlier lessons' prose. A
+  // receipt from before stableInputHash existed is kept as written: the user
+  // asked that written lessons never be rewritten (2026-10-06).
+  const matches = receipt.inputHash === inputHash ||
+    (stableInputHash !== undefined &&
+      (receipt.stableInputHash === undefined || receipt.stableInputHash === stableInputHash));
+  if (!matches) return null;
   if (typeof receipt.pageBody !== "string" || !receipt.pageBody.trim()) return null;
+  if (receipt.bodyHash !== acceptedBodyHash(receipt)) return null;
   if (!Array.isArray(receipt.visualIds) || !Array.isArray(receipt.visualizationOutcomes)) return null;
   return receipt;
 }
@@ -92,10 +109,14 @@ export function writeAcceptedPage(
 ): void {
   const file = receiptPath(stagingGardenDir);
   const pages = readAcceptedPages(stagingGardenDir);
-  pages[pageRelPath] = receipt;
+  pages[pageRelPath] = { ...receipt, bodyHash: acceptedBodyHash(receipt) };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const payload: AcceptedPagesFile = { schemaVersion: SCHEMA_VERSION, pages };
   const temporary = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, `${JSON.stringify(payload)}\n`);
   fs.renameSync(temporary, file);
+}
+
+function acceptedBodyHash(receipt: AcceptedPageReceipt): string {
+  return createHash("sha256").update(JSON.stringify({ inputHash: receipt.inputHash, pageBody: receipt.pageBody })).digest("hex");
 }

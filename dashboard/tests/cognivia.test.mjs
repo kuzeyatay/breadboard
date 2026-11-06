@@ -226,15 +226,11 @@ test("the switch turns the whole integration off", () => {
 
 // --- routing: every surface that composes a prompt --------------------------
 
-test("every Hermes surface routes a mental-health turn to the copilot", () => {
+test("normal chat does not silently switch personas based on a request classifier", () => {
   for (const surface of ["dashboard_terminal", "garden_chat", "quartz_ai"]) {
-    const prompt = composeHermesSystemPrompt({
-      surface,
-      decision: decision(),
-      userText: "I feel worthless and I can't get out of bed most mornings.",
-    });
-    assert.match(prompt, /# cognivia\b/, surface);
-    assert.match(prompt, /Register: personal_distress/, surface);
+    const prompt = composeHermesSystemPrompt({surface, decision: decision(), userText: "I feel worthless and I can't get out of bed."});
+    assert.doesNotMatch(prompt, /# cognivia\b/);
+    assert.match(prompt, /Respect the user's chosen language, format and level/);
   }
 });
 
@@ -247,14 +243,11 @@ test("an ordinary Hermes turn is not routed there", () => {
   assert.doesNotMatch(prompt, /# cognivia\b/);
 });
 
-test("the routes that build their own prompts are wired in too", () => {
-  const roots = [
-    "src/app/api/chat/route.ts",
-    "src/app/api/knowledge-chat/route.ts",
-    "src/lib/conversations/direct-turn-service.ts",
-  ];
-  for (const file of roots) {
-    const text = fs.readFileSync(path.join(import.meta.dirname, "..", file), "utf8");
-    assert.match(text, /cogniviaSection\(/, file);
+test("legacy and direct chat routes use the same shared core without persona classification", () => {
+  for (const file of ["src/app/api/chat/route.ts", "src/app/api/knowledge-chat/route.ts"]) {
+    assert.match(fs.readFileSync(path.join(import.meta.dirname, "..", file), "utf8"), /chatCorePrompt\(/);
   }
+  const direct = fs.readFileSync(path.join(import.meta.dirname, "../src/lib/conversations/direct-turn-service.ts"), "utf8");
+  assert.match(direct, /chatCorePrompt\(/);
+  assert.doesNotMatch(direct, /cogniviaSection\(/);
 });

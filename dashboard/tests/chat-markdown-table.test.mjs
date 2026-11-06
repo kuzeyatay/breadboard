@@ -40,6 +40,40 @@ const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const { ChatMarkdown } = require(bundle);
 
+test("Garden citation protocols resolve before Markdown URL sanitization", () => {
+  const markup = renderToStaticMarkup(React.createElement(ChatMarkdown, {
+    content: '[Opening-session sequence](garden:ec-2/Concepts/24.%20course/review.md) · [Course topic list](garden:ec-2/sources/lecture1-1-introduction.md)',
+  }));
+  assert.match(markup, /href="\/garden\/ec-2\?note=Concepts%2F24\.%20course%2Freview"/);
+  assert.match(markup, /href="\/garden\/ec-2\?note=sources%2Flecture1-1-introduction"/);
+  assert.match(markup, /target="_blank"/);
+  assert.doesNotMatch(markup, /href=""|href="garden:/);
+});
+
+test("unusable citations retain their formatted labels without clickable anchors", () => {
+  const markup = renderToStaticMarkup(React.createElement(ChatMarkdown, {
+    content: '[**Source title**](sandbox:/mnt/data/book.pdf) · [Unknown](garden:bad) · [Placeholder](#) · [Relative](sources/book.md)',
+  }));
+  assert.match(markup, /<span><strong>Source title<\/strong><\/span>/);
+  assert.match(markup, /<span>Unknown<\/span>/);
+  assert.match(markup, /<span>Placeholder<\/span>/);
+  assert.match(markup, /<span>Relative<\/span>/);
+  assert.doesNotMatch(markup, /<a\b/);
+});
+
+test("Garden diagrams retain their canonical asset URL and accessible description", () => {
+  const source = "/electromagnetism-1/assets/source-visuals/spherical-element.png";
+  const markup = renderToStaticMarkup(React.createElement(ChatMarkdown, {
+    content: `![Spherical element with dr, r dθ, and r sin θ dφ](${source})`,
+  }));
+  assert.ok(markup.includes(`src="${source}"`));
+  assert.match(markup, /alt="Spherical element with dr, r dθ, and r sin θ dφ"/);
+  assert.match(markup, /class="[^"]*max-w-full/);
+  assert.match(markup, /class="[^"]*chat-markdown-image/);
+  assert.match(markup, /loading="eager"/);
+  assert.match(markup, /decoding="async"/);
+});
+
 test("markdown tables keep table semantics inside a viewport-bound frame", () => {
   const markup = renderToStaticMarkup(
     React.createElement(ChatMarkdown, {

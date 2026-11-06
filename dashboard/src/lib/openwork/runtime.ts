@@ -25,7 +25,7 @@
 import { spawnSync } from "node:child_process";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
-import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import { dashboardDataDir, repositoryRoot, runtimeV2ConfiguredPayloadRoot } from "../runtime-paths.ts";
 
 export interface OpencodeLauncher {
   /** argv[0] used to invoke OpenCode. */
@@ -94,10 +94,7 @@ export function resolveOpenworkRoot(env: NodeJS.ProcessEnv = process.env): strin
  * workspace and pnpm is not a Breadboard dependency.
  */
 export function serverRuntimeRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return (
-    configured(env.OPENWORK_SERVER_RUNTIME_ROOT) ??
-    path.join(dashboardDataDir(), "openwork-runtime")
-  );
+  return runtimeV2ConfiguredPayloadRoot("openwork-runtime", env.OPENWORK_SERVER_RUNTIME_ROOT, env);
 }
 
 /** The prepared server's entry point. */

@@ -95,7 +95,7 @@ test("an empty address book says how it fills itself", () => {
   const html = renderToStaticMarkup(
     React.createElement(ContactsPanel, { initial: [], initialTotal: 0 }),
   );
-  assert.match(html, /Invite someone to an event and they will appear/);
+  assert.match(html, /Invite someone to an event to add them here/);
 });
 
 test("a contact filed automatically is labelled, a typed one is not", () => {

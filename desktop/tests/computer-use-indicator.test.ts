@@ -53,7 +53,7 @@ test("computer-use heartbeat accepts only a fresh active signal", () => {
   assert.equal(isComputerUseStateFilename("computer-use-state.../secret.json"), false);
 });
 
-test("computer-use overlay identifies Bread, Escape, green corners, and the cursor", () => {
+test("computer-use overlay identifies Bread, Escape, and green corners", () => {
   const html = fs.readFileSync(path.join(overlayRoot, "index.html"), "utf8");
   const css = fs.readFileSync(path.join(overlayRoot, "overlay.css"), "utf8");
   const script = fs.readFileSync(path.join(overlayRoot, "overlay.js"), "utf8");
@@ -67,7 +67,6 @@ test("computer-use overlay identifies Bread, Escape, green corners, and the curs
   assert.match(css, /data-appearance="red"/);
   assert.match(css, /--signal:\s*#ff485c/);
   assert.equal((css.match(/radial-gradient\(ellipse 310px 240px/g) ?? []).length, 4);
-  assert.match(css, /data-surface="cursor"/);
   assert.match(script, /URLSearchParams/);
   assert.match(script, /dataset\.appearance/);
   assert.match(copyStatic, /computer-use-overlay/);
@@ -83,11 +82,11 @@ test("the Electron indicator is click-through, always on top, capture excluded, 
   assert.match(source, /setAlwaysOnTop\(true, "screen-saver"\)/);
   assert.match(source, /setContentProtection\(true\)/);
   assert.match(source, /globalShortcut\.register\("Escape"/);
-  assert.match(source, /screen\.getCursorScreenPoint\(\)/);
+  assert.doesNotMatch(source, /screen\.getCursorScreenPoint\(\)/);
 });
 
 test(
-  "a real Electron shell shows every edge, a cursor halo, and switches from green to red",
+  "a real Electron shell shows every edge without tracking the user's cursor and switches from green to red",
   { skip: process.platform !== "win32" },
   () => {
     const electron = path.join(desktopRoot, "node_modules", "electron", "dist", "electron.exe");
@@ -127,7 +126,7 @@ app.whenReady().then(async () => {
   fs.writeFileSync(statePath, JSON.stringify({ version: 1, active: true, updatedAt: Date.now(), appearance: "green" }));
   const indicator = new ComputerUseIndicator({ dataDir: fixture, overlayHtmlPath: overlayHtml, allowed });
   indicator.start();
-  const expectedWindowCount = screen.getAllDisplays().length + 1;
+  const expectedWindowCount = screen.getAllDisplays().length;
   await waitFor(
     () => BrowserWindow.getAllWindows().length === expectedWindowCount &&
       BrowserWindow.getAllWindows().every((window) => !window.webContents.isLoading()),
@@ -202,7 +201,7 @@ app.whenReady().then(async () => {
       };
       assert.equal(result.error, undefined, result.error);
       assert.equal(result.edges, result.expectedEdges);
-      assert.equal(result.cursors, 1);
+      assert.equal(result.cursors, 0);
       assert.equal(result.green, true);
       assert.equal(result.redAfterSwitch, true);
       assert.equal(result.primaryBanner, true);

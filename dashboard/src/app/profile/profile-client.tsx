@@ -10,14 +10,15 @@ import {
 } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { signOut } from "next-auth/react";
+import SignOutButton from "@/app/components/sign-out-button";
 import { RefreshCw } from "lucide-react";
 
 import BackLink from "@/app/components/back-link";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
-import DefaultModelPanel from "./default-model-panel";
+import DefaultModelPanel, { FallbackModelPanel } from "./default-model-panel";
 import BrainMapPanel from "./brain-map-panel";
 import BrowserProfilePanel from "./browser-profile-panel";
+import DownloadSettingsPanel from "./download-settings-panel";
 import ContactsPanel from "./contacts-panel";
 import CalendarSyncPanel from "./calendar-sync-panel";
 import ClapActionPanel from "./clap-action-panel";
@@ -87,6 +88,11 @@ import {
   subscribeNotificationSound,
 } from "@/lib/notification-sound";
 import {
+  getChatRailSoundEnabled,
+  setChatRailSoundEnabled,
+  subscribeChatRailSound,
+} from "@/lib/chat-lens-sound";
+import {
   browserNavigationControl,
   type BrowserNavigationControl,
 } from "@/lib/desktop-browser-tabs.ts";
@@ -94,22 +100,12 @@ import {
   breadboardRestartControl,
   type BreadboardRestartControl,
 } from "@/lib/desktop-app-restart.ts";
-import {
-  clickyDesktopControl,
-  type ClickyDesktopControl,
-  type ClickyLauncherState,
-} from "@/lib/clicky/desktop-control.ts";
 
 interface Invite {
   id: number;
   code: string;
   created_at: string;
   used_at: string | null;
-}
-
-interface GoogleImageGenerationStatus {
-  available: boolean;
-  configured: boolean;
 }
 
 const numbers = new Intl.NumberFormat("en-US");
@@ -170,21 +166,6 @@ function relativeTime(value: string): string {
 
 function hourLabel(hour: number): string {
   return `${String(hour).padStart(2, "0")}:00`;
-}
-
-/**
- * What the peak hour says about the person, in one clause.
- *
- * Deliberately coarse — the histogram beside it carries the detail, and a
- * sharper claim than the data supports would be worse than none.
- */
-function rhythmPhrase(peakHour: number): string {
-  if (peakHour < 5) return "the small hours are yours";
-  if (peakHour < 9) return "you start before most people do";
-  if (peakHour < 12) return "you do your thinking in the morning";
-  if (peakHour < 17) return "the afternoon is your working stretch";
-  if (peakHour < 21) return "you get going after the day winds down";
-  return "you are a night owl";
 }
 
 // ------------------------------------------------------------------ pieces
@@ -705,6 +686,32 @@ function ThoughtTopologyPanel({ initialEnabled }: { initialEnabled: boolean }) {
   );
 }
 
+function ChatRailSoundPanel() {
+  const enabled = useSyncExternalStore(subscribeChatRailSound, getChatRailSoundEnabled, () => true);
+  const [error, setError] = useState<string | null>(null);
+
+  return (
+    <Card title="Chat scroll sound" hint="Mechanical clicks as you turn the chat navigation ring.">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-white">Play scroll clicks</p>
+          <p className="mt-0.5 text-xs leading-5 text-gray-500">
+            {enabled ? "Sound is on for this device." : "The chat navigation ring is silent."}
+          </p>
+        </div>
+        <Switch
+          checked={enabled}
+          label="Play scroll clicks"
+          busy={false}
+          onChange={() => setError(setChatRailSoundEnabled(!enabled)
+            ? null : "Breadboard could not save this preference on this device.")}
+        />
+      </div>
+      {error && <p className="mt-4 text-xs text-red-400" role="alert">{error}</p>}
+    </Card>
+  );
+}
+
 function NotificationSoundPanel() {
   const enabled = useSyncExternalStore(subscribeNotificationSound, getNotificationSoundEnabled, () => true);
   const [error, setError] = useState<string | null>(null);
@@ -1133,7 +1140,7 @@ function LocationPanel() {
   return (
     <Card
       title="Location"
-      hint="Let answers account for where this device is when place genuinely matters. It refreshes automatically while enabled."
+      hint="Use this device’s location for nearby places and local information. Updates automatically while enabled."
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
@@ -1289,7 +1296,7 @@ function ReviewDeliveryPanel() {
   return (
     <Card
       title="Review delivery"
-      hint="Questions from your gardens, scheduled with FSRS and sent to your phone."
+      hint="Review questions from your gardens, sent to your phone when they’re due."
     >
       {error ? <p className="mb-2 text-xs text-[#a45f56]">{error}</p> : null}
       {settings === null ? (
@@ -1380,7 +1387,7 @@ function ReviewDeliveryPanel() {
               className="mt-1 w-full"
             />
             <p className="mt-1 text-[11px] text-gray-600">
-              Higher means shorter intervals and more reviews for the same material.
+              Higher targets mean more frequent reviews.
             </p>
           </div>
 
@@ -1395,8 +1402,7 @@ function ReviewDeliveryPanel() {
             </p>
           ) : (
             <p className="text-[11px] text-gray-600">
-              No cards yet. Open a garden&rsquo;s chat and use its settings icon to build
-              them.
+              No review questions yet. Create them in a garden&rsquo;s chat settings.
             </p>
           )}
         </div>
@@ -1466,11 +1472,6 @@ function IdentityPanel({
   const trimmedNickname = nickname.trim();
   const trimmedFirstName = firstName.trim();
   const greetingName = trimmedNickname || trimmedFirstName || initial.username;
-  const greetingSource = trimmedNickname
-    ? ", your nickname, which wins over a first name"
-    : trimmedFirstName
-      ? ", your first name; a nickname would win over it"
-      : ", your username, until you give it something better";
 
   async function save() {
     setBusy(true);
@@ -1526,7 +1527,7 @@ function IdentityPanel({
   return (
     <Card
       title="About you"
-      hint={`Breadboard will call you ${greetingName}${greetingSource}. All of this is given to the assistant at the start of every chat, this one included. Leave a field empty and it is not mentioned at all.`}
+      hint={`Breadboard will call you ${greetingName}. These optional details help personalize every chat.`}
     >
       <form
         className="space-y-3"
@@ -1598,11 +1599,8 @@ function IdentityPanel({
         </label>
         <div className="flex items-center justify-between gap-3">
           <p className="min-w-0 text-xs text-gray-600">
-            The nickname is what you are called, ahead of your first name; leave both empty to go
-            back to your username. The full name, occupation and note are context the assistant
-            reads, not a greeting.{" "}
+            Name used in replies: nickname, first name, or username, in that order.{" "}
             {about.length > 0 && `${about.length} of ${ABOUT_MAX_LENGTH} characters. `}
-            None of this is memory the assistant learned — it is what you told it.
           </p>
           <button
             type="submit"
@@ -1619,162 +1617,16 @@ function IdentityPanel({
   );
 }
 
-function GoogleImageGenerationPanel({ initial }: { initial: GoogleImageGenerationStatus }) {
-  const [status, setStatus] = useState(initial);
-  const [apiKey, setApiKey] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [confirmed, setConfirmed] = useState(false);
-
-  async function save() {
-    setBusy(true);
-    setError(null);
-    setConfirmed(false);
-    try {
-      const response = await fetch("/api/profile/google-images", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey }),
-      });
-      const data = (await response.json().catch(() => ({}))) as {
-        status?: GoogleImageGenerationStatus;
-        error?: string;
-      };
-      if (!response.ok || !data.status) {
-        throw new Error(data.error || "Could not save the Google image-generation API key");
-      }
-      setStatus(data.status);
-      setApiKey("");
-      setConfirmed(true);
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "Could not save the Google image-generation API key",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function remove() {
-    setBusy(true);
-    setError(null);
-    setConfirmed(false);
-    try {
-      const response = await fetch("/api/profile/google-images", { method: "DELETE" });
-      const data = (await response.json().catch(() => ({}))) as {
-        status?: GoogleImageGenerationStatus;
-        error?: string;
-      };
-      if (!response.ok || !data.status) {
-        throw new Error(data.error || "Could not remove the Google image-generation API key");
-      }
-      setStatus(data.status);
-      setApiKey("");
-      setConfirmed(true);
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "Could not remove the Google image-generation API key",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const readyToSave = status.available && Boolean(apiKey.trim());
-
+function GoogleImageGenerationPanel() {
   return (
     <Card
       title="Google Image Generation"
-      hint="Use Google Gemini to generate an image when ChatGPT image generation is unavailable."
+      hint="Gemini is the fallback when ChatGPT image generation is unavailable."
     >
-      <form
-        className="space-y-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (readyToSave && !busy) void save();
-        }}
-      >
-        <div className="flex items-center justify-between gap-3 text-xs">
-          <span className="text-gray-500">
-            {status.configured
-              ? "Google image generation is configured for your account."
-              : status.available
-                ? "No Google Gemini API key is saved."
-                : "Credential storage is unavailable until NEXTAUTH_SECRET is configured."}
-          </span>
-          <span
-            className={`shrink-0 rounded-full border px-2 py-0.5 ${
-              status.configured
-                ? "border-emerald-800/70 bg-emerald-950/40 text-emerald-300"
-                : "border-gray-800 text-gray-600"
-            }`}
-          >
-            {status.configured ? "Connected" : "Not connected"}
-          </span>
-        </div>
-
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-gray-500">Gemini API key</span>
-          <input
-            type="password"
-            value={apiKey}
-            maxLength={512}
-            autoComplete="off"
-            placeholder={status.configured ? "Paste a key to replace the saved one" : "AIza…"}
-            onChange={(event) => {
-              setApiKey(event.target.value);
-              setConfirmed(false);
-            }}
-            className="w-full rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
-          />
-        </label>
-
-        <p className="text-xs leading-relaxed text-gray-600">
-          Create or copy an API key in{" "}
-          <a
-            href="https://aistudio.google.com/app/apikey"
-            target="_blank"
-            rel="noreferrer"
-            className="text-gray-400 underline decoration-gray-700 underline-offset-2 hover:text-white"
-          >
-            Google AI Studio
-          </a>
-          . The key is encrypted at rest and is never shown again after saving. It is used only
-          server-side when ChatGPT image generation fails.
-        </p>
-
-        <div className="flex items-center justify-end gap-2">
-          {status.configured ? (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void remove()}
-              className="neu-button rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-500 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Remove
-            </button>
-          ) : null}
-          <button
-            type="submit"
-            disabled={!readyToSave || busy}
-            className="neu-button rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {busy ? "Saving…" : status.configured ? "Replace credentials" : "Save credentials"}
-          </button>
-        </div>
-        {error && <p className="text-xs text-red-400">{error}</p>}
-        {!error && confirmed && (
-          <p className="text-xs text-gray-500">
-            {status.configured
-              ? "Google image-generation API key saved."
-              : "Stored API key removed."}
-          </p>
-        )}
-      </form>
+      <p className="text-sm leading-relaxed text-gray-500">
+        Breadboard uses the image model from your connected Google Gemini subscription.
+        No separate API key is needed. Manage your Google account in Subscriptions.
+      </p>
     </Card>
   );
 }
@@ -1859,34 +1711,35 @@ function NavbarPanel({
     }
   }
 
-  const on = NAVBAR_SHORTCUTS.filter((shortcut) => shortcuts[shortcut.key]).length;
+  const visibleShortcuts = NAVBAR_SHORTCUTS.filter((shortcut) => shortcut.key !== "browser");
+  const on = visibleShortcuts.filter((shortcut) => shortcuts[shortcut.key]).length;
 
   return (
     <Card
-      title="Navbar"
+      title="Navigation bar"
       hint={
         on === 0
-          ? "The navbar shows none of these. Switch one on to give it a seat."
-          : `${on} of ${NAVBAR_SHORTCUTS.length} showing in the navbar.`
+          ? "Choose which shortcuts appear in the navigation bar."
+          : `${on} of ${visibleShortcuts.length} shortcuts shown.`
       }
     >
       <div className="mb-4 flex items-start justify-between gap-4 border-b border-gray-800 pb-4">
         <div className="min-w-0">
           <p className="text-sm font-medium text-white">Flowers</p>
           <p className="mt-0.5 text-xs leading-5 text-gray-500">
-            Adds flowers to the animated grass in the top navbar.
+            Show flowers in the grass along the top bar.
           </p>
         </div>
         <Switch
           checked={flowers}
-          label="Show flowers in the top navbar"
+          label="Show flowers in the navigation bar"
           busy={busy !== null}
           onChange={() => void toggleFlowers()}
         />
       </div>
 
       <ul className="space-y-3">
-        {NAVBAR_SHORTCUTS.map((shortcut) => (
+        {visibleShortcuts.map((shortcut) => (
           <li key={shortcut.key} className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               {/* The switch itself already says whether the seat is taken, so
@@ -1911,7 +1764,7 @@ function NavbarPanel({
             </div>
             <Switch
               checked={shortcuts[shortcut.key]}
-              label={`Show ${shortcut.label} in the navbar`}
+              label={`Show ${shortcut.label} in the navigation bar`}
               busy={busy !== null}
               onChange={() => void toggle(shortcut.key)}
             />
@@ -2006,7 +1859,7 @@ function InvitePanel({ initial }: { initial: { created: number; redeemed: number
         <p className="mt-4 text-xs text-gray-600">Loading…</p>
       ) : invites.length === 0 ? (
         <p className="mt-4 text-xs text-gray-600">
-          You have not handed out any codes yet.
+          No invitations yet.
         </p>
       ) : (
         <ul className="mt-4 space-y-1.5">
@@ -2058,10 +1911,10 @@ function ModelPanel({ cost }: { cost: ProfileCost }) {
 
   return (
     <Card
-      title="Which brains answered you"
+      title="Models you use"
       hint={
         cost.models.length === 0
-          ? "No reply has recorded its model yet."
+          ? "No model usage recorded yet."
           : `${cost.models.length} model${cost.models.length === 1 ? "" : "s"} across ${formatCount(
               cost.models.reduce((sum, entry) => sum + entry.replies, 0),
             )} replies.`
@@ -2073,14 +1926,14 @@ function ModelPanel({ cost }: { cost: ProfileCost }) {
           label="Estimated list price"
           hint={
             cost.totalTokens === 0
-              ? "Nothing priced yet"
+              ? "No estimate available"
               : `All ${formatCompact(cost.totalTokens)} tokens priced`
           }
         />
         <Stat
           value={formatCompact(cost.outputTokens)}
-          label="Tokens written back"
-          hint="The expensive half of the bill"
+          label="Response tokens"
+          hint="Text generated in replies"
         />
         {saved && (
           <Stat
@@ -2129,13 +1982,13 @@ function ReliabilityPanel({ reliability }: { reliability: ProfileReliability }) 
 
   return (
     <Card
-      title="When it broke"
+      title="Unfinished replies"
       hint={
         reliability.terminalReplies === 0
-          ? "Nothing has been asked of it yet."
+          ? "No replies yet."
           : broken === 0
             ? `${formatCount(reliability.completed)} replies, none of which failed.`
-            : `${rate < 0.1 ? "<0.1" : rate.toFixed(1)}% of finished turns never produced an answer.`
+            : `${rate < 0.1 ? "<0.1" : rate.toFixed(1)}% of replies failed or were stopped.`
       }
     >
       <div className="grid grid-cols-3 gap-3">
@@ -2169,7 +2022,7 @@ function ReliabilityPanel({ reliability }: { reliability: ProfileReliability }) 
 
       <p className="mt-4 text-xs leading-5 text-gray-600">
         {reliability.worstAgent
-          ? `${reliability.worstAgent.label} is the least reliable agent — ${formatCount(reliability.worstAgent.failed)} of ${formatCount(reliability.worstAgent.runs)} runs did not finish.`
+          ? `${reliability.worstAgent.label}: ${formatCount(reliability.worstAgent.failed)} of ${formatCount(reliability.worstAgent.runs)} tasks did not finish.`
           : "No agent run has failed."}
         {reliability.lastFailureAt && (
           <> Last failure {relativeTime(reliability.lastFailureAt)}.</>
@@ -2184,9 +2037,9 @@ function ReliabilityPanel({ reliability }: { reliability: ProfileReliability }) 
 function LatencyPanel({ latency }: { latency: ProfileLatency }) {
   if (latency.measured === 0) {
     return (
-      <Card title="How long you waited" hint="No reply has reported its duration yet.">
+      <Card title="Response time" hint="No response times recorded yet.">
         <p className="text-xs text-gray-600">
-          Timings appear here once replies start recording how long they took.
+          Response times will appear here after a measured reply.
         </p>
       </Card>
     );
@@ -2194,7 +2047,7 @@ function LatencyPanel({ latency }: { latency: ProfileLatency }) {
 
   return (
     <Card
-      title="How long you waited"
+      title="Response time"
       hint={`Across ${formatCount(latency.measured)} timed replies. Half came back inside ${formatShortDuration(latency.medianMs)}.`}
     >
       <div className="grid grid-cols-2 gap-3">
@@ -2206,9 +2059,7 @@ function LatencyPanel({ latency }: { latency: ProfileLatency }) {
         />
       </div>
       <p className="mt-3 text-xs leading-5 text-gray-600">
-        The quickest took {formatShortDuration(latency.fastestMs)} and the slowest
-        ran for {formatShortDuration(latency.slowestMs)} — long waits are usually an
-        agent working, not the chat hanging.
+        Fastest: {formatShortDuration(latency.fastestMs)}. Longest: {formatShortDuration(latency.slowestMs)}.
       </p>
     </Card>
   );
@@ -2222,17 +2073,16 @@ function MemoryPanel({ memory }: { memory: ProfileMemory }) {
 
   return (
     <Card
-      title="What it remembers"
+      title="Saved memory"
       hint={
         total === 0
-          ? "Nothing has been committed to durable memory yet."
-          : `${formatCount(memory.confirmed)} confirmed, ${formatCount(memory.candidate)} still provisional.`
+          ? "No saved memories yet."
+          : `${formatCount(memory.confirmed)} confirmed, ${formatCount(memory.candidate)} unconfirmed.`
       }
     >
       {total === 0 ? (
         <p className="text-xs text-gray-600">
-          Durable memories are written as the assistant notices something worth
-          keeping. Settings → Memory is where you read and retire them.
+          View or delete remembered details in Settings → Memory.
         </p>
       ) : (
         <>
@@ -2248,8 +2098,8 @@ function MemoryPanel({ memory }: { memory: ProfileMemory }) {
           </div>
           <p className="mt-4 text-xs leading-5 text-gray-600">
             {memory.superseded > 0
-              ? `${formatCount(memory.superseded)} entr${memory.superseded === 1 ? "y has" : "ies have"} been retired. Settings → Memory is where you read and retire them.`
-              : "Settings → Memory is where you read and retire them."}
+              ? `${formatCount(memory.superseded)} entr${memory.superseded === 1 ? "y has" : "ies have"} been retired. Manage saved memories in Settings → Memory.`
+              : "Manage saved memories in Settings → Memory."}
           </p>
         </>
       )}
@@ -2319,13 +2169,13 @@ function statusColor(status: AuditEntry["status"]): string {
 function AuditFeed({ entries }: { entries: AuditEntry[] }) {
   return (
     <Card
-      title="What it did on your behalf"
-      hint="Agent runs, artifacts, memories and scheduled chats, newest first."
+      title="Recent activity"
+      hint="Agent tasks, files, memories, and scheduled chats, newest first."
       className="mt-4"
     >
       {entries.length === 0 ? (
         <p className="text-xs text-gray-600">
-          Nothing has happened in the background yet.
+          No background activity yet.
         </p>
       ) : (
         <ul className="space-y-2.5">
@@ -2436,120 +2286,6 @@ function RestartBreadboardButton() {
 }
 
 /**
- * The desktop shell launches the built-in Windows companion or the native
- * macOS app. An ordinary browser leaves this card out.
- */
-function ClickyPanel() {
-  const [control, setControl] = useState<ClickyDesktopControl | null>(null);
-  const [state, setState] = useState<ClickyLauncherState | null>(null);
-  const [busy, setBusy] = useState<"launch" | "project" | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    const desktop = clickyDesktopControl();
-    if (!desktop) return;
-    let active = true;
-    void desktop
-      .read()
-      .then((next) => {
-        if (!active) return;
-        setControl(() => desktop);
-        setState(next);
-      })
-      .catch(() => {
-        if (!active) return;
-        setControl(() => desktop);
-        setMessage("Breadboard could not read Clicky's launch state.");
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  if (!control || (!state && !message)) return null;
-
-  async function act(action: "launch" | "project") {
-    if (!control || busy) return;
-    setBusy(action);
-    setMessage(null);
-    try {
-      const launch =
-        action === "launch"
-          ? await control.launch()
-          : await control.openProject();
-      setState(launch.state);
-      setMessage(launch.message);
-    } catch {
-      setMessage("Breadboard could not reach the Clicky launcher.");
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  return (
-    <Card
-      title="Clicky"
-      hint="A voice companion for Windows and macOS that can see your screen when you ask for help."
-    >
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span
-              className={`h-2 w-2 shrink-0 rounded-full ${
-                state?.available
-                  ? "bg-emerald-400"
-                  : state?.supported
-                    ? "bg-amber-400"
-                    : "bg-gray-600"
-              }`}
-              aria-hidden
-            />
-            <p className="text-sm font-medium text-white">
-              {state?.available
-                ? "Ready"
-                : state?.status === "not_built"
-                  ? "Needs its first build"
-                  : "Unavailable"}
-            </p>
-          </div>
-          <p className="mt-1 text-xs leading-5 text-gray-500">
-            {message ?? state?.message}
-          </p>
-          {state?.supported && (
-            <p className="mt-2 text-xs leading-5 text-gray-600">
-              You can also type <span className="font-mono text-gray-400">launch Clicky</span> in
-              any chat.
-            </p>
-          )}
-        </div>
-
-        {state?.available ? (
-          <button
-            type="button"
-            onClick={() => void act("launch")}
-            disabled={busy !== null}
-            aria-busy={busy === "launch"}
-            className="neu-button shrink-0 rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-wait disabled:opacity-60"
-          >
-            {busy === "launch" ? "Launching…" : "Launch Clicky"}
-          </button>
-        ) : state?.projectAvailable ? (
-          <button
-            type="button"
-            onClick={() => void act("project")}
-            disabled={busy !== null}
-            aria-busy={busy === "project"}
-            className="neu-button shrink-0 rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-wait disabled:opacity-60"
-          >
-            {busy === "project" ? "Opening…" : "Open in Xcode"}
-          </button>
-        ) : null}
-      </div>
-    </Card>
-  );
-}
-
-/**
  * A garden needs more than a single ranking number: activity volume, the
  * number of separate chats, measured generation time, and recency answer
  * different questions. The progress bar remains the quick comparison while
@@ -2618,7 +2354,6 @@ export default function ProfileClient({
   contactTotal,
   syncedCalendars,
   calendarVaultConfigured,
-  googleImageGenerationStatus,
   initialTab,
   initialBrainScope,
 }: {
@@ -2633,7 +2368,6 @@ export default function ProfileClient({
   contactTotal: number;
   syncedCalendars: CalendarCollection[];
   calendarVaultConfigured: boolean;
-  googleImageGenerationStatus: GoogleImageGenerationStatus;
   initialTab: "profile" | "knowledge";
   initialBrainScope: string;
 }) {
@@ -2666,18 +2400,18 @@ export default function ProfileClient({
       params.delete("organization");
     }
     const query = params.toString();
-    router.replace(query ? `/profile?${query}` : "/profile", { scroll: false });
+    router.replace(query ? `/settings?${query}` : "/settings", { scroll: false });
   }, [router]);
 
   return (
-    <div className="flex min-h-screen flex-col bg-[var(--paper-bg)] text-white">
+    <div data-hide-scrollbars className="flex min-h-screen flex-col bg-[var(--paper-bg)] text-white">
       <header className="breadboard-flower-navbar relative flex shrink-0 items-center justify-between gap-4 border-b border-gray-800 px-6 py-3.5">
         <NavbarFlowerWind showFlowers={showNavbarFlowers} />
         <div className="relative z-10 flex min-w-0 items-center gap-3">
-          <BackLink fallbackHref="/dashboard" fallbackLabel="Back to dashboard" />
+          <BackLink fallbackHref="/new-tab" fallbackLabel="Back to home" />
           <span className="text-gray-700">/</span>
           <h1 className="truncate text-sm font-semibold text-white">
-            {tab === "knowledge" ? "Knowledge" : "Profile"}
+            {tab === "knowledge" ? "Knowledge" : "Settings"}
           </h1>
         </div>
         <nav className="relative z-10 inline-flex shrink-0 items-center rounded-md border border-gray-800 bg-gray-900/80 p-1 shadow-inner">
@@ -2693,7 +2427,7 @@ export default function ProfileClient({
                   : "rounded-md px-3 py-1.5 text-xs font-medium text-gray-400 transition hover:text-white"
               }
             >
-              {name === "profile" ? "Profile" : "Knowledge"}
+              {name === "profile" ? "Settings" : "Knowledge"}
             </button>
           ))}
         </nav>
@@ -2727,9 +2461,7 @@ export default function ProfileClient({
 
           <div className="flex shrink-0 items-center gap-2">
             <RestartBreadboardButton />
-            <button
-              type="button"
-              onClick={() => signOut({ callbackUrl: "/auth/login" })}
+            <SignOutButton
               className="neu-button flex items-center gap-1.5 rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
             >
               <svg
@@ -2746,7 +2478,7 @@ export default function ProfileClient({
                 <path d="M14.5 8.5 18 12l-3.5 3.5M9 12h9" />
               </svg>
               Sign out
-            </button>
+            </SignOutButton>
           </div>
         </section>
 
@@ -2803,7 +2535,7 @@ export default function ProfileClient({
             hint={
               habit.peakHour === null
                 ? "No prompts to read a rhythm from yet."
-                : `Your busiest hour is ${hourLabel(habit.peakHour)} — ${rhythmPhrase(habit.peakHour)}.`
+                : `Your busiest hour is ${hourLabel(habit.peakHour)}.`
             }
           >
             <HourHistogram hours={habit.hours} />
@@ -2812,7 +2544,7 @@ export default function ProfileClient({
 
           <Card
             title="Where you work"
-            hint="Prompts by surface, with a closer look at your busiest gardens."
+            hint="Prompts by location and your most active Gardens."
           >
             {surfaces.length === 0 ? (
               <p className="text-xs text-gray-600">No prompts yet.</p>
@@ -2863,7 +2595,7 @@ export default function ProfileClient({
         */}
         <div className="mt-4 gap-4 lg:columns-2">
           <Packed>
-            <Card title="What came out of it" hint="Artifacts by kind, and the agents you actually run.">
+            <Card title="Your results" hint="Generated files by type and your most-used agents.">
               {artifactKinds.length === 0 ? (
                 <p className="text-xs text-gray-600">Nothing has been produced yet.</p>
               ) : (
@@ -2903,22 +2635,17 @@ export default function ProfileClient({
           <Packed>
             <div className="space-y-4">
               <Card
-                title="What it cost to answer you"
+                title="Response usage"
                 hint={
                   totals.measuredReplies === 0
-                    ? "No reply has reported its usage yet."
+                    ? "No response usage recorded yet."
                     : `Measured across ${formatCount(totals.measuredReplies)} of ${formatCount(totals.replies)} replies.`
                 }
               >
                 <div className="grid grid-cols-2 gap-3">
                   <Stat value={formatCompact(totals.tokens)} label="Tokens" />
-                  <Stat value={formatDuration(totals.thinkingMs)} label="Spent generating" />
+                  <Stat value={formatDuration(totals.thinkingMs)} label="Time generating replies" />
                 </div>
-                <p className="mt-3 text-xs text-gray-600">
-                  {totals.memories === 0
-                    ? "The assistant has not committed anything to durable memory yet."
-                    : `It also keeps ${formatCount(totals.memories)} thing${totals.memories === 1 ? "" : "s"} about you in durable memory.`}
-                </p>
               </Card>
 
               <ModelPanel cost={stats.cost} />
@@ -2950,6 +2677,10 @@ export default function ProfileClient({
 
           <Packed>
             <DefaultModelPanel />
+          </Packed>
+
+          <Packed>
+            <FallbackModelPanel />
           </Packed>
 
           <Packed>
@@ -2985,7 +2716,11 @@ export default function ProfileClient({
           </Packed>
 
           <Packed>
-            <GoogleImageGenerationPanel initial={googleImageGenerationStatus} />
+            <DownloadSettingsPanel />
+          </Packed>
+
+          <Packed>
+            <GoogleImageGenerationPanel />
           </Packed>
 
           <Packed>
@@ -2997,7 +2732,7 @@ export default function ProfileClient({
           </Packed>
 
           <Packed>
-            <ClickyPanel />
+            <ChatRailSoundPanel />
           </Packed>
 
           <Packed>

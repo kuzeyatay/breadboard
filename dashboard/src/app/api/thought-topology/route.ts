@@ -15,7 +15,7 @@ import {
   type ThoughtTopology,
   type ThoughtTopologyApiResponse,
 } from "@/lib/thought-topology/types";
-import { gardenContentFingerprint } from "@/lib/thought-topology/projection";
+import { gardenContentFingerprintAsync } from "@/lib/thought-topology/fingerprint-async";
 import { scoringVersionOrdinal, THOUGHT_TOPOLOGY_SCORING } from "@/lib/thought-topology/scoring";
 import {
   invalidateThoughtTopologyAfterMutation,
@@ -57,7 +57,7 @@ async function queueRebuildForStoredTopology(
   // those snapshots from the read path because they are deliberately hidden
   // from the renderer. Also repair maps built before source-anchor provenance
   // and endpoint-independent connection selection were supported.
-  const reason = topologyRebuildReason(cluster, gardenDir, topology);
+  const reason = await topologyRebuildReason(cluster, gardenDir, topology);
   if (!reason) return false;
   try {
     const queued = await invalidateThoughtTopologyAfterMutation(cluster.slug, reason);
@@ -67,16 +67,16 @@ async function queueRebuildForStoredTopology(
   }
 }
 
-function topologyRebuildReason(
+async function topologyRebuildReason(
   cluster: { slug: string },
   gardenDir: string,
   topology: ThoughtTopology,
-): string | null {
+): Promise<string | null> {
   return !thoughtTopologyHasCompleteConnections(topology)
     ? `Thought Topology for ${cluster.slug} has incomplete connection explanations`
     : scoringVersionOrdinal(topology.scoringVersion) < 4
       ? `Thought Topology for ${cluster.slug} is missing source-anchor connections`
-    : topology.build.contentFingerprint !== gardenContentFingerprint(gardenDir)
+    : topology.build.contentFingerprint !== await gardenContentFingerprintAsync(gardenDir)
       ? `Garden content changed since the last Thought Topology build of ${cluster.slug}`
       : null;
 }
@@ -381,7 +381,7 @@ export async function GET(request: Request) {
     }
     if (!automatic && status?.state !== "building") {
       if (!topology || status || (latest && ["queued", "running"].includes(latest.status)) ||
-          topologyRebuildReason(cluster, gardenDir, topology) ||
+          await topologyRebuildReason(cluster, gardenDir, topology) ||
           (latest && latest.revision < cluster.thought_topology_revision)) {
         status = status?.state === "failed" ? status : {
           state: "stale",

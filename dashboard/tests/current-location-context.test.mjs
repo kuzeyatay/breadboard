@@ -251,14 +251,14 @@ test("agent turns persist the base prompt but run with the ephemeral location pr
   assert.ok(begin >= 0 && dispatch > begin && startRun > dispatch);
 
   const persistedRun = turns.slice(begin, dispatch);
-  assert.match(persistedRun, /system: baseSystem/);
+  assert.match(persistedRun, /system: systemWithProducts/);
   assert.doesNotMatch(persistedRun, /system: runtimeSystem/);
 
   const liveDispatch = turns.slice(startRun, startRun + 1_500);
   assert.match(liveDispatch, /system: runtimeSystem/);
   assert.match(
     turns,
-    /const runtimeSystem = \[baseSystem, currentLocationContext, browserContext\]/,
+    /const runtimeSystem = \[systemWithProducts, currentLocationContext, browserContext\]/,
   );
 });
 
@@ -270,7 +270,7 @@ test("direct-provider turns render device location into their non-persisted prom
   );
   assert.match(
     direct,
-    /currentLocationContext,[\s\S]{0,240}?readerComprehensionPrompt\(\),[\s\S]{0,80}?\.filter\(Boolean\)/,
+    /currentLocationContext,[\s\S]{0,100}?\.filter\(Boolean\)/,
   );
   assert.match(direct, /store: false/);
   assert.match(

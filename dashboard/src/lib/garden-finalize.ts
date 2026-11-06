@@ -77,7 +77,7 @@ import {
   loadVisualizationPlan,
   type VisualizationPlan,
 } from "./visualization-opportunities.ts";
-import { extractVerbatimDisplayMath, normalizeQuartzMarkdown } from "./quartz-markdown.ts";
+import { extractVerbatimDisplayMath, formulaNotationKey, normalizeQuartzMarkdown } from "./quartz-markdown.ts";
 import {
   loadSourceVisualSourceIdentityMap,
   sourceSetHashWithReviewedFormulas,
@@ -2451,7 +2451,12 @@ function cleanExportTree(gardenDir: string, report: FinalizeReport): void {
     // visible Quartz content but stays available to the knowledge graph.
     if (entry.isDirectory() && entry.name === "Internal") {
       const dest = path.join(gardenDir, ".breadboard", "Internal");
-      moveDir(abs, dest);
+      // Merge, never replace: .breadboard/Internal also holds the accepted-
+      // lesson receipts, and replacing it made the next resume rewrite all 36
+      // telecom-1 lessons (2026-10-08).
+      fs.mkdirSync(dest, { recursive: true });
+      for (const child of fs.readdirSync(abs)) moveDir(path.join(abs, child), path.join(dest, child));
+      rmrf(abs);
       report.removed.push(`Internal/ -> .breadboard/Internal/`);
       continue;
     }
@@ -4375,8 +4380,10 @@ export function normalizeSourceWikilinks(gardenDir: string, report: FinalizeRepo
       return `${hashes} ${label}`;
     });
 
-    // 2) Remaining wikilinks: resolve or flatten.
-    next = next.replace(/(!?)\[\[([^\]]+?)\]\]/g, (full, bang: string, inner: string) => {
+    // 2) Remaining wikilinks: resolve or flatten. `[[label]](#anchor)` is a
+    // Markdown link with a bracketed label, not a wikilink; flattening it
+    // rewrote bound source material (em1 matter-interactions, 2026-10-16).
+    next = next.replace(/(!?)\[\[([^\]]+?)\]\](?!\()/g, (full, bang: string, inner: string) => {
       if (bang === "!") return full; // image/embed transclusion
       const pipe = inner.indexOf("|");
       const rawTarget = (pipe >= 0 ? inner.slice(0, pipe) : inner).trim();
@@ -5859,6 +5866,7 @@ function tagIsCentral(tag: string, page: LearnerPage): boolean {
  * embedded source-figure caption never counts as page-central evidence. */
 function teachingProseLite(body: string): string {
   return body
+    .replace(/(?:^|\n)\*\*References\*\*\n\n(?:- [^\n]*(?:\n|$))+/g, "\n")
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/^\s*\*[^*\n]+\*(?:\s*\*\([^)\n]*\)\*)?\s*$/gm, " ");
@@ -6428,8 +6436,14 @@ function cropQualityFindings(gardenDir: string, visual: LedgerVisual): CropQuali
     const type = String(visual.type ?? "");
     const minWidth = type === "equation" ? 180 : type === "table" ? 260 : 160;
     const minHeight = type === "equation" ? 48 : type === "table" ? 120 : 90;
-    if (dims.width < minWidth || dims.height < minHeight) {
-      problems.push(`${id}: crop too small (${dims.width}x${dims.height})`);
+    // A tall, narrow figure (em1 10.4: 151x236 dipole column) is legible when
+    // its area clears the minimum; only slivers and icons are too small. A crop
+    // no learner sees (skipped, never embedded) cannot hurt the lesson.
+    const tooSmall = dims.width * dims.height < minWidth * minHeight ||
+      dims.width < minWidth * 0.75 || dims.height < minHeight * 0.75;
+    const shown = cropStatus === "embedded" || (visual.usageStatus === "assigned" && requiresEmbeddedCrop);
+    if (tooSmall) {
+      (shown ? problems : warnings).push(`${id}: crop too small (${dims.width}x${dims.height})`);
     }
   }
   const bbox = asObject(visual.bbox);
@@ -6918,11 +6932,16 @@ function repairSectionSemanticTitles(
   }
 }
 
-function idsUsedByLearners(learnerPages: LearnerPage[]): Set<string> {
+function idsUsedByLearners(
+  learnerPages: LearnerPage[],
+  { includeProvenanceAnchors = true }: { includeProvenanceAnchors?: boolean } = {},
+): Set<string> {
   const ids = new Set<string>();
   for (const page of learnerPages) {
     for (const id of fmGetArray(page.rawFm, "sourceVisualIds")) ids.add(id);
-    for (const id of fmGetArray(page.rawFm, "sourceAnchors")) ids.add(id);
+    if (includeProvenanceAnchors) {
+      for (const id of fmGetArray(page.rawFm, "sourceAnchors")) ids.add(id);
+    }
     for (const id of formulaAnchorsFromFrontmatter(page.rawFm)) {
       if (!id.startsWith("trivial:")) ids.add(id);
     }
@@ -7008,7 +7027,11 @@ function sourceAnchorUsageVsCropStatusProblems(
   learnerPages: LearnerPage[],
   groundableFormulaAnchorIds: Set<string>,
 ): string[] {
-  const usedIds = idsUsedByLearners(learnerPages);
+  // A page's `sourceAnchors` is provenance: it mirrors the unit's citations,
+  // which may name artifacts the contract deliberately omitted (em1,
+  // 2026-10-16: 91 omitted anchors). Only displayed/embedded/defined use
+  // contradicts a skip.
+  const usedIds = idsUsedByLearners(learnerPages, { includeProvenanceAnchors: false });
   const problems: string[] = [];
   for (const visual of ledger) {
     const id = visual.sourceVisualId;
@@ -7947,7 +7970,10 @@ function isExactReviewedSourceFormulaProjection(
  * comparison. This permits Quartz's mechanical `\\tag{n}` -> visible text
  * lowering, but a changed sign, variable, limit, or term remains different. */
 function quartzDisplayProjectionKey(value: string): string {
-  const normalized = normalizeQuartzMarkdown(`$$\n${value}\n$$`);
+  // A transcription already wrapped in \[ \] (Couch 7-16 and neighbours) would
+  // become $$ $$…$$ $$ and project to nothing (telecom-1, 2026-10-08).
+  const inner = value.trim().replace(/^\\\[([\s\S]*)\\\]$/, "$1");
+  const normalized = normalizeQuartzMarkdown(`$$\n${inner}\n$$`);
   const display = extractVerbatimDisplayMath(normalized)[0];
   return exactFormulaProjectionKey(display?.formula);
 }
@@ -7956,16 +7982,30 @@ function sourceFormulaIdsUsedByFinalArtifact(
   contract: LearningUnitContractArtifact,
   learnerPages: readonly LearnerPage[],
   ledger: readonly LedgerVisual[],
+  selectedSourceIds: readonly string[] = [],
 ): string[] {
   const ids = new Set<string>();
+  // The garden ledger outlives one Learn run: a module rebuilt from other
+  // sources still finds the previous run's "assigned" formulas there
+  // (telecom-1 M3, 2026-10-17: 40 M1 BER formulas failed finalize). Only
+  // formulas of this run's selected sources can be in use.
+  const selected = new Set(selectedSourceIds.map((sourceId) => sourceId.trim()).filter(Boolean));
   const add = (value: unknown): void => {
     const id = String(value ?? "").trim();
     if (isSourceFormulaId(id)) ids.add(id);
   };
+  // A unit may cite a formula the contract deliberately omitted (redundant or
+  // out of scope) as provenance; that citation does not ask a lesson to
+  // display it (em1, 2026-10-16: 55 omitted formulas failed finalize).
+  const omitted = new Set(
+    ledger
+      .filter((visual) => visual.usageStatus === "intentionally_skipped")
+      .map((visual) => visual.sourceVisualId),
+  );
   for (const assignment of contract.assignments) add(assignment.sourceArtifactId);
   for (const unit of contract.units) {
     for (const formula of unit.sourceFormulas ?? []) add(formula.id);
-    for (const anchor of unit.sourceAnchors ?? []) add(anchor);
+    for (const anchor of unit.sourceAnchors ?? []) if (!omitted.has(anchor)) add(anchor);
     for (const anchor of unit.interactiveVisual?.sourceAnchors ?? []) add(anchor);
     for (const anchor of unit.interactiveVisualPlan?.visualIntent?.sourceAnchors ?? []) add(anchor);
   }
@@ -7980,7 +8020,11 @@ function sourceFormulaIdsUsedByFinalArtifact(
     }
   }
   for (const visual of ledger) {
-    if (classifyFigure(visual) === "equation" && visual.usageStatus === "assigned") {
+    if (
+      classifyFigure(visual) === "equation" &&
+      visual.usageStatus === "assigned" &&
+      (selected.size === 0 || selected.has(String(visual.sourceId ?? "").trim()))
+    ) {
       add(visual.sourceVisualId);
     }
   }
@@ -8054,10 +8098,12 @@ export function reviewedSourceFormulaPageBindingProblems({
     path.join(gardenDir, ".breadboard", "source-visuals.json"),
     [],
   );
+  const manifestSourceIds = readSourceFormulaReviewSetManifest(gardenDir)?.sourceIds;
   const formulaIds = sourceFormulaIdsUsedByFinalArtifact(
     contract,
     learnerPages,
     ledger,
+    Array.isArray(manifestSourceIds) ? manifestSourceIds.map(stringField).filter(Boolean) : [],
   );
   for (const formulaId of requiredFormulaIds) {
     const normalized = String(formulaId ?? "").trim();
@@ -8077,7 +8123,8 @@ export function reviewedSourceFormulaPageBindingProblems({
       page.rel,
       new Set(
         extractVerbatimDisplayMath(normalizeQuartzMarkdown(page.body))
-          .map((expression) => exactFormulaProjectionKey(expression.formula))
+          // Notation-identical displays (P_{S} vs P_S) are one equation.
+          .map((expression) => formulaNotationKey(exactFormulaProjectionKey(expression.formula)))
           .filter(Boolean),
       ),
     ]),
@@ -8121,7 +8168,10 @@ export function reviewedSourceFormulaPageBindingProblems({
           }
         }
       }
-      if (!expectedDisplay || !displayKeysByPage.get(page.rel)?.has(expectedDisplay)) {
+      // A recorded source erratum is cited and taught in corrected form, not
+      // displayed as printed (see citedSourceFormulaErrataIds in learn.ts).
+      const recordedErratum = fmGetArray(page.rawFm, "sourceFormulaErrata").includes(formulaId);
+      if (!recordedErratum && (!expectedDisplay || !displayKeysByPage.get(page.rel)?.has(formulaNotationKey(expectedDisplay)))) {
         problems.push(
           `${page.rel}: reviewed formula ${formulaId} is not present as an exact visible Quartz display projection`,
         );
@@ -8579,8 +8629,15 @@ function syllabusCoverageEvidenceRecoveryBindingProblems({
         body: source.body,
       })),
       anchors: modelSourcePageAnchors(sources),
-      expectedSourceSetHash: contract.sourceSetHash,
-      expectedSourceArtifactInventoryHash: contract.sourceArtifactInventoryHash,
+      // A text-bound receipt (sourceSetHash is the text fingerprint) is not
+      // compared with the contract's full hashes; its per-source raw-text
+      // bindings above are what prove it still matches the sources.
+      ...((contractReceipt as { sourceSetHash?: unknown } | undefined)?.sourceSetHash === contract.sourceSetHash
+        ? {
+            expectedSourceSetHash: contract.sourceSetHash,
+            expectedSourceArtifactInventoryHash: contract.sourceArtifactInventoryHash,
+          }
+        : {}),
     }));
   } catch (error) {
     problems.push(
@@ -8623,7 +8680,7 @@ function collectFinalizeChecks({
     const unitId = fmGetScalar(page.rawFm, "learningUnitId");
     if (unitId) pagesByUnit.set(unitId, page);
   }
-  const ledger = readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []);
+  const gardenLedger = readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []);
   const sourceFormulaReviewManifest = readSourceFormulaReviewSetManifest(gardenDir);
   const rawManifestFormulaIds = sourceFormulaReviewManifest?.formulaIds;
   const manifestFormulaIds = Array.isArray(rawManifestFormulaIds)
@@ -8636,6 +8693,13 @@ function collectFinalizeChecks({
   const selectedSourceIds = expectedSourceFormulaReviewContext
     ? expectedSourceFormulaReviewContext.sourceIds
     : manifestSourceIds;
+  // The garden ledger keeps every earlier run's visuals. A module rebuilt from
+  // other sources must be judged on its own sources only: telecom-1 M3
+  // (2026-10-17) failed 298 coverage checks on M1's leftover entries.
+  const selectedSourceIdSet = new Set(selectedSourceIds.map((sourceId) => sourceId.trim()).filter(Boolean));
+  const ledger = selectedSourceIdSet.size === 0
+    ? gardenLedger
+    : gardenLedger.filter((visual) => selectedSourceIdSet.has(String(visual.sourceId ?? "").trim()));
   const currentReviewedFormulaIds = currentSourceFormulaIds(ledger, selectedSourceIds);
   const declaredReviewedFormulaIds = expectedSourceFormulaReviewContext
     ? expectedSourceFormulaReviewContext.formulaIds
@@ -8644,6 +8708,7 @@ function collectFinalizeChecks({
     contract,
     learnerPages,
     ledger,
+    selectedSourceIds,
   );
   const requireSourceFormulaReview = Boolean(
     expectedSourceFormulaReviewContext ||

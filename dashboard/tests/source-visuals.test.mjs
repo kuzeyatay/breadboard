@@ -68,12 +68,16 @@ test("formula-review logical timeout covers the full bounded transport schedule"
   );
 });
 
-test("source-visual detection gives Sol Ultra one bounded three-minute request", () => {
+test("source-visual detection gives a vision call one bounded ten-minute request", () => {
   assert.equal(
     DEFAULT_SOURCE_VISUAL_DETECTION_TIMEOUT_MS,
     MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS,
   );
-  assert.equal(sourceVisualDetectionTimeoutMs(""), 180_000);
+  // A driven chatgpt.com page regularly needs more than three minutes for a
+  // page image; the old 180s ceiling killed calls that were about to succeed
+  // and could not be raised by the override it also bounds.
+  assert.equal(sourceVisualDetectionTimeoutMs(""), 600_000);
+  assert.equal(sourceVisualDetectionTimeoutMs("240000"), 240_000);
   assert.equal(sourceVisualDetectionTimeoutMs("45000"), 45_000);
   assert.equal(
     sourceVisualDetectionTimeoutMs("1"),
@@ -2009,6 +2013,41 @@ test("reject or ambiguous formula evidence fails closed without ledger projectio
       /review rejected source evidence.*ambiguous/,
     );
     assert.deepEqual(fs.readFileSync(ledgerPath), before);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(cacheRoot, { recursive: true, force: true });
+  }
+});
+
+test("a planner review leaves out a page whose formulas stay unverifiable", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-review-drop-"));
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-review-drop-cache-"));
+  try {
+    const garden = "garden";
+    seedFormulaReviewGarden(root, garden, [1]);
+    const progress = [];
+    const result = await reviewRequiredSourceFormulaExactText({
+      client: fakeClient(async () => ({ choices: [{ message: { content: JSON.stringify({
+        reviews: [{
+          sourceVisualId: "S1.P1.E1",
+          action: "reject",
+          identityAssessment: "ambiguous",
+          reason: "The PDF render does not establish a complete single displayed equation.",
+        }],
+      }) } }] })),
+      model: "review-model",
+      contentPath: root,
+      gardenSlug: garden,
+      selectedSourceIds: ["src"],
+      requiredFormulaIds: ["S1.P1.E1"],
+      cacheRoot,
+      renderPdfPage: async () => solidPng(),
+      dropUnverifiablePages: true,
+      onProgress: (step) => progress.push(step),
+    });
+    assert.deepEqual(result.formulaIds, []);
+    assert.equal(result.visuals.some((visual) => visual.sourceVisualId === "S1.P1.E1"), false);
+    assert.match(progress.join(" | "), /Left out unverifiable formulas on src p\.1/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(cacheRoot, { recursive: true, force: true });

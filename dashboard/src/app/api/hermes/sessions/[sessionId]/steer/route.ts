@@ -14,6 +14,7 @@ import { recordAuditEvent } from "@/lib/hermes/runtime-store.ts";
 import { parseChatAttachments } from "@/lib/chat-attachments-request.ts";
 import { attachmentOnlyMessageText, chatMessageAttachments } from "@/lib/chat-attachments.ts";
 import { hydrateDocumentAttachments, stageEditableDocumentAttachments } from "@/lib/document-attachments-server.ts";
+import { prepareDocumentContext } from "@/lib/document-skills/turn.ts";
 import { hermesMessageId } from "@/lib/hermes/message-id.ts";
 import { chatTextSelectionQuestionPrompt, normalizeChatTextSelectionReference } from "@/lib/chat-text-selection.ts";
 import {
@@ -157,6 +158,11 @@ export async function POST(
         attachments: resolvedAttachments,
         workspace: session.activeDirectory,
       });
+      const documents = await prepareDocumentContext({
+        userId,
+        attachments: resolvedAttachments,
+        signal: request.signal,
+      });
       const correction = textSelection
         ? chatTextSelectionQuestionPrompt(text, textSelection)
         : text;
@@ -166,8 +172,8 @@ export async function POST(
         workspaceKey: session.workspaceKey,
         directory: session.activeDirectory,
         agentName: session.agentName,
-        text: staged.context ? `${correction}\n\n${staged.context}` : correction,
-        attachments: resolvedAttachments,
+        text: [correction, documents.context, staged.context].filter(Boolean).join("\n\n"),
+        attachments: documents.inlineAttachments,
         model: dispatch.model,
         variant: dispatch.variant,
         tools: dispatch.tools,

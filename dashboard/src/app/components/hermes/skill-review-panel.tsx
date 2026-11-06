@@ -1,5 +1,6 @@
 "use client";
 
+import SkillAccessReview from "./skill-access-review";
 import { useState, type FormEvent } from "react";
 import type { SkillContinuation } from "./use-agent-session";
 
@@ -107,7 +108,7 @@ export default function SkillReviewPanel({
       setReport(body.report as QuarantineReport);
       setApprovedPermissions(new Set());
       setNotice(
-        "Downloaded to inactive quarantine. Review every item before deciding.",
+        "Check the requested access, then install this skill.",
       );
     } catch (reason) {
       setError(
@@ -145,8 +146,8 @@ export default function SkillReviewPanel({
       setReport(null);
       setNotice(
         decision === "promote"
-          ? "Approved for the Breadboard workbench."
-          : "Quarantined copy rejected and removed.",
+          ? "Skill installed."
+          : "Installation cancelled.",
       );
       if (decision === "promote") await onApproved?.();
       if (decision === "promote" && body.continuation && onResume) {
@@ -169,14 +170,7 @@ export default function SkillReviewPanel({
     }
   }
 
-  function togglePermission(permission: string) {
-    setApprovedPermissions((current) => {
-      const next = new Set(current);
-      if (next.has(permission)) next.delete(permission);
-      else next.add(permission);
-      return next;
-    });
-  }
+
 
   return (
     <div
@@ -189,13 +183,13 @@ export default function SkillReviewPanel({
               Skill discovery and review
             </h2>
             <p className="mt-1 text-xs text-gray-400">
-              Search is metadata-only. Downloads remain inactive until you
-              approve the reviewed hashes and permissions.
+              Downloaded skills stay inactive until you review and approve their files and permissions.
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
+            disabled={busy}
             className="rounded border border-gray-700 px-2 py-1 text-xs hover:bg-gray-800"
           >
             Close
@@ -260,7 +254,7 @@ export default function SkillReviewPanel({
                   onClick={() => void quarantine(candidate)}
                   className="rounded border border-amber-700 px-2 py-1 text-xs text-amber-200 hover:bg-amber-950/50 disabled:opacity-50"
                 >
-                  Quarantine
+                  Install skill
                 </button>
               </div>
             ))}
@@ -274,80 +268,11 @@ export default function SkillReviewPanel({
               <p className="mt-1 break-all text-xs text-gray-400">
                 Source: {report.source}
               </p>
-              <p className="text-xs text-gray-400">
-                Exact lock/hash: {report.exactVersion ?? "not reported"} ·
-                quarantined {report.installedAt}
-              </p>
             </div>
 
-            <div>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-300">
-                Static risk report
-              </h3>
-              <p className="mt-1 text-xs text-amber-200">
-                {report.riskSummary}
-              </p>
-              {report.risks.length ? (
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-gray-300">
-                  {report.risks.map((risk) => (
-                    <li key={risk}>{risk}</li>
-                  ))}
-                </ul>
-              ) : null}
+            <div className="[--ink:#e5e7eb] [--ink-heading:#fff] [--ink-muted:#9ca3af] [--line:#374151]">
+              <SkillAccessReview report={report} approved={approvedPermissions} onChange={setApprovedPermissions} disabled={busy} />
             </div>
-
-            <div>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-300">
-                Requested permissions
-              </h3>
-              {report.requestedPermissions.length ? (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {report.requestedPermissions.map((permission) => (
-                    <label
-                      key={permission}
-                      className="flex items-center gap-1.5 rounded border border-gray-700 px-2 py-1 text-xs"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={approvedPermissions.has(permission)}
-                        onChange={() => togglePermission(permission)}
-                      />
-                      {permission}
-                    </label>
-                  ))}
-                </div>
-              ) : (
-                <p className="mt-1 text-xs text-gray-500">
-                  No permissions were declared or derived.
-                </p>
-              )}
-            </div>
-
-            <details className="rounded border border-gray-800 p-2">
-              <summary className="cursor-pointer text-xs font-medium">
-                Files and SHA-256 ({report.files.length})
-              </summary>
-              <div className="mt-2 max-h-48 space-y-1 overflow-auto font-mono text-[11px] text-gray-400">
-                {report.files.map((file) => (
-                  <p key={file} className="break-all">
-                    {file} · {report.fileHashes[file]}
-                  </p>
-                ))}
-              </div>
-            </details>
-
-            {report.discoveredScripts.length ? (
-              <p className="text-xs text-gray-400">
-                Scripts: {report.discoveredScripts.join(", ")}
-              </p>
-            ) : null}
-            {report.externalNetworkRequirements.length ? (
-              <p className="break-all text-xs text-gray-400">
-                Network references:{" "}
-                {report.externalNetworkRequirements.join(", ")}
-              </p>
-            ) : null}
-
             <div className="flex justify-end gap-2 border-t border-gray-800 pt-3">
               <button
                 type="button"
@@ -355,15 +280,15 @@ export default function SkillReviewPanel({
                 onClick={() => void decide("reject")}
                 className="rounded border border-red-800 px-3 py-1.5 text-xs text-red-200 hover:bg-red-950/50 disabled:opacity-50"
               >
-                Reject and remove
+                Cancel
               </button>
               <button
                 type="button"
-                disabled={busy || !report.integrityVerified}
+                disabled={busy || !report.integrityVerified || report.requestedPermissions.some(permission => !approvedPermissions.has(permission))}
                 onClick={() => void decide("promote")}
                 className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
               >
-                Approve for workbench
+                Install
               </button>
             </div>
           </div>

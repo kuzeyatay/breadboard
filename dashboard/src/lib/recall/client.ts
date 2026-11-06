@@ -127,7 +127,8 @@ export class RecallClient {
    * written one.
    */
   private authorization(): Record<string, string> {
-    if (this.apiKey === undefined) this.apiKey = resolveRecallApiKey(this.config);
+    // A status probe may precede the first start that creates the key.
+    if (!this.apiKey) this.apiKey = resolveRecallApiKey(this.config);
     return this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {};
   }
 

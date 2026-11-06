@@ -104,7 +104,11 @@ export async function compileLearnNativeVisualizer(
       errors.push(`Missing native control #${control.id}.`);
   }
   for (const output of opportunity?.requiredOutputs ?? []) {
-    if (!plan.outputs.some((entry) => entry.id === output.id))
+    // An id starting with a digit is not a valid identifier, so the model
+    // prefixes it ("qam_16_symbol_..." for "16_symbol_..."); four attempts
+    // failed on that alone (telecom-1 lesson 3.3, 2026-10-06).
+    if (!plan.outputs.some((entry) =>
+      entry.id === output.id || (/^\d/.test(output.id) && entry.id.endsWith(`_${output.id}`))))
       errors.push(`Missing required output ${output.id} in plan.`);
   }
   if (errors.length) return failed(errors);

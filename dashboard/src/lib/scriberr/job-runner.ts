@@ -15,6 +15,7 @@ import path from "path";
 import {
   VideoTranscriptionError,
   isKnowledgeExtractionFailure,
+  knowledgeExtractionFailureModel,
   sanitizeErrorForClient,
 } from "./errors.ts";
 import { assertProbeAcceptable } from "./ffprobe.ts";
@@ -32,6 +33,7 @@ import {
   sweepStaleTempDirs,
 } from "./paths.ts";
 import type { VideoTranscriptionConfig } from "./config.ts";
+import type { ScriberrStartParams } from "./client.ts";
 import type {
   VideoTranscriptionJobStore,
 } from "./job-store.ts";
@@ -64,13 +66,7 @@ export interface ScriberrOps {
   }): Promise<ScriberrJobSnapshot>;
   startTranscription(
     scriberrJobId: string,
-    params: {
-      modelFamily?: string;
-      model?: string;
-      batchSize?: number;
-      language?: string | null;
-      diarize?: boolean;
-    },
+    params: ScriberrStartParams,
   ): Promise<ScriberrJobSnapshot>;
   getJobStatus(scriberrJobId: string): Promise<ScriberrJobSnapshot>;
   getTranscript(scriberrJobId: string): Promise<{
@@ -396,10 +392,10 @@ export class VideoTranscriptionRunner {
     await this.cleanupTempMedia(jobId);
   }
 
-  /** Retry a failed job from its latest checkpoint. */
+  /** Retry a failed or cancelled job from its latest checkpoint. */
   async retry(jobId: string): Promise<VideoTranscriptionJob | null> {
     const job = this.deps.store.getJob(jobId);
-    if (!job || job.status !== "failed") return job;
+    if (!job || (job.status !== "failed" && job.status !== "cancelled")) return job;
 
     this.deps.store.updateJob(jobId, {
       errorCode: null,
@@ -685,6 +681,8 @@ export class VideoTranscriptionRunner {
     await client.startTranscription(job.scriberrJobId, {
       modelFamily: this.deps.config.scriberrModelFamily,
       model: this.deps.config.scriberrModel,
+      device: this.deps.config.scriberrDevice,
+      computeType: this.deps.config.scriberrComputeType,
       batchSize: this.deps.config.scriberrBatchSize,
       language: this.deps.config.scriberrLanguage,
       diarize: this.deps.config.scriberrDiarization,
@@ -922,7 +920,13 @@ export class VideoTranscriptionRunner {
       // fine and nothing was written on purpose. Naming it plainly is what
       // tells the user the garden is untouched and a retry is worth it.
       if (isKnowledgeExtractionFailure(error)) {
-        throw new VideoTranscriptionError("concept_extraction_failed", { cause: error });
+        const model = knowledgeExtractionFailureModel(error);
+        throw new VideoTranscriptionError("concept_extraction_failed", {
+          cause: error,
+          userMessage: model
+            ? `The transcript was read, but model ${model} failed while building its summary and concepts, so nothing was added to the garden. Retry the video or choose another model.`
+            : undefined,
+        });
       }
       throw new VideoTranscriptionError("markdown_write_failed", { cause: error });
     }

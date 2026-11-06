@@ -72,6 +72,7 @@ const externalCloneModules = [
 ];
 
 const opaqueRuntimePathModules = [
+  "src/lib/money-printer/runtime.ts",
   "src/lib/agent-browser/browser-profile.ts",
   "src/lib/agent-browser/opencli-extension.ts",
   "src/lib/aris/agent.ts",
@@ -97,6 +98,7 @@ const opaqueRuntimePathModules = [
 ];
 
 const opaqueDataFilesystemModules = [
+  "src/lib/money-printer/runtime.ts",
   "src/lib/hermes/patent-disclosure-source.ts",
   "src/lib/money-printer/credentials.ts",
   "src/lib/openplanter/runtime.ts",

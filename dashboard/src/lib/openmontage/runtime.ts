@@ -23,6 +23,7 @@ import {
   dashboardDataDir,
   repositoryRoot,
   runtimeV2ServiceVenv,
+  runtimeV2ToolchainRoot,
 } from "../runtime-paths.ts";
 import {
   externalRuntimePathExists,
@@ -69,7 +70,7 @@ function configured(value: string | undefined): string | null {
 }
 
 export function openMontageRuntimeRoot(): string {
-  return path.join(dashboardDataDir(), "runtime-v2", "toolchains", "openmontage");
+  return runtimeV2ToolchainRoot("openmontage");
 }
 
 function firstExisting(candidates: readonly (string | null)[]): string | null {

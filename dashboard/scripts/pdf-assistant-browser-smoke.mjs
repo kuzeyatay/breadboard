@@ -61,15 +61,30 @@ const cssPath=root+'src/app/globals.css';
 const css=await postcss([tailwind({base:root})]).process(await readFile(cssPath,'utf8'),{from:cssPath});
 await writeFile(new URL('base.css',out),css.css);
 const html=`<!doctype html><html data-theme="light" style="--font-source-sans:'Segoe UI';--font-schibsted:'Segoe UI';--font-ibm-plex-mono:monospace"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/base.css"><link rel="stylesheet" href="/bundle.css"></head><body><div id="root" style="height:100vh;display:flex;flex-direction:column"></div><script src="/bundle.js"></script></body></html>`;
+// Desktop serves chunks from a separate asset origin. Native import() must
+// still load PDF.js from the document's API origin, including after a redirect.
+const assetRequests=[];
+const assetServer=createServer(async(req,res)=>{
+  assetRequests.push(req.url);
+  if(req.url!=='/bundle.js'){res.writeHead(404);res.end('Not an app asset');return;}
+  res.writeHead(200,{'content-type':'text/javascript','access-control-allow-origin':'*'});
+  res.end(await readFile(new URL('bundle.js',out)));
+});
+await new Promise(resolve=>assetServer.listen(0,'127.0.0.1',resolve));
+const pdfModuleRequests=[];
 let uploads=0;
 let captureView=true;
 const viewRequests=[];
 const server=createServer(async(req,res)=>{
   try{
     const url=new URL(req.url,'http://localhost');
+    if(url.pathname==='/bundle.js'){
+      res.writeHead(302,{location:`http://127.0.0.1:${assetServer.address().port}/bundle.js`});res.end();return;
+    }
     if(url.pathname==='/fixture.pdf'){res.writeHead(200,{'content-type':'application/pdf'});res.end(pdfBytes);return;}
     if(url.pathname.startsWith('/api/pdfjs/')){
       const name=url.pathname.slice('/api/pdfjs/'.length);
+      pdfModuleRequests.push(name);
       const path=name==='pdf_viewer.mjs'||name==='pdf_viewer.css'?'web/'+name:name.startsWith('images/')?'web/'+name:'build/'+name;
       res.writeHead(200,{'content-type':name.endsWith('.css')?'text/css':name.endsWith('.svg')?'image/svg+xml':'text/javascript'});res.end(await readFile(root+'node_modules/pdfjs-dist/legacy/'+path));return;
     }
@@ -97,7 +112,15 @@ async function selectText(needle){
 }
 try{
   await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.locator('.page[data-loaded="true"] .textLayer span').first().waitFor({timeout:90000});
+  await page.locator('.page[data-loaded="true"] .textLayer span').first().waitFor({timeout:30000});
+  assert.deepEqual(assetRequests,['/bundle.js'],'API modules must not resolve against the redirected bundle origin');
+  for(const module of ['pdf.mjs','pdf_viewer.mjs','pdf.worker.mjs'])assert.ok(pdfModuleRequests.includes(module),`${module} loads from the document origin`);
+  if(process.argv.includes('--render-only')){
+    await page.getByRole('button',{name:'Next',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('.page[data-page-number="2"]')?.dataset.loaded==='true');
+    assert.deepEqual(errors,[]);
+    console.log('PASS: PDF.js modules and worker load from the document origin after the app bundle redirects; PDF renders and page navigation works.');
+  }else{
   await page.getByRole('button',{name:'Open PDF assistant',exact:true}).click();
   await page.getByRole('textbox',{name:'',exact:true}).count();
   assert.equal(await page.getByRole('button',{name:/Capture view|Preview current PDF screenshot/}).count(),0);
@@ -190,5 +213,6 @@ try{
   assert.deepEqual(errors,[]);
   await writeFile(new URL('results.json',out),JSON.stringify({passed:true,uploads,turns:await page.evaluate(()=>window.qaSends.length),errors},null,2));
   console.log('PASS: real PDF.js rendering, screenshot capture, full document context, saved highlights, Ask in chat, Ask here, cached uploads, dark theme and mobile panel.');
+  }
 }catch(error){await page.screenshot({path:fileURLToPath(new URL('failure.png',out))});console.log('Browser errors:',errors);throw error;}
-finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
+finally{await browser.close();await Promise.all([new Promise(resolve=>server.close(resolve)),new Promise(resolve=>assetServer.close(resolve))]);}

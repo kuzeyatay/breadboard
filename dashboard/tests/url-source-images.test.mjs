@@ -122,3 +122,30 @@ test("leaves an unavailable or non-image reference intact", async () => {
   assert.equal(result.images.length, 0);
   assert.equal(result.warningCount, 1);
 });
+
+test("captured images become Learn page snapshots listed first in source_images", async () => {
+  const { default: sharp } = await import("sharp");
+  const { saveUrlImagesAsPageSnapshots, withSnapshotSourceImages } = await import("../src/lib/url-source-images.ts");
+  const os = await import("node:os");
+  const fsMod = await import("node:fs");
+  const pathMod = await import("node:path");
+  const contentPath = fsMod.mkdtempSync(pathMod.join(os.tmpdir(), "url-snapshots-"));
+  const png = (size) => sharp({ create: { width: size, height: size, channels: 3, background: "#336699" } }).png().toBuffer();
+  try {
+    const urls = await saveUrlImagesAsPageSnapshots({
+      contentPath,
+      gardenSlug: "em",
+      sourceSlug: "Maxwell Equations",
+      images: [{ bytes: await png(200) }, { bytes: await png(16) }, { bytes: Buffer.from("not an image") }, { bytes: await png(300) }],
+    });
+    assert.deepEqual(urls, ["/em/assets/maxwell-equations-page-001.png", "/em/assets/maxwell-equations-page-002.png"]);
+    assert.ok(fsMod.existsSync(pathMod.join(contentPath, "em", "assets", "maxwell-equations-page-002.png")));
+
+    const note = '---\ntitle: "x"\nsource_images: ["/em/assets/url-sources/abc/001-a.gif"]\n---\n\nbody';
+    assert.match(withSnapshotSourceImages(note, urls),
+      /^source_images: \["\/em\/assets\/maxwell-equations-page-001\.png", "\/em\/assets\/maxwell-equations-page-002\.png", "\/em\/assets\/url-sources\/abc\/001-a\.gif"\]$/m);
+    assert.match(withSnapshotSourceImages('---\ntitle: "x"\n---\n\nbody', urls), /^source_images: \["\/em\/assets\/maxwell-equations-page-001\.png", .*\]\n---\n\nbody$/m);
+  } finally {
+    fsMod.rmSync(contentPath, { recursive: true, force: true });
+  }
+});

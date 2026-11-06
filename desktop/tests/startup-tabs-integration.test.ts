@@ -5,12 +5,15 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-for (const phase of ["ready", "welcome", "close", "stalled", "concurrent"]) test({
+for (const phase of ["ready", "authenticated", "welcome", "close", "stalled", "concurrent", "orphaned", "lazy"]) test({
   ready: "startup waits for every restored tab and browser page before revealing any window or notification",
+  authenticated: "signed-in startup loads every saved tab and waits for its content before revealing the app",
   welcome: "notifications stay hidden after startup paints until the user dismisses welcome",
   close: "closing startup disposes all preloading tabs and secondary windows",
   stalled: "slow widgets and tab resources keep startup visible past its diagnostic interval",
   concurrent: "tabs opened during startup remain selectable and resize with their window",
+  orphaned: "a widget that never settles cannot strand the remaining startup tabs",
+  lazy: "by default restored tabs keep their place and title and load only when selected",
 }[phase]!, {
   skip: process.platform !== "win32",
 }, () => {

@@ -75,6 +75,16 @@ test("an active phase falls back to time since mount instead of stale message ti
   );
 });
 
+test("durable completion stops the timer even when activity completion was missed", () => {
+  assert.equal(assistantResponseElapsedMs({
+    activities: [{ startedAt: "2026-09-23T14:31:22.000Z" }],
+    active: false,
+    now: Date.parse("2026-09-23T14:45:00.000Z"),
+    responseStartedAt: "2026-09-23T14:31:22.000Z",
+    responseCompletedAt: "2026-09-23T14:37:07.000Z",
+  }), 345_000);
+});
+
 test("a reopened live response keeps counting from its durable message start", () => {
   assert.equal(
     assistantResponseElapsedMs({

@@ -367,6 +367,7 @@ impl Registry {
         recall_configuration: Option<&RuntimeRecallConfiguration>,
     ) -> Result<ServiceLaunchRequest, RegistryError> {
         let service = self.service(id)?;
+        if id == "scriberr" { paths.scriberr_uploads_path()?; }
         if !authority.matches_scope(&paths.runtime_generation_scope()) {
             return Err(RegistryError::InvalidManifest(
                 ValidationError::InvalidRange {
@@ -417,7 +418,7 @@ impl Registry {
                 &paths.resolve_runtime(&profile.allowed_executable)?,
             )?,
             ServiceExecutableAuthority::DataRoot => {
-                paths.pin_data_file_for_launch(&paths.resolve_data(&profile.allowed_executable)?)?
+                paths.pin_service_data_file_for_launch(&profile.allowed_executable)?
             }
         };
         let mut launch_files = Vec::with_capacity(profile.install_probe.files().len());
@@ -442,7 +443,7 @@ impl Registry {
                     paths.pin_app_file_for_launch(&paths.resolve_app(&probe.path)?)?
                 }
                 ServiceInstallProbeAuthority::DataRoot => {
-                    paths.pin_data_file_for_launch(&paths.resolve_data(&probe.path)?)?
+                    paths.pin_service_data_file_for_launch(&probe.path)?
                 }
             };
             launch_files.push(pin);
@@ -459,7 +460,7 @@ impl Registry {
                 ServiceLaunchArgument::DataPath { path } => {
                     arguments.push(
                         paths
-                            .resolve_data(path)?
+                            .resolve_service_data(path)?
                             .child_argv_path()?
                             .into_os_string(),
                     );
@@ -491,7 +492,7 @@ impl Registry {
                 paths.pin_app_launch_directory(path)?
             }
             ServiceWorkingDirectoryPolicy::DataSubdirectory { path } => {
-                paths.pin_data_launch_directory(path)?
+                paths.pin_service_data_launch_directory(path)?
             }
             ServiceWorkingDirectoryPolicy::HotDevelopmentWorkspace {
                 app_path,

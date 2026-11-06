@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import logging
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from werkzeug.serving import ThreadedWSGIServer, WSGIRequestHandler
+
+from .temp_cleanup import TempCleanupWorker
 
 if TYPE_CHECKING:
     from _typeshed.wsgi import WSGIEnvironment
@@ -141,7 +144,17 @@ def run_memory_efficient_server(
         MemoryEfficientWSGIRequestHandler,
         max_workers=max_workers,
     )
+    cleanup = None
     try:
+        try:
+            cleanup = TempCleanupWorker()
+            cleanup.start()
+        except (OSError, RuntimeError):
+            logging.getLogger(__name__).exception("Temporary-cache cleanup unavailable")
         server.serve_forever()
     finally:
-        server.server_close()
+        try:
+            if cleanup is not None:
+                cleanup.stop()
+        finally:
+            server.server_close()

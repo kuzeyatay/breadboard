@@ -118,6 +118,8 @@ function queryTerms(query: string): string[] {
  */
 export function rankHits(hits: MergedHit[], query: string): MergedHit[] {
   const terms = queryTerms(query);
+  const titleKey = (value: string) => value.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+  const requestedTitle = titleKey(query);
   const scored = hits.map((hit) => {
     const haystack = `${hit.title} ${hit.abstract ?? ""}`.toLowerCase();
     const matched = terms.filter((term) => haystack.includes(term)).length;
@@ -128,10 +130,12 @@ export function rankHits(hits: MergedHit[], query: string): MergedHit[] {
       (hit.pdfUrl ? 2.5 : 0) +
       (hit.openAccess ? 0.5 : 0) +
       Math.log10((hit.citationCount ?? 0) + 1) * 0.6;
-    return { hit, score };
+    // A named paper must not lose the one-result slot to a longer title that
+    // contains the same words. Substrings and partial titles get no such boost.
+    return { hit, score, exactTitle: requestedTitle.length > 0 && titleKey(hit.title) === requestedTitle };
   });
   return scored
-    .sort((left, right) => right.score - left.score)
+    .sort((left, right) => Number(right.exactTitle) - Number(left.exactTitle) || right.score - left.score)
     .map((entry) => entry.hit);
 }
 

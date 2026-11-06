@@ -7,6 +7,7 @@ import { EMPTY_CHAT_GREETING_SIGNALS } from "@/lib/hermes/chat-greeting";
 import { readChatGreetingSignals } from "@/lib/hermes/chat-greeting-signals";
 import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
 import BrowserClient from "./browser-client";
+import DashboardPageShell from "@/app/dashboard/dashboard-page-shell";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +33,7 @@ export default async function BrowserPage() {
         showFlowers={getNavbarFlowers(userId)}
         restoreOwnerKey={restoreOwnerKey}
         initialGreetingSignals={initialGreetingSignals}
+        home={<DashboardPageShell combinedHome />}
       />
     </div>
   );

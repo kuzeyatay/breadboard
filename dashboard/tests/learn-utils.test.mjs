@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   buildLearningPageFrontmatter,
+  sourceVisualInventoryCoverageProblems,
   containsRawVisualPlaceholder,
   formulaMetricFamily,
   normalizeZettelTags,
@@ -973,5 +974,54 @@ describe("notation continuity across a garden", () => {
     assert.deepEqual(unexplainedApparatus(explained, new Set()), []);
     const summed = `Adding up every state gives $$${BS}sum_{n=0}^{C} P_n = 1$$ for the trunk.`;
     assert.deepEqual(unexplainedApparatus(summed, new Set()), []);
+  });
+});
+
+describe("source visual completeness against a malformed page body", () => {
+  // An OCR body whose page delimiters stop partway leaves the rest of the book
+  // inside the last block. Its captions are then enforced against the single
+  // page image that was scanned (telecom-1, 2026-09-22: Couch "page 789" held
+  // 1,646,439 chars against a 1,448 median and failed the gate twice).
+  const page = (n, text) => [`## Page ${n}`, text, ""].join("\n");
+  const realPages = [
+    page(1, ["Figure 1-1: A block diagram.", "Some prose about it."].join("\n")),
+    page(2, ["Table 2-1: Fourier pairs.", "More prose."].join("\n")),
+  ].join("");
+  const spilledTail = page(
+    3,
+    ["Figure 3-1: Real caption."]
+      .concat(
+        Array.from({ length: 1200 }, (_, i) => [
+          `Figure ${4 + (i % 5)}-${i}: caption from a page that was never scanned.`,
+          `Table ${5 + (i % 4)}-${i}: likewise.`,
+        ].join("\n")),
+      )
+      .join("\n"),
+  );
+  const sourceImages = [1, 2, 3].map((n) => `/g/assets/book-page-00${n}.png`);
+  const registered = [
+    { sourceId: "book", type: "figure" },
+    { sourceId: "book", type: "figure" },
+    { sourceId: "book", type: "table" },
+  ];
+
+  test("captions from an implausibly large block are not enforced", () => {
+    assert.ok(spilledTail.length > 60_000, `tail must exceed the cap: ${spilledTail.length}`);
+    const problems = sourceVisualInventoryCoverageProblems(
+      [{ slug: "book", body: realPages + spilledTail, sourceImages }],
+      registered,
+      new Map([["book", sourceImages]]),
+    );
+    assert.deepEqual(problems, [], `unexpected: ${problems.join("; ")}`);
+  });
+
+  test("a genuine shortfall on normal pages is still reported", () => {
+    const problems = sourceVisualInventoryCoverageProblems(
+      [{ slug: "book", body: realPages, sourceImages }],
+      [{ sourceId: "book", type: "figure" }],
+      new Map([["book", sourceImages]]),
+    );
+    assert.equal(problems.length, 1, `expected one problem, got: ${problems.join("; ")}`);
+    assert.match(problems[0], /declares 1 table captions but only registered 0 tables/);
   });
 });

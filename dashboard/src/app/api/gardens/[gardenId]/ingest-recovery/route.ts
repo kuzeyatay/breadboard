@@ -34,14 +34,14 @@ const RESUMED_TERMINAL_STATES = new Set([
 async function reconcileResumed(
   authority: RuntimeJobAuthority,
   record: IngestRecoveryRecord,
-): Promise<IngestRecoveryRecord | null> {
-  if (!record.resumedJobId) return record;
+): Promise<ReturnType<typeof publicIngestRecovery> | null> {
+  if (!record.resumedJobId) return publicIngestRecovery(record);
   let state: string;
   try {
     state = (await inspectRuntimeJobForStatus(authority, record.resumedJobId)).state;
   } catch (error) {
     const status = (error as { status?: unknown }).status;
-    if (status !== 404) return record;
+    if (status !== 404) return publicIngestRecovery(record);
     state = "failed";
   }
   if (state === "succeeded") {
@@ -49,13 +49,14 @@ async function reconcileResumed(
     return null;
   }
   if (RESUMED_TERMINAL_STATES.has(state)) {
-    return markIngestRecoveryResumed({
+    const cleared = markIngestRecoveryResumed({
       gardenId: record.gardenId,
       recoveryId: record.recoveryId,
       jobId: null,
     });
+    return cleared ? publicIngestRecovery(cleared) : null;
   }
-  return record;
+  return publicIngestRecovery(record, state);
 }
 
 export async function GET(
@@ -74,7 +75,7 @@ export async function GET(
     for (const record of listIngestRecoveries({ gardenId: cluster.slug })) {
       if (record.userId !== null && record.userId !== userId) continue;
       const reconciled = await reconcileResumed(authority, record);
-      if (reconciled) recoveries.push(publicIngestRecovery(reconciled));
+      if (reconciled) recoveries.push(reconciled);
     }
     return NextResponse.json({ recoveries });
   } catch (error) {

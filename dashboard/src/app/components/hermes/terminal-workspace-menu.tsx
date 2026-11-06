@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
+import { SideChatMenuItem } from "../side-chat-context";
 import {
   CONTEXT_MENU_CONTENT_CLASS,
   CONTEXT_MENU_ITEM_CLASS,
@@ -64,6 +65,7 @@ export default function TerminalWorkspaceMenu({
           collisionPadding={8}
           className={`${CONTEXT_MENU_CONTENT_CLASS} max-h-[min(24rem,var(--radix-context-menu-content-available-height))] max-w-[min(20rem,calc(100vw-16px))] overflow-y-auto`}
         >
+          <SideChatMenuItem className={CONTEXT_MENU_ITEM_CLASS} />
           <ContextMenu.RadioGroup value={selected?.slug ?? ""}>
             <ContextMenu.RadioItem value="" className={CONTEXT_MENU_ITEM_CLASS} onSelect={() => onSelect(null)}>
               <ContextMenu.ItemIndicator className="mr-2">✓</ContextMenu.ItemIndicator>

@@ -5,7 +5,7 @@ import http from "node:http";
 import path from "node:path";
 
 import { startRuntimeV2GatewayHttpService } from "./runtime-v2-gateway-http.mjs";
-import { ensureDirectSpotifyProfile } from "./runtime-v2-spotify-profile.mjs";
+import { createSpotifySessionProfile } from "./runtime-v2-spotify-profile.mjs";
 
 const LOOPBACK_HOST = "127.0.0.1";
 const VIEW_TTL_MS = 75_000;
@@ -288,6 +288,17 @@ let controlQueue=Promise.resolve();
 let registering=false;
 let pendingRegistration=null;
 let stateRevision=0;
+let readyWaiter=null;
+let latestState=null;
+let latestStateAt=0;
+async function beforeDeadline(operation,expiresAt){
+  let timer;
+  try {
+    return await Promise.race([operation,new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(new Error("Control expired")),Math.max(1,expiresAt-Date.now()));
+    })]);
+  }finally{clearTimeout(timer);}
+}
 async function flushRegistration(){
   if(registering)return;
   registering=true;
@@ -300,13 +311,24 @@ async function flushRegistration(){
 }
 function register(state){
   if(!deviceId)return;
+  if(state!==undefined){latestState=state;latestStateAt=Date.now();}
   const track=state?.track_window?.current_track;
   const playback=track&&track.uri?.startsWith("spotify:track:")?{
     track:{id:track.uri.split(":")[2],uri:track.uri,name:track.name??"",artist:(track.artists??[]).map(artist=>artist.name).join(", "),
       album:track.album?.name??"",imageUrl:track.album?.images?.[0]?.url??null,durationMs:Math.round(state.duration)},
-    isPlaying:!state.paused,positionMs:Math.max(0,Math.round(state.position)),shuffle:state.shuffle===true
+    isPlaying:!state.paused,positionMs:Math.max(0,Math.round(state.position)),shuffle:state.shuffle===true,
+    ...(Array.isArray(state.track_window.next_tracks)?{hasNextTrack:state.track_window.next_tracks.length>0}:{}),
+    ...([0,1,2].includes(state.repeat_mode)?{repeatMode:state.repeat_mode}:{})
   }:null;
   pendingRegistration=JSON.stringify({deviceId,...(state===undefined?{}:{playback})});
+  return flushRegistration();
+}
+function unregister(){
+  stateRevision++;
+  latestState=null;latestStateAt=0;
+  if(!deviceId)return;
+  pendingRegistration=JSON.stringify({deviceId,ready:false});
+  deviceId=null;
   return flushRegistration();
 }
 window.onSpotifyWebPlaybackSDKReady=()=>{
@@ -317,8 +339,27 @@ window.onSpotifyWebPlaybackSDKReady=()=>{
       fetch("/token",{cache:"no-store"}).then(response=>response.json()).then(payload=>callback(payload.accessToken));
     }
   });
+  let reconnectingPlayer=null;
+  function reconnectPlayer(){
+    if(reconnectingPlayer)return reconnectingPlayer;
+    const operation=Promise.resolve().then(async()=>{
+      void unregister();
+      player.disconnect();
+      await new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>{readyWaiter=null;reject(new Error("Reconnect timed out"));},8000);
+        readyWaiter=id=>{clearTimeout(timer);readyWaiter=null;resolve(id);};
+        Promise.resolve().then(()=>player.connect()).then(connected=>{
+          if(connected===false)throw new Error("Reconnect failed");
+        }).catch(error=>{clearTimeout(timer);readyWaiter=null;reject(error);});
+      });
+    });
+    reconnectingPlayer=operation;
+    void operation.finally(()=>{if(reconnectingPlayer===operation)reconnectingPlayer=null;}).catch(()=>{});
+    return operation;
+  }
   player.addListener("ready",value=>{
-    deviceId=value.device_id;void register();
+    deviceId=value.device_id;stateRevision++;void register();
+    readyWaiter?.(deviceId);
     if(commands)return;
     commands=new EventSource("/commands");
     commands.onmessage=event=>{
@@ -326,7 +367,17 @@ window.onSpotifyWebPlaybackSDKReady=()=>{
       controlQueue=controlQueue.catch(()=>{}).then(async()=>{
         let result={handled:false};
         try {
-          const state=await player.getCurrentState();
+          result=await beforeDeadline((async()=>{
+          if(command.action==="reconnect" && Date.now()<command.expiresAt){
+            if(!deviceId || deviceId===command.deviceId){
+              await reconnectPlayer();
+            }
+            return {reconnected:true,deviceId};
+          }else{
+          const revision=++stateRevision;
+          const age=Date.now()-latestStateAt;
+          const state=latestState&&age<6000?{...latestState,
+            position:Math.min(latestState.duration,latestState.position+(latestState.paused?0:age))}:await player.getCurrentState();
           if(command.deviceId===deviceId && state && Date.now()<command.expiresAt){
             if(command.action==="seek")await player.seek(Math.min(command.positionMs,Math.max(0,state.duration-1)));
             else if(command.action==="pause")await player.pause();
@@ -334,19 +385,35 @@ window.onSpotifyWebPlaybackSDKReady=()=>{
             else if(command.action==="next")await player.nextTrack();
             else if(command.action==="previous")await player.previousTrack();
             else throw new Error("Unsupported control");
-            const next=(command.action==="next"||command.action==="previous")?await player.getCurrentState():state;
-            result={handled:true,
-              trackUri:next?.track_window?.current_track?.uri??state.track_window.current_track.uri,
-              isPlaying:command.action==="pause"?false:command.action==="resume"?true:!next?.paused,
-              positionMs:command.action==="seek"?Math.min(command.positionMs,Math.max(0,state.duration-1)):next?.position??0};
+            if(Date.now()>=command.expiresAt)throw new Error("Control expired");
+            const skipping=command.action==="next"||command.action==="previous";
+            const next={...state,
+              paused:command.action==="pause"?true:command.action==="resume"?false:state.paused,
+              position:command.action==="seek"?Math.min(command.positionMs,Math.max(0,state.duration-1)):state.position};
+            if(revision===stateRevision){
+              if(skipping){
+                // Metadata follows through the event stream without delaying
+                // acknowledgement or the next control on an SDK status read.
+                latestStateAt=0;
+                void player.getCurrentState().then(value=>{if(revision===stateRevision)return register(value);}).catch(()=>{});
+              }else void register(next);
+            }
+            return {handled:true,trackUri:next.track_window.current_track.uri,
+              isPlaying:!next.paused,positionMs:next.position??0};
           }
+          }
+          return {handled:false};
+          })(),command.expiresAt);
         }catch{result={error:true};}
-        await fetch("/command-result",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:command.id,result})}).catch(()=>{});
+        // A lost acknowledgement must not wedge the player's command queue.
+        void fetch("/command-result",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:command.id,result}),signal:AbortSignal.timeout(2000)}).catch(()=>{});
       });
     };
   });
   player.addListener("player_state_changed",state=>{stateRevision++;void register(state);});
-  player.addListener("not_ready",()=>{stateRevision++;void register(null);deviceId=null;});
+  player.addListener("not_ready",value=>{
+    if(value.device_id===deviceId){void unregister();void reconnectPlayer().catch(()=>{});}
+  });
   player.connect();
   setInterval(()=>{
     const revision=stateRevision;
@@ -552,13 +619,13 @@ async function proxyToken(configuration, session) {
   };
 }
 
-async function proxyRegistration(configuration, session, deviceId, playback) {
+async function proxyRegistration(configuration, session, deviceId, playback, ready) {
   const value = await dashboardRequest(
     dashboardEngineUrl(configuration),
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ticket: session.ticket, deviceId, ...(playback === undefined ? {} : { playback }) }),
+      body: JSON.stringify({ ticket: session.ticket, deviceId, ...(ready === false ? { ready: false } : playback === undefined ? {} : { playback }) }),
     },
   );
   if (value.ok !== true) {
@@ -622,6 +689,7 @@ async function createPlayerBridge(configuration, session) {
         const result = body?.result;
         if (!exactRecord(body, ["id", "result"]) || typeof body.id !== "string" || !result || (
           !(exactRecord(result, ["handled"]) && result.handled === false) && !(exactRecord(result, ["error"]) && result.error === true) &&
+          !(exactRecord(result, ["reconnected", "deviceId"]) && result.reconnected === true && typeof result.deviceId === "string" && /^[A-Za-z0-9_-]{8,200}$/u.test(result.deviceId)) &&
           !(exactRecord(result, ["handled", "trackUri", "positionMs", "isPlaying"]) &&
             result.handled === true && /^spotify:track:[A-Za-z0-9]{10,64}$/u.test(result.trackUri) &&
             Number.isSafeInteger(result.positionMs) && result.positionMs >= 0 && typeof result.isPlaying === "boolean")
@@ -631,7 +699,7 @@ async function createPlayerBridge(configuration, session) {
         }
         const pending = pendingCommands.get(body.id);
         if (result.error === true) pending?.reject(new Error("The local player could not apply that control."));
-        else if (result.handled === false || result.handled === true) pending?.resolve(result);
+        else if (result.handled === false || result.handled === true || result.reconnected === true) pending?.resolve(result);
         else { sendError(response, 400, "Player control result rejected."); return; }
         sendJson(response, 200, { ok: true });
         return;
@@ -642,7 +710,8 @@ async function createPlayerBridge(configuration, session) {
       }
       if (request.method === "POST" && requestUrl.pathname === "/register") {
         const body = await readJsonBody(request, 16 * 1024);
-        if (!exactRecord(body, ["deviceId"]) && !exactRecord(body, ["deviceId", "playback"])) {
+        if (!exactRecord(body, ["deviceId"]) && !exactRecord(body, ["deviceId", "playback"]) &&
+          !(exactRecord(body, ["deviceId", "ready"]) && body.ready === false)) {
           sendError(response, 400, "Player registration rejected.");
           return;
         }
@@ -651,6 +720,7 @@ async function createPlayerBridge(configuration, session) {
           session,
           playbackDeviceId(body.deviceId),
           body.playback,
+          body.ready,
         );
         sendJson(response, 200, { ok: true });
         return;
@@ -686,12 +756,13 @@ async function createPlayerBridge(configuration, session) {
       if (!commandStream || commandStream.destroyed) return { handled: false };
       if (pendingCommands.size >= 16) fail("The local player is busy.", 429, "spotify_player_busy");
       const id = randomUUID();
+      const timeoutMs = command.action === "reconnect" ? 10_000 : 2_000;
       let timer;
       try {
         return await new Promise((resolve, reject) => {
           pendingCommands.set(id, { resolve, reject });
-          timer = setTimeout(() => reject(new Error("The local player did not respond.")), 2_000);
-          commandStream.write(`data: ${JSON.stringify({ ...command, id, expiresAt: Date.now() + 1_500 })}\n\n`);
+          timer = setTimeout(() => reject(new Error("The local player did not respond.")), timeoutMs);
+          commandStream.write(`data: ${JSON.stringify({ ...command, id, expiresAt: Date.now() + timeoutMs - 500 })}\n\n`);
         });
       } catch {
         // A dispatched command may already have changed audio. Never replay an
@@ -765,7 +836,7 @@ async function closeSession(session) {
   if (session.stopping) return;
   session.stopping = true;
   sessions.delete(session.userId);
-  await closeServer(session.bridge.server).catch(() => undefined);
+  if (session.bridge) await closeServer(session.bridge.server).catch(() => undefined);
   const child = session.child;
   if (child && child.exitCode === null && child.signalCode === null) {
     try {
@@ -775,6 +846,9 @@ async function closeSession(session) {
     }
     await waitForExit(child, 3_000);
   }
+  await session.profile.cleanup().catch(() => {
+    process.stderr.write("[runtime-v2-spotify-playback] temporary profile cleanup failed\n");
+  });
 }
 
 function recordFailure(userId, message) {
@@ -831,13 +905,10 @@ async function launchSession(configuration, input) {
     launchingUsers.add(input.userId);
     try {
       const executable = browserExecutable();
-      const profile = ensureDirectSpotifyProfile(configuration.dataRoot, [
-        "database",
-        "spotify-browser-player",
-        `user-${input.userId}`,
-      ]);
+      const profile = createSpotifySessionProfile(configuration.dataRoot, input.userId);
       session = {
         userId: input.userId,
+        profile,
         ticket: input.ticket,
         views: new Map([[input.viewId, Date.now() + VIEW_TTL_MS]]),
         child: null,
@@ -853,7 +924,7 @@ async function launchSession(configuration, input) {
           executable,
           [
             "--headless=new",
-            `--user-data-dir=${profile}`,
+            `--user-data-dir=${profile.directory}`,
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-sync",
@@ -922,6 +993,9 @@ async function launchSession(configuration, input) {
         });
       });
       return sessionStatus(input.userId);
+    } catch (error) {
+      if (session) await closeSession(session);
+      throw error;
     } finally {
       launchingUsers.delete(input.userId);
     }
@@ -975,6 +1049,19 @@ function controlSession(body) {
   return session.bridge.control({ deviceId, action: body.action, positionMs: body.positionMs });
 }
 
+function reconnectSession(body) {
+  if (!exactRecord(body, ["userId", "deviceId"])) {
+    fail("The Spotify reconnect request is invalid.", 400, "invalid_spotify_playback_request");
+  }
+  const userId = positiveUserId(body.userId);
+  const deviceId = playbackDeviceId(body.deviceId);
+  return serialize(userId, async () => {
+    const session = sessions.get(userId);
+    if (!session || session.stopping) return { handled: false };
+    return session.bridge.control({ deviceId, action: "reconnect", positionMs: null });
+  });
+}
+
 async function main() {
   const configuration = runtimeConfiguration();
   const expiryTimer = setInterval(() => void expireViews(), 5_000);
@@ -1026,6 +1113,9 @@ async function main() {
       }
       if (routePath === "/v1/control") {
         return controlSession(body);
+      }
+      if (routePath === "/v1/reconnect") {
+        return reconnectSession(body);
       }
       fail("Unknown Spotify playback route.", 404, "route_not_found");
     },

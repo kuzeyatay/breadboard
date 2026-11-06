@@ -47,7 +47,7 @@ app.whenReady().then(async () => {
   window.setOpacity(0);
   window.showInactive();
   window.setContentSize(1000, 800);
-  const base = window.webContents;
+  const base = manager.page(window);
   await base.loadURL(origin + '/dashboard');
   manager.tabs.setNotificationOverlayUrl(origin + '/notification-overlay');
   manager.tabs.setNotificationsVisible(true);

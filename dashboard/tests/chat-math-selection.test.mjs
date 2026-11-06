@@ -16,13 +16,15 @@ const bundle = await esbuild.build({
       import { createRoot } from "react-dom/client";
       import {
         ChatSelectionMenu,
+        chatSelectableText,
         QuotedChatSelection,
         SelectableAssistantMarkdown,
         SelectionComposerContext,
       } from "@/app/components/chat-text-selection-ui";
+      window.readSelectableText = () => chatSelectableText(document.querySelector('[data-chat-selectable-message]'));
       function Fixture() {
         const [selection, setSelection] = useState(null);
-        const [annotations, setAnnotations] = useState(() => JSON.parse(localStorage.getItem("highlights") || "[]"));
+        const [annotations, setAnnotations] = useState(() => JSON.parse(localStorage.getItem("highlights") || "null") ?? window.fixture.annotations ?? []);
         const save = (next) => {
           setAnnotations(next);
           localStorage.setItem("highlights", JSON.stringify(next));
@@ -172,4 +174,64 @@ test("prose dollars stay prose in the selection preview", async (t) => {
   await previews.waitFor();
   assert.equal(await previews.locator(".katex").count(), 0);
   assert.match(await previews.innerText(), /\$5 and \$10/);
+});
+
+test("a highlight spanning prose and display math does not paint the block separator", async (t) => {
+  const sentence = "Differentiate the first equation and substitute the second:";
+  const formula = "L\\frac{d^2 i_L}{dt^2} = -\\frac{i_L}{C}";
+  const { page, mount } = await pageFor(t, { content: `${sentence}\n\n$$\n${formula}\n$$\n\nSo the current satisfies the equation.` });
+  const originalText = await page.evaluate(() => window.readSelectableText());
+  await selectBetween(page, "[data-chat-selectable-message] p", 0, ".katex-display .katex-html .mord", 0);
+  const candidate = await page.evaluate(() => window.selectionCandidate);
+  assert.equal(candidate.quote, `${sentence}\n$$${formula}$$`);
+  await page.getByRole("button", { name: "Highlight blue", exact: true }).click();
+
+  const verify = async () => {
+    assert.deepEqual(await page.locator("mark").evaluateAll(marks => marks.filter(mark => !mark.textContent.trim()).map(mark => mark.outerHTML)), [],
+      "invisible block newlines must not become padded, clickable highlights");
+    assert.equal(await page.locator("mark").count(), 2, "only the sentence and equation are painted");
+    assert.equal(await page.locator("mark > .katex-display").count(), 1);
+    assert.equal(await page.evaluate(() => window.readSelectableText()), originalText, "selection offsets retain the separator");
+  };
+  await verify();
+  await mount();
+  await verify();
+  await page.locator("mark > .katex-display").click();
+  await page.getByRole("button", { name: "Highlight pink", exact: true }).click();
+  await verify();
+  assert.equal(await page.locator('mark[data-chat-highlight-color="pink"]').count(), 2);
+  if (process.env.SELECTION_QA_DIR) {
+    fs.mkdirSync(process.env.SELECTION_QA_DIR, { recursive: true });
+    await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
+    await page.screenshot({ path: path.join(process.env.SELECTION_QA_DIR, "math-highlight-no-stray-separator.png") });
+  }
+  await page.locator("mark").first().click();
+  await page.getByRole("button", { name: "Remove highlight", exact: true }).click();
+  assert.equal(await page.locator("mark").count(), 0);
+});
+
+test("whole-message annotations retain inline spaces and code whitespace without painting structural newlines", async (t) => {
+  const content = [
+    "Start here.",
+    "> First paragraph.\n>\n> Second paragraph.",
+    "- **Bold** *italic*\n- Next item\n  - Nested item",
+    "| First | Second |\n| --- | --- |\n| Cell A | Cell B |",
+    "```text\n  indented\n\n  next line\n```",
+    "Finish here.",
+  ].join("\n\n");
+  const { page, mount } = await pageFor(t, { content, annotations: [{
+    id: "whole-message", start: 0, end: content.length, quote: content, wholeMessage: true, kind: "chat",
+  }] });
+  const originalText = await page.evaluate(() => window.readSelectableText());
+
+  const verify = async () => {
+    assert.deepEqual(await page.locator("mark").evaluateAll(marks => marks.filter(mark => !mark.textContent.trim() && /[\r\n]/.test(mark.textContent)).map(mark => mark.outerHTML)), []);
+    assert.equal(await page.locator("li > strong + mark").textContent(), " ", "spaces between inline formatting remain highlighted");
+    assert.equal(await page.locator("pre code mark").textContent(), "  indented\n\n  next line\n", "code indentation and blank lines are preserved");
+    assert.equal(await page.locator("td mark").count(), 2, "table cells remain highlighted");
+    assert.equal(await page.evaluate(() => window.readSelectableText()), originalText);
+  };
+  await verify();
+  await mount();
+  await verify();
 });

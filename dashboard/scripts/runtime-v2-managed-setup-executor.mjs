@@ -1,3 +1,5 @@
+import { runtimePathWithin as pathWithin, sameRuntimePath, runtimeProcessPath } from "./runtime-v2-paths.mjs";
+import { clearManagedPayloadReady, managedPayloadTarget, markManagedPayloadReady, runtimeBulkDataRoot } from "./runtime-v2-bulk-paths.mjs";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -6,30 +8,35 @@ import zlib from "node:zlib";
 
 export const MANAGED_SETUP_OPERATIONS = Object.freeze({
   "audio-analyzer": Object.freeze(["check", "download", "install"]),
-  "bolt-slides": Object.freeze(["install-dependencies"]),
-  "career-ops": Object.freeze(["install", "browsers", "scaffold"]),
+  "bolt-slides": Object.freeze(["install-dependencies", "remove"]),
+  "career-ops": Object.freeze(["install", "browsers", "scaffold", "remove"]),
   "claude-code": Object.freeze(["status", "logout", "refresh-usage"]),
-  acestep: Object.freeze(["install"]),
+  acestep: Object.freeze(["install", "remove"]),
   comfyui: Object.freeze(["install"]),
   "deep-tutor": Object.freeze(["install", "reinstall", "remove"]),
   "deer-flow": Object.freeze(["install", "reinstall", "remove"]),
   "google-images": Object.freeze(["check", "install"]),
-  hyperframes: Object.freeze(["install-cli"]),
+  hyperframes: Object.freeze(["install-cli", "remove"]),
   legal: Object.freeze(["install", "reinstall", "remove"]),
-  matraix: Object.freeze(["install-runtime"]),
+  matraix: Object.freeze(["install-runtime", "remove"]),
   "money-printer": Object.freeze(["install", "reinstall", "remove"]),
-  openmontage: Object.freeze(["install-dependencies", "install-remotion"]),
+  openmontage: Object.freeze(["install-dependencies", "install-remotion", "remove"]),
   openexecutive: Object.freeze(["install", "reinstall", "remove"]),
-  openscience: Object.freeze(["install"]),
-  openwork: Object.freeze(["prepare-server"]),
-  resource2skill: Object.freeze(["install-runtime", "install-web", "install-blender"]),
+  openscience: Object.freeze(["install", "remove"]),
+  openwork: Object.freeze(["prepare-server", "remove"]),
+  resource2skill: Object.freeze(["install-runtime", "install-web", "install-blender", "remove"]),
   shorts: Object.freeze(["install", "reinstall", "remove"]),
   "stock-analyst": Object.freeze(["install", "reinstall", "remove"]),
   subsai: Object.freeze(["build-subtitles", "remove-subtitles"]),
   tradingagents: Object.freeze(["install", "reinstall", "remove"]),
   "vibe-trading": Object.freeze(["install", "reinstall", "remove"]),
-  wardrobe: Object.freeze(["install"]),
+  wardrobe: Object.freeze(["install", "remove"]),
 });
+
+export const MANAGED_SETUP_EXCLUSIVE_OPERATIONS = Object.freeze([
+  "deep-tutor", "deer-flow", "legal", "money-printer", "openexecutive", "shorts", "stock-analyst", "tradingagents", "vibe-trading",
+  "bolt-slides", "career-ops", "hyperframes", "matraix", "acestep", "openmontage", "openscience", "openwork", "resource2skill", "wardrobe",
+]);
 
 export const AUDIO_ANALYZER_VERSION = "v1.0.0";
 export const GOOGLE_IMAGES_BUILD_ENTRY = path.join("src", "index.js");
@@ -92,12 +99,6 @@ function directPath(candidate, kind, label) {
   return canonical;
 }
 
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" ||
-    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-}
-
 function ensureDirectDirectory(directory, label) {
   const metadata = fs.lstatSync(directory, { throwIfNoEntry: false });
   if (!metadata) {
@@ -116,7 +117,7 @@ function inheritedToolEnvironment(env) {
     "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "ProgramW6432",
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "CARGO_HOME", "RUSTUP_HOME", "UV_CACHE_DIR",
-    "PIP_CACHE_DIR", "npm_config_cache",
+    "PIP_CACHE_DIR", "npm_config_cache", "UV_PYTHON_INSTALL_DIR",
   ];
   const result = {};
   for (const name of allowed) {
@@ -133,6 +134,17 @@ function inheritedToolEnvironment(env) {
   result.PYTHONIOENCODING = "utf-8";
   result.PYTHONUTF8 = "1";
   return result;
+}
+
+export function managedUvLinkMode(env, destination, platform = process.platform) {
+  const cache = env.UV_CACHE_DIR?.trim();
+  if (platform !== "win32" || !cache || !path.win32.isAbsolute(cache) || !path.win32.isAbsolute(destination)) return "copy";
+  const volume = value => path.win32.parse(path.win32.resolve(value)).root.replace("\\\\?\\", "").toLowerCase();
+  const cacheVolume = volume(cache);
+  // Both the cache and target have already passed the managed-path checks.
+  // Use uv's Windows default on the same local volume; cross-drive installs
+  // remain copies. This avoids duplicating large wheels on the external disk.
+  return /^[a-z]:\\$/u.test(cacheVolume) && cacheVolume === volume(destination) ? "hardlink" : "copy";
 }
 
 function appendTail(current, chunk, maximum = MAX_COMMAND_LOG_BYTES) {
@@ -155,14 +167,20 @@ export function runManagedSetupCommand(command, args, options) {
   if (signal.aborted) {
     return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
   }
+  // Native workers have a sealed PATH and a bundled Node/npm installation.
+  // Resolve the fixed npm recipes through that installation, including the
+  // callers that still name npm.cmd, instead of requiring a user PATH shim.
+  const npm = /^(?:npm|npm\.cmd)$/u.test(command) ? managedNpmLauncher() : null;
+  const executable = runtimeProcessPath(npm?.command ?? command, platform);
+  const commandArgs = npm ? [...npm.baseArgs, ...args] : args;
   return new Promise((resolve, reject) => {
     let settled = false;
     let timedOut = false;
     let stdout = "";
     let stderr = "";
-    const shell = platform === "win32" && /\.(?:cmd|bat)$/iu.test(command);
-    const child = spawnImpl(command, args, {
-      cwd,
+    const shell = platform === "win32" && /\.(?:cmd|bat)$/iu.test(executable);
+    const child = spawnImpl(executable, commandArgs, {
+      cwd: runtimeProcessPath(cwd, platform),
       env,
       detached: false,
       windowsHide: true,
@@ -469,7 +487,7 @@ async function createPythonEnvironment({
       ["venv", "--python", pythonVersion, venv],
       {
         cwd: root,
-        env: { ...inheritedToolEnvironment(env), UV_LINK_MODE: "copy" },
+        env: { ...inheritedToolEnvironment(env), UV_LINK_MODE: managedUvLinkMode(env, venv) },
         signal,
         timeoutMs: VENV_TIMEOUT_MS,
         spawnImpl,
@@ -546,7 +564,7 @@ async function installPythonRequirements({
           ["pip", "install", "--python", python, ...step],
           {
             cwd: root,
-            env: { ...toolEnv, UV_LINK_MODE: "copy" },
+            env: { ...toolEnv, UV_LINK_MODE: managedUvLinkMode(env, python) },
             signal,
             timeoutMs: INSTALL_TIMEOUT_MS,
             spawnImpl,
@@ -599,7 +617,7 @@ async function deerFlowSetup(action, context) {
     [["backend", "app", "gateway", "app.py"], ["backend", "pyproject.toml"]],
   );
   const backend = path.join(root, "backend");
-  const venv = serviceEnvironment(context.dataRoot, "deer-flow");
+  const venv = serviceEnvironment(context.bulkRoot, "deer-flow");
   if (action === "remove") {
     return {
       ok: true,
@@ -624,7 +642,7 @@ async function deerFlowSetup(action, context) {
     cwd: backend,
     env: {
       ...inheritedToolEnvironment(context.env),
-      UV_LINK_MODE: "copy",
+      UV_LINK_MODE: managedUvLinkMode(context.env, venv, context.platform),
       UV_PROJECT_ENVIRONMENT: venv,
     },
     signal: context.signal,
@@ -670,7 +688,7 @@ async function vibeTradingSetup(action, context) {
     "Vibe-Trading",
     [["pyproject.toml"], ["agent", "api_server.py"], ["agent", "src", "agent", "loop.py"]],
   );
-  const venv = serviceEnvironment(context.dataRoot, "vibe-trading");
+  const venv = serviceEnvironment(context.bulkRoot, "vibe-trading");
   if (action === "remove") {
     return {
       ok: true,
@@ -723,7 +741,7 @@ async function stockAnalystSetup(action, context) {
     "daily_stock_analysis",
     [["main.py"], ["server.py"], ["api", "app.py"], ["api", "v1", "endpoints", "agent.py"]],
   );
-  const venv = serviceEnvironment(context.dataRoot, "stock-analyst");
+  const venv = serviceEnvironment(context.bulkRoot, "stock-analyst");
   if (action === "remove") {
     return {
       ok: true,
@@ -910,7 +928,7 @@ async function managedPythonCloneSetup(operation, action, context) {
     spec.directory,
     spec.markers,
   );
-  const venv = serviceEnvironment(context.dataRoot, operation);
+  const venv = serviceEnvironment(context.bulkRoot, operation);
   if (action === "remove") {
     return {
       ok: true,
@@ -934,7 +952,7 @@ async function managedPythonCloneSetup(operation, action, context) {
         cwd: root,
         env: {
           ...inheritedToolEnvironment(context.env),
-          UV_LINK_MODE: "copy",
+          UV_LINK_MODE: managedUvLinkMode(context.env, venv, context.platform),
           UV_PROJECT_ENVIRONMENT: venv,
         },
         signal: context.signal,
@@ -1105,7 +1123,7 @@ function ensureMoneyPrinterRuntime(context) {
 }
 
 async function moneyPrinterSetup(action, context) {
-  const venv = serviceEnvironment(context.dataRoot, "money-printer");
+  const venv = serviceEnvironment(context.bulkRoot, "money-printer");
   if (action === "remove") {
     return {
       ok: true,
@@ -1129,7 +1147,7 @@ async function moneyPrinterSetup(action, context) {
         cwd: root,
         env: {
           ...inheritedToolEnvironment(context.env),
-          UV_LINK_MODE: "copy",
+          UV_LINK_MODE: managedUvLinkMode(context.env, venv, context.platform),
           UV_PROJECT_ENVIRONMENT: venv,
         },
         signal: context.signal,
@@ -1221,7 +1239,7 @@ async function matraixSetup(context) {
       "setup_uv_missing",
     );
   }
-  const venv = serviceEnvironment(context.dataRoot, "matraix");
+  const venv = serviceEnvironment(context.bulkRoot, "matraix");
   let python = pythonInVenv(venv, context.platform);
   if (!python) {
     const created = await createPythonEnvironment({
@@ -1302,7 +1320,7 @@ async function subsaiSetup(action, context) {
   }
   const toolEnvironment = {
     ...inheritedToolEnvironment(context.env),
-    UV_LINK_MODE: "copy",
+    UV_LINK_MODE: managedUvLinkMode(context.env, venv, context.platform),
   };
   const dependencies = await runManagedSetupCommand(
     uv,
@@ -1403,18 +1421,18 @@ async function boltSlidesSetup(context) {
     ],
   );
   const destination = path.join(
-    context.dataRoot,
+    context.bulkRoot,
     "runtime-v2",
     "toolchains",
     "bolt-slides",
   );
   const staging = path.join(
-    context.dataRoot,
+    context.bulkRoot,
     "runtime-v2",
     "toolchains",
     `.bolt-slides-stage-${crypto.randomUUID()}`,
   );
-  if (!pathWithin(context.dataRoot, destination) || !pathWithin(context.dataRoot, staging)) {
+  if (!pathWithin(context.bulkRoot, destination) || !pathWithin(context.bulkRoot, staging)) {
     fail("The Bolt Slides toolchain escaped Runtime data.");
   }
   fs.mkdirSync(path.dirname(staging), { recursive: true });
@@ -1500,10 +1518,10 @@ async function wardrobeSetup(context) {
       ["public"],
     ],
   );
-  const toolchainsRoot = path.join(context.dataRoot, "runtime-v2", "toolchains");
+  const toolchainsRoot = path.join(context.bulkRoot, "runtime-v2", "toolchains");
   const destination = path.join(toolchainsRoot, "wardrobe");
   const staging = path.join(toolchainsRoot, `.wardrobe-stage-${crypto.randomUUID()}`);
-  if (!pathWithin(context.dataRoot, destination) || !pathWithin(context.dataRoot, staging)) {
+  if (!pathWithin(context.bulkRoot, destination) || !pathWithin(context.bulkRoot, staging)) {
     fail("The Wardrobe runtime escaped Runtime data.");
   }
   fs.mkdirSync(toolchainsRoot, { recursive: true });
@@ -1688,12 +1706,12 @@ async function careerOpsSetup(action, context) {
       "The Career Ops Playwright launcher",
     );
     const browserRoot = path.join(
-      context.dataRoot,
+      context.bulkRoot,
       "runtime-v2",
       "toolchains",
       "career-ops-browsers",
     );
-    if (!pathWithin(context.dataRoot, browserRoot)) {
+    if (!pathWithin(context.bulkRoot, browserRoot)) {
       fail("The Career Ops browser cache escaped Runtime data.");
     }
     fs.mkdirSync(browserRoot, { recursive: true });
@@ -1814,12 +1832,12 @@ function openMontageSource(context) {
 
 function openMontageRuntimeRoot(context) {
   const destination = path.join(
-    context.dataRoot,
+    context.bulkRoot,
     "runtime-v2",
     "toolchains",
     "openmontage",
   );
-  if (!pathWithin(context.dataRoot, destination)) {
+  if (!pathWithin(context.bulkRoot, destination)) {
     fail("The OpenMontage runtime escaped Runtime data.");
   }
   return destination;
@@ -1847,7 +1865,7 @@ function ensureOpenMontageRuntime(context) {
     path.dirname(destination),
     `.openmontage-stage-${crypto.randomUUID()}`,
   );
-  if (!pathWithin(context.dataRoot, staging)) {
+  if (!pathWithin(context.bulkRoot, staging)) {
     fail("The OpenMontage staging root escaped Runtime data.");
   }
   fs.mkdirSync(path.dirname(staging), { recursive: true });
@@ -1907,7 +1925,7 @@ async function openMontageSetup(action, context) {
     return { ok: true, message: "Installed the Remotion composition runtime.", detail: "" };
   }
 
-  const venv = serviceEnvironment(context.dataRoot, "openmontage");
+  const venv = serviceEnvironment(context.bulkRoot, "openmontage");
   let python = pythonInVenv(venv, context.platform);
   if (!python) {
     const created = await createPythonEnvironment({
@@ -1948,7 +1966,7 @@ async function createResource2SkillEnvironment(context, root, venv) {
   if (uv) {
     result = await runManagedSetupCommand(uv, ["venv", "--python", "3.11", venv], {
       cwd: root,
-      env: { ...inheritedToolEnvironment(context.env), UV_LINK_MODE: "copy" },
+      env: { ...inheritedToolEnvironment(context.env), UV_LINK_MODE: managedUvLinkMode(context.env, venv, context.platform) },
       signal: context.signal,
       timeoutMs: VENV_TIMEOUT_MS,
       spawnImpl: context.spawnImpl,
@@ -2009,15 +2027,15 @@ async function resource2SkillSetup(action, context) {
     "isFile",
     "The Resource2Skill bridge",
   );
-  const venv = serviceEnvironment(context.dataRoot, "resource2skill");
+  const venv = serviceEnvironment(context.bulkRoot, "resource2skill");
   const browserRoot = path.join(
-    context.dataRoot,
+    context.bulkRoot,
     "runtime-v2",
     "services",
     "resource2skill",
     "browsers",
   );
-  if (!pathWithin(context.dataRoot, browserRoot)) {
+  if (!pathWithin(context.bulkRoot, browserRoot)) {
     fail("The Resource2Skill browser cache escaped Runtime data.");
   }
   let python = pythonInVenv(venv, context.platform);
@@ -2029,7 +2047,7 @@ async function resource2SkillSetup(action, context) {
   const uv = resolveOnPath("uv", context.env, context.platform);
   const toolEnvironment = {
     ...inheritedToolEnvironment(context.env),
-    UV_LINK_MODE: "copy",
+    UV_LINK_MODE: managedUvLinkMode(context.env, venv, context.platform),
   };
   const install = async (args) => uv
     ? runManagedSetupCommand(uv, ["pip", "install", "--python", python, ...args], {
@@ -2787,7 +2805,7 @@ async function comfyUiSetup(context) {
     ...inheritedToolEnvironment(context.env),
     PIP_NO_INPUT: "1",
     PYTHONNOUSERSITE: "1",
-    UV_LINK_MODE: "copy",
+    UV_LINK_MODE: managedUvLinkMode(context.env, venv, context.platform),
   };
   const command = (executable, args, timeoutMs) => runManagedSetupCommand(
     executable,
@@ -3076,8 +3094,8 @@ async function installManagedNpmTool({
   reuseExisting = false,
   npmLauncher,
 }) {
-  const destination = path.join(context.dataRoot, destinationName);
-  if (!pathWithin(context.dataRoot, destination)) fail(`${label} install root escaped Runtime data.`);
+  const destination = path.join(context.bulkRoot, destinationName);
+  if (!pathWithin(context.bulkRoot, destination)) fail(`${label} install root escaped Runtime data.`);
   const verifyExisting = async () => {
     const directory = fs.lstatSync(destination, { throwIfNoEntry: false });
     if (!directory?.isDirectory() || directory.isSymbolicLink()) return false;
@@ -3098,7 +3116,7 @@ async function installManagedNpmTool({
   const ready = () => ({ ok: true, message: `${label} is ready.`, detail: "" });
   if (reuseExisting && await verifyExisting()) return ready();
   const staging = path.join(
-    context.dataRoot,
+    context.bulkRoot,
     `.${destinationName}-stage-${crypto.randomUUID()}`,
   );
   fs.mkdirSync(staging);
@@ -3205,7 +3223,7 @@ async function hyperframesSetup(context) {
 /** Resolve once in durable tool storage, then pin the browser in each private run home. */
 export async function prepareHyperframesBrowser(launcher, options) {
   const dataRoot = directPath(options.dataRoot, "isDirectory", "The Runtime data root");
-  const browserHome = path.join(dataRoot, "hyperframes-browser");
+  const browserHome = managedPayloadTarget(dataRoot, "hyperframes-browser", options.env);
   fs.mkdirSync(browserHome, { recursive: true });
   directPath(browserHome, "isDirectory", "HyperFrames browser home");
   const env = {
@@ -3235,7 +3253,10 @@ export async function prepareHyperframesBrowser(launcher, options) {
   if (resolved.code !== 0) throw new Error("HyperFrames could not resolve its rendering browser.");
   const browser = resolved.stdout.trim();
   if (!path.isAbsolute(browser)) throw new Error("HyperFrames returned an invalid browser path.");
-  return directPath(browser, "isFile", "The HyperFrames rendering browser");
+  const executable = directPath(browser, "isFile", "The HyperFrames rendering browser");
+  if (!pathWithin(browserHome, executable)) throw new Error("The HyperFrames rendering browser escaped its managed cache.");
+  markManagedPayloadReady(dataRoot, "hyperframes-browser", options.env);
+  return executable;
 }
 
 async function ensureOpenscienceWorkspace(context) {
@@ -3427,30 +3448,36 @@ async function openworkSetup(context) {
   if (bunProbe.code !== 0) {
     return { ok: false, message: "Bun was found but did not start.", detail: commandTail(bunProbe) };
   }
-  const destination = path.join(context.dataRoot, "openwork-runtime");
-  const staging = path.join(context.dataRoot, `.openwork-stage-${crypto.randomUUID()}`);
-  if (!pathWithin(context.dataRoot, destination) || !pathWithin(context.dataRoot, staging)) {
+  const destination = path.join(context.bulkRoot, "openwork-runtime");
+  const staging = path.join(context.bulkRoot, `.openwork-stage-${crypto.randomUUID()}`);
+  if (!pathWithin(context.bulkRoot, destination) || !pathWithin(context.bulkRoot, staging)) {
     fail("The OpenWork runtime escaped Runtime data.");
   }
   fs.mkdirSync(staging);
   try {
     const state = { bytes: 0, files: 0, maximumBytes: 128 * 1024 * 1024, maximumFiles: 20_000 };
-    copyDirectTree(
+    // Dependencies are freshly installed below. A pnpm checkout can contain
+    // dependency junctions that are neither source nor safe to copy into data.
+    const excludedNames = new Set(["node_modules", ".git"]);
+    copyFilteredDirectTree(
       path.join(root, "apps", "server", "src"),
       path.join(staging, "apps", "server", "src"),
       state,
+      excludedNames,
       "The OpenWork server source",
     );
-    copyDirectTree(
+    copyFilteredDirectTree(
       path.join(root, "packages", "paths"),
       path.join(staging, "packages", "paths"),
       state,
+      excludedNames,
       "The OpenWork paths package",
     );
-    copyDirectTree(
+    copyFilteredDirectTree(
       path.join(root, "packages", "types"),
       path.join(staging, "packages", "types"),
       state,
+      excludedNames,
       "The OpenWork types package",
     );
     copyDirectTree(
@@ -3464,7 +3491,9 @@ async function openworkSetup(context) {
     const server = path.join(staging, "apps", "server");
     const installed = await runManagedSetupCommand(
       npm,
-      ["install", "--no-audit", "--no-fund", "--omit=dev", "--loglevel", "error"],
+      // Pack file: packages instead of creating Windows junctions to staging;
+      // those absolute targets disappear when the finished runtime is moved.
+      ["install", "--install-links", "--no-audit", "--no-fund", "--omit=dev", "--loglevel", "error"],
       {
         cwd: server,
         env: inheritedToolEnvironment(context.env),
@@ -3521,15 +3550,82 @@ export function validateManagedSetupRequest(value) {
   return value;
 }
 
+const REMOVABLE_ENVIRONMENTS = new Set([
+  "deep-tutor", "deer-flow", "legal", "money-printer", "openexecutive", "shorts", "stock-analyst", "tradingagents", "vibe-trading",
+]);
+
+export function managedSetupPayloads(operation, action) {
+  if (REMOVABLE_ENVIRONMENTS.has(operation) || operation === "matraix") {
+    return [`runtime-v2/services/${operation}/.venv`];
+  }
+  if (operation === "openmontage") return ["runtime-v2/toolchains/openmontage",
+    ...(action === "install-dependencies" ? ["runtime-v2/services/openmontage/.venv"] : [])];
+  if (operation === "resource2skill") return ["runtime-v2/services/resource2skill/.venv",
+    ...(action === "install-web" ? ["runtime-v2/services/resource2skill/browsers"] : [])];
+  if (operation === "career-ops") return action === "browsers" ? ["runtime-v2/toolchains/career-ops-browsers"] : [];
+  if (operation === "acestep") return [".venv", "source", "uv-cache", "cache"].map(name => `runtime-v2/services/acestep/${name}`);
+  return ({
+    "bolt-slides": ["runtime-v2/toolchains/bolt-slides"],
+    wardrobe: ["runtime-v2/toolchains/wardrobe"],
+    hyperframes: ["hyperframes-cli"], openscience: ["openscience-cli"], openwork: ["openwork-runtime"],
+  })[operation] ?? [];
+}
+
+export function managedRemovalTargets(serviceId) {
+  if (REMOVABLE_ENVIRONMENTS.has(serviceId) || serviceId === "matraix") return [[`runtime-v2/services/${serviceId}/.venv`]];
+  // Only dependency/model leaves are removable. Runtime sources may contain
+  // generated work, so retain them along with all state and shared caches.
+  return ({
+    "bolt-slides": [["runtime-v2/toolchains/bolt-slides", "node_modules"]],
+    "career-ops": [["runtime-v2/toolchains/career-ops", "node_modules"], ["runtime-v2/toolchains/career-ops-browsers"]],
+    hyperframes: [["hyperframes-cli", "node_modules"]],
+    openscience: [["openscience-cli", "node_modules"]],
+    openwork: [["openwork-runtime", "apps/server/node_modules"], ["openwork-runtime", "node_modules"], ["openwork-runtime", "packages/paths/node_modules"]],
+    openmontage: [["runtime-v2/services/openmontage/.venv"], ["runtime-v2/toolchains/openmontage", "remotion-composer/node_modules"]],
+    resource2skill: [["runtime-v2/services/resource2skill/.venv"], ["runtime-v2/services/resource2skill/browsers"]],
+    wardrobe: [["runtime-v2/toolchains/wardrobe", "node_modules"]],
+    acestep: [["runtime-v2/services/acestep/.venv"], ["runtime-v2/services/acestep/source", "checkpoints"]],
+  })[serviceId] ?? null;
+}
+
+function removeManagedEnvironments(context, serviceId) {
+  const leaves = managedRemovalTargets(serviceId);
+  if (!leaves) fail("This environment cannot be removed by managed setup.", 400, "setup_operation_unknown");
+  const environments = [context.env, { ...context.env, BREADBOARD_BULK_DATA_DIR: "" }];
+  const targets = [];
+  // Inspect both exact roots before touching either. Remove means remove the
+  // selected agent's dependencies, including an older fallback that would
+  // otherwise reactivate after the D: environment disappeared.
+  for (const [relative, child] of leaves) for (const environment of environments) {
+    const payload = managedPayloadTarget(context.dataRoot, relative, environment);
+    const target = child ? path.join(payload, ...child.split("/")) : payload;
+    if (!pathWithin(payload, target)) fail("The dependency removal escaped its managed payload.");
+    if (targets.some(entry => sameRuntimePath(entry.target, target))) continue;
+    const metadata = fs.lstatSync(target, { throwIfNoEntry: false });
+    if (metadata?.isSymbolicLink()) fail("The managed dependency directory is redirected.", 400, "setup_path_indirect");
+    if (metadata) directPath(target, "isDirectory", "The managed dependency directory");
+    const marker = path.join(payload, ".breadboard-bulk-ready.json");
+    if (fs.lstatSync(marker, { throwIfNoEntry: false })) directPath(marker, "isFile", "The managed dependency verification marker");
+    targets.push({target, relative, environment, exists: Boolean(metadata)});
+  }
+  for (const entry of targets) clearManagedPayloadReady(context.dataRoot, entry.relative, entry.environment);
+  for (const entry of targets) if (entry.exists) fs.rmSync(entry.target, {recursive: true, force: false});
+  return {ok: true, message: targets.some(entry => entry.exists) ? "Downloaded tools removed. Saved work and settings were kept." : "There were no managed tools to remove.", detail: "Shared download caches and runtime source files were kept."};
+}
+
 export async function executeManagedSetup(request, options) {
   const canonical = validateManagedSetupRequest(request);
   if (!options || typeof options !== "object") fail("Managed setup context is invalid.");
   const dataRoot = directPath(options.dataRoot, "isDirectory", "The Runtime data root");
   const appRoot = directPath(options.appRoot, "isDirectory", "The Breadboard application root");
+  const environment = options.env ?? process.env;
+  const bulkRoot = MANAGED_SETUP_EXCLUSIVE_OPERATIONS.includes(canonical.operation)
+    ? runtimeBulkDataRoot(dataRoot, environment) : dataRoot;
   const context = {
     dataRoot,
+    bulkRoot,
     appRoot,
-    env: options.env ?? process.env,
+    env: { ...environment },
     signal: options.signal,
     spawnImpl: options.spawnImpl ?? spawn,
     fetchImpl: options.fetchImpl ?? fetch,
@@ -3537,6 +3633,35 @@ export async function executeManagedSetup(request, options) {
     arch: options.arch ?? process.arch,
   };
   if (!(context.signal instanceof AbortSignal)) fail("Managed setup requires cancellation authority.");
+  const protectedEnvironment = MANAGED_SETUP_EXCLUSIVE_OPERATIONS.includes(canonical.operation);
+  if (protectedEnvironment
+    && !["2", "3"].includes(context.env.BREADBOARD_MANAGED_SETUP_EXCLUSION)) {
+    fail("Restart Breadboard to activate the updated Runtime before installing, repairing, or removing agent dependencies. Active jobs must finish first.", 409, "setup_runtime_update_required");
+  }
+  if (protectedEnvironment && canonical.action === "remove") {
+    if (!REMOVABLE_ENVIRONMENTS.has(canonical.operation) && context.env.BREADBOARD_MANAGED_SETUP_EXCLUSION !== "3") {
+      fail("Restart Breadboard after active jobs finish to activate removal for this agent.", 409, "setup_runtime_update_required");
+    }
+    return removeManagedEnvironments(context, canonical.operation);
+  }
+  const payloads = managedSetupPayloads(canonical.operation, canonical.action);
+  for (const relative of payloads) clearManagedPayloadReady(dataRoot, relative, context.env);
+  if (protectedEnvironment && environment.BREADBOARD_BULK_DATA_DIR?.trim()) {
+    const cache = managedPayloadTarget(dataRoot, "runtime-v2/toolchains/cache", context.env);
+    fs.mkdirSync(cache, { recursive: true });
+    directPath(cache, "isDirectory", "The managed dependency cache");
+    for (const name of ["uv", "python", "pip", "npm"]) ensureDirectDirectory(path.join(cache, name), "The managed package cache");
+    context.env.UV_CACHE_DIR = path.join(cache, "uv");
+    context.env.UV_PYTHON_INSTALL_DIR = path.join(cache, "python");
+    context.env.PIP_CACHE_DIR = path.join(cache, "pip");
+    context.env.npm_config_cache = path.join(cache, "npm");
+  }
+  const result = await dispatchManagedSetup(canonical, context);
+  if (result.ok) for (const relative of payloads) markManagedPayloadReady(dataRoot, relative, context.env);
+  return result;
+}
+
+async function dispatchManagedSetup(canonical, context) {
   if (canonical.operation === "audio-analyzer") return audioSetup(canonical.action, context);
   if (canonical.operation === "claude-code") {
     return claudeAccountOperation(canonical.action, context);
@@ -3552,7 +3677,7 @@ export async function executeManagedSetup(request, options) {
     const uv = resolveOnPath("uv", context.env);
     if (!uv) fail("Install the Runtime uv toolchain before preparing ACE-Step.",503,"setup_uv_missing");
     const script = directPath(path.join(context.appRoot,"dashboard","scripts","acestep-setup.py"),"isFile","ACE-Step setup entrypoint");
-    const result = await runManagedSetupCommand(uv,["run","--no-project","--python","3.11",script,context.dataRoot,uv],{cwd:context.dataRoot,env:inheritedToolEnvironment(context.env),signal:context.signal,timeoutMs:50*60_000,spawnImpl:context.spawnImpl});
+    const result = await runManagedSetupCommand(uv,["run","--no-project","--python","3.11",script,context.dataRoot,uv,context.bulkRoot],{cwd:context.dataRoot,env:inheritedToolEnvironment(context.env),signal:context.signal,timeoutMs:50*60_000,spawnImpl:context.spawnImpl});
     return {ok:result.code===0,message:result.code===0?"ACE-Step environment and turbo model prepared.":"ACE-Step setup failed.",detail:commandTail(result)};
   }
   if (canonical.operation === "comfyui") return comfyUiSetup(context);

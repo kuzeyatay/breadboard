@@ -147,6 +147,43 @@ def test_later_verified_response_supersedes_pending_report(agent, monkeypatch):
     agent._handle_max_iterations.assert_not_called()
 
 
+def test_client_turn_renews_real_iteration_budget_and_finishes_verification(agent, monkeypatch):
+    from tui_gateway.correlated_delegation import finish_delegations
+
+    answers = iter([_response("progress checkpoint"), _response("verified final report")])
+    requests = []
+
+    def model_call(kwargs):
+        requests.append(kwargs["messages"])
+        return next(answers)
+
+    agent._interruptible_api_call = model_call
+    agent._handle_max_iterations = MagicMock(return_value="replacement summary")
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
+    with (
+        patch("agent.verification_stop.build_verify_on_stop_nudge", side_effect=["verify it", None]),
+        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+    ):
+        checkpoint = agent.run_conversation("edit changed.py", task_id="original-task")
+        assert checkpoint["turn_exit_reason"] == "max_iterations_reached(1/1)"
+        assert agent.iteration_budget.remaining == 0
+        history_before = list(checkpoint["messages"])
+        final = finish_delegations(agent, checkpoint, {"task_id": "original-task"},
+            owns_event=lambda event: False, cancelled=lambda: False,
+            interim=lambda text: None, waiting=lambda: None, max_auto_continuations=1)
+
+    assert final["completed"] is True
+    assert final["final_response"] == "verified final report"
+    assert len(requests) == 2
+    assert requests[0][0] == requests[1][0]  # stable system prompt
+    assert checkpoint["messages"] == history_before
+    assert final["messages"][:len(history_before)] == history_before
+    assert [row["role"] for row in final["messages"]] == ["user", "assistant", "user", "assistant"]
+    assert agent.max_iterations == 1
+    assert agent._current_task_id == "original-task"
+    agent._handle_max_iterations.assert_not_called()
+
+
 def test_multiple_verification_retries_publish_each_candidate_once(agent, monkeypatch):
     """Multiple verification retries should publish each candidate once, in order."""
     agent.max_iterations = 3

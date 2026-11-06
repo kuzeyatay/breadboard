@@ -1,0 +1,5 @@
+.toggle { appearance:none; position:relative; width:36px; height:22px; flex-shrink:0; border:0; border-radius:20px; background:var(--line-strong); cursor:pointer; transition:background-color 140ms ease-out; }
+.toggle::after { content:""; position:absolute; width:18px; height:18px; border-radius:50%; left:2px; top:2px; background:#fff; box-shadow:0 1px 3px #0002; transition:transform 140ms ease-out; }
+.toggle:checked { background:var(--botanical); }.toggle:checked::after { transform:translateX(14px); }
+.toggle:focus-visible { outline:2px solid var(--botanical); outline-offset:3px; }.toggle:disabled { opacity:.45; cursor:default; }
+@media(prefers-reduced-motion:reduce) { .toggle,.toggle::after { transition:none; } }

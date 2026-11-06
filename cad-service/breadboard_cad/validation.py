@@ -337,19 +337,35 @@ def validate_model(
             limit = bed.get(axis)
             if limit is None:
                 continue
-            measured = getattr(bounding_box, axis)
+            largest = max(solids, key=lambda solid: getattr(solid.bounding_box, axis))
+            measured = getattr(largest.bounding_box, axis)
             if measured > limit:
                 issues.append(
                     _issue(
                         "exceeds_printer_bed",
                         "error",
-                        f"The part is {measured:.1f} mm in {axis.upper()}, larger than the "
+                        f"The body '{largest.name}' is {measured:.1f} mm in {axis.upper()}, larger than the "
                         f"configured {limit:.0f} mm bed.",
                         feature=f"printerBed.{axis}",
                         expected=limit,
                         actual=round(measured, 2),
                         repair_hint="Shrink the part, split it into printable sections, or raise "
                         "the configured bed size.",
+                    )
+                )
+            elif len(solids) > 1 and getattr(bounding_box, axis) > limit:
+                issues.append(
+                    _issue(
+                        "assembly_layout_exceeds_printer_bed",
+                        "warning",
+                        f"Every body fits the {axis.upper()} bed dimension individually, but the "
+                        f"assembled layout spans {getattr(bounding_box, axis):.1f} mm, exceeding "
+                        f"the configured {limit:.0f} mm bed. This layout is not validated for printing in place.",
+                        feature=f"printerBed.{axis}",
+                        expected=limit,
+                        actual=round(getattr(bounding_box, axis), 2),
+                        repair_hint="Print the bodies separately or arrange them in a slicer. "
+                        "Do not shrink functional assembly geometry merely to fit its assembled footprint.",
                     )
                 )
 

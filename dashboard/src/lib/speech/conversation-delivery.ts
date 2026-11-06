@@ -1,0 +1,2 @@
+/** Delivery only: the answering agent remains responsible for facts and tools. */
+export const CONVERSATION_DELIVERY = 'Speak to one person in a relaxed, warm conversational voice. Use connected phrasing, natural pitch variation, light emphasis and short pauses that follow the meaning. Avoid a flat reading, an announcer voice or exaggerated cheerfulness. Keep the supplied words unchanged; do not add filler, stage directions or commentary.';

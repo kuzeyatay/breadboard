@@ -114,6 +114,24 @@ async function _navigate(url: URL, isBack: boolean = false) {
 
   if (!contents) return
 
+  const html = p.parseFromString(contents, "text/html")
+  // Retain the current page until the saved destination is ready to paint.
+  try {
+    await window.prepareCanonicalQuartzDocument?.(html)
+  } catch {
+    document.querySelectorAll(".navigation-progress").forEach((bar) => bar.remove())
+    document.querySelector("[data-canonical-navigation-error]")?.remove()
+    const error = document.createElement("div"), retry = document.createElement("button")
+    error.dataset.canonicalNavigationError = "true"
+    error.setAttribute("role", "alert")
+    error.append("Could not load the saved page. ")
+    retry.textContent = "Retry"
+    retry.onclick = () => { error.remove(); void navigate(url, isBack) }
+    error.append(retry)
+    ;(document.querySelector("article.popover-hint") ?? document.querySelector(".page-listing"))?.before(error)
+    return
+  }
+
   // notify about to nav
   const event: CustomEventMap["prenav"] = new CustomEvent("prenav", { detail: {} })
   document.dispatchEvent(event)
@@ -122,7 +140,6 @@ async function _navigate(url: URL, isBack: boolean = false) {
   cleanupFns.forEach((fn) => fn())
   cleanupFns.clear()
 
-  const html = p.parseFromString(contents, "text/html")
   normalizeRelativeURLs(html, url)
 
   let title = html.querySelector("title")?.textContent

@@ -32,7 +32,7 @@ export async function POST(request: Request) {
         result: {
           ok: true,
           message:
-            "Runtime will stop the DeerFlow Gateway after active runs release and its idle timeout expires.",
+            "DeerFlow will stop after its active tasks finish and it has been idle for a while.",
           detail: "",
         },
       });

@@ -21,7 +21,7 @@ import {
 } from '@/lib/chat-attachments';
 import { modelAttachmentPromptText } from '@/lib/model-attachments';
 import { buildUrlLinkContext } from '@/lib/url-link-context';
-import { scanClusterKnowledge, type KnowledgeNode } from '@/lib/knowledge';
+import { scanClusterKnowledgeCooperatively, type KnowledgeNode } from '@/lib/knowledge';
 import { gardenMediaKind } from '@/lib/garden-media-kind.ts';
 import { retrieveGraphRag } from '@/lib/semantic-retrieval';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
@@ -31,12 +31,10 @@ import { readHermesConfig } from '@/lib/hermes/config.ts';
 import { openGardenAgentChat } from '@/lib/hermes/garden-chat-adapter.ts';
 import { apiErrorResponse } from '@/lib/hermes/route-helpers.ts';
 import { recordAuditEvent } from '@/lib/hermes/runtime-store.ts';
-import { cogniviaSection } from '@/lib/cognivia/index.ts';
 import { directModeSection } from '@/lib/hermes/direct-mode.ts';
-import {
-  readerComprehensionPrompt,
-  responseStylePrompt,
-} from '@/lib/hermes/system-prompts.ts';
+import { chatCorePrompt } from '@/lib/hermes/system-prompts.ts';
+import { parseBrowserTerminalAccess } from '@/lib/browser-terminal.ts';
+import { browserTerminalPrompt } from '@/lib/hermes/browser-terminal-context.ts';
 import { createEmDashFilter } from '@/lib/prose-punctuation.ts';
 import { SupervisorResourceExhaustedError } from '@/lib/supervisor-control.ts';
 import {
@@ -280,14 +278,14 @@ export async function POST(request: Request) {
     const payload = await request.json() as JsonRecord;
     const runtime = readHermesConfig();
     let legacyFallback = false;
-    if (runtime.mode !== 'legacy') {
+    if (payload.voice === true || runtime.mode !== 'legacy') {
       try {
         return await openGardenAgentChat(payload, request.signal);
       } catch (error) {
         if (error instanceof SupervisorResourceExhaustedError) {
           return routeErrorResponse(error);
         }
-        if (runtime.mode === 'required') return apiErrorResponse(error);
+        if (payload.voice === true || runtime.mode === 'required') return apiErrorResponse(error);
         legacyFallback = true;
         recordAuditEvent({
           eventType: 'fallback.used',
@@ -354,7 +352,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'QUARTZ_CONTENT_PATH not configured' }, { status: 500 });
     }
 
-    const knowledge = scanClusterKnowledge(contentPath, cluster.slug);
+    const knowledge = await scanClusterKnowledgeCooperatively(contentPath, cluster.slug);
 
     const selectedFocusSlugs = new Set<string>();
     for (const slug of selectedSourceSlugs) {
@@ -445,7 +443,8 @@ export async function POST(request: Request) {
     let systemPrompt =
       // Same prose-first voice and minimal-background rule the Hermes surfaces
       // get, so an answer does not change shape with the runtime behind it.
-      `${responseStylePrompt()}\n\n` +
+      `${chatCorePrompt()}\n\n` +
+      `${await browserTerminalPrompt(parseBrowserTerminalAccess(payload.browserAccess), false)}\n\n` +
       // Concise shapes an answer wherever it is answered, so the
       // legacy fallback carries it too rather than silently reverting the voice.
       (payload.adhdMode === true ? `${directModeSection()}\n\n` : '') +
@@ -453,17 +452,12 @@ export async function POST(request: Request) {
       'Use the learning relationships and markdown pages as grounded context. ' +
       'You can answer questions about the Learning Map itself, including source documents, textbook pages, locations, page references, tags, and relationships. ' +
       'When the user asks where something appears, cite the note title and the Locations value from the context. ' +
-      'When a question depends on uploaded material, mention the relevant source or textbook page names naturally. ' +
+      'Cite relevant sources and pages in references supporting the explanation. ' +
       'Always format mathematical expressions using LaTeX delimiters: ' +
       'use $...$ for inline math (e.g. $|\\Psi|^2$, $e^{i(kx-\\omega t)}$, $E = mc^2$) ' +
       'and $$...$$ on its own line for display/block equations. ' +
       'Never write math in plain text with ^ or bracket notation - always use proper LaTeX.\n\n' +
       `${graphContext}${selectedDocumentContext}${selectedAudioMarkdownContext}${activeMarkdownPromptContext}${highlightedTextPromptContext}\n\nGraphRAG-lite retrieved evidence (BM25, aliases, optional embeddings, and bounded one-hop relationships):\n\n${notesContext}`;
-
-    // A mental-health turn is answered as a CBT copilot on every surface, and
-    // this legacy garden route is one of them.
-    const cognivia = cogniviaSection({ userText: lastUserMessage?.content ?? '' });
-    if (cognivia) systemPrompt += `\n\n${cognivia}`;
 
     const urlLinkContext = await buildUrlLinkContext(chatMessages);
     if (urlLinkContext.context) {
@@ -480,9 +474,6 @@ export async function POST(request: Request) {
         'Use the relevant notes and relationships to check your answer before responding.';
     }
 
-    // Retrieved notes and Concise can shape content and layout, but the
-    // last instruction still has to make the result usable to a new reader.
-    systemPrompt += `\n\n${readerComprehensionPrompt()}`;
 
     const client = new OpenAI({
       baseURL,
@@ -566,7 +557,6 @@ export async function POST(request: Request) {
         const encoder = new TextEncoder();
         const emittedImageIds = new Set<string>();
         let usageEmitted = false;
-
         function emit(payload: SsePayload) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
         }

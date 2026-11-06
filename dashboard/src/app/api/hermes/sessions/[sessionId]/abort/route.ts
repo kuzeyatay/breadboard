@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 // and covers its main runtime and delegated workers. Highlight answers have
 // independent Stop controls and keep running when the main answer is stopped.
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
   try {
@@ -32,15 +32,16 @@ export async function POST(
       throw new ApiError(404, "session_not_found", "Conversation not found.");
     }
     const conversationId = conversation?.id ?? legacySession!.conversation_id;
-    const inlineTurnId = legacySession ? JSON.parse(legacySession.runtime_metadata || "{}").inlineTurnId as string | undefined : undefined;
-    const sessions = inlineTurnId ? [legacySession!] : (conversationId !== null
+    const requestedInlineTurnId = new URL(request.url).searchParams.get("inlineTurnId") || undefined;
+    const inlineTurnId = legacySession ? JSON.parse(legacySession.runtime_metadata || "{}").inlineTurnId as string | undefined : requestedInlineTurnId;
+    const sessions = (conversationId !== null
       ? listRuntimeSessionsForConversation(conversationId)
-      : [legacySession!]).filter(row => !JSON.parse(row.runtime_metadata || "{}").inlineTurnId);
+      : [legacySession!]).filter(row => (JSON.parse(row.runtime_metadata || "{}").inlineTurnId || undefined) === inlineTurnId);
     const activeRuns = sessions.flatMap((row) => {
       const run = getActiveRuntimeRun(row.id);
       return run ? [run] : [];
     });
-    const directTurn = conversationId === null || inlineTurnId ? null : abortDirectProviderTurn(conversationId);
+    const directTurn = conversationId === null ? null : abortDirectProviderTurn(conversationId, inlineTurnId);
     // Discover workers before sealing the pending placeholder; the running
     // markers in the transcript are also how their managers are located.
     const externalStop = conversationId === null || inlineTurnId ? Promise.resolve([])

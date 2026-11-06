@@ -1,16 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
+import { asciiWallpaperSlug } from "@/lib/ascii-wallpapers";
 import { useWallpaperTone } from "./use-wallpaper-tone";
+import { hydratePageAppearance, savePageAppearance } from "@/lib/page-appearance-client";
 import {
   APP_THEME_CHANGE_EVENT,
   APP_THEME_MODE_CHANGE_EVENT,
   resolveAppTheme,
 } from "@/lib/app-theme";
 import {
-  PAGE_APPEARANCE_CHANGE_EVENT, readPageAppearance, resolveWallpaper,
+  PAGE_APPEARANCE_CHANGE_EVENT, ambientBackgroundOptions, readPageAppearance, resolveWallpaper,
   advanceRandomBackgrounds, RANDOM_BACKGROUND_MAX_DELAY_MS,
-  writePageAppearance, type AppearancePage,
+  writePageAppearance, type AppearancePage, type RainMode,
 } from "@/lib/page-appearance";
 
 function subscribe(onChange: () => void) {
@@ -29,6 +31,8 @@ function subscribe(onChange: () => void) {
 const serverSnapshot = JSON.stringify({ preference: { backgrounds: { light: "none", dark: "none" } }, appTheme: "light", ready: false });
 
 export function usePageAppearance(ownerKey: string, page: AppearancePage) {
+  useEffect(() => { void hydratePageAppearance(ownerKey, page); }, [ownerKey, page]);
+
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let checking = false;
@@ -79,11 +83,13 @@ export function usePageAppearance(ownerKey: string, page: AppearancePage) {
     ready: boolean;
   }, [snapshot]);
   const theme = appTheme;
+  const rainMode: RainMode = preference.rain?.[theme] ?? "off";
+  const asciiBackground = asciiWallpaperSlug(preference.backgrounds[theme]);
   const wallpaper = resolveWallpaper(preference.backgrounds[theme], theme);
+  const { spotify: spotifyBackground, random: randomColorsBackground } = ambientBackgroundOptions(preference.backgrounds[theme]);
   const wallpaperTone = useWallpaperTone(wallpaper?.src, wallpaper?.tone ?? theme);
   const save = (patch: Parameters<typeof writePageAppearance>[3]) => {
-    writePageAppearance(window.localStorage, ownerKey, page, patch);
-    window.dispatchEvent(new Event(PAGE_APPEARANCE_CHANGE_EVENT));
+    return savePageAppearance(ownerKey, page, patch);
   };
-  return { preference, appTheme, theme, wallpaper, wallpaperTone, ready, hasWallpaper: Boolean(wallpaper), save };
+  return { preference, appTheme, theme, wallpaper, wallpaperTone, asciiBackground, spotifyBackground, randomColorsBackground, rainMode, ambientBackground: spotifyBackground || randomColorsBackground, ready, hasWallpaper: Boolean(wallpaper), save };
 }

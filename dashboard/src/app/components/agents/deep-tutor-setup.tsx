@@ -78,7 +78,7 @@ const SETUP_ACTIONS = [
   {
     id: "remove",
     label: "Remove environment",
-    unlocks: "Deletes DeepTutor/.venv. Nothing else in the clone is touched.",
+    unlocks: "Removes DeepTutor’s installed tools. Your other files are kept.",
   },
   {
     id: "reindex",
@@ -257,8 +257,7 @@ export default function DeepTutorSetup({ gardenSlug }: { gardenSlug?: string | n
       ) : null}
       {health?.cloned && !health.uvAvailable && !health.environmentReady ? (
         <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
-          Building the environment needs uv, because the tutor requires Python 3.11–3.13 and uv
-          fetches a matching one. Install it from docs.astral.sh/uv, then reopen this panel.
+          Install uv from docs.astral.sh/uv, then reopen this panel. It will download the required Python version.
         </p>
       ) : null}
 

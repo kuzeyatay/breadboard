@@ -39,6 +39,20 @@ export function syncTextHighlights(userId: number, input: Record<string, unknown
       throw new ApiError(400, "invalid_highlight_mutation", "Invalid highlight change.");
     }
   }
+  const read = () => {
+    const rows = db.prepare("SELECT value FROM text_highlights WHERE user_id = ? AND storage_key = ? AND value IS NOT NULL ORDER BY rowid")
+      .all(userId, key) as { value: string }[];
+    return { entries: rows.map(row => JSON.parse(row.value)), acknowledged: mutations.map((mutation: HighlightMutation) => mutation.operationId) };
+  };
+  // Opening a page re-sends its cached marks, which are normally all stored
+  // already, so the INSERT OR IGNOREs below would change nothing. Answer those
+  // with a plain read: BEGIN IMMEDIATE waits for the write lock (synchronously,
+  // on the server's only thread) while a worker is writing.
+  if (mutations.length === 0) {
+    const stored = new Set((db.prepare("SELECT highlight_id FROM text_highlights WHERE user_id = ? AND storage_key = ?")
+      .all(userId, key) as { highlight_id: string }[]).map(row => row.highlight_id));
+    if (entries.every(entry => stored.has(highlightEntryId(entry)!))) return read();
+  }
   return db.transaction(() => {
     const migrate = db.prepare("INSERT OR IGNORE INTO text_highlights(user_id, storage_key, highlight_id, value) VALUES (?, ?, ?, ?)");
     // Import old browser caches without overwriting newer marks or tombstones.
@@ -52,8 +66,6 @@ export function syncTextHighlights(userId: number, input: Record<string, unknown
         write.run(userId, key, mutation.id, mutation.value === null ? null : JSON.stringify(mutation.value));
       }
     }
-    const rows = db.prepare("SELECT value FROM text_highlights WHERE user_id = ? AND storage_key = ? AND value IS NOT NULL ORDER BY rowid")
-      .all(userId, key) as { value: string }[];
-    return { entries: rows.map(row => JSON.parse(row.value)), acknowledged: mutations.map((mutation: HighlightMutation) => mutation.operationId) };
+    return read();
   }).immediate();
 }

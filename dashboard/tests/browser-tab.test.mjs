@@ -10,8 +10,9 @@ const shortcut = read("../src/app/components/browser-shortcut.tsx");
 const newTab = read("../src/app/new-tab/new-tab-client.tsx");
 const catalog = read("../src/lib/profile/navbar-shortcuts.ts");
 const page = read("../src/app/browser/page.tsx");
-const client = read("../src/app/browser/browser-client.tsx");
-const widgets = read("../src/app/browser/browser-home-widgets.tsx");
+const client = read("../src/app/browser/browser-client.tsx") + read("../src/app/browser/browser-navigation.tsx");
+const suggestionList = read("../src/app/browser/browser-suggestion-list.tsx");
+const widgets = read("../src/app/browser/browser-home-widgets.tsx") + read("../src/app/browser/browser-site-icon.tsx");
 const greetingTypewriter = read("../src/app/components/use-greeting-typewriter.ts");
 const homeAccessories = read("../src/app/browser/browser-home-accessories.tsx");
 const personalization = read("../src/app/browser/browser-personalization.tsx");
@@ -69,9 +70,9 @@ test("browser tabs share Breadboard's strip and use a trusted address toolbar", 
   assert.match(client, /aria-valuemax=\{terminalMaxWidth\(viewportWidth\)\}/);
   assert.doesNotMatch(client, /TERMINAL_MAX_WIDTH = 760/);
   assert.match(client, /storedWidthValue === null \? null : Number\(storedWidthValue\)/);
-  assert.match(client, /dynamic\([\s\S]*?dashboard-agent-terminal/);
-  assert.doesNotMatch(client, /import DashboardAgentTerminal from/);
-  assert.match(client, /terminalLoaded \? \(/);
+  assert.match(client, /import DashboardAgentTerminal from/);
+  assert.doesNotMatch(client, /Loading terminal/);
+  assert.match(client, /terminalLoaded \|\| browser\?\.selection\?\.reference\?\.mode === "inline" \? \(/);
   assert.match(terminal, /compact=\{drawerPresentation\}/);
   assert.match(terminal, /collapsed=\{terminalRailCollapsed\}/);
   assert.match(terminal, /onToggleCollapsed=\{toggleTerminalRail\}/);
@@ -134,9 +135,9 @@ test("the browser greeting starts typing as soon as its first text arrives", () 
 
 test("browser home provides live dock data, search suggestions, and editable shortcuts", () => {
   assert.match(client, /role="combobox"/);
-  assert.match(client, /role="listbox"/);
+  assert.match(suggestionList, /role="listbox"/);
   assert.match(client, /searchSuggestions\(searchQuery, recentSearches, googleSearchSuggestions\)/);
-  assert.match(client, /searchSuggestions\(addressLookupQuery, recentSearches, googleAddressSuggestions\)/);
+  assert.match(client, /searchSuggestions\(query, recentSearchStore\.items, googleSuggestions\)/);
   assert.match(client, /useBrowserRecentSearches\(restoreOwnerKey, browser\?\.address, privateBrowsing\)/);
   assert.match(read("../src/app/browser/use-browser-recent-searches.ts"), /breadboard:browser-searches:/);
   assert.doesNotMatch(client, /rememberSearch\(browser\.address\)/);
@@ -151,9 +152,9 @@ test("browser home provides live dock data, search suggestions, and editable sho
   assert.match(suggestionsRoute, /suggestqueries\.google\.com\/complete\/search/);
   assert.match(client, /Search with Google or enter an address/);
   assert.match(client, /Search with Google/);
-  assert.match(client, /BrowserSuggestionGlyph/);
-  assert.match(client, /className="browser-suggestion-remove"/);
-  assert.match(client, /onRemoveHistory\(suggestion\.value\)/);
+  assert.match(suggestionList, /BrowserSuggestionGlyph/);
+  assert.match(suggestionList, /className="browser-suggestion-remove"/);
+  assert.match(suggestionList, /onRemoveHistory\(suggestion\.value, suggestion\)/);
   assert.match(client, /removeHistoryEntry\(value\)/);
   assert.match(globals, /\.browser-suggestion-remove\s*\{/);
   assert.doesNotMatch(client, /browser-suggestion-google|Google suggestion/);
@@ -167,7 +168,7 @@ test("browser home provides live dock data, search suggestions, and editable sho
   assert.match(widgets, /icons\.duckduckgo\.com\/ip3/);
   assert.match(widgets, /new URL\("\/favicon\.ico", page\.origin\)/);
   assert.match(widgets, /onError=\{\(\) => setSourceIndex\(\(index\) => index \+ 1\)\}/);
-  assert.match(client, /pageUrl=\{browser\.address\}/);
+  assert.match(client, /pageUrl=\{privateBrowsing \? undefined : browser\.address\}/);
   assert.match(client, /pageUrl=\{bookmark\.url\}/);
   assert.match(titleBar, /browserTabFaviconFallback/);
   assert.match(titleBar, /reportedFavicon \? undefined : "true"/);
@@ -311,12 +312,11 @@ test("browser Spotify opens a CarPlay-style searchable player and uses the Bread
   assert.match(spotifyRoute, /"create-playlist"/);
   assert.match(spotifyRoute, /"rename-playlist"/);
   assert.match(spotifyRoute, /"delete-playlist"/);
-  assert.match(spotifyRoute, /body: \{ uris: queueUris \}/);
-  assert.match(spotifyRoute, /spotifyRecommendedTracks\(userId, trackId, 10\)/);
-  assert.match(spotifyRoute, /const prepared = preparedQueues\.get/);
-  assert.match(spotifyRoute, /body: \{ context_uri: playlistUri \}/);
-  assert.match(spotifyService, /endpoint: "\/v1\/recommendations"/);
-  assert.match(widgets, /playTrack\(item, \[\], true\)/);
+  assert.match(spotifyRoute, /uris: queueUris/);
+  assert.doesNotMatch(spotifyRoute, /spotifyAutoplayTracks|preparedQueues/);
+  assert.match(spotifyRoute, /context_uri:/);
+  assert.doesNotMatch(spotifyService, /endpoint: "\/v1\/recommendations"/);
+  assert.match(widgets, /playTrack\(item, \[\]\)/);
   assert.match(spotifyService, /endpoint: "\/v1\/me\/playlists"/);
   assert.match(spotifyService, /endpoint: "\/v1\/me\/tracks"/);
   assert.match(spotifyService, /endpoint: "\/v1\/me\/library"/);
@@ -377,7 +377,7 @@ test("browser home orbits counter-rotate and retain a reduced-motion shade drift
 test("browser entry points are desktop-only and use product-neutral copy", () => {
   assert.match(shortcut, /if \(!tabs\?\.enabled\) return null;/);
   assert.match(newTab, /function BrowserShortcut\([\s\S]*?if \(!tabs\?\.enabled\) return null;/);
-  assert.match(newTab, /<BrowserShortcut query=\{needle\} \/>/);
+  assert.match(newTab, /<BrowserShortcut query="" \/>/);
   assert.match(catalog, /key: "browser",\s*label: "Browser",\s*description:/);
   for (const source of [bridge, titleBar, shortcut, newTab, catalog, page, client]) {
     assert.doesNotMatch(source, /Firefox/);

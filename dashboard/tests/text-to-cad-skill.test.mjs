@@ -132,6 +132,26 @@ test("CAD follow-ups retain the workflow and routing is chat/auth scoped", () =>
   );
 });
 
+test("a teaching request cannot borrow CAD intent from the material being taught", () => {
+  for (const text of [
+    "Write a textbook section about the step response of an RC circuit.",
+    "Create a step-by-step lesson on solving quadratic equations.",
+    "Write a report about the manufacture of a bracket from a STEP model.",
+    "Write a lesson on gears and brackets.",
+    "Use the attached material to form a full teaching textbook section. The section you write here will follow the section below.\n# LTI systems\nA step response is the output for a unit step. Now send an impulse through the system.",
+    "Write a lesson about parametric CAD using this example: create a housing with four holes.",
+    "Summarize this text:\n> Create a STEP bracket with four holes.",
+  ]) {
+    for (const surface of ["dashboard_terminal", "garden_chat"]) {
+      const result = textToCadCommandText({ text, surface, authenticated: true });
+      assert.equal(result.skill, null, `${surface}: ${text}`);
+      assert.equal(result.text, text);
+    }
+  }
+  assert.equal(selectedSkill("Create a STEP model of a bracket and write an explanation of its mounting holes."), "cad");
+  assert.equal(selectedSkill('Inspect "housing.step" and measure the mounting holes.'), "cad");
+});
+
 test("command injection preserves the request and bridge selects the CAD worker", () => {
   const request = "create a STEP bracket with four M3 holes";
   assert.deepEqual(

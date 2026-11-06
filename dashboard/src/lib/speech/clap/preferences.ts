@@ -34,6 +34,6 @@ export function migrateClapPreferences(value: unknown, control: GestureControl =
 }
 
 export function trustedClapPath(path: string): boolean {
-  return !/^\/(?:api|voice|notification-overlay|preview|login|register|auth|share|embed)(?:\/|$)/.test(path) &&
+  return !/^\/(?:api|voice|dictation|notification-overlay|preview|login|register|auth|share|embed)(?:\/|$)/.test(path) &&
     !path.startsWith('/workflows/teach-controller');
 }

@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,10 +27,9 @@ const SCOPE_SEGMENT = /^(?!\.)[^\\/\0\p{Cc}]{1,255}$/u;
 const CONTENT_INDEX_RELATIVE_PATH = "static/contentIndex.json";
 const CONTENT_METADATA_RELATIVE_PATH = "static/contentMetadata.json";
 const MAX_CONTENT_INDEX_BYTES = 512 * 1024 * 1024;
-// Large gardens can exceed V8's default ~4 GiB old-space limit while Quartz
-// builds its in-memory content graph. Keep the build below the supervisor's
-// 10 GiB hard ceiling while leaving headroom for the ingestion worker.
-const QUARTZ_BUILD_MAX_OLD_SPACE_SIZE_MB = 7 * 1024;
+// Leave room inside the worker's 10 GiB process-tree limit for native buffers,
+// renderer output and V8's other spaces, in addition to the retained graph.
+const QUARTZ_BUILD_MAX_OLD_SPACE_SIZE_MB = 5 * 1024;
 const CHILD_TERMINATION_GRACE_MS = 10_000;
 const DEFAULT_LOCK_POLL_MS = 100;
 const DEFAULT_LOCK_STALE_MS = 30_000;
@@ -78,24 +78,6 @@ function hasExactKeys(value, keys) {
   return (
     actual.length === expected.length &&
     actual.every((key, index) => key === expected[index])
-  );
-}
-
-function samePath(left, right) {
-  const normalizedLeft = path.resolve(left);
-  const normalizedRight = path.resolve(right);
-  return process.platform === "win32"
-    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
-    : normalizedLeft === normalizedRight;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return (
-    relative === "" ||
-    (!relative.startsWith(`..${path.sep}`) &&
-      relative !== ".." &&
-      !path.isAbsolute(relative))
   );
 }
 
@@ -1247,7 +1229,11 @@ async function runSealedQuartzPublication(attestation, rawOptions) {
         sourceRoot: attestation.sourceRoot,
         cliPath,
         stagePath,
-        concurrency: options.concurrency,
+        // A renderer change expands a single-Garden save to the whole library.
+        // Parallel parser heaps can exceed the worker's process-tree memory
+        // ceiling in that case. One parser keeps full rebuilds inside it;
+        // ordinary scoped publications retain their requested parallelism.
+        concurrency: scope.length > 0 ? options.concurrency : 1,
         timeoutMs: options.timeoutMs,
         buildEnvironment: options.buildEnvironment,
         scope,

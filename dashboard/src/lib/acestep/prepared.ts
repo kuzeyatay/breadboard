@@ -1,10 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ACESTEP_REVISION } from "./capabilities.ts";
+import { managedPayloadRoot } from "../../../scripts/runtime-v2-bulk-paths.mjs";
+import { sameRuntimePath } from "../runtime-v2/path-policy.ts";
 export const ACESTEP_MODEL_REVISION = "19671f406d603126926c1b7e2adc169acbcade22";
 export function preparedAceStep(directory: string) {
   try {
     const root = fs.realpathSync.native(directory);
+    const source = process.env.BREADBOARD_BULK_DATA_DIR?.trim()
+      ? managedPayloadRoot(path.resolve(root, "../../.."), "runtime-v2/services/acestep/source")
+      : path.join(root, "source");
     const filename = path.join(root, "models-ready.json"), stat = fs.lstatSync(filename);
     if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 1024 * 1024)
       return null;
@@ -15,8 +20,8 @@ export function preparedAceStep(directory: string) {
     for (const item of data.files) {
       if (typeof item.path !== "string" || !/^source\/checkpoints\/(acestep-v15-turbo|vae|Qwen3-Embedding-0.6B)\//.test(item.path) || item.path.split('/').some((part: string) => part === '..') || item.path.includes('\\') || !Number.isSafeInteger(item.size) || item.size < 1)
         return null;
-      const file = path.resolve(root, item.path), canonical = fs.realpathSync.native(file);
-      if (path.relative(file, canonical) !== "" || fs.lstatSync(file).isSymbolicLink() || fs.statSync(file).size !== item.size)
+      const file = path.resolve(source, item.path.slice("source/".length)), canonical = fs.realpathSync.native(file);
+      if (!sameRuntimePath(file, canonical) || fs.lstatSync(file).isSymbolicLink() || fs.statSync(file).size !== item.size)
         return null;
       if (item.path.endsWith('.safetensors'))
         weights.add(item.path.split('/')[2]);

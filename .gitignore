@@ -289,6 +289,8 @@ desktop/artifacts/
 /multisim-service/*.egg-info/
 /multisim-service/build/
 /multisim-service/dist/
+/multisim-service/src/breadboard_multisim/export_runtime/node_modules/
+/work/eda-export/
 
 # Benchmark candidates mined from rated-down answers. These hold questions and
 # answers verbatim out of private conversations; promoting one into

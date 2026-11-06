@@ -21,59 +21,109 @@ after(() => {
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
 });
 
-test("Google Gemini image generation sends the documented interaction and decodes its image", async () => {
-  const expected = Buffer.from("verified-google-image");
-  let requestBody;
-  let requestHeaders;
-  const generated = await generateGoogleImage({
-    apiKey: "AIza-test-only-generation-key",
-    prompt: "A glass greenhouse on Mars",
-    fetchImpl: async (url, init) => {
-      assert.equal(url, "https://generativelanguage.googleapis.com/v1beta/interactions");
-      requestHeaders = init?.headers;
-      requestBody = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({
-        id: "interaction-1",
-        output_image: {
-          mime_type: "image/png",
-          data: expected.toString("base64"),
-        },
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    },
-  });
-
-  assert.equal(requestHeaders["x-goog-api-key"], "AIza-test-only-generation-key");
-  assert.deepEqual(requestBody, {
-    model: "gemini-3.1-flash-image",
-    input: [{ type: "text", text: "A glass greenhouse on Mars" }],
-  });
-  assert.deepEqual(generated.buffer, expected);
-  assert.equal(generated.mimeType, "image/png");
-  assert.equal(generated.interactionId, "interaction-1");
-  assert.equal(generatedImageFilename(generated.mimeType), "generated-image.png");
+const MODEL = "cliproxy/gemini-3.1-flash-image";
+const input = { baseURL: "http://chatmock.test:49981/v1", prompt: "A glass greenhouse on Mars" };
+const json = (payload, status = 200) => Response.json(payload, { status });
+const catalog = (ids = [MODEL]) => ({ data: ids.map(id => ({ id })) });
+const imageReply = (bytes, field = "images") => ({
+  id: "chatcmpl-image-1", model: MODEL,
+  choices: [{ message: { [field]: [{ image_url: { url: `data:image/jpeg;base64,${bytes.toString("base64")}` } }] } }],
 });
 
-test("Google Gemini failures retain a provider-specific reason", async () => {
-  await assert.rejects(
-    generateGoogleImage({
-      apiKey: "AIza-test-only-generation-key",
-      prompt: "A glass greenhouse on Mars",
-      fetchImpl: async () => new Response(JSON.stringify({
-        error: { message: "API key is not authorized for this model" },
-      }), { status: 403, headers: { "content-type": "application/json" } }),
-    }),
-    (error) =>
-      error?.code === "google_image_generation_credentials_rejected" &&
-      /Google rejected the Gemini API key/u.test(error.message) &&
-      /not authorized for this model/u.test(error.message),
-  );
+test("Gemini fallback uses the subscription model and local bearer, without a Google API key", async () => {
+  const expected = Buffer.from("verified-subscription-image");
+  const requests = [];
+  const savedKey = process.env.CHATMOCK_API_KEY;
+  process.env.CHATMOCK_API_KEY = "test-local-bearer";
+  try {
+    const generated = await generateGoogleImage({
+      ...input, baseURL: "http://chatmock.test:49981/",
+      fetchImpl: async (url, init) => {
+        requests.push({ url, ...init });
+        return requests.length === 1 ? json(catalog()) : json(imageReply(expected));
+      },
+    });
+    assert.deepEqual(requests.map(r => r.url), [input.baseURL + "/models", input.baseURL + "/chat/completions"]);
+    for (const request of requests) {
+      assert.equal(request.headers.authorization, "Bearer test-local-bearer");
+      assert.equal(request.headers["x-goog-api-key"], undefined);
+    }
+    assert.deepEqual(JSON.parse(requests[1].body), {
+      model: MODEL, council: false, stream: false,
+      messages: [{ role: "user", content: [{ type: "text", text: input.prompt }] }],
+    });
+    assert.deepEqual(generated.buffer, expected);
+    assert.equal(generated.model, MODEL);
+    assert.equal(generated.mimeType, "image/jpeg");
+    assert.equal(generated.responseId, "chatcmpl-image-1");
+    assert.equal(generatedImageFilename(generated.mimeType), "generated-image.jpg");
+  } finally {
+    if (savedKey === undefined) delete process.env.CHATMOCK_API_KEY;
+    else process.env.CHATMOCK_API_KEY = savedKey;
+  }
+});
 
-  await assert.rejects(
-    generateGoogleImage({ apiKey: "", prompt: "A glass greenhouse on Mars" }),
-    (error) =>
-      error?.code === "google_image_generation_unconfigured" &&
-      /Add a Gemini API key in Profile/u.test(error.message),
-  );
+test("Gemini discovery accepts other subscription image models but never another provider", async () => {
+  const available = ["google/gemini-3.1-flash-image", "cliproxy/gemini-3-flash", "cliproxy/gemini-3-pro-image"];
+  const expected = Buffer.from("alternate-image");
+  for (const model of [undefined, "gemini-3-pro-image", "cliproxy/gemini-3-pro-image"]) {
+    const generated = await generateGoogleImage({
+      ...input, model,
+      fetchImpl: async (url, init) => {
+        if (url.endsWith("/models")) return json(catalog(available));
+        assert.equal(JSON.parse(init.body).model, "cliproxy/gemini-3-pro-image");
+        return json(imageReply(expected, "content"));
+      },
+    });
+    assert.deepEqual(generated.buffer, expected);
+  }
+  for (const ids of [[], available.slice(0, 2)]) {
+    await assert.rejects(generateGoogleImage({ ...input,
+      fetchImpl: async url => {
+        assert.ok(url.endsWith("/models"), "unavailable models must not start a generation");
+        return json(catalog(ids));
+      },
+    }), { code: "google_image_generation_unconfigured" });
+  }
+});
+
+test("Gemini subscription authentication, quota and proxy errors retain their reasons", async () => {
+  for (const [status, code] of [[403, "credentials_rejected"], [429, "quota_reached"], [502, "upstream_error"], [200, "upstream_error"]]) {
+    await assert.rejects(generateGoogleImage({ ...input,
+      fetchImpl: async url => url.endsWith("/models") ? json(catalog()) : json({ error: { message: "upstream detail" } }, status),
+    }), error => {
+      assert.equal(error.code, "google_image_generation_" + code);
+      assert.match(error.message, /upstream detail/u);
+      assert.doesNotMatch(error.message, /API key/u);
+      return true;
+    });
+  }
+});
+
+test("Gemini rejects malformed image data and text-only replies", async () => {
+  for (const [reply, code] of [
+    [{ choices: [{ message: { content: "I cannot draw" } }] }, "empty"],
+    [{ choices: [{ message: { images: [{ image_url: { url: "data:image/png;base64,%%%" } }] } }] }, "invalid_image"],
+    [{ choices: [{ message: { images: [{ image_url: { url: "https://example.com/image.png" } }] } }] }, "empty"],
+  ]) {
+    await assert.rejects(generateGoogleImage({ ...input,
+      fetchImpl: async url => json(url.endsWith("/models") ? catalog() : reply),
+    }), { code: "google_image_generation_" + code });
+  }
+});
+
+test("Gemini cancellation stops before generation, including during response decoding", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(generateGoogleImage({ ...input, signal: controller.signal,
+    fetchImpl: async () => { assert.fail("cancelled work must not reach the proxy"); },
+  }), { code: "google_image_generation_aborted" });
+  const inFlight = new AbortController();
+  await assert.rejects(generateGoogleImage({ ...input, signal: inFlight.signal,
+    fetchImpl: async url => url.endsWith("/models") ? json(catalog()) : {
+      ok: true, status: 200, json: async () => { inFlight.abort(); throw new Error("aborted body"); },
+    },
+  }), { code: "google_image_generation_aborted" });
 });
 
 test("Google image-generation API keys are encrypted and scoped to one profile", () => {
@@ -119,9 +169,11 @@ test("the artifact fallback reports both generators when neither can run", () =>
     new URL("../src/app/api/hermes/tools/artifacts/route.ts", import.meta.url),
     "utf8",
   );
-  assert.match(route, /ChatGPT image generation failed:/u);
-  assert.match(route, /Google image generation fallback also failed:/u);
-  assert.match(route, /primaryGenerationFailure/u);
+  const fallback = fs.readFileSync(new URL("../src/lib/hermes/image-generation-fallback.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(route + fallback, /readGoogleImageGenerationCredentials/u);
+  assert.match(fallback, /ChatGPT image generation failed:/u);
+  assert.match(fallback, /Google image generation fallback also failed:/u);
+  assert.match(fallback, /primaryGenerationFailure/u);
   assert.doesNotMatch(route, /searchImages\(/u);
 
   const generationStart = route.indexOf('action === "artifact_image_generate"');

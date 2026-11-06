@@ -113,10 +113,8 @@ export default function GodsEyeSettingsDialog({ onClose }: { onClose: () => void
         </header>
 
         <p className="text-xs leading-5 text-[var(--ink-muted)]">
-          A 3D globe with live aircraft, ships, satellites, earthquakes and public cameras, from
-          the cloned <span className="font-mono">gods-eye-view</span> app. It runs keyless on
-          OpenStreetMap imagery and Re:Earth terrain after the clone is installed once. A Google
-          Maps key is optional and adds Google&apos;s photorealistic 3D planet and place services.
+          Explore aircraft, ships, satellites, earthquakes, and public cameras on a 3D globe.
+          No API key is needed. Add a Google Maps key for photorealistic 3D maps and place search.
         </p>
 
         {status ? (

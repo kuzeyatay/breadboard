@@ -19,6 +19,12 @@ import dynamic from "next/dynamic";
 import { useArtifactDockHost } from "./artifact-dock-host";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import { markdownReadingMinutes } from "@/lib/markdown-reading-time";
+import { isSpiceNetlistArtifact } from "@/lib/netlist-viewer/format";
+// This small, browser-safe viewer travels with the panel so opening a CIR file
+// cannot be held behind a second JavaScript request with an empty fallback.
+import ArtifactNetlistViewer from "./artifact-netlist-viewer";
+import ArtifactPreviewLoading from "./artifact-preview-loading";
+import ArtifactPreviewSurface from "./artifact-preview-surface";
 import {
   ReclaimingAudio,
   ReclaimingVideo,
@@ -55,14 +61,14 @@ export { ARTIFACT_AI_EDIT_EVENT } from "./artifact-ai-edit";
 // browser, so it is loaded on demand rather than with every artifact view.
 const HardwareBlueprintArtifact = dynamic(
   () => import("@/app/components/hardware/hardware-blueprint-artifact"),
-  { ssr: false, loading: () => <p className="text-sm text-[var(--ink-muted)]">Loading blueprint…</p> },
+  { ssr: false, loading: () => <ArtifactPreviewLoading /> },
 );
 
 // The CAD viewer pulls in three.js and a WebGL context, so it is loaded on
 // demand rather than with every artifact view.
 const ParametricCadArtifact = dynamic(
   () => import("@/app/components/cad/parametric-cad-artifact"),
-  { ssr: false, loading: () => <p className="text-sm text-[var(--ink-muted)]">Loading the CAD model…</p> },
+  { ssr: false, loading: () => <ArtifactPreviewLoading /> },
 );
 
 // Imported GLB artifacts use the same local Three.js viewer as model
@@ -70,14 +76,14 @@ const ParametricCadArtifact = dynamic(
 // WebGL renderer or download the glTF loader.
 const ModelViewer = dynamic(
   () => import("@/app/components/cad/model-viewer"),
-  { ssr: false, loading: () => <p className="text-sm text-[var(--ink-muted)]">Loading the 3D model…</p> },
+  { ssr: false, loading: () => <ArtifactPreviewLoading /> },
 );
 
 // The film player runs an animation loop over the storyboard and loads every
 // frame image, so it is loaded on demand rather than with every artifact view.
 const VimaxFilmArtifact = dynamic(
   () => import("@/app/components/vimax/vimax-film-artifact"),
-  { ssr: false, loading: () => <p className="text-sm text-[var(--ink-muted)]">Loading the film…</p> },
+  { ssr: false, loading: () => <ArtifactPreviewLoading /> },
 );
 
 // A Vox production carries a video, every poster and the whole beat map, so it
@@ -87,7 +93,7 @@ const VoxProductionArtifact = dynamic(
   {
     ssr: false,
     loading: () => (
-      <p className="text-sm text-[var(--ink-muted)]">Opening the production…</p>
+      <ArtifactPreviewLoading />
     ),
   },
 );
@@ -97,7 +103,7 @@ const VoxProductionArtifact = dynamic(
 // is loaded only when a post is actually opened.
 const SocialsManagerPostArtifact = dynamic(
   () => import("@/app/components/hermes/socials-manager-post-artifact"),
-  { ssr: false, loading: () => <p className="text-sm text-[var(--ink-muted)]">Opening the post…</p> },
+  { ssr: false, loading: () => <ArtifactPreviewLoading /> },
 );
 
 // A gadget mounts its own sandbox frame and talks to the host bridge, so it is
@@ -105,7 +111,7 @@ const SocialsManagerPostArtifact = dynamic(
 // import from this module, so there is no cycle with the inline chat cards.
 const InlineGadget = dynamic(() => import("@/app/components/hermes/inline-gadget"), {
   ssr: false,
-  loading: () => <p className="text-sm text-[var(--ink-muted)]">Starting the gadget…</p>,
+  loading: () => <ArtifactPreviewLoading />,
 });
 
 // The Markdown editor is substantially heavier than the reading view, so only
@@ -115,9 +121,7 @@ const MarkdownArtifactEditor = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="grid h-full place-items-center text-sm text-[var(--ink-muted)]">
-        Opening Markdown editor…
-      </div>
+      <ArtifactPreviewLoading label="Opening Markdown editor…" />
     ),
   },
 );
@@ -189,6 +193,9 @@ function extensionLabel(filename: string): string {
 
 /** One-line "Markdown · MD" descriptor used under an artifact's title. */
 export function artifactDescription(artifact: PresentedArtifact): string {
+  if (isSpiceNetlistArtifact(artifact)) {
+    return `${artifact.filename.toLowerCase().endsWith(".bbcir") ? "Circuit project" : "SPICE netlist"} · ${extensionLabel(artifact.filename)}`;
+  }
   if (artifact.renderer === "interactive-visualizer") {
     return `Interactive model · ${extensionLabel(artifact.filename)}`;
   }
@@ -397,15 +404,14 @@ export function artifactUrl(
 }
 
 /**
- * PDF artifacts always open in Breadboard's full-page PDF viewer. Published
- * Garden PDFs retain their document route. Imported PDF files open Breadboard's
- * PDF.js editor; source-rendered PDFs stay in the document source editor.
+ * The full PDF viewer route used by artifact popups and their tab/window
+ * actions. Published Garden PDFs retain their document route; generated PDFs
+ * use the same reader as imported files, with editing gated by the page.
  */
 export function artifactPdfHref(artifact: PresentedArtifact): string | null {
   if (artifact.kind !== "pdf") return null;
   const open = artifact.metadata?.gardenOpenPath;
   if (typeof open === "string" && open.startsWith("/gardens/")) return open;
-  if (artifact.renderer !== "pdf-file") return null;
   if (!artifact.previewAvailable || !artifact.conversationId) return null;
   const query = new URLSearchParams({
     conversationId: artifact.conversationId,
@@ -649,9 +655,13 @@ function ArtifactDocumentViewport({ children }: { children: ReactNode }) {
 function ArtifactOfficeDocumentFrame({
   src,
   title,
+  onReady,
+  onError,
 }: {
   src: string;
   title: string;
+  onReady: () => void;
+  onError: () => void;
 }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
@@ -736,6 +746,8 @@ function ArtifactOfficeDocumentFrame({
       allow=""
       referrerPolicy="no-referrer"
       src={src}
+      onLoad={onReady}
+      onError={onError}
       style={contentHeight === null ? undefined : { height: contentHeight }}
       className="block min-h-[26rem] w-full border-0 bg-[var(--neu-surface-pressed)]"
       data-artifact-office-preview
@@ -775,6 +787,7 @@ export default function ArtifactViewer({
   // Keyed by preview URL so switching artifacts never flashes stale text and we
   // avoid resetting state synchronously inside the effect (cascading renders).
   const [preview, setPreview] = useState<{ url: string; text: string | null } | null>(null);
+  const [previewAttempt, setPreviewAttempt] = useState(0);
   const [gardenSave, setGardenSave] = useState<{
     artifactId: string;
     status: "adding" | "added" | "error";
@@ -793,7 +806,8 @@ export default function ArtifactViewer({
   // A parametric CAD manifest is JSON, which the textual branch would otherwise
   // dump as raw text; its own renderer needs that same text, so it is fetched
   // as textual content and handed to the viewer rather than printed.
-  const isTextual = artifact
+  const spiceNetlist = artifact ? isSpiceNetlistArtifact(artifact) : false;
+  const isTextual = artifact && !spiceNetlist
     ? TEXTUAL_KINDS.includes(artifact.kind) ||
       (artifact.kind === "spreadsheet" &&
         artifact.mimeType.startsWith("text/"))
@@ -877,21 +891,27 @@ export default function ArtifactViewer({
 
   useEffect(() => {
     if (!artifact || !isTextual || !artifact.previewAvailable) return;
-    let cancelled = false;
-    void fetch(previewUrl)
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      setPreview({ url: previewUrl, text: null });
+      controller.abort();
+    }, 20_000);
+    void fetch(previewUrl, { signal: controller.signal })
       .then((response) =>
         response.ok ? response.text() : Promise.reject(new Error("Preview unavailable")),
       )
       .then((body) => {
-        if (!cancelled) setPreview({ url: previewUrl, text: body });
+        if (!controller.signal.aborted) setPreview({ url: previewUrl, text: body });
       })
       .catch(() => {
-        if (!cancelled) setPreview({ url: previewUrl, text: null });
-      });
+        if (!controller.signal.aborted) setPreview({ url: previewUrl, text: null });
+      })
+      .finally(() => window.clearTimeout(timeout));
     return () => {
-      cancelled = true;
+      window.clearTimeout(timeout);
+      controller.abort();
     };
-  }, [artifact, isTextual, previewUrl]);
+  }, [artifact, isTextual, previewUrl, previewAttempt]);
 
   const resolved = preview?.url === previewUrl ? preview : null;
   const text = resolved?.text ?? null;
@@ -1143,12 +1163,32 @@ export default function ArtifactViewer({
         />
       );
     }
+    // Old .cir artifacts were stored as binary downloads. Their authorized
+    // download endpoint supplies the same text without rewriting stored history.
+    if (spiceNetlist && (artifact.previewAvailable || artifact.downloadAvailable)) {
+      return <ArtifactNetlistViewer
+        key={`${artifact.id}:${artifact.version}`}
+        sourceUrl={artifact.previewAvailable ? previewUrl : downloadUrl}
+        filename={artifact.filename}
+      />;
+    }
+    // Folder listings come from metadata, not a stored preview file. Imported
+    // folders and archives therefore legitimately have previewAvailable=false.
+    if (artifact.kind === "folder" || artifact.renderer === "archive-file") {
+      return <ArtifactEntriesView key={`${artifact.id}:${artifact.version}`} artifact={artifact} explorerAvailable={explorerAvailable} />;
+    }
     if (!artifact.previewAvailable) {
+      if (artifact.status === "draft") {
+        return (
+          <div className="flex h-full min-h-40 items-center justify-center text-sm text-[var(--ink-muted)]">
+            Draft saved. A preview will be available when it is finalized.
+          </div>
+        );
+      }
+      if (artifact.status !== "ready") return <ArtifactPreviewLoading label="Generating preview…" />;
       return (
         <div className="flex h-full min-h-40 items-center justify-center text-sm text-[var(--ink-muted)]">
-          {artifact.status === "ready"
-            ? "No inline preview is available for this format. Use Download to open it."
-            : "Generating preview…"}
+          No inline preview is available for this format. Use Download to open it.
         </div>
       );
     }
@@ -1158,9 +1198,16 @@ export default function ArtifactViewer({
     if (isGadget) {
       return <InlineGadget artifact={artifact} />;
     }
+    if (isTextual && resolved?.text === null) {
+      return <p role="alert" className="flex items-center gap-2 p-3 text-sm text-[var(--ink-muted)]">
+        Preview could not be loaded.
+        <button type="button" className="underline" onClick={() => { setPreview(null); setPreviewAttempt(value => value + 1); }}>Retry</button>
+      </p>;
+    }
+    if (loading) return <ArtifactPreviewLoading />;
     if (hardwareBlueprint) {
       if (loading || blueprint === null) {
-        return <p className="text-sm text-[var(--ink-muted)]">Loading blueprint…</p>;
+        return <ArtifactPreviewLoading />;
       }
       if ("error" in blueprint) {
         return (
@@ -1171,7 +1218,7 @@ export default function ArtifactViewer({
     }
     if (parametricCad) {
       if (loading || cadDesign === null) {
-        return <p className="text-sm text-[var(--ink-muted)]">Loading the CAD model…</p>;
+        return <ArtifactPreviewLoading />;
       }
       if ("error" in cadDesign) {
         return <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{cadDesign.error}</p>;
@@ -1199,7 +1246,7 @@ export default function ArtifactViewer({
     }
     if (vimaxFilm) {
       if (loading || film === null) {
-        return <p className="text-sm text-[var(--ink-muted)]">Loading the film…</p>;
+        return <ArtifactPreviewLoading />;
       }
       if ("error" in film) {
         return <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{film.error}</p>;
@@ -1213,7 +1260,7 @@ export default function ArtifactViewer({
     }
     if (voxProduction) {
       if (loading || voxFilm === null) {
-        return <p className="text-sm text-[var(--ink-muted)]">Opening the production…</p>;
+        return <ArtifactPreviewLoading />;
       }
       if ("error" in voxFilm) {
         return <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{voxFilm.error}</p>;
@@ -1227,7 +1274,7 @@ export default function ArtifactViewer({
     }
     if (socialsPost) {
       if (loading || post === null) {
-        return <p className="text-sm text-[var(--ink-muted)]">Opening the post…</p>;
+        return <ArtifactPreviewLoading />;
       }
       if ("error" in post) {
         return <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{post.error}</p>;
@@ -1235,7 +1282,6 @@ export default function ArtifactViewer({
       return <SocialsManagerPostArtifact stored={post.stored} artifact={artifact} />;
     }
     if (artifact.kind === "markdown") {
-      if (loading) return <p className="text-sm text-[var(--ink-muted)]">Loading…</p>;
       if (text === null) return <p className="text-sm text-[var(--ink-muted)]">Preview unavailable.</p>;
       return (
         <ArtifactDocumentViewport>
@@ -1251,61 +1297,78 @@ export default function ArtifactViewer({
     if (isTextual) {
       return (
         <pre className="whitespace-pre-wrap break-words rounded-lg bg-[var(--paper-strong)] p-3 text-xs text-[var(--ink)]">
-          {loading ? "Loading…" : text ?? "Preview unavailable."}
+          {text ?? "Preview unavailable."}
         </pre>
       );
     }
     if (isRaster) {
       return (
+        <ArtifactPreviewSurface key={previewUrl}>{(ready, failed) => (
         <div className="flex h-full min-h-0 items-center justify-center">
           {/* eslint-disable-next-line @next/next/no-img-element -- auth-scoped blob from our API, not a next/image source */}
           <img
             src={previewUrl}
+            onLoad={ready}
+            onError={failed}
             alt={artifact.title}
             className="max-h-full max-w-full rounded-lg border border-[var(--line)] object-contain shadow-lg"
           />
         </div>
+        )}</ArtifactPreviewSurface>
       );
     }
     if (artifact.kind === "audio") {
       return (
+        <ArtifactPreviewSurface key={previewUrl}>{(ready, failed) => (
         <div className="flex min-h-56 items-center justify-center rounded-xl bg-[var(--paper-strong)] p-6">
           <ReclaimingAudio
             controls
             preload="metadata"
             src={previewUrl}
+            onLoadedMetadata={ready}
+            onError={failed}
             className="w-full max-w-xl"
           >
             Your browser cannot preview this audio file.
           </ReclaimingAudio>
         </div>
+        )}</ArtifactPreviewSurface>
       );
     }
     if (artifact.kind === "video") {
       return (
+        <ArtifactPreviewSurface key={previewUrl}>{(ready, failed) => (
         <ReclaimingVideo
           controls
           preload="metadata"
           src={previewUrl}
+          onLoadedMetadata={ready}
+          onError={failed}
           className="mx-auto max-h-[70vh] w-full rounded-xl border border-[var(--line)] bg-black"
         >
           Your browser cannot preview this video file.
         </ReclaimingVideo>
+        )}</ArtifactPreviewSurface>
       );
     }
     if (artifact.kind === "pdf") {
       return (
         <ArtifactDocumentViewport>
+          <ArtifactPreviewSurface key={previewUrl}>{(ready, failed) => (
           <iframe
             title={`${artifact.title} PDF preview`}
             src={previewUrl}
+            onLoad={ready}
+            onError={failed}
             className="mx-auto h-full min-h-[30rem] w-full max-w-[64rem] rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] shadow-[0_8px_24px_rgba(28,45,36,0.10)]"
           />
+          )}</ArtifactPreviewSurface>
         </ArtifactDocumentViewport>
       );
     }
     if (interactive) {
       return (
+        <ArtifactPreviewSurface key={interactivePreviewUrl}>{(ready, failed) => (
         <iframe
           key={interactivePreviewUrl}
           ref={interactiveFrameRef}
@@ -1314,9 +1377,12 @@ export default function ArtifactViewer({
           allow=""
           referrerPolicy="no-referrer"
           src={interactivePreviewUrl}
+          onLoad={ready}
+          onError={failed}
           style={{ height: interactiveHeight }}
           className="min-h-[28rem] w-full rounded-xl border border-[var(--line)] bg-[var(--paper-raised)]"
         />
+        )}</ArtifactPreviewSurface>
       );
     }
     if (
@@ -1337,24 +1403,29 @@ export default function ArtifactViewer({
       // plain HTML artifact stays inert.
       const liveDeck = artifact.metadata?.boltSlidesDeck === true;
       return artifact.kind === "document" ? (
+        <ArtifactPreviewSurface key={previewUrl}>{(ready, failed) => (
         <ArtifactOfficeDocumentFrame
           key={previewUrl}
           title={`${artifact.title} preview`}
           src={previewUrl}
+          onReady={ready}
+          onError={failed}
         />
+        )}</ArtifactPreviewSurface>
       ) : (
+        <ArtifactPreviewSurface key={previewUrl}>{(ready, failed) => (
         <iframe
           title={`${artifact.title} preview`}
           sandbox={liveDeck ? "allow-scripts" : ""}
           allow=""
           referrerPolicy="no-referrer"
           src={previewUrl}
+          onLoad={ready}
+          onError={failed}
           className="h-full min-h-[26rem] w-full rounded-lg border border-[var(--line)]"
         />
+        )}</ArtifactPreviewSurface>
       );
-    }
-    if (artifact.kind === "folder" || artifact.renderer === "archive-file") {
-      return <ArtifactEntriesView artifact={artifact} explorerAvailable={explorerAvailable} />;
     }
     return (
       <p className="text-sm text-[var(--ink-muted)]">

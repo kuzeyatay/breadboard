@@ -50,6 +50,7 @@ test("technical inspection receives read-only scope without mutation tools", () 
     authorizedRoot: root,
   });
   assert.equal(decision.mode, "technical_read");
+  assert.equal(decision.expiresAt, null);
   assert.ok(decision.allowedTools.includes("read"));
   assert.ok(decision.allowedTools.includes("grep"));
   assert.ok(!decision.allowedTools.includes("edit"));
@@ -74,7 +75,7 @@ test("technical-read examples never acquire mutation permissions", () => {
   }
 });
 
-test("a concrete authenticated implementation task gets a narrow expiring grant", () => {
+test("a concrete authenticated implementation task gets a narrow turn-scoped grant", () => {
   const now = new Date("2026-07-18T12:00:00.000Z");
   const decision = decideCapabilityMode({
     surface: "dashboard_terminal",
@@ -91,7 +92,7 @@ test("a concrete authenticated implementation task gets a narrow expiring grant"
   assert.ok(decision.allowedOperations.includes("focused_test"));
   assert.ok(decision.allowedOperations.includes("typecheck"));
   assert.ok(!decision.allowedOperations.includes("dependency_install"));
-  assert.equal(decision.expiresAt, "2026-07-18T12:30:00.000Z");
+  assert.equal(decision.expiresAt, null);
   const rules = permissionRulesForDecision(decision);
   assert.ok(rules.some((rule) => rule.permission === "edit" && rule.action === "allow"));
   assert.ok(!rules.some((rule) => rule.permission === "edit" && rule.pattern === "*" && rule.action === "allow"));

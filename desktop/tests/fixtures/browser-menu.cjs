@@ -108,6 +108,18 @@ app.whenReady().then(async () => {
   await local.executeJavaScript('document.querySelector("[aria-label=\\"Fixture editor\\"]").focus()');
   shortcut(local, "F", ["control"]);
   await until(() => findUI.executeJavaScript(`document.activeElement?.matches('${findInput}')`), "Ctrl+F focuses dashboard search");
+  const trackSound = () => findUI.executeJavaScript(`
+    window.findSoundNotes = 0;
+    const create = AudioContext.prototype.createOscillator;
+    AudioContext.prototype.createOscillator = function () {
+      const oscillator = create.call(this), start = oscillator.start.bind(oscillator);
+      oscillator.start = (...args) => { window.findSoundNotes++; start(...args); };
+      return oscillator;
+    };
+    void 0;
+  `);
+  const soundNotes = () => findUI.executeJavaScript("window.findSoundNotes");
+  await trackSound();
   await findUI.insertText("needle");
   try {
     await until(() => localFind()?.matches === 2, "dashboard search finds its own two matches");
@@ -125,10 +137,50 @@ app.whenReady().then(async () => {
   await until(() => findUI.executeJavaScript(`document.activeElement?.matches('${findInput}') && document.activeElement.selectionEnd === 6 && document.activeElement.selectionStart === 0`), "repeated Ctrl+F selects the existing query");
   await findUI.insertText("no-such-match");
   await until(() => localFind()?.matches === 0, "missing text reports zero matches");
+  await until(async () => await soundNotes() === 2, "dashboard miss plays one buzz");
+  const completedMiss = { ...localFind() };
+  local.emit("found-in-page", {}, completedMiss);
+  local.emit("found-in-page", {}, { ...completedMiss, requestId: completedMiss.requestId - 1 });
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(await soundNotes(), 2, "duplicate and stale result events stay silent");
+  shortcut(findUI, "Enter");
+  await until(async () => await soundNotes() === 4, "retrying a failed find buzzes again");
   await captureFind("find-dashboard.png");
   shortcut(findUI, "Escape");
   await until(async () => !findSurface() && await local.executeJavaScript(`document.activeElement?.getAttribute('aria-label') === 'Fixture editor'`), "Escape closes find and restores editor focus");
   assert.equal(localFind(), undefined, "dashboard highlights cleared");
+  // Document viewers use the same native find bar, with their own full-document index.
+  await local.executeJavaScript(`
+    window.documentFindCalls = [];
+    let match = 1;
+    window[Symbol.for('breadboard:document-find')] = async request => {
+      window.documentFindCalls.push(request);
+      if (!request) return { matches: 0, activeMatchOrdinal: 0 };
+      if (request.text === 'slow result') {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return { matches: 999, activeMatchOrdinal: 1 };
+      }
+      if (request.findNext) match = (match - 1 + (request.forward === false ? 2 : 1)) % 3 + 1;
+      return { matches: 3, activeMatchOrdinal: match };
+    };
+    void 0;
+  `);
+  shortcut(local, "F", ["control"]);
+  await until(() => findUI.executeJavaScript(`document.activeElement?.matches('${findInput}')`), "Ctrl+F opens document search");
+  await findUI.insertText("unrendered PDF text");
+  await until(() => localFind()?.matches === 3, "document provider supplies matches absent from the DOM");
+  await until(() => findUI.executeJavaScript(`document.querySelector('#count').textContent === '1 / 3'`), "shared bar shows document count");
+  shortcut(findUI, "Enter");
+  await until(() => localFind()?.activeMatchOrdinal === 2, "shared bar advances document match");
+  shortcut(findUI, "Enter", ["shift"]);
+  await until(() => localFind()?.activeMatchOrdinal === 1, "shared bar reverses document match");
+  manager.handleCommand(local, { type: "browser-find", text: "slow result" });
+  await until(() => local.executeJavaScript(`window.documentFindCalls.some(request => request?.text === 'slow result')`), "slow document find started");
+  shortcut(findUI, "Escape");
+  await until(async () => !findSurface() && await local.executeJavaScript('window.documentFindCalls.at(-1) === null'), "closing shared bar clears PDF highlights");
+  await new Promise(resolve => setTimeout(resolve, 550));
+  assert.equal(localFind(), undefined, "late PDF results cannot restore a closed search");
+  await local.executeJavaScript(`delete window[Symbol.for('breadboard:document-find')]`);
   // Keep a search open across reload, then switch to a different document.
   shortcut(local, "F", ["control"]);
   await until(() => findUI.executeJavaScript(`document.activeElement?.matches('${findInput}')`), "local find reopens");
@@ -150,6 +202,10 @@ app.whenReady().then(async () => {
   assert.equal(await page.executeJavaScript("typeof window.breadboardDesktop"), "undefined");
   const pageView = () => window.contentView.children.find(view => view.webContents?.id === page.id);
   await until(pageView, 'external view attached after first paint');
+  await until(() => {
+    const state = manager.stateFor(chrome);
+    return state.presentationStatus === "presented" && state.presentedId === state.selfId && state.activeId === state.selfId;
+  }, "browser tab finishes presentation before accepting input");
   assert.ok(pageView(), 'external content is visible initially');
   const originalUrl = page.getURL();
   assert.equal(manager.handleCommand(page, { type: 'voice-overlay', open: true }), false, 'external pages cannot claim the overlay');
@@ -167,6 +223,7 @@ app.whenReady().then(async () => {
   // print job, opening developer tools, or exiting the test runner by accident.
   Menu.prototype.popup = function (options) { menu = this; options.callback?.(); };
   const openMenu = async () => {
+    await until(() => chrome.executeJavaScript("document.querySelector('[aria-label=\"Browser menu\"]')?.getAttribute('aria-expanded') === 'false'"), "previous menu close reaches the renderer");
     menu = undefined;
     await chrome.executeJavaScript("document.querySelector('[aria-label=\"Browser menu\"]').click()");
     await until(() => menu, "native menu created");
@@ -192,6 +249,7 @@ app.whenReady().then(async () => {
   page.focus();
   shortcut(page, "F", ["control"]);
   await until(() => findUI.executeJavaScript(`document.activeElement?.matches('${findInput}')`), "Ctrl+F from website focuses find bar");
+  await trackSound();
   assert.equal(window.contentView.children.at(-1).webContents, findSurface(), "find bar remains above the native website view");
   await findUI.insertText("needle");
   try {
@@ -204,6 +262,13 @@ app.whenReady().then(async () => {
   await until(() => manager.stateFor(chrome).tabs.find(tab => tab.browser)?.browser.find?.activeMatchOrdinal === 2, "next match works");
   await findUI.executeJavaScript("document.querySelector('[aria-label=\"Previous match\"]').click()");
   await until(() => manager.stateFor(chrome).tabs.find(tab => tab.browser)?.browser.find?.activeMatchOrdinal === 1, "previous match works");
+  assert.equal(await soundNotes(), 0, "successful website searches stay silent");
+  shortcut(findUI, "F", ["control"]);
+  await findUI.insertText("missing-on-website");
+  await until(async () => await soundNotes() === 2, "external website miss plays the same buzz");
+  shortcut(findUI, "F", ["control"]);
+  await findUI.insertText("needle");
+  await until(() => manager.stateFor(chrome).tabs.find(tab => tab.browser)?.browser.find?.matches === 3, "website query restored");
   assert.equal(localFind(), undefined, "changing tabs clears the previous page's search without mixing results");
   await page.loadURL(web + "/other");
   await until(() => manager.stateFor(chrome).tabs.find(tab => tab.browser)?.browser.find?.matches === 1, "find follows page navigation");

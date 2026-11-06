@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   type GenerativeUiAction,
@@ -56,37 +56,59 @@ function Rating({ product }: { product: ProductSearchItem }) {
 
 export default function ProductCarousel({ resource, onAction, activeCompareProductIds = [] }: Props) {
   const trackRef = useRef<HTMLDivElement>(null);
+  const [navigation, setNavigation] = useState({ previous: false, next: false });
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track) return;
+    const update = () => setNavigation({
+      previous: track.scrollLeft > 2,
+      next: track.scrollLeft + track.clientWidth < track.scrollWidth - 2,
+    });
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(track);
+    for (const card of track.children) observer.observe(card);
+    track.addEventListener("scroll", update, { passive: true });
+    return () => { observer.disconnect(); track.removeEventListener("scroll", update); };
+  }, [resource.data.products]);
   const allowed = new Set(resource.actions);
   const compared = new Set(activeCompareProductIds);
   const dispatch = (type: GenerativeUiAction["type"], productId: string) =>
     onAction({ type, resource, productId });
   const move = (direction: -1 | 1) => {
-    trackRef.current?.scrollBy({
-      left: direction * trackRef.current.clientWidth,
-      behavior: "smooth",
-    });
+    const track = trackRef.current;
+    if (!track) return;
+    const origin = track.getBoundingClientRect().left;
+    const positions = Array.from(track.children, (card) =>
+      card.getBoundingClientRect().left - origin + track.scrollLeft,
+    );
+    const max = track.scrollWidth - track.clientWidth;
+    const target = direction === 1
+      ? positions.find((left) => left > track.scrollLeft + 2) ?? max
+      : positions.findLast((left) => left < track.scrollLeft - 2) ?? 0;
+    track.scrollTo({ left: Math.max(0, Math.min(max, target)),
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
   };
 
   return (
     <section className={`${styles.widget} relative my-4 min-w-0`} aria-label={resource.title} data-generative-ui="product-carousel">
-      <header className={styles.header}>
-        <div className={styles.heading}>Product picks <span className={styles.count}>{resource.data.products.length}</span></div>
+      <div className={styles.header}>
         <div className={styles.navigation}>
-          <button type="button" onClick={() => move(-1)} className={styles.arrow} aria-label="Previous products">
+          <button type="button" onClick={() => move(-1)} disabled={!navigation.previous} className={styles.arrow} aria-label="Previous products">
             <svg aria-hidden viewBox="0 0 20 20" fill="none" width="18" height="18">
               <path d="m12 5-5 5 5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
-          <button type="button" onClick={() => move(1)} className={styles.arrow} aria-label="Next products">
+          <button type="button" onClick={() => move(1)} disabled={!navigation.next} className={styles.arrow} aria-label="Next products">
             <svg aria-hidden viewBox="0 0 20 20" fill="none" width="18" height="18">
               <path d="m8 5 5 5-5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
         </div>
-      </header>
+      </div>
       <div
         ref={trackRef}
-        className="grid touch-pan-x snap-x snap-mandatory auto-cols-[82%] grid-flow-col gap-3 overflow-x-auto overscroll-x-contain scroll-smooth px-px py-px [scrollbar-width:none] sm:auto-cols-[calc((100%_-_3rem)_/_2)] [&::-webkit-scrollbar]:hidden"
+        className={`${styles.track} grid touch-pan-x snap-x snap-mandatory auto-cols-[82%] grid-flow-col gap-3 overflow-x-auto overscroll-x-contain scroll-smooth px-px py-px [scrollbar-width:none] sm:auto-cols-[calc((100%_-_3rem)_/_2)] [&::-webkit-scrollbar]:hidden`}
       >
         {resource.data.products.map((product) => {
           const compareActive = compared.has(product.id);

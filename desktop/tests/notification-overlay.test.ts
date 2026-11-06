@@ -84,7 +84,7 @@ test("the desktop manager owns and repeatedly raises the shared overlay", () => 
   );
   assert.match(source, /NOTIFICATION_OVERLAY_PATH = "\/notification-overlay"/);
   assert.match(source, /notificationOverlay: NotificationOverlay \| null/);
-  assert.match(source, /contentView\.addChildView\(overlay\.view\)/);
+  assert.match(source, /this\.raiseViews\(host, \[overlay\.view/);
   assert.match(source, /this\.raiseNotificationOverlay\(host\)/);
   assert.match(source, /this\.layoutNotificationOverlay\(host\)/);
 });
@@ -92,6 +92,10 @@ test("the desktop manager owns and repeatedly raises the shared overlay", () => 
 test("website permission responses and cards validate the request identity and choice", () => {
   const request = { id: "permission-request", origin: "https://www.youtube.com" };
   assert.equal(isDesktopNotificationToast({ type: "success", message: "Allow notifications?", notificationPermission: request }), true);
+  assert.equal(isDesktopNotificationToast({ type: "success", message: "Allow microphone?", notificationPermission: { ...request, media: ["microphone"] } }), true);
+  for (const media of [[], ["screen"], ["microphone", "microphone"], "camera", null]) {
+    assert.equal(isDesktopNotificationToast({ type: "success", message: "Allow device?", notificationPermission: { ...request, media } }), false);
+  }
   for (const invalid of [{ ...request, id: "" }, { ...request, id: "x".repeat(101) }, { ...request, origin: "file:///tmp/site" }, { ...request, origin: null }]) {
     assert.equal(isDesktopNotificationToast({ type: "success", message: "Allow notifications?", notificationPermission: invalid }), false);
   }

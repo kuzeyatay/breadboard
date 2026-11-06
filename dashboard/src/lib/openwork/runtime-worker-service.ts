@@ -5,6 +5,8 @@
 // profile the trusted dashboard wrote before submission. It has no provider
 // secret, service lease, stop operation, supervisor capability, or spawn path.
 
+import path from "node:path";
+
 export interface OpenworkWorkerScope {
   readonly userId: number;
   readonly runId: string;
@@ -177,5 +179,5 @@ export async function preparedOpenworkService(
 }
 
 function pathIsAbsolute(value: string): boolean {
-  return /^(?:[A-Za-z]:[\\/]|\/)/u.test(value);
+  return path.isAbsolute(value);
 }

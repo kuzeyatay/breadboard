@@ -10,6 +10,8 @@
 
 import net from "node:net";
 import {
+  isRuntimeV2ServiceControlConfigured,
+  readSupervisedServiceSnapshot,
   SupervisorResourceExhaustedError,
   withServiceLease,
 } from "../supervisor-control.ts";
@@ -264,6 +266,25 @@ async function call(
 export async function cadServiceHealth(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CadHealth> {
+  if (isRuntimeV2ServiceControlConfigured(env)) {
+    const snapshot = await readSupervisedServiceSnapshot("cad", env).catch(() => null);
+    if (!snapshot || !["healthy", "ready", "busy", "degraded"].includes(snapshot.state)) {
+      const stopped = snapshot && ["available-but-stopped", "stopped", "starting"].includes(snapshot.state);
+      throw new CadServiceError(
+        stopped ? "cad_service_stopped" : "cad_service_unavailable",
+        stopped
+          ? "The CAD service starts on demand when you create a design."
+          : "The CAD service is unavailable. Check its installation in settings.",
+      );
+    }
+  }
+  return readCadServiceHealth(env, 5_000);
+}
+
+async function readCadServiceHealth(
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<CadHealth> {
   const endpoint = cadServiceEndpoint(env);
   if (!endpoint) {
     throw new CadServiceError(
@@ -271,11 +292,9 @@ export async function cadServiceHealth(
       "The CAD service has no address or shared secret configured.",
     );
   }
-  // The first health probe imports the kernel in a child process, which takes
-  // several seconds on a cold filesystem cache.
   const payload = (await call(endpoint, "/health", {
     method: "GET",
-    timeoutMs: 150_000,
+    timeoutMs,
   }, env)) as Partial<CadHealth>;
   return {
     status: payload.status === "ok" ? "ok" : "degraded",
@@ -293,7 +312,8 @@ export async function cadServiceHealth(
 export async function ensureCadServiceReady(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CadHealth> {
-  return withServiceLease("cad", "cad-preflight", () => cadServiceHealth(env), env);
+  // Only an actual run may start the service and wait for a cold kernel import.
+  return withServiceLease("cad", "cad-preflight", () => readCadServiceHealth(env, 150_000), env);
 }
 
 /**

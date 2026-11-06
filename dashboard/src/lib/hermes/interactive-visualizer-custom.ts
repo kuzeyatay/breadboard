@@ -349,7 +349,11 @@ export function compileCustomInteractiveVisualizerPackage(
   }
   validateThemeColorDeclarations(reviewedCss, errors);
   for (const entry of ESCAPE_PATTERNS) {
-    if (entry.pattern.test(script)) errors.push(entry.message);
+    const match = entry.pattern.exec(script);
+    // Name the matched text: a local `location.x` or a `require(` assertion
+    // helper trips these name-based guards (em1 3.4/4.1, 2026-10-12), and the
+    // bare message cost whole repair attempts guessing at the cause.
+    if (match) errors.push(`${entry.message} (matched ${JSON.stringify(match[0].trim().slice(0, 60))}; rename or remove it)`);
   }
   const scriptInspection = script
     ? inspectJavaScript(script, errors)

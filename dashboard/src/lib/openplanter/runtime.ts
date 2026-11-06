@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath } from "../runtime-v2/path-policy.ts";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
@@ -7,13 +8,6 @@ function configured(value: string | undefined): string | null {
   return trimmed ? path.resolve(trimmed) : null;
 }
 
-function samePath(left: string, right: string): boolean {
-  const normalize = (value: string) => {
-    const resolved = path.normalize(path.resolve(value));
-    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-  };
-  return normalize(left) === normalize(right);
-}
 
 function directPath(candidate: string, kind: "file" | "directory"): string | null {
   const resolved = path.resolve(candidate);

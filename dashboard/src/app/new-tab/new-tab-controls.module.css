@@ -24,6 +24,27 @@
   display: none;
 }
 
+.ambientBackdrop { position: fixed; inset: 0; pointer-events: none; }
+
+.launcher[data-searching] {
+  padding-top: 32px;
+  scroll-padding-top: 72px;
+}
+
+.launcher[data-searching] .heading {
+  margin-bottom: 22px;
+}
+
+.launcher[data-searching] .heading h1 {
+  font-size: 28px;
+}
+
+.launcher[data-searching] .search {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
 .heading {
   margin-bottom: 30px;
   text-align: center;
@@ -40,12 +61,14 @@
   text-wrap: balance;
 }
 
-.addressee {
-  color: var(--botanical);
-}
+.addressee { color: #6a8d75; }
 
-.surface[data-wallpaper-tone] .heading h1,
-.surface[data-wallpaper-tone] .addressee {
+:global(html[data-theme="dark"]) .addressee { color: #9ac6ac; }
+/* Preserve the sage accent even when the wallpaper chooses the title color. */
+:global(html) :global([data-wallpaper-tone="light"]) .addressee { color: #6a8d75; }
+:global(html) :global([data-wallpaper-tone="dark"]) .addressee { color: #9ac6ac; }
+
+.surface[data-wallpaper-tone] .heading h1 {
   color: var(--browser-wallpaper-foreground);
   text-shadow: 0 1px 10px rgb(0 0 0 / 16%);
 }
@@ -80,6 +103,7 @@
 
 .search {
   position: relative;
+  z-index: 5;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -378,6 +402,14 @@
 }
 
 @media (max-width: 540px) {
+  .launcher[data-searching] {
+    padding-top: 24px;
+  }
+
+  .launcher[data-searching] .heading {
+    display: none;
+  }
+
   .launcher {
     width: calc(100% - 52px);
     margin-left: 0;

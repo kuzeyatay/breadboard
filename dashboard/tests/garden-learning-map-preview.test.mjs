@@ -31,7 +31,7 @@ test("the learning map owns the single Explore action", () => {
   );
   assert.match(
     graph,
-    /graph\.nodes\.length === 0 \? \([\s\S]*?\) : \([\s\S]*?<\/>\s*\)\}\s*<LinkContextMenu[\s\S]*?aria-label="Explore"/,
+    /graph\.nodeCount === 0 \? \([\s\S]*?\) : \([\s\S]*?<\/>\s*\)\}\s*<LinkContextMenu[\s\S]*?aria-label="Explore"/,
     "the Explore action should remain outside the empty/non-empty preview branches",
   );
   assert.doesNotMatch(graph, /Open Quartz|Open Quartz Learning Map/);

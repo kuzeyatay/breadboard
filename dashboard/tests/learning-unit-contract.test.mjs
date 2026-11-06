@@ -1070,6 +1070,34 @@ describe("Learning Unit Contract — inline figure placement (Fix 2)", () => {
     assert.deepEqual(figurePlacementProblems(interpreted, options), []);
   });
 
+  test("accepts a goal word's family and names the goal terms still missing", () => {
+    // Live 2026-10-01 (gpt-6-sol, lesson 1.1): spectrum prose failed a
+    // "spectral" goal, and three repairs never learned which words were missing.
+    const url = "/garden/assets/source-visuals/line-code-psd.png";
+    const options = {
+      requiredInterpretations: [{
+        sourceVisualId: "S13.P24.F1",
+        url,
+        interpretationGoal: "Relate transitions and DC behavior to spectral occupancy.",
+      }],
+    };
+    const family = `Each spectrum starts at zero frequency, and every transition in the waveform pushes power higher.
+
+![Line code PSD](${url})
+
+Follow each curve to its first null.`;
+    assert.deepEqual(figurePlacementProblems(family, options), []);
+    const unrelated = `Each curve is drawn in a different colour.
+
+![Line code PSD](${url})
+
+The axes carry units.`;
+    assert.match(
+      figurePlacementProblems(unrelated, options).join(" | "),
+      /does not address its interpretation goal.*goal terms: dc, transitions, behavior, spectral, occupancy/,
+    );
+  });
+
   test("measures distance in prose paragraphs and accepts ordinary word inflections", () => {
     const url = "/garden/assets/source-visuals/local-basis.png";
     const md = [
@@ -1291,4 +1319,42 @@ describe("Learning Unit Contract - section semantics and grounding", () => {
     });
     assert.deepEqual(problems, []);
   });
+});
+
+test("a lesson assigned more source artifacts than it can teach must be split", async () => {
+  const { learningUnitLoadProblems } = await import("../src/lib/learning-unit-contract.ts");
+  const unit = (id, artifacts, upper) => ({
+    id, title: `Lesson ${id}`, expectedWordRange: [1500, upper],
+    sourceFigures: Array.from({ length: artifacts }, (_, i) => ({ id: `S1.P${i}.F1` })),
+    sourceFormulas: [], sourceTables: [],
+  });
+  // Live 2026-09-23: 137 artifacts in a ~2,700-word lesson passed every gate.
+  const [problem] = learningUnitLoadProblems([unit("U3", 137, 2700)]);
+  assert.match(problem, /titled "Lesson U3" carries 137 source figures, formulas, and tables/);
+  assert.match(problem, /\(27 here\)/);
+  assert.doesNotMatch(problem, /\bU3\b(?!")/, "named by title so only a full-contract repair (which can split) handles it");
+  assert.deepEqual(learningUnitLoadProblems([unit("U1", 27, 2700), unit("U2", 12, 1400)]), []);
+  assert.equal(learningUnitLoadProblems([unit("U4", 45, 20000)]).length, 1, "an inflated word estimate cannot raise the cap past 40");
+  assert.deepEqual(learningUnitLoadProblems([unit("U5", 137, 2700)], new Set(["U5"])), [], "published units in an additive run are exempt");
+});
+
+test("figure goal keywords keep acronyms and skip generic connective words", async () => {
+  // Live 2026-10-06 (telecom-1 lesson 4.2): "BER" and "SNR" were dropped.
+  const { figurePlacementProblems } = await import("../src/lib/learning-unit-contract.ts");
+  const url = "/garden/assets/ber.png";
+  const options = { requiredInterpretations: [{ sourceVisualId: "S20.P384.G2", url,
+    interpretationGoal: "Read the BER change with SNR and attribute differences between plotted cases only to conditions identified in the graph." }] };
+  const md = `The plot shows how BER falls as SNR rises for each coding scheme.\n\n![BER curves](${url})\n\nAt 10 dB SNR the coded curve sits a decade lower.`;
+  assert.deepEqual(figurePlacementProblems(md, options).filter((p) => /interpretation goal/.test(p)), []);
+});
+
+test("figures inside required source-question prompts never count as unassigned extras", async () => {
+  const { figurePlacementProblems } = await import("../src/lib/learning-unit-contract.ts");
+  const prose = "This paragraph interprets the figure above in enough words to count as real nearby prose for the check.";
+  const page = ["a", "b", "q"].map((name) => `![${name}](/g/${name}.png)\n\n${prose}`).join("\n\n");
+  assert.match(figurePlacementProblems(page, { maxFiguresPerPage: 2 }).join("\n"), /3 source figures/);
+  assert.doesNotMatch(
+    figurePlacementProblems(page, { maxFiguresPerPage: 2, sourceQuestionFigureUrls: ["/g/q.png"] }).join("\n"),
+    /source figures \(>/,
+  );
 });

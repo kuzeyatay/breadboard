@@ -12,6 +12,7 @@ process.env.BREADBOARD_DATA_DIR = dataRoot;
 const {default:db} = await import('../src/lib/db.ts');
 const store = await import('../src/lib/conversations/store.ts');
 const runtimeStore = await import('../src/lib/hermes/runtime-store.ts');
+const {conversationWorkspaceIdentity} = await import('../src/lib/hermes/workspace.ts');
 const runs = await import('../src/lib/hermes/run-store.ts');
 const {ensureConversationSchema} = await import('../src/lib/conversations/schema.ts');
 const {preserveInlineQuestionMessages,reconcileInlineQuestionMessages} = await import('../src/lib/conversations/garden-inline-question.ts');
@@ -33,7 +34,7 @@ let nextSession=0;
 const gateway={kind:'hermes',restoreSession:async input=>{calls.push(['restore',input]);return created(input)}};
 function created(input){return {externalSessionId:'external-'+(++nextSession),liveSessionId:'live-'+nextSession,workspaceKey:input.sessionKey,directory:dataRoot,agentName:'fixture'};}
 const context=vm.createContext({
-  ...runtimeStore,db,JSON,Date,
+  ...runtimeStore,db,JSON,Date,conversationWorkspaceIdentity,
   normalizedAuthorizedGardens:()=>[{id:1,slug:'em1-fixture'}],
   authorizeGardenAccess:()=>({clusterId:1,slug:'em1-fixture'}),
   isPdfAssistantPageContext:()=>false,
@@ -111,7 +112,7 @@ test('stopping the exact highlight turn never touches the main runtime, includin
     'next-auth/next':`export const getServerSession=async()=>({user:{id:'1'}});`,
     'next/server':`export const NextResponse=Response;`,
     '@/lib/auth-options':`export const authOptions={};`,
-    '@/lib/conversations/store':`export const {cancelConversationTurn,ensureConversationForLegacyChatSession,presentConversationMessage,reserveConversationTurn}=globalThis.inlineRouteFixture;`,
+    '@/lib/conversations/store':`export const {cancelConversationTurn,ensureConversationForLegacyChatSession,presentConversationMessage,reserveConversationTurn,touchGardenPreDispatchTurn}=globalThis.inlineRouteFixture;`,
     '@/lib/hermes/runtime-store.ts':`export const {getRuntimeSessionByConversation}=globalThis.inlineRouteFixture;`,
     '@/lib/hermes/session-cancel.ts':`export const {cancelRuntimeSessionWork}=globalThis.inlineRouteFixture;`,
     '@/lib/hermes/route-helpers':`export const apiErrorResponse=error=>Response.json({error:error.message},{status:error.status||500});`,
@@ -149,7 +150,7 @@ test('a main-chat snapshot predating a highlight cannot erase the saved answer',
     'next/server':`export const NextResponse=Response;`,
     '@/lib/auth-options':`export const authOptions={};`,
     '@/lib/db':`export default globalThis.inlineSaveFixture.db;`,
-    '@/lib/conversations/store':`export const {completeAssistantMessage,deleteConversation,ensureConversationForLegacyChatSession,getConversationById,renameConversation,setConversationHighlight,setConversationPinned}=globalThis.inlineSaveFixture;`,
+    '@/lib/conversations/store':`export const {completeAssistantMessage,deleteConversation,ensureConversationForLegacyChatSession,getConversationById,renameConversation,setConversationArchived,setConversationHighlight,setConversationPinned}=globalThis.inlineSaveFixture;`,
     '@/lib/hermes/runtime-store':`export const {listRuntimeSessionsForChatSession}=globalThis.inlineSaveFixture;`,
     '@/lib/hermes/run-store':`export const {getActiveRuntimeRun}=globalThis.inlineSaveFixture;`,
     '@/lib/hermes/session-cancel':`export const cancelRuntimeSessionWork=async()=>{};`,
@@ -163,4 +164,58 @@ test('a main-chat snapshot predating a highlight cannot erase the saved answer',
   const after=db.prepare("SELECT canonical_message_id,content,tool_calls FROM chat_messages WHERE session_id=1 AND json_extract(tool_calls,'$.textSelection.mode')='inline' ORDER BY canonical_message_id").all();
   assert.deepEqual(after,before);
   delete globalThis.inlineSaveFixture;
+});
+
+test('PDF Stop isolates direct controllers and agent runtimes by inline turn id',async()=>{
+  store.cancelLatestConversationTurn(conversation.id,undefined,true);
+  reserve('pdf-main-stop');
+  const mainRuntime=await resolve();
+  const mainRun=runs.beginRuntimeRun({runtimeSessionId:mainRuntime.row.id,instruction:'main',dispatch:{clientMessageId:'pdf-main-stop'}});
+  const side=reserve('pdf-side-stop',true);
+  const sideRuntime=await resolve('pdf-side-stop');
+  const sideRun=runs.beginRuntimeRun({runtimeSessionId:sideRuntime.row.id,instruction:'side',dispatch:{clientMessageId:'pdf-side-stop'}});
+  const other=reserve('pdf-side-kept',true);
+  const otherRuntime=await resolve('pdf-side-kept');
+  const otherRun=runs.beginRuntimeRun({runtimeSessionId:otherRuntime.row.id,instruction:'side',dispatch:{clientMessageId:'pdf-side-kept'}});
+  const directSource=fs.readFileSync(new URL('../src/lib/conversations/direct-turn-service.ts',import.meta.url),'utf8');
+  const directTree=ts.createSourceFile('direct.ts',directSource,ts.ScriptTarget.Latest,true);
+  const abortFunction=directTree.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='abortDirectProviderTurn');
+  const controllers=new Map([
+    [conversation.id,{clientMessageId:'pdf-main-stop',controller:new AbortController()}],
+    [`${conversation.id}:pdf-side-stop`,{clientMessageId:'pdf-side-stop',controller:new AbortController()}],
+    [`${conversation.id}:pdf-side-kept`,{clientMessageId:'pdf-side-kept',controller:new AbortController()}],
+  ]);
+  const scope=vm.createContext({activeDirectProviderTurns:controllers,DOMException});
+  vm.runInContext(ts.transpileModule(abortFunction.getText(directTree).replace(/^export /,''),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText,scope);
+  const stopped=[];
+  globalThis.pdfStopFixture={...store,...runtimeStore,...runs,abortDirectProviderTurn:scope.abortDirectProviderTurn,
+    cancelRuntimeSessionWork:async(_user,row)=>{stopped.push(row.id);const run=runs.getActiveRuntimeRun(row.id);if(run)runs.finishRuntimeRun(run.id,'cancelled');return {cancelledRunId:run?.id};}};
+  const stubs={
+    'next/server':'export const NextResponse=Response;',
+    '@/lib/server-auth':'export const requireUserId=async()=>1;',
+    '@/lib/hermes/route-helpers.ts':'export class ApiError extends Error {} export const apiErrorResponse=error=>Response.json({error:error.message},{status:500});',
+    '@/lib/hermes/runtime-store.ts':'export const {getRuntimeSessionById,listRuntimeSessionsForConversation,recordAuditEvent,setRuntimeStatus}=globalThis.pdfStopFixture;',
+    '@/lib/hermes/run-store.ts':'export const {getActiveRuntimeRun,getLatestRuntimeRun,parseRuntimeRunDispatch}=globalThis.pdfStopFixture;',
+    '@/lib/conversations/store.ts':'export const {cancelConversationTurn,cancelLatestConversationTurn,failAssistantMessage,getConversationForUser}=globalThis.pdfStopFixture;',
+    '@/lib/conversations/external-agent-turns.ts':'export const finishExternalAgentTurn=()=>{};',
+    '@/lib/conversations/external-agent-cancel.ts':'export const cancelRunningExternalAgentRuns=async()=>[];',
+    '@/lib/hermes/session-cancel.ts':'export const {cancelRuntimeSessionWork}=globalThis.pdfStopFixture;',
+    '@/lib/conversations/direct-turn-service.ts':'export const {abortDirectProviderTurn}=globalThis.pdfStopFixture;',
+  };
+  const bundle=await build({entryPoints:[new URL('../src/app/api/hermes/sessions/[sessionId]/abort/route.ts',import.meta.url).pathname.replace(/^\/([A-Z]:)/,'$1')],bundle:true,write:false,platform:'node',format:'esm',plugins:[{name:'boundaries',setup(b){b.onResolve({filter:/.*/},a=>a.path in stubs?{path:a.path,namespace:'stub'}:null);b.onLoad({filter:/.*/,namespace:'stub'},a=>({contents:stubs[a.path]}))}}]});
+  const route=await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+  const stop=id=>route.POST(new Request(`http://fixture/abort${id?'?inlineTurnId='+id:''}`,{method:'POST'}),{params:Promise.resolve({sessionId:conversation.public_id})});
+  assert.equal((await stop('pdf-side-stop')).status,200);
+  assert.deepEqual(stopped,[sideRuntime.row.id]);
+  assert.equal(controllers.get(`${conversation.id}:pdf-side-stop`).controller.signal.aborted,true);
+  assert.equal(controllers.get(conversation.id).controller.signal.aborted,false);
+  assert.equal(runs.getRuntimeRun(mainRun.id).status,'active');
+  assert.equal(store.getConversationMessageById(side.assistantMessage.id).status,'aborted');
+  assert.equal((await stop()).status,200);
+  assert.equal(controllers.get(conversation.id).controller.signal.aborted,true);
+  assert.equal(controllers.get(`${conversation.id}:pdf-side-kept`).controller.signal.aborted,false);
+  assert.equal(runs.getRuntimeRun(otherRun.id).status,'active');
+  assert.equal(store.getConversationMessageById(other.assistantMessage.id).status,'pending');
+  assert.equal(runs.getRuntimeRun(sideRun.id).status,'cancelled');
+  delete globalThis.pdfStopFixture;
 });

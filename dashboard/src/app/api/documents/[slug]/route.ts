@@ -1,8 +1,12 @@
+import { readQuartzMetadata, updateQuartzMetadata } from "@/lib/quartz-document-metadata";
 import { NextResponse } from "next/server";
+import { quartzDocumentRevision, quartzDocumentParts } from "@/lib/quartz-document-revision";
+import { decodeSlug, normalizeDocumentSlug } from "@/lib/garden-document-path";
 import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { externalRuntimeFilesystem as fs, externalRuntimePortableRealpath } from "@/lib/external-runtime-filesystem";
 import db from "@/lib/db";
 import { pageFlagColor } from "@/lib/page-understanding-types.ts";
+import { markdownFolderTitle } from "@/lib/markdown-folder-title.ts";
 import {
   normalizeTopicTags,
   refreshClusterIndex,
@@ -20,7 +24,7 @@ export const dynamic = "force-dynamic";
 
 const API_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, PATCH, DELETE, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
@@ -40,71 +44,6 @@ export function OPTIONS(): Response {
   return new Response(null, { status: 204, headers: API_HEADERS });
 }
 
-function decodeSlug(value: string): string {
-  let current = value;
-  for (let index = 0; index < 4; index += 1) {
-    try {
-      const decoded = decodeURIComponent(current);
-      if (decoded === current) return current;
-      current = decoded;
-    } catch {
-      return current;
-    }
-  }
-  return current;
-}
-
-function candidateSlugInputs(slug: string): string[] {
-  const decoded = decodeSlug(slug);
-  const candidates = [decoded];
-
-  try {
-    const url = new URL(decoded, "http://second-brain.local");
-    const note = url.searchParams.get("note");
-    if (note) candidates.unshift(decodeSlug(note));
-    candidates.push(url.pathname);
-  } catch {
-    // Plain slugs are handled by the decoded candidate.
-  }
-
-  return [...new Set(candidates)];
-}
-
-function normalizeDocumentSlug(
-  clusterSlug: string,
-  slug: string,
-): string | null {
-  const cluster = clusterSlug.trim();
-
-  for (const candidate of candidateSlugInputs(slug)) {
-    const cleaned = candidate
-      .replace(/\\/g, "/")
-      .replace(/[?#].*$/, "")
-      .replace(/\.md$/i, "")
-      .trim();
-    let segments = cleaned
-      .split("/")
-      .map((segment) => segment.trim())
-      .filter(Boolean);
-    const clusterIndex = segments.findIndex((segment) => segment === cluster);
-    if (clusterIndex >= 0) segments = segments.slice(clusterIndex + 1);
-    if (segments[0] === "garden" && segments[1] === cluster)
-      segments = segments.slice(2);
-    if (segments.length === 0) continue;
-
-    const noteSlug = segments.at(-1);
-    if (!noteSlug) continue;
-    if (
-      noteSlug.toLowerCase() === "index" ||
-      noteSlug.toLowerCase() === "_index"
-    )
-      return null;
-    return noteSlug;
-  }
-
-  return null;
-}
-
 function slugify(value: string): string {
   const slug = value
     .toLowerCase()
@@ -117,61 +56,11 @@ function slugify(value: string): string {
 }
 
 function frontmatterTitle(content: string): string {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!match) return "";
-  const titleLine = (match[1] ?? "")
-    .split(/\r?\n/)
-    .find((line) => line.trimStart().startsWith("title:"));
-  if (!titleLine) return "";
-  return titleLine
-    .slice(titleLine.indexOf(":") + 1)
-    .trim()
-    .replace(/^["']|["']$/g, "");
+  const value = readQuartzMetadata(content).title;
+  return typeof value === "string" ? value : "";
 }
-
-function parseYamlArray(value: string): string[] {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return [];
-  return trimmed
-    .slice(1, -1)
-    .split(",")
-    .map((item) => item.trim().replace(/^["']|["']$/g, ""))
-    .filter(Boolean);
-}
-
-function parseYamlValue(value: string): string | string[] {
-  const trimmed = value.trim();
-  if (trimmed.startsWith("[") && trimmed.endsWith("]"))
-    return parseYamlArray(trimmed);
-  return trimmed.replace(/^["']|["']$/g, "");
-}
-
-/** Split a note into its frontmatter block (without trailing newlines) and body. */
-function splitFrontmatter(content: string): {
-  frontmatter: string;
-  body: string;
-} {
-  const match = content.match(/^(---\r?\n[\s\S]*?\r?\n---)\r?\n?([\s\S]*)$/);
-  if (!match) return { frontmatter: "", body: content };
-  return {
-    frontmatter: match[1] ?? "",
-    body: (match[2] ?? "").replace(/^\r?\n/, ""),
-  };
-}
-
 function parseFrontmatter(content: string): Frontmatter {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!match) return {};
-
-  const data: Frontmatter = {};
-  for (const line of (match[1] ?? "").split(/\r?\n/)) {
-    const index = line.indexOf(":");
-    if (index <= 0) continue;
-    const key = line.slice(0, index).trim();
-    const value = line.slice(index + 1).trim();
-    data[key] = parseYamlValue(value);
-  }
-  return data;
+  return readQuartzMetadata(content) as Frontmatter;
 }
 
 function frontmatterStringValue(data: Frontmatter, key: string): string {
@@ -246,74 +135,11 @@ function resolveDocument(
   return { slug: noteSlug, filePath, relPath: `${noteSlug}.md` };
 }
 
-function updateFrontmatterValue(
-  content: string,
-  key: string,
-  value: string,
-): string {
-  const field = `${key}: ${JSON.stringify(value)}`;
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-
-  if (!match) {
-    return value ? `---\n${field}\n---\n\n${content}` : content;
-  }
-
-  const body = content.slice(match[0].length).replace(/^\r?\n/, "");
-  const lines = (match[1] ?? "").split(/\r?\n/);
-  let found = false;
-  const nextLines: string[] = [];
-
-  for (const line of lines) {
-    if (line.trimStart().startsWith(`${key}:`)) {
-      found = true;
-      if (value) nextLines.push(field);
-    } else {
-      nextLines.push(line);
-    }
-  }
-
-  if (!found && value) nextLines.push(field);
-
-  return `---\n${nextLines.join("\n").trimEnd()}\n---\n\n${body}`;
+function updateFrontmatterValue(content: string, key: string, value: string): string {
+  return updateQuartzMetadata(content, key, value || null);
 }
-
-function yamlQuote(value: string): string {
-  return JSON.stringify(value.replace(/\r/g, ""));
-}
-
-function yamlArray(values: string[]): string {
-  return `[${values.map((value) => yamlQuote(value)).join(", ")}]`;
-}
-
-function updateFrontmatterArrayValue(
-  content: string,
-  key: string,
-  values: string[],
-): string {
-  const field = `${key}: ${yamlArray(values)}`;
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-
-  if (!match) {
-    return values.length > 0 ? `---\n${field}\n---\n\n${content}` : content;
-  }
-
-  const body = content.slice(match[0].length).replace(/^\r?\n/, "");
-  const lines = (match[1] ?? "").split(/\r?\n/);
-  let found = false;
-  const nextLines: string[] = [];
-
-  for (const line of lines) {
-    if (line.trimStart().startsWith(`${key}:`)) {
-      found = true;
-      if (values.length > 0) nextLines.push(field);
-    } else {
-      nextLines.push(line);
-    }
-  }
-
-  if (!found && values.length > 0) nextLines.push(field);
-
-  return `---\n${nextLines.join("\n").trimEnd()}\n---\n\n${body}`;
+function updateFrontmatterArrayValue(content: string, key: string, values: string[]): string {
+  return updateQuartzMetadata(content, key, values.length ? values : null);
 }
 
 function removePathInside(root: string, target: string): void {
@@ -400,6 +226,7 @@ function documentsToDeleteForSource(
       assetUrls: [
         ...frontmatterArrayValue(sourceData, "source_images"),
         frontmatterStringValue(sourceData, "source_pdf"),
+        frontmatterStringValue(sourceData, "source_presentation"),
         frontmatterStringValue(sourceData, "source_media"),
       ].filter(Boolean),
     };
@@ -415,6 +242,8 @@ function documentsToDeleteForSource(
   );
   const sourcePdf = frontmatterStringValue(sourceData, "source_pdf");
   if (sourcePdf) assetUrls.add(sourcePdf);
+  const sourcePresentation = frontmatterStringValue(sourceData, "source_presentation");
+  if (sourcePresentation) assetUrls.add(sourcePresentation);
   const sourceMedia = frontmatterStringValue(sourceData, "source_media");
   if (sourceMedia) assetUrls.add(sourceMedia);
 
@@ -461,6 +290,7 @@ async function getDocumentRequestContext(
   let clusterId: number;
   let ownedClusterSlug: string;
   let userId: number;
+  let canEdit = false;
   try {
     const authorized =
       access === "read"
@@ -468,6 +298,7 @@ async function getDocumentRequestContext(
         : await requireOwnedClusterFromSlug(clusterSlug);
     const { cluster } = authorized;
     userId = authorized.userId;
+    canEdit = cluster.user_id === userId;
     clusterId = cluster.id;
     ownedClusterSlug = cluster.slug;
   } catch (error) {
@@ -507,6 +338,7 @@ async function getDocumentRequestContext(
   return {
     clusterId,
     userId,
+    canEdit,
     slug: document.slug,
     clusterSlug: ownedClusterSlug,
     contentPath,
@@ -533,6 +365,13 @@ export async function PATCH(
   }
   try {
     let content = fs.readFileSync(context.filePath, "utf-8");
+    const previousContent = content;
+    const previousRevision = quartzDocumentRevision(content);
+    if (body.baseRevision !== undefined && body.baseRevision !== previousRevision) {
+      return json({ error: "This page changed since your last save.", revision: previousRevision,
+        body: quartzDocumentParts(content).body, title: frontmatterTitle(content) || context.slug,
+        tags: frontmatterArrayValue(parseFrontmatter(content), "semanticHints") }, { status: 409 });
+    }
     let tags = frontmatterArrayValue(
       parseFrontmatter(content),
       "semanticHints",
@@ -549,12 +388,10 @@ export async function PATCH(
       if (typeof body.body !== "string") {
         return json({ error: "body must be a string" }, { status: 400 });
       }
-      const { frontmatter } = splitFrontmatter(content);
-      const nextBody = body.body.replace(/^\s+/, "");
-      content = frontmatter ? `${frontmatter}\n\n${nextBody}` : nextBody;
+      content = quartzDocumentParts(content).prefix + body.body;
     }
 
-    let title = frontmatterTitle(content);
+    let title = frontmatterTitle(content) || context.slug;
     if (Object.prototype.hasOwnProperty.call(body, "title")) {
       if (typeof body.title !== "string") {
         return json({ error: "title must be a string" }, { status: 400 });
@@ -602,6 +439,7 @@ export async function PATCH(
       content = updateFrontmatterArrayValue(content, "semanticHints", tags);
     }
 
+    if (content === previousContent) return json({ success: true, slug: context.slug, title, flagColor, tags, revision: previousRevision });
     fs.writeFileSync(context.filePath, content, "utf-8");
     refreshClusterIndex(context.contentPath, context.clusterSlug, { migrateSources: false });
     lease.release();
@@ -610,7 +448,7 @@ export async function PATCH(
       { userId: context.userId, gardenSlug: context.clusterSlug },
     ).catch(error => console.error("[garden] Document saved; publication failed:", error));
 
-    return json({ success: true, slug: context.slug, title, flagColor, tags });
+    return json({ success: true, slug: context.slug, title, flagColor, tags, revision: quartzDocumentRevision(content) });
   } finally {
     lease.release();
   }
@@ -624,7 +462,7 @@ export async function GET(
   if ("error" in context) return context.error;
 
   const content = fs.readFileSync(context.filePath, "utf-8");
-  const { body } = splitFrontmatter(content);
+  const { body } = quartzDocumentParts(content);
   const reader = new URL(request.url).searchParams.get("render") === "1"
     ? await (await import("@/lib/generated/quartz-reader.mjs")).renderQuartzDocument({
         content,
@@ -635,14 +473,41 @@ export async function GET(
     : undefined;
   return json({
     success: true,
+    revision: quartzDocumentRevision(content),
+    canEdit: context.canEdit,
+    accountId: String(context.userId),
     slug: context.slug,
     fileName: path.basename(context.filePath),
+    sourceSlug: path.relative(context.contentPath, context.filePath).replace(/\\/g, "/").replace(/\.md$/i, ""),
     content,
-    title: frontmatterTitle(content),
+    title: frontmatterTitle(content) || context.slug,
+    folderTitle: markdownFolderTitle(context.contentPath, context.filePath),
     tags: frontmatterArrayValue(parseFrontmatter(content), "semanticHints"),
     body,
     reader,
   });
+}
+
+/** Render draft objects through Quartz without writing a file or publishing. */
+export async function POST(request: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const context = await getDocumentRequestContext(request, params, "write");
+  if ("error" in context) return context.error;
+  const input = await request.json().catch(() => null);
+  if (!Array.isArray(input?.fragments) || input.fragments.length > 32 ||
+      input.fragments.some((item: unknown) => !item || typeof item !== "object" || typeof (item as { source?: unknown }).source !== "string") ||
+      JSON.stringify(input).length > 10_000_000) return json({ error: "Invalid preview request" }, { status: 400 });
+  const { renderQuartzDocument } = await import("@/lib/generated/quartz-reader.mjs");
+  const shared = {
+    relativePath: path.relative(externalRuntimePortableRealpath(context.contentPath), externalRuntimePortableRealpath(context.filePath)).replace(/\\/g, "/"),
+    contentRoot: externalRuntimePortableRealpath(context.contentPath).replace(/\\/g, "/"),
+    allFiles: walkClusterMarkdown(context.contentPath).map(page => page.relPath),
+  };
+  const fragments = [];
+  for (const item of input.fragments) {
+    const reader = await renderQuartzDocument({ ...shared, content: item.source });
+    fragments.push({ id: item.id, html: reader.html });
+  }
+  return json({ success: true, fragments });
 }
 
 export async function DELETE(
@@ -684,6 +549,7 @@ export async function DELETE(
         };
 
     const deletedSlugs: string[] = [];
+    const deletedPaths: string[] = [];
 
     // Resolve each basename slug to its on-disk location (any sub-folder).
     const entryBySlug = new Map<
@@ -707,6 +573,7 @@ export async function DELETE(
         if (!found || !fs.existsSync(found.filePath)) continue;
         fs.unlinkSync(found.filePath);
         deletedSlugs.push(slug);
+        deletedPaths.push(found.relPath);
         removeQuartzPublicArtifacts(
           context.contentPath,
           context.clusterSlug,
@@ -744,7 +611,10 @@ export async function DELETE(
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         return json({ error: "Document not found" }, { status: 404 });
       }
-      return json({ error: "Failed to delete document" }, { status: 500 });
+      return json(
+        { error: `Failed to delete document: ${(err as Error).message}` },
+        { status: 500 },
+      );
     }
 
     refreshClusterIndex(context.contentPath, context.clusterSlug, { migrateSources: false });
@@ -753,7 +623,7 @@ export async function DELETE(
       `delete document ${context.clusterSlug}/${context.slug}`,
       { userId: context.userId, gardenSlug: context.clusterSlug },
     ).catch(error => console.error("[garden] Document deleted; publication failed:", error));
-    return json({ success: true, slug: context.slug, deletedSlugs });
+    return json({ success: true, slug: context.slug, deletedSlugs, deletedPaths });
   } finally {
     lease.release();
   }

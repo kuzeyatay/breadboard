@@ -24,6 +24,38 @@ const NO_STORE_HEADERS = {
   Expires: '0',
 };
 
+type ModelCooldown = {
+  key?: unknown;
+  resetsInSeconds?: unknown;
+};
+
+async function readModelCooldown(
+  request: Request,
+  model: string,
+  providerModel: string,
+): Promise<{ retryAt: string } | null> {
+  try {
+    const { baseURL } = resolveChatmockBaseUrl(request);
+    const response = await fetch(`${baseURL}/settings/model-health`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) return null;
+    const payload = await response.json() as { cooldowns?: ModelCooldown[] };
+    const cooldown = payload.cooldowns?.find(
+      (candidate) => candidate.key === model || candidate.key === providerModel,
+    );
+    const seconds = cooldown?.resetsInSeconds;
+    if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+      return null;
+    }
+    return { retryAt: new Date(Date.now() + seconds * 1_000).toISOString() };
+  } catch {
+    // Usage still has value when ChatMock health is temporarily unavailable.
+    return null;
+  }
+}
+
 export async function GET(request: Request) {
   const model = new URL(request.url).searchParams.get('model')?.trim() ?? '';
   const googleModel = antigravityModelId(model);
@@ -35,7 +67,13 @@ export async function GET(request: Request) {
         'subscription-usage-limits',
         () => readGoogleUsageLimits(model),
       );
-      return NextResponse.json(usage, {
+      const cooldown = await readModelCooldown(request, model, googleModel);
+      return NextResponse.json(cooldown ? {
+        ...usage,
+        model_unavailable: true,
+        unavailable_model: model,
+        retry_at: cooldown.retryAt,
+      } : usage, {
         headers: NO_STORE_HEADERS,
       });
     }
@@ -98,15 +136,9 @@ export async function POST(request: Request) {
     }
     if (antigravityModelId(model)) return GET(request);
     const { baseURL } = resolveChatmockBaseUrl(request);
-    // A refresh is a fresh read of the report; the completion probe that
-    // shakes headers out of ChatMock is only needed when the report is away.
-    const report = await readCodexUsageReport(baseURL);
-    if (report) {
-      return NextResponse.json({ ...report, refreshed: true }, { headers: NO_STORE_HEADERS });
-    }
-    const result = await refreshChatgptUsage(baseURL, userId);
+    const result = await refreshChatgptUsage(baseURL);
     return NextResponse.json(
-      { ...result.payload, source: 'headers' },
+      result.payload,
       { status: result.status, headers: NO_STORE_HEADERS },
     );
   } catch (error) {

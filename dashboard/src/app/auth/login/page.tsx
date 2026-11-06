@@ -2,10 +2,11 @@
 
 import { signIn } from 'next-auth/react';
 import { useState, Suspense } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import type { FormEvent } from 'react';
 import { startNavigationProgress } from '@/app/components/navigation-progress';
+import { authReturnPath, AUTH_CHANGED_EVENT, synchronizeDesktopAuthentication } from '@/lib/auth-client';
 
 function RegisteredBanner() {
   const searchParams = useSearchParams();
@@ -18,13 +19,13 @@ function RegisteredBanner() {
 }
 
 export default function LoginPage() {
-  const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (loading) return;
     setError(null);
     setLoading(true);
 
@@ -32,19 +33,20 @@ export default function LoginPage() {
     const email = form.get('email') as string;
     const password = form.get('password') as string;
 
-    const result = await signIn('credentials', {
-      email,
-      password,
-      redirect: false,
-    });
-
-    setLoading(false);
-
-    if (result?.error) {
-      setError('Invalid email or password.');
-    } else {
+    try {
+      const callbackUrl = authReturnPath(new URLSearchParams(window.location.search).get('callbackUrl'), window.location.origin);
+      const result = await signIn('credentials', { email, password, redirect: false, callbackUrl });
+      if (!result?.ok || result.error) {
+        setError('Invalid email or password.');
+        setLoading(false);
+        return;
+      }
       startNavigationProgress();
-      router.push('/dashboard');
+      window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
+      if (!await synchronizeDesktopAuthentication()) window.location.replace(callbackUrl);
+    } catch {
+      setError('Could not sign in. Please try again.');
+      setLoading(false);
     }
   }
 

@@ -73,6 +73,8 @@ test("persisted PDF marks reject malformed text anchors and page coordinates", (
   };
   assert.equal(normalizePdfHighlights([mark])[0].conversationId, "conv_test");
   assert.equal(normalizePdfHighlights([mark])[0].note, "Review this equation");
+  assert.equal(normalizePdfHighlights([mark])[0].coordinateSpace, undefined);
+  assert.equal(normalizePdfHighlights([{ ...mark, coordinateSpace: "content" }])[0].coordinateSpace, "content");
   assert.deepEqual(
     normalizePdfHighlights([
       { ...mark, selection: { ...selection, end: 12 } },

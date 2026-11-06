@@ -164,26 +164,19 @@ export default function StockAnalystSetup() {
           stated before anything technical — and the honest version is that the
           free sources work but are scrapers. */}
       <p className="neu-surface-subtle rounded-xl px-3 py-2 text-[11px] leading-5 text-[var(--ink-muted)]">
-        <span className="font-medium text-[var(--ink-heading)]">Market data</span> Works with no
-        keys at all: Eastmoney, AkShare and Baostock cover mainland China, Yahoo Finance covers Hong
-        Kong, the US, Japan, Korea and Taiwan, and public SearXNG instances cover news. Those are
-        scrapers and free tiers, so they rate-limit; the keys below are what make a busy day
-        reliable.
+        <span className="font-medium text-[var(--ink-heading)]">Market data</span> Free sources cover Asian and US markets and news. Optional API keys can help when free sources reach their limits.
       </p>
 
       {/* This agent runs its own copy of the project. Someone who already uses
           the clone will assume otherwise, so say it plainly. */}
       <p className="neu-surface-subtle rounded-xl px-3 py-2 text-[11px] leading-5 text-[var(--ink-muted)]">
-        <span className="font-medium text-[var(--ink-heading)]">Separate from your own setup</span>{" "}
-        Breadboard never reads the clone&rsquo;s <span className="font-mono">.env</span> and never
-        runs its scheduled daily analysis or its notification pushes. The watchlist, language and
-        depth come from the defaults below, and the database and logs live under Breadboard&rsquo;s
-        own runtime folder.
+        Uses the settings below, separately from other Stock Analyst installations.
+        It does not run their scheduled analyses or send their notifications.
       </p>
 
       {health?.root ? (
         <p className="neu-surface-subtle truncate rounded-xl px-3 py-2 text-[11px] text-[var(--ink-muted)]">
-          <span className="font-medium text-[var(--ink-heading)]">Clone</span> {health.root}
+          <span className="font-medium text-[var(--ink-heading)]">Installation folder</span> {health.root}
         </p>
       ) : null}
 
@@ -192,9 +185,7 @@ export default function StockAnalystSetup() {
       ) : null}
       {health?.cloned && !health.uvAvailable && !health.environmentReady ? (
         <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
-          Installing without uv falls back to pip and the system Python. uv is worth having here: it
-          can fetch a Python version that every one of these market-data packages ships wheels for.
-          Install it from docs.astral.sh/uv, then reopen this panel.
+          For easier setup, install uv from docs.astral.sh/uv and reopen this panel. Otherwise, setup uses your installed Python.
         </p>
       ) : null}
 
@@ -219,12 +210,12 @@ export default function StockAnalystSetup() {
           {health.serviceRunning ? (
             <button
               type="button"
-              onClick={() => void post({ action: "stop" }, "stop", "Stop backend")}
+              onClick={() => void post({ action: "stop" }, "stop", "Stop Stock Analyst")}
               disabled={Boolean(running)}
-              title="Stops the supervised backend. The next run starts a fresh one."
+              title="Stops Stock Analyst. It restarts with your next question."
               className="neu-button rounded-xl px-3 py-2 text-xs text-[var(--ink-heading)] disabled:opacity-50"
             >
-              {running === "stop" ? "Working…" : "Stop backend"}
+              {running === "stop" ? "Working…" : "Stop Stock Analyst"}
             </button>
           ) : null}
         </div>

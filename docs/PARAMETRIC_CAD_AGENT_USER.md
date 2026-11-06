@@ -153,7 +153,9 @@ each body is a valid OpenCascade shape; each body is watertight, so a slicer can
 read it; no NaN or infinite coordinates; the measured size against the size the
 design declared; minimum feature sizes; hole diameters; clearances; whether
 bodies are disconnected; the exported mesh for holes, non-manifold edges and
-degenerate triangles; and whether the part fits the configured print bed.
+degenerate triangles; and whether each individual part fits the configured print
+bed in its current orientation. An assembly that exceeds the bed but whose parts
+fit receives a warning to print the parts separately and arrange them in a slicer.
 
 It does not check strength, stiffness, fatigue life, heat resistance, sealing,
 or whether the part is a good idea. Wall thickness is checked against the value

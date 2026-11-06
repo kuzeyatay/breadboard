@@ -226,6 +226,22 @@ test("a Garden scope reaches that Garden and nothing else", (t) => {
   assert.match(escaped.summary, /no files on disk/);
 });
 
+test("a Garden resolves from Runtime's extended Windows content path", { skip: process.platform !== "win32" }, (t) => {
+  const content = scratch("windows-content");
+  const garden = path.join(content, "ec-2");
+  fs.mkdirSync(garden);
+  const previous = process.env.QUARTZ_CONTENT_PATH;
+  process.env.QUARTZ_CONTENT_PATH = path.toNamespacedPath(content);
+  t.after(() => {
+    if (previous === undefined) delete process.env.QUARTZ_CONTENT_PATH;
+    else process.env.QUARTZ_CONTENT_PATH = previous;
+    fs.rmSync(content, { recursive: true, force: true });
+  });
+  const scope = materials.resolveScope({ userId: 1, surface: "garden_chat", clusterSlug: "ec-2" });
+  assert.deepEqual(scope.roots, [garden]);
+  assert.deepEqual(materials.resolveScope({ userId: 1, surface: "garden_chat", clusterSlug: "../.." }).roots, []);
+});
+
 test("a Garden with no directory yet keeps its own scope instead of widening", (t) => {
   const content = scratch("empty-content");
   const previous = process.env.QUARTZ_CONTENT_PATH;

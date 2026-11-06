@@ -27,7 +27,7 @@ const stubs = {
   "conversations/title-service.ts": `export function fallbackConversationTitle(text) { return text.slice(0, 60); }`,
   "hermes/event-stream.ts": `export function startSessionEventPump() {}`,
   "hermes/route-core.ts": `export function requireEnabled() {}`,
-  "hermes/runtime-store.ts": `export function getHermesUserSettings() { return { defaultModel: 'fixture', reasoningEffort: 'low' }; }`,
+  "hermes/runtime-store.ts": `export function getHermesUserSettings() { return { fallbackModel: 'fixture', reasoningEffort: 'low' }; }`,
   "hermes/session-service.ts": `export async function resolveConversationRuntime() { return {}; }`,
   "schedules/instance.ts": `export function getScheduledChatJobStore() { throw new Error('Attachment must enter a turn'); }`,
   "review/delivery.ts": `${prefix}export async function handleInboundReview() { state().reviews++; return null; }`,

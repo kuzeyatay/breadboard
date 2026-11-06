@@ -59,6 +59,8 @@ export interface RailResizeOptions {
   threshold: number;
   /** When set, the width survives a reload. */
   storageKey?: string;
+  /** False for menu docks that must reopen visibly; only save expanded widths. */
+  persistCollapsed?: boolean;
   /**
    * A key holding an older boolean "is it collapsed", read once so a rail that
    * was shut before this existed comes back shut.
@@ -101,6 +103,7 @@ export function useRailResize({
   railWidth,
   threshold,
   storageKey,
+  persistCollapsed = true,
   legacyCollapsedKey,
   viewportShare = 0.45,
 }: RailResizeOptions): RailResize {
@@ -129,13 +132,14 @@ export function useRailResize({
   const persist = useCallback(
     (next: number) => {
       if (!storageKey) return;
+      if (!persistCollapsed && next < threshold) return;
       try {
         window.localStorage.setItem(storageKey, String(next));
       } catch {
         // A browser that refuses storage still gets a working edge.
       }
     },
-    [storageKey],
+    [persistCollapsed, storageKey, threshold],
   );
 
   // Restored after mount rather than in the initial state, so the server and
@@ -156,6 +160,9 @@ export function useRailResize({
     }
     if (restored === null) return;
     const next = settleRailWidth(restored, { min, max, railWidth, threshold });
+    // A menu selection is an explicit open request, including for users whose
+    // older saved width is zero. Keep collapse persistence for ordinary rails.
+    if (!persistCollapsed && next < threshold) return;
     /* eslint-disable react-hooks/set-state-in-effect -- a stored width cannot
        be the initial state: the server has no localStorage, and seeding from it
        during the first render is a hydration mismatch. One extra render on
@@ -163,7 +170,7 @@ export function useRailResize({
     if (next >= threshold) setOpenWidth(next);
     setWidth(next);
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, [legacyCollapsedKey, max, min, railWidth, storageKey, threshold]);
+  }, [legacyCollapsedKey, max, min, persistCollapsed, railWidth, storageKey, threshold]);
 
   useEffect(() => {
     const applyViewportLimit = () => {

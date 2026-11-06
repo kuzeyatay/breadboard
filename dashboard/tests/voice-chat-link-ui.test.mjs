@@ -15,12 +15,13 @@ test('detached voice uses its originating chat and never creates a session of it
       import Speech from './src/app/components/speech-dictation-button';
       import VoicePage from './src/app/voice/page';
       import VoiceShortcut from './src/app/components/voice-shortcut';
-      window.sent=[];window.newSessions=0;window.commands=[];
+      window.sent=[];window.screens=[];window.newSessions=0;window.commands=[];
       if(location.search.includes('desktop'))window.breadboardDesktop={
         tabs:async command=>{window.commands.push(command);return true;},
         getTabsState:async()=>({enabled:true,tabs:[]}),onTabsState:()=>()=>{}
       };
       if(location.search.includes('native'))window.voiceCompanion={
+        getScreenContextAccess:async()=>{if(window.screenFailure)throw Error('Window closed');return window.screenAccess??null;},
         state:async()=>false,conversation:async()=>null,onOpen:callback=>{window.nativeOpen=callback;return()=>{};},close:async()=>{}
       };
       function Host(){
@@ -30,10 +31,12 @@ test('detached voice uses its originating chat and never creates a session of it
         const [busy,setBusy]=useState(false),[clarification,setClarification]=useState(null);
         const element=useRef(null);
         const snapshot=useMemo(()=>({messages,busy,clarification}),[messages,busy,clarification]);
-        const key=useVoiceChatHost({identity:id,createdIdentity:created,scope,element,snapshot,onSend:text=>{
+        const key=useVoiceChatHost({identity:id,createdIdentity:created,scope,element,snapshot,onSend:(text,screen)=>{
+          if(window.delaySend)return new Promise((resolve,reject)=>window.rejectSend=reject);
           const chat=id??'created-in-origin';
           if(!id){setCreated(chat);setId(chat);}
           window.sent.push({chat,model:'source-model',text});
+          window.screens.push(screen);
           setMessages(current=>[...current,{role:'user',content:text},{role:'assistant',content:'Answer in '+chat}]);
         }});
         window.linkKey=key;
@@ -57,7 +60,7 @@ test('detached voice uses its originating chat and never creates a session of it
         'use-agent-session': `export function useAgentSession(){window.newSessions++;throw Error('Detached voice must not create a separate session');}export const isActiveAgentRunState=()=>false;`,
         'use-assistant-intelligence': 'export const useAssistantIntelligence=()=>({})',
         'voice-assistant-runtime': 'export default function(){return null}',
-        'chat-notification-inbox': 'export function setActiveChatNotificationTarget(){}',
+        'chat-notification-inbox': 'export function registerChatNotificationTarget(){return()=>{}}',
         'music-recognition-button': 'export default function(){return null}',
       };
       build.onResolve({ filter: /.*/ }, args => {
@@ -109,6 +112,18 @@ test('detached voice uses its originating chat and never creates a session of it
     assert.equal(await host.evaluate(() => window.sent.length), 1);
     await voice.close();
   }
+  // A delayed model-preference failure after the originating chat closes must
+  // not post to its closed channel or create an unhandled rejection.
+  await openMenu();
+  const delayed = await context.newPage();
+  await delayed.goto(origin + '/voice?view=full&chat=' + await host.evaluate(() => window.linkKey));
+  await host.evaluate(() => { window.delaySend = true; });
+  await delayed.getByRole('button', { name: 'Send spoken turn' }).click();
+  await host.waitForFunction(() => typeof window.rejectSend === 'function');
+  await host.evaluate(() => window.switchScope());
+  await delayed.getByRole('alert').waitFor();
+  await host.evaluate(async () => { window.rejectSend(Error('Voice model lookup failed')); await new Promise(resolve => setTimeout(resolve, 50)); });
+  await delayed.close();
   // A blank chat is created by its original composer, retaining the same link.
   await openMenu('?blank');
   const key = await host.evaluate(() => window.linkKey);
@@ -137,8 +152,25 @@ test('detached voice uses its originating chat and never creates a session of it
   await native.waitForFunction(() => Boolean(window.nativeOpen));
   await native.evaluate(key => window.nativeOpen(true, key), nativeKey);
   await native.getByText('Earlier question in chat A|Earlier answer in chat A', { exact: true }).waitFor();
+  // The detached native view owns access to the current screen. Its host may
+  // be a different tab, so every turn must carry the native grant explicitly.
+  const first = { port: 43210, token: 'a'.repeat(64) };
+  const next = { port: 43211, token: 'b'.repeat(64) };
+  const expected = [];
+  for (const access of [first, next, null]) {
+    await native.evaluate(access => { window.screenAccess = access; }, access);
+    await native.getByRole('button', { name: 'Send spoken turn' }).click();
+    expected.push({ browserAccess: access });
+    await host.waitForFunction(count => window.sent.length === count, expected.length);
+    assert.deepEqual(await host.evaluate(() => window.screens), expected);
+  }
+  // Losing access must clear the old screen instead of reusing the host tab.
+  await native.evaluate(() => { window.screenFailure = true; });
   await native.getByRole('button', { name: 'Send spoken turn' }).click();
-  await host.waitForFunction(() => window.sent.length === 1);
+  await host.waitForFunction(() => window.sent.length === 4);
+  assert.deepEqual(await host.evaluate(() => window.screens.at(-1)), { browserAccess: null });
+  assert.deepEqual(await host.evaluate(() => window.sent.map(turn => turn.text)), Array(4).fill('Spoken follow-up'));
+  assert.ok(!(await native.locator('[data-transcript]').textContent()).includes(first.token));
   assert.equal(await native.evaluate(() => window.newSessions), 0);
   await host.close();
   await native.getByRole('alert').waitFor();

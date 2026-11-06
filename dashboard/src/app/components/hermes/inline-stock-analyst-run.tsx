@@ -102,7 +102,6 @@ export default function InlineStockAnalystRun({
     persistedOutcome && persistedOutcome !== "running" ? persistedOutcome : "starting",
   );
   const [service, setService] = useState<ServiceState>("unknown");
-  const [coldStart, setColdStart] = useState(false);
   const [stages, setStages] = useState<StepRow[]>([]);
   const [tools, setTools] = useState<StepRow[]>([]);
   const [thinking, setThinking] = useState("");
@@ -142,7 +141,6 @@ export default function InlineStockAnalystRun({
       if (event.type === "service.starting") setService("starting");
       if (event.type === "service.ready") {
         setService("ready");
-        setColdStart(payload.coldStart === true);
         const running = asString(payload.model);
         if (running) setModel(running);
       }
@@ -343,13 +341,8 @@ export default function InlineStockAnalystRun({
           {!terminal && service !== "ready" ? (
             <p className="bb-agent-run-text text-[var(--ink-muted)]">
               {service === "starting"
-                ? "Starting the Stock Analyst backend — the first run of a session loads its market-data sources."
+                ? "Starting Stock Analyst and connecting to market data."
                 : "Preparing the run…"}
-            </p>
-          ) : null}
-          {service === "ready" && coldStart && !terminal ? (
-            <p className="bb-agent-run-text text-[var(--ink-muted)]">
-              Backend started. Later questions in this session reuse it.
             </p>
           ) : null}
           {warning ? (

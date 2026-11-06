@@ -57,6 +57,8 @@ for (const node of source.statements) {
     if (/^[A-Z]/.test(name) && !realComponents.has(name)) {
       stubs.push(name === "VirtualizedMessageList"
         ? `const ${name} = ({items, renderItem}) => items.map((item, index) => <div key={index} data-row={item.index}>{renderItem(item)}</div>);`
+        : name === "InlineArtifactCards"
+        ? `const ${name} = ({thinking}) => thinking ? null : <div data-testid="response-artifacts"/>;`
         : `const ${name} = ({children}) => children ?? null;`);
     } else {
       imports.push(imported === "default"
@@ -86,6 +88,7 @@ function render(overrides = {}) {
   return renderToStaticMarkup(React.createElement(ChatTranscript, {
     clusterName: "Test Garden", clusterSlug: "test", chatSessionId: 1,
     naturalRewriteFor: noop,
+    modelChangesFor: () => [],
     isStreaming: false, loadingChats: false,
     messages: [
       { role: "user", content: "Start research", createdAt: "2026-09-05T09:55:00Z" },
@@ -144,4 +147,45 @@ test("an active Garden response keeps the previous answer's controls available",
   assert.equal(actionCount(html), 1);
   assert.match(html, /Thought/);
   assert.match(html, /Thinking/);
+});
+
+test("a completed Garden response reveals its controls and artifacts despite stale streaming state", () => {
+  for (const isStreaming of [false, true]) {
+    for (const connection of ["idle", "connecting", "streaming", "waiting"]) {
+      const html = render({
+        isStreaming, connection,
+        messages: [
+          { role: "user", content: "Is analog AM in the course?" },
+          { role: "assistant", content: "Analog AM is useful background.", responseCompletedAt: "2026-10-19T04:58:00Z" },
+        ],
+      });
+      assert.match(html, /Thought/);
+      assert.equal(actionCount(html), 1, `${isStreaming}/${connection}`);
+      assert.match(html, /aria-label="Copy response"/);
+      assert.match(html, /data-testid="response-artifacts"/);
+    }
+  }
+});
+
+test("unfinished responses and ongoing delegations still withhold response controls and artifacts", () => {
+  for (const responseCompletedAt of [undefined, "", "invalid"]) {
+    const html = render({
+      isStreaming: true, connection: "streaming",
+      messages: [
+        { role: "user", content: "Explain AM" },
+        { role: "assistant", content: "Partial answer", responseCompletedAt },
+      ],
+    });
+    assert.equal(actionCount(html), 0);
+    assert.doesNotMatch(html, /data-testid="response-artifacts"/);
+  }
+  const html = render({
+    delegationInFlight: true,
+    messages: [
+      { role: "user", content: "Research AM" },
+      { role: "assistant", content: "Researching AM.", responseCompletedAt: "2026-10-19T04:58:00Z" },
+    ],
+  });
+  assert.equal(actionCount(html), 0);
+  assert.doesNotMatch(html, /data-testid="response-artifacts"/);
 });

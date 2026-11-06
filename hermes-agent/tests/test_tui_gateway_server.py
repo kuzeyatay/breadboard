@@ -811,6 +811,25 @@ def test_tui_verbose_default_cap_stays_small(monkeypatch):
     assert capped.startswith("[showing verbose tail; omitted ")
 
 
+@pytest.mark.parametrize("serialized", [False, True])
+def test_multimodal_tool_events_preserve_text_without_mutating_model_images(serialized):
+    content = [
+        {"type": "text", "text": "Source evidence"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,pixels"}},
+        {"type": "input_image", "image_url": "data:image/png;base64,pixels"},
+        {"type": "image", "source": {"type": "base64", "data": "pixels"}},
+    ]
+    envelope = {"_multimodal": True, "content": content, "meta": {"source_pages": [1, 2, 3]}}
+    display = server._tool_result_for_ui(json.dumps(envelope) if serialized else envelope)
+    assert display["content"] == content[:1]
+    assert display["image_count"] == 3
+    assert display["meta"] == envelope["meta"]
+    assert "pixels" not in json.dumps(display)
+    assert len(envelope["content"]) == 4
+    assert server._tool_result_for_ui('{"error":"unreadable source"}') == {"error": "unreadable source"}
+    assert server._tool_result_for_ui("ordinary output") == "ordinary output"
+
+
 def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     redact_module = types.ModuleType("agent.redact")
 

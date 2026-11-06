@@ -286,6 +286,7 @@ async function handleGeneration(request: Request, userId: number): Promise<NextR
       baseURL: resolveChatmockBaseUrl(request).baseURL,
       prompt,
       sourceImage,
+      signal: request.signal,
     });
     const artifact = await importArtifactImage({
       context,

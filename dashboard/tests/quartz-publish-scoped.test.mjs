@@ -40,7 +40,8 @@ function writeFakeQuartzCli(quartzRoot, buildLog) {
       'const scope = argv.filter((value) => value.startsWith("--scope=")).map((value) => value.slice(8));',
       'const directory = option("directory");',
       'const output = option("output");',
-      `fs.appendFileSync(${JSON.stringify(buildLog)}, JSON.stringify({ scope }) + "\\n");`,
+      `fs.appendFileSync(${JSON.stringify(buildLog)}, JSON.stringify({ scope, concurrency: Number(option("concurrency")) }) + "\\n");`,
+      `fs.writeFileSync(${JSON.stringify(`${buildLog}.heap`)}, JSON.stringify(process.execArgv));`,
       "fs.mkdirSync(path.join(output, 'static'), { recursive: true });",
       "fs.writeFileSync(path.join(output, 'index.css'), 'css-' + process.pid);",
       "fs.writeFileSync(path.join(output, '404.html'), 'not found');",
@@ -112,7 +113,7 @@ function writePublisherScript(temporaryRoot, dataRoot) {
       `const dataRoot = ${JSON.stringify(dataRoot)};`,
       "const start = JSON.parse(fs.readFileSync('start.json', 'utf8'));",
       "const execute = createSealedRuntimeV2QuartzPublishExecutor({ identity: start.identity, dataRoot, contentPath: path.join(dataRoot, 'quartz', 'content'), sourceRoot: path.join(dataRoot, 'quartz'), workspacePath: path.join(process.cwd(), 'workspace'), signal: undefined });",
-      "const result = await execute({ reasons: ['scoped-test'], concurrency: 1, timeoutMs: 10000, buildEnvironment: {}, scope: JSON.parse(process.env.QUARTZ_TEST_SCOPE) });",
+      "const result = await execute({ reasons: ['scoped-test'], concurrency: 4, timeoutMs: 10000, buildEnvironment: {}, scope: JSON.parse(process.env.QUARTZ_TEST_SCOPE) });",
       "process.stdout.write(JSON.stringify(result));",
     ].join("\n"),
     "utf8",
@@ -187,7 +188,8 @@ test(
 
       // A scope request with no previous publication builds the whole site.
       await runPublisher(publisherScript, workerLayout(dataRoot), ["math-1"]);
-      assert.deepEqual(lastBuild(buildLog), { scope: [] });
+      assert.deepEqual(lastBuild(buildLog), { scope: [], concurrency: 1 });
+      assert.ok(JSON.parse(fs.readFileSync(`${buildLog}.heap`, "utf8")).includes("--max-old-space-size=5120"));
       assert.equal(
         fs.readFileSync(path.join(publicDir, "index.html"), "utf8"),
         "home",
@@ -222,6 +224,7 @@ test(
         ["math-1", "old-garden"],
       );
       assert.deepEqual(lastBuild(buildLog), {
+        concurrency: 4,
         scope: ["math-1", "old-garden"],
       });
       assert.match(
@@ -353,7 +356,7 @@ test(
         "Updated Telecom",
       );
       await publish();
-      assert.deepEqual(lastBuild(buildLog), { scope: [] });
+      assert.deepEqual(lastBuild(buildLog), { scope: [], concurrency: 1 });
       assert.notEqual(receipt().revision, original);
       assert.equal(
         readIndex(publicDir)["telecom-1/note"].content,
@@ -368,12 +371,12 @@ test(
         "generated output",
       );
       await publish();
-      assert.deepEqual(lastBuild(buildLog), { scope: ["electromagnetism-1"] });
+      assert.deepEqual(lastBuild(buildLog), { scope: ["electromagnetism-1"], concurrency: 4 });
 
       // Older installations with no receipt are migrated, including every Garden.
       fs.rmSync(path.join(publicDir, QUARTZ_PUBLICATION_MARKER));
       await publish();
-      assert.deepEqual(lastBuild(buildLog), { scope: [] });
+      assert.deepEqual(lastBuild(buildLog), { scope: [], concurrency: 1 });
       assert.equal(Object.keys(readIndex(publicDir)).length, 2);
     } finally {
       assert.equal(

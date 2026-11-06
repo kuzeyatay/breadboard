@@ -54,13 +54,14 @@ export const list = tool({
 
 export const search = tool({
   description:
-    "Search this garden's grounded knowledge (pages, sources, concepts) and return the most relevant excerpts with their source citations. Use this to answer questions from the garden's own material.",
+    "Search Garden knowledge (pages, sources, concepts) with citations. Defaults to the active Garden; use gardenId for another authorized Garden or scope all to search across authorized Gardens. Read results using their returned gardenId and relPath.",
   args: {
     gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
+    scope: tool.schema.enum(["active", "all"]).describe("Default active; all searches every authorized Garden. Omit gardenId when using all.").optional(),
     query: tool.schema.string().describe("What to search for in the garden"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_search", { gardenId: args.gardenId, query: args.query })
+    return callBreadboard(ctx.sessionID, "garden_search", { gardenId: args.gardenId, scope: args.scope, query: args.query })
   },
 })
 
@@ -127,13 +128,20 @@ export const get_source_excerpt = tool({
 })
 
 export const get_source_figure = tool({
-  description: "Fetch a source figure/anchor reference from this garden by slug.",
+  description: "Search existing Garden figures and embedded images with captions, source pages, availability and reusable Markdown. Omit slug to search the active Garden, set gardenId for another authorized Garden, or scope all for cross-Garden image search. Use slug for one page. Paginate with nextOffset; this does not start extraction.",
   args: {
     gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
-    slug: tool.schema.string().describe("The source page slug"),
+    scope: tool.schema.enum(["active", "all"]).describe("Default active; all searches authorized Gardens. Omit gardenId and slug when using all.").optional(),
+    slug: tool.schema.string().describe("Optional source page slug or relPath; omit to search images across pages").optional(),
+    query: tool.schema.string().describe("Search captions, source visual IDs, image paths and page titles; page-specific reads filter captions and IDs").optional(),
+    pageStart: tool.schema.number().int().min(1).describe("First PDF page, inclusive").optional(),
+    pageEnd: tool.schema.number().int().min(1).describe("Last PDF page, inclusive").optional(),
+    offset: tool.schema.number().int().min(0).optional(),
+    limit: tool.schema.number().int().min(1).max(50).optional(),
+    includePageSnapshots: tool.schema.boolean().describe("Include full-page fallback images").optional(),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_get_source_figure", { gardenId: args.gardenId, slug: args.slug })
+    return callBreadboard(ctx.sessionID, "garden_get_source_figure", args)
   },
 })
 
@@ -191,6 +199,16 @@ export const save_note = tool({
     folder: tool.schema.string().describe("Optional nested folder path inside the target Garden, e.g. 'course/week-4'").optional(),
     title: tool.schema.string().describe("Note title"),
     content: tool.schema.string().describe("Note markdown content"),
+    minimumProseWords: tool.schema.number().int().positive().describe("Minimum explanatory prose words required by the user or active skill; omit for ordinary notes and section guides").optional(),
+    lesson: tool.schema.object({
+      learningQuestion: tool.schema.string(),
+      learnerRequest: tool.schema.string().optional(),
+      newConcepts: tool.schema.array(tool.schema.string()),
+      assumedBackground: tool.schema.array(tool.schema.string()),
+      taughtLater: tool.schema.array(tool.schema.string()),
+      previousLessonSlugs: tool.schema.array(tool.schema.string()),
+      sourcePassages: tool.schema.array(tool.schema.object({ pageSlug: tool.schema.string(), offset: tool.schema.number().int().nonnegative().optional(), limit: tool.schema.number().int().positive().max(24000).optional() })),
+    }).describe("Optional legacy lesson context. The current chat request determines teaching preparation and review; this metadata does not enable it. Only describe prior lessons or source passages that were actually read.").optional(),
     tags: tool.schema.array(tool.schema.string()).describe("Optional topic tags").default([]),
   },
   async execute(args, ctx) {
@@ -199,6 +217,8 @@ export const save_note = tool({
       gardenId: args.gardenId,
       folder: args.folder,
       content: args.content,
+      minimumProseWords: args.minimumProseWords,
+      lesson: args.lesson,
       tags: args.tags,
     })
   },
@@ -304,7 +324,8 @@ export const propose_page_revision = tool({
   args: {
     gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
     pageSlug: tool.schema.string().describe("The page to revise"),
-    patchOrReplacement: tool.schema.string().describe("The proposed replacement markdown or patch"),
+    patchOrReplacement: tool.schema.string().describe("Only the new Markdown for originalText, or a valid diff when originalText is omitted. Never prose edit instructions. Maximum 40,000 characters."),
+    originalText: tool.schema.string().describe("Exact nonempty passage copied from garden_get_page, occurring exactly once. Only this passage is replaced; everything else is preserved. Required for replacement Markdown. For an explicitly requested full rewrite, use the complete original body. Maximum 40,000 characters.").optional(),
     rationale: tool.schema.string().describe("Why this revision is warranted"),
     evidenceAnchorIds: tool.schema.array(tool.schema.string()).describe("Supporting source anchor ids").default([]),
     affectedConcepts: tool.schema.array(tool.schema.string()).describe("Concepts touched by this revision").default([]),
@@ -314,6 +335,7 @@ export const propose_page_revision = tool({
       pageSlug: args.pageSlug,
       gardenId: args.gardenId,
       patchOrReplacement: args.patchOrReplacement,
+      originalText: args.originalText,
       rationale: args.rationale,
       evidenceAnchorIds: args.evidenceAnchorIds,
       affectedConcepts: args.affectedConcepts,
@@ -339,5 +361,17 @@ export const propose_visualization = tool({
       spec: args.spec,
       rationale: args.rationale,
     })
+  },
+})
+
+export const decide_proposals = tool({
+  description: "Apply or reject existing proposals only when the user approves or rejects them. Use proposal IDs from this chat or garden_get_recent_events. This is the checked review-button action; inspect every result for conflicts.",
+  args: {
+    gardenId: tool.schema.string().optional(),
+    proposalIds: tool.schema.array(tool.schema.number().int().min(1)).min(1).max(20),
+    decision: tool.schema.enum(["apply", "reject"]),
+  },
+  async execute(args, ctx) {
+    return callBreadboard(ctx.sessionID, "garden_decide_proposals", args)
   },
 })

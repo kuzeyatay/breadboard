@@ -4,10 +4,10 @@ export const CLAP_PAGES = {
   calendar: { label: 'Calendar', href: '/plan?view=calendar' },
   plan: { label: 'Plan', href: '/plan' },
   dashboard: { label: 'Dashboard', href: '/dashboard' },
-  profile: { label: 'Profile', href: '/profile' },
+  profile: { label: 'Settings', href: '/settings' },
   timer: { label: 'Work timer', href: '/pomodoro' },
   workflows: { label: 'Workflows', href: '/workflows' },
-  knowledge: { label: 'Knowledge', href: '/profile?tab=knowledge' },
+  knowledge: { label: 'Knowledge', href: '/settings?tab=knowledge' },
 } as const;
 
 export type ClapAction =

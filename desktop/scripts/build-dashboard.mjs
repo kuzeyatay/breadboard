@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   beginDashboardBuild,
   completeDashboardBuild,
+  dashboardBuildPaths,
   recoverInterruptedDashboardBuild,
   refreshStandaloneDashboardAssets,
   writeDashboardBuildManifest,
@@ -13,6 +14,7 @@ import {
 import { assertWindowsCommitHeadroom } from "./commit-preflight.mjs";
 import { isTransientDashboardBuildFailure } from "./dashboard-build-retry.mjs";
 import { assertSafeDashboardTraces } from "./dashboard-trace-safety.mjs";
+import { verifyLiveKitRuntime } from "./verify-livekit-runtime.mjs";
 import {
   claimDashboardBuildLease,
   duplicateLeanDesktopWarning,
@@ -51,7 +53,7 @@ assertWindowsCommitHeadroom({
 // `--if-needed` is a no-op once it is there.
 const mem0 = spawnSync(
   process.execPath,
-  [path.join(repoRoot, "scripts", "setup-mem0.mjs"), "--if-needed"],
+  [path.join(repoRoot, "scripts", "setup-mem0.mjs"), process.env.BREADBOARD_SOURCE_REPAIR_BUILD === "1" ? "--verify-only" : "--if-needed"],
   { cwd: repoRoot, stdio: "inherit" },
 );
 if (mem0.status !== 0) {
@@ -165,6 +167,7 @@ for (let attempt = 1; attempt <= maxDashboardBuildAttempts; attempt += 1) {
 try {
   assertSafeDashboardTraces(repoRoot);
   refreshStandaloneDashboardAssets(repoRoot);
+  console.log(verifyLiveKitRuntime(dashboardBuildPaths(repoRoot).standaloneDashboard));
   writeDashboardBuildManifest(repoRoot);
   completeDashboardBuild(repoRoot);
 } catch (error) {

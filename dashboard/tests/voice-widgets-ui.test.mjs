@@ -54,7 +54,7 @@ test('voice shows chat widgets, supports their controls, and keeps display paylo
         return <Voice compact={location.search.includes('compact')} open={open} onClose={()=>setOpen(false)} messages={messages} busy={busy}
           onSend={text=>{window.sent.push(text);setMessages(m=>[...m,{role:'user',content:text},{role:'assistant',content:''}]);setBusy(true);}}/>;
       }createRoot(document.getElementById('root')).render(<App/>);
-    ` }, bundle: true, write: false, format: 'iife', platform: 'browser', define: { 'process.env.NODE_ENV': '"development"' },
+    ` }, bundle: true, write: false, outfile: 'voice-widgets-fixture.js', format: 'iife', platform: 'browser', define: { 'process.env.NODE_ENV': '"development"' },
     plugins: [{ name: 'speech-fixture', setup(build) {
       const stubs = {
         '@/lib/speech/clap/audio-focus': 'export const requestForegroundMicrophone=()=>navigator.mediaDevices.getUserMedia();export function stopForegroundStream(s){s?.getTracks().forEach(t=>t.stop());}export const holdForegroundAudio=()=>()=>{};',
@@ -69,9 +69,10 @@ test('voice shows chat widgets, supports their controls, and keeps display paylo
   });
   const cssInput = fs.readFileSync(path.join(root, 'src/app/globals.css'), 'utf8')
     .replace('@source "../**/*.{js,mjs,cjs,ts,tsx,jsx,mdx}";', '@source "./components/voice*.tsx"; @source "./components/chat*.tsx"; @source "./components/hermes/product*.tsx"; @source "./components/hermes/garden-navigator.tsx"; @source "./components/hermes/chat-search-results.tsx";');
-  const css = (await postcss([tailwind({ base: root })]).process(cssInput, { from: path.join(root, 'src/app/globals.css') })).css;
+  const css = (await postcss([tailwind({ base: root })]).process(cssInput, { from: path.join(root, 'src/app/globals.css') })).css
+    + '\n' + (bundle.outputFiles.find(file => file.path.endsWith('.css'))?.text ?? '');
   const server = http.createServer((req, res) => {
-    if (req.url === '/app.js') { res.setHeader('Content-Type', 'text/javascript'); res.end(bundle.outputFiles[0].text); }
+    if (req.url === '/app.js') { res.setHeader('Content-Type', 'text/javascript'); res.end(bundle.outputFiles.find(file => file.path.endsWith('.js')).text); }
     else if (req.url === '/style.css') { res.setHeader('Content-Type', 'text/css'); res.end(css); }
     else { res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><html><head><link rel="stylesheet" href="/style.css"></head><body><main id="root"></main><script src="/app.js"></script></body></html>'); }
   });

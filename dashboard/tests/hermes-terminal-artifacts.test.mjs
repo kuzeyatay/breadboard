@@ -971,7 +971,12 @@ test("artifact lifecycle persists, streams safe events, and preserves revisions"
   const fixture = artifactFixture();
   try {
     let artifact = createArtifact(createInput(fixture));
-    assert.equal(artifact.status, "generating");
+    assert.equal(artifact.status, "draft");
+    assert.equal(listArtifactVersions(artifact.id, fixture.database)[0].status, "draft");
+    assert.equal(presentArtifact(artifact).previewAvailable, false);
+    assert.equal(presentArtifact(artifact).downloadAvailable, false);
+    assert.match(readArtifactSource(artifact, 1, fixture.storage, fixture.database), /^# Study report/);
+    assert.equal(listArtifactEventsAfter({ runId: "run_one", afterId: 0, database: fixture.database })[0].status, "draft");
     artifact = await renderArtifact({ artifact, runId: "run_one", assistantMessageId: null, database: fixture.database, storageRoot: fixture.storage });
     assert.equal(artifact.status, "ready");
     assert.match(readArtifactSource(artifact, 1, fixture.storage, fixture.database), /^# Study report/);
@@ -994,6 +999,9 @@ test("artifact lifecycle persists, streams safe events, and preserves revisions"
       storageRoot: fixture.storage,
     });
     assert.equal(artifact.current_version, 2);
+    assert.equal(artifact.status, "draft");
+    assert.equal(presentArtifact(artifact).downloadAvailable, false);
+    assert.match(readArtifactSource(artifact, 2, fixture.storage, fixture.database), /Revised content/);
     artifact = await renderArtifact({ artifact, runId: "run_two", assistantMessageId: null, database: fixture.database, storageRoot: fixture.storage });
     assert.equal(listArtifactVersions(artifact.id, fixture.database).length, 2);
     assert.match(readArtifactSource(artifact, 1, fixture.storage, fixture.database), /Grounded content/);

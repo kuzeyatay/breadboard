@@ -8,11 +8,10 @@ import {
   getNavbarFlowers,
   getNavbarShortcuts,
 } from "@/lib/profile/navbar-shortcuts-store.ts";
-import { readProfileStats } from "@/lib/profile/stats.ts";
+import { readProfileStatsCached } from "@/lib/profile/stats.ts";
 import { getContactStore } from "@/lib/contacts/instance.ts";
 import { getCalendarStore } from "@/lib/calendar/instance.ts";
 import { caldavVaultConfigured } from "@/lib/calendar/caldav-credentials.ts";
-import { googleImageGenerationCredentialsStatus } from "@/lib/hermes/google-image-generation-credentials.ts";
 import ProfileClient from "./profile-client";
 import { readClapAction } from "@/lib/profile/clap-action-store.ts";
 import { thoughtTopologyAutoUpdateEnabled } from "@/lib/thought-topology/preferences.ts";
@@ -20,8 +19,8 @@ import { thoughtTopologyAutoUpdateEnabled } from "@/lib/thought-topology/prefere
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Profile — breadboard",
-  description: "Your account, your habit, and the invites you have handed out.",
+  title: "Settings — breadboard",
+  description: "Your account, download preferences, and Breadboard settings.",
 };
 
 /**
@@ -42,12 +41,12 @@ export default async function ProfilePage({
   }>;
 }) {
   const session = await getServerSession(authOptions);
-  if (!session?.user) redirect("/auth/login?callbackUrl=/profile");
+  if (!session?.user) redirect("/auth/login?callbackUrl=/settings");
 
   const userId = Number((session.user as { id?: string }).id);
-  if (!Number.isFinite(userId) || userId <= 0) redirect("/auth/login?callbackUrl=/profile");
+  if (!Number.isFinite(userId) || userId <= 0) redirect("/auth/login?callbackUrl=/settings");
 
-  const stats = readProfileStats(db, userId);
+  const stats = readProfileStatsCached(db, userId);
 
   // The address book and the synced calendars are two more small local reads,
   // so they join the same pass rather than each costing the panel a round trip
@@ -83,7 +82,6 @@ export default async function ProfilePage({
       contactTotal={contacts.countContacts(userId)}
       syncedCalendars={calendars}
       calendarVaultConfigured={caldavVaultConfigured()}
-      googleImageGenerationStatus={googleImageGenerationCredentialsStatus(userId)}
       initialTab={initialTab}
       initialBrainScope={initialBrainScope}
     />

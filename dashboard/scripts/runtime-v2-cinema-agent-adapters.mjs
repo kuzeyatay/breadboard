@@ -1,7 +1,7 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const EFFORTS = new Set(["none", "low", "medium", "high", "xhigh"]);
+const EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
 const ASPECTS = new Set(["16:9", "9:16", "1:1"]);
 const TERMINAL_EVENTS = new Set(["run.completed", "run.failed", "run.aborted"]);
 

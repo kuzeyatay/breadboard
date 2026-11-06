@@ -2,6 +2,7 @@ type Connection = { close(): Promise<void>; isHealthy(): boolean };
 type Entry<T> = {
   key: string; mode: string; controller: AbortController; promise: Promise<T>;
   connection?: T; leased: boolean; expires: number; connectedAt?: number; proven?: boolean;
+  idleTimer?: ReturnType<typeof setTimeout>;
 };
 
 /** First retry delay after a failed warm-up; each further failure doubles it. */
@@ -10,6 +11,8 @@ const RETRY_BASE_MS = 30_000;
 const RETRY_MAX_MS = 15 * 60_000;
 /** A warm connection that dies this soon after connecting counts as a failure. */
 const SHORT_LIVED_MS = 60_000;
+/** Brief reuse after actual speech must not become an all-night connection. */
+const REUSE_IDLE_MS = 20_000;
 
 /** Own idle connections separately from callers, so closing a view cannot
  * cancel a handoff and speculative work cannot exhaust the session limit. */
@@ -34,6 +37,7 @@ export function createConnectionPreloader<T extends Connection>(
   }
 
   function retire(entry: Entry<T>) {
+    clearTimeout(entry.idleTimer);
     if (entries.get(entry.mode) === entry) entries.delete(entry.mode);
     entry.controller.abort();
     retirement = Promise.all([retirement, entry.promise.then(value => value.close(), () => {})]).then(() => {});
@@ -107,6 +111,7 @@ export function createConnectionPreloader<T extends Connection>(
           entry = undefined;
         }
         entry ??= start(mode);
+        clearTimeout(entry.idleTimer);
         // Reserve cold replacements too, before the background timer can refill.
         entry.leased = true;
         const selected = entry;
@@ -132,6 +137,8 @@ export function createConnectionPreloader<T extends Connection>(
       if (entry && reusable && entry.key === key && modes.includes(entry.mode) &&
           entry.expires > now() && connection.isHealthy() && !entry.controller.signal.aborted) {
         entry.leased = false;
+        entry.expires = Math.min(entry.expires, now() + REUSE_IDLE_MS);
+        entry.idleTimer = setTimeout(() => { if (!entry.leased) retire(entry); }, Math.max(0, entry.expires - now()));
         return;
       }
       if (entry) { retire(entry); await retirement; }

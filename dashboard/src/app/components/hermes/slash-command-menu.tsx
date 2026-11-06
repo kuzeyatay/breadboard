@@ -1,5 +1,7 @@
 "use client";
 
+import { skillProductDescription } from "@/lib/hermes/skill-product-copy.ts";
+
 import {
   forwardRef,
   useEffect,
@@ -46,6 +48,7 @@ interface Props {
   placement?: "above" | "below";
   onClose: () => void;
   onSelect: (item: CommandHubItem) => void;
+  onBrowseAll?: () => void;
 }
 
 const KIND_LABELS: Record<CommandHubItem["kind"], string> = {
@@ -61,7 +64,7 @@ const KIND_LABELS: Record<CommandHubItem["kind"], string> = {
  * disk and would otherwise read as one.
  */
 function commandKindLabel(item: CommandHubItem): string {
-  return isWorkflowCommand(item) ? "Workflow" : KIND_LABELS[item.kind];
+  return isWorkflowCommand(item) || item.token.startsWith("workflows:") ? "Workflow" : KIND_LABELS[item.kind];
 }
 
 const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(
@@ -75,6 +78,7 @@ const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(
       placement = "above",
       onClose,
       onSelect,
+      onBrowseAll,
     },
     ref,
   ) {
@@ -140,7 +144,7 @@ const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(
 
     useImperativeHandle(ref, () => ({
       handleKeyDown(event) {
-        if (!open) return false;
+        if (!open || event.nativeEvent.isComposing) return false;
         if (event.key === "Escape") {
           event.preventDefault();
           onClose();
@@ -174,6 +178,7 @@ const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(
       >
         <div className="flex items-center justify-between border-b border-[var(--line)] px-3 py-2">
           <span className="text-xs font-medium text-[var(--ink-muted)]">Available capabilities</span>
+          {onBrowseAll && <button type="button" onClick={onBrowseAll} className="text-xs text-[var(--ink-muted)] hover:text-[var(--ink)]">Browse all</button>}
           {loading && !items.length ? (
             <span className="text-[10px] text-[var(--ink-muted)]">Loading…</span>
           ) : null}
@@ -181,7 +186,9 @@ const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(
         <div className="min-h-0 overflow-y-auto overscroll-contain p-1.5">
           {items.length ? (
             <ul role="listbox" aria-label="Available capabilities" className="space-y-0.5">
-              {items.map((item, index) => (
+              {items.map((item, index) => {
+                const description = skillProductDescription(item);
+                return (
                 <li
                   key={`${item.kind}:${item.id}`}
                   role="option"
@@ -194,11 +201,11 @@ const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(
                     className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)] ${index === selectedIndex ? "bg-[var(--paper-strong)]" : "hover:bg-[var(--paper-surface)]"}`}
                   >
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate font-mono text-sm font-medium text-[var(--ink-heading)]">
-                        /{item.token}
+                      <span className={`block truncate text-sm font-medium text-[var(--ink-heading)] ${item.kind === "prompt" ? "" : "font-mono"}`}>
+                        {item.kind === "prompt" ? item.name : `/${item.token}`}
                       </span>
                       <span className="mt-0.5 block truncate text-xs text-[var(--ink-muted)]">
-                        {item.name}{item.description ? ` · ${item.description}` : ""}
+                        {item.kind === "prompt" ? description : `${item.name}${description ? ` · ${description}` : ""}`}
                       </span>
                     </span>
                     <span className="shrink-0 text-[10px] text-[var(--ink-muted)]">
@@ -206,7 +213,8 @@ const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(
                     </span>
                   </button>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           ) : (
             <div className="px-4 py-8 text-center text-sm text-[var(--ink-muted)]" role="status">

@@ -31,7 +31,7 @@ app.whenReady().then(async () => {
       res.setHeader('Content-Type', 'text/html');
       res.end('<!doctype html><title>Chat fixture</title><input id="draft"><div id="root"></div><script src="/app.js"></script>');
     };
-    if (req.url === '/dashboard?terminalChat=missing' && missingRequests++ === 0) releaseMissing = send;
+    if (req.url === '/new-tab?terminalChat=missing' && missingRequests++ === 0) releaseMissing = send;
     else send();
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -49,7 +49,7 @@ app.whenReady().then(async () => {
   const window = manager.createMainWindow();
   window.setOpacity(0);
   window.showInactive();
-  const base = window.webContents;
+  const base = manager.page(window);
   await base.loadURL(origin + '/dashboard?terminalChat=stale');
   const state = () => manager.tabs.stateFor(base);
   const command = value => manager.tabs.handleCommand(base, value);
@@ -96,7 +96,7 @@ app.whenReady().then(async () => {
   await open({ surface: 'dashboard_terminal', chatId: 'stale' });
   assert.equal(state().tabs.length, 3);
   assert.notEqual(state().activeId, baseId);
-  assert.equal(state().tabs.find(tab => tab.id === state().activeId).url, origin + '/dashboard?terminalChat=stale');
+  assert.equal(state().tabs.find(tab => tab.id === state().activeId).url, origin + '/new-tab?terminalChat=stale');
 
   const garden = { surface: 'garden_chat', gardenSlug: 'signals', chatId: '42', conversationId: 'canonical' };
   await base.executeJavaScript(`window.setChat(${JSON.stringify(garden)}); true`);
@@ -115,7 +115,7 @@ app.whenReady().then(async () => {
   await until(() => releaseMissing, 'new chat request');
   const missingId = state().activeId;
   assert.equal(state().tabs.length, 4);
-  assert.equal(state().tabs.find(tab => tab.id === missingId).url, origin + '/dashboard?terminalChat=missing');
+  assert.equal(state().tabs.find(tab => tab.id === missingId).url, origin + '/new-tab?terminalChat=missing');
   await open(missing);
   assert.equal(state().tabs.length, 4, 'repeat clicks reuse the tab while it loads');
   assert.equal(state().activeId, missingId);
@@ -126,6 +126,7 @@ app.whenReady().then(async () => {
   await open(missing);
   assert.equal(state().tabs.length, 4, 'a closed chat opens again in a new tab');
   assert.notEqual(state().activeId, missingId);
+  assert.equal(state().tabs.find(tab => tab.id === state().activeId).url, origin + '/new-tab?terminalChat=missing');
 
   assert.equal(command({ type: 'notification-open', urls: ['https://example.com/dashboard?terminalChat=live'] }), false);
   window.destroy();

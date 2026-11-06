@@ -92,7 +92,7 @@ describe("source document ingest path", () => {
     assert.match(knowledgeSource, /sourceType\.toLowerCase\(\) === "pdf"[\s\S]*?sourceFileName\.trim\(\)/);
     assert.match(knowledgeSource, /title: visibleSourceTitle,[\s\S]*?description: sectionTitle/);
     assert.match(documentsRoute, /description: node\.description/);
-    assert.match(workspace, /isPdf \? doc\.sourceFile\?\.trim\(\) : ""/);
+    assert.match(workspace, /const sourceDisplay = gardenSourceDisplay\(doc\)/);
     assert.match(workspace, /sourceDescription/);
     assert.match(workspace, /\{sourceDescription\}/);
     const sourceRows = workspace.slice(

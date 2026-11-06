@@ -255,3 +255,10 @@
   }
 
 }
+
+/* Settles with the rest of the decorative motion; see lib/user-idle.ts. */
+:global(html[data-user-idle]) .wind,
+:global(html[data-user-idle]) .starField,
+:global(html[data-user-idle]) .comet {
+  animation-play-state: paused !important;
+}

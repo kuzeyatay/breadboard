@@ -17,6 +17,10 @@ import { maxResearchInvocation } from "../src/lib/max-research/identity.ts";
 import * as quartzSelection from "../src/lib/quartz-assistant-selection.ts";
 import { normalizeChatTextSelectionReference } from "../src/lib/chat-text-selection.ts";
 import { shouldGenerateConversationTitleForTurn } from "../src/lib/conversations/title-service.ts";
+import { parseUnifiedWorkflowCommand } from "../src/lib/workflows/unified-command.ts";
+import { renderUnifiedWorkflowGuidance } from "../src/lib/workflows/unified-guidance.ts";
+import { parseBrowserTerminalAccess } from "../src/lib/browser-terminal.ts";
+import { computerUseSkillChoices, renderSkillShortlistDirective } from "../src/lib/hermes/skill-shortlist.ts";
 
 const prompt = "do max research on muscle hypertrophy, hjow its triggered, what needs to be done to achieve maximum muscle growth, how much and what muscle groups must be targeted for a lean and proportional physique, I want a lean physique like in the movies, have time until august 2027 but i am willing to be agressive in my diet, i am definetly skinny fat and 87kg, 183cm with 26,5 percent body fat estimate using the navy method. so i need a gym program to get me in shape and a diet with specified calories or how much calorie per day type of thing, i can also use creatine and proteine powder. however i am week like i can only curl like 6kg and can do like only 2 pushups?";
 const read = (file) => fs.readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
@@ -49,9 +53,8 @@ function visit(node) {
   if (ts.isVariableDeclaration(node) && ["superAgentEnabled", "yoloModeEnabled"].includes(node.name.getText(workspace))) {
     modeDeclarations.push(`const ${node.getText(workspace)};`);
   }
-  if (ts.isCallExpression(node) && node.expression.getText(workspace) === "fetch" &&
-      node.arguments[0]?.text === "/api/chat") {
-    requestExpression = node.arguments[1].properties.find((property) =>
+  if (ts.isCallExpression(node) && node.expression.getText(workspace) === "fetchGardenChat") {
+    requestExpression = node.arguments[2].properties.find((property) =>
       property.name?.getText(workspace) === "body").initializer.getText(workspace);
   }
   ts.forEachChild(node, visit);
@@ -68,11 +71,11 @@ function request(superAgent, internalAgentContinuation = false) {
     nextMessages: [{ role: "user", content: prompt }],
     clusterSlug: "fitness", sessionId: 828, clientMessageId: "max-research-regression",
     model: "gpt-5.6-sol", reasoningEffort: "max", pendingAttachments: [],
-    focusedDocumentSlugs: [], textSelection: null, internalAgentContinuation,
+    focusedDocumentSlugs: [], textSelection: null, webSelection: null, turnOptions: undefined, internalAgentContinuation,
   }, "body"));
 }
 
-async function dispatch(payload, { title = 'New chat', orderIndex = 0 } = {}) {
+async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandResolution = null, workflowContinuation = null, availableSkills = [] } = {}) {
   const captured = { audits: [], inventoryLoads: [], registry: [], shortlistCalls: 0, titlePrompts: [] };
   const conversation = { id: 266, public_id: "conv_regression", title, surface: "garden_chat", active_agency_agent_slug: null };
   const session = {
@@ -89,7 +92,10 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0 } = {}) {
   };
   const noop = () => {};
   const empty = () => "";
-  const scope = { hermesPromptText, normalizeChatTextSelectionReference,
+  const scope = { hermesPromptText, normalizeChatTextSelectionReference, parseBrowserTerminalAccess,
+    browserTerminalPrompt: () => "", setBrowserTerminalContext: () => {},
+    resolveUnifiedWorkflowContinuation: () => workflowContinuation,
+    selectedGardenDocumentQuestionPrompt: functions("lib/hermes/garden-reader.ts", ["selectedGardenDocumentQuestionPrompt"], {}, "selectedGardenDocumentQuestionPrompt"),
     process: { env: {} }, setInterval: () => ({ unref: noop }), clearInterval: noop,
     requireUserId: async () => 7,
     authorizeGardenAccess: () => ({ clusterId: 1 }),
@@ -97,7 +103,7 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0 } = {}) {
     ensureConversationForLegacyChatSession: () => conversation,
     reserveConversationTurn: ({ clientMessageId }) => ({ userMessage: { client_message_id: clientMessageId, order_index: orderIndex } }),
     annotateConversationTurn: noop, conversationTurnWasCancelled: () => false,
-    deliverCompletedResearch: () => null,
+    deliverCompletedResearch: () => { assert.equal(workflowContinuation, null, "workflow hand-backs must reach synthesis before direct delivery"); return null; },
     parseChatAttachments: () => [], hydrateDocumentAttachments: () => [], retrieveDocumentAttachments: async () => [],
     generateAndApplyConversationTitle: async ({firstPrompt}) => { captured.titlePrompts.push(firstPrompt); return conversation; },
     shouldGenerateConversationTitleForTurn,
@@ -105,7 +111,10 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0 } = {}) {
     resolveHermesEngine: () => ({ model: { modelID: payload.model }, selectedModelID: payload.model, variant: "max" }),
     getRuntimeSessionByChatSession: () => null, resolveConversationRuntime: async () => session,
     listFilesystemGrants: () => [], prepareTurn, mergeSelectedTools, turnCapabilitySelection,
-    resolveCommandMessage: async (_user, text) => ({ userText: text, text, invocations: [] }),
+    resolveCommandMessage: async (_user, text, _workspace, context) => {
+      assert.equal(context.workflowContinuation, workflowContinuation);
+      return commandResolution ?? ({ userText: text, text, invocations: [] });
+    },
     loadSuperAgentInventory: async (input) => { captured.inventoryLoads.push(input); return inventory; },
     renderSuperAgentDirective,
     agentPreferencesContext: (userId) => {
@@ -113,7 +122,7 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0 } = {}) {
       return payload.testPreferences ? renderAgentPreferences(payload.testPreferences) : "";
     },
     shortlistSkillsForTurn: () => { captured.shortlistCalls++; return []; },
-    openableSkills: () => [], listMcpConnections: () => [],
+    computerUseSkillChoices, openableSkills: () => availableSkills, listMcpConnections: () => [],
     adjudicateWebGrounding: async () => ({ required: true }),
     getAgentRuntimeByKind: () => ({ health: noop, applyCapabilityDecision: ({ decision }) => { captured.decision = decision; }, startRun: (input) => { captured.start = input; } }),
     connectedAppRegistryForTurn: async (input) => {
@@ -122,11 +131,12 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0 } = {}) {
     },
     connectedRepositoryForTurn: async () => null,
     persistCapabilityDecision: () => ({ id: 1 }), recordAuditEvent: (event) => captured.audits.push(event), markStatus: noop,
-    getConversationById: () => conversation, loadConversationMemoryBundleHybrid: async () => ({ recentMessages: [] }),
+    getConversationById: () => conversation, loadConversationMemoryBundle: () => ({ recentMessages: [] }),
     stageEditableDocumentAttachments: () => ({ context: "" }),
     prepareDocumentContext: async () => ({ context: "", inlineAttachments: [] }),
-    suppliedEvidenceText: empty, gardenInstructionsContext: empty, gardenTopologyContext: empty,
-    composeMemoryContext: empty, renderSkillShortlistDirective: empty, renderWatchVideoContext: empty,
+    retrieveTerminalGardenGrounding: async () => ({ context: "" }),
+    suppliedEvidenceText: empty, gardenInstructionsContext: empty, gardenSourceInventoryContext: async () => "",
+    composeMemoryContext: empty, renderSkillShortlistDirective, renderWatchVideoContext: empty,
     gardenTurnContext: empty, ...quartzSelection,
     composeHermesSystemPrompt: ({ additional }) => additional,
     beginRuntimeRun: (input) => { captured.run = input; return { id: "run_regression" }; },
@@ -140,7 +150,8 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0 } = {}) {
     failAssistantMessage: () => assert.fail("the dispatch must not fail"),
     hasReconstructableAttachment: () => false, hasAnalyzableAttachment: () => false,
     carriedExternalAgentsForContinuation: () => [{ agentId: "max-research", status: "completed" }],
-    externalAgentCallsForRun: () => [], getLatestRuntimeRun: () => null,
+    externalAgentCallsForRun: () => [], botsStore: () => ({ forConversation: () => null }), conversationPersonalityPrompt: () => "", selectedModelForUser: () => ({ model: payload.model }), getLatestRuntimeRun: () => null,
+    deliverCompletedHyperframes: async () => { assert.equal(workflowContinuation, null, "workflow hand-backs must reach synthesis before direct delivery"); return null; },
   };
   const tree = ast("lib/hermes/garden-chat-adapter.ts");
   for (const node of tree.statements) {
@@ -157,6 +168,45 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0 } = {}) {
   await openGardenAgentChat(payload, new AbortController().signal);
   return captured;
 }
+
+test("a selected workflow survives Garden dispatch and recovery without broader agent privileges", async () => {
+  const command = "/workflows:research Find reliable evidence";
+  const selected = parseUnifiedWorkflowCommand(command);
+  const payload = request(false);
+  payload.messages = [{ role: "user", content: command }];
+  const commandResolution = {
+    userText: selected.textWithoutWorkflow,
+    text: `${renderUnifiedWorkflowGuidance(selected.selection, "garden_chat")}\n\n${selected.textWithoutWorkflow}`,
+    invocations: [{ kind: "agent", slug: "workflows:research", id: "unified-workflow:research" }],
+    workflowSelection: selected.selection,
+  };
+  const result = await dispatch(payload, { commandResolution });
+  assert.deepEqual(result.run.dispatch.workflowSelection, selected.selection);
+  assert.equal(result.run.dispatch.tools.agent_launch, true);
+  assert.ok(result.decision.allowedTools.includes("agent_launch"));
+  assert.match(result.run.dispatch.runtimeText, /Breadboard workflow: Research/);
+  assert.equal(result.firstStart.yoloMode, false);
+  assert.equal(result.start.yoloMode, false, "recovery must retain normal launch approvals");
+  assert.notEqual(result.run.dispatch.capabilities.superAgent, true);
+  assert.equal(result.inventoryLoads.length, 0);
+  assert.equal(result.registry[0].allowAllConnectionTools, false);
+});
+
+test("a verified workflow hand-back reaches Garden synthesis and retains completed jobs", async () => {
+  const selection = parseUnifiedWorkflowCommand("/workflows:research").selection;
+  const workflowContinuation = { selection, originClientMessageId: "origin", completedWork: [{ agentId: "get-doc", brief: "Find one paper" }] };
+  const payload = request(false, true);
+  payload.messages = [{ role: "user", content: "<!-- agent-launch-result:worker --> Paper [S1]" }];
+  const result = await dispatch(payload, {
+    workflowContinuation,
+    commandResolution: { text: "Summarize this verified workflow result", userText: payload.messages[0].content, invocations: [],
+      workflowSelection: selection, workflowCompletedWork: workflowContinuation.completedWork },
+  });
+  assert.equal(result.run.dispatch.tools.agent_launch, true);
+  assert.deepEqual(result.run.dispatch.workflowSelection, selection);
+  assert.deepEqual(result.run.dispatch.workflowCompletedWork, workflowContinuation.completedWork);
+  assert.equal(result.start.yoloMode, false);
+});
 
 test("Garden receives only selected preferences without gaining launch permissions", async () => {
   const preferences = defaultAgentPreferences();
@@ -245,6 +295,14 @@ test("Garden Super Agent survives serialization, brokering, prompt assembly and 
   assert.equal(submitted.payload.yoloMode, true);
 });
 
+test("API Super Agent retains standing approval after runtime recovery without a redundant YOLO flag", async () => {
+  const payload = request(true);
+  delete payload.yoloMode;
+  const result = await dispatch(payload);
+  assert.equal(result.firstStart.yoloMode, true);
+  assert.equal(result.start.yoloMode, true);
+});
+
 test("normal Garden turns and older clients do not inherit Super Agent privileges", async () => {
   const payload = request(false);
   assert.equal(payload.superAgent, false);
@@ -258,6 +316,29 @@ test("normal Garden turns and older clients do not inherit Super Agent privilege
     assert.equal(result.start.yoloMode, false, "an ordinary turn must clear a prior runtime's YOLO bypass");
     assert.doesNotMatch(result.run.dispatch.system, /# super_agent_mode/);
     assert.notEqual(result.run.dispatch.capabilities.superAgent, true);
+  }
+});
+
+test("ordinary Garden dispatch and recovery offer computer skills without claiming they were used", async () => {
+  const availableSkills = [
+    { slug: 'breadboard-use', name: 'Breadboard use', description: 'Operate Breadboard pages.' },
+    { slug: 'computer-use', name: 'Computer use', description: 'Operate native desktop apps.' },
+  ];
+  for (const invocations of [[], [{ kind: 'skill', slug: 'ask-sonner', name: 'Ask Sonner' }]]) {
+    const text = 'I need the visible form completed.';
+    const result = await dispatch({ ...request(false), messages: [{ role: 'user', content: text }] }, {
+      availableSkills, commandResolution: { userText: text, text, invocations },
+    });
+    for (const skill of availableSkills) {
+      assert.ok(result.decision.selectedConditionalSkills.includes(skill.slug), 'skill_open must be authorized');
+      assert.ok(result.run.dispatch.system.includes(skill.slug), 'model must see the choice');
+      assert.ok(!result.run.dispatch.capabilities.skills?.some(used => used.slug === skill.slug), 'offered is not used');
+    }
+    for (const tool of ['skill_open', 'breadboard_use', 'computer_use']) {
+      assert.equal(result.firstStart.tools[tool], true, tool);
+      assert.equal(result.start.tools[tool], true, 'runtime recovery retains the choice');
+    }
+    assert.equal(result.start.yoloMode, false, 'discovery must preserve action approval policy');
   }
 });
 

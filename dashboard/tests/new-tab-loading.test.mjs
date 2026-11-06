@@ -73,3 +73,30 @@ test("background counts preserve garden exclusions and refresh real files", asyn
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("expired card counts return immediately while one shared refresh is pending", async () => {
+  invalidateGardenNoteCount();
+  await cachedGardenNoteCountAsync("/cards", "math", async () => 42, { now: () => 0 });
+  let release, walks = 0;
+  const scan = () => { walks++; return new Promise(resolve => { release = resolve; }); };
+  const options = { now: () => 20_000, staleWhileRevalidate: true };
+  assert.deepEqual(await Promise.all(Array.from({length: 5}, () =>
+    cachedGardenNoteCountAsync("/cards", "math", scan, options))), [42,42,42,42,42]);
+  assert.equal(walks, 1);
+  const fresh = cachedGardenNoteCountAsync("/cards", "math", scan, { now: () => 20_000 });
+  release(43);assert.equal(await fresh, 43);
+  assert.equal(readCachedGardenNoteCount("/cards", "math"), 43);
+});
+
+test("a failed background count retains real data and invalidation still forces a fresh read", async () => {
+  invalidateGardenNoteCount();
+  await cachedGardenNoteCountAsync("/cards", "math", async () => 7, { now: () => 0 });
+  const options = { now: () => 20_000, staleWhileRevalidate: true };
+  assert.equal(await cachedGardenNoteCountAsync("/cards", "math", async () => { throw Error('disk busy'); }, options), 7);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(readCachedGardenNoteCount("/cards", "math"), 7);
+  invalidateGardenNoteCount("math");
+  let release;
+  const fresh = cachedGardenNoteCountAsync("/cards", "math", () => new Promise(resolve => { release = resolve; }), options);
+  await Promise.resolve();release(8);assert.equal(await fresh, 8);
+});

@@ -1,3 +1,4 @@
+import { onObjectDispose } from "../../util/objectLifecycle"
 import { artifactKindLabel, parseArtifactReference } from "../../util/artifactReference"
 
 const PROTOCOL = "breadboard:interactive-visualizer:v1"
@@ -5,14 +6,18 @@ const PROTOCOL = "breadboard:interactive-visualizer:v1"
 // Messages are also scoped to the exact child window, including duplicate embeds.
 const PREVIEW_CHANNEL = "standalone"
 
-document.addEventListener("nav", () => {
-  for (const code of document.querySelectorAll<HTMLElement>("code.breadboard-artifact-block")) {
+const breadboardArtifactEditorHydrate = (event: Event) => {
+  const root: ParentNode = (event as CustomEvent).detail?.root ?? document
+
+  for (const code of root.querySelectorAll<HTMLElement>("code.breadboard-artifact-block")) {
     const card = document.createElement("aside")
     card.className = "breadboard-artifact-card"
     card.dataset.artifactReference = code.dataset.artifactReference ?? ""
     ;(code.closest("pre") ?? code).replaceWith(card)
   }
-  for (const card of document.querySelectorAll<HTMLElement>(".breadboard-artifact-card")) {
+  for (const card of root.querySelectorAll<HTMLElement>(".breadboard-artifact-card")) {
+    if (card.dataset.editorHydrated === "true") continue
+    card.dataset.editorHydrated = "true"
     const reference = parseArtifactReference(card.dataset.artifactReference ?? "")
     const header = document.createElement("div")
     header.className = "breadboard-artifact-header"
@@ -109,7 +114,7 @@ document.addEventListener("nav", () => {
     window.addEventListener("message", onMessage)
     const observer = new MutationObserver(sendContext)
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["saved-theme", "data-theme", "class"] })
-    window.addCleanup(() => {
+    onObjectDispose(card, () => {
       clearTimeout(openTimer)
       clearTimeout(previewTimer)
       observer.disconnect()
@@ -128,4 +133,6 @@ document.addEventListener("nav", () => {
     // Renderer identity is checked by the authenticated host before embedding.
     if (reference.kind === "html") loadPreview()
   }
-})
+}
+document.addEventListener("nav", breadboardArtifactEditorHydrate)
+document.addEventListener("bb:hydrate-objects", breadboardArtifactEditorHydrate)

@@ -231,7 +231,8 @@ function readSkillFiles(root: string): Array<{ relativePath: string; contents: B
         continue;
       }
       if (!entry.isFile()) continue;
-      const resolved = externalRuntimePortableRealpath(absolute);
+      // The walk starts at the resolved root and refuses links, so this is canonical.
+      const resolved = absolute;
       const relative = path.relative(rootRealPath, resolved);
       if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
         throw new Error(`Reverse skill file escapes its source directory: ${absolute}`);

@@ -30,6 +30,47 @@ test("notification permissions persist by origin, pause globally, and can be res
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("media grants persist independently, migrate existing profiles, and fail closed", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-media-preferences-"));
+  const origin = "https://example.org";
+  try {
+    fs.writeFileSync(path.join(dir, "browser-preferences.json"), JSON.stringify({
+      notificationsEnabled: false, sites: { [origin]: "granted" }, translationLanguage: "en",
+    }));
+    const store = new BrowserPreferenceStore(dir);
+    assert.equal(store.mediaPermission(origin, "microphone"), "default");
+    assert.ok(store.update({ type: "browser-media-permission", origin, media: ["microphone"], permission: "granted" }));
+    const reopened = new BrowserPreferenceStore(dir);
+    assert.equal(reopened.mediaPermission(origin + "/voice", "microphone"), "granted");
+    assert.equal(reopened.mediaPermission(origin, "camera"), "default");
+    assert.equal(reopened.mediaPermission("https://sub.example.org", "microphone"), "default");
+    assert.equal(reopened.mediaPermission(origin + ":8443", "microphone"), "default");
+    assert.equal(reopened.permission(origin), "denied", "notification switch does not disable media");
+    reopened.snapshot().mediaSites![origin]!.microphone = "denied";
+    assert.equal(reopened.mediaPermission(origin, "microphone"), "granted", "snapshots are detached");
+    assert.ok(reopened.update({ type: "browser-media-permission", origin, media: ["camera"], permission: "denied" }));
+    assert.ok(reopened.update({ type: "browser-media-permission", origin, media: ["microphone"], permission: "default" }));
+    const reset = new BrowserPreferenceStore(dir);
+    assert.equal(reset.mediaPermission(origin, "microphone"), "default");
+    assert.equal(reset.mediaPermission(origin, "camera"), "denied");
+    assert.equal(reset.mediaPermission("http://example.org", "microphone"), "denied");
+    fs.writeFileSync(path.join(dir, "browser-preferences.json"), "broken");
+    assert.equal(new BrowserPreferenceStore(dir).mediaPermission(origin, "microphone"), "denied");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("media commands reject unsupported devices, unsafe origins, and malformed decisions", () => {
+  const command = { type: "browser-media-permission", origin: "https://example.org", media: ["microphone", "camera"], permission: "granted" };
+  assert.ok(isTabsCommand(command));
+  for (const media of [[], ["screen"], ["audio"], ["camera", "camera"], "microphone", null]) {
+    assert.equal(isTabsCommand({ ...command, media }), false);
+  }
+  for (const origin of ["https://example.org/path", "http://example.org", "file:///tmp/a", null]) {
+    assert.equal(isTabsCommand({ ...command, origin }), false);
+  }
+  assert.equal(isTabsCommand({ ...command, permission: "allow" }), false);
+});
+
 test("web permissions and translation commands reject unsafe origins and malformed payloads", () => {
   for (const value of ["http://example.org", "https://user:pass@example.org", "file:///test", "data:text/html,a", "null"]) assert.equal(notificationOrigin(value), null);
   assert.equal(notificationOrigin("http://localhost:4351/test"), "http://localhost:4351");

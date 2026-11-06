@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -35,20 +36,6 @@ function hasExactKeys(value, keys) {
   const expected = [...keys].sort();
   return actual.length === expected.length &&
     actual.every((key, index) => key === expected[index]);
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32"
-    ? a.toLowerCase() === b.toLowerCase()
-    : a === b;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" ||
-    (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
 function readBoundedJson(filePath, maximumBytes, label) {
@@ -1029,7 +1016,13 @@ async function runArtifactRender(launch, modules, signal) {
     } else {
       const pdf = await modules.markdownPdf.renderMarkdownToPdf(
         [{ content: parsed.body, title }],
-        { title, theme },
+        {
+          title,
+          theme,
+          clusterSlug: launch.executionScope.gardenId ?? undefined,
+          requireImages: true,
+          signal,
+        },
       );
       fs.writeFileSync(outputPath, pdf, { flag: "wx", mode: 0o600 });
       previewPath = outputPath;
@@ -1068,7 +1061,11 @@ async function runMarkdownPdf(launch, modules, signal) {
     !Array.isArray(bundle.documents) ||
     bundle.documents.length !== launch.request.documentCount ||
     bundle.documents.some((document) =>
-      !hasExactKeys(document, ["content", "title"]) ||
+      !hasExactKeys(document, ["content", "title",
+        ...(document?.slug === undefined ? [] : ["slug"]),
+        ...(document?.folderTitle === undefined ? [] : ["folderTitle"])]) ||
+      (document.slug !== undefined && typeof document.slug !== "string") ||
+      (document.folderTitle !== undefined && typeof document.folderTitle !== "string") ||
       typeof document.content !== "string" ||
       typeof document.title !== "string" ||
       !document.title.trim()) ||
@@ -1083,6 +1080,7 @@ async function runMarkdownPdf(launch, modules, signal) {
       {
         title: bundle.title,
         clusterSlug: launch.executionScope.gardenId ?? undefined,
+        signal,
       },
     );
     fs.writeFileSync(outputPath, pdf, { flag: "wx", mode: 0o600 });

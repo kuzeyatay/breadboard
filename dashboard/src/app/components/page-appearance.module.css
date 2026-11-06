@@ -12,6 +12,18 @@
   position: relative;
 }
 
+.anchor[data-placement="terminal"] {
+  position: fixed;
+  /* A parked tab can report a zero dock height. Keep the trigger clear of the
+     resting terminal even before its next ResizeObserver measurement. */
+  inset: auto 0 calc(max(var(--bb-dock-height, 0px), var(--terminal-collapsed-height, 42px)) + 32px + env(safe-area-inset-bottom, 0px));
+}
+.anchor[data-placement="terminal"] .customizeButton {
+  top: auto;
+  bottom: 0;
+  right: max(24px, env(safe-area-inset-right, 0px));
+}
+
 .customizeButton {
   position: absolute;
   top: 40px;
@@ -38,51 +50,12 @@
   box-shadow: var(--neu-inset-shadow);
 }
 
-.customizeButton:focus-visible,
-.drawer button:focus-visible,
-.drawer a:focus-visible {
+.customizeButton:focus-visible {
   outline: 2px solid var(--neu-focus);
   outline-offset: 3px;
 }
 
-.scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  background: rgb(7 13 10 / 24%);
-  backdrop-filter: blur(2px);
-}
-
-.drawer:global(.browser-wallpaper-drawer) {
-  position: fixed;
-  z-index: 91;
-  top: calc(var(--breadboard-titlebar-height, 0px) + 24px);
-  right: 24px;
-  bottom: 24px;
-  width: min(390px, calc(100vw - 48px));
-  max-height: 850px;
-  padding: 20px;
-  box-sizing: border-box;
-  overflow: hidden;
-  transform: none;
-  transition: none;
-}
-
-.drawer > header,
-.description {
-  flex: none;
-}
-
-.choices {
-  min-height: 0;
-  margin-top: 18px;
-  padding: 3px 8px 8px 4px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  /* Use Breadboard's shared recessed track and rounded botanical thumb.
-     Native thin/color overrides suppress that material in Chromium. */
-  scrollbar-gutter: stable;
-}
+.choices { display: block; }
 
 .pageTabs {
   display: grid;
@@ -131,6 +104,23 @@
 
 .choices :global(.browser-wallpaper-grid) {
   overflow: visible;
+}
+
+.choices :global(.browser-wallpaper-thumbnail) > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.imageStatus {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  background: var(--paper-raised);
+  color: var(--ink-muted);
+  font: 500 11px/1.4 var(--font-source-sans), sans-serif;
 }
 
 .hint {
@@ -211,6 +201,35 @@
   border-radius: 14px;
   background: color-mix(in srgb, var(--botanical) 4%, var(--paper-raised));
 }
+
+.spotifyChoice { margin-top: 16px; }
+.spotifyButton {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--paper-raised) 75%, transparent);
+  color: var(--ink-heading);
+  text-align: left;
+  cursor: pointer;
+}
+.spotifyButton[aria-pressed="true"] { border-color: var(--botanical); box-shadow: inset 0 0 0 1px var(--botanical); }
+.spotifyButton:focus-visible { outline: 2px solid var(--botanical); outline-offset: 3px; }
+.spotifyButton > span:nth-child(2) { min-width: 0; flex: 1; }
+.spotifyButton strong { display: block; font-size: 12px; font-weight: 600; }
+.spotifyButton small { display: block; margin-top: 4px; color: var(--ink-muted); font-size: 11px; line-height: 1.5; }
+.spotifyPreview { position: relative; display: grid; flex: none; width: 68px; height: 60px; overflow: hidden; place-items: center; border-radius: 11px; }
+.spotifyPreview > svg { position: relative; width: 22px; height: 22px; color: #122019; }
+.spotifyPreview:has([data-theme="dark"]) > svg { color: #fbfcf9; }
+.rainPreview {
+  background:
+    repeating-linear-gradient(104deg, transparent 0 12px, rgb(239 248 252 / 40%) 13px 14px, transparent 15px 25px),
+    linear-gradient(145deg, #b6d0d5, #577c8c);
+}
+.rainPreview > svg { color: #f9fcfd; filter: drop-shadow(0 1px 3px rgb(27 52 64 / 25%)); }
 
 .uploadCard[data-dragging="true"] {
   border-style: solid;
@@ -330,13 +349,6 @@
     right: 20px;
   }
 
-  .drawer:global(.browser-wallpaper-drawer) {
-    top: calc(var(--breadboard-titlebar-height, 0px) + 12px);
-    right: 12px;
-    bottom: 12px;
-    width: calc(100vw - 24px);
-    padding: 16px;
-  }
 
   .pageTabs button,
   .upload {
@@ -348,3 +360,6 @@
     height: 44px;
   }
 }
+
+.choices :global(.browser-wallpaper-categories[hidden]),
+.choices :global(.browser-wallpaper-grid[hidden]) { display: none; }

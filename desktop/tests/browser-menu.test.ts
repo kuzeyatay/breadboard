@@ -12,7 +12,7 @@ function flatten(items: MenuItemConstructorOptions[]): MenuItemConstructorOption
 test("every browser menu action is wired and the menu reports the actual page zoom", () => {
   const calls: BrowserMenuAction[] = [];
   const items = flatten(browserMenuTemplate({ profileLabel: "One & Two", hasPage: true, zoomPercent: 150, fullscreen: true }, action => calls.push(action)));
-  assert.equal(items[0]!.label, "One && Two");
+  assert.equal(items[0]!.label, "Settings");
   assert.ok(items.some(item => item.label === "Zoom · 150%"));
   assert.equal(items.find(item => item.id === "fullscreen")!.checked, true);
   const actions = items.filter(item => item.id);
@@ -32,6 +32,8 @@ test("page-only commands are unavailable on browser home and zoom stays within i
     assert.equal(home.find(item => item.id === id)!.enabled, false, id);
   }
   assert.equal(home.find(item => item.id === "downloads")!.enabled, true);
+  assert.equal(home.find(item => item.id === "visited-pages")!.enabled, true);
+  assert.equal(home.find(item => item.id === "visited-pages")!.label, "Visited pages");
   assert.equal(home.find(item => item.id === "find")!.enabled, true, "browser home is searchable too");
   const maximum = flatten(browserMenuTemplate({ profileLabel: "Profile", hasPage: true, zoomPercent: 300, fullscreen: false }, () => {}));
   assert.equal(maximum.find(item => item.id === "zoom-in")!.enabled, false);
@@ -64,4 +66,25 @@ test("Save Page produces valid Windows filenames without accepting paths", () =>
   assert.equal(savedPageFilename("CON"), "Saved page.html");
   assert.equal(savedPageFilename("..\\folder/page: test?"), ".. folder page  test.html");
   assert.equal(savedPageFilename("Breadboard guide"), "Breadboard guide.html");
+});
+
+test("no keystroke can quit the app, and Exit stays reachable from the menu", () => {
+  // Ctrl/Cmd+Shift+Q fired from inside any browser tab and quit instantly with
+  // no confirmation, ending a multi-hour Learn run (2026-09-22). Quitting must
+  // be a deliberate menu choice, not a keystroke landing in a web page.
+  const press = (key: string, shift = true) => browserMenuShortcut({
+    type: "keyDown", key, control: true, meta: false, shift, alt: false, isAutoRepeat: false,
+  });
+
+  assert.equal(press("q"), null, "Ctrl+Shift+Q must not map to any action");
+  assert.equal(press("Q"), null, "the uppercase form must not either");
+
+  // The neighbouring shortcuts must keep working.
+  assert.equal(press("p"), "new-private-tab");
+  assert.equal(press("i"), "developer-tools");
+
+  const items = flatten(browserMenuTemplate({ profileLabel: "x", hasPage: true, zoomPercent: 100, fullscreen: false }, () => {}));
+  const exit = items.find(item => item.id === "quit");
+  assert.ok(exit, "Exit is still offered in the menu");
+  assert.equal(exit.accelerator, undefined, "and advertises no accelerator");
 });

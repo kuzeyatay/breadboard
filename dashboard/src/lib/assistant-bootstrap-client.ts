@@ -1,7 +1,10 @@
 "use client";
 
+import { readTerminalData } from "./terminal-data-client.ts";
+
 export interface AssistantPreferencesPayload {
   model?: unknown;
+  fallbackModel?: unknown;
   reasoningEffort?: unknown;
   reasoningEffortByModel?: unknown;
   userPreference?: unknown;
@@ -19,7 +22,7 @@ export async function loadAssistantPreferences(): Promise<AssistantPreferencesPa
   if (preferences) return preferences;
   if (preferencesRequest) return preferencesRequest;
   const version = preferencesVersion;
-  preferencesRequest = fetch("/api/assistant-preferences", { cache: "no-store" })
+  preferencesRequest = readTerminalData("/api/assistant-preferences")
     .then(async (response) => {
       if (!response.ok) return null;
       const data = await response.json().catch(() => null);

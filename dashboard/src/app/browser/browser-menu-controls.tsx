@@ -7,7 +7,7 @@ import styles from "./browser-menu-controls.module.css";
 
 export default function BrowserMenuControls({ profileLabel, onPanel }: {
   profileLabel: string;
-  onPanel: (panel: "history" | "starred" | "downloads") => void;
+  onPanel: (panel: "history" | "visited-pages" | "starred" | "downloads") => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [error, setError] = useState("");
@@ -16,7 +16,7 @@ export default function BrowserMenuControls({ profileLabel, onPanel }: {
   useEffect(() => {
     const action = (event: Event) => {
       const action = (event as CustomEvent).detail;
-      if (action === "history" || action === "bookmarks" || action === "downloads") {
+      if (action === "history" || action === "visited-pages" || action === "bookmarks" || action === "downloads") {
         onPanel(action === "bookmarks" ? "starred" : action);
       }
     };

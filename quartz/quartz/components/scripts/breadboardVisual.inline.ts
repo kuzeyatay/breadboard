@@ -1026,8 +1026,10 @@ function buildCard(spec: Spec): HTMLElement {
   return card
 }
 
-document.addEventListener("nav", () => {
-  const nodes = document.querySelectorAll("code.breadboard-visual-block") as NodeListOf<HTMLElement>
+const breadboardVisualEditorHydrate = (event: Event) => {
+  const root: ParentNode = (event as CustomEvent).detail?.root ?? document
+
+  const nodes = root.querySelectorAll("code.breadboard-visual-block") as NodeListOf<HTMLElement>
   for (const code of nodes) {
     const host = (code.closest("pre") as HTMLElement | null) ?? code
     if (host.dataset.bvBound === "true") continue
@@ -1057,4 +1059,6 @@ document.addEventListener("nav", () => {
       host.remove()
     }
   }
-})
+}
+document.addEventListener("nav", breadboardVisualEditorHydrate)
+document.addEventListener("bb:hydrate-objects", breadboardVisualEditorHydrate)

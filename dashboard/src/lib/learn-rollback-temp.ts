@@ -144,7 +144,10 @@ export function reclaimStaleLearnRollbackRoots(
         result.skippedActive.push(candidate);
         continue;
       }
-      if (nowMs - stats.mtimeMs < staleAfterMs) {
+      // A root whose recorded owner has exited is dead now; the age rule is
+      // only for roots with no readable owner. Waiting a day let six ~1.5 GB
+      // copies pile up across failed runs (telecom-1, 2026-09-30).
+      if (!owner && nowMs - stats.mtimeMs < staleAfterMs) {
         result.skippedRecent.push(candidate);
         continue;
       }

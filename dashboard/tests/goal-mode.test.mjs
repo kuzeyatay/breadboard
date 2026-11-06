@@ -29,11 +29,14 @@ test("Goal Mode state is contained and keeps the upstream goal_state schema", ()
     now: new Date("2026-08-15T12:00:00.000Z"),
   });
   assert.deepEqual(Object.keys(state).sort(), [
+    "accounting",
+    "continuation_deferred",
     "created_at",
     "goal_id",
     "objective",
     "status",
     "time_used_seconds",
+    "token_budget",
     "tokens_used",
     "turn_budget",
     "turns_used",

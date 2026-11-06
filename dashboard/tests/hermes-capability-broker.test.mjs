@@ -88,6 +88,20 @@ test("every broad built-in tool is explicitly denied by default", () => {
   }
 });
 
+test("garden tools reach a turn that never says the word garden", () => {
+  for (const surface of ["dashboard_terminal", "garden_chat"]) {
+    const tools = enabledTools(broker("Check the study guides under my classes on ee year 2.", { surface }));
+    assert.ok(tools.includes("garden_search"), `${surface} must be able to retrieve`);
+    assert.ok(tools.includes("garden_save_note"), `${surface} must be able to author`);
+    assert.ok(!tools.includes("bash"), `${surface} must not gain a shell`);
+  }
+  const quartz = enabledTools(broker("Check the study guides under my classes.", {
+    surface: "quartz_ai",
+    isolated: true,
+  }));
+  assert.ok(!quartz.includes("garden_save_note"), "public Quartz never writes");
+});
+
 test("garden questions activate only garden read tools", () => {
   const grant = broker("What does my garden say about modulation?");
   const tools = enabledTools(grant);

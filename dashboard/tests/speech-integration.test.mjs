@@ -56,7 +56,7 @@ const prepareClient = source("../src/lib/speech/prepare-client.ts");
 test("Settings label writing calibration as Tone and audio controls as Voice", () => {
   assert.match(settingsDialog, /value: "voice",\s*label: "Tone"/);
   assert.match(settingsDialog, /value: "speech",\s*label: "Voice"/);
-  assert.match(toneSettings, /Tone calibration/);
+  assert.match(toneSettings, /Writing style/);
   assert.doesNotMatch(toneSettings, /Voice calibration/);
   assert.doesNotMatch(toneSettings, /Using defaults/);
 });
@@ -100,7 +100,7 @@ test("every shared assistant composer receives recording and transcription", () 
   assert.match(dictation, /encodePcm16Wav/);
   assert.match(dictation, /recorder\.start\(\)/);
   assert.doesNotMatch(dictation, /recorder\.start\(250\)/);
-  assert.match(dictation, /\/api\/speech\/transcribe/);
+  assert.match(source('../src/lib/speech/dictation-transcript.ts'), /\/api\/speech\/transcribe/);
   assert.match(dictation, /stopForegroundStream/);
   assert.match(dictation, /5 \* 60_000/);
   assert.match(dictation, /aria-label=\{label\}/);
@@ -108,16 +108,16 @@ test("every shared assistant composer receives recording and transcription", () 
   assert.match(permissionHelp, /openSystemMicrophoneSettings/);
 });
 
-test("voice mode can warm Voicebox before recording the first turn", () => {
-  assert.match(prepare, /export async function POST\(\)/);
+test("voice prepares in the background without blocking microphone capture", () => {
+  assert.match(prepare, /export async function POST\(/);
   assert.match(prepare, /requireUserId\(\)/);
-  assert.match(prepare, /voiceboxJson<\{ models: unknown\[\] \}>\("\/models\/status"/);
+  assert.match(prepare, /"\/models\/status"/);
   assert.match(voiceboxClient, /startupFailureMessage\(\)/);
-  assert.match(dictation, /await prepareLocalSpeech\(prepareController\.signal\)/);
+  const sharedProvider = source('../src/lib/speech/dictation-provider.ts');
+  assert.match(sharedProvider, /void prepareLocalSpeech\(signal\)/);
   assert.ok(
-    dictation.indexOf("await prepareLocalSpeech(prepareController.signal)") <
-      dictation.indexOf("await requestForegroundMicrophone"),
-    "Dictate live must wait for Voicebox before it starts capturing audio",
+    dictation.indexOf("await requestForegroundMicrophone") < dictation.indexOf("await openDictationProvider"),
+    "Dictate live captures before warming the service",
   );
   assert.match(prepareClient, /SPEECH_RECONNECT_DELAYS_MS/);
   assert.doesNotMatch(prepareClient, /throw lastFailure/);
@@ -152,6 +152,9 @@ test("local speech startup is shared, reconnects once, and hides raw fetch error
     finishFirstRequest();
     await Promise.all([first, second]);
     assert.equal(calls, 1);
+    await prepareLocalSpeech();
+    assert.equal(calls, 1, 'recent readiness avoids another startup request');
+    resetSpeechPreparation();
 
     globalThis.fetch = async () => {
       calls += 1;
@@ -164,7 +167,12 @@ test("local speech startup is shared, reconnects once, and hides raw fetch error
       speechErrorMessage(new TypeError("Failed to fetch"), "fallback"),
       "Breadboard lost its connection to speech. Try again in a moment.",
     );
+    assert.equal(
+      speechErrorMessage(new DOMException('signal timed out', 'TimeoutError'), 'fallback'),
+      'Speech took too long to respond. Please try again.',
+    );
   } finally {
+    resetSpeechPreparation();
     globalThis.fetch = originalFetch;
   }
 });

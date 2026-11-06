@@ -9,7 +9,7 @@ import {
   renameGardenFolder,
 } from '@/lib/garden-filesystem';
 import { isGardenMutationBusyError } from '@/lib/garden-mutation-lease';
-import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
+import { requireOwnedClusterFromSlug, requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,14 +30,14 @@ export function OPTIONS(): Response {
   return new Response(null, { status: 204, headers: API_HEADERS });
 }
 
-async function getContext(clusterSlug: unknown): Promise<
+async function getContext(clusterSlug: unknown, readable = false): Promise<
   { error: NextResponse } | { clusterSlug: string; clusterId: number; userId: number }
 > {
   if (typeof clusterSlug !== 'string' || !clusterSlug.trim()) {
     return { error: json({ error: 'clusterSlug is required' }, { status: 400 }) };
   }
   try {
-    const { cluster, userId } = await requireOwnedClusterFromSlug(clusterSlug);
+    const { cluster, userId } = await (readable ? requireReadableClusterFromSlug : requireOwnedClusterFromSlug)(clusterSlug);
     return { clusterSlug: cluster.slug, clusterId: cluster.id, userId };
   } catch (error) {
     return { error: routeErrorResponse(error) };
@@ -65,9 +65,16 @@ function failure(error: unknown): NextResponse {
 
 // Empty folders must remain visible even while the static site is rebuilding.
 export async function GET(request: Request): Promise<NextResponse> {
-  const context = await getContext(new URL(request.url).searchParams.get('clusterSlug'));
+  const params = new URL(request.url).searchParams;
+  const context = await getContext(params.get('clusterSlug'), params.get('render') === '1');
   if ('error' in context) return context.error;
   try {
+    if (params.get('render') === '1') {
+      const { readGardenFolderPage } = await import('@/lib/garden-folder-reader');
+      return json({ success: true, reader: await readGardenFolderPage(context.clusterSlug, params.get('folder') ?? '') }, {
+        headers: { 'Cache-Control': 'no-store' },
+      });
+    }
     return json({ folders: listGardenFolders(context.clusterSlug) }, {
       headers: { 'Cache-Control': 'no-store' },
     });
@@ -97,7 +104,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 }
 
-// Move a single note (identified by its basename slug) into `toFolder` ("" = root).
+// Move a note by relative path (or unique basename) into `toFolder` ("" = root).
 export async function PATCH(request: Request): Promise<NextResponse> {
   const body = await request.json().catch(() => ({}));
   const context = await getContext(body.clusterSlug);

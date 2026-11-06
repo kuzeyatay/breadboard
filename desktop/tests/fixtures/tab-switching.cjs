@@ -3,10 +3,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
 const { pathToFileURL } = require("node:url");
-const { app } = require("electron");
+const { app, ipcMain } = require("electron");
 const { WindowManager } = require("../../dist/main/window-manager.js");
 const dir = process.argv[2];
 app.setPath("userData", path.join(dir, "user-data"));
+// Invisible test windows must still produce the frames required for a handoff.
+app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const until = async (probe, label) => {
   const deadline = Date.now() + 8000;
@@ -41,19 +43,27 @@ app.whenReady().then(async () => {
   const window = manager.createMainWindow();
   window.setOpacity(0);
   window.showInactive();
-  const base = window.webContents;
+  const host = manager.tabs.hosts.get(window.id);
+  const base = manager.page(window);
+  for (const name of ["bookmarks", "recent-searches"]) ipcMain.handle("breadboard:get-browser-" + name, () => []);
+  ipcMain.handle("breadboard:get-browser-downloads", () => ({items:[],error:null}));
+  ipcMain.handle("breadboard:get-browser-history", () => ({items:[],error:null}));
   await base.loadURL(origin + "/base");
   const command = value => manager.tabs.handleCommand(second?.webContents ?? base, value);
   let second;
   const state = () => manager.tabs.stateFor(second?.webContents ?? base);
-  const views = () => window.contentView.children.filter(view =>
-    view.webContents?.getURL().startsWith(origin) && view.getBounds().y === 0);
+  const selected = async id => until(() => host.presentedId === id && !host.pending, "selected content presented");
+  const activeView = () => host.tabs.find(tab => tab.id === host.activeId).view;
+  await until(() => host.shellEnabled, "independent controls enabled");
+  manager.tabs.setMemoryPressure("normal");
   command({ type: "open", url: origin + "/second" });
-  second = await until(() => views().find(view => view.webContents.getURL().endsWith("/second")), "second tab revealed");
   const secondId = state().activeId;
+  await selected(secondId);
+  second = activeView();
   command({ type: "open", url: origin + "/third" });
-  const third = await until(() => views().find(view => view.webContents.getURL().endsWith("/third")), "third tab revealed");
   const thirdId = state().activeId;
+  await selected(thirdId);
+  const third = activeView();
 
   // Retiring the original page used to leave its header's native drag region
   // over the newer tab controls, even though about:blank contains no header.
@@ -86,108 +96,60 @@ app.whenReady().then(async () => {
   press(second.webContents, "9", ["control"]);
   await until(() => state().activeId === thirdId, "Ctrl+9 selects the last tab");
 
-  // Warm pages must reuse their frame even when the renderer stops delivering
-  // animation frames. Native clicks are separately verified in the live app.
-  for (const [id, view] of [[secondId, second], [thirdId, third], [secondId, second], [thirdId, third]]) {
-    await view.webContents.executeJavaScript("requestAnimationFrame = () => 1; true");
-    const boundsDuringSwitch = [];
+  // Resident switches preserve their document and viewport without JS probes.
+  const frameReady = manager.tabs.frameReady;
+  let probes = 0;
+  manager.tabs.frameReady = (...args) => { probes++; return frameReady.apply(manager.tabs, args); };
+  for (let iteration = 0; iteration < 20; iteration++) {
+    const [id, view] = iteration % 2 ? [thirdId, third] : [secondId, second];
+    const mutations = [];
     const setBounds = view.setBounds;
-    view.setBounds = function (bounds) {
-      boundsDuringSwitch.push(bounds);
-      return setBounds.call(this, bounds);
-    };
-    const started = Date.now();
+    view.setBounds = function (bounds) { mutations.push(bounds); return setBounds.call(this, bounds); };
     command({ type: "activate", id });
-    await until(() => views().length === 1 && views()[0] === view, "warm tab selected");
+    assert.equal(host.presentedId, id);
+    assert.equal(host.pending, null);
     view.setBounds = setBounds;
-    const [width, height] = window.getContentSize();
-    assert.ok(boundsDuringSwitch.every(bounds =>
-      bounds.x === 0 && bounds.y === 0 && bounds.width === width && bounds.height === height),
-    "a warm tab must keep its visible compositor bounds instead of taking an offscreen round trip: " +
-      JSON.stringify(boundsDuringSwitch));
-    assert.ok(Date.now() - started < 250, "warm selection must not wait for a renderer probe");
+    assert.equal(mutations.length, 0, "resident viewport does not change during selection");
     assert.equal(state().navigationPending, false);
     assert.equal(await view.webContents.executeJavaScript("document.querySelector('#draft').value"), "kept");
   }
+  assert.equal(probes, 0, "resident selection never asks a renderer to become ready again");
+  manager.tabs.frameReady = frameReady;
 
-  // Switching away from a cold reveal must cancel its later commit.
+  // A slow request must not hold selection or later steal it back.
   command({ type: "open", url: origin + "/cold" });
   await until(() => releaseCold, "cold request held");
   command({ type: "activate", id: secondId });
-  await until(() => views().length === 1 && views()[0] === second, "warm tab cancels the cold reveal");
-  assert.deepEqual(views(), [second]);
+  await selected(secondId);
   releaseCold();
   await until(() => state().tabs.find(tab => tab.url.endsWith("/cold"))?.loading === false, "cancelled tab loaded");
   await sleep(100);
-  assert.equal(state().activeId, secondId);
-  assert.deepEqual(views(), [second]);
+  assert.equal(host.activeId, secondId);
+  assert.equal(host.presentedId, secondId);
 
-  // A complete server-rendered document is not enough: React can still be
-  // loading the tab bar. Keep the previous live controls beyond the ordinary
-  // compositor deadline, then reveal as soon as the new strip mounts.
+  // Content need not hydrate a duplicate strip before the user can see it.
   command({ type: "open", url: origin + "/hydrating" });
-  const hydrating = await until(() => window.contentView.children.find(view =>
-    view.webContents?.getURL() === origin + "/hydrating"), "hydrating document attached");
-  await until(() => state().tabs.find(tab => tab.url.endsWith("/hydrating"))?.loading === false,
-    "hydrating document finished loading");
-  await sleep(2_800);
-  assert.deepEqual(views(), [second], "a page with no tab strip must not cover the live tabs");
-  await hydrating.webContents.executeJavaScript(`
-    document.querySelector('header').insertAdjacentHTML('beforeend', '<div role="tablist"><button role="tab">Restored tabs</button></div>'); true
-  `);
-  await until(() => views().length === 1 && views()[0] === hydrating, "hydrated tabs revealed");
+  const hydratingId = host.activeId;
+  await selected(hydratingId);
+  const hydrating = activeView();
+  assert.equal(await hydrating.webContents.executeJavaScript("document.querySelector('[role=tablist]') === null"), true);
+  assert.ok(window.contentView.children.indexOf(host.shell.view) > window.contentView.children.indexOf(hydrating));
 
-  // Cancelling a hydration wait must never commit that page later.
-  command({ type: "open", url: origin + "/hydrating-cancelled" });
-  const cancelled = await until(() => window.contentView.children.find(view =>
-    view.webContents?.getURL() === origin + "/hydrating-cancelled"), "second hydration wait started");
-  command({ type: "activate", id: secondId });
-  await until(() => views().length === 1 && views()[0] === second, "hydration wait cancelled");
-  await cancelled.webContents.executeJavaScript(`
-    document.querySelector('header').insertAdjacentHTML('beforeend', '<div role="tablist"></div>'); true
-  `);
-  await sleep(1_300);
-  assert.deepEqual(views(), [second]);
-
-  // Browser chrome is transparent over its native page. That page must be in
-  // the window before removing the outgoing tab, including on a warm switch.
   manager.tabs.setBrowserUrl(origin + "/browser");
   command({ type: "browser", url: origin + "/web-page" });
-  const browserId = state().activeId;
-  const browserPage = await until(() => window.contentView.children.find(view =>
-    view.webContents?.getURL() === origin + "/web-page"), "native browser page attached");
-  const browserChrome = await until(() => views().find(view =>
-    view.webContents.getURL() === origin + "/browser"), "browser chrome revealed");
-  await browserChrome.webContents.executeJavaScript("requestAnimationFrame = () => 1; true");
-  command({ type: "activate", id: secondId });
-  await until(() => views().length === 1 && views()[0] === second, "leaving browser tab");
-  assert.equal(window.contentView.children.includes(browserPage), false);
-  let pageCoveredHandoff = false;
-  const removeChildView = window.contentView.removeChildView;
-  window.contentView.removeChildView = function (view) {
-    if (view === second) pageCoveredHandoff = this.children.includes(browserPage);
-    return removeChildView.call(this, view);
-  };
-  command({ type: "activate", id: browserId });
-  await until(() => views().length === 1 && views()[0] === browserChrome, "warm browser selected");
-  window.contentView.removeChildView = removeChildView;
-  assert.equal(pageCoveredHandoff, true, "the native browser page covers the transparent shell before the outgoing tab leaves");
-  assert.equal(window.contentView.children.includes(browserPage), true);
+  const firstBrowser = host.tabs.find(tab => tab.id === host.activeId);
+  await selected(firstBrowser.id);
   command({ type: "browser", url: origin + "/web-page-two" });
-  const secondBrowserId = state().activeId;
-  const secondBrowserPage = await until(() => window.contentView.children.find(view =>
-    view.webContents?.getURL() === origin + "/web-page-two"), "second browser page attached");
-  command({ type: "activate", id: browserId });
-  await until(() => window.contentView.children.includes(browserPage), "first browser reselected");
-  let browserCoveredHandoff = false;
-  window.contentView.removeChildView = function (view) {
-    if (view === browserPage) browserCoveredHandoff = this.children.includes(secondBrowserPage);
-    return removeChildView.call(this, view);
-  };
-  command({ type: "activate", id: secondBrowserId });
-  await until(() => !window.contentView.children.includes(browserPage), "second browser page revealed");
-  window.contentView.removeChildView = removeChildView;
-  assert.equal(browserCoveredHandoff, true, "switching browser tabs must attach the incoming native page before detaching the outgoing one");
+  const secondBrowser = host.tabs.find(tab => tab.id === host.activeId);
+  await selected(secondBrowser.id);
+  assert.equal(firstBrowser.contents, secondBrowser.contents, "one browser panel renderer serves both tabs");
+  for (const browserTab of [firstBrowser, secondBrowser, firstBrowser]) {
+    command({ type: "activate", id: browserTab.id });
+    await selected(browserTab.id);
+    const views = window.contentView.children;
+    assert.ok(views.indexOf(browserTab.browser.view) > views.indexOf(browserTab.view), "native website covers the shared panel");
+    assert.ok(views.indexOf(host.shell.view) > views.indexOf(browserTab.browser.view), "controls remain above the website");
+  }
   window.destroy();
   server.closeAllConnections();
   server.close();

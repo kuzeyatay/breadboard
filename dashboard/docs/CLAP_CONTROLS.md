@@ -94,7 +94,7 @@ states feed one 1.5-second action cooldown, preventing two actions from the same
 sound. While either calibration/test panel is active, actions for both controls
 are suppressed; only the selected test gesture is counted.
 
-Dictation, voice, music recognition, meeting recording, voice samples, Clicky
+Dictation, voice, music recognition, meeting recording, voice samples,
 and demonstration narration retain their own microphone constraints. Their
 shared foreground lease first causes ambient capture to stop and close, then
 allows foreground recording to start when parallel listening is off. A gesture

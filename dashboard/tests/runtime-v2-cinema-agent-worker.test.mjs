@@ -12,7 +12,38 @@ import {
 import {
   loadRuntimeV2CinemaLaunch,
   parseRuntimeV2CinemaStopRecord,
+  trustedPath,
 } from "../scripts/runtime-v2-cinema-agent-worker-core.mjs";
+
+test("trusted cinema paths accept Windows canonical prefixes and reject redirected ancestors", {
+  skip: process.platform !== "win32",
+}, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-cinema-path-"));
+  const name = "BREADBOARD_CINEMA_TEST_PATH";
+  const previous = process.env[name];
+  try {
+    const direct = path.join(root, "direct");
+    fs.mkdirSync(direct);
+    const executable = path.join(direct, "python.exe");
+    fs.writeFileSync(executable, "fixture");
+    for (const [target, kind] of [[direct, "directory"], [executable, "file"]]) {
+      for (const spelling of [target, path.toNamespacedPath(target)]) {
+        process.env[name] = spelling;
+        assert.equal(trustedPath(name, kind), path.resolve(spelling));
+      }
+    }
+    const redirected = path.join(root, "redirected");
+    fs.symlinkSync(direct, redirected, "junction");
+    process.env[name] = path.join(redirected, "python.exe");
+    assert.throws(() => trustedPath(name, "file"), /path is indirect/u);
+    process.env[name] = redirected;
+    assert.throws(() => trustedPath(name, "directory"), /path is unavailable/u);
+  } finally {
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function vimaxRequest(overrides = {}) {
   return {
@@ -142,6 +173,15 @@ test("canonical cinema requests contain product data, never process or secret co
     () => validateRuntimeV2CinemaRequest("vox-director", voxRequest({ steps: 1_000 })),
     /invalid/u,
   );
+});
+
+test("cinema workers accept every effort offered by the assistant", async () => {
+  const { ASSISTANT_REASONING_EFFORTS } = await import("../src/lib/assistant-reasoning.ts");
+  for (const reasoningEffort of ASSISTANT_REASONING_EFFORTS) {
+    assert.equal(validateRuntimeV2CinemaRequest("vimax", vimaxRequest({ reasoningEffort })).reasoningEffort, reasoningEffort);
+    assert.equal(validateRuntimeV2CinemaRequest("vox-director", voxRequest({ reasoningEffort })).reasoningEffort, reasoningEffort);
+  }
+  assert.throws(() => validateRuntimeV2CinemaRequest("vimax", vimaxRequest({ reasoningEffort: "invalid" })), /invalid/u);
 });
 
 test("launch loading binds identity, scope and zero-input private paths", () => {

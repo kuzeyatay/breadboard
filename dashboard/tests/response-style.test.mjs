@@ -3,7 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 import {
   composeHermesSystemPrompt,
-  readerComprehensionPrompt,
+  chatCorePrompt,
   responseStylePrompt,
 } from "../src/lib/hermes/system-prompts.ts";
 
@@ -78,10 +78,10 @@ test("chat references are resolved by meaning in every chat mode", () => {
   assert.match(style, /If the referenced text is missing or truncated/);
   for (const surface of ["dashboard_terminal", "garden_chat", "quartz_ai"]) {
     const prompt = composeHermesSystemPrompt({ surface, decision: KNOWLEDGE_DECISION });
-    assert.ok(prompt.includes(style), `${surface} needs the same reference policy`);
+    assert.ok(prompt.includes(chatCorePrompt()), `${surface} needs the same reference policy`);
   }
   const direct = source("src/lib/conversations/direct-turn-service.ts");
-  assert.match(direct, /responseStylePrompt\(\)/);
+  assert.match(direct, /chatCorePrompt\(\)/);
   assert.match(direct, /You can read the messages supplied in this conversation/);
 });
 
@@ -150,92 +150,36 @@ test("illustrative wording expands the intended pattern instead of anchoring on 
   assert.match(style, /Never invent examples that could be mistaken for sourced facts/);
 });
 
-test("human-facing answers pass a final first-time-reader comprehension check", () => {
-  const layer = readerComprehensionPrompt();
-  assert.match(layer, /final quality gate for human-facing explanatory prose/i);
-  assert.match(layer, /person encountering the subject for the first time/i);
-  assert.match(layer, /practical bottom line in everyday language/i);
-  assert.match(layer, /explain it in a short clause on first use/i);
-  assert.match(layer, /what was measured, the time period/i);
-  assert.match(layer, /What is this\? Why does it matter\?/);
-  assert.match(layer, /Concise may change the length and layout, but it never disables this layer/);
-});
 
-test("every Hermes surface receives both rules", () => {
+test("every Hermes surface receives the same assistant contract once, without the retired comprehension layer", () => {
   for (const surface of ["dashboard_terminal", "garden_chat", "quartz_ai"]) {
-    const prompt = composeHermesSystemPrompt({
-      surface,
-      decision: KNOWLEDGE_DECISION,
-    });
-    assert.match(prompt, /# response_style/, `${surface} lost the prose rule`);
-    assert.match(
-      prompt,
-      /# assumed_background/,
-      `${surface} lost the background rule`,
-    );
-    assert.ok(
-      prompt.endsWith(readerComprehensionPrompt()),
-      `${surface} does not run the comprehension layer last`,
-    );
+    const prompt = composeHermesSystemPrompt({surface, decision: KNOWLEDGE_DECISION});
+    assert.equal(prompt.split(chatCorePrompt()).length - 1, 1);
+    assert.doesNotMatch(prompt, /# reader_comprehension_layer/);
   }
 });
 
-test("specialist personas cannot override the final comprehension layer", () => {
+test("explicit personas remain available without adding an automatic rewriting layer", () => {
   const persona = "# specialist_persona\nWrite for experienced analysts only.";
-  const prompt = composeHermesSystemPrompt({
-    surface: "dashboard_terminal",
-    decision: KNOWLEDGE_DECISION,
-    persona,
-    directMode: true,
-  });
-
-  assert.ok(prompt.indexOf(persona) < prompt.indexOf("# reader_comprehension_layer"));
-  assert.ok(prompt.endsWith(readerComprehensionPrompt()));
+  const prompt = composeHermesSystemPrompt({surface: "dashboard_terminal", decision: KNOWLEDGE_DECISION, persona, adhdMode:true});
+  assert.ok(prompt.includes(persona));
+  assert.ok(prompt.includes(chatCorePrompt()));
+  assert.match(prompt, /cannot widen permissions/);
 });
 
-test("the standalone chat routes answer in the same voice", () => {
-  for (const route of [
-    "src/app/api/chat/route.ts",
-    "src/app/api/knowledge-chat/route.ts",
-  ]) {
+test("standalone chat routes use the shared assistant contract", () => {
+  for (const route of ["src/app/api/chat/route.ts", "src/app/api/knowledge-chat/route.ts"]) {
     const text = source(route);
-    assert.match(
-      text,
-      /import \{[\s\S]{0,160}responseStylePrompt[\s\S]{0,160}\} from '@\/lib\/hermes\/system-prompts\.ts'/,
-      `${route} does not import the shared style`,
-    );
-    assert.match(
-      text,
-      /import \{[\s\S]{0,160}readerComprehensionPrompt[\s\S]{0,160}\} from '@\/lib\/hermes\/system-prompts\.ts'/,
-      `${route} does not import the comprehension layer`,
-    );
-    assert.match(
-      text,
-      /let systemPrompt =[\s\S]{0,240}\$\{responseStylePrompt\(\)\}/,
-      `${route} does not prepend the shared style to its system prompt`,
-    );
-    assert.match(
-      text,
-      /readerComprehensionPrompt\(\)/,
-      `${route} does not apply the final comprehension layer`,
-    );
-    assert.ok(
-      text.lastIndexOf("readerComprehensionPrompt()") <
-        text.lastIndexOf("const client = new OpenAI"),
-      `${route} does not finish its system prompt before provider dispatch`,
-    );
+    assert.match(text, /chatCorePrompt\(\)/);
+    assert.doesNotMatch(text, /readerComprehensionPrompt|responseStylePrompt|cogniviaSection/);
   }
 });
 
-test("the runtime-less Direct provider keeps comprehension after Concise", () => {
-  const directTurn = source("src/lib/conversations/direct-turn-service.ts");
-  const directMode = directTurn.indexOf("directMode ? directModeSection() : \"\"");
-  const comprehension = directTurn.indexOf("readerComprehensionPrompt()", directMode);
-  const promptJoin = directTurn.indexOf("].filter(Boolean).join", comprehension);
-
-  assert.ok(directMode >= 0);
-  assert.ok(comprehension > directMode);
-  assert.ok(promptJoin > comprehension);
+test("direct chat retains user-selected Concise alongside the shared assistant contract", () => {
+  const direct = source("src/lib/conversations/direct-turn-service.ts");
+  assert.match(direct, /chatCorePrompt\(\)/);
+  assert.match(direct, /directMode \? directModeSection\(\) : ""/);
+  assert.doesNotMatch(direct, /readerComprehensionPrompt|reviewTeachingAnswer/);
 });
 
 test("the assistant policy defers level-of-detail instead of contradicting it", () => {

@@ -103,6 +103,19 @@ test("fresh context survives unrelated turns and refreshes after travelling", as
   assert.notEqual(next.capturedAt, first.capturedAt);
 });
 
+test("a new Terminal reuses another tab's recent fix but refreshes it when due", async () => {
+  const snapshot = { latitude: 52.37, longitude: 4.90, accuracyMeters: 80,
+    capturedAt: "2026-09-09T11:58:00Z", timeZone: "Europe/Amsterdam", label: "Amsterdam, Netherlands" };
+  const env = environment({ snapshot });
+  const restored = await env.api.getCurrentLocationForTurn("First turn in another tab");
+  assert.equal(Date.parse(restored.capturedAt), Date.parse(snapshot.capturedAt));
+  assert.equal(env.fixture.hydrations, 1, "durable consent still hydrates before reusing a fix");
+  assert.equal(env.fixture.calls, 0, "opening a tab does not repeat the operating system lookup");
+  env.advance(16 * 60_000);
+  await env.api.getCurrentLocationForTurn("Now refresh");
+  assert.equal(env.fixture.calls, 1);
+});
+
 test("a turn joins a refresh already started by the visibility timer", async () => {
   const env = environment();
   await env.api.getCurrentLocationForTurn("First");

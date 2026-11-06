@@ -2,13 +2,13 @@ type GardenRootNode = {
   isFolder: boolean
   slugSegment: string
   data: unknown | null
+  children?: GardenRootNode[]
 }
 
 const LEGACY_VISIBLE_GARDEN_FOLDERS = new Set(["learning", "sources"])
 const INTERNAL_GARDEN_FOLDERS = new Set([
   ".breadboard",
   "assets",
-  "generated",
   "internal",
   "static",
   "tags",
@@ -25,7 +25,9 @@ export function isVisibleGardenRootEntry(node: GardenRootNode): boolean {
 
   if (INTERNAL_GARDEN_FOLDERS.has(segment)) return false
 
-  // User-created folders have an `_index.md`, represented by data on the folder node.
-  // Keep the two historical garden folders visible for older content without an index.
-  return node.data !== null || LEGACY_VISIBLE_GARDEN_FOLDERS.has(segment)
+  // Save page creates Generated/ without an index. Published children also
+  // make a folder navigable; legacy topic cards have already been filtered out
+  // of the content index by RemoveDrafts.
+  return node.data !== null || LEGACY_VISIBLE_GARDEN_FOLDERS.has(segment) ||
+    (node.children?.some(isVisibleGardenRootEntry) ?? false)
 }

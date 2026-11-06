@@ -11,6 +11,7 @@ const { IPC_CHANNELS } = require('../../dist/shared/ipc-contract.js');
 const dir = process.argv[2];
 app.setPath('userData', path.join(dir, 'profile'));
 app.on('window-all-closed', () => {});
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 const until = async (probe, label) => {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
@@ -72,11 +73,14 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC_CHANNELS.tabsCommand, (event, command) => manager.handleCommand(event.sender, command));
   let writes = 0;
   ipcMain.handle(IPC_CHANNELS.getBrowserRecentSearches, () => []);
+  ipcMain.handle(IPC_CHANNELS.getBrowserBookmarks, () => []);
+  ipcMain.handle(IPC_CHANNELS.getBrowserDownloads, () => ({items:[],error:null}));
   ipcMain.handle(IPC_CHANNELS.setBrowserRecentSearches, () => { writes++; return true; });
   const window = windows.openPopupWindow(origin + '/browser');
-  await until(() => window.webContents.getURL() === origin + '/browser' && !window.webContents.isLoading(), 'normal shell');
+  window.setOpacity(0); window.showInactive();
+  await until(() => windows.page(window).getURL() === origin + '/browser' && !windows.page(window).isLoading(), 'normal shell');
   await manager.restoreSession(window, origin + '/dashboard', () => { throw new Error('No windows to restore'); });
-  await manager.handleCommand(window.webContents, { type: 'browser', replaceCurrent: true, url: web + '/normal' });
+  await manager.handleCommand(windows.page(window), { type: 'browser', replaceCurrent: true, url: web + '/normal' });
   const active = sender => {
     const state = manager.stateFor(sender);
     return state.tabs.find(tab => tab.id === state.activeId);
@@ -151,9 +155,9 @@ app.whenReady().then(async () => {
   await choose(privateChrome, 'new-private-window');
   const privateWindow = BrowserWindow.getAllWindows().find(candidate => candidate !== window);
   assert.ok(privateWindow, 'private window uses the real WindowManager');
-  await until(() => privateWindow.webContents.getURL() === origin + '/browser' && !privateWindow.webContents.isLoading(), 'private window shell');
+  await until(() => windows.page(privateWindow).getURL() === origin + '/browser' && !windows.page(privateWindow).isLoading(), 'private window shell');
   // BrowserClient performs this same replacement on its first render.
-  assert.equal(await manager.handleCommand(privateWindow.webContents, { type: 'browser', replaceCurrent: true }), true);
+  assert.equal(await manager.handleCommand(windows.page(privateWindow), { type: 'browser', replaceCurrent: true }), true);
   const privateWindowChrome = await readyChrome(privateWindow);
   assert.equal(active(privateWindowChrome).browser.private, true);
   assert.equal(await manager.handleCommand(privateWindowChrome, { type: 'new' }), true);

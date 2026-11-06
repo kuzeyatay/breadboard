@@ -8,6 +8,19 @@ import {
 
 export type NotchProviderId = "anthropic" | "chatgpt" | "google";
 export interface NotchProvider { id: NotchProviderId; label: string; models: string[] }
+export type NotchActivityState = "working" | "waiting" | "complete" | "idle";
+export interface NotchActivitySession {
+  id: string;
+  name: string;
+  detail: string;
+  state: NotchActivityState;
+  waiting_for?: string;
+  since: string;
+}
+export interface NotchActivityPayload {
+  captured_at: string;
+  providers: Partial<Record<NotchProviderId, NotchActivitySession[]>>;
+}
 export interface NotchUsagePayload {
   provider?: NotchProviderId;
   available?: boolean;
@@ -16,6 +29,8 @@ export interface NotchUsagePayload {
   error?: string;
   refresh_error?: string;
   retry_at?: string;
+  model_unavailable?: boolean;
+  unavailable_model?: string;
   recovery_required?: boolean;
   auth_required?: boolean;
   primary?: DisplayUsageLimitWindow;
@@ -28,6 +43,30 @@ export interface NotchUsagePayload {
   accounts?: { account: string; limit: DisplayUsageLimitWindow }[];
 }
 export interface NotchUsageRow { key: string; label: string; limit: DisplayUsageLimitWindow; used: number | null }
+
+/** Codenotch resolves simultaneous sessions by attention cost, not recency. */
+export function notchActivitySummary(sessions: readonly NotchActivitySession[]): NotchActivityState {
+  if (sessions.some((session) => session.state === "waiting")) return "waiting";
+  if (sessions.some((session) => session.state === "working")) return "working";
+  if (sessions.some((session) => session.state === "complete")) return "complete";
+  return "idle";
+}
+
+export function notchActivityLabel(state: NotchActivityState): string {
+  return state === "working" ? "working" : state === "waiting" ? "waiting" : state === "complete" ? "complete" : "idle";
+}
+
+export function notchActivityElapsed(since: string, now: number): string {
+  const started = Date.parse(since);
+  if (!Number.isFinite(started)) return "";
+  const seconds = Math.max(0, Math.floor((now - started) / 1000));
+  if (seconds < 60) return "now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
 
 /** Include live subscriptions even while the Intelligence catalog is awaiting sync. */
 export function notchProviders(modelIds: string[], subscriptionModelIds: string[] = []): NotchProvider[] {
@@ -78,6 +117,12 @@ export function notchReserveCopy(data?: NotchUsagePayload): string | null {
   const reserve = data?.reserve;
   if (!data?.available || !reserve?.active) return null;
   return `Plan limit reached — ChatGPT is answering with ${usageReserveModelLabel(reserve.model)} from its reserve pool. Ring shows the reserve.`;
+}
+
+export function notchAvailabilityCopy(data?: NotchUsagePayload): string | null {
+  if (!data?.model_unavailable) return null;
+  const model = data.unavailable_model?.trim() || "The selected Gemini model";
+  return `${model} is temporarily unavailable even though Google reports quota remaining. This usually means a short-term rate or capacity limit.`;
 }
 
 /**

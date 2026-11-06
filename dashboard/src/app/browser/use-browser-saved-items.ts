@@ -15,6 +15,7 @@ export function useBrowserSavedItems<T>(
   storageKey: string,
   resolveControl: (owner: string) => SavedItemsControl<T> | null,
   normalize: (value: unknown) => T[],
+  blocksStartup = true,
 ) {
   const desktopReady = useDesktopTabs() !== null;
   const [reload, setReload] = useState(0);
@@ -25,7 +26,7 @@ export function useBrowserSavedItems<T>(
     saving: boolean;
     error: string | null;
   }>({ owner: null, items: [], ready: false, saving: false, error: null });
-  useStartupLoading(!state.ready && !state.error);
+  useStartupLoading(blocksStartup && !state.ready && !state.error);
   const readyRef = useRef(false);
   const savingRef = useRef(false);
   const generationRef = useRef(0);

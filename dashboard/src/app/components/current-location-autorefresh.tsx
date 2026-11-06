@@ -83,7 +83,10 @@ async function refreshStoredCurrentLocation(): Promise<boolean> {
 }
 
 export function refreshCurrentLocationAtInitialization(): Promise<boolean> {
-  return refreshStoredCurrentLocation();
+  // New Terminal documents share a recent device fix through localStorage.
+  // Opening each tab must not repeat the OS lookup and reverse geocoding.
+  // A fresh app origin, expired fix or explicit refresh still requests one.
+  return refreshCurrentLocationIfDue();
 }
 
 export function refreshCurrentLocationIfDue(now = Date.now()): Promise<boolean> {

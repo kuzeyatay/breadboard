@@ -8,6 +8,7 @@ import type { MaxResearchProgress } from "../max-research/progress.ts";
 const SUPER_AGENT_TOOL_LABELS: Readonly<Record<string, string>> = {
   agent_launch: "Choosing an agent",
   skill_open: "Opening skill",
+  multisim: "Working on circuit",
   workflow_run: "Running automation",
   workflow_create: "Creating automation",
   mcp_call: "Using connected service",

@@ -1,0 +1,21 @@
+.artwork, .preview { position: absolute; inset: 0; overflow: hidden; background: #0b1014; color: #dce8e2; pointer-events: none; contain: strict; }
+.canvas { position: absolute; inset: 0; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; overflow: hidden; }
+/* Fill the available frame while preserving the scene's original proportions.
+   Contain leaves edge gaps instead of cropping or limiting art to its raster size. */
+.canvas canvas { display: block; width: 100% !important; height: 100% !important; max-width: none !important; max-height: none !important; object-fit: contain; }
+.artwork::after { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 40%, rgb(3 8 12 / 40%), rgb(3 8 12 / 12%) 75%); pointer-events: none; }
+.artwork .canvas { opacity: 0; transition: opacity 600ms ease; }
+.artwork .canvas[data-ready='true'] { opacity: 1; }
+.previewError { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px; color: #e4eae6; }
+.failure { position: absolute; z-index: 1; bottom: calc(var(--bb-dock-height,42px) + 24px); left: 24px; padding: 10px 14px; border-radius: 12px; background: #17201c; color: #eff6f2; font-size: 13px; pointer-events: auto; }
+.failure button { border: 0; background: transparent; color: inherit; text-decoration: underline; cursor: pointer; }
+.hint { margin: 12px 0; color: var(--ink-muted); font-size: 12px; line-height: 1.5; }
+.filters { display: flex; flex-direction: column; gap: 8px; }
+.search { display: flex; align-items: center; gap: 8px; padding: 0 10px; height: 38px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink-muted); background: var(--paper-surface); }
+.search input { width: 100%; min-width: 0; border: 0; background: transparent; color: var(--ink); outline: none; box-shadow: none; font: inherit; font-size: 13px; }
+.search:focus-within { outline: 2px solid var(--botanical); outline-offset: 2px; }
+.filters select { min-width: 0; height: 36px; padding-inline: 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: var(--paper-surface); font-size: 12px; }
+.grid:global(.browser-wallpaper-grid) { max-height: none; overflow: visible; }
+.more { display: block; margin: 16px auto 4px; padding: 9px 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper-surface); color: var(--ink); font-size: 12px; cursor: pointer; }
+.gallery button:focus-visible, .filters select:focus-visible { outline: 2px solid var(--botanical); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { .artwork .canvas { transition: none; } }

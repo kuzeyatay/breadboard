@@ -63,3 +63,15 @@ test("legacy mixed history migrates to unique recent searches", () => {
     ["white flowers", "garden design"],
   );
 });
+
+test("only four unique matching previous searches appear without deleting saved history", () => {
+  const history = ["Coffee 0", "coffee 0", ...Array.from({ length: 12 }, (_, i) => `coffee ${i + 1}`)];
+  const original = [...history];
+  const empty = searchSuggestions("", history, []);
+  assert.deepEqual(empty.map(entry => entry.value), ["Coffee 0", "coffee 1", "coffee 2", "coffee 3"]);
+  const typed = searchSuggestions("coffee", history, ["coffee beans", "coffee shop", "coffee near me"]);
+  assert.deepEqual(typed.filter(entry => entry.source === "history"), empty);
+  assert.equal(typed.length, 8);
+  assert.equal(typed[4].value, "coffee");
+  assert.deepEqual(history, original);
+});

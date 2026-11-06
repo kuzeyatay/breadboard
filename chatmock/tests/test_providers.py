@@ -1503,7 +1503,7 @@ class ProviderRoutesTests(unittest.TestCase):
                         result = self.client.post(endpoint, json={**body, **({"model": model} if model is not None else {})})
                         self.assertEqual(result.status_code, 400)
                         self.assertEqual(result.get_json()["error"]["code"], "default_model_required")
-                        self.assertIn("No default model is selected", result.get_json()["error"]["message"])
+                        self.assertIn("No fallback provider is selected", result.get_json()["error"]["message"])
             upstream.assert_not_called()
             credentials.assert_not_called()
         pin = self.client.put("/v1/settings/chat-model", json={"model": "gpt-5.5"})

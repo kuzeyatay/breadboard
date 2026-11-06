@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import Database from 'better-sqlite3';
-import { isChatNotificationRecord } from '../src/lib/chat-notification-inbox.ts';
+import { isChatNotificationRecord, isNotificationClarification } from '../src/lib/chat-notification-inbox.ts';
+import { notificationHistoryItem } from '../src/lib/notification-history.ts';
+import { listNotificationHistory, saveNotificationHistory, markNotificationHistoryRead } from '../src/lib/chat-notifications/history.ts';
 import { dismissQuestionNotifications, listPendingQuestionNotifications, questionNotificationId,
   recordQuestionNotification, resolveQuestionNotification } from '../src/lib/chat-notifications/questions.ts';
 import { ensureChatNotificationSchema, listPendingChatNotifications } from '../src/lib/chat-notifications/store.ts';
+import { readChatRuntimeControl } from '../src/lib/hermes/chat-runtime-control.ts';
 
 function database(t) {
   const db = new Database(':memory:');
@@ -39,6 +42,44 @@ function ask(db, session = 1, requestId = 'request1') {
     question: 'Which period should I research?', choices: ['This year', 'Last year'] });
 }
 
+test('reopening a chat restores its run and question after the notification is dismissed', t => {
+  const db = database(t);
+  db.exec('ALTER TABLE hermes_runtime_sessions ADD COLUMN chat_session_id INTEGER; UPDATE hermes_runtime_sessions SET chat_session_id=42 WHERE id=3');
+  ask(db,3);
+  dismissQuestionNotifications(db,1,[],{ surface:'garden_chat',chatId:'42',gardenSlug:'signals' });
+  assert.deepEqual(listPendingQuestionNotifications(db,1),[]);
+  assert.deepEqual(readChatRuntimeControl(db,42), { sessionId:3, runId:'run3', pendingClarification:{
+    requestId:'request1', question:'Which period should I research?', choices:['This year','Last year'],
+  }});
+  assert.equal(readChatRuntimeControl(db,99),null);
+  resolveQuestionNotification(db,3,'request1');
+  ask(db,3); // an old event replay must not put the answered question back
+  assert.equal(readChatRuntimeControl(db,42).pendingClarification,null);
+  ask(db,3,'second');
+  resolveQuestionNotification(db,3,'request1'); // late first reply cannot clear the next question
+  assert.equal(readChatRuntimeControl(db,42).pendingClarification.requestId,'second');
+  resolveQuestionNotification(db,3,'second');
+  assert.equal(readChatRuntimeControl(db,42).pendingClarification,null);
+  db.exec("UPDATE hermes_runs SET status='completed' WHERE id='run3'");
+  assert.equal(readChatRuntimeControl(db,42),null);
+});
+
+test('existing pending receipts and temporary chats also restore answer controls', t => {
+  const db = database(t);
+  db.exec('ALTER TABLE hermes_runtime_sessions ADD COLUMN chat_session_id INTEGER; UPDATE hermes_runtime_sessions SET chat_session_id=42 WHERE id=3');
+  ask(db,3);
+  db.exec("UPDATE hermes_runs SET dispatch_json='{}' WHERE id='run3'; UPDATE chat_question_notifications SET dismissed=1");
+  assert.match(readChatRuntimeControl(db,42).pendingClarification.question,/Which period/);
+  resolveQuestionNotification(db,3,'request1');
+  assert.equal(readChatRuntimeControl(db,42).pendingClarification,null);
+  db.exec('UPDATE conversations SET temporary=1 WHERE id=3');
+  ask(db,3,'private-question');
+  assert.deepEqual(listPendingQuestionNotifications(db,1),[]);
+  assert.equal(readChatRuntimeControl(db,42).pendingClarification.requestId,'private-question');
+  db.exec("UPDATE hermes_runs SET heartbeat_at='2000-01-01T00:00:00Z' WHERE id='run3'");
+  assert.equal(readChatRuntimeControl(db,42),null);
+});
+
 test('pending questions notify before a response completes, with the exact chat and choices', t => {
   const db = database(t);
   ask(db); ask(db,2); ask(db,3);
@@ -50,8 +91,47 @@ test('pending questions notify before a response completes, with the exact chat 
   assert.deepEqual(notices[0].target,{ surface:'dashboard_terminal',chatId:'conv_main' });
   assert.deepEqual(notices[1].target,{ surface:'garden_chat',chatId:'42',gardenSlug:'signals',conversationId:'conv_garden' });
   assert.ok(notices.every(isChatNotificationRecord));
+  assert.deepEqual(notices[0].clarification, { sessionId: 1, requestId: 'request1',
+    question: 'Which period should I research?', choices: ['This year', 'Last year'] });
+  assert.equal(notices[1].clarification.sessionId, 3);
   assert.equal(listPendingQuestionNotifications(db,2).length,1);
   assert.deepEqual(listPendingChatNotifications(db,1),[]);
+});
+
+test('notification history keeps answer controls after reading, but removes them when the question ends', t => {
+  const db = database(t);
+  ask(db);
+  const [notice] = listPendingQuestionNotifications(db, 1);
+  saveNotificationHistory(db, 1, [notificationHistoryItem(notice)]);
+  dismissQuestionNotifications(db, 1, [questionNotificationId(notice.id)]);
+  markNotificationHistoryRead(db, 1, [`chat-notification:${notice.id}`]);
+  assert.deepEqual(listPendingQuestionNotifications(db, 1), []);
+  assert.deepEqual(listNotificationHistory(db, 1)[0].clarification, notice.clarification);
+  assert.equal(listNotificationHistory(db, 1)[0].read, true);
+  assert.deepEqual(listNotificationHistory(db, 2), []);
+  ask(db, 1, 'replacement');
+  assert.equal(listNotificationHistory(db, 1)[0].clarification, undefined);
+  assert.deepEqual(listPendingQuestionNotifications(db, 1).map(row => row.clarification.requestId), ['replacement']);
+  const [replacement] = listPendingQuestionNotifications(db, 1);
+  saveNotificationHistory(db, 1, [notificationHistoryItem(replacement)]);
+  resolveQuestionNotification(db, 1, 'replacement');
+  assert.ok(listNotificationHistory(db, 1).every(row => row.clarification === undefined));
+});
+
+test('question payloads preserve free-text prompts and validate structured answer controls', t => {
+  const db = database(t);
+  recordQuestionNotification(db, { runtimeSessionId: 1, runId: 'run1', requestId: 'free-text',
+    question: 'What should I focus on?', choices: [] });
+  const [notice] = listPendingQuestionNotifications(db, 1);
+  assert.deepEqual(notice.clarification.choices, []);
+  assert.equal(notice.clarification.question, notice.response);
+  for (const change of [{ sessionId: 0 }, { requestId: '' }, { question: 42 }, { choices: [false] }]) {
+    const clarification = { ...notice.clarification, ...change };
+    assert.equal(isNotificationClarification(clarification), false);
+    assert.equal(isChatNotificationRecord({ ...notice, clarification }), false);
+  }
+  db.exec("UPDATE hermes_runs SET dispatch_json='{}' WHERE id='run1'");
+  assert.equal(listPendingQuestionNotifications(db, 1)[0].clarification.requestId, 'free-text', 'legacy receipt still supports typed answers');
 });
 
 test('dismissals survive event replay, stay account scoped, and leave the final answer unread', t => {

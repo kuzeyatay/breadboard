@@ -115,27 +115,15 @@ test("agents that share a domain are separated by input shape, not topic", () =>
   }
 });
 
-test("the catalogue makes launching nothing the default", () => {
-  // The request this was built for was explicit that selecting no agent has to
-  // stay a real outcome, so the default is stated before any agent is listed.
-  assert.match(superAgent, /Choosing well starts with choosing whether/);
-  assert.match(superAgent, /the honest default is none of them/);
-  assert.match(superAgent, /launch nothing and answer/);
-
-  // The test that replaces topic matching: name the capability this turn lacks.
-  assert.match(superAgent, /what does this agent reach that I cannot\?/);
-  assert.match(superAgent, /is \*about\* an agent's topic is not one of them/);
-
-  // Independent jobs may run together, while a second agent still has to own a
-  // different job because "more agents" otherwise reads as thoroughness.
-  assert.match(superAgent, /Then decide how many/);
-  assert.match(superAgent, /one job done twice/);
-  assert.match(superAgent, /run concurrently/);
-  assert.match(superAgent, /whatever order the workers finish/);
-  assert.doesNotMatch(superAgent, /They run one at a time, in order/);
-
-  // Outward actions are called out as a higher bar than reads.
-  assert.match(superAgent, /what starting one commits the user to/);
+test("the catalogue reserves workers for missing capabilities and independent jobs", () => {
+  assert.match(superAgent, /concrete capability this turn lacks/);
+  assert.match(superAgent, /Topic overlap alone is not a reason/);
+  assert.match(superAgent, /default to answering with your own evidence and tools/);
+  assert.match(superAgent, /launch's `reason` argument/);
+  assert.match(superAgent, /one worker for dependent work/);
+  assert.match(superAgent, /run concurrently, up to four/);
+  assert.match(superAgent, /never duplicate the same job/);
+  assert.match(superAgent, /outward actions or ongoing commitments/);
 });
 
 test("the catalogue renders grouped, described, and by id only where launchable", () => {

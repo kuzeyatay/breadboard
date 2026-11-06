@@ -71,9 +71,42 @@ export const REVEAL_FRAME_PROBE = `new Promise((resolve) => {
   requestAnimationFrame(() => requestAnimationFrame(resolve));
 })`;
 
-/** A ceiling for polish, not a page-load deadline: DOM-ready has already
- * replaced the cold initial document before this begins, and a renderer
- * deprioritised under load must not hold the previous page in front forever. */
+/** The parser can paint while the main HTML response is still open. */
+export async function waitForDocumentFrame(contents: WebContents, signal: AbortSignal): Promise<boolean> {
+  if (contents.isDestroyed() || signal.aborted) return false;
+  const release = allowBackgroundFrames(contents);
+  try {
+    const frame = contents.mainFrame;
+    const probe = frame.executeJavaScript(`new Promise(resolve => {
+      let observer;
+      let done = false;
+      const finish = value => { if (done) return; done = true; clearTimeout(timer); observer?.disconnect(); document.removeEventListener('readystatechange', parsed); resolve(value); };
+      const timer = setTimeout(() => finish(false), 1200);
+      const painted = () => requestAnimationFrame(() => requestAnimationFrame(() => finish(true)));
+      const parsed = () => { if (document.readyState !== 'loading') painted(); };
+      if (performance.getEntriesByName('first-contentful-paint').length) { painted(); return; }
+      observer = new PerformanceObserver(list => {
+        if (list.getEntries().some(entry => entry.name === 'first-contentful-paint')) painted();
+      });
+      observer.observe({type:'paint', buffered:true});
+      // Frame-only/canvas/empty documents need not emit a top-level FCP. Once
+      // parsed, two frames of this document suffice; subresources may continue.
+      document.addEventListener('readystatechange', parsed);
+      parsed();
+    })`, false);
+    return await new Promise<boolean>(resolve => {
+      const finish = (ready: boolean) => { clearTimeout(timer); signal.removeEventListener("abort", cancel); resolve(ready); };
+      const cancel = () => finish(false);
+      const timer = setTimeout(cancel, 1500);
+      signal.addEventListener("abort", cancel, { once: true });
+      void probe.then(value => finish(value === true && !signal.aborted), cancel);
+    });
+  } catch { return false; }
+  finally { release(); }
+}
+
+/** Background preparation may stop waiting after this without claiming that
+ * the page painted. Foreground handoffs instead wait until cancelled. */
 export const REVEAL_FRAME_MAX_WAIT_MS = 2_500;
 
 interface PaintProbeTarget {
@@ -88,6 +121,32 @@ interface DocumentFrame {
 /** What a probe of the *current* document needs from a page. */
 export interface DocumentProbeTarget extends PaintProbeTarget {
   readonly mainFrame?: DocumentFrame | null;
+  getBackgroundThrottling?(): boolean;
+  setBackgroundThrottling?(allowed: boolean): void;
+}
+
+const frameLeases = new WeakMap<DocumentProbeTarget, { count: number; throttled: boolean }>();
+
+/** Chromium can classify even an attached, parked view as hidden and stop rAF.
+ * Share this lease with startup preparation so one completed wait cannot put a
+ * still-pending foreground renderer back to sleep. */
+export function allowBackgroundFrames(contents: DocumentProbeTarget): () => void {
+  if (contents.isDestroyed() || !contents.getBackgroundThrottling || !contents.setBackgroundThrottling) return () => {};
+  let lease = frameLeases.get(contents);
+  if (!lease) {
+    lease = { count: 0, throttled: contents.getBackgroundThrottling() };
+    contents.setBackgroundThrottling(false);
+    frameLeases.set(contents, lease);
+  }
+  lease.count += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    if (--lease.count > 0) return;
+    frameLeases.delete(contents);
+    if (!contents.isDestroyed()) contents.setBackgroundThrottling!(lease.throttled);
+  };
 }
 
 /**
@@ -155,21 +214,40 @@ export async function waitForFirstPaint(
 }
 
 /**
- * Wait until a tab attached out of sight has a composited frame and can be
- * moved in front of the page currently on screen. Never throws, always
- * settles.
+ * Confirm fresh animation frames after attaching a tab. A timeout, cancellation,
+ * or destroyed document is not a frame. Use a null deadline with a signal for a
+ * foreground handoff: a slow renderer must not uncover an empty window.
  */
 export async function waitForRevealFrame(
   contents: DocumentProbeTarget | WebContents,
-  maxWaitMs = REVEAL_FRAME_MAX_WAIT_MS,
-): Promise<void> {
-  if (contents.isDestroyed()) return;
-  try {
-    await settleWithin(runInDocument(contents, REVEAL_FRAME_PROBE, true), maxWaitMs);
-  } catch {
-    // Navigated, closed, or refused the evaluation. The outer ceiling on the
-    // reveal still brings the tab forward.
-  }
+  maxWaitMs: number | null = REVEAL_FRAME_MAX_WAIT_MS,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (contents.isDestroyed() || signal?.aborted) return false;
+  return new Promise<boolean>(resolve => {
+    const release = allowBackgroundFrames(contents);
+    let settled = false;
+    let ceiling: ReturnType<typeof setTimeout> | undefined;
+    const finish = (ready: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (ceiling) clearTimeout(ceiling);
+      signal?.removeEventListener("abort", cancel);
+      release();
+      resolve(ready);
+    };
+    const cancel = () => finish(false);
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (maxWaitMs !== null) ceiling = setTimeout(cancel, maxWaitMs);
+    try {
+      void runInDocument(contents, REVEAL_FRAME_PROBE, true).then(
+        () => finish(!contents.isDestroyed() && !signal?.aborted),
+        cancel,
+      );
+    } catch {
+      cancel();
+    }
+  });
 }
 
 /** A native resize can reach Chromium after its next animation frame. Wait for

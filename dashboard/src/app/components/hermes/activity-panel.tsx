@@ -2,19 +2,26 @@
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
 import { assistantThinkingUpdates, isAssistantTextPreview } from "@/lib/assistant-thinking";
+import { normalizeMathDelimiters } from "@/lib/chat-markdown-math";
 import {
   assistantLiveActivityReady,
   assistantResponseElapsedMs,
 } from "@/lib/assistant-activity-timing";
 import type { ChatTokenUsage } from "@/lib/chat-token-usage";
+import { parseChatTimestamp } from "@/lib/chat-time-separators";
 import type {
   ActivityItem,
   ClarificationPrompt,
   ConnectionState,
   PermissionPrompt,
 } from "./use-agent-session";
+
+const remarkPlugins = [remarkMath];
+const rehypePlugins = [rehypeKatex];
 
 interface Props {
   activities: ActivityItem[];
@@ -30,9 +37,13 @@ interface Props {
   pendingClarification?: ClarificationPrompt | null;
   onClarificationAnswer?: (answer: string) => void;
   usage?: ChatTokenUsage;
+  /** Local preparation precedes the model call and is shown immediately. */
+  preparationLabel?: string;
   responseDurationMs?: number;
   /** Durable beginning of the response this row belongs to. */
   responseStartedAt?: string;
+  /** Durable completion wins over a stale chat connection. */
+  responseCompletedAt?: string;
   /** Start of an ongoing phase that runs outside the main chat connection. */
   activePhaseStartedAt?: string;
   /**
@@ -61,8 +72,10 @@ export default function ActivityPanel({
   pendingClarification = null,
   onClarificationAnswer,
   usage,
+  preparationLabel,
   responseDurationMs,
   responseStartedAt,
+  responseCompletedAt,
   activePhaseStartedAt,
   carriedDurationMs,
   onPermissionDecision,
@@ -88,7 +101,8 @@ export default function ActivityPanel({
   // A failed artifact can be repaired while the response continues. Only an
   // explicit response failure may stop a live chat. Natural rewriting belongs
   // to the finished answer's action row and never extends its thinking time.
-  const responseActive = (active || artifactState?.status === "running") && !stateFailed;
+  const responseComplete = parseChatTimestamp(responseCompletedAt) !== null;
+  const responseActive = ((active && !responseComplete) || artifactState?.status === "running") && !stateFailed;
   const effectiveFailed = stateFailed || (!responseActive && artifactState?.status === "failed");
   const liveActivity = activities.findLast((item) => item.status === "running");
   const completedActivityLabel = activities.findLast(
@@ -102,6 +116,7 @@ export default function ActivityPanel({
         now,
         reportedDurationMs: responseDurationMs ?? usage?.responseDurationMs,
         responseStartedAt,
+        responseCompletedAt,
         activePhaseStartedAt,
         activeFallbackStartedAtMs,
         carriedDurationMs,
@@ -112,6 +127,7 @@ export default function ActivityPanel({
       responseActive,
       responseDurationMs,
       responseStartedAt,
+      responseCompletedAt,
       activeFallbackStartedAtMs,
       activePhaseStartedAt,
       carriedDurationMs,
@@ -127,16 +143,16 @@ export default function ActivityPanel({
         ? "Waiting for your answer"
         : stateLabel ?? (artifactState?.status === "running" ? artifactState.label : undefined) ??
           liveActivity?.label ?? restoredActivityLabel ?? "Thinking");
-  // Every turn opens with the same stable Thinking beat. Tool, orchestration,
-  // answer-writing, and artifact labels can take over only after five seconds.
+  // Tool, orchestration, answer-writing and artifact labels wait five seconds.
+  // Compaction can begin before the first model call, so show it immediately.
   // A settled default returns to Thinking so AssistantResponseMeta renders the
   // permanent, past-tense Thought label.
   const effectiveLabel = responseActive
-    ? pendingPermission || pendingClarification || showLiveActivity
+    ? preparationLabel ?? (pendingPermission || pendingClarification || liveLabel === "Compacting conversation" || showLiveActivity
       ? liveLabel
-      : "Thinking"
+      : "Thinking")
     : stateLabel ??
-      artifactState?.label ??
+      (artifactState?.status === "failed" ? artifactState.label : undefined) ??
       completedLabel ??
       completedActivityLabel ??
       "Thinking";
@@ -182,6 +198,7 @@ export default function ActivityPanel({
         failed={effectiveFailed}
         label={effectiveLabel}
         usage={usage}
+        showTokenUsage={!preparationLabel}
         responseDurationMs={elapsedMs !== null && (responseActive || elapsedMs > 0) ? elapsedMs : undefined}
         action={stateAction}
         disclosureExpanded={canDisclose ? progressOpen : undefined}
@@ -216,7 +233,9 @@ export default function ActivityPanel({
                     }`}
                   />
                   <div className="min-w-0 break-words text-sm font-normal leading-6 text-[var(--ink-muted)] [&_p]:whitespace-pre-wrap [&_pre]:whitespace-pre-wrap [&_code]:[overflow-wrap:anywhere] [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_a]:underline [&>*+*]:mt-2">
-                    <ReactMarkdown skipHtml>{note}</ReactMarkdown>
+                    <ReactMarkdown skipHtml remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
+                      {normalizeMathDelimiters(note)}
+                    </ReactMarkdown>
                   </div>
                 </li>
               );

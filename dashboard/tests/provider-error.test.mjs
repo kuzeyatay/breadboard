@@ -200,3 +200,13 @@ test("the runtime status line is cleaned the same way", () => {
   );
   assert.equal(progress.payload.label, "Reading the garden index");
 });
+
+
+test("bare transport errors are failures but an explanation of HTTP errors is an answer", () => {
+  for (const text of ["Internal Server Error", "bad gateway.", " Service unavailable! ", "Gateway timeout"]) {
+    assert.equal(isProviderErrorText(text), true, text);
+  }
+  for (const text of ["A 502 means Bad Gateway.", "Service unavailable means the upstream is temporarily unable to respond."]) {
+    assert.equal(isProviderErrorText(text), false, text);
+  }
+});

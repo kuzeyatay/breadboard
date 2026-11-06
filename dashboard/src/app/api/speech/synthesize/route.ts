@@ -10,11 +10,13 @@ import { synthesizeSpeech } from "@/lib/speech/synthesis";
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
-    const body = (await request.json()) as { text?: unknown };
+    const body = (await request.json()) as { text?: unknown; stream?: unknown; delivery?: unknown };
     const response = await synthesizeSpeech({
       userId,
       text: body.text,
       signal: request.signal,
+      streaming: body.stream === true,
+      delivery: body.delivery === 'conversation' ? 'conversation' : 'reading',
     });
     return new Response(response.body, {
       status: 200,

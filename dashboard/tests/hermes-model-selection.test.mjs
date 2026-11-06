@@ -6,7 +6,7 @@ import {
 } from "../src/lib/hermes/model-selection.ts";
 
 test("uses the UI-selected model and reasoning effort", () => {
-  for (const modelID of ["gpt-6-astra", "gpt-5.6-terra"]) {
+  for (const modelID of ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-terra"]) {
     const engine = resolveHermesEngine(modelID, "max");
     assert.deepEqual(engine.model, {
       providerID: HERMES_CHATMOCK_PROVIDER_ID,

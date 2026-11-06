@@ -21,6 +21,7 @@ from typing import Any
 
 from .guard import check_source
 from .models import BuildRequest, BuildResult, ConvertRequest, ExecutionFailure
+from .memory_limit import apply_worker_memory_limit
 
 #: The name an imported file is given inside the workspace. Never the name the
 #: user's file had: that is a string from a browser, and this one is a path.
@@ -271,11 +272,16 @@ def main(argv: list[str]) -> int:
         # A program that computes a huge recursive shape should hit a clean
         # RecursionError long before the interpreter's C stack gives out.
         sys.setrecursionlimit(3_000)
-        result = (
-            run_convert(request, workdir)
-            if isinstance(request, ConvertRequest)
-            else run_job(request, workdir)
-        )
+        try:
+            apply_worker_memory_limit()
+        except OSError as error:
+            result = _failure("memory_limit_unavailable", "The CAD worker could not establish its memory limit; geometry execution was refused.", exceptionType=type(error).__name__)
+        else:
+            result = (
+                run_convert(request, workdir)
+                if isinstance(request, ConvertRequest)
+                else run_job(request, workdir)
+            )
 
     with open(result_path, "w", encoding="utf-8") as handle:
         json.dump(result.model_dump(by_alias=True, mode="json"), handle)

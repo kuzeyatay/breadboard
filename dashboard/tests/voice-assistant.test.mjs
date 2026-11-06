@@ -4,13 +4,16 @@ import Database from 'better-sqlite3';
 import { DEFAULT_VOICE_ASSISTANT, heardHeyBread, parseVoiceAssistantPreferences } from '../src/lib/speech/assistant-preferences.ts';
 import { readVoiceAssistantPreferences, writeVoiceAssistantPreferences } from '../src/lib/speech/assistant-store.ts';
 
-test('voice preferences default off, validate strictly, persist, and remain account scoped', () => {
+test('voice prepares by default without listening, migrates preferences, and remains account scoped', () => {
   const db = new Database(':memory:');
   try {
     db.exec('CREATE TABLE users(id INTEGER PRIMARY KEY); INSERT INTO users VALUES (1), (2)');
     assert.deepEqual(readVoiceAssistantPreferences(db, 1), DEFAULT_VOICE_ASSISTANT);
     writeVoiceAssistantPreferences(db, 1, { readAloudNotifications:true, alwaysOnVoiceAssistant:true });
-    assert.deepEqual(readVoiceAssistantPreferences(db, 1), { readAloudNotifications:true, alwaysOnVoiceAssistant:true });
+    assert.deepEqual(readVoiceAssistantPreferences(db, 1), { ...DEFAULT_VOICE_ASSISTANT, readAloudNotifications:true, alwaysOnVoiceAssistant:true });
+    writeVoiceAssistantPreferences(db, 1, { ...DEFAULT_VOICE_ASSISTANT, voiceModel: 'anthropic/claude-sonnet-4-5', startVoiceOnStartup: false });
+    assert.equal(readVoiceAssistantPreferences(db, 1).voiceModel, 'anthropic/claude-sonnet-4-5');
+    assert.equal(readVoiceAssistantPreferences(db, 1).startVoiceOnStartup, false);
     assert.deepEqual(readVoiceAssistantPreferences(db, 2), DEFAULT_VOICE_ASSISTANT);
     for (const value of [null, [], {}, { ...DEFAULT_VOICE_ASSISTANT, command:'execute' }, { ...DEFAULT_VOICE_ASSISTANT, alwaysOnVoiceAssistant:'true' }]) assert.equal(parseVoiceAssistantPreferences(value), null);
     writeVoiceAssistantPreferences(db, 1, DEFAULT_VOICE_ASSISTANT);

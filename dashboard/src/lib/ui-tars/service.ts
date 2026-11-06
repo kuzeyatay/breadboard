@@ -12,11 +12,15 @@ import { validateAgentConfiguration, type UITarsAgentConfiguration } from "./con
 import { providerRequiresStoredKey } from "./model-provider.ts";
 import { UITarsServiceError } from "./errors.ts";
 import { refreshAgentRuns, syncRunProjection } from "./runtime-run-manager.ts";
-import { SupervisorResourceExhaustedError } from "../supervisor-control.ts";
+import { isRuntimeV2ServiceControlConfigured, readSupervisedServiceSnapshot, SupervisorResourceExhaustedError } from "../supervisor-control.ts";
 
 export { UITarsServiceError } from "./errors.ts";
 
 export type RuntimeState = "available" | "starting" | "unavailable" | "misconfigured" | "disabled";
+
+const STOPPED_HEALTH: Awaited<ReturnType<UITarsClient["health"]>> = {
+  status: "unavailable", runtime: null, realBrowser: false, operator: null, version: null,
+};
 
 const decisionBuckets = new Map<string, { count: number; resetAt: number }>();
 
@@ -46,6 +50,21 @@ export async function health(): Promise<{
   health: Awaited<ReturnType<UITarsClient["health"]>>;
 }> {
   const currentMode = uiTarsMode();
+  if (isRuntimeV2ServiceControlConfigured()) {
+    const snapshot = await readSupervisedServiceSnapshot("ui-tars");
+    if (!snapshot || ["installation-unavailable", "resource-blocked", "failed"].includes(snapshot.state)) {
+      return { mode: currentMode, runtimeState: "unavailable", health: STOPPED_HEALTH };
+    }
+    if (snapshot.state === "available-but-stopped" || snapshot.state === "stopped") {
+      // Native installation availability permits an on-demand start; it says
+      // nothing about a live browser or computer operator. Do not warm the
+      // adapter merely to render passive health.
+      return { mode: currentMode, runtimeState: "available", health: STOPPED_HEALTH };
+    }
+    if (snapshot.state === "pending" || snapshot.state === "starting") {
+      return { mode: currentMode, runtimeState: "starting", health: STOPPED_HEALTH };
+    }
+  }
   const adapter = await client().health();
   return {
     mode: currentMode,
@@ -57,6 +76,7 @@ export async function health(): Promise<{
 function agentRuntimeState(
   agent: store.PresentedAgent,
   adapter: Awaited<ReturnType<UITarsClient["health"]>>,
+  runtimeState: RuntimeState,
 ): RuntimeState {
   if (!agent.enabled) return "disabled";
   const configurationReady =
@@ -65,7 +85,7 @@ function agentRuntimeState(
   if (providerRequiresStoredKey(agent.configuration) && !agent.secretConfigured) {
     return "misconfigured";
   }
-  if (adapter.status !== "healthy") return "unavailable";
+  if (runtimeState !== "available") return runtimeState;
   if (agent.configuration.operator === "computer" && !adapter.operators?.includes("computer")) {
     return "unavailable";
   }
@@ -85,13 +105,13 @@ export async function agentsPage(userId: number): Promise<{
   const currentMode = uiTarsMode();
   const rows = store.listAgents(userId);
   await Promise.allSettled(rows.map((agent) => refreshAgentRuns(userId, agent.id)));
-  const adapter = await client().health();
+  const { health: adapter, runtimeState } = await health();
   const agents = rows.map((row) => {
     const presented = store.presentAgent(row);
     const lastRun = store.listRuns(userId, row.id, 1)[0];
     return {
       ...presented,
-      runtimeState: agentRuntimeState(presented, adapter),
+      runtimeState: agentRuntimeState(presented, adapter, runtimeState),
       ...(lastRun
         ? { lastRun: { id: lastRun.id, status: lastRun.status, createdAt: lastRun.created_at } }
         : {}),

@@ -1,3 +1,4 @@
+import { isBareProviderError } from "../provider-error.ts";
 import crypto from "node:crypto";
 import type Database from "better-sqlite3";
 import { isChatHighlight } from "./highlights.ts";
@@ -34,6 +35,7 @@ export interface ConversationRow {
   legacy_runtime_session_id: number | null;
   next_order_index: number;
   pinned_at: string | null;
+  archived_at: string | null;
   highlight: string | null;
   /** 1 for an off-the-record chat. See `conversationIsTemporary`. */
   temporary: number;
@@ -310,7 +312,7 @@ export function listConversationsForUser(
   // what "my chats" contains.
   return database.prepare(`
     SELECT * FROM conversations
-    WHERE user_id = ? AND temporary = 0 AND buzz_room_id IS NULL
+    WHERE user_id = ? AND temporary = 0 AND buzz_room_id IS NULL AND archived_at IS NULL
     ORDER BY (pinned_at IS NOT NULL) DESC, updated_at DESC, id DESC
     LIMIT 100
   `).all(userId) as ConversationRow[];
@@ -443,7 +445,12 @@ export interface ConversationMessageSummary {
   pendingMessageCount: number;
 }
 
-/** One aggregate query for history rows, avoiding a transcript read per chat. */
+/**
+ * One aggregate query for history rows, avoiding a transcript read per chat.
+ * Every value comes from idx_conversation_messages_profile_values_v2, so no
+ * multi-megabyte row is read (958 ms -> 2 ms for 60 chats). Keep the outcome
+ * expression and octet_length identical to that index.
+ */
 export function summarizeConversationMessages(
   conversationIds: number[],
   database: Database.Database = db,
@@ -455,13 +462,11 @@ export function summarizeConversationMessages(
     SELECT conversation_id,
            COUNT(*) AS message_count,
            MAX(updated_at) AS last_message_updated_at,
-           SUM(LENGTH(content)) AS content_length,
+           SUM(octet_length(content)) AS content_length,
            SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
            MAX(CASE
              WHEN role = 'assistant'
-              AND metadata IS NOT NULL
-              AND json_valid(metadata)
-              AND json_extract(metadata, '$.externalAgentOutcome') = 'running'
+              AND json_extract(CASE WHEN json_valid(metadata) THEN metadata END, '$.externalAgentOutcome') = 'running'
              THEN 1 ELSE 0 END) AS external_agent_active
     FROM conversation_messages
     WHERE conversation_id IN (${placeholders})
@@ -889,6 +894,11 @@ export function completeAssistantMessage(input: {
   sources?: unknown;
   tokenUsage?: unknown;
 }, database: Database.Database = db): ConversationMessageRow {
+  // A transport error is not a completed answer. Match only the whole error
+  // response, so an explanation discussing HTTP errors remains ordinary text.
+  if (isBareProviderError(input.content)) {
+    return failAssistantMessage({ ...input, status: "failed", error: input.content.trim() }, database);
+  }
   const completed = finishAssistantMessage({
     ...input,
     status: "complete",
@@ -1076,10 +1086,55 @@ export function retryAssistantMessage(
   return pending;
 }
 
+/** Renew the checkpoint while its viewer is still waiting for dispatch. */
+export function touchGardenPreDispatchTurn(input: {
+  conversationId: number;
+  clientMessageId: string;
+}, database: Database.Database = db): boolean {
+  // A viewer may keep its saved turn alive while the dispatch endpoint is
+  // starting. Only a pending checkpoint can be renewed; late heartbeats must
+  // never reopen a stopped, failed, or completed response.
+  return database.prepare(`
+    UPDATE conversation_messages SET updated_at = datetime('now')
+    WHERE conversation_id = ? AND client_message_id = ?
+      AND role = 'assistant' AND status = 'pending'
+      AND json_extract(metadata, '$.gardenPreDispatch') = 1
+  `).run(input.conversationId, input.clientMessageId).changes > 0;
+}
+
+/** Archiving changes placement only; messages, activity and pins are preserved. */
+export function setConversationArchived(
+  conversation: ConversationRow,
+  archived: boolean,
+  database: Database.Database = db,
+): ConversationRow {
+  database.prepare(`
+    UPDATE conversations
+    SET archived_at = CASE WHEN ? = 1 THEN COALESCE(archived_at, datetime('now')) ELSE NULL END
+    WHERE id = ?
+  `).run(archived ? 1 : 0, conversation.id);
+  return getConversationById(conversation.id, database)!;
+}
+
+export function listArchivedConversationsForUser(
+  userId: number,
+  gardenSlug?: string,
+  database: Database.Database = db,
+): ConversationRow[] {
+  return database.prepare(`
+    SELECT c.* FROM conversations c
+    LEFT JOIN clusters g ON g.id = c.default_garden_id
+    WHERE c.user_id = ? AND c.temporary = 0 AND c.buzz_room_id IS NULL
+      AND c.archived_at IS NOT NULL
+      ${gardenSlug ? "AND g.slug = ? AND c.surface = 'garden_chat' AND c.legacy_chat_session_id IS NOT NULL" : ""}
+    ORDER BY c.archived_at DESC, c.id DESC
+  `).all(...(gardenSlug ? [userId, gardenSlug] : [userId])) as ConversationRow[];
+}
+
 /**
  * Close pre-dispatch Garden turns whose owner disappeared before it could
- * create a runtime run. The adapter refreshes `updated_at` while it prepares;
- * an active run is protected by its own durable heartbeat/recovery path.
+ * create a runtime run. The viewer and adapter refresh `updated_at` while
+ * preparing; an active run has its own durable heartbeat/recovery path.
  */
 export function failStaleGardenPreDispatchTurns(input: {
   chatSessionIds: number[];
@@ -1476,6 +1531,8 @@ export function presentConversation(row: ConversationRow): {
   hookId: string | null;
   pinned: boolean;
   pinnedAt: string | null;
+  archived: boolean;
+  archivedAt: string | null;
   highlight: string | null;
   temporary: boolean;
   createdAt: string;
@@ -1491,6 +1548,8 @@ export function presentConversation(row: ConversationRow): {
     hookId: row.hook_id ?? null,
     pinned: row.pinned_at !== null,
     pinnedAt: row.pinned_at ?? null,
+    archived: row.archived_at != null,
+    archivedAt: row.archived_at ?? null,
     // The client mirrors this rather than remembering what it asked for: a
     // reopened chat has to be able to say what it is on its own.
     temporary: conversationIsTemporary(row),

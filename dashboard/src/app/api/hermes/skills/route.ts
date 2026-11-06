@@ -4,6 +4,7 @@ import { requireEnabled } from "@/lib/hermes/route-helpers.ts";
 import {
   getSkillsCatalogStore,
   type CatalogFilter,
+  type CatalogSkillRecord,
 } from "@/lib/hermes/skills-catalog-store.ts";
 import {
   catalogSyncInProgress,
@@ -15,8 +16,9 @@ import {
   isCatalogSkillInspectable,
   listFirstPartySkills,
   listInstalledLocalSkills,
+  type SkillClassification,
 } from "@/lib/hermes/skills.ts";
-import { resolveSkillCompatibility } from "@/lib/hermes/skill-compatibility.ts";
+import { resolveSkillCompatibility, type SkillCompatibility } from "@/lib/hermes/skill-compatibility.ts";
 import type { HermesSurface } from "@/lib/hermes/config.ts";
 import {
   SCIENTIFIC_SKILLS_SOURCE,
@@ -31,14 +33,15 @@ import {
 import { listMcpConnections } from "@/lib/hermes/mcp-connections.ts";
 import { listSkills as listDocumentSkills } from "@/lib/document-skills/store.ts";
 import type { DocumentSkillRecord } from "@/lib/document-skills/types.ts";
+import { documentSkillAvailability, installedSkillCompatibility, querySkillLibrary, type SkillLibraryEntry } from "@/lib/hermes/skill-library.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-type SkillsRouteFilter = CatalogFilter | "recent";
+type SkillsRouteFilter = CatalogFilter | "recent" | "my";
 
 const FILTERS = new Set<SkillsRouteFilter>([
-  "all", "recent", "featured", "scientific", "reverse", "design", "engineering", "office", "documents", "omh", "coding", "trending", "hot", "official", "installed", "updates", "audited", "unreviewed",
+  "my", "all", "recent", "featured", "scientific", "reverse", "design", "engineering", "office", "documents", "omh", "coding", "trending", "hot", "official", "installed", "updates", "audited", "unreviewed",
 ]);
 
 /**
@@ -92,13 +95,12 @@ function publicDocumentSkill(record: DocumentSkillRecord) {
     detailCheckedAt: built,
     files: null,
     audits: null,
-    classification: { classification: "eligible", category: "knowledge", reasons: [] },
-    availability: record.status === "ready" ? "available" : "unavailable",
-    reasons: record.status === "ready" ? [] : ["The document is still being distilled."],
+    classification: { classification: "eligible_general", category: "knowledge", reasons: [] },
+    ...documentSkillAvailability(record.status, record.error),
     contract: null,
-    requirements: null,
+    requirements: [],
     requiresOpenCode: false,
-  };
+  } satisfies SkillLibraryEntry & Record<string, unknown>;
 }
 
 export async function GET(request: Request) {
@@ -110,53 +112,63 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const surface = parseSurface(url.searchParams.get("surface"));
   const requestedFilter = url.searchParams.get("filter") as SkillsRouteFilter | null;
-  const filter = requestedFilter && FILTERS.has(requestedFilter) ? requestedFilter : "all";
-  if (filter === "recent") {
-    const recentIds = [...new Set(
-      url.searchParams
-        .getAll("id")
-        .map((id) => id.trim())
-        .filter((id) => id.length > 0 && id.length <= 300),
-    )].slice(0, 30);
-    const query = (url.searchParams.get("q") ?? "").trim().toLowerCase();
-    const firstParty = surface === "quartz_ai"
-      ? []
+  const filter = requestedFilter && FILTERS.has(requestedFilter) ? requestedFilter : "my";
+  if (filter === "my" || filter === "installed" || filter === "recent" || filter === "documents") {
+    // This is a local library read. Discovery and synchronization must never
+    // block access to skills the user already has.
+    const recentIds = [...new Set(url.searchParams.getAll("id"))]
+      .filter((id) => id.length > 0 && id.length <= 300).slice(0, 30);
+    const pinnedIds = [...new Set(url.searchParams.getAll("pinnedId"))]
+      .filter((id) => id.length > 0 && id.length <= 300).slice(0, 100);
+    const documents = surface === "quartz_ai" ? [] : listDocumentSkills(userId).map(publicDocumentSkill);
+    const firstParty = surface === "quartz_ai" || filter === "documents" ? []
       : listFirstPartySkills(surface, connectedMcpServers).map(publicFirstPartySkill);
-    const store = getSkillsCatalogStore();
-    synchronizeLocalSkillsCatalogs({ store });
-    const catalog = recentIds.length
-      ? store.list({ ids: recentIds, page: 0, perPage: 100 }).skills
-          .map((skill) => withCompatibility(skill, surface, connectedMcpServers))
-          .filter((skill) =>
-            isReviewedLocalSource(skill.source) ||
-            isCatalogSkillInspectable(skill.classification.classification)
-          )
-          .map(publicSkill)
-      : [];
-    const byId = new Map(
-      [...firstParty, ...catalog].map((skill) => [skill.upstreamId, skill] as const),
-    );
-    const skills = recentIds
-      .flatMap((id) => {
-        const skill = byId.get(id);
-        return skill ? [skill] : [];
-      })
-      .filter((skill) =>
-        !query ||
-        `${skill.name}\n${skill.description}\n${skill.slug}\n${skill.source}`
-          .toLowerCase()
-          .includes(query)
-      );
-    const status = store.status();
+    const local = surface === "quartz_ai" || filter === "documents" ? []
+      : listInstalledLocalSkills(surface, connectedMcpServers).map(publicLocalInstallSkill);
+    const records: CatalogSkillRecord[] = [];
+    if (surface !== "quartz_ai" && filter !== "documents") {
+      const store = getSkillsCatalogStore();
+      for (let page = 0; ; page += 1) {
+        const batch = store.list({ filter: "installed", page, perPage: 100 });
+        records.push(...batch.skills);
+        if (!batch.hasMore) break;
+      }
+    }
+    const localById = new Map(local.map((skill) => [skill.upstreamId, skill]));
+    const catalog = records.map((record) => {
+      const installed = localById.get(record.upstreamId);
+      const metadata = publicSkill(withCompatibility(record, surface, connectedMcpServers));
+      return {
+        ...metadata,
+        ...(installed ?? {}),
+        source: record.source,
+        sourceType: record.sourceType,
+        installs: record.installs,
+        pageUrl: record.pageUrl,
+        installUrl: record.installUrl,
+        updateStatus: record.updateStatus,
+        reviewStatus: record.reviewStatus,
+        upstreamStatus: record.upstreamStatus,
+        upstreamHash: record.upstreamHash,
+        approvedHash: record.approvedHash,
+        localHash: record.localHash,
+        availability: installed?.availability ?? "unavailable" as const,
+        reasons: installed?.reasons ?? installedSkillCompatibility(undefined).reasons,
+      };
+    });
+    const result = querySkillLibrary({
+      skills: [...firstParty, ...local, ...catalog, ...documents],
+      query: url.searchParams.get("q") ?? "",
+      page: Number(url.searchParams.get("page") ?? 0),
+      perPage: Number(url.searchParams.get("perPage") ?? 50),
+      recentIds,
+      pinnedIds,
+      recentOnly: filter === "recent",
+    });
     return NextResponse.json({
-      skills,
-      pagination: {
-        page: 0,
-        perPage: skills.length,
-        total: skills.length,
-        hasMore: false,
-      },
-      status: { ...status, synchronizing: catalogSyncInProgress() },
+      ...result,
+      status: { hasSnapshot: true, totalAvailable: result.pagination.total, stale: false,
+        lastSuccessfulSyncAt: null, lastFailure: null },
       filter,
     });
   }
@@ -264,29 +276,6 @@ export async function GET(request: Request) {
       filter,
     });
   }
-  if (filter === "documents") {
-    // Not a catalog query: these live in Breadboard's own store, scoped to the
-    // user whose documents they came from.
-    const query = (url.searchParams.get("q") ?? "").trim().toLowerCase();
-    const all = listDocumentSkills(userId)
-      .filter(
-        (record) =>
-          !query ||
-          record.title.toLowerCase().includes(query) ||
-          record.origin.fileName.toLowerCase().includes(query),
-      )
-      .map(publicDocumentSkill);
-    const page = Math.max(0, Number(url.searchParams.get("page") ?? 0) || 0);
-    const perPage = Math.min(100, Math.max(1, Number(url.searchParams.get("perPage") ?? 50) || 50));
-    const start = page * perPage;
-    return NextResponse.json({
-      skills: all.slice(start, start + perPage),
-      pagination: { page, perPage, total: all.length, hasMore: start + perPage < all.length },
-      status: { ...store.status(), synchronizing: catalogSyncInProgress() },
-      filter,
-    });
-  }
-
   const result = store.list({
     filter,
     source:
@@ -315,21 +304,12 @@ export async function GET(request: Request) {
       isCatalogSkillInspectable(skill.classification.classification)
     );
   const skills = visible.map(publicSkill);
-  // A reviewed skill living only in the approved store has no catalog row, so
-  // the database query above cannot see it. Surface those on the first page of
-  // the Installed tab, skipping any that a catalog row already covers.
-  const localInstalls =
-    filter === "installed" && result.page === 0 && surface !== "quartz_ai"
-      ? listInstalledLocalSkills(surface, connectedMcpServers)
-          .filter((skill) => !visible.some((listed) => listed.upstreamId === skill.id))
-          .map(publicLocalInstallSkill)
-      : [];
   return NextResponse.json({
-    skills: [...localInstalls, ...skills],
+    skills,
     pagination: {
       page: result.page,
       perPage: result.perPage,
-      total: result.total + localInstalls.length,
+      total: result.total,
       hasMore: result.hasMore,
     },
     status: { ...status, synchronizing: catalogSyncInProgress() },
@@ -393,10 +373,7 @@ function publicFirstPartySkill(
       category: skill.category,
       reasons: [],
     },
-    availability: skill.availability,
-    reasons: skill.unavailableReasons,
-    contract: skill.capabilityContract,
-    requirements: skill.compatibilityRequirements,
+    ...installedSkillCompatibility(skill),
     requiresOpenCode:
       skill.classification === "eligible_coding_conditional",
   };
@@ -462,13 +439,10 @@ export async function POST() {
   }
 }
 
-function publicSkill<T extends {
-  installedPath?: string | null;
-  files: Array<{ path: string; contents?: string }> | null;
-  slashCommand: string;
-  description: string | null;
-  detailCheckedAt: string | null;
-}>(skill: T) {
+function publicSkill(skill: CatalogSkillRecord & SkillCompatibility & {
+  classification: SkillClassification;
+  requiresOpenCode: boolean;
+}) {
   return {
     ...skill,
     installedPath: undefined,

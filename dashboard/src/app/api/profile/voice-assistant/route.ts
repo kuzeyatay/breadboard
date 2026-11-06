@@ -4,11 +4,15 @@ import { readJsonBody } from '@/lib/hermes/route-core';
 import { requireSameOrigin } from '@/lib/request-origin';
 import { parseVoiceAssistantPreferences } from '@/lib/speech/assistant-preferences';
 import { readVoiceAssistantPreferences, writeVoiceAssistantPreferences } from '@/lib/speech/assistant-store';
+import { getHermesUserSettings } from '@/lib/hermes/runtime-store';
+import { GLOBAL_MODEL_SENTINEL } from '@/lib/ai-models';
 export const dynamic = 'force-dynamic';
 export async function GET() {
   try {
     const userId = await requireUserId();
-    return Response.json({ userId: String(userId), preferences: readVoiceAssistantPreferences(db, userId) }, { headers: { 'Cache-Control': 'no-store' } });
+    const preferences = readVoiceAssistantPreferences(db, userId);
+    const effectiveVoiceModel = preferences.voiceModel === GLOBAL_MODEL_SENTINEL ? getHermesUserSettings(userId).fallbackModel : preferences.voiceModel;
+    return Response.json({ userId: String(userId), preferences, effectiveVoiceModel }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) { return routeErrorResponse(error); }
 }
 export async function PUT(request: Request) {

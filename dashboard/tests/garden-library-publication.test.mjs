@@ -41,15 +41,15 @@ test("a dashboard cluster gets its own subtree-scoped Quartz index", () => {
   assert.match(index, /cluster-\$\{scopeToken\}/);
 });
 
-test("dashboard publication materializes every cluster view before navigation", () => {
+test("mutations materialize cluster views without rebuilding them on dashboard reads", () => {
   assert.match(index, /export function preparePrivateQuartzIndexes/);
   assert.match(index, /for \(const folder of listFolders\(db, userId\)\)/);
   assert.match(
     index,
     /refreshPrivateQuartzIndex\(userId: number\)[\s\S]*preparePrivateQuartzIndexes\(userId\)/,
   );
-  assert.match(dashboard, /preparePrivateQuartzIndexes\(userId\)/);
-  assert.match(dashboard, /publishQuartzIndexesIfIdle\("prepare dashboard cluster garden indexes", userId\)/);
+  assert.doesNotMatch(dashboard, /preparePrivateQuartzIndexes|publishQuartzIndexesIfIdle/);
+  assert.match(page, /preparePrivateClusterQuartzIndex\(userId, rawCluster\)/);
 });
 
 test("My garden delegates pending navigation feedback to the global blue bar", () => {
@@ -57,5 +57,6 @@ test("My garden delegates pending navigation feedback to the global blue bar", (
   assert.doesNotMatch(client, /animate-pulse/);
   assert.doesNotMatch(client, /loadedSource|isLoaded/);
   assert.match(client, /\{quartzUnavailable && \(/);
-  assert.match(client, /Quartz did not respond/);
+  assert.match(client, /Garden did not respond/);
+  assert.doesNotMatch(client, /Open Quartz directly/);
 });

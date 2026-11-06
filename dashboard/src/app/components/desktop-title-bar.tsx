@@ -1,25 +1,28 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import {
+  AI_TAB_GROUP_ID,
   TAB_GROUP_COLORS,
   describeTabUrl,
-  openBrowserInDesktop,
   sendDesktopTabsCommand,
   tabLabel,
+  type DesktopTabGroup,
   type DesktopTabKind,
   type DesktopTabView,
   type DesktopTabsState,
 } from "@/lib/desktop-browser-tabs";
 import { createPortal } from "react-dom";
-import { tabDropTarget, tabGroupDropTarget, type TabDropRect, type TabDropTarget } from "@/lib/desktop-tab-drag";
+import { tabDropTarget, tabGroupDropTarget, tabSplitDropTarget, type TabDropRect, type TabDropTarget } from "@/lib/desktop-tab-drag";
 import { useDesktopTabs } from "./use-desktop-tabs";
+import BreadboardLoader from "./breadboard-loader";
 import { isMacPlatform } from "@/app/buzz/lib/platform";
+import { isInTabGroup, isTabGroupHidden, tabGroupPath } from "@/lib/desktop-tab-groups";
 
 /** How far a press travels before it is a drag rather than a click. */
 const DRAG_THRESHOLD_PX = 6;
 
-export default function DesktopTitleBar() {
+export default function DesktopTitleBar({ shell = false }: { shell?: boolean } = {}) {
   useEffect(() => {
     if (!("breadboardDesktop" in window)) return;
     // The inline script in the document head normally sets this before the first
@@ -36,7 +39,8 @@ export default function DesktopTitleBar() {
   const tabs = useDesktopTabs();
   // Hidden/prepared renderers must not publish caption hit regions over the
   // visible tab's controls. An unregistered page has no window drag ownership.
-  const canDragWindow = tabs?.selfId != null && tabs.selfId === tabs.activeId;
+  const canDragWindow = shell || (tabs?.selfId != null && tabs.selfId === tabs.activeId);
+  if (tabs?.persistentShell && !shell) return <div className="desktop-title-bar" aria-hidden="true" />;
 
   return (
     <div className="desktop-title-bar" data-window-drag={canDragWindow} aria-label="Window controls">
@@ -46,12 +50,16 @@ export default function DesktopTitleBar() {
 }
 
 interface DragState {
+  element: HTMLElement;
   id: number;
   /** Present when the group label is dragging all of its members. */
   groupId?: string;
   width: number;
   pointerId: number;
   startX: number;
+  startY: number;
+  splitTargetId: number | null;
+  splitSide: "left" | "right" | null;
   offset: number;
   dragging: boolean;
   /** Where the tab would land if released now. */
@@ -61,6 +69,8 @@ interface DragState {
   clientX: number;
   clientY: number;
   scrollLeft: number;
+  stripTop: number;
+  stripBottom: number;
   rects: TabDropRect[];
 }
 
@@ -92,10 +102,16 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
   const groupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const suppressGroupClick = useRef<string | null>(null);
   const stateRef = useRef(state);
-  stateRef.current = state;
+  useLayoutEffect(() => { stateRef.current = state; }, [state]);
   const groups = state.groups ?? [];
   const ariaShortcutModifier = isMacPlatform() ? "Meta" : "Control";
-  const visibleTabs = state.tabs.filter(tab => !groups.some(group => group.id === tab.groupId && group.collapsed));
+  const visibleTabs = state.tabs.filter(tab => !isTabGroupHidden(groups, tab.groupId));
+
+  function updateDrag(next: DragState | null) {
+    // Keep gesture state synchronous even before React renders its preview.
+    dragRef.current = next;
+    setDrag(next);
+  }
 
   function clearGroupTimer() {
     if (groupTimer.current) clearTimeout(groupTimer.current);
@@ -103,6 +119,7 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
   }
 
   function cancelDrag() {
+    if (dragRef.current && stateRef.current.persistentShell) void sendDesktopTabsCommand({ type: "tab-drag", active: false });
     if (dragRef.current?.groupId) suppressGroupClick.current = dragRef.current.groupId;
     clearGroupTimer();
     updateDrag(null);
@@ -112,36 +129,8 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
     const escape = (event: KeyboardEvent) => { if (event.key === "Escape") cancelDrag(); };
     window.addEventListener("keydown", escape);
     window.addEventListener("blur", cancelDrag);
-    return () => { clearGroupTimer(); window.removeEventListener("keydown", escape); window.removeEventListener("blur", cancelDrag); };
+    return () => { if (dragRef.current && stateRef.current.persistentShell) void sendDesktopTabsCommand({ type: "tab-drag", active: false }); clearGroupTimer(); window.removeEventListener("keydown", escape); window.removeEventListener("blur", cancelDrag); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!drag?.dragging) return;
-    let frame = 0;
-    const tick = () => {
-      const current = dragRef.current, strip = stripRef.current;
-      if (!current || !strip) return;
-      const bounds = strip.getBoundingClientRect();
-      const step = current.clientX < bounds.left + 30 ? -8 : current.clientX > bounds.right - 30 ? 8 : 0;
-      if (step) {
-        const before = strip.scrollLeft;
-        strip.scrollLeft += step;
-        if (before !== strip.scrollLeft) previewDrop(current, current.clientX, current.clientY);
-      }
-      frame = requestAnimationFrame(tick);
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [drag?.dragging]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  function updateDrag(next: DragState | null) {
-    // Pointer down and up can arrive before React has rendered the state update
-    // from the first event. Keep the gesture's live value synchronous so a
-    // quick click never disappears merely because its tab was farther along
-    // the strip (or the renderer was busy for a frame).
-    dragRef.current = next;
-    setDrag(next);
-  }
 
   useEffect(() => {
     stripRef.current?.querySelector<HTMLElement>(`[data-tab-id="${state.activeId}"]`)
@@ -155,77 +144,122 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
     const scrollDelta = strip.scrollLeft - current.scrollLeft;
     const rects = current.rects.map(rect => ({ ...rect, left: rect.left - scrollDelta }));
     const drop = clientY < bounds.top - 12 || clientY > bounds.bottom + 18 ? null
-      : current.groupId ? tabGroupDropTarget(stateRef.current.tabs, rects, current.groupId, clientX)
-      : tabDropTarget(stateRef.current.tabs, rects, current.id, clientX);
+      : current.groupId ? tabGroupDropTarget(stateRef.current.tabs, rects, current.groupId, clientX, stateRef.current.groups)
+      : tabDropTarget(stateRef.current.tabs, rects, current.id, clientX, stateRef.current.groups);
     if (current.groupId) suppressGroupClick.current = current.groupId;
-    const sameCandidate = drop?.groupTargetId !== undefined && drop.groupTargetId === current.drop?.groupTargetId;
+    const splitSide = current.groupId || !stateRef.current.persistentShell ? null : tabSplitDropTarget(stateRef.current.tabs, current.id, current.splitTargetId, clientX, clientY, window.innerWidth, stateRef.current.contentHeight ?? window.innerHeight, bounds.bottom);
+    const candidate = drop?.nestGroupId ?? drop?.groupTargetId;
+    const sameCandidate = candidate !== undefined && candidate === (current.drop?.nestGroupId ?? current.drop?.groupTargetId);
     if (!sameCandidate) clearGroupTimer();
-    const next = { ...current, clientX, clientY, offset: clientX - current.startX + scrollDelta,
-      dragging: true, target: drop?.index ?? current.target, drop, groupReady: sameCandidate && current.groupReady };
+    const next = { ...current, clientX, clientY, stripTop: bounds.top, stripBottom: bounds.bottom, offset: clientX - current.startX + scrollDelta,
+      dragging: true, splitSide, target: drop?.index ?? current.target, drop, groupReady: sameCandidate && current.groupReady };
     updateDrag(next);
-    if (drop?.groupTargetId !== undefined && !sameCandidate) {
+    if (candidate !== undefined && !sameCandidate) {
       groupTimer.current = setTimeout(() => {
         const live = dragRef.current;
-        if (live && live.drop?.groupTargetId === drop.groupTargetId) updateDrag({ ...live, groupReady: true });
+        if (live && (live.drop?.nestGroupId ?? live.drop?.groupTargetId) === candidate) updateDrag({ ...live, groupReady: true });
       }, 400);
     }
   }
+
+  useEffect(() => {
+    if (!drag?.dragging) return;
+    let frame = 0;
+    const tick = () => {
+      const current = dragRef.current, strip = stripRef.current;
+      if (!current || !strip) return;
+      const bounds = strip.getBoundingClientRect();
+      const step = current.clientY > bounds.bottom + 18 ? 0 : current.clientX < bounds.left + 30 ? -8 : current.clientX > bounds.right - 30 ? 8 : 0;
+      if (step) {
+        const before = strip.scrollLeft;
+        strip.scrollLeft += step;
+        if (before !== strip.scrollLeft) previewDrop(current, current.clientX, current.clientY);
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [drag?.dragging]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function onTabPointerDown(event: ReactPointerEvent<HTMLElement>, tab: DesktopTabView, groupId?: string) {
     if (event.button !== 0 || dragRef.current) return;
     clearGroupTimer();
     suppressGroupClick.current = null;
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (state.persistentShell) void sendDesktopTabsCommand({ type: "tab-drag", active: true, preview: false });
+    // A click only needs its pointer and destination. Measuring every tab here
+    // forces the page to finish layout before it can send the activation IPC.
+    // Keep the press in a ref; only a real drag needs geometry or a render.
+    dragRef.current = {
+      element: event.currentTarget,
+      id: tab.id, groupId, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
+      splitTargetId: state.activeId !== tab.id ? state.activeId : state.tabs.filter(candidate => candidate.id !== tab.id).find(candidate => tab.groupId && candidate.groupId === tab.groupId)?.id
+        ?? state.tabs[state.tabs.indexOf(tab) - 1]?.id ?? state.tabs[state.tabs.indexOf(tab) + 1]?.id ?? null,
+      splitSide: null,
+      width: 0, offset: 0, dragging: false, target: -1, drop: null,
+      groupReady: false, clientX: event.clientX, clientY: event.clientY,
+      scrollLeft: 0, stripTop: 0, stripBottom: 33, rects: [],
+    };
+    // Match native browsers: selection starts on press, without waiting for
+    // the person's mouse-up. Anchor/close buttons stop propagation themselves.
+    if (!groupId && tab.id !== state.activeId) void sendDesktopTabsCommand({ type: "activate", id: tab.id });
+  }
+
+  function measureDrag(current: DragState, target: HTMLElement): DragState {
     const elements = Array.from(stripRef.current?.querySelectorAll<HTMLElement>("[data-tab-id], [data-group-marker]") ?? []);
-    const members = new Set(state.tabs.filter(tab => tab.groupId === groupId).map(tab => tab.id));
-    const draggedElements = groupId ? elements.filter(element => element.dataset.groupMarker === groupId ||
-      (element.dataset.tabId !== undefined && members.has(Number(element.dataset.tabId)))) : [event.currentTarget];
-    updateDrag({
-      id: tab.id,
-      groupId,
+    const members = new Set(stateRef.current.tabs.filter(tab => current.groupId && isInTabGroup(stateRef.current.groups ?? [], tab.groupId, current.groupId)).map(tab => tab.id));
+    const draggedElements = current.groupId ? elements.filter(element => isInTabGroup(stateRef.current.groups ?? [], element.dataset.groupMarker, current.groupId!) ||
+      (element.dataset.tabId !== undefined && members.has(Number(element.dataset.tabId)))) : [target];
+    return {
+      ...current,
       width: draggedElements.reduce((width, element) => {
         const style = getComputedStyle(element);
         return width + element.getBoundingClientRect().width + parseFloat(style.marginLeft) + parseFloat(style.marginRight);
       }, 0),
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      offset: 0,
-      dragging: false,
-      target: state.tabs.findIndex((candidate) => candidate.id === tab.id),
-      drop: null, groupReady: false, clientX: event.clientX, clientY: event.clientY,
+      target: stateRef.current.tabs.findIndex((candidate) => candidate.id === current.id),
       scrollLeft: stripRef.current?.scrollLeft ?? 0,
       rects: elements.map(element => {
         const rect = element.getBoundingClientRect();
         return { left: rect.left, width: rect.width,
           ...(element.dataset.tabId ? { id: Number(element.dataset.tabId) } : { groupId: element.dataset.groupMarker }) };
       }),
-    });
+    };
   }
 
-  function onTabPointerMove(event: ReactPointerEvent<HTMLElement>) {
+  function onTabPointerMove(event: ReactPointerEvent<HTMLElement> | PointerEvent) {
     const current = dragRef.current;
     if (!current || event.pointerId !== current.pointerId) return;
     const offset = event.clientX - current.startX;
-    const dragging = current.dragging || Math.abs(offset) > DRAG_THRESHOLD_PX;
+    const dragging = current.dragging || Math.hypot(offset, event.clientY - current.startY) > DRAG_THRESHOLD_PX;
     if (!dragging) return;
-    previewDrop(current, event.clientX, event.clientY);
+    if (!current.dragging && stateRef.current.persistentShell) void sendDesktopTabsCommand({ type: "tab-drag", active: true });
+    previewDrop(current.dragging ? current : measureDrag(current, current.element), event.clientX, event.clientY);
   }
 
-  function onTabPointerUp(event: ReactPointerEvent<HTMLElement>, tab: DesktopTabView) {
+  function onTabPointerUp(event: ReactPointerEvent<HTMLElement> | PointerEvent, tab: DesktopTabView) {
     const drag = dragRef.current;
     if (!drag || event.pointerId !== drag.pointerId) return;
     clearGroupTimer();
     updateDrag(null);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (drag.element.hasPointerCapture(event.pointerId)) drag.element.releasePointerCapture(event.pointerId);
     if (!drag.dragging) {
-      if (!drag.groupId && tab.id !== state.activeId) void sendDesktopTabsCommand({ type: "activate", id: tab.id });
+      if (stateRef.current.persistentShell) void sendDesktopTabsCommand({ type: "tab-drag", active: false });
       return;
     }
+    if (drag.splitSide && drag.splitTargetId !== null) {
+      void sendDesktopTabsCommand({ type: "split-tabs", id: drag.id, targetId: drag.splitTargetId, side: drag.splitSide })
+        .finally(() => { void sendDesktopTabsCommand({ type: "tab-drag", active: false }); });
+      return;
+    }
+    if (stateRef.current.persistentShell) void sendDesktopTabsCommand({ type: "tab-drag", active: false });
     if (!drag.drop) return;
     if (drag.groupId) {
-      if (drag.target !== state.tabs.findIndex(tab => tab.groupId === drag.groupId)) {
-        void sendDesktopTabsCommand({ type: "group-move", groupId: drag.groupId, index: drag.target });
-      }
+      void sendDesktopTabsCommand({ type: "group-move", groupId: drag.groupId, index: drag.target,
+        parentId: drag.groupReady ? drag.drop.nestGroupId ?? null : null });
+      return;
+    }
+    if (drag.groupReady && drag.drop.nestGroupId) {
+      void sendDesktopTabsCommand({ type: "move", id: tab.id, index: drag.target, groupId: drag.drop.nestGroupId });
       return;
     }
     if (drag.groupReady && drag.drop.groupTargetId !== undefined) {
@@ -240,63 +274,101 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
 
   function onTabPointerCancel() { cancelDrag(); }
 
+  // Resizing a native shell view can retire Chromium's element capture. The
+  // shell owns the full window for this gesture, so continue from its window.
+  useEffect(() => {
+    const move = (event: PointerEvent) => onTabPointerMove(event);
+    const up = (event: PointerEvent) => {
+      const tab = stateRef.current.tabs.find(tab => tab.id === dragRef.current?.id);
+      if (tab) onTabPointerUp(event, tab);
+      else if (dragRef.current) cancelDrag();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    return () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+  });
+
   function openTabMenu(tab: DesktopTabView, x: number, y: number) {
     cancelDrag();
     void sendDesktopTabsCommand({ type: "tab-menu", id: tab.id, x: Math.max(0, x), y: Math.max(0, y) });
   }
 
   const groupTarget = state.tabs.find(tab => tab.id === drag?.drop?.groupTargetId);
-  const dropGroup = groups.find(group => group.id === groupTarget?.groupId);
+  const dropGroup = groups.find(group => group.id === (drag?.drop?.nestGroupId ?? groupTarget?.groupId));
   const draggedGroup = groups.find(group => group.id === drag?.groupId);
   const dropColor = TAB_GROUP_COLORS[draggedGroup?.color ?? dropGroup?.color ?? "blue"];
   const sourceIndex = state.tabs.findIndex(tab => tab.id === drag?.id);
-  const sourceCount = drag?.groupId ? state.tabs.filter(tab => tab.groupId === drag.groupId).length : 1;
+  const sourceCount = drag?.groupId ? state.tabs.filter(tab => isInTabGroup(groups, tab.groupId, drag.groupId!)).length : 1;
   const draggedWidth = drag?.width ?? 0;
-  const previewReorder = drag?.dragging && drag.drop && drag.drop.groupTargetId === undefined &&
+  const previewReorder = drag?.dragging && drag.drop && drag.drop.groupTargetId === undefined && !drag.drop.nestGroupId &&
     (drag.groupId || state.tabs.slice(Math.min(sourceIndex, drag.target), Math.max(sourceIndex, drag.target) + 1).every(tab => !tab.groupId));
   const markerX = (drag?.drop?.markerX ?? 0) - (previewReorder && sourceIndex < drag.target ? draggedWidth : 0);
 
+  function renderGroupMarker(group: DesktopTabGroup, tab?: DesktopTabView, shift = 0) {
+    const path = tabGroupPath(groups, group.id);
+    const idleAi = group.id === AI_TAB_GROUP_ID && !state.tabs.some(tab => tab.aiOpened || tab.browser?.aiOpened);
+    const groupDragging = drag?.dragging && drag.groupId && isInTabGroup(groups, group.id, drag.groupId);
+    return <button key={group.id} type="button" className="bb-tab-group" data-group-marker={group.id}
+      data-parent-group={group.parentId}
+      data-ai-group={group.id === AI_TAB_GROUP_ID ? "true" : undefined}
+      data-group-color={group.color}
+      data-empty={!tab ? "true" : undefined}
+      data-group-depth={path.indexOf(group)}
+      data-collapsed={group.collapsed ? "true" : undefined}
+      data-split={group.split ? "true" : undefined}
+      data-dragging={groupDragging ? "true" : undefined}
+      data-reordering={drag?.dragging ? "true" : undefined}
+      data-drop-target={drag?.groupReady && dropGroup?.id === group.id ? "true" : undefined}
+      style={{ "--group-color": TAB_GROUP_COLORS[group.color], transform: `translateX(${groupDragging ? drag?.offset ?? 0 : shift}px)` } as CSSProperties} aria-expanded={idleAi ? undefined : !group.collapsed}
+      aria-label={idleAi ? "Open AI tabs" : `${group.collapsed ? "Expand" : "Collapse"} ${group.name || "tab group"}, ${state.tabs.filter(tab => isInTabGroup(groups, tab.groupId, group.id)).length} tabs`}
+      title={group.id === AI_TAB_GROUP_ID ? "Pages opened by Breadboard · Right-click to manage" : `${path.map(group => group.name || "Tab group").join(" / ")} · Drag onto a group to nest; right-click to manage`}
+      onPointerDown={event => { if (tab && group.id !== AI_TAB_GROUP_ID) onTabPointerDown(event, tab, group.id); }}
+      onPointerMove={onTabPointerMove}
+      onPointerUp={event => { if (tab && group.id !== AI_TAB_GROUP_ID) onTabPointerUp(event, tab); }}
+      onPointerCancel={onTabPointerCancel}
+      onLostPointerCapture={() => { if (!state.persistentShell) cancelDrag(); }}
+      onClick={event => {
+        if (event.detail > 0 && suppressGroupClick.current === group.id) { suppressGroupClick.current = null; return; }
+        if (idleAi) {
+          void sendDesktopTabsCommand({ type: "group-action", groupId: group.id, action: "show-ai-info" });
+          return;
+        }
+        void sendDesktopTabsCommand({ type: "group-update", groupId: group.id, collapsed: !group.collapsed });
+      }}
+      onContextMenu={event => { event.preventDefault(); event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect();
+        void sendDesktopTabsCommand({ type: "group-menu", groupId: group.id, x: Math.max(0, rect.left), y: rect.bottom + 6 }); }}
+      onKeyDown={event => { if ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu") {
+        event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect();
+        void sendDesktopTabsCommand({ type: "group-menu", groupId: group.id, x: Math.max(0, rect.left), y: rect.bottom + 6 });
+      } }}>
+      {group.id === AI_TAB_GROUP_ID ? <svg className="bb-tab-group-ai-icon" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg> : null}
+      {group.id !== AI_TAB_GROUP_ID && (group.name || group.parentId) ? <span>{"↳ ".repeat(path.indexOf(group))}{group.name || "Tab group"}</span> : null}
+    </button>;
+  }
+
   return (
     <div ref={stripRef} className="bb-tabstrip" role="tablist" aria-label="Browser tabs">
+      {groups.filter(group => group.id === AI_TAB_GROUP_ID && !state.tabs.some(tab => isInTabGroup(groups, tab.groupId, group.id))).map(group => renderGroupMarker(group))}
       {state.tabs.map((tab, index) => {
         const group = groups.find(group => group.id === tab.groupId);
-        const firstInGroup = group && state.tabs[index - 1]?.groupId !== group.id;
+        const path = tabGroupPath(groups, tab.groupId);
+        const previousPath = tabGroupPath(groups, state.tabs[index - 1]?.groupId);
         const groupStyle = group ? { "--group-color": TAB_GROUP_COLORS[group.color] } as CSSProperties : undefined;
-        const dragging = drag?.dragging === true && (drag.groupId ? tab.groupId === drag.groupId : drag.id === tab.id);
+        const dragging = drag?.dragging === true && (drag.groupId ? isInTabGroup(groups, tab.groupId, drag.groupId) : drag.id === tab.id);
         const shift = previewReorder && !dragging ? sourceIndex < drag.target && index >= sourceIndex + sourceCount && index < drag.target + sourceCount ? -draggedWidth
           : sourceIndex > drag.target && index >= drag.target && index < sourceIndex ? draggedWidth : 0 : 0;
-        const groupDragging = dragging && drag?.groupId === group?.id;
-        const groupMarker = firstInGroup ? <button type="button" className="bb-tab-group" data-group-marker={group.id}
-          data-collapsed={group.collapsed ? "true" : undefined}
-          data-dragging={groupDragging ? "true" : undefined}
-          data-reordering={drag?.dragging ? "true" : undefined}
-          data-drop-target={drag?.groupReady && dropGroup?.id === group.id ? "true" : undefined}
-          style={{ ...groupStyle, transform: `translateX(${groupDragging ? drag?.offset ?? 0 : shift}px)` }} aria-expanded={!group.collapsed}
-          aria-label={`${group.collapsed ? "Expand" : "Collapse"} ${group.name || "tab group"}, ${state.tabs.filter(tab => tab.groupId === group.id).length} tabs`}
-          title={`${group.name || "Tab group"} · Drag to reorder; click to ${group.collapsed ? "expand" : "collapse"}; right-click to manage`}
-          onPointerDown={event => onTabPointerDown(event, tab, group.id)}
-          onPointerMove={onTabPointerMove}
-          onPointerUp={event => onTabPointerUp(event, tab)}
-          onPointerCancel={onTabPointerCancel}
-          onLostPointerCapture={onTabPointerCancel}
-          onClick={event => {
-            if (event.detail > 0 && suppressGroupClick.current === group.id) { suppressGroupClick.current = null; return; }
-            void sendDesktopTabsCommand({ type: "group-update", groupId: group.id, collapsed: !group.collapsed });
-          }}
-          onContextMenu={event => { event.preventDefault(); event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect();
-            void sendDesktopTabsCommand({ type: "group-menu", groupId: group.id, x: Math.max(0, rect.left), y: rect.bottom + 6 }); }}
-          onKeyDown={event => { if ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu") {
-            event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect();
-            void sendDesktopTabsCommand({ type: "group-menu", groupId: group.id, x: Math.max(0, rect.left), y: rect.bottom + 6 });
-          } }}>
-          {group.name ? <span>{group.name}</span> : null}
-        </button> : null;
-        if (group?.collapsed) return firstInGroup ? <Fragment key={tab.id}>{groupMarker}</Fragment> : null;
+        const groupMarker = path.filter((group, depth) => !previousPath.some(previous => previous.id === group.id) && !path.slice(0, depth).some(parent => parent.collapsed)).map(group => {
+          return renderGroupMarker(group, tab, shift);
+        });
+        if (path.some(group => group.collapsed)) return <Fragment key={tab.id}>{groupMarker}</Fragment>;
         const active = tab.id === state.activeId;
         const label = `${tab.browser?.private && tab.title !== "Private Tab" ? "Private · " : ""}${tabLabel(tab.title, tab.url)}`;
         const shortcutNumber = index < 8 ? index + 1 : index === state.tabs.length - 1 ? 9 : null;
         const kind = tab.browser ? "browser" : describeTabUrl(tab.url).kind;
         const learning = kind === "workspace" && tab.learnActive === true;
+        const aiOpened = tab.aiOpened === true || tab.browser?.aiOpened === true;
+        const activityDescription = aiOpened ? `${label} — AI task; closes when finished` : learning ? `${label} — Learn in progress` : label;
+        const description = tab.highlighted ? `${activityDescription} — Highlighted` : activityDescription;
         const reportedFavicon = tab.browser?.favicon;
         const fallbackFavicon = browserTabFaviconFallback(tab.browser?.address);
         const favicon = tab.browser?.private ? undefined : reportedFavicon ?? fallbackFavicon;
@@ -323,18 +395,21 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
             }}
             aria-selected={active}
             aria-haspopup="menu"
-            title={learning ? `${label} — Learn in progress` : label}
+            title={description}
             aria-keyshortcuts={shortcutNumber ? `${ariaShortcutModifier}+${shortcutNumber}` : undefined}
-            aria-label={learning ? `${label} — Learn in progress` : label}
+            aria-label={description}
             className="bb-tab"
             data-tab-id={tab.id}
             data-active={active ? "true" : undefined}
             data-anchored={tab.anchored ? "true" : undefined}
+            data-highlighted={tab.highlighted ? "true" : undefined}
             data-loading={tab.loading ? "true" : undefined}
             data-learning={learning ? "true" : undefined}
+            data-ai-opened={aiOpened ? "true" : undefined}
             data-dragging={dragging ? "true" : undefined}
             data-reordering={drag?.dragging ? "true" : undefined}
             data-grouped={group ? "true" : undefined}
+            data-split-visible={group?.split && state.tabs.find(member => member.id === state.activeId)?.groupId === group.id ? "true" : undefined}
             data-group-end={group && state.tabs[index + 1]?.groupId !== group.id ? "true" : undefined}
             data-group-target={drag?.groupReady && drag.drop?.groupTargetId === tab.id ? "true" : undefined}
             style={{ ...groupStyle,
@@ -344,7 +419,7 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
             onPointerMove={onTabPointerMove}
             onPointerUp={(event) => onTabPointerUp(event, tab)}
             onPointerCancel={onTabPointerCancel}
-            onLostPointerCapture={onTabPointerCancel}
+            onLostPointerCapture={() => { if (!state.persistentShell) cancelDrag(); }}
             onContextMenu={event => {
               event.preventDefault();
               event.stopPropagation();
@@ -358,7 +433,9 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
             }}
           >
             <span className="bb-tab-glyph" aria-hidden="true">
-              {favicon ? (
+              {tab.loading && !learning ? (
+                <BreadboardLoader className="bb-tab-loader" />
+              ) : favicon ? (
                 <span className="bb-tab-favicon-frame">
                   <TabGlyph kind="browser" />
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -379,13 +456,12 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
                     }}
                   />
                 </span>
-              ) : tab.loading && !learning ? (
-                <span className="bb-tab-spinner" />
               ) : (
                 <TabGlyph kind={kind} privateBrowsing={tab.browser?.private} />
               )}
             </span>
             <span className="bb-tab-title">{label}</span>
+            {aiOpened && <span className="bb-tab-ai-badge" aria-hidden="true">AI</span>}
             <button
               type="button"
               className="bb-tab-anchor"
@@ -424,24 +500,23 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
       })}
       {state.savedGroups?.length ? <button type="button" className="bb-tab-saved" aria-label="Saved tab groups" title="Saved tab groups"
         onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); void sendDesktopTabsCommand({ type: "group-menu", x: Math.max(0, rect.left), y: rect.bottom + 6 }); }}>▣</button> : null}
+      {drag?.dragging && drag.splitSide && typeof document !== "undefined" ? createPortal(<div className="bb-tab-split-preview" data-side={drag.splitSide}
+        style={{ top: Math.max(136, drag.stripBottom + 40), height: Math.max(1, (state.contentHeight ?? window.innerHeight) - Math.max(136, drag.stripBottom + 40)) }}>
+        <span role="status">Release to split {drag.splitSide} and group tabs</span>
+      </div>, document.body) : null}
       {drag?.dragging && drag.drop && typeof document !== "undefined" ? createPortal(<div className="bb-tab-drag-feedback" style={{ "--drop-color": dropColor } as CSSProperties}>
-        {!drag.groupReady ? <span className="bb-tab-drop-line" style={{ left: markerX, top: (stripRef.current?.getBoundingClientRect().top ?? 0) + 5 }} /> : null}
-        <span className="bb-tab-drop-hint" role="status" style={{ left: Math.max(8, Math.min(drag.clientX - 90, window.innerWidth - 300)), top: (stripRef.current?.getBoundingClientRect().bottom ?? 33) + 4 }}>
-          {drag.groupId ? "Release to move group" : drag.drop.groupTargetId !== undefined ? drag.groupReady ? dropGroup ? `Release to add to ${dropGroup.name || "group"}` : "Release to create group" : "Hold to group · Move to edge to reorder" : "Release to move tab"}
+        {!drag.groupReady ? <span className="bb-tab-drop-line" style={{ left: markerX, top: drag.stripTop + 5 }} /> : null}
+        <span className="bb-tab-drop-hint" role="status" style={{ left: Math.max(8, Math.min(drag.clientX - 90, window.innerWidth - 300)), top: drag.stripBottom + 4 }}>
+          {drag.drop.nestGroupId ? drag.groupReady ? `Release to add to ${dropGroup?.name || "group"}` : "Hold to nest inside group" : drag.groupId ? "Release to move group" : drag.drop.groupTargetId !== undefined ? drag.groupReady ? dropGroup ? `Release to add to ${dropGroup.name || "group"}` : "Release to create group" : "Hold to group · Move to edge to reorder" : "Release to move tab"}
         </span>
       </div>, document.body) : null}
       <button
         type="button"
         className="bb-tab-new"
         aria-label="New tab"
-        title="New tab (Ctrl+T); right-click to open Browser"
+        title="New tab (Ctrl+T)"
         onClick={() => {
           void sendDesktopTabsCommand({ type: "new" });
-        }}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          void openBrowserInDesktop();
         }}
       >
         <PlusGlyph />

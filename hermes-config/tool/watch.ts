@@ -17,7 +17,7 @@ type WatchArgs = {
 
 export const run = tool({
   description:
-    "Process one video with the selected first-party Watch skill. Accepts a public HTTP(S) URL or a local file inside the authorized workspace. Returns a Markdown report, timestamped frame paths, transcript evidence, and bounded visual evidence analyzed through ChatMock. When an image-capable read tool is available, inspect relevant original frames before making fine-grained visual claims.",
+    "Retrieve available captions or transcribe one video with the selected first-party Watch skill. Accepts a public HTTP(S) video URL, including YouTube, or a local file inside the authorized workspace. Use detail=transcript for transcript or subtitle requests without visual questions. Returns a Markdown report with the available timestamped transcript and optional frame paths; when frames are present, also returns bounded visual analysis through ChatMock. When an image-capable read tool is available, inspect relevant original frames before making fine-grained visual claims.",
   args: {
     source: tool.schema.string().min(1).max(4096).describe("Public video URL or authorized local video path."),
     question: tool.schema.string().min(1).max(8000).describe("The user's question, or a concise request to summarize the video."),

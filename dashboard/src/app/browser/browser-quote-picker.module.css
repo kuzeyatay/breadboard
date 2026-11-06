@@ -1,0 +1,30 @@
+.trigger { cursor: pointer; text-align: left; font: inherit; appearance: none; }
+.trigger .quote { margin: 0; padding-right: 10px; font: 570 14px/1.4 var(--font-schibsted), sans-serif; letter-spacing: -.012em; text-wrap: balance; overflow: hidden; max-height: 4.2em; }
+.trigger .author { align-self: flex-end; color: var(--browser-wallpaper-muted); font: 600 10px/1.2 var(--font-source-sans), sans-serif; letter-spacing: .025em; }
+.trigger .chevron { position: absolute; top: 10px; right: 10px; opacity: .65; transition: transform 140ms ease; }
+.trigger[data-state="open"] .chevron { transform: rotate(180deg); }
+.trigger:focus-visible { outline: 2px solid var(--browser-wallpaper-foreground); outline-offset: 4px; }
+.current { margin: 0 0 16px; padding: 15px 16px; border: 1px solid var(--line); border-radius: 17px; background: var(--card); }
+.current figcaption { color: var(--muted); font-size: 10px; }
+.current blockquote { margin: 9px 0; font-size: 16px; line-height: 1.5; font-weight: 550; text-wrap: pretty; }
+.current p { margin: 0; color: var(--muted); font-size: 11px; text-align: right; }
+.rotation { display: flex; align-items: center; gap: 11px; width: 100%; padding: 13px; margin-bottom: 15px; border: 1px solid var(--line); border-radius: 15px; background: var(--card); color: var(--ink); text-align: left; cursor: pointer; }
+.rotation > svg { flex: none; color: var(--accent); }
+.rotation > span { flex: 1; }
+.rotation strong { font-size: 12px; font-weight: 650; }
+.rotation small { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+.count { margin: 0 3px 10px; color: var(--muted); font-size: 11px; }
+.collection { display: grid; gap: 7px; }
+.option { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px; border: 1px solid var(--line); border-radius: 15px; background: var(--card); color: var(--ink); text-align: left; cursor: pointer; }
+.option > span { flex: 1; min-width: 0; font-size: 13px; line-height: 1.5; }
+.option small { display: block; margin-top: 7px; color: var(--muted); font-size: 10px; }
+.option > svg { flex: none; color: var(--accent); }
+.option[aria-pressed="true"], .rotation[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--card)); }
+.retry { padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
+@media (hover: hover) { .option:hover, .rotation:hover { background: color-mix(in srgb, var(--accent) 12%, var(--card)); } }
+@media (max-width: 1780px) { .trigger .quote { font-size: clamp(11px, .78vw, 13px); line-height: 1.3; max-height: 3.9em; } .trigger .author { font-size: 9px; } }
+@media (prefers-reduced-motion: reduce) { .trigger .chevron { transition: none; } }
+
+.mood { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; color: var(--muted); font-size: 11px; }
+.mood select { flex: 1; min-width: 0; min-height: 36px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 11px; background: var(--card); color: var(--ink); font: inherit; font-size: 12px; }
+.mood select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

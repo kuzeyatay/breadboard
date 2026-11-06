@@ -227,9 +227,9 @@ const SELECTION_LABELS: Record<CapabilityUse["selection"], string> = {
 /** What the row says on its right edge, in the same voice the evidence rows use. */
 function capabilityStatus(use: CapabilityUse): { label: string; tone: string } {
   if (use.calls === 0) {
-    // Selected and never called. Worth saying: it means the capability was in
-    // play — its guidance was in the prompt — without having produced anything.
-    return { label: "not used", tone: "text-[var(--ink-muted)]" };
+    // Text-only skills can supply instructions without making a tool call.
+    // Older summaries cannot establish whether guidance was loaded.
+    return { label: use.guidanceLoaded ? "instructions loaded" : "use not recorded", tone: "text-[var(--ink-muted)]" };
   }
   if (use.failures >= use.calls) {
     return { label: use.calls === 1 ? "failed" : "all failed", tone: "text-red-700" };
@@ -290,7 +290,7 @@ function CapabilitiesSection({
   const { used } = capabilities;
   return (
     <div className="mb-2.5">
-      <SectionLabel>Capabilities used</SectionLabel>
+      <SectionLabel>Capabilities for this response</SectionLabel>
       {/*
         What was on the table is deliberately not reported. A super-agent turn
         is handed the whole catalogue, so "24 skills were available" describes
@@ -469,7 +469,7 @@ export default function EvidencePanel({
               a runtime agent's run. Name where the calls actually live.
             */}
             {agents?.some((agent) => agent.carried)
-              ? "This turn made no calls of its own — the work was done by the runtime agent below, and its tool calls belong to that run."
+              ? "See the agent’s activity below for the tools used."
               : "No external tool evidence was recorded for this answer."}
           </p>
         )}
@@ -483,7 +483,7 @@ export default function EvidencePanel({
         */}
         {verification.explanationReview && verification.explanationReview.status !== "not_applicable" ? (
           <div className="mt-2.5 border-t border-[var(--line)] pt-2">
-            <SectionLabel>Explanation coverage</SectionLabel>
+            <SectionLabel>Explanation review</SectionLabel>
             <p className="mt-1 text-[var(--ink-muted)]">{verification.explanationReview.reason}</p>
             {verification.explanationReview.repairConcerns?.length ? (
               <ul className="mt-1 space-y-1 text-[var(--ink-muted)]">
@@ -492,7 +492,7 @@ export default function EvidencePanel({
                 ))}
               </ul>
             ) : null}
-            {verification.explanationReview.coverage.some(item => item.status === "missing" || item.status === "uncertain") ? (
+            {verification.explanationReview.coverage?.some(item => item.status === "missing" || item.status === "uncertain") ? (
               <ul className="mt-1 space-y-1 text-[var(--ink-muted)]">
                 {verification.explanationReview.coverage.filter(item => item.status === "missing" || item.status === "uncertain").map(item => (
                   <li key={item.id}>

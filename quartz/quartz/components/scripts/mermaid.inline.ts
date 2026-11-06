@@ -1,3 +1,4 @@
+import { onObjectDispose } from "../../util/objectLifecycle"
 import { registerEscapeHandler, removeAllChildren } from "./util"
 
 interface Position {
@@ -185,9 +186,10 @@ const cssVars = [
 ] as const
 
 let mermaidImport = undefined
-document.addEventListener("nav", async () => {
-  const center = document.querySelector(".center") as HTMLElement
-  const nodes = center.querySelectorAll("code.mermaid") as NodeListOf<HTMLElement>
+const hydrateMermaid = async (event: Event) => {
+  const center = (event as CustomEvent).detail?.root ?? document.querySelector(".center") ?? document
+  const nodes = center.querySelectorAll("code.mermaid:not([data-mermaid-bound])") as NodeListOf<HTMLElement>
+  for (const node of nodes) node.dataset.mermaidBound = "true"
   if (nodes.length === 0) return
 
   mermaidImport ||= await import(
@@ -207,7 +209,7 @@ document.addEventListener("nav", async () => {
       node.removeAttribute("data-processed")
       const oldText = textMapping.get(node)
       if (oldText) {
-        node.innerHTML = oldText
+        node.textContent = oldText
       }
     }
 
@@ -242,7 +244,7 @@ document.addEventListener("nav", async () => {
 
   await renderMermaid()
   document.addEventListener("themechange", renderMermaid)
-  window.addCleanup(() => document.removeEventListener("themechange", renderMermaid))
+  onObjectDispose(center, () => document.removeEventListener("themechange", renderMermaid))
 
   for (let i = 0; i < nodes.length; i++) {
     const codeBlock = nodes[i] as HTMLElement
@@ -250,6 +252,7 @@ document.addEventListener("nav", async () => {
     const clipboardBtn = pre.querySelector(".clipboard-button") as HTMLButtonElement
     const expandBtn = pre.querySelector(".expand-button") as HTMLButtonElement
 
+    if (!clipboardBtn || !expandBtn) continue
     const clipboardStyle = window.getComputedStyle(clipboardBtn)
     const clipboardWidth =
       clipboardBtn.offsetWidth +
@@ -292,9 +295,11 @@ document.addEventListener("nav", async () => {
     expandBtn.addEventListener("click", showMermaid)
     registerEscapeHandler(popupContainer, hideMermaid)
 
-    window.addCleanup(() => {
+    onObjectDispose(pre, () => {
       panZoom?.cleanup()
       expandBtn.removeEventListener("click", showMermaid)
     })
   }
-})
+}
+document.addEventListener("nav", hydrateMermaid)
+document.addEventListener("bb:hydrate-objects", hydrateMermaid)

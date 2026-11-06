@@ -50,6 +50,78 @@ const { ChatMarkdown } = require(bundle);
 const render = (content) =>
   renderToStaticMarkup(React.createElement(ChatMarkdown, { content }));
 
+const equationsIn = (markup) => Array.from(
+  markup.matchAll(/<annotation encoding="application\/x-tex">([\s\S]*?)<\/annotation>/g),
+  (match) => match[1],
+);
+
+test("single-line numbered display equations render inside ordinary prose, lists and quotes", () => {
+  const formula = String.raw`a=\frac{v^2}{r}\tag{1}`;
+  for (const content of [`Before.\n\n$$${formula}$$\n\nAfter.`, `- $$${formula}$$\n\nAfter.`, `> $$${formula}$$\n\nAfter.`]) {
+    const markup = render(content);
+    assert.doesNotMatch(markup, /katex-error/);
+    assert.match(markup, /katex-display/);
+    assert.deepEqual(equationsIn(markup), [formula]);
+    assert.match(markup, /After\./);
+  }
+  const code = render('`$$a=b\\tag{1}$$`\n\n```tex\n$$a=b\\tag{1}$$\n```');
+  assert.doesNotMatch(code, /katex/);
+});
+
+test("number-led functions and fractions do not turn the following explanation into math", () => {
+  const markup = render(String.raw`We have converted a differential equation into algebra. Taking the inverse transform of $1/(s+a)$ gives $e^{-at}1(t)$, so this system's impulse response is $h(t)=be^{-at}1(t)$. Here $1(t)$ denotes the unit step: zero before $t=0$, one afterward.`);
+  assert.deepEqual(equationsIn(markup), [
+    "1/(s+a)", "e^{-at}1(t)", "h(t)=be^{-at}1(t)", "1(t)", "t=0",
+  ]);
+  assert.match(markup, /denotes the unit step: zero before/);
+  assert.doesNotMatch(markup, /katex-error|\$/);
+});
+
+test("number-led percentages keep the connecting explanation out of math", () => {
+  const markup = render(String.raw`The output has completed \(63.2\%\) of its change; \(36.8\%\) remains. Rise time runs from $10\%$ to $90\%$. The meter costs $50.`);
+  assert.deepEqual(equationsIn(markup), [String.raw`63.2\%`, String.raw`36.8\%`, String.raw`10\%`, String.raw`90\%`]);
+  assert.doesNotMatch(markup, /katex-error/);
+  assert.match(markup, /of its change;/);
+  assert.match(markup, /costs \$50/);
+});
+
+test("explicit LaTeX delimiters preserve number-led products beside prices", () => {
+  const markup = render(String.raw`The meter costs $5. Its corner moves from \(1/(RC)\) to \(1/(2RC)\); compare \(2ab\) with \(3xy\). A second meter costs $50.`);
+  assert.deepEqual(equationsIn(markup), ["1/(RC)", "1/(2RC)", "2ab", "3xy"]);
+  assert.doesNotMatch(markup, /katex-error/);
+  assert.match(markup, /costs \$5/);
+  assert.match(markup, /costs \$50/);
+  assert.match(markup, /; compare /);
+});
+
+test("currency detection cannot borrow operators from explicitly delimited math", () => {
+  const markup = render(String.raw`It costs $5; use \(x_1=2\). Another costs $10.`);
+  assert.deepEqual(equationsIn(markup), ["x_1=2"]);
+  assert.match(markup, /costs \$5/);
+  assert.match(markup, /costs \$10/);
+  assert.doesNotMatch(markup, /katex-error/);
+});
+
+for (const formula of ["1/(s+a)", "1(t)", "1 / (s + a)", "2x", "2 x", "2(x+1)", "3/x"]) {
+  test(`number-led algebra renders: ${formula}`, () => {
+    assert.deepEqual(equationsIn(render(`Use $${formula}$ here.`)), [formula]);
+  });
+}
+
+test("parenthesized price descriptions stay prose beside a number-led formula", () => {
+  const markup = render("It costs $5 (monthly), or $50 annually; use $1/(s+a)$ here.");
+  assert.deepEqual(equationsIn(markup), ["1/(s+a)"]);
+  assert.match(markup, /\$5 \(monthly\), or \$50 annually/);
+});
+
+for (const prices of ["Prices: $5, $10, and $20.", "Valuations: $18B, $7.87B.", "Range: $5 - $10.", "Compare $5 / $10."]) {
+  test(`short price lists and ranges stay prose: ${prices}`, () => {
+    const markup = render(prices);
+    assert.doesNotMatch(markup, /katex/);
+    assert.ok(markup.includes(prices));
+  });
+}
+
 test("two dollar amounts in one sentence stay money, not a formula", () => {
   const markup = render(
     "Large private valuations (Helsing at $18B, Hadrian at $7.87B) lead the sector.",

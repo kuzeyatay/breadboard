@@ -316,7 +316,7 @@ test("the profile's sunrise-to-sunset switch rides the same column and comes bac
   assert.match(source("../src/app/layout.tsx"), /<AppThemeRuntime\s*\/>/);
   assert.match(
     source("../src/app/components/app-theme-runtime.tsx"),
-    /void hydrateComposerSwitches\(\);/,
+    /(?:void|await) hydrateComposerSwitches\(\);/,
   );
   assert.deepEqual(pickComposerSwitches({ sunTheme: true }), { sunTheme: true });
 });

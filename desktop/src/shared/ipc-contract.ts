@@ -1,5 +1,8 @@
-import { isTranslationLanguage, notificationOrigin, type BrowserPreferences, type BrowserPreferenceCommand, type BrowserTranslationState } from "./browser-preferences";
+import { isTranslationLanguage, isBrowserMediaPermissionList, notificationOrigin, type BrowserMediaPermission, type BrowserPreferences, type BrowserPreferenceCommand, type BrowserTranslationState } from "./browser-preferences";
 import { isTabGroupId, isTabGroupColor, type TabGroup } from "./tab-groups";
+import { normalizeAnnotationTarget } from "./browser-annotations";
+import type { BrowserSelection } from "./web-text-selection";
+import { isBrowserInlineAnswerState, isBrowserInlineAnswerAction, type BrowserInlineAnswerState, type BrowserInlineAnswerAction } from "./browser-inline-answer";
 
 export const IPC_CHANNELS = {
   getVersions: "breadboard:get-versions",
@@ -32,8 +35,14 @@ export const IPC_CHANNELS = {
   // draws the strip from the state it is sent and asks for changes by command.
   getTabsState: "breadboard:get-tabs-state",
   getBrowserTerminalAccess: "breadboard:get-browser-terminal-access",
+  spotifyRequest: "breadboard:spotify-request",
+  readTerminalData: "breadboard:read-terminal-data",
+  cancelTerminalData: "breadboard:cancel-terminal-data",
+  textHighlightRequest: "breadboard:text-highlight-request",
   tabsCommand: "breadboard:tabs-command",
   tabsState: "breadboard:tabs-state",
+  browserInlineAnswerState: "breadboard:browser-inline-answer-state",
+  browserInlineAnswerAction: "breadboard:browser-inline-answer-action",
   notificationToast: "breadboard:notification-toast",
   notificationOverlayVisibility: "breadboard:notification-overlay-visibility",
   getBrowserNavigation: "breadboard:get-browser-navigation",
@@ -55,9 +64,10 @@ export const IPC_CHANNELS = {
   setBrowserRecentSearches: "breadboard:set-browser-recent-searches",
   getBrowserDownloads: "breadboard:get-browser-downloads",
   browserDownloadCommand: "breadboard:browser-download-command",
-  getClickyState: "breadboard:get-clicky-state",
-  launchClicky: "breadboard:launch-clicky",
-  openClickyProject: "breadboard:open-clicky-project",
+  savePdfDownload: "breadboard:save-pdf-download",
+  getDownloadSettings: "breadboard:get-download-settings",
+  setDownloadPrompt: "breadboard:set-download-prompt",
+  chooseDownloadDirectory: "breadboard:choose-download-directory",
   openLocalPath: "breadboard:open-local-path",
 } as const;
 
@@ -112,6 +122,11 @@ export type WindowThemeSchedule =
 
 /** One tab as the strip draws it. */
 export interface TabView {
+  /** Temporary app or browser tab opened by an AI task. */
+  aiOpened?: boolean;
+  highlighted?: boolean;
+  downloadsOpen?: boolean;
+  generation?: number;
   find?: { matches: number; activeMatchOrdinal: number };
   groupId?: string;
   id: number;
@@ -119,28 +134,31 @@ export interface TabView {
   title: string;
   url: string;
   loading: boolean;
+  pageLoading?: boolean;
   learnActive?: boolean;
   /** Present only for a sandboxed web page beneath trusted browser chrome. */
   browser?: {
+    aiOpened?: boolean;
     private?: boolean;
     address: string;
     /** The native document can cover the trusted browser home. */
     pageReady?: boolean;
+    uiVisited?: boolean;
+    uiKey?: string;
     canGoBack: boolean;
     canGoForward: boolean;
     terminalOpen: boolean;
+    organizationOpen?: boolean;
+    annotationTarget?: import("./browser-annotations").BrowserAnnotationTarget;
     downloadsOpen?: boolean;
     extensionsOpen?: boolean;
+    adBlock?: { enabled: boolean; available: boolean; site: string | null; siteEnabled: boolean; blocked: number };
     terminalWidth: number;
     zoomPercent?: number;
     translation?: BrowserTranslationState;
     find?: { matches: number; activeMatchOrdinal: number };
     favicon?: string;
-    selection?: {
-      text: string;
-      title: string;
-      url: string;
-    };
+    selection?: BrowserSelection;
   };
 }
 
@@ -154,10 +172,21 @@ export interface TabsState {
   /** The Profile switch. Off, the strip is empty and every shortcut is inert. */
   enabled: boolean;
   activeId: number | null;
+  presentedId?: number | null;
+  /** Native content currently in front, including an outgoing page during preparation. */
+  visibleId?: number | null;
+  presentationRevision?: number;
+  presentationStatus?: "pending" | "presented" | "failed";
+  persistentShell?: boolean;
+  contentHeight?: number;
+  theme?: "light" | "dark";
+  browserOwnerKey?: string;
   /** The visible page is waiting for a destination to paint without a loading scene. */
   navigationPending?: boolean;
   /** The receiving page's own tab, which may differ from the selected tab. */
   selfId: number | null;
+  /** This hidden Terminal is preparing its initial widgets for the next open. */
+  preparingNewTab?: boolean;
   tabs: TabView[];
   groups?: TabGroup[];
   savedGroups?: Array<TabGroup & { tabCount: number }>;
@@ -191,6 +220,11 @@ export interface ChatgptWebTabRequest {
    * which then gets the interactive page.
    */
   lane?: string;
+  /**
+   * ChatGPT voice: true lets this page use the microphone (chatgpt.com, audio
+   * only) until a later request says false. Absent leaves it as it is.
+   */
+  microphone?: boolean;
 }
 
 /**
@@ -204,16 +238,19 @@ export type ChatgptWebTabResult =
 
 export function isChatgptWebTabRequest(value: unknown): value is ChatgptWebTabRequest {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const { foreground, reset, lane } = value as { foreground?: unknown; reset?: unknown; lane?: unknown };
+  const { foreground, reset, lane, microphone } = value as {
+    foreground?: unknown; reset?: unknown; lane?: unknown; microphone?: unknown;
+  };
   return (
     typeof foreground === "boolean" &&
     (reset === undefined || typeof reset === "boolean") &&
+    (microphone === undefined || typeof microphone === "boolean") &&
     (lane === undefined || (typeof lane === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(lane)))
   );
 }
 
 export interface BrowserSignInsState {
-  /** Cookie domains only; cookie names and values never leave the main process. */
+  /** Sites with recognized login sessions; cookie material never leaves main. */
   sites: string[];
   openPages: number;
 }
@@ -240,6 +277,25 @@ export interface BrowserDownloadsSnapshot {
   items: BrowserDownload[];
   error: string | null;
 }
+
+export interface DownloadSettingsState {
+  directory: string;
+  askWhereToSave: boolean;
+}
+
+export type DownloadSettingsResult =
+  | { ok: true; settings: DownloadSettingsState }
+  | { ok: false; error: string };
+
+/** The desktop chooses the destination; renderers cannot supply a path. */
+export interface SavePdfDownloadRequest {
+  filename: string;
+  data: ArrayBuffer;
+}
+
+export type SavePdfDownloadResult =
+  | { ok: true; filename: string; savePath: string }
+  | { ok: false; error: string; cancelled?: boolean };
 
 export type BrowserDownloadCommand =
   | { type: "open" | "show" | "cancel" | "remove"; id: string }
@@ -327,7 +383,7 @@ export interface DesktopNotificationToast {
   chatId?: string;
   response?: string;
   website?: { id: string; origin: string };
-  notificationPermission?: { id: string; origin: string };
+  notificationPermission?: { id: string; origin: string; media?: BrowserMediaPermission[] };
   dismissed?: boolean;
 }
 
@@ -358,7 +414,8 @@ export function isDesktopNotificationToast(value: unknown): value is DesktopNoti
       String((permission as Record<string, unknown>).id).length > 0 &&
       String((permission as Record<string, unknown>).id).length <= 100 &&
       notificationOrigin((permission as Record<string, unknown>).origin) !== null &&
-      notificationOrigin((permission as Record<string, unknown>).origin) === (permission as Record<string, unknown>).origin)) &&
+      notificationOrigin((permission as Record<string, unknown>).origin) === (permission as Record<string, unknown>).origin &&
+      ((permission as Record<string, unknown>).media === undefined || isBrowserMediaPermissionList((permission as Record<string, unknown>).media)))) &&
     (notice.website === undefined || (typeof notice.website === "object" && notice.website !== null &&
       typeof (notice.website as Record<string, unknown>).id === "string" &&
       String((notice.website as Record<string, unknown>).id).length <= 100 &&
@@ -382,7 +439,14 @@ export function isNotificationOverlaySize(value: unknown): value is Notification
 }
 
 /** What a page may ask the shell to do with the tabs of its own window. */
-export type TabsCommand =
+export type TabsCommand = TabsAction & { targetTabId?: number; generation?: number; presentationRevision?: number };
+
+type TabsAction =
+  | { type: "browser-adblock-enabled"; enabled: boolean }
+  | { type: "browser-adblock-site-enabled"; enabled: boolean; site: string }
+  | { type: "browser-shell-context"; ownerKey: string }
+  | { type: "page-loading"; id: number; documentGeneration: number; pending: boolean }
+  | { type: "auth-sync" }
   | { type: "navigation-check"; url: string }
   | { type: "notification-targets"; urls: string[] }
   | { type: "notification-open"; urls: string[] }
@@ -402,10 +466,12 @@ export type TabsCommand =
   | { type: "anchor"; id: number }
   | { type: "tab-menu"; id: number; x: number; y: number }
   | { type: "move"; id: number; index: number; groupId?: string | null }
-  | { type: "group-move"; groupId: string; index: number }
+  | { type: "group-move"; groupId: string; index: number; parentId?: string | null }
   | { type: "group-tabs"; id: number; targetId: number }
-  | { type: "group-update"; groupId: string; name?: string; color?: TabGroup["color"]; collapsed?: boolean }
-  | { type: "group-action"; groupId: string; action: "new-tab" | "ungroup" | "delete" | "copy-links" | "save-close" | "restore" | "delete-saved" | "new-window" }
+  | { type: "split-tabs"; id: number; targetId: number; side: "left" | "right" }
+  | { type: "tab-drag"; active: boolean; preview?: boolean }
+  | { type: "group-update"; groupId: string; name?: string; color?: TabGroup["color"]; collapsed?: boolean; split?: boolean }
+  | { type: "group-action"; groupId: string; action: "new-tab" | "new-subgroup" | "ungroup" | "delete" | "copy-links" | "save-close" | "restore" | "delete-saved" | "new-window" | "neutralize" | "show-ai-info" }
   | { type: "group-menu"; groupId?: string; x: number; y: number }
   | { type: "group-menu-resize"; height: number }
   | { type: "group-menu-close" }
@@ -415,8 +481,9 @@ export type TabsCommand =
   | { type: "reload" }
   /** A sandboxed Chromium page beneath Breadboard's own browser toolbar. */
   | { type: "browser"; url?: string; replaceCurrent?: boolean }
-  /** A visible built-in browser page reserved for one browser-agent run. */
+  /** A background browser page reserved for one browser-agent run. */
   | { type: "browser-agent"; runId: string; url?: string }
+  | { type: "browser-agent-close"; runId: string }
   | { type: "browser-navigate"; input: string }
   | { type: "browser-stop" }
   | { type: "browser-menu"; x: number; y: number; profileLabel: string }
@@ -428,9 +495,23 @@ export type TabsCommand =
   | { type: "browser-downloads-show-all" }
   | { type: "browser-extensions-popover"; x: number; y: number }
   | { type: "browser-extensions-resize"; height: number }
+  | { type: "browser-selection-resize"; height: number }
+  | { type: "browser-selection-close" }
+  | { type: "browser-selection-action"; action: "highlight" | "note" | "remove" | "chat" | "inline"; value?: string | null }
+  | { type: "browser-selection-conversation"; id: string; url: string; conversationId: string }
+  | { type: "browser-selection-delete"; id: string; url: string }
+  | { type: "browser-answer-ready" }
+  | { type: "browser-answer-state"; state: BrowserInlineAnswerState }
+  | { type: "browser-answer-action"; action: BrowserInlineAnswerAction }
+  | { type: "browser-answer-resize"; width: number; height: number }
+  | { type: "browser-answer-move"; dx: number; dy: number }
   | { type: "browser-extensions-close" }
   | { type: "browser-extensions-picture-in-picture" }
   | { type: "browser-terminal"; open: boolean; width?: number }
+  | { type: "browser-organization"; open: boolean }
+  | { type: "browser-organization-selection" }
+  | { type: "browser-organization-target"; target: import("./browser-annotations").BrowserAnnotationTarget }
+  | { type: "browser-organization-markers"; items: Array<{ id: string; target: import("./browser-annotations").BrowserAnnotationTarget }> }
   | { type: "browser-address-suggestions"; open: boolean; bottom?: number }
   | { type: "browser-extension-load" }
   | { type: "browser-extension-action"; id: string; menuId?: string }
@@ -449,6 +530,12 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
   const isExtensionId = (id: unknown) =>
     typeof id === "string" && /^[a-p]{32}$/u.test(id);
   switch (command.type) {
+    case "browser-adblock-enabled": return typeof command.enabled === "boolean";
+    case "browser-adblock-site-enabled":
+      return typeof command.enabled === "boolean" && typeof command.site === "string" && command.site.length > 0 && command.site.length <= 253;
+    case "browser-shell-context": return typeof command.ownerKey === "string" && command.ownerKey.length <= 256;
+    case "page-loading": return Number.isSafeInteger(command.id) && Number.isSafeInteger(command.documentGeneration) && typeof command.pending === "boolean";
+    case "auth-sync": return true;
     case "notification-targets":
     case "notification-open":
       return Array.isArray(command.urls) && command.urls.length <= 8 &&
@@ -463,6 +550,10 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
       return isTranslationLanguage(command.language);
     case "browser-notifications-enabled":
       return typeof command.enabled === "boolean";
+    case "browser-media-permission":
+      return isBrowserMediaPermissionList(command.media) && typeof command.origin === "string" &&
+        notificationOrigin(command.origin) === command.origin &&
+        (command.permission === "default" || command.permission === "granted" || command.permission === "denied");
     case "browser-notification-permission":
       return notificationOrigin(command.origin) !== null && notificationOrigin(command.origin) === command.origin &&
         ["default", "granted", "denied"].includes(String(command.permission));
@@ -489,16 +580,21 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
     case "move":
       return isId(command.id) && isId(command.index) && (command.groupId == null || isTabGroupId(command.groupId));
     case "group-move":
-      return isTabGroupId(command.groupId) && isId(command.index);
+      return isTabGroupId(command.groupId) && isId(command.index) && (command.parentId == null || isTabGroupId(command.parentId));
+    case "tab-drag":
+      return typeof command.active === "boolean" && (command.preview === undefined || typeof command.preview === "boolean");
+    case "split-tabs":
+      return isId(command.id) && isId(command.targetId) && command.id !== command.targetId && (command.side === "left" || command.side === "right");
     case "group-tabs":
       return isId(command.id) && isId(command.targetId) && command.id !== command.targetId;
     case "group-update":
       return isTabGroupId(command.groupId) &&
         (command.name === undefined || (typeof command.name === "string" && command.name.length <= 80)) &&
         (command.color === undefined || isTabGroupColor(command.color)) &&
-        (command.collapsed === undefined || typeof command.collapsed === "boolean");
+        (command.collapsed === undefined || typeof command.collapsed === "boolean") &&
+        (command.split === undefined || typeof command.split === "boolean");
     case "group-action":
-      return isTabGroupId(command.groupId) && ["new-tab", "ungroup", "delete", "copy-links", "save-close", "restore", "delete-saved", "new-window"].includes(String(command.action));
+      return isTabGroupId(command.groupId) && ["new-tab", "new-subgroup", "ungroup", "delete", "copy-links", "save-close", "restore", "delete-saved", "new-window", "neutralize", "show-ai-info"].includes(String(command.action));
     case "group-menu":
       return (command.groupId === undefined || isTabGroupId(command.groupId)) &&
         [command.x, command.y].every(value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 20_000);
@@ -512,6 +608,8 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
         (command.replaceCurrent === undefined ||
           typeof command.replaceCurrent === "boolean")
       );
+    case "browser-agent-close":
+      return typeof command.runId === "string" && /^job_[0-9a-f]{64}$/u.test(command.runId);
     case "browser-agent":
       return (
         typeof command.runId === "string" &&
@@ -532,7 +630,34 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
       return [command.x, command.y].every(value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 20_000);
     case "browser-downloads-resize":
     case "browser-extensions-resize":
+    case "browser-selection-resize":
       return typeof command.height === "number" && Number.isFinite(command.height) && command.height > 0 && command.height <= 600;
+    case "browser-selection-action":
+      return ["highlight", "note", "remove", "chat", "inline"].includes(command.action as string) &&
+        (command.value === undefined || command.value === null || (typeof command.value === "string" && command.value.length <= 4000)) &&
+        (command.action !== "highlight" || ["blue", "green", "pink", "purple"].includes(command.value as string));
+    case "browser-answer-state": return isBrowserInlineAnswerState(command.state);
+    case "browser-answer-action": return isBrowserInlineAnswerAction(command.action);
+    case "browser-answer-resize":
+      return [command.width, command.height].every(value => typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 3000);
+    case "browser-answer-move":
+      return [command.dx, command.dy].every(value => typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 20000);
+    case "browser-selection-delete":
+      return typeof command.id === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(command.id) &&
+        typeof command.url === "string" && command.url.length <= 1800;
+    case "browser-selection-conversation":
+      return typeof command.id === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(command.id) &&
+        typeof command.url === "string" && command.url.length <= 1800 &&
+        typeof command.conversationId === "string" && /^conv_[A-Za-z0-9_-]{1,120}$/.test(command.conversationId);
+    case "browser-organization": return typeof command.open === "boolean";
+    case "browser-organization-enabled": return typeof command.enabled === "boolean";
+    case "browser-organization-selection": return true;
+    case "browser-organization-target": return normalizeAnnotationTarget(command.target) !== null;
+    case "browser-organization-markers": return Array.isArray(command.items) && command.items.length <= 200 && command.items.every((item: unknown) => {
+      if (!item || typeof item !== "object") return false;
+      const value = item as { id?: unknown; target?: unknown };
+      return typeof value.id === "string" && /^[a-zA-Z0-9-]{1,128}$/.test(value.id) && normalizeAnnotationTarget(value.target) !== null;
+    });
     case "browser-terminal":
       return (
         typeof command.open === "boolean" &&
@@ -571,6 +696,8 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
     case "browser-find-close":
     case "browser-downloads-close":
     case "browser-extensions-close":
+    case "browser-selection-close":
+    case "browser-answer-ready":
     case "browser-extensions-picture-in-picture":
     case "browser-downloads-show-all":
     case "browser-extension-load":

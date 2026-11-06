@@ -16,6 +16,8 @@ import os from "node:os";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { areGardenUserWritePaths, mergeCurrentGardenUserContent } from "./garden-user-content.ts";
+import { mergeConcurrentGardenChanges } from "./learn-concurrent-merge.ts";
+import { durableGardenFileDigests } from "./learn-build-workspace.ts";
 import { preserveLiveGardenPolicy } from "./learn-operator-policy.ts";
 
 export interface AtomicPromotionOptions {
@@ -35,6 +37,8 @@ export interface AtomicPromotionResult {
   destination: string;
   attempts: number;
   previousPreservedAt?: string;
+  /** Durable file digests of the tree swapped in (merge-base publications only). */
+  publishedDigests?: ReadonlyMap<string, string>;
   reason: string;
 }
 
@@ -49,13 +53,23 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function copyTreeSync(srcDir: string, destDir: string): void {
+function copyTreeSync(srcDir: string, destDir: string, link = false): void {
   fs.mkdirSync(destDir, { recursive: true });
   for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
     const src = path.join(srcDir, entry.name);
     const dest = path.join(destDir, entry.name);
-    if (entry.isDirectory()) copyTreeSync(src, dest);
-    else if (entry.isFile()) fs.copyFileSync(src, dest);
+    if (entry.isDirectory()) copyTreeSync(src, dest, link);
+    else if (entry.isFile()) {
+      if (link) {
+        try {
+          fs.linkSync(src, dest);
+          continue;
+        } catch {
+          // Cross-volume or unsupported: fall back to a real copy.
+        }
+      }
+      fs.copyFileSync(src, dest);
+    }
   }
 }
 
@@ -83,10 +97,21 @@ export async function promoteStagingGarden(input: {
   /** Keep the previous tree after a successful swap so a caller can complete
    * a second transactional resource (for example SQLite) before discarding it. */
   retainPreviousUntilCallerCommit?: boolean;
+  /** The staging tree is a throwaway copy the caller deletes afterwards, so
+   * incoming may hard-link its files instead of copying the whole garden
+   * again (halves the free disk a rollback needs). */
+  linkDisposableStaging?: boolean;
   /** Modern Learn keeps its run lease while allowing independent user edits.
    * Only the final merge/swap takes the short content-write lease. */
   learnLease?: GardenLearnLease;
   refreshMergedNavigation?: (incomingDir: string) => void;
+  /** Durable file digests of the live garden the candidate was built from.
+   * With a `learn-output` lease, live changes made since then (uploads beside
+   * Learn) are carried into the candidate instead of refusing publication. */
+  concurrentMergeBase?: ReadonlyMap<string, string>;
+  /** Called while another writer holds the content lease. Resolve true to
+   * try again (after waiting, or after recovering a dead upload). */
+  waitForContentWriter?: (conflict: GardenLearnLock) => Promise<boolean>;
   options?: Partial<AtomicPromotionOptions>;
 }): Promise<AtomicPromotionResult> {
   const options = { ...DEFAULT_PROMOTION_OPTIONS, ...input.options };
@@ -117,7 +142,7 @@ export async function promoteStagingGarden(input: {
     try {
       // 1. Stage the complete tree in a sibling temp dir.
       fs.rmSync(incomingContainer, { recursive: true, force: true });
-      copyTreeSync(input.stagingGardenDir, incoming);
+      copyTreeSync(input.stagingGardenDir, incoming, input.linkDisposableStaging);
 
       // 2. Verify the promoted-to-be tree before touching the destination.
       if (input.verifyManifest && !input.verifyManifest(incoming)) {
@@ -135,7 +160,13 @@ export async function promoteStagingGarden(input: {
       //    second move fails, restore the old dest so we never leave a
       //    half-old/half-new tree.
       if (input.learnLease?.lock.scope === "learn-output") {
-        const acquired = acquireGardenContentLease(destination, { learnLease: input.learnLease });
+        let acquired = acquireGardenContentLease(destination, { learnLease: input.learnLease });
+        // An upload admitted beside Learn can run for a long time; waiting for
+        // it must not spend the bounded retry attempts meant for lock races.
+        while (!acquired.acquired && input.waitForContentWriter &&
+            await input.waitForContentWriter(acquired.conflict)) {
+          acquired = acquireGardenContentLease(destination, { learnLease: input.learnLease });
+        }
         if (!acquired.acquired) throw Object.assign(new Error("Garden save is busy; retry publication."), { code: "EBUSY" });
         contentLease = acquired.lease;
       }
@@ -167,16 +198,44 @@ export async function promoteStagingGarden(input: {
             "incoming garden could not merge volatile state; destination untouched",
         };
       }
+      if (destExists && contentLease && input.concurrentMergeBase) {
+        const merged = mergeConcurrentGardenChanges({
+          currentDir: destination,
+          incomingDir: incoming,
+          base: input.concurrentMergeBase,
+          separateUserContent: true,
+        });
+        if (merged.conflicts.length > 0) {
+          fs.rmSync(incomingContainer, { recursive: true, force: true });
+          return {
+            promoted: false,
+            destination,
+            attempts,
+            reason: `garden changes made during this run conflict with it (${merged.conflicts.slice(0, 5).join("; ")}); destination untouched`,
+          };
+        }
+      }
       if (destExists && contentLease) {
         mergeCurrentGardenUserContent(destination, incoming);
         input.refreshMergedNavigation?.(incoming);
-        if (!contentLease.heartbeat() || !input.learnLease!.heartbeat()) {
+        const contentOwnership = contentLease.confirmOwnership();
+        const learnOwnership = input.learnLease!.confirmOwnership();
+        if (contentOwnership === "lost" || learnOwnership === "lost") {
           throw new Error("Garden save lost ownership before publication.");
+        }
+        if (contentOwnership !== "owned" || learnOwnership !== "owned") {
+          // A busy lock-transition guard is transient: retry the attempt.
+          throw Object.assign(new Error("Garden lease ownership was momentarily unconfirmable; retrying publication."), { code: "EBUSY" });
         }
       }
       // This must follow all candidate verification/merge callbacks and run on
       // every retry. A retained candidate is never authority for live policy.
       preserveLiveGardenPolicy(destination, incoming);
+      // What is about to go live, so a later restore of the previous tree can
+      // carry uploads written after this swap instead of discarding them.
+      const publishedDigests = input.concurrentMergeBase && contentLease
+        ? durableGardenFileDigests(incoming, true)
+        : undefined;
       if (destExists) fs.renameSync(destination, backup);
       try {
         fs.renameSync(incoming, destination);
@@ -257,6 +316,7 @@ export async function promoteStagingGarden(input: {
         destination,
         attempts,
         previousPreservedAt,
+        publishedDigests,
         reason: `promoted staging garden to ${destination} on attempt ${attempt}`,
       };
     } catch (error) {
@@ -390,6 +450,9 @@ export interface GardenLearnLeaseOptions {
    */
   refuseStaleProcessBoundTakeover?: boolean;
   ingestionRecovery?: GardenLearnLock["ingestionRecovery"];
+  /** Only upload journal recovery may retire a dead upload's content record;
+   * every other writer (including Learn's own recovery sweep) must wait. */
+  recoverStaleIngestionContent?: boolean;
 }
 
 export type GardenLearnLeaseOwnership = "owned" | "lost" | "uncertain";
@@ -448,8 +511,24 @@ function contentLockPath(gardenDir: string): string {
 export function acquireGardenContentLease(gardenDir: string, input: {
   paths?: readonly string[];
   learnLease?: GardenLearnLease;
+  /**
+   * A document upload admitted beside a running Learn build. It may write any
+   * garden path, only while a fresh `learn-output` Learn lease is held, and
+   * Learn's publication carries its files into the new garden.
+   */
+  ingestion?: {
+    jobId: string;
+    processBoundStaleMs: number;
+    ingestionRecovery?: GardenLearnLock["ingestionRecovery"];
+    /** Journal recovery replacing a dead upload's record. */
+    recoverStale?: boolean;
+  };
 }): GardenLearnLeaseResult {
-  const owner = { gardenSlug: path.basename(gardenDir), jobId: `content:${crypto.randomUUID()}`, buildId: "garden-save" };
+  const owner = {
+    gardenSlug: path.basename(gardenDir),
+    jobId: input.ingestion?.jobId ?? `content:${crypto.randomUUID()}`,
+    buildId: input.ingestion ? `mutation-${crypto.randomUUID()}` : "garden-save",
+  };
   const guard = acquireMutationGuard(gardenDir, owner);
   if (!guard) return { acquired: false, conflict: transientConflict(gardenDir, owner, Date.now()) };
   let lock: GardenLearnLock;
@@ -463,7 +542,16 @@ export function acquireGardenContentLease(gardenDir: string, input: {
     if (writing.status === "found" && (lockIsFresh(writing.lock, now) || !fs.existsSync(gardenDir))) {
       return { acquired: false, conflict: writing.lock };
     }
-    if (input.learnLease) {
+    // A dead upload's half-written files are undone only by its journal, so
+    // nothing but that recovery may replace its record.
+    if (writing.status === "found" && writing.lock.ingestionRecovery && !input.ingestion?.recoverStale) {
+      return { acquired: false, conflict: writing.lock };
+    }
+    if (input.ingestion) {
+      if (active.status !== "found" || active.lock.scope !== "learn-output" || !lockIsFresh(active.lock, now)) {
+        return { acquired: false, conflict: active.status === "found" ? active.lock : transientConflict(gardenDir, owner, now) };
+      }
+    } else if (input.learnLease) {
       if (input.learnLease.lost || active.status !== "found" ||
           active.lock.scope !== "learn-output" || active.lock.leaseId !== input.learnLease.lock.leaseId) {
         return { acquired: false, conflict: active.status === "found" ? active.lock : transientConflict(gardenDir, owner, now) };
@@ -474,7 +562,8 @@ export function acquireGardenContentLease(gardenDir: string, input: {
     }
     lock = { ...owner, acquiredAt: new Date(now).toISOString(), heartbeatAt: new Date(now).toISOString(),
       leaseId: crypto.randomUUID(), processId: process.pid, hostname: os.hostname(),
-      processBoundExpiresAt: new Date(now + 30 * 60_000).toISOString() };
+      processBoundExpiresAt: new Date(now + (input.ingestion?.processBoundStaleMs ?? 30 * 60_000)).toISOString(),
+      ...(input.ingestion?.ingestionRecovery ? { ingestionRecovery: input.ingestion.ingestionRecovery } : {}) };
     writeGardenLearnLock(gardenDir, lock, guard.token, true);
   } finally {
     releaseMutationGuard(gardenDir, guard.token);
@@ -546,7 +635,7 @@ type GardenLearnLockRead =
   | { status: "missing" }
   | { status: "uncertain" };
 
-function readLockFileState(filePath: string): GardenLearnLockRead {
+function readLockFileStateOnce(filePath: string): GardenLearnLockRead {
   let serialized: string;
   try {
     serialized = fs.readFileSync(filePath, "utf-8");
@@ -563,6 +652,19 @@ function readLockFileState(filePath: string): GardenLearnLockRead {
   } catch {
     return { status: "uncertain" };
   }
+}
+
+function readLockFileState(filePath: string): GardenLearnLockRead {
+  // An "uncertain" read of an old lock lets an acquirer delete it as corrupt.
+  // On Windows a scanner or a concurrent rename makes a valid lock briefly
+  // unreadable, and a process-bound lock of a busy worker is legitimately old,
+  // so one transient read could erase a live worker's garden (2026-09-23).
+  let state = readLockFileStateOnce(filePath);
+  for (let attempt = 0; state.status === "uncertain" && attempt < 4; attempt += 1) {
+    sleepSync(15);
+    state = readLockFileStateOnce(filePath);
+  }
+  return state;
 }
 
 function readLockFile(filePath: string): GardenLearnLock | null {
@@ -586,14 +688,34 @@ function readGardenLearnLockState(gardenDir: string): GardenLearnLockRead {
     : stable;
 }
 
-function readMutationGuard(gardenDir: string): LockMutationGuard | null {
-  try {
-    const parsed = JSON.parse(
-      fs.readFileSync(
+/** Guard tokens this process currently holds. A guard naming this process but
+ * absent here was leaked by a release that could not complete. */
+const heldMutationGuardTokens = new Set<string>();
+
+function readMutationGuardRecord(gardenDir: string): string | null {
+  // Windows can refuse a read while a scanner has the fresh owner file open,
+  // and a concurrent creator may not have written it yet. Treating either as
+  // "no guard" made release skip removal and leak the guard (2026-09-23).
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const serialized = fs.readFileSync(
         path.join(mutationGuardPath(gardenDir), MUTATION_GUARD_RECORD),
         "utf-8",
-      ),
-    ) as Partial<LockMutationGuard>;
+      );
+      JSON.parse(serialized);
+      return serialized;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT" || attempt >= 4) return null;
+      sleepSync(10);
+    }
+  }
+}
+
+function readMutationGuard(gardenDir: string): LockMutationGuard | null {
+  try {
+    const serialized = readMutationGuardRecord(gardenDir);
+    if (serialized === null) return null;
+    const parsed = JSON.parse(serialized) as Partial<LockMutationGuard>;
     if (
       typeof parsed.token !== "string" ||
       typeof parsed.acquiredAt !== "string" ||
@@ -638,7 +760,17 @@ function recoverStaleMutationGuard(gardenDir: string, now: number): boolean {
   const guardDir = mutationGuardPath(gardenDir);
   if (guardAgeMs(gardenDir, now) < MUTATION_GUARD_STALE_MS) return false;
   const existing = readMutationGuard(gardenDir);
+  // A guard is held only across a synchronous lock transition, so one this
+  // process owns but no longer tracks, 30 s on, was leaked by its own failed
+  // release. Otherwise it blocks every writer until this process exits.
+  const leakedByThisProcess = Boolean(
+    existing &&
+      existing.hostname === os.hostname() &&
+      existing.processId === process.pid &&
+      !heldMutationGuardTokens.has(existing.token),
+  );
   if (
+    !leakedByThisProcess &&
     existing?.hostname === os.hostname() &&
     Number.isInteger(existing.processId) &&
     localProcessIsAlive(existing.processId)
@@ -692,6 +824,7 @@ function acquireMutationGuard(
         fs.rmSync(guardDir, { recursive: true, force: true });
         throw error;
       }
+      heldMutationGuardTokens.add(guard.token);
       return guard;
     } catch (error) {
       if ((error as NodeJS.ErrnoException | undefined)?.code !== "EEXIST")
@@ -705,9 +838,15 @@ function acquireMutationGuard(
 }
 
 function releaseMutationGuard(gardenDir: string, token: string): void {
+  heldMutationGuardTokens.delete(token);
   // A delayed owner must never remove a newer owner's guard after recovery.
   if (readMutationGuard(gardenDir)?.token !== token) return;
-  fs.rmSync(mutationGuardPath(gardenDir), { recursive: true, force: true });
+  fs.rmSync(mutationGuardPath(gardenDir), {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 20,
+  });
 }
 
 function ownsMutationGuard(gardenDir: string, token: string): boolean {
@@ -805,7 +944,19 @@ function unreadableLockConflict(
 ): GardenLearnLock | null {
   try {
     const modifiedAt = fs.statSync(candidatePath).mtimeMs;
-    if (now - modifiedAt >= LOCK_STALE_MS) {
+    // A process-bound owner stops touching its lock while synchronously busy;
+    // an unreadable lock that still names a live local process is held.
+    let namesLiveProcess = false;
+    try {
+      const raw = fs.readFileSync(candidatePath, "utf-8");
+      const processId = Number(/"processId"\s*:\s*(\d+)/.exec(raw)?.[1]);
+      const hostname = /"hostname"\s*:\s*"([^"]*)"/.exec(raw)?.[1];
+      namesLiveProcess = hostname === os.hostname() && Number.isSafeInteger(processId) &&
+        processId > 0 && localProcessIsAlive(processId);
+    } catch {
+      /* unreadable: fall through to the age rule */
+    }
+    if (!namesLiveProcess && now - modifiedAt >= LOCK_STALE_MS) {
       if (ownsMutationGuard(gardenDir, mutationGuardToken)) {
         fs.rmSync(candidatePath, { force: true });
         return null;
@@ -838,6 +989,7 @@ function acquireGardenLearnLockInternal(
   refuseStaleProcessBoundTakeover = false,
   ingestionRecovery?: GardenLearnLock["ingestionRecovery"],
   scope?: GardenLearnLock["scope"],
+  recoverStaleIngestionContent = false,
 ): GardenLearnLockResult {
   const guard = acquireMutationGuard(gardenDir, owner);
   if (!guard)
@@ -852,6 +1004,15 @@ function acquireGardenLearnLockInternal(
     if (expectedLeaseId === undefined && writing.status !== "missing" &&
         (writing.status === "uncertain" || lockIsFresh(writing.lock, now) || !fs.existsSync(gardenDir))) {
       return { acquired: false, conflict: writing.status === "found" ? writing.lock : transientConflict(gardenDir, owner, now) };
+    }
+    // An upload admitted beside Learn that died mid-write left files only its
+    // journal can undo. Only journal recovery may take over from it. A Learn
+    // run resuming its own lease may continue: its publication waits for and
+    // recovers the dead upload before swapping anything.
+    const staleIngestionContent =
+      writing.status === "found" && Boolean(writing.lock.ingestionRecovery) && !lockIsFresh(writing.lock, now);
+    if (staleIngestionContent && !recoverStaleIngestionContent && expectedLeaseId === undefined) {
+      return { acquired: false, conflict: (writing as { lock: GardenLearnLock }).lock };
     }
     let existing = readLockFile(lockPath(gardenDir));
     if (!existing) {
@@ -949,6 +1110,11 @@ function acquireGardenLearnLockInternal(
           : {}),
     };
     writeGardenLearnLock(gardenDir, lock, guard.token);
+    // Recovery now owns the dead upload's rollback under the exclusive lock.
+    // A resuming Learn run leaves the record for recovery to find.
+    if (staleIngestionContent && recoverStaleIngestionContent) {
+      fs.rmSync(contentLockPath(gardenDir), { force: true });
+    }
     return { acquired: true, lock };
   } finally {
     releaseMutationGuard(gardenDir, guard.token);
@@ -1109,6 +1275,7 @@ export function acquireGardenLearnLease(
     options.refuseStaleProcessBoundTakeover ?? true,
     options.ingestionRecovery,
     options.scope,
+    options.recoverStaleIngestionContent === true,
   );
   if ("conflict" in acquired)
     return { acquired: false, conflict: acquired.conflict };

@@ -16,15 +16,14 @@ test("desktop notifications use one native overlay above every tab surface", () 
   assert.match(toast, /!desktopOverlay/);
   assert.match(toast, /mode\?: 'page' \| 'desktop-overlay'/);
   assert.match(toast, /z-\[10000\]/);
-  assert.match(toast, /text-\[#fff\]/);
-  assert.match(toast, /disabled:text-\[#fff\]/);
+  assert.match(toast, /NotificationReplyComposer/);
   assert.doesNotMatch(toast, /disabled:opacity-45/);
   assert.equal(
     (toast.match(/className=\{TOAST_ACTION_BUTTON_CLASS\}/g) ?? []).length,
     4,
     "open and dismiss actions use the same button treatment",
   );
-  assert.match(toast, /flex min-w-0 items-center gap-2\.5/);
+  assert.match(toast, /<h2 className=/);
   assert.match(styles, /\.bb-toast-card \{/);
   assert.match(styles, /backdrop-filter: blur\(28px\) saturate\(160%\)/);
 

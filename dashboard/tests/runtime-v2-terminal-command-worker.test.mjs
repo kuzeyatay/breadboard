@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 import {
   resolveRuntimeTerminalShell,
+  legacyWindowsPath,
+  sealedEnvironment,
   validateTerminalCommandRequest,
 } from "../scripts/runtime-v2-terminal-command-worker.mjs";
 
@@ -66,10 +68,10 @@ function fixture(t, request) {
   return { dataRoot, identity, jobRoot, attemptRoot };
 }
 
-async function runWorker(current, { stopAfterCheckpoint = false } = {}) {
+async function runWorker(current, { stopAfterCheckpoint = false, env = process.env } = {}) {
   const child = spawn(process.execPath, [workerPath, "start.json"], {
     cwd: current.attemptRoot,
-    env: { ...process.env },
+    env: { ...env },
     windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -145,6 +147,51 @@ test("Terminal worker accepts only the closed command request and fixed shell", 
   assert.doesNotMatch(compatibility, /node:child_process|\bspawn\s*\(/u);
   assert.match(compatibility, /submitRuntimeJob/);
   assert.match(compatibility, /terminal-command-node/);
+});
+
+test("Windows terminal transport preserves quoted script text exactly", {skip: process.platform !== "win32"}, async (t) => {
+  const expected = 'double "quote", single \'quote\', $literal, `backtick`, pipe |, UTF-8 café';
+  const current = fixture(t, {
+    command: "$sample = @'\n" + expected + "\n'@\n[Console]::WriteLine($sample)",
+    workspaceRoot: dashboardRoot,
+    maxRuntimeMs: 10000,
+  });
+  const actual = await runWorker(current);
+  assert.equal(actual.exit.code, 0, actual.stderr);
+  const result = JSON.parse(fs.readFileSync(path.join(current.jobRoot, "result.json"), "utf8"));
+  assert.equal(result.result.exitCode, 0, JSON.stringify(result));
+  assert.equal(result.result.stdout.trim(), expected);
+});
+
+test("legacy Windows path presentation keeps the same directory and the sealed environment excludes credentials", () => {
+  assert.equal(legacyWindowsPath(String.raw`\\?\C:\runtime\temp`), String.raw`C:\runtime\temp`);
+  assert.equal(legacyWindowsPath(String.raw`\\?\UNC\server\share\temp`), String.raw`\\server\share\temp`);
+  assert.equal(legacyWindowsPath(String.raw`C:\runtime\temp`), String.raw`C:\runtime\temp`);
+  assert.equal(legacyWindowsPath(String.raw`\\.\device`), String.raw`\\.\device`);
+  const result = sealedEnvironment({ TEMP: String.raw`\\?\C:\runtime\temp`, API_KEY: "must-not-leak", PATH: "trusted" });
+  assert.equal(result.API_KEY, undefined);
+  assert.equal(result.PATH, "trusted");
+  assert.equal(result.TEMP, process.platform === "win32" ? String.raw`C:\runtime\temp` : String.raw`\\?\C:\runtime\temp`);
+});
+
+test("fresh Windows worker compiles native helpers with Runtime's verbatim temp path and emits UTF-8", {
+  skip: process.platform !== "win32",
+}, async (t) => {
+  const current = fixture(t, {
+    command: "Add-Type 'public static class NativeProbe { public static int Value = 42; }'; [NativeProbe]::Value; Write-Output 'İstanbul — 日本語'",
+    workspaceRoot: dashboardRoot,
+    maxRuntimeMs: 15_000,
+  });
+  const temporary = path.join(current.dataRoot, "native temp ' [test]");
+  fs.mkdirSync(temporary);
+  const run = await runWorker(current, { env: {
+    ...process.env, TEMP: path.toNamespacedPath(temporary), TMP: path.toNamespacedPath(temporary),
+  } });
+  assert.equal(run.exit.code, 0, run.stderr);
+  const result = JSON.parse(fs.readFileSync(path.join(current.jobRoot, "result.json"), "utf8")).result;
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /42\r?\nİstanbul — 日本語/);
 });
 
 test("each Terminal command uses a fresh one-job worker and fenced output", async (t) => {
@@ -224,7 +271,7 @@ test("Terminal worker enforces the command-specific wall-clock ceiling", async (
   assert.ok(result.elapsedMs < 10_000, `elapsed ${result.elapsedMs}ms`);
 });
 
-test("Terminal worker exposes suppressed PowerShell scan errors even when the shell exits zero", {
+test("Terminal worker reports a failed final PowerShell command even when errors were suppressed", {
   skip: process.platform !== "win32",
 }, async (t) => {
   const current = fixture(t, {
@@ -236,7 +283,7 @@ test("Terminal worker exposes suppressed PowerShell scan errors even when the sh
   assert.equal(run.exit.code, 0, run.stderr);
   const result = JSON.parse(fs.readFileSync(path.join(current.jobRoot, "result.json"), "utf8")).result;
   assert.equal(result.stdout.trim(), "");
-  assert.equal(result.exitCode, 0);
+  assert.equal(result.exitCode, 1);
   assert.match(result.stderr, /PowerShell diagnostics/);
   assert.match(result.stderr, /Illegal|positional parameter/);
 });

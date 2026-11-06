@@ -27,6 +27,12 @@ Select this skill automatically when the user asks you to carry out a task in a
 graphical desktop application and there is no direct Breadboard tool for the
 operation. An explicit `/computer-use` command also selects it.
 
+You may choose this skill yourself when UI work is needed, including after a
+direct tool cannot complete part of the task. If `computer_use` is deferred,
+discover it with `tool_search`, read its schema, then call it. For Breadboard's
+own pages, settings, or built-in browser, choose `breadboard-use` instead; that
+bridge operates the existing signed-in app without a native desktop driver.
+
 Prefer the most direct instrument that can complete the work:
 
 1. Use a connected service or application API when one owns the requested data
@@ -45,9 +51,12 @@ enough.
 
 1. Call `computer_use` with `action: "list_apps"` or `action: "list_windows"`
    when the target is ambiguous.
-2. Target the app with `action: "focus_app"` and `raise_window: false`. This
-   selects its window for background input; it must not bring the app forward.
-3. Capture with `action: "capture"`. Prefer `mode: "ax"` for text-first work
+2. Capture the intended window with `action: "capture"`, using the `app` or
+   exact `pid` and `window_id` returned by discovery. Keep that target on later
+   captures so switching the user's foreground app cannot redirect the task.
+   If using `focus_app`, set `raise_window: false`; selecting a target must not
+   bring the app forward.
+3. Prefer `mode: "ax"` for text-first work
    and `mode: "som"` when the numbered visual overlay is useful.
 4. Act on a numbered `element` from the latest capture whenever possible. Use
    coordinates only when the accessibility tree exposes no usable element.
@@ -61,6 +70,13 @@ Never request foreground delivery. If Hermes returns `effect:
 escalation, stop that route and explain that the application could not be
 controlled safely in the background. Do not turn a background task into visible
 focus changes.
+
+On Windows there is only one system pointer. The driver's agent cursor is a
+separate visual overlay; background actions target the selected window through
+accessibility or window-directed input. Do not use OS mouse movement, foreground
+input, or the legacy UI-TARS desktop operator as a fallback. Applications that
+require real foreground input need a separate desktop session or VM to preserve
+the user's mouse and keyboard.
 
 ## Safety and scope
 

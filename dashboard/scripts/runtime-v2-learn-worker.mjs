@@ -692,6 +692,22 @@ function writeResultOnce(resultPath, bytes) {
 async function runRuntimeV2LearnWorker() {
   redirectApplicationStdout();
   const launch = loadRuntimeV2LearnLaunch();
+  // The supervisor kills a worker whose commit passes a limit it tightens as
+  // system commit runs low (em1, 2026-10-10: twice at 9+ GB). Record where the
+  // memory sits (V8 heap vs native buffers) so growth can be traced.
+  const memoryLog = path.join(launch.dataRoot, "runtime", "learn-worker-memory.jsonl");
+  setInterval(() => {
+    try {
+      const { rss, heapUsed, heapTotal, external, arrayBuffers } = process.memoryUsage();
+      const mb = (value) => Math.round(value / 1048576);
+      fs.appendFileSync(memoryLog, `${JSON.stringify({
+        at: new Date().toISOString(), pid: process.pid,
+        rss: mb(rss), heapUsed: mb(heapUsed), heapTotal: mb(heapTotal), external: mb(external), arrayBuffers: mb(arrayBuffers),
+      })}\n`);
+    } catch {
+      // Telemetry never affects the run.
+    }
+  }, 60_000).unref();
   const { layout, request } = configureTrustedLearnEnvironment(
     launch,
     launch.request,

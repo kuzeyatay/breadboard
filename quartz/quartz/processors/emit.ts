@@ -15,36 +15,43 @@ export async function emitContent(ctx: BuildCtx, content: ProcessedContent[]) {
 
   let emittedFiles = 0
   const staticResources = getStaticResourcesFromPlugins(ctx)
-  await Promise.all(
-    cfg.plugins.emitters.map(async (emitter) => {
-      try {
-        const emitted = await emitter.emit(ctx, content, staticResources)
-        if (Symbol.asyncIterator in emitted) {
-          // Async generator case
-          for await (const file of emitted) {
-            emittedFiles++
-            if (ctx.argv.verbose) {
-              console.log(`[emit:${emitter.name}] ${file}`)
-            } else {
-              log.updateText(`${emitter.name} -> ${styleText("gray", file)}`)
-            }
-          }
-        } else {
-          // Array case
-          emittedFiles += emitted.length
-          for (const file of emitted) {
-            if (ctx.argv.verbose) {
-              console.log(`[emit:${emitter.name}] ${file}`)
-            } else {
-              log.updateText(`${emitter.name} -> ${styleText("gray", file)}`)
-            }
+  const emitters = cfg.plugins.emitters.map((emitter) => async () => {
+    try {
+      const emitted = await emitter.emit(ctx, content, staticResources)
+      if (Symbol.asyncIterator in emitted) {
+        // Async generator case
+        for await (const file of emitted) {
+          emittedFiles++
+          if (ctx.argv.verbose) {
+            console.log(`[emit:${emitter.name}] ${file}`)
+          } else {
+            log.updateText(`${emitter.name} -> ${styleText("gray", file)}`)
           }
         }
-      } catch (err) {
-        trace(`Failed to emit from plugin \`${emitter.name}\``, err as Error)
+      } else {
+        // Array case
+        emittedFiles += emitted.length
+        for (const file of emitted) {
+          if (ctx.argv.verbose) {
+            console.log(`[emit:${emitter.name}] ${file}`)
+          } else {
+            log.updateText(`${emitter.name} -> ${styleText("gray", file)}`)
+          }
+        }
       }
-    }),
-  )
+    } catch (err) {
+      trace(`Failed to emit from plugin \`${emitter.name}\``, err as Error)
+    }
+  })
+
+  // A single-parser build also needs bounded emission: rendering textbook
+  // pages alongside folders, tags, and the full search index retains several
+  // large outputs at once, even though parsing itself is sequential.
+  if (argv.concurrency === 1) {
+    for (const emit of emitters) await emit()
+  } else {
+    await Promise.all(emitters.map((emit) => emit()))
+  }
 
   log.end(`Emitted ${emittedFiles} files to \`${argv.output}\` in ${perf.timeSince()}`)
 }

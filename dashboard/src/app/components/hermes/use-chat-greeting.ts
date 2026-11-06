@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRecommendations } from '@/app/components/use-recommendations';
+import { usePersonalize } from '@/app/components/use-personalize';
+import { AUTH_CHANGED_EVENT } from '@/lib/auth-events';
 
 import {
   CHAT_GREETING_ROTATION_MS,
@@ -31,9 +34,10 @@ export interface ChatGreetingState {
   ready: boolean;
   greeting: ChatGreeting | null;
   suggestions: string[];
+  suggestionSources: Record<string, string>;
 }
 
-const NOT_READY: ChatGreetingState = { ready: false, greeting: null, suggestions: [] };
+const NOT_READY: ChatGreetingState = { ready: false, greeting: null, suggestions: [], suggestionSources: {} };
 
 // One fetch per hour serves every terminal in the tab. Opening the dock, closing
 // it and opening it again should not cost a round trip, and the answer would be
@@ -96,10 +100,24 @@ function normalizeSignals(value: unknown): ChatGreetingSignals {
  * pools forward and re-reads the activity signals behind them.
  */
 export function useChatGreeting({ scope, temporary, garden, browser = false, initialSignals = null }: Options): ChatGreetingState {
+  const [personalize] = usePersonalize();
+  const allowPersonalContext = personalize && scope !== 'public' && !temporary;
+  const recommendations = useRecommendations({ scope, temporary, gardenSlug: garden?.slug });
   const initialSignalsRef = useRef(initialSignals);
   const [now, setNow] = useState<Date | null>(null);
   const [signals, setSignals] = useState<ChatGreetingSignals | null>(initialSignals);
   const [rotation, setRotation] = useState(0);
+
+  useEffect(() => {
+    const changed = () => {
+      cache = null;
+      initialSignalsRef.current = null;
+      setSignals(null);
+      setRotation(value => value + 1);
+    };
+    window.addEventListener(AUTH_CHANGED_EVENT, changed);
+    return () => window.removeEventListener(AUTH_CHANGED_EVENT, changed);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -123,6 +141,7 @@ export function useChatGreeting({ scope, temporary, garden, browser = false, ini
   }, []);
 
   useEffect(() => {
+    if (!allowPersonalContext) return;
     const initial = initialSignalsRef.current;
     if (initial) {
       initialSignalsRef.current = null;
@@ -142,6 +161,7 @@ export function useChatGreeting({ scope, temporary, garden, browser = false, ini
         const response = await fetch("/api/chat-greeting", { cache: "no-store" });
         if (!response.ok) throw new Error(`Greeting signals returned ${response.status}`);
         const parsed = normalizeSignals(await response.json());
+        if (cancelled) return;
         cache = { signals: parsed, readAt: Date.now() };
         if (!cancelled) setSignals(parsed);
       } catch {
@@ -153,14 +173,14 @@ export function useChatGreeting({ scope, temporary, garden, browser = false, ini
     return () => {
       cancelled = true;
     };
-  }, [rotation]);
+  }, [rotation, allowPersonalContext]);
 
   const gardenName = garden?.name ?? null;
   const gardenSlug = garden?.slug ?? null;
   return useMemo(() => {
-    if (now === null || signals === null) return NOT_READY;
+    if (now === null || (allowPersonalContext && signals === null)) return NOT_READY;
     const input = {
-      signals,
+      signals: allowPersonalContext && signals ? signals : EMPTY_CHAT_GREETING_SIGNALS,
       scope,
       temporary,
       browser,
@@ -170,7 +190,8 @@ export function useChatGreeting({ scope, temporary, garden, browser = false, ini
     return {
       ready: true,
       greeting: resolveChatGreeting(input),
-      suggestions: resolveChatSuggestions(input),
+      suggestions: recommendations.length ? recommendations.map(item => item.prompt) : resolveChatSuggestions(input),
+      suggestionSources: Object.fromEntries(recommendations.map(item => [item.prompt, item.sourceLabel])),
     };
-  }, [now, scope, signals, temporary, gardenName, gardenSlug, browser]);
+  }, [now, scope, signals, temporary, gardenName, gardenSlug, browser, recommendations, allowPersonalContext]);
 }

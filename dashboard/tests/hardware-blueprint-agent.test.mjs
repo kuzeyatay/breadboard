@@ -120,7 +120,7 @@ test("the run kind round-trips through the durable transcript", () => {
 test("the agent is reachable from every chat surface", () => {
   const hub = source("src/app/components/hermes/command-hub.tsx");
   assert.match(hub, /HARDWARE_BLUEPRINT_COMMAND/);
-  assert.match(hub, /Turns a hardware idea into a checked circuit/);
+  assert.match(hub, /Turn a hardware idea into circuit diagrams, a parts list, assembly steps, and firmware/);
   assert.match(hub, /onSelectHardwareBlueprint/);
   // Picker rows are text only, like every other agent in the list.
   assert.doesNotMatch(hub, /CircuitIcon/);

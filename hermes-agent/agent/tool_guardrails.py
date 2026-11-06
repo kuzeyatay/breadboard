@@ -15,6 +15,11 @@ from typing import Any, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_dispatch_helpers import (
+    _is_multimodal_tool_result,
+    _multimodal_text_summary,
+    _append_subdir_hint_to_multimodal,
+)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
@@ -191,7 +196,7 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
     )
 
 
-def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
+def classify_tool_failure(tool_name: str, result: str | dict[str, Any] | None) -> tuple[bool, str]:
     """Safety-fallback classifier used only when callers don't pass ``failed``.
 
     Mirrors ``agent.display._detect_tool_failure`` exactly so the guardrail
@@ -200,8 +205,12 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     from ``_detect_tool_failure``; this function exists so standalone callers
     (tests, tooling) still get consistent behavior.
     """
-    if result is None:
+    # Image envelopes are successful results; tool failures arrive as text.
+    # Match the display classifier without slicing a dictionary as a string.
+    if result is None or _is_multimodal_tool_result(result):
         return False, ""
+    if not isinstance(result, str):
+        result = _multimodal_text_summary(result)
     if file_mutation_result_landed(tool_name, result):
         return False, ""
 
@@ -304,7 +313,7 @@ class ToolCallGuardrailController:
         self,
         tool_name: str,
         args: Mapping[str, Any] | None,
-        result: str | None,
+        result: str | dict[str, Any] | None,
         *,
         failed: bool | None = None,
     ) -> ToolGuardrailDecision:
@@ -426,7 +435,9 @@ def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
     )
 
 
-def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> str:
+def append_toolguard_guidance(
+    result: str | dict[str, Any], decision: ToolGuardrailDecision,
+) -> str | dict[str, Any]:
     """Append runtime guidance to the current tool result content."""
     if decision.action not in {"warn", "halt"} or not decision.message:
         return result
@@ -435,7 +446,17 @@ def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> s
         f"\n\n[{label}: "
         f"{decision.code}; count={decision.count}; {decision.message}]"
     )
-    return (result or "") + suffix
+    if _is_multimodal_tool_result(result):
+        # A result can already be referenced by history/callbacks. Copy its text
+        # parts before adding guidance, retaining the image blocks as images.
+        updated = {
+            **result,
+            "content": [dict(part) if isinstance(part, dict) else part for part in result["content"]],
+            "text_summary": _multimodal_text_summary(result),
+        }
+        _append_subdir_hint_to_multimodal(updated, suffix)
+        return updated
+    return _multimodal_text_summary(result or "") + suffix
 
 
 def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
@@ -462,8 +483,10 @@ def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return args if isinstance(args, Mapping) else {}
 
 
-def _result_hash(result: str | None) -> str:
-    parsed = safe_json_loads(result or "")
+def _result_hash(result: str | dict[str, Any] | None) -> str:
+    # Native image results are already structured. Hash the whole payload so
+    # different pixels with the same text summary still count as new evidence.
+    parsed = result if isinstance(result, dict) else safe_json_loads(result or "")
     if parsed is not None:
         try:
             canonical = json.dumps(

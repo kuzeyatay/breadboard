@@ -9,8 +9,9 @@ import {
  *
  * Which modes exist is a property of the *active model*, not of the UI: a
  * GPT-5.6 model accepts the full ladder up to Ultra, `gpt-5.1` stops at High,
- * Claude maps three levels onto thinking budgets, and a local Ollama model has
- * no notion of reasoning at all. ChatMock reports the honoured levels per model
+ * older Claude models map three levels onto thinking budgets, while Opus 5.5
+ * supports the full effort ladder. A local model may have no notion of reasoning
+ * at all. ChatMock reports the honoured levels per model
  * on `/v1/models`; this module turns that list into labelled options.
  *
  * Offering a level the model ignores would be a control that silently does

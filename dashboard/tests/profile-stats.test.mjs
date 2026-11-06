@@ -12,6 +12,7 @@ import {
   DEFAULT_ACTIVITY_WEEKS,
   agentLabel,
   readProfileStats,
+  readProfileStatsCached,
 } from "../src/lib/profile/stats.ts";
 
 function createDatabase() {
@@ -584,6 +585,97 @@ test("a legacy runtime run falls back to its non-sentinel routed model", () => {
   assert.equal(cost.models[0].model, "gpt-5.6-sol");
 });
 
+test("runtime model lookup picks the latest resolved retry within the same conversation", () => {
+  const db = createDatabase();
+  try {
+    addConversation(db, 1);
+    addConversation(db, 2);
+    addConversation(db, 3, { userId: 2 });
+    for (const id of [1, 2, 3]) {
+      db.prepare("INSERT INTO hermes_runtime_sessions (id, conversation_id) VALUES (?, ?)").run(id, id);
+    }
+    for (const id of [1, 2]) {
+      addMessage(db, id, {
+        role: "assistant",
+        at: "2026-06-01 10:00:00",
+        clientMessageId: "shared-turn-id",
+        metadata: { model: "default" },
+        usage: { inputTokens: 1000, outputTokens: 100, totalTokens: 1100 },
+      });
+    }
+    const insertRun = db.prepare(
+      "INSERT INTO hermes_runs (id, runtime_session_id, dispatch_json, started_at) VALUES (?, ?, ?, ?)",
+    );
+    for (const [id, session, model, started] of [
+      ["old", 1, "gpt-5.5", "09:00"],
+      ["retry-a", 1, "gpt-5.6-terra", "10:00"],
+      ["retry-b", 1, "gpt-5.6-sol", "10:00"],
+      ["unresolved", 1, null, "11:00"],
+      ["other-conversation", 2, "gpt-5.6-luna", "12:00"],
+      ["other-user", 3, "gpt-5.5", "13:00"],
+    ]) {
+      insertRun.run(id, session, JSON.stringify({
+        clientMessageId: "shared-turn-id",
+        model: { modelID: "default" },
+        ...(model ? { modelIdentity: { modelID: model } } : {}),
+      }), `2026-06-01T${started}:00.000Z`);
+    }
+
+    const { cost } = readProfileStats(db, 1, { today: "2026-06-02" });
+    assert.equal(cost.pricedReplies, 2, "retry joins must not multiply the usage");
+    assert.equal(cost.totalTokens, 2200);
+    assert.deepEqual(cost.models.map(({ model }) => model).sort(), ["gpt-5.6-luna", "gpt-5.6-sol"]);
+  } finally {
+    db.close();
+  }
+});
+
+test("profile usage parses runtime dispatches a bounded number of times as replies grow", () => {
+  const db = createDatabase();
+  const jsonDb = new Database(":memory:");
+  const extract = jsonDb.prepare("SELECT json_extract(?, ?) AS value");
+  let dispatchReads = 0;
+  // Count JSON work without a wall-clock threshold. Delegate to SQLite itself
+  // so null handling and JSON path semantics remain identical to production.
+  db.function("json_extract", (json, jsonPath) => {
+    if (typeof json === "string" && json.includes('"profileDispatchFixture":true')) dispatchReads += 1;
+    return extract.get(json, jsonPath).value;
+  });
+  try {
+    addConversation(db, 1);
+    db.prepare("INSERT INTO hermes_runtime_sessions (id, conversation_id) VALUES (1, 1)").run();
+    const runCount = 30;
+    const insertRun = db.prepare(
+      "INSERT INTO hermes_runs (id, runtime_session_id, dispatch_json, started_at) VALUES (?, 1, ?, ?)",
+    );
+    for (let index = 0; index < runCount; index += 1) {
+      const clientMessageId = `turn-${index}`;
+      addMessage(db, 1, {
+        role: "assistant",
+        at: "2026-06-01 10:00:00",
+        clientMessageId,
+        usage: { inputTokens: 1000, outputTokens: 100, totalTokens: 1100 },
+      });
+      insertRun.run(`run-${index}`, JSON.stringify({
+        profileDispatchFixture: true,
+        clientMessageId,
+        modelIdentity: { modelID: "gpt-5.6-sol" },
+        prompt: "Conversation history. ".repeat(1000),
+      }), "2026-06-01T10:00:00.000Z");
+    }
+
+    const { cost } = readProfileStats(db, 1, { today: "2026-06-02" });
+    assert.equal(cost.pricedReplies, runCount);
+    assert.equal(cost.totalTokens, runCount * 1100);
+    assert.equal(cost.models[0].model, "gpt-5.6-sol");
+    assert.ok(dispatchReads > 0, "the runtime dispatches were inspected");
+    assert.ok(dispatchReads <= runCount * 4, `dispatch JSON was parsed ${dispatchReads} times for ${runCount} runs`);
+  } finally {
+    db.close();
+    jsonDb.close();
+  }
+});
+
 test("a migrated copy cannot charge the same token receipt twice", () => {
   const db = createDatabase();
   addConversation(db, 1);
@@ -901,4 +993,16 @@ test("the first conversation is the oldest one, whichever format its date uses",
 
   const stats = readProfileStats(db, 1, { today: "2026-06-02" });
   assert.equal(stats.firstConversation?.title, "Where it started");
+});
+
+test("reopening the profile serves cached stats until new activity is old enough to recount", () => {
+  const db = createDatabase();
+  addConversation(db, 900);
+  const first = readProfileStatsCached(db, 1, 1_000_000);
+  assert.equal(readProfileStatsCached(db, 1, 1_000_000 + 60_000), first, "nothing changed: no recount");
+  addMessage(db, 900, { role: "user", content: "hello", at: "2026-06-01 08:00:00" });
+  assert.equal(readProfileStatsCached(db, 1, 1_000_000 + 120_000), first, "new activity inside five minutes keeps the cached numbers");
+  const later = readProfileStatsCached(db, 1, 1_000_000 + 6 * 60_000);
+  assert.notEqual(later, first, "after five minutes the new activity is counted");
+  assert.equal(later.totals.prompts, first.totals.prompts + 1);
 });

@@ -720,6 +720,27 @@ enum TrustedProcessEnvironment {
     Service(TrustedServiceEnvironment),
 }
 
+#[cfg(feature = "environment-contract-tests")]
+impl TrustedServiceEnvironment {
+    /// Return the real launch profile and requested names, never secret values.
+    pub fn supervisor_contract_for_test(self) -> (&'static str, Vec<String>) {
+        let names = self.pairs().map(|(name, _)| name.to_string_lossy().into_owned()).collect();
+        let environment = TrustedProcessEnvironment::service(self.profile().service_id(), self)
+            .expect("sealed test service must retain its source identity");
+        (environment.supervisor_profile_argument(), names)
+    }
+}
+
+#[cfg(feature = "environment-contract-tests")]
+impl TrustedWorkerEnvironment {
+    /// Return the real launch profile and requested names, never secret values.
+    pub fn supervisor_contract_for_test(self) -> (&'static str, Vec<String>) {
+        let names = self.pairs().map(|(name, _)| name.to_string_lossy().into_owned()).collect();
+        let environment = TrustedProcessEnvironment::worker(self);
+        (environment.supervisor_profile_argument(), names)
+    }
+}
+
 impl TrustedProcessEnvironment {
     fn worker(environment: TrustedWorkerEnvironment) -> Self {
         Self::Worker(environment)
@@ -2581,7 +2602,15 @@ impl RunningProcessOwner {
                     .ok_or(ProcessOwnerError::Protocol(
                         "supervisor record had no event type",
                     ))?;
-            if self.root_pid.is_none() && !matches!(kind, "started" | "error") {
+            // The supervisor's system-commit guard runs before the target is
+            // resumed, so a denial reports memory/limit records and then a
+            // pre-start RESOURCE_EXHAUSTED `error`, all before `started`.
+            // Rejecting those records as a protocol fault made one worker's
+            // legitimate memory denial fatal to the whole dispatcher and
+            // interrupted every running job (telecom-1 Learn, 2026-10-05).
+            if self.root_pid.is_none()
+                && !matches!(kind, "started" | "error" | "memory" | "soft-limit" | "hard-limit")
+            {
                 return Err(ProcessOwnerError::Protocol(
                     "supervisor emitted lifecycle data before the started boundary",
                 ));

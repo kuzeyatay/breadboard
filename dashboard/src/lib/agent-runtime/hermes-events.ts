@@ -48,11 +48,17 @@ export interface HermesEventNormalizationState {
   activeTools?: Map<string, HermesActiveTool>;
 }
 
-/** The gateway's own context-compaction progress, tagged by kind or, for the
- *  generic lifecycle line, by its wording. Never shown as Thinking. */
-function isCompressionStatus(kind: string | undefined, text: string): boolean {
-  if (kind === "compressing" || kind === "compacting") return true;
-  return /\b(compress|compact)(ing|ed|ion)?\b/i.test(text);
+/** Show compaction in the existing progress row, without transcript housekeeping. */
+function compactionStatusLabel(kind: string | undefined, text: string): string | undefined {
+  if (kind === "compacted" || kind === "compressed" ||
+      /\bcontext compaction complete\b|\bcompressed\b.*\b(messages|tokens)\b/i.test(text)) {
+    return "Thinking";
+  }
+  if (kind === "compressing" || kind === "compacting" ||
+      /\bcompacting (context|conversation)\b|\bcompressing\b.*\bmessages\b/i.test(text)) {
+    return "Compacting conversation";
+  }
+  return undefined;
 }
 
 export function createHermesEventNormalizationState(): HermesEventNormalizationState {
@@ -288,17 +294,12 @@ export function normalizeHermesEvent(
     case "status.update": {
       const raw = asString(payload.text)?.trim();
       if (!raw) return [];
-      // Context compression is housekeeping, not something the person asked
-      // for. Its progress line ("compressing 6 messages (~6,000 tok)") used
-      // to take over the Thinking label for a moment on models with smaller
-      // windows, which read as the turn doing something odd with the message.
-      if (isCompressionStatus(asString(payload.kind), raw)) return [];
       // Runtime status lines carry the same wrapped upstream errors as a failed
       // completion ("❌ Non-retryable error (HTTP 400): … returned HTTP 400: …"),
       // and they are read as a progress label, so they get the same treatment.
-      const detail = isProviderErrorText(raw)
+      const detail = compactionStatusLabel(asString(payload.kind), raw) ?? (isProviderErrorText(raw)
         ? humanizeProviderError(raw) || raw
-        : raw;
+        : raw);
       return [{
         type: "reasoning.status",
         sessionId: publicSessionId,
@@ -637,10 +638,9 @@ export function normalizeHermesEvent(
         const residual = fullText.startsWith(state.assistantText)
           ? fullText.slice(state.assistantText.length)
           : state.assistantText
-            ? // Normally a rewritten completion means the stream already said
-              // it. A failure is the exception: the refusal replaces the text
-              // rather than continuing it, so append it to whatever streamed
-              // instead of dropping the only explanation the user gets.
+            ? // A non-prefix completion has no append-only suffix. Successful
+              // answers are reconciled below; append a failure explanation
+              // here so it remains available alongside any partial output.
               status === "failed" && !state.assistantText.includes(fullText)
               ? `\n\n${fullText}`
               : ""
@@ -656,12 +656,22 @@ export function normalizeHermesEvent(
           });
         }
       }
+      // Deltas are provisional. Hermes may trim leading whitespace, rewrite
+      // the answer, or finish after the last delivered delta. A prefix-only
+      // comparison cannot reconcile those cases: it used to silently drop the
+      // ending whenever the stream began with e.g. two extra newlines.
+      // Keep partial text on an interrupted/empty completion; a successful,
+      // nonempty completion is the authoritative final answer.
+      if (status === "idle" && fullText.trim()) {
+        state.assistantText = fullText;
+      }
       events.push({
         type: "assistant.completed",
         sessionId: publicSessionId,
         ...(messageId ? { messageId } : {}),
         timestamp,
         payload: {
+          text: state.assistantText,
           usage: payload.usage,
           ...(asString(payload.reasoning)
             ? { reasoning: payload.reasoning }

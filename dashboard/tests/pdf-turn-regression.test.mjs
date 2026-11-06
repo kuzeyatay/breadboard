@@ -9,7 +9,9 @@ import * as blobs from "../src/lib/conversations/document-blob-store.ts";
 import * as readings from "../src/lib/conversations/document-reading-store.ts";
 import * as formats from "../src/lib/document-attachments.ts";
 import { readPdfAttachment } from "../src/lib/pdf-attachment-reader.ts";
+import * as gardenReading from "../src/lib/pdf-garden-reading.ts";
 import { ApiError } from "../src/lib/hermes/route-core.ts";
+import { isSpiceNetlistArtifact } from "../src/lib/netlist-viewer/format.ts";
 
 // Execute production functions with only their external boundaries supplied,
 // following the existing Garden dispatch test harness.
@@ -44,7 +46,8 @@ test("the upload handler reads scans, persists the reading, and rejects unreadab
   let unavailable = false;
   const ocr = [];
   const handler = functions("app/api/chat-attachments/documents/route.ts", ["POST", "DELETE"], {
-    ...blobs, ...readings, ...formats, fs, ApiError, NextResponse: Response,
+    ...blobs, ...readings, ...formats, ...gardenReading, fs, ApiError, NextResponse: Response,
+    requireReadableCluster: () => { throw new Error("Unexpected Garden access"); },
     requireUserId: async () => 1,
     apiErrorResponse: error => Response.json({ code: error.code, message: error.message }, { status: error.status ?? 500 }),
     readPdfAttachment: (bytes, options) => readPdfAttachment(bytes, { ...options, transcribe: async (_url, page) => {
@@ -65,11 +68,75 @@ test("the upload handler reads scans, persists the reading, and rejects unreadab
   assert.equal(readings.readStoredDocumentText({ userId: 1, blobId: result.blobId }), result.text);
   const deleted = await handler.DELETE(new Request(`http://test/api/chat-attachments/documents?blobId=${result.blobId}`));
   assert.deepEqual(await deleted.json(), { removed: true });
+  const screenshotRequest = request(false);
+  screenshotRequest.headers.set("x-pdf-ocr-pages", "[]");
+  const screenshotResponse = await handler.POST(screenshotRequest);
+  assert.equal(screenshotResponse.status, 200);
+  const screenshotResult = await screenshotResponse.json();
+  assert.deepEqual(ocr, [2], "a screenshot-backed upload must not call OCR");
+  assert.match(screenshotResult.text, /Electric field|electric field/);
+  assert.match(screenshotResult.text, /not been transcribed/);
+  const savedBlob = blobs.findDocumentBlob({ userId: 1, blobId: screenshotResult.blobId });
+  assert.deepEqual(fs.readFileSync(savedBlob.path), Buffer.from(bytes), "the full original survives scoped reading");
+  blobs.removeDocumentBlob({ userId: 1, blobId: screenshotResult.blobId });
+  for (const invalid of ['oops', '{}', '[0]', '[1.5]', '["2"]', '[1,2,3,4,5,6,7,8,9]']) {
+    const bad = request(false); bad.headers.set("x-pdf-ocr-pages", invalid);
+    assert.equal((await handler.POST(bad)).status, 400);
+  }
   unavailable = true;
   const failed = await handler.POST(request(true));
   assert.equal(failed.status, 422);
   assert.match((await failed.json()).message, /page 1.*Document reader unavailable/);
   assert.deepEqual(fs.readdirSync(path.join(root, "u1")), [], "an unreadable new upload must not leave a misleading attachment");
+});
+
+test("Garden uploads authorize the source and reuse saved OCR through the real upload handler", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pdf-garden-upload-"));
+  const oldBlobs = process.env.BREADBOARD_CHAT_DOCUMENT_DIR;
+  const oldContent = process.env.QUARTZ_CONTENT_PATH;
+  process.env.BREADBOARD_CHAT_DOCUMENT_DIR = path.join(root, "blobs");
+  process.env.QUARTZ_CONTENT_PATH = path.join(root, "content");
+  t.after(() => {
+    if (oldBlobs === undefined) delete process.env.BREADBOARD_CHAT_DOCUMENT_DIR;
+    else process.env.BREADBOARD_CHAT_DOCUMENT_DIR = oldBlobs;
+    if (oldContent === undefined) delete process.env.QUARTZ_CONTENT_PATH;
+    else process.env.QUARTZ_CONTENT_PATH = oldContent;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const garden = path.join(process.env.QUARTZ_CONTENT_PATH, "circuits");
+  fs.mkdirSync(path.join(garden, "sources"), { recursive: true });
+  fs.mkdirSync(path.join(garden, "assets"));
+  const bytes = await pdf();
+  fs.writeFileSync(path.join(garden, "assets/source.pdf"), bytes);
+  fs.writeFileSync(path.join(garden, "sources/notes.md"), '---\nsource_pdf: "/circuits/assets/source.pdf"\n---\n## Page 1\nSaved electric field explanation.\n## Page 2\nSaved transient state explanation.');
+  let allowed = true;
+  const handler = functions("app/api/chat-attachments/documents/route.ts", ["POST"], {
+    ...blobs, ...readings, ...formats, ...gardenReading, fs, ApiError, NextResponse: Response,
+    requireUserId: async () => 1,
+    requireReadableCluster: (userId, slug) => {
+      assert.equal(userId, 1); assert.equal(slug, "circuits");
+      if (!allowed) throw new ApiError(403, "forbidden", "Garden access denied");
+      return { slug };
+    },
+    apiErrorResponse: error => Response.json({ message: error.message }, { status: error.status ?? 500 }),
+    readPdfAttachment: (data, options) => readPdfAttachment(data, { ...options,
+      transcribe: async () => assert.fail("Saved Garden OCR must prevent another OCR job"),
+    }),
+  });
+  const request = () => new Request("http://test/api/chat-attachments/documents", {
+    method: "POST", body: bytes, headers: { "x-document-filename": "scan.pdf",
+      referer: "http://test/gardens/circuits/pdf/notes" },
+  });
+  const response = await handler.POST(request());
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.match(result.text, /\[\[Page 2\]\]\nSaved transient state explanation/);
+  assert.deepEqual(result.warnings, []);
+  assert.equal(readings.readStoredDocumentText({ userId: 1, blobId: result.blobId }), result.text);
+  blobs.removeDocumentBlob({ userId: 1, blobId: result.blobId });
+  allowed = false;
+  assert.equal((await handler.POST(request())).status, 403);
+  assert.deepEqual(fs.readdirSync(path.join(process.env.BREADBOARD_CHAT_DOCUMENT_DIR, "u1")), []);
 });
 
 test("the legacy extraction endpoint also detects scans without a handwriting checkbox", async () => {
@@ -109,7 +176,7 @@ test("failed response persistence retains the actionable cause and original part
 });
 
 test("the original PDF card identifies itself as an upload", () => {
-  const { artifactDescription } = functions("app/components/hermes/artifact-viewer.tsx", ["extensionLabel", "artifactDescription"], { kindLabels: { pdf: "PDF" } });
+  const { artifactDescription } = functions("app/components/hermes/artifact-viewer.tsx", ["extensionLabel", "artifactDescription"], { kindLabels: { pdf: "PDF" }, isSpiceNetlistArtifact });
   assert.equal(artifactDescription({ kind: "pdf", filename: "notes.pdf", metadata: { importedFromUpload: true } }), "Uploaded file · PDF");
   assert.equal(artifactDescription({ kind: "pdf", filename: "answer.pdf" }), "PDF · PDF");
 });

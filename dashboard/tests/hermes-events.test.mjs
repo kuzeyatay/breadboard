@@ -637,17 +637,23 @@ test("web_search_tool and web_extract_tool names correctly extract websites and 
   assert.equal(completeEvents[0].payload.websites[0].domain, "tue.nl");
 });
 
-test("context-compression progress never becomes the Thinking label", () => {
+test("compaction is visible in the thinking row without becoming answer text", () => {
   for (const payload of [
     { kind: "compressing", text: "⠋ compressing 6 messages (~6,000 tok)…" },
     { kind: "compacting", text: "🗜️ Compacting context — summarizing earlier conversation so I can continue..." },
     { kind: "lifecycle", text: "🗜️ Compacting context — summarizing earlier conversation so I can continue..." },
   ]) {
-    assert.deepEqual(
-      normalize({ type: "status.update", session_id: "live-1", payload }),
-      [],
-      payload.text,
-    );
+    const state = createHermesEventNormalizationState();
+    const events = normalize({ type: "status.update", session_id: "live-1", payload }, state);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, "reasoning.status");
+    assert.equal(events[0].payload.label, "Compacting conversation");
+    assert.equal(events[0].payload.detail, undefined);
+    assert.equal(state.assistantText, "");
+    const [done] = normalize({ type: "status.update", session_id: "live-1",
+      payload: { kind: "compacted", text: "✓ Context compaction complete — continuing turn..." } }, state);
+    assert.equal(done.type, "reasoning.status");
+    assert.equal(done.payload.label, "Thinking");
   }
   const [kept] = normalize({
     type: "status.update",
@@ -656,4 +662,40 @@ test("context-compression progress never becomes the Thinking label", () => {
   });
   assert.equal(kept.type, "reasoning.status");
   assert.equal(kept.payload.label, "Reconnecting to the provider");
+});
+
+test("the final answer repairs a truncated stream even when Hermes trims its leading whitespace", () => {
+  const state = createHermesEventNormalizationState();
+  const partial = "Saved the section.\n\nOne limitation: the lessons are shorter than the skill’s";
+  const complete = `${partial} full-depth target. A formatting revision is pending, not applied.`;
+  normalize({ type: "message.delta", payload: { text: `\n\n${partial}` } }, state);
+  const events = normalize({ type: "message.complete", payload: { text: complete, status: "complete" } }, state);
+  assert.equal(events.find(event => event.type === "assistant.completed").payload.text, complete);
+  assert.equal(state.assistantText, complete);
+  assert.equal(events.at(-1).payload.status, "idle");
+});
+
+test("a rewritten final answer replaces provisional text without appending two answers", () => {
+  const state = createHermesEventNormalizationState();
+  normalize({ type: "message.delta", payload: { text: "I think the file saved." } }, state);
+  const events = normalize({ type: "message.complete", payload: { text: "The file is saved and verified.", status: "complete" } }, state);
+  assert.equal(events.find(event => event.type === "assistant.completed").payload.text, "The file is saved and verified.");
+  assert.equal(events.filter(event => event.type === "assistant.delta").length, 0);
+});
+
+test("an empty completion preserves the available partial answer", () => {
+  for (const status of ["complete", "interrupted"]) {
+    const state = createHermesEventNormalizationState();
+    normalize({ type: "message.delta", payload: { text: "Available partial answer." } }, state);
+    const events = normalize({ type: "message.complete", payload: { text: "", status } }, state);
+    assert.equal(events.find(event => event.type === "assistant.completed").payload.text, "Available partial answer.");
+  }
+});
+
+test("compaction failures and unrelated compression tasks remain informative", () => {
+  for (const text of ["Compression aborted: provider unavailable", "Compressing output archive"]) {
+    const [event] = normalize({ type: "status.update", session_id: "live-1",
+      payload: { kind: "process", text } });
+    assert.equal(event.payload.label, text);
+  }
 });

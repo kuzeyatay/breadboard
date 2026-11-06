@@ -12,18 +12,26 @@ export const QUARTZ_VIEW_HEARTBEAT_MS = 20_000;
 export const QUARTZ_VIEW_HOLD_TTL_MS = 70_000;
 export const QUARTZ_VIEW_LEASE_ROTATION_MS = 5 * 60_000;
 
-const MAX_ACTIVE_VIEWS_PER_USER = 8;
+// A view is a small heartbeat record, not a separate service instance. Garden
+// previews in background workspace tabs count too; eight ordinary tabs must
+// not prevent a citation from opening. Keep a generous metadata bound while
+// sharing one native service lease for all of a user's readers.
+const MAX_ACTIVE_VIEWS_PER_USER = 256;
 
 interface QuartzViewHold {
   readonly userId: number;
-  lease: SupervisorLease;
-  acquiredAt: number;
   expiresAt: number;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
+interface QuartzUserLease {
+  lease: SupervisorLease;
+  acquiredAt: number;
+}
+
 interface QuartzViewLeaseState {
   readonly holds: Map<string, QuartzViewHold>;
+  readonly users: Map<number, QuartzUserLease>;
   readonly operations: Map<string, Promise<unknown>>;
 }
 
@@ -35,6 +43,7 @@ function state(): QuartzViewLeaseState {
   if (!stateGlobal.__breadboardQuartzViewLeaseState) {
     stateGlobal.__breadboardQuartzViewLeaseState = {
       holds: new Map(),
+      users: new Map(),
       operations: new Map(),
     };
   }
@@ -66,7 +75,7 @@ function scheduleExpiry(key: string, hold: QuartzViewHold): void {
   if (hold.timer) clearTimeout(hold.timer);
   const expectedExpiry = hold.expiresAt;
   const timer = setTimeout(() => {
-    void serialize(key, async () => {
+    void serialize(String(hold.userId), async () => {
       const current = state().holds.get(key);
       if (!current || current !== hold || current.expiresAt !== expectedExpiry) return;
       if (current.expiresAt > Date.now()) {
@@ -75,7 +84,7 @@ function scheduleExpiry(key: string, hold: QuartzViewHold): void {
       }
       state().holds.delete(key);
       current.timer = null;
-      await releaseSupervisorLease(current.lease);
+      await releaseIdleUserLease(current.userId);
     });
   }, Math.max(1, expectedExpiry - Date.now()));
   timer.unref?.();
@@ -102,6 +111,14 @@ function activeViewCount(userId: number): number {
   return count;
 }
 
+async function releaseIdleUserLease(userId: number): Promise<void> {
+  if (activeViewCount(userId) !== 0) return;
+  const shared = state().users.get(userId);
+  if (!shared) return;
+  state().users.delete(userId);
+  await releaseSupervisorLease(shared.lease);
+}
+
 /**
  * Acquire before rendering a Quartz frame and renew while the authenticated
  * view remains mounted. Native lease identifiers stay inside this server-only
@@ -113,16 +130,16 @@ export async function renewQuartzViewLease(
   now = Date.now(),
 ): Promise<{ expiresInMs: number }> {
   const key = holdKey(userId, viewId);
-  return serialize(key, async () => {
+  // Serialize across this user's views, so simultaneous cold tabs cannot
+  // acquire duplicate native leases or release a lease another tab just took.
+  return serialize(String(userId), async () => {
     const leaseState = state();
-    let hold = leaseState.holds.get(key);
-
-    if (hold && hold.expiresAt <= now) {
-      leaseState.holds.delete(key);
-      if (hold.timer) clearTimeout(hold.timer);
-      await releaseSupervisorLease(hold.lease);
-      hold = undefined;
+    for (const [expiredKey, expired] of leaseState.holds) {
+      if (expired.userId !== userId || expired.expiresAt > now) continue;
+      leaseState.holds.delete(expiredKey);
+      if (expired.timer) clearTimeout(expired.timer);
     }
+    let hold = leaseState.holds.get(key);
 
     if (!hold) {
       if (activeViewCount(userId) >= MAX_ACTIVE_VIEWS_PER_USER) {
@@ -130,29 +147,31 @@ export async function renewQuartzViewLease(
         error.status = 429;
         throw error;
       }
+    }
+
+    let shared = leaseState.users.get(userId);
+    if (!shared) {
       // Publish before starting the read-only server. On Windows this also
       // avoids making the initial public-tree promotion contend with an open
       // directory handle held by the static service.
       await ensureQuartzPublicationForView(userId);
       const lease = await acquireQuartzLease();
-      hold = {
-        userId,
-        lease,
-        acquiredAt: now,
-        expiresAt: now + QUARTZ_VIEW_HOLD_TTL_MS,
-        timer: null,
-      };
-      leaseState.holds.set(key, hold);
-    } else if (now - hold.acquiredAt >= QUARTZ_VIEW_LEASE_ROTATION_MS) {
+      shared = { lease, acquiredAt: now };
+      leaseState.users.set(userId, shared);
+    } else if (now - shared.acquiredAt >= QUARTZ_VIEW_LEASE_ROTATION_MS) {
       // Acquire the replacement first so a visible frame never creates a
       // zero-lease idle-stop window during bounded native lease rotation.
       const replacement = await acquireQuartzLease();
-      const previous = hold.lease;
-      hold.lease = replacement;
-      hold.acquiredAt = now;
+      const previous = shared.lease;
+      shared.lease = replacement;
+      shared.acquiredAt = now;
       await releaseSupervisorLease(previous);
     }
 
+    if (!hold) {
+      hold = { userId, expiresAt: now + QUARTZ_VIEW_HOLD_TTL_MS, timer: null };
+      leaseState.holds.set(key, hold);
+    }
     hold.expiresAt = now + QUARTZ_VIEW_HOLD_TTL_MS;
     scheduleExpiry(key, hold);
     return { expiresInMs: QUARTZ_VIEW_HOLD_TTL_MS };
@@ -180,12 +199,12 @@ export async function openQuartzViewLease(userId: number): Promise<string | null
 
 export async function releaseQuartzViewLease(userId: number, viewId: string): Promise<void> {
   const key = holdKey(userId, viewId);
-  await serialize(key, async () => {
+  await serialize(String(userId), async () => {
     const hold = state().holds.get(key);
     if (!hold) return;
     state().holds.delete(key);
     if (hold.timer) clearTimeout(hold.timer);
     hold.timer = null;
-    await releaseSupervisorLease(hold.lease);
+    await releaseIdleUserLease(userId);
   });
 }

@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     db.prepare("SELECT 1").get();
-    return NextResponse.json({ status: "ok" });
+    return NextResponse.json({ status: "ok", sourceReleaseId: process.env.BREADBOARD_SOURCE_RELEASE_ID || null });
   } catch {
     return NextResponse.json({ status: "degraded", database: "unavailable" }, { status: 503 });
   }

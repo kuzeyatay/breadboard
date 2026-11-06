@@ -28,6 +28,7 @@ import {
 } from "@/lib/hermes/route-helpers.ts";
 import { authorizeRuntimeReference } from "@/lib/hermes/session-service.ts";
 import { ApiError } from "@/lib/hermes/route-core.ts";
+import { scheduleGoalContinuation } from "@/lib/goal-continuation.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -59,6 +60,7 @@ export async function GET(_request: Request, context: RouteContext) {
     requireEnabled();
     const { sessionId } = await context.params;
     const { conversation } = authorizedSession(userId, sessionId);
+    scheduleGoalContinuation(conversation.id);
     return NextResponse.json(goalPayload(conversation.public_id));
   } catch (error) {
     return apiErrorResponse(error);
@@ -74,6 +76,7 @@ export async function PATCH(request: Request, context: RouteContext) {
     const body = (await request.json().catch(() => ({}))) as {
       status?: unknown;
       turnBudget?: unknown;
+      tokenBudget?: unknown;
     };
     const status = body.status;
     if (status !== undefined && status !== "active" && status !== "paused") {
@@ -104,6 +107,13 @@ export async function PATCH(request: Request, context: RouteContext) {
         turnBudget: turnBudget as number | null,
       });
     }
+    if (body.tokenBudget !== undefined) {
+      const tokenBudget = body.tokenBudget;
+      if (tokenBudget !== null && (typeof tokenBudget !== "number" || !Number.isSafeInteger(tokenBudget) || tokenBudget <= 0)) {
+        throw new ApiError(400, "goal_budget_invalid", "A token budget must be a positive whole number, or unlimited.");
+      }
+      extendGoalModeBudget({ conversationPublicId: conversation.public_id, tokenBudget: tokenBudget as number | null });
+    }
     if (status !== undefined) {
       setGoalModeStatus({
         conversationPublicId: conversation.public_id,
@@ -119,8 +129,10 @@ export async function PATCH(request: Request, context: RouteContext) {
         conversationPublicId: conversation.public_id,
         status: status ?? null,
         turnBudgetChanged: body.turnBudget !== undefined,
+        tokenBudgetChanged: body.tokenBudget !== undefined,
       },
     });
+    if (status === "active") scheduleGoalContinuation(conversation.id);
     return NextResponse.json(goalPayload(conversation.public_id));
   } catch (error) {
     return apiErrorResponse(error);

@@ -24,6 +24,10 @@ if (!cargo) {
 const build = spawnSync(cargo, [
   "build",
   "--release",
+  "--locked",
+  // Lean startup must use the already provisioned Cargo dependency cache.
+  // This also prevents index refreshes from stalling an offline launch.
+  ...(process.env.BREADBOARD_DESKTOP_DASHBOARD_MODE === "standalone" ? ["--offline"] : []),
   "--manifest-path",
   manifest,
   "--package",
@@ -37,7 +41,15 @@ const build = spawnSync(cargo, [
   stdio: "inherit",
   shell: false,
 });
-if (build.status !== 0) process.exit(build.status ?? 1);
+if (build.status !== 0) {
+  if (process.env.BREADBOARD_DESKTOP_DASHBOARD_MODE === "standalone") {
+    console.error(
+      "[native-runtime] Lean builds use cached Rust dependencies. If Cargo reports a missing dependency, " +
+      "run npm --prefix desktop run prepare:native-runtime once while online, then retry desktop:dev:lean.",
+    );
+  }
+  process.exit(build.status ?? 1);
+}
 const artifacts = [
   {
     built: path.join(targetDir, "release", "runtime-supervisor.exe"),

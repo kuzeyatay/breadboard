@@ -683,13 +683,13 @@ export function scanPdf(bytes: Buffer): PdfScanResult {
       // Render mode 1 paints only the outline, so a white *fill* still shows.
       if (span.renderMode !== 1 && isNearWhite(span.fillColor)) {
         pageFindings.push({
-          severity: "critical",
+          severity: "warning",
           type: "Near-white text",
           where: page.label,
           detail:
-            `colour=${formatColor(span.fillColor)}. Invisible against a white page. ` +
-            "This port cannot measure the rendered background, so text deliberately " +
-            `set white over a dark band would read the same way${describe(snippet)}`,
+            `colour=${formatColor(span.fillColor)}. May be hard to see against a light background. ` +
+            "The scan does not check the rendered background; light text on a dark band may be fully visible. " +
+            `Check the page before concluding that this text is hidden${describe(snippet)}`,
         });
         if (snippet) hiddenParts.push(snippet);
       }

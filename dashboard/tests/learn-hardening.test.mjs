@@ -157,6 +157,22 @@ describe("fallback + commentary detectors", () => {
     );
   });
 
+  test("a root closed one brace early before more members parses as the intended object", async () => {
+    // Live 2026-09-25: a complete Source Map ended '...]},"evidenceGaps":[]}'.
+    const { parseJsonCandidate } = await import("../src/lib/learn-utils.ts");
+    const early = '{"unitEvidence":[{"unitId":"SU1"}],"practiceReview":[{"anchorId":"a"}]},"evidenceGaps":[]}';
+    assert.deepEqual(parseJsonCandidate(early), {
+      unitEvidence: [{ unitId: "SU1" }],
+      practiceReview: [{ anchorId: "a" }],
+      evidenceGaps: [],
+    });
+    assert.deepEqual(
+      parseJsonCandidate('{"unitEvidence":[{"unitId":"SU1"}],"practiceReview":[{"anchorId":"a"}]}]}'),
+      { unitEvidence: [{ unitId: "SU1" }], practiceReview: [{ anchorId: "a" }] },
+      "surplus ']}' after a complete root is dropped",
+    );
+  });
+
   test("callCouncilJson hands malformed JSON text to the stage instead of pretending the answer was empty", async () => {
     // Live 2026-09-16: a stray brace inside a 2.7 KB visual-necessity repair
     // ("...}}}]}") parsed to null and the plan died as "no nonempty candidate".
@@ -327,7 +343,9 @@ I will use the Erlang B table to size the trunk group.`);
     assert.match(terminalMismatch, /lookup\.status === 200 && lookup\.result/);
     assert.match(terminalMismatch, /completePlanningCheckpoint/);
     assert.match(terminalMismatch, /lookup\.code === "request_failed"/);
-    assert.match(terminalMismatch, /lookup\.receipt\?\.redispatchAllowed === false/);
+    assert.match(terminalMismatch, /lookup\.receipt\.redispatchAllowed === false \|\|/);
+    // Only the origin job can redispatch, so an ended origin settles it too.
+    assert.match(terminalMismatch, /originJobStatus === "failed"/);
     assert.match(terminalMismatch, /unresolved\.push\(candidate\)/);
     assert.doesNotMatch(terminalMismatch, /receipt_not_found/);
     assert.match(
@@ -541,6 +559,12 @@ describe("learning-map depth validation", () => {
 
   test("a real learning spine passes", () => {
     assert.deepEqual(validateLearningMapDepth(richMap), []);
+  });
+
+  test("one connected section is valid; empty plans and empty sections are not", () => {
+    assert.deepEqual(validateLearningMapDepth({ ...richMap, sections: [richMap.sections[0]] }), []);
+    assert.ok(validateLearningMapDepth({ ...richMap, sections: [] }).length > 0);
+    assert.ok(validateLearningMapDepth({ ...richMap, sections: [{ ...richMap.sections[0], subsections: [] }] }).length > 0);
   });
 
   test("a shallow, source-shaped map fails", () => {

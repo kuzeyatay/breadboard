@@ -61,7 +61,7 @@ export interface OcrTextLayerResult {
   pagesWritten: number;
   /** Pages whose layer follows spotted boxes rather than an even spread. */
   positionedPages: number;
-  /** Pages that had no usable text or do not exist in the PDF. */
+  /** Pages with no usable text/required positions, or outside the PDF. */
   skippedPages: number[];
 }
 
@@ -195,13 +195,12 @@ function drawInvisibleLines(
   page.pushOperators(setTextRenderingMode(TextRenderingMode.Fill));
 }
 
-/** Glyph height of the layer font relative to its size (ascent + descent). */
-const FONT_EM_HEIGHT = 1.15;
-/** Share of the font size below the baseline. */
-const FONT_DESCENT = 0.21;
-/** Bounds for stretching a line to its box (Tz, percent). */
-const MIN_H_SCALE = 25;
-const MAX_H_SCALE = 400;
+// PDF.js gives a selection span a height of one font size and places its top
+// using ascent / (ascent + abs(descent)), not the font's ink height. These metrics
+// come from the embedded font rather than approximations for one typeface.
+interface SelectionFontMetrics {
+  ascentRatio: number;
+}
 
 interface PageFrame {
   /** Crop box origin and size in PDF user space. */
@@ -270,6 +269,7 @@ function drawPositionedInvisibleLines(
   page: PDFPage,
   font: PDFFont,
   lines: OcrTextLine[],
+  metrics: SelectionFontMetrics,
 ): number {
   const frame = pageFrame(page);
   const dw = frame.rotation % 180 === 0 ? frame.width : frame.height;
@@ -282,15 +282,13 @@ function drawPositionedInvisibleLines(
     const boxWidth = (u1 - u0) * dw;
     const boxHeight = (v1 - v0) * dh;
     if (boxWidth <= 0 || boxHeight <= 0) continue;
-    const size = Math.max(MIN_FONT_SIZE, boxHeight / FONT_EM_HEIGHT);
+    const size = boxHeight;
     const natural = font.widthOfTextAtSize(line.text, size);
     if (natural <= 0) continue;
-    const scale = Math.min(
-      MAX_H_SCALE,
-      Math.max(MIN_H_SCALE, (boxWidth / natural) * 100),
-    );
-    // The baseline sits one descent above the box bottom, at its left edge.
-    const baseline = viewToPage(frame, u0, v1 - (size * FONT_DESCENT) / dh);
+    // Invisible glyphs can be arbitrarily stretched. Capping Tz made narrow
+    // formulas overflow their box and short, widely written words undershoot.
+    const scale = (boxWidth / natural) * 100;
+    const baseline = viewToPage(frame, u0, v0 + (size * metrics.ascentRatio) / dh);
     page.pushOperators(horizontalScaling(scale));
     page.drawText(line.text, {
       x: baseline.x,
@@ -416,11 +414,14 @@ export async function embedOcrTextLayer({
   pdf,
   pages,
   fontBytes,
+  requirePositions = false,
 }: {
   pdf: Uint8Array;
   pages: OcrTextLayerPage[];
   /** Override the bundled font; tests and callers with their own glyph set. */
   fontBytes?: Uint8Array;
+  /** Refuse invented selection positions when localization was unavailable. */
+  requirePositions?: boolean;
 }): Promise<OcrTextLayerResult> {
   const skippedPages: number[] = [];
   const planned: Array<{
@@ -433,6 +434,7 @@ export async function embedOcrTextLayer({
     const lines = spotted.length > 0 ? [] : ocrTextLayerLines(page.text);
     if (
       (lines.length === 0 && spotted.length === 0) ||
+      (requirePositions && spotted.length === 0) ||
       !Number.isInteger(page.pageNumber)
     ) {
       skippedPages.push(page.pageNumber);
@@ -449,7 +451,10 @@ export async function embedOcrTextLayer({
     updateMetadata: false,
   });
   document.registerFontkit(fontkit as never);
-  const font = await document.embedFont(fontBytes ?? loadTextLayerFont(), {
+  const bytes = fontBytes ?? loadTextLayerFont();
+  const face = fontkit.create(Buffer.from(bytes));
+  const metrics = { ascentRatio: face.ascent / (face.ascent - face.descent) };
+  const font = await document.embedFont(bytes, {
     subset: true,
   });
   const pdfPages = document.getPages();
@@ -463,9 +468,13 @@ export async function embedOcrTextLayer({
       continue;
     }
     if (spotted.length > 0) {
-      if (drawPositionedInvisibleLines(target, font, spotted) > 0) {
+      if (drawPositionedInvisibleLines(target, font, spotted, metrics) > 0) {
         positionedPages += 1;
         pagesWritten += 1;
+        continue;
+      }
+      if (requirePositions) {
+        skippedPages.push(pageNumber);
         continue;
       }
       // Every box collapsed at this page's size; spread the words instead.

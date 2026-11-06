@@ -5,7 +5,7 @@ export type BrowserContextAction =
   | "open-link-tab" | "open-link-window" | "open-link-private" | "bookmark-link" | "save-link" | "copy-link" | "copy-clean-link"
   | "open-image" | "save-image" | "copy-image" | "copy-image-link" | "open-media" | "save-media" | "copy-media-link" | "picture-in-picture"
   | "undo" | "redo" | "cut" | "copy" | "paste" | "paste-plain" | "delete" | "select-all"
-  | "search" | "translate-text" | "ask" | "back" | "forward" | "reload" | "bookmark-page" | "save-page" | "print" | "translate-page" | "copy-page-link" | "inspect";
+  | "comment" | "search" | "translate-text" | "ask" | "back" | "forward" | "reload" | "bookmark-page" | "save-page" | "print" | "translate-page" | "copy-page-link" | "inspect";
 
 export function browserContextWebUrl(value: string): boolean {
   try { return ["http:", "https:"].includes(new URL(value).protocol); } catch { return false; }
@@ -49,7 +49,7 @@ function downloadableMedia(params: ContextMenuParams): boolean {
 /** Native menus stay above the web view and supply keyboard navigation and dismissal. */
 export function browserContextMenuTemplate(
   params: ContextMenuParams,
-  navigation: { canGoBack: boolean; canGoForward: boolean },
+  navigation: { canGoBack: boolean; canGoForward: boolean; annotationsEnabled?: boolean },
   run: (action: BrowserContextAction) => void,
 ): MenuItemConstructorOptions[] {
   const groups: MenuItemConstructorOptions[][] = [];
@@ -123,6 +123,7 @@ export function browserContextMenuTemplate(
       item("Copy Page Link", "copy-page-link"),
     ]);
   }
+  if (navigation.annotationsEnabled && !params.isEditable && params.formControlType !== "input-password") groups.push([item("Comment in Organization", "comment")]);
   groups.push([item("Inspect", "inspect")]);
   return groups.filter(group => group.length).flatMap((group, index) => index ? [{ type: "separator" as const }, ...group] : group);
 }
@@ -133,6 +134,7 @@ export interface BrowserContextControls {
   privateBrowsing: boolean;
   bookmark(value: { url: string; title: string; iconUrl?: string }): Promise<void>;
   ask(text: string): void;
+  comment?(): Promise<void> | void;
   navigate(action: "back" | "forward" | "reload"): void;
   pageAction(action: BrowserMenuAction): Promise<void>;
 }
@@ -142,6 +144,7 @@ export async function runBrowserContextAction(
 ): Promise<void> {
   const open = (url: string, background = true) => { if (browserContextWebUrl(url)) controls.openTab(url, background); };
   switch (action) {
+    case "comment": await controls.comment?.(); return;
     case "open-link-tab": open(params.linkURL); return;
     case "open-link-window": case "open-link-private":
       if (browserContextWebUrl(params.linkURL)) controls.openWindow(params.linkURL, action === "open-link-private" || controls.privateBrowsing);

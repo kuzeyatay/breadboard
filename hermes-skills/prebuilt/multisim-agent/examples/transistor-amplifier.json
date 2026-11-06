@@ -1,0 +1,14 @@
+{
+  "title": "Emitter-degenerated common-emitter amplifier",
+  "components": [
+    {"id": "VCC", "type": "voltage_source", "value": 12, "nodes": ["vcc", "0"]},
+    {"id": "VIN", "type": "voltage_source", "value": 0, "ac": 1, "nodes": ["vin", "0"], "waveform": "SIN(0 0.01 1000)"},
+    {"id": "RB1", "type": "resistor", "value": "100k", "nodes": ["vcc", "base"]},
+    {"id": "RB2", "type": "resistor", "value": "22k", "nodes": ["base", "0"]},
+    {"id": "RC", "type": "resistor", "value": "3.3k", "nodes": ["vcc", "vout"]},
+    {"id": "RE", "type": "resistor", "value": "1k", "nodes": ["emitter", "0"]},
+    {"id": "CIN", "type": "capacitor", "value": "10u", "nodes": ["vin", "base"]},
+    {"id": "Q1", "type": "bjt", "model": "EDU_NPN", "nodes": ["vout", "base", "emitter"]}
+  ],
+  "models": [{"name": "EDU_NPN", "definition": ".model EDU_NPN NPN(IS=1e-14 BF=150 VAF=100 CJE=8p CJC=4p TF=0.3n)", "provenance": "Generic educational NPN; not a manufacturer-qualified 2N3904"}]
+}

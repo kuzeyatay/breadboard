@@ -20,6 +20,7 @@ const fixtureFollowUp = "What is two plus two? Say only hello. These are words t
 const fixtureThinkingMs = Number(process.env.BREADBOARD_VOICE_TEST_THINKING_MS || 0);
 const notificationTexts = [process.env.BREADBOARD_VOICE_TEST_NOTIFICATION_TEXT || 'Your answer is ready.', 'Your next answer is ready.'];
 const readOnly = process.env.BREADBOARD_VOICE_TEST_READ_ONLY === '1';
+const conversational = process.env.BREADBOARD_VOICE_TEST_CONVERSATIONAL === '1';
 const preloadOnly = process.env.BREADBOARD_VOICE_TEST_PRELOAD === 'only';
 const normalizeSpeech = text => text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 const assistantTranscripts = [];
@@ -103,11 +104,25 @@ try {
   const page = await browser.newPage();
   page.on("console", message => console.log(message.text()));
   page.on("pageerror", error => process.stderr.write(error.message + "\n"));
-  if (process.env.BREADBOARD_VOICE_TEST_PRELOAD) await page.addInitScript(() => {
+  if (process.env.BREADBOARD_VOICE_TEST_PRELOAD || conversational) await page.addInitScript(() => {
+    const players = [], streams = new WeakMap();
+    const NativeAudio = window.Audio;
+    window.Audio = function (...args) { const player = new NativeAudio(...args); players.push(player); return player; };
+    window.Audio.prototype = NativeAudio.prototype;
+    const createSource = AudioContext.prototype.createMediaStreamSource;
+    AudioContext.prototype.createMediaStreamSource = function (stream) {
+      streams.set(this, stream);
+      return createSource.call(this, stream);
+    };
     const createProcessor = AudioContext.prototype.createScriptProcessor;
     AudioContext.prototype.createScriptProcessor = function (...args) {
-      const processor = createProcessor.apply(this, args);
+      const stream = streams.get(this), processor = createProcessor.apply(this, args);
       processor.addEventListener('audioprocess', event => {
+        // A muted microphone session can generate its own reply. Only decoded
+        // samples belonging to the audible script reader count toward latency.
+        const audible = players.some(player => !player.paused && !player.muted && player.volume > 0 &&
+          player.srcObject?.getAudioTracks().some(track => stream?.getAudioTracks().some(input => input.id === track.id)));
+        if (!audible) return;
         const samples = event.inputBuffer.getChannelData(0);
         const energy = samples.reduce((sum, value) => sum + value * value, 0);
         if (energy / samples.length > 0.000001) window.firstSpeechAt ??= performance.now();
@@ -216,7 +231,7 @@ try {
     assert.equal(normalizeSpeech(text), normalizeSpeech(fixtureText));
     console.log(JSON.stringify({ test: "subscription transcription", text, passed: true, apiKeyUsed: false }));
     const liveTranscriptStart = assistantTranscripts.length;
-    const live = await page.evaluate(async ({ reply, followUp, thinkingMs }) => {
+    const live = await page.evaluate(async ({ reply, followUp, thinkingMs, conversational }) => {
       const context = new AudioContext();
       const microphone = context.createMediaStreamDestination();
       const source = context.createBufferSource();
@@ -224,19 +239,29 @@ try {
       source.connect(microphone);
       const voice = await voiceTest.connectSubscriptionVoice({ microphone: microphone.stream });
       try {
+        const preparing = performance.now();
+        // The overlay prepares its muted reader when listening starts, so it
+        // can connect while the user speaks instead of delaying their answer.
+        let readerPreparationMs;
+        const ready = voice.prepareSpeaker().then(() => { readerPreparationMs = Math.round(performance.now() - preparing); });
         await context.resume();
         const ended = new Promise(resolve => { source.onended = resolve; });
         source.start();
         await ended;
+        await ready;
         const endedAt = performance.now();
-        const text = await voice.finishTranscript();
+        const text = await voice.finishTranscript({ settleFinal: true });
         const finalizationMs = Math.round(performance.now() - endedAt);
         if (thinkingMs > 0) await new Promise(resolve => setTimeout(resolve, thinkingMs));
-        await voice.speak(reply);
-        await voice.speak(followUp);
-        return { text, finalizationMs };
+        const requested = performance.now();
+        window.firstSpeechAt = undefined;
+        await voice.speak(reply, true);
+        const firstAudioMs = Math.round(window.firstSpeechAt - requested);
+        await voice.speak(followUp, true);
+        return { text, finalizationMs, readerPreparationMs, ...(conversational ? { firstAudioMs } : {}) };
       } finally { await voice.close(); await context.close(); }
-    }, { reply: fixtureReply, followUp: fixtureFollowUp, thinkingMs: fixtureThinkingMs });
+    }, { reply: fixtureReply, followUp: fixtureFollowUp, thinkingMs: fixtureThinkingMs, conversational });
+    if (conversational) assert.ok(Number.isFinite(live.firstAudioMs), 'conversational delivery must receive real speech samples');
     assert.equal(normalizeSpeech(live.text), normalizeSpeech(fixtureText));
     assert.equal(normalizeSpeech(assistantTranscripts.slice(liveTranscriptStart).join(" ")), normalizeSpeech(`${fixtureReply} ${fixtureFollowUp}`));
     console.log(JSON.stringify({ test: "live microphone with isolated, consecutive verbatim readings", ...live, passed: true }));

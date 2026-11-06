@@ -10,6 +10,7 @@ import {
   OPENMONTAGE_SOURCE_COMMIT,
   canonicalOpenMontageStatus,
   executeRuntimeV2OpenMontageProbe,
+  openMontageInstallationSource,
   validateRuntimeV2OpenMontageProbeEnvironment,
   validateRuntimeV2OpenMontageProbeRequest,
   validateRuntimeV2OpenMontageProbeScope,
@@ -387,7 +388,24 @@ test("the worker uses only managed source, venv, remotion, private paths, and cl
   }
 });
 
-test("the worker does not claim the staged application clone before managed setup exists", async (t) => {
+test("application installation markers accept native paths but reject redirected source", (t) => {
+  const appRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-openmontage-source-"));
+  t.after(() => fs.rmSync(appRoot, { recursive: true, force: true }));
+  assert.equal(openMontageInstallationSource(appRoot), null);
+  const source = path.join(appRoot, "OpenMontage");
+  for (const relative of ["AGENT_GUIDE.md", "requirements.txt", "tools/tool_registry.py", "remotion-composer/package.json", "remotion-composer/package-lock.json"]) {
+    const target = path.join(source, ...relative.split("/"));
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "fixture\n");
+  }
+  assert.equal(path.resolve(openMontageInstallationSource(appRoot)), source);
+  assert.ok(openMontageInstallationSource(path.toNamespacedPath(appRoot)));
+  fs.renameSync(source, source + "-direct");
+  fs.symlinkSync(source + "-direct", source, process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() => openMontageInstallationSource(appRoot), /source is indirect/u);
+});
+
+test("the worker reports staged application source as installable without executing it or claiming managed readiness", async (t) => {
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-openmontage-missing-"));
   t.after(() => fs.rmSync(dataRoot, { recursive: true, force: true }));
   const workspace = path.join(dataRoot, "runtime", "jobs", "job_openmontage_probe_1", "workspace");
@@ -440,7 +458,16 @@ test("the worker does not claim the staged application clone before managed setu
         return expected;
       },
     });
-    assert.deepEqual(result, expected);
+    const installationSource = openMontageInstallationSource(path.resolve(dashboardRoot, ".."));
+    assert.deepEqual(result, installationSource ? {
+      ...expected,
+      reason: "OpenMontage source is available. Install the managed Runtime source, Python, ffmpeg, the coding runtime from Agent Manager or OpenMontage settings.",
+      clone: { found: true, path: installationSource },
+      python: { ...expected.python, installable: true },
+      remotion: { ...expected.remotion, installable: true },
+    } : expected);
+    assert.equal(result.ready, false);
+    assert.equal(fs.existsSync(managedRoot), false, "a health probe must not prepare the source or install an environment");
   } finally {
     process.chdir(priorCwd);
     for (const name of Object.keys(process.env)) delete process.env[name];

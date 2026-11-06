@@ -519,6 +519,15 @@ export async function runCadAgentLoop(input: CadAgentLoopInput): Promise<CadAgen
       }
       const summary = summariseToolResult(call.function.name, result);
       toolCalls.push({ name: call.function.name, ok: result.ok !== false, summary });
+      input.toolContext.emit?.("cad.tool.completed", {
+        name: call.function.name, ok: result.ok !== false, summary,
+      });
+      if (input.forcedToolName === "cad_create_project" && result.ok !== false) {
+        return {
+          answer, projectId: input.toolContext.projectId ?? null, toolCalls,
+          stoppedBecause: "step_limit",
+        };
+      }
 
       const serialized = JSON.stringify(result);
       messages.push({
@@ -605,6 +614,8 @@ export async function runCadProjectBuildPhase(input: CadModelTarget & {
       role: "user",
       content: [
         `Build existing project ${input.project.id}.`,
+        "The original design request and its supplied reference material follow. Reuse supplied source where requested; a summarized specification does not replace that source.",
+        input.toolContext.instruction,
         "Its validated design specification follows:",
         JSON.stringify(spec),
       ].join("\n"),

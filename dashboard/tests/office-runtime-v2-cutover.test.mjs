@@ -517,7 +517,7 @@ test("standalone Markdown PDF rendering seals the folder bundle under exact Gard
       { userId: 17, gardenId: "garden-one", conversationId: null },
       {
         documents: [
-          { content: "# One\nFirst note", title: "One" },
+          { content: "# One\nFirst note", title: "One", folderTitle: "Chapter One" },
           { content: "# Two\nSecond note", title: "Two" },
         ],
         title: "Folder notes",

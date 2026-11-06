@@ -22,13 +22,29 @@ const fixture = `
   export let seekFailure = false;
   export let localResult = {handled:false};
   export const localCommands = [];
-  export let holdRecommendations = null;
+  export let holdStatus = null;
+  export const engineReads = [];
+  export function getEngine() { engineReads.push(true); return engine; }
+  export function delayStatus(promise) { holdStatus = promise; }
   export const requests = [];
   export let statusFailure = false;
+  export const reconnects = [];
+  export let playFailures = [];
+  export let replacement = 'breadboard-reconnected-001';
+  export function failPlay(codes, replacementId = 'breadboard-reconnected-001') { playFailures = [...codes]; replacement = replacementId; }
+  export function invalidateEngine(userId, deviceId) { if(engine.deviceId === deviceId) engine = {...engine,ready:false,deviceId:null}; }
+  export async function reconnectEngine(userId, deviceId) {
+    reconnects.push({userId,deviceId});
+    engine = {ready:true,deviceId:replacement,status:'ready',error:null};
+    return replacement;
+  }
   export function failStatus() { statusFailure = true; }
   export function reset(value, localEngine = {ready:false,deviceId:null,status:'starting',error:null}) {
+    globalThis.spotifyRequestPolicy?.cooldowns.clear();
     playback = value; engine = localEngine; requests.length = 0; seekFailure = false; statusFailure = false;
-    localCommands.length = 0; localResult = {handled:false}; holdRecommendations = null;
+    localCommands.length = 0; localResult = {handled:false};
+    holdStatus = null; engineReads.length = 0;
+    reconnects.length = 0; playFailures = [];
     db.exec('DELETE FROM spotify_listening_history');
   }
   export function failSeek() { seekFailure = true; }
@@ -38,9 +54,19 @@ const fixture = `
     if(localResult instanceof Error) throw localResult;
     return localResult;
   }
-  export function delayRecommendations(promise) { holdRecommendations = promise; }
   export function providerRequest({request}) {
     requests.push(request);
+    if (request.endpoint === '/v1/me/player/devices') return {devices:[
+      {id:'phone-123',name:'My iPhone',type:'Smartphone',is_active:true,is_restricted:false},
+      {id:'living-room-tv',name:'Living room TV',type:'TV',is_active:false,is_restricted:false},
+      {id:'locked-speaker',name:'Restricted speaker',type:'Speaker',is_active:false,is_restricted:true},
+      {id:'breadboard-123',name:'Breadboard',type:'Computer',is_active:false,is_restricted:false},
+      {id:null,name:'Unavailable',type:'Speaker'},
+      {id:'phone-123',name:'Duplicate',type:'Smartphone'},
+    ]};
+    if (request.method === 'PUT' && (request.endpoint === '/v1/me/player/play' || request.endpoint === '/v1/me/player') && playFailures.length) {
+      throw new ApiError(409, playFailures.shift(), 'Playback failed');
+    }
     if (request.endpoint === "/v1/search") return {
       tracks: {items: playback?.item ? [playback.item] : []},
       artists: {items: [{id:'artist0123456789abcde',uri:'spotify:artist:artist0123456789abcde',name:'Duke Dumont',images:[]}]},
@@ -48,11 +74,13 @@ const fixture = `
     if (request.endpoint === "/v1/artists/artist0123456789abcde") return {id:'artist0123456789abcde',uri:'spotify:artist:artist0123456789abcde',name:'Duke Dumont',images:[]};
     if (request.endpoint === "/v1/artists/artist0123456789abcde/top-tracks") return {tracks:playback?.item?[playback.item]:[]};
     if (request.endpoint === "/v1/artists/artist0123456789abcde/albums") return {items:[]};
-    if (request.endpoint === "/v1/recommendations") return holdRecommendations ?? {tracks:[]};
     if (request.endpoint === "/v1/me/player/play") return null;
     if (request.endpoint === "/v1/me/player/seek") {
       if (seekFailure) throw new Error("Seek rejected");
       return null; // Spotify's read endpoint can still return the old position.
+    }
+    if (['/v1/me/player/pause','/v1/me/player/next','/v1/me/player/previous'].includes(request.endpoint) && !playback) {
+      throw new ApiError(409, 'spotify_device_unavailable', 'No active device');
     }
     if (request.endpoint === "/v1/me/player/pause") { playback.is_playing = false; return null; }
     if (request.endpoint === "/v1/me/player/next" || request.endpoint === "/v1/me/player/previous") {
@@ -61,7 +89,9 @@ const fixture = `
       return null;
     }
     if (request.endpoint === "/v1/me/player") {
+      if (request.method !== 'GET') return null;
       if (statusFailure) throw Object.assign(new ApiError(429,'spotify_rate_limited','Too many requests'),{retryAfterMs:90_000});
+      if (holdStatus) { const snapshot = structuredClone(playback); return holdStatus.then(() => snapshot); }
       return structuredClone(playback);
     }
     if (request.endpoint === "/v1/me/library/contains") return [false];
@@ -83,7 +113,9 @@ const stubs = {
   "@/lib/server-auth": "export async function requireUserId() { return 7; }",
   "@/lib/hermes/route-helpers.ts": "export * from '../hermes/route-core.ts';",
   "../hermes/route-core.ts": helpers,
-  "@/lib/spotify/playback-engine.ts": "import {engine} from 'test-fixture'; export async function spotifyPlaybackEngineStatus() { return engine; }",
+  "@/lib/spotify/playback-engine.ts": "export {getEngine as spotifyPlaybackEngineStatus} from 'test-fixture';",
+  "./playback-engine.ts": "import {engine} from 'test-fixture'; export async function spotifyPlaybackEngineStatus() { return engine; } export {invalidateEngine as invalidateSpotifyPlaybackEngine} from 'test-fixture';",
+  "./runtime-service.ts": "export {reconnectEngine as reconnectSpotifyPlaybackRuntime} from 'test-fixture';",
   "@/lib/spotify/runtime-service.ts": "export {controlLocal as controlSpotifyPlaybackRuntime} from 'test-fixture';",
   "../db.ts": "export {db as default} from 'test-fixture';",
   "../connected-apps/broker.ts": "export {providerRequest as embeddedProviderRequest} from 'test-fixture'; export async function connectedAppTokensFor() { throw new Error('Unexpected token request'); }",
@@ -92,7 +124,7 @@ const stubs = {
 };
 const bundle = await build({
   stdin: {
-    contents: 'export {GET,POST} from "./src/app/api/browser/spotify/route.ts"; export {spotifyCurrentPlaybackState} from "./src/lib/spotify/service.ts"; export {reset,requests,failSeek,failStatus,setLocalResult,localCommands,delayRecommendations} from "test-fixture";',
+    contents: 'export {GET,POST} from "./src/app/api/browser/spotify/route.ts"; export {spotifyCurrentPlaybackState} from "./src/lib/spotify/service.ts"; export {reset,requests,failSeek,failStatus,setLocalResult,localCommands,delayStatus,engineReads,failPlay,reconnects,engine} from "test-fixture";',
     resolveDir: fileURLToPath(new URL("../", import.meta.url)),
     loader: "ts",
   },
@@ -127,6 +159,80 @@ function phonePlayback(device = { id: "phone-123", name: "My iPhone" }) {
 const seek = positionMs => dock.POST(new Request("http://localhost/api/browser/spotify", {
   method: "POST", body: JSON.stringify({ action: "seek", positionMs }),
 }));
+
+const control = body => dock.POST(new Request("http://localhost/api/browser/spotify", {
+  method: "POST", body: JSON.stringify(body),
+}));
+
+test("device discovery lists phones, TVs and computers without changing playback", async () => {
+  dock.reset(phonePlayback());
+  const response = await dock.GET(new Request("http://localhost/api/browser/spotify?view=devices"));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const {devices} = await response.json();
+  assert.equal(devices.length, 4, "unaddressable and duplicate devices are omitted");
+  assert.deepEqual(devices.map(device => device.type), ["smartphone", "tv", "speaker", "computer"]);
+  assert.equal(devices[2].isRestricted, true);
+  assert.deepEqual(dock.requests, [{method:"GET",endpoint:"/v1/me/player/devices"}]);
+  assert.equal(dock.engineReads.length, 0);
+});
+
+test("an explicit transfer selects a TV without starting Breadboard or replacing the queue", async () => {
+  for (const isPlaying of [true, false]) {
+    dock.reset({...phonePlayback(),is_playing:isPlaying});
+    const response = await control({action:"transfer",deviceId:"living-room-tv"});
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.device.name, "Living room TV");
+    assert.equal(payload.refreshPlayback, true);
+    assert.deepEqual(dock.requests.at(-1), {method:"PUT",endpoint:"/v1/me/player",body:{device_ids:["living-room-tv"],play:false}});
+    assert.equal(dock.requests.length, 2);
+    assert.equal(dock.reconnects.length, 0);
+  }
+});
+
+test("transfer rejects disappeared, restricted and invalid devices without fallback", async () => {
+  for (const [deviceId, status] of [["missing-device",409],["locked-speaker",409],["",400],["../phone",400],[42,400]]) {
+    dock.reset(phonePlayback());
+    const response = await control({action:"transfer",deviceId});
+    assert.equal(response.status, status);
+    assert.equal(dock.requests.some(request => request.method !== "GET"), false);
+  }
+  dock.reset(phonePlayback());
+  dock.failPlay(["spotify_device_unavailable"]);
+  assert.equal((await control({action:"transfer",deviceId:"living-room-tv"})).status, 409);
+  assert.equal(dock.reconnects.length, 0, "a failed TV transfer never redirects playback to Breadboard");
+});
+
+test("transfer back to Breadboard recovers a replaced local device ID", async () => {
+  dock.reset(phonePlayback(), {ready:true,deviceId:"breadboard-123",status:"ready",error:null});
+  dock.failPlay(["spotify_device_unavailable"]);
+  const response = await control({action:"transfer",deviceId:"breadboard-123"});
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.device.id, payload.engine.deviceId);
+  assert.equal(payload.device.id, "breadboard-reconnected-001");
+});
+
+test("resume and new music stay on the selected remote device while the local player is unavailable", async () => {
+  const actions = [
+    {action:"resume"},
+    {action:"play-track",trackUri:"spotify:track:0123456789abcdefghijAB"},
+    {action:"play-playlist",playlistUri:"spotify:playlist:0123456789abcdefghijAB"},
+    {action:"play-artist",artistUri:"spotify:artist:0123456789abcdefghijAB"},
+    {action:"play-album",albumUri:"spotify:album:0123456789abcdefghijAB"},
+  ];
+  for (const action of actions) {
+    dock.reset(phonePlayback());
+    const response = await control({...action,deviceId:"phone-123"});
+    assert.equal(response.status, 200);
+    assert.equal(dock.requests.length, 1);
+    assert.equal(dock.requests[0].endpoint, "/v1/me/player/play");
+    assert.equal(dock.requests[0].query.device_id, "phone-123");
+    assert.equal(dock.reconnects.length, 0);
+    if (action.action === "resume") assert.equal(dock.engineReads.length, 0);
+  }
+});
 
 test("dock search returns artists and songs in one provider request", async () => {
   dock.reset(phonePlayback());
@@ -297,11 +403,12 @@ test("pause targets the phone without requiring or transferring to the local eng
   }));
   assert.equal(response.status, 200);
   assert.deepEqual(dock.requests.filter(request => request.method !== "GET"), [{
-    method: "PUT", endpoint: "/v1/me/player/pause", query: {device_id: "phone-123"},
+    method: "PUT", endpoint: "/v1/me/player/pause",
   }]);
   const state = await response.json();
-  assert.equal(state.playback.isPlaying, false);
-  assert.equal(state.playback.deviceName, "My iPhone");
+  assert.equal(state.refreshPlayback, true);
+  assert.equal(dock.requests.length, 1, "pause does not wait for a cloud status read");
+  assert.equal(dock.engineReads.length, 0, "phone controls never wait for the local engine");
 });
 
 test("pause uses Spotify's active device when its identifier is unavailable", async () => {
@@ -313,14 +420,14 @@ test("pause uses Spotify's active device when its identifier is unavailable", as
   assert.deepEqual(dock.requests.filter(request => request.method !== "GET"), [{method: "PUT", endpoint: "/v1/me/player/pause"}]);
 });
 
-test("pause with no current track returns a clear error and sends no control command", async () => {
+test("pause reports a missing active device without retrying the command", async () => {
   dock.reset(null);
   const response = await dock.POST(new Request("http://localhost/api/browser/spotify", {
     method: "POST", body: JSON.stringify({action: "pause"}),
   }));
   assert.equal(response.status, 409);
   assert.equal((await response.json()).code, "spotify_playback_required");
-  assert.equal(dock.requests.filter(request => request.method !== "GET").length, 0);
+  assert.deepEqual(dock.requests.map(request => request.endpoint), ["/v1/me/player/pause"]);
 });
 
 for (const action of ["next", "previous"]) {
@@ -332,7 +439,7 @@ for (const action of ["next", "previous"]) {
       }));
       assert.equal(response.status, 200);
       assert.deepEqual(dock.requests.filter(request => request.method !== "GET"), [{
-        method: "POST", endpoint: `/v1/me/player/${action}`, query: {device_id: "phone-123"},
+        method: "POST", endpoint: `/v1/me/player/${action}`,
       }]);
       assert.equal((await response.json()).refreshPlayback, true);
       const playback = await dock.spotifyCurrentPlaybackState(7);
@@ -352,19 +459,44 @@ for (const action of ["next", "previous"]) {
     assert.deepEqual(dock.requests.filter(request => request.method !== "GET"), [{method: "POST", endpoint: `/v1/me/player/${action}`}]);
   });
 
-  test(`${action} with no current track sends no control command`, async () => {
+  test(`${action} reports a missing active device without retrying the command`, async () => {
     dock.reset(null);
     const response = await dock.POST(new Request("http://localhost/api/browser/spotify", {
       method: "POST", body: JSON.stringify({action}),
     }));
     assert.equal(response.status, 409);
     assert.equal((await response.json()).code, "spotify_playback_required");
-    assert.equal(dock.requests.filter(request => request.method !== "GET").length, 0);
+    assert.deepEqual(dock.requests.map(request => request.endpoint), [`/v1/me/player/${action}`]);
   });
 }
 
 const post = body => dock.POST(new Request("http://localhost/api/browser/spotify", {method:"POST",body:JSON.stringify(body)}));
 const readyEngine = {ready:true,deviceId:"breadboard-123",status:"ready",error:null};
+
+for (const action of ["pause", "next", "previous", "resume", "play-track"]) {
+  test(`${action} does not wait behind an in-flight cloud status read`, async () => {
+    dock.reset(phonePlayback(), readyEngine);
+    let finishStatus;
+    dock.delayStatus(new Promise(resolve => { finishStatus = resolve; }));
+    const poll = dock.GET(new Request("http://localhost/api/browser/spotify"));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(dock.requests.filter(request => request.method === "GET").length, 1);
+    let deadline;
+    try {
+      const response = await Promise.race([
+        post({action, ...(action === "play-track" ? {trackUri: phonePlayback().item.uri} : {})}),
+        new Promise((_, reject) => { deadline = setTimeout(() => reject(Error("Control waited for status")), 500); }),
+      ]);
+      assert.equal(response.status, 200);
+      assert.equal(dock.requests.filter(request => request.method !== "GET").length, 1);
+      assert.equal(dock.requests.filter(request => request.method === "GET").length, 1, "the control adds no status preflight");
+    } finally {
+      clearTimeout(deadline);
+      finishStatus();
+      await poll;
+    }
+  });
+}
 
 for (const action of ["pause", "resume", "seek", "next", "previous"]) {
   test(`local ${action} reaches the SDK without any Spotify Web API requests`, async () => {
@@ -384,8 +516,8 @@ test("an unavailable local player falls back to active-device control without tr
   const response = await post({action:"pause",local:true});
   assert.equal(response.status, 200);
   assert.equal(dock.localCommands.length, 1);
-  assert.deepEqual(dock.requests.map(request => request.endpoint), ["/v1/me/player", "/v1/me/player/pause"]);
-  assert.equal(dock.requests[1].query.device_id, "phone-123");
+  assert.deepEqual(dock.requests.map(request => request.endpoint), ["/v1/me/player/pause"]);
+  assert.equal(dock.requests[0].query, undefined, "Spotify resolves the active device");
 });
 
 test("an unconfirmed local skip is never sent twice through a cloud fallback", async () => {
@@ -408,24 +540,101 @@ test("cold song and playlist starts return after the play command, without recom
   }
 });
 
-test("preparing recommendations never delays a click and a completed preparation supplies the queue", async () => {
+test("a search result starts at its position in Spotify's album without a catalog lookup", async () => {
   dock.reset(null, readyEngine);
-  let finish;
-  dock.delayRecommendations(new Promise(resolve => { finish = resolve; }));
-  const track = phonePlayback().item;
-  const next = {...track,id:"next0123456789abcdefgh",uri:"spotify:track:next0123456789abcdefgh"};
-  const preparation = dock.GET(new Request(`http://localhost/api/browser/spotify?view=prepare-track&id=${track.id}`));
-  await new Promise(resolve => setImmediate(resolve));
-  const cold = await post({action:"play-track",trackUri:track.uri,autoplay:true});
-  assert.equal(cold.status, 200);
-  assert.deepEqual(dock.requests.find(request => request.endpoint.endsWith("/play")).body.uris, [track.uri]);
-  finish({tracks:[next]});
-  assert.equal((await preparation).status, 200);
-  const warm = await post({action:"play-track",trackUri:track.uri,autoplay:true});
-  assert.equal(warm.status, 200);
-  assert.deepEqual(dock.requests.filter(request => request.endpoint.endsWith("/play")).at(-1).body.uris, [track.uri,next.uri]);
-  assert.equal(dock.requests.filter(request => request.endpoint.endsWith("/recommendations")).length, 1);
+  const trackUri = phonePlayback().item.uri;
+  const albumUri = "spotify:album:album0123456789abcde";
+  assert.equal((await post({action:"play-track",trackUri,albumUri,queueUris:[]})).status,200);
+  assert.deepEqual(dock.requests,[{method:"PUT",endpoint:"/v1/me/player/play",query:{device_id:readyEngine.deviceId},body:{context_uri:albumUri,offset:{uri:trackUri}}}]);
+  for(const albumUri of [null, "", "spotify:track:0123456789abcdefghijAB", 3]) {
+    assert.equal((await post({action:"play-track",trackUri,albumUri})).status,400);
+  }
+  assert.equal(dock.requests.length,1);
+  const queued="spotify:track:next0123456789abcdefgh";
+  assert.equal((await post({action:"play-track",trackUri,albumUri,queueUris:[queued]})).status,200);
+  assert.deepEqual(dock.requests[1].body,{uris:[trackUri,queued]},"explicitly selected lists retain their order");
 });
+
+test("legacy recommendation prefetch and autoplay flags cannot build a substitute queue", async () => {
+  dock.reset(null, readyEngine);
+  const track = phonePlayback().item;
+  const preparation = await dock.GET(new Request(`http://localhost/api/browser/spotify?view=prepare-track&id=${track.id}`));
+  assert.equal(preparation.status, 200);
+  assert.deepEqual(dock.requests, [], "hovering never requests catalog recommendations");
+  const response = await post({action:"play-track",trackUri:track.uri,autoplay:true,queueUris:["spotify:track:next0123456789abcdefgh"]});
+  assert.equal(response.status, 200);
+  assert.deepEqual(dock.requests, [{method:"PUT",endpoint:"/v1/me/player/play",query:{device_id:readyEngine.deviceId},body:{uris:[track.uri]}}]);
+});
+
+for (const kind of ["playlist", "album"]) {
+  test(`selecting a song in a ${kind} retains the Spotify context and selected offset`, async () => {
+    dock.reset(null, readyEngine);
+    const uri = `spotify:${kind}:0123456789abcdefghijAB`;
+    const offsetUri = phonePlayback().item.uri;
+    assert.equal((await post({action:`play-${kind}`,[`${kind}Uri`]:uri,offsetUri})).status, 200);
+    assert.deepEqual(dock.requests, [{method:"PUT",endpoint:"/v1/me/player/play",query:{device_id:readyEngine.deviceId},body:{context_uri:uri,offset:{uri:offsetUri}}}]);
+    for (const offsetUri of [null, "", "spotify:playlist:0123456789abcdefghijAB", 3]) {
+      assert.equal((await post({action:`play-${kind}`,[`${kind}Uri`]:uri,offsetUri})).status, 400);
+    }
+    assert.equal(dock.requests.length, 1, "malformed offsets never reach playback");
+  });
+}
+
+for (const action of ["transfer", "resume"]) {
+  test(`${action} preserves Spotify's existing queue without submitting any track list`, async () => {
+    dock.reset(phonePlayback(), readyEngine);
+    assert.equal((await post({action})).status, 200);
+    assert.deepEqual(dock.requests, [{method:"PUT",endpoint:"/v1/me/player",body:{device_ids:[readyEngine.deviceId],play:true}}]);
+  });
+}
+
+for (const body of [
+  {action: "play-artist", artistUri: "spotify:artist:artist0123456789abcde"},
+  {action: "play-album", albumUri: "spotify:album:album0123456789abcde"},
+  {action: "play-playlist", playlistUri: "spotify:playlist:list0123456789abcde"},
+  {action: "play-track", trackUri: "spotify:track:0123456789abcdefghijAB", queueUris: ["spotify:track:next0123456789abcdefgh"]},
+  {action: "resume"},
+  {action: "transfer"},
+]) {
+  test(`${body.action} reconnects an absent device and preserves the original request`, async () => {
+    dock.reset(null, readyEngine);
+    dock.failPlay(['spotify_device_unavailable']);
+    const response = await post(body);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).engine.deviceId, 'breadboard-reconnected-001');
+    assert.deepEqual(dock.reconnects, [{userId:7,deviceId:readyEngine.deviceId}]);
+    const commands = dock.requests.filter(request => request.method === 'PUT');
+    assert.equal(commands.length, 2);
+    if (body.action.startsWith('play-')) {
+      assert.deepEqual(commands[1].body, commands[0].body);
+      assert.equal(commands[1].query.device_id, 'breadboard-reconnected-001');
+    } else assert.deepEqual(commands[1].body.device_ids, ['breadboard-reconnected-001']);
+  });
+}
+
+test('readiness propagation retries are bounded, including reconnects retaining the same ID', async () => {
+  dock.reset(null, readyEngine);
+  dock.failPlay(['spotify_device_unavailable', 'spotify_device_unavailable'], readyEngine.deviceId);
+  assert.equal((await post({action:'play-artist',artistUri:'spotify:artist:artist0123456789abcde'})).status,200);
+  assert.equal(dock.reconnects.length,1);
+  assert.equal(dock.requests.length,3);
+  dock.reset(null,readyEngine);
+  dock.failPlay(Array(5).fill('spotify_device_unavailable'));
+  assert.equal((await post({action:'play-artist',artistUri:'spotify:artist:artist0123456789abcde'})).status,409);
+  assert.equal(dock.reconnects.length,1);
+  assert.equal(dock.requests.length,4);
+  assert.equal(dock.engine.ready,false);
+});
+
+for (const code of ['provider_request_failed', 'spotify_rate_limited']) {
+  test(`${code} never reconnects or replays a play request`, async () => {
+    dock.reset(null,readyEngine);
+    dock.failPlay([code]);
+    assert.equal((await post({action:'play-artist',artistUri:'spotify:artist:artist0123456789abcde'})).status,code === 'spotify_rate_limited' ? 429 : 409);
+    assert.equal(dock.reconnects.length,0);
+    assert.equal(dock.requests.length,1);
+  });
+}
 
 test("a Spotify cooldown stays visible while the connected engine can renew its lease", async () => {
   dock.reset(phonePlayback(), {ready:true,deviceId:"breadboard-123",status:"ready",error:null});
@@ -438,6 +647,7 @@ test("a Spotify cooldown stays visible while the connected engine can renew its 
     assert.equal(status.engine.ready,true);
     assert.equal(status.playback,null);
     assert.match(status.playbackError,/too many requests/i);
+    assert.equal(status.playbackErrorCode,"spotify_rate_limited");
   }
   assert.equal(dock.requests.filter(request=>request.endpoint==="/v1/me/player").length,1);
 });

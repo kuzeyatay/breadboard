@@ -18,26 +18,39 @@ import { beginInteraction } from "./performance/client.ts";
 import type { InteractionHandle } from "./performance/interaction-trace.ts";
 
 export interface DesktopTabView {
+  /** Temporary app or browser tab opened by an AI task. */
+  aiOpened?: boolean;
+  highlighted?: boolean;
   find?: { matches: number; activeMatchOrdinal: number };
   groupId?: string;
   id: number;
+  generation?: number;
   /** Optional when connected to an older desktop shell. */
   anchored?: boolean;
   title: string;
   url: string;
   loading: boolean;
+  pageLoading?: boolean;
+  downloadsOpen?: boolean;
   /** A Learn worker is running in this garden workspace. */
   learnActive?: boolean;
   browser?: {
+    /** Temporary tab opened by an AI task. */
+    aiOpened?: boolean;
     private?: boolean;
     address: string;
     /** The native document can cover home. Optional for older desktop shells. */
     pageReady?: boolean;
+    uiVisited?: boolean;
+    uiKey?: string;
     canGoBack: boolean;
     canGoForward: boolean;
     terminalOpen: boolean;
+    organizationOpen?: boolean;
+    annotationTarget?: import("./browser-annotations").BrowserAnnotationTarget;
     downloadsOpen?: boolean;
     extensionsOpen?: boolean;
+    adBlock?: { enabled: boolean; available: boolean; site: string | null; siteEnabled: boolean; blocked: number };
     terminalWidth: number;
     zoomPercent?: number;
     translation?: { status: "original" | "translating" | "translated" | "error"; language: string; translated: number; error?: string };
@@ -47,6 +60,9 @@ export interface DesktopTabView {
       text: string;
       title: string;
       url: string;
+      requestId?: string;
+      reference?: import("./chat-text-selection").ChatTextSelectionReference;
+      conversationId?: string;
     };
   };
 }
@@ -58,13 +74,24 @@ export interface DesktopTabsState {
   /** The Profile switch. Off, the strip is empty and every shortcut is inert. */
   enabled: boolean;
   activeId: number | null;
+  presentedId?: number | null;
+  /** Native content currently in front, including an outgoing page during preparation. */
+  visibleId?: number | null;
+  presentationRevision?: number;
+  presentationStatus?: "pending" | "presented" | "failed";
+  persistentShell?: boolean;
+  contentHeight?: number;
+  theme?: "light" | "dark";
+  browserOwnerKey?: string;
   /** The shell retains the visible page until the destination paints. */
   navigationPending?: boolean;
   /** The receiving page's own tab. Optional for older desktop shells. */
   selfId?: number | null;
+  /** Initialize the next Terminal's widgets without selecting or focusing it. */
+  preparingNewTab?: boolean;
   tabs: DesktopTabView[];
   extensions: DesktopBrowserExtension[];
-  browserPreferences?: { notificationsEnabled: boolean; sites: Record<string, "granted" | "denied">; translationLanguage: string };
+  browserPreferences?: { organizationSidebarEnabled?: boolean; notificationsEnabled: boolean; sites: Record<string, "granted" | "denied">; mediaSites?: Record<string, Partial<Record<"microphone" | "camera", "granted" | "denied">>>; translationLanguage: string };
 }
 
 export interface DesktopBrowserExtension {
@@ -77,17 +104,29 @@ export interface DesktopBrowserExtension {
 
 export const TAB_GROUP_COLORS = {
   blue: "#85c5ff", purple: "#dca8ff", cyan: "#59dbe5", orange: "#ffb870",
-  yellow: "#f6d45f", pink: "#ffadd6", green: "#87dc93", gray: "#b7c2cd", red: "#ff9baa",
+  yellow: "#f6d45f", pink: "#ffadd6", green: "#87dc93", gray: "#b7c2cd", red: "#ff9baa", black: "#000000",
 } as const;
+
+export const AI_TAB_GROUP_ID = "breadboard-ai";
 
 export interface DesktopTabGroup {
   id: string;
+  parentId?: string;
   name: string;
   color: keyof typeof TAB_GROUP_COLORS;
   collapsed: boolean;
+  /** Show the two group members side by side. */
+  split?: boolean;
 }
 
-export type DesktopTabsCommand =
+export type DesktopTabsCommand = DesktopTabsAction & { targetTabId?: number; generation?: number; presentationRevision?: number };
+
+type DesktopTabsAction =
+  | { type: "browser-adblock-enabled"; enabled: boolean }
+  | { type: "browser-adblock-site-enabled"; enabled: boolean; site: string }
+  | { type: "browser-shell-context"; ownerKey: string }
+  | { type: "page-loading"; id: number; documentGeneration: number; pending: boolean }
+  | { type: "auth-sync" }
   | { type: "navigation-check"; url: string }
   | { type: "notification-targets"; urls: string[] }
   | { type: "notification-open"; urls: string[] }
@@ -95,7 +134,9 @@ export type DesktopTabsCommand =
   | { type: "voice-overlay"; open: boolean }
   | { type: "voice-open"; conversationKey?: string }
   | { type: "browser-notifications-enabled"; enabled: boolean }
+  | { type: "browser-organization-enabled"; enabled: boolean }
   | { type: "browser-notification-permission"; origin: string; permission: "default" | "granted" | "denied" }
+  | { type: "browser-media-permission"; origin: string; media: ("microphone" | "camera")[]; permission: "default" | "granted" | "denied" }
   | { type: "browser-translation-language"; language: string }
   | { type: "browser-translate"; language: string }
   | { type: "browser-translation-menu" }
@@ -109,10 +150,12 @@ export type DesktopTabsCommand =
   | { type: "anchor"; id: number }
   | { type: "tab-menu"; id: number; x: number; y: number }
   | { type: "move"; id: number; index: number; groupId?: string | null }
-  | { type: "group-move"; groupId: string; index: number }
+  | { type: "group-move"; groupId: string; index: number; parentId?: string | null }
   | { type: "group-tabs"; id: number; targetId: number }
-  | { type: "group-update"; groupId: string; name?: string; color?: DesktopTabGroup["color"]; collapsed?: boolean }
-  | { type: "group-action"; groupId: string; action: "new-tab" | "ungroup" | "delete" | "copy-links" | "save-close" | "restore" | "delete-saved" | "new-window" }
+  | { type: "split-tabs"; id: number; targetId: number; side: "left" | "right" }
+  | { type: "tab-drag"; active: boolean; preview?: boolean }
+  | { type: "group-update"; groupId: string; name?: string; color?: DesktopTabGroup["color"]; collapsed?: boolean; split?: boolean }
+  | { type: "group-action"; groupId: string; action: "new-tab" | "new-subgroup" | "ungroup" | "delete" | "copy-links" | "save-close" | "restore" | "delete-saved" | "new-window" | "neutralize" | "show-ai-info" }
   | { type: "group-menu"; groupId?: string; x: number; y: number }
   | { type: "group-menu-resize"; height: number }
   | { type: "group-menu-close" }
@@ -122,6 +165,7 @@ export type DesktopTabsCommand =
   | { type: "reload" }
   | { type: "browser"; url?: string; replaceCurrent?: boolean }
   | { type: "browser-agent"; runId: string; url?: string }
+  | { type: "browser-agent-close"; runId: string }
   | { type: "browser-navigate"; input: string }
   | { type: "browser-stop" }
   | { type: "browser-menu"; x: number; y: number; profileLabel: string }
@@ -133,9 +177,23 @@ export type DesktopTabsCommand =
   | { type: "browser-downloads-show-all" }
   | { type: "browser-extensions-popover"; x: number; y: number }
   | { type: "browser-extensions-resize"; height: number }
+  | { type: "browser-selection-resize"; height: number }
+  | { type: "browser-selection-close" }
+  | { type: "browser-selection-action"; action: "highlight" | "note" | "remove" | "chat" | "inline"; value?: string | null }
+  | { type: "browser-selection-conversation"; id: string; url: string; conversationId: string }
+  | { type: "browser-selection-delete"; id: string; url: string }
+  | { type: "browser-answer-ready" }
+  | { type: "browser-answer-state"; state: import("./browser-inline-answer").BrowserInlineAnswerState }
+  | { type: "browser-answer-action"; action: import("./browser-inline-answer").BrowserInlineAnswerAction }
+  | { type: "browser-answer-resize"; width: number; height: number }
+  | { type: "browser-answer-move"; dx: number; dy: number }
   | { type: "browser-extensions-close" }
   | { type: "browser-extensions-picture-in-picture" }
   | { type: "browser-terminal"; open: boolean; width?: number }
+  | { type: "browser-organization"; open: boolean }
+  | { type: "browser-organization-selection" }
+  | { type: "browser-organization-target"; target: import("./browser-annotations").BrowserAnnotationTarget }
+  | { type: "browser-organization-markers"; items: Array<{ id: string; target: import("./browser-annotations").BrowserAnnotationTarget }> }
   | { type: "browser-address-suggestions"; open: boolean; bottom?: number }
   | { type: "browser-extension-load" }
   | { type: "browser-extension-action"; id: string; menuId?: string }
@@ -146,6 +204,8 @@ export interface DesktopTabsBridge {
   getTabsState: () => Promise<DesktopTabsState>;
   onTabsState: (listener: (state: DesktopTabsState) => void) => () => void;
   tabs: (command: DesktopTabsCommand) => Promise<boolean>;
+  onBrowserInlineAnswerState?: (listener: (state: import("./browser-inline-answer").BrowserInlineAnswerViewState) => void) => () => void;
+  onBrowserInlineAnswerAction?: (listener: (action: import("./browser-inline-answer").BrowserInlineAnswerAction) => void) => () => void;
 }
 
 interface DesktopNavigationBridge {
@@ -166,7 +226,7 @@ interface DesktopNavigationBridge {
   browserHistoryCommand?: (command: DesktopBrowserHistoryCommand) => Promise<boolean>;
   onBrowserHistoryChanged?: (listener: () => void) => () => void;
   setBrowserRecentSearches?: (ownerKey: string, searches: string[]) => Promise<boolean>;
-  chatgptWebTab?: (request: { foreground: boolean; reset?: boolean; lane?: string }) => Promise<DesktopChatgptWebTabResult>;
+  chatgptWebTab?: (request: { foreground: boolean; reset?: boolean; lane?: string; microphone?: boolean }) => Promise<DesktopChatgptWebTabResult>;
 }
 
 /**
@@ -188,10 +248,13 @@ export function requestChatgptWebTabInDesktop(
   foreground: boolean,
   reset = false,
   lane?: string,
+  microphone?: boolean,
 ): Promise<DesktopChatgptWebTabResult> | null {
   const desktop = bridge();
   if (typeof desktop?.chatgptWebTab !== "function") return null;
-  return desktop.chatgptWebTab(lane ? { foreground, reset, lane } : { foreground, reset }).catch((error: unknown) => ({
+  return desktop.chatgptWebTab({
+    foreground, reset, ...(lane ? { lane } : {}), ...(microphone === undefined ? {} : { microphone }),
+  }).catch((error: unknown) => ({
     ok: false as const,
     error: error instanceof Error ? error.message : String(error),
   }));
@@ -346,7 +409,24 @@ export function openBrowserInDesktop(
   });
 }
 
-/** Open/focus the live built-in page controlled by one browser-agent run. */
+/** Home can be an app page or the trusted surface of an existing browser tab. */
+export async function navigateBrowserFromHome(url: string, state: DesktopTabsState | null): Promise<boolean> {
+  const page = state?.tabs.find(tab => tab.id === state.selfId);
+  if (state && !page) return false;
+  const target = page ? { targetTabId: page.id, generation: page.generation, presentationRevision: state?.presentationRevision } : {};
+  const command: DesktopTabsCommand = page?.browser
+    ? { type: "browser-navigate", input: url, ...target }
+    : { type: "browser", url, replaceCurrent: true, ...target };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      sendDesktopTabsCommand(command),
+      new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 10_000); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
+/** Open the run's page in the background; a sign-in URL explicitly reveals it. */
 export function openBrowserAgentRunInDesktop(
   runId: string,
   url?: string,
@@ -384,11 +464,11 @@ const pendingReads = new Set<() => void>();
 
 function publish(next: DesktopTabsState): void {
   snapshot = next;
-  // The tab the person asked for is now the active one in the state every
-  // strip renders from, and the shell has attached its view.
+  // Finish renderer telemetry at the native presentation commit, not selection.
+  // Physical input-to-pixel latency is measured separately by the desktop probe.
   if (pendingActivations.size > 0) {
     for (const id of [...pendingActivations.keys()]) {
-      if (id === next.activeId) endTabActivation(id, "usable");
+      if (id === next.presentedId && next.presentationStatus === "presented") endTabActivation(id, "usable");
       else if (!next.tabs.some((tab) => tab.id === id)) endTabActivation(id, "failed");
     }
   }
@@ -619,10 +699,12 @@ export type DesktopTabKind =
 const ROUTE_LABELS: Record<string, { label: string; kind: DesktopTabKind }> = {
   "": { label: "Dashboard", kind: "dashboard" },
   dashboard: { label: "Dashboard", kind: "dashboard" },
-  "new-tab": { label: "New tab", kind: "new" },
+  "new-tab": { label: "Terminal", kind: "new" },
+  "ai-tabs": { label: "AI tabs", kind: "page" },
   plan: { label: "Plan", kind: "plan" },
   buzz: { label: "Organization", kind: "organization" },
-  profile: { label: "Profile", kind: "profile" },
+  settings: { label: "Settings", kind: "profile" },
+  profile: { label: "Settings", kind: "profile" },
   calendar: { label: "Calendar", kind: "calendar" },
   garden: { label: "Gardens", kind: "gardens" },
   gardens: { label: "Gardens", kind: "gardens" },
@@ -662,7 +744,7 @@ export function describeTabUrl(url: string): { label: string; kind: DesktopTabKi
   try {
     segments = new URL(url).pathname.split("/").filter(Boolean);
   } catch {
-    return { label: "New tab", kind: "new" };
+    return { label: "Terminal", kind: "new" };
   }
   const [first = "", second, third, fourth] = segments;
   if (second && third === "pdf" && (first === "artifacts" || first === "attachments")) {
@@ -692,6 +774,9 @@ export function tabLabel(title: string, url: string): string {
     .replace(/\s*[—–|·-]\s*breadboard\s*$/i, "")
     .replace(/^\s*breadboard\s*[—–|·-]\s*/i, "")
     .trim();
-  if (!cleaned || /^breadboard$/i.test(cleaned)) return describeTabUrl(url).label;
+  const place = describeTabUrl(url);
+  if (!cleaned || /^breadboard$/i.test(cleaned)) return place.label;
+  if (place.kind === "new" && /^new tab$/i.test(cleaned)) return place.label;
+  if (place.kind === "profile" && /^profile$/i.test(cleaned)) return place.label;
   return cleaned;
 }

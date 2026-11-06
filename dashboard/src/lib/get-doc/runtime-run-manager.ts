@@ -11,6 +11,7 @@ import {
   readOuterAgentRunView,
   startOuterAgentRun,
   type OuterAgentEvent,
+  type OuterAgentRunView,
   type OuterAgentRunStatus,
 } from "../runtime-v2/outer-agent-run.ts";
 import type { DocumentSearchRequest, DocumentSourceId } from "./identity.ts";
@@ -72,7 +73,7 @@ function savedRows(userId: number, runId: string): SavedRow[] {
   return db.prepare(
     `SELECT * FROM runtime_v2_get_doc_saved_documents
      WHERE owner_user_id = ? AND runtime_job_id = ?
-     ORDER BY saved_at, document_id`,
+     ORDER BY rowid`,
   ).all(userId, runId) as SavedRow[];
 }
 
@@ -147,10 +148,24 @@ export async function getEventsSince(
   runId: string,
   since = 0,
 ): Promise<GetDocEvent[]> {
+  return [...(await getRunView(userId, runId, since)).events];
+}
+
+/** Read events and terminal state together. A second status read could observe
+ * completion after the event read, closing SSE before the final answer. */
+export async function getRunView(
+  userId: number,
+  runId: string,
+  since = 0,
+): Promise<OuterAgentRunView> {
   const view = await readOuterAgentRunView("get-doc", userId, runId, 0);
   const events = [...view.events];
   const base = events.at(-1)?.sequenceNumber ?? 0;
-  for (const [index, row] of savedRows(userId, runId).entries()) {
+  // Worker sequence numbers remain authoritative until the final snapshot.
+  // A save receipt appended to an active stream could otherwise claim the
+  // number of its next worker event and make a reconnect skip that event.
+  // The download response reports the saved artifact immediately on its own.
+  for (const [index, row] of (view.terminal ? savedRows(userId, runId) : []).entries()) {
     events.push({
       sequenceNumber: base + index + 1,
       type: "document.saved",
@@ -158,7 +173,7 @@ export async function getEventsSince(
       at: row.saved_at,
     });
   }
-  return events.filter((event) => event.sequenceNumber > since);
+  return { ...view, events: events.filter((event) => event.sequenceNumber > since) };
 }
 
 export async function isTerminal(userId: number, runId: string): Promise<boolean> {

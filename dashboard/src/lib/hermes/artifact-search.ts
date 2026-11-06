@@ -5,7 +5,7 @@ export function filterArtifactsForArchive(
   artifacts: PresentedArtifact[],
 ): PresentedArtifact[] {
   return artifacts.filter(
-    (artifact) => artifact.status !== "generating" && artifact.status !== "failed",
+    (artifact) => artifact.status !== "draft" && artifact.status !== "generating" && artifact.status !== "failed",
   );
 }
 

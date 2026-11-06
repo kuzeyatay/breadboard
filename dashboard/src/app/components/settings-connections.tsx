@@ -6,7 +6,9 @@
 // deciding what an agent may do with it afterward.
 
 import BambuConnectionEntry from "./settings-bambu";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import GoogleFlowConnectionEntry from "./settings-google-flow";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { RECOMMENDATION_REFRESH_EVENT } from '@/lib/recommendations/types';
 import { invalidateCommandResponseCache } from "@/lib/hermes/command-client-cache";
 import { invalidateSettingsCache } from "@/lib/settings-client-cache";
 import { readConnectionsPanel } from "@/lib/settings-connections-read";
@@ -66,7 +68,7 @@ async function synchronizeGoogleCalendar(
   onFailure: (message: string) => void,
 ): Promise<void> {
   const failed =
-    "Google Calendar connected, but its events could not update. Try Update now in Profile → Calendars.";
+    "Google Calendar connected, but its events could not update. Try Update now in Settings → Calendars.";
   try {
     const response = await fetch("/api/calendar/google", { method: "POST" });
     const sync = (await response.json().catch(() => ({}))) as {
@@ -81,6 +83,7 @@ async function synchronizeGoogleCalendar(
 }
 
 export default function SettingsConnections() {
+  const recommendationConnections = useRef<string | null>(null);
   const [appIntegrations, setAppIntegrations] = useState<AppIntegration[]>([]);
   const [connectionsLoading, setConnectionsLoading] = useState(false);
   const [connectionsMessage, setConnectionsMessage] = useState<string | null>(null);
@@ -112,7 +115,14 @@ export default function SettingsConnections() {
           afterAuthorization: options.afterAuthorization,
         });
         if (result.spotify) setSpotify(result.spotify);
-        if (result.integrations) setAppIntegrations(result.integrations);
+        if (result.integrations) {
+          setAppIntegrations(result.integrations);
+          const fingerprint = result.integrations.filter(item => item.connected).map(item => item.slug).sort().join('|');
+          if (options.afterAuthorization || (recommendationConnections.current !== null && recommendationConnections.current !== fingerprint)) {
+            window.dispatchEvent(new Event(RECOMMENDATION_REFRESH_EVENT));
+          }
+          recommendationConnections.current = fingerprint;
+        }
         setConnectionsMessage(result.message ?? null);
         if (result.calendarSyncNeeded) {
           void synchronizeGoogleCalendar(setConnectionsMessage);
@@ -174,6 +184,9 @@ export default function SettingsConnections() {
     const normalized = query.trim().toLowerCase();
     return !normalized || "bambu lab printer 3d printing".includes(normalized);
   }, [query]);
+
+  const googleFlowMatchesQuery = !query.trim() ||
+    "google flow veo subscription video generation".includes(query.trim().toLowerCase());
 
   async function connectSpotify() {
     const popup = window.open(
@@ -309,7 +322,7 @@ export default function SettingsConnections() {
       </div>
       <div className="px-1">
         <p className="text-xs leading-5 text-[var(--ink-muted)]">
-          Connections securely link external apps to Breadboard, letting agents use their information and actions when you ask while keeping credentials outside the chat.
+          Connect apps so agents can use them when you ask. Credentials stay out of chat.
         </p>
       </div>
       {connectionsMessage ? (
@@ -319,12 +332,13 @@ export default function SettingsConnections() {
       ) : null}
       {!appIntegrations.length && !spotify && connectionsLoading ? (
         <LoadingRows />
-      ) : bambuMatchesQuery || spotifyMatchesQuery || visibleAppIntegrations.length ? (
+      ) : bambuMatchesQuery || googleFlowMatchesQuery || spotifyMatchesQuery || visibleAppIntegrations.length ? (
         <ul
           className="grid grid-cols-1 gap-2 sm:grid-cols-2"
           aria-label="Available app connections"
         >
           {bambuMatchesQuery ? <BambuConnectionEntry /> : null}
+          {googleFlowMatchesQuery ? <GoogleFlowConnectionEntry /> : null}
           {spotifyMatchesQuery ? (
             <li className="neu-card flex min-w-0 items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] p-3">
               <span
@@ -391,11 +405,11 @@ export default function SettingsConnections() {
                 </span>
                 <span className="mt-0.5 block truncate text-[10px] text-[var(--ink-muted)]">
                   {integration.connected
-                    ? "Connected through Composio"
+                    ? "Available in chats"
                     : integration.authentication === "oauth"
-                    ? "OAuth sign-in"
+                    ? "Sign-in required"
                     : integration.authentication === "credentials"
-                      ? "Secure credentials"
+                      ? "Enter connection details"
                       : "No account required"}
                 </span>
               </span>

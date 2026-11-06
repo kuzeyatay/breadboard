@@ -1,8 +1,11 @@
-import { prepareExplanationTurn } from "./explanation-review-context.ts";
-import { explanationTurnPrompt } from "./explanation-turn.ts";
+import { isBareProviderError } from "../provider-error.ts";
+import { parseBrowserTerminalAccess } from "../browser-terminal.ts";
+import { resolveUnifiedWorkflowContinuation } from "../workflows/unified-continuation.ts";
+import { browserTerminalPrompt, setBrowserTerminalContext } from "./browser-terminal-context.ts";
 import { hermesPromptText } from "../agent-runtime/hermes-prompt.ts";
-import { selectedGardenDocumentContext } from "./garden-reader.ts";
+import { selectedGardenDocumentContext, selectedGardenDocumentQuestionPrompt } from "./garden-reader.ts";
 import { agentPreferencesContext } from "../agent-preferences/store.ts";
+import { retrieveTerminalGardenGrounding } from "./terminal-garden-grounding.ts";
 import { normalizeChatTextSelectionReference } from "../chat-text-selection.ts";
 // Compatibility adapter for the existing garden workspace chat UI.
 // It preserves that UI's SSE contract while replacing its model transport with
@@ -10,10 +13,9 @@ import { normalizeChatTextSelectionReference } from "../chat-text-selection.ts";
 
 import path from "node:path";
 import db from "../db.ts";
+import { persistAssistantProgress } from "../conversations/live-progress.ts";
 import { recordQuestionNotification, resolveQuestionNotification } from "../chat-notifications/questions.ts";
 import { normalizeChatTokenUsage } from "../chat-token-usage.ts";
-import { mergeExplanationUsage } from "./explanation-review.ts";
-import { reviewRuntimeExplanation } from "./explanation-review-runtime.ts";
 import { requireUserId } from "../server-auth.ts";
 import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import { resolveHermesEngine } from "./model-selection.ts";
@@ -43,6 +45,8 @@ import {
   type ExternalAgentCall,
 } from "./evidence.ts";
 import { composeHermesSystemPrompt } from "./system-prompts.ts";
+import { botsStore } from "../bots/server.ts";
+import { conversationPersonalityPrompt } from "../bots/types.ts";
 import { suppliedEvidenceText } from "./evidence-calibration.ts";
 import { adjudicateWebGrounding } from "./web-grounding-decider.ts";
 import { scheduleLoopxTickForConversation } from "../loopx/conversation-tick.ts";
@@ -68,6 +72,7 @@ import {
   renderSuperAgentDirective,
 } from "./super-agent.ts";
 import {
+  computerUseSkillChoices,
   renderSkillShortlistDirective,
   shortlistSkillsForTurn,
 } from "./skill-shortlist.ts";
@@ -102,13 +107,8 @@ import {
 import { composeMemoryContext } from "../conversations/memory.ts";
 import { deliverCompletedResearch, completedResearchEventStream } from "../conversations/deliver-completed-research.ts";
 import { deliverCompletedHyperframes } from "../conversations/deliver-completed-hyperframes.ts";
-import { loadConversationMemoryBundleHybrid } from "../mem0/retrieval.ts";
+import { loadConversationMemoryBundle } from "../conversations/memory.ts";
 import { gardenInstructions } from "../garden-settings.ts";
-import { readThoughtTopology } from "../thought-topology/storage.ts";
-import {
-  compactThoughtTopologyGraph,
-  queryThoughtTopologyGraph,
-} from "./thought-topology-graph.ts";
 import {
   associateArtifactToolCall,
   listArtifactEventsAfter,
@@ -204,6 +204,8 @@ type GardenChatPayload = {
   messages?: unknown;
   model?: unknown;
   reasoningEffort?: unknown;
+  browserAccess?: unknown;
+  voice?: unknown;
   selectedDocumentSlugs?: unknown;
   activeMarkdown?: unknown;
   selectedText?: unknown;
@@ -306,17 +308,21 @@ export async function openGardenAgentChat(
     ) {
       throw new ApiError(409, "turn_cancelled", "This turn was stopped.");
     }
-    const hyperframesDelivery = await deliverCompletedHyperframes({
+    const workflowContinuation = resolveUnifiedWorkflowContinuation({
       userId, conversationId: conversation.id, clientMessageId: reservedClientMessageId,
       continuationText: text, internalAgentContinuation: payload.internalAgentContinuation === true,
     });
+    const hyperframesDelivery = !workflowContinuation ? await deliverCompletedHyperframes({
+      userId, conversationId: conversation.id, clientMessageId: reservedClientMessageId,
+      continuationText: text, internalAgentContinuation: payload.internalAgentContinuation === true,
+    }) : null;
     if (hyperframesDelivery) return completedResearchEventStream(hyperframesDelivery);
-    const researchDelivery = deliverCompletedResearch({
+    const researchDelivery = !workflowContinuation ? deliverCompletedResearch({
       conversationId: conversation.id,
       clientMessageId: reservedClientMessageId,
       continuationText: text,
       internalAgentContinuation: payload.internalAgentContinuation === true,
-    });
+    }) : null;
     if (researchDelivery) return completedResearchEventStream(researchDelivery);
 
     // Attachments reach this surface in the request body but used to stop here:
@@ -418,7 +424,7 @@ export async function openGardenAgentChat(
       .slice(-6, -1);
     const filesystemGrants = listFilesystemGrants(userId);
     const superAgent = payload.superAgent === true;
-    const yoloMode = payload.yoloMode === true;
+    const yoloMode = superAgent || payload.yoloMode === true;
     let prepared = prepareTurn({
       request: text,
       internalAgentContinuation: payload.internalAgentContinuation === true,
@@ -620,6 +626,7 @@ export async function openGardenAgentChat(
       authenticated: true,
       hasAudioAttachment: hasAnalyzableAttachment(attachments),
       activeAgentSlug: conversation.active_agency_agent_slug,
+      priorMessages: messages,
     });
     // The same second copy of the chain: an attached song has to select the skill
     // here exactly as it does in conversations/turn-service.ts. No carried-track
@@ -690,6 +697,7 @@ export async function openGardenAgentChat(
       surface: "garden_chat" as const,
       runtimeKind: session.runtimeKind,
       activeAgentSlug: conversation.active_agency_agent_slug,
+      workflowContinuation,
     };
     // An automatic selection must never cost the user their turn. If an
     // auto-selected capability is unavailable here, resolve the same message
@@ -755,10 +763,11 @@ export async function openGardenAgentChat(
       .filter((item) => item.kind === "mcp")
       .map((item) => item.slug);
     const parametricCadSelected = decision.selectedConditionalSkills.includes("cad");
-    if (parametricCadSelected) {
+    if (parametricCadSelected || resolved.workflowSelection) {
       decision.allowedTools = [
         ...new Set([...decision.allowedTools, "agent_launch"]),
       ];
+      prepared.grant.allowedTools = { ...prepared.grant.allowedTools, agent_launch: true };
     }
     // Match the canonical turn service: the switch supplies both the brokered
     // tools and the catalogue/instructions needed to choose a runtime agent.
@@ -801,6 +810,13 @@ export async function openGardenAgentChat(
             ),
           })
         : [];
+    if (!superAgent && payload.internalAgentContinuation !== true) {
+      skillShortlist.push(...computerUseSkillChoices({
+        skills: openableSkills("garden_chat", listMcpConnections(userId, true).map(connection => connection.slug)),
+        allowedTools: prepared.grant.allowedTools,
+        selectedSkills: decision.selectedConditionalSkills,
+      }));
+    }
     if (skillShortlist.length > 0) {
       decision.selectedConditionalSkills = [
         ...new Set([
@@ -811,6 +827,7 @@ export async function openGardenAgentChat(
       decision.allowedTools = [
         ...new Set([...decision.allowedTools, "skill_open"]),
       ];
+      prepared.grant.allowedTools = { ...prepared.grant.allowedTools, skill_open: true };
     }
 
     // Whether this turn owes live web evidence. The keyword planner's "no" is
@@ -930,7 +947,7 @@ export async function openGardenAgentChat(
         "The Garden conversation scope is invalid.",
       );
     }
-    const memory = await loadConversationMemoryBundleHybrid({
+    const memory = loadConversationMemoryBundle({
       conversation,
       query: text,
       activeGardenId: session.row.cluster_id,
@@ -967,13 +984,14 @@ export async function openGardenAgentChat(
       ...(decision.selectedConditionalSkills.includes(BREADBOARD_USE_SKILL)
         ? { breadboard_use: true }
         : {}),
-      ...(parametricCadSelected ? { agent_launch: true } : {}),
+      ...(parametricCadSelected || resolved.workflowSelection ? { agent_launch: true } : {}),
       ...(skillShortlist.length > 0 ? { skill_open: true } : {}),
     });
+    const browserAccess = parseBrowserTerminalAccess(payload.browserAccess);
+    if (browserAccess) runTools.browser_terminal = true;
     // Documents the turn can see — files the user just attached and garden
-    // sources they ticked in the sidebar — become book-to-skill skills when they
-    // are large enough to be worth distilling, and the turn gets their structured
-    // index instead of their raw text.
+    // sources they ticked in the sidebar — are preserved verbatim. Large documents get
+    // an index into exact source chunks, without model summarization.
     const editableDocuments = stageEditableDocumentAttachments({
       userId,
       attachments,
@@ -995,28 +1013,21 @@ export async function openGardenAgentChat(
             sources: selectedMedia.video,
           })
         : [];
-    const explanationSelection = normalizeQuartzAssistantSelection(payload.selectedTextContext) ?? normalizeQuartzAssistantSelection(payload.selectedText);
-    const explanationContext = payload.internalAgentContinuation === true ? undefined : await prepareExplanationTurn({
-      runtimeSessionId: session.row.id,
-      request: resolved.userText || text,
-      messages: memory.recentMessages,
-      selectionContext: quartzAssistantSelectionPromptContext(explanationSelection ?? payload.selectedText),
-      selectedText: explanationSelection?.text,
-      sourcePassages: selectedDocumentEvidence,
-      constraints: JSON.stringify({ knownFacts: memory.workingState.knownFacts, decisions: memory.workingState.decisions,
-        historicalInstructions: memory.workingState.historicalInstructions, openQuestions: memory.workingState.openQuestions }),
+    const gardenSourceInventory = await gardenSourceInventoryContext(clusterSlug);
+    const gardenGrounding = await retrieveTerminalGardenGrounding({
+      userId, request: resolved.userText || text, plan: prepared.plan,
+      activeGardenSlug: clusterSlug, hasAttachments: Boolean(attachments?.length || selectedSlugs.length),
     });
-    const explanationFocus = explanationContext?.repair === true && decision.mode === "knowledge";
     const runSystem = composeHermesSystemPrompt({
       surface: "garden_chat",
       decision,
+      requiresWebEvidence: webGroundingVerdict.required,
       userText: resolved.userText || text,
-      explanationFocus,
-      // Only the attachments that still travel verbatim: a distilled document
-      // reaches the model as an index, which has no values to check.
+      // Compatibility evidence input; original document text travels in turn context.
       suppliedEvidence: suppliedEvidenceText(documents.inlineAttachments),
       conversationPublicId: conversation.public_id,
       adhdMode: payload.adhdMode === true,
+      voice: payload.voice === true,
       additional: [
         agentPreferencesContext(userId),
         superAgentInventory ? renderSuperAgentDirective(superAgentInventory) : "",
@@ -1025,9 +1036,12 @@ export async function openGardenAgentChat(
         // reads as a preference the assistant carries into the work, not as a
         // late correction bolted onto the end of the prompt.
         gardenInstructionsContext(session.row.cluster_id),
-        gardenTopologyContext(clusterSlug, page),
-        composeMemoryContext(memory, { explanationFocus, recentContextSupplied: Boolean(explanationContext) }),
-        explanationContext ? explanationTurnPrompt(explanationContext) : "",
+        // Ahead of the topology packet: what the Garden holds is read before
+        // how its concepts relate, because the first question of a Garden turn
+        // is whether the material is already here.
+        gardenSourceInventory,
+        gardenGrounding.context,
+        composeMemoryContext(memory, { includeProfile: false }),
         // Directly after memory, so the repository reads as something the
         // assistant knows about this Garden rather than a tool it was handed.
         repository?.systemContext ?? "",
@@ -1035,7 +1049,6 @@ export async function openGardenAgentChat(
         // Empty unless this turn was offered a shortlist above.
         renderSkillShortlistDirective(skillShortlist),
         documents.context,
-        selectedDocumentEvidence,
         renderWatchVideoContext(preparedGardenVideos),
         editableDocuments.context,
         decision.selectedConditionalSkills.includes(IMAGE_TO_3D_SKILL)
@@ -1063,9 +1076,12 @@ export async function openGardenAgentChat(
       ]
         .filter(Boolean)
         .join("\n\n"),
-      persona: activeAgencyAgent
+      persona: conversationPersonalityPrompt(
+        botsStore().forConversation(userId, conversation.public_id),
+        activeAgencyAgent
         ? renderAgencyAgentPersona(activeAgencyAgent)
         : undefined,
+      ),
     });
     // Garden Chat's copy of the capability ledger the Terminal keeps. Same rule:
     // only selections the resolver kept are recorded, so an automatic pick the
@@ -1149,10 +1165,15 @@ export async function openGardenAgentChat(
             ),
           })
         : [];
-    const runtimeText = quartzAssistantSelectionQuestionPrompt(
-      resolved.text ||
-      "Acknowledge the persona selection briefly and ask how you can help.",
-      normalizeQuartzAssistantSelection(payload.selectedTextContext) ?? payload.selectedText,
+    // A Garden selection is shown as an attachment chip. Carry its reading in
+    // this user turn so a resumed session cannot rely on stale system context.
+    const runtimeText = selectedGardenDocumentQuestionPrompt(
+      quartzAssistantSelectionQuestionPrompt(
+        resolved.text ||
+        "Acknowledge the persona selection briefly and ask how you can help.",
+        normalizeQuartzAssistantSelection(payload.selectedTextContext) ?? payload.selectedText,
+      ),
+      selectedDocumentEvidence,
     );
     let run: ReturnType<typeof beginRuntimeRun>;
     try {
@@ -1168,6 +1189,8 @@ export async function openGardenAgentChat(
         runtimeSessionId: session.row.id,
         instruction: text,
         dispatch: {
+          ...(resolved.workflowSelection ? { workflowSelection: resolved.workflowSelection } : {}),
+          ...(resolved.workflowCompletedWork ? { workflowCompletedWork: resolved.workflowCompletedWork } : {}),
           conversationPublicId: conversation.public_id,
           clientMessageId: reservedClientMessageId,
           runtimeText: hermesPromptText(runtimeText, documents.inlineAttachments),
@@ -1176,8 +1199,14 @@ export async function openGardenAgentChat(
           variant: engine.variant,
           tools: runTools,
           system: runSystem,
-          explanationContext,
           capabilities: capabilitySelection,
+          ...(gardenGrounding.attempted ? { gardenGrounding: {
+            attempted: true,
+            sources: gardenGrounding.sources,
+            lexicalUsed: gardenGrounding.lexicalUsed,
+            semanticUsed: gardenGrounding.semanticUsed,
+            warning: gardenGrounding.warning,
+          } } : {}),
           ...(carriedDelegations.length
             ? { delegatedAgents: carriedDelegations }
             : {}),
@@ -1193,6 +1222,9 @@ export async function openGardenAgentChat(
       throw error;
     }
     const runtimeMessageId = hermesMessageId(reservedClientMessageId);
+    // Screen contents are ephemeral turn context, not persisted run history.
+    const screenContext = await browserTerminalPrompt(browserAccess);
+    const runtimeSystem = [runSystem, screenContext].filter(Boolean).join("\n\n");
     const finalConversation = conversation;
     return legacyGardenEventStream(
       session,
@@ -1202,8 +1234,9 @@ export async function openGardenAgentChat(
       reservedClientMessageId,
       { messageId: runtimeMessageId, instruction: hermesPromptText(runtimeText, documents.inlineAttachments) },
       webGroundingVerdict.required,
-      (target) =>
-        runtime.startRun({
+      (target) => {
+        setBrowserTerminalContext(target.row.id, browserAccess);
+        return runtime.startRun({
           externalSessionId: target.externalSessionId,
           liveSessionId: target.liveSessionId,
           workspaceKey: target.workspaceKey,
@@ -1219,10 +1252,11 @@ export async function openGardenAgentChat(
           model: engine.model,
           modelIdentity: { modelID: engine.selectedModelID },
           variant: engine.variant,
-          system: runSystem,
+          system: runtimeSystem,
           messageId: runtimeMessageId,
           yoloMode,
-        }),
+        });
+      },
       // Hermes keeps live sessions in memory, so the first Garden turn after a
       // Hermes restart addresses a session id the gateway no longer knows and
       // prompt.submit answers "session not found". The Terminal already
@@ -1239,6 +1273,7 @@ export async function openGardenAgentChat(
           forceRecreate: true,
           inlineTurnId,
         });
+        setBrowserTerminalContext(session.row.id);
         await runtime.applyCapabilityDecision({
           externalSessionId: replacement.externalSessionId,
           liveSessionId: replacement.liveSessionId,
@@ -1343,25 +1378,48 @@ function gardenInstructionsContext(clusterId: number | null): string {
  * garden_get_graph_neighbors; this compact packet makes the current structure
  * legible even before Hermes decides to call a tool.
  */
-function gardenTopologyContext(
-  gardenSlug: string,
-  page: { slug: string; title?: string } | null,
-): string {
+/**
+ * What this Garden actually holds, by title.
+ *
+ * The topology packet above names concepts, never the user's uploaded sources,
+ * so a turn asked for "a plan over the material I have to cover" saw topic
+ * titles, concluded the material was missing, and asked the user to upload a
+ * study guide the Garden had held since September. Titles are enough to stop
+ * that: the model can see the source exists and read it with `garden_search` /
+ * `garden_get_source_excerpt`. Bodies stay behind those tools — this is the
+ * index, not the content.
+ */
+async function gardenSourceInventoryContext(gardenSlug: string): Promise<string> {
   const contentRoot = process.env.QUARTZ_CONTENT_PATH;
   if (!contentRoot) return "";
-  const topology = readThoughtTopology(path.join(contentRoot, gardenSlug));
-  if (!topology) return "";
-  const graph = queryThoughtTopologyGraph(topology, {
-    start: page?.slug ?? `garden:${gardenSlug}`,
-    depth: page ? 1 : 3,
-    limit: page ? 20 : 32,
-    includeHierarchy: true,
-  });
-  return [
-    "Canonical Garden relationship model: Thought Topology, represented as a typed property graph.",
-    "Its contains edges encode Garden → folder → page structure. Its affinity edges carry relation, direction, weight (0–1), origin, explanation, and evidence. Use garden_get_graph_neighbors for a deeper or filtered subgraph; do not reconstruct the retired Knowledge Map.",
-    `Current bounded Thought Topology:\n${JSON.stringify(compactThoughtTopologyGraph(graph))}`,
-  ].join("\n");
+  try {
+    // Lazy, like the tool path: the scanner is the heavy module, and the
+    // small-talk fast path above must not pay for it.
+    const { scanClusterKnowledge } = await import("../knowledge.ts");
+    // A minute-stale inventory is still the right answer to "does this Garden
+    // already hold the material?", and the cache makes repeat turns free.
+    const knowledge = scanClusterKnowledge(contentRoot, gardenSlug, {
+      migrateSources: false,
+      maxStaleMs: 60_000,
+    });
+    const sources = knowledge.tree.slice(0, 20).map((item) => ({
+      title: item.source.title,
+      slug: item.source.slug,
+      kind: item.source.sourceType || item.source.type,
+      topics: item.topics.length,
+    }));
+    if (!sources.length) return "";
+    return [
+      "# active_garden_source_inventory",
+      `The active Garden already holds ${knowledge.stats.documents} source documents and ${knowledge.stats.topics} topic pages. This is a partial title index (${Math.min(20, knowledge.tree.length)} of ${knowledge.tree.length} entries), not source contents. Use garden_search or garden_list_files to find sources not shown.`,
+      "The user does not need to upload, paste, or re-send anything listed here. Read a source with garden_search, garden_get_page, or garden_get_source_excerpt before making any claim about what it contains.",
+      JSON.stringify(sources),
+    ].join("\n");
+  } catch {
+    // An unreadable garden directory is not a reason to lose the turn; the
+    // read tools report the real failure when the model calls one.
+    return "";
+  }
 }
 
 function gardenTurnContext(
@@ -1373,7 +1431,7 @@ function gardenTurnContext(
 ): string {
   const roots = prepared.grant.authorizedRoots;
   return [
-    `Authorized garden: ${gardenSlug}`,
+    `Active garden: ${gardenSlug}. Use garden_list to discover other authorized Gardens and garden_search with scope all for cross-Garden questions.`,
     `Breadboard chat session: ${chatSessionId}`,
     page
       ? `Current page: ${page.title ?? page.slug} (${page.slug})`
@@ -1382,8 +1440,14 @@ function gardenTurnContext(
       ? `User-selected garden documents: ${selected.join(", ")}`
       : "",
     `Identified goal: ${prepared.plan.intendedOutcome}`,
+    // An empty capability list only means the planner saw no *action*. Saying
+    // "conversation only" while the super-agent map still grants the Garden
+    // read tools talked the model out of reading sources it was told to read.
     `Capabilities active for this turn: ${
-      prepared.grant.grantedCapabilities.join(", ") || "conversation only"
+      prepared.grant.grantedCapabilities.join(", ") ||
+      (prepared.grant.allowedTools.garden_get_source_excerpt
+        ? "reading this Garden — call garden_search / garden_get_source_excerpt / garden_get_page to read any source before answering; never ask the user to upload or paste a Garden source"
+        : "conversation only")
     }.`,
     roots.length
       ? `Approved local folders: ${roots
@@ -1393,7 +1457,7 @@ function gardenTurnContext(
     prepared.grant.withheldCapabilities.length
       ? `Withheld pending the user's approval: ${prepared.grant.withheldCapabilities.join(", ")}. Breadboard has already shown the user a permission request; do not ask for approval in prose and do not restate the task.`
       : "",
-    "Published Garden content is changed only through typed Breadboard proposals.",
+    "Use garden_save_note when the user explicitly asks to save a new note in their own Garden. Revise existing Garden pages through typed Breadboard proposals.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -1591,8 +1655,11 @@ function legacyGardenEventStream(
       // never adopts a healthy long-running Garden turn and starts a second
       // consumer after the two-minute abandonment window.
       touchRuntimeRunHeartbeat(runId);
+      const writerAbort = new AbortController();
       const heartbeat = setInterval(
-        () => touchRuntimeRunHeartbeat(runId),
+        () => {
+          touchRuntimeRunHeartbeat(runId);
+        },
         RUN_HEARTBEAT_INTERVAL_MS,
       );
       heartbeat.unref?.();
@@ -1631,7 +1698,7 @@ function legacyGardenEventStream(
                 directory: target.activeDirectory,
                 ...turnReference,
               },
-              attempt.signal,
+              AbortSignal.any([attempt.signal, writerAbort.signal]),
               connected,
             )
             [Symbol.asyncIterator]();
@@ -1707,6 +1774,12 @@ function legacyGardenEventStream(
               : event.payload.text;
             if (sealed.trim()) narrationSegments.push(sealed);
             if (event.payload.streamed) assistantText = "";
+            if (session.row.conversation_id !== null) {
+              persistAssistantProgress({
+                conversationId: session.row.conversation_id,
+                clientMessageId, progressNotes: narrationSegments,
+              });
+            }
             // A segment closed by a tool call is provisional narration, not a
             // chat answer. Put it straight into the Thinking surface instead
             // of briefly drawing it as a message that must later disappear.
@@ -1716,6 +1789,9 @@ function legacyGardenEventStream(
             });
           }
           if (event.type === "assistant.completed" || event.type === "assistant.usage") {
+            if (event.type === "assistant.completed" && typeof event.payload.text === "string") {
+              assistantText = event.payload.text;
+            }
             const usage = normalizeChatTokenUsage(event.payload.usage);
             if (usage) {
               tokenUsage = usage;
@@ -1726,6 +1802,12 @@ function legacyGardenEventStream(
             reasoning = event.payload.detailMode === "replace"
               ? event.payload.detail
               : reasoning + event.payload.detail;
+            if (session.row.conversation_id !== null) {
+              persistAssistantProgress({
+                conversationId: session.row.conversation_id,
+                clientMessageId, reasoning,
+              });
+            }
             emit({ type: "thinking", text: event.payload.detail, detailMode: event.payload.detailMode });
           }
           if (event.type === "tool.started") {
@@ -1887,22 +1969,13 @@ function legacyGardenEventStream(
                 userId: session.row.user_id,
                 gardenId: session.row.garden_id,
               });
+              throw new Error(assistantText);
             }
+            if (isBareProviderError(assistantText)) throw new Error(assistantText.trim());
             // Text is provisional until Hermes reaches idle because any
             // earlier segment may still become tool-call narration. Reveal the
             // stable answer once, after that decision.
-            const explanation = await reviewRuntimeExplanation({
-              runId, answer: assistantText, evidence,
-              onStage: (stage) => {
-                const detail = `\n\n${stage === "repair" ? "Repairing an explanation gap." : stage === "plan" ? "Identifying the necessary mechanisms." : "Checking explanation coverage."}`;
-                reasoning += detail;
-                emit({ type: "thinking", text: detail });
-              },
-            });
-            if (!explanation) return; // A stop during review owns the terminal state.
-            assistantText = explanation.answer;
-            tokenUsage = mergeExplanationUsage(tokenUsage, explanation.usage);
-            if (tokenUsage) emit({ type: "usage", usage: tokenUsage });
+            if (getRuntimeRun(runId)?.status !== "active") return;
             emit({ type: "replace", text: assistantText });
             const verification = assessVerification(assistantText, evidence, {
               webGroundingRequired,
@@ -1917,10 +1990,10 @@ function legacyGardenEventStream(
                 toolCalls,
               }),
             });
-            verification.explanationReview = explanation.report;
             // Whatever this turn left on disk becomes a card now, before the
             // stream closes and before the capability decision is revoked.
             await publishProducedFilesForTurn({ session, runId, clientMessageId });
+            if (getRuntimeRun(runId)?.status !== "active") return;
             emitArtifactEvents();
             // Last chance before the stream closes: an unemitted launch would be
             // a run the agent believes it started and nobody ever will.
@@ -2003,7 +2076,9 @@ function legacyGardenEventStream(
             conversationId: session.row.conversation_id,
             clientMessageId,
             status: "failed",
-            content: assistantText,
+            // Persist the same visible error as the live SSE response. Keeping
+            // it only in metadata hid the cause when this chat was reopened.
+            content: [...new Set([assistantText.trimEnd(), failureMessage].filter(Boolean))].join("\n\n"),
             error: "garden_event_stream_failed",
             metadata: {
               calls: toolCalls,

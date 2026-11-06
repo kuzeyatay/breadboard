@@ -37,6 +37,14 @@ export interface ResolvedWorkspace {
   workspaceKey: string;
 }
 
+/** Conversation files outlive disposable model sessions, including rehydration. */
+export function conversationWorkspaceIdentity(conversationKey: string, inlineTurnId?: string) {
+  return {
+    conversationKey,
+    sessionKey: inlineTurnId ? `${conversationKey}-inline-${inlineTurnId}` : conversationKey,
+  };
+}
+
 function pathEscapesAuthority(relative: string): boolean {
   return (
     relative === ".." ||

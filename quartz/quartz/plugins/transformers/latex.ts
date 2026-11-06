@@ -1,5 +1,5 @@
 import remarkMath from "remark-math"
-import rehypeKatex from "rehype-katex"
+import rehypeKatex from "../../util/rehypeKatexSource"
 import rehypeMathjax from "rehype-mathjax/svg"
 //@ts-ignore
 import rehypeTypst from "@myriaddreamin/rehype-typst"
@@ -8,6 +8,7 @@ import { KatexOptions } from "katex"
 import { Options as MathjaxOptions } from "rehype-mathjax/svg"
 //@ts-ignore
 import { Options as TypstOptions } from "@myriaddreamin/rehype-typst"
+import { normalizeLatexDelimiters } from "../../util/latexDelimiters"
 
 interface Options {
   renderEngine: "katex" | "mathjax" | "typst"
@@ -28,6 +29,9 @@ export const Latex: QuartzTransformerPlugin<Partial<Options>> = (opts) => {
   const macros = opts?.customMacros ?? {}
   return {
     name: "Latex",
+    textTransform(_ctx, content) {
+      return normalizeLatexDelimiters(content)
+    },
     markdownPlugins() {
       return [remarkMath]
     },

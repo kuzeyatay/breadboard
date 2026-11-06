@@ -1,8 +1,15 @@
 "use client";
+import { websiteIconUrl, BrowserSiteIcon } from "./browser-site-icon";
+export { websiteIconUrl, BrowserSiteIcon, SearchGlyph, GoogleGlyph } from "./browser-site-icon";
 import { holdForegroundAudio } from '@/lib/speech/clap/audio-focus';
 import { spotifyHistoryTracks } from '@/lib/spotify/history';
 import { BrowserSpotifyProgress } from './browser-spotify-progress';
 import { BrowserSpotifyArtistProfile } from './browser-spotify-artist-profile';
+import { BrowserSpotifyDevices } from './browser-spotify-devices';
+import type { SpotifyConnectDevice } from '@/lib/spotify/devices';
+import { ForegroundEventSource } from '@/lib/foreground-event-source';
+import { spotifyControlRequest, spotifyPlayerRequest } from '@/lib/spotify/control-request';
+import { usePublishSpotifyAmbient } from '@/app/components/spotify-ambient-context';
 
 import {
   BatteryCharging,
@@ -31,26 +38,34 @@ import {
 } from "lucide-react";
 import {
   useCallback,
+  useId,
   useEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
   type FormEvent,
-  type ReactNode,
   type RefObject,
 } from "react";
 import type { ChatGreeting } from "@/lib/hermes/chat-greeting";
 import { useGreetingTypewriter } from "@/app/components/use-greeting-typewriter";
 import { WeatherIcon, weatherKind } from "@/app/components/weather-icon";
 import { useStartupLoading } from "@/app/components/startup-readiness";
-import { browserShortcutsControl } from "@/lib/desktop-browser-tabs";
+import { readTerminalData } from "@/lib/terminal-data-client";
+import { publishLocalWeatherReading } from "@/lib/local-weather-reading";
+import { browserShortcutsControl, desktopTabsBridge, openBrowserInDesktop } from "@/lib/desktop-browser-tabs";
 import { useBrowserSavedItems } from "./use-browser-saved-items";
+import { normalizeShortcutOrder, orderedShortcuts, shortcutOrderKey } from "@/lib/shortcut-order";
+import { shortcutOrderControl } from "./shortcut-order-control";
+import { useShortcutReorder } from "./use-shortcut-reorder";
+import { applyShortcutEdits, normalizeShortcutEdits, type ShortcutEdit } from "@/lib/shortcut-edits";
+import { shortcutEditsControl } from "./shortcut-edits-control";
+import { ShortcutContextMenu } from "./shortcut-context-menu";
 import { finiteEstimate, type DockBattery, type DockNetwork, type DockWeather } from "./browser-dock-data";
 import { BatteryDetails, DockPopover, NetworkDetails, useWorldCities, WorldClocks, WorldWeather, type DockPanel } from "./browser-dock-popovers";
 import {
-  CURRENT_LOCATION_CHANGE_EVENT,
   getStoredCurrentLocationPreference,
+  subscribeCurrentLocation,
 } from "@/lib/current-location.ts";
 import {
   SKETCH_MARGIN,
@@ -70,45 +85,6 @@ export interface BrowserLink {
   iconUrl: string;
 }
 
-export function websiteIconUrl(url: string): string {
-  const hostname = new URL(url).hostname;
-  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(hostname)}&sz=128`;
-}
-
-function websiteIconSources(src?: string, pageUrl?: string): string[] {
-  const sources: string[] = [];
-  const add = (value: string | undefined) => {
-    if (value && !sources.includes(value)) sources.push(value);
-  };
-  add(src);
-  if (!pageUrl) return sources;
-  try {
-    const page = new URL(pageUrl);
-    if (page.protocol !== "http:" && page.protocol !== "https:") return sources;
-    add(websiteIconUrl(page.toString()));
-    add(`https://icons.duckduckgo.com/ip3/${encodeURIComponent(page.hostname)}.ico`);
-    add(new URL("/favicon.ico", page.origin).toString());
-  } catch {
-    // A bad page URL cannot invalidate a favicon the shell already supplied.
-  }
-  return sources;
-}
-
-function ResilientSiteImage({ sources }: { sources: readonly string[] }) {
-  const [sourceIndex, setSourceIndex] = useState(0);
-  const source = sources[sourceIndex];
-  if (!source) return null;
-  return (
-    // Site icons are deliberately loaded from the website or a favicon service.
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={source}
-      alt=""
-      onError={() => setSourceIndex((index) => index + 1)}
-    />
-  );
-}
-
 export const QUICK_LINKS: readonly BrowserLink[] = [
   { label: "Mail", glyph: "M", color: "#c85d4b", url: "https://mail.google.com", iconUrl: websiteIconUrl("https://mail.google.com") },
   { label: "YouTube", glyph: "▶", color: "#e85a4f", url: "https://www.youtube.com", iconUrl: websiteIconUrl("https://www.youtube.com") },
@@ -117,47 +93,6 @@ export const QUICK_LINKS: readonly BrowserLink[] = [
   { label: "Drive", glyph: "△", color: "#d39b3e", url: "https://drive.google.com", iconUrl: websiteIconUrl("https://drive.google.com") },
   { label: "Notion", glyph: "N", color: "#323735", url: "https://www.notion.so", iconUrl: websiteIconUrl("https://www.notion.so") },
 ] as const;
-
-const STROKE = {
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 1.7,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-};
-
-export function SearchGlyph({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 20 20" aria-hidden="true">
-      <circle cx="8.5" cy="8.5" r="5" {...STROKE} />
-      <path d="m12.2 12.2 4 4" {...STROKE} />
-    </svg>
-  );
-}
-
-export function GoogleGlyph() {
-  return <span className="browser-google-glyph" aria-hidden="true">G</span>;
-}
-
-export function BrowserSiteIcon({
-  src,
-  fallback,
-  className,
-  pageUrl,
-}: {
-  src?: string;
-  fallback: ReactNode;
-  className?: string;
-  pageUrl?: string;
-}) {
-  const sources = websiteIconSources(src, pageUrl);
-  return (
-    <span className={`browser-site-icon ${className ?? ""}`} aria-hidden="true">
-      <span className="browser-site-icon-fallback">{fallback}</span>
-      <ResilientSiteImage key={sources.join("\n")} sources={sources} />
-    </span>
-  );
-}
 
 export function BrowserSketchOutline({
   targetRef,
@@ -260,7 +195,7 @@ function safeShortcut(value: unknown): BrowserLink | null {
   if (!label || rawUrl.length > 2_048) return null;
   try {
     const url = new URL(/^https?:\/\//iu.test(rawUrl) ? rawUrl : `https://${rawUrl}`);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
     return {
       label,
       glyph: label.slice(0, 1).toLocaleUpperCase(),
@@ -298,41 +233,103 @@ function shortcutsControl(ownerKey: string) {
 export function BrowserQuickLinks({
   navigate,
   ownerKey,
+  active = true,
 }: {
   navigate: (value: string) => void;
   ownerKey: string;
+  active?: boolean;
 }) {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const labelRef = useRef<HTMLInputElement | null>(null);
   const addFrameRef = useRef<HTMLSpanElement | null>(null);
   const shortcutStore = useBrowserSavedItems(ownerKey, shortcutsKey(ownerKey), shortcutsControl, normalizeShortcuts);
   const customLinks = shortcutStore.items;
+  const orderStore = useBrowserSavedItems(ownerKey, `breadboard:shortcut-order:v1:${ownerKey}`, shortcutOrderControl, normalizeShortcutOrder, false);
+  const editsStore = useBrowserSavedItems(ownerKey, `breadboard:shortcut-edits:v1:${ownerKey}`, shortcutEditsControl, normalizeShortcutEdits, false);
+  const baseLinks = [...QUICK_LINKS, ...customLinks];
+  const links = applyShortcutEdits(orderedShortcuts(baseLinks, orderStore.items), editsStore.items)
+    .map(link => ({ ...link, iconUrl: websiteIconUrl(link.url) }));
+  const canEdit = active && shortcutStore.ready && editsStore.ready && !shortcutStore.saving && !editsStore.saving && !orderStore.saving;
+  const canReorder = canEdit && orderStore.ready;
+  const reorder = useShortcutReorder(ownerKey, links, canReorder, next => orderStore.save(next.map(link => link.sourceUrl)));
+  const reorderHelpId = useId();
   const [draftLabel, setDraftLabel] = useState("");
   const [draftUrl, setDraftUrl] = useState("");
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [editing, setEditing] = useState<string | null>(null);
 
-  const openEditor = () => {
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!active) dialog?.close();
+    return () => dialog?.close();
+  }, [active, ownerKey]);
+
+  const saveEdit = (edit: ShortcutEdit) => {
+    const sources = new Set(baseLinks.map(link => shortcutOrderKey(link.url)));
+    return editsStore.save([...editsStore.items.filter(item => sources.has(item.sourceUrl) && item.sourceUrl !== edit.sourceUrl), edit]);
+  };
+  const removeShortcut = async (link: typeof links[number]) => {
+    setActionError("");
+    if (await saveEdit({ sourceUrl: link.sourceUrl, hidden: true })) setNotice(`Deleted ${link.label} shortcut.`);
+  };
+  const openShortcutInNewTab = async (link: BrowserLink) => {
+    setActionError("");
+    if (desktopTabsBridge()) {
+      if (!(await openBrowserInDesktop({ url: link.url }))) setActionError("Couldn’t open this shortcut in a new tab. Try again.");
+    } else window.open(link.url, "_blank", "noopener,noreferrer");
+  };
+  const copyShortcut = async (link: BrowserLink) => {
+    setActionError("");
+    try { await navigator.clipboard.writeText(link.url); setNotice("Link copied."); }
+    catch { setActionError("Couldn’t copy the link. Try again."); }
+  };
+  const openEditor = (link?: typeof links[number]) => {
+    setEditing(link?.sourceUrl ?? null);
+    setDraftLabel(link?.label ?? "");
+    setDraftUrl(link?.url ?? "");
     setError("");
     dialogRef.current?.showModal();
     window.requestAnimationFrame(() => labelRef.current?.focus());
   };
   const closeEditor = () => dialogRef.current?.close();
-  const addShortcut = async (event: FormEvent<HTMLFormElement>) => {
+  const saveShortcut = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const link = safeShortcut({ label: draftLabel, url: draftUrl });
     if (!link) {
       setError("Add a name and a valid http or https address.");
       return;
     }
-    if (customLinks.some((entry) => entry.url === link.url)) {
+    if (links.some((entry) => entry.sourceUrl !== editing && shortcutOrderKey(entry.url) === shortcutOrderKey(link.url))) {
       setError("That shortcut is already here.");
       return;
     }
-    if (customLinks.length >= 8) {
-      setError("You can save up to 8 shortcuts. Remove one to add another.");
-      return;
+    if (editing) {
+      if (!(await saveEdit({ sourceUrl: editing, label: link.label, url: link.url }))) return;
+    } else {
+      const hidden = new Set(editsStore.items.filter(item => "hidden" in item).map(item => item.sourceUrl));
+      const sourceUrl = shortcutOrderKey(link.url);
+      const existing = baseLinks.find(item => shortcutOrderKey(item.url) === sourceUrl);
+      if (existing) {
+        if (!hidden.has(sourceUrl)) {
+          setError("This address belongs to an existing shortcut. You can change it from its Edit menu.");
+          return;
+        }
+        // Adding a deleted built-in or custom shortcut restores its saved slot.
+        if (!(await saveEdit({ sourceUrl, label: link.label, url: link.url }))) return;
+      } else {
+        const retained = customLinks.filter(item => !hidden.has(shortcutOrderKey(item.url)));
+        if (retained.length >= 8) {
+          setError("You can save up to 8 custom shortcuts. Delete one to add another.");
+          return;
+        }
+        // Clear a stale override before re-adding a previously deleted address.
+        if (editsStore.items.some(item => item.sourceUrl === sourceUrl) &&
+            !(await editsStore.save(editsStore.items.filter(item => item.sourceUrl !== sourceUrl)))) return;
+        if (!(await shortcutStore.save([...retained, link]))) return;
+      }
     }
-    if (!(await shortcutStore.save([...customLinks, link]))) return;
     setDraftLabel("");
     setDraftUrl("");
     closeEditor();
@@ -340,37 +337,50 @@ export function BrowserQuickLinks({
 
   return (
     <>
-      <div className="browser-quick-links" aria-label="Quick access websites">
-        {QUICK_LINKS.map((link) => (
-          <button key={link.label} type="button" className="browser-quick-link" onClick={() => navigate(link.url)}>
+      <span id={reorderHelpId} className="sr-only">Right-click for shortcut controls. Drag to reorder, or use Alt+Shift and the left or right arrow key.</span>
+      <span className="sr-only" role="status">{notice || reorder.announcement}</span>
+      <div className="browser-quick-links" aria-label="Quick access websites"
+        style={{"--browser-shortcut-columns": Math.min(links.length + 1, 8)} as CSSProperties}
+        data-reordering={Boolean(reorder.drag)} onDragOver={reorder.over} onDrop={reorder.drop}>
+        {reorder.items.map((link) => (
+          <ShortcutContextMenu key={`${ownerKey}:${link.sourceUrl}`} label={link.label} editable={canEdit && !reorder.drag}
+            open={() => navigate(link.url)} openNewTab={() => void openShortcutInNewTab(link)} edit={() => openEditor(link)}
+            remove={() => void removeShortcut(link)} copy={() => void copyShortcut(link)}>
+          <button type="button" className="browser-quick-link browser-shortcut-sortable"
+            data-shortcut-url={link.url} draggable={canReorder} aria-describedby={reorderHelpId}
+            aria-keyshortcuts="Alt+Shift+ArrowLeft Alt+Shift+ArrowRight" title="Right-click for controls · Drag to reorder · Alt+Shift+←/→"
+            data-dragging={reorder.drag?.url === link.url}
+            data-drop-before={reorder.drag?.beforeUrl === link.url && reorder.drag.url !== link.url}
+            data-drop-after={reorder.drag?.beforeUrl === null && link === reorder.items.at(-1)}
+            onDragStart={event => { setNotice(""); reorder.start(event, link.url); }} onDragEnd={reorder.end}
+            onKeyDown={event => reorder.keyDown(event, link.url)}
+            onClick={() => { if (reorder.canNavigate()) navigate(link.url); }}>
             <span className="browser-quick-link-icon" style={{ "--browser-link-color": link.color } as CSSProperties} aria-hidden="true">
               <BrowserSiteIcon src={link.iconUrl} pageUrl={link.url} fallback={link.glyph} />
             </span>
             <span>{link.label}</span>
           </button>
+          </ShortcutContextMenu>
         ))}
-        <button type="button" className="browser-quick-link browser-add-shortcut" onClick={openEditor}>
+        <button type="button" className="browser-quick-link browser-add-shortcut" draggable={false} onClick={() => openEditor()}>
           <span ref={addFrameRef} className="browser-quick-link-icon" aria-hidden="true">
             <span className="browser-add-shortcut-plus">+</span>
             <BrowserSketchOutline targetRef={addFrameRef} index={2} disconnected />
           </span>
           <span>Add shortcut</span>
         </button>
-        {customLinks.map((link) => (
-          <button key={link.url} type="button" className="browser-quick-link" onClick={() => navigate(link.url)}>
-            <span className="browser-quick-link-icon" style={{ "--browser-link-color": link.color } as CSSProperties} aria-hidden="true">
-              <BrowserSiteIcon src={link.iconUrl} pageUrl={link.url} fallback={link.glyph} />
-            </span>
-            <span>{link.label}</span>
-          </button>
-        ))}
       </div>
-      <dialog ref={dialogRef} className="browser-shortcut-dialog" onClose={() => setError("")}>
+      {orderStore.error && <p className="browser-shortcut-order-error" role="alert">Couldn’t save or load the shortcut order. <button type="button" onClick={orderStore.retry}>Retry</button></p>}
+      {(editsStore.error || actionError) && <p className="browser-shortcut-order-error" role="alert">
+        {actionError || "Couldn’t save or load your shortcut changes. Your shortcuts have been kept."}
+        {editsStore.error && <button type="button" onClick={editsStore.retry}>Retry</button>}
+      </p>}
+      <dialog ref={dialogRef} className="browser-shortcut-dialog" onClose={() => { setError(""); setEditing(null); }}>
         <form method="dialog" className="browser-shortcut-dialog-head">
-          <strong>Quick access</strong>
+          <strong>{editing ? "Edit shortcut" : "Quick access"}</strong>
           <button type="submit" aria-label="Close shortcut editor">×</button>
         </form>
-        <form className="browser-shortcut-form" onSubmit={addShortcut}>
+        <form className="browser-shortcut-form" onSubmit={saveShortcut}>
           <label>
             Name
             <input ref={labelRef} value={draftLabel} maxLength={24} onChange={(event) => setDraftLabel(event.target.value)} placeholder="Figma" />
@@ -379,18 +389,18 @@ export function BrowserQuickLinks({
             Website
             <input value={draftUrl} inputMode="url" onChange={(event) => setDraftUrl(event.target.value)} placeholder="figma.com" />
           </label>
-          {error || shortcutStore.error ? <p role="alert">{error || shortcutStore.error}</p> : null}
+          {error || shortcutStore.error || editsStore.error ? <p role="alert">{error || shortcutStore.error || editsStore.error}</p> : null}
           {shortcutStore.error && !shortcutStore.ready && <button type="button" onClick={shortcutStore.retry}>Retry loading shortcuts</button>}
-          <button type="submit" className="browser-shortcut-save" disabled={!shortcutStore.ready || shortcutStore.saving}>
-            {shortcutStore.saving ? "Saving…" : "Add shortcut"}
+          <button type="submit" className="browser-shortcut-save" disabled={!canEdit}>
+            {shortcutStore.saving || editsStore.saving ? "Saving…" : editing ? "Save changes" : "Add shortcut"}
           </button>
         </form>
-        {customLinks.length ? (
+        {!editing && customLinks.length ? (
           <div className="browser-shortcut-list" aria-label="Custom shortcuts">
-            {customLinks.map((link) => (
+            {links.filter(link => customLinks.some(item => shortcutOrderKey(item.url) === link.sourceUrl)).map((link) => (
               <div key={link.url}>
                 <span>{link.label}</span>
-                <button type="button" disabled={!shortcutStore.ready || shortcutStore.saving} onClick={() => void shortcutStore.save(customLinks.filter((entry) => entry.url !== link.url))} aria-label={`Remove ${link.label}`}>Remove</button>
+                <button type="button" disabled={!canEdit} onClick={() => void removeShortcut(link)} aria-label={`Remove ${link.label}`}>Remove</button>
               </div>
             ))}
           </div>
@@ -400,54 +410,120 @@ export function BrowserQuickLinks({
   );
 }
 
-function useDockWeather(): { weather: DockWeather | null; status: "ready" | "off" | "loading" | "unavailable" } {
+const WEATHER_REFRESH_MS = 15 * 60_000;
+const WEATHER_RETAIN_MS = 30 * 60_000;
+const WEATHER_RETRY_MS = 5_000;
+type DockWeatherStatus = "ready" | "stale" | "off" | "loading" | "unavailable";
+
+function useDockWeather(active: boolean): { weather: DockWeather | null; status: DockWeatherStatus; retry: () => void } {
   const [weather, setWeather] = useState<DockWeather | null>(null);
-  const [status, setStatus] = useState<"ready" | "off" | "loading" | "unavailable">("loading");
-  useStartupLoading(status === "loading");
+  const [status, setStatus] = useState<DockWeatherStatus>("loading");
+  const reading = useRef<{ key: string; weather: DockWeather; at: number } | null>(null);
+  const retryRef = useRef<() => void>(() => undefined);
+  const retry = useCallback(() => retryRef.current(), []);
+  useStartupLoading(active && status === "loading");
 
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
-    let generation = 0;
-    const load = async () => {
-      const request = ++generation;
-      const current = () => !cancelled && request === generation;
+    let controller: AbortController | null = null;
+    let locationKey: string | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let retryDelay = WEATHER_RETRY_MS;
+    let lastAttempt = 0;
+    const retained = (key: string) => reading.current?.key === key && Date.now() - reading.current.at < WEATHER_RETAIN_MS ? reading.current : null;
+    const load = async (refresh = false) => {
       const preference = getStoredCurrentLocationPreference(window.localStorage);
       if (!preference.useForAnswers || !preference.snapshot) {
-        if (current()) {
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+        retryDelay = WEATHER_RETRY_MS;
+        controller?.abort();
+        controller = null;
+        locationKey = null;
+        reading.current = null;
+        if (!cancelled) {
           setWeather(null);
           setStatus("off");
         }
         return;
       }
+      const { latitude, longitude } = preference.snapshot;
+      const key = `${latitude},${longitude}`;
+      // Location timestamps and unrelated cross-tab writes must not turn the
+      // dock into a request loop that starves highlights and folder saves.
+      if (key === locationKey && (!refresh || controller)) return;
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+      if (key !== locationKey) retryDelay = WEATHER_RETRY_MS;
+      controller?.abort();
+      const request = new AbortController();
+      controller = request;
+      locationKey = key;
+      lastAttempt = Date.now();
+      const current = () => !cancelled && controller === request;
       try {
-        if (current()) setStatus("loading");
+        const cached = retained(key);
+        // Keep this location's recent reading steady during a background
+        // refresh. A previous city's weather must never leak into this one.
+        if (!cached) reading.current = null;
+        setWeather(cached?.weather ?? null);
+        setStatus(previous => cached ? (previous === "stale" || Date.now() - cached.at >= WEATHER_REFRESH_MS ? "stale" : "ready") : "loading");
         const url = new URL("/api/browser/weather", window.location.origin);
-        url.searchParams.set("latitude", String(preference.snapshot.latitude));
-        url.searchParams.set("longitude", String(preference.snapshot.longitude));
-        const response = await fetch(url, { cache: "no-store" });
+        url.searchParams.set("latitude", String(latitude));
+        url.searchParams.set("longitude", String(longitude));
+        const response = await readTerminalData(url.pathname + url.search,
+          AbortSignal.any([request.signal, AbortSignal.timeout(12_000)]));
         if (!response.ok) throw new Error("weather unavailable");
         const next = (await response.json()) as DockWeather;
+        if (!Number.isFinite(next?.temperatureC) || !Number.isFinite(next?.code)) throw new Error("Incomplete weather");
         if (current()) {
+          reading.current = { key, weather: next, at: Date.now() };
+          publishLocalWeatherReading(key, next.code);
+          retryDelay = WEATHER_RETRY_MS;
           setWeather(next);
           setStatus("ready");
         }
       } catch {
-        if (current()) setStatus("unavailable");
+        if (current()) {
+          const cached = retained(key);
+          setWeather(cached?.weather ?? null);
+          setStatus(cached ? "stale" : "unavailable");
+          // A transient timeout must recover without waiting for the normal
+          // fifteen-minute refresh. Back off and keep only one request alive.
+          retryTimer = setTimeout(() => { retryTimer = undefined; void load(true); }, retryDelay);
+          retryDelay = Math.min(retryDelay * 2, 60_000);
+        }
+      } finally {
+        if (current()) controller = null;
       }
     };
     void load();
-    const timer = window.setInterval(() => void load(), 15 * 60_000);
-    window.addEventListener(CURRENT_LOCATION_CHANGE_EVENT, load);
-    window.addEventListener("storage", load);
+    const refresh = () => void load(true);
+    retryRef.current = refresh;
+    const timer = window.setInterval(refresh, WEATHER_REFRESH_MS);
+    const resume = () => {
+      if (document.visibilityState === "hidden" || Date.now() - lastAttempt < WEATHER_RETRY_MS) return;
+      if (retryTimer || !reading.current || Date.now() - reading.current.at >= WEATHER_REFRESH_MS) refresh();
+    };
+    window.addEventListener("online", refresh);
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", resume);
+    const unsubscribe = subscribeCurrentLocation(() => void load());
     return () => {
       cancelled = true;
+      retryRef.current = () => undefined;
+      controller?.abort();
+      clearTimeout(retryTimer);
       window.clearInterval(timer);
-      window.removeEventListener(CURRENT_LOCATION_CHANGE_EVENT, load);
-      window.removeEventListener("storage", load);
+      window.removeEventListener("online", refresh);
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("visibilitychange", resume);
+      unsubscribe();
     };
-  }, []);
+  }, [active]);
 
-  return { weather, status };
+  return { weather, status, retry };
 }
 
 interface BatteryManagerLike extends EventTarget {
@@ -548,6 +624,7 @@ interface SpotifyDockTrack {
   name: string;
   artist: string;
   album: string;
+  albumUri?: string;
   imageUrl: string | null;
   durationMs: number;
 }
@@ -603,11 +680,13 @@ interface SpotifyDockPlaylist {
 interface SpotifyDockState {
   connected: boolean;
   playbackError?: string;
+  playbackErrorCode?: string;
   status: "connected" | "needs_reauth" | "not_connected";
   playlistAccess: boolean;
   playlistWriteAccess: boolean;
   savedTrack: boolean;
   history: SpotifyDockTrack[];
+  selectedDevice?: Pick<SpotifyConnectDevice, "id" | "name"> | null;
   engine: {
     ready: boolean;
     deviceId: string | null;
@@ -625,6 +704,7 @@ interface SpotifyDockState {
 }
 
 type SpotifyDockAction =
+  | "transfer"
   | "pause"
   | "resume"
   | "previous"
@@ -649,49 +729,82 @@ function spotifyResponseMessage(payload: unknown, fallback: string): string {
   return typeof record.error === "string" ? record.error : fallback;
 }
 
-function useSpotifyDock() {
-  const viewIdRef = useRef<string | null>(null);
+function useSpotifyDock(active: boolean) {
+  const activeRef = useRef(active);
+  const eventsRef = useRef<ForegroundEventSource | null>(null);
   const connectedRef = useRef(false);
   const controlPendingRef = useRef(false);
   const playbackRevisionRef = useRef(0);
   const expectedPlaybackRef = useRef<{ trackUri: string; isPlaying: boolean; positionMs: number; sampledAtMs: number; until: number } | null>(null);
+  const playbackDeviceRef = useRef<string | null>(null);
+  const expectedDeviceRef = useRef<{ id: string; until: number } | null>(null);
   const refreshRef = useRef<() => void>(() => {});
   const [spotify, setSpotify] = useState<SpotifyDockState | null>(null);
   const [initializing, setInitializing] = useState(true);
-  const [engineInitializing, setEngineInitializing] = useState(true);
-  useStartupLoading(initializing || engineInitializing);
+  // A playback status is enough to render the real widget. Starting the local
+  // audio engine may take 30s; it continues independently of opening Terminal.
+  useStartupLoading(active && initializing);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    viewIdRef.current ??= window.crypto.randomUUID?.() ?? `browser-dock-${Date.now()}`;
-    const viewId = viewIdRef.current;
+    activeRef.current = active;
+    eventsRef.current?.setActive(active && !controlPendingRef.current);
+    if (active) refreshRef.current();
+  }, [active]);
+
+  useEffect(() => {
+    // Give each effect lifetime its own lease, including React's setup replay.
+    // A late cleanup from the old lifetime must not release the new player's hold.
+    const viewId = window.crypto.randomUUID();
     let cancelled = false;
     let running = false;
     let refreshRequested = false;
     let refreshTimer: number | undefined;
+    let engineTimer: number | undefined;
+    let renewing = false;
     let historyMigrated = false;
-    let initialEngineSettled = false;
     const engineWarmupDeadline = Date.now() + 30_000;
     let localPlayback: SpotifyDockState["playback"] = null;
     let localSampledAt = 0;
+    let confirmedPlaybackAt: number | null = null;
+    const hasRecentPlayback = () => confirmedPlaybackAt !== null &&
+      performance.now() - confirmedPlaybackAt < 30_000;
+    const releaseLease = () => spotifyPlayerRequest("engine", "DELETE", { viewId }).catch(() => undefined);
+    const renewLease = async () => {
+      if (cancelled || renewing || !connectedRef.current) return;
+      renewing = true;
+      window.clearTimeout(engineTimer);
+      try {
+        const response = await spotifyPlayerRequest("engine", "POST", { viewId });
+        if (!response.ok) throw new Error("Spotify player unavailable");
+        const engine = (await response.json()) as SpotifyDockState["engine"];
+        if (cancelled || !connectedRef.current) return;
+        if (activeRef.current) setSpotify(current => current?.connected ? { ...current, engine } : current);
+        if (engine.status === "starting" && !engine.ready && Date.now() < engineWarmupDeadline) {
+          engineTimer = window.setTimeout(() => void renewLease(), 1_000);
+        }
+      } catch {
+        // A local player failure does not disconnect Spotify on another device.
+      } finally {
+        renewing = false;
+        // A renewal that finishes after unmount must not recreate an orphan lease.
+        if (cancelled || !connectedRef.current) void releaseLease();
+      }
+    };
     const load = async () => {
+      if (cancelled || !activeRef.current) return;
       if (running || controlPendingRef.current) { refreshRequested = true; return; }
       refreshRequested = false;
       running = true;
       const revision = playbackRevisionRef.current;
-      let engineStarting = false;
       try {
         if (!historyMigrated) {
           const tracks = readSpotifyHistory();
           if (!tracks.length) historyMigrated = true;
           else {
             try {
-              const response = await fetch("/api/browser/spotify", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ action: "import-history", tracks }),
-              });
+              const response = await spotifyControlRequest({ action: "import-history", tracks });
               if (response.ok) {
                 historyMigrated = true;
                 window.localStorage.removeItem(SPOTIFY_HISTORY_KEY);
@@ -701,97 +814,117 @@ function useSpotifyDock() {
             }
           }
         }
-        const statusResponse = await fetch("/api/browser/spotify", { cache: "no-store" });
+        const statusResponse = await spotifyPlayerRequest();
         if (!statusResponse.ok) throw new Error("Spotify status unavailable");
         let next = (await statusResponse.json()) as SpotifyDockState;
+        if (cancelled) return;
+        const transientFailure = next.playbackErrorCode === "provider_unavailable" ||
+          next.playbackErrorCode === "spotify_status_unavailable";
         if (next.playback) {
           next = { ...next, playback: { ...next.playback, sampledAtMs: performance.now() } };
         }
         // The SDK is authoritative for this device. A slower cloud response
         // must not restore the previous song after a local state event.
-        if (next.connected && localPlayback && performance.now() - localSampledAt < 15_000) {
+        if (next.connected && (!next.playbackError || transientFailure) &&
+          localPlayback && performance.now() - localSampledAt < 15_000 &&
+          (!playbackDeviceRef.current || playbackDeviceRef.current === localPlayback.deviceId) &&
+          (!next.playback || next.playback.deviceId === localPlayback.deviceId)) {
           const sampledAtMs = performance.now();
           next = { ...next, playback: { ...localPlayback, sampledAtMs,
             positionMs: Math.min(localPlayback.track.durationMs, localPlayback.positionMs + (localPlayback.isPlaying ? sampledAtMs - localSampledAt : 0)) },
-            savedTrack: next.playback?.track.uri === localPlayback.track.uri && next.savedTrack };
+            savedTrack: next.playback?.track.uri === localPlayback.track.uri && next.savedTrack,
+            playbackError: undefined, playbackErrorCode: undefined };
         }
+        const wasConnected = connectedRef.current;
         connectedRef.current = next.connected;
+        if (!next.connected) {
+          playbackDeviceRef.current = null;
+          expectedDeviceRef.current = null;
+          confirmedPlaybackAt = null;
+          if (wasConnected) void releaseLease();
+        } else if (!wasConnected) void renewLease();
         // Show the playback sample immediately; renewing the protected-audio
         // lease must not delay an already-ready player's UI.
-        if (!cancelled && revision === playbackRevisionRef.current) {
+        if (!cancelled && activeRef.current && revision === playbackRevisionRef.current) {
+          if (!next.playbackError) confirmedPlaybackAt = next.playback ? performance.now() : null;
+          const recovering = next.connected && transientFailure && hasRecentPlayback();
           const expected = expectedPlaybackRef.current;
-          const settling = expected && performance.now() < expected.until &&
+          const expectedDevice = expectedDeviceRef.current;
+          const deviceSettling = expectedDevice && performance.now() < expectedDevice.until && next.playback?.deviceId !== expectedDevice.id;
+          const settling = deviceSettling || (expected && performance.now() < expected.until &&
             (next.playback?.track.uri !== expected.trackUri || next.playback?.isPlaying !== expected.isPlaying ||
               Math.abs((next.playback?.positionMs ?? 0) - expected.positionMs -
-                (expected.isPlaying ? performance.now() - expected.sampledAtMs : 0)) > 1_500);
-          setSpotify(current => settling && current ? { ...next, playback: current.playback } : next);
+                (expected.isPlaying ? performance.now() - expected.sampledAtMs : 0)) > 1_500));
+          if (!deviceSettling && next.playback) {
+            playbackDeviceRef.current = next.playback.deviceId;
+            expectedDeviceRef.current = null;
+          }
+          setSpotify(current => {
+            const selectedDevice = next.connected && (!next.playback || deviceSettling) ? current?.selectedDevice : null;
+            const state = { ...next, selectedDevice };
+            return recovering && current ? {
+              ...state, playback: current.playback, savedTrack: current.savedTrack,
+              playbackError: undefined, playbackErrorCode: undefined,
+            } : settling && current ? { ...state, playback: current.playback } : state;
+          });
           if (settling) {
             window.clearTimeout(refreshTimer);
-            refreshTimer = window.setTimeout(() => void load(), 250);
+            refreshTimer = window.setTimeout(() => void load(), 750);
           } else expectedPlaybackRef.current = null;
-          setError(next.playbackError ?? next.engine.error ?? "");
+          setError(recovering ? "" : next.playbackError ?? (next.playback ? "" : next.engine.error) ?? "");
           setInitializing(false);
         }
-        if (next.connected) {
-          const leaseResponse = await fetch("/api/hermes/connections/spotify/engine", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ viewId }),
-          });
-          if (leaseResponse.ok) {
-            const engine = (await leaseResponse.json()) as SpotifyDockState["engine"];
-            engineStarting = engine.status === "starting" && !engine.ready;
-            if (!cancelled && revision === playbackRevisionRef.current) {
-              setSpotify(current => current ? { ...current, engine } : current);
-            }
-          }
-        }
       } catch {
-        if (!cancelled && revision === playbackRevisionRef.current) setError("Spotify is unavailable.");
+        if (!cancelled && activeRef.current && revision === playbackRevisionRef.current && !hasRecentPlayback()) {
+          setError("Spotify is unavailable.");
+          setSpotify(current => current ? { ...current, playback: null } : current);
+        }
       } finally {
         running = false;
         if (!cancelled) {
           setInitializing(false);
-          if (!initialEngineSettled) {
-            if (engineStarting) {
-              // Accelerate the initial connection, then fall back to ordinary
-              // polling if the playback service cannot become ready.
-              if (Date.now() < engineWarmupDeadline) {
-                window.clearTimeout(refreshTimer);
-                refreshTimer = window.setTimeout(() => void load(), 1_000);
-              }
-            } else {
-              initialEngineSettled = true;
-              setEngineInitializing(false);
-            }
-          }
         }
         if (!cancelled && refreshRequested && !controlPendingRef.current) void load();
       }
     };
     void load();
     const timer = window.setInterval(() => void load(), 8_000);
-    const playbackEvents = new EventSource('/api/browser/spotify/events');
+    // Keep audio alive independently of slow/failed cloud reads and UI controls,
+    // including when this tab is hidden. The server hold expires after 70s.
+    const leaseTimer = window.setInterval(() => void renewLease(), 20_000);
+    const playbackEvents = new ForegroundEventSource('/api/browser/spotify/events', activeRef.current);
+    eventsRef.current = playbackEvents;
     playbackEvents.onmessage = event => {
       if (cancelled) return;
       try {
         const sample = JSON.parse(event.data) as { playback: SpotifyDockState["playback"] };
+        const expectedDevice = expectedDeviceRef.current;
+        // The inactive local SDK can keep sending old heartbeats after a
+        // transfer. A cloud poll or explicit transfer confirms device changes.
+        if (sample.playback && (
+          (expectedDevice && performance.now() < expectedDevice.until && sample.playback.deviceId !== expectedDevice.id) ||
+          (playbackDeviceRef.current && sample.playback.deviceId !== playbackDeviceRef.current)
+        )) { localPlayback = null; return; }
         localSampledAt = performance.now();
         localPlayback = sample.playback && { ...sample.playback, sampledAtMs: localSampledAt };
         // Empty SDK samples are also heartbeats. The regular poll already
         // checks other devices; querying Spotify on each sample floods it.
         if (!localPlayback) return;
+        confirmedPlaybackAt = localSampledAt;
         const playback = localPlayback;
         const expected = expectedPlaybackRef.current;
         if (expected && localSampledAt < expected.until &&
           (playback.track.uri !== expected.trackUri || playback.isPlaying !== expected.isPlaying ||
             Math.abs(playback.positionMs - expected.positionMs - (expected.isPlaying ? localSampledAt - expected.sampledAtMs : 0)) > 1_500)) return;
         expectedPlaybackRef.current = null;
+        playbackDeviceRef.current = playback.deviceId;
         if (connectedRef.current) playbackRevisionRef.current += 1;
         setSpotify(current => current?.connected ? { ...current, playback,
+          playbackError: undefined, playbackErrorCode: undefined,
           savedTrack: current.playback?.track.uri === playback.track.uri && current.savedTrack,
           history: playback.isPlaying ? [playback.track, ...current.history.filter(track => track.uri !== playback.track.uri)].slice(0, 50) : current.history,
         } : current);
+        if (connectedRef.current) setError("");
       } catch { /* Keep the periodic status fallback if the stream is interrupted. */ }
     };
     playbackEvents.onerror = () => { localPlayback = null; };
@@ -802,18 +935,16 @@ function useSpotifyDock() {
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      window.clearInterval(leaseTimer);
+      window.clearTimeout(engineTimer);
       playbackEvents.close();
+      eventsRef.current = null;
       window.clearTimeout(refreshTimer);
       refreshRef.current = () => {};
       window.removeEventListener('breadboard:spotify-playback-changed', refreshPlayback);
       window.removeEventListener('focus', refreshPlayback);
       if (connectedRef.current) {
-        void fetch("/api/hermes/connections/spotify/engine", {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ viewId }),
-          keepalive: true,
-        }).catch(() => undefined);
+        void releaseLease();
       }
     };
   }, []);
@@ -824,16 +955,26 @@ function useSpotifyDock() {
   ): Promise<boolean> => {
     if (controlPendingRef.current) return false;
     controlPendingRef.current = true;
+    // Release the UI update stream's HTTP slot before sending a control on
+    // older shells/browsers. The audio engine remains connected throughout.
+    eventsRef.current?.setActive(false);
     const controlRevision = ++playbackRevisionRef.current;
     expectedPlaybackRef.current = null;
     const previousPlayback = spotify?.playback ?? null;
     const { previewTrack, ...requestExtra } = extra ?? {};
+    const previousDeviceId = playbackDeviceRef.current;
+    const currentDeviceId = previousPlayback?.deviceId ?? spotify?.selectedDevice?.id;
+    const remoteDeviceId = currentDeviceId && currentDeviceId !== spotify?.engine.deviceId ? currentDeviceId : null;
+    if (remoteDeviceId && ["resume", "play-track", "play-playlist", "play-artist", "play-album"].includes(action)) requestExtra.deviceId = remoteDeviceId;
+    if (action === "transfer" && typeof requestExtra.deviceId === "string") {
+      expectedDeviceRef.current = { id: requestExtra.deviceId, until: Number.POSITIVE_INFINITY };
+    }
     const local = ["pause", "resume", "next", "previous", "seek"].includes(action) &&
       Boolean(previousPlayback?.deviceId && previousPlayback.deviceId === spotify?.engine.deviceId);
     const sampledAtMs = performance.now();
     const optimisticPlayback = action === "play-track" && previewTrack
       ? { track: previewTrack as SpotifyDockTrack, isPlaying: true, positionMs: 0, sampledAtMs,
-        deviceId: spotify?.engine.deviceId ?? null, deviceName: "Breadboard" }
+        deviceId: remoteDeviceId ?? spotify?.engine.deviceId ?? null, deviceName: remoteDeviceId ? previousPlayback?.deviceName ?? spotify?.selectedDevice?.name ?? null : "Breadboard" }
       : previousPlayback && (action === "pause" || action === "resume")
         ? { ...previousPlayback, isPlaying: action === "resume", sampledAtMs,
           positionMs: Math.min(previousPlayback.track.durationMs, previousPlayback.positionMs +
@@ -842,16 +983,14 @@ function useSpotifyDock() {
     if (optimisticPlayback) setSpotify(current => current ? { ...current, playback: optimisticPlayback } : current);
     if (optimisticPlayback) expectedPlaybackRef.current = {
       trackUri: optimisticPlayback.track.uri, isPlaying: optimisticPlayback.isPlaying,
-      positionMs: optimisticPlayback.positionMs, sampledAtMs, until: sampledAtMs + 2_000,
+      // Until the command is acknowledged, an old SDK heartbeat is not a
+      // rejection of the user's pause or newly selected song.
+      positionMs: optimisticPlayback.positionMs, sampledAtMs, until: Number.POSITIVE_INFINITY,
     };
     setBusy(true);
     setError("");
     try {
-      const response = await fetch("/api/browser/spotify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, ...requestExtra, ...(local ? { local: true } : {}) }),
-      });
+      const response = await spotifyControlRequest({ action, ...requestExtra, ...(local ? { local: true } : {}) });
       const payload = (await response.json()) as {
         code?: string;
         error?: string;
@@ -862,8 +1001,18 @@ function useSpotifyDock() {
         history?: SpotifyDockTrack[];
         localPlayback?: { trackUri: string; positionMs: number; isPlaying: boolean };
         refreshPlayback?: boolean;
+        device?: SpotifyConnectDevice;
       };
       if (!response.ok) throw new Error(payload.message ?? payload.error ?? "Spotify could not do that.");
+      if (payload.device) {
+        const device = payload.device;
+        playbackDeviceRef.current = device.id;
+        expectedDeviceRef.current = { id: device.id, until: performance.now() + 8_000 };
+        setSpotify(current => current ? {
+          ...current, selectedDevice: device,
+          playback: current.playback ? { ...current.playback, deviceId: device.id, deviceName: device.name } : null,
+        } : current);
+      }
       const sampledPlayback = payload.playback
         ? { ...payload.playback, sampledAtMs: performance.now() }
         : payload.playback;
@@ -874,20 +1023,28 @@ function useSpotifyDock() {
         savedTrack: payload.savedTrack ?? current.savedTrack,
         history: payload.history ?? current.history,
       } : current);
-      if (payload.localPlayback && controlRevision === playbackRevisionRef.current) {
+      if (payload.localPlayback && action !== "next" && action !== "previous" && controlRevision === playbackRevisionRef.current) {
         const localPlayback = payload.localPlayback;
         const sampledAtMs = performance.now();
-        expectedPlaybackRef.current = { ...localPlayback, sampledAtMs, until: sampledAtMs + 2_000 };
+        expectedPlaybackRef.current = { ...localPlayback, sampledAtMs, until: sampledAtMs + 5_000 };
         setSpotify(current => current?.playback?.track.uri === localPlayback.trackUri ? {
           ...current, playback: { ...current.playback, positionMs: localPlayback.positionMs, isPlaying: localPlayback.isPlaying, sampledAtMs },
         } : current);
       }
-      if (payload.refreshPlayback) {
-        if (optimisticPlayback && controlRevision === playbackRevisionRef.current) expectedPlaybackRef.current = {
-          trackUri: optimisticPlayback.track.uri, isPlaying: optimisticPlayback.isPlaying,
-          positionMs: optimisticPlayback.positionMs, sampledAtMs: optimisticPlayback.sampledAtMs,
-          until: performance.now() + 2_000,
+      if (optimisticPlayback && !payload.localPlayback && controlRevision === playbackRevisionRef.current) {
+        const acceptedPlayback = action === "play-track"
+          ? { ...optimisticPlayback, sampledAtMs: performance.now() }
+          : optimisticPlayback;
+        if (action === "play-track" && payload.playback === undefined) {
+          setSpotify(current => current ? { ...current, playback: acceptedPlayback } : current);
+        }
+        expectedPlaybackRef.current = {
+          trackUri: acceptedPlayback.track.uri, isPlaying: acceptedPlayback.isPlaying,
+          positionMs: acceptedPlayback.positionMs, sampledAtMs: acceptedPlayback.sampledAtMs,
+          until: performance.now() + 5_000,
         };
+      }
+      if (payload.refreshPlayback) {
         // Release controls as soon as the command is accepted; status polling
         // reconciles in the background instead of keeping every button locked.
         controlPendingRef.current = false;
@@ -895,12 +1052,15 @@ function useSpotifyDock() {
       }
       return true;
     } catch (reason) {
+      if (action === "transfer") { expectedDeviceRef.current = null; playbackDeviceRef.current = previousDeviceId; }
+      if (controlRevision === playbackRevisionRef.current) expectedPlaybackRef.current = null;
       if (optimisticPlayback && controlRevision === playbackRevisionRef.current) setSpotify(current => current ? { ...current, playback: previousPlayback } : current);
       setError(reason instanceof Error ? reason.message : "Spotify could not do that.");
       return false;
     } finally {
       controlPendingRef.current = false;
       setBusy(false);
+      eventsRef.current?.setActive(activeRef.current);
     }
   };
 
@@ -965,8 +1125,8 @@ function BrowserSpotifyDock({
   setOpen: (open: boolean) => void;
 }) {
   const rootRef = useRef<HTMLElement | null>(null);
-  const preparedTracksRef = useRef(new Set<string>());
   const searchRef = useRef<HTMLInputElement | null>(null);
+  const [devicesOpen, setDevicesOpen] = useState(false);
   const [view, setView] = useState<"search" | "playlists">("search");
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SpotifyDockTrack[]>([]);
@@ -993,21 +1153,30 @@ function BrowserSpotifyDock({
   });
 
   const track = spotify?.playback?.track ?? null;
-  const prepareTrack = (item: SpotifyDockTrack) => {
-    if (preparedTracksRef.current.has(item.id)) return;
-    if (preparedTracksRef.current.size >= 64) preparedTracksRef.current.clear();
-    preparedTracksRef.current.add(item.id);
-    void fetch(`/api/browser/spotify?view=prepare-track&id=${encodeURIComponent(item.id)}`, { cache: "no-store" })
-      .catch(() => { preparedTracksRef.current.delete(item.id); });
-  };
   const isPlaying = spotify?.playback?.isPlaying === true;
   useEffect(() => { if (isPlaying) return holdForegroundAudio(); }, [isPlaying]);
-  const playbackDeviceName = spotify?.playback?.deviceName?.trim() || (
+  const playbackDeviceName = spotify?.playback?.deviceName?.trim() || spotify?.selectedDevice?.name || (
     spotify?.engine.deviceId && spotify.playback?.deviceId === spotify.engine.deviceId
       ? "Breadboard"
       : "another device"
   );
-  const playbackDeviceLabel = isPlaying ? `Playing on ${playbackDeviceName}` : null;
+  const playbackDeviceLabel = track ? `${isPlaying ? "Playing" : "Paused"} on ${playbackDeviceName}` : spotify?.selectedDevice ? `Listen on ${playbackDeviceName}` : "Choose a device";
+  const canPlay = spotify?.engine.ready || Boolean(spotify?.playback?.deviceId || spotify?.selectedDevice);
+  const playLabel = spotify?.playback?.deviceId && spotify.playback.deviceId !== spotify.engine.deviceId
+    ? `Play Spotify on ${playbackDeviceName}` : "Play Spotify in Breadboard";
+  const openDevices = () => { setSelectedArtist(null); setDevicesOpen(true); setOpen(true); };
+  const closeDevices = () => {
+    setOpen(false);
+    window.requestAnimationFrame(() => {
+      const label = rootRef.current?.querySelector<HTMLButtonElement>(".browser-spotify-summary .browser-spotify-device");
+      const trigger = label?.getClientRects().length ? label : rootRef.current?.querySelector<HTMLButtonElement>(".browser-spotify-summary-open");
+      trigger?.focus();
+    });
+  };
+  const backFromDevices = () => {
+    setDevicesOpen(false);
+    window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLButtonElement>(".browser-spotify-popover .browser-spotify-device")?.focus());
+  };
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -1060,7 +1229,12 @@ function BrowserSpotifyDock({
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        if (devicesOpen) {
+          setDevicesOpen(false);
+          window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLButtonElement>(".browser-spotify-popover .browser-spotify-device")?.focus());
+        } else setOpen(false);
+      }
     };
     document.addEventListener("pointerdown", dismiss);
     document.addEventListener("keydown", onKeyDown);
@@ -1068,7 +1242,7 @@ function BrowserSpotifyDock({
       document.removeEventListener("pointerdown", dismiss);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [open, setOpen]);
+  }, [open, setOpen, devicesOpen]);
 
   useEffect(() => {
     if (!open || view !== "search" || selectedArtist) return;
@@ -1189,14 +1363,12 @@ function BrowserSpotifyDock({
   const playTrack = async (
     nextTrack: SpotifyDockTrack,
     queue: SpotifyDockTrack[],
-    autoplay = false,
   ) => {
     return control("play-track", {
       trackUri: nextTrack.uri,
       previewTrack: nextTrack,
-      ...(autoplay
-        ? { autoplay: true }
-        : { queueUris: queue.map((item) => item.uri) }),
+      ...(!queue.length && nextTrack.albumUri ? { albumUri: nextTrack.albumUri } : {}),
+      queueUris: queue.map((item) => item.uri),
     });
   };
   const beginAddToPlaylist = (nextTrack: SpotifyDockTrack) => {
@@ -1331,17 +1503,18 @@ function BrowserSpotifyDock({
         ) : null}
         <span className="browser-spotify-tint" />
       </span>
+      <div className="browser-spotify-summary">
       <button
         type="button"
-        className="browser-spotify-summary"
+        className="browser-spotify-summary-open"
         data-dock-popup-trigger
-        onClick={openPlayer}
+        onClick={() => { setDevicesOpen(false); openPlayer(); }}
         disabled={initializing}
         aria-busy={initializing || undefined}
         aria-expanded={spotify?.connected ? open : undefined}
         aria-controls={spotify?.connected ? "browser-spotify-player" : undefined}
         aria-label={initializing ? "Loading Spotify connection" : spotify?.connected ? "Open Spotify player" : spotify ? "Connect Spotify" : "Spotify unavailable"}
-      >
+      />
         {initializing ? (
           <span className="browser-spotify-cover browser-spotify-cover-loading" aria-hidden="true"><LoaderCircle /></span>
         ) : (
@@ -1350,14 +1523,14 @@ function BrowserSpotifyDock({
         <span className="browser-spotify-copy">
           <strong>{initializing ? "Loading Spotify…" : track?.name ?? (spotify?.connected ? "Spotify is ready" : spotify ? "Connect Spotify" : "Spotify unavailable")}</strong>
           <small>{initializing ? "Checking your connection" : error || track?.artist || (spotify?.connected ? (spotify.engine.ready ? "Search music or browse playlists" : "Starting player…") : spotify ? "Settings → Connections" : "Trying again shortly")}</small>
-          {playbackDeviceLabel ? <span className="browser-spotify-device" title={playbackDeviceLabel}>{playbackDeviceLabel}</span> : null}
+          {spotify?.connected ? <button type="button" className="browser-spotify-device" title="Choose a Spotify device" aria-haspopup="dialog" aria-expanded={open && devicesOpen} aria-controls="browser-spotify-player" onClick={openDevices}>{playbackDeviceLabel}<ChevronUp aria-hidden="true" /></button> : null}
         </span>
         {spotify?.connected ? <span className="browser-spotify-open-cue" aria-hidden="true"><ChevronUp /></span> : null}
-      </button>
+      </div>
       {initializing ? null : spotify?.connected ? (
         <span className="browser-spotify-controls">
           <button type="button" aria-label="Previous track" disabled={busy || !track} onClick={() => void control("previous")}><SkipBack aria-hidden="true" /></button>
-          <button type="button" className="browser-spotify-play" aria-label={isPlaying ? "Pause Spotify" : "Play Spotify in Breadboard"} disabled={busy || !track || (!isPlaying && !spotify.engine.ready)} onClick={() => void control(isPlaying ? "pause" : "resume")}>{isPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}</button>
+          <button type="button" className="browser-spotify-play" aria-label={isPlaying ? "Pause Spotify" : playLabel} disabled={busy || !track || (!isPlaying && !canPlay)} onClick={() => void control(isPlaying ? "pause" : "resume")}>{isPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}</button>
           <button type="button" aria-label="Next track" disabled={busy || !track} onClick={() => void control("next")}><SkipForward aria-hidden="true" /></button>
         </span>
       ) : spotify ? (
@@ -1369,19 +1542,24 @@ function BrowserSpotifyDock({
           id="browser-spotify-player"
           className="browser-spotify-popover"
           role="dialog"
-          aria-label="Spotify player and library"
+          aria-label={devicesOpen ? "Spotify devices" : "Spotify player and library"}
           aria-hidden={!open}
           data-open={open}
           data-artist-profile={Boolean(selectedArtist)}
+          data-devices={devicesOpen}
           inert={!open ? true : undefined}
         >
           {track?.imageUrl ? (
             <span className="browser-spotify-popover-ambient" aria-hidden="true" style={{ backgroundImage: `url("${track.imageUrl.replace(/"/gu, "%22")}")` }} />
           ) : null}
           <span className="browser-spotify-popover-tint" aria-hidden="true" />
-          {selectedArtist ? (
+          {devicesOpen && open ? (
+            <BrowserSpotifyDevices activeDeviceId={spotify.playback?.deviceId ?? spotify.selectedDevice?.id ?? null} localDeviceId={spotify.engine.deviceId}
+              busy={busy} error={error} onSelect={device => control("transfer", { deviceId: device.id })}
+              onBack={backFromDevices} onClose={closeDevices} />
+          ) : selectedArtist ? (
             <BrowserSpotifyArtistProfile
-              key={selectedArtist.id} artist={selectedArtist} active={open} busy={busy} ready={spotify.engine.ready} playbackError={error}
+              key={selectedArtist.id} artist={selectedArtist} active={open} busy={busy} ready={Boolean(canPlay)} playbackError={error}
               onBack={() => { setSelectedArtist(null); window.requestAnimationFrame(() => { if (libraryRef.current) libraryRef.current.scrollTop = searchScrollRef.current; }); }}
               onClose={() => setOpen(false)}
               playArtist={() => { void control("play-artist", {artistUri: selectedArtist.uri}); }}
@@ -1397,7 +1575,7 @@ function BrowserSpotifyDock({
             <div className="browser-spotify-now-copy">
               <strong>{track?.name ?? "Choose something to play"}</strong>
               <small>{track ? `${track.artist} · ${track.album}` : "Search for a song or artist, or open one of your playlists."}</small>
-              {playbackDeviceLabel ? <span className="browser-spotify-device" title={playbackDeviceLabel}>{playbackDeviceLabel}</span> : null}
+              <button type="button" className="browser-spotify-device" title="Choose a Spotify device" aria-haspopup="dialog" aria-expanded={devicesOpen} aria-controls="browser-spotify-player" onClick={openDevices}>{playbackDeviceLabel}<ChevronUp aria-hidden="true" /></button>
               <BrowserSpotifyProgress
                 key={`${track?.uri ?? "none"}:${spotify.playback?.deviceId ?? "active"}`}
                 playback={spotify.playback}
@@ -1419,7 +1597,7 @@ function BrowserSpotifyDock({
               onClick={() => track && void control(spotify.savedTrack ? "remove-saved-track" : "save-track", { trackUri: track.uri })}
             ><Heart aria-hidden="true" /></button>
             <button type="button" aria-label="Previous track" disabled={busy || !track} onClick={() => void control("previous")}><SkipBack aria-hidden="true" /></button>
-            <button type="button" className="browser-spotify-popover-play" aria-label={isPlaying ? "Pause Spotify" : "Play Spotify in Breadboard"} disabled={busy || !track || (!isPlaying && !spotify.engine.ready)} onClick={() => void control(isPlaying ? "pause" : "resume")}>{isPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}</button>
+            <button type="button" className="browser-spotify-popover-play" aria-label={isPlaying ? "Pause Spotify" : playLabel} disabled={busy || !track || (!isPlaying && !canPlay)} onClick={() => void control(isPlaying ? "pause" : "resume")}>{isPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}</button>
             <button type="button" aria-label="Next track" disabled={busy || !track} onClick={() => void control("next")}><SkipForward aria-hidden="true" /></button>
             <button
               type="button"
@@ -1473,7 +1651,7 @@ function BrowserSpotifyDock({
                 <div className="browser-spotify-result-list">
                   {(query.trim() ? searchResults : history).map((item) => (
                     <div key={item.uri} className="browser-spotify-managed-track">
-                      <button type="button" className="browser-spotify-result" disabled={busy || !spotify.engine.ready} onPointerEnter={() => prepareTrack(item)} onFocus={() => prepareTrack(item)} onClick={() => { if (query.trim()) rememberSearch(query); void playTrack(item, [], true); }} aria-label={`Play ${item.name} by ${item.artist}`}>
+                      <button type="button" className="browser-spotify-result" disabled={busy || !canPlay} onClick={() => { if (query.trim()) rememberSearch(query); void playTrack(item, []); }} aria-label={`Play ${item.name} by ${item.artist}`}>
                         <SpotifyArtwork imageUrl={item.imageUrl} label={`${item.album} cover`} className="browser-spotify-result-art" />
                         <span><strong>{item.name}</strong><small>{item.artist} · {item.album}</small></span>
                         <Play aria-hidden="true" />
@@ -1490,7 +1668,7 @@ function BrowserSpotifyDock({
                   <SpotifyPlaylistArtwork playlist={selectedPlaylist} className="browser-spotify-playlist-art" />
                   <span><strong>{selectedPlaylist.name}</strong><small>{selectedPlaylist.trackCount} songs · {selectedPlaylist.owner}</small></span>
                   <span className="browser-spotify-playlist-actions">
-                    <button type="button" className="browser-spotify-playlist-play" disabled={busy || !spotify.engine.ready || (selectedPlaylist.kind === "liked-songs" && !playlistTracks.length)} onClick={() => { if (selectedPlaylist.kind === "liked-songs") { const firstTrack = playlistTracks[0]; if (firstTrack) void playTrack(firstTrack, playlistTracks); } else { void control("play-playlist", { playlistUri: selectedPlaylist.uri }); } }}><Play aria-hidden="true" /><span>Play</span></button>
+                    <button type="button" className="browser-spotify-playlist-play" disabled={busy || !canPlay || (selectedPlaylist.kind === "liked-songs" && !playlistTracks.length)} onClick={() => { if (selectedPlaylist.kind === "liked-songs") { const firstTrack = playlistTracks[0]; if (firstTrack) void playTrack(firstTrack, playlistTracks); } else { void control("play-playlist", { playlistUri: selectedPlaylist.uri }); } }}><Play aria-hidden="true" /><span>Play</span></button>
                     {selectedPlaylist.canEditDetails ? <button type="button" className="browser-spotify-playlist-icon-action" disabled={busy} onClick={() => { setPlaylistForm("rename"); setPlaylistName(selectedPlaylist.name); setLibraryNotice(""); }} aria-label={`Rename ${selectedPlaylist.name}`}><Pencil aria-hidden="true" /></button> : null}
                     {selectedPlaylist.canDelete ? <button type="button" className="browser-spotify-playlist-icon-action browser-spotify-destructive" disabled={busy} onClick={() => void deleteSelectedPlaylist()} aria-label={`Delete ${selectedPlaylist.name}`}><Trash2 aria-hidden="true" /></button> : null}
                   </span>
@@ -1505,7 +1683,10 @@ function BrowserSpotifyDock({
                 <div className="browser-spotify-result-list">
                   {playlistTracks.map((item, index) => (
                     <div key={`${item.uri}-${index}`} className="browser-spotify-managed-track">
-                      <button type="button" className="browser-spotify-result" disabled={busy || !spotify.engine.ready} onClick={() => void playTrack(item, playlistTracks)} aria-label={`Play ${item.name} by ${item.artist}`}>
+                      <button type="button" className="browser-spotify-result" disabled={busy || !canPlay} onClick={() => {
+                        if (selectedPlaylist.kind === "liked-songs") void playTrack(item, playlistTracks.slice(index));
+                        else void control("play-playlist", { playlistUri: selectedPlaylist.uri, offsetUri: item.uri });
+                      }} aria-label={`Play ${item.name} by ${item.artist}`}>
                         <SpotifyArtwork imageUrl={item.imageUrl} label={`${item.album} cover`} className="browser-spotify-result-art" />
                         <span><strong>{item.name}</strong><small>{item.artist} · {item.album}</small></span>
                         <Play aria-hidden="true" />
@@ -1560,10 +1741,14 @@ function BrowserSpotifyDock({
 }
 
 export function BrowserDock({
+  active = true,
+  preparing = false,
   openConnections,
   openPanel,
   setPanelOpen,
 }: {
+  active?: boolean;
+  preparing?: boolean;
   openConnections: () => void;
   openPanel: DockPanel | null;
   setPanelOpen: (panel: DockPanel, open: boolean) => void;
@@ -1574,19 +1759,27 @@ export function BrowserDock({
   const [now, setNow] = useState<Date | null>(null);
   const battery = useBatteryStatus();
   const network = useNetworkStatus();
-  const { weather, status: weatherStatus } = useDockWeather();
-  const { spotify, initializing: spotifyInitializing, busy: spotifyBusy, error: spotifyError, control: controlSpotify } = useSpotifyDock();
+  const readWidgets = active || preparing;
+  const { weather, status: weatherStatus, retry: retryLocalWeather } = useDockWeather(readWidgets);
+  const { spotify, initializing: spotifyInitializing, busy: spotifyBusy, error: spotifyError, control: controlSpotify } = useSpotifyDock(readWidgets);
+  usePublishSpotifyAmbient(spotify?.connected && spotify.playback ? {
+    imageUrl: spotify.playback.track.imageUrl,
+    name: spotify.playback.track.name,
+    artist: spotify.playback.track.artist,
+    playing: spotify.playback.isPlaying,
+  } : null, active && spotify !== null, spotify?.playback?.sampledAtMs);
 
   useEffect(() => {
+    if (!readWidgets) return;
     const tick = () => setNow(new Date());
     tick();
     const timer = window.setInterval(tick, 30_000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [readWidgets]);
 
   const time = now?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) ?? "--:--";
   const day = now?.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) ?? "Today";
-  const currentWeather = weatherStatus === "ready" ? weather : null;
+  const currentWeather = weatherStatus === "ready" || weatherStatus === "stale" ? weather : null;
   const weatherMessage = weatherStatus === "off" ? "Location is off" : weatherStatus === "loading" ? "Checking…" : "Unavailable";
 
   return (
@@ -1594,7 +1787,7 @@ export function BrowserDock({
       <BrowserSketchOutline targetRef={dockRef} index={8} />
       <DockPopover
         panel="time"
-        open={openPanel === "time"}
+        open={active && openPanel === "time"}
         onOpenChange={(open) => setPanelOpen("time", open)}
         trigger={
           <button type="button" className="browser-dock-time" aria-label="Open world clocks">
@@ -1607,8 +1800,11 @@ export function BrowserDock({
       </DockPopover>
       <DockPopover
         panel="weather"
-        open={openPanel === "weather"}
-        onOpenChange={(open) => setPanelOpen("weather", open)}
+        open={active && openPanel === "weather"}
+        onOpenChange={(open) => {
+          setPanelOpen("weather", open);
+          if (open && (weatherStatus === "unavailable" || weatherStatus === "stale")) retryLocalWeather();
+        }}
         trigger={
           <button
             type="button"
@@ -1616,8 +1812,8 @@ export function BrowserDock({
             data-weather-kind={currentWeather ? weatherKind(currentWeather.code) : undefined}
             data-daylight={currentWeather ? (currentWeather.isDay ? "day" : "night") : undefined}
             data-weather-status={weatherStatus}
-            aria-label={currentWeather ? `Open world weather. Local weather: ${currentWeather.condition}, ${currentWeather.temperatureC}°C, feels like ${currentWeather.apparentC}°C` : `Open world weather. Local weather: ${weatherMessage}`}
-            title={currentWeather ? `Feels like ${currentWeather.apparentC}°C, ${currentWeather.condition}` : weatherStatus === "off" ? "Enable current location in Settings for local weather" : weatherMessage}
+            aria-label={currentWeather ? `Open world weather. Local weather: ${currentWeather.condition}, ${currentWeather.temperatureC}°C, feels like ${currentWeather.apparentC}°C${weatherStatus === "stale" ? ". Updating last reading" : ""}` : `Open world weather. Local weather: ${weatherMessage}`}
+            title={currentWeather ? `${weatherStatus === "stale" ? "Updating last reading. " : ""}Feels like ${currentWeather.apparentC}°C, ${currentWeather.condition}` : weatherStatus === "off" ? "Enable current location in Settings for local weather" : weatherMessage}
           >
             <span className="browser-weather-heading" aria-hidden="true">Local weather <Navigation /></span>
             <span className="browser-weather-icon" aria-hidden="true">
@@ -1625,17 +1821,18 @@ export function BrowserDock({
             </span>
             <strong className="browser-weather-temperature" aria-hidden="true">{currentWeather ? `${currentWeather.temperatureC}°` : "–°"}</strong>
             <span className="browser-weather-detail" aria-hidden="true">
-              <span>{currentWeather?.condition ?? weatherMessage}</span>
+              <span>{weatherStatus === "stale" ? "Updating…" : currentWeather?.condition ?? weatherMessage}</span>
               {currentWeather ? <span>Feels like {currentWeather.apparentC}°</span> : <span>{weatherStatus === "off" ? "Enable in Settings" : "Local forecast"}</span>}
             </span>
           </button>
         }
       >
-        <WorldWeather cities={cities} save={saveCities} localWeather={currentWeather} />
+        <WorldWeather cities={cities} save={saveCities} localWeather={currentWeather}
+          localWeatherUnavailable={weatherStatus === "unavailable"} onRetryLocalWeather={retryLocalWeather} />
       </DockPopover>
       <DockPopover
         panel="network"
-        open={openPanel === "network"}
+        open={active && openPanel === "network"}
         onOpenChange={(open) => setPanelOpen("network", open)}
         trigger={
           <button type="button" className="browser-dock-network" data-online={network.online} aria-label={`Open connection details. ${network.online ? "Online" : "Offline"}`}>
@@ -1651,7 +1848,7 @@ export function BrowserDock({
       </DockPopover>
       <DockPopover
         panel="battery"
-        open={openPanel === "battery"}
+        open={active && openPanel === "battery"}
         onOpenChange={(open) => setPanelOpen("battery", open)}
         trigger={
           <button type="button" className="browser-battery" data-low={Boolean(battery && battery.percent <= 20 && !battery.charging)} aria-label={battery ? `Open battery details. Battery ${battery.percent} percent${battery.charging ? ", charging" : ""}` : "Open battery details. Battery percentage unavailable"} title={battery?.charging ? "Charging" : battery ? "On battery" : "Battery percentage unavailable"} style={{ "--browser-battery": `${(battery?.percent ?? 0) * 3.6}deg` } as CSSProperties}>
@@ -1669,7 +1866,7 @@ export function BrowserDock({
         error={spotifyError}
         control={controlSpotify}
         openConnections={openConnections}
-        open={openPanel === "spotify"}
+        open={active && openPanel === "spotify"}
         setOpen={setSpotifyOpen}
       />
     </div>

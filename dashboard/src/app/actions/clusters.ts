@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { countClusterMarkdown, refreshClusterIndex } from "@/lib/knowledge";
 import { cachedGardenNoteCount } from "@/lib/garden-note-count-cache";
+import { gardenCardNoteCount } from "@/lib/garden-card-note-count";
 import {
   refreshOrganizationQuartzIndex,
   refreshPrivateQuartzIndex,
@@ -233,9 +234,9 @@ export async function getClusters(userId: number): Promise<Cluster[]> {
       .all(userId) as ClusterRow[];
 
     const contentPath = process.env.QUARTZ_CONTENT_PATH ?? "";
-    return rows.map((c) =>
-      toCluster(c, countNotes(contentPath, c.slug), userId),
-    );
+    return await Promise.all(rows.map(async (c) =>
+      toCluster(c, await gardenCardNoteCount(contentPath, c.slug), userId),
+    ));
   } catch {
     throw new Error("Failed to load gardens");
   }
@@ -254,9 +255,9 @@ export async function getPublicClusters(userId: number): Promise<Cluster[]> {
       .all() as ClusterRow[];
 
     const contentPath = process.env.QUARTZ_CONTENT_PATH ?? "";
-    return rows.map((c) =>
-      toCluster(c, countNotes(contentPath, c.slug), userId),
-    );
+    return await Promise.all(rows.map(async (c) =>
+      toCluster(c, await gardenCardNoteCount(contentPath, c.slug), userId),
+    ));
   } catch {
     throw new Error("Failed to load public gardens");
   }
@@ -286,9 +287,9 @@ export async function getOrganizationClusters(
       .all() as ClusterRow[];
 
     const contentPath = process.env.QUARTZ_CONTENT_PATH ?? "";
-    return rows.map((c) =>
-      toCluster(c, countNotes(contentPath, c.slug), userId),
-    );
+    return await Promise.all(rows.map(async (c) =>
+      toCluster(c, await gardenCardNoteCount(contentPath, c.slug), userId),
+    ));
   } catch {
     throw new Error("Failed to load organization gardens");
   }
@@ -378,6 +379,8 @@ export async function createCluster(
       }
     });
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
     revalidatePath("/garden");
     return slug;
   } catch (err) {
@@ -433,6 +436,8 @@ export async function updateClusterDetails(
       gardenSlug: cluster.slug,
     });
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
     revalidatePath("/garden");
     revalidatePath(`/gardens/${cluster.slug}`);
     revalidatePath(`/garden/${cluster.slug}`);
@@ -484,6 +489,8 @@ export async function setClusterVisibility(
       scope: [],
     });
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
     revalidatePath("/garden");
   } catch (err) {
     throw new Error(
@@ -510,6 +517,8 @@ export async function createClusterFolder(
 
     refreshPrivateQuartzIndex(userId);
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
     revalidatePath("/garden");
   } catch (err) {
     throw new Error(
@@ -538,6 +547,8 @@ export async function setClusterFolder(
 
     refreshPrivateQuartzIndex(userId);
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
     revalidatePath("/garden");
   } catch (err) {
     throw new Error(
@@ -557,6 +568,8 @@ export async function renameClusterFolder(
 
     refreshPrivateQuartzIndex(userId);
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
     revalidatePath("/garden");
   } catch (err) {
     throw new Error(
@@ -576,6 +589,8 @@ export async function moveClusterFolder(
 
     refreshPrivateQuartzIndex(userId);
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
     revalidatePath("/garden");
   } catch (err) {
     throw new Error(
@@ -600,6 +615,8 @@ export async function reorderClusterFolder(
 
     refreshPrivateQuartzIndex(userId);
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
     revalidatePath("/garden");
   } catch (err) {
     throw new Error(
@@ -616,6 +633,8 @@ export async function deleteClusterFolder(name: string): Promise<void> {
 
     refreshPrivateQuartzIndex(userId);
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
     revalidatePath("/garden");
   } catch (err) {
     throw new Error(
@@ -639,6 +658,8 @@ export async function setClusterChatAccessible(
     if (result.changes !== 1) throw new Error("Garden not found");
 
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
   } catch (err) {
     throw new Error(
       err instanceof Error
@@ -666,6 +687,8 @@ export async function setClusterInstructions(
       .run(cleaned, clusterId, userId);
     if (result.changes !== 1) throw new Error("Garden not found");
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
   } catch (err) {
     throw new Error(
       err instanceof Error ? err.message : "Failed to save garden instructions",
@@ -693,6 +716,8 @@ export async function setClusterMemoryScope(
       .run(scope, clusterId, userId);
     if (result.changes !== 1) throw new Error("Garden not found");
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
   } catch (err) {
     throw new Error(
       err instanceof Error
@@ -717,6 +742,8 @@ export async function setClusterForkAllowed(
     if (result.changes !== 1) throw new Error("Garden not found");
 
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
   } catch (err) {
     throw new Error(
       err instanceof Error
@@ -755,6 +782,8 @@ export async function setClusterRepository(
     const codeIndex = await prepareGraftIndex(userId, resolvedPath);
 
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
     return {
       connected: true,
       repoName: path.basename(resolvedPath),
@@ -788,6 +817,8 @@ export async function setClusterGraftEnabled(
     }
 
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
   } catch (err) {
     throw new Error(
       err instanceof Error
@@ -813,6 +844,8 @@ export async function setClusterBorderColor(
     if (result.changes !== 1) throw new Error("Garden not found");
 
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
   } catch (err) {
     throw new Error(
       err instanceof Error ? err.message : "Failed to update border color",
@@ -838,6 +871,8 @@ export async function setClusterCardSize(
     if (result.changes !== 1) throw new Error("Garden not found");
 
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
   } catch (err) {
     throw new Error(
       err instanceof Error ? err.message : "Failed to update garden size",
@@ -945,6 +980,8 @@ export async function forkCluster(
       gardenSlug: targetSlug,
     });
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
     revalidatePath("/garden");
     revalidatePath(`/gardens/${targetSlug}`);
     revalidatePath(`/garden/${targetSlug}`);
@@ -972,6 +1009,8 @@ export async function deleteCluster(clusterId: number): Promise<void> {
     });
 
     revalidatePath("/dashboard");
+    revalidatePath("/new-tab");
+    revalidatePath("/browser");
     revalidatePath(`/gardens/${cluster.slug}`);
     revalidatePath(`/garden/${cluster.slug}`);
     revalidatePath("/garden");

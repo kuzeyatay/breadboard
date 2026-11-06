@@ -1,10 +1,9 @@
 import { subscriptionSpeech } from "./subscription-client";
+import { loadSpeechSettings } from './settings-client';
 
-/** Shared dispatch for voice mode, dictation, Clicky, previews and read-aloud. */
+/** Shared dispatch for voice mode, dictation, previews and read-aloud. */
 export async function speechRequest(url: string, init: RequestInit = {}): Promise<Response> {
-  const status = await fetch("/api/speech/settings", { cache: "no-store", signal: init.signal });
-  if (!status.ok) return status;
-  const { settings } = await status.json();
+  const { settings } = await loadSpeechSettings(init.signal ?? undefined);
   // OpenAI (web) speaks and transcribes server-side through the chatgpt.com
   // page, exactly like the other request/response providers.
   if (settings.speechProvider === "local" || settings.speechProvider === "elevenlabs" || settings.speechProvider === "openaiweb") return fetch(url, init);

@@ -1,6 +1,10 @@
 import type Database from "better-sqlite3";
 
-export const SQLITE_BUSY_TIMEOUT_MS = 30_000;
+// A Learn planning run writes for hours beside the dashboard, recovery sweeps
+// and other workers on a 2.7 GB database. At 30 s one "database is locked"
+// threw away a fully repaired Learning Map six hours in (telecom-1 M1,
+// 2026-10-01); waiting longer only costs time when a writer is genuinely busy.
+export const SQLITE_BUSY_TIMEOUT_MS = 120_000;
 
 /**
  * Configure the shared Breadboard database for the multi-process runtime.

@@ -1,3 +1,4 @@
+import { onObjectDispose } from "../../util/objectLifecycle"
 import { sourceVisualAlignment, sourceVisualsCanShareRow } from "../../util/sourceVisualLayout"
 
 function canGroupFigures(first: HTMLElement, second: HTMLElement | undefined): boolean {
@@ -11,8 +12,10 @@ function unwrapRow(row: HTMLElement) {
   row.replaceWith(...Array.from(row.childNodes))
 }
 
-document.addEventListener("nav", () => {
-  for (const article of document.querySelectorAll<HTMLElement>("article.popover-hint")) {
+const hydrateSourceVisuals = (event: Event) => {
+  const scopedRoot = (event as CustomEvent).detail?.root as HTMLElement | undefined
+  const articles = scopedRoot ? [scopedRoot] : document.querySelectorAll<HTMLElement>("article.popover-hint")
+  for (const article of articles) {
     const figures = Array.from(
       article.querySelectorAll<HTMLElement>(":scope > .breadboard-source-visual"),
     )
@@ -116,7 +119,7 @@ document.addEventListener("nav", () => {
     }
     layout()
 
-    window.addCleanup(() => {
+    onObjectDispose(article, () => {
       cancelAnimationFrame(frame)
       observer.disconnect()
       for (const row of rows.values()) unwrapRow(row)
@@ -126,4 +129,6 @@ document.addEventListener("nav", () => {
       }
     })
   }
-})
+}
+document.addEventListener("nav", hydrateSourceVisuals)
+document.addEventListener("bb:hydrate-objects", hydrateSourceVisuals)

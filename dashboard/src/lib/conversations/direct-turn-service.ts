@@ -1,3 +1,4 @@
+import { isBareProviderError } from "../provider-error.ts";
 // The turn pipeline used when Agent mode is off: the message goes straight to
 // the provider.
 //
@@ -15,6 +16,9 @@
 // usage, and a marker saying which backend produced it.
 
 import "server-only";
+import { botsStore } from "../bots/server.ts";
+import { botPersonalityPrompt } from "../bots/types.ts";
+import { persistAssistantProgress } from "./live-progress.ts";
 import { deliverCompletedHyperframes } from "./deliver-completed-hyperframes.ts";
 
 import OpenAI from "openai";
@@ -56,19 +60,17 @@ import {
   recordAuditEvent,
 } from "../hermes/runtime-store.ts";
 import { getActiveRuntimeRun } from "../hermes/run-store.ts";
-import { cogniviaSection } from "../cognivia/index.ts";
+import { preservesLiteralTeachingText } from "../teaching-plan.ts";
 import { directModeSection } from "../hermes/direct-mode.ts";
 import {
-  readerComprehensionPrompt,
-  responseStylePrompt,
+  chatCorePrompt,
 } from "../hermes/system-prompts.ts";
 import {
-  evidenceCalibrationSection,
   suppliedEvidenceText,
 } from "../hermes/evidence-calibration.ts";
-import { answerDepthSection } from "../hermes/answer-depth.ts";
 import {
   completeAssistantMessage,
+  annotateConversationTurn,
   conversationTurnWasCancelled,
   failAssistantMessage,
   listRecentConversationMessages,
@@ -111,11 +113,11 @@ interface ActiveDirectProviderTurn {
 }
 
 const directProviderGlobal = globalThis as typeof globalThis & {
-  __breadboardActiveDirectProviderTurns?: Map<number, ActiveDirectProviderTurn>;
+  __breadboardActiveDirectProviderTurns?: Map<number | string, ActiveDirectProviderTurn>;
 };
 const activeDirectProviderTurns =
   directProviderGlobal.__breadboardActiveDirectProviderTurns ??=
-    new Map<number, ActiveDirectProviderTurn>();
+    new Map<number | string, ActiveDirectProviderTurn>();
 
 /**
  * Stop is the one operation that owns provider cancellation. Closing a page or
@@ -124,8 +126,9 @@ const activeDirectProviderTurns =
  */
 export function abortDirectProviderTurn(
   conversationId: number,
+  inlineTurnId?: string,
 ): { clientMessageId: string } | null {
-  const active = activeDirectProviderTurns.get(conversationId);
+  const active = activeDirectProviderTurns.get(inlineTurnId ? `${conversationId}:${inlineTurnId}` : conversationId);
   if (!active) return null;
   active.stopRequested = true;
   active.controller.abort(new DOMException("Stopped by the user.", "AbortError"));
@@ -145,6 +148,7 @@ export interface StartDirectTurnInput {
   reasoningEffort?: unknown;
   attachments?: ChatAttachment[];
   textSelection?: ChatTextSelectionReference;
+  concurrentInline?: boolean;
   retry?: boolean;
   /** Groups a regenerated answer with the one it was regenerated from. */
   branchGroupId?: string;
@@ -210,21 +214,11 @@ function directSystemPrompt(
   userText = "",
   suppliedEvidence = "",
   referencedChatContext = "",
+  persona = "",
 ): string {
   return [
-    responseStylePrompt(),
+    chatCorePrompt(),
     directMode ? directModeSection() : "",
-    // A mental-health turn is answered as a CBT copilot wherever it is
-    // answered, including here, where there is no runtime behind the model.
-    cogniviaSection({ userText }) ?? "",
-    // Claim strength has to track the evidence here too. There are no tools on
-    // this turn, so the section composes with no allowed tools and tells the
-    // model to say an unverifiable criterion is unverified rather than to
-    // browse for it.
-    evidenceCalibrationSection({ userText, suppliedEvidence }) ?? "",
-    // A general question thins out here most of all, because with no tools the
-    // model's own knowledge is the only place the details can come from.
-    answerDepthSection({ userText }) ?? "",
     [
       "# direct_provider_turn",
       "Agent mode is switched off for this message, so you are answering as the model alone.",
@@ -236,9 +230,7 @@ function directSystemPrompt(
     ].join("\n"),
     currentLocationContext,
     referencedChatContext,
-    // This stays last even with Concise on. Brevity may remove irrelevant
-    // detail, never the explanation that makes the remaining answer usable.
-    readerComprehensionPrompt(),
+    persona,
   ].filter(Boolean).join("\n\n");
 }
 
@@ -388,7 +380,8 @@ export async function startDirectProviderTurn(
     : questionText;
   // A live agent run owns the assistant slot and its own event stream. Sending a
   // provider turn into the same conversation would interleave two answers.
-  const runtimeSession = getRuntimeSessionByConversation(input.conversation.id);
+  const inlineTurnId = input.concurrentInline && input.textSelection?.mode === "inline" ? input.clientMessageId : undefined;
+  const runtimeSession = getRuntimeSessionByConversation(input.conversation.id, inlineTurnId);
   if (runtimeSession && getActiveRuntimeRun(runtimeSession.id)) {
     throw new ApiError(
       409,
@@ -577,6 +570,7 @@ export async function startDirectProviderTurn(
       backend: DIRECT_BACKEND,
       ...(input.textSelection ? { textSelection: input.textSelection } : {}),
       model,
+      literalTeachingText: preservesLiteralTeachingText(requestText),
       ...(reasoning ? { reasoning } : {}),
       responseDurationMs: Math.max(0, Date.now() - startedAtMs),
       ...(input.branchGroupId ? { branchGroupId: input.branchGroupId } : {}),
@@ -626,15 +620,17 @@ export async function startDirectProviderTurn(
     controller: providerAbort,
     stopRequested: false,
   };
-  activeDirectProviderTurns.set(input.conversation.id, activeDirectTurn);
+  const directTurnKey = inlineTurnId ? `${input.conversation.id}:${inlineTurnId}` : input.conversation.id;
+  activeDirectProviderTurns.set(directTurnKey, activeDirectTurn);
   const releaseDirectTurn = () => {
-    if (activeDirectProviderTurns.get(input.conversation.id) === activeDirectTurn) {
-      activeDirectProviderTurns.delete(input.conversation.id);
+    if (activeDirectProviderTurns.get(directTurnKey) === activeDirectTurn) {
+      activeDirectProviderTurns.delete(directTurnKey);
     }
   };
 
   let stream: AsyncIterable<ResponseStreamEvent>;
   try {
+    const history = historyInput(input.conversation, input.clientMessageId);
     const { baseURL } = resolveChatmockBaseUrl(input.request);
     const client = new OpenAI({
       baseURL,
@@ -655,9 +651,11 @@ export async function startDirectProviderTurn(
         explicitChatReference
           ? composeExplicitCrossConversationContext(explicitChatReference)
           : "",
-      ) + "\n\n" + await browserTerminalPrompt(input.surface !== "quartz_ai" ? input.browserAccess : undefined, false),
+        botPersonalityPrompt(botsStore().forConversation(input.conversation.user_id, input.conversation.public_id)),
+      )
+        + "\n\n" + await browserTerminalPrompt(input.surface !== "quartz_ai" ? input.browserAccess : undefined, false),
       input: [
-        ...historyInput(input.conversation, input.clientMessageId),
+        ...history,
         currentUserInput(requestText, attachments),
       ],
       stream: true,
@@ -721,7 +719,6 @@ export async function startDirectProviderTurn(
     async start(controller) {
       const emDash = createEmDashFilter();
       let failure: string | null = null;
-
       // A reader that went away closes the stream under us. The answer still has
       // to be accumulated and stored, so a failed write only stops writing.
       const emit = (event: DirectStreamEvent) => {
@@ -757,6 +754,10 @@ export async function startDirectProviderTurn(
           ) {
             thinkingRecovery.recordStreamed(event.output_index, event.delta);
             reasoning += event.delta;
+            persistAssistantProgress({
+              conversationId: input.conversation.id,
+              clientMessageId: input.clientMessageId, reasoning,
+            });
             emit({ type: "thinking", text: event.delta });
           } else if (event.type === "response.output_item.done") {
             const missingThinking = thinkingRecovery.missingFrom(
@@ -765,6 +766,10 @@ export async function startDirectProviderTurn(
             );
             if (missingThinking) {
               reasoning += missingThinking;
+              persistAssistantProgress({
+                conversationId: input.conversation.id,
+                clientMessageId: input.clientMessageId, reasoning,
+              });
               emit({ type: "thinking", text: missingThinking });
             }
             const missingAnswer = answerRecovery.missingFrom(
@@ -802,6 +807,7 @@ export async function startDirectProviderTurn(
         answer += held;
         emit({ type: "delta", text: held });
       }
+      if (!failure && isBareProviderError(answer)) failure = answer.trim();
       if (usage) {
         emit({
           type: "usage",
@@ -820,7 +826,7 @@ export async function startDirectProviderTurn(
         finish(
           activeDirectTurn.stopRequested
             ? "aborted"
-            : failure && !answer.trim()
+            : failure
               ? "failed"
               : "complete",
           answer,

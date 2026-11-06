@@ -16,11 +16,13 @@
 // lexical match can be wrong, and a wrongly injected skill rewrites the turn
 // while a wrongly offered one costs a glance at one line.
 //
-// Two groups are never shortlisted. Skills whose selection unlocks a tool
+// Two groups are never lexically shortlisted. Skills whose selection unlocks a tool
 // (`skillsOwningTools`) — selecting one here would turn a guess about relevance
 // into a grant. And skills the chain already routes: the router looked at this
 // exact message and declined, and offering the skill anyway second-guesses a
 // selector that knows its own subject better than word overlap does.
+// Computer-control guidance has a separate, permission-aware offer below: its
+// tools are already brokered, and UI work can arise midway through any task.
 
 import { skillsOwningTools } from "./capability-usage.ts";
 import {
@@ -118,6 +120,29 @@ export function shortlistSkillsForTurn<T extends SkillRelevanceCandidate>(input:
   }));
 }
 
+/** Computer control can become useful after another route fails. Offer its
+ * operating instructions independently of phrase matching, but only when the
+ * broker already granted the corresponding tool. Reading a skill grants no
+ * additional authority. Already injected guidance need not be offered again. */
+export function computerUseSkillChoices(input: {
+  skills: readonly SkillRelevanceCandidate[];
+  allowedTools: Readonly<Record<string, boolean>>;
+  selectedSkills: readonly string[];
+}): ShortlistedSkill[] {
+  return [
+    ["breadboard-use", "breadboard_use"],
+    ["computer-use", "computer_use"],
+  ].flatMap(([slug, tool]) => {
+    if (input.allowedTools[tool] !== true || input.selectedSkills.includes(slug)) return [];
+    const skill = input.skills.find(candidate => candidate.slug === slug);
+    return skill ? [{
+      slug: skill.slug, name: skill.name,
+      description: oneLine(skill.description, DESCRIPTION_MAX),
+      matched: [], score: 0,
+    }] : [];
+  });
+}
+
 /**
  * The system-prompt section that offers the shortlist. Stated as an offer, not
  * a selection: nothing is in play until the model opens one, and a request the
@@ -129,7 +154,10 @@ export function renderSkillShortlistDirective(
   if (shortlist.length === 0) return "";
   return [
     "# relevant_skills",
-    "Reviewed skills the user has installed whose descriptions match this request, closest first. None is in play yet. When one covers the task better than a procedure of your own, call `skill_open` with its slug, read the guidance, and follow it before you answer; open more than one only when the work spans them. When none fits, ignore this section — do not mention it, list it, or explain why you did not use it.",
+    "Reviewed skills available for this turn. None is in play yet. When one covers the task better than a procedure of your own, call `skill_open` with its slug, read the guidance, and follow it before acting; open more than one only when the work spans them. Discover deferred tools with tool_search. When none fits, ignore this section — do not mention it, list it, or explain why you did not use it.",
+    ...(shortlist.some(skill => skill.slug === "breadboard-use" || skill.slug === "computer-use") ? [
+      "Computer-control skills listed here are possible instruments, not instructions to operate anything: breadboard-use controls Breadboard pages and its built-in browser; computer-use operates another native app when a direct tool cannot complete the task.",
+    ] : []),
     ...shortlist.map(
       (skill) => `- ${skill.slug} — ${skill.name}: ${skill.description}`,
     ),

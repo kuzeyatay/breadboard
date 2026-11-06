@@ -111,6 +111,25 @@ const NOTIFIABLE_SOURCES_SQL = `
 `;
 const NOTIFIABLE_MESSAGES_SQL = `${READABLE_MESSAGES_SQL}${NOTIFIABLE_SOURCES_SQL}`;
 
+/**
+ * Every window polls the inbox every few seconds. Without this narrowing,
+ * SQLite applies the JSON filters above to every answer ever dismissed before
+ * reaching the dismissal check, and reading `updated_at` walks each row's
+ * multi-megabyte `metadata` overflow chain — about a second of the dashboard's
+ * only thread per poll. Answers dismissed by id are excluded from the index
+ * alone; dismissed inline-selection copies are excluded by
+ * UNDISMISSED_EQUIVALENT_SQL.
+ */
+const UNDISMISSED_ANSWER_SQL = `
+      AND m.id IN (
+        SELECT answer.id FROM conversation_messages answer
+        WHERE answer.role = 'assistant' AND answer.status IN ('complete', 'failed')
+          AND NOT EXISTS (
+            SELECT 1 FROM chat_notification_dismissals d
+            WHERE d.user_id = @userId AND d.message_id = answer.id
+          )
+      )`;
+
 export function ensureChatNotificationSchema(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS chat_notification_baselines (
@@ -132,6 +151,9 @@ export function ensureChatNotificationSchema(database: Database.Database): void 
       updated_at TEXT NOT NULL,
       message_id INTEGER NOT NULL
     );
+
+    CREATE INDEX IF NOT EXISTS idx_conversation_messages_answers
+      ON conversation_messages(role, status);
   `);
 }
 
@@ -210,16 +232,22 @@ function inlineSelectionRequestIdSql(alias: string): string {
   )`;
 }
 
+/** With UNDISMISSED_ANSWER_SQL: no dismissed copy of the same inline-selection answer. */
+const UNDISMISSED_EQUIVALENT_SQL = `AND (${inlineSelectionRequestIdSql("m")} IS NULL OR NOT EXISTS (
+        SELECT 1 FROM conversation_messages seen
+        JOIN chat_notification_dismissals d ON d.user_id = @userId AND d.message_id = seen.id
+        WHERE seen.conversation_id = m.conversation_id
+          AND ${inlineSelectionRequestIdSql("seen")} = ${inlineSelectionRequestIdSql("m")}
+      ))`;
+
 function notificationFromRow(row: NotificationRow): ChatNotificationRecord | null {
-  const target = row.surface === "garden_chat"
-    ? row.legacy_chat_session_id !== null && row.garden_slug
+  const target = row.surface === "garden_chat" && row.legacy_chat_session_id !== null && row.garden_slug
       ? {
           surface: "garden_chat" as const,
           chatId: String(row.legacy_chat_session_id),
           gardenSlug: row.garden_slug,
           conversationId: row.conversation_public_id,
         }
-      : null
     : {
         surface: "dashboard_terminal" as const,
         chatId: row.conversation_public_id,
@@ -239,6 +267,31 @@ function notificationFromRow(row: NotificationRow): ChatNotificationRecord | nul
     target,
     updatedAt: row.updated_at,
   };
+}
+
+/** Recent eligible answers for the center's initial history, including answers
+ * already read. Restrict candidates before loading potentially large metadata. */
+export function listRecentChatNotifications(database: Database.Database, userId: number): ChatNotificationRecord[] {
+  const rows = database.prepare(`
+    SELECT m.id AS message_id,m.content,m.status,m.metadata,m.updated_at,
+      c.public_id AS conversation_public_id,c.title AS conversation_title,c.surface,
+      c.legacy_chat_session_id,g.slug AS garden_slug
+    ${NOTIFIABLE_MESSAGES_SQL}
+      AND m.id IN (SELECT recent.id FROM conversation_messages recent
+        JOIN conversations owner ON owner.id=recent.conversation_id
+        WHERE owner.user_id=@userId AND owner.temporary=0 AND owner.buzz_room_id IS NULL
+          AND recent.role='assistant' AND recent.status IN ('complete','failed')
+        ORDER BY recent.id DESC LIMIT 100)
+    ORDER BY m.id DESC LIMIT 50
+  `).all({userId}) as NotificationRow[];
+  const seen = new Set<string>();
+  return rows.flatMap(row => {
+    const identity = notificationIdentity(row);
+    if (seen.has(identity)) return [];
+    seen.add(identity);
+    const item = notificationFromRow(row);
+    return item ? [item] : [];
+  });
 }
 
 /**
@@ -285,24 +338,9 @@ export function listPendingChatNotifications(
            c.surface,
            c.legacy_chat_session_id,
            g.slug AS garden_slug
-    ${NOTIFIABLE_MESSAGES_SQL}
+    ${NOTIFIABLE_MESSAGES_SQL}${UNDISMISSED_ANSWER_SQL}
       AND (m.updated_at > @afterAt OR (m.updated_at = @afterAt AND m.id > @afterId))
-      AND NOT EXISTS (
-        SELECT 1
-        FROM chat_notification_dismissals d
-        JOIN conversation_messages dismissed_message
-          ON dismissed_message.id = d.message_id
-        WHERE d.user_id = @userId
-          AND (
-            d.message_id = m.id
-            OR (
-              dismissed_message.conversation_id = m.conversation_id
-              AND ${inlineSelectionRequestIdSql("m")} IS NOT NULL
-              AND ${inlineSelectionRequestIdSql("dismissed_message")}
-                = ${inlineSelectionRequestIdSql("m")}
-            )
-          )
-      )
+      ${UNDISMISSED_EQUIVALENT_SQL}
     ORDER BY m.updated_at DESC, m.id DESC
     LIMIT @candidateLimit
   `).all({
@@ -429,21 +467,13 @@ export function listUnreadChatMessages(database: Database.Database, userId: numb
   }
   const rows = database.prepare(`
     SELECT m.id AS message_id, c.public_id, c.legacy_chat_session_id, g.slug AS garden_slug
-    ${READABLE_MESSAGES_SQL}
+    ${READABLE_MESSAGES_SQL}${UNDISMISSED_ANSWER_SQL}
       AND (
         m.updated_at > @afterAt OR (m.updated_at = @afterAt AND m.id > @afterId)
         OR (1 = 1 ${NOTIFIABLE_SOURCES_SQL}
           AND (m.updated_at > @notificationAfterAt OR (m.updated_at = @notificationAfterAt AND m.id > @notificationAfterId)))
       )
-      AND NOT EXISTS (
-        SELECT 1 FROM chat_notification_dismissals d
-        JOIN conversation_messages seen ON seen.id = d.message_id
-        WHERE d.user_id = @userId AND (d.message_id = m.id OR (
-          seen.conversation_id = m.conversation_id
-          AND ${inlineSelectionRequestIdSql("m")} IS NOT NULL
-          AND ${inlineSelectionRequestIdSql("seen")} = ${inlineSelectionRequestIdSql("m")}
-        ))
-      )
+      ${UNDISMISSED_EQUIVALENT_SQL}
   `).all({ userId, afterAt: baseline.updated_at, afterId: baseline.message_id,
     notificationAfterAt: notificationBaseline.updated_at, notificationAfterId: notificationBaseline.message_id }) as Array<{
     message_id: number; public_id: string; legacy_chat_session_id: number | null; garden_slug: string | null;
@@ -461,15 +491,20 @@ export function markUnreadChatMessagesSeen(
   database: Database.Database, userId: number, messageIds: readonly number[], target?: ChatNotificationTarget | null,
 ): number {
   if (target?.surface === "garden_learn") target = null;
-  const insert = database.prepare(`
+  // Two shapes so each is an index seek. One `id = ? OR target` statement
+  // hid both keys inside an OR and ran the JSON readability checks over every
+  // message the person has: seconds per id on a large database.
+  const insertSelect = `
     INSERT OR IGNORE INTO chat_notification_dismissals (user_id, message_id)
-    SELECT @userId, m.id ${READABLE_MESSAGES_SQL}
-      AND (@messageId = m.id OR (
-        @messageId IS NULL AND (
-          (@publicId IS NOT NULL AND c.public_id = @publicId)
-          OR (@legacyId IS NOT NULL AND c.legacy_chat_session_id = @legacyId AND g.slug = @gardenSlug)
-        )
-      ))
+    SELECT @userId, m.id ${READABLE_MESSAGES_SQL}`;
+  const insertMessage = database.prepare(`${insertSelect} AND m.id = @messageId`);
+  const insertTarget = database.prepare(`${insertSelect}
+      AND m.conversation_id IN (
+        SELECT tc.id FROM conversations tc
+        LEFT JOIN clusters tg ON tg.id = tc.default_garden_id
+        WHERE (@publicId IS NOT NULL AND tc.public_id = @publicId)
+           OR (@legacyId IS NOT NULL AND tc.legacy_chat_session_id = @legacyId AND tg.slug = @gardenSlug)
+      )
   `);
   const params = {
     userId,
@@ -479,8 +514,8 @@ export function markUnreadChatMessagesSeen(
   };
   return database.transaction(() => {
     let changed = 0;
-    if (target) changed += insert.run({ ...params, messageId: null }).changes;
-    for (const messageId of new Set(messageIds)) changed += insert.run({ ...params, messageId }).changes;
+    if (target) changed += insertTarget.run(params).changes;
+    for (const messageId of new Set(messageIds)) changed += insertMessage.run({ userId, messageId }).changes;
     return changed;
   })();
 }

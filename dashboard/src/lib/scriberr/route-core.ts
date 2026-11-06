@@ -460,10 +460,10 @@ export async function handleRetryVideoTranscription(
     const garden = await deps.requireOwnedGarden(gardenId);
     const job = deps.store.getJobForCluster(jobId, garden.clusterId);
     if (!job) return { status: 404, body: { error: "Job not found" } };
-    if (job.status !== "failed") {
+    if (job.status !== "failed" && job.status !== "cancelled") {
       return {
         status: 409,
-        body: { error: "Only failed jobs can be retried." },
+        body: { error: "Only failed or cancelled jobs can be retried." },
       };
     }
     const updated = await deps.runnerRetry(jobId);

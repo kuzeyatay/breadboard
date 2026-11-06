@@ -123,7 +123,7 @@ export class BrowserTranslation {
           if (!/^https?:/.test(frame.url) && !/^about:(blank|srcdoc)$/.test(frame.url)) continue;
           this.documents.add(frame);
           let data: unknown;
-          try { data = await this.execute(frame, "collect", { initial: this.characters === 0 }); }
+          try { data = await this.execute(frame, "collect", { initial: this.characters === 0, language: this.state.language }); }
           catch { exhausted.add(frame); continue; }
           if (!live()) return;
           if (!Array.isArray(data) || data.length > 40) { exhausted.add(frame); continue; }

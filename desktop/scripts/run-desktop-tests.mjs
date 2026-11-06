@@ -18,6 +18,7 @@ export const SERIAL_SCREEN_TEST_FILES = Object.freeze([
   "browser-picture-in-picture-integration.test.js",
   "google-pip-extension-integration.test.js",
   "voice-screen-context-integration.test.js",
+  "screen-recording-integration.test.js",
 ]);
 
 function isDesktopTestFile(name) {

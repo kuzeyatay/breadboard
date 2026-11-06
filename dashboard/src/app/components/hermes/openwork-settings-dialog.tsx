@@ -108,7 +108,7 @@ export default function OpenworkSettingsDialog({ onClose }: { onClose: () => voi
 
   async function prepareServer() {
     setPreparing(true);
-    setNotice("Preparing the OpenWork server from the clone. This takes a minute.");
+    setNotice("Setting up OpenWork. This takes about a minute.");
     try {
       const response = await fetch("/api/openwork/setup", {
         method: "POST",
@@ -156,8 +156,7 @@ export default function OpenworkSettingsDialog({ onClose }: { onClose: () => voi
               OpenWork workspace setup
             </h2>
             <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-              OpenWork runs work inside a workspace of skills and connections. Breadboard runs
-              its server from the clone and points it at an OpenCode engine on ChatMock.
+              Complete tasks using the files, skills, and connected apps in your OpenWork workspace.
             </p>
           </span>
           <button
@@ -235,7 +234,7 @@ export default function OpenworkSettingsDialog({ onClose }: { onClose: () => voi
                 optional={
                   status.prepared
                     ? `Version ${status.version} — the clone has changed since this was prepared.`
-                    : "Not prepared yet. Breadboard copies the server out of the clone and installs its dependencies."
+                    : "Set up OpenWork to use it."
                 }
               >
                 {status.prepared && !status.stale ? null : (

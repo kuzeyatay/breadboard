@@ -1,14 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { Star } from "lucide-react";
 import { matchesStarredMessage } from "@/lib/starred-messages-types";
-import { saveMessageStar, useStarredMessages } from "./use-starred-messages";
+import { saveMessageStar, StarredPdfSourceContext, useStarredMessages } from "./use-starred-messages";
 
 export default function StarMessageButton({ conversationId, messageId, className }: {
   conversationId: string; messageId: string; className: string;
 }) {
   const { messages, saving, loading } = useStarredMessages();
+  const sourceUrl = useContext(StarredPdfSourceContext);
   const [error, setError] = useState<string | null>(null);
   const starred = messages.some((item) => matchesStarredMessage(item, conversationId, messageId));
   const label = starred ? "Unstar message" : "Star message";
@@ -18,7 +19,7 @@ export default function StarMessageButton({ conversationId, messageId, className
       className={`${className} disabled:opacity-40 ${starred ? "text-[var(--botanical)]" : ""}`}
       onClick={async () => {
         setError(null);
-        try { await saveMessageStar(conversationId, messageId, !starred); }
+        try { await saveMessageStar(conversationId, messageId, !starred, sourceUrl); }
         catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save this star. Try again."); }
       }}>
       <Star className="h-4 w-4" strokeWidth={1.7} fill={starred ? "currentColor" : "none"} aria-hidden />

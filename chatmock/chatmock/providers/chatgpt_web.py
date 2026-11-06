@@ -34,6 +34,7 @@ a single message, the page opens ``/?temporary-chat=true&model=<slug>``, the
 answer streams back, and nothing lands in the person's ChatGPT history.
 """
 
+import hashlib
 import json
 import os
 import queue
@@ -414,6 +415,7 @@ def _bridge_open_tab(
     foreground: bool,
     reset: bool = False,
     lane: str = INTERACTIVE_LANE,
+    microphone: bool | None = None,
 ) -> tuple[int, str]:
     """Ask the shell for its ChatGPT tab: ``(cdp port, CDP target id)``.
 
@@ -439,6 +441,9 @@ def _bridge_open_tab(
             "foreground": bool(foreground),
             "reset": bool(reset),
             "lane": lane,
+            # Only ChatGPT voice asks: the page may use the microphone while
+            # True, and the shell takes the grant back on False.
+            **({"microphone": bool(microphone)} if microphone is not None else {}),
             "requestedAt": _now_iso(),
         }
         _bridge_lock.notify_all()
@@ -657,7 +662,19 @@ PAGE_SCRIPT = r"""
   // (#prompt-textarea). Signed out - which is what the sign-in tab shows first -
   // the site mounts a plain textarea named "prompt" instead; both are accepted so
   // readiness can be judged either way, and insert() handles each in its own idiom.
-  const composer = () => document.querySelector('#prompt-textarea') || document.querySelector('textarea[name="prompt"]');
+  // The id went away on 2026-09-29 (the editor is now a bare
+  // `div.ProseMirror[role=textbox]` in the composer form), so the id is only
+  // the first guess. A rendered editor wins: after the site's own router opens
+  // a new chat, the previous chat's editor can linger unrendered and cannot
+  // take focus (seen 2026-10-07).
+  const composer = () => {
+    const boxes = [
+      ...document.querySelectorAll('#prompt-textarea'),
+      ...document.querySelectorAll('form .ProseMirror[contenteditable="true"], form [role="textbox"][contenteditable="true"]'),
+      ...document.querySelectorAll('textarea[name="prompt"]'),
+    ];
+    return boxes.find(box => box.getClientRects().length > 0) || boxes[0] || null;
+  };
   const isTextarea = (box) => !!box && box.tagName === 'TEXTAREA';
   const stopButton = () => document.querySelector(STOP);
   const sendButton = () => {
@@ -1088,7 +1105,13 @@ PAGE_SCRIPT = r"""
       if (timer) clearTimeout(timer);
       flush(true);
       try { reader.cancel(); } catch (_) {}
-      if (reducer.handedOff() && !reducer.text()) emit({ type: 'handoff', turn });
+      // Only `message_stream_complete` / `[DONE]` finish an answer. A body that
+      // just stops - every stream now opens with a `resume_conversation_token`,
+      // and the site can move the rest of the answer to its resume channel -
+      // held a part of it, and returning that part as the answer is how a tool
+      // call came back cut at `{"name":"calendar_list_events","arguments`
+      // (2026-10-05). The collector then follows the socket or the page instead.
+      if (!reducer.isDone() || (reducer.handedOff() && !reducer.text())) emit({ type: 'handoff', turn });
       else emit({ type: 'done', turn, text: reducer.text(), reasoning: reducer.reasoning(), conversationId: reducer.conversationId(), messageId: reducer.assistantId(), model: requestModel });
     }
   }
@@ -1209,11 +1232,20 @@ PAGE_SCRIPT = r"""
     } catch (_) { return null; }
   }
   let observed = null;
+  // The site wraps fetch after this script does, so the DOMContentLoaded
+  // re-install below puts a second observer under the site's wrapper (seen
+  // 2026-10-05: every request logged twice). Two observers meant two reducers
+  // emitting the same answer, interleaved: "pongpong 42 42". A call that is
+  // already inside an observer passes straight through the inner one.
+  let observing = false;
   const install = () => {
     if (window.fetch === observed || typeof window.fetch !== 'function') return;
     const downstream = window.fetch;
     observed = function (...args) {
-      const result = downstream.apply(this, args);
+      if (observing) return downstream.apply(this, args);
+      let result;
+      observing = true;
+      try { result = downstream.apply(this, args); } finally { observing = false; }
       let url = null, method = 'GET';
       try {
         url = new URL(typeof args[0] === 'string' ? args[0] : args[0] && args[0].url, location.href);
@@ -1312,6 +1344,11 @@ PAGE_SCRIPT = r"""
   };
 })();
 """
+# Which script a document holds. The script installs once per document, so a
+# page the site's router moves around keeps the one it loaded with; such a
+# page is navigated in full when ChatMock now carries a different one.
+PAGE_SCRIPT_VERSION = hashlib.sha256(PAGE_SCRIPT.encode("utf-8")).hexdigest()[:16]
+_PAGE_SOURCE = PAGE_SCRIPT + f"window.__breadboardChatgptWebVersion = {json.dumps(PAGE_SCRIPT_VERSION)};"
 
 
 # --------------------------------------------------------------------------
@@ -1326,6 +1363,7 @@ class _Page:
         self.lane: str = INTERACTIVE_LANE
         self.events: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         self._loaded = threading.Event()
+        self._dom_loaded = threading.Event()
         # Request ids of the site's own refusals of a message, newest last.
         # The site reads a refusal's body before the page script can (seen
         # 2026-09-14: the script reported `status: 400, body: ""` for a
@@ -1344,6 +1382,8 @@ class _Page:
                 self.events.put(payload)
         elif method == "Page.loadEventFired":
             self._loaded.set()
+        elif method == "Page.domContentEventFired":
+            self._dom_loaded.set()
         elif method == "Network.responseReceived":
             response = params.get("response") or {}
             status = int(response.get("status") or 0)
@@ -1360,7 +1400,7 @@ class _Page:
         self.cdp.call("Runtime.addBinding", {"name": BINDING}, timeout=ATTACH_TIMEOUT_SECONDS)
         self.cdp.call(
             "Page.addScriptToEvaluateOnNewDocument",
-            {"source": PAGE_SCRIPT},
+            {"source": _PAGE_SOURCE},
             timeout=ATTACH_TIMEOUT_SECONDS,
         )
         # Only for `failed_responses`; the answer itself still comes through
@@ -1446,13 +1486,47 @@ class _Page:
 
     def ensure_script(self) -> None:
         if not self.evaluate("!!window.__breadboardChatgptWeb", attempts=EVAL_ATTEMPTS):
-            self.evaluate(PAGE_SCRIPT, attempts=EVAL_ATTEMPTS)
+            self.evaluate(_PAGE_SOURCE, attempts=EVAL_ATTEMPTS)
 
-    def navigate(self, url: str, *, timeout: float = PAGE_READY_TIMEOUT_SECONDS) -> None:
+    def navigate(self, url: str, *, timeout: float = PAGE_READY_TIMEOUT_SECONDS, full_load: bool = True) -> None:
+        """Open ``url``. ``full_load=False`` returns at DOMContentLoaded.
+
+        Measured 2026-10-07: the load event of a fresh chat came ~4 s after
+        its composer was usable (the site keeps loading iframes and assets).
+        A caller that only needs the composer passes ``full_load=False`` and
+        then waits with ``wait_ready``, which never answers for the document
+        being left: it is marked here before the navigation starts.
+        """
+        if not full_load:
+            try:
+                self.evaluate("window.__breadboardLeaving = true", timeout=5)
+            except ProviderError:
+                pass
         self._loaded.clear()
+        self._dom_loaded.clear()
         self.cdp.call("Page.navigate", {"url": url})
-        self._loaded.wait(timeout)
+        (self._loaded if full_load else self._dom_loaded).wait(timeout)
         self.ensure_script()
+
+    def soft_navigate(self, url: str, *, timeout: float = 15) -> bool:
+        """Open ``url`` through the site's own router, without a reload.
+
+        Measured 2026-10-07: a fresh chat this way was ready in ~0.9 s, where
+        a full navigation took 4.6-5.8 s. False when the router is missing or
+        the new chat did not appear; the caller then navigates in full.
+        """
+        target = url[len(ORIGIN):] if url.startswith(ORIGIN) else url
+        expression = """(async () => {
+  const router = window.__reactRouterDataRouter;
+  if (!router || typeof router.navigate !== 'function' || !window.__breadboardChatgptWeb) return false;
+  if (window.__breadboardChatgptWebVersion !== %s) return false;
+  await router.navigate(%s);
+  return location.pathname === '/' && !document.querySelector('section[data-testid^="conversation-turn"], article[data-testid^="conversation-turn"]');
+})()""" % (json.dumps(PAGE_SCRIPT_VERSION), json.dumps(target))
+        try:
+            return self.evaluate(expression, await_promise=True, timeout=timeout) is True
+        except ProviderError:
+            return False
 
     def current_url(self) -> str:
         try:
@@ -1464,7 +1538,10 @@ class _Page:
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                if self.evaluate("window.__breadboardChatgptWeb && window.__breadboardChatgptWeb.ready()", timeout=10):
+                if self.evaluate(
+                    "!window.__breadboardLeaving && window.__breadboardChatgptWeb && window.__breadboardChatgptWeb.ready()",
+                    timeout=10,
+                ):
                     return True
             except ProviderError:
                 pass
@@ -1719,6 +1796,25 @@ def _focus(page: _Page) -> None:
         return
     page.bring_to_front()
     page.set_window_state("normal")
+
+
+def set_microphone(enabled: bool, lane: str = INTERACTIVE_LANE) -> None:
+    """Let the lane's page use the microphone, or take that back.
+
+    The shell refuses the page's microphone unless asked here (it is a page
+    nobody is looking at). Only a desktop page has a shell to ask.
+    """
+    bridge = _live_bridge()
+    if bridge is None:
+        if enabled:
+            raise ProviderError(
+                "ChatGPT voice needs Breadboard's desktop app. Keep a Breadboard window open and try again.",
+                status_code=503,
+                phase="prepare",
+                replay_safe=True,
+            )
+        return
+    _bridge_open_tab(bridge, foreground=False, lane=lane, microphone=enabled)
 
 
 def _unresponsive_error(surface: str) -> ProviderError:
@@ -2107,15 +2203,150 @@ def _image_data_urls(messages: List[Dict[str, Any]]) -> List[str]:
     return out
 
 
-def compose_prompt(messages: List[Dict[str, Any]]) -> str:
+# --------------------------------------------------------------------------
+# Tools, as text
+# --------------------------------------------------------------------------
+#
+# chatgpt.com has no function calling: its composer takes prose and gives back
+# prose. Dropping the caller's `tools` was the old behaviour, and it made every
+# Breadboard surface lie on a web model - the assistant held 130 tools on the
+# server and told the user it had no way to read their own Garden or calendar,
+# because none of them reached the page.
+#
+# So the tools travel as text. The manifest goes in with the instructions, the
+# model answers with one fenced block, and `_parse_tool_calls` turns that back
+# into the OpenAI tool call the caller's agent loop already knows how to run.
+# The result comes back as an ordinary `role: "tool"` message, which
+# `compose_prompt` already renders, so a multi-step loop needs nothing further.
+
+TOOL_FENCE = "```tool_call"
+
+# ponytail: one call per turn, and the manifest is trimmed to fit a composer
+# rather than paged. Both are cheap to lift if a turn ever needs more.
+# A Breadboard turn offers ~130 tools, so the budget has to hold all of them at
+# one compact line each; a dropped tail is a tool the model cannot know about.
+_TOOL_MANIFEST_MAX_CHARS = 26_000
+_TOOL_DESCRIPTION_MAX_CHARS = 160
+
+
+def _tool_entries(tools: Any) -> List[Dict[str, Any]]:
+    """The OpenAI `tools` array, reduced to the callable function specs."""
+    entries: List[Dict[str, Any]] = []
+    for tool in tools if isinstance(tools, list) else []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "").strip()
+        if name:
+            entries.append(function)
+    return entries
+
+
+def _tool_signature(function: Dict[str, Any]) -> str:
+    parameters = function.get("parameters")
+    properties = parameters.get("properties") if isinstance(parameters, dict) else None
+    required = parameters.get("required") if isinstance(parameters, dict) else None
+    required_names = [str(item) for item in required] if isinstance(required, list) else []
+    names: List[str] = []
+    for key in list(properties.keys())[:12] if isinstance(properties, dict) else []:
+        names.append(f"{key}*" if key in required_names else str(key))
+    return ", ".join(names)
+
+
+def _tool_protocol(tools: Any) -> str:
+    """The manifest plus the answer contract, or "" when no tool was offered."""
+    functions = _tool_entries(tools)
+    if not functions:
+        return ""
+    lines: List[str] = []
+    budget = _TOOL_MANIFEST_MAX_CHARS
+    for function in functions:
+        description = " ".join(str(function.get("description") or "").split())
+        if len(description) > _TOOL_DESCRIPTION_MAX_CHARS:
+            description = description[: _TOOL_DESCRIPTION_MAX_CHARS - 1].rstrip() + "…"
+        line = f"- {function['name']}({_tool_signature(function)})"
+        if description:
+            line += f": {description}"
+        budget -= len(line) + 1
+        if budget < 0:
+            break
+        lines.append(line)
+    return chr(10).join(
+        [
+            "You can call tools. They are the only way to reach the user's own data —"
+            " their Garden pages, calendar, files and the rest — so when the answer"
+            " depends on something you cannot see, call the tool instead of saying you"
+            " have no access to it. Arguments marked * are required.",
+            "",
+            *lines,
+            "",
+            "To call one, reply with NOTHING but this block, arguments as JSON:",
+            TOOL_FENCE,
+            '{"name": "<tool>", "arguments": {}}',
+            "```",
+            "One call per reply. You get its result as a `Tool result (<tool>)` turn"
+            " and can then call another or answer. Answer in ordinary prose when you"
+            " need no tool; never describe a call you did not make.",
+        ]
+    )
+
+
+def _parse_tool_calls(text: str) -> List[Dict[str, Any]] | None:
+    """One OpenAI tool call from the model's prose, or None if it answered."""
+    body = ""
+    start = text.find(TOOL_FENCE)
+    if start >= 0:
+        rest = text[start + len(TOOL_FENCE) :]
+        end = rest.find("```")
+        body = rest if end < 0 else rest[:end]
+    else:
+        # The site sometimes drops the language tag or the fence entirely. A
+        # reply that is only a JSON object naming a tool is still a call.
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            stripped = stripped.strip("`").strip()
+            if stripped.lower().startswith("json"):
+                stripped = stripped[4:].strip()
+        if stripped.startswith("{") and '"name"' in stripped:
+            body = stripped
+    if not body.strip():
+        return None
+    try:
+        parsed = json.loads(body.strip())
+    except Exception:  # noqa: BLE001 - prose that merely looks like a call
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    name = str(parsed.get("name") or parsed.get("tool") or "").strip()
+    if not name:
+        return None
+    arguments = parsed.get("arguments")
+    if arguments is None:
+        arguments = parsed.get("parameters")
+    if isinstance(arguments, str):
+        rendered = arguments
+    else:
+        rendered = json.dumps(arguments if isinstance(arguments, dict) else {}, ensure_ascii=False)
+    return [
+        {
+            "id": f"call_{uuid4().hex[:24]}",
+            "type": "function",
+            "function": {"name": name, "arguments": rendered},
+        }
+    ]
+
+
+def compose_prompt(messages: List[Dict[str, Any]], tools: Any = None) -> str:
     """One message for the site's composer from an OpenAI-shaped transcript.
 
     A lone user message goes through verbatim. Anything richer - a system
     prompt, earlier turns, tool results - is framed the way chat-on-steroids
     frames context for ChatGPT: instructions first, the conversation so far,
-    then the request to answer as the assistant. Function calling is not a
-    thing the website does, so tool declarations are not forwarded; the model
-    answers in prose.
+    then the request to answer as the assistant. The website has no function
+    calling, so `tools` is carried as a text protocol instead (see
+    ``_tool_protocol``): the manifest goes in with the instructions and the
+    model answers with a fenced ``tool_call`` block, which `_parse_tool_calls`
+    turns back into an OpenAI tool call.
     """
     system: List[str] = []
     turns: List[tuple[str, str]] = []
@@ -2146,6 +2377,10 @@ def compose_prompt(messages: List[Dict[str, Any]]) -> str:
             turns.append((f"Tool result ({name})", text))
             continue
         turns.append(("User", text))
+
+    protocol = _tool_protocol(tools)
+    if protocol:
+        system.append(protocol)
 
     if not system and len(turns) == 1 and turns[0][0] == "User":
         return turns[0][1]
@@ -2228,6 +2463,7 @@ def _begin_turn(
     *,
     temporary: bool = True,
     lane: str = INTERACTIVE_LANE,
+    soft: bool = False,
 ) -> tuple[_Page, str]:
     """Open a fresh temporary chat for ``model`` and submit ``prompt``.
 
@@ -2237,7 +2473,7 @@ def _begin_turn(
     """
     page = _ensure_page(lane=lane)
     try:
-        return page, _submit_turn(page, model, prompt, effort, images or [], temporary=temporary)
+        return page, _submit_turn(page, model, prompt, effort, images or [], temporary=temporary, soft=soft)
     except _PageUnresponsive:
         # The page stopped answering commands after it was attached to. There
         # is nothing to read back from it, and reusing it would wedge the next
@@ -2293,6 +2529,7 @@ def _submit_turn(
     images: List[str],
     *,
     temporary: bool = True,
+    soft: bool = False,
 ) -> str:
     session = _session(page)
     if not session.get("signedIn"):
@@ -2306,7 +2543,9 @@ def _submit_turn(
                 replay_safe=True,
             )
     page.drain()
-    page.navigate(_chat_url(model, effort, temporary=temporary))
+    url = _chat_url(model, effort, temporary=temporary)
+    if not (soft and page.soft_navigate(url)):
+        page.navigate(url, full_load=False)
     if not page.wait_ready():
         raise ProviderError(
             "chatgpt.com did not show a composer. Open the ChatGPT tab and check the page, then try again.",
@@ -2531,6 +2770,10 @@ def _collect_turn(
             elif kind == "stream":
                 stream_seen = True
                 if event.get("mode") == "ws":
+                    # The socket's reducer starts from the answer's beginning;
+                    # a fetch stream cut short before it must not prefix it.
+                    if not socket_seen:
+                        raw = ""
                     socket_seen = True
                 result.mode = str(event.get("mode") or "sse")
                 if isinstance(event.get("model"), str):
@@ -2813,7 +3056,9 @@ def request_chat(
             },
         )
     messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
-    prompt = compose_prompt(messages)
+    tools = payload.get("tools")
+    tools_offered = bool(_tool_entries(tools))
+    prompt = compose_prompt(messages, tools)
     if not prompt.strip():
         return _WebResponse(400, {"error": {"message": "The request had no message to send."}})
     effort = _effort_from_payload(payload)
@@ -2890,11 +3135,14 @@ def request_chat(
                 watcher.join(CLIENT_WATCH_INTERVAL_SECONDS + 1)
             release()
         completion_tokens = _estimate_tokens(result.text)
+        tool_calls = _parse_tool_calls(result.text) if tools_offered else None
         body = transport.chat_completion(
             completion_id=completion_id,
             created=created,
             model=public_model,
-            content=result.text,
+            content="" if tool_calls else result.text,
+            finish_reason="tool_calls" if tool_calls else "stop",
+            tool_calls=tool_calls,
             usage={
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
@@ -2912,17 +3160,35 @@ def request_chat(
             and payload["stream_options"].get("include_usage")
         )
 
-        def emit_text(delta: str) -> None:
+        def put_delta(delta: Dict[str, Any]) -> None:
             chunks.put(
                 transport.sse_chunk(
                     transport.chat_chunk(
                         completion_id=completion_id,
                         created=created,
                         model=public_model,
-                        delta={"content": delta},
+                        delta=delta,
                     )
                 )
             )
+
+        # A tool call must never be streamed as prose: the caller would show the
+        # user a JSON block and then run the call as well. So while the answer
+        # could still turn out to be one, its text is held back. The moment it
+        # cannot be a call any more the buffer is flushed and streaming resumes.
+        held: List[str] = []
+        holding = [bool(tools_offered)]
+
+        def emit_text(delta: str) -> None:
+            if holding[0]:
+                held.append(delta)
+                seen = "".join(held).lstrip()
+                if not seen or TOOL_FENCE.startswith(seen[: len(TOOL_FENCE)]) or seen.startswith("{"):
+                    return
+                holding[0] = False
+                delta = "".join(held)
+                held.clear()
+            put_delta({"content": delta})
 
         def worker() -> None:
             try:
@@ -2938,6 +3204,20 @@ def request_chat(
                             )
                         )
                     )
+                tool_calls = _parse_tool_calls(result.text) if tools_offered else None
+                if tool_calls:
+                    held.clear()
+                    put_delta(
+                        {
+                            "tool_calls": [
+                                {"index": 0, **tool_calls[0]},
+                            ]
+                        }
+                    )
+                elif held:
+                    # It only looked like a call; the user is owed the text.
+                    put_delta({"content": "".join(held)})
+                    held.clear()
                 completion_tokens = _estimate_tokens(result.text)
                 usage = (
                     {
@@ -2954,7 +3234,7 @@ def request_chat(
                             completion_id=completion_id,
                             created=created,
                             model=public_model,
-                            finish_reason="stop",
+                            finish_reason="tool_calls" if tool_calls else "stop",
                             usage=usage,
                         )
                     )

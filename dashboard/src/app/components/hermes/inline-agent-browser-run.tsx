@@ -26,6 +26,7 @@ import type { HermesSurface } from "@/lib/hermes/config.ts";
 import {
   desktopTabsBridge,
   openBrowserAgentRunInDesktop,
+  sendDesktopTabsCommand,
 } from "@/lib/desktop-browser-tabs";
 
 interface RunEvent {
@@ -145,6 +146,12 @@ export default function InlineAgentBrowserRun({
   const usesDesktopBrowser = desktopTabsBridge() !== undefined;
 
   const base = `/api/agent-browser/agents/${agentId}/runs/${runId}`;
+
+  useEffect(() => {
+    if (usesDesktopBrowser && TERMINAL_STATUSES.has(status)) {
+      void sendDesktopTabsCommand({ type: "browser-agent-close", runId });
+    }
+  }, [runId, status, usesDesktopBrowser]);
 
   useEffect(() => {
     onTerminalRef.current = onTerminal;
@@ -271,7 +278,10 @@ export default function InlineAgentBrowserRun({
     }
 
     async function finishSignIn(): Promise<void> {
-      if (usesDesktopBrowser) return;
+      if (usesDesktopBrowser) {
+        await sendDesktopTabsCommand({ type: "browser-agent-close", runId });
+        return;
+      }
       const profile = await readProfile();
       if (!profile.windowOpen) return;
       const response = await fetch("/api/agent-browser/browser-profile", {

@@ -11,19 +11,22 @@ const routeSource = fs.readFileSync(
   "utf8",
 );
 
-test("chat usage popover probes on manual refresh while its automatic loads remain read-only", () => {
+test("chat usage popover supports manual refresh while its automatic loads remain read-only", () => {
   assert.match(popoverSource, /const useProbe = probe && !googleUsageActive && !claudeUsageActive/);
   assert.match(popoverSource, /method: useProbe \? "POST" : "GET"/);
   assert.match(popoverSource, /refreshUsage\(false, true\)/);
   assert.match(popoverSource, /refreshUsage\(true\)/);
   assert.match(routeSource, /export async function POST\(request: Request\)/);
-  assert.match(routeSource, /refreshChatgptUsage\(baseURL, userId\)/);
+  assert.match(routeSource, /refreshChatgptUsage\(baseURL\)/);
 });
 
 test("Google subscription usage is selected by model without a generation probe", () => {
   assert.match(popoverSource, /query\.set\("model", activeModel\)/);
   assert.match(routeSource, /antigravityModelId\(model\)/);
   assert.match(routeSource, /withCliproxyLease\([\s\S]*'subscription-usage-limits'[\s\S]*readGoogleUsageLimits\(model\)/);
+  assert.match(routeSource, /settings\/model-health/);
+  assert.match(routeSource, /model_unavailable: true/);
+  assert.match(routeSource, /retry_at: cooldown\.retryAt/);
 });
 
 test("Anthropic reads usage first and requests bounded session recovery only when needed", () => {

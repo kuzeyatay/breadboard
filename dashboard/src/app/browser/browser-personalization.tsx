@@ -11,13 +11,15 @@ export function BrowserDailyQuote({ ownerKey }: { ownerKey: string }) {
   useEffect(() => {
     let timer = 0;
     const schedule = () => {
+      window.clearTimeout(timer);
       const now = new Date();
       setToday(now);
       const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
       timer = window.setTimeout(schedule, tomorrow.getTime() - now.getTime() + 1_000);
     };
     schedule();
-    return () => window.clearTimeout(timer);
+    window.addEventListener("focus", schedule);
+    return () => { window.clearTimeout(timer); window.removeEventListener("focus", schedule); };
   }, []);
 
   const daily = useMemo(
@@ -30,12 +32,12 @@ export function BrowserDailyQuote({ ownerKey }: { ownerKey: string }) {
   );
 
   return (
-    <figure ref={quoteRef} className="browser-daily-quote" aria-label="Daily inspirational quote">
+    <figure ref={quoteRef} className="browser-daily-quote" aria-label="Daily quote">
       <BrowserSketchOutline targetRef={quoteRef} index={2} />
       <blockquote className="browser-daily-quote-full">“{daily.quote}”</blockquote>
-      <figcaption className="browser-daily-quote-full">— {daily.author}</figcaption>
+      {daily.author && <figcaption className="browser-daily-quote-full">— {daily.author}</figcaption>}
       <blockquote className="browser-daily-quote-compact">“{compactDaily.quote}”</blockquote>
-      <figcaption className="browser-daily-quote-compact">— {compactDaily.author}</figcaption>
+      {compactDaily.author && <figcaption className="browser-daily-quote-compact">— {compactDaily.author}</figcaption>}
     </figure>
   );
 }

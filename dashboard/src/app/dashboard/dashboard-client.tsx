@@ -66,7 +66,7 @@ import {
   exportGardenFile,
   importTransferFile,
 } from "@/lib/garden-transfer/client";
-import { useToast, Toaster } from "@/app/components/toast";
+import { useToast } from "@/app/components/toast";
 import {
   requestChatNotificationOpen,
   type ChatNotificationTarget,
@@ -86,9 +86,19 @@ import {
 } from "@/lib/runtime-v2/ingest-recovery-client";
 import { usePageAppearance } from "@/app/components/use-page-appearance";
 import PageAppearance from "@/app/components/page-appearance";
+import DashboardNotifications from "@/app/components/dashboard-notifications";
+import SpotifyAmbientBackground from "@/app/components/spotify-ambient-background";
+import AsciiArtwork from "@/app/components/ascii-artwork";
+import RainBackground from "@/app/components/rain-background";
+import { SpotifyAmbientProvider } from "@/app/components/spotify-ambient-context";
 import styles from "./dashboard-appearance.module.css";
+import GardenCardSettingsMenu from "./garden-card-settings-menu";
+import CombinedHomeLauncher, { type CombinedHomeData } from "@/app/new-tab/combined-home-launcher";
+import TerminalBrowserControls from "@/app/new-tab/terminal-browser-controls";
+import homeStyles from "@/app/new-tab/combined-home.module.css";
 
 interface Props {
+  home?: CombinedHomeData;
   userEmail: string;
   username: string;
   initialClusters: Cluster[];
@@ -195,6 +205,7 @@ function Spinner({ className = "w-4 h-4" }: { className?: string }) {
 }
 
 export default function DashboardClient({
+  home,
   userEmail,
   username,
   initialClusters,
@@ -208,7 +219,7 @@ export default function DashboardClient({
   initialTerminalChatId = null,
 }: Props) {
   const router = useRouter();
-  const { toasts, addToast, dismissToast } = useToast();
+  const { toasts, centerNotifications, addToast, dismissToast, dismissCenterNotification, readCenterNotification, clearCenterNotifications, inboxStatus, refreshNotifications } = useToast({ notificationCenter: Boolean(home) });
   // A Terminal notice opens its chat in the dock on this page; a Garden notice
   // has no home here and navigates instead.
   const openChatFromNotification = useCallback(
@@ -274,9 +285,6 @@ export default function DashboardClient({
   );
   const [linkingRepoId, setLinkingRepoId] = useState<number | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
-  const [confirmVisibilityId, setConfirmVisibilityId] = useState<number | null>(
-    null,
-  );
   const [colorClusterId, setColorClusterId] = useState<number | null>(null);
   const [resizingClusterId, setResizingClusterId] = useState<number | null>(
     null,
@@ -311,7 +319,8 @@ export default function DashboardClient({
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
 
-  const appearance = usePageAppearance(userEmail.trim().toLowerCase(), "dashboard");
+  const appearancePage = home ? "new-tab" : "dashboard";
+  const appearance = usePageAppearance(userEmail.trim().toLowerCase(), appearancePage);
   const bgImage = appearance.wallpaper?.src ?? null;
   // Whoever shared a garden with you, opened over the dashboard rather than
   // instead of it.
@@ -1153,7 +1162,7 @@ export default function DashboardClient({
             prefetch={false}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
-            className="ml-auto rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-pink-300"
+            className={`${homeStyles.clusterIconAction} ml-auto rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-pink-300`}
             aria-label={`Open cluster ${folderLabel(folder)} in Quartz`}
             title="Open this cluster in Quartz"
           >
@@ -1342,7 +1351,6 @@ export default function DashboardClient({
     setEditDescription(cluster.description ?? "");
     setEditError(null);
     setConfirmDeleteId(null);
-    setConfirmVisibilityId(null);
     setColorClusterId(null);
   }
 
@@ -1495,7 +1503,6 @@ export default function DashboardClient({
 
     const previousVisibility = cluster.visibility;
     const previousOrganizationId = cluster.organization_id;
-    setConfirmVisibilityId(null);
     if (
       previousVisibility === nextVisibility &&
       previousOrganizationId === organizationId
@@ -1657,7 +1664,6 @@ export default function DashboardClient({
     if (!clickedBorder) return;
 
     setConfirmDeleteId(null);
-    setConfirmVisibilityId(null);
     setColorClusterId((current) =>
       current === cluster.id ? null : cluster.id,
     );
@@ -1727,7 +1733,6 @@ export default function DashboardClient({
     setResizingClusterId(cluster.id);
     setColorClusterId(null);
     setConfirmDeleteId(null);
-    setConfirmVisibilityId(null);
 
     const previousCursor = document.body.style.cursor;
     const previousUserSelect = document.body.style.userSelect;
@@ -2213,10 +2218,9 @@ export default function DashboardClient({
         addToast(
           `Added ${successCount} file${successCount > 1 ? "s" : ""} to ${uploadCluster.name}${vlmUploadEnabled ? " with VLM parsing" : anydocUploadEnabled ? " with anydoc conversion" : isHandwriting && hasHandwritingCompatibleFile ? " with handwriting OCR" : ""}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""} in ${totalDuration}`,
         );
-        // Ahead of the extraction warnings: the message already names the file,
-        // and it is the one a user should read before acting on the document.
+        // Keep scan findings available for review after a successful import.
         for (const warning of hiddenContentWarnings) {
-          addToast(warning, "error", "Hidden content detected");
+          addToast(warning, "success", "Document content to review");
         }
         for (const warning of screenshotWarnings) addToast(warning);
         router.refresh();
@@ -2266,18 +2270,20 @@ export default function DashboardClient({
       : myClusters.find((cluster) => cluster.id === confirmDeleteId) ?? null;
 
   return (
+    <SpotifyAmbientProvider ownerKey={home?.widgetOwnerKey ?? userEmail.trim().toLowerCase()}>
     <div
       // Marks the pixels the terminal dock's glass bar refracts.
       data-glass-scene-root
       data-dashboard-page
+      data-combined-home={Boolean(home) || undefined}
       data-wallpaper-ready={appearance.ready}
-      data-wallpaper-tone={bgImage ? appearance.wallpaperTone : undefined}
-      className={`${styles.surface} dashboard-shell min-h-screen bg-[var(--paper-bg)] text-white flex flex-col`}
+      data-wallpaper-tone={home && appearance.asciiBackground ? "dark" : home && appearance.ambientBackground ? appearance.theme : bgImage ? appearance.wallpaperTone : undefined}
+      className={`${styles.surface} ${home ? `${homeStyles.surface} browser-home-widget-surface` : ""} dashboard-shell min-h-screen bg-[var(--paper-bg)] text-white flex flex-col`}
       style={{
         // Clear the fixed dock, then a screenful of slack so the bottom of the
         // grid can always be scrolled up to a comfortable reading position.
         paddingBottom: "calc(var(--bb-dock-height, 0px) + 40vh)",
-        ...(bgImage
+        ...(bgImage && !home
           ? {
               backgroundImage: `url("${bgImage}")`,
               backgroundSize: "cover",
@@ -2287,17 +2293,27 @@ export default function DashboardClient({
           : {}),
       }}
     >
-      <NavBar
+      {!home && <NavBar
         email={userEmail}
         username={username}
         shortcuts={navbarShortcuts}
         showFlowers={showNavbarFlowers}
-      />
+        showActions={!home}
+      />}
 
-      <PageAppearance page="dashboard" ownerKey={userEmail.trim().toLowerCase()} />
+      {home && <div aria-hidden={appearance.asciiBackground ? undefined : true} className={`browser-start-page ${homeStyles.backdrop}`} data-has-wallpaper={Boolean(bgImage || appearance.asciiBackground)} data-spotify-ambient={appearance.ambientBackground || undefined} style={bgImage ? { backgroundImage: `url("${bgImage}")` } : undefined}>
+        {appearance.ambientBackground && <SpotifyAmbientBackground theme={appearance.theme} spotifyColors={appearance.spotifyBackground} randomColors={appearance.randomColorsBackground} />}
+        {appearance.asciiBackground && <AsciiArtwork slug={appearance.asciiBackground} />}
+        {appearance.rainMode !== "off" && <RainBackground theme={appearance.theme} mode={appearance.rainMode} />}
+      </div>}
+      {home && <div aria-hidden="true" className={`browser-start-page ${homeStyles.rings}`} />}
+      <PageAppearance page={appearancePage} ownerKey={userEmail.trim().toLowerCase()} triggerIcon={home ? "palette" : "pencil"} placement={home ? "terminal" : "page"} />
+
 
       {/* Persistent, top-left: what is scheduled to run on its own. */}
-      <ScheduledChatsDock />
+      {!home && <ScheduledChatsDock />}
+
+      {home && <CombinedHomeLauncher data={home} navigation={<NavBar email={userEmail} username={username} shortcuts={navbarShortcuts} showFlowers={showNavbarFlowers} showActions={false} trailingActions={<TerminalBrowserControls ownerKey={home.widgetOwnerKey} />} />} />}
 
       <input
         ref={transferInputRef}
@@ -2307,9 +2323,9 @@ export default function DashboardClient({
         onChange={handleTransferFileChange}
       />
 
-      <div className="max-w-5xl mx-auto w-full px-6 py-12 flex-1">
-        <div className="flex flex-col gap-5 mb-10">
-          <div className="flex items-center justify-between gap-4">
+      <main aria-label="Gardens and folders" className={home ? homeStyles.gardens : "max-w-5xl mx-auto w-full px-6 py-12 flex-1"}>
+        <div className={home ? "" : "flex flex-col gap-5 mb-10"}>
+          {!home && <div className="flex items-center justify-between gap-4">
             <div className={styles.wallpaperText}>
               <h1 className="text-2xl font-semibold tracking-tight">Gardens</h1>
               <p className="text-sm text-gray-500 mt-1">
@@ -2335,13 +2351,14 @@ export default function DashboardClient({
                 </Link>
               </LinkContextMenu>
             </div>
-          </div>
+          </div>}
 
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className={home ? homeStyles.gardenControls : "flex flex-col gap-3 sm:flex-row sm:items-center"}>
             <div className="neu-segmented flex rounded-lg border border-gray-800 bg-gray-900/60 p-1">
               <button
                 type="button"
                 onClick={() => setClusterView("mine")}
+                aria-pressed={clusterView === "mine"}
                 className={[
                   "px-3 py-1.5 text-sm rounded-md transition-colors",
                   clusterView === "mine"
@@ -2354,6 +2371,7 @@ export default function DashboardClient({
               <button
                 type="button"
                 onClick={() => setClusterView("public")}
+                aria-pressed={clusterView === "public"}
                 className={[
                   "px-3 py-1.5 text-sm rounded-md transition-colors",
                   clusterView === "public"
@@ -2367,6 +2385,7 @@ export default function DashboardClient({
                 <button
                   type="button"
                   onClick={() => setClusterView("organization")}
+                  aria-pressed={clusterView === "organization"}
                   className={[
                     "px-3 py-1.5 text-sm rounded-md transition-colors",
                     clusterView === "organization"
@@ -2379,7 +2398,10 @@ export default function DashboardClient({
               )}
             </div>
 
-            <div className="relative min-w-0 flex-1">
+            {home && <LinkContextMenu href="/garden?view=private" label="Explore all gardens">
+              <Link href="/garden?view=private" prefetch={false} onNavigate={(event) => { event.preventDefault(); window.location.assign("/garden?view=private"); }} className="neu-button px-4 py-2 text-sm font-medium text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors">Explore All</Link>
+            </LinkContextMenu>}
+            {!home && <div className="relative min-w-0 flex-1">
               <svg
                 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-600"
                 fill="none"
@@ -2427,7 +2449,7 @@ export default function DashboardClient({
                   </svg>
                 </button>
               )}
-            </div>
+            </div>}
           </div>
         </div>
 
@@ -2696,215 +2718,27 @@ export default function DashboardClient({
                                 </button>
                               </div>
                             )}
-                            {canManage &&
-                              confirmVisibilityId === cluster.id && (
-                                <div className="dashboard-garden-card-overlay absolute top-2.5 flex w-48 flex-col gap-0.5 rounded-lg border border-gray-700 bg-gray-900 p-1 shadow-lg">
-                                  {[
-                                    {
-                                      key: "private",
-                                      label: "Keep private",
-                                      visibility: "private" as ClusterVisibility,
-                                      organizationId: null as number | null,
-                                      active:
-                                        cluster.visibility === "private",
-                                    },
-                                    ...organizations.map((organization) => ({
-                                      key: `organization-${organization.id}`,
-                                      label: `Share with ${organization.name}`,
-                                      visibility:
-                                        "organization" as ClusterVisibility,
-                                      organizationId:
-                                        organization.id as number | null,
-                                      active:
-                                        cluster.visibility === "organization" &&
-                                        cluster.organization_id ===
-                                          organization.id,
-                                    })),
-                                    {
-                                      key: "public",
-                                      label: "Share publicly",
-                                      visibility: "public" as ClusterVisibility,
-                                      organizationId: null as number | null,
-                                      active: cluster.visibility === "public",
-                                    },
-                                  ].map((option) => (
-                                    <button
-                                      key={option.key}
-                                      data-card-action="true"
-                                      type="button"
-                                      onClick={() =>
-                                        handleVisibilityChange(
-                                          cluster,
-                                          option.visibility,
-                                          option.organizationId,
-                                        )
-                                      }
-                                      className={[
-                                        "truncate rounded px-2 py-1 text-left text-xs transition-colors",
-                                        option.active
-                                          ? "bg-gray-800 text-white"
-                                          : "text-gray-400 hover:bg-gray-800 hover:text-white",
-                                      ].join(" ")}
-                                    >
-                                      {option.label}
-                                    </button>
-                                  ))}
-                                  <button
-                                    data-card-action="true"
-                                    type="button"
-                                    onClick={() => setConfirmVisibilityId(null)}
-                                    className="mt-0.5 rounded border-t border-gray-800 px-2 py-1 text-left text-[10px] text-gray-600 transition-colors hover:text-white"
-                                  >
-                                    Close
-                                  </button>
-                                </div>
-                              )}
-                            {canManage &&
-                              confirmVisibilityId !== cluster.id && (
-                                <div className="dashboard-garden-card-controls absolute flex items-center gap-2">
-                                  <button
-                                    data-card-action="true"
-                                    type="button"
-                                    onClick={() =>
-                                      void handleConnectRepository(cluster)
-                                    }
-                                    disabled={linkingRepoId !== null}
-                                    style={{
-                                      backgroundColor: "var(--paper-surface)",
-                                    }}
-                                    className={[
-                                      "neu-button grid h-7 w-7 shrink-0 place-items-center rounded-full transition-colors disabled:opacity-40",
-                                      cluster.repo_connected
-                                        ? "text-[var(--botanical)]"
-                                        : "text-gray-500 hover:text-white",
-                                    ].join(" ")}
-                                    title={
-                                      cluster.repo_connected
-                                        ? `Change repository (${cluster.repo_name ?? "connected"})`
-                                        : "Connect a local repository"
-                                    }
-                                    aria-label={
-                                      cluster.repo_connected
-                                        ? `Change connected repository ${cluster.repo_name ?? ""}`.trim()
-                                        : "Connect a local repository"
-                                    }
-                                  >
-                                    {linkingRepoId === cluster.id ? (
-                                      <Spinner className="h-3.5 w-3.5" />
-                                    ) : (
-                                      <svg
-                                        className="h-3.5 w-3.5"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        strokeWidth={1.8}
-                                        aria-hidden
-                                      >
-                                        <circle cx="6" cy="5" r="2" />
-                                        <circle cx="18" cy="6" r="2" />
-                                        <circle cx="6" cy="19" r="2" />
-                                        <path
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          d="M6 7v10m2-8h5a5 5 0 0 0 5-5"
-                                        />
-                                      </svg>
-                                    )}
-                                  </button>
-                                  <button
-                                    data-card-action="true"
-                                    type="button"
-                                    onClick={() => openEditModal(cluster)}
-                                    className="p-1 text-gray-500 hover:text-white transition-colors"
-                                    title="Edit garden"
-                                    aria-label="Edit garden"
-                                  >
-                                    <svg
-                                      className="w-3.5 h-3.5"
-                                      fill="none"
-                                      viewBox="0 0 24 24"
-                                      stroke="currentColor"
-                                      strokeWidth={1.8}
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
-                                      />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    data-card-action="true"
-                                    type="button"
-                                    onClick={() => handleExportGarden(cluster)}
-                                    disabled={transferBusy !== null}
-                                    className="p-1 text-gray-500 hover:text-white transition-colors disabled:opacity-40"
-                                    title="Export garden as a .garden file"
-                                    aria-label="Export garden"
-                                  >
-                                    {transferBusy === `garden:${cluster.slug}` ? (
-                                      <Spinner className="w-3.5 h-3.5" />
-                                    ) : (
-                                      <svg
-                                        className="w-3.5 h-3.5"
-                                        fill="none"
-                                        viewBox="0 0 24 24"
-                                        stroke="currentColor"
-                                        strokeWidth={1.8}
-                                      >
-                                        <path
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          d="M12 3v12m0 0 4-4m-4 4-4-4M3.75 16.5v1.875A2.625 2.625 0 0 0 6.375 21h11.25a2.625 2.625 0 0 0 2.625-2.625V16.5"
-                                        />
-                                      </svg>
-                                    )}
-                                  </button>
-                                  <button
-                                    data-card-action="true"
-                                    type="button"
-                                    onClick={() =>
-                                      setConfirmVisibilityId(cluster.id)
-                                    }
-                                    className="shrink-0 rounded-full border border-gray-700 px-2.5 py-0.5 text-[11px] text-gray-300 transition-colors hover:border-gray-500 hover:text-white"
-                                    title="Change who can see this garden"
-                                  >
-                                    {cluster.visibility === "organization"
-                                      ? (cluster.organizationName ??
-                                        "organization")
-                                      : cluster.visibility}
-                                  </button>
-                                  <button
-                                    data-card-action="true"
-                                    type="button"
-                                    onClick={() =>
-                                      setConfirmDeleteId(cluster.id)
-                                    }
-                                    disabled={isDeleting}
-                                    className="p-1 text-gray-700 hover:text-red-500 transition-colors disabled:opacity-40"
-                                    title="Delete garden"
-                                  >
-                                    {isDeleting ? (
-                                      <Spinner className="w-3.5 h-3.5" />
-                                    ) : (
-                                      <svg
-                                        className="w-3.5 h-3.5"
-                                        fill="none"
-                                        viewBox="0 0 24 24"
-                                        stroke="currentColor"
-                                        strokeWidth={1.8}
-                                        aria-hidden="true"
-                                      >
-                                        <path
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          d="M4 7h16M9.5 7V5.5A1.5 1.5 0 0 1 11 4h2a1.5 1.5 0 0 1 1.5 1.5V7m1.9 0-.6 11.1a2 2 0 0 1-2 1.9H8.7a2 2 0 0 1-2-1.9L6.1 7M10 11v5m4-5v5"
-                                        />
-                                      </svg>
-                                    )}
-                                  </button>
-                                </div>
-                              )}
+                            {canManage && (
+                              <div className="dashboard-garden-card-controls absolute">
+                                <GardenCardSettingsMenu
+                                  cluster={cluster}
+                                  organizations={organizations}
+                                  repositoryBusy={linkingRepoId !== null}
+                                  connecting={linkingRepoId === cluster.id}
+                                  exportBusy={transferBusy !== null}
+                                  exporting={transferBusy === `garden:${cluster.slug}`}
+                                  deleting={isDeleting}
+                                  onOpen={() => setColorClusterId(null)}
+                                  onConnectRepository={() => void handleConnectRepository(cluster)}
+                                  onEdit={() => openEditModal(cluster)}
+                                  onExport={() => void handleExportGarden(cluster)}
+                                  onVisibilityChange={(visibility, organizationId) =>
+                                    void handleVisibilityChange(cluster, visibility, organizationId)
+                                  }
+                                  onDelete={() => setConfirmDeleteId(cluster.id)}
+                                />
+                              </div>
+                            )}
                             {!canManage && (
                               <span className="dashboard-garden-card-controls absolute shrink-0 rounded-full border border-gray-700 px-2.5 py-0.5 text-[11px] text-gray-400">
                                 {cluster.visibility === "organization"
@@ -2963,8 +2797,8 @@ export default function DashboardClient({
                                   <p className="text-xs text-gray-600 mt-2">
                                     {cluster.noteCount}{" "}
                                     {cluster.noteCount === 1
-                                      ? "knowledge node"
-                                      : "knowledge nodes"}{" "}
+                                      ? "note"
+                                      : "notes"}{" "}
                                     -{" "}
                                     {new Date(
                                       cluster.created_at,
@@ -3056,6 +2890,7 @@ export default function DashboardClient({
                                     <Link
                                       data-card-action="true"
                                       href={`/garden/${cluster.slug}`}
+                                      prefetch={false}
                                       className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
                                     >
                                       Explore
@@ -3068,6 +2903,7 @@ export default function DashboardClient({
                                     <Link
                                       data-card-action="true"
                                       href={`/gardens/${cluster.slug}`}
+                                      prefetch={false}
                                       className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
                                     >
                                       Workspace
@@ -3082,6 +2918,7 @@ export default function DashboardClient({
                                   <Link
                                     data-card-action="true"
                                     href={`/garden/${cluster.slug}`}
+                                    prefetch={false}
                                     className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
                                   >
                                     Explore
@@ -3183,7 +3020,7 @@ export default function DashboardClient({
             </div>
           </>
         )}
-      </div>
+      </main>
 
       {gardenPendingDeletion && (
         <ConfirmDialog
@@ -3195,8 +3032,8 @@ export default function DashboardClient({
               ? "The empty garden will be removed from your dashboard."
               : `${gardenPendingDeletion.noteCount} ${
                   gardenPendingDeletion.noteCount === 1
-                    ? "knowledge node"
-                    : "knowledge nodes"
+                    ? "note"
+                    : "notes"
                 } will also be deleted.`
           }
           confirmLabel="Delete garden"
@@ -3724,7 +3561,7 @@ export default function DashboardClient({
                     <p className="text-[11px] text-gray-600 mt-0.5">
                       {handwritingUploadEnabled
                         ? "Required for handwritten uploads so the map is built from OCR text."
-                        : "Build the Learning Spine, Source Map, and Scope Contract - slower but richer"}
+                        : "Create a detailed learning plan from your sources. Takes longer."}
                     </p>
                   </div>
                 </label>
@@ -3782,10 +3619,17 @@ export default function DashboardClient({
         />
       )}
 
-      <Toaster
-        toasts={toasts}
-        onDismiss={dismissToast}
+      <DashboardNotifications
+        enabled={Boolean(home)}
+        notifications={centerNotifications}
+        status={inboxStatus}
+        onRefresh={refreshNotifications}
+        onDismiss={dismissCenterNotification}
+        onRead={readCenterNotification}
+        onClear={clearCenterNotifications}
         onOpenChat={openChatFromNotification}
+        toasts={toasts}
+        onDismissToast={dismissToast}
       />
 
       <LazyDashboardAgentTerminal
@@ -3796,5 +3640,6 @@ export default function DashboardClient({
         backdropImage={bgImage}
       />
     </div>
+    </SpotifyAmbientProvider>
   );
 }

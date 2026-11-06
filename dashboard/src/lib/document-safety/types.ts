@@ -9,7 +9,8 @@
 export type SafetySeverity = "critical" | "warning" | "info";
 
 /**
- * `verdict` is derived, never set by a layer:
+ * `verdict` is derived, never set by a layer. These are scan priorities, not
+ * conclusions about the document's intent or reliability:
  * - `suspicious` — at least one critical finding.
  * - `review` — warnings only.
  * - `notes` — info only.
@@ -41,9 +42,8 @@ export interface DocumentSafetyReport {
   /** Which layers actually ran, so a skipped format is visible rather than implied clean. */
   layers: string[];
   /**
-   * Text a layer proved a human reader cannot see. The injection layer reads
-   * this at critical severity and the visible text at warning severity, because
-   * the same phrase means something very different in each.
+   * Text a layer flagged as potentially hidden. Formatting checks do not
+   * always establish actual visibility; inspect the text and page in context.
    */
   hiddenText: string;
 }

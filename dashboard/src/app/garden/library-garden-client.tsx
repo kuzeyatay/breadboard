@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import GardenAssistantSwitch from '@/app/components/hermes/garden-assistant-switch';
 import { Toaster, useToast } from '@/app/components/toast';
 import { quartzUrlWithAppTheme } from '@/lib/quartz-url';
+import { normalizeDocumentPath } from '@/lib/garden-document-path';
 import { exportFolderPdf, type FolderPdfExportMessage } from '@/lib/folder-pdf-export-client';
 import {
   quartzAssistantSelectionRequest,
@@ -20,6 +21,8 @@ import { useCanonicalQuartzDocument } from './use-canonical-quartz-document';
 import { useCanonicalGardenFolders } from './use-canonical-garden-folders';
 import { useQuartzViewLease } from './use-quartz-view-lease';
 import { useQuartzReaderLayout } from './use-quartz-reader-layout';
+import { useQuartzNavigationProgress } from './use-quartz-navigation-progress';
+import GardenDocumentEditorBridge from './garden-document-editor-bridge';
 import GardenMarkdownArtifacts from './garden-markdown-artifacts';
 
 interface Props {
@@ -32,6 +35,7 @@ interface Props {
 interface QuartzMessage {
   action?: string;
   type?: string;
+  snapshot?: boolean;
   open?: boolean;
   slug?: string;
   title?: string;
@@ -69,7 +73,7 @@ function noteSlugFromQuartzSlug(slug: string, clusterSlug: string): string {
     .split('/')
     .filter(Boolean);
   if (segments[0] === 'garden' && segments[1] === clusterSlug) return segments.slice(2).join('/');
-  if (segments[0] === clusterSlug) return segments.slice(1).join('/');
+  if (segments[0] === clusterSlug && segments.length > 1) return segments.slice(1).join('/');
   return segments.join('/');
 }
 
@@ -90,22 +94,12 @@ function isMarkdownDocumentSlug(slug: string, clusterSlug: string): boolean {
     .replace(/^\/+|\/+$/g, '')
     .trim()
     .toLowerCase();
-  const cleanCluster = clusterSlug
-    .replace(/^\/+|\/+$/g, '')
-    .trim()
-    .toLowerCase();
-  return Boolean(
-    clean &&
-    clean !== 'index' &&
-    clean !== cleanCluster &&
-    !clean.endsWith('/index') &&
-    !clean.endsWith('/_index') &&
-    !clean.startsWith('tags/'),
-  );
+  return !clean.startsWith('tags/') && normalizeDocumentPath(clusterSlug, slug) !== null;
 }
 
 export default function LibraryGardenClient({ src, title, quartzViewId = null }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  useQuartzNavigationProgress(iframeRef, src);
   const topologyRequestsRef = useRef(new Set<string>());
   const quartzLease = useQuartzViewLease(true, quartzViewId);
   const { toasts, dismissToast } = useToast();
@@ -267,36 +261,7 @@ export default function LibraryGardenClient({ src, title, quartzViewId = null }:
         }
 
         if (data.type === 'second-brain:move-note') {
-          const moveSlug = typeof data.slug === 'string' ? data.slug : '';
-          if (!moveSlug) return;
-          fetch('/api/folders', {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              clusterSlug: folderCluster,
-              slug: moveSlug,
-              toFolder: typeof data.toFolder === 'string' ? data.toFolder : '',
-            }),
-          })
-            .then(async (response) => {
-              const body = await response.json().catch(() => ({}));
-              const ok = response.ok && body.success;
-              postToQuartz({
-                type: 'second-brain:move-note-result',
-                slug: moveSlug,
-                ok,
-                error: body.error,
-              });
-              if (ok) reloadGarden();
-            })
-            .catch(() => {
-              postToQuartz({
-                type: 'second-brain:move-note-result',
-                slug: moveSlug,
-                ok: false,
-                error: 'Could not move note',
-              });
-            });
+          // The shared folder hook persists moves and refreshes the live tree.
           return;
         }
 
@@ -342,7 +307,7 @@ export default function LibraryGardenClient({ src, title, quartzViewId = null }:
       }
 
       if (data.type !== 'second-brain:navigate' || !data.slug) return;
-      setMarkdownEditorOpen(false);
+        if (data.snapshot !== true) setMarkdownEditorOpen(false);
 
       const cluster = clusterFromQuartzSlug(data.slug);
       if (!cluster) {
@@ -363,7 +328,11 @@ export default function LibraryGardenClient({ src, title, quartzViewId = null }:
       const slug = noteSlugFromQuartzSlug(data.slug, cluster);
       const isMarkdownDocument = isMarkdownDocumentSlug(slug, cluster);
       setActiveCluster(cluster);
-      setActiveMarkdown(isMarkdownDocument ? { cluster, slug, title: data.title, loading: true } : null);
+        setActiveMarkdown(current => {
+          if (!isMarkdownDocument) return null;
+          if (current?.cluster === cluster && current.slug === slug) return current;
+          return { cluster, slug, title: data.title, loading: true };
+        });
       window.dispatchEvent(new CustomEvent('sb:active-cluster', { detail: { cluster } }));
       window.dispatchEvent(
         new CustomEvent('sb:active-note', {
@@ -380,7 +349,7 @@ export default function LibraryGardenClient({ src, title, quartzViewId = null }:
     return () => window.removeEventListener('message', handleMessage);
   }, [quartzOrigin]);
 
-  const canonicalReader = useCanonicalQuartzDocument(iframeRef, quartzOrigin, activeMarkdown, setActiveMarkdown);
+  const canonicalReader = useCanonicalQuartzDocument(iframeRef, quartzOrigin, activeMarkdown, setActiveMarkdown, quartzLease.ready);
   useCanonicalGardenFolders(iframeRef, quartzOrigin);
 
 
@@ -389,27 +358,23 @@ export default function LibraryGardenClient({ src, title, quartzViewId = null }:
       className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-gray-950 lg:pr-[var(--garden-assistant-space)]"
       style={readerLayoutStyle}
     >
-      {canonicalReader.error ? <p role="alert" className="absolute left-3 top-3 z-20 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm text-[var(--danger)]">{canonicalReader.error}<button type="button" className="ml-2 underline" onClick={() => void canonicalReader.retry()}>Retry</button></p> : null}
+      {quartzLease.ready && canonicalReader.error ? <p role="alert" className="absolute left-3 top-3 z-20 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm text-[var(--danger)]">{canonicalReader.error}<button type="button" className="ml-2 underline" onClick={() => void canonicalReader.retry()}>Retry</button></p> : null}
       <div className="relative min-h-0 min-w-0 flex-1 bg-gray-950">
         {quartzUnavailable && (
-          <div className="absolute inset-0 z-10 grid place-items-center bg-gray-950">
-            <div className="flex flex-col items-center gap-4">
-              <span className="text-xs tracking-widest text-gray-700 uppercase">
-                Quartz did not respond
-              </span>
-              <a
-                href={src}
-                target="_blank"
-                rel="noreferrer"
-                className="neu-button rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-500 hover:text-white"
-              >
-                Open Quartz directly
-              </a>
-            </div>
+          <div className="absolute left-3 top-3 z-10 flex items-center gap-3 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm" role="alert">
+            <span>Garden did not respond</span>
+            <button type="button" className="underline disabled:opacity-50" disabled={quartzLease.retrying}
+              onClick={async () => {
+                if (!await quartzLease.retry()) return;
+                setLoadFailed(false);
+                const iframe = iframeRef.current;
+                if (iframe) iframe.src = quartzUrlWithAppTheme(src);
+              }}>{quartzLease.retrying ? 'Retrying…' : 'Retry'}</button>
           </div>
         )}
 
-        <iframe
+      <iframe
+        data-quartz-reader
           ref={iframeRef}
           key={src}
           src={quartzLease.ready ? quartzUrlWithAppTheme(src) : undefined}
@@ -439,6 +404,7 @@ export default function LibraryGardenClient({ src, title, quartzViewId = null }:
       />
 
       <Toaster toasts={toasts} onDismiss={dismissToast} />
+      <GardenDocumentEditorBridge iframeRef={iframeRef} quartzOrigin={quartzOrigin} />
       <GardenMarkdownArtifacts iframeRef={iframeRef} quartzOrigin={quartzOrigin} />
     </div>
   );

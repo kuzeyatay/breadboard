@@ -1,5 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { resolveDataRoot } from "./data-location";
+import { resolveBulkRoot } from "./bulk-location";
 
 /**
  * Single authority for every filesystem location the desktop app uses.
@@ -28,6 +30,8 @@ export interface ResolvedPaths {
   readonly resourcesRoot: string;
   /** Base of all mutable data (Electron userData in packaged mode). */
   readonly dataRoot: string;
+  /** Optional direct bulk payload authority. Databases and job metadata stay dataRoot. */
+  readonly bulkRoot?: string;
   /** Dashboard SQLite directory (contains brain.db, skills-catalog.db). */
   readonly databaseDir: string;
   /** Quartz workspace (mutable: content/, public/, .quartz-cache). */
@@ -80,11 +84,14 @@ export function repoRootFromModuleDir(moduleDir: string): string {
 export function resolvePaths(input: PathResolverInput): ResolvedPaths {
   const mode: DesktopMode = input.isPackaged && !input.forceDev ? "packaged" : "dev";
   const qaMode = mode === "dev" && input.qaMode === true;
-  const userDataRoot = path.join(input.userDataDir, "Data");
+  const userDataRoot = resolveDataRoot(input.userDataDir, qaMode);
 
   if (mode === "dev") {
     const repoRoot = repoRootFromModuleDir(input.moduleDir);
     assertDir(repoRoot, "repository root");
+    if (isInside(repoRoot, userDataRoot) || isInside(userDataRoot, repoRoot)) {
+      throw new Error("Breadboard data must be separate from the repository's program files.");
+    }
     // Hot/lean development and the packaged app are two program builds of the
     // same local product, not two accounts. Keep one durable profile so a
     // person sees the same gardens, conversations, memories, and artifacts in
@@ -100,6 +107,7 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
       runtimeRoot,
       resourcesRoot: repoRoot,
       dataRoot,
+      bulkRoot: resolveBulkRoot(input.userDataDir, qaMode, [dataRoot, repoRoot]),
       databaseDir: path.join(dataRoot, "database"),
       quartzWorkspace,
       quartzContent: path.join(quartzWorkspace, "content"),
@@ -132,6 +140,9 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
     throw new Error("Packaged mode requires process.resourcesPath");
   }
   const appRoot = path.join(resources, "app-services");
+  if (isInside(resources, userDataRoot) || isInside(userDataRoot, resources)) {
+    throw new Error("Breadboard data must be separate from the installed program files.");
+  }
   const dataRoot = userDataRoot;
   const quartzWorkspace = path.join(dataRoot, "quartz");
   return {
@@ -141,6 +152,7 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
     runtimeRoot: resources,
     resourcesRoot: resources,
     dataRoot,
+    bulkRoot: resolveBulkRoot(input.userDataDir, false, [dataRoot, resources]),
     databaseDir: path.join(dataRoot, "database"),
     quartzWorkspace,
     quartzContent: path.join(quartzWorkspace, "content"),

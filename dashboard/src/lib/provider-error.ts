@@ -115,13 +115,18 @@ const FAILURE_SHAPES: RegExp[] = [
   /^HTTP\s*[45]\d{2}\s*[:\-]/i,
 ];
 
+/** Match a whole transport-error response, never a discussion of HTTP errors. */
+export function isBareProviderError(raw: unknown): boolean {
+  return typeof raw === "string" && /^\s*(?:internal server error|bad gateway|service unavailable|gateway timeout)\s*[.!]?\s*$/i.test(raw);
+}
+
 /** Does this text look like an upstream failure rather than a model answer? */
 export function isProviderErrorText(raw: unknown): boolean {
   if (typeof raw !== "string") return false;
   // Runtime status lines lead with an emoji marker; ignore it when matching.
   const text = raw.replace(/^[^\p{L}\p{N}]+/u, "").trim();
   if (!text) return false;
-  return FAILURE_SHAPES.some((shape) => shape.test(text));
+  return isBareProviderError(text) || FAILURE_SHAPES.some((shape) => shape.test(text));
 }
 
 /**

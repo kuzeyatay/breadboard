@@ -1,6 +1,6 @@
 ---
 name: watch
-description: Analyze a video URL or local video with timestamped captions, optional Whisper transcription, and representative frames so answers are grounded in what was said and shown.
+description: Retrieve video transcripts and captions, or analyze a video URL or local recording using speech and representative frames.
 license: MIT
 allowed-tools:
   - watch_run
@@ -19,7 +19,8 @@ metadata:
 # Watch
 
 Use this skill when the user supplies a video URL or local video and wants a
-summary, explanation, comparison, timestamp, visual inspection, or diagnosis.
+transcript, subtitles, summary, explanation, comparison, timestamp, visual
+inspection, or diagnosis.
 The runtime prefers native captions, falls back to a configured Whisper
 provider when needed, and extracts representative JPEG frames. Combine both
 evidence streams; do not claim to have seen content that neither stream shows.
@@ -63,9 +64,10 @@ answer that you cannot see videos — the file is on disk and this tool opens it
 
 The tool runs the checked-in runtime outside the model's command surface,
 keeps local paths inside the authorized workspace, and returns a Markdown
-report containing frame paths and a timestamped transcript. It also sends an
-evenly sampled, bounded set of frames plus the report through Breadboard's local
-ChatMock gateway and returns `chatmockAnalysis`. Use that analysis on runtimes
+report containing frame paths and a timestamped transcript. When frames are
+present, it also sends an evenly sampled, bounded set plus the report through
+Breadboard's local ChatMock gateway and returns `chatmockAnalysis`. Caption-only
+runs return the report directly without a second model call. Use visual analysis on runtimes
 without an image reader. When an image-capable file reader is available, inspect
 all relevant returned frames directly before making fine-grained visual claims.
 Do not paste image bytes or invent descriptions from filenames.
@@ -133,9 +135,26 @@ Attribute an unverified mechanism to the video and verify research separately
 before presenting it as established. `chatmockAnalysis` is a synthesis of the
 same evidence, not an independent source; check its claims against the transcript.
 
-Do not paste the full transcript unless the user asks for it. For a follow-up
-about the same processed video, reuse the existing report and frames when they
-cover the question. If the prior report is partial, retrieve the missing context.
+## Transcript requests
+
+For a request for captions, subtitles, or a transcript, use `detail: transcript`
+unless the question also needs visuals. Check the available caption tool before
+claiming the video cannot be accessed or sending the user to copy captions by
+hand. Reuse the existing report for follow-ups about the same video; retrieve
+missing context only when the prior report is partial.
+
+Keep retrieval and reproduction distinct. A successful caption fetch is evidence
+of access, not of a license to reproduce the source. A URL remains an external
+source even after its captions are retrieved. Do not label it user-supplied text.
+For a transcript the user pasted or uploaded, perform the requested cleanup or
+formatting without asking them to supply it again. Full reproduction can also be
+appropriate for the user's own material, public-domain material, or a source
+with an applicable license; do not invent a blanket ban on video transcripts.
+When full reproduction is permitted and requested, return the actual transcript,
+preserving the words and marking gaps; do not substitute a summary. Otherwise,
+briefly explain the reproduction limit and offer a summary or permitted excerpt
+without falsely claiming the tool failed. Do not paste a full transcript when
+the user asked only for an explanation or summary.
 
 ## Useful options for the bundled script
 
@@ -157,7 +176,7 @@ Native captions are free and preferred. If captions are absent, the optional
 Whisper fallback extracts mono audio and sends only that audio to the selected
 Groq or OpenAI transcription endpoint. Credentials are read from environment
 variables or `~/.config/watch/.env`; never print them or place them in a prompt.
-For Breadboard runs, the report and at most 24 evenly sampled frames are sent
+For Breadboard runs with frames, the report and at most 24 evenly sampled frames are sent
 through the local ChatMock gateway to the active configured model for evidence
 analysis. Downloaded media, audio, and frames remain in the reported work
 directory.

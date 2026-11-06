@@ -1,0 +1,63 @@
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  min-width: 0;
+  /* Let the pill extend left while its text aligns with the response above. */
+  margin-left: -8px;
+  padding: 6px 8px 6px 7px;
+  border: 1px solid var(--line);
+  border-radius: 30px;
+  background: var(--paper-raised);
+  cursor: text;
+}
+
+.composer:focus-within {
+  border-color: var(--botanical);
+  box-shadow: inset 0 0 0 1px var(--botanical);
+}
+
+.input {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  min-height: 24px;
+  max-width: 100%;
+  margin: 6px 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow-y: hidden;
+  background: transparent;
+  color: var(--ink);
+  caret-color: var(--composer-caret);
+  font: inherit;
+  font-size: 14px;
+  line-height: 24px;
+}
+
+.input::placeholder { color: var(--ink-muted); }
+
+.sendWrap { flex: none; width: 36px; height: 36px; border-radius: 50%; }
+
+.send {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--paper-raised);
+  color: var(--ink);
+  box-shadow: var(--neu-soft-shadow);
+  cursor: pointer;
+}
+
+.send:hover:not(:disabled) { background: var(--paper-strong); }
+.send:active:not(:disabled) { transform: scale(.94); }
+.send:focus-visible { outline: 2px solid var(--botanical); outline-offset: 2px; }
+.send:disabled { color: var(--ink-muted); cursor: default; }

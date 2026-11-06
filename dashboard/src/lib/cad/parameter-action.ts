@@ -25,7 +25,7 @@ import {
   CAD_VALIDATION_DISCLAIMER,
   engineeringReviewNotice,
 } from "./safety.ts";
-import { buildAndRecord, type CadToolContext } from "./tools.ts";
+import { buildAndRecord, cadRebuildTimeoutMs, type CadToolContext } from "./tools.ts";
 import type { CADDesignSpec, ParametricCADArtifact } from "./types.ts";
 import type Database from "better-sqlite3";
 
@@ -136,7 +136,10 @@ export async function applyParameterUpdate(
     entrypoint: revision.entrypoint,
     parameters,
     instruction,
-    timeoutMs: 45_000,
+    // A parameter rebuild must support assemblies that took more than the
+    // simple-part default to generate. The worker still enforces its deadline
+    // and independent memory limit.
+    timeoutMs: cadRebuildTimeoutMs(revision.provenance_json),
     context,
   });
   if (!outcome.ok || !outcome.revision) {

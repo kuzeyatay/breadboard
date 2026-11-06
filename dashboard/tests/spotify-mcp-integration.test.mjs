@@ -198,6 +198,60 @@ test("Spotify intent reaches the live catalog without confusing search with play
   assert.doesNotMatch(agent.instructions, /open Spotify|remote MCP|Music Assistant|Sendspin/);
 });
 
+test("spoken artist completions retain the preceding music request", () => {
+  const priorMessages = [
+    { role: "user", content: "Can you play Shape of My Heart by" },
+    { role: "assistant", content: "" },
+  ];
+  for (const surface of ["dashboard_terminal", "garden_chat"]) {
+    for (const text of ["Sting? By Sting", "Sting", "By Sting", "Actually, by Sting"]) {
+      assert.deepEqual(spotifyCommandText({ text, surface, authenticated: true, priorMessages }),
+        { text: `/spotify ${priorMessages[0].content}\n${text}`, automatic: true });
+    }
+  }
+  for (const text of ["Never mind", "Don't play it", "What is the weather?", "Explain music theory", "/watch this video"]) {
+    assert.deepEqual(spotifyCommandText({ text, surface: "dashboard_terminal", authenticated: true, priorMessages }),
+      { text, automatic: false });
+  }
+  for (const extra of [
+    { authenticated: false },
+    { surface: "quartz_ai" },
+    { priorMessages: [] },
+    { priorMessages: [...priorMessages, { role: "user", content: "Explain this circuit" }] },
+  ]) {
+    assert.deepEqual(spotifyCommandText({ text: "Sting? By Sting", surface: "dashboard_terminal", authenticated: true, priorMessages, ...extra }),
+      { text: "Sting? By Sting", automatic: false });
+  }
+});
+
+test("music corrections and clarifications select tools without turning discovery into playback", () => {
+  for (const [request, reply] of [
+    ["Find some acoustic songs", "By Sting"],
+    ["Play Shape of My Heart", "The Sting version"],
+    ["Play some jazz", "Another one please"],
+    ["Play some jazz", "On my phone"],
+  ]) {
+    assert.equal(spotifyCommandText({ text: reply, surface: "dashboard_terminal", authenticated: true,
+      priorMessages: [{ role: "user", content: request }] }).automatic, true);
+  }
+  assert.equal(isSpotifyPlaybackRequest("By Sting"), false, "a clarification is not standalone playback authorization");
+  const discovery = spotifyCommandText({ text: "By Sting", surface: "dashboard_terminal", authenticated: true,
+    priorMessages: [{ role: "user", content: "Find some acoustic songs" }] });
+  assert.equal(isSpotifyPlaybackRequest(discovery.text), false, "carrying a search request must not authorize playback");
+  assert.deepEqual(spotifyCommandText({ text: "Sting", surface: "dashboard_terminal", authenticated: true,
+    priorMessages: [{ role: "user", content: "/spotify play Shape of My Heart" },
+      { role: "assistant", content: "Which artist did you mean?" }] }),
+  { text: "/spotify play Shape of My Heart\nSting", automatic: true });
+  assert.deepEqual(spotifyCommandText({ text: "Sting", surface: "dashboard_terminal", authenticated: true,
+    priorMessages: [{ role: "user", content: "Play some jazz" },
+      { role: "assistant", content: "Playing some jazz now." }] }),
+  { text: "Sting", automatic: false });
+  const turnService = fs.readFileSync(new URL("../src/lib/conversations/turn-service.ts", import.meta.url), "utf8");
+  const gardenAdapter = fs.readFileSync(new URL("../src/lib/hermes/garden-chat-adapter.ts", import.meta.url), "utf8");
+  assert.match(turnService, /spotifyCommandText\(\{[^}]*priorMessages: currentConversationMessages/s);
+  assert.match(gardenAdapter, /spotifyCommandText\(\{[^}]*priorMessages: messages/s);
+});
+
 test("the inline player survives later messages and follows contextual Spotify turns", () => {
   const messages = [
     { role: "user", content: "play Radiohead" },

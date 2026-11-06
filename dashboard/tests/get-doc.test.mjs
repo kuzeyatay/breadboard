@@ -499,7 +499,7 @@ test("both chat surfaces route the command and render the card", () => {
 
 test("the Agents palette explains Get Doc in user-facing terms", () => {
   const hub = source("src/app/components/hermes/command-hub.tsx");
-  assert.match(hub, /Finds academic papers from a title or a description/);
+  assert.match(hub, /Find academic papers and save available free PDFs/);
 });
 
 test("no shadow library is ever consulted", () => {

@@ -10,6 +10,7 @@ import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { externalRuntimeFilesystem as fs } from './external-runtime-filesystem.ts';
+export { decodeSlug, normalizeDocumentSlug } from './garden-document-path.ts';
 
 /**
  * Resolve `<contentPath>/<clusterSlug>` and refuse anything that escapes the
@@ -22,21 +23,6 @@ export function safeClusterDir(contentPath: string, clusterSlug: string): string
   return clusterDir;
 }
 
-/** Decode a slug that may have been percent-encoded more than once. */
-export function decodeSlug(value: string): string {
-  let current = value;
-  for (let index = 0; index < 4; index += 1) {
-    try {
-      const decoded = decodeURIComponent(current);
-      if (decoded === current) return current;
-      current = decoded;
-    } catch {
-      return current;
-    }
-  }
-  return current;
-}
-
 /** Turn a display name into a safe, lowercase asset file stem. */
 export function slugifyAssetName(value: string, fallback = 'file'): string {
   const slug = value
@@ -47,51 +33,6 @@ export function slugifyAssetName(value: string, fallback = 'file'): string {
     .replace(/^-+|-+$/g, '');
 
   return slug || fallback;
-}
-
-function candidateSlugInputs(slug: string): string[] {
-  const decoded = decodeSlug(slug);
-  const candidates = [decoded];
-
-  try {
-    const url = new URL(decoded, 'http://second-brain.local');
-    const note = url.searchParams.get('note');
-    if (note) candidates.unshift(decodeSlug(note));
-    candidates.push(url.pathname);
-  } catch {
-    // Plain slugs are handled by the decoded candidate.
-  }
-
-  return [...new Set(candidates)];
-}
-
-/**
- * Reduce whatever the garden frame sends (a Quartz slug, a `?note=` URL, a
- * path with the cluster prefix) down to the note's basename, or null when the
- * target is not an editable document (index pages).
- */
-export function normalizeDocumentSlug(clusterSlug: string, slug: string): string | null {
-  const cluster = clusterSlug.trim();
-
-  for (const candidate of candidateSlugInputs(slug)) {
-    const cleaned = candidate
-      .replace(/\\/g, '/')
-      .replace(/[?#].*$/, '')
-      .replace(/\.md$/i, '')
-      .trim();
-    let segments = cleaned.split('/').map((segment) => segment.trim()).filter(Boolean);
-    const clusterIndex = segments.findIndex((segment) => segment === cluster);
-    if (clusterIndex >= 0) segments = segments.slice(clusterIndex + 1);
-    if (segments[0] === 'garden' && segments[1] === cluster) segments = segments.slice(2);
-    if (segments.length === 0) continue;
-
-    const noteSlug = segments.at(-1);
-    if (!noteSlug) continue;
-    if (noteSlug.toLowerCase() === 'index' || noteSlug.toLowerCase() === '_index') return null;
-    return noteSlug;
-  }
-
-  return null;
 }
 
 /** First free `<baseName>.<ext>` (then `-2`, `-3`, …) inside `assetDir`. */

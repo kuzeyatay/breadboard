@@ -43,9 +43,49 @@ async function loadService(state) {
       builder.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ contents: mocks[args.path] }));
     } }],
   });
-  const service = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString("base64")}`);
+  const service = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString("base64")}#${Math.random()}`);
   return { service, dispose: () => { delete globalThis[key]; } };
 }
+
+test("a recovery turn repairs the same visualizer after the previous turn exhausts its attempts", async () => {
+  const database = new Database(":memory:");
+  schema(database);
+  database.exec('ALTER TABLE hermes_artifact_versions ADD COLUMN error_json TEXT; ALTER TABLE hermes_artifact_versions ADD COLUMN updated_at TEXT;');
+  const getArtifact = () => database.prepare("SELECT * FROM hermes_artifacts").get();
+  let passes = false;
+  const state = {
+    db: database, getArtifactById: getArtifact, presentArtifact: a => a,
+    recordArtifactPipelineEvent: () => {},
+    publishValidatedArtifactVersion: input => {
+      database.prepare("INSERT INTO hermes_artifact_versions (artifact_id,version,status,metadata_json) VALUES (?, ?, 'ready', ?)")
+        .run(input.artifact.id, input.version, JSON.stringify(input.metadata));
+      database.prepare("UPDATE hermes_artifacts SET current_version=?, status='ready', metadata_json=?")
+        .run(input.version, JSON.stringify(input.metadata));
+      return getArtifact();
+    },
+    runInteractiveVisualizerPublicationViaRuntime: async input => ({
+      ...compileCustomInteractiveVisualizerPackage(input.plan, input.packageValue),
+      customPackage: true, bundleHtml: '<main>Verified scene</main>', bundleHash: 'a'.repeat(64),
+      tests: { passed: passes, checks: [{name:'interaction',passed:passes,detail:'controls tested'}],
+        viewports:['1280x800'], screenshotCreated:true },
+    }),
+  };
+  const {service,dispose}=await loadService(state);
+  try {
+    const context={userId:1,runtimeSessionId:1,conversationId:1,runId:'initial-turn',assistantMessageId:1,sourceSkill:'interactive-visualizer-in-chat'};
+    const generate=()=>service.generateInteractiveVisualizer({context,artifact:getArtifact(),operation:'create',packageValue:fixture.package});
+    for(let i=0;i<3;i++) assert.equal((await generate()).tests.passed,false);
+    await assert.rejects(generate(),/repair limit for this turn/);
+    const savedPlan=database.prepare('SELECT plan_json FROM hermes_interactive_visualizers').get().plan_json;
+    context.runId='recovery-turn'; passes=true;
+    const result=await generate();
+    assert.equal(result.artifact.id,'art_race');
+    assert.equal(result.artifact.status,'ready');
+    assert.equal(result.tests.passed,true);
+    assert.equal(database.prepare('SELECT plan_json FROM hermes_interactive_visualizers').get().plan_json,savedPlan);
+    assert.equal(database.prepare('SELECT COUNT(*) AS n FROM hermes_interactive_visualizer_jobs').get().n,4);
+  } finally { dispose(); database.close(); }
+});
 
 function schema(database) {
   database.exec(`

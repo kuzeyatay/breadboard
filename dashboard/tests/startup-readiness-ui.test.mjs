@@ -50,7 +50,7 @@ test("startup restores dark mode before account hydration can publish a default 
   } finally { await browser.close(); }
 });
 
-test("startup waits for hidden calendar, weather, Spotify engine, to-dos, and provider reads", { timeout: 60_000 }, async () => {
+test("startup waits for real widget data but not a slow Spotify audio engine", { timeout: 60_000 }, async () => {
   const root = path.resolve(import.meta.dirname, "..");
   const bundle = await build({
     stdin: { resolveDir: root, loader: "tsx", contents: `
@@ -61,7 +61,7 @@ test("startup waits for hidden calendar, weather, Spotify engine, to-dos, and pr
       import {useNotepadTasks} from './src/app/new-tab/use-notepad-tasks';
       import {useProviderUsage} from './src/app/new-tab/use-provider-usage';
       function Widgets() {
-        const weather = useDockWeather(); const spotify = useSpotifyDock();
+        const weather = useDockWeather(true); const spotify = useSpotifyDock(true);
         const tasks = useNotepadTasks('startup-test'); const usage = useProviderUsage();
         return <><span id="weather">{weather.status}</span><span id="spotify">{String(spotify.initializing)}</span>
           <span id="tasks">{String(tasks.loading)}</span><span id="usage">{String(usage.catalogReady)}</span>
@@ -133,11 +133,11 @@ test("startup waits for hidden calendar, weather, Spotify engine, to-dos, and pr
     await expect(page.locator("#spotify")).toHaveText("false");
     for (const pathname of ["/api/calendar/events", "/api/browser/weather", "/api/usage-limits"]) {
       await release(pathname);
-      await expect(marker).toHaveAttribute("data-breadboard-startup", "loading");
+      if (pathname !== "/api/usage-limits") await expect(marker).toHaveAttribute("data-breadboard-startup", "loading");
     }
+    // The status has rendered; a held player warm-up cannot hide the entire home.
+    await expect(marker).toHaveAttribute("data-breadboard-startup", "ready");
     await release("/api/hermes/connections/spotify/engine");
-    await page.waitForTimeout(350);
-    await expect(marker).toHaveAttribute("data-breadboard-startup", "loading");
     engineReady = true;
     await expect(marker).toHaveAttribute("data-breadboard-startup", "ready");
     await expect(page.locator("#weather")).toHaveText("ready");
@@ -150,4 +150,68 @@ test("startup waits for hidden calendar, weather, Spotify engine, to-dos, and pr
     for (const waiters of held.values()) for (const resolve of waiters) resolve();
     await browser.close();
   }
+});
+
+test("a prepared Terminal loads the real dock and calendar without focus or playback, then activates without reloading them", { timeout: 30_000 }, async () => {
+  const root = path.resolve(import.meta.dirname, "..");
+  const bundle = await build({
+    stdin: { resolveDir: root, loader: "tsx", contents: `
+      import {useState} from 'react'; import {createRoot} from 'react-dom/client';
+      import Gate from './src/app/components/interaction-hydration-gate';
+      import Accessories from './src/app/browser/browser-home-accessories';
+      function Terminal() {
+        const [active, setActive] = useState(false);
+        window.activateTerminal = () => setActive(true);
+        return <Gate><Accessories ownerKey="preparation-test" active={active} preparing={!active} /></Gate>;
+      }
+      createRoot(document.getElementById('root')).render(<Terminal />);
+    ` }, bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", outfile: "prepared.js",
+  });
+  const browser = await chromium.launch({ headless: true, channel: "msedge" });
+  const requests = [];
+  const errors = [];
+  const engine = { ready: true, status: "ready", deviceId: "fixture", error: null };
+  try {
+    const page = await browser.newPage();
+    page.on("pageerror", error => errors.push(error.message));
+    await page.addInitScript(() => {
+      window.process = { env: {} };
+      Object.defineProperty(document, "hidden", { get: () => true });
+      Object.defineProperty(document, "visibilityState", { get: () => "hidden" });
+      window.EventSource = class { close() {} };
+      localStorage.setItem("breadboard:current-location", JSON.stringify({ useForAnswers: true, snapshot: {
+        latitude: 52, longitude: 5, capturedAt: new Date().toISOString(), accuracyMeters: 100, timeZone: "Europe/Amsterdam",
+      } }));
+    });
+    await page.route("https://prepared.test/**", route => {
+      const url = new URL(route.request().url());
+      if (url.pathname === "/prepared.js") return route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles.find(file => file.path.endsWith(".js")).text });
+      if (!url.pathname.startsWith("/api/")) return route.fulfill({ contentType: "text/html", body: '<html data-breadboard-startup="loading"><input id="working"><div id="root"></div><script>document.querySelector("#working").focus()</script><script src="/prepared.js"></script></html>' });
+      requests.push({ path: url.pathname, method: route.request().method() });
+      const payloads = {
+        "/api/calendar/calendars": { calendars: [{ id: 1, visible: true }] },
+        "/api/calendar/events": { occurrences: [] },
+        "/api/browser/weather": { temperatureC: 20, feelsLikeC: 19, code: 0, isDay: true },
+        "/api/browser/spotify": { connected: true, status: "connected", history: [], playback: null, engine },
+        "/api/hermes/connections/spotify/engine": engine,
+      };
+      return route.fulfill({ json: payloads[url.pathname] ?? {} });
+    });
+    await page.goto("https://prepared.test");
+    const marker = page.locator("html");
+    await expect(marker).toHaveAttribute("data-breadboard-startup", "ready");
+    await expect(page.getByText("No upcoming events")).toBeVisible();
+    await expect(page.getByText("Spotify is ready")).toBeVisible();
+    assert.match(await page.locator('.browser-dock').innerText(), /20°/);
+    assert.doesNotMatch(await page.locator('.browser-dock').innerText(), /--:--|Checking…|Loading Spotify/);
+    await expect(page.locator('#working')).toBeFocused();
+    const readsBefore = requests.length;
+    await page.evaluate(() => window.activateTerminal());
+    await page.waitForTimeout(300);
+    await expect(marker).toHaveAttribute("data-breadboard-startup", "ready");
+    assert.equal(requests.length, readsBefore, "activation reuses the prepared data");
+    assert.ok(requests.every(request => request.method === "GET" || request.path.endsWith('/engine')), "preparation never sends a playback control");
+    await expect(page.locator('#working')).toBeFocused();
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
 });

@@ -38,6 +38,8 @@ test('terminal highlight clicks show their popup above the dock and preserve the
         ['child',{selection:child,question:'Explain the detail',answer:'The nested answer.'}],
       ]);
       const savedChatHighlights = [plain];
+      const chatSelections = new Map(), messages = [], sessionId = 'fixture';
+      const setSelectionMessageTarget = () => {};
       function App() {
         const [openInlineAnswers,setOpenInlineAnswers] = useState([]);
         const [selectionMenu,setSelectionMenu] = useState(null);
@@ -85,7 +87,7 @@ test('terminal highlight clicks show their popup above the dock and preserve the
   await mark('answered').click();
   await dialogs.first().waitFor({state:'visible'});
   assert.equal(await dialogs.first().evaluate(card=>{
-    const button=card.querySelector('[aria-label="Delete highlight"]');
+    const button=card.querySelector('[aria-label="More highlight actions"]');
     const rect=button.getBoundingClientRect();
     return card.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2));
   }),true,'the answer is painted above the terminal and receives pointer events');
@@ -93,7 +95,7 @@ test('terminal highlight clicks show their popup above the dock and preserve the
   await mark('child').click();
   assert.equal(await dialogs.count(),2,'opening a nested answer keeps its parent');
   assert.equal(await dialogs.nth(1).evaluate(card=>{
-    const button=card.querySelector('[aria-label="Delete highlight"]');
+    const button=card.querySelector('[aria-label="More highlight actions"]');
     const rect=button.getBoundingClientRect();
     return card.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2));
   }),true,'nested answers inherit the terminal popup layer');
@@ -103,11 +105,12 @@ test('terminal highlight clicks show their popup above the dock and preserve the
   assert.equal(await page.evaluate(()=>window.composerSelection),null,'an unsent highlight must not change the main chat context');
   assert.equal(await page.getByRole('textbox',{name:'Chat composer'}).inputValue(),'Keep this draft');
   assert.equal(await page.getByRole('textbox',{name:'Chat composer'}).evaluate(el=>el===document.activeElement),false);
-  await dialogs.getByRole('button',{name:'Ask a question',exact:true}).click();
+  assert.equal(await dialogs.getByRole('textbox').evaluate(el=>el===document.activeElement),true);
   await dialogs.getByRole('textbox').fill('What does this mean?');
   await page.keyboard.press('Enter');
   assert.deepEqual(await page.evaluate(()=>window.asked),{id:'empty',question:'What does this mean?'});
-  await dialogs.getByRole('button',{name:'Delete highlight',exact:true}).click();
+  await dialogs.getByRole('button',{name:'More highlight actions',exact:true}).click();
+  await dialogs.getByRole('menuitem',{name:'Delete highlight',exact:true}).click();
   assert.equal(await dialogs.count(),0);
   await mark('answered').focus();
   await page.keyboard.press('Enter');

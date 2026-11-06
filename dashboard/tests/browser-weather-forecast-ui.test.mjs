@@ -5,6 +5,202 @@ import test from "node:test";
 import { build } from "esbuild";
 import { chromium, expect } from "@playwright/test";
 
+test("cross-tab highlight and notification writes cannot flood weather or block saves", { timeout: 60_000 }, async () => {
+  const root = path.resolve(import.meta.dirname, "..");
+  const bundle = await build({
+    stdin: { resolveDir: root, loader: "tsx", contents: `
+      import React, {useEffect} from 'react'; import {createRoot} from 'react-dom/client';
+      import {useDockWeather} from './src/app/browser/browser-home-widgets';
+      import {useWorldCities} from './src/app/browser/browser-dock-popovers';
+      function App() {
+        const {weather, status, retry} = useDockWeather(true); const {cities} = useWorldCities();
+        useEffect(() => { window.cityChanges = (window.cityChanges || 0) + 1; }, [cities]);
+        return <><output id="status">{status}</output><output id="temperature">{weather?.temperatureC}</output><button onClick={retry}>Retry local weather</button></>;
+      }
+      const root = createRoot(document.getElementById('root'));
+      window.unmountWeather = () => root.unmount(); root.render(<App/>);
+    ` },
+    bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", outfile: "weather.js",
+    plugins: [{ name: "weather-hook", setup(builder) {
+      builder.onLoad({ filter: /browser-home-widgets\.tsx$/ }, ({ path: filename }) => ({
+        loader: "tsx", contents: fs.readFileSync(filename, "utf8").replace("function useDockWeather(", "export function useDockWeather("),
+      }));
+    } }],
+  });
+  const browser = await chromium.launch({ headless: true, channel: "msedge" });
+  const requests = [];
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.clock.install();
+    await context.route("https://weather-storage.test/**", route => {
+      if (route.request().url().includes('/api/browser/weather')) { requests.push(route); return; }
+      return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' });
+    });
+    await page.goto('https://weather-storage.test/');
+    const peer = await context.newPage();
+    await peer.goto('https://weather-storage.test/');
+    const setLocation = latitude => peer.evaluate(latitude => {
+      localStorage.setItem('breadboard:current-location', JSON.stringify({useForAnswers: true, snapshot: {
+        latitude, longitude: 5, accuracyMeters: 100, timeZone: 'Europe/Amsterdam', capturedAt: new Date().toISOString(),
+      }}));
+    }, latitude);
+    await setLocation(52);
+    await page.addScriptTag({ content: bundle.outputFiles.find(file => file.path.endsWith('.js')).text });
+    await expect.poll(() => requests.length).toBe(1);
+    const citiesBefore = await page.evaluate(() => window.cityChanges);
+    await peer.evaluate(() => {
+      for (let index = 0; index < 40; index++) {
+        localStorage.setItem('breadboard:notification-view:v1:test', String(index));
+        localStorage.setItem('breadboard:highlight-outbox:test', String(index));
+      }
+    });
+    // Even genuine location events must coalesce when only the fix timestamp changes.
+    await setLocation(52);
+    await page.evaluate(() => window.dispatchEvent(new Event('breadboard:current-location-change')));
+    await page.clock.runFor(100);
+    assert.equal(requests.length, 1, 'storage heartbeats must leave the network queue free for saves');
+    assert.equal(await page.evaluate(() => window.cityChanges), citiesBefore, 'unrelated storage cannot restart world-weather effects');
+    await requests[0].fulfill({ json: { temperatureC: 18, code: 0 } });
+    await expect(page.locator('#status')).toHaveText('ready');
+    await setLocation(52);
+    await page.clock.runFor(100);
+    assert.equal(requests.length, 1, 'an unchanged location also reuses completed weather');
+
+    await setLocation(53);
+    await expect.poll(() => requests.length).toBe(2);
+    const cancelled = page.waitForEvent('requestfailed', request => request.url().includes('latitude=53'));
+    await setLocation(54);
+    await expect.poll(() => requests.length).toBe(3);
+    await cancelled;
+    assert.ok(requests[2].request().url().includes('latitude=54'));
+    await requests[2].fulfill({ json: { temperatureC: 21, code: 0 } });
+    await expect(page.locator('#temperature')).toHaveText('21');
+
+    await setLocation(55);
+    await expect.poll(() => requests.length).toBe(4);
+    await expect(page.locator('#temperature')).toHaveText('');
+    await page.clock.runFor(12_001);
+    await expect(page.locator('#status')).toHaveText('unavailable');
+    await page.clock.runFor(5_001);
+    await expect.poll(() => requests.length).toBe(5);
+    await page.getByRole('button', {name: 'Retry local weather'}).click();
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    assert.equal(requests.length, 5, 'retries must coalesce with an in-flight request');
+    await requests[4].fulfill({json: {temperatureC: null, code: 0}});
+    await expect(page.locator('#status')).toHaveText('unavailable');
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await expect.poll(() => requests.length).toBe(6);
+    await requests[5].fulfill({json: {temperatureC: 19, code: 0}});
+    await expect(page.locator('#status')).toHaveText('ready');
+    await expect(page.locator('#temperature')).toHaveText('19');
+
+    // Background refreshes keep the last reading visible through transient
+    // failures, then recover without interaction or the 15-minute interval.
+    await page.getByRole('button', {name: 'Retry local weather'}).click();
+    await expect.poll(() => requests.length).toBe(7);
+    await expect(page.locator('#temperature')).toHaveText('19');
+    await expect(page.locator('#status')).toHaveText('ready');
+    for (const delay of [5_000, 10_000, 20_000, 40_000, 60_000, 60_000]) {
+      const count = requests.length;
+      await requests.at(-1).fulfill({status: 502, json: {error: 'Unavailable'}});
+      await expect(page.locator('#status')).toHaveText('stale');
+      await expect(page.locator('#temperature')).toHaveText('19');
+      await page.clock.runFor(delay - 500);
+      assert.equal(requests.length, count, 'automatic retries back off, capped at one minute');
+      await page.clock.runFor(501);
+      await expect.poll(() => requests.length).toBe(count + 1);
+      await expect(page.locator('#temperature')).toHaveText('19');
+    }
+    await requests.at(-1).fulfill({json: {temperatureC: 20, code: 0}});
+    await expect(page.locator('#status')).toHaveText('ready');
+    await expect(page.locator('#temperature')).toHaveText('20');
+
+    // Recent readings are bounded, and stale data is never silently kept
+    // forever. Returning to the window refreshes an expired reading.
+    await page.clock.setSystemTime(await page.evaluate(() => Date.now() + 31 * 60_000));
+    const beforeResume = requests.length;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect.poll(() => requests.length).toBe(beforeResume + 1);
+    await expect(page.locator('#temperature')).toHaveText('');
+    await requests.at(-1).fulfill({status: 502, json: {error: 'Unavailable'}});
+    await expect(page.locator('#status')).toHaveText('unavailable');
+    await peer.evaluate(() => localStorage.clear());
+    await expect(page.locator('#status')).toHaveText('off');
+    await expect(page.locator('#temperature')).toHaveText('');
+    const beforeOptOut = requests.length;
+    await page.clock.runFor(61_000);
+    assert.equal(requests.length, beforeOptOut, 'opting out cancels scheduled retries');
+    await setLocation(56);
+    await expect.poll(() => requests.length).toBe(beforeOptOut + 1);
+    const unmounted = page.waitForEvent('requestfailed', request => request.url().includes('latitude=56'));
+    await page.evaluate(() => window.unmountWeather());
+    await unmounted;
+    await page.clock.runFor(61_000);
+    assert.equal(requests.length, beforeOptOut + 1, 'unmounting cannot schedule another request');
+  } finally {
+    await browser.close();
+  }
+});
+
+test("world weather settles during cross-tab writes and retries unavailable local and city readings", { timeout: 60_000 }, async () => {
+  const root = path.resolve(import.meta.dirname, "..");
+  const bundle = await build({
+    stdin: { resolveDir: root, loader: "tsx", contents: `
+      import React from 'react'; import {createRoot} from 'react-dom/client';
+      import {WorldWeather, useWorldCities} from './src/app/browser/browser-dock-popovers';
+      function App() {
+        const {cities, save} = useWorldCities();
+        const [localFailed, setLocalFailed] = React.useState(true);
+        return <WorldWeather cities={cities} save={save} localWeather={null}
+          localWeatherUnavailable={localFailed} onRetryLocalWeather={() => setLocalFailed(false)} />;
+      }
+      createRoot(document.getElementById('root')).render(<App/>);
+    ` },
+    bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", outfile: "weather.js",
+  });
+  const browser = await chromium.launch({ headless: true, channel: "msedge" });
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const requests = [];
+    await page.clock.install();
+    await context.route('https://world-weather.test/**', route => {
+      if (route.request().url().includes('/api/browser/weather')) { requests.push(route); return; }
+      return route.fulfill({contentType: 'text/html', body: '<div id="root"></div>'});
+    });
+    await page.goto('https://world-weather.test/');
+    const peer = await context.newPage();
+    await peer.goto('https://world-weather.test/');
+    await page.addScriptTag({content: bundle.outputFiles.find(file => file.path.endsWith('.js')).text});
+    await expect.poll(() => requests.length).toBe(5);
+    await peer.evaluate(() => {
+      for (let index = 0; index < 20; index++) localStorage.setItem('breadboard:highlight-outbox:test', String(index));
+    });
+    await page.clock.runFor(100);
+    assert.equal(requests.length, 5, 'cross-tab writes must not cancel and restart city requests');
+    const reading = {temperatureC: 18, apparentC: 17, code: 3, condition: 'Overcast', isDay: true, timezone: 'Europe/Amsterdam'};
+    await requests[0].fulfill({json: reading});
+    await requests[1].fulfill({status: 502, json: {error: 'Unavailable'}});
+    await page.clock.runFor(12_001);
+    await expect(page.getByText('Getting weather…', {exact: true})).toHaveCount(0);
+    await expect(page.getByText('Unavailable right now', {exact: true})).toHaveCount(4);
+    await page.getByRole('button', {name: 'Retry unavailable weather'}).click();
+    await expect(page.getByText('Local weather is unavailable right now.')).toHaveCount(0);
+    await expect.poll(() => requests.length).toBe(9);
+    await Promise.all(requests.slice(5, 8).map(route => route.fulfill({json: reading})));
+    await requests[8].fulfill({status: 502, json: {error: 'Unavailable'}});
+    await expect(page.getByText('Unavailable right now', {exact: true})).toHaveCount(1);
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await expect.poll(() => requests.length).toBe(10);
+    await requests[9].fulfill({json: reading});
+    await expect(page.getByText('Overcast', {exact: true})).toHaveCount(5);
+    await expect(page.getByRole('button', {name: 'Retry unavailable weather'})).toHaveCount(0);
+  } finally {
+    await browser.close();
+  }
+});
+
 test("weather locations open an independent seven-day popup beside the city list", { timeout: 60_000 }, async () => {
   const root = path.resolve(import.meta.dirname, "..");
   const bundle = await build({

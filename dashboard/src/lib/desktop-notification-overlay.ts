@@ -12,7 +12,7 @@ export interface DesktopNotificationToast {
   chatId?: string;
   response?: string;
   website?: { id: string; origin: string };
-  notificationPermission?: { id: string; origin: string };
+  notificationPermission?: { id: string; origin: string; media?: ("microphone" | "camera")[] };
   dismissed?: boolean;
 }
 

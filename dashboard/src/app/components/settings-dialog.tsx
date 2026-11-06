@@ -38,32 +38,32 @@ const TABS: Array<{ value: SettingsTab; label: string; description: string }> = 
     value: "account",
     label: "Accounts",
     description:
-      "Every account Breadboard is signed in to, and the ones it can still reach models through.",
+      "Manage the accounts and services you use with Breadboard.",
   },
   {
     value: "connections",
     label: "Connections",
-    description: "External apps agents may act through when you ask.",
+    description: "Connect apps for Breadboard to use when you ask.",
   },
   {
     value: "mcp",
     label: "MCP",
-    description: "Tool servers agents may use when you select them.",
+    description: "Connect extra tools using MCP servers.",
   },
   {
     value: "memory",
     label: "Memory",
-    description: "What the agent carries between chats.",
+    description: "Manage what Breadboard remembers between chats.",
   },
   {
     value: "voice",
     label: "Tone",
-    description: "Calibrate answers to how you write.",
+    description: "Match replies to your writing style.",
   },
   {
     value: "speech",
     label: "Voice",
-    description: "Choose Local, ChatGPT subscription, or ElevenLabs speech, read responses aloud, and dictate messages.",
+    description: "Choose a speech service for voice conversations, dictation, and reading aloud.",
   },
   {
     value: "messaging",
@@ -73,12 +73,12 @@ const TABS: Array<{ value: SettingsTab; label: string; description: string }> = 
   {
     value: "guardrails",
     label: "Guardrails",
-    description: "Mask PII out of outbound messages before they're sent.",
+    description: "Hide personal details in outgoing WhatsApp and Telegram replies.",
   },
   {
     value: "recall",
     label: "Recall",
-    description: "What this computer remembers about your day, and who may read it.",
+    description: "Control what Recall saves and which agents can access it.",
   },
 ];
 

@@ -71,6 +71,16 @@ app.whenReady().then(async () => {
     await ready(source); await ready(other);
     openMenu(source);
     assert.equal(state().activeId, other, "opening a background tab menu does not activate it");
+    assert.equal(openMenu(source).getMenuItemById("highlight").label, "Highlight tab");
+    assert.equal(openMenu(source).getMenuItemById("highlight").checked, false);
+    await select(source, "highlight");
+    assert.equal(state().tabs.find(tab => tab.id === source).highlighted, true);
+    assert.equal(openMenu(source).getMenuItemById("highlight").checked, true);
+    assert.equal(state().activeId, other, "highlighting a background tab keeps selection");
+    assert.equal(state().tabs.find(tab => tab.id === other).highlighted, false);
+    await select(source, "highlight");
+    assert.equal(state().tabs.find(tab => tab.id === source).highlighted, false);
+    assert.equal(openMenu(source).getMenuItemById("highlight").checked, false);
     await select(source, "duplicate");
     const duplicate = state().activeId;
     assert.notEqual(duplicate, source);
@@ -87,6 +97,7 @@ app.whenReady().then(async () => {
     assert.deepEqual(state().tabs.map(tab => tab.id), [first, source, grouped, duplicate, other]);
     await select(source, "new-right");
     const fresh = state().activeId;
+    await select(fresh, "highlight");
     assert.equal(tab(fresh).url, origin + "/new-tab");
     assert.equal(tab(fresh).groupId, group);
     assert.equal(state().tabs.findIndex(tab => tab.id === fresh), state().tabs.findIndex(tab => tab.id === source) + 1);
@@ -103,6 +114,7 @@ app.whenReady().then(async () => {
     await select(source, "reopen");
     const reopened = state().activeId;
     assert.equal(tab(reopened).url, origin + "/new-tab");
+    assert.equal(state().tabs.find(tab => tab.id === reopened).highlighted, true, "reopening keeps the highlight");
     await select(source, "close-others");
     assert.deepEqual(state().tabs.map(tab => tab.id), [source, other]);
     await select(other, "anchor");
@@ -113,10 +125,13 @@ app.whenReady().then(async () => {
     await command({ type: "browser", url: origin + "/site?a=1#section" });
     const site = state().activeId;
     await ready(site);
+    await select(site, "highlight");
+    assert.equal(state().tabs.find(tab => tab.id === site).highlighted, true);
     const browserHits = hits.get("/site?a=1");
     await command({ type: "activate", id: source });
     await select(site, "reload");
     await until(() => hits.get("/site?a=1") > browserHits);
+    assert.equal(state().tabs.find(tab => tab.id === site).highlighted, true, "browser reload keeps the highlight");
     assert.equal(state().activeId, source);
     await select(site, "duplicate");
     const siteCopy = state().activeId;
@@ -133,6 +148,8 @@ app.whenReady().then(async () => {
 
     const privateTab = manager.openBrowserTab(host, origin + "/private", false, undefined, undefined, undefined, manager.privateBrowserPartition());
     await ready(privateTab.id);
+    await select(privateTab.id, "highlight");
+    assert.equal(state().tabs.find(tab => tab.id === privateTab.id).highlighted, true, "private tabs can be highlighted too");
     await command({ type: "activate", id: site });
     await select(privateTab.id, "duplicate");
     const privateCopy = tab(state().activeId);

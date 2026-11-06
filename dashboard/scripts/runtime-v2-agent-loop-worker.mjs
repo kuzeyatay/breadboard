@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -26,20 +27,6 @@ function boundedText(value, maximumBytes) {
     value.length > 0 &&
     Buffer.byteLength(value, "utf8") <= maximumBytes &&
     !/\p{Cc}/u.test(value);
-}
-
-function samePath(left, right) {
-  const first = path.resolve(left);
-  const second = path.resolve(right);
-  return process.platform === "win32"
-    ? first.toLowerCase() === second.toLowerCase()
-    : first === second;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" ||
-    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function basicArguments(value) {

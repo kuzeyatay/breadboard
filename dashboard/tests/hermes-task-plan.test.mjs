@@ -400,6 +400,20 @@ test("research plus garden write selects both", () => {
   assert.ok(c.has("garden_write"));
 });
 
+test("mathematical direction pairs do not request external forwarding", () => {
+  for (const pair of ["forward/inverse", "forward/backward", "forward/reverse"]) {
+    const p = plan(`Revise the Garden page. Keep spherical basis derivations by rotations, ${pair} general components, local lengths and volume element.`);
+    assert.ok(p.requiredCapabilities.includes("garden_write"));
+    assert.ok(!p.requiredCapabilities.includes("application_action"));
+    assert.equal(p.requiresConfirmation, false);
+  }
+  for (const request of ["Forward the note to Alex.", "Forward /inverse to Alex."]) {
+    const p = plan(request);
+    assert.ok(p.requiredCapabilities.includes("application_action"));
+    assert.equal(p.requiresConfirmation, true);
+  }
+});
+
 test("emailing a report requires confirmation and an external action", () => {
   const p = plan("Email this report to Alex.");
   assert.ok(p.requiredCapabilities.includes("application_action"));

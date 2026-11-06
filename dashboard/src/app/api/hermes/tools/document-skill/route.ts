@@ -100,6 +100,7 @@ export async function POST(request: Request) {
     }
 
     const truncated = content.length > MAX_FILE_CHARS;
+    const excerpt = truncated ? `${content.slice(0, MAX_FILE_CHARS)}\n\n[…truncated…]` : content;
     recordAuditEvent({
       eventType: "document_skill.read",
       runtimeSessionId: session.id,
@@ -107,7 +108,6 @@ export async function POST(request: Request) {
       gardenId: session.garden_id,
       payload: { slug, file: requested, truncated },
     });
-
     return NextResponse.json({
       ok: true,
       tool: "document_skill_read",
@@ -116,7 +116,7 @@ export async function POST(request: Request) {
         file: requested,
         title: record.title,
         truncated,
-        content: truncated ? `${content.slice(0, MAX_FILE_CHARS)}\n\n[…truncated…]` : content,
+        content: excerpt,
       },
     });
   } catch (error) {

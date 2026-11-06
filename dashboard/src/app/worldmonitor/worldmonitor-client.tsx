@@ -1060,9 +1060,7 @@ export default function WorldMonitorClient({ panels }: Props) {
             <div ref={answerRef} className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-2.5 py-2">
               {turns.length === 0 && (
                 <p className="text-[0.7rem] leading-relaxed bb-wm-ink-muted">
-                  Ask about the current window. The answer is grounded in the
-                  headlines on this page, and says so when they do not cover the
-                  question.
+                  Ask about the headlines shown here.
                 </p>
               )}
               {turns.map((turn, index) => (

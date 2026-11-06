@@ -37,7 +37,7 @@ export default function ReviewSettingsFields({
           <span>
             <span className="block text-xs text-gray-200">Ask me about this garden</span>
             <span className={`block ${label}`}>
-              Questions are scheduled with FSRS and sent to you between reviews.
+              Receive review questions when it is time to practice.
             </span>
           </span>
         </label>

@@ -16,11 +16,11 @@ test("a disabled default records a failed topology job before starting model wor
   const userId = Number(db.prepare("INSERT INTO users (username, email, password_hash) VALUES ('no-model', 'no-model@example.test', 'x')").run().lastInsertRowid);
   const clusterId = Number(db.prepare("INSERT INTO clusters (user_id, name, slug) VALUES (?, 'No model', 'no-model')").run(userId).lastInsertRowid);
   const queueJobId = Number(db.prepare("INSERT INTO thought_topology_jobs (cluster_id, revision, reason, status) VALUES (?, 1, 'Manual', 'queued')").run(clusterId).lastInsertRowid);
-  setHermesUserSettings(userId, { defaultModel: "none" });
-  await assert.rejects(executeThoughtTopologyRuntimeBuild({ clusterId, userId, gardenId: "no-model", revision: 1, queueJobId, runtimeJobId: "job_no_model" }), /No default model is selected/);
+  setHermesUserSettings(userId, { fallbackModel: "none" });
+  await assert.rejects(executeThoughtTopologyRuntimeBuild({ clusterId, userId, gardenId: "no-model", revision: 1, queueJobId, runtimeJobId: "job_no_model" }), /No fallback model is selected/);
   const job = db.prepare("SELECT status, last_error, attempts FROM thought_topology_jobs WHERE id = ?").get(queueJobId);
   assert.equal(job.status, "failed");
-  assert.match(job.last_error, /No default model is selected/);
+  assert.match(job.last_error, /No fallback model is selected/);
   assert.equal(job.attempts, 1);
 });
 

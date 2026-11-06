@@ -54,7 +54,6 @@ export default async function ArtifactVideoPage({
     <VideoPlayerClient
       title={artifact.title}
       sourceUrl={`/api/hermes/artifacts/${encodeURIComponent(artifact.id)}/preview?${sourceQuery.toString()}`}
-      kicker="Video artifact"
       showNavbarFlowers={getNavbarFlowers(userId)}
     />
   );

@@ -9,6 +9,8 @@ const { TabManager } = require("../../dist/main/tab-manager.js");
 const { IPC_CHANNELS, isTabsCommand } = require("../../dist/shared/ipc-contract.js");
 const [dir] = process.argv.slice(2);
 app.setPath("userData", path.join(dir, "profile"));
+// Synthetic devices still exercise the real Chromium permission callbacks.
+app.commandLine.appendSwitch("use-fake-device-for-media-stream");
 app.on("window-all-closed", () => {});
 const until = async (probe, label) => {
   console.log("Checking:", label);
@@ -54,6 +56,7 @@ app.whenReady().then(async () => {
   ].map(file => ({ content: fs.readFileSync(path.join(dashboard, file), "utf8"), extension: "tsx" }))]));
   const capture = async (contents, filename) => {
     if (!process.env.BREADBOARD_BROWSER_SERVICES_QA_DIR) return;
+    await contents.executeJavaScript("Promise.all(document.getAnimations().filter(animation=>animation.effect?.getTiming().iterations!==Infinity).map(animation=>animation.finished.catch(()=>{}))).then(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))");
     fs.mkdirSync(process.env.BREADBOARD_BROWSER_SERVICES_QA_DIR, { recursive: true });
     fs.writeFileSync(path.join(process.env.BREADBOARD_BROWSER_SERVICES_QA_DIR, filename), (await contents.capturePage()).toPNG());
   };
@@ -149,6 +152,7 @@ app.whenReady().then(async () => {
   manager.publishNotificationToast = (contents, notice) => { notices.push(notice); return publish(contents, notice); };
   const overlay = webContents.getAllWebContents().find(c => c.getURL() === origin + "/notification-overlay");
   assert.ok(overlay);
+  await require("./browser-media-permissions.cjs")({ manager, chrome, page, overlay, web, notices, until, capture });
   const requestPermission = async () => {
     await page.executeJavaScript("window.requestedPermission=null; void Notification.requestPermission().then(value=>window.requestedPermission=value,error=>window.requestedPermission='ERROR:'+error.message); true", true);
     await until(() => overlay.executeJavaScript("Boolean(document.querySelector('[role=dialog]'))"), "custom permission card renders");
@@ -161,19 +165,20 @@ app.whenReady().then(async () => {
   await requestPermission();
   await page.executeJavaScript("window.secondPermission=null; void Notification.requestPermission().then(value=>window.secondPermission=value); true", true);
   assert.equal(await page.executeJavaScript("window.requestedPermission"), null, "website waits for an explicit choice");
-  assert.equal(notices.filter(notice => notice.notificationPermission && !notice.dismissed).length, 1, "duplicate requests share one card");
+  assert.equal(notices.filter(notice => notice.notificationPermission && !notice.notificationPermission.media && !notice.dismissed).length, 1, "duplicate requests share one card");
   const requestId = notices.at(-1).notificationPermission.id;
   assert.equal(manager.handleCommand(chrome, { type: "browser-notification-permission-response", id: requestId, permission: "granted" }), false, "only the overlay may answer");
   assert.equal(manager.handleCommand(page, { type: "browser-notification-permission-response", id: requestId, permission: "granted" }), false, "website cannot answer its own request");
   assert.equal(manager.handleCommand(overlay, { type: "browser-notification-permission-response", id: "unknown", permission: "granted" }), false);
   await until(() => {
-    const bounds = window.contentView.children.find(view => view.webContents === overlay).getBounds();
+    const bounds = window.contentView.children.find(view => view.webContents === overlay || view.children.some(child => child.webContents === overlay))?.getBounds();
+    if (!bounds) return false;
     const [width, height] = window.getContentSize();
     return bounds.width > 100 && bounds.height > 100 && bounds.x + bounds.width === width && bounds.y + bounds.height === height;
   }, "permission card sits at bottom right");
   await capture(overlay, "website-permission-light.png");
   await overlay.executeJavaScript("document.documentElement.dataset.theme='dark'; new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
-  await until(() => overlay.executeJavaScript("getComputedStyle([...document.querySelectorAll('[role=dialog] button')].find(button=>button.textContent==='Allow')).color === 'rgb(33, 36, 32)'"), "permission button follows the dark theme");
+  await until(() => overlay.executeJavaScript("(() => { const probe=document.createElement('span'); probe.style.color='var(--paper-raised)'; document.body.append(probe); const expected=getComputedStyle(probe).color; probe.remove(); return getComputedStyle([...document.querySelectorAll('[role=dialog] button')].find(button=>button.textContent==='Allow')).color===expected; })()"), "permission button follows the dark theme");
   await capture(overlay, "website-permission-dark.png");
   window.setSize(340, 750);
   await until(() => overlay.executeJavaScript("innerWidth <= 326"), "permission card fits a narrow window");
@@ -329,6 +334,9 @@ app.whenReady().then(async () => {
     return settings && !settings.isLoading();
   }, "browser settings loads");
   await until(() => settings.executeJavaScript("Boolean(document.querySelector('input[role=switch]'))"), "notification settings render");
+  await until(() => settings.executeJavaScript(`document.querySelector('select[aria-label="Microphone for ${web}"]')?.value === 'granted'`), "saved microphone choice appears in settings");
+  await settings.executeJavaScript(`(() => { const select=document.querySelector('select[aria-label="Microphone for ${web}"]'); select.value='default'; select.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+  await until(() => !manager.stateFor(settings).browserPreferences.mediaSites[web], "settings resets the microphone permission");
   await capture(settings, "notification-settings.png");
   await settings.executeJavaScript("document.querySelector('input[role=switch]').click()");
   await until(() => manager.stateFor(settings).browserPreferences.notificationsEnabled === false, "settings switch saves");

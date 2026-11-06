@@ -30,6 +30,12 @@ from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
+from tui_gateway.correlated_delegation import (
+    auto_continuation_limit,
+    client_manages_notification,
+    finish_delegations,
+    guardrail_failure,
+)
 from tui_gateway.transport import (
     StdioTransport,
     Transport,
@@ -4695,7 +4701,26 @@ def _record_completed_tool(session: dict, payload: dict) -> None:
         del tools[:-256]
 
 
-def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
+def _tool_result_for_ui(result: object) -> object:
+    """Keep model pixels out of progress events and their recovery journal."""
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (TypeError, ValueError):
+            return result
+    if not (isinstance(result, dict) and result.get("_multimodal") is True
+            and isinstance(result.get("content"), list)):
+        return result
+    parts = result["content"]
+    visible = [part for part in parts if not (
+        isinstance(part, dict) and part.get("type") in {"image_url", "input_image", "image"}
+    )]
+    # Do not mutate the envelope: the executor still needs these exact pixels
+    # when it builds the model's next request after calling this UI callback.
+    return {**result, "content": visible, "image_count": len(parts) - len(visible)}
+
+
+def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: object):
     payload = {"tool_id": tool_call_id, "name": name, "args": args}
     session = _sessions.get(sid)
     snapshot = None
@@ -4706,10 +4731,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     duration_s = time.time() - started_at if started_at else None
     if duration_s is not None:
         payload["duration_s"] = duration_s
-    try:
-        payload["result"] = json.loads(result)
-    except Exception:
-        payload["result"] = result
+    payload["result"] = _tool_result_for_ui(result)
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
@@ -9834,7 +9856,11 @@ def _(rid, params: dict) -> dict:
         if running and (not active_turn_id or active_turn_id == turn_id):
             expected = str(params.get("expected_user_text") or "").strip()
             inflight_user = str(inflight.get("user") or "").strip()
-            if not expected or not inflight_user or expected == inflight_user:
+            # Redirects replace the in-flight prompt but retain this turn's
+            # identity. An exact live ID is stronger evidence than the original
+            # prompt; falling through would misread its unfinished tool history
+            # as an interrupted turn while the agent is still working.
+            if active_turn_id == turn_id or not expected or not inflight_user or expected == inflight_user:
                 clarify = _pending_clarify_for_session(sid)
                 if clarify is not None:
                     return _ok(
@@ -10945,6 +10971,7 @@ def _(rid, params: dict) -> dict:
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
         session["active_client_turn_id"] = client_turn_id
+        session["client_managed_turns"] = bool(client_turn_id)
         access = params.get("tool_access")
         session["tool_access"] = {key: value for key, value in access.items()
             if isinstance(key, str) and isinstance(value, bool)} if isinstance(access, dict) else {}
@@ -11262,7 +11289,7 @@ def _notification_poller_loop(
 
         _requeued = False
         with session["history_lock"]:
-            if session.get("running"):
+            if session.get("running") or client_manages_notification(session, evt):
                 process_registry.completion_queue.put(evt)
                 _requeued = True
             else:
@@ -11317,6 +11344,9 @@ def _notification_poller_loop(
             evt = process_registry.completion_queue.get_nowait()
         except Exception:
             break
+        if client_manages_notification(session, evt):
+            deferred.append(evt)
+            continue
         if _notification_event_belongs_elsewhere(sid, session, evt):
             deferred.append(evt)
             continue
@@ -11509,6 +11539,8 @@ def _run_prompt_submit(
         if notification_event is not None and _notification_was_cancelled(session, notification_event):
             session["running"] = False
             return
+        if client_turn_id:
+            session["client_managed_turns"] = True
         # ``_run_prompt_submit`` also runs inside the isolated compute host,
         # which bypasses the public prompt.submit handler above.
         session["completed_tools"] = []
@@ -11733,6 +11765,30 @@ def _run_prompt_submit(
             agent.step_callback = report_step
             try:
                 result = agent.run_conversation(run_message, **run_kwargs)
+                if client_turn_id:
+                    result = finish_delegations(
+                        agent, result, run_kwargs,
+                        max_auto_continuations=auto_continuation_limit(_load_cfg()),
+                        owns_event=lambda e: _session_owns_notification_event(sid, session, e),
+                        cancelled=lambda: bool(session.get("_turn_cancel_requested") or session.get("_finalized")),
+                        interim=lambda text: _emit("message.interim", sid, {
+                            "text": text,
+                            # Limit summaries may be generated without deltas.
+                            # Claiming they were streamed makes clients seal an
+                            # empty buffer and lose their progress copy as well.
+                            "already_streamed": bool(getattr(
+                                agent, "_interim_content_was_streamed", lambda _text: False,
+                            )(text)),
+                            "turn_id": client_turn_id,
+                        }),
+                        waiting=lambda: _emit("status.update", sid, {
+                            "kind": "process", "text": "Waiting for delegated work to finish", "turn_id": client_turn_id,
+                        }),
+                        continuing=lambda count: _emit("status.update", sid, {
+                            "kind": "process", "text": "Continuing automatically from saved work",
+                            "turn_id": client_turn_id,
+                        }),
+                    )
             finally:
                 agent.step_callback = original_step_callback
             usage_after = _get_usage(agent)
@@ -11868,6 +11924,12 @@ def _run_prompt_submit(
                 "usage": _turn_usage_delta(usage_before, usage_after),
                 "status": status,
             }
+            guard_failure = guardrail_failure(result) if isinstance(result, dict) else None
+            if guard_failure and status != "interrupted":
+                status = payload["status"] = "error"
+                payload["failure_reason"], explanation = guard_failure
+                payload["guardrail"] = result["guardrail"]
+                raw = payload["text"] = f"{raw}\n\n{explanation}".strip()
             if client_turn_id:
                 payload["turn_id"] = client_turn_id
             if last_reasoning:
@@ -12141,6 +12203,12 @@ def _run_prompt_submit(
                 skip_poll_observed=False,
             )
             for index, (_evt, synth) in enumerate(drained):
+                if client_manages_notification(session, _evt):
+                    # Client-owned turns consume child results before completion.
+                    # On failure/stop leave any remaining result for the next
+                    # authorized turn, never an idle uncorrelated tool run.
+                    process_registry.completion_queue.put(_evt)
+                    continue
                 with session["history_lock"]:
                     if session.get("running"):
                         for pending_evt, _pending_synth in drained[index:]:

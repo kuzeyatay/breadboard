@@ -229,13 +229,12 @@ See the [documentation](https://quartz.jzhao.xyz) for how to get started.
 }
 
 export async function compileInlineScript(filePath) {
-  let text = await promises.readFile(filePath, "utf8")
+  // Let esbuild parse module exports. Text replacement also changes selectors,
+  // strings, and comments (for example, `.folder-pdf-export`). The IIFE output
+  // already makes these modules safe to embed in classic script elements.
+  const text = await promises.readFile(filePath, "utf8")
 
-  // remove default exports that we manually inserted
-  text = text.replace("export default", "")
-  text = text.replace("export", "")
-
-  const sourcefile = path.relative(path.resolve("."), filePath)
+  const sourcefile = path.resolve(filePath)
   const resolveDir = path.dirname(sourcefile)
   const transpiled = await esbuild.build({
     stdin: {

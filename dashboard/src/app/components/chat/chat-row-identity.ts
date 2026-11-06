@@ -12,6 +12,32 @@
  */
 export const CHAT_OVERSCAN = 6;
 
+/** Six short messages are useful prefetch; six textbook-sized answers can be
+ * 100 screens of offscreen math. Keep a viewport of neighbors on either side,
+ * still capped by the caller's row limit and including every visible row. */
+export function chatViewportRange(
+  range: { startIndex: number; endIndex: number; overscan: number; count: number },
+  height: number,
+  rowSize: (index: number) => number,
+  viewport?: { offset: number; firstStart: number; lastEnd: number },
+): number[] {
+  if (range.count === 0) return [];
+  const budget = Math.max(1, height);
+  let first = range.startIndex;
+  let last = range.endIndex;
+  // A visible answer may already extend many screens past either edge. That
+  // content is part of the buffer; do not mount another textbook behind it.
+  let pixels = viewport ? Math.max(0, viewport.offset - viewport.firstStart) : 0;
+  for (let n = 0; n < range.overscan && first > 0 && pixels < budget; n++) {
+    pixels += Math.max(1, rowSize(--first));
+  }
+  pixels = viewport ? Math.max(0, viewport.lastEnd - viewport.offset - budget) : 0;
+  for (let n = 0; n < range.overscan && last < range.count - 1 && pixels < budget; n++) {
+    pixels += Math.max(1, rowSize(++last));
+  }
+  return Array.from({ length: Math.max(0, last - first + 1) }, (_, index) => first + index);
+}
+
 /**
  * How tall a message the person sent is allowed to stand before it is folded
  * behind a Show more toggle. Twelve lines at the transcript's 24px leading:

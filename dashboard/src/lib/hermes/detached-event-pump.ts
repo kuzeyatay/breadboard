@@ -5,6 +5,7 @@
 export interface DetachedEventPumpSink {
   emit(chunk: Uint8Array): void;
   markConnected(): void;
+  reuseWhile(check: () => boolean): void;
   close(): void;
 }
 
@@ -24,6 +25,7 @@ class DetachedEventPump {
   private connected = false;
   private closed = false;
   private started = false;
+  private reusable: () => boolean = () => true;
   private readonly settledPromise: Promise<void>;
   private resolveSettled!: () => void;
 
@@ -41,6 +43,7 @@ class DetachedEventPump {
     void this.drive({
       emit: (chunk) => this.emit(chunk),
       markConnected: () => this.markConnected(),
+      reuseWhile: (check) => { this.reusable = check; },
       close: () => this.close(),
     })
       .catch(() => {
@@ -57,6 +60,22 @@ class DetachedEventPump {
   /** Join the server-owned driver without attaching an SSE viewer. */
   settled(): Promise<void> {
     return this.settledPromise;
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  get canReuse(): boolean {
+    return !this.closed && this.reusable();
+  }
+
+  /** Stop replay immediately when the owning turn is cancelled, even if the
+   * upstream iterator is still unwinding. Its cleanup remains joinable. */
+  retire(terminalFrame?: Uint8Array): void {
+    if (terminalFrame) this.emit(terminalFrame);
+    this.close();
+    this.chunks.length = 0;
   }
 
   response(
@@ -150,6 +169,9 @@ class DetachedEventPump {
 
 type PumpRegistryGlobal = typeof globalThis & {
   __breadboardDetachedEventPumps?: Map<string, DetachedEventPump>;
+  __breadboardSettlingEventPumps?: Set<DetachedEventPump>;
+  __breadboardGoalContinuationPromises?: Map<number, Promise<void>>;
+  __breadboardTaskRecoveryPromises?: Map<string, Promise<void>>;
 };
 
 function registry(): Map<string, DetachedEventPump> {
@@ -158,18 +180,37 @@ function registry(): Map<string, DetachedEventPump> {
   return root.__breadboardDetachedEventPumps;
 }
 
+function settlingPumps(): Set<DetachedEventPump> {
+  const root = globalThis as PumpRegistryGlobal;
+  root.__breadboardSettlingEventPumps ??= new Set();
+  return root.__breadboardSettlingEventPumps;
+}
+
+/** Capture the current producer before asynchronous cancellation. A newer
+ * turn can replace it while cleanup waits; never retire that replacement. */
+export function captureEventPumpRetirement(key: string): (terminalFrame?: Uint8Array) => void {
+  const pump = registry().get(key);
+  return (terminalFrame) => pump?.retire(terminalFrame);
+}
+
 export function acquireDetachedEventPump(
   key: string,
   drive: DrivePump,
 ): DetachedEventPump {
   const pumps = registry();
   const existing = pumps.get(key);
-  if (existing) return existing;
+  // A terminal frame closes the viewers before upstream iterator cleanup
+  // finishes. A quick follow-up needs a fresh pump, not the preceding answer's
+  // replay buffer. Live reconnects still share the current pump.
+  if (existing?.canReuse) return existing;
+  existing?.retire();
 
   const created = new DetachedEventPump(key, drive);
   pumps.set(key, created);
+  settlingPumps().add(created);
   created.start(() => {
     if (pumps.get(key) === created) pumps.delete(key);
+    settlingPumps().delete(created);
   });
   return created;
 }
@@ -183,7 +224,15 @@ export function acquireDetachedEventPump(
  * before its native owner lets the process exit.
  */
 export async function waitForDetachedEventPumps(): Promise<void> {
-  while (registry().size > 0) {
-    await Promise.allSettled([...registry().values()].map((pump) => pump.settled()));
+  const goals = () => (globalThis as PumpRegistryGlobal).__breadboardGoalContinuationPromises;
+  const recoveries = () => (globalThis as PumpRegistryGlobal).__breadboardTaskRecoveryPromises;
+  while (registry().size > 0 || settlingPumps().size > 0 || goals()?.size || recoveries()?.size) {
+    await Promise.allSettled([
+      // A replaced terminal pump may still schedule a goal or task recovery
+      // during cleanup. Finite workers must keep joining that work too.
+      ...[...new Set([...registry().values(), ...settlingPumps()])].map((pump) => pump.settled()),
+      ...[...(goals()?.values() ?? [])],
+      ...[...(recoveries()?.values() ?? [])],
+    ]);
   }
 }

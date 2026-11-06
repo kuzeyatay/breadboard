@@ -216,7 +216,7 @@ export function announceCurrentLocationChange(): void {
 export function subscribeCurrentLocation(onChange: () => void): () => void {
   if (typeof window === "undefined") return () => undefined;
   const handleStorage = (event: StorageEvent) => {
-    if (event.key === CURRENT_LOCATION_STORAGE_KEY) onChange();
+    if (event.key === null || event.key === CURRENT_LOCATION_STORAGE_KEY) onChange();
   };
   window.addEventListener(CURRENT_LOCATION_CHANGE_EVENT, onChange);
   window.addEventListener("storage", handleStorage);

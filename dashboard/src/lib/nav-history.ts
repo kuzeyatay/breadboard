@@ -84,12 +84,14 @@ export function recordVisit(href: string): void {
   for (const listener of listeners) listener();
 }
 
-/** A fresh Profile tab has no trail of its own, so carry its source in the link. */
+const isSettingsPath = (pathname: string | undefined) => pathname === '/settings' || pathname === '/profile';
+
+/** A fresh Settings tab has no trail of its own, so carry its source in the link. */
 export function withProfileReturnTo(href: string, sourceHref: string): string {
   const destination = parse(href);
   const source = normalize(sourceHref);
   if (!destination || destination.origin !== window.location.origin ||
-      destination.pathname !== '/profile' || !source || parse(source)?.pathname === '/profile') return href;
+      !isSettingsPath(destination.pathname) || !source || isSettingsPath(parse(source)?.pathname)) return href;
   destination.searchParams.set('returnTo', `${source}${parse(sourceHref)?.hash ?? ''}`);
   return `${destination.pathname}${destination.search}${destination.hash}`;
 }
@@ -107,9 +109,10 @@ export function resolveBackHref(currentHref: string, fallbackHref: string): stri
 
   // A source carried across tabs takes precedence over any copied session
   // history. Only same-origin, non-auth pages can become return destinations.
-  const returnTo = current.pathname === '/profile' ? current.searchParams.get('returnTo') : null;
+  const returnTo = isSettingsPath(current.pathname) ? current.searchParams.get('returnTo') : null;
   const returnHref = returnTo ? normalize(returnTo) : null;
-  if (returnTo && returnHref && parse(returnHref)?.pathname !== current.pathname) {
+  if (returnTo && returnHref && parse(returnHref)?.pathname !== current.pathname &&
+      !(isSettingsPath(current.pathname) && isSettingsPath(parse(returnHref)?.pathname))) {
     return `${returnHref}${parse(returnTo)?.hash ?? ''}`;
   }
 
@@ -118,6 +121,7 @@ export function resolveBackHref(currentHref: string, fallbackHref: string): stri
     const candidate = parse(trail[index]);
     if (!candidate) continue;
     if (candidate.pathname === current.pathname) continue;
+    if (isSettingsPath(candidate.pathname) && isSettingsPath(current.pathname)) continue;
     return `${candidate.pathname}${candidate.search}`;
   }
 
@@ -172,7 +176,7 @@ export function consumeBackTo(href: string): void {
 }
 
 const LABELS: Array<{ match: RegExp; label: string }> = [
-  { match: /^\/new-tab(?:\/|$)/, label: 'Back to new tab' },
+  { match: /^\/new-tab(?:\/|$)/, label: 'Back to Terminal' },
   { match: /^\/dashboard(?:\/|$)/, label: 'Back to dashboard' },
   { match: /^\/plan(?:\/|$)/, label: 'Back to Plan' },
   { match: /^\/buzz(?:\/|$)/, label: 'Back to Organization' },
@@ -183,7 +187,8 @@ const LABELS: Array<{ match: RegExp; label: string }> = [
   { match: /^\/garden(?:\/|$)/, label: 'Back to library' },
   { match: /^\/clusters(?:\/|$)/, label: 'Back to gardens' },
   { match: /^\/calendar(?:\/|$)/, label: 'Back to calendar' },
-  { match: /^\/profile(?:\/|$)/, label: 'Back to profile' },
+  { match: /^\/settings(?:\/|$)/, label: 'Back to settings' },
+  { match: /^\/profile(?:\/|$)/, label: 'Back to settings' },
   { match: /^\/skills(?:\/|$)/, label: 'Back to skills' },
   { match: /^\/settings(?:\/|$)/, label: 'Back to settings' },
 ];

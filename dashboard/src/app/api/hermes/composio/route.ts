@@ -11,6 +11,7 @@ import {
   readJsonBody,
 } from "@/lib/hermes/route-helpers.ts";
 import { recordAuditEvent } from "@/lib/hermes/runtime-store.ts";
+import { invalidateRecommendations } from '@/lib/recommendations/service';
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -65,6 +66,7 @@ export async function DELETE(request: Request) {
     const userId = await requireUserId();
     const slug = new URL(request.url).searchParams.get("slug")?.trim();
     const removed = await removeComposioConnection(userId, slug || undefined);
+    invalidateRecommendations(userId);
     if (!removed) {
       throw new ApiError(
         404,

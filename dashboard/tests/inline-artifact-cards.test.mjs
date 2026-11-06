@@ -77,13 +77,14 @@ test("created artifacts render as persistent response-owned file cards", () => {
   );
 });
 
-test("ready video artifacts stay compact until the artifact is opened", () => {
-  // Source attachments are playable in the user message. Generated video
-  // artifacts use the same compact placeholder as other files so a large media
-  // player does not take over the assistant response.
-  assert.doesNotMatch(cards, /function InlineVideoArtifact/);
-  assert.doesNotMatch(cards, /artifact\.kind === "video"[\s\S]*?<InlineVideoArtifact/);
-  assert.match(cards, /artifact\.previewAvailable \|\| artifact\.downloadAvailable \? \([\s\S]*?context\.openArtifact\(artifact\.id, artifact\.version\)/);
+test("ready video artifacts have an attached inline player above their file card", () => {
+  assert.match(cards, /artifact\.kind === "video" && artifact\.previewAvailable[\s\S]*?<InlineVideoArtifact/);
+  const videoCard = cards.slice(cards.indexOf("function InlineVideoArtifact"), cards.indexOf("function InlineArtifactFileCard"));
+  assert.match(videoCard, /<ArtifactVideoPreview[\s\S]*?<ArtifactCardContent/);
+  assert.match(videoCard, /artifactUrl\(artifact, "preview"\)/);
+  assert.match(videoCard, /href=\{videoHref\}/);
+  // No full-card overlay may intercept the native video controls.
+  assert.doesNotMatch(videoCard, /absolute inset-0/);
   assert.match(viewer, /artifact\.kind === "video" && onEditVideo/);
 });
 
@@ -254,7 +255,7 @@ test("chat rows await artifacts except when opening a specific starred message",
 
   assert.match(
     gardenWorkspace,
-    /const chatContentLoading =\s*loadingChats \|\| \(!visibleChatJustCreated && !openingStarredMessage && !inlineArtifactsReady\);/,
+    /const chatContentLoading =\s*loadingChats \|\| activeTranscriptPending \|\|\s*\(!visibleChatJustCreated && !openingStarredMessage && !inlineArtifactsReady\);/,
   );
   assert.match(
     gardenWorkspace,
@@ -272,11 +273,11 @@ test("gadgets use the standard artifact placeholder until opened", () => {
 test("both runtime and legacy garden chats pin artifact cards to their owning message", () => {
   assert.match(
     runtimePanel,
-    /<InlineArtifactCardsProvider[\s\S]*conversationId=\{surface !== "quartz_ai" \? sessionId : null\}[\s\S]*renderItem=\{[\s\S]*<InlineArtifactCards[\s\S]*ownerMessageId=\{[\s\S]*message\.artifactMessageId \?\? message\.id \?\? null/,
+    /<InlineArtifactCardsProvider[\s\S]*conversationId=\{surface !== "quartz_ai" \? sessionId : null\}[\s\S]*renderItem=\{[\s\S]*<InlineArtifactCards[\s\S]*ownerMessageId=\{[\s\S]*message\.artifactMessageId \?\? message\.id \?\? message\.clientMessageId \?\? ""/,
   );
   assert.match(
     gardenWorkspace,
-    /<InlineArtifactCardsProvider[\s\S]*legacyChatSessionId=\{chatSessionId\}[\s\S]*renderItem=\{[\s\S]*<InlineArtifactCards[\s\S]*ownerMessageId=\{\s*msg\.artifactMessageId \?\? msg\.id \?\? null/,
+    /<InlineArtifactCardsProvider[\s\S]*legacyChatSessionId=\{chatSessionId\}[\s\S]*renderItem=\{[\s\S]*<InlineArtifactCards[\s\S]*ownerMessageId=\{\s*msg\.artifactMessageId \?\? msg\.id \?\? msg\.clientMessageId \?\? ""/,
   );
   assert.match(agentSession, /artifactMessageId:\s*payload\.assistantMessageId/);
   assert.match(gardenWorkspace, /assistantMsg\.artifactMessageId = event\.assistantMessageId/);
@@ -298,20 +299,23 @@ test("markdown artifacts can be added to the Garden artifacts folder", () => {
   assert.match(gardenWorkspace, /void fetchDocuments\(\)/);
 });
 
-test("PDF artifact clicks open Breadboard's native full-page PDF viewer", () => {
+test("PDF artifact cards preview in the attachment popup with full PDF viewer destinations", () => {
   assert.match(viewer, /export function artifactPdfHref/);
   assert.match(
     viewer,
     /return `\/artifacts\/\$\{encodeURIComponent\(artifact\.id\)\}\/pdf\?\$\{query\.toString\(\)\}`/,
   );
   assert.match(cards, /const pdfHref = artifactPdfHref\(artifact\)/);
-  assert.match(cards, /<a href=\{pdfHref\}/);
+  for (const surface of [cards, artifactPanel]) {
+    assert.match(surface, /<AttachmentPreviewDialog\s+source=\{\{ kind: "pdf", name: artifact\.title, href: pdfHref \}\}/);
+    assert.doesNotMatch(surface, /<a href=\{pdfHref\}/);
+  }
+  assert.doesNotMatch(viewer.slice(viewer.indexOf("export function artifactPdfHref"), viewer.indexOf("export function artifactVideoHref")), /artifact\.renderer !== "pdf-file"/);
   assert.match(artifactPdfPage, /<PdfViewerClient/);
   assert.match(artifactPdfPage, /sourceUrl=\{sourceUrl\}/);
   assert.match(artifactPdfPage, /readOnly=\{!editable\}/);
   assert.match(nativePdfViewer, /sourceUrl\?: string/);
   assert.match(nativePdfViewer, /readOnly\?: boolean/);
-  assert.match(nativePdfViewer, /readOnly \? "PDF artifact" : "PDF source"/);
 });
 
 test("document surfaces and full-window editors fill the dock body edge to edge", () => {

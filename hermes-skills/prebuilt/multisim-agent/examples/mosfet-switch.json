@@ -1,0 +1,10 @@
+{
+  "title": "5 V MOSFET switching stage",
+  "components": [
+    {"id": "VDD", "type": "voltage_source", "value": 5, "nodes": ["vdd", "0"]},
+    {"id": "VG", "type": "voltage_source", "value": 0, "nodes": ["gate", "0"], "waveform": "PULSE(0 5 1u 10n 10n 4u 10u)"},
+    {"id": "RL", "type": "resistor", "value": 100, "nodes": ["vdd", "vout"]},
+    {"id": "M1", "type": "mosfet", "model": "EDU_NMOS", "nodes": ["vout", "gate", "0", "0"], "parameters": {"W": "10u", "L": "1u"}}
+  ],
+  "models": [{"name": "EDU_NMOS", "definition": ".model EDU_NMOS NMOS(LEVEL=1 VTO=2 KP=0.1 LAMBDA=0.01)", "provenance": "Generic level-1 NMOS for switching regression, no parasitic-capacitance claim"}]
+}

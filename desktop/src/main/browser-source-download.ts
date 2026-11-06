@@ -140,6 +140,19 @@ export async function fetchBrowserSource(
     const mime = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
     if (["text/html", "application/xhtml+xml", "application/json"].includes(mime ?? "")) {
       await response.body?.cancel();
+      // Canvas module items redirect to a file's HTML preview. Resolve that
+      // preview only after the signed-in request has identified the file;
+      // module item ids are not file ids. Keep this in the original session
+      // and origin, preserve access query parameters, and let /download go
+      // through the same redirect, byte-limit and tab-lifetime checks.
+      if (mime !== "application/json" && current.origin === new URL(pageUrl).origin &&
+          /^\/(?:courses\/[0-9]+\/)?files\/[0-9]+(?:\/preview)?\/?$/.test(current.pathname)) {
+        current = new URL(current);
+        current.pathname = current.pathname.replace(/\/(?:preview\/?)?$/, "") + "/download";
+        current.searchParams.delete("wrap");
+        current.searchParams.delete("preview");
+        continue;
+      }
       throw new Error("The link returned a page instead of a file. Use the page's download link and check that you are signed in.");
     }
     if (Number(response.headers.get("content-length")) > BROWSER_SOURCE_MAX_BYTES) {

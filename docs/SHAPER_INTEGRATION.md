@@ -39,16 +39,28 @@ The authoritative dependency instructions are in
 the ordinary Breadboard Node environment is not sufficient. The experimental
 single-view path additionally needs the `depth_anything_3` package.
 
-Provision that environment once, then configure the desktop runtime with:
+The native runtime uses a fixed environment under Breadboard's active data
+folder (shown in Agents > Manage agents). On Windows its executable must be:
 
-```dotenv
-SHAPER_ROOT=C:\path\to\breadboard\ShapeR
-SHAPER_PYTHON=C:\path\to\the\shaper-environment\python.exe
+```text
+<data folder>\runtime-v2\services\formsmith\.venv\Scripts\python.exe
 ```
 
-Development and packaging may resolve those values from their trusted staged
-roots, but a browser request cannot supply or override them. The packaged
-ShapeR source is read-only. Model downloads, Hugging Face/Torch caches, compiler
+On Linux the corresponding executable is `.venv/bin/python`. Provisioning must
+target this location after any data-folder move. Setting `SHAPER_PYTHON` in the
+shell does not override the native runtime's sealed executable path. The
+runtime also seals the ShapeR source and bridge to their application paths;
+a browser request cannot supply or override them.
+
+There is currently no automatic Formsmith installer. The upstream recipe uses
+Linux-oriented compiler packages and CUDA extensions, so it is not a verified
+Windows installation procedure. A usable environment requires Python 3.10,
+the upstream dependencies, `depth_anything_3`, and a successful CUDA probe in
+that same environment. An installed NVIDIA driver alone does not establish
+that readiness. Do not substitute the separate Stable Fast 3D setup script:
+it provisions a different model and environment.
+
+The packaged ShapeR source is read-only. Model downloads, Hugging Face/Torch caches, compiler
 caches, and temporary homes live under the Breadboard data root at
 `runtime-v2/services/formsmith`; attempt inputs and GLB staging remain inside
 the Runtime job's private workspace.

@@ -126,7 +126,7 @@ export default function OpenMontageSettingsDialog({ onClose }: { onClose: () => 
     setNotice(
       action === "install-dependencies"
         ? "Installing OpenMontage's Python dependencies. This takes a few minutes."
-        : "Installing the Remotion composition runtime. This takes a few minutes.",
+        : "Installing animation tools. This takes a few minutes.",
     );
     try {
       const response = await fetch("/api/openmontage/setup", {
@@ -176,8 +176,7 @@ export default function OpenMontageSettingsDialog({ onClose }: { onClose: () => 
               Video production setup
             </h2>
             <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-              OpenMontage runs a real production pipeline — script, scene plan, assets, edit,
-              render. These are the pieces it needs, and what they unlock.
+              Create videos from a brief, including the script, visuals, and final edit. Set up the tools below.
             </p>
           </span>
           <button
@@ -233,7 +232,7 @@ export default function OpenMontageSettingsDialog({ onClose }: { onClose: () => 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-2">
           {loading && !status ? (
             <div className="px-4 py-16 text-center text-sm text-[var(--ink-muted)]">
-              Checking the production toolchain…
+              Checking video tools…
             </div>
           ) : status ? (
             <ul className="divide-y divide-[var(--line)]">
@@ -241,15 +240,22 @@ export default function OpenMontageSettingsDialog({ onClose }: { onClose: () => 
                 label="OpenMontage"
                 ok={status.clone.found}
                 detail={status.clone.path}
-                optional="The OpenMontage clone was not found next to the dashboard. Clone it there, or set OPENMONTAGE_ROOT."
-              />
+                optional="OpenMontage setup files are missing."
+                >
+                  {!status.clone.found ? (
+                    <details className="max-w-64 text-xs text-[var(--ink-muted)]">
+                      <summary className="cursor-pointer">Technical setup</summary>
+                      <p className="mt-2">The OpenMontage clone was not found next to the dashboard. Clone it there, or set OPENMONTAGE_ROOT.</p>
+                    </details>
+                  ) : null}
+                </Row>
               <Row
                 label="Python tools"
                 ok={status.python.found && status.python.dependencies}
                 detail={`${status.python.version || "Python"} · ${status.python.source}`}
                 optional={
                   status.python.found
-                    ? "The dependencies are not installed yet, so none of OpenMontage's tools can be imported."
+                    ? "Install the required tools to use OpenMontage."
                     : "Python was not found. Install Python 3.10 or newer, or set OPENMONTAGE_PYTHON."
                 }
               >
@@ -268,13 +274,13 @@ export default function OpenMontageSettingsDialog({ onClose }: { onClose: () => 
                 label="FFmpeg"
                 ok={status.ffmpeg.found}
                 detail={`${status.ffmpeg.path} · ${status.ffmpeg.source}`}
-                optional="Not found. Without it OpenMontage loses every edit and compose tool — there is no way to turn a plan into a video. Put ffmpeg on PATH or set OPENMONTAGE_FFMPEG_PATH."
+                optional="FFmpeg is required to edit and export videos. Add it to PATH or set OPENMONTAGE_FFMPEG_PATH."
               />
               <Row
-                label="Remotion runtime"
+                label="Animation tools"
                 ok={status.remotion.found}
                 detail={`Installed at ${status.remotion.path}`}
-                optional="Not installed. Optional: the ffmpeg render path works without it, but Remotion is what gives animated text, charts and word-level captions."
+                optional="Optional: adds animated text, charts, and word-by-word captions."
               >
                 {status.remotion.found || !status.remotion.installable ? null : (
                   <button
@@ -288,16 +294,16 @@ export default function OpenMontageSettingsDialog({ onClose }: { onClose: () => 
                 )}
               </Row>
               <Row
-                label="Coding runtime"
+                label="Codex"
                 ok={status.codex.found}
                 detail={`Codex · ${status.codex.version}`}
-                optional="Codex was not found. Install it or set CODEX_BIN — it is the agent that drives the pipeline."
+                optional="Codex is required. Install it or set CODEX_BIN."
               />
               <Row
                 label="Provider keys"
                 ok={status.providers.length > 0}
                 detail={status.providers.join(", ")}
-                optional="None set. OpenMontage still makes a real video from stock footage, music and local composition — add keys to OpenMontage/.env to unlock AI image, video and voice generation."
+                optional="Optional: add provider keys to OpenMontage/.env for AI images, video, and voices. Stock footage and local editing work without them."
               />
             </ul>
           ) : null}
@@ -305,9 +311,7 @@ export default function OpenMontageSettingsDialog({ onClose }: { onClose: () => 
 
         <footer className="border-t border-[var(--line)] px-5 py-3">
           <p className="text-xs leading-5 text-[var(--ink-muted)]">
-            The agent runs on the model you picked in chat, through ChatMock — the same account
-            as every other agent. Productions stay on this machine, and each one keeps its own
-            folder so a finished video still plays later.
+            Uses your selected chat model. Video projects are saved on this device.
           </p>
         </footer>
       </section>

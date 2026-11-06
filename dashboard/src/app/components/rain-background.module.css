@@ -1,0 +1,41 @@
+.rain {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+  opacity: 0;
+  transition: opacity 1.4s ease;
+  --rain-color: rgb(49 83 99 / 65%);
+}
+
+.rain[data-theme="dark"] { --rain-color: rgb(205 229 242 / 75%); }
+.rain[data-active="true"] { opacity: 1; }
+.drop {
+  position: absolute;
+  top: -50px;
+  width: 1px;
+  height: var(--rain-length);
+  border-radius: 999px;
+  background: linear-gradient(transparent, var(--rain-color));
+  opacity: var(--rain-opacity);
+  animation: rainfall var(--rain-duration) var(--rain-delay) linear infinite;
+  animation-play-state: paused;
+}
+.rain[data-moving="true"] .drop { animation-play-state: running; }
+.rain[data-intensity="light"] .drop:nth-child(2n),
+.rain[data-intensity="steady"] .drop:nth-child(3n) { display: none; }
+
+@keyframes rainfall {
+  from { transform: translate3d(-30px, -40px, 0) rotate(-8deg); }
+  to { transform: translate3d(90px, calc(100vh + 100px), 0) rotate(-8deg); }
+}
+
+@media (max-width: 600px) {
+  .drop:nth-child(2n) { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rain { display: none; transition: none; }
+  .rain .drop { animation: none; }
+}

@@ -17,7 +17,7 @@
 .error { padding: 12px 18px; color: var(--ink-heading); font-size: 12px; background: color-mix(in srgb, #d68a36 12%, transparent); }
 .error button { margin-left: 10px; text-decoration: underline; }
 
-.control { position: absolute; right: 58px; top: 50%; transform: translateY(-50%); }
+.control { position: relative; flex: none; }
 .trigger { position: relative; cursor: pointer; }
 .trigger[aria-expanded="true"] { background: color-mix(in srgb, var(--ink-muted) 14%, var(--paper-surface)); color: var(--ink-heading); }
 .trigger[data-downloading="true"] { color: var(--botanical); }

@@ -13,8 +13,12 @@ import module from "node:module";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import http from "node:http";
 
 import esbuild from "esbuild";
+import postcss from "postcss";
+import tailwindcss from "@tailwindcss/postcss";
+import { chromium } from "playwright";
 
 const dashboardRoot = path.resolve(fileURLToPath(import.meta.url), "..", "..");
 const artifactComponentSource = fs.readFileSync(
@@ -288,10 +292,10 @@ test("the 3D preview loads through the authenticated CAD route", () => {
   assert.doesNotMatch(html, /[A-Za-z]:\\\\|\/home\/|\/Users\//);
 });
 
-test("every standard view and display control is offered", () => {
+test("standard views and display controls are grouped", () => {
   const html = render();
-  for (const label of ["Iso", "Front", "Rear", "Left", "Right", "Top", "Bottom"]) {
-    assert.ok(html.includes(`>${label}<`), `the ${label} view button is missing`);
+  for (const label of ["Isometric", "Front", "Rear", "Left", "Right", "Top", "Bottom"]) {
+    assert.ok(html.includes(`>${label}<`), `the ${label} view option is missing`);
   }
   for (const label of ["Reset view", "Perspective", "Wireframe", "Grid", "Bounding box"]) {
     assert.ok(html.includes(label), `the ${label} control is missing`);
@@ -308,7 +312,7 @@ test("the preview toolbar does not expose internal mesh names", () => {
 });
 
 test("the parameters panel exposes editable values with their ranges", () => {
-  const html = render();
+  const html = render({ initialPanel: "parameters" });
   const trigger = html.match(/<button[^>]*id="cad-parameters-trigger"[^>]*>/)?.[0] ?? "";
   assert.match(trigger, /aria-expanded="true"/);
   assert.match(trigger, /aria-controls="cad-parameters-panel"/);
@@ -348,12 +352,12 @@ test("an expanded CAD panel can be collapsed and reopened", () => {
   }
 });
 
-test("every panel is reachable and counts what it holds", () => {
+test("every panel is reachable with only the validation count emphasized", () => {
   const html = render();
-  assert.match(html, /Parameters \(4\)/);
+  assert.match(html, />Parameters</);
   assert.match(html, /Validation \(1\)/);
-  assert.match(html, /Exports \(7\)/);
-  assert.match(html, /Revisions \(2\)/);
+  assert.match(html, />Exports</);
+  assert.match(html, />Revisions</);
   assert.match(html, /Source/);
 });
 
@@ -452,7 +456,7 @@ test("an invalid design is labelled as such", () => {
 });
 
 test("the panel refuses to submit without a conversation to publish into", () => {
-  const html = render({ conversationId: undefined });
+  const html = render({ conversationId: undefined, initialPanel: "parameters" });
   // The rebuild button is present but disabled: a design opened outside its
   // conversation can be read, not revised.
   const button = /Rebuild with these values/.exec(html);
@@ -502,8 +506,8 @@ const ASSEMBLED = {
   },
 };
 
-test("a multi-body design opens on what attaches where", () => {
-  const html = render({ design: ASSEMBLED });
+test("the assembly panel explains what attaches where", () => {
+  const html = render({ design: ASSEMBLED, initialPanel: "assembly" });
   const trigger = html.match(/<button[^>]*id="cad-assembly-trigger"[^>]*>/)?.[0] ?? "";
   assert.match(trigger, /aria-expanded="true"/, "assembly does not lead");
   assert.match(
@@ -534,11 +538,20 @@ test("a multi-body design opens on what attaches where", () => {
   assert.match(html, /Measure the printed bosses before ordering screws\./);
 });
 
-test("a design with no assembly recorded still opens on its parameters", () => {
-  const html = render();
+test("an explicit assembly request falls back to parameters when none are recorded", () => {
+  const html = render({ initialPanel: "assembly" });
   assert.doesNotMatch(html, /id="cad-assembly-panel"/);
   const trigger = html.match(/<button[^>]*id="cad-parameters-trigger"[^>]*>/)?.[0] ?? "";
   assert.match(trigger, /aria-expanded="true"/);
+});
+
+test("the default view keeps details collapsed and uses normal title casing", () => {
+  const html = render({ design: ASSEMBLED });
+  assert.doesNotMatch(html, /aria-expanded="true"/);
+  assert.doesNotMatch(html, /id="cad-assembly-panel"/);
+  assert.match(html, /Expand CAD viewer/);
+  assert.match(html, /Resize CAD viewer/);
+  assert.doesNotMatch(render({ design: ASSEMBLED, initialPanel: "assembly" }), /uppercase|tracking-wide/);
 });
 
 test("geometry written by the recovery template says so", () => {
@@ -561,4 +574,162 @@ test("geometry written by the recovery template says so", () => {
 
   // A model-written design is not labelled.
   assert.doesNotMatch(render({ design: ASSEMBLED }), /built-in recovery template/);
+});
+
+test("the CAD canvas stays contained through resizing, details and viewer-only fullscreen", { timeout: 60000 }, async () => {
+  const fixture = {
+    ...ASSEMBLED,
+    designSpec: { ...ASSEMBLED.designSpec, description: ASSEMBLED.designSpec.description.repeat(30) },
+  };
+  const [browserBundle, css] = await Promise.all([
+    esbuild.build({
+      stdin: {
+        resolveDir: dashboardRoot,
+        loader: "tsx",
+        contents: `import { createRoot } from "react-dom/client";
+          import Cad from "./src/app/components/cad/parametric-cad-artifact";
+          createRoot(document.getElementById("root")).render(<Cad design={${JSON.stringify(fixture)}} conversationId="conv_test" />);`,
+      },
+      bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
+      alias: { "@": path.join(dashboardRoot, "src") },
+      logLevel: "silent",
+    }),
+    postcss([tailwindcss()]).process('@import "tailwindcss" source(none); @source "../src/app/components/cad";', {
+      from: path.join(dashboardRoot, "tests/cad-viewer-fixture.css"),
+    }),
+  ]);
+  // A small real mesh exercises WebGL, camera controls and ResizeObserver.
+  const positions = new Float32Array([-48, -35, 0, 48, -35, 0, 0, 35, 0, 0, 0, 30]);
+  const indices = new Uint16Array([0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3]);
+  const data = Buffer.concat([Buffer.from(positions.buffer), Buffer.from(indices.buffer)]);
+  const model = JSON.stringify({
+    asset: { version: "2.0" }, scene: 0,
+    scenes: [{ nodes: [0] }], nodes: [{ mesh: 0 }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1 }] }],
+    buffers: [{ byteLength: data.length, uri: `data:application/octet-stream;base64,${data.toString("base64")}` }],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+      { buffer: 0, byteOffset: positions.byteLength, byteLength: indices.byteLength },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 4, type: "VEC3", min: [-48, -35, 0], max: [48, 35, 30] },
+      { bufferView: 1, componentType: 5123, count: indices.length, type: "SCALAR" },
+    ],
+  });
+  let modelRequests = 0;
+  const server = http.createServer((request, response) => {
+    if (request.url === "/app.js") {
+      response.setHeader("content-type", "text/javascript");
+      response.end(browserBundle.outputFiles[0].text);
+    } else if (request.url.includes("/files/")) {
+      modelRequests++;
+      response.setHeader("content-type", "model/gltf+json");
+      response.end(model);
+    } else {
+      response.setHeader("content-type", "text/html");
+      response.end(`<style>${css.css}
+        :root { --line:#b8cfc3; --paper-strong:#ede5d4; --paper-raised:#fffefa; --ink:#37453e; --ink-heading:#1c2d24; --ink-muted:#5c7065; --botanical:#42705a; --selection-yellow-line:#ac8217; }
+        body { margin:0; padding:16px; background:#faf7ef; font-family:Arial,sans-serif; }
+        #root { height:calc(100dvh - 32px); overflow:auto; }
+        </style><div id="root"></div><script src="/app.js"></script>`);
+    }
+  });
+  let browser;
+  try {
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    browser = await chromium.launch({ headless: true, ...(process.platform === "win32" ? { channel: "msedge" } : {}) });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    const viewport = page.getByRole("region", { name: "CAD viewer", exact: true });
+    const canvas = viewport.locator("canvas");
+    await page.getByText(/^\d+(\.\d+)? mm grid$/).waitFor();
+    await page.getByText("Loading the 3D model…", { exact: true }).waitFor({ state: "hidden" });
+    await canvas.evaluate(element => { window.originalCadCanvas = element; });
+    const initial = await viewport.boundingBox();
+    assert.ok(initial.height >= 640 && initial.y < 100, JSON.stringify(initial));
+    assert.equal(await page.locator("#cad-assembly-panel").count(), 0);
+
+    const assertCanvasFits = async () => {
+      const frame = await canvas.boundingBox();
+      const bounds = await viewport.boundingBox();
+      assert.ok(frame.height > 280 && frame.y >= bounds.y && frame.y + frame.height <= bounds.y + bounds.height, JSON.stringify({ frame, bounds }));
+      assert.equal(await canvas.evaluate(element => element === window.originalCadCanvas), true);
+    };
+    await assertCanvasFits();
+    // The live canvas advertises Breadboard's actual bindings to AirCursor;
+    // ordinary app titles and the surrounding controls must not arm 3D input.
+    const normalTitle = await page.title();
+    await canvas.hover();
+    await page.waitForFunction(() => document.title.startsWith("Breadboard CAD | "));
+    const beforeOrbit = await canvas.screenshot();
+    const canvasBounds = await canvas.boundingBox();
+    await page.mouse.down({ button: "left" });
+    await page.mouse.move(canvasBounds.x + canvasBounds.width / 2 + 45, canvasBounds.y + canvasBounds.height / 2 + 25, { steps: 6 });
+    await page.mouse.up({ button: "left" });
+    const afterOrbit = await canvas.screenshot();
+    assert.ok(!beforeOrbit.equals(afterOrbit), "Breadboard's left-drag binding must orbit the rendered model");
+    await page.mouse.wheel(0, -240);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.ok(!afterOrbit.equals(await canvas.screenshot()), "wheel input must zoom the rendered model");
+    await page.getByRole("combobox", { name: "Standard view" }).hover();
+    await page.waitForFunction(title => document.title === title, normalTitle);
+    await page.getByRole("button", { name: "Assembly", exact: true }).click();
+    assert.equal((await viewport.boundingBox()).height, initial.height);
+    await assertCanvasFits();
+    assert.equal(await page.getByText("Printed parts", { exact: true }).evaluate(element => getComputedStyle(element).textTransform), "none");
+    await page.getByRole("button", { name: "Assembly", exact: true }).click();
+
+    const handle = page.getByRole("separator", { name: "Resize CAD viewer" });
+    const handleBounds = await handle.boundingBox();
+    await page.mouse.move(handleBounds.x + handleBounds.width / 2, handleBounds.y + 8);
+    await page.mouse.down();
+    await page.mouse.move(handleBounds.x + handleBounds.width / 2, handleBounds.y + 88, { steps: 8 });
+    await page.mouse.up();
+    assert.ok((await viewport.boundingBox()).height >= initial.height + 79);
+    await assertCanvasFits();
+    await handle.press("ArrowUp");
+    assert.ok(Math.abs((await viewport.boundingBox()).height - initial.height - 40) < 2);
+    await handle.press("Home");
+    assert.equal((await viewport.boundingBox()).height, initial.height);
+
+    await page.getByRole("combobox", { name: "Standard view" }).selectOption("top");
+    await page.getByText("Display", { exact: true }).click();
+    await page.getByRole("combobox", { name: "Projection" }).selectOption("orthographic");
+    await page.getByRole("checkbox", { name: "Wireframe" }).check();
+    await page.getByRole("checkbox", { name: "Bounding box" }).check();
+    await page.getByRole("checkbox", { name: "Grid", exact: true }).uncheck();
+    await page.getByRole("button", { name: "Expand CAD viewer" }).click();
+    await page.waitForFunction(() => document.fullscreenElement?.getAttribute("aria-label") === "CAD viewer");
+    await page.waitForFunction(() => document.fullscreenElement?.clientHeight === window.innerHeight);
+    await assertCanvasFits();
+    assert.equal(await handle.count(), 0);
+    assert.equal(await page.getByRole("combobox", { name: "Standard view" }).inputValue(), "top");
+    await page.getByRole("button", { name: "Exit expanded viewer" }).click();
+    await page.waitForFunction(() => document.fullscreenElement === null);
+    assert.equal((await viewport.boundingBox()).height, initial.height);
+    assert.equal(await page.getByRole("button", { name: "Expand CAD viewer" }).evaluate(element => element === document.activeElement), true);
+    assert.equal(modelRequests, 1, "resizing and fullscreen must preserve the loaded model");
+    await assertCanvasFits();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await assertCanvasFits();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+    await page.getByText("Display", { exact: true }).click();
+    assert.equal(await page.getByRole("checkbox", { name: "Wireframe" }).isChecked(), true);
+    const menu = await page.getByRole("combobox", { name: "Projection" }).boundingBox();
+    assert.ok(menu.x >= 0 && menu.x + menu.width <= 390);
+    assert.deepEqual(errors, []);
+    if (process.env.CAD_VIEWER_SCREENSHOT_DIR) {
+      await page.getByText("Display", { exact: true }).click();
+      fs.mkdirSync(process.env.CAD_VIEWER_SCREENSHOT_DIR, { recursive: true });
+      await page.screenshot({ path: path.join(process.env.CAD_VIEWER_SCREENSHOT_DIR, "cad-mobile.png") });
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.screenshot({ path: path.join(process.env.CAD_VIEWER_SCREENSHOT_DIR, "cad-desktop.png") });
+    }
+  } finally {
+    await browser?.close();
+    await new Promise(resolve => server.close(resolve));
+  }
 });

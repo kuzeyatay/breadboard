@@ -246,7 +246,7 @@ test("Google image search is a fenced disposable Runtime job with sealed credent
   ]) assert.throws(() => validateImageSearchRequest(invalid), /canonical Google image-search request/);
 });
 
-test("the Profile page owns Google image-generation credential setup", () => {
+test("the Profile page describes the Gemini subscription fallback without requesting credentials", () => {
   const page = fs.readFileSync(
     path.join(dashboardRoot, "src", "app", "profile", "page.tsx"),
     "utf8",
@@ -259,11 +259,12 @@ test("the Profile page owns Google image-generation credential setup", () => {
     path.join(dashboardRoot, "src", "app", "api", "profile", "google-images", "route.ts"),
     "utf8",
   );
-  assert.match(page, /googleImageGenerationCredentialsStatus\(userId\)/u);
+  assert.doesNotMatch(page, /googleImageGenerationCredentialsStatus/u);
   assert.match(client, /title="Google Image Generation"/u);
-  assert.match(client, /Google AI Studio/u);
+  assert.match(client, /connected Google Gemini subscription/u);
+  assert.match(client, /No separate API key is needed/u);
   assert.doesNotMatch(client, /Programmable Search Engine ID/u);
-  assert.match(client, /\/api\/profile\/google-images/u);
+  assert.doesNotMatch(client, /\/api\/profile\/google-images/u);
   assert.match(route, /requireUserId\(\)/u);
   assert.match(route, /storeGoogleImageGenerationCredentials/u);
   assert.doesNotMatch(

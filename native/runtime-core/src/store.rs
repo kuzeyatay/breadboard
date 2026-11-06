@@ -134,6 +134,8 @@ pub enum StoreError {
     JobIdConflict(String),
     #[error("runtime is not accepting new work")]
     AdmissionClosed,
+    #[error("{0} has active work or installation maintenance; wait for it to finish before changing its dependencies")]
+    InstallationBusy(String),
     #[error("idempotency key {key} was reused by {owner} with a different request")]
     IdempotencyConflict { owner: String, key: String },
     #[error("idempotency key {0} was durably cancelled before submission")]
@@ -1151,6 +1153,9 @@ impl JobStore {
         if query_job_optional(&transaction, &input.job_id)?.is_some() {
             return Err(StoreError::JobIdConflict(input.job_id.clone()));
         }
+        crate::managed_setup_guard::require_job_installation_access(
+            &transaction, &input.job_type, &input.canonical_request_payload,
+        )?;
         transaction.execute(
             "INSERT INTO runtime_jobs (
                 job_id, job_type, worker_kind, resource_class, owner_principal, user_id, garden_id,
@@ -1400,6 +1405,24 @@ impl JobStore {
         *gate = false;
     }
 
+    /// Called only after the lifecycle owner closes admission. Reservations
+    /// remain busy until their process tree has actually exited, even when a
+    /// worker has already published a terminal result.
+    pub fn maintenance_activity(&self) -> Result<(u64, u64), StoreError> {
+        let connection = self.connection.lock().expect("job store mutex poisoned");
+        let workers = connection.query_row(
+            "SELECT COUNT(*) FROM runtime_admission_reservations
+             WHERE subject_kind='job' AND lifecycle_state IN ('pending','resident')",
+            [], |row| row.get::<_, u64>(0),
+        )?;
+        let leases = connection.query_row(
+            "SELECT COUNT(*) FROM runtime_service_leases
+             WHERE lifecycle_state IN ('pending','active') AND expires_at > ?1",
+            [now_ms()], |row| row.get::<_, u64>(0),
+        )?;
+        Ok((workers, leases))
+    }
+
     /// Opens admission after bootstrap, unless any handle for this generation
     /// has already begun shutdown. The second shutdown check closes the race
     /// between the lock-free fast rejection and acquisition of the gate.
@@ -1475,6 +1498,28 @@ impl JobStore {
             return Ok(JobAdmissionResult::Admitted(Box::new(current)));
         }
         validate_transition(current.state, JobState::Admitted)?;
+        // Re-check retained queued work from an older Runtime as well as new
+        // submissions. Never mint a guarded setup worker while a conflicting
+        // process or job already owns its environment.
+        let payload = query_bound_job_input(&transaction, &current)?;
+        if let Err(error) = crate::managed_setup_guard::require_job_installation_access_except(
+            &transaction, &current.job_type, &payload, Some(job_id),
+        ) {
+            if matches!(error, StoreError::InstallationBusy(_)) {
+                let denial = AdmissionDenial {
+                    code: "BREADBOARD_INSTALLATION_BUSY".into(),
+                    resource: "installation".into(),
+                    required_headroom_mb: 0,
+                    available_headroom_mb: 0,
+                    // Older overlapping setup fails safely; ordinary queued
+                    // work can run after that maintenance request is released.
+                    retryable: current.job_type != "managed-setup",
+                    reason: error.to_string(),
+                };
+                return finish_admission_denial_tx(transaction, &current, denial);
+            }
+            return Err(error);
+        }
         if active_job_reservation_tx(&transaction, job_id)?.is_some() {
             return Err(StoreError::CorruptState(format!(
                 "queued job {job_id} already has an active admission reservation"
@@ -8582,6 +8627,36 @@ mod tests {
         )
     }
 
+    #[test]
+    fn managed_setup_guard_serializes_competing_run_and_removal_submissions() {
+        let (_directory, store) = store();
+        let store = Arc::new(store);
+        let barrier = Arc::new(Barrier::new(2));
+        let mut requests = vec![
+            input_for("job_setup", "setup", owner(1), serde_json::json!({
+                "protocolVersion": 1, "operation": "legal", "action": "remove"
+            })),
+            input_for("job_run", "run", owner(1), serde_json::json!({"task": "review"})),
+        ];
+        requests[0].job_type = "managed-setup".into();
+        requests[0].worker_kind = "managed-setup-node".into();
+        requests[1].job_type = "legal-run".into();
+        requests[1].worker_kind = "outer-legal-node".into();
+        let threads: Vec<_> = requests.into_iter().map(|mut request| {
+            request.request_digest = compute_submission_digest(
+                &request.owner, &request.job_type, request.garden_id.as_deref(),
+                request.conversation_id.as_deref(), &request.canonical_request_payload,
+                &request.input_blobs,
+            ).unwrap();
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || { barrier.wait(); store.submit_raw(&request) })
+        }).collect();
+        let results: Vec<_> = threads.into_iter().map(|thread| thread.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| matches!(result, Err(StoreError::InstallationBusy(_)))).count(), 1);
+    }
+
     fn internal_input(job_id: &str, key: &str) -> NewJob {
         input_for_scope(
             job_id,
@@ -11531,6 +11606,20 @@ mod tests {
             3
         );
         assert!(reconcile_after_restart(&store).unwrap().is_empty());
+    }
+
+    #[test]
+    fn maintenance_boundary_counts_admitted_jobs_until_their_hold_is_released() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        assert_eq!(store.maintenance_activity().unwrap(), (0, 0));
+        admit(&store, "job_1", &default_admission());
+        assert_eq!(store.maintenance_activity().unwrap(), (1, 0));
+        store.pause_accepting_work();
+        assert_eq!(store.maintenance_activity().unwrap(), (1, 0));
+        store.request_cancellation(&context(1), "job_1").unwrap();
+        assert_eq!(store.maintenance_activity().unwrap(), (0, 0));
+        store.open_accepting_work().unwrap();
     }
 
     #[test]

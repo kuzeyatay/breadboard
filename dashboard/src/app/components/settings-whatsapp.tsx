@@ -344,8 +344,7 @@ export default function SettingsWhatsApp({
         <div>
           <p className="text-sm font-medium text-[var(--ink-heading)]">Who can talk to it</p>
           <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
-            Self-chat uses your own number: message yourself and Breadboard answers.
-            Bot mode uses a second number that other people message.
+            Self-chat: message your own number. Bot mode: use a second number for others to message.
           </p>
         </div>
         <div className="neu-segmented inline-flex rounded-xl p-1" role="group">

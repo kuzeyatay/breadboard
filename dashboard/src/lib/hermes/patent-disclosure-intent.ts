@@ -11,7 +11,7 @@ const PATENT_ACTION =
   /\b(?:analy[sz]e|compare|draft|explain|extract|prepare|read|review|rewrite|summari[sz]e|write)\b/i;
 
 const PATENT_OBJECT =
-  /\b(?:patent|patent application|claims?|office action|invention disclosure|utility model|design patent)\b/i;
+  /\b(?:patent|patent application|office action|invention disclosure|utility model|design patent)\b/i;
 
 const WORKFLOW_CONTEXT =
   /(?:交底书|专利点|查新结果|权利要求树|审查意见|figure_plan\.yaml|structure_schema|appearance_schema|patent disclosure|prior art|claim tree|office action)/iu;

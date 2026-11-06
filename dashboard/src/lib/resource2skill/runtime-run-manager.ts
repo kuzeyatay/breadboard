@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath, runtimePathWithin } from "../runtime-v2/path-policy.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -115,18 +116,9 @@ function artifactsFromEvents(events: readonly OuterAgentEvent[]): Resource2Skill
   return [];
 }
 
-function samePath(left: string, right: string): boolean {
-  const normalize = (value: string) => {
-    const resolved = path.normalize(path.resolve(value));
-    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-  };
-  return normalize(left) === normalize(right);
-}
 
 function contained(candidate: string, root: string): boolean {
-  const normalizedCandidate = process.platform === "win32" ? candidate.toLowerCase() : candidate;
-  const normalizedRoot = process.platform === "win32" ? root.toLowerCase() : root;
-  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`);
+  return runtimePathWithin(root, candidate);
 }
 
 function runtimeDataRoot(): string {

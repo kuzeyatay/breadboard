@@ -138,7 +138,8 @@ function pathspecsFor(roots) {
  * Works on the user's main tree and on a reconstructed worktree alike, which is
  * what lets reconstruction verify itself by re-capturing and comparing.
  */
-export function captureSourceSnapshot({ repoRoot, roots = SUT_ROOTS, label = null } = {}) {
+export function captureSourceSnapshot({ repoRoot, roots = SUT_ROOTS, label = null, maxUntrackedFiles = MAX_UNTRACKED_FILES } = {}) {
+  if (!Number.isInteger(maxUntrackedFiles) || maxUntrackedFiles < 1 || maxUntrackedFiles > 10_000) throw new SourceSnapshotError("Invalid snapshot file bound", "bad-bound");
   const resolved = path.resolve(repoRoot);
   const baseCommit = gitOrThrow(["rev-parse", "HEAD"], resolved).toString("utf8").trim();
 
@@ -190,7 +191,7 @@ export function captureSourceSnapshot({ repoRoot, roots = SUT_ROOTS, label = nul
     }
     const contents = fs.readFileSync(absolute);
     totalBytes += contents.byteLength;
-    if (untrackedFiles.length >= MAX_UNTRACKED_FILES || totalBytes > MAX_UNTRACKED_BYTES) {
+    if (untrackedFiles.length >= maxUntrackedFiles || totalBytes > MAX_UNTRACKED_BYTES) {
       // Truncating would make the snapshot unreproducible while still looking
       // valid, which is exactly the failure mode this module exists to remove.
       throw new SourceSnapshotError(
@@ -223,6 +224,7 @@ export function captureSourceSnapshot({ repoRoot, roots = SUT_ROOTS, label = nul
     capturedAt: new Date().toISOString(),
     baseCommit,
     roots: [...roots],
+    maxUntrackedFiles,
     trackedDiff: trackedDiff.toString("utf8"),
     trackedDiffSha256: trackedDiffSha,
     trackedDiffBytes: trackedDiff.byteLength,
@@ -304,7 +306,7 @@ export function snapshotIdentity(snapshot) {
 
 /** True when the live tree still matches the snapshot the finding was made on. */
 export function snapshotStillCurrent({ repoRoot, snapshot }) {
-  const current = captureSourceSnapshot({ repoRoot, roots: snapshot.roots });
+  const current = captureSourceSnapshot({ repoRoot, roots: snapshot.roots, maxUntrackedFiles: snapshot.maxUntrackedFiles });
   return {
     current: snapshotIdentity(current),
     expected: snapshotIdentity(snapshot),
@@ -380,7 +382,7 @@ export function materializeSnapshot({ worktreePath, snapshot }) {
     fs.writeFileSync(target, Buffer.from(file.contents, "base64"));
   }
 
-  const rebuilt = captureSourceSnapshot({ worktreePath, repoRoot: resolved, roots: snapshot.roots });
+  const rebuilt = captureSourceSnapshot({ worktreePath, repoRoot: resolved, roots: snapshot.roots, maxUntrackedFiles: snapshot.maxUntrackedFiles });
   if (rebuilt.sourceFingerprint !== snapshot.sourceFingerprint) {
     throw new SourceSnapshotError(
       `reconstructed source fingerprint ${rebuilt.sourceFingerprint.slice(0, 16)} does not match the captured ${snapshot.sourceFingerprint.slice(0, 16)}`,

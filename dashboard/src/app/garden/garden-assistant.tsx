@@ -1,8 +1,10 @@
 'use client';
 
+import { useStarredMessageJump, type StarredMessageTarget } from '@/app/components/use-starred-message-jump';
+import { normalizeQuartzChatLink } from '@/lib/quartz-chat-link';
 import { handleGardenSourceImportResult } from '@/lib/hermes/garden-source-import-client';
 import { useUnreadChats } from '@/lib/conversations/unread-client';
-import { setActiveChatNotificationTarget } from '@/lib/chat-notification-inbox';
+import { useChatNotificationView } from '@/lib/use-chat-notification-view';
 import { ActiveChatIcon, UnreadChatDot } from '@/app/components/hermes/history-client';
 
 import {
@@ -19,10 +21,13 @@ import {
   type RefObject,
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
+import { useRecommendations } from '@/app/components/use-recommendations';
+import { ChatSuggestionCards } from '@/app/components/hermes/chat-greeting-empty-state';
 import QuartzInlineAnswerPopover, { type QuartzAnswerSelection } from '@/app/garden/quartz-inline-answer-popover';
+import InlineArtifactCards, { InlineArtifactCardsProvider } from '@/app/components/hermes/inline-artifact-cards';
 import { useComposerInset } from '@/app/components/chat/use-composer-inset';
 import ChatDisclaimer from '@/app/components/chat/chat-disclaimer';
-import AssistantMessageActions, { type AssistantResponseBranch } from '@/app/components/assistant-message-actions';
+import AssistantMessageActions, { MessageActionsSlot, type AssistantResponseBranch } from '@/app/components/assistant-message-actions';
 import { messageRewriteReview } from '@/app/components/humanizer/rewrite-status';
 import UserMessageControls from '@/app/components/chat/user-message-controls';
 import { applyBranchVariant, cloneMessages, createConversationBranch, messageBranchId, previousUserMessageIndex, type ConversationBranchGroup } from '@/app/components/hermes/conversation-branches';
@@ -53,6 +58,7 @@ import { applyAutoHumanizeOutcome, useAutoHumanize, type NaturalRewriteActivity 
 import { UserMessageText } from '@/app/components/hermes/command-text';
 import CollapsibleUserMessage from '@/app/components/chat/collapsible-user-message';
 import { useLegacyAgentActivity } from '@/app/components/hermes/use-legacy-agent-activity';
+import type { ChatRuntimeControl } from '@/lib/hermes/chat-runtime-control.ts';
 import { restoreQueuedFollowUpDraft, useQueuedFollowUps } from '@/app/components/hermes/queued-follow-ups';
 import { useChatDraft } from '@/app/components/hermes/use-chat-draft';
 import { forgetChatDrafts } from '@/lib/conversations/drafts';
@@ -74,10 +80,11 @@ import {
   type ChatMessageAttachment,
 } from '@/lib/chat-attachments';
 import { distillAttachments } from '@/lib/document-skills/client';
+import { useAttachmentPreparation } from '@/app/components/use-attachment-preparation';
 import { type ChatTokenUsage, normalizeChatTokenUsage } from '@/lib/chat-token-usage';
 import { chatTimeSeparatorLabels } from '@/lib/chat-time-separators';
 import { isClarificationAnswerMessage } from '@/lib/steered-response';
-import type { VerificationSummary } from '@/lib/hermes/evidence';
+import { trimVerificationForTransport, type VerificationSummary } from '@/lib/hermes/evidence';
 import { applyGardenStableTextEvent } from '@/lib/hermes/garden-stable-stream';
 import { assistantVisibleContent } from '@/lib/hermes/assistant-visible-content';
 import { delegatedAgentCompletedLabelForMessage, delegatedThinkingUpdates } from '@/lib/hermes/super-agent-activity';
@@ -87,7 +94,9 @@ import type {
   QuartzInlineAnswerUpdate,
 } from '@/lib/quartz-assistant-selection';
 import type { QuartzTopologyInvestigationRequest } from '@/lib/quartz-topology-investigation';
-import { abortGardenTurnCheckpoint, reserveGardenTurnCheckpoint } from '@/lib/conversations/garden-turn-client';
+import { abortGardenTurnCheckpoint, fetchGardenChat, reserveGardenTurnCheckpoint } from '@/lib/conversations/garden-turn-client';
+import { gardenTurnCompletedOnServer, readGardenResponseData } from '@/lib/hermes/garden-response-stream';
+import { runGardenInlineQuestion, preserveInlineQuestionMessages, reconcileInlineQuestionMessages, retireCompletedInlineQuestionViewers } from '@/lib/conversations/garden-inline-question';
 
 interface QuartzInlineSelectionReference {
   requestId: string;
@@ -96,6 +105,7 @@ interface QuartzInlineSelectionReference {
 }
 
 interface ChatMessage {
+  artifactMessageId?: string;
   humanizerReview?: import('@/lib/humanizer/review-types').HumanizerReviewPresentation;
   contentVersions?: import('@/app/components/hermes/use-agent-session').AgentMessage['contentVersions'];
   id?: string;
@@ -122,9 +132,13 @@ interface ChatMessage {
   /** A durable pre-dispatch pause restored from chat history. */
   pendingPermissions?: Array<Record<string, unknown>>;
   runtimeError?: string;
+  pending?: boolean;
+  failed?: boolean;
+  interrupted?: boolean;
 }
 
 interface ChatSession {
+  runtimeControl?: ChatRuntimeControl | null;
   id: number;
   conversationId?: string | null;
   title: string;
@@ -147,6 +161,7 @@ function withRecoveredAssistant(messages: ChatMessage[], active: boolean): ChatM
     {
       role: 'assistant',
       content: '',
+      pending: true,
       createdAt: last.createdAt,
       clientMessageId: last.clientMessageId,
       textSelection: last.textSelection,
@@ -257,6 +272,7 @@ interface GraphStats {
   documents: number;
   topics: number;
   textbookPages: number;
+  conceptPages: number;
   conceptNodes: number;
   generatedNotes: number;
   links: number;
@@ -299,6 +315,7 @@ const EMPTY_STATS: GraphStats = {
   documents: 0,
   topics: 0,
   textbookPages: 0,
+  conceptPages: 0,
   conceptNodes: 0,
   generatedNotes: 0,
   links: 0,
@@ -397,6 +414,7 @@ const DEFAULT_PROMPTS: SavedPrompt[] = [
 const PROMPT_CATEGORIES = ['All', 'Summary', 'Study', 'Analysis', 'Writing', 'Custom'];
 const PANEL_WIDTH_KEY = 'second-brain:garden-assistant-width';
 const QUARTZ_CHAT_HISTORY_KEY_PREFIX = 'second-brain:quartz-ai-history:';
+const QUARTZ_CHAT_SELECTION_KEY_PREFIX = 'second-brain:quartz-ai-selection:';
 const QUARTZ_BRANCH_KEY_PREFIX = 'breadboard:quartz-conversation-branches:';
 const MAX_QUARTZ_CHAT_SESSIONS = 30;
 const DEFAULT_PANEL_WIDTH = 520;
@@ -419,6 +437,9 @@ function markdownFileLabel(markdown: ActiveMarkdown): string {
 
 function wantsOpenMarkdownEdit(text: string): boolean {
   const normalized = text.toLowerCase();
+  // Figure edits need the agent's Garden search and source-figure tools. The
+  // single-note rewrite endpoint cannot inspect assets or neighboring notes.
+  if (/\b(figures?|images?|diagrams?|illustrations?|pictures?|plots?|charts?|visuals?|screenshots?)\b/.test(normalized)) return false;
   const refersToOpenMarkdown =
     /\b(this|current|open|opened|visible)\s+(markdown|md|note|file|document)\b/.test(normalized) ||
     /\b(markdown|md|note|file|document)\s+(i\s+have\s+open|is\s+open|currently\s+open)\b/.test(normalized) ||
@@ -460,6 +481,7 @@ function quartzHistoryKey(clusterSlug: string): string {
 
 function loadQuartzChatSessions(clusterSlug: string | null): ChatSession[] {
   if (typeof window === 'undefined' || !clusterSlug) return [];
+  writeQuartzChatSessions(clusterSlug);
   try {
     const raw = window.localStorage.getItem(quartzHistoryKey(clusterSlug));
     if (!raw) return [];
@@ -488,16 +510,70 @@ function loadQuartzChatSessions(clusterSlug: string | null): ChatSession[] {
   }
 }
 
-function persistQuartzChatSessions(clusterSlug: string | null, sessions: ChatSession[]) {
+function loadQuartzChatSelection(clusterSlug: string | null): number | null | undefined {
+  if (typeof window === 'undefined' || !clusterSlug) return undefined;
+  try {
+    const saved = window.localStorage.getItem(`${QUARTZ_CHAT_SELECTION_KEY_PREFIX}${clusterSlug}`);
+    if (saved === 'new') return null;
+    const id = Number(saved);
+    return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+  } catch { return undefined; }
+}
+
+function persistQuartzChatSelection(clusterSlug: string | null, sessionId: number | null) {
   if (typeof window === 'undefined' || !clusterSlug) return;
-  const durableSessions = sessions
+  try {
+    window.localStorage.setItem(`${QUARTZ_CHAT_SELECTION_KEY_PREFIX}${clusterSlug}`, sessionId === null ? 'new' : String(sessionId));
+  } catch { /* Keep the selected conversation usable when storage is unavailable. */ }
+}
+
+// The history is a multi-MB JSON of up to 30 sessions, and every write sends a
+// `storage` event carrying the old and new strings to every other Breadboard
+// tab. Written on each streamed token of an "Ask here" answer, that grew all
+// ~40 renderers to 1.3 GB at once and exhausted Windows commit (2026-10-19
+// 10:18). The server holds the real history, so writes wait for a quiet moment.
+const QUARTZ_HISTORY_QUIET_MS = 1_500;
+const QUARTZ_HISTORY_MAX_WAIT_MS = 15_000;
+const pendingQuartzHistory = new Map<string, { sessions: ChatSession[]; timer: ReturnType<typeof setTimeout>; since: number }>();
+const writtenQuartzHistory = new Map<string, string>();
+
+function writeQuartzChatSessions(clusterSlug: string) {
+  const pending = pendingQuartzHistory.get(clusterSlug);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pendingQuartzHistory.delete(clusterSlug);
+  const value = JSON.stringify(pending.sessions
     .filter((session) => session.temporary !== true)
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-    .slice(0, MAX_QUARTZ_CHAT_SESSIONS);
-  window.localStorage.setItem(
-    quartzHistoryKey(clusterSlug),
-    JSON.stringify(durableSessions),
-  );
+    .slice(0, MAX_QUARTZ_CHAT_SESSIONS)
+    // Raw tool payloads were 6.8 of this key's 8.3 MB, and Chromium keeps a
+    // copy of the origin's whole localStorage in every renderer that reads it.
+    .map((session) => ({
+      ...session,
+      messages: session.messages.map((message) => message.verification
+        ? { ...message, verification: trimVerificationForTransport(message.verification) }
+        : message),
+    })));
+  if (writtenQuartzHistory.get(clusterSlug) === value) return;
+  writtenQuartzHistory.set(clusterSlug, value);
+  try {
+    window.localStorage.setItem(quartzHistoryKey(clusterSlug), value);
+  } catch { /* The server keeps the history when local storage is full. */ }
+}
+
+function flushQuartzChatSessions() {
+  for (const clusterSlug of [...pendingQuartzHistory.keys()]) writeQuartzChatSessions(clusterSlug);
+}
+
+if (typeof window !== 'undefined') window.addEventListener('pagehide', flushQuartzChatSessions);
+
+function persistQuartzChatSessions(clusterSlug: string | null, sessions: ChatSession[]) {
+  if (typeof window === 'undefined' || !clusterSlug) return;
+  const previous = pendingQuartzHistory.get(clusterSlug);
+  if (previous) clearTimeout(previous.timer);
+  const since = previous?.since ?? Date.now();
+  const delay = Math.max(0, Math.min(QUARTZ_HISTORY_QUIET_MS, since + QUARTZ_HISTORY_MAX_WAIT_MS - Date.now()));
+  pendingQuartzHistory.set(clusterSlug, { sessions, since, timer: setTimeout(() => writeQuartzChatSessions(clusterSlug), delay) });
 }
 
 type AgentActivityProps = ComponentProps<typeof ActivityPanel>;
@@ -517,6 +593,8 @@ type TranscriptRowProps = {
   userRequest: string;
   naturalRewrite?: NaturalRewriteActivity;
   chatSessionId: number | null;
+  conversationId?: string;
+  canStar: boolean;
   onSend: (text: string) => void;
   /** Row identity, so a folded long message stays folded across remounts. */
   messageKey: string;
@@ -561,6 +639,8 @@ const TranscriptRow = memo(function TranscriptRow({
   userRequest,
   naturalRewrite,
   chatSessionId,
+  conversationId,
+  canStar,
   onSend,
   messageKey,
   separatorLabel,
@@ -622,6 +702,7 @@ const TranscriptRow = memo(function TranscriptRow({
                 onClarificationAnswer={onClarificationAnswer}
                 usage={message.usage}
                 responseDurationMs={message.responseDurationMs}
+                responseCompletedAt={message.responseCompletedAt}
                 onPermissionDecision={onPermissionDecision}
                 completedLabel={delegatedAgentCompletedLabelForMessage(message)}
               />
@@ -634,9 +715,11 @@ const TranscriptRow = memo(function TranscriptRow({
                   onSelection={onTextSelection} onOpenAnnotation={onOpenAnnotation} />}
               />
               <InlineProposalCards ownerMessageId={message.id ?? null} />
+              {message.id ? <InlineArtifactCards ownerMessageId={message.artifactMessageId ?? message.id} thinking={!showActions} /> : null}
             </div>
         )}
         {message.role === 'assistant' && showActions && (visibleAssistantContent || uiResources.length) ? (
+          <MessageActionsSlot conversationId={conversationId} messageId={message.clientMessageId ?? message.id} canStar={canStar}>
           <AssistantMessageActions
             content={visibleAssistantContent || 'Response unavailable'}
             humanizerReview={messageRewriteReview(message)}
@@ -648,6 +731,7 @@ const TranscriptRow = memo(function TranscriptRow({
             onRetry={onRetry}
             branch={branch}
           />
+          </MessageActionsSlot>
         ) : null}
       </div>
     </div>
@@ -673,8 +757,8 @@ export default function GardenAssistant({
   const handledSelectionRequestRef = useRef<string | null>(null);
   const handledTopologyInvestigationRef = useRef<string | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const activeInlineRequestIdRef = useRef<string | null>(null);
   const [chatOpen, setChatOpen] = useState(initialOpen);
+  const [chatQuestionTarget, setChatQuestionTarget] = useState<StarredMessageTarget | null>(null);
   const [input, setInput] = useState('');
   const [selectedTextContext, setSelectedTextContext] = useState<QuartzAssistantSelectionRequest | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -682,6 +766,14 @@ export default function GardenAssistant({
   const timeSeparators = useMemo(() => chatTimeSeparatorLabels(visibleMessages), [visibleMessages]);
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
+  const activeChatIdRef = useRef(activeChatId);
+  activeChatIdRef.current = activeChatId;
+  const chatSelectionVersionRef = useRef(0);
+  const blankChatRequestedRef = useRef(false);
+  const clusterSlugRef = useRef(activeClusterSlug);
+  clusterSlugRef.current = activeClusterSlug;
+  const inlineQuestionRunsRef = useRef(new Map<string, { clusterSlug: string; selectionId: string; sessionId: number | null; clientMessageId: string; controller: AbortController; viewerController: AbortController; retired: boolean }>());
+  const turnSessionCreationRef = useRef<{ clusterSlug: string | null; chatId: number | null; promise: Promise<ChatSession | null> } | null>(null);
   const [temporaryChat, setTemporaryChat] = useState(false);
   const chatBeforeTemporary = useRef<number | null>(null);
   const [branchesByChat, setBranchesByChat] = useState<Record<number, Record<string, ConversationBranchGroup<ChatMessage>>>>({});
@@ -701,13 +793,13 @@ export default function GardenAssistant({
   const messageMutationPendingRef = useRef(false);
   const activeChat = chatSessions.find((session) => session.id === activeChatId) ?? null;
   const viewingConversationId = activeChat?.conversationId ?? undefined;
-  useEffect(() => {
-    setActiveChatNotificationTarget(chatOpen && activeClusterSlug && activeChatId !== null && !temporaryChat
-      ? { surface: "garden_chat", gardenSlug: activeClusterSlug, chatId: String(activeChatId), conversationId: viewingConversationId }
-      : null);
-    return () => setActiveChatNotificationTarget(null);
-  }, [chatOpen, activeClusterSlug, activeChatId, temporaryChat, viewingConversationId]);
-  const chatIsStreaming = isStreaming || activeChat?.active === true;
+  const starConversationId = viewingConversationId ?? (activeChatId === null ? undefined : String(activeChatId));
+  const canStar = !temporaryChat && activeChat?.isOwn !== false;
+  useChatNotificationView(chatOpen && activeClusterSlug && activeChatId !== null && !temporaryChat
+    ? { surface: "garden_chat", gardenSlug: activeClusterSlug, chatId: String(activeChatId), conversationId: viewingConversationId }
+    : null);
+  const pendingMain = messages.some(message => message.role === 'assistant' && message.pending && message.textSelection?.mode !== 'inline' && !message.inlineSelection);
+  const chatIsStreaming = isStreaming || (activeChat?.active === true && pendingMain);
   // The chat this assistant minted out of its own blank state, so an unsent
   // draft can follow it there and nowhere else. See useChatDraft.
   const [createdChatId, setCreatedChatId] = useState<number | null>(null);
@@ -715,6 +807,11 @@ export default function GardenAssistant({
   // transcript is put up before the chat row that will hold it exists, so the
   // empty session arriving must not be allowed to wipe it.
   const localTurnRef = useRef(false);
+  const turnObserverRef = useRef<{
+    sessionId: number;
+    clientMessageId: string;
+    recover: (session: ChatSession) => void;
+  } | null>(null);
   const persistenceChainsRef = useRef<Map<number, Promise<boolean>>>(new Map());
   const persistenceVersionsRef = useRef<Map<number, number>>(new Map());
   const [showHistory, setShowHistory] = useState(false);
@@ -722,18 +819,20 @@ export default function GardenAssistant({
   // straight from the buffer, so a reply that arrives in bursts (or whole)
   // still reads as a stream. Older messages render their content directly.
   const newestMessage = visibleMessages[visibleMessages.length - 1];
-  const streamingInlineSelection = Boolean(chatIsStreaming && (messages[messages.length - 1]?.inlineSelection || messages[messages.length - 1]?.textSelection?.mode === 'inline'));
   const newestAssistantVisibleContent =
     newestMessage?.role === 'assistant'
       ? gardenAssistantVisibleContent(newestMessage)
       : '';
   const revealedAssistantContent = useSmoothStreamText(
     newestAssistantVisibleContent,
-    chatIsStreaming && !streamingInlineSelection,
+    chatIsStreaming,
   );
   const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null);
   const [approvingPermission, setApprovingPermission] = useState(false);
-  const agentActivity = useLegacyAgentActivity();
+  const agentActivity = useLegacyAgentActivity({
+    sessionReference: activeChat?.conversationId ?? activeChatId,
+    runtimeControl: activeChat?.isOwn === false ? null : activeChat?.runtimeControl,
+  });
   const abortConversationActivity = agentActivity.abort;
   const abortAgentActivity = useCallback(async () => {
     const stopped = await abortConversationActivity(viewingConversationId);
@@ -741,7 +840,9 @@ export default function GardenAssistant({
   }, [abortConversationActivity, viewingConversationId]);
   const selectionMessages = useMemo(() => messages.map((message, index) => ({
     ...message, id: gardenSelectionMessageId(message, index),
+    starMessageId: message.clientMessageId ?? message.id,
     content: message.role === 'assistant' ? gardenAssistantVisibleContent(message) : message.content,
+    progressNotes: delegatedThinkingUpdates(message),
   })).filter(message => !isClarificationAnswerMessage(message)), [messages]);
   // A follow-up may begin inside a page answer while the panel is closed; the
   // question is typed in the composer, so bring it up.
@@ -750,14 +851,32 @@ export default function GardenAssistant({
     setShowHistory(false);
     setChatOpen(true);
   }, []);
+  const renderAnswerArtifacts = useCallback((answerMessageId: string) => {
+    // Selection ids stay stable while streaming; artifacts use the persisted
+    // response id (or the original response's id after a branch is restored).
+    const message = messages.find((candidate, index) => gardenSelectionMessageId(candidate, index) === answerMessageId);
+    const ownerMessageId = message?.artifactMessageId ?? message?.id;
+    return ownerMessageId ? <InlineArtifactCards legacyChatSessionId={activeChatId}
+      gardenSlug={activeClusterSlug} ownerMessageId={ownerMessageId} /> : null;
+  }, [messages, activeChatId, activeClusterSlug]);
   const textSelection = useTextSelectionController({
+    conversationId: starConversationId,
+    canStar,
+    persistDraft: !temporaryChat,
     scope: activeChatId === null ? null : `quartz:${activeClusterSlug}:${activeChatId}`,
+    renderArtifacts: renderAnswerArtifacts,
     messages: selectionMessages,
     busy: chatIsStreaming,
+    concurrentInline: true,
     composerRef: composerTextareaRef,
     onBeginQuestion: beginResponseQuestion,
-    onAsk: (question, selection) => { void sendMessage(question, undefined, [], undefined, undefined, selection); },
-    onStop: abortAgentActivity,
+    onOpenChatQuestion: selectionId => {
+      setChatOpen(true);
+      setShowHistory(false);
+      setChatQuestionTarget({ chatId: String(activeChatId), messageId: '', selectionId, requestId: Date.now() });
+    },
+    onAsk: (question, selection, attachments) => { void sendMessage(question, undefined, attachments, undefined, undefined, selection); },
+    onStop: selectionId => { void stopInlineQuestion(selectionId); },
   });
   // Page answers are hidden turns of this transcript. Keying them by request id
   // lets the Quartz popover make its answer selectable, so "Ask here" nests.
@@ -771,17 +890,28 @@ export default function GardenAssistant({
     return ids;
   }, [messages]);
   const quartzAnswerSelection = useMemo<QuartzAnswerSelection>(() => ({
+    persistDraft: !temporaryChat,
     messageIdFor: (requestId) => inlineAnswerMessageIds.get(requestId),
+    starMessageIdFor: (requestId) => {
+      const answer = messages.findLast(message => message.role === 'assistant' && message.inlineSelection?.requestId === requestId);
+      return answer?.clientMessageId ?? answer?.id;
+    },
+    conversationId: starConversationId,
+    canStar,
+    attachmentsFor: (requestId) => {
+      const user = messages.findLast(message => message.role === 'user' && message.inlineSelection?.requestId === requestId);
+      return user ? reusableChatAttachments(user.attachments).filter(item => item.context !== 'pdf') : undefined;
+    },
     annotations: textSelection.annotations,
     onSelection: textSelection.receiveSelection,
     onOpenAnnotation: textSelection.openAnnotation,
-  }), [inlineAnswerMessageIds, textSelection.annotations, textSelection.receiveSelection, textSelection.openAnnotation]);
+    onReply: textSelection.replyToAnswer,
+  }), [messages, inlineAnswerMessageIds, starConversationId, canStar, temporaryChat, textSelection.annotations, textSelection.receiveSelection, textSelection.openAnnotation, textSelection.replyToAnswer]);
+  const stopInlineQuestionRef = useRef(stopInlineQuestion);
+  stopInlineQuestionRef.current = stopInlineQuestion;
   useEffect(() => {
-    if (!inlineAnswerStopRequest || activeInlineRequestIdRef.current !== inlineAnswerStopRequest.requestId) {
-      return;
-    }
-    abortAgentActivity();
-  }, [abortAgentActivity, inlineAnswerStopRequest]);
+    if (inlineAnswerStopRequest) void stopInlineQuestionRef.current(inlineAnswerStopRequest.requestId);
+  }, [inlineAnswerStopRequest]);
   const naturalRewriteFor = useAutoHumanize({
     conversationId: viewingConversationId,
     messages,
@@ -807,10 +937,7 @@ export default function GardenAssistant({
   const { queueFollowUp, headerContent: queuedFollowUpsHeader } = useQueuedFollowUps({
     conversationKey: activeChatId === null ? null : String(activeChatId),
     runInFlight: chatIsStreaming,
-    steerableRunActive:
-      agentActivity.connection === 'connecting' ||
-      agentActivity.connection === 'streaming' ||
-      agentActivity.connection === 'waiting',
+    steerableRunActive: Boolean(agentActivity.activeRunId) && activeChat?.isOwn !== false,
     onSteer: steerActiveResponse,
     onRestoreDraft: (text, attachments, selection) => {
       restoreQueuedFollowUpDraft(text, setInput, composerTextareaRef);
@@ -844,7 +971,8 @@ export default function GardenAssistant({
     conversationId: activeChat?.conversationId, messages: visibleMessages, model, onModelChange: setModel, persist: !temporaryChat,
   });
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
-  const [extractingAttachments, setExtractingAttachments] = useState(false);
+  const { begin: beginAttachmentPreparation, busy: extractingAttachments, error: attachmentUploadError } =
+    useAttachmentPreparation(`${activeClusterSlug}:${activeChatId ?? ""}`);
   const [attachmentStatus, setAttachmentStatus] = useState('');
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
@@ -875,6 +1003,8 @@ export default function GardenAssistant({
   useEffect(() => {
     if (previousClusterRef.current === activeClusterSlug) return;
     previousClusterRef.current = activeClusterSlug;
+    chatSelectionVersionRef.current += 1;
+    blankChatRequestedRef.current = false;
     setTemporaryChat(false);
     chatBeforeTemporary.current = null;
     setInput('');
@@ -891,9 +1021,10 @@ export default function GardenAssistant({
       return;
     }
     handledSelectionRequestRef.current = selectedTextRequest.requestId;
-    textSelection.cancelQuestion();
-    if (selectedTextRequest.question && !chatIsStreaming) {
-      void sendMessage(selectedTextRequest.question, undefined, [], selectedTextRequest.text, selectedTextRequest);
+    if (selectedTextRequest.mode !== 'inline') textSelection.cancelQuestion();
+    if (selectedTextRequest.question && (selectedTextRequest.mode === 'inline' || !chatIsStreaming)) {
+      const { attachments, ...selectionContext } = selectedTextRequest;
+      void sendMessage(selectedTextRequest.question, undefined, attachments ?? [], selectedTextRequest.text, selectionContext);
       return;
     }
     setSelectedTextContext(selectedTextRequest);
@@ -930,7 +1061,7 @@ export default function GardenAssistant({
   // completed inline turns from canonical chat history after a reload or page
   // navigation so a fresh Quartz document can rebuild that local association.
   useEffect(() => {
-    if (chatIsStreaming || !onInlineAnswerUpdate) return;
+    if (!onInlineAnswerUpdate) return;
     const questions = new Map<string, string>();
     for (const message of messages) {
       const selection = message.inlineSelection;
@@ -939,12 +1070,14 @@ export default function GardenAssistant({
         questions.set(selection.requestId, message.content);
         continue;
       }
-      if (!message.content) continue;
+      if (!message.content && !message.pending) continue;
       onInlineAnswerUpdate({
         ...selection,
         question: questions.get(selection.requestId) ?? 'Question about this highlight',
         answer: message.content,
-        state: 'complete',
+        thinking: message.thinking,
+        progressNotes: delegatedThinkingUpdates(message),
+        state: message.pending ? (message.content ? 'streaming' : 'pending') : message.failed || message.interrupted ? 'error' : 'complete',
         ...(message.responseDurationMs !== undefined ? { responseDurationMs: message.responseDurationMs } : {}),
       });
     }
@@ -971,13 +1104,20 @@ export default function GardenAssistant({
     // addressed by the Hermes runtime, so it is dropped on reconcile.
     const cached = loadQuartzChatSessions(activeClusterSlug);
     setChatSessions(cached);
-    // Reopening the newest chat for this cluster is not a creation.
-    setActiveChatId(cached[0]?.id ?? null);
-    setCreatedChatId(null);
-    setMessages(cached[0]?.messages ?? []);
+    const savedSelection = loadQuartzChatSelection(activeClusterSlug);
+    if (savedSelection === null) blankChatRequestedRef.current = true;
+    // A reload must reopen the selected conversation, not a newer empty chat
+    // left behind by a delayed creation request in another tab.
+    if (!blankChatRequestedRef.current) {
+      const selected = cached.find(session => session.id === savedSelection) ?? cached[0];
+      setActiveChatId(selected?.id ?? null);
+      setCreatedChatId(null);
+      setMessages(selected?.messages ?? []);
+    }
 
     if (!activeClusterSlug) return;
     let cancelled = false;
+    const selectionVersion = chatSelectionVersionRef.current;
     (async () => {
       try {
         const response = await fetch(
@@ -987,7 +1127,7 @@ export default function GardenAssistant({
         if (!response.ok) return;
         const body = (await response.json()) as { sessions?: ChatSession[] };
         const serverSessions = body.sessions;
-        if (cancelled || !Array.isArray(serverSessions)) return;
+        if (cancelled || selectionVersion !== chatSelectionVersionRef.current || !Array.isArray(serverSessions)) return;
 
         const serverIds = new Set(serverSessions.map((session) => session.id));
         setChatSessions((previous) => {
@@ -1001,7 +1141,7 @@ export default function GardenAssistant({
               // durable user checkpoint but this tab may have newer streamed
               // text. Once active clears, the finalized server transcript is
               // authoritative and replaces the cache.
-              messages: withRecoveredAssistant(
+              messages: reconcileInlineQuestionMessages(preserveInlineQuestionMessages(withRecoveredAssistant(
                 session.active === true &&
                   (cachedById.get(session.id)?.messages.length ?? 0) >= (session.messages?.length ?? 0)
                   ? (cachedById.get(session.id)?.messages ?? [])
@@ -1009,7 +1149,7 @@ export default function GardenAssistant({
                     ? session.messages
                     : (cachedById.get(session.id)?.messages ?? []),
                 session.active === true,
-              ),
+              ), cachedById.get(session.id)?.messages ?? []), session.messages ?? []),
             }))
             .slice(0, MAX_QUARTZ_CHAT_SESSIONS);
           const mountedTemporary = previous.find(
@@ -1021,11 +1161,13 @@ export default function GardenAssistant({
           persistQuartzChatSessions(activeClusterSlug, next);
           return next;
         });
-        setActiveChatId((current) =>
-          temporaryChat || (current !== null && serverIds.has(current))
-            ? current
-            : (serverSessions[0]?.id ?? null),
-        );
+        setActiveChatId((current) => {
+          if (blankChatRequestedRef.current || temporaryChat) return current;
+          const selected = savedSelection != null && serverIds.has(savedSelection)
+            ? savedSelection : current !== null && serverIds.has(current) ? current : serverSessions[0]?.id ?? null;
+          persistQuartzChatSelection(activeClusterSlug, selected);
+          return selected;
+        });
       } catch {
         /* offline: the cached view stays until the next successful reconcile */
       }
@@ -1036,14 +1178,17 @@ export default function GardenAssistant({
   }, [activeClusterSlug, temporaryChat]);
 
   useEffect(() => {
-    if (localTurnRef.current) return;
     const restoredMessages = activeChat?.messages ?? [];
+    if (localTurnRef.current) {
+      setMessages(current => reconcileInlineQuestionMessages(current, restoredMessages));
+      return;
+    }
     setMessages(restoredMessages);
     setPermissionRequest(permissionRequestFromMessages(restoredMessages));
   }, [activeChat?.id, activeChat?.messages]);
 
   const activeChatIdsKey = chatSessions
-    .filter((session) => session.active === true)
+    .filter((session) => (isStreaming && session.id === activeChatId) || session.active === true || session.messages.some(message => message.pending))
     .map((session) => session.id)
     .join(',');
   useEffect(() => {
@@ -1069,6 +1214,11 @@ export default function GardenAssistant({
           })
           .then((refreshed) => {
             if (!refreshed) return;
+            retireCompletedInlineQuestionViewers(inlineQuestionRunsRef.current, refreshed.id, refreshed.messages);
+            const observer = turnObserverRef.current;
+            if (observer?.sessionId === refreshed.id && gardenTurnCompletedOnServer(refreshed, observer.clientMessageId)) {
+              observer.recover(refreshed);
+            }
             setChatSessions((previous) => {
               const current = previous.find((session) => session.id === refreshed.id);
               if (!current) return previous;
@@ -1077,10 +1227,10 @@ export default function GardenAssistant({
                 (refreshed.active === true && current.messages.length >= refreshed.messages.length);
               const merged = {
                 ...refreshed,
-                messages: withRecoveredAssistant(
+                messages: reconcileInlineQuestionMessages(preserveInlineQuestionMessages(withRecoveredAssistant(
                   keepLocal ? current.messages : refreshed.messages,
                   refreshed.active === true,
-                ),
+                ), current.messages), refreshed.messages),
               };
               const next = previous.map((session) => (session.id === refreshed.id ? merged : session));
               persistQuartzChatSessions(activeClusterSlug, next);
@@ -1127,7 +1277,7 @@ export default function GardenAssistant({
 
     let cancelled = false;
 
-    fetch(`/api/knowledge-graph?clusterSlug=${encodeURIComponent(activeClusterSlug)}`)
+    fetch(`/api/knowledge-graph?clusterSlug=${encodeURIComponent(activeClusterSlug)}&statsOnly=1`)
       .then(async (response) => {
         if (!response.ok) return;
         const body = await response.json().catch(() => ({}));
@@ -1136,7 +1286,8 @@ export default function GardenAssistant({
           setStats({
             documents: Number(nextStats.documents) || 0,
             topics: Number(nextStats.topics) || 0,
-            textbookPages: Number(nextStats.textbookPages) || Number(nextStats.topics) || 0,
+            textbookPages: Number(nextStats.textbookPages ?? nextStats.topics) || 0,
+            conceptPages: Number(nextStats.conceptPages) || 0,
             conceptNodes: Number(nextStats.conceptNodes) || 0,
             generatedNotes: Number(nextStats.generatedNotes) || 0,
             links: Number(nextStats.links) || 0,
@@ -1159,14 +1310,75 @@ export default function GardenAssistant({
     ref: transcriptScrollRef,
     awayFromBottom: transcriptAwayFromBottom,
     scrollToBottom: jumpToNewestMessage,
+    scrollToMessage,
   } = useChatAutoScroll<HTMLDivElement>({
-    isResponding: chatIsStreaming && !streamingInlineSelection,
+    isResponding: chatIsStreaming,
     responseKey: chatAutoScrollResponseKey(visibleMessages),
     contentKey: chatAutoScrollContentKey(visibleMessages),
     enabled: chatOpen,
     conversationKey: activeChatId,
     virtual: transcriptVirtual,
   });
+
+  const questionJumpRows = useMemo(() => visibleMessages.map(message => ({ message })), [visibleMessages]);
+  useStarredMessageJump({ target: chatQuestionTarget, chatId: activeChatId, loading: !chatOpen,
+    rows: questionJumpRows, bridge: transcriptVirtual, scrollRef: transcriptScrollRef, scrollToMessage });
+
+  // Rebuild reader links from durable question metadata when a chat is restored.
+  useEffect(() => {
+    if (activeChatId === null || !quartzOrigin) return;
+    for (const message of messages) {
+      const selection = message.textSelection;
+      if (message.role !== 'user' || !message.id || selection?.mode !== 'chat' ||
+          !selection.sourceMessageId.startsWith('quartz:')) continue;
+      quartzIframeRef?.current?.contentWindow?.postMessage({
+        type: 'second-brain:assistant-chat-link', highlightId: selection.sourceMessageId.slice(7),
+        pageSlug: selection.sourcePageSlug,
+        chatLink: { chatId: String(activeChatId), selectionId: selection.id, surface: 'garden' },
+      }, quartzOrigin);
+    }
+  }, [activeChatId, messages, quartzIframeRef, quartzOrigin]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const openQuestion = async (event: MessageEvent) => {
+      if (!quartzOrigin || event.origin !== quartzOrigin || event.source !== quartzIframeRef?.current?.contentWindow ||
+          event.data?.type !== 'second-brain:assistant-open-chat') return;
+      const link = normalizeQuartzChatLink(event.data.chatLink);
+      if (!link || link.surface !== 'garden') return;
+      setChatOpen(true);
+      setShowHistory(false);
+      if (String(activeChatId) === link.chatId) {
+        setChatQuestionTarget({ ...link, messageId: '', requestId: Date.now() });
+        return;
+      }
+      if (chatIsStreaming) {
+        setAttachmentStatus('Stop the current response before opening another chat.');
+        return;
+      }
+      let selected = chatSessions.find(session => String(session.id) === link.chatId);
+      if (!selected && activeClusterSlug) {
+        try {
+          const query = new URLSearchParams({ clusterSlug: activeClusterSlug, historySurface: 'assistant', sessionId: link.chatId });
+          const response = await fetch(`/api/chat-sessions?${query}`, { cache: 'no-store' });
+          if (!response.ok) throw new Error('Could not open this question’s chat.');
+          const body = await response.json();
+          if (cancelled) return;
+          selected = body.sessions?.find((session: ChatSession) => String(session.id) === link.chatId);
+        } catch {
+          if (!cancelled) setAttachmentStatus('Could not open this question’s chat. Try again.');
+          return;
+        }
+      }
+      if (selected) {
+        setChatSessions(current => current.some(session => session.id === selected!.id) ? current : [...current, selected!]);
+        openChatSession(selected);
+        setChatQuestionTarget({ ...link, messageId: '', requestId: Date.now() });
+      } else setAttachmentStatus('This question’s chat is no longer available.');
+    };
+    window.addEventListener('message', openQuestion);
+    return () => { cancelled = true; window.removeEventListener('message', openQuestion); };
+  }, [activeChatId, activeClusterSlug, chatSessions, chatIsStreaming, quartzIframeRef, quartzOrigin]);
 
   // One tick per question asked. This panel hands the virtualizer `messages`
   // untouched, so a message's place in the conversation is also its row.
@@ -1185,7 +1397,7 @@ export default function GardenAssistant({
     [visibleMessages],
   );
 
-  function updateSessionMessages(sessionId: number, nextMessages: ChatMessage[], title?: string) {
+  function updateSessionMessages(sessionId: number, nextMessages: ChatMessage[] | ((current: ChatMessage[]) => ChatMessage[]), title?: string) {
     setChatSessions((previous) => {
       const sessions = previous
         .map((session) =>
@@ -1193,7 +1405,7 @@ export default function GardenAssistant({
             ? {
                 ...session,
                 title: title ?? session.title,
-                messages: nextMessages,
+                messages: typeof nextMessages === 'function' ? nextMessages(session.messages) : preserveInlineQuestionMessages(nextMessages, session.messages),
                 updated_at: new Date().toISOString(),
               }
             : session,
@@ -1229,9 +1441,12 @@ export default function GardenAssistant({
     options: { keepMessages?: boolean; temporary?: boolean } = {},
   ): Promise<ChatSession | null> {
     if (!activeClusterSlug) return null;
+    const selectionVersion = chatSelectionVersionRef.current;
     try {
       const response = await fetch('/api/chat-sessions', {
         method: 'POST',
+        priority: 'high',
+        signal: AbortSignal.timeout(15_000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           clusterSlug: activeClusterSlug,
@@ -1246,6 +1461,7 @@ export default function GardenAssistant({
       if (!created || typeof created.id !== 'number') return null;
 
       const session: ChatSession = { ...created, isOwn: true, messages: [] };
+      if (clusterSlugRef.current !== activeClusterSlug) return session;
       setChatSessions((previous) => {
         const sessions = [session, ...previous.filter((entry) => entry.id !== session.id)].slice(
           0,
@@ -1254,13 +1470,135 @@ export default function GardenAssistant({
         persistQuartzChatSessions(activeClusterSlug, sessions);
         return sessions;
       });
-      setActiveChatId(session.id);
-      setCreatedChatId(session.id);
-      if (!options.keepMessages) setMessages([]);
+      if (selectionVersion === chatSelectionVersionRef.current &&
+          (!options.keepMessages || activeChatIdRef.current === activeChatId)) {
+        chatSelectionVersionRef.current += 1;
+        blankChatRequestedRef.current = false;
+        if (session.temporary !== true) persistQuartzChatSelection(activeClusterSlug, session.id);
+        setActiveChatId(session.id);
+        activeChatIdRef.current = session.id;
+        setCreatedChatId(session.id);
+        if (!options.keepMessages) setMessages([]);
+      }
       return session;
     } catch {
       return null;
     }
+  }
+
+  /** All questions started from a blank panel share one server-issued chat. */
+  async function ensureTurnSession(): Promise<ChatSession | null> {
+    if (activeChat?.isOwn !== false && activeChat) return activeChat;
+    if (!turnSessionCreationRef.current || turnSessionCreationRef.current.clusterSlug !== activeClusterSlug || turnSessionCreationRef.current.chatId !== activeChatId) {
+      turnSessionCreationRef.current = {
+        clusterSlug: activeClusterSlug, chatId: activeChatId,
+        promise: createChatSession(undefined, { keepMessages: true }),
+      };
+    }
+    const creation = turnSessionCreationRef.current;
+    try { return await creation.promise; }
+    finally {
+      if (turnSessionCreationRef.current === creation) turnSessionCreationRef.current = null;
+    }
+  }
+
+  async function sendInlineQuestion(
+    question: string,
+    selection: ChatTextSelectionReference,
+    attachments: readonly ChatAttachment[],
+    quartzSelection?: QuartzAssistantSelectionRequest,
+    voice?: import('@/lib/speech/voice-request').VoiceRequestOptions,
+  ) {
+    if (!activeClusterSlug) return;
+    const clusterSlug = activeClusterSlug;
+    const key = `${clusterSlug}:${activeChatId ?? 'new'}:${selection.id}`;
+    if ([...inlineQuestionRunsRef.current.values()].some(run => run.clusterSlug === clusterSlug && run.sessionId === activeChatId && run.selectionId === selection.id)) return;
+    const run = { clusterSlug, selectionId: selection.id, sessionId: activeChatId, clientMessageId: crypto.randomUUID(), controller: new AbortController(), viewerController: new AbortController(), retired: false };
+    const startedAt = new Date().toISOString();
+    inlineQuestionRunsRef.current.set(key, run);
+    const publishPage = (answer: ChatMessage) => {
+      if (!quartzSelection || clusterSlugRef.current !== clusterSlug) return;
+      onInlineAnswerUpdate?.({
+        requestId: quartzSelection.requestId, highlightId: quartzSelection.highlightId,
+        pageSlug: quartzSelection.pageSlug, question, answer: answer.content,
+        thinking: answer.thinking,
+        progressNotes: delegatedThinkingUpdates(answer),
+        state: answer.pending ? (answer.content ? 'streaming' : 'pending') : answer.failed || answer.interrupted ? 'error' : 'complete',
+        responseDurationMs: answer.responseDurationMs,
+      });
+    };
+    publishPage({ role: 'assistant', content: '', pending: true });
+    try {
+      const session = await ensureTurnSession();
+      if (!session) throw new Error('Chat history could not be created. Please try again.');
+      run.sessionId = session.id;
+      await runGardenInlineQuestion({
+        sessionId: session.id, clusterSlug, clientMessageId: run.clientMessageId,
+        question, selection, quartzSelection, attachments, model, reasoningEffort, ...voice,
+        activeMarkdown: activeMarkdownContext,
+        superAgent: isSuperAgentEnabled(), yoloMode: isSuperAgentEnabled() || isYoloModeEnabled(),
+        adhdMode: isDirectModeEnabled(), personalize: isPersonalizeEnabled(),
+        sourceResponse: selectionMessages.find(message => message.id === selection.sourceMessageId)?.content,
+        selectedDocumentSlugs: [], signal: run.controller.signal, viewerSignal: run.viewerController.signal,
+        publish: pair => {
+          if (run.retired || clusterSlugRef.current !== clusterSlug) return;
+          updateSessionMessages(session.id, current => preserveInlineQuestionMessages(current, pair));
+          if (activeChatIdRef.current === session.id) {
+            setMessages(current => preserveInlineQuestionMessages(current, pair));
+          }
+          publishPage(pair[1]);
+        },
+      });
+    } catch (error) {
+      if (run.retired) return;
+      const failure = run.controller.signal.aborted ? 'Stopped.'
+        : error instanceof Error ? error.message : 'The highlight question could not be saved. Please try again.';
+      publishPage({ role: 'assistant', content: failure, failed: true });
+      if (clusterSlugRef.current === clusterSlug) {
+        // The question was attempted even if storage never acknowledged it.
+        // Keep its error at the highlight instead of reverting to the empty
+        // "No question has been sent" card after a long connection wait.
+        const userMessage: ChatMessage = {
+          clientMessageId: run.clientMessageId, role: 'user', content: question,
+          createdAt: startedAt, textSelection: selection, selectedText: selection.quote,
+          attachments: chatMessageAttachments(attachments), attachmentNames: attachments.map(item => item.name),
+          ...(quartzSelection ? { inlineSelection: {
+            requestId: quartzSelection.requestId, highlightId: quartzSelection.highlightId, pageSlug: quartzSelection.pageSlug,
+          } } : {}),
+        };
+        const failedMessages: ChatMessage[] = [userMessage, {
+          ...userMessage, role: 'assistant', content: failure, pending: false,
+          failed: !run.controller.signal.aborted, interrupted: run.controller.signal.aborted,
+          responseCompletedAt: new Date().toISOString(),
+        }];
+        const retainFailure = (current: ChatMessage[]) => preserveInlineQuestionMessages(current, failedMessages);
+        if (run.sessionId !== null) updateSessionMessages(run.sessionId, retainFailure);
+        if (activeChatIdRef.current === run.sessionId) {
+          setMessages(retainFailure);
+          setAttachmentStatus(failure);
+          setInput(current => current || question);
+          setChatAttachments(current => current.length ? current : [...attachments]);
+          if (quartzSelection) setSelectedTextContext(current => current ?? quartzSelection);
+          else textSelection.restoreComposerSelection(selection);
+        }
+      }
+    } finally {
+      if (inlineQuestionRunsRef.current.get(key) === run) inlineQuestionRunsRef.current.delete(key);
+    }
+  }
+
+  async function stopInlineQuestion(selectionId: string) {
+    const run = [...inlineQuestionRunsRef.current.values()].find(candidate =>
+      candidate.clusterSlug === activeClusterSlug && candidate.selectionId === selectionId &&
+      (candidate.sessionId === activeChatIdRef.current || candidate.sessionId === null),
+    );
+    const answer = messages.findLast(message => message.role === 'assistant' &&
+      (message.textSelection?.id === selectionId || message.inlineSelection?.requestId === selectionId));
+    const sessionId = run?.sessionId ?? activeChatId;
+    const clientMessageId = run?.clientMessageId ?? answer?.clientMessageId;
+    // Stop before creation/checkpoint finishes is remembered by this controller.
+    run?.controller.abort();
+    if (sessionId !== null && clientMessageId) await abortGardenTurnCheckpoint(sessionId, clientMessageId);
   }
 
   async function persistChatSession(
@@ -1309,25 +1647,40 @@ export default function GardenAssistant({
     return write;
   }
 
-  async function startNewChat() {
-    if (chatIsStreaming) return;
+  function startNewChat() {
+    if (chatIsStreaming || !activeClusterSlug) return;
+    // Opening a blank composer must not wait for a network connection. The
+    // first turn creates its durable session through ensureTurnSession.
+    chatSelectionVersionRef.current += 1;
+    blankChatRequestedRef.current = true;
+    persistQuartzChatSelection(activeClusterSlug, null);
+    turnSessionCreationRef.current = null;
     chatBeforeTemporary.current = null;
     setTemporaryChat(false);
     localTurnRef.current = false;
-    const session = await createChatSession(undefined, { temporary: false });
-    if (session) {
-      setMessages([]);
-      setPermissionRequest(null);
-      setShowHistory(false);
-    }
+    setActiveChatId(null);
+    activeChatIdRef.current = null;
+    setCreatedChatId(null);
+    setMessages([]);
+    setPermissionRequest(null);
+    setSelectedTextContext(null);
+    textSelection.clearComposerSelection();
+    setChatAttachments([]);
+    setAttachmentStatus('');
+    setShowHistory(false);
+    window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
   }
 
   function openChatSession(session: ChatSession) {
     if (chatIsStreaming) return;
+    chatSelectionVersionRef.current += 1;
+    blankChatRequestedRef.current = false;
+    persistQuartzChatSelection(activeClusterSlug, session.id);
     chatBeforeTemporary.current = null;
     setTemporaryChat(false);
     localTurnRef.current = false;
     setActiveChatId(session.id);
+    activeChatIdRef.current = session.id;
     // An existing chat, so nothing typed in the blank composer belongs to it.
     setCreatedChatId(null);
     setMessages(session.messages ?? []);
@@ -1370,6 +1723,7 @@ export default function GardenAssistant({
       const sessions = previous.filter((session) => session.id !== sessionId);
       persistQuartzChatSessions(activeClusterSlug, sessions);
       if (activeChatId === sessionId) {
+        persistQuartzChatSelection(activeClusterSlug, sessions[0]?.id ?? null);
         setActiveChatId(sessions[0]?.id ?? null);
         setCreatedChatId(null);
         setMessages(sessions[0]?.messages ?? []);
@@ -1389,7 +1743,10 @@ export default function GardenAssistant({
   ): Promise<boolean> {
     const correction = text.trim() || attachmentOnlyMessageText(attachments);
     const context = activeSteerContextRef.current;
-    if (!correction || !context) return false;
+    if (!correction) return false;
+    if (agentActivity.pendingClarification && attachments.length === 0 && !selection) {
+      return agentActivity.respondToClarification(correction);
+    }
 
     let accepted = false;
     try {
@@ -1397,7 +1754,9 @@ export default function GardenAssistant({
     } catch {
       return false;
     }
-    if (!accepted || activeSteerContextRef.current !== context) return false;
+    if (!accepted) return false;
+    // The server persists a restored turn's correction; the history poll brings it in.
+    if (!context || activeSteerContextRef.current !== context) return true;
 
     const correctionMessage: ChatMessage = {
       role: 'user',
@@ -1431,6 +1790,7 @@ export default function GardenAssistant({
     selectionContextOverride?: QuartzAssistantSelectionRequest,
     textSelectionOverride?: ChatTextSelectionReference,
     branchSource?: ChatMessage,
+    voice?: import('@/lib/speech/voice-request').VoiceRequestOptions,
   ) {
     const text = (textOverride ?? input).trim();
     const responseSelection = textSelectionOverride ?? (textOverride === undefined ? textSelection.composerSelection ?? undefined : undefined);
@@ -1442,26 +1802,35 @@ export default function GardenAssistant({
         sourceResponse: selectionMessages.find(message => message.id === responseSelection.sourceMessageId)?.content,
       } : selectionContextOverride ?? (textOverride === undefined ? (selectedTextContext ?? undefined) : undefined);
     const selectedText = (selectedTextOverride ?? selectionContext?.text)?.slice(0, 4_000);
-    const inlineSelection =
-      !responseSelection && selectionContext?.mode === 'inline'
-        ? {
-            requestId: selectionContext.requestId,
-            highlightId: selectionContext.highlightId,
-            ...(selectionContext.pageSlug ? { pageSlug: selectionContext.pageSlug } : {}),
-          }
-        : undefined;
     const pendingAttachments: ChatAttachment[] = attachmentOverride
       ? [...attachmentOverride]
       : textOverride === undefined
         ? chatAttachments
         : [];
+    if (text && agentActivity.pendingClarification && !responseSelection && pendingAttachments.length === 0) {
+      const answered = await agentActivity.respondToClarification(text);
+      if (answered && textOverride === undefined) setInput(current => current.trim() === text ? '' : current);
+      return;
+    }
     const superAgentEnabled = isSuperAgentEnabled();
     const yoloModeEnabled = superAgentEnabled || isYoloModeEnabled();
-    if ((!text && pendingAttachments.length === 0) || chatIsStreaming || messageMutationPendingRef.current || !activeClusterSlug) return;
-
-    if (inlineSelection) {
-      activeInlineRequestIdRef.current = inlineSelection.requestId;
+    if (text && selectionContext?.mode === 'inline' && !messageMutationPendingRef.current && activeClusterSlug) {
+      const selection = responseSelection ?? {
+        id: selectionContext.requestId, mode: 'inline' as const,
+        sourceMessageId: `quartz:${selectionContext.highlightId}`,
+        start: 0, end: selectionContext.text.length, quote: selectionContext.text,
+        prefix: selectionContext.prefix, suffix: selectionContext.suffix,
+      };
+      if (textOverride === undefined) {
+        setInput('');
+        setChatAttachments([]);
+        textSelection.clearComposerSelection();
+        setSelectedTextContext(null);
+      }
+      await sendInlineQuestion(text, selection, pendingAttachments, responseSelection ? undefined : selectionContext, voice);
+      return;
     }
+    if ((!text && pendingAttachments.length === 0) || chatIsStreaming || messageMutationPendingRef.current || !activeClusterSlug) return;
 
     const history = historyOverride ?? messages;
     const branchSourceIndex = branchSource ? messages.indexOf(branchSource) : -1;
@@ -1478,6 +1847,13 @@ export default function GardenAssistant({
     const displayText = text || 'Please review the attached document(s).';
     const turnCreatedAt = new Date().toISOString();
     const clientMessageId = crypto.randomUUID();
+    const chatSelection = responseSelection ?? (selectionContext?.mode === 'chat' ? {
+      id: selectionContext.requestId, mode: 'chat' as const,
+      sourceMessageId: `quartz:${selectionContext.highlightId}`,
+      sourcePageSlug: selectionContext.pageSlug,
+      start: 0, end: selectionContext.text.length, quote: selectionContext.text,
+      prefix: selectionContext.prefix, suffix: selectionContext.suffix,
+    } : undefined);
     const userMessage: ChatMessage = {
       clientMessageId,
       ...(branch ? { branchGroupId: branch.groupId } : {}),
@@ -1487,8 +1863,7 @@ export default function GardenAssistant({
       attachmentNames,
       attachments: chatMessageAttachments(pendingAttachments),
       ...(selectedText ? { selectedText } : {}),
-      ...(responseSelection ? { textSelection: responseSelection } : {}),
-      ...(inlineSelection ? { inlineSelection } : {}),
+      ...(chatSelection ? { textSelection: chatSelection } : {}),
     };
     const nextMessages = [...history, userMessage];
     // Corrections steered into this turn land here, between the turn's user
@@ -1503,24 +1878,9 @@ export default function GardenAssistant({
       content: '',
       createdAt: turnCreatedAt,
       sources: [],
-      ...(responseSelection ? { textSelection: responseSelection } : {}),
-      ...(inlineSelection ? { inlineSelection } : {}),
+      ...(chatSelection ? { textSelection: chatSelection } : {}),
     };
     const responseStartedAt = performance.now();
-    const publishInlineAnswer = (
-      state: QuartzInlineAnswerUpdate['state'],
-      answer = assistantMessage.content,
-      responseDurationMs?: number,
-    ) => {
-      if (!inlineSelection) return;
-      onInlineAnswerUpdate?.({
-        ...inlineSelection,
-        question: displayText,
-        answer,
-        state,
-        ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
-      });
-    };
 
     // Everything below needs a chat row, and on a fresh chat that is a round
     // trip to the server. The message goes up first: what was typed appears
@@ -1534,8 +1894,7 @@ export default function GardenAssistant({
     setChatAttachments([]);
     setAttachmentStatus('');
     setIsStreaming(true);
-    setMessages([...nextMessages, assistantMessage]);
-    publishInlineAnswer('pending', '');
+    setMessages(current => preserveInlineQuestionMessages([...nextMessages, assistantMessage], current));
     // Thinking belongs to the turn, not to the request that answers it, so it
     // is raised here rather than once there is a chat row to send against.
     const turnSignal = agentActivity.start(viewingConversationId);
@@ -1544,31 +1903,31 @@ export default function GardenAssistant({
     let session = activeChat;
     let sessionTitle: string | undefined;
     if (!session || session.isOwn === false) {
-      session = await createChatSession(undefined, { keepMessages: true });
+      session = await ensureTurnSession();
       if (!session) {
-        const creationError = 'I could not create a chat history entry yet.';
+        const creationError = 'I could not create this chat yet. Please try again.';
         setMessages([
           ...nextMessages,
           {
             ...assistantMessage,
             content: creationError,
+            failed: true,
           },
         ]);
-        publishInlineAnswer('error', creationError);
-        agentActivity.finish(true);
+        agentActivity.finish(true, turnSignal);
         activityStarted = false;
         setIsStreaming(false);
         localTurnRef.current = false;
         if (activeSteerContextRef.current === steerContext) {
           activeSteerContextRef.current = null;
         }
-        if (activeInlineRequestIdRef.current === inlineSelection?.requestId) {
-          activeInlineRequestIdRef.current = null;
-        }
         return;
       }
     }
 
+    // Bind before checkpoint I/O so the newly selected chat cannot mistake
+    // its own first local turn for a stale stream from a different chat.
+    agentActivity.bindSession(session.conversationId ?? session.id);
     updateSessionMessages(session.id, [...nextMessages, assistantMessage], sessionTitle);
 
     // Reserve the question and its pending answer atomically. This happens
@@ -1580,12 +1939,19 @@ export default function GardenAssistant({
       agentActivity.bindSession(checkpoint.conversationId ?? session.conversationId ?? null);
       userMessage.id = checkpoint.userMessageId;
       assistantMessage.id = checkpoint.assistantMessageId;
+      if (chatSelection?.sourceMessageId.startsWith('quartz:') && quartzOrigin) {
+        quartzIframeRef?.current?.contentWindow?.postMessage({
+          type: 'second-brain:assistant-chat-link', highlightId: chatSelection.sourceMessageId.slice(7),
+          pageSlug: chatSelection.sourcePageSlug,
+          chatLink: { chatId: String(session.id), selectionId: chatSelection.id, surface: 'garden' },
+        }, quartzOrigin);
+      }
       checkpointSaved = true;
     } catch {
       checkpointSaved = false;
     }
     if (!checkpointSaved) {
-      setMessages(branch ? messages : history);
+      setMessages(current => preserveInlineQuestionMessages(branch ? messages : history, current));
       if (branch) {
         saveBranchGroups(branchGroups);
         updateSessionMessages(session.id, messages);
@@ -1593,7 +1959,6 @@ export default function GardenAssistant({
       setInput(text);
       if (responseSelection) textSelection.restoreComposerSelection(responseSelection);
       setChatAttachments(pendingAttachments);
-      publishInlineAnswer('error', 'Chat history could not be saved.');
       agentActivity.finish(true, turnSignal);
       activityStarted = false;
       setIsStreaming(false);
@@ -1601,14 +1966,14 @@ export default function GardenAssistant({
       if (activeSteerContextRef.current === steerContext) {
         activeSteerContextRef.current = null;
       }
-      if (activeInlineRequestIdRef.current === inlineSelection?.requestId) {
-        activeInlineRequestIdRef.current = null;
-      }
       return;
     }
 
     let agentFailed = false;
     let pendingApproval: PermissionRequest | null = null;
+    const viewerAbort = new AbortController();
+    const viewerSignal = AbortSignal.any([turnSignal, viewerAbort.signal]);
+    const recovered: { session: ChatSession | null } = { session: null };
     try {
       if (turnSignal.aborted) {
         await abortGardenTurnCheckpoint(session.id, clientMessageId);
@@ -1618,6 +1983,7 @@ export default function GardenAssistant({
         const response = await fetch('/api/markdown-edit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: turnSignal,
           body: JSON.stringify({
             clusterSlug: activeMarkdown.cluster || activeClusterSlug,
             slug: activeMarkdown.slug,
@@ -1628,6 +1994,7 @@ export default function GardenAssistant({
           }),
         });
         const body = await response.json().catch(() => ({}));
+        turnSignal.throwIfAborted();
         if (!response.ok || !body.success) {
           throw new Error(typeof body.error === 'string' ? body.error : 'Markdown edit failed');
         }
@@ -1650,6 +2017,7 @@ export default function GardenAssistant({
             }
           : null;
         assistantMessage = {
+          ...assistantMessage,
           role: 'assistant',
           createdAt: turnCreatedAt,
           content: [
@@ -1665,7 +2033,7 @@ export default function GardenAssistant({
           responseDurationMs: Math.round(performance.now() - responseStartedAt),
         };
         const finalMessages = [...nextMessages, ...steerContext.messages, assistantMessage];
-        setMessages(finalMessages);
+        setMessages(current => preserveInlineQuestionMessages(finalMessages, current));
         await persistChatSession(session.id, finalMessages, sessionTitle);
         window.dispatchEvent(
           new CustomEvent('sb:markdown-updated', {
@@ -1680,8 +2048,19 @@ export default function GardenAssistant({
         return;
       }
 
-      const signal = turnSignal;
-      const response = await fetch('/api/chat', {
+      const signal = viewerSignal;
+      turnObserverRef.current = {
+        sessionId: session.id,
+        clientMessageId,
+        recover: durable => {
+          recovered.session = durable;
+          localTurnRef.current = false;
+          // Retire this HTTP viewer only. The durable run already finished;
+          // do not send Stop or overwrite its saved answer with local text.
+          viewerAbort.abort();
+        },
+      };
+      const response = await fetchGardenChat(session.id, clientMessageId, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1692,8 +2071,10 @@ export default function GardenAssistant({
             role,
             content,
           })),
-          model,
-          reasoningEffort,
+          model: voice?.model ?? model,
+          reasoningEffort: voice?.reasoningEffort ?? reasoningEffort,
+          browserAccess: voice?.browserAccess,
+          voice: voice?.voice,
           attachments: pendingAttachments,
           activeMarkdown: activeMarkdownContext,
           selectedText,
@@ -1714,171 +2095,144 @@ export default function GardenAssistant({
       if (response.headers.get('X-Breadboard-AI-Fallback') === '1') {
         assistantMessage = {
           ...assistantMessage,
-          thinking: 'Hermes failed at runtime. HERMES_MODE=preferred allowed this visible legacy ChatMock fallback.\n',
+          thinking: "The assistant is unavailable. Continuing in basic chat.\n",
         };
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
       const updateAssistant = () => {
-        setMessages([...nextMessages, ...steerContext.messages, { ...assistantMessage }]);
-        publishInlineAnswer(assistantMessage.content ? 'streaming' : 'pending');
+        setMessages(current => preserveInlineQuestionMessages([...nextMessages, ...steerContext.messages, { ...assistantMessage }], current));
       };
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split('\n\n');
-        buffer = events.pop() ?? '';
-
-        for (const eventBlock of events) {
-          const payload = eventBlock
-            .split('\n')
-            .filter((line) => line.startsWith('data:'))
-            .map((line) => line.replace(/^data:\s?/, ''))
-            .join('\n')
-            .trim();
-
-          if (!payload || payload === '[DONE]') continue;
-
-          try {
-            const event = JSON.parse(payload);
-            agentActivity.handleEvent(event as Record<string, unknown>);
-            if (event.type === 'tool' && event.status === 'completed' && event.toolName === 'garden_import_source') {
-              handleGardenSourceImportResult(event.details);
-            }
-            if (event.type === 'tool' && event.status === 'completed') {
-              const resources = normalizeGenerativeUiResources(event.uiResources);
-              if (resources.length) {
-                assistantMessage = {
-                  ...assistantMessage,
-                  uiResources: [
-                    ...(assistantMessage.uiResources ?? []).filter(current => !resources.some(next => next.id === current.id)),
-                    ...resources,
-                  ],
-                };
-                updateAssistant();
-              }
-            }
-            if (event.type === 'sources' && Array.isArray(event.sources)) {
-              assistantMessage = {
-                ...assistantMessage,
-                sources: Array.from(new Set(event.sources.filter((source: unknown) => typeof source === 'string'))),
-              };
-              updateAssistant();
-            }
-            if (event.type === 'error') {
-              assistantMessage = {
-                ...assistantMessage,
-                content: `${assistantMessage.content}\n\n${event.error ?? 'Hermes reported an error.'}`,
-              };
-              updateAssistant();
-            }
-            if (event.type === 'runtime' && event.fallback) {
-              assistantMessage = {
-                ...assistantMessage,
-                thinking: `${assistantMessage.thinking ?? ''}\nHermes unavailable — using the visible preferred-mode ChatMock fallback.`,
-              };
-              updateAssistant();
-            }
-            if (event.type === 'thinking' && typeof event.text === 'string') {
-              assistantMessage = applyGardenStableTextEvent(assistantMessage, {
-                type: 'thinking',
-                text: event.text,
-                detailMode: event.detailMode,
-              });
-              updateAssistant();
-            }
-            if (event.type === 'delta' && typeof event.text === 'string') {
-              assistantMessage = applyGardenStableTextEvent(assistantMessage, {
-                type: 'delta',
-                text: event.text,
-              });
-              updateAssistant();
-            }
-            if (event.type === 'provisional' && typeof event.text === 'string') {
-              assistantMessage = applyGardenStableTextEvent(assistantMessage, {
-                type: 'provisional',
-                text: event.text,
-              });
-              updateAssistant();
-            }
-            if (event.type === 'replace' && typeof event.text === 'string') {
-              assistantMessage = applyGardenStableTextEvent(assistantMessage, {
-                type: 'replace',
-                text: event.text,
-              });
-              updateAssistant();
-            }
-            if (event.type === 'segment' && typeof event.text === 'string') {
-              assistantMessage = applyGardenStableTextEvent(assistantMessage, {
-                type: 'segment',
-                text: event.text,
-                streamed: event.streamed === true,
-              });
-              updateAssistant();
-            }
-            if (event.type === 'usage') {
-              const usage = normalizeChatTokenUsage(event.usage);
-              if (usage) {
-                assistantMessage = {
-                  ...assistantMessage,
-                  usage: {
-                    ...usage,
-                    responseDurationMs: Math.round(performance.now() - responseStartedAt),
-                  },
-                };
-                updateAssistant();
-              }
-            }
-            if (event.type === 'verification' && event.verification) {
-              assistantMessage = {
-                ...assistantMessage,
-                verification: event.verification as VerificationSummary,
-              };
-              updateAssistant();
-            }
-            if (event.type === 'plan' && typeof event.intendedOutcome === 'string') {
-              // Show the identified goal while work is in flight, so a
-              // multi-step task reads as active work rather than a stall.
-              assistantMessage = {
-                ...assistantMessage,
-                thinking: `${assistantMessage.thinking ?? ''}\n${event.intendedOutcome}`.trim(),
-              };
-              updateAssistant();
-            }
-            if (event.type === 'permission' && event.kind === 'filesystem') {
-              // A missing grant is a request, not a refusal. Capture it so the
-              // user can approve inline; `text` is retained so the same task
-              // resumes without the user retyping it.
-              pendingApproval = {
-                requestId: String(event.requestId ?? ''),
-                message: String(event.message ?? 'Additional access is required.'),
-                path: typeof event.path === 'string' ? event.path : undefined,
-                operations: Array.isArray(event.operations) ? (event.operations as string[]) : [],
-                originalText: text,
-                history,
-                attachments: pendingAttachments,
-                selectedText,
-                selectionContext,
-                textSelection: responseSelection,
-              };
-            }
-            if (event.type === 'blocked' && pendingApproval) {
-              setPermissionRequest(pendingApproval);
-              assistantMessage = {
-                ...assistantMessage,
-                content: assistantMessage.content || pendingApproval.message,
-              };
-              updateAssistant();
-            }
-          } catch {
-            // Ignore malformed stream fragments and keep reading.
+      for await (const payload of readGardenResponseData(response.body, signal)) {
+        if (!payload || payload === '[DONE]') continue;
+        let event;
+        try { event = JSON.parse(payload); }
+        catch { continue; }
+        agentActivity.handleEvent(event as Record<string, unknown>, turnSignal);
+        if (event.type === 'tool' && event.status === 'completed' && event.toolName === 'garden_import_source') {
+          handleGardenSourceImportResult(event.details);
+        }
+        if (event.type === 'tool' && event.status === 'completed') {
+          const resources = normalizeGenerativeUiResources(event.uiResources);
+          if (resources.length) {
+            assistantMessage = {
+              ...assistantMessage,
+              uiResources: [
+                ...(assistantMessage.uiResources ?? []).filter(current => !resources.some(next => next.id === current.id)),
+                ...resources,
+              ],
+            };
+            updateAssistant();
           }
+        }
+        if (event.type === 'sources' && Array.isArray(event.sources)) {
+          assistantMessage = {
+            ...assistantMessage,
+            sources: Array.from(new Set(event.sources.filter((source: unknown) => typeof source === 'string'))),
+          };
+          updateAssistant();
+        }
+        if (event.type === 'error') {
+          throw new Error(typeof event.error === 'string' ? event.error :
+            typeof event.payload?.message === 'string' ? event.payload.message : 'The assistant could not finish this response.');
+        }
+        if (event.type === 'runtime' && event.fallback) {
+          assistantMessage = {
+            ...assistantMessage,
+            thinking: `${assistantMessage.thinking ?? ''}\nHermes unavailable — using the visible preferred-mode ChatMock fallback.`,
+          };
+          updateAssistant();
+        }
+        if (event.type === 'thinking' && typeof event.text === 'string') {
+          assistantMessage = applyGardenStableTextEvent(assistantMessage, {
+            type: 'thinking',
+            text: event.text,
+            detailMode: event.detailMode,
+          });
+          updateAssistant();
+        }
+        if (event.type === 'delta' && typeof event.text === 'string') {
+          assistantMessage = applyGardenStableTextEvent(assistantMessage, {
+            type: 'delta',
+            text: event.text,
+          });
+          updateAssistant();
+        }
+        if (event.type === 'provisional' && typeof event.text === 'string') {
+          assistantMessage = applyGardenStableTextEvent(assistantMessage, {
+            type: 'provisional',
+            text: event.text,
+          });
+          updateAssistant();
+        }
+        if (event.type === 'replace' && typeof event.text === 'string') {
+          assistantMessage = applyGardenStableTextEvent(assistantMessage, {
+            type: 'replace',
+            text: event.text,
+          });
+          updateAssistant();
+        }
+        if (event.type === 'segment' && typeof event.text === 'string') {
+          assistantMessage = applyGardenStableTextEvent(assistantMessage, {
+            type: 'segment',
+            text: event.text,
+            streamed: event.streamed === true,
+          });
+          updateAssistant();
+        }
+        if (event.type === 'usage') {
+          const usage = normalizeChatTokenUsage(event.usage);
+          if (usage) {
+            assistantMessage = {
+              ...assistantMessage,
+              usage: {
+                ...usage,
+                responseDurationMs: Math.round(performance.now() - responseStartedAt),
+              },
+            };
+            updateAssistant();
+          }
+        }
+        if (event.type === 'verification' && event.verification) {
+          assistantMessage = {
+            ...assistantMessage,
+            verification: event.verification as VerificationSummary,
+          };
+          updateAssistant();
+        }
+        if (event.type === 'plan' && typeof event.intendedOutcome === 'string') {
+          // Show the identified goal while work is in flight, so a
+          // multi-step task reads as active work rather than a stall.
+          assistantMessage = {
+            ...assistantMessage,
+            thinking: `${assistantMessage.thinking ?? ''}\n${event.intendedOutcome}`.trim(),
+          };
+          updateAssistant();
+        }
+        if (event.type === 'permission' && event.kind === 'filesystem') {
+          // A missing grant is a request, not a refusal. Capture it so the
+          // user can approve inline; `text` is retained so the same task
+          // resumes without the user retyping it.
+          pendingApproval = {
+            requestId: String(event.requestId ?? ''),
+            message: String(event.message ?? 'Additional access is required.'),
+            path: typeof event.path === 'string' ? event.path : undefined,
+            operations: Array.isArray(event.operations) ? (event.operations as string[]) : [],
+            originalText: text,
+            history,
+            attachments: pendingAttachments,
+            selectedText,
+            selectionContext,
+            textSelection: responseSelection,
+          };
+        }
+        if (event.type === 'blocked' && pendingApproval) {
+          setPermissionRequest(pendingApproval);
+          assistantMessage = {
+            ...assistantMessage,
+            content: assistantMessage.content || pendingApproval.message,
+          };
+          updateAssistant();
         }
       }
       assistantMessage = {
@@ -1890,17 +2244,22 @@ export default function GardenAssistant({
         // The adapter already persisted this as an awaiting-permission turn.
         // Keep the optimistic transcript/card, but do not PATCH the blank
         // assistant into a completed canonical answer.
-        publishInlineAnswer('pending', assistantMessage.content, assistantMessage.responseDurationMs);
         const pausedMessages = [...nextMessages, ...steerContext.messages, assistantMessage];
-        setMessages(pausedMessages);
+        setMessages(current => preserveInlineQuestionMessages(pausedMessages, current));
         updateSessionMessages(session.id, pausedMessages, sessionTitle);
         return;
       }
-      publishInlineAnswer('complete', assistantMessage.content, assistantMessage.responseDurationMs);
       const finalMessages = [...nextMessages, ...steerContext.messages, assistantMessage];
-      setMessages(finalMessages);
+      setMessages(current => preserveInlineQuestionMessages(finalMessages, current));
       await persistChatSession(session.id, finalMessages, sessionTitle);
     } catch (error) {
+      if (recovered.session) {
+        const durable = recovered.session;
+        agentFailed = durable.messages.some(message => message.clientMessageId === clientMessageId && (message.failed || message.interrupted));
+        setMessages(current => preserveInlineQuestionMessages(durable.messages, current));
+        updateSessionMessages(durable.id, durable.messages, durable.title);
+        return;
+      }
       const aborted = error instanceof Error && error.name === 'AbortError';
       agentFailed = !aborted;
       const message = aborted
@@ -1910,7 +2269,7 @@ export default function GardenAssistant({
           : 'Assistant could not answer right now';
       const failureAnswer = aborted
         ? 'The request was stopped.'
-        : `I could not reach the assistant for this garden yet. ${message}`;
+        : [assistantMessage.content, message].filter(Boolean).join('\n\n');
       const finalMessages: ChatMessage[] = [
         ...nextMessages,
         ...steerContext.messages,
@@ -1919,22 +2278,22 @@ export default function GardenAssistant({
           role: 'assistant',
           createdAt: turnCreatedAt,
           content: failureAnswer,
+          pending: false,
+          failed: !aborted,
+          interrupted: aborted,
           sources: [],
           responseDurationMs: Math.round(performance.now() - responseStartedAt),
           responseCompletedAt: new Date().toISOString(),
-          ...(inlineSelection ? { inlineSelection } : {}),
         },
       ];
-      publishInlineAnswer('error', failureAnswer, Math.round(performance.now() - responseStartedAt));
-      setMessages(finalMessages);
+      setMessages(current => preserveInlineQuestionMessages(finalMessages, current));
       await persistChatSession(session.id, finalMessages, sessionTitle);
     } finally {
-      if (activityStarted) agentActivity.finish(agentFailed);
+      if (turnObserverRef.current?.clientMessageId === clientMessageId) turnObserverRef.current = null;
+      viewerAbort.abort();
+      if (activityStarted) agentActivity.finish(agentFailed, turnSignal);
       if (activeSteerContextRef.current === steerContext) {
         activeSteerContextRef.current = null;
-      }
-      if (activeInlineRequestIdRef.current === inlineSelection?.requestId) {
-        activeInlineRequestIdRef.current = null;
       }
       setIsStreaming(false);
       // The transcript this turn wrote has been persisted, so the session row
@@ -1999,23 +2358,23 @@ export default function GardenAssistant({
 
   async function addAttachmentFiles(files: File[]) {
     if (files.length === 0) return;
-    setExtractingAttachments(true);
-    // The add-documents button spins while the read runs, so a status line
-    // saying the same thing only adds noise under the composer. Clear it so a
-    // message from an earlier attachment does not sit there stale.
+    const preparation = beginAttachmentPreparation();
+    let errors: string[] = [];
     setAttachmentStatus('');
     try {
-      const result = await extractChatAttachments(files);
-      setChatAttachments((current) => [...current, ...result.attachments]);
-      setAttachmentStatus([...result.errors, ...result.warnings].join(' · '));
-      // Distil now, while the user is still typing, so the answer comes from a
-      // structured document rather than a dumped one.
-      const distillErrors = await distillAttachments(result.attachments, {
-        onStatus: setAttachmentStatus,
+      const result = await extractChatAttachments(files, {
+        onStatus: status => { if (preparation.isCurrent()) setAttachmentStatus(status); },
       });
-      if (distillErrors.length > 0) setAttachmentStatus(distillErrors.join(' · '));
+      errors = result.errors;
+      if (!preparation.isCurrent()) return;
+      setChatAttachments(current => [...current, ...result.attachments]);
+      setAttachmentStatus([...result.errors, ...result.warnings].join(' · '));
+      void distillAttachments(result.attachments).catch(() => undefined);
+    } catch (cause) {
+      errors = [cause instanceof Error ? cause.message : 'Could not attach the files.'];
+      if (preparation.isCurrent()) setAttachmentStatus(errors.join(' · '));
     } finally {
-      setExtractingAttachments(false);
+      preparation.finish(errors);
     }
   }
 
@@ -2133,6 +2492,8 @@ export default function GardenAssistant({
           message={paced ? { ...message, content: revealedAssistantContent } : message}
           userRequest={messages.slice(0, storedIndex).findLast(item => item.role === 'user')?.content ?? ''}
           chatSessionId={activeChatId}
+          conversationId={starConversationId}
+          canStar={canStar}
           sourceMessageId={gardenSelectionMessageId(message, storedIndex)}
           annotations={textSelection.annotations.get(gardenSelectionMessageId(message, storedIndex)) ?? NO_TEXT_ANNOTATIONS}
           onTextSelection={textSelection.receiveSelection}
@@ -2140,13 +2501,13 @@ export default function GardenAssistant({
           onSend={sendWidgetMessage}
           messageKey={chatRowKey(message, index)}
           separatorLabel={timeSeparators[index] ?? null}
-          activities={isNewest && !streamingInlineSelection ? agentActivity.activities : NO_ACTIVITIES}
-          connection={isNewest && !streamingInlineSelection ? visibleAgentConnection : 'idle'}
-          pendingPermission={isNewest && !streamingInlineSelection ? agentActivity.pendingPermission : null}
+          activities={isNewest ? agentActivity.activities : NO_ACTIVITIES}
+          connection={isNewest ? visibleAgentConnection : 'idle'}
+          pendingPermission={isNewest ? agentActivity.pendingPermission : null}
           onPermissionDecision={handlePermissionDecision}
-          pendingClarification={isNewest && !streamingInlineSelection ? agentActivity.pendingClarification : null}
+          pendingClarification={isNewest ? agentActivity.pendingClarification : null}
           onClarificationAnswer={handleClarificationAnswer}
-          showActions={!(chatIsStreaming && !streamingInlineSelection && isNewest)}
+          showActions={!(chatIsStreaming && isNewest)}
           onRetry={isNewest && storedIndex >= 0 ? () => retryAssistantMessage(storedIndex) : undefined}
           userActionsDisabled={chatIsStreaming || updatingMessages || activeChat?.isOwn === false}
           onEditUserMessage={handleEditUserMessage}
@@ -2172,6 +2533,8 @@ export default function GardenAssistant({
       naturalRewriteFor,
       activeChatId,
       activeChat?.isOwn,
+      starConversationId,
+      canStar,
       branchGroups,
       updatingMessages,
       handleEditUserMessage,
@@ -2181,9 +2544,10 @@ export default function GardenAssistant({
       agentActivity.activities,
       visibleAgentConnection,
       agentActivity.pendingPermission,
+      agentActivity.pendingClarification,
+      handleClarificationAnswer,
       handlePermissionDecision,
       chatIsStreaming,
-      streamingInlineSelection,
       revealedAssistantContent,
       textSelection.annotations,
       textSelection.receiveSelection,
@@ -2256,6 +2620,10 @@ export default function GardenAssistant({
   } as CSSProperties;
   const newChatPageSelected =
     !chatIsStreaming && messages.length === 0 && activeChat?.isOwn !== false;
+  const recommendations = useRecommendations({
+    gardenSlug: activeClusterSlug, pageTitle: activeMarkdown?.title,
+    temporary: temporaryChat, enabled: chatOpen && newChatPageSelected && hasActiveCluster,
+  });
   const historySessions = chatSessions.filter(
     (session) => session.temporary !== true,
   );
@@ -2265,6 +2633,7 @@ export default function GardenAssistant({
 
   const chatPanel = (
     <aside
+      data-garden-assistant-panel
       className="neu-surface-raised fixed inset-x-3 bottom-3 top-20 z-40 flex flex-col overflow-hidden rounded-md border border-gray-800 bg-gray-900 text-gray-100 lg:absolute lg:inset-y-0 lg:left-auto lg:right-0 lg:h-full lg:w-[var(--assistant-panel-width)] lg:rounded-none lg:border-y-0 lg:border-l lg:border-r-0"
       style={chatPanelStyle}
       data-temporary-chat={temporaryChat ? 'true' : undefined}
@@ -2291,9 +2660,9 @@ export default function GardenAssistant({
         <div className="mt-3 grid grid-cols-4 gap-2 text-center text-[11px] text-gray-400">
           {[
             { label: 'Sources', value: stats.documents },
-            { label: 'Pages', value: stats.textbookPages },
-            { label: 'Concepts', value: stats.conceptNodes },
-            { label: 'Links', value: stats.links },
+            { label: 'Lessons', value: stats.textbookPages },
+            { label: 'Concepts', value: stats.conceptPages },
+            { label: 'Connections', value: stats.links },
           ].map((item) => (
             <div key={item.label} className="neu-inset rounded-md border border-gray-800 bg-gray-950/60 px-2 py-1.5">
               <div className="font-medium text-gray-100">{formatNumber(item.value)}</div>
@@ -2316,42 +2685,6 @@ export default function GardenAssistant({
               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 5.25v4.5h4.5" />
             </svg>
           </button>
-          <div
-            className={`flex min-w-0 max-w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-xs ${
-              activeMarkdown && activeMarkdown.cluster === activeClusterSlug
-                ? 'bg-gray-800 text-gray-200'
-                : 'border border-gray-800 bg-gray-950/60 text-gray-600'
-            }`}
-            title={
-              activeMarkdown && activeMarkdown.cluster === activeClusterSlug
-                ? `Current markdown: ${activeMarkdown.slug}`
-                : 'No page is currently open'
-            }
-          >
-            <svg
-              className="h-3.5 w-3.5 shrink-0 text-gray-500"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={1.7}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5A3.375 3.375 0 0 0 10.125 2.25H6.75A2.25 2.25 0 0 0 4.5 4.5v15A2.25 2.25 0 0 0 6.75 21.75h10.5a2.25 2.25 0 0 0 2.25-2.25v-5.25Z"
-              />
-            </svg>
-            <span className="truncate">
-              {activeMarkdown && activeMarkdown.cluster === activeClusterSlug
-                ? markdownFileLabel(activeMarkdown)
-                : 'No markdown open'}
-            </span>
-            {activeMarkdown?.loading && activeMarkdown.cluster === activeClusterSlug ? (
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-300" title="Loading markdown context" />
-            ) : activeMarkdown?.content && activeMarkdown.cluster === activeClusterSlug ? (
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-300" title="Markdown context loaded" />
-            ) : null}
-          </div>
         </div>
       </div>
 
@@ -2396,7 +2729,7 @@ export default function GardenAssistant({
             title={
               temporaryChat
                 ? 'Temporary chat is on — click to return. This chat is not in your history and is not used or saved as memory.'
-                : 'Temporary chat: start a chat kept out of your history and memory, both ways'
+                : "Temporary chats stay out of your history and don’t use or save memory."
             }
             aria-label={temporaryChat ? 'Turn off temporary chat' : 'Turn on temporary chat'}
           >
@@ -2424,11 +2757,13 @@ export default function GardenAssistant({
           ref={transcriptScrollRef}
           className="bb-chat-scroller bb-chat-scroll-tail flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4"
         >
+          <InlineArtifactCardsProvider legacyChatSessionId={activeChatId} gardenSlug={activeClusterSlug}>
           <InlineProposalCardsProvider
             key={viewingConversationId}
             conversationId={activeChat?.isOwn !== false ? viewingConversationId : null}
             gardenSlug={activeChat?.isOwn !== false && viewingConversationId ? activeClusterSlug : null}
             refreshKey={`${chatIsStreaming}:${messages.length}`}
+            onRequestRevision={prompt => queueFollowUp(prompt, [])}
           >
           {visibleMessages.length === 0 ? (
             <div className="space-y-4">
@@ -2447,19 +2782,22 @@ export default function GardenAssistant({
                   {formatNumber(stats.words)} words are indexed for this garden.
                 </p>
               </div>
-              <div className="space-y-2">
+              {recommendations.length ? <ChatSuggestionCards
+                suggestions={recommendations.map(item => item.prompt)}
+                onSelectSuggestion={prompt => { setInput(prompt); composerTextareaRef.current?.focus(); }}
+              /> : <div className="space-y-2">
                 {SUGGESTED_PROMPTS.map((prompt) => (
                   <button
                     type="button"
                     key={prompt}
-                    onClick={() => void sendMessage(prompt)}
+                    onClick={() => { setInput(prompt); composerTextareaRef.current?.focus(); }}
                     disabled={chatIsStreaming || !hasActiveCluster}
                     className="neu-button block w-full rounded-md border border-gray-800 bg-gray-950/50 px-3 py-2 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {prompt}
                   </button>
                 ))}
-              </div>
+              </div>}
             </div>
           ) : (
             <VirtualizedMessageList
@@ -2477,6 +2815,7 @@ export default function GardenAssistant({
             />
           )}
           </InlineProposalCardsProvider>
+          </InlineArtifactCardsProvider>
           {visibleMessages.length > 0 ? <ChatDisclaimer /> : null}
         </div>
         <ChatMessageRail
@@ -2487,7 +2826,7 @@ export default function GardenAssistant({
         />
         <ChatJumpToBottom
           visible={transcriptAwayFromBottom}
-          busy={chatIsStreaming && !streamingInlineSelection}
+          busy={chatIsStreaming}
           onJump={jumpToNewestMessage}
         />
       </div>
@@ -2549,7 +2888,17 @@ export default function GardenAssistant({
           onChange={handleAttachmentInput}
           className="hidden"
         />
+        {activeMarkdown && activeMarkdown.cluster === activeClusterSlug ? (
+          <div
+            className="mb-1 flex min-w-0 items-baseline gap-1 px-3 text-[11px] leading-5 text-[#6B7971]"
+            title={activeMarkdown.slug}
+          >
+            <span className="shrink-0">Viewing</span>
+            <span className="min-w-0 [overflow-wrap:anywhere]">{markdownFileLabel(activeMarkdown)}</span>
+          </div>
+        ) : null}
         <AssistantComposer
+          personalizedSuggestions={!temporaryChat && activeChat?.isOwn !== false}
           viewportBoundedIntelligence
           textareaRef={composerTextareaRef}
           capabilitySurface="garden_chat"
@@ -2557,11 +2906,12 @@ export default function GardenAssistant({
           compact
           value={input}
           onChange={setInput}
-          onSubmit={() => void sendMessage()}
+          onSubmit={voice => void sendMessage(undefined, undefined, undefined, undefined, undefined, undefined, undefined, voice)}
           history={sentMessages}
           placeholder={hasActiveCluster ? 'Ask anything' : 'Open a garden first...'}
           disabled={!hasActiveCluster}
           isSending={chatIsStreaming}
+          onSubmitDuringRun={textSelection.composerSelection?.mode === 'inline' || selectedTextContext?.mode === 'inline' ? () => void sendMessage() : undefined}
           runState={
             !chatIsStreaming
               ? 'idle'
@@ -2599,6 +2949,7 @@ export default function GardenAssistant({
           onAddDocuments={() => attachmentInputRef.current?.click()}
           onPasteFiles={addAttachmentFiles}
           isAddingDocuments={extractingAttachments}
+              attachmentUploadError={attachmentUploadError}
           attachments={chatAttachments}
           onRemoveAttachment={(index) =>
             setChatAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))
@@ -2876,6 +3227,7 @@ export default function GardenAssistant({
       iframeRef={quartzIframeRef}
       quartzOrigin={quartzOrigin}
       answerSelection={quartzAnswerSelection}
+      renderArtifacts={renderAnswerArtifacts}
     />
   ) : null;
 

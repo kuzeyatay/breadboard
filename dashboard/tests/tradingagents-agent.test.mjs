@@ -229,10 +229,11 @@ test("the composer replaces the message field instead of leaving it open", () =>
   assert.match(composer, /const formAgent = tradingAgentsAgent \?\? shortsAgent \?\?/);
   assert.match(
     composer.replace(/\s+/g, " "),
-    /onClick=\{\(\) => formAgent \? submitFormAgent\(\)/,
+    /onClick=\{\(\) => sendCurrentDraft\(\)\}/,
   );
+  assert.match(composer, /function sendCurrentDraft[\s\S]*?if \(formAgent\) submitFormAgent\(\);/);
   // Dictation writes into the message field, which no longer exists.
-  assert.match(composer, /disabled=\{disabled \|\| isSending \|\| Boolean\(formAgent\)\}/);
+  assert.match(composer, /disabled=\{disabled \|\| isSending \|\| Boolean\(formAgent\)(?: \|\| Boolean\(uploadQueued\))?\}/);
 
   const form = source("src/app/components/hermes/tradingagents-request-form.tsx");
   assert.doesNotMatch(form, /<textarea/, "the request form must not reintroduce a prompt field");

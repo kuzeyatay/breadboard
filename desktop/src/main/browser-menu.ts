@@ -1,7 +1,7 @@
 import type { MenuItemConstructorOptions } from "electron";
 
 export type BrowserMenuAction =
-  | "profile" | "new-tab" | "new-window" | "new-private-tab" | "new-private-window" | "history" | "bookmarks" | "downloads"
+  | "profile" | "new-tab" | "new-window" | "new-private-tab" | "new-private-window" | "history" | "visited-pages" | "bookmarks" | "downloads"
   | "extensions" | "appearance" | "print" | "save" | "translate" | "find"
   | "zoom-in" | "zoom-out" | "zoom-reset" | "fullscreen" | "picture-in-picture" | "settings"
   | "developer-tools" | "copy-link" | "help" | "report" | "about" | "quit";
@@ -22,7 +22,7 @@ export function browserMenuTemplate(
     id: action, label, accelerator, enabled, registerAccelerator: false, click: () => run(action),
   });
   return [
-    item(context.profileLabel.replace(/&/g, "&&") || "Your profile", "profile"),
+    item("Settings", "profile"),
     { type: "separator" },
     item("New Tab", "new-tab", "CommandOrControl+T"),
     item("New Window", "new-window", "CommandOrControl+N"),
@@ -30,6 +30,7 @@ export function browserMenuTemplate(
     item("New Private Window", "new-private-window", "CommandOrControl+Shift+N"),
     { type: "separator" },
     item("History", "history", "CommandOrControl+H"),
+    item("Visited pages", "visited-pages"),
     item("Bookmarks", "bookmarks", "CommandOrControl+Shift+O"),
     item("Downloads", "downloads", "CommandOrControl+J"),
     { label: "Extensions and Themes", submenu: [
@@ -60,7 +61,12 @@ export function browserMenuTemplate(
       item("About Breadboard", "about"),
     ] },
     { type: "separator" },
-    item("Exit", "quit", "CommandOrControl+Shift+Q"),
+    // Deliberately no accelerator: Ctrl/Cmd+Shift+Q fires from inside any
+    // browser tab and quit the whole app instantly, with no confirmation,
+    // killing whatever was running (2026-09-22: it ended a multi-hour Learn
+    // run three minutes before it would have cleared its wait). Exit stays
+    // available from this menu, where choosing it is deliberate.
+    item("Exit", "quit"),
   ];
 }
 
@@ -73,7 +79,8 @@ export function browserMenuShortcut(input: {
   if (input.type !== "keyDown" || input.isAutoRepeat || input.alt || !(input.control || input.meta)) return null;
   const key = input.key.toLowerCase();
   if (input.shift) {
-    const actions: Record<string, BrowserMenuAction> = { p: "new-private-tab", n: "new-private-window", o: "bookmarks", a: "extensions", i: "developer-tools", q: "quit" };
+    // "q" is intentionally absent - see the Exit item above.
+    const actions: Record<string, BrowserMenuAction> = { p: "new-private-tab", n: "new-private-window", o: "bookmarks", a: "extensions", i: "developer-tools" };
     return actions[key] ?? null;
   }
   const actions: Record<string, BrowserMenuAction> = { n: "new-window", h: "history", j: "downloads", p: "print", s: "save", f: "find" };

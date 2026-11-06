@@ -14,11 +14,13 @@ import {
 } from "@/lib/hermes/local-skills-sources.ts";
 import {
   classifySkill,
+  listInstalledLocalSkills,
 } from "@/lib/hermes/skills.ts";
 import {
   resolveSkillCompatibility,
 } from "@/lib/hermes/skill-compatibility.ts";
 import { listMcpConnections } from "@/lib/hermes/mcp-connections.ts";
+import { installedSkillCompatibility } from "@/lib/hermes/skill-library.ts";
 import type { HermesSurface } from "@/lib/hermes/config.ts";
 
 export const dynamic = "force-dynamic";
@@ -105,12 +107,21 @@ function browserSkill(
   const manifest =
     skill.files?.find((file) => /^SKILL\.md$/i.test(file.path))?.contents ??
     "";
-  const classification = classifySkill({
+  const inferredClassification = classifySkill({
     name: skill.name || skill.slug,
     description: skill.description ?? undefined,
     repository: skill.source,
     manifest,
   });
+  const installed = skill.installationStatus === "installed"
+    ? listInstalledLocalSkills(surface, connectedMcpServers).find((entry) => entry.id === skill.upstreamId)
+    : undefined;
+  const classification = installed ? {
+    ...inferredClassification,
+    classification: installed.classification,
+    category: installed.category,
+    reasons: installed.unavailableReasons,
+  } : inferredClassification;
   const compatibility = resolveSkillCompatibility({
     classification: classification.classification,
     manifest,
@@ -126,11 +137,13 @@ function browserSkill(
     ...skill,
     installedPath: undefined,
     files: skill.files?.map((file) => ({ path: file.path })) ?? null,
-    command: `/${skill.slashCommand}`,
+    slashCommand: installed?.slug ?? skill.slashCommand,
+    command: `/${installed?.slug ?? skill.slashCommand}`,
     description: skill.description ?? (skill.detailCheckedAt ? "No description was provided by the publisher." : ""),
     descriptionLoaded: Boolean(skill.description || skill.detailCheckedAt),
     classification,
     ...compatibility,
+    ...(skill.installationStatus === "installed" ? installedSkillCompatibility(installed) : {}),
     requiresOpenCode:
       classification.classification === "eligible_coding_conditional",
   };

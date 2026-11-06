@@ -1,0 +1,187 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import fs from 'node:fs';
+import path from 'node:path';
+import { build } from 'esbuild';
+import { chromium } from 'playwright';
+import postcss from 'postcss';
+import tailwind from '@tailwindcss/postcss';
+import { readCircuitDocument } from '../src/lib/netlist-viewer/project.ts';
+
+const root = path.resolve(import.meta.dirname, '..');
+const oscillator = fs.readFileSync(path.join(root, '../multisim-service/docs/verification/2026-09-22/circuit.cir'), 'utf8');
+
+test('real artifact pane opens legacy SPICE downloads, traces pins, navigates models, exports SVG and handles errors', {timeout:90_000}, async () => {
+  const bundle = await build({stdin:{resolveDir:root,loader:'tsx',contents:`
+    import React from 'react';import{createRoot}from'react-dom/client';
+    import ArtifactViewer from './src/app/components/hermes/artifact-viewer';
+    const artifact={id:'saved-oscillator',title:'10 kHz oscillator',filename:'circuit.cir',kind:'unknown',renderer:'binary-file',status:'ready',previewAvailable:false,downloadAvailable:true,version:1,metadata:{},mimeType:'application/octet-stream',conversationId:'chat-1'};
+    const root=createRoot(document.getElementById('root'));
+    root.render(<ArtifactViewer artifact={artifact} onClose={()=>{}}/>);
+    window.showPreview=()=>root.render(<ArtifactViewer artifact={{...artifact,kind:'code',renderer:'spice-netlist',previewAvailable:true,version:2}} onClose={()=>{}}/>);
+    window.showArtifact=(overrides)=>root.render(<ArtifactViewer artifact={{...artifact,...overrides}} onClose={()=>{}}/>);
+  `},outfile:'fixture.js',bundle:true,write:false,platform:'browser',format:'iife',jsx:'automatic',alias:{'@':path.join(root,'src')},plugins:[{name:'unrelated-viewers',setup(builder){
+    builder.onResolve({filter:/^next\/dynamic$/},()=>({path:'dynamic',namespace:'fixture'}));
+    builder.onResolve({filter:/(?:artifact-document-studio|artifact-genoffice-editor|artifact-vvveb-editor|hardware-blueprint-artifact|parametric-cad-artifact|model-viewer|vimax-film-artifact|vox-production-artifact|socials-manager-post-artifact|inline-gadget|markdown-artifact-editor|chat-markdown)$/}, args=>({path:args.path,namespace:'fixture'}));
+    builder.onLoad({filter:/.*/,namespace:'fixture'},args=>({loader:'tsx',resolveDir:root,contents:args.path==='dynamic'?`import React,{lazy,Suspense}from'react';export default function dynamic(load){const C=lazy(load);return p=><Suspense fallback={null}><C {...p}/></Suspense>}`:'export default function UnrelatedViewer(){return null;}'}));
+  }}]});
+  const utilities = await postcss([tailwind()]).process('@import "tailwindcss" source(none); @source "../src/app/components/hermes/artifact-viewer.tsx"; @source "../src/app/components/hermes/artifact-preview-loading.tsx"; @source "../src/app/components/hermes/artifact-preview-surface.tsx";', {from:path.join(root,'tests/netlist-fixture.css')});
+  const css = utilities.css + (bundle.outputFiles.find(f=>f.path.endsWith('.css'))?.text ?? '');
+  const js = bundle.outputFiles.find(f=>f.path.endsWith('.js')).text;
+  const executablePath=[process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,chromium.executablePath(),'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find(p=>p&&fs.existsSync(p));
+  const browser=await chromium.launch({executablePath,headless:true});
+  try {
+    const page=await browser.newPage({viewport:{width:1300,height:1000}});
+    const errors=[], downloads=[], sourceRequests=[];let failed=false, body=oscillator, contentType='application/octet-stream';
+    let releaseSource;
+    let sourceGate=new Promise(resolve=>{releaseSource=resolve;});
+    page.on('pageerror',error=>errors.push(error.message));
+    page.on('download',download=>downloads.push(download));
+    await page.route('http://localhost:53149/**',async route=>{
+      const url=new URL(route.request().url());
+      if(/\/api\/hermes\/artifacts\/saved-oscillator\/(?:download|preview)$/.test(url.pathname)){
+        assert.equal(url.searchParams.get('conversationId'),'chat-1');
+        sourceRequests.push(url.pathname);
+        await sourceGate;
+        return route.fulfill({status:failed?503:200,contentType,body:failed?'unavailable':body});
+      }
+      if(url.pathname.startsWith('/api/'))return route.fulfill({json:{}});
+      return route.fulfill({contentType:'text/html',body:`<style>:root{--paper-bg:#f7f8f6;--paper-strong:#fff;--line:#d5dae0;--ink:#172033;--ink-muted:#566374}*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:var(--paper-bg)}${css}</style><div id="root"></div><script>${js}</script>`});
+    });
+    await page.goto('http://localhost:53149/');
+    const viewer=page.getByRole('region',{name:'SPICE netlist viewer'});
+    await viewer.getByRole('status').filter({hasText:'Loading circuit'}).waitFor();
+    assert.equal(await viewer.getAttribute('aria-busy'),'true');
+    assert.equal(await viewer.getByRole('status').locator('svg').count(),1);
+    assert.equal(await viewer.getByRole('button',{name:'Source',exact:true}).isVisible(),true);
+    releaseSource();
+    await viewer.locator('[data-component="XOSC"]').waitFor();
+    assert.equal(await viewer.getAttribute('aria-busy'),'false');
+    assert.equal(sourceRequests.length,1);
+    assert.equal(await viewer.locator('[data-component]').count(),46);
+    assert.equal(await page.getByText('No inline preview is available for this format.',{exact:false}).count(),0);
+    await viewer.getByRole('combobox',{name:'Select component',exact:true}).selectOption('XOSC');
+    await viewer.getByRole('button',{name:'plus: wp',exact:true}).click();
+    assert.match(await viewer.getByRole('status').innerText(),/XOSC.plus/);
+    assert.ok(await viewer.locator('[data-net="wp"] path').count()>0);
+    await viewer.getByRole('button',{name:'Rotate 90°',exact:true}).click();
+    assert.equal(await viewer.locator('[data-component="XOSC"] > g').getAttribute('transform'),'rotate(90)');
+    await viewer.getByRole('button',{name:'Focus',exact:true}).click();
+    const dragTarget=viewer.getByRole('button',{name:'Select XOSC',exact:true});
+    const box=await dragTarget.boundingBox();
+    const originalPosition=await viewer.locator('[data-component="XOSC"]').getAttribute('transform');
+    await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+    await page.mouse.down();await page.mouse.move(box.x+box.width/2+25,box.y+box.height/2+20,{steps:5});await page.mouse.up();
+    assert.notEqual(await viewer.locator('[data-component="XOSC"]').getAttribute('transform'),originalPosition);
+    await viewer.getByRole('button',{name:'plus: wp',exact:true}).click();
+    assert.match(await viewer.getByRole('status').innerText(),/XOSC.plus/);
+    await viewer.getByRole('button',{name:'Reset layout',exact:true}).click();
+    const before=await viewer.locator('svg[aria-label="Top level circuit"]').getAttribute('viewBox');
+    await viewer.getByRole('button',{name:'Zoom in',exact:true}).click();
+    assert.notEqual(await viewer.locator('svg[aria-label="Top level circuit"]').getAttribute('viewBox'),before);
+    await viewer.getByRole('button',{name:'Fit',exact:true}).click();
+    await viewer.getByRole('button',{name:'Open BB_OPAMP',exact:true}).click();
+    assert.equal(await viewer.locator('[data-component]').count(),4);
+    assert.equal(await viewer.getByRole('combobox',{name:'Circuit or subcircuit'}).inputValue(),'bb_opamp');
+    await viewer.getByRole('combobox',{name:'Trace net',exact:true}).selectOption('pole');
+    assert.match(await viewer.getByRole('status').innerText(),/Cdominant/);
+    await page.screenshot({path:path.join(root,'.tmp-netlist-opamp.png')});
+    const downloadPromise=page.waitForEvent('download');
+    await viewer.getByRole('button',{name:'Export SVG',exact:true}).click();
+    const download=await downloadPromise;
+    const exported=fs.readFileSync(await download.path(),'utf8');
+    assert.match(exported,/<svg[^>]*xmlns="http:\/\/www.w3.org\/2000\/svg"/);
+    assert.match(exported,/Blimit/);assert.doesNotMatch(exported,/<script|<foreignObject/);
+    await viewer.getByRole('button',{name:'Source',exact:true}).click();
+    assert.equal(await viewer.getByLabel('SPICE source').textContent(),oscillator);
+    await viewer.getByRole('button',{name:'Circuit',exact:true}).click();
+    await viewer.getByRole('combobox',{name:'Circuit or subcircuit'}).selectOption('@top');
+    await viewer.getByRole('checkbox',{name:'All connections'}).check();
+    await page.screenshot({path:path.join(root,'.tmp-netlist-oscillator.png')});
+    await page.evaluate(()=>document.documentElement.style.cssText='--paper-bg:#18212c;--paper-strong:#222d3b;--line:#455269;--ink:#edf2fa;--ink-muted:#b2bfd0');
+    await page.screenshot({path:path.join(root,'.tmp-netlist-dark.png')});
+    await page.setViewportSize({width:420,height:850});
+    await page.getByRole('button',{name:'Expand artifact',exact:true}).click();
+    assert.ok(await viewer.evaluate(el=>el.scrollWidth<=el.clientWidth+1));
+    await page.screenshot({path:path.join(root,'.tmp-netlist-narrow.png')});
+    failed=true;await page.reload();
+    await viewer.getByRole('alert').filter({hasText:'HTTP 503'}).waitFor();
+    failed=false;await viewer.getByRole('button',{name:'Retry',exact:true}).click();
+    await viewer.locator('[data-component="XOSC"]').waitFor();
+    await page.evaluate(()=>window.showPreview());
+    await viewer.locator('[data-component="XOSC"]').waitFor();
+    assert.ok(sourceRequests.some(url=>url.endsWith('/preview')));
+    body='* a malformed deck\nR1 a\n.include "external.lib"\n.control\n';
+    await page.reload();await viewer.locator('details[open]').waitFor();
+    assert.match(await viewer.locator('details').innerText(),/incomplete|Incomplete/);
+    await viewer.getByRole('button',{name:'Source',exact:true}).click();
+    assert.equal(await viewer.getByLabel('SPICE source').textContent(),body);
+
+    // Folder/ZIP listings have metadata but deliberately no preview file.
+    const entries=[{path:'circuit.cir',byteSize:1200},{path:'results/plot.svg',byteSize:2048}];
+    await page.evaluate(entries=>window.showArtifact({kind:'folder',renderer:'folder-archive',filename:'oscillator.zip',title:'Oscillator folder',metadata:{entries,entryCount:3}}),entries);
+    const listing=page.getByRole('list',{name:'Files in Oscillator folder'});
+    await listing.waitFor();
+    assert.equal(await listing.getByRole('listitem').count(),2);
+    assert.match(await page.getByRole('dialog').innerText(),/Showing 2 of 3 files/);
+    assert.equal(await page.getByText('No inline preview is available for this format.',{exact:false}).count(),0);
+    await page.evaluate(entries=>window.showArtifact({kind:'unknown',renderer:'archive-file',filename:'oscillator.zip',title:'Oscillator ZIP',metadata:{entries}}),entries);
+    await page.getByRole('list',{name:'Files in Oscillator ZIP'}).waitFor();
+    await page.evaluate(()=>window.showArtifact({kind:'folder',renderer:'folder-archive',filename:'empty.zip',title:'Missing listing'}));
+    await page.getByText("This folder's listing is unavailable.",{exact:false}).waitFor();
+
+    // Text, image, and frame previews keep an icon visible until real content arrives.
+    const loading=page.getByRole('status').filter({hasText:'Loading preview'});
+    sourceGate=new Promise(resolve=>{releaseSource=resolve;});body='fresh text';contentType='text/plain';
+    await page.evaluate(()=>window.showArtifact({kind:'text',renderer:'text-file',filename:'notes.txt',previewAvailable:true,version:3}));
+    await loading.waitFor();assert.equal(await loading.locator('svg').count(),1);
+    releaseSource();await page.getByText('fresh text',{exact:true}).waitFor();await loading.waitFor({state:'hidden'});
+    failed=true;
+    await page.evaluate(()=>window.showArtifact({kind:'text',renderer:'text-file',filename:'other.txt',previewAvailable:true,version:4}));
+    await page.getByRole('alert').filter({hasText:'Preview could not be loaded'}).waitFor();
+    assert.equal(await page.getByText('fresh text',{exact:true}).count(),0);
+    failed=false;await page.getByRole('button',{name:'Retry',exact:true}).click();
+    await page.getByText('fresh text',{exact:true}).waitFor();
+    sourceGate=new Promise(resolve=>{releaseSource=resolve;});
+    body='<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="green"/></svg>';contentType='image/svg+xml';
+    await page.evaluate(()=>window.showArtifact({kind:'image',renderer:'image-file',filename:'plot.svg',previewAvailable:true,version:5}));
+    await loading.waitFor();releaseSource();await loading.waitFor({state:'hidden'});
+    assert.ok(await page.getByRole('img').evaluate(image=>image.naturalWidth>0));
+    sourceGate=new Promise(resolve=>{releaseSource=resolve;});body='<p>Folder report</p>';contentType='text/html';
+    await page.evaluate(()=>window.showArtifact({kind:'html',renderer:'html-file',filename:'report.html',previewAvailable:true,version:6}));
+    await loading.waitFor();releaseSource();await loading.waitFor({state:'hidden'});
+    await page.frameLocator('iframe').getByText('Folder report').waitFor();
+
+    // A stalled circuit fetch becomes a retryable error rather than a blank pane.
+    sourceGate=new Promise(resolve=>{releaseSource=resolve;});body=oscillator;contentType='text/plain';
+    await page.clock.install();
+    await page.evaluate(()=>window.showArtifact({version:7}));
+    await viewer.getByRole('status').filter({hasText:'Loading circuit'}).waitFor();
+    await page.clock.fastForward(20_001);
+    await viewer.getByRole('alert').filter({hasText:'too long to load'}).waitFor();
+    releaseSource();await viewer.getByRole('button',{name:'Retry',exact:true}).click();
+    await viewer.locator('[data-component="XOSC"]').waitFor();
+    // The saved project uses routed wires immediately, and survives layout edits.
+    body=fs.readFileSync(path.join(root,'tests/fixtures/netlist-viewer/oscillator.bbcir'),'utf8');contentType='application/json';
+    await page.setViewportSize({width:1300,height:1000});
+    await page.evaluate(()=>window.showArtifact({filename:'oscillator.bbcir',title:'Connected oscillator',version:8,kind:'code',renderer:'spice-netlist',previewAvailable:true}));
+    await viewer.getByRole('button',{name:'Save circuit project',exact:true}).waitFor();
+    assert.equal(await viewer.getByRole('checkbox',{name:'All connections'}).isChecked(),true);
+    assert.equal(await viewer.locator('g[data-net] polyline').count(),116);
+    assert.match(await viewer.innerText(),/wiper/);
+    await viewer.getByRole('combobox',{name:'Select component',exact:true}).selectOption('XOSC');
+    await viewer.getByRole('button',{name:'Rotate 90°',exact:true}).click();
+    const projectDownloadPromise=page.waitForEvent('download');
+    await viewer.getByRole('button',{name:'Save circuit project',exact:true}).click();
+    const saved=fs.readFileSync(await (await projectDownloadPromise).path(),'utf8');
+    const reopened=readCircuitDocument(saved,'oscillator.bbcir');
+    assert.deepEqual(reopened.document.diagnostics,[]);assert.equal(reopened.project.schematic.positions.XOSC.rotation,90);
+    await viewer.getByRole('button',{name:'Reset layout',exact:true}).click();
+    await viewer.getByRole('button',{name:'Focus',exact:true}).click();
+    await page.screenshot({path:path.join(root,'.tmp-connected-oscillator.png')});
+    await viewer.getByRole('button',{name:'Source',exact:true}).click();
+    assert.equal(await viewer.getByLabel('SPICE source').textContent(),JSON.parse(body).netlist);
+    assert.deepEqual(errors,[]);
+    assert.equal(downloads.length,2);
+  } finally {await browser.close();}
+});

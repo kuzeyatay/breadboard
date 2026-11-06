@@ -1,3 +1,5 @@
+@use "../../styles/variables.scss" as *;
+
 .readermode {
   cursor: pointer;
   padding: 0;
@@ -23,10 +25,15 @@
 
 :root[reader-mode="on"] {
   & .page > #quartz-body {
-    padding-inline-end: 1rem;
+    padding-inline: 1rem;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    grid-template-areas:
+      "grid-center"
+      "grid-footer";
 
     // Let long text and media shrink with the iframe instead of forcing the
-    // article beneath the assistant. Keep the book/search controls reachable.
+    // article beneath the assistant.
     & .page-header,
     & .center,
     & footer {
@@ -35,24 +42,54 @@
       overflow-wrap: anywhere;
     }
 
-    @media (min-width: 801px) {
-      grid-template-columns: clamp(18rem, 22vw, 420px) minmax(0, 1fr);
-      grid-template-areas:
-        "grid-sidebar-left grid-header"
-        "grid-sidebar-left grid-center"
-        "grid-sidebar-left grid-footer";
+    // Center the whole document, including its title and editing controls, in
+    // the viewport the host leaves available after resizing the assistant.
+    & > .center,
+    & > footer {
+      max-width: $pageWidth;
+      margin-inline: auto;
+    }
 
+    & > .center {
+      grid-area: grid-center;
+    }
+
+    & .sidebar.right {
+      display: none;
+    }
+
+    @media all and not ($mobile) {
+      // The hidden explorer must not reserve a column or intercept the article.
+      // Reveal it from the left edge or keyboard focus to keep its controls usable.
       & .sidebar.left {
+        position: fixed;
+        inset-inline-start: 0;
+        width: clamp(18rem, 22vw, 420px);
         padding-inline: 1rem;
-      }
+        background-color: var(--light);
+        clip-path: inset(0 calc(100% - 1rem) 0 0);
 
-      & .sidebar.right {
-        display: none;
+        &:dir(rtl) {
+          clip-path: inset(0 0 0 calc(100% - 1rem));
+        }
+
+        &:hover,
+        &:has(:focus-visible) {
+          clip-path: none;
+        }
       }
     }
 
-    @media (max-width: 800px) {
-      grid-template-columns: minmax(0, 1fr);
+    @media all and ($mobile) {
+      grid-template-rows: auto auto auto;
+      grid-template-areas:
+        "grid-sidebar-left"
+        "grid-center"
+        "grid-footer";
+
+      & .sidebar.left {
+        opacity: 1;
+      }
     }
   }
 
@@ -61,7 +98,8 @@
     opacity: 0;
     transition: opacity 0.2s ease;
 
-    &:hover {
+    &:hover,
+    &:has(:focus-visible) {
       opacity: 1;
     }
   }

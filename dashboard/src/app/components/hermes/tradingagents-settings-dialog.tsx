@@ -203,8 +203,7 @@ export default function TradingAgentsSettingsDialog({ onClose }: { onClose: () =
               Trading Agent setup
             </h2>
             <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-              The analysis runs inside the cloned framework&apos;s own Python environment, with
-              ChatMock as the model behind every agent in it.
+              Analyze investments from competing viewpoints, including risks.
             </p>
           </span>
           <button

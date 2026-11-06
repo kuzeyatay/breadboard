@@ -2,7 +2,7 @@ import path from "node:path";
 import {
   dashboardDataDir,
   repositoryRoot,
-  runtimeV2ServiceRoot,
+  runtimeV2PayloadRoot,
   runtimeV2ServiceVenv,
 } from "../runtime-paths.ts";
 import {
@@ -57,7 +57,7 @@ export function resource2SkillWorkspaceRoot(env: NodeJS.ProcessEnv = process.env
 }
 
 export function resource2SkillBrowserRoot(): string {
-  return path.join(runtimeV2ServiceRoot("resource2skill"), "browsers");
+  return runtimeV2PayloadRoot("runtime-v2/services/resource2skill/browsers");
 }
 
 export function resource2SkillBridge(): string {

@@ -46,6 +46,22 @@ export type ChatNotificationTitle =
 
 export type ChatNotificationKind = "chat_response" | "chat_question" | "learn";
 
+export interface NotificationClarification {
+  sessionId: number;
+  requestId: string;
+  question: string;
+  choices: string[];
+}
+
+export function isNotificationClarification(value: unknown): value is NotificationClarification {
+  if (!value || typeof value !== "object") return false;
+  const question = value as NotificationClarification;
+  return Number.isSafeInteger(question.sessionId) && question.sessionId > 0 &&
+    typeof question.requestId === "string" && Boolean(question.requestId.trim()) &&
+    typeof question.question === "string" && Boolean(question.question.trim()) &&
+    Array.isArray(question.choices) && question.choices.every(choice => typeof choice === "string");
+}
+
 export interface ChatNotificationRecord {
   id: string;
   /** Stable highlight identity across inline answer retries and migrated rows. */
@@ -63,6 +79,8 @@ export interface ChatNotificationRecord {
   updatedAt: string;
   /** Defaults to `chat_response` when absent so older payloads keep working. */
   kind?: ChatNotificationKind;
+  /** Exact runtime question to answer without starting another conversation turn. */
+  clarification?: NotificationClarification;
   /** One line of status detail for a Learn notice (stage, section, page). */
   message?: string;
   /** 0-100 while a Learn run is in progress; drives the status bar on the card. */
@@ -124,6 +142,7 @@ export function isChatNotificationRecord(
     typeof candidate.response === "string" &&
     typeof candidate.chatTitle === "string" &&
     typeof candidate.updatedAt === "string" &&
+    (candidate.clarification === undefined || isNotificationClarification(candidate.clarification)) &&
     (candidate.kind === undefined ||
       candidate.kind === "chat_response" ||
       candidate.kind === "chat_question" ||
@@ -207,7 +226,7 @@ export function chatNotificationHref(target: ChatNotificationTarget): string {
   if (target.surface === "garden_chat") {
     return `/gardens/${encodeURIComponent(target.gardenSlug ?? "")}?chat=${encodeURIComponent(target.chatId)}`;
   }
-  return `/dashboard?terminalChat=${encodeURIComponent(target.chatId)}`;
+  return `/new-tab?terminalChat=${encodeURIComponent(target.chatId)}`;
 }
 
 /** A Garden chat and its hub conversation are the same notification target. */

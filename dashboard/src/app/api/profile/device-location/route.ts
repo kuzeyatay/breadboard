@@ -9,6 +9,12 @@ import { readSystemLocationViaRuntime } from "@/lib/runtime-v2/system-location-j
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+// Each read runs a Runtime job (about 5 s) and every page with the sun theme
+// asks. The machine rarely moves, so reuse a found position for 15 minutes,
+// the same maximum age the browser source accepts.
+const FIX_TTL_MS = 15 * 60_000;
+const recentFixes = new Map<number, { at: number; result: unknown }>();
+
 /**
  * Where the computer running Breadboard is, according to its operating system.
  *
@@ -33,10 +39,14 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    return NextResponse.json(await readSystemLocationViaRuntime({
+    const recent = recentFixes.get(userId);
+    if (recent && Date.now() - recent.at < FIX_TTL_MS) return NextResponse.json(recent.result);
+    const result = await readSystemLocationViaRuntime({
       userId,
       signal: request.signal,
-    }));
+    });
+    if (result.state === "available") recentFixes.set(userId, { at: Date.now(), result });
+    return NextResponse.json(result);
   } catch (error) {
     return routeErrorResponse(error);
   }

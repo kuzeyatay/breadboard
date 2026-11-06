@@ -14,9 +14,7 @@ export interface RecallSettings {
   captureEnabled: boolean;
   /**
    * Start capture as soon as Breadboard opens, instead of waiting for Start to
-   * be pressed. Deliberately separate from captureEnabled: allowing capture and
-   * choosing to record unattended are two different decisions, and this one has
-   * to be asked for on its own.
+   * be pressed. Users can turn off automatic startup independently of capture.
    */
   autoStartCapture: boolean;
   /** Microphone capture. Screen capture is governed by captureEnabled. */
@@ -36,10 +34,10 @@ export interface RecallSettings {
   maxResults: number;
 }
 
-/** Capture is opt-in: a user who has never opened the tab records nothing. */
+/** Recall starts by default; persisted user choices always take precedence. */
 export const DEFAULT_RECALL_SETTINGS: RecallSettings = {
-  captureEnabled: false,
-  autoStartCapture: false,
+  captureEnabled: true,
+  autoStartCapture: true,
   captureAudio: true,
   agentAccess: true,
   agentControl: "ask",
@@ -156,8 +154,8 @@ export type RecallAutoStartOutcome = (typeof RECALL_AUTO_START_OUTCOMES)[number]
 /**
  * Should opening Breadboard start the recorder?
  *
- * Only "start" launches anything, and reaching it takes two separate opt-ins
- * from the user — capture allowed, and capture allowed to begin on its own.
+ * Only "start" launches anything. Both capture and automatic startup must
+ * remain enabled; an explicit opt-out always prevents an unattended start.
  * Kept here, away from the process and the database, because this is the rule
  * that decides whether a screen gets recorded without anybody asking for it
  * just then.

@@ -184,6 +184,8 @@ test("1/2. workspace seeds durable inputs and never copies the old learning tree
   );
   fs.mkdirSync(path.join(repo, ".breadboard"), { recursive: true });
   fs.writeFileSync(path.join(repo, ".breadboard", "source-visuals.json"), "[]");
+  fs.mkdirSync(path.join(repo, ".breadboard", "visual-descriptions"));
+  fs.writeFileSync(path.join(repo, ".breadboard", "visual-descriptions", "image.json"), '{"caption":"Saved source figure"}');
   fs.writeFileSync(
     path.join(repo, ".breadboard", "source-visual-source-index.json"),
     JSON.stringify({
@@ -216,6 +218,7 @@ test("1/2. workspace seeds durable inputs and never copies the old learning tree
   roots.push(ws.workspaceRoot);
   // durable inputs present
   assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, "sources", "s1.md")));
+  assert.equal(fs.readFileSync(path.join(ws.stagingGardenDir, ".breadboard", "visual-descriptions", "image.json"), "utf8"), '{"caption":"Saved source figure"}');
   assert.ok(
     fs.existsSync(
       path.join(ws.stagingGardenDir, ".breadboard", "source-visuals.json"),

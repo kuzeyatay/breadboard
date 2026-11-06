@@ -4,6 +4,7 @@ description: "Breadboard-owned, capability-checked tools for the embedded Hermes
 author: Breadboard
 kind: backend
 provides_tools:
+  - multisim
   - terminal_execute_command
   - garden_list
   - garden_search

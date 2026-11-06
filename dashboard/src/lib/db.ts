@@ -666,6 +666,23 @@ db.exec(`
     ON hermes_runs(runtime_session_id) WHERE status = 'active';
   CREATE INDEX IF NOT EXISTS idx_hermes_runs_session_started
     ON hermes_runs(runtime_session_id, started_at DESC);
+  -- The profile's model breakdown reads two small values out of every run's
+  -- dispatch_json (539 MB across 3,385 runs here). Indexed, it reads none of it.
+  -- The expressions must stay identical to readProfileStats' runtime_models.
+  -- json_valid guards the expressions: a bare json_extract in an index makes
+  -- any write of malformed JSON fail, and a lost run is worse than a slow page.
+  DROP INDEX IF EXISTS idx_hermes_runs_profile_model;
+  CREATE INDEX IF NOT EXISTS idx_hermes_runs_profile_model_safe
+    ON hermes_runs(
+      runtime_session_id,
+      json_extract(CASE WHEN json_valid(dispatch_json) THEN dispatch_json END, '$.clientMessageId'),
+      COALESCE(
+        json_extract(CASE WHEN json_valid(dispatch_json) THEN dispatch_json END, '$.modelIdentity.modelID'),
+        NULLIF(json_extract(CASE WHEN json_valid(dispatch_json) THEN dispatch_json END, '$.model.modelID'), 'default')
+      ),
+      started_at,
+      id
+    );
 
   CREATE TABLE IF NOT EXISTS hermes_steer_requests (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -757,6 +774,10 @@ ensureColumn(
   "default_model",
   "default_model TEXT NOT NULL DEFAULT 'gpt-5.6-sol'",
 );
+// Preserve the old combined preference once, then keep startup and fallback
+// independent. NULL is only a migration marker; explicit "none" is preserved.
+ensureColumn("hermes_user_settings", "fallback_model", "fallback_model TEXT");
+db.exec("UPDATE hermes_user_settings SET fallback_model = default_model WHERE fallback_model IS NULL");
 db.exec(`
   UPDATE hermes_runtime_sessions
   SET external_session_id = hermes_session_id

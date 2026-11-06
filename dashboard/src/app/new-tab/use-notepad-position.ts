@@ -1,18 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 
 interface Position { x: number; y: number }
-interface Placement { position: Position | null; collapsed: boolean; layoutVersion?: number }
+interface Placement { position: Position | null; collapsed: boolean; enlarged?: boolean; layoutVersion?: number }
 
 export function useNotepadPosition(ownerKey: string) {
   const panelRef = useRef<HTMLElement>(null);
-  const placement = useRef<Placement>({ position: null, collapsed: false });
+  const placement = useRef<Placement>({ position: null, collapsed: true });
   const drag = useRef<{ id: number; x: number; y: number; origin: Position } | null>(null);
   const [ready, setReady] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const [dragging, setDragging] = useState(false);
-  const key = `breadboard:new-tab:notepad:${ownerKey}`;
+  const [enlarged, setEnlarged] = useState(false);
+  const key = `breadboard:terminal-notepad:layout:v1:${ownerKey}`;
 
   const save = useCallback(() => {
     try { localStorage.setItem(key, JSON.stringify(placement.current)); } catch { /* Still movable. */ }
@@ -28,40 +29,40 @@ export function useNotepadPosition(ownerKey: string) {
     return { x, y };
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const panel = panelRef.current;
     const parent = panel?.parentElement;
     if (!panel || !parent) return;
-    const saved: Placement = { position: null, collapsed: parent.clientWidth < 1180, layoutVersion: 2 };
+    const saved: Placement = { position: null, collapsed: true, enlarged: false, layoutVersion: 3 };
     try {
       const value = JSON.parse(localStorage.getItem(key) ?? "null");
-      if (value && typeof value.collapsed === "boolean") saved.collapsed = value.collapsed;
+      // Each fresh Terminal starts minimal; retain placement and preferred expanded size.
+      saved.enlarged = value?.enlarged === true;
       if (Number.isFinite(value?.position?.x) && Number.isFinite(value?.position?.y)) {
-        // Move legacy right-side placements left once to make room for usage.
-        // Subsequent drag positions belong to the user and remain untouched.
-        saved.position = value.layoutVersion !== 2 && value.position.x > parent.clientWidth / 2
-          ? { x: 28, y: value.position.y }
-          : value.position;
+        saved.position = value.position;
       }
     } catch { /* A malformed preference falls back to the visible default. */ }
     placement.current = saved;
     const fit = () => {
       // Do not overwrite the preferred position when a smaller window clamps it.
       place(placement.current.position ?? {
-        x: 28,
-        y: parent.clientWidth < 1180 ? 20 : 116,
+        x: 24,
+        y: 16,
       });
     };
-    const frame = requestAnimationFrame(() => {
+    // Restore browser-owned preferences together before revealing the panel.
+    // Cancel the frame if the owner changes or the notepad unmounts.
+    const restoreFrame = requestAnimationFrame(() => {
       setCollapsed(saved.collapsed);
+      setEnlarged(Boolean(saved.enlarged));
       fit();
-      save();
       setReady(true);
     });
+    save();
     const observer = new ResizeObserver(fit);
     observer.observe(parent);
     observer.observe(panel);
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
+    return () => { cancelAnimationFrame(restoreFrame); observer.disconnect(); };
   }, [key, save]);
 
   function onPointerDown(event: PointerEvent<HTMLButtonElement>) {
@@ -105,13 +106,25 @@ export function useNotepadPosition(ownerKey: string) {
     save();
   }
 
+  function open() {
+    placement.current.collapsed = false;
+    setCollapsed(false);
+    save();
+  }
+
   function toggleCollapsed() {
     placement.current.collapsed = !placement.current.collapsed;
     setCollapsed(placement.current.collapsed);
     save();
   }
 
-  return { panelRef, ready, collapsed, dragging, toggleCollapsed, handleProps: {
+  function toggleEnlarged() {
+    placement.current.enlarged = !placement.current.enlarged;
+    setEnlarged(placement.current.enlarged);
+    save();
+  }
+
+  return { panelRef, ready, collapsed, enlarged, dragging, open, toggleCollapsed, toggleEnlarged, handleProps: {
     onPointerDown, onPointerMove, onPointerUp: endDrag, onPointerCancel: endDrag, onLostPointerCapture: endDrag, onKeyDown,
   } };
 }

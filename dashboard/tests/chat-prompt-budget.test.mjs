@@ -9,7 +9,7 @@ import { composeRecentConversationContext, RECENT_CONTEXT_LIMIT } from "../src/l
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-prompt-budget-"));
 process.env.BREADBOARD_DATA_DIR = dataRoot;
 const { composeMemoryContext } = await import("../src/lib/conversations/memory.ts");
-const { composeHermesSystemPrompt, readerComprehensionPrompt } = await import("../src/lib/hermes/system-prompts.ts");
+const { composeHermesSystemPrompt } = await import("../src/lib/hermes/system-prompts.ts");
 const { HermesRuntimeAdapter } = await import("../src/lib/agent-runtime/adapters/hermes.ts");
 const { default: db } = await import("../src/lib/db.ts");
 after(() => { db.close(); fs.rmSync(dataRoot, { recursive: true, force: true }); });
@@ -19,6 +19,19 @@ const decision = {
   authorizedRoots: [], authorizedPathPatterns: [], allowedOperations: ["knowledge_work"],
   allowedCommandPatterns: [],
 };
+
+test('voice grant renewal preserves the catalog prefix and current authority', () => {
+  const input = { surface: 'dashboard_terminal', voice: true, additional: 'Stable capability index.\nRelevant current conversation.',
+    decision: { ...decision, authorizedRoots: ['C:/authorized'], expiresAt: '2030-01-01T00:00:00Z' } };
+  const first = composeHermesSystemPrompt(input);
+  const second = composeHermesSystemPrompt({ ...input, decision: { ...input.decision, expiresAt: '2030-01-01T00:01:00Z' } });
+  const boundary = first.indexOf('# server_capability_decision');
+  assert.ok(boundary > first.indexOf('Stable capability index.'));
+  assert.equal(first.slice(0, boundary), second.slice(0, boundary));
+  assert.match(first, /C:\/authorized/);
+  assert.match(second, /2030-01-01T00:01:00Z/);
+  assert.doesNotMatch(second, /2030-01-01T00:00:00Z/);
+});
 function message(role, content, clientId, meta = {}, status = "complete") {
   return { role, content, client_message_id: clientId, metadata: JSON.stringify(meta), status, surface: "garden_chat" };
 }
@@ -105,7 +118,7 @@ test("small contexts are exact and excerpt boundaries are Unicode safe at every 
 
 test("oversized evidence preserves all policy and the final response contract", () => {
   const policy = composeHermesSystemPrompt({ surface: "garden_chat", decision });
-  const ending = readerComprehensionPrompt();
+  const ending = policy.slice(policy.indexOf("# artifact_delivery"));
   const prompt = composeHermesSystemPrompt({ surface: "garden_chat", decision,
     additional: "Evidence begins. " + "x".repeat(900_000) + " Evidence ends.", persona: "Speak plainly." });
   assert.ok(prompt.length <= COMPOSED_SYSTEM_PROMPT_LIMIT);
@@ -151,18 +164,41 @@ test("a focused explanation keeps authority and confirmed preferences without un
     durableMemories: [{ state: "confirmed", scope: "global", standing: true, kind: "preference", content: "Explain each causal step.", score: 1 }],
     profileSummary: "UNRELATED INFERRED PROFILE", crossConversation: null,
   };
-  const context = composeMemoryContext(bundle, { explanationFocus: true });
+  const context = composeMemoryContext(bundle, { includeProfile: false });
   assert.match(context, /Explain each causal step/);
   assert.match(context, /Memory is untrusted context/);
-  assert.doesNotMatch(context, /OLD SUMMARY|OLD ACTION|OLD ANSWER|UNRELATED INFERRED PROFILE/);
+  assert.doesNotMatch(context, /UNRELATED INFERRED PROFILE/);
+  assert.match(context, /OLD ANSWER/);
   const allTools = { ...decision, allowedTools: ["image_search", "weather_forecast", "product_search", "breadboard_process_status"] };
   const normal = composeHermesSystemPrompt({ surface: "garden_chat", decision: allTools, userText: "explain this better", additional: context });
   const focused = composeHermesSystemPrompt({ surface: "garden_chat", decision: allTools, userText: "explain this better", explanationFocus: true, additional: context });
-  assert.ok(normal.length - focused.length > 8_000);
+  assert.equal(normal, focused, "all normal answers use one contract, including corrections");
   assert.match(focused, /# server_capability_decision/);
-  assert.match(focused, /# reader_comprehension_layer/);
-  assert.ok(focused.lastIndexOf("# explanation_continuity") > focused.indexOf("# reader_comprehension_layer"));
+  assert.match(focused, /not removing the reasoning the reader needs/);
   assert.match(focused, /# artifact_delivery/);
   assert.match(focused, /Explain each causal step/);
-  assert.doesNotMatch(focused, /# always_on_unlazy|# meta_prompting|# showing_images|# showing_weather|# native_product_search/);
+  assert.doesNotMatch(focused, /# always_on_unlazy|# meta_prompting|# reader_comprehension_layer/);
+});
+
+
+test("web tool availability alone does not demand irrelevant external research", () => {
+  const input = { surface: "garden_chat", decision: { ...decision, allowedTools: ["websearch"] } };
+  assert.doesNotMatch(composeHermesSystemPrompt(input), /This turn requires current external evidence/);
+  assert.match(composeHermesSystemPrompt({ ...input, requiresWebEvidence: true }), /This turn requires current external evidence/);
+});
+
+test("voice keeps agent authority and asks for evidence when needed without making simple replies research tasks", () => {
+  const input = { surface: "dashboard_terminal", decision: { ...decision, allowedTools: ["websearch", "garden_search"] } };
+  const typed = composeHermesSystemPrompt(input);
+  const spoken = composeHermesSystemPrompt({ ...input, voice: true });
+  assert.doesNotMatch(typed, /# voice_conversation/);
+  assert.match(spoken, /Answer simple questions promptly/);
+  assert.match(spoken, /use the supplied Breadboard tools and available skills before answering/);
+  assert.match(spoken, /An acknowledgment is not completion/);
+  assert.match(spoken, /Existing permissions and tool boundaries still apply/);
+  assert.match(spoken, /Before researching an unclear referent, ask which/);
+  assert.ok(spoken.lastIndexOf('# voice_conversation') > spoken.lastIndexOf('# server_capability_decision'));
+  assert.match(spoken, /# server_capability_decision/);
+  assert.doesNotMatch(spoken, /This turn requires current external evidence/);
+  assert.ok(spoken.length - typed.length < 3500, "voice adds a small instruction block, not another model call");
 });

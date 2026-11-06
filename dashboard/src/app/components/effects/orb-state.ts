@@ -8,7 +8,7 @@ import type { OrbState } from "thinking-orbs";
  * globe, bands and strands wrapping a body. Two do not: `breathing` is a
  * face-on ring and `shaping` is a flat outline morphing circle → triangle →
  * square. Those two are excluded here; the status line uses the spherical
- * set, and since 2026-09-15 always `composing`. `breathing` is not unused:
+ * set, with `composing` reserved for Thinking. `breathing` is not unused:
  * it is the generic loading mark (`components/breadboard-loader.tsx`), which
  * reaches the library directly rather than through `<ThinkingOrb>`.
  *
@@ -34,36 +34,42 @@ export function isVolumetricOrbState(value: unknown): value is VolumetricOrbStat
 }
 
 /**
- * Which orb a live status line would deserve, matched on its words.
- *
- * The chat no longer uses this — its orb is pinned to `composing` — but it is
- * kept for a surface that wants the label-matched orb.
+ * Which orb a live status line uses, matched on its activity words.
  *
  * The chat's activity label is free text assembled from tool names, agent
  * names and lifecycle beats (see `hermes/activity-panel.tsx`), so this matches
- * on the words that actually recur there rather than on a closed enum. First
- * match wins, so the more specific verbs are listed before the general ones.
+ * on the words that actually recur there rather than on a closed enum. The
+ * earliest activity word wins: "Planning research" is planning, and "Building
+ * a web page" is building, even though both mention a search-related word.
  */
 // Stems, anchored at the start of a word only: the labels are written in the
 // present participle ("Searching the web", "Reading the PDF"), so a closing
 // \b would match none of them.
 const LABEL_ORBS: ReadonlyArray<readonly [RegExp, VolumetricOrbState]> = [
-  [/\b(search|brows|googl|look(ing)? up|research|fetch|crawl|web)/i, "searching"],
-  [/\b(listen|voice|speech|transcrib|record|dictat|hearing)/i, "listening"],
-  [/\b(connect|start|launch|waiting|queue|prepar|loading|attach|sync)/i, "connecting"],
-  [/\b(writ|draft|compos|answer|summar|render|format|reply)/i, "composing"],
+  [/^thinking\b/i, "composing"],
+  [/\b(search|brows|googl|look(ing)? up|research|fetch|crawl|web|find)/i, "searching"],
+  [/\b(listen|voice|speech|transcrib|dictat|hearing|record(?:ing)?\s+(?:audio|voice|speech|meeting))/i, "listening"],
+  [/\b(connect|start|launch|wait|queu|prepar|load|attach|sync|delegat)/i, "connecting"],
+  [/\b(writ|draft|compos|answer|summar|render|format|reply|work|run|process|record)/i, "working"],
   [/\b(build|generat|creat|weav|assembl|design|edit|apply|install)/i, "weaving"],
-  [/\b(solv|comput|calculat|analys|analyz|reason|plan|review|check|test|debug|reading)/i, "solving"],
+  [/\b(solv|comput|calculat|analys|analyz|reason|plan|review|check|test|debug|read|inspect|choos)/i, "solving"],
 ];
 
 /**
- * `working` is the default beat: it is what plain "Thinking" gets, and the
- * fallback for any label none of the patterns claim.
+ * An absent label means Thinking, matching the status row's default. Other
+ * unrecognised activities get `working`, keeping the sash exclusive to Thinking.
  */
 export function orbStateForLabel(label: string | undefined): VolumetricOrbState {
-  if (!label) return "working";
-  for (const [pattern, state] of LABEL_ORBS) {
-    if (pattern.test(label)) return state;
+  const activity = label?.trim();
+  if (!activity) return "composing";
+  let state: VolumetricOrbState = "working";
+  let firstMatch = Infinity;
+  for (const [pattern, candidate] of LABEL_ORBS) {
+    const match = pattern.exec(activity);
+    if (match && match.index < firstMatch) {
+      state = candidate;
+      firstMatch = match.index;
+    }
   }
-  return "working";
+  return state;
 }

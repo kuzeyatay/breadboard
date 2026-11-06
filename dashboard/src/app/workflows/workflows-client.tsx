@@ -24,7 +24,7 @@ import { loadTeachAvailability, type TeachAvailabilityView } from "./teach/teach
 import "./sim-canvas.css";
 import type { WorkflowStateJson } from "./lib/types";
 
-const BACK_FALLBACK_LABEL = "Back to dashboard";
+const BACK_FALLBACK_LABEL = "Back to home";
 
 type WorkflowListItem = {
   id: string;
@@ -260,8 +260,7 @@ function HomeView({
         <div>
           <h2 className="font-semibold text-[var(--ink-heading)]">Your workflows</h2>
           <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-            Build an automation on the canvas, or show Breadboard the task once and let it
-            work the workflow out. Either way you run it from here or from chat.
+            Build a workflow on the canvas or teach it by demonstration. Run it here or from chat.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -459,7 +458,7 @@ export default function WorkflowsClient({
     const returnPath = consumeWorkflowReturnPath();
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     startNavigationProgress();
-    router.replace(returnPath ?? "/dashboard", { scroll: false });
+    router.replace(returnPath ?? "/new-tab", { scroll: false });
   }
 
   return (

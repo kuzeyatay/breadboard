@@ -72,6 +72,28 @@ export function runtimeIdentityKey(session: RuntimeIdentityFields): string {
   return `${session.runtimeKind}:${session.externalSessionId}:${session.liveSessionId ?? ""}`;
 }
 
+/** Measure silence only while this subscription can observe the submitted turn. */
+export function streamSupervisorTiming(input: {
+  now: number;
+  subscriptionOpenedAt: number;
+  submittedAt?: string;
+  lastRuntimeEventAt: number;
+}): { elapsedMs: number; msSinceLastEvent: number } {
+  const submittedAt = input.submittedAt ? Date.parse(input.submittedAt) : Number.NaN;
+  // A resumed run may be hours old. Its new pump still needs a full recovery
+  // window to query the saved result; the original dispatch age is not silence
+  // observed by this subscription. Conversely, a slow new dispatch starts the
+  // clock only when the runtime acknowledges it.
+  const observingSince = Math.max(
+    input.subscriptionOpenedAt,
+    Number.isFinite(submittedAt) ? submittedAt : input.subscriptionOpenedAt,
+  );
+  return {
+    elapsedMs: Math.max(0, input.now - observingSince),
+    msSinceLastEvent: Math.max(0, input.now - Math.max(observingSince, input.lastRuntimeEventAt)),
+  };
+}
+
 export function streamSupervisorDecision(input: {
   /** Identity the current upstream subscription was opened against. */
   boundIdentity: string;
@@ -81,7 +103,7 @@ export function streamSupervisorDecision(input: {
   sawRuntimeEvent: boolean;
   /** True once the prompt has actually been handed to the runtime. */
   submitted: boolean;
-  /** Time since the pump opened its first subscription. */
+  /** Time since both the current subscription opened and the turn was submitted. */
   elapsedMs: number;
   /** True once the turn has been persisted; supervision stops after that. */
   finalized: boolean;
@@ -101,7 +123,7 @@ export function streamSupervisorDecision(input: {
   }
 
   if (input.timedOut) return null;
-  // An unsubmitted run has its own 15s dispatch deadline; expiring it here
+  // An unsubmitted run has its own dispatch deadline; expiring it here
   // would race that and misreport a slow dispatch as a dead runtime.
   if (!input.submitted) return null;
 

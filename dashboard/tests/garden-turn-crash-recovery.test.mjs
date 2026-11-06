@@ -140,6 +140,44 @@ test("replaying a canonical completion repairs a stale Garden browser projection
   assert.equal(legacy.runtime_status, "complete");
 });
 
+test("a live viewer protects a saved turn during slow dispatch, but an abandoned turn expires", () => {
+  const conversation = store.ensureConversationForLegacyChatSession(1, 1);
+  const clientMessageId = "slow-garden-dispatch";
+  store.reserveConversationTurn({
+    conversation, clientMessageId, surface: "garden_chat", content: "/interactive-visualizer-in-chat",
+    metadata: { gardenPreDispatch: true, textSelection: { mode: "chat" } },
+  });
+  const ageCheckpoint = () => db.prepare(`
+    UPDATE conversation_messages SET updated_at = datetime('now', '-2 minutes')
+    WHERE conversation_id = ? AND role = 'assistant'
+  `).run(conversation.id);
+  const reap = () => store.failStaleGardenPreDispatchTurns({
+    chatSessionIds: [1], staleBefore: new Date(Date.now() - 45_000).toISOString(),
+  });
+  ageCheckpoint();
+  assert.equal(store.touchGardenPreDispatchTurn({ conversationId: conversation.id, clientMessageId }), true);
+  assert.equal(reap(), 0, "no runtime exists yet, but the waiting viewer still owns this turn");
+  ageCheckpoint();
+  assert.equal(reap(), 1, "closing the viewer leaves the normal crash recovery intact");
+  assert.equal(store.touchGardenPreDispatchTurn({ conversationId: conversation.id, clientMessageId }), false);
+});
+
+test("checkpoint heartbeats cannot touch another turn or revive a terminal response", () => {
+  const conversation = store.ensureConversationForLegacyChatSession(1, 1);
+  for (const status of ["complete", "failed", "aborted"]) {
+    const clientMessageId = `terminal-${status}`;
+    store.reserveConversationTurn({
+      conversation, clientMessageId, surface: "garden_chat", content: status,
+      metadata: { gardenPreDispatch: true },
+    });
+    assert.equal(store.touchGardenPreDispatchTurn({ conversationId: conversation.id + 1, clientMessageId }), false);
+    assert.equal(store.touchGardenPreDispatchTurn({ conversationId: conversation.id, clientMessageId: "wrong-turn" }), false);
+    if (status === "complete") store.completeAssistantMessage({ conversationId: conversation.id, clientMessageId, content: "Ready" });
+    else store.failAssistantMessage({ conversationId: conversation.id, clientMessageId, status, content: status });
+    assert.equal(store.touchGardenPreDispatchTurn({ conversationId: conversation.id, clientMessageId }), false);
+  }
+});
+
 test("Stop seals a Garden turn before runtime dispatch can revive it", () => {
   const conversation = store.ensureConversationForLegacyChatSession(1, 1);
   store.reserveConversationTurn({

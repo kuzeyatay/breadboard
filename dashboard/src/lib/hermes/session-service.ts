@@ -40,9 +40,10 @@ import {
 } from "./config.ts";
 import { issueCapabilityToken } from "./capability-token.ts";
 import { allowedToolsForSurface } from "./tool-scopes.ts";
-import { directoryForWorkspaceKey } from "./workspace.ts";
+import { conversationWorkspaceIdentity, directoryForWorkspaceKey } from "./workspace.ts";
 import {
   createRuntimeSession,
+  registerConversationRuntime,
   getRuntimeSessionByConversation,
   getRuntimeSessionById,
   getHermesUserSettings,
@@ -506,6 +507,8 @@ export async function resolveConversationRuntime(input: {
   branchContextId?: string;
   /** One isolated runtime for a highlight question; canonical history stays in its chat. */
   inlineTurnId?: string;
+  /** Voice connects optional MCP servers only when their tools are needed. */
+  deferMcpConnections?: boolean;
 }): Promise<AuthorizedRuntimeSession> {
   if (input.surface !== input.conversation.surface) {
     throw new ApiError(
@@ -534,7 +537,7 @@ export async function resolveConversationRuntime(input: {
     throw new ApiError(404, "session_not_found", "Session not found.");
   }
   if (!row) {
-    row = await createConversationRuntime(input.conversation, input.surface, active, input.activePageSlug ?? null, gardens, input.inlineTurnId);
+    row = await createConversationRuntime(input.conversation, input.surface, active, input.activePageSlug ?? null, gardens, input.inlineTurnId, input.deferMcpConnections);
   } else {
     row = updateRuntimeActiveContext({
       runtimeSessionId: row.id,
@@ -551,6 +554,7 @@ export async function resolveConversationRuntime(input: {
         input.surface,
         input.historyOverride,
         input.branchContextId,
+        input.deferMcpConnections,
       );
     }
   }
@@ -617,21 +621,21 @@ async function createConversationRuntime(
   pageSlug: string | null,
   gardens: AuthorizedGardenSummary[],
   inlineTurnId?: string,
+  deferMcpConnections = conversation.origin_label === "Voice",
 ): Promise<RuntimeSessionRow> {
   const settings = getHermesUserSettings(conversation.user_id);
   const selected = await createWithConfiguredRuntimeFallback({
     surface,
-    sessionKey: inlineTurnId ? `${conversation.public_id}-inline-${inlineTurnId}` : conversation.public_id,
-    conversationKey: conversation.public_id,
+    ...conversationWorkspaceIdentity(conversation.public_id, inlineTurnId),
     title: conversation.title,
     metadata: { conversationPublicId: conversation.public_id },
     filesystemMode: "restricted",
     authenticated: true,
-    model: settings.defaultModel,
+    model: settings.fallbackModel,
     reasoningEffort: settings.reasoningEffort,
   });
   const { runtime, created } = selected;
-  const row = createRuntimeSession({
+  const registration = registerConversationRuntime({
     conversationId: conversation.id,
     surface,
     userId: conversation.user_id,
@@ -651,7 +655,18 @@ async function createConversationRuntime(
     liveSessionId: created.liveSessionId,
     runtimeMetadata: { title: conversation.title, conversationPublicId: conversation.public_id, ...(inlineTurnId ? { inlineTurnId } : {}) },
   });
-  await loadUnifiedToolRegistryForRuntime(row, created.directory, runtime);
+  const { row } = registration;
+  if (!registration.created) {
+    // The other request owns the durable identity. Never initialize its row
+    // using the losing request's workspace or replace its in-flight session.
+    if (runtimeExternalSessionId(row) !== created.externalSessionId) {
+      await runtime.disposeSession(created).catch(() => undefined);
+    }
+    return row;
+  }
+  if (!deferMcpConnections) {
+    await loadUnifiedToolRegistryForRuntime(row, created.directory, runtime);
+  }
   recordAuditEvent({
     eventType: "conversation.runtime_created",
     runtimeSessionId: row.id,
@@ -672,14 +687,18 @@ async function recreateConversationRuntime(
   surface: HermesSurface,
   historyOverride?: Array<{ role: "user" | "assistant"; content: string }>,
   branchContextId?: string,
+  deferMcpConnections = conversation.origin_label === "Voice",
 ): Promise<RuntimeSessionRow> {
   const runtime = getAgentRuntimeByKind(row.runtime_kind);
   const settings = getHermesUserSettings(conversation.user_id);
   const previousExternalSessionId = runtimeExternalSessionId(row);
+  const metadata = row.runtime_metadata ? JSON.parse(row.runtime_metadata) : {};
   const restoreInput = {
     surface,
-    sessionKey: `${conversation.public_id}-${Date.now().toString(36)}`,
-    conversationKey: conversation.public_id,
+    ...conversationWorkspaceIdentity(
+      conversation.public_id,
+      typeof metadata.inlineTurnId === "string" ? metadata.inlineTurnId : undefined,
+    ),
     title: conversation.title,
     metadata: {
       conversationPublicId: conversation.public_id,
@@ -690,7 +709,7 @@ async function recreateConversationRuntime(
     authenticated: true,
     externalSessionId: previousExternalSessionId ?? "",
     messages: historyOverride ?? canonicalRuntimeMessages(conversation.id),
-    model: settings.defaultModel,
+    model: settings.fallbackModel,
     reasoningEffort: settings.reasoningEffort,
   };
   const created =
@@ -713,7 +732,9 @@ async function recreateConversationRuntime(
       ...(branchContextId ? { branchContextId } : {}),
     },
   });
-  await loadUnifiedToolRegistryForRuntime(replaced, created.directory, runtime);
+  if (!deferMcpConnections) {
+    await loadUnifiedToolRegistryForRuntime(replaced, created.directory, runtime);
+  }
   recordAuditEvent({
     eventType: "conversation.runtime_recreated",
     runtimeSessionId: row.id,

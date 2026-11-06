@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 
+mod bulk;
+
 const MAX_STAGING_FILE_CREATE_ATTEMPTS: usize = 32;
 static NEXT_STAGING_FILE_NONCE: AtomicU64 = AtomicU64::new(1);
 
@@ -268,6 +270,7 @@ impl TrustedDirectoryPin {
 enum LaunchDirectoryAuthority {
     RuntimeData,
     Application,
+    ManagedBulk,
 }
 
 /// An opaque process working-directory authority. Unlike
@@ -307,7 +310,7 @@ impl TrustedLaunchDirectory {
     /// root pin from being relabeled as a launch workspace.
     pub fn revalidate(&self) -> Result<(), PathError> {
         match self.authority {
-            LaunchDirectoryAuthority::RuntimeData | LaunchDirectoryAuthority::Application => {
+            LaunchDirectoryAuthority::RuntimeData | LaunchDirectoryAuthority::Application | LaunchDirectoryAuthority::ManagedBulk => {
                 self.authority_root.revalidate()?;
                 self.directory.revalidate()?;
                 if !path_is_within(self.directory.absolute(), &self.authority_root.canonical) {
@@ -694,6 +697,8 @@ pub struct RuntimePaths {
     data_root: TrustedRoot,
     app_root: TrustedRoot,
     runtime_root: TrustedRoot,
+    bulk_root: Option<TrustedRoot>,
+    configured_bulk_root: Option<PathBuf>,
 }
 
 impl fmt::Debug for RuntimePaths {
@@ -836,6 +841,8 @@ impl RuntimePaths {
             data_root: establish_root("data", data_root.into())?,
             app_root: establish_root("application", app_root.into())?,
             runtime_root: establish_root("runtime", runtime_root.into())?,
+            bulk_root: None,
+            configured_bulk_root: None,
         })
     }
 

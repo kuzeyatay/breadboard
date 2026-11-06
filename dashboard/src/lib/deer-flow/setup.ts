@@ -5,20 +5,20 @@
 export const SETUP_ACTIONS = [
   {
     id: "install",
-    label: "Build environment",
+    label: "Set up DeerFlow",
     unlocks:
-      "Creates a managed environment and installs the Gateway, the agent harness and their dependencies.",
+      "Installs the tools DeerFlow needs.",
   },
   {
     id: "reinstall",
     label: "Repair",
-    unlocks: "Re-syncs the environment against the clone's current lockfile.",
+    unlocks: "Reinstalls the required tools.",
   },
   {
     id: "remove",
-    label: "Remove environment",
+    label: "Remove installed tools",
     unlocks:
-      "Stops the Gateway and deletes its managed environment. Nothing in the clone is touched.",
+      "Stops DeerFlow and removes its installed tools. Your other files are kept.",
   },
 ] as const;
 

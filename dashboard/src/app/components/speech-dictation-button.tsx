@@ -2,8 +2,10 @@
 
 import { requestForegroundMicrophone, stopForegroundStream } from '@/lib/speech/clap/audio-focus';
 
+import { requestTranscript, dictationResponseError as responseError } from '@/lib/speech/dictation-transcript';
 import { speechRequest } from "@/lib/speech/request-client";
-import { connectSubscriptionVoice, subscriptionSelected, type SubscriptionVoice } from "@/lib/speech/subscription-live";
+import { type SubscriptionVoice } from "@/lib/speech/subscription-live";
+import { DICTATION_MICROPHONE, openDictationProvider, selectDictationProvider } from '@/lib/speech/dictation-provider';
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { Hand } from "lucide-react";
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
@@ -13,6 +15,8 @@ import { CLAP_SETTINGS_EVENT, CLAP_STATUS_EVENT, clapWakeEnabled, clapWakeIssue,
 import { registerClapTarget } from '@/lib/speech/clap/targets';
 import { subscribeClapControls } from '@/lib/speech/clap/client';
 import BreadboardLoader from "@/app/components/breadboard-loader";
+import DictationLiveControl from "./dictation-live-control";
+import { paintDictationLevels } from "@/lib/speech/dictation-levels";
 import MicrophonePermissionHelp from "./microphone-permission-help";
 import { describeMicrophoneBlock, type MicrophoneFix } from "@/lib/speech/microphone-access";
 import {
@@ -31,7 +35,7 @@ import {
   readRecordingEvents,
   type RecordingTranscriptionEvent,
 } from "@/lib/speech/recording-upload";
-import { prepareLocalSpeech, speechErrorMessage } from "@/lib/speech/prepare-client";
+import { speechErrorMessage } from "@/lib/speech/prepare-client";
 import { VOICE_DOUBLE_TAP_MS } from "@/lib/speech/voice-conversation";
 
 type DictationState =
@@ -74,10 +78,8 @@ type PcmCapture = {
   paused: boolean;
 };
 
-const PARTIAL_TRANSCRIPT_INTERVAL_MS = 2_750;
-const MIN_PARTIAL_SECONDS = 1.25;
-const MODEL_DOWNLOAD_RETRY_MS = 2_000;
-const MODEL_DOWNLOAD_WAIT_MS = 10 * 60_000;
+const PARTIAL_TRANSCRIPT_INTERVAL_MS = 1_000;
+const MIN_PARTIAL_SECONDS = 0.8;
 
 function subscribeClapSetting(changed: () => void) {
   const unsubscribe = subscribeClapControls(changed);
@@ -97,63 +99,6 @@ function bestRecordingMimeType(): string | undefined {
   return ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"].find(
     (type) => MediaRecorder.isTypeSupported(type),
   );
-}
-
-function nestedMessage(value: unknown): string | null {
-  if (typeof value === "string" && value.trim()) return value.trim();
-  if (!value || typeof value !== "object") return null;
-  const record = value as Record<string, unknown>;
-  return nestedMessage(record.message) || nestedMessage(record.detail) || nestedMessage(record.error);
-}
-
-async function responseError(response: Response): Promise<string> {
-  const body = await response.json().catch(() => null);
-  return nestedMessage(body) || `Dictation failed (${response.status}).`;
-}
-
-function waitForRetry(milliseconds: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new DOMException("Aborted", "AbortError"));
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      signal.removeEventListener("abort", abort);
-      resolve();
-    }, milliseconds);
-    const abort = () => {
-      window.clearTimeout(timer);
-      reject(new DOMException("Aborted", "AbortError"));
-    };
-    signal.addEventListener("abort", abort, { once: true });
-  });
-}
-
-async function requestTranscript(
-  blob: Blob,
-  filename: string,
-  signal: AbortSignal,
-  waitForModel: boolean,
-): Promise<string | null> {
-  const deadline = Date.now() + MODEL_DOWNLOAD_WAIT_MS;
-  while (true) {
-    const form = new FormData();
-    form.set("file", blob, filename);
-    const response = await speechRequest("/api/speech/transcribe", {
-      method: "POST",
-      body: form,
-      signal,
-    });
-    if (response.status === 202) {
-      if (!waitForModel) return null;
-      if (Date.now() >= deadline) throw new Error(await responseError(response));
-      await waitForRetry(MODEL_DOWNLOAD_RETRY_MS, signal);
-      continue;
-    }
-    if (!response.ok) throw new Error(await responseError(response));
-    const result = (await response.json()) as { text?: string };
-    return result.text?.trim() || "";
-  }
 }
 
 /**
@@ -297,14 +242,7 @@ export default function SpeechDictationButton({
   }), [textareaRef, supportsClapVoice]);
 
   const paintDictationLevel = useCallback((rms: number) => {
-    const level = Math.min(1, Math.max(0, rms * 9));
-    const shape = [0.56, 0.82, 1, 0.76, 0.52];
-    levelBarsRef.current.forEach((bar, index) => {
-      if (!bar) return;
-      const scale = Math.min(1, 0.24 + level * (shape[index] ?? 0.6));
-      bar.style.transform = `scaleY(${scale.toFixed(3)})`;
-      bar.style.opacity = `${(0.62 + level * 0.38).toFixed(3)}`;
-    });
+    paintDictationLevels(levelBarsRef.current, rms);
   }, []);
 
   const subscriptionRef = useRef<SubscriptionVoice | null>(null);
@@ -543,19 +481,16 @@ export default function SpeechDictationButton({
     try {
       const prepareController = new AbortController();
       prepareAbortRef.current = prepareController;
-      try {
-        await prepareLocalSpeech(prepareController.signal);
-      } finally {
-        if (prepareAbortRef.current === prepareController) prepareAbortRef.current = null;
-      }
+      // Microphone acquisition and provider lookup run together. Local model
+      // startup must never sit in front of capturing the user's first words.
+      const selected = selectDictationProvider(prepareController.signal);
+      void selected.catch(() => {});
       if (!mountedRef.current || targetIdentity !== `${location.pathname}:${clapTargetRef.current.runtimeSessionId ?? ''}`) {
         if (mountedRef.current) setState('idle');
         return;
       }
 
-      const stream = await requestForegroundMicrophone({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
+      const stream = await requestForegroundMicrophone(DICTATION_MICROPHONE);
       if (!mountedRef.current || targetIdentity !== `${location.pathname}:${clapTargetRef.current.runtimeSessionId ?? ''}`) {
         stopForegroundStream(stream);
         if (mountedRef.current) setState('idle');
@@ -570,12 +505,11 @@ export default function SpeechDictationButton({
       partialCursorRef.current = 0;
       await beginPcmCapture(stream);
 
-      const cloudController = new AbortController();
+      const cloudController = prepareController;
       prepareAbortRef.current = cloudController;
-      if (await subscriptionSelected(cloudController.signal)) {
-        const voice = await connectSubscriptionVoice({ microphone: stream, signal: cloudController.signal,
-          onTranscript: (text) => { if (mountedRef.current && session === sessionRef.current) showPreview(text); },
-        });
+      const voice = await openDictationProvider(stream, selected, cloudController.signal,
+        (text) => { if (mountedRef.current && session === sessionRef.current) showPreview(text); });
+      if (voice) {
         if (!mountedRef.current) { await voice.close(); return; }
         subscriptionRef.current = voice;
       }
@@ -904,60 +838,8 @@ export default function SpeechDictationButton({
           <span className="absolute right-1 top-1 h-2 w-2 animate-pulse rounded-full bg-[#c96d6d]" aria-hidden />
         ) : null}
       </button>
-      <div
-        className="dictation-live-control"
-        role="group"
-        aria-label={state === "paused" ? "Dictation paused" : "Live dictation controls"}
-        aria-hidden={!dictationActive}
-      >
-        <button
-          ref={pauseButtonRef}
-          type="button"
-          className="dictation-live-action dictation-live-pause"
-          onClick={toggleRecordingPause}
-          disabled={!dictationActive}
-          aria-label={state === "paused" ? "Resume dictation" : "Pause dictation"}
-          title={state === "paused" ? "Resume dictation" : "Pause dictation"}
-        >
-          {state === "paused" ? (
-            <svg viewBox="0 0 20 20" aria-hidden>
-              <path d="m7.2 5.4 6.2 4.1a.6.6 0 0 1 0 1l-6.2 4.1a.6.6 0 0 1-.92-.5V5.9a.6.6 0 0 1 .92-.5Z" fill="currentColor" />
-            </svg>
-          ) : (
-            <svg viewBox="0 0 20 20" aria-hidden>
-              <path d="M6.5 5.5h2v9h-2zm5 0h2v9h-2z" fill="currentColor" />
-            </svg>
-          )}
-        </button>
-        <span
-          className="dictation-levels"
-          role="img"
-          aria-label={state === "paused" ? "Microphone paused" : "Live microphone level"}
-        >
-          {[0, 1, 2, 3, 4].map((index) => (
-            <span
-              key={index}
-              ref={(node) => {
-                levelBarsRef.current[index] = node;
-              }}
-              className="dictation-level-bar"
-              aria-hidden
-            />
-          ))}
-        </span>
-        <button
-          type="button"
-          className="dictation-live-action dictation-live-stop"
-          onClick={stopRecording}
-          disabled={!dictationActive}
-          aria-label="Stop dictation"
-          title="Stop dictation"
-        >
-          <svg viewBox="0 0 20 20" aria-hidden>
-            <path d="m6.25 6.25 7.5 7.5m0-7.5-7.5 7.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
-          </svg>
-        </button>
-      </div>
+      <DictationLiveControl active={dictationActive} paused={state === "paused"}
+        onPause={toggleRecordingPause} onStop={stopRecording} pauseRef={pauseButtonRef} levelBarsRef={levelBarsRef} />
       <span className="sr-only" role="status" aria-live="polite">
         {state === "paused" ? "Dictation paused" : state === "recording" ? "Dictation listening" : ""}
       </span>
@@ -1031,7 +913,7 @@ export default function SpeechDictationButton({
             aria-label="Clap shortcut"
             aria-checked={clapEnabled}
             aria-describedby={clapEnabled && clapIssue ? clapIssueId : undefined}
-            title="Listen for two claps. Choose the action in Profile."
+            title="Listen for two claps. Choose the action in Settings."
             className="group flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--botanical)]"
             onClick={() => setClapWakeEnabled(!clapEnabled)}
           >

@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-test("browser notifications and in-place translation work in real sandboxed Chromium documents", async () => {
+test("browser media permissions, notifications, settings, and translation work in real sandboxed Chromium documents", async () => {
   const desktop = path.resolve(__dirname, "../..");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-browser-page-services-"));
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;

@@ -218,8 +218,17 @@ export interface CropBox {
  * margin). Returns null when the PNG cannot be safely decoded or the crop is
  * degenerate, so callers can fall back to the full page image.
  */
+// One page usually yields several crops, and every call used to inflate the
+// whole page again (a 1200px page is ~7 MB of raw pixels). Live 2026-10-10
+// (em1, 548 textbook figures): a scan pass that re-crops every figure
+// allocated GBs within a minute and the supervisor killed the Learn worker.
+// Only the last page is kept: callers crop one page's figures in a row, and a
+// per-buffer cache pinned a decoded copy of every page a caller still held.
+let lastDecoded: { buffer: Buffer; decoded: DecodedPng | null } | undefined;
+
 export function cropPng(buffer: Buffer, box: CropBox, marginPx = 6): Buffer | null {
-  const decoded = decodePng(buffer);
+  if (lastDecoded?.buffer !== buffer) lastDecoded = { buffer, decoded: decodePng(buffer) };
+  const decoded = lastDecoded.decoded;
   if (!decoded) return null;
 
   const clamp = (value: number, min: number, max: number) =>

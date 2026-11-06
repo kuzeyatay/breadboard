@@ -6,10 +6,11 @@ export function looksLikeBrowserAddress(value: string): boolean {
 }
 
 export interface SearchSuggestion {
+  id?: string;
   value: string;
   label: string;
   detail?: string;
-  source: "google" | "history";
+  source: "google" | "history" | "breadboard" | "web";
 }
 
 export function searchSuggestions(
@@ -28,10 +29,15 @@ export function searchSuggestions(
     predictions.unshift({ value, label: value, detail: "Search with Google", source: "google" });
   }
   const seen = new Set<string>();
+  let historyCount = 0;
   return [...remembered, ...predictions]
     .filter((entry) => {
       const key = entry.value.toLocaleLowerCase();
       if (seen.has(key)) return false;
+      if (entry.source === "history") {
+        if (historyCount === 4) return false;
+        historyCount += 1;
+      }
       seen.add(key);
       return true;
     })

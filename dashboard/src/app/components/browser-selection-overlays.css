@@ -1,0 +1,28 @@
+/* Native website overlays need a transparent window, never transparent marks.
+   Keep these document-only rules separate from the shared highlight palette. */
+html[data-breadboard-selection-popup="true"],
+html[data-breadboard-inline-answer="true"] {
+  background: transparent !important;
+  overflow: hidden;
+}
+
+html[data-breadboard-selection-popup="true"] body,
+html[data-breadboard-inline-answer="true"] body {
+  background: transparent !important;
+  /* The application body is normally a flex column. These windows size to
+     their card, so application chrome must not displace or shrink that card. */
+  display: block;
+  min-height: 0;
+  padding: 10px !important;
+  overflow: hidden;
+}
+
+html[data-breadboard-selection-popup="true"] .desktop-title-bar,
+html[data-breadboard-inline-answer="true"] .desktop-title-bar {
+  /* This stylesheet is imported before the desktop chrome rules. */
+  display: none !important;
+}
+
+html[data-breadboard-inline-answer="true"] body {
+  padding: 0 !important;
+}

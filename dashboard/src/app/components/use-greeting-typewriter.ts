@@ -3,11 +3,29 @@
 import { useEffect, useRef, useState } from "react";
 
 /** Shared erase/pause/type sequence for browser and new-tab greetings. */
-export function useGreetingTypewriter(target: string, initialText = "") {
+interface GreetingAnimationOptions {
+  enabled?: boolean;
+  animateInitial?: boolean;
+}
+
+export function useGreetingTypewriter(
+  target: string,
+  initialText = "",
+  { enabled = true, animateInitial = false }: GreetingAnimationOptions = {},
+) {
   const displayedRef = useRef(initialText);
+  const completedTarget = useRef<string | null>(null);
+  const [visible, setVisible] = useState(false);
   const [displayed, setDisplayed] = useState(initialText);
   const [animating, setAnimating] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
+
+  useEffect(() => {
+    const update = () => setVisible(document.visibilityState !== "hidden");
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
 
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -18,17 +36,18 @@ export function useGreetingTypewriter(target: string, initialText = "") {
   }, []);
 
   useEffect(() => {
-    if (!target) return;
+    if (!target || !enabled || !visible) return;
     let cancelled = false;
     let timer: number | null = null;
     const frame = window.requestAnimationFrame(() => {
       if (reducedMotion || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        completedTarget.current = target;
         displayedRef.current = target;
         setDisplayed(target);
         setAnimating(false);
         return;
       }
-      if (displayedRef.current === target) {
+      if (displayedRef.current === target && (!animateInitial || completedTarget.current === target)) {
         setAnimating(false);
         return;
       }
@@ -44,7 +63,10 @@ export function useGreetingTypewriter(target: string, initialText = "") {
         if (cancelled) return;
         commit(target.slice(0, index));
         if (index < target.length) timer = window.setTimeout(() => write(index + 1), 46);
-        else setAnimating(false);
+        else {
+          completedTarget.current = target;
+          setAnimating(false);
+        }
       };
       const erase = () => {
         if (cancelled) return;
@@ -59,6 +81,9 @@ export function useGreetingTypewriter(target: string, initialText = "") {
       // Keep the pause only between an old greeting being erased and its
       // replacement; an initially empty line has nothing to pause after.
       if (current.length === 0) write(1);
+      // Leave the complete server-rendered line visible for a moment after
+      // reveal. A prewarmed Terminal must not spend its animation offscreen.
+      else if (animateInitial) timer = window.setTimeout(erase, 180);
       else erase();
     });
     return () => {
@@ -66,7 +91,7 @@ export function useGreetingTypewriter(target: string, initialText = "") {
       window.cancelAnimationFrame(frame);
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [reducedMotion, target]);
+  }, [reducedMotion, target, enabled, visible, animateInitial]);
 
-  return { displayed, animating };
+  return { displayed, animating: animating && enabled && visible };
 }

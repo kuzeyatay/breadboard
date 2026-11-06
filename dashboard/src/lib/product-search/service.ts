@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { reviewProductRecommendations } from "./recommendations.ts";
+import { discoverProductPages } from "./discovery.ts";
 
 import { assertPublicHost } from "../get-doc/download.ts";
 import {
@@ -54,6 +55,10 @@ export interface SearchCandidate {
   title: string;
   pageUrl: string;
   imageUrl?: string;
+  /** Discovery text is evidence only; it must never become an instruction. */
+  description?: string;
+  /** Locator-model suggestions need merchant Product data before projection. */
+  requireStructuredEvidence?: boolean;
   /** Price quoted by the product-specific discovery result for this exact URL. */
   priceHint?: ProductPrice;
   /** Discovery explicitly tied this direct product page to the requested market. */
@@ -143,10 +148,9 @@ function marketAliases(locale: string): string[] {
 
 function marketSearchSuffix(locale: string): string {
   // Geography determines merchants and currency, not the display language.
-  const words = `${marketCountryName(locale)} buy price`;
-  const country = marketCountryCode(locale).toLowerCase();
-  const domain = country === "us" ? "" : country === "gb" ? "uk" : country;
-  return domain ? `${words} site:.${domain}` : words;
+  // Local merchants also use .com domains. Validate the market on the offer,
+  // rather than excluding those merchants before we can inspect them.
+  return `${marketCountryName(locale)} buy price`;
 }
 
 /**
@@ -157,10 +161,11 @@ export function isBuyableProductUrl(value: unknown): boolean {
   const safe = safeProductUrl(value);
   if (!safe) return false;
   const url = new URL(safe);
-  const path = decodeURIComponent(url.pathname);
+  let path: string;
+  try { path = decodeURIComponent(url.pathname); } catch { return false; }
   if (
-    /\/(?:search|s|browse|b|category|categories|collections?|catalog|shop-all)(?:\/|$)/i.test(path) ||
-    /[?&](?:q|query|search|keyword)=/i.test(`${url.search}`) ||
+    /\/(?:search|s|browse|b|category|categories|collections?|catalog|shop-all|l|q|shopping)(?:\/|$)/i.test(path) ||
+    /[?&](?:q|k|query|search|keyword)=/i.test(`${url.search}`) ||
     /\/(?:open-product|redirect|out|go|click|affiliate|track)(?:\.php)?(?:\/|$)/i.test(path)
   ) {
     return false;
@@ -170,7 +175,8 @@ export function isBuyableProductUrl(value: unknown): boolean {
     /\/(?:products?|product-detail|p|items?|itm|ip|listing)\/[^/?#]{2,}/i.test(path) ||
     /\/site\/[^/]+\/\d+\.p(?:[/?]|$)/i.test(path) ||
     /\/shop\/buy-[^/?#]+/i.test(path) ||
-    /-[pi]\d+(?:\.html)?(?:[/?]|$)/i.test(path)
+    /-[pi]\d+(?:\.html)?(?:[/?]|$)/i.test(path) ||
+    /-p-[a-z0-9]{5,}(?:[/?]|$)/i.test(path)
   );
 }
 
@@ -190,6 +196,8 @@ function urlMatchesMarket(rawUrl: string, locale: string): boolean {
   const country = marketCountryCode(locale).toLowerCase();
   const labels = host.split(".");
   if (labels.at(-1) === country) return true;
+  if (country === "gb" && labels.at(-1) === "uk") return true;
+  if (country === "tr" && /(?:^|\.)(?:hepsiburada|trendyol|n11)\.com$/.test(host)) return true;
   if (
     country === "us" &&
     /^(?:amazon|walmart|target|bestbuy|newegg)\.com$/.test(host)
@@ -342,7 +350,7 @@ function searchResultUrl(rawHref: string): string {
 }
 
 /** Exported so the price-search projection is deterministic in tests. */
-export function pricedCandidatesFromSearchHtml(
+export function productCandidatesFromSearchHtml(
   html: string,
   country = "us-en",
 ): SearchCandidate[] {
@@ -359,10 +367,19 @@ export function pricedCandidatesFromSearchHtml(
     const marketEvidence = pageUrl
       ? urlMatchesMarket(pageUrl, country) || textMatchesMarket(resultText, country)
       : false;
-    return priceHint && isMerchantProductCandidate({ title, pageUrl })
-      ? [{ title, pageUrl, priceHint, ...(marketEvidence ? { marketEvidence: true } : {}) }]
+    // A missing snippet price is not evidence that a merchant has no offer.
+    // It may still supply a current price when its product page is inspected.
+    return isMerchantProductCandidate({ title, pageUrl })
+      ? [{ title, pageUrl, ...(priceHint ? { priceHint } : {}), ...(resultText ? { description: resultText.slice(0, 1_200) } : {}), ...(marketEvidence ? { marketEvidence: true } : {}) }]
       : [];
   });
+}
+
+/** Compatibility helper for consumers that specifically need quoted prices. */
+export function pricedCandidatesFromSearchHtml(html: string, country = "us-en"): SearchCandidate[] {
+  return productCandidatesFromSearchHtml(html, country)
+    .filter((candidate) => candidate.priceHint)
+    .map((candidate) => { const priced = { ...candidate }; delete priced.description; return priced; });
 }
 
 /**
@@ -383,9 +400,12 @@ async function discoverPricedCandidates(
       signal: combinedSignal(signal, SEARCH_TIMEOUT_MS),
     },
   );
-  if (!response.ok) return [];
+  if (!response.ok) throw new ProductSearchError("product_search_upstream_error", `The product discovery provider answered ${response.status}.`);
   const html = await readBoundedText(response);
-  return pricedCandidatesFromSearchHtml(html, input.country);
+  if (/anomaly-modal|challenge-form|bots use DuckDuckGo/i.test(html)) {
+    throw new ProductSearchError("product_search_upstream_error", "Product discovery requires a retry.");
+  }
+  return productCandidatesFromSearchHtml(html, input.country);
 }
 
 async function readBoundedText(response: Response): Promise<string> {
@@ -557,11 +577,14 @@ export function productPriceFromText(
   country = "us-en",
 ): ProductPrice | undefined {
   const text = decodedSearchText(value).slice(0, 8_000);
-  const codeBefore = /\b(USD|EUR|GBP|CAD|AUD|NZD|SGD|HKD|JPY|CNY|INR)\s*(?:[$€£¥₹])?\s*([0-9][0-9.,]{0,15})\b/i.exec(text);
-  if (codeBefore) return formattedProductPrice(codeBefore[2], codeBefore[1]);
-  const codeAfter = /(?:^|\s)([0-9][0-9.,]{0,15})\s*(USD|EUR|GBP|CAD|AUD|NZD|SGD|HKD|JPY|CNY|INR)\b/i.exec(text);
-  if (codeAfter) return formattedProductPrice(codeAfter[1], codeAfter[2]);
-  const symbol = /(US\$|CA\$|A\$|NZ\$|S\$|HK\$|[$€£¥₹])\s*([0-9][0-9.,]{0,15})\b/i.exec(text);
+  const currencyCode = (value: string) => value.toUpperCase() === "TL" ? "TRY" : value;
+  const codeBefore = /\b(USD|EUR|GBP|CAD|AUD|NZD|SGD|HKD|JPY|CNY|INR|TRY|TL)\s*(?:[$€£¥₹₺])?\s*([0-9][0-9.,]{0,15})\b/i.exec(text);
+  if (codeBefore) return formattedProductPrice(codeBefore[2], currencyCode(codeBefore[1]));
+  const codeAfter = /(?:^|\s)([0-9][0-9.,]{0,15})\s*(USD|EUR|GBP|CAD|AUD|NZD|SGD|HKD|JPY|CNY|INR|TRY|TL)\b/i.exec(text);
+  if (codeAfter) return formattedProductPrice(codeAfter[1], currencyCode(codeAfter[2]));
+  const liraAfter = /(?:^|\s)([0-9][0-9.,]{0,15})\s*₺/.exec(text);
+  if (liraAfter) return formattedProductPrice(liraAfter[1], "TRY");
+  const symbol = /(US\$|CA\$|A\$|NZ\$|S\$|HK\$|[$€£¥₹₺])\s*([0-9][0-9.,]{0,15})\b/i.exec(text);
   if (!symbol) return undefined;
   const currency = ({
     "US$": "USD",
@@ -574,6 +597,7 @@ export function productPriceFromText(
     "£": "GBP",
     "¥": country.startsWith("cn-") ? "CNY" : "JPY",
     "₹": "INR",
+    "₺": "TRY",
     "$": dollarCurrency(country),
   } as Record<string, string>)[symbol[1].toUpperCase()] ?? dollarCurrency(country);
   return formattedProductPrice(symbol[2], currency);
@@ -820,13 +844,14 @@ function isMerchantProductCandidate(candidate: SearchCandidate): boolean {
   const parsedPage = new URL(pageUrl);
   const editorialTitle = /^(?:best|top)\s|\b(?:buying guide|top picks?|hands-on review|product review)\b/i;
   const editorialPath = /\/(?:blogs?|news|articles?|guides?|reviews?)(?:\/|$)|\/(?:best|top)-/i;
-  const categoryPath = /^\/(?:b|browse|search|category|categories|collections?)(?:\/|$)/i;
+  const categoryPath = /\/(?:b|s|l|q|browse|search|shopping|category|categories|collections?)(?:\/|$)/i;
   const categoryTitle = /\b(?:products?|touchpads?|trackpads?)\s+for sale\s*\|\s*ebay$/i;
   const nonMerchantSite = /(?:^|\.)(?:pinterest|youtube|youtu\.be|reddit|facebook|instagram|tiktok)\./i;
   return !(
     editorialTitle.test(candidate.title) ||
     categoryTitle.test(candidate.title) ||
     editorialPath.test(parsedPage.pathname) ||
+    /[?&](?:q|k|query|search|keyword)=/i.test(parsedPage.search) ||
     (categoryPath.test(parsedPage.pathname) && !/\/products?\//i.test(parsedPage.pathname)) ||
     nonMerchantSite.test(parsedPage.hostname)
   );
@@ -853,6 +878,7 @@ async function inspectCandidate(
   const pagePrice = productPriceFromHtml(page.html) ?? candidate.priceHint;
   const pageAvailability = productAvailabilityFromHtml(page.html);
   const structuredProducts = jsonLdProductsFromHtml(page.html);
+  if (candidate.requireStructuredEvidence && structuredProducts.length === 0) return [];
   if (
     structuredProducts.length === 0 &&
     pagePrice &&
@@ -873,6 +899,7 @@ async function inspectCandidate(
       product: {
         id: `product:${shortHash(finalUrl)}`,
         title: candidate.title,
+        ...(candidate.description ? { description: candidate.description } : {}),
         merchant: new URL(finalUrl).hostname.replace(/^www\./i, ""),
         url: finalUrl,
         ...(imageUrl ? { imageUrl } : {}),
@@ -954,8 +981,8 @@ async function inspectCandidate(
 /**
  * Search discovery is still a source when a merchant blocks server-side page
  * inspection. Project only facts the discovery response actually supplied;
- * a quoted price may be retained, while availability, ratings, descriptions,
- * and attributes stay absent.
+ * a quoted price and snippet may be retained; availability, ratings and
+ * attributes stay absent.
  */
 async function projectDiscoveredCandidate(
   candidate: SearchCandidate,
@@ -964,6 +991,7 @@ async function projectDiscoveredCandidate(
 ): Promise<Array<{ product: ProductSearchItem; source: ProductSearchSource }>> {
   const pageUrl = safeProductUrl(candidate.pageUrl);
   if (
+    candidate.requireStructuredEvidence ||
     !pageUrl ||
     !candidate.priceHint ||
     !isBuyableProductUrl(pageUrl) ||
@@ -995,6 +1023,7 @@ async function projectDiscoveredCandidate(
     product: {
       id: `product:${shortHash(pageUrl)}`,
       title: candidate.title,
+      ...(candidate.description ? { description: candidate.description } : {}),
       merchant: site,
       url: pageUrl,
       ...(imageUrl ? { imageUrl } : {}),
@@ -1006,21 +1035,22 @@ async function projectDiscoveredCandidate(
 
 export async function searchProducts(
   rawInput: ProductSearchInput,
-  options: { signal?: AbortSignal; baseUrl?: string } = {},
+  options: { signal?: AbortSignal; baseUrl?: string; userRequest?: string } = {},
 ): Promise<ProductSearchResult> {
   const input = normalizeInput(rawInput);
   let candidates: SearchCandidate[];
+  let discoveryFailed = false;
   try {
     candidates = await discoverCandidates(input, options.signal);
-  } catch (error) {
-    if (error instanceof ProductSearchError) throw error;
+  } catch {
     if (options.signal?.aborted) {
       throw new ProductSearchError("product_search_aborted", "Product search was cancelled.");
     }
-    throw new ProductSearchError("product_search_failed", "Product search did not answer. Try again once.");
+    discoveryFailed = true;
+    candidates = [];
   }
   const accessedAt = new Date().toISOString();
-  const inspected = await Promise.all(candidates.map(async (candidate) => {
+  const inspect = async (candidate: SearchCandidate) => {
     try {
       const structured = await inspectCandidate(
         candidate,
@@ -1040,8 +1070,22 @@ export async function searchProducts(
       // boundary checks; it never manufactures the richer fields.
     }
     return projectDiscoveredCandidate(candidate, accessedAt, input.country).catch(() => []);
-  }));
-  const pairs = inspected.flat().filter(({ product }) => Boolean(product.price));
+  };
+  const inspected = await Promise.all(candidates.map(inspect));
+  let pairs = inspected.flat().filter(({ product }) => Boolean(product.price));
+  if (!pairs.length) {
+    // Scraped discovery often yields only categories or blocked merchants.
+    // The configured native web search can locate more specific pages, but
+    // every offer still has to pass our independent merchant inspection.
+    try {
+      const fallback = await discoverProductPages(input.query, marketCountryName(input.country), options);
+      const more = await Promise.all(fallback.map(inspect));
+      pairs = more.flat().filter(({ product }) => Boolean(product.price));
+    } catch {
+      if (options.signal?.aborted) throw new ProductSearchError("product_search_aborted", "Product search was cancelled.");
+      if (discoveryFailed) throw new ProductSearchError("product_search_failed", "Product discovery is unavailable. Try again.");
+    }
+  }
   const uniqueProducts = [...new Map(pairs.map(({ product }) => [product.url, product])).values()].slice(0, 36);
   let products: ProductSearchItem[];
   try {

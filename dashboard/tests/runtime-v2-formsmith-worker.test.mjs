@@ -471,6 +471,23 @@ function clientFixture(t) {
   return { dataRoot, source, image, job, stage, mesh, result, request };
 }
 
+test("Formsmith missing-environment health points to the managed environment, not an ignored override", async (t) => {
+  const fixture = executorFixture(successBridge());
+  t.after(() => fs.rmSync(fixture.dataRoot, { recursive: true, force: true }));
+  const result = await executeFormsmith(
+    { ...fixture.launch, request: { protocolVersion: 1, operation: "probe" }, inputBlobs: [] },
+    new AbortController().signal,
+    () => {},
+    undefined,
+    { env: { ...fixture.env, SHAPER_PYTHON: path.join(fixture.stateRoot, ".venv", "missing-python") } },
+  );
+  assert.equal(result.health.available, false);
+  assert.equal(result.health.cloned, true);
+  assert.match(result.health.reason, /runtime-v2\/services\/formsmith\/\.venv/u);
+  assert.match(result.health.reason, /Automatic setup is not available/u);
+  assert.doesNotMatch(result.health.reason, /set SHAPER_PYTHON/u);
+});
+
 test("Formsmith worker admits only the exact authenticated fixed protocol", () => {
   const reconstruct = {
     protocolVersion: 1,

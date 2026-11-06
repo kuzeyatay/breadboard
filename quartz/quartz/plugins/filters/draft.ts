@@ -9,11 +9,11 @@ function frontmatterString(fm: Record<string, unknown> | undefined, key: string)
   return typeof value === "string" ? value : ""
 }
 
-function isLegacySubtopicPath(relativePath = ""): boolean {
+function isLegacySubtopicPath(relativePath = "", knowledgeType = ""): boolean {
   const parts = relativePath.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase().split("/")
   return parts.some(
     (part, index) =>
-      part === "generated" ||
+      (part === "generated" && (!knowledgeType || knowledgeType === "knowledge-topic")) ||
       part === "generated subtopics" ||
       part === "subtopics" ||
       part === "ai topics" ||
@@ -141,7 +141,11 @@ function isIngestLessonArtifact(
 ): boolean {
   const isLesson =
     LESSON_KNOWLEDGE_TYPES.has(knowledgeType) || LESSON_BREADBOARD_TYPES.has(breadboardType)
-  return isLesson && !isLearnAuthored(fm) && !isDocumentIngestConcept(fm, relativePath)
+  const isSavedChatPage =
+    frontmatterString(fm, "saved_from") === "chat" ||
+    (frontmatterString(fm, "source") === "chat" &&
+      frontmatterString(fm, "generated_by") === "chatmock")
+  return isLesson && !isSavedChatPage && !isLearnAuthored(fm) && !isDocumentIngestConcept(fm, relativePath)
 }
 
 export const RemoveDrafts: QuartzFilterPlugin<RemoveDraftsOptions> = (opts = {}) => ({
@@ -156,7 +160,7 @@ export const RemoveDrafts: QuartzFilterPlugin<RemoveDraftsOptions> = (opts = {})
     const breadboardType =
       frontmatterString(fm, "breadboardType") || frontmatterString(fm, "breadboard_type")
     const legacySubtopic =
-      frontmatterString(fm, "legacy_subtopic_page") === "true" || isLegacySubtopicPath(relativePath)
+      frontmatterString(fm, "legacy_subtopic_page") === "true" || isLegacySubtopicPath(relativePath, knowledgeType)
     if (legacySubtopic) return opts.showLegacySubtopicPages === true
 
     const draftFlag: boolean = fm?.draft === true || fm?.draft === "true"

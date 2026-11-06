@@ -5,11 +5,20 @@ import {
   type Dispatcher,
 } from "undici";
 
+// A non-streaming council answer sends its headers only once the whole answer
+// exists, so this transport ceiling must outlast the longest provider
+// generation (ChatMock's websocket lifetime, default 7200 s) or it silently
+// undercuts every caller's own request timeout. Live 2026-09-25: a fixed 30
+// minutes cut off a 31-minute Learn page selection that Learn itself allowed
+// 62 minutes, failing the plan with "Request timed out."
 const CHATMOCK_HEADERS_TIMEOUT_MS = (() => {
   const value = Number(process.env.CHATMOCK_CLIENT_HEADERS_TIMEOUT_MS);
-  return Number.isFinite(value) && value >= 60_000
-    ? Math.floor(value)
-    : 30 * 60 * 1000;
+  if (Number.isFinite(value) && value >= 60_000) return Math.floor(value);
+  const websocketSeconds = Number(process.env.CHATMOCK_COUNCIL_WEBSOCKET_TOTAL_TIMEOUT);
+  const lifetimeSeconds = Number.isFinite(websocketSeconds)
+    ? Math.min(21_600, Math.max(901, Math.floor(websocketSeconds)))
+    : 7_200; // ChatMock's default websocket lifetime
+  return (lifetimeSeconds + 5 * 60) * 1000;
 })();
 
 type DispatcherFactory = (options: {
@@ -58,9 +67,8 @@ export interface ChatmockClientOptions {
   /** Whole-request deadline. The SDK's own default is ten minutes, which a
    * deep reasoning model on a long prompt routinely exceeds. */
   timeout?: number;
-  /** SDK-internal retries. Callers that account for exactly one provider POST
-   * per logical call (Learn) must pass 0: a retry after an ambiguous timeout
-   * is a duplicate request behind their back. */
+  /** SDK-internal retries. Defaults to zero because ChatMock owns the single
+   * fallback to the profile default and its terminal failure. */
   maxRetries?: number;
 }
 
@@ -73,6 +81,6 @@ export function createChatmockClient(
     apiKey: process.env.OPENAI_API_KEY,
     fetch: longHeaderTimeoutFetch(),
     ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
-    ...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+    maxRetries: options.maxRetries ?? 0,
   });
 }

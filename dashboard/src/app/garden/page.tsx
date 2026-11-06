@@ -3,7 +3,6 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { authOptions } from "@/lib/auth-options";
 import BackLink from "@/app/components/back-link";
-import MarkdownToPdfButton from "@/app/components/markdown-to-pdf-button";
 import NewNoteButton from "@/app/components/new-note-button";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import LinkContextMenu from "@/app/components/link-context-menu";
@@ -22,6 +21,7 @@ import { openQuartzViewLease } from "@/lib/quartz-view-lease";
 import { organizationIdsForUser } from "@/lib/organizations/store";
 import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
 import LibraryGardenClient from "./library-garden-client";
+import GardenSettingsButton from "./garden-settings-button";
 
 type QuartzView = "private" | "organization" | "public";
 
@@ -77,9 +77,8 @@ export default async function GardenHomePage({
   // one global blue progress bar and prevents Quartz's temporary 404 document
   // from becoming the visible garden.
   if (preparedIndex?.publishRequired) {
-    // Dashboard entry pre-warms every cluster index. If that publication is
-    // already running, let it finish and check the exact output before asking
-    // Runtime V2 for another full-site build.
+    // A garden mutation or another library view may already be publishing.
+    // Let it finish and check the exact output before requesting another build.
     if (await waitForQuartzPublicationInFlight()) {
       preparedIndex = prepareRequestedIndex();
     }
@@ -107,7 +106,7 @@ export default async function GardenHomePage({
       <header className="breadboard-flower-navbar relative flex items-center justify-between gap-4 px-6 py-3.5 border-b border-gray-800 shrink-0">
         <NavbarFlowerWind showFlowers={getNavbarFlowers(userId)} />
         <div className="relative z-10 flex items-center gap-3 min-w-0">
-          <BackLink fallbackHref="/dashboard" fallbackLabel="Back to dashboard" />
+          <BackLink fallbackHref="/new-tab" fallbackLabel="Back to home" />
           <span className="text-gray-700">/</span>
           <h1 className="text-sm font-semibold text-white truncate max-w-xs">
             {viewTitle}
@@ -115,7 +114,7 @@ export default async function GardenHomePage({
         </div>
         <div className="relative z-10 flex items-center gap-2">
           {view === "private" && <NewNoteButton />}
-          <MarkdownToPdfButton label="Save PDF" />
+          <GardenSettingsButton quartzOrigin={new URL(quartzUrl()).origin} />
           <nav
             aria-label="Library visibility"
             className="inline-flex items-center rounded-md border border-gray-800 bg-gray-900/80 p-1 shadow-inner"

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 import { issueCapabilityToken } from '../src/lib/hermes/capability-token.ts';
 
-for (const action of ['state', 'launch_clicky', 'set_checked']) {
+for (const action of ['state', 'set_checked', 'recording_sources', 'recording_start', 'recording_status', 'recording_stop']) {
 test(`app control ${action} requires an owned active private conversation and uses server identity`, async () => {
   const state = globalThis.__breadboardUseRouteTest = {
     session: { id: 33, user_id: 7, surface: 'dashboard_terminal', conversation_id: 44 },
@@ -15,7 +15,8 @@ test(`app control ${action} requires an owned active private conversation and us
     '@/lib/hermes/runtime-store.ts': 'export const getRuntimeSessionById = id => id === 33 ? globalThis.__breadboardUseRouteTest.session : null; export const runtimeExternalSessionId = () => "runtime";',
     '@/lib/hermes/run-store.ts': 'export const getActiveRuntimeRun = () => globalThis.__breadboardUseRouteTest.run;',
     '@/lib/conversations/store.ts': 'export const getConversationById = () => globalThis.__breadboardUseRouteTest.conversation;',
-    '@/lib/hermes/breadboard-use.ts': 'export const useBreadboard = async (...args) => { globalThis.__breadboardUseRouteTest.calls.push(args); return { targets: [] }; };',
+    '@/lib/hermes/breadboard-use.ts': 'export const executeBreadboardAction = async (...args) => { globalThis.__breadboardUseRouteTest.calls.push(args); return { targets: [] }; };',
+    '@/lib/hermes/screen-recording-artifact.ts': 'export const attachScreenRecording = async data => data;',
     '@/lib/hermes/route-helpers.ts': `export class ApiError extends Error { constructor(status, code, message) { super(message); this.status = status; this.code = code; } }
       export const requireEnabled = () => {};
       export const readJsonBody = req => req.json();
@@ -31,7 +32,7 @@ test(`app control ${action} requires an owned active private conversation and us
   const module = { exports: {} };
   new Function('require', 'module', 'exports', bundle.outputFiles[0].text)(createRequire(import.meta.url), module, module.exports);
   const call = () => module.exports.POST(new Request('http://localhost/api/hermes/tools/breadboard-use', {
-    method: 'POST', body: JSON.stringify({ args: { action, sessionId: 'forged', userId: 99 } }),
+    method: 'POST', body: JSON.stringify({ args: { action, sessionId: 'forged', userId: 99, runId: 'forged' } }),
   }));
   const token = (surface = 'dashboard_terminal', allowedTools = ['breadboard_use']) => issueCapabilityToken({
     userId: 7, conversationId: 44, breadboardSessionId: '33', hermesSessionId: 'runtime', surface, allowedTools,
@@ -49,7 +50,7 @@ test(`app control ${action} requires an owned active private conversation and us
       state.session.surface = surface; state.token = token(surface);
       assert.equal((await call()).status, 200);
       assert.equal(state.calls.at(-1)[0].action, action);
-      assert.deepEqual(state.calls.at(-1).slice(1), ['33', 7]);
+      assert.deepEqual(state.calls.at(-1).slice(1), ['33', 7, 'run']);
     }
     state.session.surface = 'quartz_ai'; state.token = token('quartz_ai');
     assert.equal((await call()).status, 403);

@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { requireUserId } from "@/lib/server-auth";
+import { requireUserId, requireReadableCluster } from "@/lib/server-auth";
+import { gardenPdfReference, readGardenPdfPages } from "@/lib/pdf-garden-reading.ts";
 import { requireSameOrigin } from "@/lib/request-origin";
 import {
-  ApiError,
   apiErrorResponse,
   readJsonBody,
   requireString,
@@ -13,18 +13,25 @@ import {
   normalizeAssistantModelId,
 } from "@/lib/ai-models.ts";
 import {
-  parsePdfViewDecision,
   pdfViewDecisionMessages,
+  resolvePdfViewDecision,
 } from "@/lib/pdf-assistant-view-decision.ts";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     requireSameOrigin(request, "Ask about PDFs from Breadboard.");
     const body = await readJsonBody(request, 128_000);
     const question = requireString(body.question, "question", 12_000);
+    const source = gardenPdfReference(request, body.sourceUrl);
+    let sourcePageText: string | undefined;
+    if (source && process.env.QUARTZ_CONTENT_PATH) {
+      const cluster = requireReadableCluster(userId, source.clusterSlug);
+      sourcePageText = readGardenPdfPages({ ...source, clusterSlug: cluster.slug,
+        contentPath: process.env.QUARTZ_CONTENT_PATH })?.[Number(body.pageNumber)];
+    }
     const history = Array.isArray(body.history)
       ? body.history.slice(-6).flatMap((item) => {
           if (
@@ -38,8 +45,9 @@ export async function POST(request: Request) {
           ];
         })
       : [];
-    let raw: string;
-    try {
+    const decision = await resolvePdfViewDecision({
+      signal: request.signal,
+      requestDecision: async (signal) => {
       const completion = await createChatmockClient().chat.completions.create(
         {
           model: normalizeAssistantModelId(body.model) ?? GLOBAL_MODEL_SENTINEL,
@@ -51,6 +59,7 @@ export async function POST(request: Request) {
                 ? Number(body.pageNumber)
                 : 1,
             pageText: typeof body.pageText === "string" ? body.pageText : "",
+            sourcePageText,
             selectedText:
               typeof body.selectedText === "string"
                 ? body.selectedText
@@ -60,28 +69,13 @@ export async function POST(request: Request) {
           response_format: { type: "json_object" },
         },
         {
-          signal: AbortSignal.any([
-            request.signal,
-            AbortSignal.timeout(30_000),
-          ]),
+          signal,
           maxRetries: 0,
         },
       );
-      raw = completion.choices[0]?.message?.content ?? "";
-    } catch {
-      throw new ApiError(
-        502,
-        "pdf_view_decision_unavailable",
-        "The assistant could not prepare the PDF context. Try your question again.",
-      );
-    }
-    const decision = parsePdfViewDecision(raw);
-    if (!decision)
-      throw new ApiError(
-        502,
-        "pdf_view_decision_invalid",
-        "The assistant could not decide which PDF context to use. Try your question again.",
-      );
+      return completion.choices[0]?.message?.content ?? "";
+      },
+    });
     return NextResponse.json(decision);
   } catch (error) {
     return apiErrorResponse(error);

@@ -2,8 +2,8 @@
 //
 // These run inside Breadboard (not Hermes). The Hermes garden/quartz
 // agents invoke them through a thin adapter that presents a capability token;
-// this module verifies the token, enforces that the requested garden matches the
-// token's scope, and executes the tool against the real Breadboard knowledge
+// this module verifies the token, intersects requested gardens with the
+// token's authorized set, and executes the tool against the real Breadboard knowledge
 // model (scanClusterKnowledge, retrieveGraphRag, the SQLite store). Results are
 // bounded so a single tool call never dumps an entire garden or source file.
 //
@@ -23,6 +23,7 @@ import path from "node:path";
 import db from "../db.ts";
 import { pageUnderstanding } from "../page-understanding.ts";
 import type { KnowledgeNode } from "../knowledge.ts";
+import { gardenDocumentHref } from "../chat-markdown-links.ts";
 import {
   verifyCapabilityToken,
   tokenAllows,
@@ -30,7 +31,13 @@ import {
 } from "./capability-token.ts";
 import { GARDEN_STRUCTURE_TOOLS, isProposalTool } from "./tool-scopes.ts";
 import { createProposal } from "./runtime-store.ts";
+import { applyGardenRevision } from "../garden-revision.ts";
+import { parseSemanticMarkdown } from "../garden-semantics.ts";
+import { getRuntimeRun, parseRuntimeRunDispatch } from "./run-store.ts";
 import { gardenNavigationResourceFromSources } from "../generative-ui/contracts.ts";
+import { noteDepthError, noteProseWordCount } from "./note-depth.ts";
+import { activeRunForToken } from "./active-run-for-token.ts";
+import { preservesLiteralTeachingText, teachingReviewHash } from "../teaching-plan.ts";
 import { boundedGardenFileList, gardenReadEntries, gardenPageExcerpt, readGardenPage, readGardenRetrievalNodes } from "./garden-reader.ts";
 
 export interface GardenToolResult {
@@ -84,6 +91,19 @@ function loadClusterByIdentifier(gardenId: string | number): ClusterRow | null {
   return row ?? null;
 }
 
+function authorizedClusters(token: CapabilityToken): ClusterRow[] {
+  if (token.allowedGardenIds !== undefined) {
+    if (!token.allowedGardenIds.length) return [];
+    const placeholders = token.allowedGardenIds.map(() => "?").join(",");
+    return db.prepare(
+      `SELECT id, slug, name, user_id FROM clusters WHERE id IN (${placeholders}) ORDER BY lower(name), id`,
+    ).all(...token.allowedGardenIds) as ClusterRow[];
+  }
+  const gardenId = token.gardenId ?? token.activeGardenId;
+  const cluster = gardenId === undefined ? null : loadClusterByIdentifier(gardenId);
+  return cluster ? [cluster] : [];
+}
+
 function contentPath(): string {
   const value = process.env.QUARTZ_CONTENT_PATH;
   if (!value) throw new Error("QUARTZ_CONTENT_PATH not configured");
@@ -105,8 +125,8 @@ function nodeSummary(node: KnowledgeNode) {
 
 /**
  * Execute a scoped garden tool. `rawToken` is the capability token presented by
- * the Hermes tool adapter. Every call re-derives the garden from the token,
- * so a model-supplied garden id can never widen scope.
+ * the Hermes tool adapter. Every call re-derives the authorized set from the
+ * token, so a model-supplied garden id or search scope can never widen access.
  */
 export async function executeGardenTool(input: {
   rawToken: unknown;
@@ -132,18 +152,40 @@ export async function executeGardenTool(input: {
   }
 
   if (input.tool === "garden_list") {
-    const allowed =
-      token.allowedGardenIds ??
-      (token.activeGardenId ? [token.activeGardenId] : []);
-    const placeholders = allowed.map(() => "?").join(",");
-    const gardens = allowed.length
-      ? db
-          .prepare(
-            `SELECT id, slug, name FROM clusters WHERE id IN (${placeholders}) ORDER BY lower(name), id`,
-          )
-          .all(...allowed)
-      : [];
+    const gardens = authorizedClusters(token)
+      .map(({ id, slug, name }) => ({ id, slug, name }));
     return { ok: true, tool: input.tool, data: { gardens } };
+  }
+
+  if (input.tool === "garden_search" || input.tool === "garden_get_source_figure") {
+    if (input.tool === "garden_get_source_figure" && (input.args.imagePath !== undefined || input.args.pdfPage !== undefined) &&
+        (typeof input.args.slug !== "string" || !input.args.slug.trim() || input.args.scope === "all")) {
+      return { ok: false, tool: input.tool, error: "Inspect an image with its exact page slug and Garden; omit scope all." };
+    }
+    if (input.args.scope !== undefined && input.args.scope !== "active" && input.args.scope !== "all") {
+      return { ok: false, tool: input.tool, error: "Search scope must be active or all." };
+    }
+    if (input.args.scope === "all") {
+      if (input.args.gardenId !== undefined) {
+        return { ok: false, tool: input.tool, error: "Use gardenId for one Garden or scope all for all authorized Gardens, not both." };
+      }
+      if (input.tool === "garden_get_source_figure" && input.args.slug !== undefined) {
+        return { ok: false, tool: input.tool, error: "Omit slug when searching images across all authorized Gardens. Use gardenId and slug for one page." };
+      }
+      const gardens = authorizedClusters(token);
+      if (!gardens.length) {
+        return { ok: false, tool: input.tool, error: "No authorized gardens in scope." };
+      }
+      try {
+        if (input.tool === "garden_get_source_figure") {
+          const { searchGardenSourceFigures } = await import("./garden-source-figures.ts");
+          return { ok: true, tool: input.tool, data: await searchGardenSourceFigures(contentPath(), gardens, input.args) };
+        }
+        return await searchGardens(gardens, input.args);
+      } catch (error) {
+        return { ok: false, tool: input.tool, error: error instanceof Error ? error.message : "Search failed." };
+      }
+    }
   }
 
   const requestedGarden =
@@ -184,6 +226,18 @@ export async function executeGardenTool(input: {
   }
 
   try {
+    if (input.tool === "garden_get_page_context" && input.args.includeHistory === true) {
+      if (!["dashboard_terminal", "garden_chat"].includes(token.surface) || token.userId !== cluster.user_id) {
+        return { ok: false, tool: input.tool, error: "Page history requires the Garden's owner in a signed-in Breadboard chat." };
+      }
+      const page = await readGardenPage(contentPath(), cluster.slug, String(input.args.slug ?? input.args.pageSlug ?? ""));
+      if (!page.node) return { ok: false, tool: input.tool, error: "Page not found or ambiguous. Use an exact relPath from availableMatches.", data: { availableMatches: page.availableMatches } };
+      const { gardenPageHistory } = await import("./garden-page-history.ts");
+      return { ok: true, tool: input.tool, data: { page: nodeSummary(page.node), history: await gardenPageHistory({
+        userId: token.userId, cluster, node: page.node, rawContent: page.rawContent!, contentPath: contentPath(),
+        offset: input.args.historyOffset,
+      }) } };
+    }
     if (input.tool === "garden_list_files") {
       if (!["dashboard_terminal", "garden_chat"].includes(token.surface)) {
         return { ok: false, tool: input.tool, error: "Listing a Garden requires a signed-in Breadboard chat." };
@@ -221,6 +275,17 @@ export async function executeGardenTool(input: {
         },
       } };
     }
+    if (input.tool === "garden_decide_proposals") {
+      if (!["dashboard_terminal", "garden_chat"].includes(token.surface) || token.userId !== cluster.user_id || !token.conversationId) {
+        return { ok: false, tool: input.tool, error: "Proposal decisions require the owner's signed-in chat." };
+      }
+      const { decideGardenProposals } = await import("./proposal-decisions.ts");
+      const data = await decideGardenProposals({
+        userId: token.userId, gardenId: cluster.slug, conversationId: token.conversationId,
+        proposalIds: input.args.proposalIds, decision: input.args.decision,
+      });
+      return { ok: true, tool: input.tool, data };
+    }
     if (input.tool === "garden_save_note") {
       return await executeSaveNote(cluster, token, input.args);
     }
@@ -228,9 +293,10 @@ export async function executeGardenTool(input: {
       return await executeStructureTool(input.tool, cluster, token, input.args);
     }
     if (isProposalTool(input.tool)) {
-      return executeProposalTool(input.tool, cluster, token, input.args);
+      return await executeProposalTool(input.tool, cluster, token, input.args);
     }
-    return await executeReadTool(input.tool, cluster, input.args, token.userId);
+    const read = await executeReadTool(input.tool, cluster, input.args, token.userId);
+    return read;
   } catch (error) {
     return {
       ok: false,
@@ -240,16 +306,91 @@ export async function executeGardenTool(input: {
   }
 }
 
+async function searchGardens(
+  clusters: ClusterRow[],
+  args: Record<string, unknown>,
+): Promise<GardenToolResult> {
+  const { retrieveGraphRag } = await import("../semantic-retrieval.ts");
+  const gardens = [];
+  // Read sequentially to avoid opening every Garden's source files at once.
+  for (const cluster of clusters) {
+    gardens.push({
+      slug: cluster.slug,
+      name: cluster.name,
+      rootPath: path.join(contentPath(), cluster.slug),
+      knowledge: { nodes: await readGardenRetrievalNodes(contentPath(), cluster.slug) },
+    });
+  }
+  const query = String(args.query ?? "").slice(0, 2000);
+  const retrieval = await retrieveGraphRag({
+    query,
+    gardens,
+    maxChunks: MAX_RESULTS,
+    indexEmbeddings: false,
+    embeddingTimeoutMs: 3_000,
+  });
+  const chunks = retrieval.chunks.slice(0, MAX_RESULTS);
+  const navigator = gardenNavigationResourceFromSources({
+    id: `garden-search:${clusters.length === 1 ? clusters[0].id : "all"}:${Date.now()}`,
+    query,
+    createdAt: new Date().toISOString(),
+    sources: chunks.map((chunk) => ({
+      gardenName: chunk.gardenName,
+      gardenSlug: chunk.gardenSlug,
+      pageSlug: chunk.pageSlug,
+      title: chunk.pageTitle,
+      ...(chunk.heading ? { heading: chunk.heading } : {}),
+      excerpt: chunk.content.slice(0, 500),
+    })),
+  });
+  return {
+    ok: true,
+    tool: "garden_search",
+    data: {
+      gardens: clusters.map(({ slug, name }) => ({ gardenId: slug, gardenName: name })),
+      context: retrieval.context.slice(0, MAX_EXCERPT_CHARS),
+      ...(retrieval.embeddingWarning ? { warning: retrieval.embeddingWarning } : {}),
+      sources: retrieval.sources.slice(0, MAX_RESULTS),
+      chunks: chunks.map((chunk) => ({
+        gardenId: chunk.gardenSlug,
+        gardenName: chunk.gardenName,
+        pageSlug: chunk.pageSlug,
+        relPath: chunk.pageRelPath,
+        href: gardenDocumentHref(chunk.gardenSlug, chunk.pageRelPath),
+        pageTitle: chunk.pageTitle,
+        heading: chunk.heading,
+        content: chunk.content.slice(0, 800),
+        evidenceAnchors: chunk.evidenceAnchors?.slice(0, 6),
+        locations: chunk.locations?.slice(0, 6),
+      })),
+      // The bridge unwraps data, so native resources must travel inside it.
+      ...(navigator ? { uiResources: [navigator] } : {}),
+    },
+  };
+}
+
 async function executeReadTool(
   tool: string,
   cluster: ClusterRow,
   args: Record<string, unknown>,
   userId?: number | null,
 ): Promise<GardenToolResult> {
+  if (tool === "garden_get_source_figure") {
+    const { gardenSourceFigures, searchGardenSourceFigures } = await import("./garden-source-figures.ts");
+    if (args.slug === undefined) {
+      return { ok: true, tool, data: await searchGardenSourceFigures(contentPath(), [cluster], args) };
+    }
+    const result = await readGardenPage(contentPath(), cluster.slug, String(args.slug ?? ""));
+    if (!result.node) return { ok: false, tool, error: "Source not found or ambiguous. Use an exact relPath from availableMatches.", data: { availableMatches: result.availableMatches } };
+    return { ok: true, tool, data: { gardenId: cluster.slug, gardenName: cluster.name,
+      ...await gardenSourceFigures(contentPath(), cluster.slug, result.node, args) } };
+  }
   if (tool === "garden_get_page" || tool === "garden_get_source_excerpt") {
     const result = await readGardenPage(contentPath(), cluster.slug, String(args.slug ?? args.pageSlug ?? ""));
     if (!result.node) return { ok: false, tool, error: "Page not found or ambiguous. Use an exact relPath from availableMatches; do not guess another slug.", data: { availableMatches: result.availableMatches } };
-    return { ok: true, tool, data: { ...nodeSummary(result.node), ...gardenPageExcerpt(result.node, args),
+    const excerpt = gardenPageExcerpt(result.node, args);
+    return { ok: true, tool, data: { ...nodeSummary(result.node), ...excerpt,
+      href: gardenDocumentHref(cluster.slug, result.node.relPath),
       understanding: pageUnderstanding.get(userId, cluster.slug, result.node.relPath),
       understandingSource: "reader self-report, not tested mastery or a review grade",
     } };
@@ -298,58 +439,7 @@ async function executeReadTool(
   // Lazy-load the heavy knowledge/retrieval modules so the scope-enforcement
   // path (and its tests) never pays for the Quartz publish dependency chain.
   if (tool === "garden_search") {
-      const { retrieveGraphRag } = await import("../semantic-retrieval.ts");
-      const nodes = await readGardenRetrievalNodes(contentPath(), cluster.slug);
-      const query = String(args.query ?? "").slice(0, 2000);
-      const retrieval = await retrieveGraphRag({
-        query,
-        gardens: [
-          {
-            slug: cluster.slug,
-            name: cluster.name,
-            rootPath: path.join(contentPath(), cluster.slug),
-            knowledge: { nodes },
-          },
-        ],
-        maxChunks: MAX_RESULTS,
-        indexEmbeddings: false,
-        embeddingTimeoutMs: 3_000,
-      });
-      const chunks = retrieval.chunks.slice(0, MAX_RESULTS);
-      const navigator = gardenNavigationResourceFromSources({
-        id: `garden-search:${cluster.id}:${Date.now()}`,
-        query,
-        createdAt: new Date().toISOString(),
-        sources: chunks.map((chunk) => ({
-          gardenName: cluster.name,
-          gardenSlug: cluster.slug,
-          pageSlug: chunk.pageSlug,
-          title: chunk.pageTitle,
-          ...(chunk.heading ? { heading: chunk.heading } : {}),
-          excerpt: chunk.content.slice(0, 500),
-        })),
-      });
-      return {
-        ok: true,
-        tool,
-        data: {
-          context: retrieval.context.slice(0, MAX_EXCERPT_CHARS),
-          ...(retrieval.embeddingWarning ? { warning: retrieval.embeddingWarning } : {}),
-          sources: retrieval.sources.slice(0, MAX_RESULTS),
-          chunks: chunks.map((chunk) => ({
-            pageSlug: chunk.pageSlug,
-            relPath: chunk.pageRelPath,
-            pageTitle: chunk.pageTitle,
-            heading: chunk.heading,
-            content: chunk.content.slice(0, 800),
-            evidenceAnchors: chunk.evidenceAnchors?.slice(0, 6),
-            locations: chunk.locations?.slice(0, 6),
-          })),
-          // The Hermes bridge returns this `data` object as the tool result,
-          // so the native resource must travel inside it rather than beside it.
-          ...(navigator ? { uiResources: [navigator] } : {}),
-        },
-      };
+    return searchGardens([cluster], args);
   }
 
   const { scanClusterKnowledge } = await import("../knowledge.ts");
@@ -435,25 +525,10 @@ async function executeReadTool(
       };
     }
 
-    case "garden_get_source_figure": {
-      const slug = String(args.slug ?? "");
-      const node = knowledge.nodes.find((n) => n.slug === slug);
-      if (!node) return { ok: false, tool, error: "Source not found." };
-      return {
-        ok: true,
-        tool,
-        data: {
-          slug: node.slug,
-          sourcePdf: node.sourcePdf,
-          anchors: node.sourceAnchors?.slice(0, 12),
-        },
-      };
-    }
-
     case "garden_get_recent_events": {
       const rows = db
         .prepare(
-          "SELECT kind, page_slug, status, created_at FROM hermes_proposals WHERE garden_id = ? ORDER BY created_at DESC LIMIT 20",
+          "SELECT id, kind, page_slug, rationale, assistant_message_id, status, created_at FROM hermes_proposals WHERE garden_id = ? ORDER BY created_at DESC LIMIT 20",
         )
         .all(cluster.slug);
       return { ok: true, tool, data: { events: rows } };
@@ -503,15 +578,7 @@ async function resyncGardenRetrieval(
   }
 }
 
-/**
- * Write a new note straight into the garden, through the same canonical
- * document service the authoring UI and an applied proposal both use.
- *
- * The two checks below are what license skipping review: an anonymous Quartz
- * reader can never reach this, and neither can a visitor to someone else's
- * public garden. Everyone who gets past them is writing to their own garden
- * from a chat they are authenticated in.
- */
+/** Save through the canonical document service for the authenticated owner. */
 async function executeSaveNote(
   cluster: ClusterRow,
   token: CapabilityToken,
@@ -543,22 +610,34 @@ async function executeSaveNote(
   if (!title) return { ok: false, tool, error: "A note title is required." };
   if (!content.trim())
     return { ok: false, tool, error: "The note has no content to save." };
+  if (content.length > 100000)
+    return { ok: false, tool, error: "The note exceeds 100000 characters. Nothing was saved; split it into complete notes before retrying." };
+  const depthError = noteDepthError(content, args.minimumProseWords);
+  if (depthError) return { ok: false, tool, error: depthError };
 
   // "Rewrite naturally", when the user has it on as a standing preference. A
   // note is written by the server into the garden, so the browser switch cannot
   // reach it - this is the moment the text becomes a file. Failure is silent
   // and keeps the original: a rewrite must never cost somebody their note.
   const { humanizeStoredText } = await import("../humanizer/auto-server.ts");
-  const stored = (
+  const activeRun = activeRunForToken(token, true);
+  const literal = activeRun && preservesLiteralTeachingText(activeRun.instruction);
+  const humanized = literal ? content : (
     await humanizeStoredText(
       cluster.user_id,
-      content.slice(0, 100000),
+      content,
       "garden_note",
     )
   ).text;
-
+  // An optional rewrite must not undo a length contract the draft passed.
+  const stored = noteDepthError(humanized, args.minimumProseWords) ? content : humanized;
   const { createGardenDocument } = await import("../garden-documents.ts");
   const document = await createGardenDocument({
+    beforeWrite: () => {
+      const current = activeRunForToken(token, true);
+      if (activeRun && current?.id !== activeRun.id) throw new Error("This turn was superseded; nothing was saved.");
+    },
+    preserveContent: true,
     userId: cluster.user_id,
     clusterSlug: cluster.slug,
     title,
@@ -586,6 +665,9 @@ async function executeSaveNote(
       folder: document.folder,
       slug: document.slug,
       relPath: document.relPath,
+      ...(args.minimumProseWords !== undefined
+        ? { proseWords: noteProseWordCount(stored), minimumProseWords: args.minimumProseWords }
+        : {}),
     },
   };
 }
@@ -713,12 +795,12 @@ async function executeStructureTool(
   }
 }
 
-function executeProposalTool(
+async function executeProposalTool(
   tool: string,
   cluster: ClusterRow,
   token: CapabilityToken,
   args: Record<string, unknown>,
-): GardenToolResult {
+): Promise<GardenToolResult> {
   const evidence = Array.isArray(args.evidenceAnchorIds)
     ? args.evidenceAnchorIds
         .filter((a): a is string => typeof a === "string")
@@ -728,6 +810,9 @@ function executeProposalTool(
     typeof args.rationale === "string" ? args.rationale.slice(0, 4000) : null;
 
   if (tool === "garden_create_note_proposal") {
+    const proposedContent = String(args.content ?? "");
+    activeRunForToken(token, true);
+    if (!proposedContent.trim() || proposedContent.length > 100000) return { ok: false, tool, error: "Provide nonempty note content of at most 100000 characters." };
     const proposal = createProposal({
       clusterId: cluster.id,
       gardenId: cluster.slug,
@@ -736,7 +821,8 @@ function executeProposalTool(
       rationale,
       payload: {
         title: String(args.title ?? "Untitled note").slice(0, 300),
-        content: String(args.content ?? "").slice(0, 100000),
+        content: proposedContent,
+        preserveContent: true,
         folder: proposalFolder(args.folder),
         tags: Array.isArray(args.tags)
           ? args.tags
@@ -764,19 +850,61 @@ function executeProposalTool(
   }
 
   if (tool === "garden_propose_page_revision") {
+    let patchOrReplacement = args.patchOrReplacement;
+    const originalText = args.originalText;
+    const usesDraft = args.replacementDraftRunId !== undefined || args.replacementDraftIndex !== undefined;
+    const { node, rawContent } = await readGardenPage(contentPath(), cluster.slug, String(args.pageSlug ?? ""));
+    if (!node || rawContent === null) return { ok: false, tool, error: "The revision must identify one existing page." };
+    const activeRun = activeRunForToken(token, true);
+    if (usesDraft) {
+      if (patchOrReplacement !== undefined || typeof args.replacementDraftRunId !== "string" ||
+          !Number.isSafeInteger(args.replacementDraftIndex) || Number(args.replacementDraftIndex) < 0) {
+        return { ok: false, tool, error: "Use either patchOrReplacement or both replacementDraftRunId and a nonnegative integer replacementDraftIndex." };
+      }
+      if (originalText !== node.content) {
+        return { ok: false, tool, error: "Reusing a retained draft requires an authorized full-body rewrite and an exact, complete current body read. Use originalBodyReadId from reading every page chunk." };
+      }
+      if (!activeRun) return { ok: false, tool, error: "An active run is required to reuse a retained draft." };
+      const retainedRun = getRuntimeRun(args.replacementDraftRunId);
+      if (retainedRun?.status === "active") return { ok: false, tool, error: "Wait for the source run to finish before reusing its retained draft." };
+      const owner = retainedRun && db.prepare("SELECT user_id FROM hermes_runtime_sessions WHERE id = ?")
+        .get(retainedRun.runtime_session_id) as { user_id: number } | undefined;
+      const draft = retainedRun && owner?.user_id === token.userId
+        ? parseRuntimeRunDispatch(retainedRun).teachingDrafts?.[Number(args.replacementDraftIndex)] : undefined;
+      if (!draft || typeof draft.markdown !== "string" || draft.target !== `garden:${cluster.slug}:${node.relPath}`) {
+        return { ok: false, tool, error: "No retained draft owned by this user matches the requested page and index." };
+      }
+      // A retained draft is content, never proof of acceptance. Preserve the
+      // current frontmatter and validate the exact edit and current file version.
+      patchOrReplacement = parseSemanticMarkdown(draft.markdown).body.trim();
+    }
+    if (typeof patchOrReplacement !== "string" || (originalText !== undefined && typeof originalText !== "string")) {
+      return { ok: false, tool, error: "patchOrReplacement and originalText must be strings." };
+    }
+    // Reject oversize edits rather than silently truncating replacement text.
+    if (patchOrReplacement.length > 100000 || (originalText?.length ?? 0) > 100000) {
+      return { ok: false, tool, error: "Revision passages must be at most 100,000 characters. Use smaller targeted edits." };
+    }
+    // Validate before offering Apply, then check again against the current
+    // canonical file under the write lease when the user applies the proposal.
+    // The base hash detects shifted diff coordinates; exact targets protect
+    // against conflicts while allowing independent proposals to be applied.
+    applyGardenRevision(rawContent, patchOrReplacement, originalText);
+    activeRunForToken(token, true);
+    const pageSlug = node.relPath.replace(/\.md$/i, "");
     const proposal = createProposal({
       clusterId: cluster.id,
       gardenId: cluster.slug,
       surface: token.surface,
       kind: "page_revision",
-      pageSlug: typeof args.pageSlug === "string" ? args.pageSlug : null,
+      pageSlug,
       rationale,
       payload: {
-        pageSlug: String(args.pageSlug ?? ""),
-        patchOrReplacement: String(args.patchOrReplacement ?? "").slice(
-          0,
-          40000,
-        ),
+        pageSlug,
+        patchOrReplacement,
+        ...(usesDraft ? { replacementDraftRunId: args.replacementDraftRunId, replacementDraftIndex: args.replacementDraftIndex } : {}),
+        teachingBaseHash: teachingReviewHash(rawContent, null),
+        ...(originalText !== undefined ? { originalText } : {}),
         affectedConcepts: Array.isArray(args.affectedConcepts)
           ? args.affectedConcepts
               .filter((c): c is string => typeof c === "string")

@@ -1,5 +1,7 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 function invalidProfile(message) {
   throw Object.assign(new Error(message), {
@@ -13,25 +15,6 @@ function filesystemError(error, code) {
     error !== null &&
     typeof error === "object" &&
     error.code === code
-  );
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32"
-    ? path.toNamespacedPath(a).toLowerCase() ===
-        path.toNamespacedPath(b).toLowerCase()
-    : a === b;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return (
-    relative === "" ||
-    (!relative.startsWith(`..${path.sep}`) &&
-      relative !== ".." &&
-      !path.isAbsolute(relative))
   );
 }
 
@@ -75,4 +58,43 @@ export function ensureDirectSpotifyProfile(
     current = candidate;
   }
   return current;
+}
+
+/**
+ * Windows can restore a headless browser outside Runtime's process tree after
+ * a reboot. Chromium's singleton lock then makes launches against a reused
+ * profile exit immediately. Authentication comes from the local player bridge,
+ * so no browser cookies need to survive between playback sessions.
+ */
+export function createSpotifySessionProfile(root, userId) {
+  if (!Number.isSafeInteger(userId) || userId < 1) {
+    invalidProfile("The Spotify playback user scope is invalid.");
+  }
+  const directory = ensureDirectSpotifyProfile(root, [
+    "database",
+    "spotify-browser-player",
+    `user-${userId}`,
+    `session-${randomUUID()}`,
+  ]);
+  return {
+    directory,
+    async cleanup() {
+      const metadata = fs.lstatSync(directory, { throwIfNoEntry: false });
+      if (!metadata) return;
+      if (
+        !pathWithin(root, directory) ||
+        !metadata.isDirectory() ||
+        metadata.isSymbolicLink() ||
+        !samePath(fs.realpathSync.native(directory), directory)
+      ) {
+        invalidProfile("The Spotify playback profile is indirect.");
+      }
+      await fs.promises.rm(directory, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 200,
+      });
+    },
+  };
 }

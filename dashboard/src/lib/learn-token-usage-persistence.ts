@@ -1018,7 +1018,25 @@ export function reconcilePersistedLearnTokenUsageForTerminalJob(
      WHERE job_id = ?
        AND completed_requests < started_requests`,
   ).run(updatedAt, jobId);
+  closeTerminalRequestLifecycles(database, "job_id = ?", [jobId], updatedAt);
   return result.changes;
+}
+
+/** Close the per-request lifecycles with their aggregate. Otherwise a later
+ * receipt recovered for the terminal job (a resumed rebuild replaying its
+ * Council call) adds a second completion on top of the closed aggregate and
+ * counter reconciliation fails (telecom-1, 2026-10-03). */
+function closeTerminalRequestLifecycles(
+  database: Database.Database,
+  where: string,
+  params: unknown[],
+  updatedAt: string,
+): void {
+  database.prepare(
+    `UPDATE learn_token_usage_request_lifecycles
+     SET completed_requests = started_requests, updated_at = ?
+     WHERE completed_requests < started_requests AND ${where}`,
+  ).run(updatedAt, ...params);
 }
 
 /**
@@ -1046,5 +1064,16 @@ export function reconcilePersistedLearnTokenUsageForStaleTerminalJobs(
        )
      RETURNING job_id`,
   ).all(updatedAt, terminalBefore) as Array<{ job_id: string }>;
+  // Not limited to the aggregates closed now: this also heals lifecycles left
+  // open by older releases whose aggregates were already closed.
+  closeTerminalRequestLifecycles(
+    database,
+    `job_id IN (
+       SELECT id FROM learn_jobs
+       WHERE status IN ('failed', 'cancelled', 'complete') AND updated_at <= ?
+     )`,
+    [terminalBefore],
+    updatedAt,
+  );
   return rows.map((row) => row.job_id);
 }

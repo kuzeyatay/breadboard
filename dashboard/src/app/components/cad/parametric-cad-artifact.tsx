@@ -13,7 +13,8 @@
 // through the CAD service and publishes a new revision — no CAD code runs in
 // the browser.
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Maximize2, Minimize2, SlidersHorizontal } from "lucide-react";
 import ModelViewer, { type ModelViewerHandle, type StandardView } from "./model-viewer";
 import type {
   CADFileReference,
@@ -22,7 +23,7 @@ import type {
 } from "@/lib/cad/types";
 
 const STANDARD_VIEWS: Array<{ id: StandardView; label: string }> = [
-  { id: "isometric", label: "Iso" },
+  { id: "isometric", label: "Isometric" },
   { id: "front", label: "Front" },
   { id: "rear", label: "Rear" },
   { id: "left", label: "Left" },
@@ -68,8 +69,8 @@ function statusTone(status: ParametricCADArtifact["status"]): {
 }
 
 const panel =
-  "rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-4";
-const label = "text-[11px] font-medium uppercase tracking-wide text-[var(--ink-muted)]";
+  "shrink-0 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-4";
+const label = "text-sm font-medium text-[var(--ink-heading)]";
 const toggle =
   "neu-button rounded-lg border border-[var(--line)] bg-[var(--paper-strong)] px-2.5 py-1 text-xs font-medium text-[var(--ink-heading)] transition-colors hover:bg-[var(--paper-raised)]";
 const toggleOn =
@@ -89,21 +90,28 @@ const CAD_PANEL_IDS: Record<CadPanel, string> = {
 export default function ParametricCadArtifact({
   design,
   conversationId,
-  initialPanel = "assembly",
+  initialPanel = null,
   onRevised,
 }: {
   design: ParametricCADArtifact;
   /** Needed to publish a new artifact version when a parameter changes. */
   conversationId?: string;
   /**
-   * Which panel opens first. Lets a caller point straight at the findings.
-   * Assembly leads by default — a reader opening a design first needs to know
-   * which body is which and what goes where, not the parameter values.
+   * Details stay collapsed by default so the model leads. A caller can still
+   * point straight at assembly instructions, parameters or findings.
    */
-  initialPanel?: CadPanel;
+  initialPanel?: CadPanel | null;
   onRevised?: () => void;
 }) {
   const viewer = useRef<ModelViewerHandle | null>(null);
+  const viewport = useRef<HTMLElement | null>(null);
+  const expandButton = useRef<HTMLButtonElement | null>(null);
+  const resizeStart = useRef<{ y: number; height: number } | null>(null);
+  const [viewerHeight, setViewerHeight] = useState<number | null>(null);
+  const [viewerSize, setViewerSize] = useState({ height: 360, limit: 720 });
+  const [expanded, setExpanded] = useState(false);
+  const [viewerMessage, setViewerMessage] = useState("");
+  const [standardView, setStandardView] = useState<StandardView>("isometric");
   const [wireframe, setWireframe] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
   const [showBox, setShowBox] = useState(false);
@@ -116,6 +124,42 @@ export default function ParametricCadArtifact({
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
   const parameterRequestIds = useRef(new Map<string, string>());
+
+  useEffect(() => {
+    const element = viewport.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => {
+      setViewerSize({
+        height: Math.round(element.getBoundingClientRect().height),
+        limit: Math.max(720, window.innerHeight * 2),
+      });
+    });
+    observer.observe(element);
+    const onFullscreenChange = () => {
+      const isExpanded = document.fullscreenElement === viewport.current;
+      setExpanded(isExpanded);
+      if (!isExpanded) expandButton.current?.focus({ preventScroll: true });
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+    };
+  }, []);
+
+  const toggleExpanded = async () => {
+    setViewerMessage("");
+    try {
+      if (document.fullscreenElement === viewport.current) await document.exitFullscreen();
+      else await viewport.current?.requestFullscreen();
+    } catch {
+      setViewerMessage("Full screen is unavailable. Drag the bottom edge to enlarge the viewer.");
+    }
+  };
+
+  const resizeViewer = (height: number) => {
+    setViewerHeight(Math.min(Math.max(360, height), Math.max(720, window.innerHeight * 2)));
+  };
 
   const measurements = design.measurements;
   const tone = statusTone(design.status);
@@ -206,8 +250,8 @@ export default function ParametricCadArtifact({
   }, [conversationId, design.projectId, design.revision, edits, editable, onRevised]);
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col gap-4">
-      <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+    <div className="flex min-h-full w-full flex-col gap-3">
+      <header className="flex shrink-0 flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <div className="min-w-0">
           <h2 className="truncate text-base font-semibold text-[var(--ink-heading)]">
             {design.title}
@@ -222,12 +266,6 @@ export default function ParametricCadArtifact({
         <p className={`text-xs font-medium ${tone.className}`}>{tone.label}</p>
       </header>
 
-      {design.designSpec.description ? (
-        <p className="text-sm leading-relaxed text-[var(--ink)]">
-          {design.designSpec.description}
-        </p>
-      ) : null}
-
       {templateBuilt(design) ? (
         <p className="rounded-lg border border-[var(--selection-yellow-line)] bg-[var(--paper-strong)] p-3 text-xs leading-relaxed text-[var(--ink)]">
           This geometry came from Breadboard&rsquo;s built-in recovery template for this kind of
@@ -238,56 +276,84 @@ export default function ParametricCadArtifact({
       ) : null}
 
       {/* ---- interactive preview ------------------------------------- */}
-      <section className="min-h-[320px] flex-1 overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-strong)]">
-        <div className="flex flex-wrap items-center gap-1.5 border-b border-[var(--line)] px-3 py-2">
-          {STANDARD_VIEWS.map((view) => (
-            <button
-              key={view.id}
-              type="button"
-              className={toggle}
-              onClick={() => viewer.current?.setView(view.id)}
-            >
-              {view.label}
-            </button>
-          ))}
-          <span className="mx-1 h-4 w-px bg-[var(--line)]" aria-hidden />
-          <button type="button" className={toggle} onClick={() => viewer.current?.resetView()}>
+      <section
+        ref={viewport}
+        aria-label="CAD viewer"
+        className="flex min-h-[360px] shrink-0 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] [&:fullscreen]:min-h-0 [&:fullscreen]:rounded-none [&:fullscreen]:border-0"
+        style={{ height: expanded ? "100dvh" : viewerHeight ?? "72dvh" }}
+      >
+        <div className="relative z-10 flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--line)] px-3 py-2">
+          <select
+            aria-label="Standard view"
+            className={toggle}
+            value={standardView}
+            onChange={(event) => {
+              const view = event.target.value as StandardView;
+              setStandardView(view);
+              viewer.current?.setView(view);
+            }}
+          >
+            {STANDARD_VIEWS.map((view) => (
+              <option key={view.id} value={view.id}>{view.label}</option>
+            ))}
+          </select>
+          <button type="button" className={toggle} onClick={() => {
+            setStandardView("isometric");
+            viewer.current?.resetView();
+          }}>
             Reset view
           </button>
-          <button
-            type="button"
-            className={projection === "orthographic" ? toggleOn : toggle}
-            onClick={() =>
-              setProjection((current) =>
-                current === "perspective" ? "orthographic" : "perspective",
-              )
-            }
+          <details
+            className="static sm:relative"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && event.currentTarget.open) {
+                event.stopPropagation();
+                event.currentTarget.open = false;
+                event.currentTarget.querySelector("summary")?.focus();
+              }
+            }}
           >
-            {projection === "orthographic" ? "Orthographic" : "Perspective"}
-          </button>
+            <summary className={`${toggle} flex cursor-pointer list-none items-center gap-1.5 [&::-webkit-details-marker]:hidden`}>
+              <SlidersHorizontal size={14} aria-hidden="true" />
+              Display
+            </summary>
+            <div className="absolute right-3 top-full z-20 mt-2 w-48 space-y-3 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-3 text-xs text-[var(--ink)] shadow-lg sm:right-0">
+              <label className="flex flex-col gap-1.5">
+                Projection
+                <select className={toggle} value={projection} onChange={(event) => setProjection(event.target.value as typeof projection)}>
+                  <option value="perspective">Perspective</option>
+                  <option value="orthographic">Orthographic</option>
+                </select>
+              </label>
+              {[
+                { name: "Wireframe", checked: wireframe, set: setWireframe },
+                { name: "Grid", checked: showGrid, set: setShowGrid },
+                { name: "Bounding box", checked: showBox, set: setShowBox },
+              ].map((option) => (
+                <label key={option.name} className="flex cursor-pointer items-center gap-2">
+                  <input type="checkbox" checked={option.checked} onChange={(event) => option.set(event.target.checked)} />
+                  {option.name}
+                </label>
+              ))}
+            </div>
+          </details>
           <button
+            ref={expandButton}
             type="button"
-            className={wireframe ? toggleOn : toggle}
-            onClick={() => setWireframe((current) => !current)}
+            className={`${toggle} ml-auto flex items-center gap-1.5`}
+            aria-label={expanded ? "Exit expanded viewer" : "Expand CAD viewer"}
+            title={expanded ? "Exit expanded viewer (Esc)" : "Expand CAD viewer"}
+            onClick={() => void toggleExpanded()}
           >
-            Wireframe
-          </button>
-          <button
-            type="button"
-            className={showGrid ? toggleOn : toggle}
-            onClick={() => setShowGrid((current) => !current)}
-          >
-            Grid
-          </button>
-          <button
-            type="button"
-            className={showBox ? toggleOn : toggle}
-            onClick={() => setShowBox((current) => !current)}
-          >
-            Bounding box
+            {expanded ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
+            <span className="hidden sm:inline">{expanded ? "Restore" : "Expand"}</span>
           </button>
         </div>
-        <div className="h-[min(58vh,520px)] min-h-[280px] w-full">
+        {viewerMessage ? <p role="status" className="shrink-0 px-3 py-2 text-xs text-[var(--ink-muted)]">{viewerMessage}</p> : null}
+        <div className="min-h-0 w-full flex-1">
           {preview ? (
             <ModelViewer
               source={fileUrl(preview)}
@@ -304,25 +370,67 @@ export default function ParametricCadArtifact({
             </p>
           )}
         </div>
+        {!expanded ? (
+          <div
+            role="separator"
+            tabIndex={0}
+            aria-label="Resize CAD viewer"
+            aria-orientation="horizontal"
+            aria-valuemin={360}
+            aria-valuemax={viewerSize.limit}
+            aria-valuenow={viewerSize.height}
+            aria-valuetext={`${viewerSize.height} pixels high`}
+            title="Drag to resize · Arrow keys to adjust · Double-click to reset"
+            className="flex h-4 shrink-0 touch-none cursor-ns-resize items-center justify-center border-t border-[var(--line)] hover:bg-[var(--paper-raised)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--botanical)]"
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
+              event.preventDefault();
+              event.currentTarget.focus({ preventScroll: true });
+              resizeStart.current = { y: event.clientY, height: viewport.current?.getBoundingClientRect().height ?? 360 };
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={(event) => {
+              if (resizeStart.current) resizeViewer(resizeStart.current.height + event.clientY - resizeStart.current.y);
+            }}
+            onPointerUp={(event) => {
+              resizeStart.current = null;
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+            }}
+            onPointerCancel={() => { resizeStart.current = null; }}
+            onLostPointerCapture={() => { resizeStart.current = null; }}
+            onDoubleClick={() => setViewerHeight(null)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                event.preventDefault();
+                resizeViewer((viewport.current?.getBoundingClientRect().height ?? 360) + (event.key === "ArrowDown" ? 40 : -40));
+              } else if (event.key === "Home") {
+                event.preventDefault();
+                setViewerHeight(null);
+              }
+            }}
+          >
+            <span className="h-1 w-10 rounded-full bg-[var(--line)]" aria-hidden="true" />
+          </div>
+        ) : null}
       </section>
 
       {/* ---- panels --------------------------------------------------- */}
-      <nav className="flex flex-wrap gap-1.5">
+      <nav aria-label="Design details" className="flex shrink-0 flex-wrap gap-1 border-b border-[var(--line)]">
         {(
           [
             ...(assembly ? ([["assembly", "Assembly"]] as const) : []),
-            ["parameters", `Parameters (${editable.length})`],
+            ["parameters", "Parameters"],
             ["validation", `Validation (${errors.length + warnings.length})`],
-            ["exports", `Exports (${design.exports.length})`],
+            ["exports", "Exports"],
             ["source", "Source"],
-            ["history", `Revisions (${design.revisionHistory.length})`],
+            ["history", "Revisions"],
           ] as const
         ).map(([id, text]) => (
           <button
             key={id}
             id={`cad-${id}-trigger`}
             type="button"
-            className={tab === id ? toggleOn : toggle}
+            className={`border-b-2 px-3 py-2 text-xs font-medium transition-colors ${tab === id ? "border-[var(--botanical)] text-[var(--ink-heading)]" : "border-transparent text-[var(--ink-muted)] hover:text-[var(--ink-heading)]"}`}
             aria-expanded={tab === id}
             aria-controls={CAD_PANEL_IDS[id]}
             onClick={() => setTab((current) => (current === id ? null : id))}
@@ -331,6 +439,13 @@ export default function ParametricCadArtifact({
           </button>
         ))}
       </nav>
+
+      {design.designSpec.description ? (
+        <details className="shrink-0 text-sm text-[var(--ink-muted)]">
+          <summary className="w-fit cursor-pointer">Design description</summary>
+          <p className="mt-2 leading-relaxed text-[var(--ink)]">{design.designSpec.description}</p>
+        </details>
+      ) : null}
 
       {tab === "assembly" && assembly ? (
         <section
@@ -356,9 +471,6 @@ export default function ParametricCadArtifact({
                       <span className="font-medium text-[var(--ink-heading)]">
                         {component.quantity > 1 ? `${component.quantity} × ` : ""}
                         {component.name}
-                      </span>
-                      <span className="font-mono text-[10px] text-[var(--ink-muted)]">
-                        {component.id}
                       </span>
                       {measured ? (
                         <span className="text-[var(--ink-muted)]">
@@ -410,9 +522,6 @@ export default function ParametricCadArtifact({
                     <span>
                       {component.quantity > 1 ? `${component.quantity} × ` : ""}
                       {component.name}
-                    </span>
-                    <span className="font-mono text-[10px] text-[var(--ink-muted)]">
-                      {component.id}
                     </span>
                   </li>
                 ))}
@@ -489,7 +598,7 @@ export default function ParametricCadArtifact({
                     <span className="truncate text-xs font-medium text-[var(--ink-heading)]">
                       {parameter.label}
                     </span>
-                    <span className="shrink-0 text-[10px] uppercase tracking-wide text-[var(--ink-muted)]">
+                    <span className="shrink-0 text-[11px] text-[var(--ink-muted)]">
                       {parameter.source}
                     </span>
                   </span>
@@ -670,9 +779,6 @@ export default function ParametricCadArtifact({
                     {file.linearTolerance} mm / {file.angularTolerance} rad
                   </span>
                 ) : null}
-                <span className="font-mono text-[10px] text-[var(--ink-muted)]">
-                  {file.sha256.slice(0, 12)}
-                </span>
               </li>
             ))}
           </ul>

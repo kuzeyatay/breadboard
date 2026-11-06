@@ -41,6 +41,7 @@ const bundled = await esbuild.build({
       export * as elevenlabsCredentialRoute from './src/app/api/speech/elevenlabs/credentials/route.ts';
       export * as elevenlabsVoicesRoute from './src/app/api/speech/elevenlabs/voices/route.ts';
       export * as requestClient from './src/lib/speech/request-client.ts';
+      export * as settingsClient from './src/lib/speech/settings-client.ts';
       export * as subscriptionLive from './src/lib/speech/subscription-live.ts';
       export * as subscriptionRoute from './src/app/api/speech/subscription/route.ts';
       export * as synthesis from './src/lib/speech/synthesis.ts';
@@ -94,9 +95,33 @@ const fixture = { exports: {} };
 new Function("require", "module", "exports", bundled.outputFiles[0].text)(createRequire(import.meta.url), fixture, fixture.exports);
 const { settings, credentials, client, synthesis, recording, prepareRoute, statusRoute, transcribeRoute, mp3Route, credentialRoute } = fixture.exports;
 const migrated = settings.getSpeechSettings(1);
+test('startup prepares only selected installed local models and respects the off switch', async () => {
+  settings.updateSpeechSettings(1, { profileId: 'chosen', engine: 'kokoro', transcriptionModel: 'base' });
+  const calls = [];
+  state.localJson = async (url, init) => {
+    calls.push([url, init?.body && JSON.parse(init.body)]);
+    if (url === '/models/status') return { models: [
+      { model_name: 'whisper-base', downloaded: true, loaded: false, downloading: false },
+      { model_name: 'kokoro', downloaded: true, loaded: false, downloading: false },
+      { model_name: 'qwen-tts-1.7B', downloaded: true, loaded: false, downloading: false },
+    ] };
+    if (url === '/profiles/chosen') return { voice_type: 'preset', preset_engine: 'kokoro' };
+    return {};
+  };
+  const request = () => new Request('http://localhost/api/speech/prepare', { method: 'POST', body: JSON.stringify({ startup: true }) });
+  const result = await (await prepareRoute.POST(request())).json();
+  assert.equal(result.warming, true);
+  assert.deepEqual(calls.filter(([url]) => url === '/models/download').map(([, body]) => body.model_name), ['whisper-base', 'kokoro']);
+  db.prepare('INSERT OR REPLACE INTO voice_assistant_preferences VALUES (?, ?)').run(1, JSON.stringify({ readAloudNotifications: false, alwaysOnVoiceAssistant: false, startVoiceOnStartup: false, voiceModel: 'default' }));
+  calls.length = 0;
+  assert.equal((await (await prepareRoute.POST(request())).json()).skipped, true);
+  assert.deepEqual(calls, []);
+  db.exec('DELETE FROM voice_assistant_preferences');
+});
 const { elevenlabsCredentials, elevenlabs, elevenlabsCredentialRoute, elevenlabsVoicesRoute, requestClient, subscriptionLive, subscriptionRoute } = fixture.exports;
 
 beforeEach(() => {
+  fixture.exports.settingsClient.invalidateSpeechSettings();
   process.env.NEXTAUTH_SECRET = "speech-tests-only-stable-secret";
   delete process.env.OPENAI_API_KEY;
   delete process.env.ELEVENLABS_API_KEY;
@@ -406,6 +431,27 @@ test("ElevenLabs synthesis chunks long text and downloads MP3 without a local vo
   const unicode = "a".repeat(3999) + "🎙" + "b".repeat(20);
   assert.equal(elevenlabs.elevenLabsTextChunks(unicode).join(""), unicode);
   assert.equal(elevenlabs.elevenLabsTextChunks(unicode)[0].length, 3999);
+});
+
+test('ElevenLabs conversational playback streams the selected voice before upstream completes and cancels cleanly', async () => {
+  selectElevenLabs();
+  settings.updateSpeechSettings(1, { pronunciations: 'SQL = sequel' });
+  let cancelled = false;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(url, 'https://api.elevenlabs.io/v1/text-to-speech/voice123/stream?output_format=mp3_44100_128');
+    assert.equal(init.headers.get('xi-api-key'), 'elevenlabs-test-key');
+    assert.deepEqual(JSON.parse(init.body), { text: 'Explain sequel.', model_id: 'eleven_flash_v2_5' });
+    return new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode('first-audio')); },
+      cancel() { cancelled = true; },
+    }), { headers: { 'Content-Type': 'audio/mpeg' } });
+  };
+  const response = await synthesis.synthesizeSpeech({ userId: 1, text: 'Explain SQL.', streaming: true });
+  const reader = response.body.getReader();
+  assert.equal(new TextDecoder().decode((await reader.read()).value), 'first-audio');
+  await reader.cancel();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cancelled, true);
 });
 
 test('ElevenLabs preserves sentence boundaries and sends neighbouring context only on v2 models', async () => {

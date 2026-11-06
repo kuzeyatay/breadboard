@@ -8,6 +8,7 @@ import esbuild from 'esbuild';
 import postcss from 'postcss';
 import tailwind from '@tailwindcss/postcss';
 import { chromium } from 'playwright';
+import { searchPlaces } from '../src/lib/breadboard-search.ts';
 
 test('Talk context menu opens full voice tabs and compact windows without dismissing before selection', { timeout: 60000 }, async t => {
   const root = fileURLToPath(new URL('../', import.meta.url));
@@ -43,7 +44,7 @@ test('Talk context menu opens full voice tabs and compact windows without dismis
         'use-agent-session': `const session={sessionId:'voice-test',messages:[],loadingSession:false,runState:'idle',send(){}};
           export const useAgentSession=()=>session;export const isActiveAgentRunState=()=>false;`,
         'use-assistant-intelligence': 'export const useAssistantIntelligence=()=>({})',
-        'chat-notification-inbox': 'export function setActiveChatNotificationTarget(){}',
+        'chat-notification-inbox': 'export function registerChatNotificationTarget(){return()=>{}}',
         'prepare-client': 'export async function prepareLocalSpeech(){}export const speechErrorMessage=(e,f)=>e?.message||f;',
         'subscription-live': 'export const subscriptionSelected=async()=>true;export async function connectSubscriptionVoice(){}',
         'voice-response': 'export default function(){return null}',
@@ -155,18 +156,20 @@ test('Voice opens from its optional navbar seat and searchable new-tab entry, wi
     import React,{useState}from'react';import{createRoot}from'react-dom/client';
     import NavBar from './src/app/components/navbar';import NewTab from './src/app/new-tab/new-tab-client';
     import{DEFAULT_NAVBAR_SHORTCUTS}from'./src/lib/profile/navbar-shortcuts';
-    window.commands=[];window.failOpen=false;
-    window.breadboardDesktop={tabs:async command=>{window.commands.push(command);return !window.failOpen;},getTabsState:async()=>({enabled:true,tabs:[]}),onTabsState:()=>()=>{}};
-    function App(){const[shortcuts,setShortcuts]=useState({...DEFAULT_NAVBAR_SHORTCUTS,workTimer:false,browser:false,clicky:false,plan:false});window.showVoice=enabled=>setShortcuts(s=>({...s,voice:enabled}));
-      return <><NavBar email="you@example.com" username="You" showFlowers={false} shortcuts={shortcuts}/><NewTab gardens={[]} addressee="friend"/></>;}
+    window.commands=[];window.failOpen=false;window.navigated=[];window.companionCalls=[];
+    window.breadboardDesktop={tabs:async command=>{window.commands.push(command);return !window.failOpen;},getTabsState:async()=>({enabled:true,tabs:[]}),onTabsState:()=>()=>{},
+      getClickyState:async()=>{window.companionCalls.push('state');return {supported:true,available:true,status:'ready'}},
+      launchClicky:async()=>{window.companionCalls.push('launch');return {ok:true}},openClickyProject:async()=>({ok:true})};
+    function App(){const[shortcuts,setShortcuts]=useState({...DEFAULT_NAVBAR_SHORTCUTS,workTimer:false,browser:false,plan:false,clicky:true});window.showVoice=enabled=>setShortcuts(s=>({...s,voice:enabled}));
+      return <><NavBar email="you@example.com" username="You" showFlowers={false} shortcuts={shortcuts}/><NewTab gardens={[]} initialSearchHistory={[]} addressee="friend"/></>;}
     createRoot(document.getElementById('root')).render(<App/>);
   `},bundle:true,write:false,outfile:'voice-shortcut-fixture.js',platform:'browser',format:'iife',define:{'process.env.NODE_ENV':'"production"'},plugins:[{name:'fixture',setup(build){
     const modules={
       'next/link':`import React from'react';export default function Link({children,...props}){return <a {...props}>{children}</a>}`,
+      'next/navigation':'export const useRouter=()=>({push:href=>window.navigated.push(href)});',
       'navbar-flower-wind':'export default function(){return null}',
       'work-timer-shortcut':'export default function(){return null}',
       'browser-shortcut':'export default function(){return null}',
-      'clicky-shortcut':'export default function(){return null}',
       'link-context-menu':'export default function({children}){return children}',
       'browser-home-accessories':'export default function(){return null}',
       'browser-home-widgets':'export function BrowserSketchOutline(){return null}',
@@ -178,12 +181,14 @@ test('Voice opens from its optional navbar seat and searchable new-tab entry, wi
       'new-tab-notepad':'export default function(){return null}',
       'navigation-progress':'export function startNavigationProgress(){}export function cancelNavigationProgress(){}',
     };
-    build.onResolve({filter:/.*/},args=>{const key=args.path==='next/link'?args.path:args.path.split('/').at(-1);return key in modules?{path:key,namespace:'fixture'}:null;});
+    build.onResolve({filter:/.*/},args=>{const key=args.path in modules?args.path:args.path.split('/').at(-1);return key in modules?{path:key,namespace:'fixture'}:null;});
     build.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:modules[args.path],loader:'tsx',resolveDir:root}));
   }}]});
   const styles=fs.readFileSync(path.join(root,'src/app/globals.css'),'utf8').replace('@source "../**/*.{js,mjs,cjs,ts,tsx,jsx,mdx}";', '@source "./components/navbar.tsx"; @source "./components/voice-shortcut.tsx";');
   const css=(await postcss([tailwind({base:root})]).process(styles,{from:path.join(root,'src/app/globals.css')})).css+'\n'+(bundle.outputFiles.find(file=>file.path.endsWith('.css'))?.text??'');
   const server=http.createServer((req,res)=>{
+    if(req.url.startsWith('/api/new-tab/search?q=')){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({results:searchPlaces(new URL(req.url,'http://fixture').searchParams.get('q')),limited:[],unavailable:[]}));return;}
+    if(req.url.startsWith('/api/')){res.setHeader('Content-Type','application/json');res.end('{}');return;}
     if(req.url==='/app.js'){res.setHeader('Content-Type','text/javascript');res.end(bundle.outputFiles.find(file=>file.path.endsWith('.js')).text);return;}
     if(req.url==='/style.css'){res.setHeader('Content-Type','text/css');res.end(css);return;}
     if(req.url==='/logo.png'){res.setHeader('Content-Type','image/png');res.end(fs.readFileSync(path.join(root,'public/logo.png')));return;}
@@ -193,9 +198,11 @@ test('Voice opens from its optional navbar seat and searchable new-tab entry, wi
   const executablePath=['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe','C:/Program Files/Microsoft/Edge/Application/msedge.exe','/usr/bin/chromium'].find(fs.existsSync);
   const browser=await chromium.launch({headless:true,...(executablePath?{executablePath}:{})});
   try {
-    const page=await browser.newPage({viewport:{width:1100,height:750}});const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    const page=await browser.newPage({viewport:{width:1100,height:750}});page.setDefaultTimeout(7000);const errors=[];page.on('pageerror',error=>errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     const navbar=page.locator('.breadboard-flower-navbar'),places=page.getByRole('navigation',{name:'Places'});
+    assert.doesNotMatch(await navbar.innerText(), /clicky/i, 'a retired preference and an older desktop bridge cannot restore the companion');
+    assert.deepEqual(await page.evaluate(()=>window.companionCalls), [], 'rendering never consults or launches the retired companion');
     assert.equal(await navbar.getByRole('button',{name:'Voice',exact:true}).count(),0);
     await places.getByRole('button',{name:'Voice',exact:true}).click();
     assert.deepEqual(await page.evaluate(()=>window.commands),[{type:'voice-open'}]);
@@ -203,10 +210,13 @@ test('Voice opens from its optional navbar seat and searchable new-tab entry, wi
     assert.equal(await page.evaluate(()=>window.commands.length),2);
     fs.mkdirSync(path.join(root,'.tmp-voice-assistant-qa'),{recursive:true});
     await page.screenshot({path:path.join(root,'.tmp-voice-assistant-qa','voice-new-tab.png')});
-    await page.getByRole('searchbox').fill('voice');assert.equal(await places.getByRole('button',{name:'Voice',exact:true}).count(),1);assert.equal(await places.getByRole('link').count(),0);
+    await page.getByRole('combobox',{name:'Search all of Breadboard'}).fill('voice');
+    await page.getByRole('option',{name:/Voice.*Talk with your assistant/i}).getByRole('button').click();
+    assert.equal(await page.evaluate(()=>window.navigated.at(-1)),'/voice?view=full');
+    await page.getByRole('button',{name:'Clear search',exact:true}).click();
     await page.evaluate(()=>window.failOpen=true);await places.getByRole('button',{name:'Voice',exact:true}).click();await places.getByRole('alert').waitFor();
     await page.evaluate(()=>window.failOpen=false);await places.getByRole('button',{name:'Voice',exact:true}).click();assert.equal(await places.getByRole('alert').count(),0);
-    await page.getByRole('searchbox').fill('calendar');assert.equal(await places.getByRole('button',{name:'Voice',exact:true}).count(),0);
+    await page.getByRole('combobox',{name:'Search all of Breadboard'}).fill('calendar');assert.equal(await page.getByRole('option',{name:/Voice.*Talk with your assistant/i}).count(),0);
     await page.evaluate(()=>window.showVoice(false));assert.equal(await navbar.getByRole('button',{name:'Voice',exact:true}).count(),0);
     assert.deepEqual(errors,[]);
   } finally {await browser.close();await new Promise(resolve=>server.close(resolve));}

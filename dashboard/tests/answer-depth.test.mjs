@@ -149,13 +149,10 @@ test("diagnostics point at a contract file that exists", () => {
 
 // --- wiring -----------------------------------------------------------------
 
-test("a general question ships the contract from the composed prompt", () => {
-  const prompt = composeHermesSystemPrompt({
-    surface: "dashboard_terminal",
-    decision: decision(),
-    userText: "how does garbage collection work?",
-  });
-  assert.match(prompt, /# answer_depth/);
+test("general questions receive the shared reasoning contract without a depth classifier", () => {
+  const prompt = composeHermesSystemPrompt({surface: "dashboard_terminal", decision: decision(), userText: "how does garbage collection work?"});
+  assert.match(prompt, /State what something is, what happens and why/);
+  assert.doesNotMatch(prompt, /# answer_depth/);
 });
 
 test("a scoped question composes the same prompt without it", () => {
@@ -167,7 +164,8 @@ test("a scoped question composes the same prompt without it", () => {
   assert.doesNotMatch(prompt, /# answer_depth/);
 });
 
-test("agent mode off owes the same standard", () => {
+test("agent mode off uses the same writing guidance", () => {
   const direct = source("src/lib/conversations/direct-turn-service.ts");
-  assert.match(direct, /answerDepthSection\(\{ userText \}\)/);
+  assert.match(direct, /chatCorePrompt\(\)/);
+  assert.doesNotMatch(direct, /answerDepthSection|prepareTeachingAnswer|reviewTeachingAnswer/);
 });

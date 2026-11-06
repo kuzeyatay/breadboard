@@ -35,7 +35,7 @@ export default function BrowserProfilePanel() {
   }, []);
 
   // Cookies can change while any browser tab is open. Refresh on returning to
-  // Profile and while visible, without opening Chromium's on-disk databases.
+  // Settings and while visible, without opening Chromium's on-disk databases.
   useEffect(() => {
     void read();
     const refresh = () => {
@@ -112,14 +112,14 @@ export default function BrowserProfilePanel() {
         <>
           <p className="mt-4 text-xs text-gray-400">
             {profile?.sites.length
-              ? "Saved browser data is available to your browser tabs and agents."
-              : "Sign in to a website to keep your account available here."}
+              ? "Recognized sign-ins are available to your browser tabs and agents."
+              : "No signed-in websites detected yet."}
           </p>
 
           {profile !== null && profile.sites.length > 0 && (
             <div className="mt-3">
               <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-600">
-                Sites with saved cookies
+                Signed-in websites
               </h3>
               <div className="flex flex-wrap gap-1.5">
                 {profile.sites.map((site) => (
@@ -189,7 +189,7 @@ export default function BrowserProfilePanel() {
 
       {(error || readError) && (
         <p className="mt-3 text-xs text-red-400" role="alert">
-          {error || "Breadboard could not read saved browser data."}{" "}
+          {error || "Breadboard could not read browser sign-ins."}{" "}
           {readError && <button type="button" onClick={() => void read()} className="underline">Retry</button>}
         </p>
       )}

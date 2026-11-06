@@ -52,8 +52,8 @@ app.whenReady().then(async () => {
   });
   const external = http.createServer((req, res) => {
     res.setHeader('Content-Type', 'text/html');
-    if (req.url === '/login') res.setHeader('Set-Cookie', 'fixture-signin=fixture-value; HttpOnly; Path=/; SameSite=Lax');
-    res.end(`<!doctype html><title>Sign-in fixture</title><body>${req.headers.cookie?.includes('fixture-signin=fixture-value') ? 'Signed in' : 'Sign-in page'}</body>`);
+    if (req.url === '/login') res.setHeader('Set-Cookie', 'next-auth.session-token=fixture-value; HttpOnly; Path=/; SameSite=Lax');
+    res.end(`<!doctype html><title>Sign-in fixture</title><body>${req.headers.cookie?.includes('next-auth.session-token=fixture-value') ? 'Signed in' : 'Sign-in page'}</body>`);
   });
   const savedPort = path.join(dir, 'site-port.txt');
   const origin = await listen(server);
@@ -81,11 +81,15 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC_CHANNELS.openBrowserSignIn, (event, url) => manager.openBrowserSignIn(event.sender, url));
   ipcMain.handle(IPC_CHANNELS.resetBrowserSignIns, () => manager.resetBrowserSignIns());
   const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
+  // An anonymous visit and third-party tracking must never appear as accounts.
+  await browserSession.cookies.set({ url: web, name: 'theme', value: 'dark' });
+  await browserSession.cookies.set({ url: 'https://tracking.example.test', name: '_ga', value: 'anonymous' });
+  await browserSession.cookies.set({ url: 'https://anonymous.example.test', name: 'sessionid', value: 'anonymous', httpOnly: true });
   const privateSession = session.fromPartition('browser-sign-ins-private-fixture');
   await privateSession.cookies.set({ url: 'https://private.example.test', name: 'private', value: 'fixture' });
   await shell.session.cookies.set({ url: 'https://breadboard.example.test', name: 'account', value: 'fixture', expirationDate: Date.now() / 1000 + 86400 });
   await shell.session.cookies.flushStore();
-  await window.loadURL(origin + '/profile');
+  await window.loadURL(origin + '/settings');
   const button = label => `[...document.querySelectorAll('button')].find(button=>button.textContent===${JSON.stringify(label)})`;
   const click = label => shell.executeJavaScript(`${button(label)}.click()`);
   const read = () => shell.executeJavaScript('window.breadboardDesktop.getBrowserSignIns()');
@@ -138,11 +142,22 @@ app.whenReady().then(async () => {
       await manager.handleCommand(shell, { type: 'close', id: manager.stateFor(shell).activeId });
       await refresh();
       await until(() => shell.executeJavaScript("document.body.innerText.includes('127.0.0.1')"), 'saved sites shown after restart');
+      const panelText = await shell.executeJavaScript('document.body.innerText');
+      assert.match(panelText, /Signed-in websites/i);
+      assert.doesNotMatch(panelText, /Sites with saved cookies|tracking\.example|anonymous\.example|fixture-value/i);
       await until(() => shell.executeJavaScript(`!${button('Forget sign-ins')}.disabled`), 'reset available after closing browser');
       if (process.env.BREADBOARD_SIGN_INS_QA_DIR) {
         fs.mkdirSync(process.env.BREADBOARD_SIGN_INS_QA_DIR, { recursive: true });
         fs.writeFileSync(path.join(process.env.BREADBOARD_SIGN_INS_QA_DIR, 'profile-sign-ins.png'), (await shell.capturePage()).toPNG());
       }
+      await browserSession.cookies.remove(web, 'next-auth.session-token');
+      await refresh();
+      await until(async () => (await read()).sites.length === 0, 'logout removes the site from sign-ins');
+      await until(() => shell.executeJavaScript("document.body.innerText.includes('No signed-in websites detected yet.')"), 'logout updates the panel');
+      assert.ok((await browserSession.cookies.get({ name: 'theme' })).length, 'ordinary cookies remain after logout');
+      await browserSession.cookies.set({ url: web, name: 'next-auth.session-token', value: 'fixture-value', httpOnly: true });
+      await refresh();
+      await until(() => shell.executeJavaScript("document.body.innerText.includes('127.0.0.1')"), 'new login restores the site');
       await click('Forget sign-ins');
       await until(() => shell.executeJavaScript(`Boolean(${button('Delete every sign-in')})`), 'reset confirmation');
       assert.equal((await read()).sites.length, 1, 'confirmation alone must not delete anything');

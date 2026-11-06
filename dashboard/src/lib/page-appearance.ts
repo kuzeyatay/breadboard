@@ -1,33 +1,53 @@
+import { asciiWallpaperSlug } from "./ascii-wallpapers.ts";
 export type AppearancePage = "new-tab" | "dashboard" | "browser";
 export type AppearanceTheme = "light" | "dark";
+export type RainMode = "off" | "on" | "weather";
 export type WallpaperCategory = "Astral" | "Places" | "Abstract";
 
 export const APPEARANCE_PAGES: Record<AppearancePage, string> = {
-  "new-tab": "New tab",
+  "new-tab": "Terminal",
   dashboard: "Dashboard",
   browser: "Browser",
 };
 export const PAGE_APPEARANCE_CHANGE_EVENT = "breadboard:page-appearance-change";
 export const NO_WALLPAPER_ID = "none";
+export const SPOTIFY_BACKGROUND_ID = "spotify-colors";
+export const RANDOM_COLORS_BACKGROUND_ID = "random-colors";
+export const SPOTIFY_RANDOM_BACKGROUND_ID = "spotify-random-colors";
+
+export function ambientBackgroundOptions(value: string) {
+  return {
+    spotify: value === SPOTIFY_BACKGROUND_ID || value === SPOTIFY_RANDOM_BACKGROUND_ID,
+    random: value === RANDOM_COLORS_BACKGROUND_ID || value === SPOTIFY_RANDOM_BACKGROUND_ID,
+  };
+}
+
+export function ambientBackgroundId({ spotify, random }: { spotify: boolean; random: boolean }): string {
+  if (spotify && random) return SPOTIFY_RANDOM_BACKGROUND_ID;
+  if (spotify) return SPOTIFY_BACKGROUND_ID;
+  return random ? RANDOM_COLORS_BACKGROUND_ID : NO_WALLPAPER_ID;
+}
 export const RANDOM_BACKGROUND_MIN_DELAY_MS = 60 * 60 * 1000;
 export const RANDOM_BACKGROUND_MAX_DELAY_MS = 24 * RANDOM_BACKGROUND_MIN_DELAY_MS;
 export const WALLPAPERS = [
-  { id: "alpine-dawn", name: "Alpine dawn", category: "Places", tone: "light", src: "/browser-wallpapers/alpine-dawn.webp", model: "GPT Image" },
-  { id: "limestone-courtyard", name: "Quiet courtyard", category: "Places", tone: "light", src: "/browser-wallpapers/limestone-courtyard.webp", model: "GPT Image" },
-  { id: "mineral-clouds", name: "Mineral light", category: "Abstract", tone: "light", src: "/browser-wallpapers/mineral-clouds.webp", model: "GPT Image" },
-  { id: "aurora-valley", name: "Aurora valley", category: "Astral", tone: "dark", src: "/browser-wallpapers/aurora-valley.webp", model: "GPT Image" },
-  { id: "astral-nebula", name: "Astral quiet", category: "Astral", tone: "dark", src: "/browser-wallpapers/astral-nebula.webp", model: "GPT Image" },
-  { id: "moonlit-coast", name: "Moonlit coast", category: "Places", tone: "dark", src: "/browser-wallpapers/moonlit-coast.webp", model: "GPT Image" },
+  { id: "alpine-dawn", name: "Alpine dawn", category: "Places", tone: "light", src: "/browser-wallpapers/alpine-dawn.webp", previewSrc: "/browser-wallpapers/thumbnails/alpine-dawn.webp", model: "GPT Image" },
+  { id: "limestone-courtyard", name: "Quiet courtyard", category: "Places", tone: "light", src: "/browser-wallpapers/limestone-courtyard.webp", previewSrc: "/browser-wallpapers/thumbnails/limestone-courtyard.webp", model: "GPT Image" },
+  { id: "mineral-clouds", name: "Mineral light", category: "Abstract", tone: "light", src: "/browser-wallpapers/mineral-clouds.webp", previewSrc: "/browser-wallpapers/thumbnails/mineral-clouds.webp", model: "GPT Image" },
+  { id: "aurora-valley", name: "Aurora valley", category: "Astral", tone: "dark", src: "/browser-wallpapers/aurora-valley.webp", previewSrc: "/browser-wallpapers/thumbnails/aurora-valley.webp", model: "GPT Image" },
+  { id: "astral-nebula", name: "Astral quiet", category: "Astral", tone: "dark", src: "/browser-wallpapers/astral-nebula.webp", previewSrc: "/browser-wallpapers/thumbnails/astral-nebula.webp", model: "GPT Image" },
+  { id: "moonlit-coast", name: "Moonlit coast", category: "Places", tone: "dark", src: "/browser-wallpapers/moonlit-coast.webp", previewSrc: "/browser-wallpapers/thumbnails/moonlit-coast.webp", model: "GPT Image" },
 ] as const;
 
 export interface PageAppearancePreference {
   backgrounds: Record<AppearanceTheme, string>;
   random?: Partial<Record<AppearanceTheme, { nextChangeAt: number }>>;
+  rain?: Partial<Record<AppearanceTheme, Exclude<RainMode, "off">>>;
 }
 
 type AppearancePatch =
   | { background: { theme: AppearanceTheme; value: string } }
-  | { random: { theme: AppearanceTheme; enabled: boolean } };
+  | { random: { theme: AppearanceTheme; enabled: boolean } }
+  | { rain: { theme: AppearanceTheme; mode: RainMode } };
 
 function randomBackground(current: string, random: () => number): string {
   const candidates = WALLPAPERS.filter((wallpaper) => wallpaper.id !== current);
@@ -52,7 +72,7 @@ export function pageAppearanceKey(ownerKey: string, page: AppearancePage): strin
 
 export function validBackground(value: unknown): value is string {
   return typeof value === "string" && (
-    value === NO_WALLPAPER_ID || /^pixabay:\d{1,12}$/u.test(value) ||
+    value === NO_WALLPAPER_ID || asciiWallpaperSlug(value) !== null || ambientBackgroundOptions(value).spotify || ambientBackgroundOptions(value).random || /^pixabay:\d{1,12}$/u.test(value) ||
     /^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+$/iu.test(value) ||
     WALLPAPERS.some((wallpaper) => wallpaper.id === value)
   );
@@ -77,6 +97,8 @@ export function readPageAppearance(
         },
       };
       for (const theme of ["light", "dark"] as const) {
+        const rain = parsed?.rain?.[theme];
+        if (rain === "on" || rain === "weather") (preference.rain ??= {})[theme] = rain;
         const nextChangeAt = parsed?.random?.[theme]?.nextChangeAt;
         if (typeof nextChangeAt === "number" && Number.isSafeInteger(nextChangeAt) && nextChangeAt >= 0) {
           (preference.random ??= {})[theme] = { nextChangeAt };
@@ -115,6 +137,13 @@ export function writePageAppearance(
       (next.random ??= {})[theme] = { nextChangeAt: nextRandomChange(now, random) };
     } else if (!enabled) {
       stopRandomBackground(next, theme);
+    }
+  } else if ("rain" in patch) {
+    const { theme, mode } = patch.rain;
+    if (mode === "on" || mode === "weather") (next.rain ??= {})[theme] = mode;
+    else if (next.rain) {
+      delete next.rain[theme];
+      if (!Object.keys(next.rain).length) delete next.rain;
     }
   }
   // Read immediately before writing so another customizer's picks are retained.

@@ -30,13 +30,14 @@ const VERBS = [
   "resolve", "correct", "harden", "optimi[sz]e", "parameteri[sz]e", "deprecate", "unit[- ]test",
   "add", "build", "create", "develop", "generate", "introduce", "make", "produce", "write",
   "draft", "prepare", "author", "compose",
+  "design", "model", "check", "validate", "measure", "fit", "mate", "assemble", "slice", "print", "preview", "view", "source",
   "change", "edit", "modify", "update", "adjust", "revise", "replace", "extend", "rename",
   "move", "copy", "duplicate", "organi[sz]e", "sort", "tidy", "group", "consolidate",
   "flatten", "archive", "unzip", "zip", "extract", "relocate", "reorgani[sz]e", "restructure", "stage",
   "delete", "remove", "erase", "purge", "trash", "wipe", "discard",
   "run", "execute", "invoke", "launch", "start", "rerun", "re-run",
   "convert", "export", "render", "transform", "transcribe", "caption", "subtitle", "diari[sz]e", "re-?encode", "trim", "clip",
-  "download", "fetch", "pull\\s+down", "grab",
+  "upload", "download", "fetch", "pull\\s+down", "grab",
   "email", "e-mail", "send", "post", "publish", "share", "submit", "tweet", "notify",
   "invite", "schedule", "book", "order", "purchase", "pay", "message", "text", "msg",
   "forward", "shoot", "push", "deliver", "drop", "whats\\s?app", "telegram",
@@ -58,14 +59,26 @@ const QUESTION = /^(?:how|why|what|which|where|when|whether|should\b|could\s+i|c
 const EXPLICIT_RESTART = /^(?:(?:please|now|then|next|instead)\s+|(?:can|could|would|will)\s+you\b|(?:i|we)\s+(?:want|need)\s+you\b)/i;
 const PERSONAL_INTENT = /^(?:(?:i|we)\s+(?:want|need|would\s+like)|(?:i['’]d|we['’]d)\s+like)\s+/i;
 const SUBORDINATE = new RegExp(`\\S\\s+(?:that|which)\\b|\\b(?:how|whether|if|when)\\b|\\bto\\s+(?:${VERBS})\\b`, "i");
-const OBJECT_BOUNDARY = /\b(?:from|using|via|based\s+on|according\s+to|about|because|while|where|which|that|so|when|if|with|for|into|onto|to)\b/i;
+const OBJECT_BOUNDARY = /\b(?:from|using|via|based\s+on|according\s+to|about|on|because|while|where|which|that|so|when|if|with|for|into|onto|to)\b/i;
 
 /** Attached/pasted evidence is not another set of user instructions. */
 export function requestProse(value: string): string {
-  return value
+  const prose = value
     .replace(/```[^\n]*\n[\s\S]*?(?:```|$)|~~~[^\n]*\n[\s\S]*?(?:~~~|$)/g, "\n")
     .replace(/^\s*>.*$/gm, "")
     .replace(/<(document|attachment|untrusted_text|tool_output|source_content)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, "\n");
+  // A pasted section can begin with a Markdown heading, including on the same
+  // line as its introduction. Its imperative examples are reference material,
+  // not extra requested actions. Require an explicit source introduction;
+  // ordinary headings in a user's own task list must remain actionable.
+  const heading = /(?:^|\s)#{1,6}[ \t]+\S/m.exec(prose);
+  if (heading) {
+    const before = prose.slice(0, heading.index);
+    const introduction = before.slice(-600).replace(/\s+/g, " ");
+    const sourceBlock = /\b(?:after|from|using|based on|continue|read|explain|summari[sz]e|review|critique|translate|rewrite|adapt)\b.{0,180}\b(?:(?:following|pasted|quoted)\s+(?:text|material|section|passage|excerpt|document|article|transcript|draft|answer|lesson|notes)|(?:text|material|section|passage|excerpt|document|article|transcript|draft|answer|lesson|notes)\s+(?:below|that follows))\b/i;
+    if (sourceBlock.test(introduction)) return before;
+  }
+  return prose;
 }
 
 /** A source/URL/string can be an object, but its words cannot be verbs. */

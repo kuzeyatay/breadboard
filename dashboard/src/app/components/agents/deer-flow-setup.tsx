@@ -22,24 +22,24 @@ interface Health {
 const SETUP_ACTIONS = [
   {
     id: "install",
-    label: "Build environment",
+    label: "Set up DeerFlow",
     unlocks:
-      "Creates deer-flow/backend/.venv and installs the Gateway and the agent harness. Takes several minutes.",
+      "Installs the tools DeerFlow needs. This takes several minutes.",
   },
   {
     id: "reinstall",
     label: "Repair",
-    unlocks: "Re-syncs the environment against the clone's current lockfile.",
+    unlocks: "Reinstalls the required tools.",
   },
   {
     id: "stop",
-    label: "Stop the Gateway",
-    unlocks: "Stops the supervised DeerFlow process. The next run starts a fresh one.",
+    label: "Stop DeerFlow",
+    unlocks: "Stops DeerFlow. It restarts with your next task.",
   },
   {
     id: "remove",
-    label: "Remove environment",
-    unlocks: "Deletes deer-flow/backend/.venv. Nothing else in the clone is touched.",
+    label: "Remove installed tools",
+    unlocks: "Removes DeerFlow’s installed tools. Your other files are kept.",
   },
 ] as const;
 
@@ -56,8 +56,8 @@ const EMPTY: Health = {
 };
 
 function statusOf(health: Health | null): { label: string; ready: boolean } {
-  if (!health) return { label: "Checking clone", ready: false };
-  if (!health.cloned) return { label: "Not cloned", ready: false };
+  if (!health) return { label: "Checking installation", ready: false };
+  if (!health.cloned) return { label: "Setup files missing", ready: false };
   if (!health.environmentReady) return { label: "Needs setup", ready: false };
   if (!health.packageInstalled) return { label: "Install incomplete", ready: false };
   return { label: health.serviceRunning ? "Running" : "Ready", ready: true };
@@ -161,9 +161,7 @@ export default function DeerFlowSetup() {
       {/* What the agent is, stated before anything technical: this is the whole
           reason someone would build a gigabyte of Python for it. */}
       <p className="neu-surface-subtle rounded-xl px-3 py-2 text-[11px] leading-5 text-[var(--ink-muted)]">
-        <span className="font-medium text-[var(--ink-heading)]">Runs</span> the cloned DeerFlow
-        harness on ChatMock: one lead agent with a per-task workspace, delegated subagents, skills
-        and memory. Files it produces are kept as artifacts of the chat that asked for them.
+        <span className="font-medium text-[var(--ink-heading)]">Runs</span> research and writing tasks with a team of agents. Finished files appear in the chat.
       </p>
 
       {health?.root ? (
@@ -177,9 +175,7 @@ export default function DeerFlowSetup() {
       ) : null}
       {health?.cloned && !health.uvAvailable && !health.environmentReady ? (
         <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
-          Building the environment needs uv: DeerFlow&apos;s backend is a uv workspace, and its two
-          local packages only install through it. Install uv from docs.astral.sh/uv, then reopen
-          this panel.
+          Install uv from docs.astral.sh/uv, then reopen this panel to continue setup.
         </p>
       ) : null}
 

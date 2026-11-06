@@ -7,6 +7,8 @@ export interface StarredMessageTarget {
   chatId: string;
   messageId: string;
   clientMessageId?: string;
+  /** Selection identity survives both optimistic and server message IDs. */
+  selectionId?: string;
   requestId: number;
 }
 
@@ -15,7 +17,7 @@ export function useStarredMessageJump({ target, chatId, loading, rows, bridge, s
   target?: StarredMessageTarget | null;
   chatId: string | number | null | undefined;
   loading: boolean;
-  rows: readonly { message: { id?: string; clientMessageId?: string; role: string } }[];
+  rows: readonly { message: { id?: string; clientMessageId?: string; role: string; textSelection?: { id: string } } }[];
   bridge: ChatVirtualBridge;
   scrollRef: RefObject<HTMLElement | null>;
   scrollToMessage: (index: number) => void;
@@ -23,7 +25,9 @@ export function useStarredMessageJump({ target, chatId, loading, rows, bridge, s
   const handled = useRef<StarredMessageTarget | null>(null);
   // History refreshes and streaming replace the rows array. Only a change in
   // the target's position should restart a jump that is already settling.
-  const index = target ? rows.findIndex(({ message }) => message.role === "assistant" &&
+  const index = target?.selectionId
+    ? rows.findIndex(({ message }) => message.role === "user" && message.textSelection?.id === target.selectionId)
+    : target ? rows.findIndex(({ message }) => message.role === "assistant" &&
     (message.id === target.messageId || message.clientMessageId === target.messageId ||
       (Boolean(target.clientMessageId) && (message.id === target.clientMessageId ||
         message.clientMessageId === target.clientMessageId)))) : -1;

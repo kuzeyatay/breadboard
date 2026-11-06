@@ -101,16 +101,17 @@ function validRecord(value: unknown): value is RuntimeIngestRecoveryRecord {
   );
 }
 
-function session(): Storage | null {
+function storage(kind: "local" | "session"): Storage | null {
   try {
-    return typeof sessionStorage === "undefined" ? null : sessionStorage;
+    return kind === "local"
+      ? (typeof localStorage === "undefined" ? null : localStorage)
+      : (typeof sessionStorage === "undefined" ? null : sessionStorage);
   } catch {
     return null;
   }
 }
 
-function readRecords(): RuntimeIngestRecoveryRecord[] {
-  const target = session();
+function readStorageRecords(target: Storage | null): RuntimeIngestRecoveryRecord[] {
   if (!target) return [];
   try {
     const raw = target.getItem(STORAGE_KEY);
@@ -130,9 +131,8 @@ function readRecords(): RuntimeIngestRecoveryRecord[] {
   }
 }
 
-function writeRecords(records: readonly RuntimeIngestRecoveryRecord[]): void {
-  const target = session();
-  if (!target) return;
+function writeStorageRecords(target: Storage | null, records: readonly RuntimeIngestRecoveryRecord[]): boolean {
+  if (!target) return false;
   try {
     const boundedRecords = records.slice(-MAX_RECORDS);
     let serialized = JSON.stringify(boundedRecords);
@@ -145,8 +145,32 @@ function writeRecords(records: readonly RuntimeIngestRecoveryRecord[]): void {
     }
     if (boundedRecords.length === 0) target.removeItem(STORAGE_KEY);
     else target.setItem(STORAGE_KEY, serialized);
+    return true;
   } catch {
-    // Recovery metadata is best effort when session storage is unavailable.
+    return false;
+  }
+}
+
+function readRecords(): RuntimeIngestRecoveryRecord[] {
+  const persistent = storage("local");
+  const legacy = storage("session");
+  const tabRecords = readStorageRecords(legacy);
+  if (!persistent) return tabRecords;
+  const records = readStorageRecords(persistent);
+  if (tabRecords.length === 0) return records;
+  // Migrate existing uploads, preferring identities already updated by another
+  // tab. Only identities are retained; file bytes and credentials never are.
+  const merged = [...new Map([...tabRecords, ...records].map(record => [record.requestId, record])).values()];
+  if (writeStorageRecords(persistent, merged)) writeStorageRecords(legacy, []);
+  return merged;
+}
+
+function writeRecords(records: readonly RuntimeIngestRecoveryRecord[]): void {
+  // Unlike sessionStorage, this survives closing and reopening the garden tab.
+  if (writeStorageRecords(storage("local"), records)) {
+    writeStorageRecords(storage("session"), []);
+  } else {
+    writeStorageRecords(storage("session"), records);
   }
 }
 

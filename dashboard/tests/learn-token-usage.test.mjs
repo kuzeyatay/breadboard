@@ -521,6 +521,17 @@ test('terminal recovery closes abandoned request lifecycles without fabricating 
         policy_mismatch_requests INTEGER NOT NULL DEFAULT 0,
         usage_updated_at TEXT
       );
+      CREATE TABLE learn_token_usage_request_lifecycles (
+        job_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        started_requests INTEGER NOT NULL DEFAULT 0,
+        completed_requests INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO learn_token_usage_request_lifecycles VALUES
+        ('generic-abandoned-job', 'open-call', 1, 0, 'x'),
+        ('old-failed', 'open-call', 1, 0, 'x'),
+        ('old-awaiting', 'open-call', 1, 0, 'x');
     `);
     database.prepare(
       'INSERT INTO learn_jobs (id, status, error, updated_at) VALUES (?, ?, ?, ?)',
@@ -669,6 +680,19 @@ test('terminal recovery closes abandoned request lifecycles without fabricating 
         '2026-08-24T04:01:00.000Z',
       ),
       [],
+    );
+    // Lifecycles close with their aggregate, so a receipt recovered later for
+    // a terminal job cannot count a second completion (telecom-1, 2026-10-03).
+    assert.deepEqual(
+      database.prepare(
+        `SELECT job_id, completed_requests FROM learn_token_usage_request_lifecycles
+         ORDER BY job_id`,
+      ).all(),
+      [
+        { job_id: 'generic-abandoned-job', completed_requests: 1 },
+        { job_id: 'old-awaiting', completed_requests: 0 },
+        { job_id: 'old-failed', completed_requests: 1 },
+      ],
     );
 
     database.close();

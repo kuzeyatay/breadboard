@@ -25,8 +25,9 @@ const MEMORY_TELEMETRY_INTERVAL: Duration =
     Duration::from_millis(SUPERVISION_POLL_INTERVAL_MS as u64);
 const RESOURCE_EXHAUSTED_EXIT_CODE: u32 = 73;
 
-const WORKER_ENVIRONMENT_NAMES: &[&str] = &["SystemRoot"];
+const WORKER_ENVIRONMENT_NAMES: &[&str] = &["SystemRoot", "BREADBOARD_BULK_DATA_DIR"];
 const TOOL_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
+    "BREADBOARD_BULK_DATA_DIR",
     "SystemRoot",
     "PATH",
     "TEMP",
@@ -58,6 +59,7 @@ const SYSTEM_LOCATION_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_RUNTIME_V2_FIXED_TOOLS",
 ];
 const MANAGED_SETUP_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
+    "BREADBOARD_MANAGED_SETUP_EXCLUSION",
     "CARGO_HOME",
     "RUSTUP_HOME",
     "UV_CACHE_DIR",
@@ -191,7 +193,7 @@ const VOX_DIRECTOR_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "COMFYUI_ENABLED",
     "COMFYUI_MANAGED",
     "COMFYUI_PORT",
-    "BREADBOARD_ACESTEP_DIR",
+    "BREADBOARD_ACESTEP_DIR", "BREADBOARD_ACESTEP_SOURCE_DIR",
     "BREADBOARD_ACESTEP_URL",
     "BREADBOARD_ACESTEP_PORT",
     "COMFYUI_URL",
@@ -583,6 +585,7 @@ const OUTER_BOLT_SLIDES_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "LC_ALL",
 ];
 const OUTER_HARDWARE_BLUEPRINT_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
+    "BREADBOARD_SOLIDWORKS_IMMUTABLE_RUNTIME",
     "BREADBOARD_RUNTIME_V2_ACTIVE",
     "BREADBOARD_SUPERVISOR_CONTROL_URL",
     "BREADBOARD_SUPERVISOR_CONTROL_TOKEN",
@@ -631,6 +634,9 @@ const MEETING_NOTES_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "SCRIBERR_POLL_INTERVAL_MS",
     "SCRIBERR_MODEL_FAMILY",
     "SCRIBERR_MODEL",
+    "SCRIBERR_DEVICE",
+    "SCRIBERR_COMPUTE_TYPE",
+    "SCRIBERR_BATCH_SIZE",
     "SCRIBERR_LANGUAGE",
 ];
 const OUTER_INBOX_ZERO_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
@@ -736,6 +742,9 @@ const OUTER_VIDEO_USE_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "SCRIBERR_POLL_INTERVAL_MS",
     "SCRIBERR_MODEL_FAMILY",
     "SCRIBERR_MODEL",
+    "SCRIBERR_DEVICE",
+    "SCRIBERR_COMPUTE_TYPE",
+    "SCRIBERR_BATCH_SIZE",
     "SCRIBERR_LANGUAGE",
     "SCRIBERR_DIARIZATION",
 ];
@@ -808,6 +817,9 @@ const SCRIBERR_GARDEN_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "SCRIBERR_POLL_INTERVAL_MS",
     "SCRIBERR_MODEL_FAMILY",
     "SCRIBERR_MODEL",
+    "SCRIBERR_DEVICE",
+    "SCRIBERR_COMPUTE_TYPE",
+    "SCRIBERR_BATCH_SIZE",
     "SCRIBERR_LANGUAGE",
     "SCRIBERR_DIARIZATION",
     "VIDEO_TRANSCRIPTION_DELETE_SCRIBERR_JOBS",
@@ -838,6 +850,7 @@ const SCRIBERR_GARDEN_WORKER_ENVIRONMENT_NAMES: &[&str] = &[
     "QUARTZ_BUILD_TIMEOUT_MS",
 ];
 const SERVICE_COMMON_ENVIRONMENT_NAMES: &[&str] = &[
+    "BREADBOARD_BULK_DATA_DIR",
     "SystemRoot",
     "PATH",
     "TEMP",
@@ -870,7 +883,7 @@ const COMFYUI_ENVIRONMENT_NAMES: &[&str] = &[
     "COMFYUI_ROOT",
     "COMFYUI_ENV_DIR",
     "COMFYUI_RUNTIME_DIR",
-    "BREADBOARD_ACESTEP_DIR",
+    "BREADBOARD_ACESTEP_DIR", "BREADBOARD_ACESTEP_SOURCE_DIR",
     "BREADBOARD_ACESTEP_URL",
     "BREADBOARD_ACESTEP_PORT",
     "COMFYUI_URL",
@@ -901,6 +914,7 @@ const GBRAIN_ENVIRONMENT_NAMES: &[&str] = &[
     "GBRAIN_QUERY_TIMEOUT_MS",
 ];
 const AGENT_SERVICE_ENVIRONMENT_NAMES: &[&str] = &[
+    "BREADBOARD_BULK_DATA_DIR",
     "SystemRoot",
     "PATH",
     "TEMP",
@@ -927,6 +941,7 @@ const AGENT_SERVICE_ENVIRONMENT_NAMES: &[&str] = &[
 ];
 const OPENWORK_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_OPENWORK_SERVICE_TOKEN",
+    "OPENCODE_BIN",
     "OPENWORK_ROOT",
     "OPENWORK_BUN_PATH",
     "OPENWORK_SERVER_RUNTIME_ROOT",
@@ -982,6 +997,7 @@ const VLM_OCR_ENVIRONMENT_NAMES: &[&str] = &[
 ];
 const RECALL_ENVIRONMENT_NAMES: &[&str] = &["SCREENPIPE_API_KEY"];
 const NODE_SERVICE_ENVIRONMENT_NAMES: &[&str] = &[
+    "BREADBOARD_BULK_DATA_DIR",
     "SystemRoot",
     "PATH",
     "TEMP",
@@ -1209,6 +1225,7 @@ const DEEP_RESEARCH_ENVIRONMENT_NAMES: &[&str] = &[
     "DEEP_RESEARCH_HOST",
     "DEEP_RESEARCH_PORT",
     "DEEP_RESEARCH_SECRET",
+    "DEEP_RESEARCH_STATE_DIR",
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
     "CHATMOCK_BASE_URL",
@@ -1254,6 +1271,7 @@ const STOCK_ANALYST_ENVIRONMENT_NAMES: &[&str] = &[
     "STOCK_ANALYST_HOME",
 ];
 const SOLIDWORKS_MCP_ENVIRONMENT_NAMES: &[&str] = &[
+    "BREADBOARD_SOLIDWORKS_IMMUTABLE_RUNTIME",
     "BREADBOARD_DATA_DIR",
     "BREADBOARD_SOLIDWORKS_SERVICE_PORT",
     "BREADBOARD_SOLIDWORKS_SERVICE_TOKEN",
@@ -1442,7 +1460,7 @@ const DASHBOARD_ENVIRONMENT_NAMES: &[&str] = &[
     "GBRAIN_QUERY_TIMEOUT_MS",
     "COMFYUI_ENABLED",
     "COMFYUI_MANAGED",
-    "BREADBOARD_ACESTEP_DIR",
+    "BREADBOARD_ACESTEP_DIR", "BREADBOARD_ACESTEP_SOURCE_DIR",
     "BREADBOARD_ACESTEP_URL",
     "BREADBOARD_ACESTEP_PORT",
     "COMFYUI_URL",
@@ -1947,7 +1965,7 @@ impl EnvironmentProfile {
                 TOOL_WORKER_ENVIRONMENT_NAMES,
                 OUTER_HARDWARE_BLUEPRINT_WORKER_ENVIRONMENT_NAMES,
             ),
-            Self::MusicProducerWorker => (TOOL_WORKER_ENVIRONMENT_NAMES, &["CHATMOCK_API_KEY", "BREADBOARD_ACESTEP_DIR","BREADBOARD_ACESTEP_URL","BREADBOARD_ACESTEP_PORT","BREADBOARD_LOCAL_MCP_BROKER_URL","BREADBOARD_LOCAL_MCP_BROKER_TOKEN","BREADBOARD_LOCAL_MCP_REGISTRY_ROOT"][..]),
+            Self::MusicProducerWorker => (TOOL_WORKER_ENVIRONMENT_NAMES, &["CHATMOCK_API_KEY", "BREADBOARD_ACESTEP_DIR", "BREADBOARD_ACESTEP_SOURCE_DIR","BREADBOARD_ACESTEP_URL","BREADBOARD_ACESTEP_PORT","BREADBOARD_LOCAL_MCP_BROKER_URL","BREADBOARD_LOCAL_MCP_BROKER_TOKEN","BREADBOARD_LOCAL_MCP_REGISTRY_ROOT"][..]),
             Self::GetDocWorker => (
                 TOOL_WORKER_ENVIRONMENT_NAMES,
                 GET_DOC_WORKER_ENVIRONMENT_NAMES,
@@ -2014,7 +2032,7 @@ impl EnvironmentProfile {
                 DASHBOARD_ENVIRONMENT_NAMES,
             ),
             Self::Chatmock => (SERVICE_COMMON_ENVIRONMENT_NAMES, CHATMOCK_ENVIRONMENT_NAMES),
-            Self::Acestep => (SERVICE_COMMON_ENVIRONMENT_NAMES, &["PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE", "BREADBOARD_ACESTEP_DIR","BREADBOARD_ACESTEP_URL","BREADBOARD_ACESTEP_PORT"][..]),
+            Self::Acestep => (SERVICE_COMMON_ENVIRONMENT_NAMES, &["PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE", "BREADBOARD_ACESTEP_DIR", "BREADBOARD_ACESTEP_SOURCE_DIR","BREADBOARD_ACESTEP_URL","BREADBOARD_ACESTEP_PORT"][..]),
             Self::Comfyui => (SERVICE_COMMON_ENVIRONMENT_NAMES, COMFYUI_ENVIRONMENT_NAMES),
             Self::Dashboard => (
                 SERVICE_COMMON_ENVIRONMENT_NAMES,
@@ -5966,6 +5984,119 @@ mod windows_runtime {
     mod environment_tests {
         use super::*;
 
+        #[test]
+        fn real_hybrid_service_and_worker_envelopes_pass_the_supervisor_boundary() {
+            use breadboard_runtime_core::{
+                DashboardControlEnvironment, RuntimePaths, ServiceAuxiliaryEndpoint,
+                ServiceEndpointMap, TrustedDirectoryPin, TrustedOsEnvironment,
+                TrustedServiceEnvironmentSet, TrustedWorkerEnvironmentSet,
+            };
+            use breadboard_runtime_protocol::{
+                parse_service_manifest, parse_worker_manifest, RuntimeMode,
+                TrustedServiceEnvironmentSource, TrustedWorkerEnvironmentSource,
+            };
+
+            let fixture = tempfile::tempdir().unwrap();
+            let data = fixture.path().join("data");
+            let app = fixture.path().join("app");
+            let runtime = fixture.path().join("runtime");
+            let config = fixture.path().join("config");
+            let bulk = fixture.path().join("bulk");
+            for root in [&data, &app, &runtime, &config, &bulk] {
+                std::fs::create_dir(root).unwrap();
+            }
+            std::fs::write(config.join("desktop-config.json"), serde_json::to_vec(&serde_json::json!({
+                "version": 2,
+                "nextAuthSecret": "next-auth-secret-0123456789-abcdef",
+                "gbrainMode": "preferred",
+                "gbrainAdapterSecret": "gbrain-adapter-secret-0123456789-ab",
+                "hermesSessionToken": "hermes-session-token-0123456789-ab",
+                "hermesToolSecret": "hermes-tool-secret-0123456789-abcd",
+                "hermesCapabilitySecret": "hermes-capability-secret-0123456789",
+                "initialInviteCode": "BREAD0123456789"
+            })).unwrap()).unwrap();
+            let paths = RuntimePaths::new(&data, &app, &runtime).unwrap()
+                .with_bulk_root(Some(bulk)).unwrap();
+            let config = TrustedDirectoryPin::pin_existing("configuration", config).unwrap();
+            let os = TrustedOsEnvironment::for_environment_contract_tests();
+            let endpoints = ServiceEndpointMap::new(
+                std::array::from_fn::<_, { TrustedServiceEnvironmentSource::COUNT }, _>(|i| 17000 + i as u16),
+                std::array::from_fn::<_, { ServiceAuxiliaryEndpoint::COUNT }, _>(|i| 18000 + i as u16),
+            ).unwrap();
+            let manifest = parse_service_manifest(include_bytes!("../../../desktop/runtime-v2/manifests/services.json")).unwrap();
+            let workers_manifest = parse_worker_manifest(include_bytes!("../../../desktop/runtime-v2/manifests/workers.json")).unwrap();
+
+            // Use the actual native builders and process-owner profile mapping,
+            // not copies of the supervisor's own allowlists. This covers every
+            // setup recipe (one managed-setup source) and every dependency probe
+            // as well as the four service failures observed after D activation.
+            for mode in [RuntimeMode::Lean, RuntimeMode::Hot, RuntimeMode::Packaged] {
+                let services = TrustedServiceEnvironmentSet::load(mode, &paths, &config, &endpoints,
+                    DashboardControlEnvironment::new("http://127.0.0.1:19000", "synthetic-control-token-0123456789").unwrap(),
+                    &os).unwrap();
+                let workers = TrustedWorkerEnvironmentSet::from_service_environments(mode, &services, &paths, &os);
+                let mut checked_services = 0;
+                for service in &manifest.services {
+                    if let Some(launch) = service.launch_profiles.iter().find(|profile| profile.modes.contains(&mode)) {
+                        let environment = services.prepare_for_launch_profile(&service.id, launch).unwrap();
+                        let (profile, names) = environment.supervisor_contract_for_test();
+                        if matches!(service.id.as_str(), "openwork" | "openscience" | "wardrobe" | "inbox-zero-stack") {
+                            assert!(names.iter().any(|name| name == "BREADBOARD_BULK_DATA_DIR"), "{} lacks sealed bulk root", service.id);
+                        }
+                        assert_real_envelope(profile, &names);
+                        checked_services += 1;
+                    }
+                }
+                assert!(checked_services >= 32, "service manifest coverage unexpectedly narrowed");
+                let mut managed_setup_seen = false;
+                for worker in &workers_manifest.workers {
+                    let environment = workers.prepare_for_source(worker.environment_source);
+                    let (profile, names) = environment.supervisor_contract_for_test();
+                    if worker.environment_source == TrustedWorkerEnvironmentSource::ManagedSetup {
+                        assert!(names.iter().any(|name| name == "BREADBOARD_BULK_DATA_DIR"));
+                        assert!(names.iter().any(|name| name == "BREADBOARD_MANAGED_SETUP_EXCLUSION"));
+                        managed_setup_seen = true;
+                    }
+                    assert_real_envelope(profile, &names);
+                }
+                assert!(managed_setup_seen);
+            }
+        }
+
+        fn assert_real_envelope(profile: &str, names: &[String]) {
+            let mut args = vec!["--environment-profile".to_string(), profile.to_string()];
+            for name in names { args.extend(["--inherit-env".to_string(), name.clone()]); }
+            args.extend(["--cwd", r"C:\trusted", "--", "node.exe"].map(str::to_string));
+            let options = super::super::parse_options(args).unwrap_or_else(|error| {
+                let profile = EnvironmentProfile::parse(profile).unwrap();
+                let rejected = names.iter().filter(|name| profile.canonical_environment_name(name).is_none()).collect::<Vec<_>>();
+                panic!("real {profile:?} envelope rejected: {error}; names={rejected:?}")
+            });
+            let block = child_environment_block_with_lookup(options.environment_profile, &options.inherited_environment, |name| {
+                assert!(name == "SystemRoot" || names.iter().any(|requested| requested == name));
+                Some(OsString::from("synthetic-contract-value"))
+            }).unwrap();
+            assert_eq!(decoded_entries(&block).len(), names.len());
+            assert!(options.environment_profile.canonical_environment_name("UNTRUSTED_AMBIENT_VARIABLE").is_none());
+        }
+
+        #[test]
+        fn bulk_environment_is_never_copied_from_unrequested_ambient_state() {
+            for profile in [EnvironmentProfile::Openwork, EnvironmentProfile::Openscience,
+                EnvironmentProfile::Wardrobe, EnvironmentProfile::InboxZeroStack,
+                EnvironmentProfile::ManagedSetupWorker] {
+                let block = child_environment_block_with_lookup(profile, &[], |name| match name {
+                    "SystemRoot" => Some(OsString::from(r"C:\Windows")),
+                    "BREADBOARD_BULK_DATA_DIR" => panic!("unrequested ambient bulk root must not be read"),
+                    _ => None,
+                }).unwrap();
+                assert_eq!(decoded_entries(&block), [r"SystemRoot=C:\Windows"]);
+                assert!(child_environment_block_with_lookup(profile, &["UNTRUSTED_AMBIENT_VARIABLE".to_string()], |_| {
+                    panic!("unknown requested names must be rejected before lookup")
+                }).is_err());
+            }
+        }
+
         fn decoded_entries(block: &[u16]) -> Vec<String> {
             block
                 .split(|value| *value == 0)
@@ -6464,9 +6595,25 @@ mod tests {
                 "SystemDrive",
                 "PROGRAMFILES",
                 "PROGRAMFILES(X86)",
+                "BREADBOARD_BULK_DATA_DIR",
             ] {
                 assert!(names.contains(&required), "{label} must admit {required}");
             }
+        }
+    }
+
+    #[test]
+    fn packaged_solidworks_flag_stays_with_its_actual_consumers() {
+        for profile in [EnvironmentProfile::Dashboard, EnvironmentProfile::SolidworksMcp,
+            EnvironmentProfile::OuterHardwareBlueprintWorker] {
+            assert_eq!(profile.canonical_environment_name("BREADBOARD_SOLIDWORKS_IMMUTABLE_RUNTIME"),
+                Some("BREADBOARD_SOLIDWORKS_IMMUTABLE_RUNTIME"));
+        }
+        for profile in [EnvironmentProfile::Worker, EnvironmentProfile::ManagedSetupWorker,
+            EnvironmentProfile::Openwork, EnvironmentProfile::Openscience,
+            EnvironmentProfile::Wardrobe, EnvironmentProfile::InboxZeroStack,
+            EnvironmentProfile::BackgroundWorker] {
+            assert!(profile.canonical_environment_name("BREADBOARD_SOLIDWORKS_IMMUTABLE_RUNTIME").is_none());
         }
     }
 
@@ -7065,6 +7212,34 @@ mod tests {
             rejected.is_empty(),
             "runtime-core dashboard environment names are outside the supervisor profile: {rejected:?}"
         );
+    }
+
+    #[test]
+    fn openwork_builder_names_are_accepted_only_by_the_service_profile() {
+        let source = include_str!("../../runtime-core/src/service_environment.rs");
+        let builder = source
+            .split_once("fn build_openwork_environment(")
+            .unwrap().1
+            .split_once("fn build_openscience_environment(")
+            .unwrap().0;
+        let mut names = Vec::new();
+        let mut cursor = builder;
+        while let Some((_, rest)) = cursor.split_once("builder.insert(") {
+            cursor = rest;
+            if let Some(literal) = rest.trim_start().strip_prefix('"') {
+                names.push(literal.split_once('"').unwrap().0);
+            }
+        }
+        assert!(names.contains(&"OPENCODE_BIN"));
+        let mut arguments = vec!["--environment-profile".to_string(), "openwork".to_string()];
+        for name in &names {
+            arguments.extend(["--inherit-env".to_string(), name.to_string()]);
+        }
+        arguments.extend(["--cwd", "C:\\trusted", "--", "node.exe"].map(str::to_string));
+        assert_eq!(parse_options(arguments).unwrap().inherited_environment, names);
+        for profile in [EnvironmentProfile::OuterOpenworkWorker, EnvironmentProfile::Openscience] {
+            assert!(profile.canonical_environment_name("OPENCODE_BIN").is_none());
+        }
     }
 
     #[test]

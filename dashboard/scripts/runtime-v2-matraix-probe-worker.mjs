@@ -1,3 +1,5 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
+import { managedVenvRoot } from "./runtime-v2-bulk-paths.mjs";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -37,18 +39,6 @@ function boundedText(value, maximumBytes) {
   return typeof value === "string" &&
     Buffer.byteLength(value, "utf8") <= maximumBytes &&
     !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value);
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" ||
-    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function directDirectory(candidate, root, message) {
@@ -136,12 +126,12 @@ function applicationLayout(launch) {
   const bridge = fs.existsSync(bridgeCandidate)
     ? directFile(bridgeCandidate, appRoot, "The staged MatrAIx bridge is indirect.")
     : null;
-  const venv = path.join(dataRoot, "runtime-v2", "services", "matraix", ".venv");
+  const venv = managedVenvRoot(dataRoot, "matraix");
   const pythonCandidate = process.platform === "win32"
     ? path.join(venv, "Scripts", "python.exe")
     : path.join(venv, "bin", "python");
   const python = fs.existsSync(pythonCandidate)
-    ? directFile(pythonCandidate, dataRoot, "The managed MatrAIx Python is indirect.")
+    ? directFile(pythonCandidate, venv, "The managed MatrAIx Python is indirect.")
     : null;
   const workspace = directDirectory(
     launch.workspacePath,

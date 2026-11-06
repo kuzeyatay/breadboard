@@ -28,8 +28,6 @@ export const ANYDOC_VERSION = "0.1.7";
 /** Sections beyond this collapse into one: a heading-per-line document should
  *  not turn into a thousand one-line citations. */
 const MAX_SECTIONS = 120;
-/** Embedded images saved per document. */
-const MAX_EMBEDDED_IMAGES = 24;
 
 // ── The native module ───────────────────────────────────────────────────────
 
@@ -327,8 +325,7 @@ export async function convertWithAnydoc({
       const images = document.assets.filter((asset) =>
         asset.mediaType.startsWith("image/"),
       );
-      const kept = images.slice(0, MAX_EMBEDDED_IMAGES);
-      kept.forEach((asset, index) => {
+      images.forEach((asset, index) => {
         const saved = saveImage({
           index: index + 1,
           mediaType: asset.mediaType,
@@ -337,11 +334,6 @@ export async function convertWithAnydoc({
         });
         if (saved) imagePaths.push(saved);
       });
-      if (images.length > kept.length) {
-        warnings.push(
-          `Saved the first ${kept.length} of ${images.length} embedded images to keep the upload stable.`,
-        );
-      }
     } catch {
       // Losing the pictures is not losing the document: the text conversion
       // already succeeded, so report it as a warning and keep going.

@@ -1,3 +1,4 @@
+import { runtimePathWithin as pathWithin, sameRuntimePath } from "./runtime-v2-paths.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,12 +67,6 @@ export function validateAudioAnalyzerRequest(value) {
   return value;
 }
 
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" ||
-    (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
-}
-
 function analyzerExecutable(launch) {
   const configured = process.env.BREADBOARD_AUDIO_ANALYZER_SERVER?.trim();
   if (!configured) throw new Error("The trusted audio-analyzer executable is unavailable.");
@@ -84,10 +79,7 @@ function analyzerExecutable(launch) {
     throw new Error("The trusted audio-analyzer executable is unavailable.");
   }
   const canonical = fs.realpathSync.native(resolved);
-  const same = process.platform === "win32"
-    ? canonical.toLowerCase() === resolved.toLowerCase()
-    : canonical === resolved;
-  if (!same) throw new Error("The trusted audio-analyzer executable is indirect.");
+  if (!sameRuntimePath(canonical, resolved)) throw new Error("The trusted audio-analyzer executable is indirect.");
   return canonical;
 }
 

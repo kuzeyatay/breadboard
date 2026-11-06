@@ -75,7 +75,8 @@ function parseInitialTurn(
     // browser-owned provider response body. Keep the mode with the durable
     // placeholder so a reload cannot accidentally change which runtime owns
     // the already-submitted prompt.
-    agentMode: turn.agentMode !== false,
+    agentMode: turn.voice === true || turn.agentMode !== false,
+    ...(turn.voice === true ? { voice: true } : {}),
     ...(typeof turn.model === "string" && turn.model.trim()
       ? { model: turn.model.trim().slice(0, 240) }
       : {}),
@@ -174,10 +175,10 @@ export async function POST(request: Request) {
       userId,
       title,
       surface,
-      originLabel: isPdfAssistantPageContext(surface, pageSlug) ? "PDF Assistant" : surface === 'dashboard_terminal' && body.voice === true ? 'Voice' : surface === "dashboard_terminal" && body.browser === true
+      originLabel: body.sideChat === true ? "Side chat" : isPdfAssistantPageContext(surface, pageSlug) ? "PDF Assistant" : surface === 'dashboard_terminal' && body.voice === true ? 'Voice' : surface === "dashboard_terminal" && body.browser === true
         ? "Browser"
         : undefined,
-      temporary: body.temporary === true,
+      temporary: body.sideChat === true || body.temporary === true,
       scopeKind: surface === "quartz_ai" && garden
         ? "page"
         : garden

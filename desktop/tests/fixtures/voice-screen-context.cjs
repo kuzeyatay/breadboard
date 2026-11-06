@@ -58,6 +58,7 @@ app.whenReady().then(async () => {
   // native image path. Voice follows the user's view instead of the old grant.
   const { VoiceCompanion } = require(path.resolve(__dirname, '../../dist/main/voice-companion.js'));
   const companion = new VoiceCompanion({ dashboardUrl: () => origin, allowed: { origins: new Set([origin]) },
+    prepareCapture: contents => manager.prepareBreadboardUseInput(contents),
     contextTargets: host => manager.voiceContextTargets(host) });
   await companion.start();
   const voice = BrowserWindow.getAllWindows().find(candidate => candidate.webContents.getURL() === origin + '/voice');

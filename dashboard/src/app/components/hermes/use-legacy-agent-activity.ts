@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatTextSelectionReference } from "@/lib/chat-text-selection.ts";
+import type { ChatRuntimeControl } from "@/lib/hermes/chat-runtime-control.ts";
 import { isYoloModeEnabled, useYoloMode } from "@/app/components/use-yolo-mode";
 import {
   activityLabelForTool,
@@ -24,7 +25,10 @@ import {
 
 type LegacyRuntimeEvent = Record<string, unknown> & { type?: string };
 
-export function useLegacyAgentActivity() {
+export function useLegacyAgentActivity(restored?: {
+  sessionReference: string | number | null;
+  runtimeControl?: ChatRuntimeControl | null;
+}) {
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("idle");
   const [pendingPermission, setPendingPermission] =
@@ -33,17 +37,46 @@ export function useLegacyAgentActivity() {
     useState<ClarificationPrompt | null>(null);
   const runtimeSessionId = useRef<number | null>(null);
   const runtimeRunId = useRef<string | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const answeredClarifications = useRef(new Set<string>());
+  const clarificationInFlight = useRef<string | null>(null);
+  const pendingClarificationRef = useRef<ClarificationPrompt | null>(null);
+  pendingClarificationRef.current = pendingClarification;
   // Garden Chat knows its canonical conversation before the runtime event
   // arrives. Keep that reference so Stop works during document preparation.
   const pendingSessionReference = useRef<string | number | null>(null);
   const requestController = useRef<AbortController | null>(null);
   const [yoloMode] = useYoloMode();
 
+  const restoredReference = restored?.sessionReference;
+  const restoredControl = restored?.runtimeControl;
+  useEffect(() => {
+    if (restoredReference === undefined) return;
+    // The live stream is newer than a history poll. Once the selected chat
+    // changes, invalidate its callbacks without cancelling the background turn.
+    if (requestController.current && pendingSessionReference.current === restoredReference) return;
+    requestController.current = null;
+    pendingSessionReference.current = restoredReference;
+    runtimeSessionId.current = restoredControl?.sessionId ?? null;
+    runtimeRunId.current = restoredControl?.runId ?? null;
+    setActiveRunId(restoredControl?.runId ?? null);
+    const question = restoredControl?.pendingClarification;
+    const key = question ? `${restoredControl.sessionId}:${question.requestId}` : null;
+    const pending = key && !answeredClarifications.current.has(key) && clarificationInFlight.current !== key ? question! : null;
+    setPendingClarification(pending);
+    setPendingPermission(null);
+    setConnection(pending ? "waiting" : restoredControl ? "streaming" : "idle");
+    setActivities(pending ? [{ id: `clarify-${pending.requestId}`, kind: "permission",
+      label: "Waiting for your answer", detail: pending.question,
+      status: "permission_required", startedAt: new Date().toISOString() }] : []);
+  }, [restoredReference, restoredControl]);
+
   const start = useCallback((sessionReference?: string | number | null) => {
     const controller = new AbortController();
     requestController.current = controller;
     runtimeSessionId.current = null;
     runtimeRunId.current = null;
+    setActiveRunId(null);
     pendingSessionReference.current = sessionReference ?? null;
     setPendingPermission(null);
     setPendingClarification(null);
@@ -82,6 +115,7 @@ export function useLegacyAgentActivity() {
         typeof event.runId === "string" && event.runId.trim()
           ? event.runId.trim()
           : null;
+      setActiveRunId(runtimeRunId.current);
       setConnection("streaming");
       return;
     }
@@ -299,8 +333,10 @@ export function useLegacyAgentActivity() {
     }
     requestController.current = null;
     runtimeRunId.current = null;
+    setActiveRunId(null);
     pendingSessionReference.current = null;
     setPendingPermission(null);
+    setPendingClarification(null);
     setConnection(failed ? "error" : "idle");
     setActivities((current) =>
       current.map((item) =>
@@ -337,6 +373,7 @@ export function useLegacyAgentActivity() {
       setPendingClarification(null);
       runtimeSessionId.current = null;
       runtimeRunId.current = null;
+      setActiveRunId(null);
       pendingSessionReference.current = null;
       setConnection("idle");
       setActivities((current) =>
@@ -438,26 +475,37 @@ export function useLegacyAgentActivity() {
 
   const respondToClarification = useCallback(
     async (answer: string) => {
-      const prompt = pendingClarification;
+      const prompt = pendingClarificationRef.current;
       const sessionId = runtimeSessionId.current;
+      const runId = runtimeRunId.current;
       const trimmed = answer.trim();
-      if (!prompt || !sessionId || !trimmed) return;
+      if (!prompt || !sessionId || !trimmed || clarificationInFlight.current) return false;
+      const key = `${sessionId}:${prompt.requestId}`;
+      clarificationInFlight.current = key;
+      pendingClarificationRef.current = null;
       setPendingClarification(null);
       setConnection("streaming");
       try {
         await submitClarificationAnswer(prompt.requestId, sessionId, trimmed);
       } catch {
-        setPendingClarification(prompt);
-        setConnection("waiting");
-        setActivities((current) =>
+        if (runtimeSessionId.current === sessionId && runtimeRunId.current === runId && !pendingClarificationRef.current) {
+          pendingClarificationRef.current = prompt;
+          setPendingClarification(prompt);
+          setConnection("waiting");
+          setActivities((current) =>
           current.map((item) =>
             item.id === `clarify-${prompt.requestId}`
               ? { ...item, detail: "The answer could not be delivered." }
               : item,
           ),
-        );
-        return;
+          );
+        }
+        return false;
+      } finally {
+        if (clarificationInFlight.current === key) clarificationInFlight.current = null;
       }
+      answeredClarifications.current.add(key);
+      if (runtimeSessionId.current !== sessionId || runtimeRunId.current !== runId) return true;
       setActivities((current) =>
         current.map((item) =>
           item.id === `clarify-${prompt.requestId}`
@@ -470,8 +518,9 @@ export function useLegacyAgentActivity() {
             : item,
         ),
       );
+      return true;
     },
-    [pendingClarification],
+    [],
   );
 
   useEffect(() => {
@@ -485,6 +534,7 @@ export function useLegacyAgentActivity() {
   return {
     activities,
     connection,
+    activeRunId,
     pendingPermission,
     pendingClarification,
     start,

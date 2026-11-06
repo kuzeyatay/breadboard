@@ -1,7 +1,10 @@
 "use client";
 
-import { useEffect, useSyncExternalStore } from "react";
+import { createContext, useEffect, useSyncExternalStore } from "react";
 import type { StarredMessage } from "@/lib/starred-messages-types";
+
+/** PDF readers also render answers in portals; context follows those answers. */
+export const StarredPdfSourceContext = createContext<string | undefined>(undefined);
 
 const empty = { messages: [] as StarredMessage[], loading: true, saving: false, error: null as string | null };
 let state = empty;
@@ -33,14 +36,14 @@ export function refreshStarredMessages(): Promise<void> {
   return loading;
 }
 
-export async function saveMessageStar(conversationId: string, messageId: string, starred: boolean) {
+export async function saveMessageStar(conversationId: string, messageId: string, starred: boolean, sourceUrl?: string) {
   if (state.saving) return;
   revision += 1;
   publish({ ...state, saving: true });
   try {
     const messages = await readMessages(await fetch("/api/starred-messages", {
       method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId, messageId, starred }),
+      body: JSON.stringify({ conversationId, messageId, starred, ...(starred && sourceUrl ? { sourceUrl } : {}) }),
     }));
     revision += 1;
     publish({ messages, loading: false, saving: false, error: null });

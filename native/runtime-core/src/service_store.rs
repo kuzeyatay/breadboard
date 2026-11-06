@@ -53,6 +53,8 @@ pub enum DurableServiceStoreError {
     Lease(#[from] ServiceLeaseError),
     #[error("service {0} was not registered")]
     ServiceNotFound(String),
+    #[error("service {service_id} generation {generation} is completing its idle stop")]
+    IdleStopPending { service_id: String, generation: u64 },
     #[error("service {0} is already bound to different durable registration data")]
     RegistrationConflict(String),
     #[error("service {0} admission profile does not match its registration or active generation")]
@@ -1210,6 +1212,9 @@ impl JobStore {
             .expect("runtime service store mutex poisoned");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         ensure_service_registration_tx(&transaction, registration, now_ms)?;
+        crate::managed_setup_guard::require_service_installation_access(
+            &transaction, registration.service_id(),
+        )?;
         let worker_dependency = match authority {
             ServiceAcquireAuthority::Independent => None,
             ServiceAcquireAuthority::WorkerDependency(dependency) => {
@@ -1315,6 +1320,20 @@ impl JobStore {
                 (service.generation, ServiceLeaseClaimState::Active)
             }
             ServiceLifecycleState::Stopping => {
+                // A scheduled idle stop is a temporary ownership transition,
+                // not an unavailable dependency. The same transaction already
+                // revalidated admission, installation exclusion and the exact
+                // unclaimed worker owner. Never turn shutdown/failure stops
+                // or a superseded intent into permission to wait and restart.
+                if matches!(
+                    query_generation_stop_intent_tx(&transaction, &service.service_id, service.generation)?,
+                    Some((ServiceStopCause::Idle, OutboxState::Pending | OutboxState::Claimed | OutboxState::Acked))
+                ) {
+                    return Err(DurableServiceStoreError::IdleStopPending {
+                        service_id: service.service_id,
+                        generation: service.generation,
+                    });
+                }
                 return Err(ServiceLeaseError::ServiceStopping(service.service_id).into());
             }
             ServiceLifecycleState::AvailableButStopped => {
@@ -1444,6 +1463,9 @@ impl JobStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         ensure_service_registration_tx(&transaction, registration, now_ms)?;
         let service = query_service_tx(&transaction, registration.service_id())?;
+        crate::managed_setup_guard::require_service_installation_access(
+            &transaction, registration.service_id(),
+        )?;
         require_monotonic_time(&service, now_ms)?;
         if service.acquisition_closed {
             return Err(ServiceLeaseError::AcquisitionClosed(service.service_id).into());
@@ -5851,6 +5873,92 @@ mod tests {
                 .state,
             RuntimeServiceState::Stopping
         );
+    }
+
+    #[test]
+    fn idle_stop_acquire_waits_without_a_lease_then_starts_only_after_tree_exit() {
+        let (_directory, store) = store();
+        let registration = registration("search");
+        let profile = admission_profile("search", RuntimeMode::Lean, 64);
+        let first = acquire(&store, &registration, "first", 100);
+        let start = acknowledge_next_start(&store, 101, 102);
+        let residency = ProcessTreeResidency::service_for_test(store.generation_scope.clone(), "search", 1);
+        store.settle_durable_service_residency_inner(&start, &residency, 103).unwrap();
+        store.confirm_durable_service_ready_inner(&start, 104).unwrap();
+        store.release_durable_service_lease(&first, ServiceLeaseReleaseReason::Explicit, 105).unwrap();
+        store.advance_durable_service_time("search", 205).unwrap();
+        let request = |at| store.begin_durable_service_acquire(
+            &registration, &profile, "waiting", 500, at, AdmissionPolicy::default(), commit_sample,
+        );
+        // Cover both the durable pending StopTree and its acknowledged form.
+        assert!(matches!(request(206), Err(DurableServiceStoreError::IdleStopPending { generation: 1, .. })));
+        let stop_claim = store.claim_next_durable_service_intent(100, 207).unwrap().unwrap();
+        let stop = match store.acknowledge_durable_service_intent(stop_claim, 208).unwrap().authority {
+            AcknowledgedServiceIntent::Stop(stop) => stop,
+            _ => panic!("expected idle StopTree"),
+        };
+        assert!(matches!(request(209), Err(DurableServiceStoreError::IdleStopPending { generation: 1, .. })));
+        let snapshot = store.durable_service_snapshot("search").unwrap();
+        assert_eq!((snapshot.active_leases, snapshot.pending_leases, snapshot.generation), (0, 0, 1));
+        assert_eq!(outbox_count(&store, None), 2);
+        let exit = ProcessTreeExit::service_stopped_after_started_for_test_in_scope(store.generation_scope.clone(), "search", 1);
+        store.finish_durable_service_tree_exit_inner(&start, &exit, Some(stop.cause()), 210).unwrap();
+        let DurableServiceAcquireResult::Acquired(second) = request(211).unwrap() else { panic!("must acquire after zero-resident receipt"); };
+        assert_eq!((second.generation(), second.state()), (2, ServiceLeaseClaimState::Pending));
+        assert_eq!(outbox_count(&store, None), 3);
+    }
+
+    #[test]
+    fn idle_stop_worker_wait_revalidates_cancellation_assignment_and_runtime_shutdown() {
+        for transition in ["cancel", "assigned", "shutdown"] {
+            let (directory, store) = store();
+            let fixture = admitted_gbrain_dependency(&directory, &store);
+            let registration = insert_ready_idle_heavyweight(&store, "gbrain", 1, 500);
+            let profile = admission_profile("gbrain", RuntimeMode::Lean, 64);
+            store.advance_durable_service_time("gbrain", 500).unwrap();
+            let request = |at| store.begin_durable_worker_service_dependency_acquire(
+                &registration, &profile, &fixture.dependency, "waiting", 500, at,
+                AdmissionPolicy::default(), || panic!("waiting/lost owners must not sample or launch"),
+            );
+            assert!(matches!(request(501), Err(DurableServiceStoreError::IdleStopPending { generation: 1, .. })));
+            match transition {
+                "cancel" => { store.request_cancellation(&fixture.context, &fixture.job_id).unwrap(); }
+                "assigned" => { let _claim = store.try_claim_admitted_worker(&fixture.job_id, "worker_new_owner").unwrap(); }
+                "shutdown" => store.close_for_runtime_shutdown(),
+                _ => unreachable!(),
+            }
+            if transition == "shutdown" {
+                assert!(matches!(request(502), Err(DurableServiceStoreError::Store(StoreError::AdmissionClosed))));
+            } else {
+                assert!(matches!(request(502).unwrap(), DurableWorkerServiceAcquireResult::OwnerLost));
+            }
+            let snapshot = store.durable_service_snapshot("gbrain").unwrap();
+            assert_eq!((snapshot.active_leases, snapshot.pending_leases, snapshot.generation), (0, 0, 1));
+        }
+    }
+
+    #[test]
+    fn failure_shutdown_and_superseded_stops_never_become_idle_waits() {
+        for (cause, state) in [("failure", "acked"), ("shutdown", "acked"), ("idle", "superseded")] {
+            let (directory, store) = store();
+            let fixture = admitted_gbrain_dependency(&directory, &store);
+            let registration = insert_ready_idle_heavyweight(&store, "gbrain", 1, 500);
+            let profile = admission_profile("gbrain", RuntimeMode::Lean, 64);
+            store.advance_durable_service_time("gbrain", 500).unwrap();
+            let stop_claim = store.claim_next_durable_service_intent(100, 501).unwrap().unwrap();
+            let acknowledged = store.acknowledge_durable_service_intent(stop_claim, 502).unwrap();
+            assert!(matches!(acknowledged.authority, AcknowledgedServiceIntent::Stop(_)));
+            store.connection.lock().unwrap().execute(
+                "UPDATE runtime_service_outbox SET stop_cause=?1,lifecycle_state=?2,
+                 acked_at=CASE WHEN ?2='acked' THEN acked_at ELSE NULL END
+                 WHERE service_id='gbrain' AND action='stop_tree'",
+                params![cause, state],
+            ).unwrap();
+            assert!(matches!(store.begin_durable_worker_service_dependency_acquire(
+                &registration, &profile, &fixture.dependency, "never_wait", 500, 503,
+                AdmissionPolicy::default(), || panic!("failed stop must not sample"),
+            ), Err(DurableServiceStoreError::Lease(ServiceLeaseError::ServiceStopping(_)))));
+        }
     }
 
     #[test]

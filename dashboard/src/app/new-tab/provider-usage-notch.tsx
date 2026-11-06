@@ -4,7 +4,22 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Activity, RefreshCw } from "lucide-react";
-import { notchColor, notchHeadlineRow, notchRemaining, notchReserveCopy, notchResetCopy, notchUsageRows, type NotchProviderId } from "@/lib/usage-notch";
+import {
+  notchActivityElapsed,
+  notchActivityLabel,
+  notchActivitySummary,
+  notchAvailabilityCopy,
+  notchColor,
+  notchHeadlineRow,
+  notchRemaining,
+  notchReserveCopy,
+  notchResetCopy,
+  notchUsageRows,
+  type NotchActivitySession,
+  type NotchActivityState,
+  type NotchProviderId,
+} from "@/lib/usage-notch";
+import { useAgentActivity } from "./use-agent-activity";
 import { useProviderUsage } from "./use-provider-usage";
 import glyphs from "./usage-notch-glyphs.json";
 import styles from "./provider-usage-notch.module.css";
@@ -18,7 +33,21 @@ function ProviderGlyph({ provider }: { provider: NotchProviderId }) {
   return <svg viewBox="0 0 1 1" className={styles.glyph} aria-hidden="true"><path d={GLYPHS[provider]} fill="currentColor" fillRule="evenodd" /></svg>;
 }
 
-function UsageRing({ provider, used, loading, stale }: { provider: NotchProviderId; used: number | null; loading: boolean; stale: boolean }) {
+function ActivityArc({ state }: { state: NotchActivityState }) {
+  if (state === "idle") return null;
+  if (state === "working") return (
+    <svg viewBox="0 0 48 48" className={styles.activityArc} data-agent-state={state} aria-hidden="true">
+      <circle cx="24" cy="24" r="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" pathLength="100" strokeDasharray="25 75" />
+    </svg>
+  );
+  return (
+    <svg viewBox="0 0 48 48" className={`${styles.activityArc} ${state === "waiting" ? styles.activityWaiting : styles.activityComplete}`} data-agent-state={state} aria-hidden="true">
+      <circle cx="24" cy="24" r="15" fill="none" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function UsageRing({ provider, used, loading, stale, activity }: { provider: NotchProviderId; used: number | null; loading: boolean; stale: boolean; activity: NotchActivityState }) {
   const remaining = notchRemaining(used);
   return (
     <span className={styles.ring} style={{ "--usage-color": notchColor(used) } as CSSProperties}>
@@ -27,10 +56,38 @@ function UsageRing({ provider, used, loading, stale }: { provider: NotchProvider
         <circle cx="24" cy="24" r="20.8" fill="none" className={styles.ringProgress} strokeWidth="3.3" strokeLinecap="round" pathLength="100" strokeDasharray="100" strokeDashoffset={100 - (remaining ?? 0)} transform="rotate(-90 24 24)" opacity={remaining === 0 || remaining === null ? 0 : 1} />
       </svg>
       <ProviderGlyph provider={provider} />
-      {loading && <svg viewBox="0 0 48 48" className={styles.refreshArc} aria-hidden="true"><circle cx="24" cy="24" r="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" pathLength="100" strokeDasharray="20 80" /></svg>}
+      {loading && activity === "idle" && <svg viewBox="0 0 48 48" className={styles.refreshArc} aria-hidden="true"><circle cx="24" cy="24" r="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" pathLength="100" strokeDasharray="20 80" /></svg>}
+      <ActivityArc state={activity} />
       {stale && !loading && <span className={styles.staleDot} aria-hidden="true" />}
     </span>
   );
+}
+
+function StatusRing({ state }: { state: NotchActivityState }) {
+  const fraction = state === "working" ? 75 : state === "waiting" ? 50 : 100;
+  return <svg viewBox="0 0 12 12" className={`${styles.sessionStateRing} ${styles[`sessionState${state[0].toUpperCase()}${state.slice(1)}`]}`} data-session-state={state} aria-hidden="true">
+    <circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" pathLength="100" strokeDasharray={`${fraction} 100`} transform="rotate(-90 6 6)" />
+  </svg>;
+}
+
+function ActivitySessions({ sessions, now }: { sessions: readonly NotchActivitySession[]; now: number }) {
+  if (!sessions.length) return null;
+  const rank = { waiting: 0, working: 1, complete: 2, idle: 3 } satisfies Record<NotchActivityState, number>;
+  const ordered = [...sessions].sort((left, right) => rank[left.state] - rank[right.state] || Date.parse(right.since) - Date.parse(left.since));
+  const shown = ordered.slice(0, 5);
+  return <section className={styles.sessions} aria-label="Agent activity">
+    {shown.map((session) => <div key={session.id} className={styles.session}>
+      <div className={styles.sessionHeading}>
+        <span>{session.name}</span>
+        <span className={styles.sessionState}><StatusRing state={session.state} />{notchActivityLabel(session.state)}</span>
+      </div>
+      <div className={styles.sessionDetail}>
+        <span>{session.state === "waiting" && session.waiting_for ? session.waiting_for : session.detail}</span>
+        <span>{notchActivityElapsed(session.since, now)}</span>
+      </div>
+    </div>)}
+    {ordered.length > shown.length && <p className={styles.moreSessions}>and {ordered.length - shown.length} more</p>}
+  </section>;
 }
 
 function UsageNumber({ remaining }: { remaining: number | null }) {
@@ -53,6 +110,7 @@ function UsageNumber({ remaining }: { remaining: number | null }) {
 
 export default function ProviderUsageNotch() {
   const usage = useProviderUsage();
+  const activity = useAgentActivity();
   const [open, setOpen] = useState<string | null>(null);
   const [pinned, setPinned] = useState<string | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -89,10 +147,13 @@ export default function ProviderUsageNotch() {
           const used = headline?.used ?? null;
           const remaining = notchRemaining(used);
           const reserveCopy = provider.id === "chatgpt" ? notchReserveCopy(reading?.data) : null;
+          const availabilityCopy = provider.id === "google" ? notchAvailabilityCopy(reading?.data) : null;
           const weekly = provider.id === "chatgpt" && !reserveCopy && headline?.limit.window_minutes === 10080;
           const stale = Boolean(reading?.data?.stale || (reading?.error && rows.length));
           const retryAt = Date.parse(reading?.data?.retry_at ?? "");
           const coolingDown = Number.isFinite(retryAt) && retryAt > usage.now;
+          const sessions = activity.providers[provider.id] ?? [];
+          const activityState = notchActivitySummary(sessions);
           const expanded = open === provider.id;
           return (
             <Popover.Root key={provider.id} open={expanded} onOpenChange={(next) => {
@@ -107,9 +168,9 @@ export default function ProviderUsageNotch() {
                     returnFocus.current = true;
                     if (pinned === provider.id) dismiss(); else { setOpen(provider.id); setPinned(provider.id); }
                   }}
-                  aria-label={`${provider.label} usage: ${remaining === null ? "not reported" : `${Math.round(remaining)}% remaining`}${weekly ? ", weekly limit" : ""}${reserveCopy ? ", reserve pool" : ""}${stale ? ", last known reading" : ""}`}
+                  aria-label={`${provider.label} usage: ${remaining === null ? "not reported" : `${Math.round(remaining)}% remaining`}${weekly ? ", weekly limit" : ""}${reserveCopy ? ", reserve pool" : ""}${availabilityCopy ? ", selected model temporarily unavailable" : ""}${stale ? ", last known reading" : ""}${sessions.length ? `, agent ${notchActivityLabel(activityState)}` : ""}`}
                   data-provider={provider.id} data-open={expanded}>
-                  <Popover.Anchor asChild><span className={styles.anchor}><UsageRing provider={provider.id} used={used} loading={reading?.loading ?? true} stale={stale} /></span></Popover.Anchor>
+                  <Popover.Anchor asChild><span className={styles.anchor}><UsageRing provider={provider.id} used={used} loading={reading?.loading ?? true} stale={stale} activity={activityState} /></span></Popover.Anchor>
                   <UsageNumber remaining={remaining} />
                 </button>
               </Popover.Trigger>
@@ -148,9 +209,11 @@ export default function ProviderUsageNotch() {
                   {!rows.length && <p className={styles.status}>{reading?.loading ? "Reading provider usage…" : reading?.error ?? "No usage reported yet. Send a message to update it."}</p>}
                   {stale && <p className={styles.status}>Last reading{reading?.data?.captured_at ? ` · ${new Date(reading.data.captured_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}. {reading?.error ?? "Waiting for an updated report."}</p>}
                   {coolingDown && <p className={styles.status}>Retrying automatically after {new Date(retryAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.</p>}
+                  {availabilityCopy && <p className={styles.status} data-model-unavailable="true">{availabilityCopy}</p>}
                   {reserveCopy && <p className={styles.status} data-usage-reserve="active">{reserveCopy}</p>}
                   {weekly && <p className={styles.status}>Ring shows the remaining weekly allowance.</p>}
                   {provider.id === "google" && rows.length > 1 && <p className={styles.status}>Ring shows the account with the least remaining allowance.</p>}
+                  <ActivitySessions sessions={sessions} now={usage.now} />
                   <Popover.Arrow asChild><svg width="30" height="24" viewBox="0 0 30 24" className={styles.tail} aria-hidden="true"><path d="M0 0 C9 2 12 8 15 24 C18 8 21 2 30 0Z" /></svg></Popover.Arrow>
                   </motion.div>
                 </Popover.Content>}

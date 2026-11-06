@@ -175,6 +175,58 @@ export function websiteHtmlImages(html: string, pageUrl: string): Array<{ url: s
   return images;
 }
 
+/** Re-attach the figures a reader left out, keeping its own images in place. */
+export function withSourceFigures(markdown: string, html: string, pageUrl: string): string {
+  const missing = websiteHtmlImages(html, pageUrl).filter(image =>
+    !markdown.includes(image.url) && !markdown.includes(new URL(image.url).pathname));
+  return missing.length
+    ? `${markdown}\n\n### Additional source figures\n\n${missing.map(image => `![${image.alt}](${image.url})`).join("\n\n")}`
+    : markdown;
+}
+
+/**
+ * A reader can return a page as plain text with every <img> gone - Jina does
+ * this for Squarespace pages, so a single-page import saved a source with no
+ * figures at all. Read the page itself and recover them, exactly as the crawl
+ * already does with the HTML it holds. Never fatal: a link that cannot be
+ * re-read still imports with whatever the reader returned.
+ */
+export async function appendSourceFigures(markdown: string, pageUrl: string, {
+  signal, fetchImpl = fetch, assertPublicHostImpl = assertPublicHost,
+}: {
+  signal?: AbortSignal;
+  fetchImpl?: typeof fetch;
+  assertPublicHostImpl?: (hostname: string) => Promise<void>;
+} = {}): Promise<string> {
+  const deadline = AbortSignal.timeout(30_000);
+  const activeSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  try {
+    let current = new URL(pageUrl);
+    for (let hop = 0; hop <= 5; hop++) {
+      if (!/^https?:$/.test(current.protocol) || current.username || current.password) return markdown;
+      await assertPublicHostImpl(current.hostname);
+      const response = await fetchImpl(current, { redirect: "manual", signal: activeSignal,
+        headers: { "User-Agent": "Breadboard-Website-Import/1.0", Accept: "text/html,application/xhtml+xml" } });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        await response.body?.cancel();
+        if (!location) return markdown;
+        current = new URL(location, current);
+        continue;
+      }
+      if (!response.ok || !/html/i.test(response.headers.get("content-type") ?? "")) {
+        await response.body?.cancel();
+        return markdown;
+      }
+      return withSourceFigures(markdown, await boundedText(response, MAX_PAGE_BYTES), current.href);
+    }
+    return markdown;
+  } catch {
+    signal?.throwIfAborted();
+    return markdown;
+  }
+}
+
 export function websiteMarkdownLinks(markdown: string, pageUrl: string): string[] {
   const result: string[] = [];
   const visit = (node: { type: string; url?: string; value?: string; children?: unknown[] }): void => {
@@ -362,12 +414,8 @@ export async function convertWebsiteToMarkdown({
       const pageHash = createHash("sha256").update(response.text).update("\0").update(converted.markdown).digest("hex");
       const duplicate = pageHashes.get(pageHash);
       if (duplicate) { snapshot.aliases[pageUrl] = duplicate; continue; }
-      const missingImages = websiteHtmlImages(response.text, response.url).filter(image =>
-        !converted.markdown.includes(image.url) && !converted.markdown.includes(new URL(image.url).pathname));
-      const markdown = converted.markdown + (missingImages.length
-        ? `\n\n### Additional source figures\n\n${missingImages.map(image => `![${image.alt}](${image.url})`).join("\n\n")}` : "");
       const page: WebsitePage = { ...converted, originalUrl: pageUrl, discoveredLinks,
-        markdown,
+        markdown: withSourceFigures(converted.markdown, response.text, response.url),
         anchor: `website-page-${snapshot.pages.length + 1}` };
       snapshot.pages.push(page);
       pageHashes.set(pageHash, pageUrl);

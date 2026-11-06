@@ -4,6 +4,8 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { devElectronBinary } from "./dev-electron-binary.mjs";
+import { launchOutsideTree } from "./launch-outside-tree.mjs";
 import {
   loadDashboardEnv,
   loadRootEnv,
@@ -49,8 +51,24 @@ export async function runDesktopDev({
   dashboardMode = "hot",
 } = {}) {
   const require = createRequire(import.meta.url);
-  const electronBinary = require("electron");
   const electronEnv = desktopDevEnvironment(env, dashboardMode);
+  const desktopRoot = path.join(repoRoot, "desktop");
+  // Windows: show up in Task Manager as its own "Breadboard" app with its icon,
+  // not as "Electron" nested inside the terminal that launched it.
+  if (process.platform === "win32" && env.BREADBOARD_DEV_PLAIN_ELECTRON !== "1") {
+    const binary = await devElectronBinary(require("electron"), { desktopRoot });
+    const launched = await launchOutsideTree(binary, [".", "--breadboard-dev", ...electronArgs], {
+      cwd: desktopRoot, env: electronEnv,
+    });
+    if (launched) {
+      const stop = () => { try { process.kill(launched.pid); } catch { /* already gone */ } };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+      return await launched.exited;
+    }
+    process.stderr.write("[desktop] could not start Breadboard outside the terminal; starting it directly\n");
+  }
+  const electronBinary = require("electron");
   const electronChild = spawn(
     electronBinary,
     [".", "--breadboard-dev", ...electronArgs],

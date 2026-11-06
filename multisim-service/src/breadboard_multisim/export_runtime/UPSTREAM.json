@@ -1,0 +1,28 @@
+[
+  {
+    "changes": [
+      "Typed IR input to convert; export genericBlock and connectivity helpers."
+    ],
+    "commit": "31532c9f510fa233bf8937c2c53a06c61c074c32",
+    "repository": "https://github.com/senolgulgonul/weave",
+    "name": "weave",
+    "license": "MIT"
+  },
+  {
+    "commit": "33ec7f42bf2885084a459a702a83ea3d87f95f9d",
+    "repository": "https://github.com/yxy050208/multisim-mcp",
+    "name": "multisim-mcp",
+    "changes": [
+      "Bootstrap helper optionally derives the project shell from installed samples without COM; reported as application-unverified.",
+      "Isolated adapter resolves bounded constant arithmetic during parameter substitution for editable subcircuit expansion."
+    ],
+    "license": "MIT"
+  },
+  {
+    "commit": "cb9c13bc6131488bf0c6ac15505d54b4a7e3aa2a",
+    "repository": "https://github.com/cinderblock/electronics-workbench-decoder",
+    "version": "0.2.0",
+    "name": "electronics-workbench-decoder",
+    "license": "ISC"
+  }
+]

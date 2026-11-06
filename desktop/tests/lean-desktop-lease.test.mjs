@@ -156,10 +156,11 @@ test("the build entry point locks before resource admission and releases only ow
       fs.copyFileSync(path.join(desktopRoot, "scripts", name), path.join(scripts, name));
     }
     for (const [name, exports] of [
-      ["dashboard-build-cache.mjs", ["availableDashboardBuild", "reusableDashboardBuild", "beginDashboardBuild", "completeDashboardBuild",
+      ["dashboard-build-cache.mjs", ["assertDashboardBuildOutputUnused", "availableDashboardBuild", "reusableDashboardBuild", "dashboardBuildPaths", "beginDashboardBuild", "completeDashboardBuild",
         "recoverInterruptedDashboardBuild", "refreshStandaloneDashboardAssets", "writeDashboardBuildManifest"]],
       ["dashboard-build-retry.mjs", ["isTransientDashboardBuildFailure"]],
       ["dashboard-trace-safety.mjs", ["assertSafeDashboardTraces"]],
+      ["verify-livekit-runtime.mjs", ["verifyLiveKitRuntime"]],
     ]) {
       fs.writeFileSync(path.join(scripts, name), exports.map((name) =>
         `export function ${name}() { throw new Error('Unexpected build work'); }`).join("\n"));

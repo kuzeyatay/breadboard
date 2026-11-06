@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth-options";
 import { scanClusterKnowledge } from "@/lib/knowledge";
+import { isPptxSource } from "@/lib/garden-source-display";
 import {
   getNavbarFlowers,
   getNavbarShortcuts,
@@ -37,7 +38,8 @@ async function getPdfPageData(clusterSlug: string, slug: string) {
         (item) => item.slug === slug,
       )
     : undefined;
-  const title = node?.title || titleFromSlug(slug) || "PDF source";
+  const title = (node && isPptxSource(node.sourceType, node.sourceFile) ? node.sourceFile : "") ||
+    node?.title || titleFromSlug(slug) || "PDF source";
   const pdfFileName =
     pdfFileNameFromSource(node?.sourceFile) ||
     pdfFileNameFromSource(node?.sourcePdf) ||

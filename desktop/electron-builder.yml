@@ -1,6 +1,10 @@
 appId: com.breadboard.desktop
 productName: Breadboard
 copyright: "Breadboard"
+# Task Manager names the app by its FileDescription, which electron-builder
+# takes from package.json's description (a developer sentence) before productName.
+extraMetadata:
+  description: Breadboard
 electronLanguages:
   - en-US
 
@@ -10,12 +14,15 @@ directories:
 
 files:
   - dist/**/*
+  - "!dist/native/windows-dictation-*.previous.exe"
+  - "!dist/native/windows-dictation-*.new.exe"
   - package.json
   - "!node_modules/**/*"
 
 asar: true
 asarUnpack:
   - dist/native/windows-input.exe
+  - dist/native/windows-dictation.exe
 compression: normal
 
 # All services, runtimes and read-only assets ship as plain resources (not

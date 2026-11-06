@@ -305,9 +305,9 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
 
   "agent-browser": {
     group: "operating",
-    does: "Drives a real browser, one page at a time, for pages that plain extraction cannot read.",
+    does: "Drives a real browser for interactive website tasks and pages that plain extraction cannot read.",
     choose:
-      "The last resort, and the web-research section below states exactly when it is allowed. Never part of an opening plan.",
+      "Use the live Breadboard browser tool first for the user's existing tabs and sign-ins. Choose this worker when a separate browser run is needed. Public research still starts with search and extraction; a requested website interaction needs no failed extraction first.",
   },
   "agent-tars": {
     group: "operating",

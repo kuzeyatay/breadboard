@@ -25,6 +25,6 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [dev-dependencies]
-breadboard-runtime-core = { path = "../runtime-core" }
+breadboard-runtime-core = { path = "../runtime-core", features = ["environment-contract-tests"] }
 breadboard-runtime-protocol = { path = "../runtime-protocol" }
 tempfile = "3"

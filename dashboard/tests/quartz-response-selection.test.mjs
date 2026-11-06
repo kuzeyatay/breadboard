@@ -6,6 +6,7 @@ import test, { before, after } from 'node:test';
 import ts from 'typescript';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
+import { expect } from '@playwright/test';
 import postcss from 'postcss';
 import tailwindcss from '@tailwindcss/postcss';
 import { normalizeQuartzAssistantSelection, quartzAssistantSelectionPromptContext } from '../src/lib/quartz-assistant-selection.ts';
@@ -13,6 +14,14 @@ import { normalizeQuartzAssistantSelection, quartzAssistantSelectionPromptContex
 const root = fileURLToPath(new URL('../', import.meta.url));
 const source = fs.readFileSync(path.join(root, 'src/app/garden/garden-assistant.tsx'), 'utf8');
 const tree = ts.createSourceFile('garden.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+let assistantPanelOpening;
+function findAssistantPanel(node) {
+  if (ts.isJsxOpeningElement(node) && node.tagName.getText(tree) === 'aside' &&
+      node.getText(tree).includes('chatPanelStyle')) assistantPanelOpening = node.getText(tree);
+  ts.forEachChild(node, findAssistantPanel);
+}
+findAssistantPanel(tree);
+assert.ok(assistantPanelOpening);
 const declarations = new Map();
 for (const node of tree.statements) {
   if (ts.isFunctionDeclaration(node) && node.name) declarations.set(node.name.text, node.getText(tree));
@@ -37,16 +46,21 @@ const bundle = await build({ bundle: true, write: false, outfile: 'quartz-select
     window.isInlineViewed=isInlineSelectionNotificationViewed;
     import {uiResourcesForUserRequest} from '@/lib/generative-ui/request-policy';
     import {chatRowKey} from '@/app/components/chat/chat-row-identity';
-    const ActivityPanel=()=>null,AssistantMessageActions=()=>null,ChatTimeSeparator=()=>null,ChatMessageAttachments=()=>null,ChatVideoLinkEmbeds=()=>null,InlineProposalCards=()=>null;
+    const ActivityPanel=()=>null,AssistantMessageActions=()=>null,ChatTimeSeparator=()=>null,ChatMessageAttachments=()=>null,ChatVideoLinkEmbeds=()=>null,InlineProposalCards=()=>null,InlineArtifactCards=()=>null;
     const delegatedThinkingUpdates=()=>[],delegatedAgentCompletedLabelForMessage=()=>'';
     const CollapsibleUserMessage=({children})=><>{children}</>,UserMessageText=({content})=><p>{content}</p>;
     ${['gardenAssistantVisibleContent','visibleGardenChatMessages','gardenSelectionMessageId','withRecoveredAssistant','TranscriptRow'].map(name => declarations.get(name)).join('\n')}
+    function Panel({children}) {
+      if (!window.fixtureAssistantPanel) return <>{children}</>;
+      const chatPanelStyle={'--assistant-panel-width':'520px'},temporaryChat=false;
+      return ${assistantPanelOpening}{children}</aside>;
+    }
     function App(){
       const [scope,setScope]=useState('quartz:fixture:1');
       const [messages,setMessages]=useState(()=>JSON.parse(localStorage.getItem('fixture-messages')||'null')||[
         {id:'response-1',role:'assistant',content:'Quartz response **selected passage** continues with context. Another **sentence to remember**.'}
       ]);
-      const [input,setInput]=useState(''),[busy,setBusy]=useState(false);
+      const [input,setInput]=useState(''),[busy,setBusy]=useState(false),[showSource,setShowSource]=useState(true);
       const composerRef=useRef(null);
       const save=next=>{setMessages(next);localStorage.setItem('fixture-messages',JSON.stringify(next));};
       const mapped=messages.map((m,i)=>({...m,id:gardenSelectionMessageId(m,i)}));
@@ -54,12 +68,12 @@ const bundle = await build({ bundle: true, write: false, outfile: 'quartz-select
         window.submitted={question,selection};
         const clientMessageId=crypto.randomUUID();
         save([...messages,{role:'user',content:question,selectedText:selection.quote,textSelection:selection,clientMessageId},
-          {role:'assistant',content:'Inline answer with **nested explanation** to select.',textSelection:selection,clientMessageId}]);
+          {role:'assistant',content:'Inline answer with **nested explanation** to select.',thinking:'I will check the selected passage in its original context.',textSelection:selection,clientMessageId}]);
         setBusy(true);setInput('');
       };
-      const controls=useTextSelectionController({scope,messages:mapped,busy,composerRef,onAsk:ask,onStop:()=>setBusy(false),onBeginQuestion:()=>{}});
-      window.switchScope=setScope;window.finish=()=>setBusy(false);
-      return <><main>{visibleGardenChatMessages(messages).map((message,index)=><TranscriptRow key={gardenSelectionMessageId(message,index)}
+      const controls=useTextSelectionController({scope,persistDraft:!window.fixtureTemporary,messages:mapped,busy,composerRef,onAsk:ask,onStop:()=>setBusy(false),onBeginQuestion:()=>{},onOpenChatQuestion:id=>{window.openedQuestion=id;}});
+      window.switchScope=setScope;window.finish=()=>setBusy(false);window.showSource=setShowSource;
+      return <Panel><main>{showSource&&visibleGardenChatMessages(messages).map((message,index)=><TranscriptRow key={gardenSelectionMessageId(message,index)}
         message={message} userRequest="Explain Quartz" sourceMessageId={gardenSelectionMessageId(message,index)}
         annotations={controls.annotations.get(gardenSelectionMessageId(message,index))||[]}
         onTextSelection={controls.receiveSelection} onOpenAnnotation={controls.openAnnotation} onSend={()=>{}} />)}</main>
@@ -69,7 +83,7 @@ const bundle = await build({ bundle: true, write: false, outfile: 'quartz-select
         <textarea aria-label="Question" ref={composerRef} value={input} onChange={e=>setInput(e.target.value)}/>
         <button onClick={()=>{ask(input,controls.composerSelection);controls.clearComposerSelection();}}>Send</button>
         </div>
-      </>;
+      </Panel>;
     }createRoot(document.getElementById('root')).render(<App/>);
   ` } });
 
@@ -82,7 +96,7 @@ before(async () => {
 });
 after(async () => { await browser?.close(); });
 
-async function fixture(t) {
+async function fixture(t, {assistantPanel=false,temporary=false}={}) {
   const page = await browser.newPage({viewport:{width:1100,height:850}});
   page.setDefaultTimeout(8000);
   const errors=[];
@@ -101,6 +115,8 @@ async function fixture(t) {
   });
   const mount=async()=>{
     await page.goto('http://localhost:53139/');
+    await page.evaluate(value=>{window.fixtureAssistantPanel=value;},assistantPanel);
+    await page.evaluate(value=>{window.fixtureTemporary=value;},temporary);
     await page.addStyleTag({content:css});
     await page.addScriptTag({content:bundle.outputFiles[0].text});
     await page.locator('[data-chat-selectable-message]').first().waitFor();
@@ -109,10 +125,139 @@ async function fixture(t) {
   return {page,mount,stores};
 }
 
+test('Ask here opens above the Quartz assistant panel and remains clickable after reopening and nesting',async t=>{
+  const {page}=await fixture(t,{assistantPanel:true});
+  for (const viewport of [{width:1100,height:850},{width:390,height:700}]) {
+    await page.setViewportSize(viewport);
+    await select(page,'selected passage');
+    await page.getByRole('button',{name:'Ask here',exact:true}).click();
+    const dialog=page.getByRole('dialog',{name:'Answer about highlighted text'});
+    const editor=dialog.last().getByRole('textbox',{name:'Edit question about highlighted text'});
+    // Visibility alone passes when the panel covers a body portal. An actual
+    // pointer click proves that the question can be reached and typed into.
+    await editor.click();
+    await editor.fill('Explain this selection');
+    await editor.press('Enter');
+    await page.evaluate(()=>window.finish());
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await page.locator('main mark').click();
+    await dialog.getByRole('button',{name:'Edit this question',exact:true}).click();
+    await editor.click();
+    await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
+    await select(page,'nested explanation',dialog);
+    await page.getByRole('button',{name:'Ask here',exact:true}).click();
+    await editor.click();
+    await editor.fill('Explain the nested answer');
+    await editor.press('Enter');
+    await page.evaluate(()=>window.finish());
+    await expect(dialog).toHaveCount(2);
+    await dialog.last().getByRole('button',{name:'More highlight actions',exact:true}).click();
+    await dialog.last().getByRole('menuitem',{name:'Delete highlight',exact:true}).click();
+    await dialog.getByRole('button',{name:'More highlight actions',exact:true}).click();
+    await dialog.getByRole('menuitem',{name:'Delete highlight',exact:true}).click();
+    await expect(dialog).toHaveCount(0);
+  }
+});
+
+test('Ask here drafts survive dismissal, switching chats and reload, and stay separate by highlight', async t => {
+  const {page,mount}=await fixture(t);
+  await page.getByRole('textbox',{name:'Question',exact:true}).fill('My main draft');
+  const dialog=page.getByRole('dialog',{name:'Answer about highlighted text'});
+  const editor=dialog.getByRole('textbox',{name:'Edit question about highlighted text'});
+  const mark=quote=>page.locator('main mark').filter({hasText:quote});
+  await select(page,'selected passage');
+  await page.getByRole('button',{name:'Ask here',exact:true}).click();
+  await editor.fill('First unfinished question\nwith a second line');
+  await page.mouse.click(20,20);
+  await expect(dialog).toHaveCount(0);
+  await select(page,'sentence to remember');
+  await page.getByRole('button',{name:'Ask here',exact:true}).click();
+  await expect(editor).toHaveValue('');
+  await editor.fill('Second unfinished question');
+  await page.mouse.click(20,20);
+  await mark('selected passage').click();
+  await expect(editor).toHaveValue('First unfinished question\nwith a second line');
+  await expect(page.getByRole('textbox',{name:'Question',exact:true})).toHaveValue('My main draft');
+  await expect(page.getByLabel('Ask here context')).toHaveCount(0);
+  assert.equal(await page.evaluate(()=>window.submitted),undefined);
+  await page.evaluate(()=>window.switchScope('quartz:fixture:2'));
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('main mark')).toHaveCount(0);
+  await page.evaluate(()=>window.switchScope('quartz:fixture:1'));
+  await mark('sentence to remember').click();
+  await expect(editor).toHaveValue('Second unfinished question');
+  await mount();
+  await mark('selected passage').click();
+  await expect(editor).toHaveValue('First unfinished question\nwith a second line');
+  await editor.press('Enter');
+  await page.evaluate(()=>window.finish());
+  await dialog.getByRole('button',{name:'Edit this question',exact:true}).click();
+  await editor.fill('A revised question that has not been sent');
+  await mount();
+  await mark('selected passage').click();
+  await expect(editor).toHaveValue('A revised question that has not been sent');
+  await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
+  await mount();
+  await mark('selected passage').click();
+  await expect(editor).toHaveCount(0);
+  await expect(dialog.getByRole('button',{name:'Edit this question',exact:true})).toContainText('First unfinished question');
+  await page.mouse.click(20,20);
+  await mark('sentence to remember').click();
+  await expect(editor).toHaveValue('Second unfinished question');
+  await dialog.getByRole('button',{name:'More highlight actions',exact:true}).click();
+  await dialog.getByRole('menuitem',{name:'Delete highlight',exact:true}).click();
+  const drafts=await page.evaluate(()=>JSON.parse(localStorage.getItem('breadboard:chat-drafts')||'{}'));
+  assert.deepEqual(drafts,{},'sending, cancelling and deleting clear their draft without affecting another highlight');
+});
+
+test('temporary Ask here drafts survive dismissal without being written to local storage', async t => {
+  const {page,mount}=await fixture(t,{temporary:true});
+  await select(page,'selected passage');
+  await page.getByRole('button',{name:'Ask here',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'Answer about highlighted text'});
+  const editor=dialog.getByRole('textbox',{name:'Edit question about highlighted text'});
+  await editor.fill('Temporary unsent question');
+  await page.mouse.click(20,20);
+  await page.locator('main mark').click();
+  await expect(editor).toHaveValue('Temporary unsent question');
+  assert.equal(await page.evaluate(()=>localStorage.getItem('breadboard:chat-drafts')),null);
+  await mount();
+  await page.locator('main mark').click();
+  await expect(editor).toHaveValue('');
+});
+
+test('Ask here stays visible when a transcript refresh removes its source row during the answer', async t => {
+  const {page}=await fixture(t,{assistantPanel:true});
+  await select(page,'selected passage');
+  await page.getByRole('button',{name:'Ask here',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'Answer about highlighted text'});
+  const editor=dialog.getByRole('textbox',{name:'Edit question about highlighted text'});
+  await editor.fill('Explain the highlighted passage');
+  await editor.press('Enter');
+  await expect(dialog.getByRole('button',{name:'Stop this answer',exact:true})).toBeVisible();
+  const position=await dialog.boundingBox();
+  // The virtual transcript may replace/unmount the source row while this
+  // independent answer is still running. Its popup must remain usable.
+  await page.evaluate(()=>window.showSource(false));
+  await expect(page.locator('main [data-chat-selectable-message]')).toHaveCount(0);
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('button',{name:'Stop this answer',exact:true})).toBeVisible();
+  await page.evaluate(()=>window.finish());
+  await expect(dialog).toBeVisible();
+  assert.ok(Math.abs((await dialog.boundingBox()).x-position.x)<2);
+  await page.evaluate(()=>window.showSource(true));
+  await expect(page.locator('main mark')).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button',{name:'Edit this question',exact:true}).click();
+  await expect(editor).toBeFocused();
+});
+
 async function select(page, quote, within=page.locator('main'), toolbar=true) {
   const target=within.getByText(quote,{exact:true});
   const points=await target.evaluate(element=>{
-    const text=element.firstChild,range=document.createRange();
+    const text=document.createTreeWalker(element,NodeFilter.SHOW_TEXT).nextNode(),range=document.createRange();
     range.setStart(text,0);range.setEnd(text,1);const a=range.getBoundingClientRect();
     range.setStart(text,text.length-1);range.setEnd(text,text.length);const b=range.getBoundingClientRect();
     return {x:a.left,y:a.top+a.height/2,endX:b.right,endY:b.top+b.height/2};
@@ -276,10 +421,24 @@ test('Ask in chat quotes the response and Ask here supports streaming, nesting, 
   assert.equal(submitted.selection.quote,'selected passage');
   assert.equal(submitted.selection.mode,'chat');
   await page.evaluate(()=>window.finish());
+  const chatMark = page.getByRole('button',{name:'Open question in chat',exact:true});
+  assert.equal(await chatMark.innerText(),'selected passage');
+  for (const theme of ['light','dark']) {
+    await page.locator('html').evaluate((el,theme)=>el.dataset.theme=theme,theme);
+    await expect(chatMark).toHaveCSS('background-color', theme==='light'?'rgb(244, 231, 173)':'rgb(111, 100, 54)');
+  }
+  await chatMark.click();
+  assert.equal(await page.evaluate(()=>window.openedQuestion),submitted.selection.id);
+  await mount();
+  await page.getByRole('button',{name:'Open question in chat',exact:true}).focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await page.evaluate(()=>window.openedQuestion),submitted.selection.id);
   await select(page,'selected passage');
   await page.getByRole('button',{name:'Ask here',exact:true}).click();
-  await page.getByRole('textbox',{name:'Question',exact:true}).fill('Explain inline');
-  await page.getByRole('button',{name:'Send',exact:true}).click();
+  const inlineEditor = () => page.locator('.bb-inline-answer').last().getByRole('textbox',{name:'Edit question about highlighted text'});
+  await expect(inlineEditor()).toBeFocused();
+  await inlineEditor().fill('Explain inline');
+  await inlineEditor().press('Enter');
   assert.equal(await page.locator('main').getByText('Explain inline',{exact:true}).count(),0);
   let dialog=page.getByRole('dialog',{name:'Answer about highlighted text'});
   assert.equal(await dialog.locator('[aria-label="Assistant response actions"]').count(),0,'streaming answers have no completion actions');
@@ -287,6 +446,9 @@ test('Ask in chat quotes the response and Ask here supports streaming, nesting, 
   await dialog.getByRole('button',{name:'Ask this question again',exact:true}).click();
   assert.equal((await page.evaluate(()=>window.submitted)).question,'Explain inline');
   await page.evaluate(()=>window.finish());
+  await dialog.getByTitle('Show thinking updates').click();
+  await expect(dialog.getByRole('list',{name:'Thinking updates'})).toContainText('I will check the selected passage in its original context.');
+  await dialog.getByTitle('Hide thinking updates').click();
   const actions=dialog.locator('[aria-label="Assistant response actions"]');
   await actions.waitFor();
   for(const name of ['Copy response','Read response aloud','Mark response as helpful','Mark response as not helpful','More response actions']) {
@@ -309,8 +471,9 @@ test('Ask in chat quotes the response and Ask here supports streaming, nesting, 
   assert.equal(await dialog.count(),1,'the portalled evidence panel keeps its answer open');
   await select(page,'nested explanation',dialog);
   await page.getByRole('button',{name:'Ask here',exact:true}).click();
-  await page.getByRole('textbox',{name:'Question',exact:true}).fill('Explain nested');
-  await page.getByRole('button',{name:'Send',exact:true}).click();
+  await expect(inlineEditor()).toBeFocused();
+  await inlineEditor().fill('Explain nested');
+  await inlineEditor().press('Enter');
   const nested=await page.evaluate(()=>window.submitted);
   assert.match(nested.selection.sourceMessageId,/^client:.*:assistant$/);
   await page.evaluate(()=>window.finish());
@@ -318,6 +481,17 @@ test('Ask in chat quotes the response and Ask here supports streaming, nesting, 
   await page.locator('main mark').click();
   await dialog.locator('mark').click();
   assert.equal(await dialog.count(),2);
+  await dialog.first().locator('mark').click();
+  await expect(dialog).toHaveCount(1);
+  await expect(dialog.first()).toContainText('Explain inline');
+  await dialog.first().locator('mark').click();
+  await expect(dialog).toHaveCount(2);
+  await page.locator('main mark').click();
+  await expect(dialog).toHaveCount(0);
+  await page.locator('main mark').click();
+  await expect(dialog).toHaveCount(1);
+  await dialog.first().locator('mark').click();
+  await expect(dialog).toHaveCount(2);
   const assertSeparate=async()=>{
     await page.waitForFunction(()=>{
       const cards=[...document.querySelectorAll('.bb-inline-answer')].map(el=>el.getBoundingClientRect());
@@ -327,10 +501,17 @@ test('Ask in chat quotes the response and Ask here supports streaming, nesting, 
   await assertSeparate();
   await select(page,'nested explanation',dialog.last());
   await page.getByRole('button',{name:'Ask here',exact:true}).click();
-  await page.getByRole('textbox',{name:'Question',exact:true}).fill('Explain a third level');
-  await page.getByRole('button',{name:'Send',exact:true}).click();
+  await expect(inlineEditor()).toBeFocused();
+  await inlineEditor().fill('Explain a third level');
+  await inlineEditor().press('Enter');
   await page.evaluate(()=>window.finish());
   assert.equal(await dialog.count(),3);
+  await dialog.first().locator('mark').click();
+  await expect(dialog).toHaveCount(1);
+  await dialog.first().locator('mark').click();
+  await expect(dialog).toHaveCount(2);
+  await dialog.last().locator('mark').click();
+  await expect(dialog).toHaveCount(3);
   await dialog.last().getByRole('button',{name:'More response actions',exact:true}).click();
   await page.keyboard.press('Escape');
   assert.equal(await dialog.count(),3,'Escape closes the action menu before any ancestor answer');
@@ -359,8 +540,10 @@ test('Ask in chat quotes the response and Ask here supports streaming, nesting, 
   await page.screenshot({path:path.join(artifacts,'nested-mobile.png')});
   await page.setViewportSize({width:1860,height:969});
   // Remove the third level, then its parent; deleting does not lose the first answer.
-  await dialog.last().getByRole('button',{name:'Delete highlight',exact:true}).click();
-  await dialog.last().getByRole('button',{name:'Delete highlight',exact:true}).click();
+  await dialog.last().getByRole('button',{name:'More highlight actions',exact:true}).click();
+  await dialog.last().getByRole('menuitem',{name:'Delete highlight',exact:true}).click();
+  await dialog.last().getByRole('button',{name:'More highlight actions',exact:true}).click();
+  await dialog.last().getByRole('menuitem',{name:'Delete highlight',exact:true}).click();
   await mount();
   await page.locator('main mark').click();
   assert.equal(await dialog.locator('mark').count(),0,'deleted inline anchors stay deleted after history hydration');
@@ -387,6 +570,7 @@ test('Garden page Ask here uses the shared popup across the iframe boundary', as
         window.requests=[];addEventListener('message',e=>window.requests.push(e.data));
         window.answerSelections=[];
         const answerSelection={messageIdFor:id=>'page-answer:'+id,annotations:new Map(),
+          attachmentsFor:id=>window.requests.findLast(r=>r.type==='second-brain:assistant-ask-here'&&r.requestId===id)?.attachments,
           onSelection:selection=>window.answerSelections.push(selection),onOpenAnnotation:()=>{}};
         function App(){const frame=useRef(null);return <>
           <iframe ref={frame} src="http://localhost:53140/reader" style={{display:'block',marginTop:60,width:'100%',height:'calc(100vh - 60px)',border:0}}/>
@@ -402,6 +586,7 @@ test('Garden page Ask here uses the shared popup across the iframe boundary', as
   const stores=new Map();
   await page.route('http://localhost:*/**',async route=>{
     const url=new URL(route.request().url());
+    if(url.pathname==='/api/extract-text')return route.fulfill({json:{type:'image',dataUrl:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6foAAAAAASUVORK5CYII='}});
     if(url.pathname==='/api/text-highlights'){
       const {key,entries=[],mutations=[]}=route.request().postDataJSON();
       const current=stores.get(key)||new Map(entries.map(item=>[item.id,item]));
@@ -435,15 +620,35 @@ test('Garden page Ask here uses the shared popup across the iframe boundary', as
     document.body.dispatchEvent(new KeyboardEvent('keyup',{key:'Shift',bubbles:true}));
   });
   await frame.getByRole('button',{name:'Ask here',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'Answer about highlighted text'});
+  const editor=dialog.getByRole('textbox',{name:'Edit question about highlighted text'});
+  await expect(editor).toBeFocused();
+  assert.equal(await page.evaluate(()=>requests.some(r=>r.type==='second-brain:assistant-ask-here')),false,'Ask here opens a draft without opening the side chat or dispatching a turn');
+  await editor.fill('explain');
+  await editor.evaluate(el=>{
+    const data=new DataTransfer();data.items.add(new File(['image'],'equation.png',{type:'image/png'}));
+    el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));
+  });
+  await dialog.getByRole('img',{name:'equation.png',exact:true}).waitFor();
+  await frame.locator('article').click({position:{x:10,y:10}});
+  await expect(dialog).toHaveCount(0);
+  await frame.locator('mark.bb-hl').click();
+  await expect(editor).toHaveValue('explain');
+  await expect(dialog.getByRole('img',{name:'equation.png',exact:true})).toBeVisible();
+  if(process.env.ASK_HERE_PASTE_SCREENSHOT)await page.screenshot({path:process.env.ASK_HERE_PASTE_SCREENSHOT});
+  await editor.press('Enter');
   await page.waitForFunction(()=>requests.some(r=>r.type==='second-brain:assistant-ask-here'));
   let request=await page.evaluate(()=>requests.find(r=>r.type==='second-brain:assistant-ask-here'));
+  assert.equal(normalizeQuartzAssistantSelection(request).attachments[0].name,'equation.png');
   const answer='“This field” means the **magnetic field**.\n\n1. **It deflects moving charges.**\n\n```text\nmagnetic force = sideways push\n```\n\n> Which way would the charge be pushed?\n\n'+('A magnetic field can change the direction of motion.\n\n'.repeat(12));
   const publish=async(state,content=answer)=>page.evaluate(({request,state,content})=>{
-    document.querySelector('iframe').contentWindow.postMessage({...request,type:'second-brain:assistant-inline-answer',question:request.question||'explain',answer:content,state,responseDurationMs:29600},'http://localhost:53140');
+    document.querySelector('iframe').contentWindow.postMessage({...request,type:'second-brain:assistant-inline-answer',question:request.question||'explain',answer:content,state,responseDurationMs:29600,thinking:'I will relate the selected field to the force on a moving charge.'},'http://localhost:53140');
   },{request,state,content});
   await publish('pending','');
-  const dialog=page.getByRole('dialog',{name:'Answer about highlighted text'});
   await dialog.waitFor();
+  await dialog.getByTitle('Show thinking updates').click();
+  await expect(dialog.getByRole('list',{name:'Thinking updates'})).toContainText('I will relate the selected field to the force on a moving charge.');
+  await dialog.getByTitle('Hide thinking updates').click();
   assert.equal(await frame.locator('.bb-highlight-answer').isVisible(),false,'the old page popup stays hidden');
   await dialog.getByRole('button',{name:'Stop this answer',exact:true}).click();
   await page.waitForFunction(()=>requests.some(r=>r.type==='second-brain:assistant-inline-stop'));
@@ -459,15 +664,15 @@ test('Garden page Ask here uses the shared popup across the iframe boundary', as
   assert.equal(nested.sourceMessageId,'page-answer:'+request.requestId);
   assert.equal(nested.quote,'Which way would the charge be pushed?');
   await page.evaluate(()=>getSelection().removeAllRanges());
-  assert.equal(await dialog.getByRole('button',{name:'Close answer',exact:true}).count(),0);
+  assert.equal(await dialog.getByRole('button',{name:'Close answer',exact:true}).count(),1);
   for(const viewport of [{width:1100,height:850},{width:390,height:700}]){
     await page.setViewportSize(viewport);
     await page.waitForFunction(()=>{const el=document.querySelector('.bb-inline-answer');return el&&el.getBoundingClientRect().right<=innerWidth;});
     const layout=await dialog.evaluate(el=>({rect:el.getBoundingClientRect().toJSON(),width:innerWidth,height:innerHeight,padding:getComputedStyle(el).paddingTop,radius:getComputedStyle(el).borderRadius}));
     assert.ok(layout.rect.left>=16 && layout.rect.right<=layout.width-16,JSON.stringify(layout));
     assert.ok(layout.rect.top>=16 && layout.rect.bottom<=layout.height-16,JSON.stringify(layout));
-    assert.equal(layout.padding,viewport.width>=640?'24px':'20px');
-    assert.equal(layout.radius,'22.4px');
+    assert.equal(layout.padding,'16px');
+    assert.equal(layout.radius,'16px');
   }
   await page.setViewportSize({width:1100,height:850});
   if(process.env.QUARTZ_SHARED_ANSWER_SCREENSHOT) await page.screenshot({path:process.env.QUARTZ_SHARED_ANSWER_SCREENSHOT});
@@ -479,6 +684,7 @@ test('Garden page Ask here uses the shared popup across the iframe boundary', as
   assert.equal(retry.question,'explain sideways force');
   assert.equal(retry.highlightId,request.highlightId);
   assert.equal(retry.text,request.text);
+  assert.deepEqual(retry.attachments,request.attachments,'page-question retry retains its pasted image across the iframe bridge');
   request=retry;
   await publish('pending','');
   await dialog.waitFor();
@@ -488,6 +694,10 @@ test('Garden page Ask here uses the shared popup across the iframe boundary', as
   assert.equal(await dialog.count(),0,'streaming updates respect dismissal');
   await frame.locator('mark.bb-hl').click();
   await dialog.waitFor();
+  await frame.locator('mark.bb-hl').click();
+  await dialog.waitFor({state:'hidden'});
+  await frame.locator('mark.bb-hl').click();
+  await dialog.waitFor();
   await page.keyboard.press('Escape');
   await dialog.waitFor({state:'hidden'});
   await frame.locator('mark.bb-hl').click();
@@ -495,7 +705,8 @@ test('Garden page Ask here uses the shared popup across the iframe boundary', as
   await frame.evaluate(()=>{for(const cleanup of cleanups.splice(0))cleanup();document.dispatchEvent(new Event('nav'));});
   await dialog.waitFor({state:'hidden'});
   await frame.locator('mark.bb-hl').click();
-  await dialog.getByRole('button',{name:'Delete highlight',exact:true}).click();
+  await dialog.getByRole('button',{name:'More highlight actions',exact:true}).click();
+  await dialog.getByRole('menuitem',{name:'Delete highlight',exact:true}).click();
   await frame.waitForFunction(()=>document.querySelectorAll('mark.bb-hl').length===0);
   await frame.goto(frame.url());
   await frame.waitForSelector('article');

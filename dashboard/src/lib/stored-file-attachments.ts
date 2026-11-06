@@ -10,7 +10,8 @@ export type StoredFileAttachmentFormat =
   | "css" | "yaml" | "yml" | "toml" | "ini" | "sql" | "sh" | "ps1"
   | "rs" | "go" | "rb" | "php" | "swift" | "kt" | "kts" | "scala"
   | "lua" | "r" | "vue" | "svelte" | "zip" | "bin" | "vcf" | "ics"
-  | "m" | "mlx";
+  | "m" | "mlx"
+  | "cir" | "ckt" | "sp" | "spice" | "net" | "bbcir";
 
 export type StoredFileArtifactKind =
   | "text"
@@ -55,6 +56,12 @@ export const STORED_FILE_ATTACHMENT_FORMATS: Record<
   ts: CODE("text/typescript; charset=utf-8"),
   tsx: CODE("text/tsx; charset=utf-8"),
   py: CODE("text/x-python; charset=utf-8"),
+  cir: CODE("text/x-spice; charset=utf-8"),
+  bbcir: CODE("application/json; charset=utf-8"),
+  ckt: CODE("text/x-spice; charset=utf-8"),
+  sp: CODE("text/x-spice; charset=utf-8"),
+  spice: CODE("text/x-spice; charset=utf-8"),
+  net: CODE("text/x-spice; charset=utf-8"),
   java: CODE("text/x-java-source; charset=utf-8"),
   c: CODE("text/x-c; charset=utf-8"),
   h: CODE("text/x-c; charset=utf-8"),

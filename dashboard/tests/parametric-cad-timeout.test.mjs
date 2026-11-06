@@ -13,6 +13,7 @@ const { designCadPart } = await import("../src/lib/cad/design-service.ts");
 const { cadDefaults } = await import("../src/lib/cad/defaults.ts");
 const { assessCadSafety } = await import("../src/lib/cad/safety.ts");
 const { ensureCadSchema } = await import("../src/lib/cad/schema.ts");
+const { runCadTool, cadToolDefinitions, cadRebuildTimeoutMs } = await import("../src/lib/cad/tools.ts");
 
 after(() => {
   appDatabase.close();
@@ -77,6 +78,116 @@ const target = {
   requestTimeoutMs: 15_000,
 };
 const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test("CAD generation accepts the service's five-minute ceiling and rejects larger budgets", async () => {
+  const definition = cadToolDefinitions().find((tool) => tool.name === "cad_generate_model");
+  assert.equal(definition.parameters.properties.timeoutMs.maximum, 300_000);
+  const database = new Database(":memory:");
+  ensureCadSchema(database);
+  try {
+    const args = { projectId: "missing", source: "def build_model(params): return None", parameters: {}, timeoutMs: 300_000 };
+    // Reaching project lookup proves the runtime parser accepted the same
+    // ceiling advertised to the model; no native process is launched.
+    await assert.rejects(runCadTool("cad_generate_model", args, context({ database })), { code: "cad_project_not_found" });
+    const rejected = await runCadTool("cad_generate_model", { ...args, timeoutMs: 300_001 }, context({ database }));
+    assert.equal(rejected.error, "invalid_arguments");
+    assert.ok(rejected.issues.some((issue) => issue.includes("timeoutMs")));
+  } finally {
+    database.close();
+  }
+});
+
+test("rebuild budgets use recorded execution duration while remaining bounded", () => {
+  for (const value of ["broken", "{}", "null", '{"buildDurationMs":-1}', '{"buildDurationMs":"150000"}']) {
+    assert.equal(cadRebuildTimeoutMs(value), 90_000);
+  }
+  assert.equal(cadRebuildTimeoutMs('{"buildDurationMs":20000}'), 90_000);
+  assert.equal(cadRebuildTimeoutMs('{"buildDurationMs":150000}'), 235_000);
+  assert.equal(cadRebuildTimeoutMs('{"buildDurationMs":290000}'), 300_000);
+});
+
+test("source generation and repair retain reusable source supplied in the original request", async (t) => {
+  const reference = "def tested_socket(params):\n    return original_retaining_geometry(params)";
+  const instruction = `Reuse this tested joint to build the hand.\n${reference}`;
+  const bodies = [];
+  let builds = 0;
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return response();
+  });
+  const toolContext = context({ instruction });
+  const result = await runCadProjectBuildPhase({
+    ...target, project, toolContext,
+    runTool: async () => {
+      builds += 1;
+      toolContext.attemptsRemaining -= 1;
+      return builds === 1
+        ? { ok: false, validationPassed: false, message: "Repair one stem/cap overlap" }
+        : { ok: true, validationPassed: true, revision: 1 };
+    },
+  });
+  assert.equal(result.stoppedBecause, "answered");
+  assert.equal(bodies.length, 2);
+  for (const body of bodies) {
+    const request = body.messages.find((message) => message.role === "user");
+    assert.ok(request.content.includes(instruction), "the source phase lost the original reusable CAD source");
+    assert.ok(request.content.includes(JSON.stringify(JSON.parse(project.design_spec_json))));
+    assert.equal(body.tools.length, 1, "preserving reference source must not restart planning");
+    assert.equal(body.tool_choice.function.name, "cad_generate_model");
+  }
+});
+
+test("a project-creation refusal remains visible in durable CAD diagnostics", async (t) => {
+  const events = [];
+  t.mock.method(globalThis, "fetch", async () => response("cad_create_project"));
+  const result = await runCadAgentLoop({
+    ...target,
+    toolContext: context({ projectId: project.id, emit: (type, payload) => events.push({ type, payload }) }),
+    systemPrompt: "Create a sibling design", userMessage: "Preserve the old model",
+    maxSteps: 1,
+  });
+  assert.equal(result.toolCalls[0].ok, false);
+  const diagnostic = events.find((event) => event.type === "cad.tool.completed");
+  assert.equal(diagnostic.payload.ok, false);
+  assert.match(diagnostic.payload.summary, /already has a CAD project/);
+});
+
+test("planning corrects invalid fields once and stops as soon as one project is saved", async (t) => {
+  const database = new Database(":memory:");
+  t.after(() => database.close());
+  database.exec(`
+    CREATE TABLE users(id INTEGER PRIMARY KEY);
+    CREATE TABLE conversations(id INTEGER PRIMARY KEY);
+    CREATE TABLE clusters(id INTEGER PRIMARY KEY);
+    INSERT INTO users VALUES (1);
+    INSERT INTO conversations VALUES (1);
+  `);
+  ensureCadSchema(database);
+  const bodies = [];
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    if (bodies.length === 1) {
+      const invalid = await response("cad_create_project").json();
+      const call = invalid.choices[0].message.tool_calls[0];
+      const args = JSON.parse(call.function.arguments);
+      args.design_spec.constraints = [{ id: "motion", type: "custom", description: "x".repeat(601) }];
+      call.function.arguments = JSON.stringify(args);
+      return new Response(JSON.stringify(invalid));
+    }
+    return response("cad_create_project");
+  });
+  const ctx = context({ database });
+  const result = await runCadAgentLoop({
+    ...target, toolContext: ctx, systemPrompt: "Save the spec", userMessage: "A joint",
+    maxSteps: 2, allowedToolNames: ["cad_create_project"], forcedToolName: "cad_create_project",
+  });
+  assert.equal(bodies.length, 2);
+  assert.deepEqual(result.toolCalls.map((call) => call.ok), [false, true]);
+  assert.match(bodies[1].messages.at(-1).content, /constraints.0.description/);
+  assert.equal(database.prepare("SELECT COUNT(*) AS n FROM cad_projects").get().n, 1);
+  assert.equal(ctx.attemptsRemaining, 3);
+  assert.equal(bodies[0].tools[0].function.parameters.properties.design_spec.properties.constraints.items.properties.description.maxLength, 600);
+});
 
 test("planning timeout saves exactly one project and shares its recovery budget with source generation", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });

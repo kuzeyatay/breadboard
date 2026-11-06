@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath } from "./runtime-v2-paths.mjs";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -50,14 +51,6 @@ function isDirectFile(filePath) {
   } catch {
     return false;
   }
-}
-
-function samePath(left, right, platform = process.platform) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return platform === "win32"
-    ? a.toLowerCase() === b.toLowerCase()
-    : a === b;
 }
 
 function delay(milliseconds) {

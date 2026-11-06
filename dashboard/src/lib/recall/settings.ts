@@ -27,8 +27,8 @@ export type { RecallControlMode, RecallSettings };
 db.exec(`
   CREATE TABLE IF NOT EXISTS recall_user_settings (
     user_id                INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    capture_enabled        INTEGER NOT NULL DEFAULT 0,
-    auto_start_capture     INTEGER NOT NULL DEFAULT 0,
+    capture_enabled        INTEGER NOT NULL DEFAULT 1,
+    auto_start_capture     INTEGER NOT NULL DEFAULT 1,
     capture_audio          INTEGER NOT NULL DEFAULT 1,
     agent_access           INTEGER NOT NULL DEFAULT 1,
     agent_control          TEXT    NOT NULL DEFAULT 'ask',
@@ -39,9 +39,8 @@ db.exec(`
   );
 `);
 
-// Added after the table shipped. The default matches the one in the CREATE
-// above, so a user who already opted into capture does not silently acquire an
-// unattended recorder along with the upgrade.
+// Added after the table shipped. Keep legacy accounts opted out of automatic
+// recording during this migration; new accounts use the enabled defaults above.
 {
   const columns = new Set(
     (db.prepare(`PRAGMA table_info(recall_user_settings)`).all() as Array<{ name: string }>).map(

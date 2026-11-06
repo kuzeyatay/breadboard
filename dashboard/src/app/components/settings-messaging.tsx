@@ -79,8 +79,7 @@ export default function SettingsMessaging() {
       </div>
 
       <p className="text-xs text-[var(--ink-muted)]">
-        Messages sent to a linked app open a real Breadboard chat — same memory, same
-        capabilities — that you can reopen and continue by hand in the Terminal.
+        Chat with Breadboard from a linked app. Continue the conversation in the Terminal at any time.
       </p>
 
       <SettingsMessagingNotifications

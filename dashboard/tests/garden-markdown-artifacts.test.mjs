@@ -39,23 +39,9 @@ test("notes attach, persist and reopen garden artifacts; video and whiteboard in
   const host = await build({ stdin: { resolveDir: root, loader: "tsx", contents: `
     import React,{useRef}from'react';import{createRoot}from'react-dom/client';
     import Attachments from './src/app/garden/garden-markdown-artifacts';
-    function App(){const ref=useRef(null);return <><iframe ref={ref} src="http://localhost:53147/lesson" title="Note" style={{width:'100%',height:'850px'}}/><Attachments iframeRef={ref} quartzOrigin="http://localhost:53147"/></>}
+    import Bridge from './src/app/garden/garden-document-editor-bridge';
+    function App(){const ref=useRef(null);return <><iframe ref={ref} src="http://localhost:53147/lesson" title="Note" style={{width:'100%',height:'850px'}}/><Attachments iframeRef={ref} quartzOrigin="http://localhost:53147"/><Bridge iframeRef={ref} quartzOrigin="http://localhost:53147"/></>}
     createRoot(document.getElementById('root')).render(<App/>);
-    window.addEventListener('message',async e=>{
-      const data=e.data;if(e.origin!=='http://localhost:53147')return;
-      if(data.type==='second-brain:get-markdown'){
-        const body=await fetch('/api/documents/lesson').then(r=>r.json());
-        e.source.postMessage({type:'second-brain:markdown-content-result',slug:data.slug,ok:true,title:'Lesson',body:body.markdown},e.origin);
-      }
-      if(data.type==='second-brain:save-markdown'){
-        await fetch('/api/documents/lesson',{method:'PATCH',body:JSON.stringify({markdown:data.body})});
-        e.source.postMessage({type:'second-brain:markdown-save-result',slug:data.slug,ok:true},e.origin);
-      }
-      if(data.type==='second-brain:upload-markdown-video'){
-        window.uploadedVideo=data.file.name;
-        e.source.postMessage({type:'second-brain:markdown-video-result',slug:data.slug,ok:true,markdown:'![Clip](/demo/assets/clip.mp4)'},e.origin);
-      }
-    });
   ` }, bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", alias: { "@": path.join(root, "src") }, plugins: [{ name: "viewer-boundary", setup(builder) {
     builder.onResolve({ filter: /^next\/dynamic$/ }, () => ({ path: "dynamic", namespace: "fixture" }));
     builder.onResolve({ filter: /\/artifact-viewer$/ }, () => ({ path: "viewer", namespace: "fixture" }));
@@ -73,16 +59,22 @@ test("notes attach, persist and reopen garden artifacts; video and whiteboard in
     page.setDefaultTimeout(8_000);
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
-    let markdown = "Before\n\nAfter";
+    let markdown = "Before\n\nAfter", revision = 0;
     let listFailure = false, missing = false, wrongGarden = false, listRequests = 0, openRequests = 0;
     let extraArtifacts = [], previewFailure = false, previewRequests = 0;
     const ready = { ...reference, gardenId: "demo", status: "ready", previewAvailable: true, downloadAvailable: true, filename: "lecture.mp4" };
     await page.route("http://localhost:53146/**", async route => {
       const url = new URL(route.request().url());
+      if (url.pathname.startsWith("/quartz-editor/")) return route.fulfill({ path: path.join(root, "public", url.pathname) });
       if (url.pathname === "/api/documents/lesson") {
-        if (route.request().method() === "PATCH") markdown = route.request().postDataJSON().markdown;
-        return route.fulfill({ json: { markdown } });
+        if (route.request().method() === "PATCH") { markdown = route.request().postDataJSON().body ?? markdown; revision++; }
+        if (route.request().method() === "POST") {
+          const fragments = await Promise.all(route.request().postDataJSON().fragments.map(async item => ({id:item.id, html:(await renderQuartzDocument({content:item.source,relativePath:"demo/lesson.md",contentRoot:quartz,allFiles:["demo/lesson.md"]})).html})));
+          return route.fulfill({json:{success:true,fragments}});
+        }
+        return route.fulfill({ json: { success:true, body:markdown, title:"Lesson", tags:[], accountId:"1", canEdit:true, revision:String(revision) } });
       }
+      if (url.pathname === "/api/markdown-videos") return route.fulfill({json:{success:true,markdown:"![Clip](/demo/assets/clip.mp4)"}});
       if (url.pathname === "/api/hermes/artifacts") {
         listRequests++;
         assert.equal(url.searchParams.get("gardenSlug"), "demo");
@@ -118,10 +110,13 @@ test("notes attach, persist and reopen garden artifacts; video and whiteboard in
     });
     await page.route("http://localhost:53147/**", async route => {
       const rendered = await renderQuartzDocument({ content: markdown, relativePath: "demo/lesson.md", contentRoot: quartz, allFiles: ["demo/lesson.md"] });
-      return route.fulfill({ contentType: "text/html; charset=utf-8", body: `<meta name="viewport" content="width=device-width, initial-scale=1"><style>:root{--light:#fff;--dark:#222;--secondary:#385845;--lightgray:#ddd;--gray:#666;--codeFont:monospace}body{font-family:system-ui}${editor.css}${cardStyle}</style>${editor.html}<article class="popover-hint">${rendered.html}</article><script>(${installCanonicalQuartzReader.toString()})();</script><script>${editor.script}</script><script>${cards.outputFiles[0].text}</script><script>document.dispatchEvent(new Event('nav'))</script>` });
+      return route.fulfill({ contentType: "text/html; charset=utf-8", body: `<meta name="viewport" content="width=device-width, initial-scale=1"><style>:root{--light:#fff;--dark:#222;--secondary:#385845;--lightgray:#ddd;--gray:#666;--codeFont:monospace}body{font-family:system-ui}${editor.css}${cardStyle}</style><h1 class="article-title">Lesson</h1>${editor.html}<article class="popover-hint">${rendered.html}</article><script>(${installCanonicalQuartzReader.toString()})();</script><script>${editor.script}</script><script>${cards.outputFiles[0].text}</script><script>document.dispatchEvent(new Event('nav'))</script>` });
     });
     await page.goto("http://localhost:53146/");
     const frame = page.frameLocator('iframe[title="Note"]');
+    const draft = () => frame.locator('.ProseMirror').evaluate(() => window.__quartzDocumentEditor.getDraft().body);
+    const save = () => frame.locator('.ProseMirror').evaluate(() => window.__quartzDocumentEditor.flush());
+    const attach = () => frame.getByLabel('Insert content').selectOption('artifact');
     const refreshArticle = async (html) => {
       await page.evaluate(html => new Promise(resolve => {
         const requestId = crypto.randomUUID();
@@ -141,30 +136,31 @@ test("notes attach, persist and reopen garden artifacts; video and whiteboard in
     await frame.locator(".markdown-actions").evaluate(el => { el.lifecycleProbe = true; });
     await refreshArticle("<p>Before</p><p>After</p>");
     assert.equal(await frame.locator(".markdown-actions").evaluate(el => el.lifecycleProbe), true);
-    await frame.getByRole("button", { name: "Edit markdown", exact: true }).click();
-    await frame.locator(".markdown-editor-textarea").waitFor({ state: "visible" });
-    await frame.locator(".markdown-editor-textarea").evaluate(el => el.setSelectionRange(6, 6));
-    await frame.getByRole("button", { name: "Attach artifact", exact: true }).click();
+    await frame.getByRole("switch", { name: "Edit page", exact: true }).click();
+    await frame.locator(".ProseMirror").waitFor({ state: "visible" });
+    await frame.locator(".ProseMirror p").first().click();
+    await page.keyboard.press("End");
+    await attach();
     await frame.getByRole("button", { name: "Attach Lecture recording" }).waitFor({ timeout: 5000 }).catch(async error => {
       await page.screenshot({ path: path.join(root, ".tmp-artifact-attachments.png") });
-      throw new Error(`${error.message}\n${JSON.stringify({ errors, listRequests, status: await frame.locator(".markdown-editor-artifacts").innerHTML() })}`);
+      throw new Error(`${error.message}\n${JSON.stringify({ errors, listRequests, status: await frame.locator(".bb-artifact-list").innerHTML() })}`);
     });
-    assert.equal(await frame.locator(".markdown-editor-artifact-item").count(), 1);
+    assert.equal(await frame.locator(".bb-artifact-item").count(), 1);
     await frame.getByRole("searchbox").fill("no-match");
     await frame.getByText("No matching artifacts.", { exact: true }).waitFor();
     await frame.getByRole("searchbox").fill("lecture");
     await frame.getByRole("button", { name: "Attach Lecture recording" }).click();
-    const edited = await frame.locator(".markdown-editor-textarea").inputValue();
+    const edited = await draft();
     assert.ok(edited.indexOf("Before") < edited.indexOf("```artifact"));
     assert.ok(edited.indexOf("```artifact") < edited.indexOf("After"));
     await refreshArticle("<p>Refreshed while editing</p>");
-    assert.equal(await frame.locator(".markdown-editor-textarea").inputValue(), edited, "refresh preserves the draft");
-    await frame.getByRole("button", { name: "Attach artifact", exact: true }).click();
+    assert.equal(await draft(), edited, "refresh preserves the draft");
+    await attach();
     await frame.getByRole("button", { name: "Attach Lecture recording" }).waitFor({ timeout: 5000 });
     assert.equal(listRequests, 2, "refresh rebinds replies without duplicating button handlers");
     await frame.getByRole("button", { name: "Close", exact: true }).click();
-    await frame.getByRole("button", { name: "Save", exact: true }).click();
-    await frame.locator(".markdown-editor-modal").waitFor({ state: "hidden" });
+    await save();
+    await frame.getByRole("switch", { name: "Edit page" }).click();
     await page.reload();
     await frame.getByRole("button", { name: "Open video", exact: true }).click();
     await page.getByRole("dialog", { name: "Artifact viewer" }).waitFor();
@@ -179,23 +175,23 @@ test("notes attach, persist and reopen garden artifacts; video and whiteboard in
     await frame.getByText("This artifact does not belong to this garden.", { exact: true }).waitFor();
     assert.equal(await page.getByRole("dialog", { name: "Artifact viewer" }).count(), 0);
 
-    await frame.getByRole("button", { name: "Edit markdown", exact: true }).click();
-    await frame.locator(".markdown-editor-placement").selectOption("bottom");
-    await frame.getByRole("button", { name: "Add whiteboard", exact: true }).click();
-    assert.match(await frame.locator(".markdown-editor-textarea").inputValue(), /```penecho\nid: \d+-[a-zA-Z0-9-]+/);
-    await frame.locator(".markdown-editor-video-input").setInputFiles({ name: "clip.mp4", mimeType: "video/mp4", buffer: Buffer.from("video fixture") });
-    await frame.getByText("Video inserted in editor. Click Save to publish.", { exact: true }).first().waitFor();
-    assert.match(await frame.locator(".markdown-editor-textarea").inputValue(), /!\[Clip\]\(\/demo\/assets\/clip.mp4\)/);
+    await frame.getByRole("switch", { name: "Edit page", exact: true }).click();
+    await frame.locator(".ProseMirror").press("Control+End");
+    await frame.getByLabel("Insert content").selectOption("whiteboard");
+    assert.match(await draft(), /```penecho\nid: \d+-[a-zA-Z0-9-]+/);
+    await frame.locator(".bb-document-toolbar input[type=file]").setInputFiles({ name: "clip.mp4", mimeType: "video/mp4", buffer: Buffer.from("video fixture") });
+    await frame.locator('.bb-object-content').filter({hasText:"Uploading…"}).waitFor({state:"hidden"});
+    assert.match(await draft(), /!\[Clip\]\(\/demo\/assets\/clip.mp4\)/);
     listFailure = true;
-    await frame.getByRole("button", { name: "Attach artifact", exact: true }).click();
+    await attach();
     await frame.getByText("Temporary failure. Select Refresh to try again.", { exact: true }).waitFor();
     listFailure = false;
     await frame.getByRole("button", { name: "Refresh", exact: true }).click();
     await frame.getByRole("button", { name: "Attach Lecture recording" }).waitFor();
     await frame.getByRole("searchbox").press("Escape");
-    assert.equal(await frame.getByRole("button", { name: "Attach artifact", exact: true }).getAttribute("aria-expanded"), "false");
-    await frame.getByRole("button", { name: "Save", exact: true }).click();
-    await frame.locator(".markdown-editor-modal").waitFor({ state: "hidden" });
+    assert.equal(await frame.locator("dialog[open]").count(), 0);
+    await save();
+    await frame.getByRole("switch", { name: "Edit page" }).click();
     const rendered = await renderQuartzDocument({ content: markdown, relativePath: "demo/lesson.md", contentRoot: quartz, allFiles: ["demo/lesson.md"] });
     assert.match(rendered.html, /breadboard-artifact-block/);
     assert.match(rendered.html, /penecho-board-block/);
@@ -205,20 +201,20 @@ test("notes attach, persist and reopen garden artifacts; video and whiteboard in
     const htmlArtifact = { ...ready, id: "html-1", title: "Energy dashboard", kind: "html", renderer: "html-file", filename: "energy-dashboard.html", version: 1 };
     const modelArtifact = { ...htmlArtifact, id: "model-1", title: "Interactive controls", renderer: "interactive-visualizer", filename: "controls.html" };
     extraArtifacts = [htmlArtifact, modelArtifact];
-    await frame.getByRole("button", { name: "Edit markdown", exact: true }).click();
-    await frame.getByRole("button", { name: "Attach artifact", exact: true }).click();
+    await frame.getByRole("switch", { name: "Edit page", exact: true }).click();
+    await attach();
     await frame.getByRole("button", { name: "Attach Energy dashboard", exact: true }).waitFor();
     await frame.getByRole("button", { name: "Web & interactive", exact: true }).click();
-    assert.equal(await frame.locator(".markdown-editor-artifact-item").count(), 2);
+    assert.equal(await frame.locator(".bb-artifact-item").count(), 2);
     await frame.getByRole("searchbox").fill("energy html");
-    assert.equal(await frame.locator(".markdown-editor-artifact-item").count(), 1);
+    assert.equal(await frame.locator(".bb-artifact-item").count(), 1);
     await frame.getByRole("searchbox").fill("");
     await page.screenshot({ path: path.join(root, ".tmp-artifact-attachments-desktop.png") });
     await frame.getByRole("button", { name: "Attach Energy dashboard", exact: true }).click();
-    await frame.getByRole("button", { name: "Attach artifact", exact: true }).click();
+    await attach();
     await frame.getByRole("button", { name: "Attach Interactive controls", exact: true }).click();
-    await frame.getByRole("button", { name: "Save", exact: true }).click();
-    await frame.locator(".markdown-editor-modal").waitFor({ state: "hidden" });
+    await save();
+    await frame.getByRole("switch", { name: "Edit page" }).click();
     await page.reload();
     const htmlPreview = frame.frameLocator('iframe[title="Energy dashboard preview"]');
     const modelPreview = frame.frameLocator('iframe[title="Interactive controls preview"]');
@@ -250,11 +246,11 @@ test("notes attach, persist and reopen garden artifacts; video and whiteboard in
     wrongGarden = false;
 
     await page.setViewportSize({ width: 390, height: 900 });
-    await frame.getByRole("button", { name: "Attach artifact", exact: true }).waitFor({ state: "hidden" });
-    await frame.getByRole("button", { name: "Edit markdown", exact: true }).click();
-    await frame.getByRole("button", { name: "Attach artifact", exact: true }).click();
+    await frame.getByLabel("Insert content").waitFor({ state: "hidden" });
+    await frame.getByRole("switch", { name: "Edit page", exact: true }).click();
+    await attach();
     await frame.getByRole("button", { name: "Attach Lecture recording" }).waitFor();
-    const panel = frame.locator(".markdown-editor-panel");
+    const panel = frame.locator(".bb-document-dialog");
     assert.ok(await panel.evaluate(el => el.scrollWidth <= el.clientWidth + 1), "the editor fits a narrow viewport");
     await page.screenshot({ path: path.join(root, ".tmp-artifact-attachments.png") });
 

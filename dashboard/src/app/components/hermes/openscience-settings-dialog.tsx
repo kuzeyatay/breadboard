@@ -153,8 +153,7 @@ export default function OpenscienceSettingsDialog({ onClose }: { onClose: () => 
               OpenScience setup
             </h2>
             <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-              OpenScience reads the literature, writes and runs code, and writes up what it
-              found — inside its own workspace, on ChatMock.
+              Research a question through literature, code, and experiments.
             </p>
           </span>
           <button
@@ -214,16 +213,23 @@ export default function OpenscienceSettingsDialog({ onClose }: { onClose: () => 
             <>
               <ul className="divide-y divide-[var(--line)]">
                 <Row
-                  label="OpenScience clone"
+                  label="OpenScience files"
                   ok={status.clone.found}
                   detail={status.clone.path}
-                  optional="Not found. Clone synthetic-sciences/openscience next to the dashboard — it pins the version an install uses."
-                />
+                  optional="OpenScience setup files are missing."
+                >
+                  {!status.clone.found ? (
+                    <details className="max-w-64 text-xs text-[var(--ink-muted)]">
+                      <summary className="cursor-pointer">Technical setup</summary>
+                      <p className="mt-2">Not found. Clone synthetic-sciences/openscience next to the dashboard — it pins the version an install uses.</p>
+                    </details>
+                  ) : null}
+                </Row>
                 <Row
                   label="OpenScience CLI"
                   ok={status.cli.found}
                   detail={`Version ${status.cli.version} · ${status.cli.source}`}
-                  optional={`Not installed. Breadboard installs the platform build of version ${status.targetVersion}, the one the clone ships.`}
+                  optional={`Install OpenScience ${status.targetVersion} for this device.`}
                 >
                   <button
                     type="button"
@@ -238,7 +244,7 @@ export default function OpenscienceSettingsDialog({ onClose }: { onClose: () => 
                   label="Workspace"
                   ok={status.workspace.isolated}
                   detail={status.workspace.path}
-                  optional={`${status.workspace.path} — not yet its own project root. Installing sets that up; without it a run would treat the surrounding repository as its project.`}
+                  optional={`Install OpenScience to prepare its workspace at ${status.workspace.path}.`}
                 />
               </ul>
               <div className="px-2 pb-2 pt-1">
@@ -251,8 +257,7 @@ export default function OpenscienceSettingsDialog({ onClose }: { onClose: () => 
                   Restart the server
                 </button>
                 <p className="mt-1.5 text-xs leading-5 text-[var(--ink-muted)]">
-                  The server reads its configuration once at boot. Restart it after changing
-                  your background model or provider.
+                  Restart after changing your background model or provider.
                 </p>
               </div>
               <AgentRunDefaults agentId={OPENSCIENCE_AGENT_ID} />

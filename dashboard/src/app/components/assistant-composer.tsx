@@ -1,5 +1,7 @@
 'use client';
 
+import { unifiedWorkflowModeAgent } from '@/lib/workflows/unified-command.ts';
+
 import type {
   ClipboardEvent,
   CSSProperties,
@@ -19,20 +21,26 @@ import {
 } from 'react';
 import dynamic from 'next/dynamic';
 import AttachmentPreviewDialog from '@/app/components/attachment-preview-dialog';
+import ComposerAddMenu, { type ComposerAddMenuHandle } from '@/app/components/composer-add-menu';
 import SettingsDialog, { type SettingsTab } from '@/app/components/settings-dialog';
 import BreadboardLoader from '@/app/components/breadboard-loader';
 import ComposerBorderBeam from '@/app/components/effects/composer-border-beam';
 import MetalSendButton from '@/app/components/effects/metal-send-button';
 import SpeechDictationButton from '@/app/components/speech-dictation-button';
 import VoiceConversationOverlay from '@/app/components/voice-conversation-overlay';
+import type { SpokenExchange } from '@/lib/speech/chatgpt-voice';
 import { useVoiceChatHost } from '@/app/components/use-voice-chat-host';
 import type { VoiceMessage } from '@/lib/speech/voice-conversation';
+import type { PromptSuggestionMessage } from '@/lib/chat-prompt-suggestion';
+import { usePromptSuggestion } from '@/app/components/use-prompt-suggestion';
+import PromptSuggestionOverlay from '@/app/components/prompt-suggestion-overlay';
 import UsageLimitsPopover from '@/app/components/usage-limits-popover';
 import ViewportPopover from '@/app/components/viewport-popover';
 import { CommandHub, type CommandHubHandle } from '@/app/components/hermes/command-hub';
 import SlashCommandMenu, {
   type SlashCommandMenuHandle,
 } from '@/app/components/hermes/slash-command-menu';
+import SelectedSkills from '@/app/components/hermes/selected-skills';
 import { splitLeadingCommandTokens } from '@/app/components/hermes/command-text';
 import { slashQueryAt, slashQueryReplacementRange } from '@/lib/hermes/slash-query';
 import {
@@ -54,6 +62,8 @@ import type { LocalWorkflowSummary } from '@/lib/workflows/types';
 import { formatAssistantModelName, groupAssistantModels } from '@/lib/ai-models';
 import type { AssistantReasoningEffort } from '@/lib/assistant-reasoning';
 import type { IntelligenceMode } from '@/lib/intelligence-modes';
+import { voiceRequestOptions, type VoiceRequestOptions } from '@/lib/speech/voice-request';
+import type { VoiceScreenContext } from '@/lib/speech/voice-screen-context';
 import type { AgentRunState } from '@/app/components/hermes/use-agent-session';
 import { AGENT_BROWSER_SLASH_COMMAND } from '@/lib/agent-browser/identity.ts';
 import { DEEP_RESEARCH_SLASH_COMMAND } from '@/lib/deep-research/identity.ts';
@@ -133,7 +143,6 @@ import { modelAttachmentHref } from '@/lib/model-attachments';
 import { isPlayableVideoFormat } from '@/lib/video-attachments';
 import ModelCubeIcon from '@/app/components/model-cube-icon';
 import SignInRequiredCard from '@/app/components/sign-in-required-card';
-import { launchClickyFromPrompt } from '@/lib/clicky/desktop-control.ts';
 
 /** What the goal card's play button sends when a goal has stalled. */
 const GOAL_CONTINUATION_MESSAGE = 'Continue working on the goal.';
@@ -156,7 +165,7 @@ export type ComposerAttachment = ChatAttachment;
 interface Props {
   value: string;
   onChange: (value: string) => void;
-  onSubmit: () => void;
+  onSubmit: (voice?: VoiceRequestOptions) => void;
   /** Invokes the selected automation with the editable instruction in the composer. */
   onRunWorkflow?: (workflow: LocalWorkflowSummary, input: string) => void | Promise<void>;
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -170,6 +179,10 @@ interface Props {
    * conversation really did change and wrong on every unrelated re-render.
    */
   history?: readonly string[];
+  /** Recent visible conversation for Tab-to-accept suggestions. Defaults to the shared voice transcript. */
+  suggestionMessages?: readonly PromptSuggestionMessage[];
+  /** False for public, temporary, or other users' chat surfaces. */
+  personalizedSuggestions?: boolean;
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
   onPasteFiles?: (files: File[]) => void | Promise<void>;
   textareaRef?: Ref<HTMLTextAreaElement>;
@@ -205,14 +218,14 @@ interface Props {
    */
   intelligenceModes?: IntelligenceMode[];
   onAddDocuments?: () => void;
+  onOpenGardenChat?: (chatId: string) => void;
   isAddingDocuments?: boolean;
+  /** A failed upload cancels automatic sending and leaves the draft intact. */
+  attachmentUploadError?: string;
   attachments?: ComposerAttachment[];
   onRemoveAttachment?: (index: number) => void;
   utilityActions?: ReactNode;
-  /**
-   * Accepted so the many call sites keep compiling, but nothing is drawn: the
-   * composer no longer shows a status line under the input.
-   */
+  /** Shown while files are uploading or being read. */
   statusMessage?: string;
   headerContent?: ReactNode;
   className?: string;
@@ -414,6 +427,11 @@ interface Props {
    * the newest assistant reply is what voice mode reads back.
    */
   voiceMessages?: readonly VoiceMessage[];
+  /**
+   * Saves one ChatGPT voice exchange into this chat. Passing it (with
+   * `voiceMessages`) offers ChatGPT voice in the microphone's menu.
+   */
+  onVoiceRecord?: (exchange: SpokenExchange) => Promise<void>;
   voiceClarification?: { requestId: string; question: string } | null;
   voiceConversationId?: string | number | null;
   voiceCreatedConversationId?: string | number | null;
@@ -554,7 +572,10 @@ export default function AssistantComposer({
   onReasoningEffortChange,
   intelligenceModes,
   onAddDocuments,
+  onOpenGardenChat,
   isAddingDocuments = false,
+  attachmentUploadError = '',
+  statusMessage = '',
   attachments = [],
   onRemoveAttachment,
   utilityActions,
@@ -660,11 +681,33 @@ export default function AssistantComposer({
   onClearRuflo,
   onSelectRuflo,
   voiceMessages,
+  suggestionMessages = voiceMessages,
+  personalizedSuggestions = true,
+  onVoiceRecord,
   voiceConversationId = capabilitySessionId ?? null,
   voiceCreatedConversationId,
   voiceConversationScope = `${capabilitySurface}:${capabilityGardenSlug ?? ''}`,
   voiceClarification,
 }: Props) {
+  const uploadQueueScope = `${voiceConversationScope}:${voiceConversationId ?? ''}`;
+  const [uploadQueued, setUploadQueued] = useState<{
+    scope: string;
+    text: string;
+    voice?: VoiceRequestOptions;
+  } | null>(null);
+  const uploadQueuedRef = useRef(uploadQueued);
+  const cancelUploadSend = () => {
+    uploadQueuedRef.current = null;
+    setUploadQueued(null);
+  };
+  function holdForUploads(voice?: VoiceRequestOptions) {
+    if (uploadQueuedRef.current) return true;
+    if (!isAddingDocuments) return false;
+    const queued = { scope: uploadQueueScope, text: value, voice };
+    uploadQueuedRef.current = queued;
+    setUploadQueued(queued);
+    return true;
+  }
   // Which attached documents have been read into searchable pages yet. Polls
   // only while one is still being read, and only when documents are attached.
   const documentIndexStatus = useDocumentIndexStatus(
@@ -684,6 +727,9 @@ export default function AssistantComposer({
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('account');
   const [showCommandHub, setShowCommandHub] = useState(false);
   const [showSlashCommands, setShowSlashCommands] = useState(false);
+  const [menuSearch, setMenuSearch] = useState<{ kind: 'add' | 'commands'; query: string } | null>(null);
+  const menuDraftCaretRef = useRef<number | null>(null);
+  const addMenuRef = useRef<ComposerAddMenuHandle>(null);
   // The workflow stays selected while its generated sentence is edited. That is
   // what lets "...but change the entered name to Mike" become bounded run input
   // instead of falling back to an unrelated chat turn.
@@ -735,6 +781,8 @@ export default function AssistantComposer({
     return () => window.clearTimeout(timer);
   }, []);
   const commandHubRef = useRef<CommandHubHandle>(null);
+  const [skillHints, setSkillHints] = useState<CommandHubItem[]>([]);
+  const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const slashCommandMenuRef = useRef<SlashCommandMenuHandle>(null);
   const internalTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   useImperativeHandle(textareaRef, () => internalTextareaRef.current as HTMLTextAreaElement);
@@ -752,7 +800,8 @@ export default function AssistantComposer({
     }
   }, [pendingWorkflowPrompt, value]);
 
-  function submitMessage() {
+  function submitMessage(voice?: VoiceRequestOptions) {
+    if (holdForUploads(voice)) return;
     if (
       pendingWorkflow &&
       pendingWorkflowPrompt !== null &&
@@ -767,12 +816,7 @@ export default function AssistantComposer({
       void onRunWorkflow(workflow, input);
       return;
     }
-    if (attachments.length === 0 && launchClickyFromPrompt(value)) {
-      onChange('');
-      window.setTimeout(() => internalTextareaRef.current?.focus(), 0);
-      return;
-    }
-    onSubmit();
+    onSubmit(voice);
   }
 
   // Voice mode has to send through the host's own submit so a spoken turn is an
@@ -780,6 +824,15 @@ export default function AssistantComposer({
   // holds the transcript one render after `onChange` — so the send waits for the
   // draft to come back as `value`, then fires the submit from that render.
   const pendingVoiceSendRef = useRef<string | null>(null);
+  const pendingVoiceOptionsRef = useRef<VoiceRequestOptions | undefined>(undefined);
+  const voiceInterruptedRef = useRef(false);
+  const [voiceSendRevision, setVoiceSendRevision] = useState(0);
+  const voiceRunBusy = isSending || externalRunActive || ['submitting', 'connecting', 'running', 'waiting_for_permission', 'steering', 'stopping'].includes(runState ?? '');
+  const interruptSpokenTurn = useCallback(() => {
+    if (!onStop || clarificationPending) return;
+    voiceInterruptedRef.current = true;
+    onStop();
+  }, [onStop, clarificationPending]);
   const composerValueRef = useRef(value);
   const onChangeRef = useRef(onChange);
   const onSubmitRef = useRef(submitMessage);
@@ -789,21 +842,27 @@ export default function AssistantComposer({
 
   useEffect(() => {
     if (pendingVoiceSendRef.current === null || pendingVoiceSendRef.current !== value) return;
+    if (voiceInterruptedRef.current && voiceRunBusy) return;
+    voiceInterruptedRef.current = false;
     pendingVoiceSendRef.current = null;
-    onSubmitRef.current();
-  }, [value]);
+    onSubmitRef.current(pendingVoiceOptionsRef.current);
+    pendingVoiceOptionsRef.current = undefined;
+  }, [value, voiceRunBusy, voiceSendRevision]);
 
   // Stable for the life of the composer: the voice screen captures it once, in
   // an audio callback that never re-subscribes.
-  const sendSpokenTurn = useCallback((text: string) => {
+  const sendSpokenTurn = useCallback(async (text: string, screen?: VoiceScreenContext) => {
     const spoken = text.trim();
     if (!spoken) return;
-    if (composerValueRef.current === spoken) {
-      onSubmitRef.current();
+    const voice = await voiceRequestOptions(undefined, screen);
+    if (composerValueRef.current === spoken && !voiceInterruptedRef.current) {
+      onSubmitRef.current(voice);
       return;
     }
     pendingVoiceSendRef.current = spoken;
+    pendingVoiceOptionsRef.current = voice;
     onChangeRef.current(spoken);
+    setVoiceSendRevision(revision => revision + 1);
   }, []);
 
   // Selecting the agent starts its request from the stored defaults. Functional
@@ -931,7 +990,24 @@ export default function AssistantComposer({
 
   useLayoutEffect(() => {
     resizeTextarea();
-  }, [resizeTextarea, value]);
+  }, [resizeTextarea, value, menuSearch]);
+
+  useEffect(() => {
+    setMenuSearch(null);
+    setShowSlashCommands(false);
+  }, [capabilitySessionId, capabilitySurface]);
+
+  useEffect(() => {
+    if (menuSearch?.kind !== 'commands') return;
+    const closeOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !composerSurfaceRef.current?.contains(event.target)) {
+        setMenuSearch(null);
+        setShowSlashCommands(false);
+      }
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    return () => document.removeEventListener('pointerdown', closeOutside);
+  }, [menuSearch?.kind]);
 
   useEffect(() => {
     window.addEventListener('resize', resizeTextarea);
@@ -943,12 +1019,20 @@ export default function AssistantComposer({
     const container = textarea?.parentElement;
     if (!container || typeof ResizeObserver === 'undefined') return;
 
-    const observer = new ResizeObserver(() => resizeTextarea());
+    // Height changes are usually our own autosizing. Measuring them again
+    // forces another layout; only a width change can rewrap an unchanged draft.
+    let previousWidth: number | undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry || entry.contentRect.width === previousWidth) return;
+      previousWidth = entry.contentRect.width;
+      resizeTextarea();
+    });
     observer.observe(container);
     return () => observer.disconnect();
   }, [resizeTextarea]);
 
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (uploadQueuedRef.current) { event.preventDefault(); return; }
     onPaste?.(event);
     if (event.defaultPrevented || !onPasteFiles) return;
 
@@ -1031,11 +1115,11 @@ export default function AssistantComposer({
   // answer. So neither the queue nor Stop takes over while the question is open.
   const runInFlight = (activeRun || externalRunActive) && !clarificationPending;
   const voiceSnapshot = useMemo(() => voiceMessages ? {
-    messages: voiceMessages, busy: isSending || runInFlight, clarification: voiceClarification,
-  } : null, [voiceMessages, isSending, runInFlight, voiceClarification]);
+    messages: voiceMessages, busy: isSending || runInFlight, clarification: voiceClarification, recordable: Boolean(onVoiceRecord),
+  } : null, [voiceMessages, isSending, runInFlight, voiceClarification, onVoiceRecord]);
   const voiceChatKey = useVoiceChatHost({ identity: voiceConversationId,
     createdIdentity: voiceCreatedConversationId, scope: voiceConversationScope, element: internalTextareaRef,
-    snapshot: voiceSnapshot, onSend: sendSpokenTurn });
+    snapshot: voiceSnapshot, onSend: sendSpokenTurn, onInterrupt: interruptSpokenTurn, onRecord: onVoiceRecord });
   const stopping = runState === 'stopping' || stopPending;
   // Transcript loading holds messages for the same reason as an active run: a
   // direct send would race history restoration and could be overwritten by it.
@@ -1045,7 +1129,7 @@ export default function AssistantComposer({
   // Runtime availability controls actions, not drafting. Keeping the textarea
   // editable means a transient runtime health check never eats or blocks the
   // user's next message.
-  const sessionActionsDisabled = disabled || stopping;
+  const sessionActionsDisabled = disabled || stopping || Boolean(uploadQueued);
   // Two agents take a request rather than a message — Trading Agent analyses an
   // instrument, Shorts cuts a video — and while either is selected there is no
   // message to send, so the whole send path runs off its form's validity
@@ -1057,6 +1141,19 @@ export default function AssistantComposer({
   const shortsRequest = shortsAgent ? shortsRequestFrom(shortsForm) : null;
   const formsmithRequest = formsmithAgent ? formsmithRequestFrom(formsmithForm) : null;
   const formAgent = tradingAgentsAgent ?? shortsAgent ?? formsmithAgent ?? null;
+  const promptSuggestion = usePromptSuggestion({
+    messages: suggestionMessages,
+    personalize: personalize && personalizedSuggestions && Boolean(suggestionMessages),
+    gardenSlug: capabilityGardenSlug,
+    conversationKey: JSON.stringify([voiceConversationScope, voiceConversationId]),
+    model,
+    value,
+    enabled: !sessionActionsDisabled && !loading && !isSending && !activeRun && !externalRunActive &&
+      !permissionPending && !clarificationPending && !formAgent && !pendingWorkflow &&
+      !showSlashCommands && !showCommandHub && !menuSearch && !showIntelligence && !voiceOpen &&
+      attachments.length === 0 && !isAddingDocuments && !onSubmitDuringRun,
+    onChange,
+  });
   const formRequestReady = tradingAgentsAgent
     ? Boolean(tradingAgentsRequest)
     : shortsAgent
@@ -1079,7 +1176,7 @@ export default function AssistantComposer({
     else if (shortsAgent) submitShorts();
     else if (formsmithAgent) submitFormsmith();
   };
-  const canSend = formAgent ? formRequestReady : canSubmit;
+  const canSend = formAgent ? formRequestReady : canSubmit || isAddingDocuments;
   // The goal card's play button sends this and nothing else. It is a message
   // rather than a hidden signal on purpose: the turn it starts is one the
   // person asked for, so it belongs in the transcript where they can see what
@@ -1119,7 +1216,11 @@ export default function AssistantComposer({
   // the liveliest thing in the composer.
   const sendDisabled =
     !canSend ||
-    (formAgent
+    Boolean(menuSearch) ||
+    Boolean(uploadQueued) ||
+    (isAddingDocuments && !formAgent
+      ? queueDisabled
+      : formAgent
       ? disabled || queueHeld || isSending
       : queueHeld
         ? canSubmitDuringRun
@@ -1244,12 +1345,13 @@ export default function AssistantComposer({
     return true;
   }
 
-  function assignTextareaRef(node: HTMLTextAreaElement | null) {
+  const assignTextareaRef = useCallback((node: HTMLTextAreaElement | null) => {
     internalTextareaRef.current = node;
     if (node) resizeTextarea();
-  }
+  }, [resizeTextarea]);
 
   function queueSteer() {
+    if (holdForUploads()) return;
     const text = value.trim();
     if ((!text && attachments.length === 0) || !canQueueFollowUp) return;
     onQueueSteer?.(text, attachments);
@@ -1262,7 +1364,93 @@ export default function AssistantComposer({
     window.setTimeout(() => internalTextareaRef.current?.focus(), 0);
   }
 
+  function sendCurrentDraft(voice?: VoiceRequestOptions) {
+    if (holdForUploads(voice)) return;
+    if (formAgent) submitFormAgent();
+    else if (queueHeld) {
+      if (canSubmitDuringRun) onSubmitDuringRun?.();
+      else queueSteer();
+    } else submitMessage(voice);
+  }
+  const sendCurrentDraftRef = useRef(sendCurrentDraft);
+  sendCurrentDraftRef.current = sendCurrentDraft;
+  useEffect(() => {
+    if (!uploadQueued) return;
+    if (uploadQueued.scope !== uploadQueueScope || uploadQueued.text !== value || attachmentUploadError) {
+      uploadQueuedRef.current = null;
+      setUploadQueued(null);
+      return;
+    }
+    if (isAddingDocuments || queueDisabled ||
+        (queueHeld ? !canSubmitDuringRun && !canQueueFollowUp : disabled || isSending)) return;
+    // Consume before invoking the host: renders and repeated Send/Enter presses
+    // must never dispatch the queued message twice.
+    if (uploadQueuedRef.current !== uploadQueued) return;
+    uploadQueuedRef.current = null;
+    setUploadQueued(null);
+    sendCurrentDraftRef.current(uploadQueued.voice);
+  }, [uploadQueued, uploadQueueScope, value, attachmentUploadError, isAddingDocuments,
+    queueDisabled, queueHeld, canSubmitDuringRun, canQueueFollowUp, disabled, isSending]);
+
+  function closeMenuSearch() {
+    setMenuSearch(null);
+    setShowSlashCommands(false);
+    if (menuSearch) requestAnimationFrame(() => {
+      const input = internalTextareaRef.current;
+      input?.focus();
+      const caret = menuDraftCaretRef.current ?? value.length;
+      input?.setSelectionRange(caret, caret);
+    });
+  }
+
+  function openMenuSearch(kind: 'add' | 'commands') {
+    if (!menuSearch) menuDraftCaretRef.current = internalTextareaRef.current?.selectionStart ?? value.length;
+    setMenuSearch({ kind, query: '' });
+    setShowSlashCommands(kind === 'commands');
+    setShowCommandHub(false);
+    requestAnimationFrame(() => internalTextareaRef.current?.focus());
+  }
+
   function insertCommand(item: CommandHubItem) {
+    setMenuSearch(null);
+    setShowSlashCommands(false);
+    if (item.kind === 'skill') setSkillHints(current => [...current.filter(skill => skill.id !== item.id), item]);
+    if (item.token.startsWith('workflows:')) {
+      // Choosing a workflow leaves the specialist chip behind. Otherwise its
+      // sticky selection would claim the next request before the planner.
+      const selected: Array<[unknown, (() => void) | undefined]> = [
+        [browserAgent, onClearBrowserAgent], [agentBrowserAgent, onClearAgentBrowser],
+        [agentReachAgent, onClearAgentReach], [getDocAgent, onClearGetDoc],
+        [meetingNotesAgent, onClearMeetingNotes], [deepTutorAgent, onClearDeepTutor],
+        [musicProducerAgent, onClearMusicProducer], [careerOpsAgent, onClearCareerOps],
+        [openExecutiveAgent, onClearOpenExecutive], [vibeTradingAgent, onClearVibeTrading],
+        [stockAnalystAgent, onClearStockAnalyst], [deerFlowAgent, onClearDeerFlow],
+        [tradingAgentsAgent, onClearTradingAgents], [shortsAgent, onClearShorts],
+        [formsmithAgent, onClearFormsmith], [deepResearchAgent, onClearDeepResearch],
+        [openPlanterAgent, onClearOpenPlanter], [openCodeAgent, onClearOpenCode],
+        [codexAgent, onClearCodex], [rufloAgent, onClearRuflo],
+      ];
+      selected.forEach(([active, clear]) => { if (active) clear?.(); });
+      const agent = unifiedWorkflowModeAgent(`/${item.token}`);
+      // Empty native-input modes can open their form immediately. A draft or
+      // attachment stays in the composer and goes through normal validation.
+      if (!value.trim() && attachments.length === 0) {
+        const picker = agent?.id === 'formsmith' ? onSelectFormsmith
+          : agent?.id === 'shorts' ? onSelectShorts
+          : agent?.id === 'trading-agent' ? onSelectTradingAgents : undefined;
+        if (picker) { picker(); return; }
+      }
+    }
+    if (item.kind === 'prompt') {
+      const text = item.content ?? '';
+      onChange(text);
+      setShowSlashCommands(false);
+      window.setTimeout(() => {
+        internalTextareaRef.current?.focus();
+        internalTextareaRef.current?.setSelectionRange(text.length, text.length);
+      }, 0);
+      return;
+    }
     if (item.requiresOpenCode) {
       const codingCommand =
         codexAgent || /^\/agents:codex(?:\s+|$)/i.test(value.trimStart())
@@ -1272,7 +1460,7 @@ export default function AssistantComposer({
       // coding runtime it already names — the prefix below puts one back.
       const replaced = slashQueryReplacementRange(
         value,
-        internalTextareaRef.current?.selectionStart,
+        menuSearch ? menuDraftCaretRef.current ?? value.length : internalTextareaRef.current?.selectionStart,
       );
       const remainder = replaced
         ? `${value.slice(0, replaced.start)}${value.slice(replaced.end)}`
@@ -1294,10 +1482,11 @@ export default function AssistantComposer({
 
   function insertCommandToken(command: string) {
     const node = internalTextareaRef.current;
+    const draftCaret = menuSearch ? menuDraftCaretRef.current ?? value.length : node?.selectionStart;
     // A token being edited is overwritten in place; anything else (the palette
     // button, an agent shortcut) goes to the head of the sentence, where a
     // capability selector has to sit anyway.
-    const replaced = slashQueryReplacementRange(value, node?.selectionStart);
+    const replaced = slashQueryReplacementRange(value, draftCaret);
     const start = replaced?.start ?? 0;
     const end = replaced?.end ?? 0;
     const token = `${command} `;
@@ -1307,27 +1496,28 @@ export default function AssistantComposer({
       node?.focus();
       const cursor = replaced
         ? start + token.length
-        : token.length + (node?.selectionStart ?? value.length);
+        : token.length + (draftCaret ?? value.length);
       node?.setSelectionRange(cursor, cursor);
     }, 0);
   }
 
   function selectDirectSlashCommand(item: CommandHubItem) {
+    setMenuSearch(null);
     setShowSlashCommands(false);
     const runtimeAgentId = item.id.startsWith('runtime-agent:')
       ? item.id.slice('runtime-agent:'.length)
       : null;
-    if (runtimeAgentId === 'trading-agent' && onSelectTradingAgents) {
+    if (runtimeAgentId === 'trading-agent' && onSelectTradingAgents && !value.trim() && !attachments.length) {
       onChange('');
       onSelectTradingAgents();
       return;
     }
-    if (runtimeAgentId === 'shorts' && onSelectShorts) {
+    if (runtimeAgentId === 'shorts' && onSelectShorts && !value.trim() && !attachments.length) {
       onChange('');
       onSelectShorts();
       return;
     }
-    if (runtimeAgentId === 'formsmith' && onSelectFormsmith) {
+    if (runtimeAgentId === 'formsmith' && onSelectFormsmith && !value.trim() && !attachments.length) {
       onChange('');
       onSelectFormsmith();
       return;
@@ -1336,6 +1526,7 @@ export default function AssistantComposer({
   }
 
   const availableRuntimeAgentIds = [
+    capabilitySurface === 'dashboard_terminal' ? 'video-use' : null,
     onSelectBrowserAgent ? 'agent-tars' : null,
     onSelectAgentBrowser ? 'agent-browser' : null,
     onSelectAgentReach ? 'agent-reach' : null,
@@ -1388,17 +1579,39 @@ export default function AssistantComposer({
       {/* The beam runs while there is nothing to send and fades the moment
           typing starts — it invites the first word, then gets out of its way. */}
       <ComposerBorderBeam active={value.trim() === ''}>
-      <div className="neu-composer relative rounded-[30px] p-2">
+      <div
+        ref={composerSurfaceRef}
+        className="neu-composer relative rounded-[30px] p-2"
+        onPointerDown={(event) => {
+          if (event.button !== 0 || event.defaultPrevented) return;
+          const textarea = internalTextareaRef.current;
+          if (!textarea) return;
+          // The pill and input row have padding outside the textarea. Treat
+          // those blank surfaces as input, leaving controls, menus, links and
+          // direct textarea clicks to handle their own focus and selection.
+          if (
+            event.target !== event.currentTarget &&
+            event.target !== textarea.parentElement &&
+            event.target !== textarea.parentElement?.parentElement
+          ) return;
+          event.preventDefault();
+          textarea.focus({ preventScroll: true });
+        }}
+      >
         <SlashCommandMenu
           ref={slashCommandMenuRef}
           open={showSlashCommands}
-          query={slashQuery}
+          query={menuSearch?.kind === 'commands' ? menuSearch.query : slashQuery}
           sessionId={capabilitySessionId}
           surface={capabilitySurface}
           availableRuntimeAgentIds={availableRuntimeAgentIds}
-          onClose={() => setShowSlashCommands(false)}
+          onClose={closeMenuSearch}
           onSelect={selectDirectSlashCommand}
+          onBrowseAll={() => { setMenuSearch(null); setShowSlashCommands(false); commandHubRef.current?.openTab('skill'); }}
         />
+        <SelectedSkills value={value} onChange={onChange} sessionId={capabilitySessionId}
+          surface={capabilitySurface} hints={skillHints} disabled={sessionActionsDisabled}
+          onRemove={() => window.setTimeout(() => internalTextareaRef.current?.focus(), 0)} />
         {capabilitySessionId && capabilitySurface !== 'quartz_ai' ? (
           <GoalCard
             sessionId={capabilitySessionId}
@@ -1412,6 +1625,18 @@ export default function AssistantComposer({
           <div className="bb-composer-header mb-1 border-b border-[var(--line)] px-1 pb-1.5 has-[[data-queue-empty]]:contents">
             {headerContent}
           </div>
+        ) : null}
+        {uploadQueued ? (
+          <div role="status" className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs text-[var(--ink-muted)]">
+            <span>Message queued — waiting for files…</span>
+            <button type="button" onClick={cancelUploadSend} className="shrink-0 underline underline-offset-2">Cancel queued send</button>
+          </div>
+        ) : attachmentUploadError ? (
+          <p role="alert" className="px-3 py-1.5 text-xs text-[var(--ink-muted)]">
+            {attachmentUploadError} Add the file again to retry.
+          </p>
+        ) : isAddingDocuments ? (
+          <p role="status" className="px-3 py-1.5 text-xs text-[var(--ink-muted)]">{statusMessage || 'Preparing files…'}</p>
         ) : null}
         {pendingWorkflow ? (
           <div className="flex items-center px-2 pb-1.5 pt-0.5">
@@ -1461,6 +1686,7 @@ export default function AssistantComposer({
                     <button
                       type="button"
                       onClick={() => onRemoveAttachment(index)}
+                      disabled={Boolean(uploadQueued)}
                       className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full border border-[var(--line)] bg-[var(--paper-raised)] text-[var(--ink)] shadow-[var(--neu-soft-shadow)] transition hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
                       aria-label={`Remove ${attachment.name}`}
                     >
@@ -1602,6 +1828,7 @@ export default function AssistantComposer({
                     <button
                       type="button"
                       onClick={() => onRemoveAttachment(index)}
+                      disabled={Boolean(uploadQueued)}
                       className="ml-0.5 shrink-0 rounded-full p-0.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"
                       aria-label={`Remove ${attachment.name}`}
                     >
@@ -2149,9 +2376,11 @@ export default function AssistantComposer({
           <CommandHub
             ref={commandHubRef}
             open={showCommandHub}
+            searchOpen={menuSearch?.kind === 'commands'}
+            onToggleSearch={() => menuSearch?.kind === 'commands' ? closeMenuSearch() : openMenuSearch('commands')}
             onOpenChange={(nextOpen) => {
               setShowCommandHub(nextOpen);
-              if (nextOpen) setShowSlashCommands(false);
+              if (nextOpen) { setShowSlashCommands(false); setMenuSearch(null); }
             }}
             onSelect={insertCommand}
             onSelectReference={(token) => insertCommandToken(`/${token}`)}
@@ -2226,22 +2455,41 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
           />
 
           {onAddDocuments && !formAgent ? (
-            <button
-              type="button"
-              onClick={onAddDocuments}
+            <ComposerAddMenu
+              ref={addMenuRef}
+              key={String(capabilitySessionId ?? 'new')}
+              anchorRef={composerSurfaceRef}
+              inputRef={internalTextareaRef}
+              open={menuSearch?.kind === 'add'}
+              onOpenChange={next => { if (next) openMenuSearch('add'); else if (menuSearch?.kind === 'add') setMenuSearch(null); }}
+              query={menuSearch?.kind === 'add' ? menuSearch.query : ''}
+              surface={capabilitySurface}
+              onSelectConnection={connection => {
+                // Connected account tools are already available to the runtime. Stage
+                // an ordinary request, rather than inventing an unsupported slash token.
+                const prefix = `Use my connected ${connection.name} account. `;
+                const next = value.includes(prefix.trim()) ? value : `${value}${value && !/\s$/.test(value) ? '\n' : ''}${prefix}`;
+                setMenuSearch(null);
+                onChange(next);
+                requestAnimationFrame(() => {
+                  internalTextareaRef.current?.focus();
+                  internalTextareaRef.current?.setSelectionRange(next.length, next.length);
+                });
+              }}
+              onManageConnections={() => {
+                setSettingsInitialTab('connections');
+                setSettingsMounted(true);
+                setShowIntelligence(true);
+                setIntelligencePanel('settings');
+              }}
+              onAddDocuments={onAddDocuments}
+              onAddFiles={onPasteFiles}
+              onOpenGardenChat={onOpenGardenChat}
+              sessionId={capabilitySessionId}
               disabled={sessionActionsDisabled || isAddingDocuments}
-              className={`neu-button-icon flex shrink-0 items-center justify-center rounded-full text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:opacity-40 ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
-              title="Add documents"
-              aria-label="Add documents"
-            >
-              {isAddingDocuments ? (
-                <Spinner />
-              ) : (
-                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                </svg>
-              )}
-            </button>
+              busy={isAddingDocuments}
+              compact={compact}
+            />
           ) : null}
 
           {activeRun && permissionPending ? (
@@ -2296,7 +2544,7 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
               const linkBody = commandSplit ? commandSplit.rest : value;
               const bodySegments = composerSegments(linkBody);
               const hasLink = bodySegments.some((segment) => segment.kind === 'link');
-              const mirrored = Boolean(commandSplit) || hasLink;
+              const mirrored = !menuSearch && (Boolean(commandSplit) || hasLink);
               return (
                 <>
                   {/* Keep the mirror centered with a one-line textarea. Once
@@ -2348,9 +2596,15 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                   ) : null}
                   <textarea
                     ref={assignTextareaRef}
-                    value={value}
+                    value={menuSearch?.query ?? value}
+                    readOnly={Boolean(uploadQueued)}
                     onChange={(event) => {
                       const next = event.target.value;
+                      if (menuSearch) {
+                        setMenuSearch({ ...menuSearch, query: next });
+                        return;
+                      }
+                      promptSuggestion.dismiss();
                       if (pendingWorkflowPrompt !== null && !next.trim()) {
                         setPendingWorkflow(null);
                       }
@@ -2374,11 +2628,23 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                       }
                     }}
                     onKeyDown={(event) => {
+                      if (menuSearch && event.nativeEvent.isComposing) return;
+                      if (uploadQueuedRef.current) {
+                        if (event.key === 'Escape') cancelUploadSend();
+                        if (event.key === 'Enter') event.preventDefault();
+                        return;
+                      }
+                      if (addMenuRef.current?.handleKeyDown(event)) return;
                       if (slashCommandMenuRef.current?.handleKeyDown(event)) return;
                       if (commandHubRef.current?.handleKeyDown(event)) return;
+                      if (menuSearch) {
+                        if (event.key === 'Enter') event.preventDefault();
+                        return;
+                      }
                       onKeyDown?.(event);
                       if (event.defaultPrevented) return;
                       if (walkMessageHistory(event)) return;
+                      if (promptSuggestion.handleKeyDown(event)) return;
                       if (
                         event.key !== 'Enter' ||
                         event.shiftKey ||
@@ -2387,6 +2653,10 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                         return;
                       }
                       event.preventDefault();
+                      if (isAddingDocuments && !queueDisabled) {
+                        holdForUploads();
+                        return;
+                      }
                       // Loading history and an active response both hold this
                       // message in the visible follow-up queue. The host drains
                       // it only after the conversation is safe to write.
@@ -2401,14 +2671,31 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                       if (!canSubmit || isSending || disabled) return;
                       submitMessage();
                     }}
-                    onPaste={handlePaste}
+                    onPaste={menuSearch ? undefined : handlePaste}
                     onScroll={syncCommandBackdrop}
                     rows={1}
                     wrap="soft"
-                    placeholder={placeholder}
+                    placeholder={menuSearch ? (menuSearch.kind === 'add' ? 'Search additions…' : 'Search capabilities…') : promptSuggestion.text ? '' : placeholder}
+                    aria-label={menuSearch ? (menuSearch.kind === 'add' ? 'Search add menu' : 'Search capabilities') : placeholder}
+                    aria-controls={menuSearch?.kind === 'add' ? 'composer-add-menu' : showSlashCommands ? 'direct-slash-command-menu' : undefined}
+                    aria-describedby={promptSuggestion.text ? promptSuggestion.descriptionId : undefined}
+                    aria-keyshortcuts={promptSuggestion.text ? 'Tab Escape' : undefined}
                     className={`block w-full min-w-0 max-w-full resize-none overflow-y-hidden bg-transparent px-1 py-0 caret-[var(--composer-caret)] outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${mirrored ? 'text-transparent' : 'text-[var(--ink)]'} ${compact ? 'min-h-5 text-sm leading-5' : 'min-h-6 text-[15px] leading-6'}`}
                     style={textareaStyle}
                   />
+                  {promptSuggestion.text ? (
+                    <>
+                      <PromptSuggestionOverlay
+                        key={JSON.stringify([placeholder, promptSuggestion.text])}
+                        text={promptSuggestion.text}
+                        placeholder={placeholder}
+                        compact={compact}
+                      />
+                      <span id={promptSuggestion.descriptionId} className="sr-only">
+                        Suggested message: {promptSuggestion.text} Press Tab to use it or Escape to dismiss.
+                      </span>
+                    </>
+                  ) : null}
                 </>
               );
             })()}
@@ -2605,8 +2892,8 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                         <span className="block">Agent mode</span>
                         <span className="block text-[11px] text-[var(--ink-muted)]">
                           {agentMode
-                            ? 'Answers run on the agent runtime, with tools'
-                            : 'Answers come straight from the model, no tools'}
+                            ? "Use tools to complete tasks"
+                            : "Reply without using tools"}
                         </span>
                       </span>
                       <span
@@ -2701,7 +2988,7 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
             onChange={onChange}
             // Dictation writes into the message field, which does not exist
             // while a request-form agent is selected.
-            disabled={disabled || isSending || Boolean(formAgent)}
+            disabled={disabled || isSending || Boolean(formAgent) || Boolean(uploadQueued)}
             compact={compact}
             textareaRef={internalTextareaRef}
             onOpenVoiceMode={voiceMessages ? (greet = false) => { setGreetVoice(greet); setVoiceOpen(true); } : undefined}
@@ -2714,7 +3001,7 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
               (a quiet run) or never arrive at all, and then nothing on screen
               could stop a working conversation. Enter still queues the draft
               either way, exactly as it does during a chat turn. */}
-          {(activeRun || externalRunActive || isSending) && onStop && !canQueueFollowUp && !canSubmitDuringRun && !clarificationPending ? (
+          {(activeRun || externalRunActive || isSending) && onStop && !canQueueFollowUp && !canSubmitDuringRun && !clarificationPending && !isAddingDocuments && !uploadQueued ? (
             <MetalSendButton variant="circle" className="shrink-0">
             <button
               type="button"
@@ -2733,21 +3020,13 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
             // A ready draft replaces Stop in the same button position. Ordinary
             // follow-ups queue; an interaction with its own active-run submitter
             // (currently "Ask here") replaces the running turn.
-            onClick={() =>
-              formAgent
-                ? submitFormAgent()
-                : queueHeld
-                  ? canSubmitDuringRun
-                    ? onSubmitDuringRun?.()
-                    : queueSteer()
-                  : submitMessage()
-            }
+            onClick={() => sendCurrentDraft()}
             disabled={sendDisabled}
             // While the chat loads with no draft, the button keeps its accent
             // colour and spinner. A draft restores the enabled arrow immediately.
             className={`neu-button-accent flex shrink-0 items-center justify-center rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] ${loading ? 'disabled:cursor-wait disabled:opacity-55' : 'disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)]'} ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
             aria-label={
-              canSubmitDuringRun
+              uploadQueued ? 'Message queued' : isAddingDocuments && !formAgent ? 'Queue message' : canSubmitDuringRun
                 ? 'Send'
                 : canQueueFollowUp
                 ? 'Queue message'
@@ -2762,7 +3041,7 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                       : 'Send'
             }
             title={
-              canSubmitDuringRun
+              uploadQueued ? 'Waiting for files to finish uploading' : isAddingDocuments && !formAgent ? 'Send when files are ready' : canSubmitDuringRun
                 ? 'Send'
                 : canQueueFollowUp
                 ? 'Queue until the conversation is ready'
@@ -2878,6 +3157,8 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
           greetOnOpen={greetVoice}
           onClose={() => setVoiceOpen(false)}
           onSend={sendSpokenTurn}
+          onInterrupt={interruptSpokenTurn}
+          onRecord={onVoiceRecord}
           messages={voiceMessages}
           clarification={voiceClarification}
           busy={isSending || runInFlight}

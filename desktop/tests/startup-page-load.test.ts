@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import vm from "node:vm";
 import type { WebContents } from "electron";
-import { waitForStartupPageLoad, waitForStartupPageReady } from "../src/main/startup-page-load";
+import { startupReadinessProbe, waitForStartupPageLoad, waitForStartupPageReady } from "../src/main/startup-page-load";
 
 function page(url = "", loading = true, destroyed = false) {
   return Object.assign(new EventEmitter(), {
@@ -84,4 +85,49 @@ test("startup readiness bounds a wedged renderer and releases listeners on failu
     assert.equal(await pending, false);
     assert.deepEqual(contents.eventNames(), []);
   }
+});
+
+test("changing selection cancels readiness without waiting for a pending widget", async () => {
+  const contents = Object.assign(page("http://localhost/new-tab", false), {
+    mainFrame: { executeJavaScript: () => new Promise(() => {}) },
+  });
+  const controller = new AbortController();
+  const pending = waitForStartupPageReady(contents as unknown as WebContents, 10_000, controller.signal);
+  controller.abort();
+  assert.equal(await pending, false);
+  assert.deepEqual(contents.eventNames(), []);
+});
+
+test("a hydrated Terminal still waits for fonts and initial images to settle", async () => {
+  let time = 0;
+  const scheduled: Array<() => void> = [];
+  const document = { documentElement: { hasAttribute: () => true, dataset: { breadboardStartup: "ready" } },
+    fonts: { status: "loading" }, images: [{ loading: "eager", complete: false }] };
+  let ready = false;
+  const promise = vm.runInNewContext(startupReadinessProbe(2000), {
+    document, Date: { now: () => time }, setTimeout: (fn: () => void) => scheduled.push(fn),
+  }).then((value: boolean) => { ready = value; });
+  const tick = async () => { time += 50; scheduled.shift()?.(); await Promise.resolve(); };
+  for (let i = 0; i < 6; i++) await tick();
+  assert.equal(ready, false);
+  document.fonts.status = "loaded";
+  for (let i = 0; i < 6; i++) await tick();
+  assert.equal(ready, false);
+  document.images[0]!.complete = true;
+  for (let i = 0; i < 6; i++) await tick();
+  await promise;
+  assert.equal(ready, true);
+});
+
+test("a stalled optional site icon cannot hide a hydrated Terminal", async () => {
+  let time = 0;const scheduled: Array<() => void> = [];
+  const document = { documentElement: { hasAttribute: () => true, dataset: { breadboardStartup: "ready" } },
+    fonts: { status: "loaded" }, images: [{ loading: "eager", complete: false,
+      hasAttribute: (name: string) => name === "data-startup-optional" }] };
+  const promise = vm.runInNewContext(startupReadinessProbe(2000), {
+    document, Date: { now: () => time }, setTimeout: (fn: () => void) => scheduled.push(fn),
+  });
+  for (let i = 0; i < 6; i++) { time += 50; scheduled.shift()?.(); await Promise.resolve(); }
+  assert.equal(await promise, true);
+  assert.equal(document.images[0]!.complete, false);
 });

@@ -158,6 +158,7 @@ function sendFlagColor(slug: FullSlug, flagColor: string) {
 // ── Folder drag-and-drop (only when embedded in the dashboard iframe) ─────────
 const insideDashboard = typeof window !== "undefined" && window.parent !== window
 let draggedSlug: string | null = null
+let draggedDocument: ContentDetails | null = null
 
 // A note's full slug is "<cluster>/<...folder>/<basename>".
 function clusterAndBasename(slug: string): { cluster: string; basename: string } {
@@ -178,8 +179,91 @@ function clearDropTargets() {
   }
 }
 
-function sendMoveNote(cluster: string, slug: string, toFolder: string) {
-  window.parent?.postMessage({ type: "second-brain:move-note", cluster, slug, toFolder }, "*")
+interface DocumentMove {
+  requestId: string
+  cluster: string
+  fromSlug: FullSlug
+  toSlug: FullSlug
+  toFolder: string
+  source: ContentDetails
+  document: ContentDetails
+  pending: boolean
+  openWhenReady: boolean
+}
+const documentMoves = new Map<string, DocumentMove>()
+let explorerDocuments = new Map<FullSlug, ContentDetails>()
+document.addEventListener("click", (event) => {
+  const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>(".explorer a[data-for]") : null
+  const move = link && [...documentMoves.values()].find(move => move.pending && move.toSlug === link.dataset.for)
+  if (!move) return
+  // A pending destination is already visible, but its file is not persisted
+  // yet. Queue an immediate click rather than navigating to a missing URL.
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  move.openWhenReady = true
+}, true)
+
+function openMovedDocument(slug: FullSlug) {
+  const url = new URL(resolveRelative(explorerSlug ?? slug, slug), location.href)
+  if (window.spaNavigate) void window.spaNavigate(url)
+  else location.assign(url.href)
+}
+
+function reportMoveError(move: DocumentMove, message: string) {
+  for (const explorer of document.querySelectorAll<HTMLElement>(".explorer")) {
+    explorer.querySelector(".explorer-move-error")?.remove()
+    const error = document.createElement("p"), retry = document.createElement("button")
+    error.className = "explorer-move-error"
+    error.setAttribute("role", "alert")
+    error.append(`${move.document.title}: ${message} `)
+    retry.type = "button"
+    retry.textContent = "Retry"
+    retry.addEventListener("click", () => {
+      error.remove()
+      void moveDocument(move.fromSlug, move.source, move.toFolder)
+    }, { once: true })
+    error.append(retry)
+    explorer.append(error)
+  }
+}
+
+async function moveDocument(fromSlug: FullSlug, source: ContentDetails, toFolder: string) {
+  const cluster = clusterAndBasename(fromSlug).cluster
+  const fileName = source.filePath.split("/").pop()!
+  const filePath = `${cluster}/${toFolder ? toFolder + "/" : ""}${fileName}` as FilePath
+  const toSlug = slugifyFilePath(filePath)
+  if (fromSlug === toSlug || [...documentMoves.values()].some(move => move.pending && move.toSlug === fromSlug)) return
+  const move: DocumentMove = { requestId: crypto.randomUUID(), cluster, fromSlug, toSlug, toFolder,
+    source, document: { ...source, slug: toSlug, filePath }, pending: true, openWhenReady: false }
+  if (explorerDocuments.has(toSlug)) {
+    reportMoveError(move, "A note with that name already exists in the target folder.")
+    return
+  }
+  document.querySelectorAll(".explorer-move-error").forEach(error => error.remove())
+  documentMoves.set(move.requestId, move)
+  // Expand the destination and its ancestors before the next paint.
+  const parts = toSlug.split("/")
+  const states: FolderState[] = JSON.parse(localStorage.getItem("fileTree") || "[]")
+  for (let depth = 1; depth < parts.length; depth++) {
+    const path = `${parts.slice(0, depth).join("/")}/index` as FullSlug
+    const state = states.find(entry => entry.path === path)
+    if (state) state.collapsed = false
+    else states.push({ path, collapsed: false })
+  }
+  localStorage.setItem("fileTree", JSON.stringify(states))
+  if (explorerSlug) void setupExplorer(explorerSlug)
+  try {
+    if (document.querySelector<HTMLElement>(".markdown-actions")?.dataset.noteSlug === fromSlug) {
+      await (window as Window & { __quartzDocumentEditor?: { flush(): Promise<void> } }).__quartzDocumentEditor?.flush()
+    }
+    window.parent.postMessage({ type: "second-brain:move-note", cluster,
+      slug: source.filePath.slice(cluster.length + 1),
+      toFolder, requestId: move.requestId }, "*")
+  } catch (error) {
+    documentMoves.delete(move.requestId)
+    if (explorerSlug) void setupExplorer(explorerSlug)
+    reportMoveError(move, error instanceof Error ? error.message : "Could not save the page before moving it.")
+  }
 }
 
 function sendCreateFolder(cluster: string, folder: string) {
@@ -211,10 +295,44 @@ interface CreateFolderDialog {
 }
 
 let createFolderDialog: CreateFolderDialog | null = null
+let folderHostReady = false
+let waitingFolderDialog: CreateFolderDialog | null = null
 let createFolderResultListenerBound = false
 let explorerSlug: FullSlug | null = null
 const canonicalFolders = new Map<string, Map<string, string>>()
 const canonicalFolderSnapshots = new Set<string>()
+// Quartz can use full document navigation. Keep the last acknowledged folder
+// snapshot in this tab so saved folders participate in the first tree render,
+// just like published folders. Refresh it from the authenticated host below.
+const folderCacheKey = "breadboard:canonical-folders:v1"
+if (insideDashboard) {
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(folderCacheKey) || "null")
+    if (cached && Date.now() - cached.savedAt < 30 * 60_000) {
+      for (const [cluster, folders] of cached.folders) {
+        if (typeof cluster !== "string" || !Array.isArray(folders)) continue
+        canonicalFolders.set(cluster, new Map(folders.filter((entry: unknown) =>
+          Array.isArray(entry) && entry.length === 2 && entry.every(value => typeof value === "string"))))
+      }
+      for (const cluster of cached.complete ?? []) if (canonicalFolders.has(cluster)) canonicalFolderSnapshots.add(cluster)
+    }
+  } catch { /* Storage can be unavailable; the host still supplies snapshots. */ }
+}
+function saveFolderSnapshot() {
+  if (!insideDashboard) return
+  try {
+    sessionStorage.setItem(folderCacheKey, JSON.stringify({ savedAt: Date.now(),
+      folders: [...canonicalFolders].map(([cluster, folders]) => [cluster, [...folders]]),
+      complete: [...canonicalFolderSnapshots],
+    }))
+  } catch { /* The tree remains usable if tab storage is full. */ }
+}
+const canonicalDocumentSnapshots = new Set<string>()
+let deletedDocumentSlugs = new Set<string>()
+document.addEventListener("bb:document-deletions", ((event: CustomEvent<{ slugs: string[] }>) => {
+  deletedDocumentSlugs = new Set(event.detail.slugs)
+  if (explorerSlug) void setupExplorer(explorerSlug)
+}) as EventListener)
 const removedFolderPrefixes = new Set<string>()
 // Mirrors the server policy; the shared filesystem service enforces it too.
 const AUTOMATIC_GARDEN_FOLDERS = new Set([
@@ -232,8 +350,18 @@ const AUTOMATIC_GARDEN_FOLDERS = new Set([
   ".breadboard",
 ])
 const canonicalDocuments = new Map<FullSlug, ContentDetails>()
-const unpublishedDocuments = new Set<FullSlug>()
-const unpublishedFolders = new Set<string>()
+const savedTitles = new Map<FullSlug, string>()
+// A title edit must survive tree rebuilds until the publication catches up.
+document.addEventListener("bb:document-title", (event) => {
+  const { slug, title } = (event as CustomEvent).detail ?? {}
+  if (typeof slug !== "string" || typeof title !== "string") return
+  savedTitles.set(slug as FullSlug, title)
+  document.querySelectorAll<HTMLAnchorElement>(`.explorer a[data-for="${CSS.escape(slug)}"]`)
+    .forEach((link) => { link.textContent = title })
+  const canonical = canonicalDocuments.get(slug as FullSlug)
+  if (canonical) canonical.title = title
+  void fetchData.then((data) => { if (data[slug]) data[slug].title = title })
+})
 const boundExplorerToggles = new WeakSet<HTMLElement>()
 const explorerRenderControllers = new WeakMap<HTMLElement, AbortController>()
 const explorerRenderVersions = new WeakMap<HTMLElement, number>()
@@ -318,6 +446,15 @@ function setCreateFolderDialogPending(
 }
 
 function sendFolderDialogAction(dialog: CreateFolderDialog) {
+  // A cached tree can be interactive before React has hydrated the host.
+  // Queue the intent until the read handshake succeeds; never retry a copy
+  // blindly, since repeating a successful copy would create another folder.
+  if (!folderHostReady) {
+    waitingFolderDialog = dialog
+    requestFolderSnapshot(dialog.cluster)
+    return
+  }
+  waitingFolderDialog = null
   if (dialog.action === "create") sendCreateFolder(dialog.cluster, dialog.pendingFolder)
   else
     window.parent.postMessage(
@@ -335,6 +472,7 @@ function sendFolderDialogAction(dialog: CreateFolderDialog) {
 function closeCreateFolderDialog(force = false) {
   const dialog = createFolderDialog
   if (!dialog || (dialog.pending && !force)) return
+  waitingFolderDialog = null
   clearCreateFolderTimers(dialog)
   dialog.overlay.hidden = true
   dialog.input.value = ""
@@ -360,6 +498,7 @@ function bindCreateFolderResultListener() {
           newFolder?: string
           name?: string
           requestId?: string
+          relPath?: string
           complete?: boolean
           folders?: Array<{ folder: string; name: string }>
           documents?: Array<{ relPath: string; title: string; type?: string; sourceType?: string }>
@@ -370,6 +509,25 @@ function bindCreateFolderResultListener() {
           retryAfterMs?: number
         }
       | undefined
+    if (data?.type === "second-brain:move-note-result" && data.requestId) {
+      const move = documentMoves.get(data.requestId)
+      if (!move?.pending || data.cluster !== move.cluster) return
+      if (data.ok && typeof data.relPath === "string") {
+        move.pending = false
+        const filePath = `${move.cluster}/${data.relPath}` as FilePath
+        move.toSlug = slugifyFilePath(filePath)
+        move.document = { ...move.document, slug: move.toSlug, filePath }
+        if (explorerSlug) void setupExplorer(explorerSlug)
+        if (move.openWhenReady || document.querySelector<HTMLElement>(".markdown-actions")?.dataset.noteSlug === move.fromSlug) {
+          openMovedDocument(move.toSlug)
+        }
+      } else {
+        documentMoves.delete(move.requestId)
+        if (explorerSlug) void setupExplorer(explorerSlug)
+        reportMoveError(move, data.error || "Could not move the page.")
+      }
+      return
+    }
     if (
       (data?.type === "second-brain:copy-folder-result" ||
         data?.type === "second-brain:rename-folder-result") &&
@@ -420,6 +578,7 @@ function bindCreateFolderResultListener() {
       Array.isArray(data.documents)
     ) {
       if (data.complete) {
+        canonicalDocumentSnapshots.add(data.cluster)
         for (const [slug, entry] of canonicalDocuments) {
           if (entry.filePath.startsWith(`${data.cluster}/`)) canonicalDocuments.delete(slug)
         }
@@ -444,6 +603,17 @@ function bindCreateFolderResultListener() {
           content: "",
         })
       }
+      if (data.complete) {
+        const moves = [...documentMoves.values()].filter(move => move.cluster === data.cluster)
+        const destinations = new Set<FullSlug>()
+        for (const move of moves) { destinations.delete(move.fromSlug); destinations.add(move.toSlug) }
+        // Keep every pending overlay until a post-mutation snapshot agrees.
+        // Checking the final destinations also handles quick A -> B -> A moves.
+        if (moves.every(move => !move.pending) && [...destinations].every(slug => canonicalDocuments.has(slug)) &&
+            moves.every(move => destinations.has(move.fromSlug) || !canonicalDocuments.has(move.fromSlug))) {
+          for (const move of moves) documentMoves.delete(move.requestId)
+        }
+      }
       if (data.reveal) {
         const slug = slugifyFilePath(`${data.cluster}/${data.reveal}` as FilePath)
         const segments = slug.split("/")
@@ -463,6 +633,8 @@ function bindCreateFolderResultListener() {
       typeof data.cluster === "string" &&
       Array.isArray(data.folders)
     ) {
+      folderHostReady = true
+      if (waitingFolderDialog?.pending && !waitingFolderDialog.overlay.hidden) sendFolderDialogAction(waitingFolderDialog)
       const retry = folderSnapshotRetries.get(data.cluster)
       if (retry !== undefined) window.clearTimeout(retry)
       folderSnapshotRetries.delete(data.cluster)
@@ -706,27 +878,33 @@ function openFolderActionDialog(
     })
 }
 
-function makeFileDraggable(li: HTMLElement, slug: FullSlug) {
+function makeFileDraggable(li: HTMLElement, node: FileTrieNode) {
   if (!insideDashboard) return
-  li.draggable = true
+  const slug = node.slug
+  const pending = [...documentMoves.values()].some(move => move.pending && move.toSlug === slug)
+  li.draggable = !pending
+  if (pending) li.setAttribute("aria-busy", "true")
   li.classList.add("explorer-draggable")
   li.addEventListener("dragstart", (event) => {
+    if (pending || !node.data) { event.preventDefault(); return }
     draggedSlug = slug
+    draggedDocument = { ...node.data, title: node.displayName }
     event.dataTransfer?.setData("text/plain", slug)
     if (event.dataTransfer) event.dataTransfer.effectAllowed = "move"
   })
   li.addEventListener("dragend", () => {
     draggedSlug = null
+    draggedDocument = null
     clearDropTargets()
   })
 }
 
-function makeFolderDropTarget(el: HTMLElement, folderSlug: string) {
+function makeFolderDropTarget(el: HTMLElement, folderSlug: string, diskFolder: string) {
   if (!insideDashboard) return
   const target = clusterAndRelFolder(folderSlug)
 
   el.addEventListener("dragover", (event) => {
-    if (!draggedSlug) return
+    if (!draggedSlug || !draggedDocument) return
     if (clusterAndBasename(draggedSlug).cluster !== target.cluster) return
     event.preventDefault()
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move"
@@ -740,8 +918,9 @@ function makeFolderDropTarget(el: HTMLElement, folderSlug: string) {
     if (dragged.cluster !== target.cluster) return
     event.preventDefault()
     event.stopPropagation()
-    sendMoveNote(target.cluster, dragged.basename, target.relFolder)
+    if (draggedDocument) void moveDocument(draggedSlug as FullSlug, draggedDocument, diskFolder)
     draggedSlug = null
+    draggedDocument = null
   })
 }
 
@@ -893,13 +1072,10 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
   a.href = resolveRelative(currentSlug, node.slug)
   a.dataset.for = node.slug
   a.textContent = node.displayName
-  if (unpublishedDocuments.has(node.slug)) {
-    // The canonical file is saved, but its static URL does not exist yet.
-    a.removeAttribute("href")
-    a.title = "Saved. The reading page is being published."
-    a.setAttribute("aria-disabled", "true")
-  }
-  makeFileDraggable(li, node.slug)
+  // The content index is a cached snapshot, not the authority on whether a
+  // saved note can open. Canonical entries retain real links even when this
+  // frame's index predates their publication.
+  makeFileDraggable(li, node)
 
   if (currentSlug === node.slug) {
     a.classList.add("active")
@@ -1033,7 +1209,6 @@ function createFolderNode(
       relFolder)
   const isGardenRoot = relFolder.length === 0
   const isVirtualCluster = isVirtualGardenClusterNode(node)
-  const isUnpublished = unpublishedFolders.has(folderPath)
   // Existing emitted pages may outlive an asset-only rebuild, so apply the
   // clipping hook at runtime as well as in Explorer's template.
   titleContainer.classList.add("folder-title-clip")
@@ -1045,7 +1220,7 @@ function createFolderNode(
 
   // Virtual cluster headings organize Gardens in the library. They are not
   // content folders, so note/file actions remain on the real Garden nodes.
-  if (!isVirtualCluster) makeFolderDropTarget(folderContainer, folderPath)
+  if (!isVirtualCluster) makeFolderDropTarget(folderContainer, folderPath, isGardenRoot ? "" : diskFolder)
   if (insideDashboard && !isVirtualCluster) {
     const addBtn = document.createElement("button")
     addBtn.type = "button"
@@ -1111,11 +1286,13 @@ function createFolderNode(
   }
 
   let folderTitle: HTMLElement
-  if (opts.folderClickBehavior === "link" && !isVirtualCluster && !isUnpublished) {
+  if (opts.folderClickBehavior === "link" && !isVirtualCluster) {
     // Replace button with link for link behavior
     const button = titleContainer.querySelector(".folder-button") as HTMLElement
     const a = document.createElement("a")
-    a.href = resolveRelative(currentSlug, folderPath)
+    // Preserve the folder's index identity. A clean slug without /index can
+    // otherwise be mistaken for a same-named note by the unpublished shell.
+    a.href = "/" + folderPath.split("/").map(encodeURIComponent).join("/")
     a.dataset.for = folderPath
     a.className = "folder-title"
     a.textContent = node.displayName
@@ -1126,8 +1303,8 @@ function createFolderNode(
     const span = titleContainer.querySelector(".folder-title") as HTMLElement
     span.textContent = node.displayName
     folderTitle = span
-    if ((isVirtualCluster || isUnpublished) && opts.folderClickBehavior === "link") {
-      button.ariaLabel = `Toggle ${isVirtualCluster ? "cluster" : "folder"} ${node.displayName}`
+    if (isVirtualCluster && opts.folderClickBehavior === "link") {
+      button.ariaLabel = `Toggle cluster ${node.displayName}`
       button.addEventListener("click", toggleFolder, { signal })
     }
   }
@@ -1188,6 +1365,7 @@ function reviveDataFn(source: string | undefined) {
 
 async function setupExplorer(currentSlug: FullSlug) {
   explorerSlug = currentSlug
+  saveFolderSnapshot()
   bindCreateFolderResultListener()
   ensureDndStyles()
   const allExplorers = document.querySelectorAll("div.explorer") as NodeListOf<HTMLElement>
@@ -1249,19 +1427,33 @@ async function setupExplorer(currentSlug: FullSlug) {
           slug.startsWith(`${cluster}/`),
       )
     const entries = Object.entries(data).filter(
-      ([slug, entry]) => isAllowed(entry.filePath ?? "", slug) && !isRemoved(entry.filePath ?? ""),
+      ([slug, entry]) => {
+        const filePath = entry.filePath ?? ""
+        const cluster = (filePath || slug).split("/")[0]
+        // A complete disk snapshot replaces published documents. Keep folder
+        // index metadata, which the documents endpoint intentionally omits.
+        const obsolete = canonicalDocumentSnapshots.has(cluster) &&
+          !canonicalDocuments.has(slug as FullSlug) && !/(?:^|\/)_?index\.md$/.test(filePath)
+        return !obsolete && !deletedDocumentSlugs.has(slug) && isAllowed(filePath, slug) && !isRemoved(filePath)
+      },
     ) as [FullSlug, ContentDetails][]
-    const trie = FileTrieNode.fromEntries(entries)
+    const documents = new Map<FullSlug, ContentDetails>(entries)
     for (const [slug, document] of canonicalDocuments) {
+      if (deletedDocumentSlugs.has(slug)) continue
       if (!isAllowed(document.filePath, slug)) continue
       if (isRemoved(document.filePath)) continue
-      if (data[slug]) {
-        unpublishedDocuments.delete(slug)
-      } else {
-        unpublishedDocuments.add(slug)
-        trie.add(document)
+      documents.set(slug, { ...documents.get(slug), ...document })
+    }
+    for (const move of documentMoves.values()) {
+      documents.delete(move.fromSlug)
+      if (!deletedDocumentSlugs.has(move.toSlug) && isAllowed(move.document.filePath, move.toSlug)) {
+        documents.set(move.toSlug, move.pending ? move.document : { ...move.document, ...canonicalDocuments.get(move.toSlug) })
       }
     }
+    explorerDocuments = documents
+    const trie = FileTrieNode.fromEntries([...documents].map(([slug, entry]) => [slug, {
+      ...entry, title: savedTitles.get(slug) ?? entry.title,
+    }]))
     for (const [cluster, folders] of canonicalFolders) {
       if (allowedClusters && !allowedClusters.includes(cluster)) continue
       for (const [folder, title] of folders) {
@@ -1272,10 +1464,8 @@ async function setupExplorer(currentSlug: FullSlug) {
         if (isRemoved(filePath)) continue
         const slug = slugifyFilePath(filePath)
         if (data[slug]) {
-          unpublishedFolders.delete(slug)
           continue
         }
-        unpublishedFolders.add(slug)
         trie.add({ slug, title, filePath, links: [], tags: [], content: "" })
       }
     }

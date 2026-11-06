@@ -10,8 +10,8 @@
 // The rule that keeps this usable is the severity split, and it is the whole
 // reason this file is not a flat regex list:
 //
-//   - The same sentence in *hidden* text is an attack. Nobody writes "ignore
-//     all previous instructions" in white-on-white 1pt type by accident.
+//   - Instructions in potentially hidden text deserve closer review, but
+//     formatting and phrase matches alone do not establish intent.
 //   - The same sentence in *visible* text is, far more often, a document
 //     about prompt injection. This garden has notes on exactly that subject.
 //     Flagging them at critical severity would train the user to dismiss the
@@ -19,8 +19,8 @@
 //
 // So visible text is reported at warning severity at most, and only when a
 // `strong` pattern hits or several weaker ones do at once. Hidden text is
-// reported at critical severity on any hit, because the concealment already
-// supplied the intent the phrasing alone cannot.
+// reported at critical severity on any hit to prioritize review, without
+// deciding whether the document is actually attempting to redirect a model.
 
 import type { SafetyFinding } from "./types.ts";
 import { quote } from "./unicode.ts";
@@ -243,11 +243,10 @@ function collectMatches(text: string): InjectionMatch[] {
 }
 
 /**
- * Scan text a layer has proved a human reader cannot see.
+ * Scan text a layer has flagged as potentially hidden.
  *
- * Every hit is critical here. The concealment is the intent: a sentence that
- * would be ambiguous in the body of a document is not ambiguous when somebody
- * went to the trouble of making it invisible.
+ * Every hit is critical for review priority. Intent still needs context:
+ * formatting can be benign and a document can quote instructions as examples.
  */
 export function scanHiddenTextForInjection(
   hiddenText: string,
@@ -257,11 +256,12 @@ export function scanHiddenTextForInjection(
 
   return collectMatches(hiddenText.slice(0, MAX_SCAN_CHARS)).map((match) => ({
     severity: "critical" as const,
-    type: `Hidden prompt injection (${match.label})`,
+    type: `Possible prompt injection in flagged text (${match.label})`,
     where,
     detail:
-      "Text a reader cannot see contains an instruction addressed to whatever " +
-      `model reads this document. Content: ${quote(match.excerpt)}`,
+      "Text flagged as potentially hidden matches wording that may address an AI reader. " +
+      "Inspect the quoted text in its document context before interpreting its intent. " +
+      `Content: ${quote(match.excerpt)}`,
   }));
 }
 

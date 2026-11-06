@@ -55,6 +55,7 @@ export async function POST(
       syllabusSourceId,
       sourceOnly: body.sourceOnly !== false,
       includeSourceSnapshots: body.includeSourceSnapshots === true,
+      reuseCropVerdictsAcrossModels: body.reuseCropVerdictsAcrossModels === true,
       userInstruction,
     }, `full rebuild for ${cluster.slug}`);
     if (execution.accepted) {

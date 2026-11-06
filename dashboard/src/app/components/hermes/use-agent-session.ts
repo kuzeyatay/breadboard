@@ -1,5 +1,6 @@
 "use client";
 
+import { mergeProgressNote, mergeThinkingDetail } from "@/lib/hermes/stream-progress";
 import { handleGardenSourceImportResult } from "@/lib/hermes/garden-source-import-client";
 
 // Client-side hook that drives an Hermes-backed agent session for any of
@@ -242,6 +243,8 @@ export interface AgentMessage {
   responseCompletedAt?: string;
   role: "user" | "assistant";
   content: string;
+  /** Ephemeral public speech stream; never rendered as the stable chat answer. */
+  voiceStream?: { text: string; segment: number };
   /** Assistant-authored pre-tool updates, kept separate from private reasoning. */
   progressNotes?: string[];
   activityLabel?: string;
@@ -307,6 +310,7 @@ export interface AgentMessage {
    */
   preDispatchRecovery?: {
     agentMode: boolean;
+    voice?: boolean;
     model?: string;
     reasoningEffort?: AssistantReasoningEffort;
     superAgent: boolean;
@@ -611,6 +615,10 @@ export interface SkillContinuation {
 
 export interface AgentSendOptions {
   model?: string;
+  /** Spoken requests use the agent runtime even when typed chat has tools off. */
+  voice?: boolean;
+  /** Fresh view access from a detached voice window; null clears stale context. */
+  browserAccess?: BrowserTerminalAccess | null;
   reasoningEffort?: AssistantReasoningEffort;
   /** Keep this model-to-model hand-back out of the visible user transcript. */
   internalAgentContinuation?: boolean;
@@ -771,7 +779,7 @@ function normalizeHumanizerReview(value: unknown): HumanizerReviewPresentation |
   };
 }
 
-function normalizeRestoredMessages(value: unknown): AgentMessage[] {
+export function normalizeRestoredMessages(value: unknown): AgentMessage[] {
   if (!Array.isArray(value)) return [];
 
   return value
@@ -975,6 +983,7 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
             : undefined;
         normalized.preDispatchRecovery = {
           agentMode: recovery.agentMode !== false,
+          ...(recovery.voice === true ? { voice: true } : {}),
           ...(typeof recovery.model === "string" && recovery.model.trim()
             ? { model: recovery.model.trim().slice(0, 240) }
             : {}),
@@ -1003,13 +1012,13 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
     });
 }
 
-function pendingRestoredTurn(messages: AgentMessage[]): {
+function pendingRestoredTurn(messages: AgentMessage[], concurrentInline = false): {
   assistant: AgentMessage;
   instruction: string;
 } | null {
   const assistant = [...messages]
     .reverse()
-    .find((message) => message.role === "assistant");
+    .find((message) => message.role === "assistant" && !(concurrentInline && message.textSelection?.mode === "inline"));
   if (!assistant?.pending) return null;
   const user = [...messages]
     .reverse()
@@ -1029,13 +1038,13 @@ function pendingRestoredTurn(messages: AgentMessage[]): {
  * renderer-recovery snapshot; an arbitrary empty historical answer is not a
  * signal that work is still running.
  */
-function optimisticPendingTurn(messages: AgentMessage[]): {
+function optimisticPendingTurn(messages: AgentMessage[], concurrentInline = false): {
   assistant: AgentMessage;
   instruction: string;
 } | null {
   const assistant = [...messages]
     .reverse()
-    .find((message) => message.role === "assistant");
+    .find((message) => message.role === "assistant" && !(concurrentInline && message.textSelection?.mode === "inline"));
   if (
     !assistant ||
     assistant.content.trim() ||
@@ -1314,6 +1323,10 @@ function isExpectedCancellationError(message: string): boolean {
 }
 
 interface CreateOptions {
+  /** An independent, temporary workspace side chat; stars can retain it. */
+  sideChat?: boolean;
+  /** Side questions are observed separately from the main run. */
+  concurrentInline?: boolean;
   voice?: boolean;
   /** Destination for new terminal chats; existing chats keep their own context. */
   workspaceSlug?: string;
@@ -1342,6 +1355,7 @@ function activeConversationStorageKey(
   surface: AgentSurface,
   options?: CreateOptions,
 ): string {
+  if (options?.sideChat) return `breadboard-side-chat:${surface}:${options.gardenSlug ?? "global"}`;
   const context = options?.voice ? 'voice' : options?.gardenSlug ?? options?.pageSlug ?? "global";
   return `breadboard-active-conversation:${surface}:${context}`;
 }
@@ -1455,6 +1469,7 @@ async function ensureSession(
     internalAgentContinuation?: boolean;
     scheduleReceiptId?: number;
     agentMode: boolean;
+    voice?: boolean;
     model?: string;
     reasoningEffort?: AssistantReasoningEffort;
     superAgent: boolean;
@@ -1753,9 +1768,9 @@ export function useAgentSession(
       options: { allowOptimistic?: boolean } = {},
     ): boolean => {
       const initial =
-        pendingRestoredTurn(restoredMessages) ??
+        pendingRestoredTurn(restoredMessages, createOptions?.concurrentInline) ??
         (options.allowOptimistic
-          ? optimisticPendingTurn(restoredMessages)
+          ? optimisticPendingTurn(restoredMessages, createOptions?.concurrentInline)
           : null);
       if (!initial) return false;
       const expectedClientMessageId = initial.assistant.clientMessageId;
@@ -1818,6 +1833,7 @@ export function useAgentSession(
                     selectedText: user.textSelection?.quote,
                   },
                   model: recovery.model ?? latestSendOptionsRef.current.model,
+                  voice: recovery.voice === true,
                   reasoningEffort:
                     recovery.reasoningEffort ??
                     latestSendOptionsRef.current.reasoningEffort,
@@ -1977,7 +1993,7 @@ export function useAgentSession(
           pendingHistoryOverrideRef.current = null;
           setMessages(nextMessages);
           if (rehydrateAwaitingPermission(nextMessages)) return;
-          const pending = pendingRestoredTurn(nextMessages);
+          const pending = pendingRestoredTurn(nextMessages, createOptions?.concurrentInline);
           if (pending) {
             setActiveInstruction(pending.instruction);
             delayMs = Math.min(2_500, Math.round(delayMs * 1.25));
@@ -2036,7 +2052,7 @@ export function useAgentSession(
     },
     // Restoration depends on this callback. Inline options (as used by the
     // PDF assistant) must not restart restoration on every loading-state render.
-    [createOptions?.gardenSlug, createOptions?.pageSlug, rehydrateAwaitingPermission, surface, transition],
+    [createOptions?.concurrentInline, createOptions?.gardenSlug, createOptions?.pageSlug, rehydrateAwaitingPermission, surface, transition],
   );
 
   useEffect(() => {
@@ -2464,6 +2480,13 @@ export function useAgentSession(
               continue;
             }
             switch (event.type) {
+            case "assistant.voice.delta":
+              if (typeof payload.text === "string" &&
+                  typeof payload.segment === "number" && Number.isInteger(payload.segment) && payload.segment >= 0) {
+                assistant = { ...assistant, voiceStream: { text: payload.text, segment: payload.segment } };
+                commit(assistant);
+              }
+              break;
             case "assistant.delta":
               assistant = {
                 ...assistant,
@@ -2489,10 +2512,9 @@ export function useAgentSession(
                 const progressNotes = assistant.progressNotes ?? [];
                 assistant = {
                   ...assistant,
-                  progressNotes:
-                    progressNotes.at(-1) === sealed
-                      ? progressNotes
-                      : [...progressNotes, sealed],
+                  progressNotes: mergeProgressNote(
+                    progressNotes, sealed, payload.progressIndex,
+                  ),
                 };
                 commit(assistant);
                 upsertActivity({
@@ -2513,10 +2535,10 @@ export function useAgentSession(
               if (typeof payload.detail === "string" && payload.detail) {
                 assistant = {
                   ...assistant,
-                  reasoning:
-                    payload.detailMode === "replace"
-                      ? payload.detail
-                      : `${assistant.reasoning ?? ""}${payload.detail}`,
+                  reasoning: mergeThinkingDetail(
+                    assistant.reasoning ?? "", payload.detail,
+                    payload.detailMode, payload.detailOffset,
+                  ),
                 };
                 commit(assistant);
               }
@@ -3962,6 +3984,8 @@ export function useAgentSession(
       // surfaces disable the composer for this window, so reaching here means a
       // path that outran the flag -- drop the turn rather than corrupt the view.
       if (loadingSessionRef.current) return;
+      const voiceTurn = options?.voice === true || createOptions?.voice === true;
+      const agentModeEnabled = voiceTurn || isAgentModeEnabled();
       const superAgentEnabled = isSuperAgentEnabled();
       activeSuperAgentRef.current = superAgentEnabled;
       const viewEpoch = viewEpochRef.current;
@@ -4159,9 +4183,17 @@ export function useAgentSession(
             attachmentPreparationRef.current = null;
           }
         }
-        const browserAccess = surface === "dashboard_terminal"
-          ? await currentBrowserTerminalAccess() : undefined;
+        const browserAccess = surface === "quartz_ai" ? undefined
+          : options?.browserAccess !== undefined ? options.browserAccess ?? undefined
+          : surface === "dashboard_terminal" ? await currentBrowserTerminalAccess() : undefined;
         if (turnWasStopped()) return;
+        // An inline question may be creating this PDF's first conversation.
+        // Join that creation before deciding whether another POST is needed.
+        const pendingCreation = pendingConversationCreationRef.current;
+        if (!startingSessionId && pendingCreation?.viewEpoch === viewEpoch) {
+          await pendingCreation.promise;
+          if (turnWasStopped()) return;
+        }
         const initialCreation = {
           viewEpoch,
           promise: ensureSession(
@@ -4179,7 +4211,8 @@ export function useAgentSession(
               internalAgentContinuation:
                 options?.internalAgentContinuation === true,
               scheduleReceiptId: options?.scheduledChatReceipt?.id,
-              agentMode: isAgentModeEnabled(),
+              agentMode: agentModeEnabled,
+              voice: voiceTurn,
               model: options?.model,
               reasoningEffort: options?.reasoningEffort,
               superAgent: superAgentEnabled,
@@ -4233,14 +4266,13 @@ export function useAgentSession(
           setFilesystemMode(ensured.filesystemMode);
         }
         if (turnWasStopped()) return;
-        // Agent mode off: the message goes to the provider instead of the
-        // runtime. Read at send time, not at render time, so the switch the user
-        // sees is the one that governs the message they just sent.
+        // Spoken requests retain Breadboard's tools. Typed messages use the
+        // Agent setting captured when this turn was sent; neither changes it.
         const currentLocation = options?.internalAgentContinuation !== true
           ? await getCurrentLocationForTurn(trimmed)
           : undefined;
         if (turnWasStopped()) return;
-        if (!isAgentModeEnabled()) {
+        if (!agentModeEnabled) {
           await streamDirectTurn({
             sessionId: activeSessionId,
             text: trimmed,
@@ -4310,6 +4342,7 @@ export function useAgentSession(
               model: options?.model,
               reasoningEffort: options?.reasoningEffort,
               continuation: options?.continuation,
+              voice: voiceTurn,
               internalAgentContinuation:
                 options?.internalAgentContinuation === true,
               scheduleReceiptId: options?.scheduledChatReceipt?.id,
@@ -4439,7 +4472,7 @@ export function useAgentSession(
             ) {
               const restoredMessages = normalizeRestoredMessages(restored.messages);
               const previousRun = restored.activeRun as { clientMessageId?: string; id?: string } | undefined;
-              const previousTurn = pendingRestoredTurn(restoredMessages);
+              const previousTurn = pendingRestoredTurn(restoredMessages, createOptions?.concurrentInline);
               if ((previousRun?.id && stoppedRunIdsRef.current.has(previousRun.id)) ||
                   (previousTurn?.assistant.clientMessageId && stoppedTurnIdsRef.current.has(previousTurn.assistant.clientMessageId))) {
                 throw new Error("The previous response is still stopping. Please try sending this message again.");
@@ -5282,11 +5315,8 @@ export function useAgentSession(
     setSessionId(id);
     // A chat handed in from outside is one that already exists.
     setCreatedSessionId(null);
-    if (id) {
-      window.localStorage.setItem(storageKey, id);
-      window.localStorage.setItem("breadboard-active-conversation", id);
-    }
-  }, [storageKey]);
+    if (id) rememberActiveConversation(id);
+  }, [rememberActiveConversation]);
 
   const openSession = useCallback(
     async (id: string, optimisticMessages: AgentMessage[] = []) => {
@@ -5315,8 +5345,7 @@ export function useAgentSession(
       // turn is a hidden agent continuation, lost its whole transcript.
       pendingHistoryOverrideRef.current =
         normalizedOptimistic.length > 0 ? normalizedOptimistic : null;
-      window.localStorage.setItem(storageKey, id);
-      window.localStorage.setItem("breadboard-active-conversation", id);
+      rememberActiveConversation(id);
 
       try {
         // A working chat can change between hover and click. Join a prefetch
@@ -5345,7 +5374,7 @@ export function useAgentSession(
           restored.activeRun && typeof restored.activeRun === "object"
             ? (restored.activeRun as Record<string, unknown>)
             : null;
-        const optimisticPending = optimisticPendingTurn(normalizedOptimistic);
+        const optimisticPending = optimisticPendingTurn(normalizedOptimistic, createOptions?.concurrentInline);
         const optimisticClientMessageId =
           optimisticPending?.assistant.clientMessageId;
         const optimisticTurnPersisted = optimisticClientMessageId
@@ -5420,10 +5449,11 @@ export function useAgentSession(
     },
     [
       markLoadingSession,
+      createOptions?.concurrentInline,
       rehydrateAwaitingPermission,
       resumePendingConversation,
       reset,
-      storageKey,
+      rememberActiveConversation,
       surface,
       transition,
     ],

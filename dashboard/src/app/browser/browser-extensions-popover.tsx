@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Check, Ellipsis, PictureInPicture2, Plus, Puzzle, RotateCw, Trash2 } from "lucide-react";
+import { Check, Ellipsis, PictureInPicture2, Plus, Puzzle, RotateCw, ShieldCheck, Trash2 } from "lucide-react";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
 import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
 import styles from "./browser-extensions-popover.module.css";
@@ -12,6 +12,7 @@ export default function BrowserExtensionsPopover() {
   const extensions = tabs?.extensions ?? [];
   const browser = tabs?.tabs.find(tab => tab.id === tabs.activeId)?.browser;
   const pageReady = browser?.pageReady;
+  const adBlock = browser?.adBlock;
   const googlePipReady = !browser?.private && extensions.some(extension => extension.id === "hkgfoiooedgoejojocmhlaklaeopbecg" && extension.action);
   const [extensionAction, setExtensionAction] = useState<string | null>(null);
   const [extensionError, setExtensionError] = useState<string | null>(null);
@@ -39,6 +40,20 @@ export default function BrowserExtensionsPopover() {
     const loaded = await sendDesktopTabsCommand({ type: "browser-extension-load" });
     if (!loaded) setExtensionError("That folder could not be loaded. Check that it contains a valid manifest.json file.");
     setExtensionAction(null);
+  }
+
+  async function toggleAdBlock(siteOnly = false) {
+    if (!adBlock || (siteOnly && !adBlock.site)) return;
+    setExtensionAction("adblock");
+    setExtensionError(null);
+    try {
+      const ok = await sendDesktopTabsCommand(siteOnly
+        ? { type: "browser-adblock-site-enabled", enabled: !adBlock.siteEnabled, site: adBlock.site! }
+        : { type: "browser-adblock-enabled", enabled: !adBlock.enabled });
+      if (!ok) setExtensionError("The ad blocker setting could not be saved. Try again.");
+    } catch {
+      setExtensionError("The ad blocker did not respond. Try again.");
+    } finally { setExtensionAction(null); }
   }
 
   async function reloadBrowserExtension(id: string) {
@@ -82,7 +97,36 @@ export default function BrowserExtensionsPopover() {
     <div ref={root} className={styles.content}>
       <header className={styles.header}><strong>Extensions</strong></header>
       <div className={styles.list}>
-        {!googlePipReady ? <button type="button" className={`${styles.rowAction} ${styles.pictureInPicture}`} disabled={!pageReady}
+        {adBlock ? <div className={styles.extension}>
+          <div className={styles.row}>
+            <button type="button" className={styles.rowAction} role="switch" aria-label="Ad Blocker"
+              aria-checked={adBlock.enabled} disabled={!adBlock.available || extensionAction !== null}
+              onClick={() => void toggleAdBlock()}>
+              <span className={`${styles.icon} ${styles.shieldIcon}`} aria-hidden="true"><ShieldCheck size={28} /></span>
+              <span className={styles.copy}><strong>Ad Blocker</strong>
+                <small>{!adBlock.available ? "Unavailable · restart Breadboard" : !adBlock.enabled ? "Built in · Off"
+                  : adBlock.site && !adBlock.siteEnabled ? "Paused on this site" : `Built in · On${adBlock.site ? ` · ${adBlock.blocked} blocked` : ""}`}</small>
+              </span>
+              <span className={styles.toggle} data-enabled={adBlock.enabled && adBlock.available} aria-hidden="true" />
+            </button>
+            <button type="button" className={styles.more} aria-label="Ad Blocker options"
+              aria-expanded={openOptions === "adblock"} aria-controls="adblock-options"
+              onClick={() => setOpenOptions(openOptions === "adblock" ? null : "adblock")}>
+              <Ellipsis size={18} aria-hidden="true" />
+            </button>
+          </div>
+          {openOptions === "adblock" ? <div id="adblock-options" className={styles.options} role="group" aria-label="Ad Blocker options">
+            {adBlock.site ? <button type="button" className={styles.option} role="switch"
+              aria-label={`Block ads on ${adBlock.site}`} aria-checked={adBlock.siteEnabled}
+              disabled={!adBlock.available || !adBlock.enabled || extensionAction !== null} onClick={() => void toggleAdBlock(true)}>
+              <span className={styles.check} aria-hidden="true">{adBlock.siteEnabled ? <Check size={14} /> : null}</span>
+              <span className={styles.siteLabel}>Block on {adBlock.site}</span>
+            </button> : null}
+            <p className={styles.version}>Blocks ads and trackers, hides ad panels, and applies video-site fixes. Reload after changing a setting.</p>
+            {browser?.private ? <p className={styles.version}>Changes last for this private session.</p> : null}
+          </div> : null}
+        </div> : null}
+        {!googlePipReady ? <button type="button" aria-label="Picture in Picture" className={`${styles.rowAction} ${styles.pictureInPicture}`} disabled={!pageReady}
           onClick={() => void sendDesktopTabsCommand({ type: "browser-extensions-picture-in-picture" })}>
           <span className={`${styles.icon} ${styles.pipIcon}`} aria-hidden="true"><PictureInPicture2 size={28} /></span>
           <span className={styles.copy}><strong>Picture in Picture</strong><small>Built in · Alt+P</small></span>
@@ -133,7 +177,7 @@ export default function BrowserExtensionsPopover() {
               </button>
             </div> : null}
           </div>
-        )) : <p className={styles.empty}>No extensions loaded yet.</p>}
+        )) : <p className={styles.empty}>No additional extensions loaded.</p>}
       </div>
       {extensionError ? <p className={styles.error} role="alert">{extensionError}</p> : null}
       <footer className={styles.footer}>
@@ -143,7 +187,7 @@ export default function BrowserExtensionsPopover() {
         </button>
       </footer>
       {managing ? <div id="extension-management" className={styles.management}>
-        <button type="button" className={styles.load} disabled={extensionAction !== null} onClick={() => void loadBrowserExtension()}>
+        <button type="button" aria-label="Load unpacked extension" className={styles.load} disabled={extensionAction !== null} onClick={() => void loadBrowserExtension()}>
           <Plus size={16} aria-hidden="true" />
           {extensionAction === "load" ? "Loading extension…" : "Load unpacked"}
         </button>

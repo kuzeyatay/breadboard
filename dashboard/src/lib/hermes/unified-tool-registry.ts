@@ -47,13 +47,15 @@ export async function connectedAppRegistryForTurn(input: {
    * write-approval gate lives at call time in the mcp route.
    */
   allowAllConnectionTools?: boolean;
+  /** Keep optional server startup out of the spoken response path. */
+  deferMcpConnections?: boolean;
 }): Promise<ConnectedAppTurnRegistry> {
   // Spotify is a Breadboard-owned connected app with native tools and browser
   // playback. Ignore retired pilot-MCP rows left by older builds.
   const installedConnections = listMcpConnections(input.userId, true).filter(
     (connection) => connection.slug !== "spotify" && !isUnguardedBambuConnection(connection),
   );
-  for (const connection of installedConnections) {
+  for (const connection of input.deferMcpConnections ? [] : installedConnections) {
     try {
       await input.runtime.addMcpConnection(
         input.directory,
@@ -81,6 +83,17 @@ export async function connectedAppRegistryForTurn(input: {
       .filter((slug) => discovery.mcp[slug]?.status === "connected")
       .sort((left, right) => right.length - left.length);
     connectionNames.push(...connectedMcp);
+    if (input.deferMcpConnections) {
+      // Discovery itself is local for Hermes. Cold/offline servers remain
+      // discoverable by the model, but only a request for that server waits
+      // for its connection. The call route still enforces user/run scope.
+      const deferred = installedConnections.filter(connection => !connectedMcp.includes(connection.slug));
+      connectionNames.push(...deferred.map(connection => connection.slug));
+      for (const connection of deferred) {
+        contextLines.push(`Optional MCP connection ${JSON.stringify(connection.slug)} is available on demand. If it is relevant to the user's request, call mcp_call with connection=${JSON.stringify(connection.slug)}, tool="__breadboard_list_tools", args={} to discover its exact tools and argument schemas. Do not connect merely to answer conversation. A connection failure does not prevent using other Breadboard tools.`);
+      }
+      if (installedConnections.length) tools.mcp_call = true;
+    }
 
     const toolsByConnection = new Map<string, string[]>(
       connectedMcp.map((slug) => [slug, []]),

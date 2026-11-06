@@ -2,10 +2,15 @@
 # API: https://learn.microsoft.com/en-us/windows/win32/api/endpointvolume/nn-endpointvolume-iaudioendpointvolume
 [CmdletBinding()]
 param(
-    [ValidateSet('status', 'mute', 'unmute', 'set-volume')]
+    [ValidateSet('status', 'mute', 'unmute', 'set-volume', 'devices')]
     [string]$Action = 'status',
     [ValidateRange(0, 100)]
-    [double]$Volume = 0
+    [double]$Volume = 0,
+    [ValidateSet('output', 'input')]
+    [string]$Device = 'output',
+    [ValidateSet('console', 'multimedia', 'communications')]
+    [string]$Role = 'multimedia',
+    [string]$EndpointId = ''
 )
 $ErrorActionPreference = 'Stop'
 if ($Action -eq 'set-volume' -and -not $PSBoundParameters.ContainsKey('Volume')) {
@@ -23,8 +28,15 @@ namespace Breadboard {
 
     [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     internal interface IDeviceEnumerator {
-        [PreserveSig] int EnumAudioEndpoints(int flow, uint state, out IntPtr devices);
+        [PreserveSig] int EnumAudioEndpoints(int flow, uint state, out IDeviceCollection devices);
         [PreserveSig] int GetDefaultAudioEndpoint(int flow, int role, out IDevice device);
+        [PreserveSig] int GetDevice([MarshalAs(UnmanagedType.LPWStr)] string id, out IDevice device);
+    }
+
+    [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IDeviceCollection {
+        [PreserveSig] int GetCount(out uint count);
+        [PreserveSig] int Item(uint index, out IDevice device);
     }
 
     [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -57,21 +69,50 @@ namespace Breadboard {
         public double Volume;
         public bool Verified;
         public string Action;
+        public string Device;
+        public string Role;
     }
 
     public static class PcAudio {
-        public static AudioState Run(string action, double volume) {
+        public static string[] Devices(int flow) {
+            IDeviceEnumerator enumerator = null;
+            IDeviceCollection devices = null;
+            try {
+                enumerator = (IDeviceEnumerator)new DeviceEnumerator();
+                Marshal.ThrowExceptionForHR(enumerator.EnumAudioEndpoints(flow, 1, out devices));
+                uint count;
+                Marshal.ThrowExceptionForHR(devices.GetCount(out count));
+                string[] ids = new string[count];
+                for (uint index = 0; index < count; index++) {
+                    IDevice device = null;
+                    try {
+                        Marshal.ThrowExceptionForHR(devices.Item(index, out device));
+                        Marshal.ThrowExceptionForHR(device.GetId(out ids[index]));
+                    } finally { if (device != null) Marshal.ReleaseComObject(device); }
+                }
+                return ids;
+            } finally {
+                if (devices != null) Marshal.ReleaseComObject(devices);
+                if (enumerator != null) Marshal.ReleaseComObject(enumerator);
+            }
+        }
+
+        public static AudioState Run(string action, double volume, int flow, int role, string endpointId) {
             if (action != "status" && action != "mute" && action != "unmute" && action != "set-volume")
                 throw new ArgumentException("Unknown audio action.");
             if (double.IsNaN(volume) || double.IsInfinity(volume) || volume < 0 || volume > 100)
                 throw new ArgumentOutOfRangeException("volume");
+            if (!String.IsNullOrEmpty(endpointId) && Array.IndexOf(Devices(flow), endpointId) < 0)
+                throw new ArgumentException("The endpoint is not an active device of the requested input/output kind.");
             IDeviceEnumerator enumerator = null;
             IDevice device = null;
             object endpoint = null;
             try {
                 enumerator = (IDeviceEnumerator)new DeviceEnumerator();
-                // eRender, eMultimedia: the PC's default playback endpoint.
-                Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(0, 1, out device));
+                if (String.IsNullOrEmpty(endpointId))
+                    Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(flow, role, out device));
+                else
+                    Marshal.ThrowExceptionForHR(enumerator.GetDevice(endpointId, out device));
                 string id;
                 Marshal.ThrowExceptionForHR(device.GetId(out id));
                 Guid iid = typeof(IEndpointVolume).GUID;
@@ -89,7 +130,9 @@ namespace Breadboard {
                     (action == "set-volume" && Math.Abs(level * 100 - volume) > 0.5))
                     throw new InvalidOperationException("Windows audio readback did not match the requested state.");
                 return new AudioState { EndpointId = id, Muted = muted,
-                    Volume = Math.Round(level * 100, 2), Verified = true, Action = action };
+                    Volume = Math.Round(level * 100, 2), Verified = true, Action = action,
+                    Device = flow == 0 ? "output" : "input",
+                    Role = new string[] { "console", "multimedia", "communications" }[role] };
             } finally {
                 if (endpoint != null) Marshal.ReleaseComObject(endpoint);
                 if (device != null) Marshal.ReleaseComObject(device);
@@ -100,4 +143,10 @@ namespace Breadboard {
 }
 '@
 }
-[Breadboard.PcAudio]::Run($Action, $Volume) | ConvertTo-Json -Compress
+$flow = if ($Device -eq 'input') { 1 } else { 0 }
+$roleIndex = @{ console = 0; multimedia = 1; communications = 2 }[$Role]
+if ($Action -eq 'devices') {
+    @{ Device = $Device; EndpointIds = @([Breadboard.PcAudio]::Devices($flow)); Verified = $true } | ConvertTo-Json -Compress
+} else {
+    [Breadboard.PcAudio]::Run($Action, $Volume, $flow, $roleIndex, $EndpointId) | ConvertTo-Json -Compress
+}

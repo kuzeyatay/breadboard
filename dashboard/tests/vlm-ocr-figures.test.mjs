@@ -224,8 +224,8 @@ test('the Runtime V2 ingest worker persists figures as page assets and counts th
   assert.match(route, /jobType: "document-ingestion"/);
   assert.doesNotMatch(route, /function vlmFigureSaver\(/);
   assert.match(worker, /function vlmFigureSaver\(/);
-  // Both the PDF and the single-image path pass a saver.
-  assert.equal((worker.match(/saveFigure: vlmFigureSaver\(/g) ?? []).length, 2);
+  // PDF, single-image, and the handwritten-PDF figure pass persist their crops.
+  assert.equal((worker.match(/saveFigure: vlmFigureSaver\(/g) ?? []).length, 3);
   // The count that reaches the persisted payload has to come from the VLM
   // result rather than being recomputed or defaulted. The local variable it is
   // carried in is not the contract, so this pins the derivation and the

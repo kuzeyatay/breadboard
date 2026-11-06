@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   hardenWindow,
+  hardenWebContents,
   isNavigationAllowed,
   type AllowedOrigins,
 } from "./security";
@@ -24,6 +25,7 @@ import {
 } from "./first-paint";
 import { isFullScreenShortcut } from "./tab-model";
 import { TabManager } from "./tab-manager";
+import { observeTabMemoryPressure } from "./tab-memory-pressure";
 import { rebaseDashboardUrl } from "./tab-session";
 import { installRendererRecovery } from "./renderer-recovery";
 
@@ -47,6 +49,8 @@ export interface WindowManagerOptions {
   log?: (line: string) => void;
   /** Lets the shell retire non-main safety windows before the app closes. */
   onMainWindowCloseRequested?: () => void;
+  /** Asked before the main window closes; false keeps it open. */
+  confirmMainWindowClose?: (window: BrowserWindow) => boolean;
   /** Lets F12 open the inspector in any tab. Development builds only. */
   devTools?: boolean;
   /** Durable record of unpacked extensions loaded into the isolated browser profile. */
@@ -55,6 +59,7 @@ export interface WindowManagerOptions {
   browserHistoryConfigDir?: string;
   tabSessionConfigDir?: string;
   startupPageLoadMaxWaitMs?: number;
+  restoreAllTabsAtStartup?: boolean;
   onBrowserAgentPageReady?: (runId: string, targetUrl: string) => Promise<boolean>;
 }
 
@@ -220,6 +225,16 @@ export class WindowManager {
       openWindow: (url, privateBrowsing) => {
         return this.openPopupWindow(url, privateBrowsing);
       },
+      onBaseReplaced: window => {
+        const state = this.localPageRecovery.get(window);
+        if (state) {
+          this.clearLoadWatchdog(state);
+          if (state.timer) clearTimeout(state.timer);
+          if (state.heartbeat) clearInterval(state.heartbeat);
+          this.localPageRecovery.delete(window);
+        }
+        this.installLocalPageRecovery(window, this.page(window).getURL());
+      },
       openExternal: (url) => {
         void shell.openExternal(url);
       },
@@ -229,10 +244,15 @@ export class WindowManager {
       browserHistoryConfigDir: options.browserHistoryConfigDir,
       tabSessionConfigDir: options.tabSessionConfigDir,
       startupPageLoadMaxWaitMs: options.startupPageLoadMaxWaitMs,
+      restoreAllTabsAtStartup: options.restoreAllTabsAtStartup,
       log: options.log,
       onBrowserAgentPageReady: options.onBrowserAgentPageReady,
     });
+    observeTabMemoryPressure(state => this.tabs.setMemoryPressure(state));
   }
+
+  /** Content pages are ordinary views; the native window stays neutral. */
+  page(window: BrowserWindow) { return this.tabs.baseContents(window); }
 
   get window(): BrowserWindow | null {
     return this.mainWindow;
@@ -301,17 +321,16 @@ export class WindowManager {
       // the fact would be setting it too late.
       backgroundColor ? { ...options, backgroundColor } : options,
     );
-    hardenWindow(
-      window,
-      this.options.allowed,
-      (url) => this.openPopupWindow(url),
-      (url) => this.tabs.openLocalTab(window.webContents, url),
-      (url, background) =>
-        this.tabs.openExternalTab(window.webContents, url, background),
-    );
+    this.tabs.attach(window, true);
+    const page = this.page(window);
+    hardenWebContents(page, this.options.allowed, {
+      onOpenLocalWindow: (url) => this.openPopupWindow(url),
+      onOpenLocalTab: (url, background) => this.tabs.openLocalTab(page, url, background),
+      onOpenExternalTab: (url, background) => this.tabs.openExternalTab(page, url, background),
+    });
     // Keyboard shortcuts — full screen included — are the tab manager's, so
     // they work the same in a window's own page and in every tab it holds.
-    this.tabs.attach(window);
+
     this.installTitleBarOverlayUpkeep(window);
     return window;
   }
@@ -571,14 +590,17 @@ export class WindowManager {
       heartbeat: null,
     };
     this.localPageRecovery.set(window, state);
+    const contents = this.page(window);
+    const ownsPage = () => this.tabs.windowFor(contents) === window;
 
     const rememberAllowedUrl = (url: string) => {
+      if (!ownsPage()) return;
       if (this.isRecoverableLocalPage(url)) state.url = url;
     };
-    window.webContents.on("did-navigate", (_event, url) => {
+    this.page(window).on("did-navigate", (_event, url) => {
       rememberAllowedUrl(url);
     });
-    window.webContents.on("did-navigate-in-page", (_event, url, isMainFrame) => {
+    this.page(window).on("did-navigate-in-page", (_event, url, isMainFrame) => {
       if (isMainFrame) rememberAllowedUrl(url);
     });
     // Once a replacement owns the retry loop, this window has been retired to
@@ -587,9 +609,9 @@ export class WindowManager {
     // any more, and letting them clear that state disarms the only thing
     // bringing the dashboard back.
     const retired = () => state.replacement !== null;
-    window.webContents.on("did-finish-load", () => {
-      if (retired()) return;
-      const url = window.webContents.getURL();
+    this.page(window).on("did-finish-load", () => {
+      if (!ownsPage() || retired()) return;
+      const url = this.page(window).getURL();
       // Chromium may finish loading its internal error document after emitting
       // did-fail-load. Only a real Breadboard URL proves recovery succeeded.
       if (!this.isRecoverableLocalPage(url)) return;
@@ -599,7 +621,7 @@ export class WindowManager {
       if (state.timer !== null) clearTimeout(state.timer);
       state.timer = null;
     });
-    window.webContents.on(
+    this.page(window).on(
       "did-fail-load",
       (_event, errorCode, _description, failedUrl, isMainFrame) => {
         // -3 is an intentional aborted navigation, normally a redirect. The
@@ -607,13 +629,14 @@ export class WindowManager {
         // still the attempt in flight, and something has to outlive a redirect
         // that leads nowhere.
         if (!isMainFrame || errorCode === -3) return;
-        if (retired()) return;
+        if (!ownsPage() || retired()) return;
         rememberAllowedUrl(failedUrl);
         this.clearLoadWatchdog(state);
         this.scheduleLocalPageRecovery(window, state);
       },
     );
-    installRendererRecovery(window.webContents, () => {
+    installRendererRecovery(this.page(window), () => {
+      if (!ownsPage()) return;
       if (retired()) {
         // Navigating a live http: page to the local reconnect scene retires its
         // renderer, and Chromium reports that teardown here. Put the scene back
@@ -655,7 +678,7 @@ export class WindowManager {
       this.armLoadWatchdog(window, state, () =>
         this.scheduleLocalPageRecovery(window, state),
       );
-      void window.loadURL(state.url).catch(() => {
+      void this.page(window).loadURL(state.url).catch(() => {
         this.clearLoadWatchdog(state);
         this.scheduleLocalPageRecovery(window, state);
       });
@@ -674,7 +697,7 @@ export class WindowManager {
     const now = Date.now();
     if (now - this.recoverySceneShownAt < RECOVERY_SCENE_RESHOW_MS) return;
     this.recoverySceneShownAt = now;
-    void window
+    void this.page(window)
       .loadFile(this.recoveryHtmlPath(), { query: { theme: this.currentTheme } })
       .catch(() => undefined);
   }
@@ -724,7 +747,7 @@ export class WindowManager {
       );
       state.paintToken += 1;
       try {
-        window.webContents.stop();
+        this.page(window).stop();
       } catch {
         // A window torn down between the check and the call. The retry below
         // finds it destroyed and stops there.
@@ -755,7 +778,7 @@ export class WindowManager {
     this.parkOffscreen(replacement);
 
     const retry = () => this.scheduleMainWindowReplacementLoad(state);
-    replacement.webContents.on("did-fail-load", (
+    this.page(replacement).on("did-fail-load", (
       _event,
       errorCode,
       _description,
@@ -770,14 +793,14 @@ export class WindowManager {
       state.paintToken += 1;
       retry();
     });
-    const disposeRendererRecovery = installRendererRecovery(replacement.webContents, () => {
+    const disposeRendererRecovery = installRendererRecovery(this.page(replacement), () => {
       if (state.replacement !== replacement) return;
       this.clearLoadWatchdog(state);
       state.paintToken += 1;
       retry();
     });
-    replacement.webContents.on("did-finish-load", () => {
-      const loadedUrl = replacement.webContents.getURL();
+    this.page(replacement).on("did-finish-load", () => {
+      const loadedUrl = this.page(replacement).getURL();
       this.clearLoadWatchdog(state);
       // Chromium finishes loading its own error document, so a finished load is
       // not yet a recovered one. Retrying rather than returning is what keeps a
@@ -800,7 +823,7 @@ export class WindowManager {
         // else's to finish. Both are handled elsewhere; leaving is correct.
         if (state.replacement !== replacement || state.paintToken !== paintToken) return;
         if (replacement.isDestroyed()) return;
-        if (!this.isRecoverableLocalPage(replacement.webContents.getURL())) {
+        if (!this.isRecoverableLocalPage(this.page(replacement).getURL())) {
           // It wandered off the app while painting. Nothing else is armed for
           // this attempt, so the retry has to be asked for here.
           retry();
@@ -839,7 +862,7 @@ export class WindowManager {
       this.armLoadWatchdog(replacement, state, () =>
         this.scheduleMainWindowReplacementLoad(state),
       );
-      void replacement.loadURL(state.url).catch(() => {
+      void this.page(replacement).loadURL(state.url).catch(() => {
         this.clearLoadWatchdog(state);
         this.scheduleMainWindowReplacementLoad(state);
       });
@@ -885,8 +908,8 @@ export class WindowManager {
     // These listeners belong only to the offscreen retry phase. The adopted
     // window gets a fresh recovery state below; leaving both sets installed
     // would make every later navigation run an obsolete paint probe as well.
-    replacement.webContents.removeAllListeners("did-fail-load");
-    replacement.webContents.removeAllListeners("did-finish-load");
+    this.page(replacement).removeAllListeners("did-fail-load");
+    this.page(replacement).removeAllListeners("did-finish-load");
     this.prepareWindowReveal(replacement);
     this.unparkWindow(replacement);
     this.mainWindowCloseRequested = false;
@@ -901,11 +924,16 @@ export class WindowManager {
   }
 
   private installMainWindowLifetime(window: BrowserWindow): void {
-    window.on("close", () => {
+    window.on("close", (event) => {
       // Retired startup/recovery windows are destroyed after their replacement
       // has become current. Their close events must not turn that handoff into
       // an application quit request.
       if (this.mainWindow === window) {
+        if (this.options.confirmMainWindowClose && !this.options.confirmMainWindowClose(window)) {
+          event.preventDefault();
+          this.log(`main window ${window.id} close was declined`);
+          return;
+        }
         this.log(`main window ${window.id} received a close request`);
         this.mainWindowCloseRequested = true;
         this.options.onMainWindowCloseRequested?.();
@@ -1019,7 +1047,7 @@ export class WindowManager {
     });
 
     this.teachControllerWindow = window;
-    void window.loadURL(targetUrl).catch(() => undefined);
+    void this.page(window).loadURL(targetUrl).catch(() => undefined);
     return window;
   }
 
@@ -1047,14 +1075,14 @@ export class WindowManager {
     targetUrl: string,
   ): Promise<void> {
     try {
-      await window.loadFile(this.loadingHtmlPath(), {
+      await this.page(window).loadFile(this.loadingHtmlPath(), {
         query: { theme: this.currentTheme },
       });
     } catch {
       // The scene is a courtesy. A window that cannot show it still opens.
     }
     if (window.isDestroyed()) return;
-    await window.loadURL(targetUrl).catch(() => undefined);
+    await this.page(window).loadURL(targetUrl).catch(() => undefined);
   }
 
   async showStartupScreen(): Promise<void> {
@@ -1064,7 +1092,7 @@ export class WindowManager {
     // loaded ahead of a service that has since died is not worth keeping.
     this.startupContinued = false;
     this.discardDashboardPreload();
-    await window.loadFile(this.options.startupHtmlPath, {
+    await this.page(window).loadFile(this.options.startupHtmlPath, {
       query: { theme: this.currentTheme },
     });
     if (!window.isVisible()) window.show();
@@ -1118,7 +1146,7 @@ export class WindowManager {
     const settled = new Promise<"loaded" | "failed">((resolve) => {
       // Deliberately not `ready-to-show`: it fires at the first paint of the
       // shell, long before the page it is meant to be handing over has content.
-      window.webContents.once("did-finish-load", () => {
+      this.page(window).once("did-finish-load", () => {
         void (async () => {
           await this.tabs.prepareStartupWindow(window);
           if (window.isDestroyed()) return;
@@ -1127,12 +1155,12 @@ export class WindowManager {
             restoredWindows.push(restored);
             this.parkOffscreen(restored);
             this.installLocalPageRecovery(restored, launchUrl);
-            void restored.loadURL(launchUrl).catch(() => undefined);
+            void this.page(restored).loadURL(launchUrl).catch(() => undefined);
             return restored;
           }, true);
         })().then(() => resolve("loaded"), () => resolve("failed"));
       });
-      window.webContents.on("did-fail-load", (_event, errorCode, _description, _url, isMainFrame) => {
+      this.page(window).on("did-fail-load", (_event, errorCode, _description, _url, isMainFrame) => {
         // -3 is ABORTED, which a redirect raises on its way to a good page.
         if (isMainFrame && errorCode !== -3) resolve("failed");
       });
@@ -1140,7 +1168,7 @@ export class WindowManager {
     });
     const preload: DashboardPreload = { window, url: launchUrl, restoredWindows, settled };
     this.dashboardPreload = preload;
-    void window.loadURL(launchUrl).catch(() => undefined);
+    void this.page(window).loadURL(launchUrl).catch(() => undefined);
     return preload;
   }
 
@@ -1150,16 +1178,18 @@ export class WindowManager {
     maxWaitMs = FIRST_PAINT_MAX_WAIT_MS,
   ): Promise<void> {
     if (window.isDestroyed()) return;
-    await waitForFirstPaint(window.webContents, maxWaitMs);
+    await waitForFirstPaint(this.page(window), maxWaitMs);
   }
 
   private async waitForWindowFrame(window: BrowserWindow): Promise<void> {
     const deadline = Date.now() + REVEAL_FRAME_MAX_WAIT_MS;
     while (!window.isDestroyed() && Date.now() < deadline) {
-      const size = window.getContentSize();
-      const painted = await waitForViewportFrame(window.webContents, size, deadline - Date.now());
+      const contentBounds = this.tabs.baseViewport(window);
+      const size = [contentBounds.width, contentBounds.height];
+      const painted = await waitForViewportFrame(this.page(window), size, deadline - Date.now());
       if (window.isDestroyed() || painted === undefined) return;
-      const current = window.getContentSize();
+      const currentBounds = this.tabs.baseViewport(window);
+      const current = [currentBounds.width, currentBounds.height];
       // Caption/DPI updates can finish asynchronously even after maximize has
       // fired. If they changed the client area, wait for that viewport too.
       if (painted && size[0] === current[0] && size[1] === current[1]) return;
@@ -1185,9 +1215,9 @@ export class WindowManager {
       this.startupShownAt !== null &&
       this.mainWindow === window &&
       window !== null && !window.isDestroyed() &&
-      !window.webContents.isDestroyed() &&
-      window.webContents.id === senderId &&
-      window.webContents.getURL().split(/[?#]/)[0] ===
+      !this.page(window).isDestroyed() &&
+      this.page(window).id === senderId &&
+      this.page(window).getURL().split(/[?#]/)[0] ===
         pathToFileURL(this.options.startupHtmlPath).toString();
     if (!isCurrentStartup() || !preload || preload.window.isDestroyed()) return false;
     const outcome = await preload.settled;
@@ -1312,13 +1342,13 @@ export class WindowManager {
     // always — keeps showing it until the dashboard has painted. One that has
     // nothing in it yet (the app reopened after its last window was closed)
     // would be a flat sheet for the whole load, so it waits in the scene first.
-    if (!window.webContents.getURL()) {
-      await window
+    if (!this.page(window).getURL()) {
+      await this.page(window)
         .loadFile(this.loadingHtmlPath(), { query: { theme: this.currentTheme } })
         .catch(() => undefined);
       if (window.isDestroyed()) return;
     }
-    await window.loadURL(launchUrl);
+    await this.page(window).loadURL(launchUrl);
     await Promise.all([
       this.tabs.prepareStartupWindow(window),
       this.restoreTabSession(dashboardUrl, defaultScreenUrl),
@@ -1344,9 +1374,9 @@ export class WindowManager {
 
   sendToRenderer(channel: string, payload: unknown): void {
     const window = this.mainWindow;
-    if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
+    if (!window || window.isDestroyed() || this.page(window).isDestroyed()) return;
     try {
-      window.webContents.send(channel, payload);
+      this.page(window).send(channel, payload);
     } catch (error) {
       // A local dashboard restart can dispose its RenderFrameHost a fraction
       // before Electron marks the BrowserWindow/WebContents destroyed. Sending

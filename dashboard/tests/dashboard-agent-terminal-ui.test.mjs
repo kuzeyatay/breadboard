@@ -209,13 +209,13 @@ test("the terminal always starts collapsed without reopening to a stale height",
   assert.match(terminal, /if \(height < minOpenHeight\(\)\) return/);
 });
 
-test("the collapsed terminal bar has no implementation-status copy", () => {
+test("the original terminal hydrates independently without replacement status copy", () => {
   assert.match(
     lazyTerminal,
-    /import DashboardAgentTerminal from "\.\/dashboard-agent-terminal"/,
+    /dynamic\(\(\) => import\("\.\/dashboard-agent-terminal"\)\)/,
   );
-  assert.match(lazyTerminal, /<DashboardAgentTerminal \{\.\.\.props\} \/>/);
-  assert.doesNotMatch(lazyTerminal, /next\/dynamic|loading:|Loading Terminal|setEnabled|onClick/);
+  assert.match(lazyTerminal, /<Suspense fallback=\{null\}>\s*<DashboardAgentTerminal \{\.\.\.props\} \/>\s*<Hydrated onReady=\{onReady\} \/>\s*<\/Suspense>/);
+  assert.doesNotMatch(lazyTerminal, /ssr:\s*false|Loading Terminal|setEnabled|onClick/);
   assert.doesNotMatch(lazyTerminal, /open when needed/i);
 });
 

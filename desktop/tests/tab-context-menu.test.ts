@@ -16,6 +16,14 @@ test("tab menus protect anchors and disable unavailable actions", () => {
   assert.equal(privateItems.find(item => item.id === "anchor")?.enabled, false);
 });
 
+test("never-offload is a checkbox that reflects the tab", () => {
+  const state = { anchored: false, private: false, hasLink: true, canCloseOthers: true, canCloseRight: true, canReopen: false };
+  const off = tabContextMenuTemplate(state, () => {}).find(item => item.id === "keep-loaded");
+  assert.equal(off?.type, "checkbox");
+  assert.equal(off?.checked, false);
+  assert.equal(tabContextMenuTemplate({ ...state, keepLoaded: true }, () => {}).find(item => item.id === "keep-loaded")?.checked, true);
+});
+
 test("tab-menu IPC requires a tab id and finite bounded coordinates", () => {
   const command = { type: "tab-menu", id: 3, x: 150.5, y: 20 };
   assert.ok(isTabsCommand(command));

@@ -185,7 +185,35 @@ export function splitAnchor(link: string): [string, string] {
 export function slugTag(tag: string) {
   return tag
     .split("/")
-    .map((tagSegment) => sluggify(tagSegment))
+    .map((tagSegment) => {
+      const slug = sluggify(tagSegment)
+      const encoder = new TextEncoder()
+      const safe = slug.replace(/[<>:"\\|?*\u0000-\u001f]/g, "-")
+      const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(safe)
+      if (safe === slug && !reserved && !/\.$/.test(safe) && encoder.encode(slug).length <= 220) {
+        return slug
+      }
+      // Tag pages become filenames. Keep ordinary links unchanged, but bound
+      // generated sentences and unsafe names on both Windows and UTF-8 disks.
+      // A stable suffix distinguishes tags with the same shortened prefix.
+      let first = 0x811c9dc5
+      let second = 0x9e3779b9
+      for (let index = 0; index < slug.length; index++) {
+        const code = slug.charCodeAt(index)
+        first = Math.imul(first ^ code, 0x01000193)
+        second = Math.imul(second ^ code, 0x85ebca77)
+      }
+      const suffix = [first, second].map((part) => (part >>> 0).toString(16).padStart(8, "0")).join("")
+      let prefix = reserved ? "tag-" : ""
+      let bytes = prefix.length
+      for (const character of safe) {
+        const size = encoder.encode(character).length
+        if (bytes + size > 180) break
+        prefix += character
+        bytes += size
+      }
+      return `${prefix || "tag"}-${suffix}`
+    })
     .join("/")
 }
 

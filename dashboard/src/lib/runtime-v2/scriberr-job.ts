@@ -379,7 +379,7 @@ export async function retryScriberrRuntimeJob(input: {
   control?: ScriberrRuntimeControl;
 }): Promise<VideoTranscriptionJob | null> {
   const job = input.store.getJob(input.jobId);
-  if (!job || job.status !== "failed") return job;
+  if (!job || (job.status !== "failed" && job.status !== "cancelled")) return job;
   if (
     job.inputKind === "upload" &&
     !job.mediaTempPath &&

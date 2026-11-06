@@ -142,6 +142,7 @@ async function loadCutoverModule() {
               }
               export async function inspectRuntimeJob(authority, jobId) {
                 state().inspections.push({ authority: structuredClone(authority), jobId });
+                if (state().unavailable) throw new RuntimeJobControlError("UNAVAILABLE");
                 const job = state().jobs.get(jobId);
                 if (!job) throw new RuntimeJobControlError("JOB_NOT_FOUND");
                 return structuredClone(job);
@@ -202,6 +203,36 @@ function config() {
     engine: "chrome",
   };
 }
+
+test("desktop cleanup reads native job completion without a mounted card and preserves unknown or live work", async () => {
+  const state = freshState();
+  const jobId = `job_${"e".repeat(64)}`;
+  try {
+    assert.equal(await cutover.isAgentBrowserRunFinished(7, jobId), false);
+    assert.equal(state.inspections.length, 0);
+    state.mappings.set(jobId, { job_id: jobId, owner_user_id: 7, agent_id: agentId, terminal_at: null });
+    state.jobs.set(jobId, snapshot(jobId, "running"));
+    assert.equal(await cutover.isAgentBrowserRunFinished(8, jobId), false);
+    assert.equal(await cutover.isAgentBrowserRunFinished(7, jobId), false);
+    state.unavailable = true;
+    await assert.rejects(cutover.isAgentBrowserRunFinished(7, jobId), /UNAVAILABLE/);
+    assert.equal(state.mappings.get(jobId).terminal_at, null);
+    state.unavailable = false;
+    for (const status of ["succeeded", "failed", "cancelled"]) {
+      state.mappings.get(jobId).terminal_at = null;
+      state.jobs.set(jobId, snapshot(jobId, status));
+      assert.equal(await cutover.isAgentBrowserRunFinished(7, jobId), true);
+      assert.ok(state.mappings.get(jobId).terminal_at);
+    }
+    state.jobs.delete(jobId);
+    state.mappings.get(jobId).terminal_at = null;
+    assert.equal(await cutover.isAgentBrowserRunFinished(7, jobId), true, "a missing known native job is terminal");
+    state.unavailable = true;
+    assert.equal(await cutover.isAgentBrowserRunFinished(7, jobId), true, "durable completion remains usable during an outage");
+  } finally {
+    fs.rmSync(state.dataRoot, { recursive: true, force: true });
+  }
+});
 
 function projection(job, status, events, pendingApproval = null) {
   return {

@@ -105,12 +105,25 @@ function playbackDeviceId(value: unknown): string {
 export function registerSpotifyPlaybackEngine(input: {
   ticket: string;
   deviceId: unknown;
+  ready?: boolean;
 }): void {
   const userId = verifySpotifyEngineTicket(input.ticket);
+  const deviceId = playbackDeviceId(input.deviceId);
+  if (input.ready === false) {
+    invalidateSpotifyPlaybackEngine(userId, deviceId);
+    return;
+  }
   state.registrations.set(userId, {
-    deviceId: playbackDeviceId(input.deviceId),
+    deviceId,
     updatedAt: Date.now(),
   });
+}
+
+export function invalidateSpotifyPlaybackEngine(userId: number, deviceId: string): void {
+  // A late disconnect from an old player must not erase its replacement.
+  if (state.registrations.get(userId)?.deviceId === deviceId) {
+    state.registrations.delete(userId);
+  }
 }
 
 export async function spotifyPlaybackEngineStatus(userId: number): Promise<{

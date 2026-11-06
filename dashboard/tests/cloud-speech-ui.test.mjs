@@ -133,7 +133,7 @@ test("Voice settings switch between Local, ChatGPT, and ElevenLabs, configure ke
     cloud = { configured: false, source: "subscription", reason: "service_unavailable", error: "Restart Breadboard to load the subscription voice service." };
     await page.getByRole("button", { name: "Re-check connection" }).click();
     await page.getByText(cloud.error, { exact: true }).waitFor();
-    await page.getByText("An unavailable voice service does not mean you are signed out.", { exact: false }).waitFor();
+    await page.getByText("Voice is unavailable. Try checking the connection again.", { exact: true }).waitFor();
     cloud = { configured: true, source: "subscription" };
     await page.getByRole("button", { name: "Re-check connection" }).click();
     await page.getByText("ChatGPT account connected.", { exact: false }).waitFor();
@@ -172,7 +172,7 @@ test("Voice settings switch between Local, ChatGPT, and ElevenLabs, configure ke
     cloud = { configured: false, source: "subscription", signedIn: false, reason: "sign_in_required", error: "No connected ChatGPT account was found." };
     await page.getByRole("button", { name: "Re-check connection" }).click();
     await page.getByText(cloud.error, { exact: true }).waitFor();
-    assert.equal(await page.getByText("An unavailable voice service does not mean you are signed out.", { exact: false }).count(), 0);
+    assert.equal(await page.getByText("Voice is unavailable. Try checking the connection again.", { exact: true }).count(), 0);
     assert.equal(await page.getByRole("button", { name: "Preview voice", exact: true }).isEnabled(), false);
     const beforeElevenLabsPrepareCalls = prepareCalls;
     await page.getByRole("button", { name: "ElevenLabs", exact: true }).click();

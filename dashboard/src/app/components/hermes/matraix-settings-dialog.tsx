@@ -94,8 +94,7 @@ export default function MatraixSettingsDialog({ onClose }: { onClose: () => void
               MatrAIx setup
             </h2>
             <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-              Puts a question to a sampled population of persona agents. Every respondent is a
-              separate model call through your configured provider.
+              Test a question with simulated people. Each response uses a separate AI request.
             </p>
           </div>
           <button
@@ -175,13 +174,15 @@ export default function MatraixSettingsDialog({ onClose }: { onClose: () => void
           {status && !status.pools[1]?.present ? (
             <div className="space-y-1">
               <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
-                Studies run on the 200-persona sample the clone ships with, which is enough for a
-                cohort of a dozen. To sample from the full million-persona release, run this inside
-                the clone — it is a large download, so Breadboard does not start it for you.
+                Includes 200 sample personas. A larger library of one million personas is available as a separate, large download.
               </p>
-              <pre className="bb-agent-run-panel overflow-x-auto p-2 font-mono text-[10px] leading-4">
-                {status.productionPoolCommand}
-              </pre>
+              <details className="text-[11px] text-[var(--ink-muted)]">
+                <summary className="cursor-pointer">Download instructions</summary>
+                <p className="mt-2">Run this command from the Matraix installation folder:</p>
+                <pre className="bb-agent-run-panel overflow-x-auto p-2 font-mono text-[10px] leading-4">
+                  {status.productionPoolCommand}
+                </pre>
+              </details>
             </div>
           ) : null}
           <AgentRunDefaults agentId={MATRAIX_AGENT_ID} />

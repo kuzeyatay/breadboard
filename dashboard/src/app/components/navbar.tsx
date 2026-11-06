@@ -1,10 +1,9 @@
 "use client";
 
+import type { ReactNode } from "react";
 import NavigationLink from "./navigation-link";
 import NavbarFlowerWind from "./navbar-flower-wind";
 import WorkTimerShortcut from "./work-timer-shortcut";
-import BrowserShortcut from "./browser-shortcut";
-import ClickyShortcut from "./clicky-shortcut";
 import VoiceShortcut from "./voice-shortcut";
 import {
   DEFAULT_NAVBAR_SHORTCUTS,
@@ -17,6 +16,7 @@ interface Props {
   showFlowers?: boolean;
   /** Show the right-hand shortcuts and profile link. */
   showActions?: boolean;
+  trailingActions?: ReactNode;
   /**
    * Which optional shortcuts this account has asked for. Read on the server so
    * the navbar is right on first paint rather than rearranging after hydration.
@@ -29,15 +29,16 @@ export default function NavBar({
   username,
   showFlowers = true,
   showActions = true,
+  trailingActions,
   shortcuts = DEFAULT_NAVBAR_SHORTCUTS,
 }: Props) {
   return (
     <nav className="breadboard-flower-navbar neu-surface-subtle relative flex items-center justify-between px-6 py-2.5 border-b border-gray-800 shrink-0">
       <NavbarFlowerWind showFlowers={showFlowers} />
-      <NavigationLink newTab label="Dashboard"
-        href="/dashboard"
+      <NavigationLink newTab label="Terminal"
+        href="/new-tab"
         className="relative z-10 flex items-center gap-2.5 rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
-        aria-label="Go to Breadboard main page"
+        aria-label="Go to Terminal"
       >
         {/* logo.png is white line-art; darken it to the ink tone so it reads on the light theme. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -53,13 +54,11 @@ export default function NavBar({
       {/* Agents live in the capability palette's Agents tab (the slash button),
           not in this navbar. */}
       {showActions && <div className="relative z-10 flex items-center gap-4">
-        {/* Work timer, Clicky and Plan ship on by default; the rest stay opt-in.
+        {/* Work timer and Plan ship on by default; the rest stay opt-in.
             Every seat can be changed from the profile page. */}
         {shortcuts.workTimer && <WorkTimerShortcut />}
-        {/* The embedded browser is desktop-only; its seat draws nothing on the web. */}
-        {shortcuts.browser && <BrowserShortcut />}
-        {/* Clicky is available in the Windows and macOS desktop shells. */}
-        {shortcuts.clicky && <ClickyShortcut />}
+        {/* Browsing now starts through the combined home search and shortcuts.
+            BrowserShortcut and the browser route remain available in code. */}
         {shortcuts.voice && <VoiceShortcut />}
         {shortcuts.plan && (
           <NavigationLink newTab label="Plan"
@@ -111,9 +110,9 @@ export default function NavBar({
         {/* The profile chip is the way to the profile page, which is where
             inviting and signing out now live — both are account business, and
             neither was worth a permanent seat in the navbar. */}
-        <NavigationLink newTab label="Profile"
-          href="/profile"
-          title="Your profile"
+        <NavigationLink newTab label="Settings"
+          href="/settings"
+          title="Settings"
           className="flex min-w-0 max-w-[240px] items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-gray-400 transition-colors hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
         >
           <svg
@@ -132,6 +131,7 @@ export default function NavBar({
           <span className="truncate font-medium">{username || email}</span>
         </NavigationLink>
       </div>}
+      {trailingActions}
     </nav>
   );
 }

@@ -99,6 +99,28 @@ impl ShutdownCoordinator {
         self.lock().accepting_work
     }
 
+    /// Reversible, lifecycle-only quiet boundary for a tested release switch.
+    /// Existing jobs keep running; no new job or service lease can be admitted.
+    pub(crate) fn quiesce(&self) -> Result<(u64, u64), AdmissionOpenError> {
+        let mut state = self.lock();
+        if state.requested { return Err(AdmissionOpenError::ShutdownRequested); }
+        let store = state.store.as_ref().and_then(Weak::upgrade)
+            .ok_or(AdmissionOpenError::Unavailable)?;
+        // Do not transiently deny dependency acquisition to work that is
+        // already running. Close only at an observed idle boundary, then
+        // recount to cover a submission racing the first observation.
+        let activity = store.maintenance_activity().map_err(|_| AdmissionOpenError::Unavailable)?;
+        if activity != (0, 0) { return Ok(activity); }
+        store.pause_accepting_work();
+        state.accepting_work = false;
+        let activity = store.maintenance_activity().map_err(|_| AdmissionOpenError::Unavailable)?;
+        if activity != (0, 0) {
+            store.open_accepting_work().map_err(|_| AdmissionOpenError::Unavailable)?;
+            state.accepting_work = true;
+        }
+        Ok(activity)
+    }
+
     /// Linearizes every worker CreateProcess boundary against shutdown.
     /// Trusted launch preparation may happen before this call, but both the
     /// durable claim and process creation must occur inside `operation`.
@@ -180,6 +202,7 @@ mod tests {
             Err(AdmissionOpenError::Unavailable)
         );
         assert!(!coordinator.is_accepting_work());
+        assert_eq!(coordinator.quiesce(), Err(AdmissionOpenError::Unavailable));
     }
 
     #[test]

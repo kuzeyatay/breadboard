@@ -65,28 +65,28 @@ app.whenReady().then(async () => {
   // A window with several tabs, as an ordinary session has.
   const opened = [];
   for (let index = 0; index < 6; index += 1) {
-    const state = manager.tabs.stateFor(window.webContents);
-    manager.tabs.handleCommand(window.webContents, {
+    const state = manager.tabs.stateFor(manager.page(window));
+    manager.tabs.handleCommand(manager.page(window), {
       type: "open",
       url: `${origin}/page-${index}`,
       background: true,
     });
-    const next = manager.tabs.stateFor(window.webContents);
+    const next = manager.tabs.stateFor(manager.page(window));
     const added = next.tabs.find((tab) => !state.tabs.some((old) => old.id === tab.id));
     if (added) opened.push(added.id);
   }
   await until(
-    () => manager.tabs.stateFor(window.webContents).tabs.length >= 7,
+    () => manager.tabs.stateFor(manager.page(window)).tabs.length >= 7,
     "every tab is open",
   );
   // Let the first layout of each new view settle before measuring.
   await new Promise((resolve) => setTimeout(resolve, 1_500));
 
-  const tabCount = manager.tabs.stateFor(window.webContents).tabs.length;
+  const tabCount = manager.tabs.stateFor(manager.page(window)).tabs.length;
   const switches = [opened[0], opened[1], opened[2], opened[0], opened[1]];
   boundsCalls = 0;
   for (const id of switches) {
-    manager.tabs.handleCommand(window.webContents, { type: "activate", id });
+    manager.tabs.handleCommand(manager.page(window), { type: "activate", id });
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   const perSwitch = boundsCalls / switches.length;
@@ -96,7 +96,7 @@ app.whenReady().then(async () => {
     switches: switches.length,
     boundsCalls,
     perSwitch,
-    activeAfterSwitches: manager.tabs.stateFor(window.webContents).activeId,
+    activeAfterSwitches: manager.tabs.stateFor(manager.page(window)).activeId,
     expectedActive: switches[switches.length - 1],
   };
   fs.writeFileSync(resultFile, JSON.stringify(result));

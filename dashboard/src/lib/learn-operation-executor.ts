@@ -15,6 +15,7 @@ import {
   switchFinishedLearnHumanizer,
 } from "@/lib/learn";
 import type { LearnWorkerRequest } from "@/lib/learn-background";
+import { startLearnWorkspaceHygiene } from "@/lib/learn-build-workspace";
 import { withCapabilityLease } from "@/lib/supervisor-control";
 
 function rejectExistingLearnerContent(): never {
@@ -95,6 +96,9 @@ async function executeLearnOperationInner(
         model: request.model,
         sourceOnly: request.sourceOnly,
         includeSourceSnapshots: request.includeSourceSnapshots,
+        // The Plan button sends the reuse checkbox too; dropping it here made
+        // every UI plan re-review all figure crops on the new model.
+        reuseCropVerdictsAcrossModels: request.reuseCropVerdictsAcrossModels,
         autoConfirmTopicMap: request.autoConfirmTopicMap,
         userInstruction: request.userInstruction,
         yieldToResponse,
@@ -236,6 +240,7 @@ async function executeLearnOperationInner(
           model: request.model,
           sourceOnly: request.sourceOnly,
           includeSourceSnapshots: request.includeSourceSnapshots,
+          reuseCropVerdictsAcrossModels: request.reuseCropVerdictsAcrossModels,
           forceFullRebuild: true,
           userInstruction: request.userInstruction,
         },
@@ -273,5 +278,8 @@ export function executeAdmittedLearnOperation(
   request: LearnWorkerRequest,
   yieldToResponse?: (jobId: string) => Promise<void>,
 ): Promise<unknown> {
+  // Only Learn workers reach this entry point, so the disk-hygiene timer
+  // never runs in the dashboard process.
+  startLearnWorkspaceHygiene();
   return executeLearnOperationInner(request, yieldToResponse);
 }

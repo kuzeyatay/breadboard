@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "breadboard-multisim"
+version = "0.1.0"
+description = "Breadboard native circuit engineering workflow, adapted from multisim-mcp"
+license = "MIT"
+license-files = ["LICENSE", "vendor/LICENSE.multisim-mcp"]
+requires-python = ">=3.11"
+dependencies = ["numpy>=2,<3", "matplotlib>=3.9,<4", "pydantic>=2.10,<3", "filelock>=3.16,<4", "mcp>=2,<3"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "pytest-asyncio>=0.24", "ruff>=0.12"]
+multisim = ["pywin32>=311; sys_platform == 'win32'", "cryptography>=44; sys_platform == 'win32'"]
+
+[project.scripts]
+breadboard-multisim = "breadboard_multisim.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src", "vendor"]
+include = ["breadboard_multisim*", "multisim_mcp*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+breadboard_multisim = ["references/*.md", "references/*.json", "export_runtime/*.cjs", "export_runtime/*.json", "export_runtime/*.md", "export_runtime/weave/*.js", "export_runtime/weave/*.json", "export_runtime/weave/*.md"]
+multisim_mcp = ["templates/*.json", "compatibility/*.json", "harness_skills/manifest.json", "harness_skills/*/SKILL.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: requires real ngspice (set BREADBOARD_NGSPICE or install on PATH)"]
+
+[tool.ruff]
+exclude = ["vendor"]
+line-length = 110

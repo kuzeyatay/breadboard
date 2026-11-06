@@ -236,14 +236,15 @@ test("the real finite worker can run Hermes and scheduled-chat closures without 
     assert.equal(worker.error, undefined, worker.error?.message);
     assert.equal(worker.status, 0, worker.stderr);
     assert.doesNotMatch(worker.stderr, /ERR_MODULE_NOT_FOUND|next[\\/]server/u);
-    assert.deepEqual(
-      worker.stdout.trim().split("\n").map((line) => JSON.parse(line).type),
-      ["ready", "complete"],
-    );
+    const records = worker.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(records[0].type, "ready");
+    assert.equal(records.at(-1).type, "complete");
+    assert.ok(records.slice(1, -1).every(record => record.type === "heartbeat"), "Only liveness heartbeats may occur before completion.");
     const result = JSON.parse(
       fs.readFileSync(path.join(dataRoot, ...`${jobRoot}/result.json`.split("/")), "utf8"),
     );
     assert.equal(result.result.operation, operation);
+    assert.equal(result.completionSequence, records.at(-1).sequence);
   }
 });
 

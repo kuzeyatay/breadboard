@@ -791,6 +791,38 @@ test("an exact generation-one failed receipt authorizes one explicit same-id red
   );
 });
 
+test("a receipt ChatMock settled after a process restart (model unknown) authorizes one redispatch", async (t) => {
+  const root = fixtureRoot(t);
+  const fake = new FakeCouncilBoundary();
+  fake.createOverride = async (body) => {
+    if (fake.posts.length === 1) {
+      const proof = fake.fail(body, 1);
+      const attempt = proof.attempts[0];
+      Object.assign(attempt, { requestedModel: "unknown", resolvedModel: "unknown" });
+      attempt.modelRouting = [{
+        schemaVersion: 1,
+        at: NOW,
+        requestId: attempt.councilRunId,
+        endpoint: "council",
+        requestedModel: "unknown",
+        resolvedModel: "unknown",
+        upstreamModel: "unknown",
+        provider: "orphaned_process_restart",
+        outcome: "failed",
+        fallback: false,
+      }];
+      throw new Error("ChatMock restarted mid-call");
+    }
+    return httpCompletion(fake.complete(body));
+  };
+
+  const result = await runGeneratedVisualCouncilRequestWithReceipt(runInput(root, fake));
+
+  assert.equal(result.dispatchCount, 2);
+  assert.equal(fake.posts.length, 2);
+  assert.equal(fake.posts[1].clientRequestRedispatch, true);
+});
+
 test("abort after failed-receipt resolution fences the recovery claim and provider redispatch", async (t) => {
   const root = fixtureRoot(t);
   const fake = new FakeCouncilBoundary();

@@ -2,19 +2,26 @@
 
 import { useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
 import { createVoiceChatHost, type VoiceChatSnapshot } from '@/lib/speech/voice-chat-link';
+import type { SpokenExchange } from '@/lib/speech/chatgpt-voice';
+import type { VoiceScreenContext } from '@/lib/speech/voice-screen-context';
 
-export function useVoiceChatHost({ identity, createdIdentity, scope, element, snapshot, onSend }: {
+export function useVoiceChatHost({ identity, createdIdentity, scope, element, snapshot, onSend, onInterrupt, onRecord }: {
   identity: string | number | null;
   createdIdentity?: string | number | null;
   scope: string;
   element: RefObject<HTMLTextAreaElement | null>;
   snapshot: VoiceChatSnapshot | null;
-  onSend: (text: string) => void;
+  onSend: (text: string, screen?: VoiceScreenContext) => void | Promise<void>;
+  onInterrupt?: () => void;
+  /** Saves a ChatGPT voice exchange from a detached voice view. */
+  onRecord?: (exchange: SpokenExchange) => Promise<void>;
 }) {
   const host = useRef<ReturnType<typeof createVoiceChatHost> | null>(null);
   const boundIdentity = useRef(identity);
   const boundScope = useRef(scope);
   const send = useRef(onSend);
+  const interrupt = useRef(onInterrupt);
+  const record = useRef(onRecord);
   const resume = useRef(() => {});
   const [registration] = useState(() => {
     let key: string | undefined;
@@ -32,6 +39,8 @@ export function useVoiceChatHost({ identity, createdIdentity, scope, element, sn
   const key = useSyncExternalStore(registration.subscribe, registration.read, () => undefined);
   useLayoutEffect(() => {
     send.current = onSend;
+    interrupt.current = onInterrupt;
+    record.current = onRecord;
     const createdHere = boundIdentity.current === null && identity !== null && identity === createdIdentity;
     if (!snapshot || boundScope.current !== scope || (boundIdentity.current !== identity && !createdHere)) {
       host.current?.close();
@@ -42,13 +51,17 @@ export function useVoiceChatHost({ identity, createdIdentity, scope, element, sn
     boundScope.current = scope;
     resume.current = () => {
       if (snapshot && !host.current) {
-        host.current = createVoiceChatHost(snapshot, text => send.current(text), () => element.current);
+        host.current = createVoiceChatHost(snapshot, (text, screen) => send.current(text, screen), () => element.current, () => interrupt.current?.(),
+          async exchange => {
+            if (!record.current) throw new Error('This chat cannot save a ChatGPT voice conversation.');
+            await record.current(exchange);
+          });
         registration.publish(host.current.key);
       }
     };
     resume.current();
     if (snapshot) host.current?.update(snapshot);
-  }, [identity, createdIdentity, scope, element, snapshot, onSend, registration]);
+  }, [identity, createdIdentity, scope, element, snapshot, onSend, onInterrupt, onRecord, registration]);
   useLayoutEffect(() => {
     const close = () => { host.current?.close(); host.current = null; };
     const reopen = () => resume.current();

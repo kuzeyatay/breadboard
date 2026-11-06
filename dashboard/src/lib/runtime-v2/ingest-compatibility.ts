@@ -42,6 +42,23 @@ const PUBLIC_INGEST_FAILURE_MESSAGES = new Set([
   PUBLIC_INGEST_MODEL_QUOTA_FAILURE,
   PUBLIC_INGEST_CONCEPT_EXTRACTION_FAILURE,
 ]);
+const PUBLIC_MODEL_ID_FRAGMENT = "[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}";
+const PUBLIC_INGEST_MODEL_QUOTA_FAILURE_PATTERN = new RegExp(
+  `^Model ${PUBLIC_MODEL_ID_FRAGMENT} and its fallbacks were rate-limited or out of credits, so the document could not be processed\\. Add provider credits or wait for the usage limit to reset, or choose another model, then retry the upload\\.$`,
+  "u",
+);
+const PUBLIC_INGEST_CONCEPT_EXTRACTION_FAILURE_PATTERN = new RegExp(
+  `^The document was read, but model ${PUBLIC_MODEL_ID_FRAGMENT} failed while building its summary and concepts, so nothing was added to the garden\\. Resume the upload to try again\\.$`,
+  "u",
+);
+
+function isPublicIngestFailureMessage(value: string): boolean {
+  return (
+    PUBLIC_INGEST_FAILURE_MESSAGES.has(value) ||
+    PUBLIC_INGEST_MODEL_QUOTA_FAILURE_PATTERN.test(value) ||
+    PUBLIC_INGEST_CONCEPT_EXTRACTION_FAILURE_PATTERN.test(value)
+  );
+}
 // A retained-upload id the worker attaches to a failure (see
 // `retainIngestRecovery`); it is an opaque handle for the garden's recovery
 // routes, never a path.
@@ -183,7 +200,7 @@ function parseCheckpoint(
       !(hasExactKeys(content.failure, ["error", "visionError"]) ||
         hasExactKeys(content.failure, ["error", "visionError", "recoveryId"])) ||
       typeof content.failure.error !== "string" ||
-      !PUBLIC_INGEST_FAILURE_MESSAGES.has(content.failure.error) ||
+      !isPublicIngestFailureMessage(content.failure.error) ||
       (content.failure.visionError !== null &&
         content.failure.visionError !== PUBLIC_INGEST_VISION_WARNING) ||
       !(content.failure.recoveryId === undefined ||
@@ -223,6 +240,7 @@ const RESULT_KEYS = new Set([
   "topicCount",
   "imageCount",
   "figureCount",
+  "visualDescriptions",
   "visionError",
   "screenshotWarning",
   "mapGenerationWarning",
@@ -269,6 +287,15 @@ function validSafetyFinding(value: unknown): boolean {
   );
 }
 
+function validVisualDescriptionCoverage(value: unknown): boolean {
+  if (!isRecord(value) || !hasExactKeys(value, ["total", "described", "existing", "unavailable", "pending", "serviceUnavailable", "warnings"])) return false;
+  const counts = [value.described, value.existing, value.unavailable, value.pending];
+  return safeNonnegativeInteger(value.total) && counts.every(safeNonnegativeInteger) &&
+    (counts as number[]).reduce((sum, count) => sum + count, 0) === value.total &&
+    typeof value.serviceUnavailable === "boolean" && Array.isArray(value.warnings) &&
+    value.warnings.length <= 4 && value.warnings.every(warning => boundedText(warning, MAX_RESULT_STRING_BYTES));
+}
+
 function parseIngestionResult(value: unknown, model: string | null): Record<string, unknown> {
   if (
     !isRecord(value) ||
@@ -284,6 +311,7 @@ function parseIngestionResult(value: unknown, model: string | null): Record<stri
     !safeNonnegativeInteger(value.durationMs) ||
     (value.duplicate !== undefined && typeof value.duplicate !== "boolean") ||
     (value.figureCount !== undefined && !safeNonnegativeInteger(value.figureCount)) ||
+    (value.visualDescriptions !== undefined && !validVisualDescriptionCoverage(value.visualDescriptions)) ||
     !optionalExactText(value.visionError, PUBLIC_INGEST_VISION_WARNING) ||
     !optionalExactText(value.screenshotWarning, PUBLIC_INGEST_DOCUMENT_WARNING) ||
     !optionalExactText(value.mapGenerationWarning, PUBLIC_INGEST_MAP_WARNING) ||

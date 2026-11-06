@@ -12,15 +12,16 @@
 // answering the wrong question usually has nothing attached at all, so
 // `evidence` is optional throughout.
 //
-//   node --experimental-strip-types scripts/evaluate-answer-quality.mjs
-//   node --experimental-strip-types scripts/evaluate-answer-quality.mjs --reason too_long
+//   node --experimental-strip-types scripts/evaluate-answer-quality.mjs --model gpt-6-sol --reasoning-effort max
+//   node --experimental-strip-types scripts/evaluate-answer-quality.mjs --model gpt-6-sol --reason too_long
 //   ANSWER_QUALITY_MODEL=... ANSWER_QUALITY_GRADER=... node ... --json report.json
 //
-// Use a weak answering model and a grader from a different family; see
-// qa/answer-quality/README.md for why.
+// Use the answering model and effort implicated in the report. A grader is
+// diagnostic evidence, not a release decision; see qa/answer-quality/README.md.
 
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { composeHermesSystemPrompt } from "../dashboard/src/lib/hermes/system-prompts.ts";
 import { suppliedEvidenceText } from "../dashboard/src/lib/hermes/evidence-calibration.ts";
@@ -36,8 +37,10 @@ const argValue = (flag) => {
   return index >= 0 ? argv[index + 1] : undefined;
 };
 
-const ANSWER_MODEL = process.env.ANSWER_QUALITY_MODEL?.trim() || "default";
+const ANSWER_MODEL = argValue("--model") || process.env.ANSWER_QUALITY_MODEL?.trim();
+const ANSWER_EFFORT = argValue("--reasoning-effort") || process.env.ANSWER_QUALITY_REASONING_EFFORT?.trim();
 const GRADER_MODEL = process.env.ANSWER_QUALITY_GRADER?.trim() || ANSWER_MODEL;
+const GRADER_EFFORT = process.env.ANSWER_QUALITY_GRADER_REASONING_EFFORT?.trim();
 const BASE_URL = process.env.ANSWER_QUALITY_BASE_URL?.trim() || localChatmockBaseUrl();
 
 const decision = {
@@ -57,7 +60,8 @@ const decision = {
   expiresAt: null,
 };
 
-async function completeOnce(model, messages, maxTokens) {
+async function complete(model, messages, reasoningEffort) {
+  const started = performance.now();
   const response = await fetch(`${BASE_URL}/chat/completions`, {
     method: "POST",
     headers: {
@@ -67,8 +71,8 @@ async function completeOnce(model, messages, maxTokens) {
     body: JSON.stringify({
       model,
       messages,
-      temperature: 0,
-      max_completion_tokens: maxTokens,
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+      council: false,
       stream: false,
     }),
   });
@@ -78,27 +82,23 @@ async function completeOnce(model, messages, maxTokens) {
     );
   }
   const payload = await response.json();
-  const content = payload?.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || !content.trim()) {
-    throw new Error(`${model} returned no content`);
+  const choice = payload?.choices?.[0];
+  const content = choice?.message?.content;
+  const completion = {
+    answer: typeof content === "string" ? content.trim() : "",
+    requestedModel: model,
+    reasoningEffort: reasoningEffort ?? null,
+    reportedModel: payload?.model ?? null,
+    finishReason: choice?.finish_reason ?? null,
+    elapsedSeconds: (performance.now() - started) / 1000,
+    usage: payload?.usage ?? null,
+  };
+  if (completion.finishReason !== "stop" || !completion.answer) {
+    const error = new Error(`${model} did not return a complete answer (finish_reason=${completion.finishReason})`);
+    error.completion = completion;
+    throw error;
   }
-  return content.trim();
-}
-
-/** Retried past a transient proxy failure, which would otherwise end a run early. */
-async function complete(model, messages, maxTokens, attempts = 3) {
-  let lastError;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      return await completeOnce(model, messages, maxTokens);
-    } catch (error) {
-      lastError = error;
-      if (attempt < attempts) {
-        await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
-      }
-    }
-  }
-  throw lastError;
+  return completion;
 }
 
 /** The user message as Breadboard builds it, with the attachment only if there is one. */
@@ -127,7 +127,7 @@ const GRADER_INSTRUCTION = [
   '{"results":[{"id":"<property id>","holds":true|false,"why":"<one short sentence>"}]}',
 ].join("\n");
 
-async function grade(scenario, answer) {
+async function grade(scenario, answer, onCompletion) {
   const properties = [
     ...scenario.rubric.must.map((text, index) => ({
       id: `must-${index + 1}`,
@@ -151,14 +151,16 @@ async function grade(scenario, answer) {
       (property) => `${property.id} (${property.kind}): the answer ${property.text}`,
     ),
   ].join("\n");
-  const raw = await complete(
+  const completion = await complete(
     GRADER_MODEL,
     [
       { role: "system", content: GRADER_INSTRUCTION },
       { role: "user", content: prompt },
     ],
-    1600,
+    GRADER_EFFORT,
   );
+  onCompletion(completion);
+  const raw = completion.answer;
   const json = raw.replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
   let parsed;
   try {
@@ -167,7 +169,7 @@ async function grade(scenario, answer) {
     throw new Error(`grader returned unparseable output: ${raw.slice(0, 200)}`);
   }
   const byId = new Map((parsed.results ?? []).map((entry) => [String(entry.id), entry]));
-  return properties.map((property) => {
+  const results = properties.map((property) => {
     const verdict = byId.get(property.id);
     return {
       ...property,
@@ -178,6 +180,7 @@ async function grade(scenario, answer) {
       judged: Boolean(verdict),
     };
   });
+  return { results, completion };
 }
 
 /**
@@ -192,6 +195,9 @@ function needsReview(scenario) {
 }
 
 async function run() {
+  if (!ANSWER_MODEL || ANSWER_MODEL === "default") {
+    throw new Error("Select the implicated answering model with --model or ANSWER_QUALITY_MODEL; an implicit default cannot establish model fidelity.");
+  }
   const set = JSON.parse(fs.readFileSync(scenarioFile, "utf8"));
   const only = argValue("--scenario");
   const reason = argValue("--reason");
@@ -204,6 +210,10 @@ async function run() {
 
   const report = [];
   const skipped = [];
+  const jsonOut = argValue("--json");
+  const saveReport = () => {
+    if (jsonOut) fs.writeFileSync(path.resolve(jsonOut), JSON.stringify(report, null, 2));
+  };
   for (const scenario of scenarios) {
     if (needsReview(scenario)) {
       skipped.push(scenario.id);
@@ -224,39 +234,69 @@ async function run() {
           ])
         : undefined,
     });
-    const answer = await complete(
-      ANSWER_MODEL,
-      [
-        { role: "system", content: system },
-        { role: "user", content: userMessage(scenario) },
-      ],
-      2400,
-    );
-    const words = answer.split(/\s+/).filter(Boolean).length;
-    const results = await grade(scenario, answer);
-    const failures = results.filter((result) => !result.holds);
-    report.push({
+    const input = {
+      system,
+      systemSha256: createHash("sha256").update(system).digest("hex"),
+      user: userMessage(scenario),
+      requestedModel: ANSWER_MODEL,
+      reasoningEffort: ANSWER_EFFORT ?? null,
+      council: false,
+      boundary: "Single writing response with inline source text and a web-only capability decision; no tools or full normal-chat capability inventory are exercised.",
+    };
+    const entry = {
       id: scenario.id,
       reason: scenario.reason,
       origin: scenario.origin ?? "nominated",
-      words,
-      passed: failures.length === 0,
-      results,
-      answer,
-    });
+      rubric: scenario.rubric,
+      input,
+      status: "running",
+      passed: false,
+    };
+    report.push(entry);
+    saveReport();
+    try {
+      const completion = await complete(ANSWER_MODEL, [
+        { role: "system", content: system },
+        { role: "user", content: input.user },
+      ], ANSWER_EFFORT);
+      entry.completion = completion;
+      const answer = completion.answer;
+      entry.answer = answer;
+      const words = answer.split(/\s+/).filter(Boolean).length;
+      entry.status = "grading";
+      saveReport();
+      const { results, completion: graderCompletion } = await grade(scenario, answer, (response) => {
+        entry.graderCompletion = response;
+        saveReport();
+      });
+      const failures = results.filter((result) => !result.holds);
+      Object.assign(entry, {
+        status: "complete",
+        words,
+        passed: failures.length === 0,
+        results,
+        graderCompletion,
+      });
 
-    console.log(
-      `\n${failures.length === 0 ? "PASS" : "FAIL"}  ${scenario.id}  [${scenario.reason}]  ${words} words`,
-    );
-    for (const result of failures) {
-      console.log(`   x ${result.kind}: ${result.text}`);
-      console.log(`     ${result.why}`);
+      console.log(
+        `\n${failures.length === 0 ? "PASS" : "FAIL"}  ${scenario.id}  [${scenario.reason}]  ${words} words`,
+      );
+      for (const result of failures) {
+        console.log(`   x ${result.kind}: ${result.text}`);
+        console.log(`     ${result.why}`);
+      }
+    } catch (error) {
+      entry.failedStage = entry.status === "grading" ? "grading" : "answering";
+      entry.status = "error";
+      entry.error = error instanceof Error ? error.message : String(error);
+      if (error?.completion) entry.failedCompletion = error.completion;
+      console.log(`\nERROR ${scenario.id}: ${entry.error}`);
+    } finally {
+      saveReport();
     }
   }
 
-  const jsonOut = argValue("--json");
   if (jsonOut) {
-    fs.writeFileSync(path.resolve(jsonOut), JSON.stringify(report, null, 2));
     console.log(`\nwrote ${jsonOut}`);
   }
 

@@ -13,6 +13,7 @@ import { publishQuartzAfterMutation } from "./quartz-publish.ts";
 import { assertGardenMutationWritePaths, withGardenMutationLease } from "./garden-mutation-lease.ts";
 import { applyGardenRevision } from "./garden-revision.ts";
 import { ApiError } from "./hermes/route-core.ts";
+import { teachingReviewHash } from "./teaching-plan.ts";
 
 export interface CreateGardenDocumentInput {
   userId: number;
@@ -21,6 +22,9 @@ export interface CreateGardenDocumentInput {
   content: string;
   folder?: string;
   tags?: string[];
+  preserveContent?: boolean;
+  /** Recheck the originating run after waiting for the write lease. */
+  beforeWrite?: () => void;
 }
 
 export interface CreatedGardenDocument {
@@ -36,6 +40,8 @@ export async function reviseGardenDocument(input: {
   clusterSlug: string;
   pageSlug: string;
   patchOrReplacement: string;
+  originalText?: string;
+  teachingBaseHash?: string;
 }): Promise<CreatedGardenDocument & { content: string }> {
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
   if (!contentPath) throw new Error("QUARTZ_CONTENT_PATH not configured");
@@ -60,7 +66,11 @@ export async function reviseGardenDocument(input: {
       throw new ApiError(400, "invalid_revision_path", "Invalid revision destination.");
     }
     const previous = fs.readFileSync(page.filePath, "utf8");
-    const content = applyGardenRevision(previous, input.patchOrReplacement);
+    // Other approved revisions can change this page without changing this
+    // proposal's target. Revalidate exact passages under the lease; relocate
+    // numbered hunks only when their complete source blocks are still unique.
+    const baseChanged = Boolean(input.teachingBaseHash && teachingReviewHash(previous, null) !== input.teachingBaseHash);
+    const content = applyGardenRevision(previous, input.patchOrReplacement, input.originalText, { relocateHunks: baseChanged });
     try {
       fs.writeFileSync(page.filePath, content, "utf8");
       refreshClusterIndex(contentPath, input.clusterSlug, { migrateSources: false });
@@ -123,6 +133,7 @@ export async function createGardenDocument(
     clusterDir,
     "create-document",
     () => {
+      input.beforeWrite?.();
       fs.mkdirSync(targetDir, { recursive: true });
 
       const baseSlug = slugify(title) || "note";
@@ -133,7 +144,7 @@ export async function createGardenDocument(
         slug = `${baseSlug}-${suffix}`;
       }
 
-      const body = input.content.trim() || `## ${title}\n\n`;
+      const body = input.preserveContent ? input.content : input.content.trim() || `## ${title}\n\n`;
       const tags = normalizeTopicTags(
         (input.tags ?? []).map((tag) => tag.trim()).filter(Boolean),
         body,

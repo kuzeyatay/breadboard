@@ -68,6 +68,7 @@ class ToolSearchConfig:
     threshold_pct: float  # 0..100 — only used when enabled == "auto"
     search_default_limit: int
     max_search_limit: int
+    always_visible: Tuple[str, ...] = ()
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -111,6 +112,10 @@ class ToolSearchConfig:
             threshold_pct=threshold_pct,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
+            always_visible=tuple(dict.fromkeys(
+                name.strip() for name in raw.get("always_visible", [])
+                if isinstance(name, str) and name.strip()
+            )) if isinstance(raw.get("always_visible"), list) else (),
         )
 
 
@@ -186,7 +191,7 @@ def is_deferrable_tool_name(name: str) -> bool:
         return False
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def classify_tools(tool_defs: List[Dict[str, Any]], always_visible: Iterable[str] = ()) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
@@ -195,6 +200,7 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
     """
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
+    pinned = frozenset(always_visible)
     for td in tool_defs:
         fn = td.get("function") or {}
         name = fn.get("name", "")
@@ -202,7 +208,7 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
             # Should never happen — bridge tools are added after classification —
             # but be defensive.
             continue
-        if is_deferrable_tool_name(name):
+        if name not in pinned and is_deferrable_tool_name(name):
             deferrable.append(td)
         else:
             visible.append(td)
@@ -551,7 +557,9 @@ def assemble_tool_defs(
     incoming = [td for td in tool_defs
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
-    visible, deferrable = classify_tools(incoming)
+    # Visibility only selects from the already-authorized input; it never adds
+    # a tool to a session or changes the underlying call's permission checks.
+    visible, deferrable = classify_tools(incoming, config.always_visible)
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 

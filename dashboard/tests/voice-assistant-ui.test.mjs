@@ -7,6 +7,72 @@ import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
 import { chromium } from 'playwright';
 
+test('viewing chats silences current and queued speech without waiting for an inbox poll', {timeout:30000}, async t => {
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  const bundle = await esbuild.build({
+    stdin: {resolveDir:root,loader:'tsx',contents:`
+      import React from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';
+      import Runtime from './src/app/components/voice-assistant-runtime';
+      import {useChatNotificationView} from './src/lib/use-chat-notification-view';
+      import {VOICE_ASSISTANT_CHANNEL} from './src/lib/speech/assistant-preferences';
+      window.played=[];window.activeText=null;window.polls=0;
+      window.refresh=()=>{const channel=new BroadcastChannel(VOICE_ASSISTANT_CHANNEL);channel.postMessage({type:'preferences'});channel.close();};
+      const fetchOriginal=window.fetch;
+      window.fetch=async(...args)=>{const response=await fetchOriginal(...args);if(args[0]==='/api/chat-notifications')window.polls++;return response;};
+      function Surface({id}){useChatNotificationView({surface:'dashboard_terminal',chatId:id});return null;}
+      function App(){const [ids,setIds]=React.useState([]);window.view=ids=>flushSync(()=>setIds(ids));
+        return <><Runtime/>{ids.map(id=><Surface key={id} id={id}/>)}</>;}
+      createRoot(document.getElementById('root')).render(<App/>);
+    `},
+    bundle:true,write:false,format:'iife',platform:'browser',jsx:'automatic',
+    define:{'process.env.NODE_ENV':'"production"'},
+    plugins:[{name:'speech-fixture',setup(build){
+      build.onResolve({filter:/(?:notification-speech|wake-listener|subscription-live)$/},args=>({path:args.path,namespace:'fixture'}));
+      build.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:
+        args.path.endsWith('notification-speech') ? `export async function speakNotification(text,signal){
+          signal.throwIfAborted();window.played.push(text);window.activeText=text;
+          await new Promise(resolve=>signal.addEventListener('abort',()=>{window.activeText=null;resolve();},{once:true}));
+        }` : args.path.endsWith('wake-listener') ? 'export async function listenForHeyBread(){}' :
+        'export const preloadSubscriptionVoice=async()=>{};export const clearSubscriptionPreload=async()=>{};'
+      }));
+    }}],
+  });
+  let messages=[];
+  const server=http.createServer((req,res)=>{
+    if(req.url==='/app.js'){res.setHeader('Content-Type','text/javascript');res.end(bundle.outputFiles[0].text);return;}
+    res.setHeader('Content-Type','application/json');
+    if(req.url==='/api/chat-notifications'){res.end(JSON.stringify({messages}));return;}
+    if(req.url==='/api/profile/voice-assistant'){res.end(JSON.stringify({userId:'1',preferences:{readAloudNotifications:true,alwaysOnVoiceAssistant:false}}));return;}
+    if(req.url==='/api/speech/settings'){res.end(JSON.stringify({settings:{enabled:true,speechProvider:'local'}}));return;}
+    res.setHeader('Content-Type','text/html');res.end('<!doctype html><div id="root"></div><script src="/app.js"></script>');
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>{server.closeAllConnections();return new Promise(resolve=>server.close(resolve));});
+  const executablePath=['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe','C:/Program Files/Microsoft/Edge/Application/msedge.exe','/usr/bin/chromium'].find(fs.existsSync);
+  const browser=await chromium.launch({headless:true,...(executablePath?{executablePath}:{})});
+  t.after(()=>browser.close());
+  const page=await browser.newPage();page.setDefaultTimeout(5000);
+  const errors=[];page.on('pageerror',error=>errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}/reader`);
+  await page.waitForFunction(()=>window.polls>0);
+  const notice=(id,chatId)=>({id,title:'Response ready',type:'success',response:id,chatTitle:'Chat',target:{surface:'dashboard_terminal',chatId},updatedAt:new Date().toISOString()});
+  messages=[notice('current','one'),notice('queued','two')];
+  await page.evaluate(()=>window.refresh());
+  await page.waitForFunction(()=>window.activeText==='Response ready. current');
+  // No visible toaster participates: the voice reader must observe presence itself.
+  await page.evaluate(()=>window.view(['one','two']));
+  await page.waitForFunction(()=>window.activeText===null,null,{timeout:750});
+  await page.waitForTimeout(600);
+  assert.deepEqual(await page.evaluate(()=>window.played),['Response ready. current']);
+  await page.evaluate(()=>{window.view([]);window.refresh();});
+  await page.waitForTimeout(600);
+  assert.deepEqual(await page.evaluate(()=>window.played),['Response ready. current'],'viewed queued speech must not replay after leaving');
+  messages.push(notice('new-background-reply','two'));
+  await page.evaluate(()=>window.refresh());
+  await page.waitForFunction(()=>window.activeText==='Response ready. new-background-reply');
+  assert.deepEqual(errors,[]);
+});
+
 test('profile switches drive wake capture and queued notifications through both providers; compact voice cleans up', {timeout:60000}, async () => {
   const root = fileURLToPath(new URL('../', import.meta.url));
   const source = `
@@ -41,7 +107,7 @@ test('profile switches drive wake capture and queued notifications through both 
   const subscription = `export const preloadSubscriptionVoice=async()=>{};export const clearSubscriptionPreload=async()=>{};export const subscriptionSelected=async()=>window.cloud;export async function connectSubscriptionVoice(options={}){window.cloudTranscript=options.onTranscript;return{setListening(){},resetTranscript(){},finishTranscript:async()=>'',stopSpeaking(){window.finishSpeech?.();},close:async()=>{},speak:text=>{window.played.push({provider:'chatgpt',text});return new Promise(r=>window.finishSpeech=r);}};}`;
   const bundle = await esbuild.build({stdin:{contents:source,resolveDir:root,loader:'tsx'},bundle:true,write:false,format:'iife',platform:'browser',loader:{'.css':'empty','.module.css':'empty'},define:{'process.env.NODE_ENV':'"production"'},plugins:[{name:'voice-services',setup(build){
     build.onResolve({filter:/^(next\/navigation|\.\/navigation-progress)$|(?:subscription-live|prepare-client|request-client)$/},args=>({path:args.path,namespace:'voice-stub'}));
-    build.onLoad({filter:/.*/,namespace:'voice-stub'},args=>({contents:args.path.endsWith('subscription-live')?subscription:args.path.endsWith('prepare-client')?'export async function prepareLocalSpeech(){} export const speechErrorMessage=(e,f)=>e?.message||f;':args.path.endsWith('request-client')?'export const speechRequest=(...args)=>fetch(...args);':'export const useRouter=()=>({push(){}});export const startNavigationProgress=()=>{};',loader:'js'}));
+    build.onLoad({filter:/.*/,namespace:'voice-stub'},args=>({contents:args.path.endsWith('subscription-live')?subscription:args.path.endsWith('prepare-client')?'export async function prepareLocalSpeech(){} export function resetSpeechPreparation(){} export const speechErrorMessage=(e,f)=>e?.message||f;':args.path.endsWith('request-client')?'export const speechRequest=(...args)=>fetch(...args);':'export const useRouter=()=>({push(){}});export const startNavigationProgress=()=>{};',loader:'js'}));
   }}]});
   const fixture={preferences:{readAloudNotifications:false,alwaysOnVoiceAssistant:false},transcript:'hello there',messages:[],transcriptions:0};
   const css = fs.readFileSync(path.join(root,'src/app/globals.css'),'utf8');

@@ -193,11 +193,11 @@ export interface LocalOpenHandlers {
   /** A new hardened Breadboard window. Without it the page navigates in place. */
   onOpenLocalWindow?: (url: string) => void;
   /**
-   * A tab beside the page that asked, for the gesture a browser answers that
-   * way (a Ctrl- or middle-click). Returns false when tabs are switched off,
-   * in which case the request falls through to a window.
+   * A tab beside the page that asked. Ordinary links select the new tab;
+   * Ctrl- and middle-clicks keep it in the background. Returns false when
+   * tabs are switched off, so the request falls through to a window.
    */
-  onOpenLocalTab?: (url: string) => boolean;
+  onOpenLocalTab?: (url: string, background: boolean) => boolean;
   /** A sandboxed Breadboard browser tab for an ordinary external web page. */
   onOpenExternalTab?: (url: string, background: boolean) => void;
 }
@@ -219,18 +219,17 @@ export function hardenWebContents(
     event.preventDefault();
     if (isSafeExternalUrl(targetUrl)) openExternal(targetUrl, false);
   });
-  contents.setWindowOpenHandler(({ url, disposition }) => {
+  contents.setWindowOpenHandler(({ url, disposition, features = "" }) => {
     // External http(s) URLs go to Breadboard's sandboxed browser when the page
     // belongs to a tab-capable window. Protocols such as mailto still belong to
-    // the operating system. A local `target="_blank"` opens a new hardened
-    // Breadboard window when a handler is provided (so features like the Work
-    // timer get their own instance), otherwise it navigates in-window. A Ctrl-
-    // or middle-click is Chromium's background-tab disposition.
+    // the operating system. Local blank-target links and window.open requests
+    // use managed tabs too, unless an explicit popup asks for its own window.
+    // A Ctrl- or middle-click is Chromium's background-tab disposition.
     if (isSafeExternalUrl(url) && !isNavigationAllowed(allowed, url)) {
       openExternal(url, disposition === "background-tab");
     } else if (isNavigationAllowed(allowed, url)) {
-      const inTab =
-        disposition === "background-tab" && handlers.onOpenLocalTab?.(url) === true;
+      const explicitWindow = /(?:^|,)\s*popup(?:\s*=\s*(?:1|yes|true))?\s*(?:,|$)/i.test(features);
+      const inTab = !explicitWindow && handlers.onOpenLocalTab?.(url, disposition === "background-tab") === true;
       if (!inTab) {
         if (handlers.onOpenLocalWindow) handlers.onOpenLocalWindow(url);
         else void contents.loadURL(url);
@@ -245,7 +244,7 @@ export function hardenWindow(
   window: BrowserWindow,
   allowed: AllowedOrigins,
   onOpenLocalWindow?: (url: string) => void,
-  onOpenLocalTab?: (url: string) => boolean,
+  onOpenLocalTab?: (url: string, background: boolean) => boolean,
   onOpenExternalTab?: (url: string, background: boolean) => void,
 ): void {
   hardenWebContents(window.webContents, allowed, {

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useMemo, useState, type RefObject } from "react";
+import { SKETCH_MARGIN, sketchRectOutlines } from "@/lib/hermes/sketch-outline";
 
 export default function TerminalDockOutline({
   targetRef,
@@ -27,12 +28,18 @@ export default function TerminalDockOutline({
     return () => observer.disconnect();
   }, [targetRef]);
 
-  if (!box.width || !box.height) return null;
-  const right = box.width - 2;
-  const radius = Math.min(box.radius, right / 2, box.height - 2);
-  // An open path follows only the exposed sides and rounded top. There is no
-  // invisible bottom segment for the tracing pass to spend half its cycle on.
-  const path = `M 1 ${box.height} V ${radius + 1} Q 1 1 ${radius + 1} 1 H ${right - radius} Q ${right} 1 ${right} ${radius + 1} V ${box.height}`;
+  const outlines = useMemo(() => {
+    if (!box.width || !box.height) return null;
+    // Keep both hand-drawn passes inside the dock's clipped border box, even
+    // when it is collapsed to the slim bar or resized to fill the viewport.
+    return sketchRectOutlines({
+      width: Math.max(1, box.width - SKETCH_MARGIN * 2),
+      height: Math.max(1, box.height - SKETCH_MARGIN * 2),
+      radius: box.radius,
+    }, 17);
+  }, [box]);
+
+  if (!outlines) return null;
 
   return (
     <svg
@@ -41,8 +48,8 @@ export default function TerminalDockOutline({
       viewBox={`0 0 ${box.width} ${box.height}`}
       preserveAspectRatio="none"
     >
-      <path d={path} pathLength={1} />
-      <path d={path} pathLength={1} />
+      <path d={outlines.settled} pathLength={1} />
+      <path d={outlines.pass} pathLength={1} />
     </svg>
   );
 }

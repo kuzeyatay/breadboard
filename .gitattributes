@@ -37,6 +37,7 @@ deer-flow/** linguist-vendored=true -whitespace
 diagram-design/** linguist-vendored=true -whitespace
 emilkowalski-skills/** linguist-vendored=true -whitespace
 goal/** linguist-vendored=true -whitespace
+google-flow-mcp/** linguist-vendored=true -whitespace -text
 gods-eye-view/** linguist-vendored=true -whitespace
 hallmark/** linguist-vendored=true -whitespace
 harvey-labs/** linguist-vendored=true -whitespace

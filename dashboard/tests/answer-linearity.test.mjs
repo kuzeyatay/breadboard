@@ -4,7 +4,6 @@ import {
   answerLinearityFindings,
   linearityRepairInstruction,
 } from "../src/lib/hermes/answer-linearity.ts";
-import { EXPLANATION_TURN_CONTRACT } from "../src/lib/hermes/explanation-turn.ts";
 
 // The explanation that landed (EM1, 2026-09-17): one spine, no asides.
 const LINEAR = [
@@ -56,16 +55,3 @@ test("a single cited paragraph is not an interruption, and findings are bounded"
   assert.ok(answerLinearityFindings(repeated).length <= 12);
 });
 
-test("the writing contract states the spine rules the reviewer cannot enforce", () => {
-  for (const rule of [
-    /Fix one governing question before writing/,
-    /one step per paragraph/,
-    /Earn every name/,
-    /Keep the line clear of interruptions/,
-    /Write to the reader, never to the task/,
-    /one spine that absorbs what serves it, never the union/,
-    /Depth is reaching the last step, not length/,
-  ]) {
-    assert.match(EXPLANATION_TURN_CONTRACT, rule);
-  }
-});

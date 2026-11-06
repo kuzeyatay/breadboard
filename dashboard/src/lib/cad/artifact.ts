@@ -234,9 +234,9 @@ export function latestCadArtifact(input: {
 }
 
 /** Read a stored design back. Returns null when it cannot be trusted. */
-export function readStoredCadDesign(artifact: ArtifactRow): ParametricCADArtifact | null {
+export function readStoredCadDesign(artifact: ArtifactRow, database?: Database.Database): ParametricCADArtifact | null {
   try {
-    const parsed = parseStoredCadArtifact(JSON.parse(readArtifactSource(artifact)) as unknown);
+    const parsed = parseStoredCadArtifact(JSON.parse(readArtifactSource(artifact, artifact.current_version, undefined, database)) as unknown);
     return parsed.ok ? parsed.value : null;
   } catch {
     return null;
@@ -297,6 +297,7 @@ export async function publishCadDesign(input: {
       : null;
     const artifact =
       existing && existing.user_id === input.context.userId && existing.status !== "archived"
+        && readStoredCadDesign(existing, input.database)?.projectId === manifest.projectId
         ? updateArtifactContent({
             artifact: existing,
             content,

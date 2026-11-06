@@ -85,7 +85,7 @@ test("AppLifecycle reports a Hot claim failure before constructing or starting R
     claim,
   );
   const constructionGate = source.indexOf(
-    "if (hotCheckoutFailure === null)",
+    "if (hotCheckoutFailure === null",
     claim,
   );
   const runtimeConstruction = source.indexOf("new RuntimeProcess({", constructionGate);

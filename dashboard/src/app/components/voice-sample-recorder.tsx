@@ -256,7 +256,7 @@ export default function VoiceSampleRecorder({ passage, onRecorded, disabled = fa
         </p>
         <p className="mt-2 text-[11px] leading-5 text-[var(--ink-muted)]">
           {passage.translated
-            ? "Read at your normal pace, in a quiet room. Breadboard files these exact words as the transcript, so the clone learns from a perfect match."
+            ? "Read these words exactly, at your normal pace in a quiet room."
             : "There is no passage in that language yet, so this English one stands in. Read it as shown; Breadboard saves the passage with the recording automatically."}
         </p>
       </div>

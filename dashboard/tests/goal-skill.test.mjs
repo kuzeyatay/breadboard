@@ -233,7 +233,7 @@ test("the goal tools are gated on the skill or an existing goal, not on a reques
     "utf8",
   );
   assert.doesNotMatch(service, /input\.goalMode/);
-  assert.match(service, /const goalMode = goalModeState !== null \|\| goalSkillSelected;/);
+  assert.match(service, /const goalMode = \(goalModeState !== null && goalModeState\.status !== "complete"\) \|\| goalSkillSelected;/);
   assert.match(service, /invocation\.slug === GOAL_MODE_SKILL/);
   // The dispatched run carries a null id on the creating turn, and the stream's
   // finalize resolves it — otherwise the first turn of every goal goes

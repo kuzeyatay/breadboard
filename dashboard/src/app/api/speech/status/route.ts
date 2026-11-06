@@ -40,13 +40,15 @@ export async function GET() {
         profiles: [], models: [], presets: { kokoro: [], qwen_custom_voice: [] },
       }, { headers: { "Cache-Control": "no-store" } });
     }
-    const cloud = await subscriptionStatus(userId);
     if (settings.speechProvider === "chatgpt") {
+      const cloud = await subscriptionStatus(userId);
       return NextResponse.json({
         available: cloud.configured, cloud, settings, health: null, startup: null,
         profiles: [], models: [], presets: { kokoro: [], qwen_custom_voice: [] },
       }, { headers: { "Cache-Control": "no-store" } });
     }
+    // Local status must not wait for an unrelated cloud connection timeout.
+    const cloud = { configured: false, source: 'subscription' as const };
     try {
       const health = await voiceboxObservationJson<VoiceboxHealth>("/health");
       const [profiles, models, kokoro, qwen] = await Promise.all([

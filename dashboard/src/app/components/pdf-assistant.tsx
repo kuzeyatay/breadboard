@@ -1,16 +1,21 @@
 "use client";
 
+import { StarredPdfSourceContext } from "./use-starred-messages";
+
+import type { StarredMessageTarget } from "./use-starred-message-jump";
+
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type RefObject,
+  type SetStateAction,
 } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { History, MessageCircle, Plus, X } from "lucide-react";
 import AgentRuntimePanel from "./hermes/agent-runtime-panel";
+import { useInlineAgentQuestions } from "./hermes/use-inline-agent-questions";
 import {
   useAgentSession,
   type AgentSendOptions,
@@ -20,8 +25,6 @@ import { useAssistantModels } from "./use-assistant-models";
 import { useChatDraft } from "./hermes/use-chat-draft";
 import {
   ChatSelectionMenu,
-  InlineSelectionAnswerPopover,
-  SelectionComposerContext,
   type FloatingAnchorRect,
 } from "./chat-text-selection-ui";
 import PdfSelectionLayer, {
@@ -30,11 +33,14 @@ import PdfSelectionLayer, {
 } from "./pdf-selection-layer";
 import {
   attachDocumentFile,
+  attachmentOnlyMessageText,
+  CHAT_ATTACHMENT_ACCEPT,
+  extractChatAttachments,
   reusableChatAttachments,
   visibleChatMessageAttachments,
   type ChatAttachment,
 } from "@/lib/chat-attachments";
-import type { ChatTextSelectionReference } from "@/lib/chat-text-selection";
+import { chatTextSelectionsOverlap, type ChatTextSelectionReference } from "@/lib/chat-text-selection";
 import {
   DEFAULT_CHAT_HIGHLIGHT_COLOR,
   normalizeChatHighlightNote,
@@ -43,23 +49,27 @@ import {
 import {
   capturePdfViewport,
   normalizePdfHighlights,
-  pdfDocumentExcerpt,
   pdfPageText,
   pdfViewContext,
   type PdfHighlight,
+  type PdfViewportSnapshot,
 } from "@/lib/pdf-assistant";
+import { runPdfPreparationStep } from "@/lib/pdf-preparation";
+import { requestPdfViewDecision } from "@/lib/pdf-assistant-view-decision";
 import {
   loadHermesSessionSummaries,
   type HermesSessionSnapshot,
 } from "@/lib/hermes/session-client";
-import { setActiveChatNotificationTarget } from "@/lib/chat-notification-inbox";
+import { useChatNotificationView } from "@/lib/use-chat-notification-view";
 import { useUnreadChats } from "@/lib/conversations/unread-client";
 import { UnreadChatDot } from "./hermes/history-client";
 import { useTextHighlights } from "./use-text-highlights";
 import { TextHighlightSaveStatus } from "./text-highlight-save-status";
+import PdfAssistantResizeHandle from "./pdf-assistant-resize-handle";
 
 interface Props {
   documentKey: string;
+  sourceUrl?: string;
   title: string;
   fileName: string;
   pageNumber: number;
@@ -71,8 +81,11 @@ interface Props {
   getBytes: () => Promise<Uint8Array>;
 }
 
+type SentPdfView = Promise<{ snapshot: PdfViewportSnapshot; error?: never } | { snapshot?: never; error: unknown }>;
+
 export default function PdfAssistant({
   documentKey,
+  sourceUrl,
   title,
   fileName,
   pageNumber,
@@ -84,8 +97,13 @@ export default function PdfAssistant({
   getBytes,
 }: Props) {
   const [open, setOpen] = useState(false);
+  const [chatQuestionTarget, setChatQuestionTarget] = useState<StarredMessageTarget | null>(null);
   const [input, setInput] = useState("");
+  const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
+  const [addingAttachments, setAddingAttachments] = useState(false);
+  const [attachmentUploadError, setAttachmentUploadError] = useState('');
   const [preparing, setPreparing] = useState(false);
+  const [preparationLabel, setPreparationLabel] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
   const [selectionMenu, setSelectionMenu] =
     useState<PdfSelectionCandidate | null>(null);
@@ -104,23 +122,29 @@ export default function PdfAssistant({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [panelWidth, setPanelWidth] = useState(420);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const attachmentDraftGenerationRef = useRef(0);
+  const pendingAttachmentsRef = useRef(0);
   const preparingRef = useRef(false);
+  const sendGenerationRef = useRef(0);
   const mountedRef = useRef(true);
   const pageNumberRef = useRef(pageNumber);
   pageNumberRef.current = pageNumber;
+  const sentViewsRef = useRef(new WeakMap<ChatAttachment, SentPdfView>());
   const documentAttachmentRef = useRef<{
     hash: string;
     attachment: ChatAttachment;
   } | null>(null);
-  const documentTextRef = useRef<{
-    pdf: PDFDocumentProxy;
-    text: Promise<string>;
-  } | null>(null);
-  const resizeRef = useRef<{ x: number; width: number } | null>(null);
   const session = useAgentSession("dashboard_terminal", {
+    concurrentInline: true,
     pageSlug: documentKey,
     title: `PDF · ${title}`,
   });
+  const inlineQuestions = useInlineAgentQuestions({
+    sessionId: session.sessionId, messages: session.messages,
+    ensureConversation: session.ensureConversation, pageSlug: documentKey,
+  });
+  const messages = inlineQuestions.messages;
   const intelligence = useAssistantIntelligence({ scope: `pdf:${documentKey}`, sessionId: session.sessionId, createdSessionId: session.createdSessionId, shared: true });
   const { models } = useAssistantModels({ eager: open });
   const busy =
@@ -129,12 +153,9 @@ export default function PdfAssistant({
   const disabled = loading || session.loadingSession;
   const viewingChatId = open || openAnswer ? session.sessionId : null;
 
-  useEffect(() => {
-    setActiveChatNotificationTarget(viewingChatId
-      ? { surface: "dashboard_terminal", chatId: viewingChatId }
-      : null);
-    return () => setActiveChatNotificationTarget(null);
-  }, [viewingChatId]);
+  useChatNotificationView(viewingChatId
+    ? { surface: "dashboard_terminal", chatId: viewingChatId }
+    : null);
 
   useChatDraft({
     surface: documentKey,
@@ -147,48 +168,70 @@ export default function PdfAssistant({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      attachmentDraftGenerationRef.current += 1;
     };
   }, [documentKey]);
 
-  // Re-anchor open answers after scroll/zoom, and dismiss them when their mark leaves the view.
+  function resetAttachmentDraft() {
+    attachmentDraftGenerationRef.current += 1;
+    pendingAttachmentsRef.current = 0;
+    setChatAttachments([]);
+    setAddingAttachments(false);
+    setAttachmentUploadError('');
+  }
+
+  async function addAttachmentFiles(files: File[]) {
+    if (!files.length || loading || session.loadingSession) return;
+    const generation = attachmentDraftGenerationRef.current;
+    if (pendingAttachmentsRef.current === 0) setAttachmentUploadError('');
+    pendingAttachmentsRef.current += 1;
+    setAddingAttachments(true);
+    setError(null);
+    try {
+      const result = await extractChatAttachments(files);
+      if (!mountedRef.current || generation !== attachmentDraftGenerationRef.current) return;
+      setChatAttachments(current => [...current, ...result.attachments]);
+      if (result.errors.length) setAttachmentUploadError(current => [current, ...result.errors].filter(Boolean).join(' · '));
+      setError(result.warnings.join(" · ") || null);
+    } catch (failure) {
+      if (!mountedRef.current || generation !== attachmentDraftGenerationRef.current) return;
+      const message = failure instanceof Error ? failure.message : "The files could not be attached. Try again.";
+      setAttachmentUploadError(current => [current, message].filter(Boolean).join(' · '));
+    } finally {
+      if (mountedRef.current && generation === attachmentDraftGenerationRef.current) {
+        pendingAttachmentsRef.current -= 1;
+        setAddingAttachments(pendingAttachmentsRef.current > 0);
+      }
+    }
+  }
+
+  // Answer cards resolve the live PDF marks through the shared selection UI.
+  // Scrolling dismisses only the transient palette, so answers return with
+  // their marks after scrolling, zooming or PDF.js page recycling.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    let frame = 0;
-    const update = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        setSelectionMenu(null);
-        setOpenAnswer((current) => {
-          if (!current) return null;
-          const highlight = highlights.find(
-            (item) => item.selection.id === current.id,
-          );
-          const anchor = highlight && pdfHighlightAnchor(container, highlight);
-          return anchor ? { id: current.id, anchor } : null;
-        });
-      });
-    };
-    container.addEventListener("scroll", update, { passive: true });
-    const observer = new ResizeObserver(update);
+    const closeMenu = () => setSelectionMenu(null);
+    container.addEventListener("scroll", closeMenu, { passive: true });
+    const observer = new ResizeObserver(closeMenu);
     observer.observe(container);
     return () => {
-      cancelAnimationFrame(frame);
       observer.disconnect();
-      container.removeEventListener("scroll", update);
+      container.removeEventListener("scroll", closeMenu);
     };
-  }, [containerRef, highlights]);
+  }, [containerRef]);
+
+  const updateComposerSelection = useCallback((action: SetStateAction<ChatTextSelectionReference | null>) => {
+    setComposerSelection(action);
+    if (typeof action !== "function" && action) setOpen(true);
+  }, []);
 
   const closeSelectionMenu = useCallback(() => setSelectionMenu(null), []);
-  const readSelection = useCallback((candidate: PdfSelectionCandidate) => {
-    setSelectionMenu(candidate);
-    setOpenAnswer(null);
-  }, []);
   const activeHighlight = highlights.find(
     (item) =>
       item.selection.id === selectionMenu?.highlightId ||
-      (item.selection.sourceMessageId === selectionMenu?.sourceMessageId &&
-        item.selection.quote === selectionMenu?.quote),
+      (selectionMenu && item.selection.sourceMessageId === selectionMenu.sourceMessageId &&
+        chatTextSelectionsOverlap(item.selection, selectionMenu)),
   );
 
   function saveHighlight(
@@ -212,6 +255,7 @@ export default function PdfAssistant({
       selection,
       color,
       rects: selectionMenu.rects,
+      coordinateSpace: selectionMenu.coordinateSpace,
     };
     if (noteOverride !== undefined) {
       const note = normalizeChatHighlightNote(noteOverride);
@@ -219,7 +263,9 @@ export default function PdfAssistant({
       else delete highlight.note;
     }
     setHighlights((current) => [
-      ...current.filter((item) => item.selection.id !== selection.id),
+      ...current.filter((item) => item.selection.id !== selection.id &&
+        (item.selection.sourceMessageId !== selection.sourceMessageId ||
+          !chatTextSelectionsOverlap(item.selection, selection))),
       highlight,
     ]);
     setSelectionMenu(null);
@@ -228,11 +274,18 @@ export default function PdfAssistant({
   }
 
   function beginQuestion(mode: "chat" | "inline") {
+    const anchor = selectionMenu?.anchor;
     const highlight = saveHighlight(
       activeHighlight?.color ?? DEFAULT_CHAT_HIGHLIGHT_COLOR,
       mode,
     );
     if (!highlight) return;
+    if (mode === "inline" && anchor) {
+      setOpenAnswer({ id: highlight.selection.id, anchor });
+      return;
+    }
+    if (mode === "chat") setHighlights(current => current.map(item =>
+      item.selection.id === highlight.selection.id ? { ...item, chatQuestion: true } : item));
     setComposerSelection(highlight.selection);
     setHistoryOpen(false);
     setOpen(true);
@@ -241,76 +294,110 @@ export default function PdfAssistant({
 
   const openHighlight = useCallback(
     (highlight: PdfHighlight, anchor: FloatingAnchorRect) => {
-      if (highlight.selection.mode === "inline" && highlight.conversationId) {
+      setSelectionMenu(null);
+      window.getSelection()?.removeAllRanges();
+      if (highlight.selection.mode === "inline") {
         setOpenAnswer({ id: highlight.selection.id, anchor });
-        if (highlight.conversationId !== session.sessionId && !busy)
-          void session.openSession(highlight.conversationId);
+      } else if (highlight.chatQuestion || highlight.conversationId) {
+        setOpenAnswer(null);
+        setHistoryOpen(false);
+        setOpen(true);
+        if (highlight.conversationId) {
+          setChatQuestionTarget({ chatId: highlight.conversationId, messageId: "", selectionId: highlight.selection.id, requestId: Date.now() });
+          if (highlight.conversationId !== session.sessionId) void session.openSession(highlight.conversationId);
+        } else {
+          setComposerSelection(highlight.selection);
+          requestAnimationFrame(() => textareaRef.current?.focus());
+        }
       } else {
         setSelectionMenu({
           ...highlight.selection,
           rects: highlight.rects,
+          coordinateSpace: highlight.coordinateSpace,
           highlightId: highlight.selection.id,
           anchor,
         });
       }
     },
-    [busy, session],
+    [session.sessionId, session.openSession],
   );
+
+  const readSelection = useCallback((candidate: PdfSelectionCandidate) => {
+    const answer = highlights.find(item => item.selection.mode === "inline" &&
+      item.selection.sourceMessageId === candidate.sourceMessageId &&
+      chatTextSelectionsOverlap(item.selection, candidate));
+    if (answer) {
+      openHighlight(answer, candidate.anchor);
+      return;
+    }
+    setSelectionMenu(candidate);
+    setOpenAnswer(null);
+  }, [highlights, openHighlight]);
 
   async function prepareContext(
     question: string,
+    currentPage: number,
+    viewAtSend: SentPdfView,
     signal: AbortSignal,
+    reportProgress: (label: string) => void,
     selection?: ChatTextSelectionReference,
   ): Promise<ChatAttachment[]> {
     signal.throwIfAborted();
+    const step = <T,>(label: string, run: (signal: AbortSignal) => Promise<T>, timeoutMs?: number) => {
+      signal.throwIfAborted();
+      reportProgress(label);
+      return runPdfPreparationStep({ signal, label, run, timeoutMs });
+    };
     const pdf = pdfDocumentRef.current;
     const container = containerRef.current;
     if (!pdf || !container)
       throw new Error("The PDF is still loading. Try again when it is ready.");
-    let currentPage = pageNumberRef.current;
-    let pageText = await pdfPageText(pdf, currentPage);
-    const response = await fetch("/api/pdf-assistant/view-decision", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: AbortSignal.any([signal, AbortSignal.timeout(35_000)]),
-      body: JSON.stringify({
-        question,
-        title,
-        pageNumber: currentPage,
-        pageText: pageText.slice(0, 16_000),
-        selectedText: selection?.quote,
-        model: intelligence.model,
-        history: session.messages.slice(-6).map((message) => ({
-          role: message.role,
-          content: message.content.slice(0, 2_000),
-        })),
+    const pageText = await step("Reading the current PDF page", () => pdfPageText(pdf, currentPage));
+    const decision = await step("Choosing PDF context", (stepSignal) =>
+      requestPdfViewDecision({
+        signal: stepSignal,
+        context: {
+          question,
+          title,
+          pageNumber: currentPage,
+          pageText: pageText.slice(0, 16_000),
+          sourceUrl,
+          selectedText: selection?.quote,
+          model: intelligence.model,
+          history: messages.slice(-6).map((message) => ({
+            role: message.role,
+            content: message.content.slice(0, 2_000),
+          })),
+        },
       }),
-    });
-    const decision = await response.json();
-    if (!response.ok || typeof decision?.captureView !== "boolean")
-      throw new Error(
-        decision?.error ||
-          "The assistant could not prepare the PDF context. Try again.",
-      );
+    );
     signal.throwIfAborted();
-    // Only take pixels when the assistant requests them. Read the page again if
-    // the user navigated while the assistant was choosing its context.
-    currentPage = pageNumberRef.current;
+    // The decision can take time. Only attach the frozen send-time view if
+    // requested; scrolling during preparation must not change this turn.
     const snapshot = decision.captureView
-      ? await capturePdfViewport(container)
+      ? await step("Preparing the sent PDF view", async () => {
+          const result = await viewAtSend;
+          if (!result.snapshot) throw result.error;
+          return result.snapshot;
+        })
       : null;
-    pageText = await pdfPageText(pdf, currentPage);
-    const bytes = await getBytes();
+    const bytes = await step("Preparing the PDF file", () => getBytes());
     signal.throwIfAborted();
     const ownedBytes = new Uint8Array(bytes);
-    const digest = await crypto.subtle.digest("SHA-256", ownedBytes);
+    const digest = await step("Checking the PDF file", () => crypto.subtle.digest("SHA-256", ownedBytes));
     const hash = Array.from(new Uint8Array(digest), (byte) =>
       byte.toString(16).padStart(2, "0"),
     ).join("");
-    if (documentAttachmentRef.current?.hash !== hash) {
-      if (documentTextRef.current?.pdf !== pdf)
-        documentTextRef.current = { pdf, text: pdfDocumentExcerpt(pdf) };
-      const [attachment, text] = await Promise.all([
+    const readWholeDocument = decision.readWholeDocument === true;
+    const ocrPages = readWholeDocument ? undefined : snapshot ? [] : [currentPage];
+    const readingKey = `${hash}:${readWholeDocument ? "all" : snapshot ? "view" : currentPage}`;
+    let documentAttachment = documentAttachmentRef.current?.hash === readingKey
+      ? documentAttachmentRef.current.attachment : undefined;
+    if (!documentAttachment) {
+      // Keep every byte and all embedded text, but do not make a page question
+      // wait for OCR of an entire scanned book. A requested screenshot supplies
+      // the visible scan directly; whole-document requests still opt into OCR.
+      const attachment = await step("Uploading and reading the PDF", (stepSignal) =>
         attachDocumentFile(
           new File(
             [ownedBytes],
@@ -318,12 +405,16 @@ export default function PdfAssistant({
             { type: "application/pdf" },
           ),
           "pdf",
-          signal,
+          stepSignal,
+          false,
+          ocrPages,
+          sourceUrl,
         ),
-        documentTextRef.current.text,
-      ]);
-      if (attachment.type === "document" && !attachment.text.trim()) attachment.text = text;
-      documentAttachmentRef.current = { hash, attachment };
+        readWholeDocument ? Math.max(180_000, pdf.numPages * 95_000) : 180_000,
+      );
+      signal.throwIfAborted();
+      documentAttachmentRef.current = { hash: readingKey, attachment };
+      documentAttachment = attachment;
     }
     signal.throwIfAborted();
     return [
@@ -336,9 +427,36 @@ export default function PdfAssistant({
         text: pageText,
         selection,
       }),
-      documentAttachmentRef.current.attachment,
+      documentAttachment,
       ...(snapshot ? [snapshot.attachment] : []),
     ].map((attachment) => ({ ...attachment, context: "pdf" as const }));
+  }
+
+  function captureSentPage(selection?: ChatTextSelectionReference) {
+    const attachment = pdfViewContext({
+      title, pageCount, pageNumber: pageNumberRef.current,
+      pages: [pageNumberRef.current], text: "", selection,
+    });
+    // Copy visible pixels before any await. Errors only matter if requested.
+    const view: SentPdfView = containerRef.current
+      ? capturePdfViewport(containerRef.current).then(
+          snapshot => ({ snapshot }), error => ({ error }),
+        )
+      : Promise.resolve({ error: new Error("The PDF is still loading. Try again when it is ready.") });
+    sentViewsRef.current.set(attachment, view);
+    return attachment;
+  }
+
+  function sentContext(attachments: readonly ChatAttachment[] = [], selection?: ChatTextSelectionReference) {
+    const attachment = attachments.find(item => sentViewsRef.current.has(item)) ?? captureSentPage(selection);
+    return { attachment, page: attachment.pdfPage!.pageNumber, view: sentViewsRef.current.get(attachment)! };
+  }
+
+  async function steer(question: string, attachments: readonly ChatAttachment[], selection?: ChatTextSelectionReference) {
+    question = question.trim() || attachmentOnlyMessageText(attachments.filter(item => item.context !== "pdf"));
+    const sent = sentContext(attachments, selection);
+    const context = await prepareContext(question, sent.page, sent.view, new AbortController().signal, () => {}, selection);
+    return session.steer(question, [...context, ...attachments.filter(item => item.context !== "pdf")], selection);
   }
 
   async function send(
@@ -346,43 +464,61 @@ export default function PdfAssistant({
     selection?: ChatTextSelectionReference,
     options?: AgentSendOptions,
   ) {
+    const inline = selection?.mode === "inline";
+    const userAttachments = options?.attachments?.filter(item => item.context !== "pdf") ?? [];
+    question = question.trim() || attachmentOnlyMessageText(userAttachments);
     // Clarification answers belong to the waiting turn and need no new attachments.
-    if (session.pendingClarification) {
+    if (!selection && !userAttachments.length && session.pendingClarification) {
       await session.respondToClarification(question);
       setInput("");
       return;
     }
     if (
       !question.trim() ||
-      busy ||
-      preparingRef.current ||
+      (!selection && (busy || preparingRef.current)) ||
       session.loadingSession ||
+      pendingAttachmentsRef.current > 0 ||
       loading
     )
       return;
-    preparingRef.current = true;
-    setPreparing(true);
-    setError(null);
+    const sent = sentContext(options?.attachments, selection);
+    const draftAttachments = userAttachments.filter(item => chatAttachments.includes(item));
+    if (!inline && selection && (busy || preparingRef.current)) await session.abort();
+    const generation = inline ? sendGenerationRef.current : ++sendGenerationRef.current;
+    if (!inline) {
+      preparingRef.current = true;
+      setPreparing(true);
+      setPreparationLabel("Preparing PDF context");
+      setError(null);
+    }
     try {
-      await session.send(question, {
+      const sendOptions: AgentSendOptions = {
         model: intelligence.model,
         reasoningEffort: intelligence.reasoningEffort,
         ...options,
+        attachments: [sent.attachment, ...userAttachments],
         prepareAttachments: async (signal) => {
           try {
-            const context = await prepareContext(question, signal, selection);
-            return [...context, ...(options?.attachments ?? [])];
-          } catch (failure) {
-            documentTextRef.current = null;
-            throw failure;
+            const context = await prepareContext(question, sent.page, sent.view, signal, (label) => {
+              if (!inline && mountedRef.current && generation === sendGenerationRef.current) setPreparationLabel(label);
+            }, selection);
+            return [...context, ...userAttachments];
           } finally {
-            if (mountedRef.current) setPreparing(false);
+            if (!inline && mountedRef.current && generation === sendGenerationRef.current) {
+              setPreparing(false);
+              setPreparationLabel(undefined);
+            }
           }
         },
         textSelection: selection,
         onTurnStarted: () => {
-          setInput("");
-          setComposerSelection(null);
+          setChatAttachments(current => current.filter(item => !draftAttachments.includes(item)));
+          if (selection?.mode === "inline") {
+            setComposerSelection(current => current?.id === selection.id ? null : current);
+          } else {
+            setInput("");
+            setComposerSelection(null);
+          }
           if (
             selection?.mode === "inline" &&
             selection.sourceMessageId.startsWith(`${documentKey}:`)
@@ -407,20 +543,27 @@ export default function PdfAssistant({
               ),
             );
         },
-      });
+      };
+      if (inline && selection) await inlineQuestions.send(question, selection, sendOptions);
+      else await session.send(question, sendOptions);
     } catch (failure) {
-      if (!mountedRef.current) return;
-      documentTextRef.current = null;
+      if (!mountedRef.current || generation !== sendGenerationRef.current) return;
       setError(
         failure instanceof Error
           ? failure.message
           : "The PDF context could not be prepared. Please try again.",
       );
       setInput((current) => current || question);
+      setChatAttachments(current => [...draftAttachments, ...current.filter(item => !draftAttachments.includes(item))]);
       setComposerSelection(selection ?? null);
     } finally {
-      preparingRef.current = false;
-      if (mountedRef.current) setPreparing(false);
+      if (!inline && generation === sendGenerationRef.current) {
+        preparingRef.current = false;
+        if (mountedRef.current) {
+          setPreparing(false);
+          setPreparationLabel(undefined);
+        }
+      }
     }
   }
 
@@ -446,32 +589,31 @@ export default function PdfAssistant({
     }
   }
 
-  const inlineThread = useMemo(() => {
-    if (!openAnswer) return null;
-    const messages = session.messages.filter(
-      (message) => message.textSelection?.id === openAnswer.id,
-    );
-    const question = messages
-      .filter((message) => message.role === "user")
-      .at(-1);
-    const answer = messages
-      .filter((message) => message.role === "assistant")
-      .at(-1);
-    return {
-      question,
-      answer,
-      pending:
-        busy &&
-        Boolean(messages.length) &&
-        session.messages.at(-1)?.textSelection?.id === openAnswer.id,
-    };
-  }, [busy, openAnswer, session.messages]);
   const answerHighlight = highlights.find(
     (item) => item.selection.id === openAnswer?.id,
   );
+  const answerConversationId = answerHighlight?.conversationId;
+  const openSession = session.openSession;
+  useEffect(() => {
+    if (!answerConversationId || answerConversationId === session.sessionId || busy) return;
+    void openSession(answerConversationId);
+  }, [answerConversationId, busy, openSession, session.sessionId]);
 
   return (
     <>
+      <input
+        ref={attachmentInputRef}
+        type="file"
+        multiple
+        accept={CHAT_ATTACHMENT_ACCEPT}
+        className="hidden"
+        aria-label="Attach files to PDF chat"
+        onChange={event => {
+          const files = Array.from(event.target.files ?? []);
+          event.target.value = "";
+          void addAttachmentFiles(files);
+        }}
+      />
       <TextHighlightSaveStatus error={highlightSaveError} className="absolute bottom-20 left-5 z-30 max-w-md rounded-md bg-gray-950 p-3 text-sm text-gray-300" />
       <PdfSelectionLayer
         containerRef={containerRef}
@@ -498,6 +640,7 @@ export default function PdfAssistant({
       )}
       <aside
         id="pdf-assistant-panel"
+        data-pdf-assistant-panel
         aria-label="PDF assistant"
         style={
           open
@@ -510,65 +653,11 @@ export default function PdfAssistant({
             : "hidden"
         }
       >
-        <button
-          type="button"
-          aria-label="Resize PDF assistant"
-          role="separator"
-          aria-orientation="vertical"
-          aria-valuenow={panelWidth}
-          aria-valuemin={340}
-          aria-valuemax={720}
-          className="absolute inset-y-0 -left-1 z-10 hidden w-2 cursor-col-resize touch-none bg-transparent hover:bg-[var(--selection-highlight-blue)] focus-visible:bg-[var(--selection-highlight-blue)] lg:block"
-          onPointerDown={(event) => {
-            resizeRef.current = { x: event.clientX, width: panelWidth };
-            event.currentTarget.setPointerCapture(event.pointerId);
-          }}
-          onPointerMove={(event) => {
-            if (resizeRef.current)
-              setPanelWidth(
-                Math.max(
-                  340,
-                  Math.min(
-                    720,
-                    window.innerWidth * 0.65,
-                    resizeRef.current.width +
-                      resizeRef.current.x -
-                      event.clientX,
-                  ),
-                ),
-              );
-          }}
-          onPointerUp={(event) => {
-            resizeRef.current = null;
-            if (event.currentTarget.hasPointerCapture(event.pointerId))
-              event.currentTarget.releasePointerCapture(event.pointerId);
-          }}
-          onLostPointerCapture={() => {
-            resizeRef.current = null;
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-              event.preventDefault();
-              setPanelWidth((width) =>
-                Math.max(
-                  340,
-                  Math.min(720, width + (event.key === "ArrowLeft" ? 20 : -20)),
-                ),
-              );
-            }
-          }}
-        />
+        {open && <PdfAssistantResizeHandle width={panelWidth} onResize={setPanelWidth} />}
         <div className="flex items-center gap-2 border-b border-[var(--line)] px-4 py-3">
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-[var(--ink-heading)]">
               Assistant
-            </p>
-            <p
-              className="truncate text-xs text-[var(--ink-muted)]"
-              title={title}
-            >
-              {title} ·{" "}
-              {pageCount ? `Page ${pageNumber} of ${pageCount}` : "PDF"}
             </p>
           </div>
           <button
@@ -576,12 +665,13 @@ export default function PdfAssistant({
             onClick={() => {
               session.reset();
               setInput("");
+              resetAttachmentDraft();
               setComposerSelection(null);
               setOpenAnswer(null);
               setError(null);
               setHistoryOpen(false);
             }}
-            disabled={busy}
+            disabled={busy || inlineQuestions.busy}
             className="neu-button rounded-md border border-[var(--line)] p-1.5 disabled:opacity-40"
             title="New chat"
             aria-label="New PDF chat"
@@ -626,10 +716,11 @@ export default function PdfAssistant({
                 <button
                   key={String(item.id)}
                   type="button"
-                  disabled={busy}
+                  disabled={busy || inlineQuestions.busy}
                   className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs hover:bg-[var(--selection-highlight-blue)] disabled:opacity-40"
                   onClick={() => {
                     void session.openSession(String(item.id));
+                    resetAttachmentDraft();
                     setHistoryOpen(false);
                     setComposerSelection(null);
                     setOpenAnswer(null);
@@ -642,13 +733,17 @@ export default function PdfAssistant({
             )}
           </div>
         )}
+        <StarredPdfSourceContext.Provider value={sourceUrl}>
         <AgentRuntimePanel
           compact
           surface="dashboard_terminal"
           sessionId={session.sessionId}
+          starredMessageTarget={chatQuestionTarget}
           createdSessionId={session.createdSessionId}
-          messages={session.messages}
+          messages={messages}
+          appendExternalAgentTurn={session.appendExternalAgentTurn}
           connection={session.connection}
+          preparationLabel={preparationLabel}
           runState={session.runState}
           steerError={session.steerError}
           error={session.error}
@@ -657,15 +752,47 @@ export default function PdfAssistant({
           activities={session.activities}
           input={input}
           onInputChange={setInput}
+          onAddDocuments={() => attachmentInputRef.current?.click()}
+          onPasteFiles={addAttachmentFiles}
+          isAddingDocuments={addingAttachments}
+          attachmentUploadError={attachmentUploadError}
+          attachments={chatAttachments}
+          onRemoveAttachment={index => setChatAttachments(current => current.filter((_, position) => position !== index))}
+          onRestoreQueuedAttachments={attachments => setChatAttachments(attachments.filter(item => item.context !== "pdf"))}
           composerTextareaRef={textareaRef}
-          onSubmit={() => void send(input, composerSelection ?? undefined)}
-          onAskSelection={(question, selection) => send(question, selection)}
-          onSteer={(text, attachments, selection) => session.steer(text, attachments, selection)}
+          selectionDraft={{
+            value: composerSelection,
+            onChange: updateComposerSelection,
+            onCancel: selection => {
+              setHighlights(current => current.filter(item =>
+                item.selection.id !== selection.id || item.conversationId ||
+                messages.some(message => message.textSelection?.id === selection.id)));
+            },
+          }}
+          sourceAnswer={openAnswer && answerHighlight ? {
+            selection: answerHighlight.selection,
+            anchor: openAnswer.anchor,
+            loading: session.loadingSession || Boolean(answerConversationId && answerConversationId !== session.sessionId),
+            error: answerConversationId === session.sessionId &&
+              !messages.some(message => message.textSelection?.id === openAnswer.id)
+              ? session.error : null,
+            onClose: () => setOpenAnswer(null),
+            onDelete: () => {
+              setHighlights(current => current.filter(item => item.selection.id !== openAnswer.id));
+              setComposerSelection(current => current?.id === openAnswer.id ? null : current);
+              setOpenAnswer(null);
+            },
+          } : undefined}
+          onSubmit={voice => void send(input, composerSelection ?? undefined, { ...voice, attachments: [...chatAttachments] })}
+          onAskSelection={(question, selection, attachments, voice) => send(question, selection, { ...voice, attachments: [...(attachments ?? chatAttachments)] })}
+          onSteer={steer}
+          captureQueuedAttachments={() => [captureSentPage(composerSelection ?? undefined)]}
           steerableRun={Boolean(session.activeRunId)}
           onSendQueued={(question, attachments, selection) =>
             send(question, selection, { attachments: [...attachments] })
           }
           onAbort={() => void session.abort()}
+          onAbortInline={inlineQuestions.stop}
           onPermissionDecision={(decision) =>
             void session.respondToPermission(decision)
           }
@@ -706,12 +833,12 @@ export default function PdfAssistant({
                   className="mb-2 rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] px-3 py-2 text-xs text-[var(--ink)]"
                 >
                   <p>{error}</p>
-                  {input.trim() && (
+                  {(input.trim() || chatAttachments.length > 0) && (
                     <button
                       type="button"
-                      disabled={busy || loading}
+                      disabled={busy || disabled}
                       onClick={() =>
-                        void send(input, composerSelection ?? undefined)
+                        void send(input, composerSelection ?? undefined, { attachments: [...chatAttachments] })
                       }
                       className="neu-button mt-2 rounded-md border border-[var(--line)] px-2 py-1 font-medium disabled:opacity-40"
                     >
@@ -720,12 +847,15 @@ export default function PdfAssistant({
                   )}
                 </div>
               )}
-              {composerSelection && (
-                <SelectionComposerContext
-                  selection={composerSelection}
-                  onCancel={() => setComposerSelection(null)}
-                />
-              )}
+              {!loading && pageCount > 0 ? (
+                <div
+                  className="mb-1 flex min-w-0 items-center gap-1 px-3 text-[11px] leading-5 text-[#6B7971]"
+                  title={`${title} — Page ${pageNumber} of ${pageCount}`}
+                >
+                  <span className="shrink-0">Viewing</span>
+                  <span>page {pageNumber}</span>
+                </div>
+              ) : null}
             </>
           }
           emptyState={
@@ -761,6 +891,7 @@ export default function PdfAssistant({
             </div>
           }
         />
+        </StarredPdfSourceContext.Provider>
       </aside>
       {selectionMenu && (
         <ChatSelectionMenu
@@ -789,36 +920,6 @@ export default function PdfAssistant({
           onAskInChat={() => beginQuestion("chat")}
           onAskHere={() => beginQuestion("inline")}
           onClose={closeSelectionMenu}
-        />
-      )}
-      {openAnswer && answerHighlight && (
-        <InlineSelectionAnswerPopover
-          anchor={openAnswer.anchor}
-          notificationSelectionId={answerHighlight.selection.id}
-          question={inlineThread?.question?.content}
-          answer={
-            inlineThread?.answer?.content ||
-            (session.loadingSession ? "Loading saved answer…" : undefined)
-          }
-          pending={inlineThread?.pending ?? false}
-          usage={inlineThread?.answer?.usage}
-          responseDurationMs={inlineThread?.answer?.responseDurationMs}
-          responseCompletedAt={inlineThread?.answer?.responseCompletedAt}
-          verification={inlineThread?.answer?.verification}
-          startedAt={inlineThread?.answer?.createdAt}
-          onClose={() => setOpenAnswer(null)}
-          onDelete={() => {
-            setHighlights((current) =>
-              current.filter((item) => item.selection.id !== openAnswer.id),
-            );
-            setOpenAnswer(null);
-          }}
-          onStop={busy ? () => void session.abort() : undefined}
-          onAskAgain={
-            !busy
-              ? (question) => void send(question, answerHighlight.selection)
-              : undefined
-          }
         />
       )}
     </>

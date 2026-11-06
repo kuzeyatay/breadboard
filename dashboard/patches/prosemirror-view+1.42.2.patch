@@ -1,0 +1,46 @@
+diff --git a/node_modules/prosemirror-view/dist/index.cjs b/node_modules/prosemirror-view/dist/index.cjs
+--- a/node_modules/prosemirror-view/dist/index.cjs
++++ b/node_modules/prosemirror-view/dist/index.cjs
+@@ -2242,9 +2242,9 @@ function selectionToDOM(view) {
+       if (resetEditableTo) resetEditable(resetEditableTo);
+     }
+     if (sel.visible) {
+-      view.dom.classList.remove("ProseMirror-hideselection");
++      if (view.dom.classList.contains("ProseMirror-hideselection")) view.dom.classList.remove("ProseMirror-hideselection");
+     } else {
+-      view.dom.classList.add("ProseMirror-hideselection");
++      if (!view.dom.classList.contains("ProseMirror-hideselection")) view.dom.classList.add("ProseMirror-hideselection");
+       if ("onselectionchange" in document) removeClassOnSelectionChange(view);
+     }
+   }
+diff --git a/node_modules/prosemirror-view/dist/index.js b/node_modules/prosemirror-view/dist/index.js
+--- a/node_modules/prosemirror-view/dist/index.js
++++ b/node_modules/prosemirror-view/dist/index.js
+@@ -2298,10 +2298,10 @@ function selectionToDOM(view, force = false) {
+                 resetEditable(resetEditableTo);
+         }
+         if (sel.visible) {
+-            view.dom.classList.remove("ProseMirror-hideselection");
++            if (view.dom.classList.contains("ProseMirror-hideselection")) view.dom.classList.remove("ProseMirror-hideselection");
+         }
+         else {
+-            view.dom.classList.add("ProseMirror-hideselection");
++            if (!view.dom.classList.contains("ProseMirror-hideselection")) view.dom.classList.add("ProseMirror-hideselection");
+             if ("onselectionchange" in document)
+                 removeClassOnSelectionChange(view);
+         }
+diff --git a/node_modules/prosemirror-view/src/selection.ts b/node_modules/prosemirror-view/src/selection.ts
+--- a/node_modules/prosemirror-view/src/selection.ts
++++ b/node_modules/prosemirror-view/src/selection.ts
+@@ -90,9 +90,9 @@ export function selectionToDOM(view: EditorView, force = false) {
+       if (resetEditableTo) resetEditable(resetEditableTo)
+     }
+     if (sel.visible) {
+-      view.dom.classList.remove("ProseMirror-hideselection")
++      if (view.dom.classList.contains("ProseMirror-hideselection")) view.dom.classList.remove("ProseMirror-hideselection")
+     } else {
+-      view.dom.classList.add("ProseMirror-hideselection")
++      if (!view.dom.classList.contains("ProseMirror-hideselection")) view.dom.classList.add("ProseMirror-hideselection")
+       if ("onselectionchange" in document) removeClassOnSelectionChange(view)
+     }
+   }

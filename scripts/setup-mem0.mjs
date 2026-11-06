@@ -143,10 +143,11 @@ function engineReady() {
 
 assertPinnedSource();
 
-if (onlyIfNeeded && engineReady()) {
+if ((onlyIfNeeded || process.argv.includes("--verify-only")) && engineReady()) {
   console.log("mem0 engine matches the reviewed immutable build; nothing to do.");
   process.exit(0);
 }
+if (process.argv.includes("--verify-only")) throw new Error("Isolated repair requires the existing verified mem0 build; automatic dependency installation is disabled.");
 
 function run(command, args, cwd) {
   const result = spawnSync(command, args, {

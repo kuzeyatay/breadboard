@@ -4,7 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 import Database from "better-sqlite3";
 import { createConversationBranch, cloneMessages, applyBranchVariant, messageBranchId, retryTargetUserMessageIndex, restoreBranchAnchor } from "../src/app/components/hermes/conversation-branches.ts";
-import { ensureGardenResponseBranches, normalizeGardenResponseBranches, readGardenResponseBranches, writeGardenResponseBranches } from "../src/lib/conversations/garden-response-branches.ts";
+import { ensureGardenResponseBranches, normalizeGardenResponseBranches, projectGardenResponseBranches, readGardenResponseBranches, writeGardenResponseBranches } from "../src/lib/conversations/garden-response-branches.ts";
 
 const tree = ts.createSourceFile("workspace.tsx", fs.readFileSync(new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const functions = new Map();
@@ -23,7 +23,7 @@ function fixture() {
     messages: original, branchGroups: {}, documents: [], crypto,
     retryBranchRef: { current: null }, createConversationBranch, cloneMessages, applyBranchVariant, messageBranchId, retryTargetUserMessageIndex, restoreBranchAnchor,
     reusableChatAttachments: value => value ?? [], normalizeFocusedDocumentNames: value => value ?? [], normalizeFocusedDocumentSlugs: value => value ?? [],
-    assistantExternalAgentRunId: () => null,
+    assistantExternalAgentRunId: () => null, warnAboutUnreusableAttachments: () => {},
     handleSubmit: (...args) => calls.sent.push({ args, retry: scope.retryBranchRef.current }),
     setBranchGroups: updater => { scope.branchGroups = updater(scope.branchGroups); },
     updateChatMessages: (_id, messages) => { scope.messages = messages; calls.messages = messages; },
@@ -90,6 +90,40 @@ test("invalid branch indices and malformed transcripts cannot reach persisted na
   assert.equal(normalizeGardenResponseBranches({ original: { ...group, variants: [original, [null]] } }, normal), null);
   assert.equal(normalizeGardenResponseBranches({ original: { ...group, id: "wrong" } }, normal), null);
   assert.equal(normalizeGardenResponseBranches({ original: group }, normal).original.variants[0][1].content, "Original answer");
+});
+
+test("selected-text Retry carries the original quote and source anchor into dispatch", async () => {
+  const f = fixture();
+  try {
+    const textSelection = { id: "highlight", mode: "chat", sourceMessageId: "msg_source", start: 10, end: 24, quote: "spinning wheel" };
+    f.scope.messages = [{ ...original[0], content: "/interactive-visualizer-in-chat", textSelection }, original[1]];
+    await f.invoke("handleRetryAssistant", 1);
+    assert.deepEqual(f.calls.sent[0].args[5].textSelection, textSelection);
+    assert.deepEqual(f.calls.sent[0].args[1], [], "retry history stops before the original question");
+    f.scope.branchGroups = readGardenResponseBranches(f.db, 1);
+    f.scope.messages = [
+      { ...original[0], content: '/interactive-visualizer-in-chat', clientMessageId: 'old-broken-retry', branchGroupId: 'original' },
+      original[1],
+    ];
+    await f.invoke('handleRetryAssistant', 1);
+    assert.deepEqual(f.calls.sent[1].args[5].textSelection, textSelection,
+      'an older retry that lost the quote recovers it from its original branch');
+  } finally { f.db.close(); }
+});
+
+test("reloading after a retry checkpoint displays only its active attempt, without deleting saved history", () => {
+  const first = [
+    { role: "user", clientMessageId: "before", content: "Before" },
+    { role: "assistant", clientMessageId: "before", content: "Before answer" },
+    ...original,
+  ];
+  const retry = original.map((message, index) => ({ ...message, id: `retry-${index}`, clientMessageId: "retry", branchGroupId: "original", content: index ? "" : message.content }));
+  const rows = [...first, ...retry];
+  const projected = projectGardenResponseBranches(rows);
+  assert.deepEqual(projected, [...first.slice(0, 2), ...retry]);
+  assert.equal(rows.length, 6, "projection preserves every durable attempt");
+  const next = retry.map(message => ({ ...message, clientMessageId: "retry-again" }));
+  assert.deepEqual(projectGardenResponseBranches([...rows, ...next]), [...first.slice(0, 2), ...next]);
 });
 
 test("a recovered older retry preserves follow-ups written after its saved snapshot", () => {

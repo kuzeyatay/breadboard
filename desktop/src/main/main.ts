@@ -2,6 +2,9 @@ import * as fs from "node:fs";
 import { app } from "electron";
 import { AppLifecycle } from "./app-lifecycle";
 import { parseStartupOptions } from "./startup-options";
+import { registerAppAssetScheme } from "./app-assets";
+
+registerAppAssetScheme();
 
 const options = parseStartupOptions(process.argv);
 if (options.userDataDir) app.setPath("userData", options.userDataDir);

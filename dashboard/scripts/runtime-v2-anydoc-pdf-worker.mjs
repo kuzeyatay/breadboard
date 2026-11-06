@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { convertWithAnydoc } from "../src/lib/anydoc/convert.ts";
+import { registerSourceRepairWorkerImports } from "./source-repair-worker-imports.mjs";
 
 const MAX_PDF_BYTES = 2 * 1024 * 1024 * 1024;
 
@@ -10,6 +10,8 @@ function fail(message) {
 }
 
 async function main() {
+  registerSourceRepairWorkerImports();
+  const { convertWithAnydoc } = await import("../src/lib/anydoc/convert.ts");
   const [sourceFilePath] = process.argv.slice(2);
   if (!sourceFilePath || !path.isAbsolute(sourceFilePath)) {
     fail("The isolated anydoc converter requires one absolute PDF path.");

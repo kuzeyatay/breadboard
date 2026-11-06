@@ -45,7 +45,7 @@ app.whenReady().then(async () => {
     const readiness = manager.waitForDashboardPaint().then(() => { ready = true; });
     await sleep(300);
     assert.equal(ready, false, "even a launch without a saved session waits for widgets");
-    await dashboard.webContents.executeJavaScript("window.finishWidgets()");
+    await manager.page(dashboard).executeJavaScript("window.finishWidgets()");
     await readiness;
     const revealed = [];
     let expectedBounds;
@@ -59,9 +59,11 @@ app.whenReady().then(async () => {
       if (value === 1) {
         expectedBounds = startup.getBounds();
         expectedSize = startup.getContentSize();
+        const viewport = manager.tabs.baseViewport(dashboard);
         revealed.push({
           native: dashboard.getContentSize(),
-          painted: frames.get(dashboard.webContents.id),
+          viewport: [viewport.width, viewport.height],
+          painted: frames.get(manager.page(dashboard).id),
         });
       }
       opacity(value);
@@ -84,7 +86,7 @@ app.whenReady().then(async () => {
       "the revealed window must intersect a connected display");
     }
     assert.equal(revealed.length, 1, mode);
-    assert.deepEqual(revealed[0].painted, revealed[0].native, mode + ": the first visible frame must already fill the window");
+    assert.deepEqual(revealed[0].painted, revealed[0].viewport, mode + ": the first visible frame must already fill the page viewport beneath the native tab bar");
     assert.deepEqual(visibleResizes, [], mode + ": geometry must settle before the window becomes visible");
     // Windows rounds physical pixels to DIPs at fractional display scales.
     for (const [index, size] of expectedSize.entries()) {

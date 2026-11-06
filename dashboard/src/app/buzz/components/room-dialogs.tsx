@@ -280,8 +280,7 @@ function NewCommunityForm({
       <DialogHeader>
         <DialogTitle>New community</DialogTitle>
         <DialogDescription>
-          A community is a Breadboard organization — the group its rooms and
-          their people belong to. Its rooms open as soon as it exists.
+          A community brings people, agents, and their rooms together.
         </DialogDescription>
       </DialogHeader>
 

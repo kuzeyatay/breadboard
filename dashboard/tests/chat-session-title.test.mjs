@@ -36,7 +36,7 @@ test('title generation sends only the first prompt to a plain LLM', async () => 
     content: CONVERSATION_TITLE_INSTRUCTION,
   });
   assert.equal(capturedBody.messages[1].role, 'user');
-  assert.match(capturedBody.messages[1].content, /describe it; do not answer it/i);
+  assert.match(capturedBody.messages[1].content, /name its main topic; do not answer it/i);
   assert.match(
     capturedBody.messages[1].content,
     /Can you explain surrogate gradients for spiking neural networks\?/,
@@ -48,13 +48,21 @@ test('title generation sends only the first prompt to a plain LLM', async () => 
   assert.equal('tool_choice' in capturedBody, false);
 });
 
-test('generated titles are cleaned and capped at four words', () => {
+test('generated titles accept natural topic phrases without cutting or padding', () => {
   assert.equal(
     normalizeGeneratedConversationTitle('Title: "Fix Chat Renaming Pipeline."'),
     'Fix Chat Renaming Pipeline',
   );
-  assert.equal(normalizeGeneratedConversationTitle('One Two Three Four Five Six'), null);
-  assert.equal(normalizeGeneratedConversationTitle('Too short'), null);
+  assert.equal(
+    normalizeGeneratedConversationTitle('RLC circuits and Laplace transforms'),
+    'RLC circuits and Laplace transforms',
+  );
+  assert.equal(normalizeGeneratedConversationTitle('MOSFET operation'), 'MOSFET operation');
+  assert.equal(normalizeGeneratedConversationTitle('Photosynthesis'), 'Photosynthesis');
+  assert.equal(normalizeGeneratedConversationTitle('One Two Three Four Five Six Seven Eight Nine'), null);
+  assert.equal(normalizeGeneratedConversationTitle(`${'x'.repeat(76)} circuits`), null);
+  assert.equal(normalizeGeneratedConversationTitle('   '), null);
+  assert.equal(normalizeGeneratedConversationTitle('---'), null);
   assert.equal(normalizeGeneratedConversationTitle("I'll inspect the chat-renaming"), null);
   assert.equal(
     normalizeGeneratedConversationTitle('<think>hidden</think>\nGarden Memory Privacy Rules'),
@@ -67,21 +75,62 @@ test('a local title keeps chats named when the title model is unavailable', asyn
     '/agents:deep-research why is robotic considered the future, what would its consequences be to the world economy';
   assert.equal(
     fallbackConversationTitle(prompt),
-    'Robotic Future World Economy',
+    'Why is robotic considered the future',
   );
   assert.equal(
     await generateConversationTitle({
       firstPrompt: prompt,
       fetcher: async () => new Response('unavailable', { status: 502 }),
     }),
-    'Robotic Future World Economy',
+    'Why is robotic considered the future',
   );
   assert.equal(
     fallbackConversationTitle(
       '/interactive-visualizer-in-chat of coulomb force and charge',
     ),
-    'Coulomb Force Charge',
+    'Coulomb force and charge',
   );
+});
+
+const rlcLessonPrompt = 'write a new lesson introducing rlc circuits in detail and then introduce laplace connectiong to first order tranmsinens (rlc circuits), like how diff eq are connected to laplace in the signals and systems garden, then introduce transfer functions, s somain, poles and zeroes transfer functions , use the explanations in the signals and systems gardens full notes whenever you can';
+
+test('the reported RLC lesson keeps its subject when title generation fails', async () => {
+  assert.equal(fallbackConversationTitle(rlcLessonPrompt), 'Rlc circuits');
+  for (const fetcher of [
+    async () => new Response('unavailable', { status: 502 }),
+    async () => { throw new Error('network unavailable'); },
+    async () => new Response('not JSON'),
+    async () => new Response(JSON.stringify({ choices: [{ message: { content: '' } }] })),
+    async () => new Response(JSON.stringify({ choices: [{ message: { content: 'Here is a lesson introducing RLC circuits in detail' } }] })),
+    async (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(new Error('timed out')), { once: true });
+    }),
+  ]) {
+    assert.equal(await generateConversationTitle({
+      firstPrompt: rlcLessonPrompt,
+      fetcher,
+      timeoutMs: 20,
+    }), 'Rlc circuits');
+  }
+});
+
+test('the RLC lesson accepts a complete model title longer than four words', async () => {
+  assert.equal(await generateConversationTitle({
+    firstPrompt: rlcLessonPrompt,
+    fetcher: async () => new Response(JSON.stringify({
+      choices: [{ message: { content: 'RLC circuits and Laplace transforms' } }],
+    })),
+  }), 'RLC circuits and Laplace transforms');
+});
+
+test('fallback titles preserve meaning, acronyms, and short subjects', () => {
+  assert.equal(fallbackConversationTitle('Explain why my phone is not charging'), 'Why my phone is not charging');
+  assert.equal(fallbackConversationTitle('Please write a detailed lesson on MOSFET operation'), 'MOSFET operation');
+  assert.equal(fallbackConversationTitle('Explain Photosynthesis'), 'Photosynthesis');
+  assert.equal(fallbackConversationTitle('Explain the difference between AC and DC circuits'), 'The difference between AC and DC circuits');
+  assert.equal(fallbackConversationTitle('Compare day to day changes in rainfall and temperature'), 'Compare day to day changes in rainfall');
+  assert.equal(fallbackConversationTitle('/agents:deep-research'), null);
+  assert.equal(fallbackConversationTitle(''), null);
 });
 
 test('a later retry repairs New chat after the reserved first turn was interrupted', () => {

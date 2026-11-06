@@ -148,3 +148,26 @@ test('a connection that dies within a minute of connecting backs off like a fail
   assert.equal(calls.length, 2, 'it is replaced after the first backoff');
   await pool.clear();
 });
+
+test('on-demand reuse closes after 20 idle seconds and never reconnects overnight', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { pool, calls, advance } = fixture();
+  await pool.configure('account', ['speak'], false);
+  assert.equal(calls.length, 0);
+  const first = pool.take('speak'); await flush(); calls[0].resolve();
+  await pool.release(await first, true);
+  t.mock.timers.tick(19_000); advance(19_000);
+  assert.equal(calls[0].closed, false);
+  const active = await pool.take('speak');
+  t.mock.timers.tick(1_000); advance(1_000); await flush();
+  assert.equal(calls[0].closed, false, 'an old idle timer cannot close active speech');
+  await pool.release(active, true);
+  t.mock.timers.tick(20_000); advance(20_000); await pool.settled();
+  assert.equal(calls[0].closed, true, 'cleanup does not depend on a UI polling timer');
+  for (let minute = 0; minute < 9 * 60; minute++) {
+    advance(60_000); await pool.configure('account', ['speak'], false);
+  }
+  await flush();
+  assert.equal(calls.length, 1, 'expiry never opens a replacement without a caller');
+  await pool.clear();
+});

@@ -35,7 +35,7 @@ const SETUP_ACTIONS = [
   {
     id: "remove",
     label: "Remove environment",
-    unlocks: "Deletes AI-Youtube-Shorts-Generator/.venv. Nothing else in the clone is touched.",
+    unlocks: "Removes the installed tools for Shorts. Your other files are kept.",
   },
 ] as const;
 

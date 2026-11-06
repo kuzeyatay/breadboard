@@ -272,6 +272,106 @@ test("staging a folder archive writes exactly the inventory", () => {
   }
 });
 
+test("graph scratch work publishes only the explicitly imported inline image", async () => {
+  const fixture = artifactFixture();
+  const workspace = path.join(fixture.root, "workspace");
+  const scratch = path.join(workspace, ".graph-work", "sine-plot");
+  fs.mkdirSync(scratch, { recursive: true });
+  fs.writeFileSync(path.join(scratch, "render_graph.m"), "plot(0:0.1:1);\n");
+  fs.writeFileSync(path.join(scratch, "matlab.log"), "Render complete\n");
+  fs.writeFileSync(path.join(scratch, "graph.png"), Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jD1sAAAAASUVORK5CYII=",
+    "base64",
+  ));
+  try {
+    const image = await createImportedArtifact({
+      ...importInput(fixture),
+      kind: "image",
+      title: "Sine plot",
+      sourceSkill: "graph",
+      authorizedRoot: workspace,
+      filePath: ".graph-work/sine-plot/graph.png",
+    });
+    const presented = presentArtifact(image);
+    assert.equal(presented.kind, "image");
+    assert.equal(presented.renderer, "image-file");
+    assert.equal(presented.status, "ready");
+    assert.equal(presented.previewAvailable, true);
+    assert.equal(presented.assistantMessageId, "msg_100");
+
+    const sweep = await publishProducedFilesForRun({
+      ...importInput(fixture),
+      startedAt: new Date(0).toISOString(),
+      workspaceRoot: workspace,
+      authorizedRoots: [workspace],
+    });
+    assert.deepEqual(sweep.imported, []);
+    assert.deepEqual(
+      fixture.database.prepare("SELECT kind, filename FROM hermes_artifacts WHERE originating_run_id = ?")
+        .all("run_one"),
+      [{ kind: "image", filename: "graph.png" }],
+    );
+    assert.ok(fs.existsSync(path.join(scratch, "render_graph.m")), "source remains available for revisions");
+  } finally {
+    fixture.database.close();
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+for (const explicitlyImported of [false, true]) {
+  test(`graph delivery in a desktop workspace ${explicitlyImported ? "keeps the explicit image without duplicates" : "recovers a PNG when the model omits artifact_import"}`, async () => {
+    const fixture = artifactFixture();
+    const previousDataRoot = process.env.BREADBOARD_DATA_DIR;
+    const dataRoot = path.join(fixture.root, "Data");
+    process.env.BREADBOARD_DATA_DIR = dataRoot;
+    fixture.storage = path.join(dataRoot, "artifacts");
+    const workspace = path.join(dataRoot, "runtime", "hermes-workspaces", "conv_graph");
+    const scratch = path.join(workspace, ".graph-work", "rc-lowpass-tau10");
+    fs.mkdirSync(scratch, { recursive: true });
+    fs.mkdirSync(fixture.storage, { recursive: true });
+    fs.mkdirSync(path.join(dataRoot, "config"), { recursive: true });
+    fs.writeFileSync(path.join(dataRoot, "config", "internal.json"), "{}");
+    fs.writeFileSync(path.join(fixture.storage, "existing.txt"), "Previously stored artifact");
+    fs.writeFileSync(path.join(scratch, "render_graph.m"), "plot(0:0.1:1);\n");
+    fs.writeFileSync(path.join(scratch, "matlab.log"), "Render complete\n");
+    const filename = "rc-lowpass-tau10-graph.png";
+    fs.writeFileSync(path.join(workspace, filename), Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jD1sAAAAASUVORK5CYII=",
+      "base64",
+    ));
+    try {
+      if (explicitlyImported) {
+        await createImportedArtifact({
+          ...importInput(fixture),
+          kind: "image", title: "RC low-pass Bode plot", sourceSkill: "graph",
+          authorizedRoot: workspace, filePath: filename,
+        });
+      }
+      const report = await publishProducedFilesForRun({
+        ...importInput(fixture),
+        startedAt: new Date(0).toISOString(),
+        workspaceRoot: workspace,
+        // A broad authorized folder must still exclude Breadboard's state.
+        authorizedRoots: [workspace, dataRoot],
+      });
+      assert.equal(report.imported.length, explicitlyImported ? 0 : 1);
+      const rows = fixture.database.prepare("SELECT * FROM hermes_artifacts WHERE originating_run_id = ?").all("run_one");
+      assert.deepEqual(rows.map(({ kind, filename }) => ({ kind, filename })), [{ kind: "image", filename }]);
+      const image = presentArtifact(rows[0]);
+      assert.equal(image.status, "ready");
+      assert.equal(image.renderer, "image-file");
+      assert.equal(image.previewAvailable, true);
+      assert.equal(image.assistantMessageId, "msg_100");
+      assert.ok(fs.existsSync(path.join(scratch, "render_graph.m")));
+    } finally {
+      if (previousDataRoot === undefined) delete process.env.BREADBOARD_DATA_DIR;
+      else process.env.BREADBOARD_DATA_DIR = previousDataRoot;
+      fixture.database.close();
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
+
 test("the sweep finds only what changed after the run began, grouped by produced folder", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-sweep-"));
   try {

@@ -154,6 +154,25 @@ test("a bare intent with nothing to aim at is not over-classified", () => {
   assert.equal(requiresGeographicGrounding("Is it far?").required, false);
 });
 
+test("artifact and API endpoint routes do not create map obligations", () => {
+  for (const request of [
+    "Finish the Breadboard Super Agent oscillator report. Use this artifact download route: /api/hermes/artifacts/123/download.",
+    "Document the HTTP route for Breadboard JSON exports.",
+    "The download route is /api/hermes/artifacts/123/download. Finish the Super Agent report.",
+  ]) {
+    const assessment = requiresGeographicGrounding(request);
+    assert.equal(assessment.required, false, request);
+    assert.equal(renderGeographicGroundingDirective(assessment), "", request);
+  }
+  for (const request of [
+    "Document the API route, then give me directions to Eindhoven.",
+    "Use the artifact download route, then plan a route from Amsterdam to Utrecht.",
+    "Download the route from Amsterdam to Utrecht.",
+  ]) {
+    assert.equal(requiresGeographicGrounding(request).required, true, request);
+  }
+});
+
 test("structured state supplies the referent a sentence leaves out", () => {
   const request = "How long would it take to walk there?";
   assert.equal(requiresGeographicGrounding(request).required, true, "'there' is a referent");
@@ -303,6 +322,30 @@ test("a coordinate stated without a lookup is reported", () => {
   assert.ok(summary.unsupportedClaims.some((claim) => /Coordinate/.test(claim)));
 });
 
+test("plot, vector and image coordinates do not demand geographic evidence", () => {
+  for (const answer of [
+    "The denominator's coordinates are (1, omega RC), so its length is the square root of 1 + (omega RC)^2.",
+    "The vector has coordinates (-2, 3). Its horizontal component points left.",
+    "Place the image at coordinates (40, 29) on the canvas.",
+  ]) {
+    assert.deepEqual(assessVerification(answer, []).unsupportedClaims, [], answer);
+    assert.deepEqual(assessGeographicGrounding({ groundingRequired: false, answer, successfulMapFactTools: [] }).unsupportedClaims, [], answer);
+  }
+});
+
+test("explicit geographic coordinates retain both answer and request grounding", () => {
+  for (const answer of [
+    "The museum is at latitude 40.9558, longitude 29.1206.",
+    "Its GPS coordinates are 40.9558, 29.1206.",
+    "The lat/lon is 40.9558, 29.1206.",
+  ]) {
+    assert.ok(assessVerification(answer, []).unsupportedClaims.some(claim => /Coordinate/.test(claim)), answer);
+    assert.ok(assessGeographicGrounding({ groundingRequired: false, answer, successfulMapFactTools: [] }).unsupportedClaims.some(claim => /Coordinate/.test(claim)), answer);
+    assert.deepEqual(assessGeographicGrounding({ groundingRequired: false, answer, successfulMapFactTools: ['map_search'] }).unsupportedClaims, [], answer);
+  }
+  assert.ok(assessVerification("The coordinates are 40.9558, 29.1206.", [], { geographicGroundingRequired: true }).unsupportedClaims.some(claim => /needed verified map data/.test(claim)));
+});
+
 test("ordinary answers are untouched by the geographic rules", () => {
   const summary = assessVerification(
     "A roundabout is a circular junction where traffic yields on entry.",
@@ -310,6 +353,40 @@ test("ordinary answers are untouched by the geographic rules", () => {
   );
   assert.deepEqual(summary.unsupportedClaims, []);
   assert.equal(summary.state, "not_applicable");
+});
+
+test("worked distances and times do not invent a requirement for map evidence", () => {
+  const answers = [
+    "You travel 60 km outward at 30 km/h, then return along the same route at 60 km/h. The trip covers 120 km in three hours.",
+    "Suppose you cycle 24 km outward at 12 km/h and return 24 km at 24 km/h. The average speed is 16 km/h.",
+    "At that speed, it takes 2 hours to cycle 60 km. Divide the distance by the speed.",
+    "The particle moves 400 m from its starting point in this example.",
+  ];
+  for (const answer of answers) {
+    assert.deepEqual(assessVerification(answer, []).unsupportedClaims, [], answer);
+    assert.deepEqual(assessGeographicGrounding({groundingRequired:false,answer,successfulMapFactTools:[]}).unsupportedClaims, [], answer);
+  }
+});
+
+test("both verification surfaces retain numerical grounding on actual geographic requests", () => {
+  const answer="The station is 400 m from the entrance, roughly 5 minutes on foot.";
+  for (const claims of [
+    assessVerification(answer, [], {geographicGroundingRequired:true}).unsupportedClaims,
+    assessGeographicGrounding({groundingRequired:true,answer,successfulMapFactTools:[]}).unsupportedClaims,
+  ]) {
+    assert.ok(claims.some(claim=>/Distance/.test(claim)));
+    assert.ok(claims.some(claim=>/Travel-time/.test(claim)));
+  }
+});
+
+test("shared address checks distinguish physical diagrams from street addresses", () => {
+  for (const answer of ["The charge is located at a distance r from the wire.", "The point is located at 3 units from the origin."]) {
+    assert.deepEqual(assessVerification(answer, []).unsupportedClaims, []);
+    assert.deepEqual(assessGeographicGrounding({groundingRequired:false,answer,successfulMapFactTools:[]}).unsupportedClaims, []);
+  }
+  const answer="The museum is located at 12 Oak Street.";
+  assert.ok(assessVerification(answer, []).unsupportedClaims.some(claim=>/Address/.test(claim)));
+  assert.ok(assessGeographicGrounding({groundingRequired:false,answer,successfulMapFactTools:[]}).unsupportedClaims.some(claim=>/Address/.test(claim)));
 });
 
 test("money is not a distance: a funding figure raises no geographic claim", () => {

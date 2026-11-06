@@ -380,7 +380,8 @@ fn map_submission_store_error(error: StoreError) -> RuntimeJobControlError {
     match error {
         StoreError::AdmissionClosed => RuntimeJobControlError::Unavailable,
         StoreError::InputUploadQuotaExceeded { .. } => RuntimeJobControlError::InputQuotaExceeded,
-        StoreError::JobIdConflict(_) | StoreError::IdempotencyConflict { .. } => {
+        StoreError::JobIdConflict(_) | StoreError::IdempotencyConflict { .. }
+        | StoreError::InstallationBusy(_) => {
             RuntimeJobControlError::Conflict
         }
         StoreError::CancelledBeforeSubmission(_) => {

@@ -84,6 +84,9 @@ export function normalizeChatTokenUsage(value: unknown): ChatTokenUsage | null {
     'inputTokens',
     'input_tokens',
     'prompt_tokens',
+    // Hermes reports all prompt tokens here; its `input` bucket excludes
+    // cache reads/writes. Prefer the inclusive count without adding cache twice.
+    'prompt',
     'input',
   ] as const;
   const outputKeys = [

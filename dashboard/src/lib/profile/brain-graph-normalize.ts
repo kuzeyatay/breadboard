@@ -36,6 +36,7 @@ const NODE_KINDS = new Set<BrainNodeKind | OptionalBrainNodeKind>([
 
 const SAFE_ROUTES = [
   "/profile",
+  "/settings",
   "/dashboard",
   "/gardens",
   "/garden",

@@ -76,13 +76,13 @@ function configuredAuthConfig(toolkitSlug: string): string | null {
   }
 }
 
-async function activeAccounts(userId: number): Promise<ConnectedAccountListResponseItem[]> {
+async function activeAccounts(userId: number, signal?: AbortSignal): Promise<ConnectedAccountListResponseItem[]> {
   if (!composioConfigured()) return [];
   const response = await composioClient().connectedAccounts.list({
     userIds: [composioUserId(userId)],
     statuses: ["ACTIVE"],
     limit: 100,
-  });
+  }, signal ? { signal } : undefined);
   return response.items.filter((account) => !account.isDisabled && account.status === "ACTIVE");
 }
 
@@ -104,8 +104,9 @@ function accountRecords(
 
 export async function listComposioConnections(
   userId: number,
+  signal?: AbortSignal,
 ): Promise<ComposioConnectionRecord[]> {
-  return (await activeAccounts(userId)).flatMap((account) =>
+  return (await activeAccounts(userId, signal)).flatMap((account) =>
     accountRecords(userId, account),
   );
 }

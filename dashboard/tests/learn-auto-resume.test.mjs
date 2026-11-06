@@ -10,6 +10,7 @@ import {
   emptyLearnAutoResumeLedger,
   learnAutoResumeDecision,
   learnRunHasStalled,
+  learnResumeRejection,
   withRecordedLearnAutoResume,
 } from "../src/lib/learn-auto-resume.ts";
 
@@ -233,5 +234,46 @@ describe("a worker reaped mid-stage leaves a row that claims to be active", () =
     // awaiting_confirmation is not a recoverableLearnStatus, so the age rule
     // cannot reach it; pin that the predicate goes through that gate.
     assert.match(source, /function recoverableLearnStatus\(status: LearnStatus\): boolean \{\s*return status === "idle" \|\| activeStatus\(status\);/);
+  });
+});
+
+describe("what a resume request may do", () => {
+  const reject = (status, workerLive) => learnResumeRejection({ status, workerLive });
+
+  test("a paused run resumes whatever its worker looks like", () => {
+    // Pausing stops the worker on purpose, so its absence proves nothing.
+    for (const workerLive of [true, false, null]) {
+      assert.equal(reject("paused", workerLive), null);
+    }
+  });
+
+  test("a live worker is left alone", () => {
+    assert.equal(reject("planning", true), null);
+    assert.equal(reject("generating_learning_pages", true), null);
+  });
+
+  test("an unreadable worker state changes nothing", () => {
+    // "I could not tell" is not evidence the run is gone.
+    assert.equal(reject("planning", null), null);
+  });
+
+  test("an active row whose worker is gone cannot resume", () => {
+    // telecom-1, 2026-09-20: a transport-killed run sat at "planning" with a
+    // dead Runtime job and /learn/resume answered 200 without starting work.
+    const rejection = reject("planning", false);
+    assert.match(rejection, /nothing to resume/);
+    assert.match(rejection, /planning/);
+    assert.match(rejection, /recovery/i);
+  });
+
+  test("the resume route asks before it reports success", () => {
+    const route = readFileSync(
+      new URL("../src/app/api/gardens/[gardenId]/learn/resume/route.ts", import.meta.url),
+      "utf8",
+    );
+    assert.match(route, /learnResumeRejection\(/);
+    assert.match(route, /runtimeLearnWorkerIsLive\(contentPath, cluster\.slug\)/);
+    // The check must precede the resume, so a dead run never answers 200.
+    assert.ok(route.indexOf("learnResumeRejection(") < route.indexOf("resumeLatestLearnJob({"));
   });
 });

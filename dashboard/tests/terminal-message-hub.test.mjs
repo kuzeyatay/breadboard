@@ -4,8 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import test, { after, beforeEach } from "node:test";
 import ts from "typescript";
-import crypto from "node:crypto";
-import * as clicky from "../src/lib/clicky/companion.ts";
 import * as pdfScope from "../src/lib/pdf-assistant-scope.ts";
 
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-terminal-hub-"));
@@ -21,6 +19,7 @@ const search = await import("../src/lib/conversations/search.ts");
 const core = await import("../src/lib/hermes/route-core.ts");
 const client = await import("../src/lib/hermes/session-client.ts");
 const notificationStore = await import("../src/lib/chat-notifications/store.ts");
+const stars = await import("../src/lib/starred-messages-store.ts");
 
 after(() => {
   db.close();
@@ -80,6 +79,56 @@ function finish(chat, id, question = "Explain resonance", answer = "Resonance ex
   store.reserveConversationTurn({ conversation: chat, clientMessageId, surface: chat.surface, content: question });
   store.completeAssistantMessage({ conversationId: chat.id, clientMessageId, content: answer });
 }
+
+test("side chats are hidden, saved by stars, and safely discarded through the session route", async () => {
+  const api = route("route.ts", {
+    "@/lib/hermes/session-service.ts": { authorizeGardenAccess: () => ({ clusterId: 10, slug: "em-1" }) },
+  });
+  let starDuringCancel = null;
+  const detail = route("[sessionId]/route.ts", {
+    "@/lib/hermes/runtime-store.ts": runtime,
+    "@/lib/starred-messages-store.ts": stars,
+    "@/lib/request-origin": { requireSameOrigin() {} },
+    "@/lib/hermes/session-cancel.ts": { cancelRuntimeSessionWork: async () => ({}) },
+    "@/lib/conversations/external-agent-cancel.ts": { cancelRunningExternalAgentRuns: async () => {
+      starDuringCancel?.(); return [];
+    } },
+  });
+  for (const gardenSlug of [undefined, "em-1"]) {
+    const response = await api.POST(new Request("http://localhost/api/hermes/sessions", {
+      method: "POST", body: JSON.stringify({ surface: gardenSlug ? "garden_chat" : "dashboard_terminal", gardenSlug, sideChat: true }),
+    }));
+    assert.equal(response.status, 200);
+    const { session } = await response.json();
+    const chat = store.getConversationForUser(session.id, 1);
+    assert.equal(chat.temporary, 1);
+    assert.equal(chat.origin_label, "Side chat");
+    assert.equal(chat.default_garden_id, gardenSlug ? 10 : null);
+    assert.ok(!store.listConversationsForUser(1).some(item => item.public_id === session.id));
+    finish(chat, "side-chat", "Side question", "Side answer");
+    const close = () => detail.DELETE(new Request(`http://localhost/api/hermes/sessions/${session.id}?discardSideChat=1`, { method: "DELETE" }), {
+      params: Promise.resolve({ sessionId: session.id }),
+    });
+    // Simulate a star committed while cancellation awaits an active run.
+    starDuringCancel = () => stars.setMessageStar(db, 1, { conversationId: session.id, messageId: "hub-test-side-chat", starred: true });
+    assert.equal((await (await close()).json()).retained, true);
+    starDuringCancel = null;
+    assert.equal(store.getConversationForUser(session.id, 1).temporary, 1);
+    const saved = stars.listStarredMessages(db, 1).find(item => item.conversationId === session.id);
+    assert.equal(saved.gardenSlug, gardenSlug ?? null);
+    stars.setMessageStar(db, 1, { conversationId: session.id, messageId: saved.messageId, starred: false });
+    assert.equal((await (await close()).json()).deleted, true);
+    assert.throws(() => store.getConversationForUser(session.id, 1), /not found/i);
+  }
+  for (const temporary of [true, false]) {
+    const chat = store.createConversation({ userId: 1, temporary });
+    const result = await detail.DELETE(new Request(`http://localhost/api/hermes/sessions/${chat.public_id}?discardSideChat=1`, { method: "DELETE" }), {
+      params: Promise.resolve({ sessionId: chat.public_id }),
+    });
+    assert.equal(result.status, 400);
+    assert.ok(store.getConversationForUser(chat.public_id, 1));
+  }
+});
 
 test("terminal workspace selection creates one shared workspace conversation and transcript", async () => {
   const api = route("route.ts", {
@@ -292,44 +341,6 @@ test("history versions detect an answer arriving after its pending placeholder",
   assert.notEqual(pending.transcriptVersion, completed.transcriptVersion);
   assert.equal(pending.pendingMessageCount, 1);
   assert.equal(completed.pendingMessageCount, 0);
-});
-
-test("Clicky persists questions and replies in one labeled hub conversation", async () => {
-  notificationStore.ensureChatNotificationBaseline(db, 1);
-  const created = await route("../../clicky/sessions/route.ts").POST();
-  const { conversationId } = await created.json();
-  const inputs = [];
-  const api = route("../../clicky/chat/route.ts", {
-    "node:crypto": { default: crypto },
-    openai: { default: class { responses = { create: async (input) => { inputs.push(input); return { status: "completed", output_text: "Clicky answer" }; } }; } },
-    "@/lib/chatmock-server": { resolveChatmockBaseUrl: () => ({ baseURL: "http://localhost" }) },
-    "@/lib/ai-models": { GLOBAL_MODEL_SENTINEL: "test-model" },
-    "@/lib/clicky/companion": clicky,
-  });
-  async function ask(content, id = conversationId) {
-    return api.POST(new Request("http://localhost/clicky/chat", { method: "POST", body: JSON.stringify({ conversationId: id, messages: [{ role: "user", content }], snapshots: [] }) }));
-  }
-  assert.equal((await ask("Explain my screen")).status, 200);
-  const chat = store.getConversationForUser(conversationId, 1);
-  assert.equal(presentation.presentHermesSessionSummary(chat).originLabel, "Clicky");
-  assert.equal(
-    notificationStore.listPendingChatNotifications(db, 1)
-      .some((notice) => notice.target.chatId === conversationId),
-    false,
-    "the answer already visible in Clicky must not enter the notification inbox",
-  );
-  finish(chat, "terminal-clicky-followup", "A question from the hub", "Hub answer");
-  assert.equal((await ask("And the next step?")).status, 200);
-  const transcript = presentation.presentHermesSessionDetail(chat).messages;
-  assert.equal(transcript.length, 6);
-  assert.equal(transcript.at(-1).content, "Clicky answer");
-  assert.ok(inputs[1].input.some((message) => message.content === "Hub answer"));
-  const result = await (await route("search/route.ts").GET(new Request("http://localhost/search?surface=dashboard_terminal&q=Clicky"))).json();
-  assert.equal(result.results[0].title, "Clicky: Explain my screen");
-  const foreign = store.createConversation({ userId: 2, originLabel: "Clicky" });
-  assert.equal((await ask("Cannot write here", foreign.public_id)).status, 404);
-  const terminal = store.createConversation({ userId: 1 });
-  assert.equal((await ask("Cannot relabel this", terminal.public_id)).status, 404);
 });
 
 test("changes from every surface invalidate the terminal summary cache", async () => {

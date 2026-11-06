@@ -9,6 +9,8 @@ import test from "node:test";
 import { build } from "esbuild";
 import ts from "typescript";
 import { chromium } from "playwright";
+import { teachingReviewHash } from "../src/lib/teaching-plan.ts";
+import { gardenProposalDecisionFixture } from "./helpers/garden-proposal-decision-fixture.mjs";
 
 // The standalone build generates this bundle too; a clean test checkout must
 // not depend on a developer having launched the dashboard beforehand.
@@ -36,25 +38,27 @@ test("Apply saves and updates the real reader before publication, including relo
         builder.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ contents: args.path.includes("knowledge")
           ? `import path from 'node:path';export const slugify=s=>s;export const normalizeTopicTags=()=>[];export const refreshClusterIndex=()=>{};export const walkClusterMarkdown=dir=>[{entry:'fields.md',filePath:path.join(dir,'unit/fields.md'),relPath:'unit/fields.md',folder:'unit'}];`
           : args.path.includes("quartz-publish") ? `export const publishQuartzAfterMutation=()=>new Promise(()=>{});`
-          : `export const withGardenMutationLease=(_dir,_operation,action)=>action();` }));
+          : `export const assertGardenMutationWritePaths=()=>{};export const withGardenMutationLease=(_dir,_operation,action)=>action();` }));
       } }],
     });
     const module = { exports: {} };
     new Function("require", "module", "exports", writerBundle.outputFiles[0].text)(createRequire(import.meta.url), module, module.exports);
-    const proposal = { id: 3, status: "pending", kind: "page_revision", garden_id: "physics", page_slug: "unit/fields", payload: JSON.stringify({ patchOrReplacement: "@@\n-Old introduction.\n+The word **electromagnetic** combines electric and magnetic fields." }) };
+    const proposal = { id: 3, status: "pending", kind: "page_revision", garden_id: "physics", page_slug: "unit/fields", payload: JSON.stringify({ patchOrReplacement: "Replace the opening paragraph with:\n\nThe word **electromagnetic** combines electric and magnetic fields." }) };
+    const proposals = [proposal];
     const routePath = path.join(root, "src/app/api/gardens/[gardenId]/proposals/[proposalId]/route.ts");
     const tree = ts.createSourceFile("route.ts", fs.readFileSync(routePath, "utf8"), ts.ScriptTarget.Latest, true);
     const handler = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === "POST");
     const routeJs = ts.transpileModule(handler.getText(tree).replace("export ", ""), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
     const deps = {
       requireUserId: async () => 1, authorizeGardenAccess: () => ({ isOwner: true, slug: "physics", clusterId: 1 }),
-      getProposalById: () => proposal, readJsonBody: r => r.json(),
+      getProposalById: id => proposals.find(item => item.id === id), readJsonBody: r => r.json(),
       reviseGardenDocument: module.exports.reviseGardenDocument,
-      setProposalStatus: (_id, status) => { proposal.status = status; },
+      setProposalStatus: (id, status) => { proposals.find(item => item.id === id).status = status; },
       NextResponse: { json: body => Response.json(body) },
       ApiError: class extends Error { constructor(status, _code, message) { super(message); this.status = status; } },
-      apiErrorResponse: error => Response.json({ error: error.message }, { status: error.status ?? 500 }),
+      apiErrorResponse: error => Response.json({ error: error.message, code: error.code }, { status: error.status ?? 500 }),
     };
+    deps.decideGardenProposal = gardenProposalDecisionFixture(deps);
     const post = new Function(...Object.keys(deps), `${routeJs};return POST`)(...Object.values(deps));
     const publicRoot = path.join(dir, "public");
     fs.mkdirSync(publicRoot);
@@ -96,7 +100,11 @@ test("Apply saves and updates the real reader before publication, including relo
         const url = new URL(req.url, "http://localhost");
         if (url.pathname === "/app.js") { res.setHeader("content-type", "text/javascript"); res.end(ui.outputFiles[0].text); return; }
         if (url.pathname === "/api/hermes/proposals") {
-          res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ proposals: proposal.status === "pending" ? [{ id: 3, assistantMessageId: "msg_3", kind: "page_revision", gardenId: "physics", gardenName: "Physics", pageSlug: "unit/fields", title: "Fields", content: proposal.payload, characters: 100 }] : [] })); return;
+          const pending = proposals.filter(item => item.status === 'pending').map(item => {
+            const payload = JSON.parse(item.payload);
+            return { id: item.id, assistantMessageId: "msg_3", kind: "page_revision", gardenId: "physics", gardenName: "Physics", pageSlug: "unit/fields", title: "Fields", content: payload.patchOrReplacement, originalText: payload.originalText, characters: 100 };
+          });
+          res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ proposals: pending })); return;
         }
         if (url.pathname.startsWith("/api/documents/")) {
           const content = fs.readFileSync(file, "utf8");
@@ -107,7 +115,7 @@ test("Apply saves and updates the real reader before publication, including relo
         }
         if (req.method === "POST") {
           let body = ""; for await (const chunk of req) body += chunk;
-          const response = await post(new Request(url, { method: "POST", body }), { params: Promise.resolve({ gardenId: "physics", proposalId: "3" }) });
+          const response = await post(new Request(url, { method: "POST", body }), { params: Promise.resolve({ gardenId: "physics", proposalId: url.pathname.split('/').at(-1) }) });
           res.statusCode = response.status; res.setHeader("content-type", "application/json"); res.end(await response.text()); return;
         }
         res.setHeader("content-type", "text/html"); res.end('<div id="root"></div><script src="/app.js"></script>');
@@ -127,6 +135,16 @@ test("Apply saves and updates the real reader before publication, including relo
     await page.goto(`http://127.0.0.1:${appServer.address().port}`);
     const reader = page.frameLocator('iframe[title="Garden"]');
     await reader.locator(".katex").waitFor();
+    await page.getByRole("button", { name: "Apply revision", exact: true }).click();
+    await page.getByRole("alert").getByText("A replacement requires originalText", { exact: false }).waitFor();
+    assert.equal(fs.readFileSync(file, "utf8"), original, "Legacy unanchored proposals cannot erase the page");
+    assert.equal(proposal.status, "pending");
+    proposal.payload = JSON.stringify({ originalText: "Old introduction.", patchOrReplacement: "The word **electromagnetic** combines electric and magnetic fields." });
+    await page.reload();
+    await page.getByLabel("Passage to replace").getByText("Old introduction.", { exact: true }).waitFor();
+    await page.getByLabel("Proposed content").getByText("electromagnetic", { exact: true }).waitFor();
+    const previewArtifacts = path.join(root, ".tmp-garden-proposal-review"); fs.mkdirSync(previewArtifacts, { recursive: true });
+    await page.screenshot({ path: path.join(previewArtifacts, "targeted-revision-preview.png") });
     const started = performance.now();
     await page.getByRole("button", { name: "Apply revision", exact: true }).click();
     await reader.locator("article strong").getByText("electromagnetic", { exact: true }).waitFor();
@@ -168,6 +186,35 @@ test("Apply saves and updates the real reader before publication, including relo
     // failure banner appeared only after the five-second acknowledgement timer.
     await page.waitForTimeout(5_500);
     assert.equal(await page.getByRole("alert").count(), 0);
+    assert.deepEqual(errors, []);
+    // Multiple pending cards share one base version. Applying the first must
+    // not invalidate an independent, numbered diff farther down the page.
+    const teachingBaseHash = teachingReviewHash(replacement, null);
+    const equationLine = replacement.split('\n').indexOf('$E = F/q$') + 1;
+    for (const [id, payload] of [
+      [4, { originalText: '## Mathematics', patchOrReplacement: '## Mathematics\n\nA worked example.' }],
+      [5, { patchOrReplacement: `@@ -${equationLine} +${equationLine},3 @@\n $E = F/q$\n+\n+The field is force per unit charge.` }],
+      [6, { originalText: '## Mathematics\n\n$E = F/q$', patchOrReplacement: 'Conflicting rewrite' }],
+    ]) proposals.push({ ...proposal, id, status: 'pending', payload: JSON.stringify({ ...payload, teachingBaseHash }) });
+    await page.reload();
+    const card = id => page.locator(`[data-proposal-id="${id}"]`);
+    await card(4).getByRole('button', { name: 'Apply revision', exact: true }).click();
+    await reader.getByText('A worked example.', { exact: true }).waitFor();
+    await card(5).getByRole('button', { name: 'Apply revision', exact: true }).click();
+    await reader.getByText('The field is force per unit charge.', { exact: true }).waitFor();
+    const combined = replacement.replace('## Mathematics', '## Mathematics\n\nA worked example.').replace('$E = F/q$', '$E = F/q$\n\nThe field is force per unit charge.');
+    assert.equal(fs.readFileSync(file, 'utf8'), combined);
+    assert.equal(await page.getByRole('alert').count(), 0);
+    assert.deepEqual(proposals.slice(1, 3).map(item => item.status), ['applied', 'applied']);
+    await card(6).getByRole('button', { name: 'Apply revision', exact: true }).click();
+    await page.getByRole('alert').getByText('The original passage must match exactly once', { exact: false }).waitFor();
+    assert.equal(proposals.at(-1).status, 'pending');
+    assert.equal(fs.readFileSync(file, 'utf8'), combined, 'A conflicting card cannot overwrite either successful edit');
+    await card(6).getByRole('button', { name: 'Discard', exact: true }).click();
+    await page.reload();
+    await reader.getByText('A worked example.', { exact: true }).waitFor();
+    await reader.getByText('The field is force per unit charge.', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Apply revision', exact: true }).count(), 0);
     assert.deepEqual(errors, []);
     const artifacts = path.join(root, ".tmp-garden-proposal-review"); fs.mkdirSync(artifacts, { recursive: true });
     await page.screenshot({ path: path.join(artifacts, "revision-applied-live-reader.png") });

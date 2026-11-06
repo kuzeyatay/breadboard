@@ -87,13 +87,28 @@ export async function POST(request: Request) {
         headers: noStoreHeaders,
       });
     }
+    if (exactBody(body, ["ticket", "deviceId", "ready"])) {
+      if (body.ready !== false) {
+        throw new ApiError(400, "invalid_spotify_engine_request", "The Spotify player request is invalid.");
+      }
+      registerSpotifyPlaybackEngine({
+        ticket: typeof body.ticket === "string" ? body.ticket : "",
+        deviceId: body.deviceId,
+        ready: false,
+      });
+      return NextResponse.json({ ok: true }, { headers: noStoreHeaders });
+    }
     if (exactBody(body, ["ticket", "deviceId"]) || exactBody(body, ["ticket", "deviceId", "playback"])) {
       registerSpotifyPlaybackEngine({
         ticket: typeof body.ticket === "string" ? body.ticket : "",
         deviceId: body.deviceId,
       });
       if (Object.hasOwn(body, "playback")) {
-        publishSpotifyPlayback(verifySpotifyEngineTicket(body.ticket as string), (body.deviceId as string).trim(), body.playback);
+        const userId = verifySpotifyEngineTicket(body.ticket as string);
+        const deviceId = (body.deviceId as string).trim();
+        // An empty SDK queue can precede Spotify's own Autoplay selection.
+        // Publish state without inserting catalog songs ahead of that choice.
+        publishSpotifyPlayback(userId, deviceId, body.playback);
       }
       return NextResponse.json({ ok: true }, { headers: noStoreHeaders });
     }

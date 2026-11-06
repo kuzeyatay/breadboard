@@ -169,7 +169,8 @@ export function decisionForGrant(
     selectedConditionalSkills: [],
     selectedConnections: [],
     createdAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(),
+    // Authority lasts for this turn; its terminal event revokes the decision.
+    expiresAt: null,
     revokedAt: null,
   };
 }

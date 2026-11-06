@@ -247,7 +247,9 @@ export async function designCadPart(
         // records the plan; a fresh, much smaller completion writes source.
         ...(isNewProject
           ? {
-              maxSteps: 1,
+              // One specification correction is allowed; a successful save
+              // exits immediately, before another project could be created.
+              maxSteps: 2,
               allowedToolNames: ["cad_create_project"],
               forcedToolName: "cad_create_project",
             }
@@ -504,7 +506,9 @@ function noFreshBuildReason(
 ): string {
   const build = toolContext.lastBuild;
   if (!build) {
-    return "No new CAD revision was built for this request. The existing design was left unchanged and was not republished.";
+    const refusal = toolCalls.findLast((call) => !call.ok)?.summary;
+    return "No new CAD revision was built for this request. The existing design was left unchanged and was not republished."
+      + (refusal ? ` ${refusal}` : "");
   }
   if (
     build.failure ||

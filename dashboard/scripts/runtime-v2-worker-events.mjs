@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { registerSourceRepairWorkerImports } from "./source-repair-worker-imports.mjs";
 import { fileURLToPath } from "node:url";
 import {
   isMainThread,
@@ -6,6 +7,11 @@ import {
   Worker,
   workerData,
 } from "node:worker_threads";
+
+// Some workers load their application modules before constructing the writer.
+// Install release selection during module initialization as well as after
+// launch validation, when workers may have filled in their data-root env.
+registerSourceRepairWorkerImports();
 
 const PROTOCOL_VERSION = 1;
 const MAX_EVENT_BYTES = 64 * 1024;
@@ -256,6 +262,7 @@ export function createRuntimeV2WorkerEventWriter(
   },
 ) {
   const identity = validateIdentity(rawIdentity);
+  registerSourceRepairWorkerImports();
   const stage = validateHeartbeatStage(heartbeatStage);
   const interval = validateHeartbeatInterval(heartbeatIntervalMs);
   const state = new Int32Array(

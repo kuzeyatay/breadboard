@@ -97,6 +97,8 @@ describe("source wikilink normalization (C)", () => {
           "",
           "Intro text. [[Page 1]]",
           "",
+          "See [[Video and detailed description of the demo]](#website-page-11).",
+          "",
           "# [[#Page 2|Page 2]]",
           "",
           "Page two body.",
@@ -134,6 +136,8 @@ describe("source wikilink normalization (C)", () => {
       assert.doesNotMatch(out, /\[\[Page 1\]\]/, "[[Page 1]] must be resolved or flattened");
       // Timestamped source-conversion link must be canonicalized or flattened.
       assert.doesNotMatch(out, /\[\[2510-27379v1-1783174795571/, "timestamped link must be removed");
+      // A Markdown link with a bracketed label is source text, not a wikilink.
+      assert.match(out, /See \[\[Video and detailed description of the demo\]\]\(#website-page-11\)\./);
 
       assert.doesNotMatch(out, /^tags:/m, "source public tags must be removed");
       assert.doesNotMatch(out, /^primaryConcepts:/m, "source primary concepts must be removed");

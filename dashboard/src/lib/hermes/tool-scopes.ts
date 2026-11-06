@@ -31,6 +31,7 @@ export const GARDEN_TOOLS = [
   "garden_get_recent_events",
   "garden_list_files",
   "garden_save_note",
+  "garden_decide_proposals",
   "garden_create_folder",
   "garden_move_page",
   "garden_rename_folder",
@@ -194,6 +195,7 @@ export const MANIM_TOOLS = ["manim_create"] as const;
 // a loop contract inside the session's workspace; it never executes the loop's
 // real task and never creates cron, webhook or Kanban automation.
 export const AGENT_LOOP_TOOLS = ["agent_loop_run"] as const;
+export const MULTISIM_TOOLS = ["multisim"] as const;
 
 // Cloned oh-my-hermes operating layer. The callback runs one read-only OMH
 // command — routing, recommendation, catalog or health — against the clone's
@@ -490,6 +492,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...MUSIC_RECOGNITION_TOOLS,
       ...MANIM_TOOLS,
       ...AGENT_LOOP_TOOLS,
+      ...MULTISIM_TOOLS,
       ...OMH_TOOLS,
       ...MESSAGING_TOOLS,
       ...WORLDMONITOR_TOOLS,
@@ -539,6 +542,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...MUSIC_RECOGNITION_TOOLS,
     ...MANIM_TOOLS,
     ...AGENT_LOOP_TOOLS,
+    ...MULTISIM_TOOLS,
     ...OMH_TOOLS,
     ...MESSAGING_TOOLS,
     ...WORLDMONITOR_TOOLS,

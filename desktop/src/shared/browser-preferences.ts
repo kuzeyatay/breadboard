@@ -1,6 +1,19 @@
+export type BrowserMediaPermission = "microphone" | "camera";
+
+export function isBrowserMediaPermission(value: unknown): value is BrowserMediaPermission {
+  return value === "microphone" || value === "camera";
+}
+
+export function isBrowserMediaPermissionList(value: unknown): value is BrowserMediaPermission[] {
+  return Array.isArray(value) && value.length > 0 && value.length <= 2 &&
+    value.every(isBrowserMediaPermission) && new Set(value).size === value.length;
+}
+
 export interface BrowserPreferences {
   notificationsEnabled: boolean;
+  organizationSidebarEnabled?: boolean;
   sites: Record<string, "granted" | "denied">;
+  mediaSites?: Record<string, Partial<Record<BrowserMediaPermission, "granted" | "denied">>>;
   translationLanguage: string;
   translationSites?: Record<string, string>;
 }
@@ -31,8 +44,10 @@ export function notificationOrigin(value: unknown): string | null {
 }
 
 export type BrowserPreferenceCommand =
+  | { type: "browser-organization-enabled"; enabled: boolean }
   | { type: "browser-notifications-enabled"; enabled: boolean }
   | { type: "browser-notification-permission"; origin: string; permission: "default" | "granted" | "denied" }
+  | { type: "browser-media-permission"; origin: string; media: BrowserMediaPermission[]; permission: "default" | "granted" | "denied" }
   | { type: "browser-translation-language"; language: string };
 
 export interface BrowserTranslationState {

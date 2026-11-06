@@ -2,6 +2,9 @@
 export function generatedVisualDashboardBaseUrl(href: string, referrer: string, ancestorOrigin = ""): string {
   try {
     const current = new URL(href)
+    // The dashboard serves the Learning Map preview itself, so it is already
+    // the dashboard; guessing a port sent its requests to :3000.
+    if (current.pathname.startsWith("/api/quartz-graph-preview")) return current.origin
     // A full navigation inside the iframe replaces document.referrer with a
     // Quartz URL. Its embedding origin still identifies this dashboard launch.
     for (const candidate of [ancestorOrigin, referrer]) {

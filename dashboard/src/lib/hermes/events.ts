@@ -70,13 +70,20 @@ export type NormalizedAgentEvent =
       sessionId: string;
       messageId?: string;
       timestamp: string;
-      payload: { text: string; streamed: boolean };
+      payload: {
+        text: string;
+        streamed: boolean;
+        /** Position in saved progress notes, retained across SSE replays. */
+        progressIndex?: number;
+      };
     }
   | {
       type: "assistant.completed" | "assistant.usage";
       sessionId: string;
       messageId?: string;
       timestamp: string;
+      // Completed events may carry authoritative `text` to replace provisional
+      // deltas. Usage-only and legacy completion events may omit it.
       payload: Record<string, unknown>;
     }
   | {
@@ -87,6 +94,8 @@ export type NormalizedAgentEvent =
         label: string;
         detail?: string;
         detailMode?: "append" | "replace";
+        /** Position before this delta, for replay over a saved checkpoint. */
+        detailOffset?: number;
       };
     }
   | {

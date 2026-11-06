@@ -339,7 +339,7 @@ export default function InlineDeerFlowRun({
           {!terminal && service !== "ready" ? (
             <p className="bb-agent-run-text text-[var(--ink-muted)]">
               {service === "starting"
-                ? "Starting the DeerFlow Gateway — the first run of a session loads its agent runtime."
+                ? "Starting DeerFlow. The first task may take a moment."
                 : "Preparing the run…"}
             </p>
           ) : null}

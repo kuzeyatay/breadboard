@@ -247,8 +247,9 @@ test("a delegated run stays private and leaves the originating assistant message
   );
   assert.match(
     session,
-    /attachToExistingTurn =\s*\n\s*input\.attachToExistingTurn === true \|\|\s*\n\s*delegatedExternalTurnIdsRef\.current\.has/,
+    /attachToExistingTurn =\s*input\.attachToExistingTurn === true \|\|\s*attachedDelegatedExternalTurnIdsRef\.current\.has/,
   );
+  assert.match(session, /delegatedAgentRun =\s*input\.delegatedAgentRun === true \|\|\s*\(delegatedExternalTurnIdsRef\.current\.has\(input\.clientMessageId\) &&\s*!attachToExistingTurn\)/);
   assert.match(turns, /export function attachExternalAgentRun/);
   assert.match(turns, /role = 'assistant'/);
   assert.match(turns, /delegatedAgentRun: true/);
@@ -355,7 +356,11 @@ test("Deep Research stop is single-click and consumes terminal recovery response
   assert.match(inline, /stopPendingRef\.current = true/);
   assert.match(inline, /disabled=\{stopPending\}/);
   assert.match(inline, /aria-busy=\{stopPending\}/);
-  assert.match(inline, /motion-reduce:animate-none/);
+  assert.match(inline, /function StopSpinner\(\)[\s\S]*?<BreadboardLoader/);
+  // Motion preferences belong to the shared orb loader now. The package
+  // renders one static frame when reduced motion is requested.
+  assert.match(source("src/app/components/breadboard-loader.tsx"), /ThinkingOrb as Orb/);
+  assert.match(source("node_modules/thinking-orbs/dist/index.es.js"), /matchMedia\("\(prefers-reduced-motion: reduce\)"\)/);
   const stopRecovery = inline.match(
     /const stop = async \(\) => \{[\s\S]*?\n  \};/,
   )?.[0] ?? "";

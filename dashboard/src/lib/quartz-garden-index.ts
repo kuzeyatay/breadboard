@@ -103,6 +103,7 @@ function readClusterStats(
         documents: 0,
         topics: 0,
         textbookPages: 0,
+        conceptPages: 0,
         conceptNodes: 0,
         learningPages: 0,
         generatedNotes: 0,

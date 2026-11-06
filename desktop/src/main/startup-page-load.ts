@@ -15,7 +15,8 @@ export function startupReadinessProbe(maxWaitMs: number): string {
     const started = Date.now();
     const check = () => {
       const ready = root.dataset.breadboardStartup === "ready" &&
-        Array.from(document.images).every(image => image.loading === "lazy" || image.complete);
+        (!document.fonts || document.fonts.status === "loaded") &&
+        Array.from(document.images).every(image => image.loading === "lazy" || image.hasAttribute?.("data-startup-optional") || image.complete);
       if (!ready) readySince = null;
       else if (readySince === null) readySince = Date.now();
       // Let effects triggered by initial responses enroll their follow-up reads.
@@ -28,8 +29,8 @@ export function startupReadinessProbe(maxWaitMs: number): string {
 }
 
 /** The outer deadline also covers a wedged or destroyed renderer. */
-export async function waitForStartupPageReady(contents: WebContents, maxWaitMs: number): Promise<boolean> {
-  if (contents.isDestroyed() || maxWaitMs <= 0) return false;
+export async function waitForStartupPageReady(contents: WebContents, maxWaitMs: number, signal?: AbortSignal): Promise<boolean> {
+  if (contents.isDestroyed() || maxWaitMs <= 0 || signal?.aborted) return false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let unavailable: () => void = () => {};
   try {
@@ -39,6 +40,7 @@ export async function waitForStartupPageReady(contents: WebContents, maxWaitMs: 
         unavailable = () => resolve(false);
         contents.once("destroyed", unavailable);
         contents.once("render-process-gone", unavailable);
+        signal?.addEventListener("abort", unavailable, { once: true });
         timer = setTimeout(unavailable, maxWaitMs);
       }),
     ]);
@@ -48,6 +50,7 @@ export async function waitForStartupPageReady(contents: WebContents, maxWaitMs: 
     clearTimeout(timer);
     contents.removeListener("destroyed", unavailable);
     contents.removeListener("render-process-gone", unavailable);
+    signal?.removeEventListener("abort", unavailable);
   }
 }
 

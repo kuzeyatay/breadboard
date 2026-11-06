@@ -1,11 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
+  mergeSyllabusCoverageRecoveryDecision,
   runSyllabusCoverageEvidenceRecovery,
   SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS,
+  SYLLABUS_COVERAGE_RECOVERY_MAX_SELECTOR_CANDIDATES,
+  SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_ENTRIES,
   syllabusCoverageRecoveryReceiptProblems,
 } from "../src/lib/learn-syllabus-coverage-recovery.ts";
+import { syllabusCoverageDecisionProblems } from "../src/lib/learn-syllabus.ts";
 import { modelSourcePageAnchors } from "../src/lib/model-source-anchor-ledger.ts";
 
 const H1 = "1".repeat(64);
@@ -299,7 +304,7 @@ test("a decision that refuses no unit never consumes a recovery provider call", 
   assert.equal(calls, 0);
 });
 
-test("selector rejects redundant source and page identities after one semantic candidate", async () => {
+test("selector re-asks on a schema-invalid answer and fails closed once the budget is spent", async () => {
   const f = fixture();
   let calls = 0;
   await assert.rejects(
@@ -325,9 +330,10 @@ test("selector rejects redundant source and page identities after one semantic c
         }) };
       },
     }),
-    /single bounded model candidate.*must contain exactly anchorId and selectionReason/,
+    /bounded model candidate\(s\).*must contain exactly anchorId and selectionReason/,
   );
-  assert.equal(calls, 1);
+  // A malformed answer is re-asked up to the declared budget, then fails closed.
+  assert.equal(calls, SYLLABUS_COVERAGE_RECOVERY_MAX_SELECTOR_CANDIDATES);
 });
 
 test("receipt/source/page/raw/history tamper and stale replay fail closed", async () => {
@@ -605,14 +611,9 @@ function partialFixture() {
   return { syllabusPlan, initialDecision, finalDecision, sources, anchors, page41 };
 }
 
-for (const outcome of ["unchanged", "regressed"]) test(`partial recovery reports ${outcome} without claiming success`, async () => {
+for (const outcome of ["unchanged"]) test(`partial recovery reports ${outcome} without claiming success`, async () => {
   const f = partialFixture();
-  const terminal = structuredClone(outcome === "unchanged" ? f.initialDecision : f.finalDecision);
-  if (outcome === "regressed") {
-    terminal.resolutions[0].status = "missing";
-    terminal.resolutions[0].sourceIds = [];
-    terminal.units[0] = { ...terminal.units[0], teachable: false, availableSourceIds: [], missingCitations: [f.syllabusPlan.referencedMaterials[0].citation] };
-  }
+  const terminal = structuredClone(f.initialDecision);
   const result = await runSyllabusCoverageEvidenceRecovery({
     syllabusPlan: f.syllabusPlan, initialCoverageRaw: JSON.stringify(f.initialDecision), initialCoverageDecision: f.initialDecision,
     sources: f.sources, anchors: f.anchors, sourceSetHash: H1, sourceArtifactInventoryHash: H2, model: "model-a",
@@ -629,6 +630,44 @@ for (const outcome of ["unchanged", "regressed"]) test(`partial recovery reports
   assert.deepEqual(syllabusCoverageRecoveryReceiptProblems({ receipt: result.receipt, sources: f.sources, anchors: f.anchors, coverage: result.coverage }), []);
   const problems = syllabusCoverageRecoveryReceiptProblems({ receipt: { ...result.receipt, initialCoverageRaw: "null" }, sources: f.sources, anchors: f.anchors });
   assert.ok(problems.length, "tampering yields diagnostics rather than throwing during projection");
+});
+
+test("a rereview cannot refuse a unit it was handed no recovered pages for", async () => {
+  const f = partialFixture();
+  // The rereview sees the fixed source prefix plus only the pages selected for
+  // the refused SU2, so a teachable: false on the untargeted SU1 is an artifact
+  // of that bounded transport rather than a judgement about SU1. SU1 keeps the
+  // verdict its own evidence won, and the run is not killed as a regression.
+  const terminal = structuredClone(f.finalDecision);
+  terminal.resolutions[0].status = "missing";
+  terminal.resolutions[0].sourceIds = [];
+  terminal.units[0] = {
+    ...terminal.units[0],
+    teachable: false,
+    availableSourceIds: [],
+    missingCitations: [f.syllabusPlan.referencedMaterials[0].citation],
+  };
+  const result = await runSyllabusCoverageEvidenceRecovery({
+    syllabusPlan: f.syllabusPlan, initialCoverageRaw: JSON.stringify(f.initialDecision), initialCoverageDecision: f.initialDecision,
+    sources: f.sources, anchors: f.anchors, sourceSetHash: H1, sourceArtifactInventoryHash: H2, model: "model-a",
+    provider: async (request) => {
+      if (request.phase === "page_selection") {
+        const page = selectorPage(JSON.parse(request.user), (number) => number === 41);
+        return { rawResponse: JSON.stringify({ selectedPages: [{ anchorId: page.anchorId, selectionReason: "Test refused unit." }], selectionReason: "Retest." }), model: "model-a" };
+      }
+      return { rawResponse: JSON.stringify(terminal), model: "model-a" };
+    },
+  });
+  assert.equal(result.coverage.units[0].unitId, "SU1");
+  assert.equal(result.coverage.units[0].teachable, true, "the untargeted unit keeps its proven verdict");
+  assert.equal(result.receipt.outcome, "recovered");
+  assert.equal(result.recovered, true);
+  assert.equal(result.receipt.unteachableUnitIdsAfter.includes("SU1"), false);
+  // The receipt still verifies end to end, merge included.
+  assert.deepEqual(
+    syllabusCoverageRecoveryReceiptProblems({ receipt: result.receipt, sources: f.sources, anchors: f.anchors, coverage: result.coverage }),
+    [],
+  );
 });
 
 test("a partially refused decision still runs recovery and can recover the refused unit", async () => {
@@ -727,4 +766,86 @@ test("a receipt whose refused-unit list disagrees with its initial decision is r
     expectedSourceArtifactInventoryHash: H2,
   });
   assert.ok(problems.some((problem) => /refused-unit list does not match/.test(problem)));
+});
+
+test("a whole-module source set stays selectable within the transport cap", () => {
+  // telecom-1 M1 (2026-09-21): 11 course documents plus five textbooks carry
+  // ~4300 canonical page identities. The old 2000 ceiling failed recovery
+  // closed before the selector saw anything, even though the same catalog at
+  // zero excerpt is far inside the character cap that actually bounds the
+  // request.
+  const identities = 4_300;
+  assert.ok(
+    SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_ENTRIES >= identities,
+    `entry cap ${SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_ENTRIES} must admit a whole-module course`,
+  );
+  // ["pNNNN", sourceIndex, pageNumber, ""] is ~20 characters with no excerpt.
+  const bytesAtZeroExcerpt = SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_ENTRIES * 20;
+  assert.ok(
+    bytesAtZeroExcerpt < SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS,
+    "the entry cap must stay inside the character cap that bounds the transport",
+  );
+});
+
+test("catalog sizing measures the transmitted payload, not the canonical entry", async () => {
+  // A canonical entry carries a full source slug, title and 64-char digest for
+  // validation; none of that is transmitted. Sizing the canonical form against
+  // the transport cap failed a whole-module course closed even though its real
+  // request was an order of magnitude inside the limit.
+  const src = await import("../src/lib/learn-syllabus-coverage-recovery.ts");
+  const text = readFileSync(
+    new URL("../src/lib/learn-syllabus-coverage-recovery.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    text,
+    /const catalogChars[\s\S]{0,400}?JSON\.stringify\(recoveryCatalogTransport\(catalog\)\)\.length/,
+    "catalogChars must size the transport projection",
+  );
+  assert.ok(src.SYLLABUS_COVERAGE_RECOVERY_MAX_CATALOG_CHARS >= 500_000);
+});
+
+test("a recovered unit keeps the assigned work its refused record already named", () => {
+  // The telecom-1 shape, 2026-09-21: one textbook (R1) is assigned to several
+  // units, so it is not exclusive to the refused unit and keeps its initial
+  // resolution. The rereview judged SU2 from recovered lecture-deck pages and
+  // named only the deck, leaving the merged decision with a unit that cites no
+  // source selected for its available assigned material.
+  const COUCH = "couch-digital-and-analog-communication-systems";
+  const DECK = "5xta0-m1-sr-digitalmodulationformats-introduction-baseband";
+  const syllabusPlan = {
+    courseTitle: "5XTA0",
+    referencedMaterials: [{ id: "R1", citation: "L. W. Couch, Digital and Analog Communication Systems, 8th ed.", title: "Digital and Analog Communication Systems", authors: ["L. W. Couch"], kind: "textbook", required: true }],
+    units: [
+      { id: "SU1", label: "M1.a.i.1", title: "Baseband binary modulation", objectives: [], topics: [], questionReferences: [], materialIds: ["R1"] },
+      { id: "SU2", label: "M1.a.i.2", title: "Baseband multilevel modulation", objectives: [], topics: [], questionReferences: [], materialIds: ["R1"] },
+    ],
+  };
+  const resolutions = [{ materialId: "R1", citation: syllabusPlan.referencedMaterials[0].citation, status: "available", sourceIds: [COUCH], matchReason: "Canonical pages identify the eighth edition." }];
+  const initial = {
+    resolutions,
+    units: [
+      { unitId: "SU1", availableSourceIds: [COUCH, DECK], missingCitations: [], teachable: true, coverageReason: "Couch plus the deck establish binary baseband signalling." },
+      // A refused unit may retain partial supporting source ids.
+      { unitId: "SU2", availableSourceIds: [COUCH, DECK], missingCitations: [], teachable: false, coverageReason: "The bounded evidence did not establish the multilevel PAM treatment." },
+    ],
+  };
+  const rereview = {
+    resolutions,
+    units: [
+      { unitId: "SU1", availableSourceIds: [], missingCitations: [], teachable: false, coverageReason: "No recovered page covers this unit." },
+      { unitId: "SU2", availableSourceIds: [DECK], missingCitations: [], teachable: true, coverageReason: "Recovered deck page establishes multi-level PAM." },
+    ],
+  };
+
+  const merged = mergeSyllabusCoverageRecoveryDecision({ syllabusPlan, initial, rereview, targetUnitIds: ["SU2"] });
+
+  assert.deepEqual(syllabusCoverageDecisionProblems(merged, syllabusPlan, [COUCH, DECK]), []);
+  const su1 = merged.units.find((unit) => unit.unitId === "SU1");
+  const su2 = merged.units.find((unit) => unit.unitId === "SU2");
+  assert.equal(su1.teachable, true, "the untargeted unit is not stripped by a rereview with no pages for it");
+  assert.equal(su2.teachable, true, "the targeted unit takes the recovered verdict");
+  assert.ok(su2.availableSourceIds.includes(DECK), "the recovered source is kept");
+  assert.ok(su2.availableSourceIds.includes(COUCH), "the assigned work it already named is kept");
+  assert.equal(new Set(su2.availableSourceIds).size, su2.availableSourceIds.length, "no duplicates");
 });

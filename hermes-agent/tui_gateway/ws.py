@@ -119,7 +119,12 @@ class WSTransport:
         if self._closed:
             return False
 
-        line = json.dumps(obj, ensure_ascii=False)
+        # Tool excerpts can contain an unpaired UTF-16 surrogate (for example
+        # a JavaScript slice through a mathematical symbol). JSON can carry it
+        # as an escape; a WebSocket text frame cannot encode it as UTF-8.
+        # Keep the payload lossless without killing the shared connection and
+        # every other chat on it, including recovery of this same payload.
+        line = json.dumps(obj, ensure_ascii=True)
 
         try:
             on_loop = asyncio.get_running_loop() is self._loop
@@ -221,7 +226,7 @@ class WSTransport:
         with self._token_lock:
             batch = self._pending_tokens
             self._pending_tokens = []
-            batch.append(json.dumps(obj, ensure_ascii=False))
+            batch.append(json.dumps(obj, ensure_ascii=True))
         await self._safe_send_many(batch)
         return not self._closed
 

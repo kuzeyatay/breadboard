@@ -21,11 +21,12 @@ function cacheResponse(url: string, value: unknown, expiresAt: number): void {
 
 export function skillsCatalogUrl({
   surface,
-  filter = "all",
+  filter = "my",
   page = 0,
   perPage = 50,
   query = "",
   recentSkillIds = [],
+  pinnedSkillIds = [],
 }: {
   surface: HermesSurface;
   filter?: string;
@@ -33,9 +34,10 @@ export function skillsCatalogUrl({
   perPage?: number;
   query?: string;
   recentSkillIds?: string[];
+  pinnedSkillIds?: string[];
 }): string {
   const normalizedQuery = query.trim();
-  if (normalizedQuery && filter !== "featured" && filter !== "recent") {
+  if (normalizedQuery && !["my", "installed", "documents", "featured", "recent"].includes(filter)) {
     const search = new URLSearchParams({ q: normalizedQuery, surface });
     return `/api/hermes/skills/search?${search}`;
   }
@@ -46,8 +48,11 @@ export function skillsCatalogUrl({
     surface,
   });
   if (normalizedQuery) parameters.set("q", normalizedQuery);
-  if (filter === "recent") {
+  if (filter === "recent" || filter === "my" || filter === "installed") {
     recentSkillIds.forEach((id) => parameters.append("id", id));
+  }
+  if (filter === "my" || filter === "installed") {
+    pinnedSkillIds.forEach((id) => parameters.append("pinnedId", id));
   }
   return `/api/hermes/skills?${parameters}`;
 }

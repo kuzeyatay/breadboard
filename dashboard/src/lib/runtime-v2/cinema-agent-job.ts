@@ -402,7 +402,7 @@ export async function inspectVoxDirectorRuntimeHealth(input: {
     output.jobId !== job.jobId ||
     output.kind !== "result" ||
     !isRecord(output.content) ||
-    !exactKeys(output.content, ["protocolVersion", "identity", "completionSequence", "health"]) ||
+    !exactKeys(output.content, ["protocolVersion", "identity", "completionSequence", "result"]) ||
     output.content.protocolVersion !== PROTOCOL_VERSION ||
     !isRecord(output.content.identity) ||
     !exactKeys(output.content.identity, ["jobId", "attempt", "workerInstanceId"]) ||
@@ -410,9 +410,9 @@ export async function inspectVoxDirectorRuntimeHealth(input: {
     output.content.identity.attempt !== job.attempt ||
     output.content.identity.workerInstanceId !== job.workerInstanceId ||
     output.content.completionSequence !== job.lastWorkerSequence ||
-    !isRecord(output.content.health)
+    !isRecord(output.content.result)
   ) {
     throw new Error("The Vox Director Runtime health result is invalid.");
   }
-  return output.content.health;
+  return output.content.result;
 }

@@ -93,6 +93,7 @@ test("both status runtime aliases use one lightweight in-process projection", ()
 
   for (const runtime of [development, production]) {
     assert.match(runtime, /from "@\/lib\/learn-status-projection"/);
+    assert.match(runtime, /await getLearnStatusSnapshotAsync\(input\)/);
     assert.match(runtime, /mergeRuntimeV2LearnStatus/);
     assert.doesNotMatch(runtime, /@\/lib\/learn(?:"|')/);
     assert.doesNotMatch(runtime, /learn-status-client|learn-status-worker/);
@@ -129,7 +130,9 @@ test("both status runtime aliases use one lightweight in-process projection", ()
   assert.ok(statusNode);
   assert.doesNotMatch(statusNode, /\b(?:body|content)\s*:/);
   assert.match(projection, /const STATUS_SOURCE_CACHE_LIMIT = 128/);
-  assert.match(projection, /const STATUS_METADATA_CACHE_LIMIT = 128/);
+  // Metadata entries hold no bodies (above), so one per note a walk accepts.
+  assert.match(projection, /const STATUS_METADATA_CACHE_LIMIT = STATUS_MARKDOWN_ENTRY_LIMIT;/);
+  assert.match(projection, /const STATUS_MARKDOWN_ENTRY_LIMIT = 16_384;/);
   assert.match(projection, /while \(cache\.size > limit\)/);
 });
 
@@ -224,6 +227,13 @@ test("the in-process projection preserves the empty Learn status DTO", async () 
       `${pathToFileURL(path.join(sourceRoot, "lib/learn-status-projection.ts")).href}?test=${Date.now()}`
     );
     const snapshot = projection.getLearnStatusSnapshot({ gardenId, contentPath });
+    const first = projection.getLearnStatusSnapshotAsync({ gardenId, contentPath });
+    const shared = projection.getLearnStatusSnapshotAsync({ gardenId, contentPath });
+    assert.equal(first, shared, "concurrent tabs share an in-flight scan");
+    assert.deepEqual(await first, snapshot, "cooperative and synchronous projections agree");
+    const fresh = projection.getLearnStatusSnapshotAsync({ gardenId, contentPath });
+    assert.notEqual(fresh, first, "completed reads are not cached across polls");
+    assert.deepEqual(await fresh, snapshot);
     assert.deepEqual(snapshot.job, null);
     assert.deepEqual(snapshot.publicationRecovery, null);
     assert.deepEqual(snapshot.proposedLearningMap, null);
@@ -303,7 +313,7 @@ test("the in-process projection preserves the empty Learn status DTO", async () 
     } finally {
       fs.readSync = originalReadSync;
     }
-    assert.equal(oversizedSnapshot.sourceCount, 2);
+    assert.equal(oversizedSnapshot.sourceCount, 3, "ordinary Markdown is available without being selected by default");
     assert.equal(oversizedSnapshot.sourceSetChanged, true);
     assert.ok(
       bytesRead < 128 * 1024,
@@ -365,6 +375,42 @@ test("the in-process projection preserves the empty Learn status DTO", async () 
     assert.equal(legacySnapshot.job.id, "legacy-job");
     assert.equal(legacySnapshot.job.model, "gpt-5.6-sol");
     assert.deepEqual(legacySnapshot.job.sourceIds, []);
+
+    const markdownGardenId = "markdown-only";
+    const markdownGarden = path.join(contentPath, markdownGardenId);
+    fs.mkdirSync(path.join(markdownGarden, "generated"), { recursive: true });
+    for (const [file, type] of [
+      ["my-note.md", "user-note"],
+      ["guide.md", "user-note"],
+      ["generated/saved-page.md", "learning-page"],
+      ["generated/legacy-card.md", "knowledge-topic"],
+    ]) {
+      fs.writeFileSync(path.join(markdownGarden, file),
+        `---\ntitle: ${file}\nknowledge_type: ${type}\n---\n\nTeaching material from ${file}.\n`);
+    }
+    const markdownSnapshot = projection.getLearnStatusSnapshot({ gardenId: markdownGardenId, contentPath });
+    assert.equal(markdownSnapshot.hasSources, true, "a garden with only Markdown can open Learn");
+    assert.equal(markdownSnapshot.hasTextbook, false, "saved chat pages are not Learn output");
+    assert.equal(markdownSnapshot.sourceCount, 3, "legacy topic cards stay excluded");
+    assert.deepEqual(markdownSnapshot.selectedSourceIds, [], "Markdown remains opt-in");
+    database.default.exec(`
+      ALTER TABLE learn_jobs ADD COLUMN source_ids_json TEXT;
+      ALTER TABLE learn_jobs ADD COLUMN syllabus_source_id TEXT;
+    `);
+    database.default.prepare(`INSERT INTO learn_jobs
+      (id, garden_id, status, mode, created_at, updated_at, source_ids_json, syllabus_source_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run("markdown-job", markdownGardenId, "cancelled", "plan", "2026-01-02", "2026-01-02",
+      JSON.stringify(["my-note", "saved-page"]), "guide");
+    const selectedMarkdown = projection.getLearnStatusSnapshot({ gardenId: markdownGardenId, contentPath });
+    assert.deepEqual(selectedMarkdown.selectedSourceIds, ["my-note", "saved-page"]);
+    assert.equal(selectedMarkdown.selectedSourceCount, 2);
+    assert.equal(selectedMarkdown.syllabusSourceId, "guide");
+    assert.equal(selectedMarkdown.sourceSetChanged, false);
+    assert.deepEqual(await projection.getLearnStatusSnapshotAsync({ gardenId: markdownGardenId, contentPath }), selectedMarkdown);
+    fs.unlinkSync(path.join(markdownGarden, "my-note.md"));
+    const afterDelete = projection.getLearnStatusSnapshot({ gardenId: markdownGardenId, contentPath });
+    assert.deepEqual(afterDelete.selectedSourceIds, ["saved-page"], "only a removed Markdown source is dropped");
 
     database.default.exec(`
       CREATE TABLE learn_publication_retries (

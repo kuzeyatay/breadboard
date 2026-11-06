@@ -5,14 +5,17 @@ const GAP = 14;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
 /** Find nearby free space outside earlier cards. Earlier answers never chase their children. */
-export function placeNestedInlineAnswer({ anchor, bounds, occupied, desiredHeight }: {
+export function placeNestedInlineAnswer({ anchor, bounds, occupied, desiredHeight, desiredWidth = 580, maxHeight = 520, minimumWidth = 340 }: {
   anchor: AnswerRect;
   bounds: AnswerRect;
   occupied: AnswerRect[];
   desiredHeight: number;
+  desiredWidth?: number;
+  maxHeight?: number;
+  minimumWidth?: number;
 }): AnswerPlacement {
-  const width = Math.min(580, bounds.right - bounds.left);
-  const height = Math.min(desiredHeight, 520, bounds.bottom - bounds.top);
+  const width = Math.min(desiredWidth, bounds.right - bounds.left);
+  const height = Math.min(desiredHeight, maxHeight, bounds.bottom - bounds.top);
   let spaces = [bounds];
   for (const card of occupied) {
     const obstacle = { left: card.left - GAP, right: card.right + GAP,
@@ -25,7 +28,7 @@ export function placeNestedInlineAnswer({ anchor, bounds, occupied, desiredHeigh
         { ...space, left: Math.max(space.left, obstacle.right) },
         { ...space, bottom: Math.min(space.bottom, obstacle.top) },
         { ...space, top: Math.max(space.top, obstacle.bottom) },
-      ].filter(rect => rect.right - rect.left >= Math.min(340, width) &&
+      ].filter(rect => rect.right - rect.left >= Math.min(minimumWidth, width) &&
         rect.bottom - rect.top >= Math.min(180, height));
     });
     spaces = spaces.filter((space, index, all) => !all.some((other, otherIndex) =>

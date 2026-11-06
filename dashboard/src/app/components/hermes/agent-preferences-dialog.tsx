@@ -131,7 +131,7 @@ export default function AgentPreferencesDialog({ onClose, returnFocusTo }: { onC
   return <Dialog.Root open onOpenChange={(open) => { if (!open && !saving) onClose(); }}>
     <Dialog.Portal>
       <Dialog.Overlay className="bb-modal-backdrop fixed inset-0 z-[150]" />
-      <Dialog.Content aria-busy={saving} onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus.current?.focus(); }}
+      <Dialog.Content data-enter-submit-scope aria-busy={saving} onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus.current?.focus(); }}
         onEscapeKeyDown={(event) => { if (saving) event.preventDefault(); event.stopPropagation(); }}
         onPointerDownOutside={(event) => { if (dirty || saving) event.preventDefault(); }}
         className="bb-modal-panel neu-dialog fixed left-1/2 top-1/2 z-[151] flex max-h-[min(88dvh,760px)] w-[calc(100vw-2rem)] max-w-xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-[var(--line)] text-[var(--ink)] focus:outline-none">
@@ -150,9 +150,9 @@ export default function AgentPreferencesDialog({ onClose, returnFocusTo }: { onC
             <section className="space-y-4 px-5 py-4">
               <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-medium">Task preferences</h3>
                 {!settings.enabled ? <span className="rounded-full bg-[var(--paper-surface)] px-2 py-1 text-[10px] text-[var(--ink-muted)]">Inactive</span> : null}</div>
-              <p className="text-xs leading-5 text-[var(--ink-muted)]">Only tasks you customize get a bias. Leave any task at No preference to let Hermes choose. Your explicit request always takes priority. {settings.enabled ? "" : "You can edit while this is off."}</p>
+              <p className="text-xs leading-5 text-[var(--ink-muted)]">Choose a preferred agent for each task, or leave it to Breadboard. Requests in chat take priority. {settings.enabled ? "" : "You can edit while this is off."}</p>
               {notice ? <p className="text-xs text-[var(--ink-muted)]">{notice}</p> : null}
-              <input value={taskQuery} onChange={(event) => setTaskQuery(event.target.value)} aria-label="Filter task preferences" placeholder="Find a task: music, stocks, video…" className={field} />
+              <input data-enter-newline value={taskQuery} onChange={(event) => setTaskQuery(event.target.value)} aria-label="Filter task preferences" placeholder="Find a task: music, stocks, video…" className={field} />
               <div className="divide-y divide-[var(--line)]">
               {settings.tasks.filter((task) => `${task.name} ${task.when}`.toLowerCase().includes(taskQuery.toLowerCase())).map((task) => <details key={task.id} className="group/task py-1">
                 <summary className="cursor-pointer rounded-lg py-2 text-sm font-medium text-[var(--ink-heading)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">
@@ -181,7 +181,6 @@ export default function AgentPreferencesDialog({ onClose, returnFocusTo }: { onC
               <div className="flex items-center justify-between gap-5"><div><label htmlFor="agent-preferences-explain" className="text-sm font-medium">Explain agent choices</label>
                 <p className="mt-1 text-xs text-[var(--ink-muted)]">Briefly say which agent fits and why before starting.</p></div>
                 <Toggle id="agent-preferences-explain" checked={settings.explainChoice} onChange={(explainChoice) => update({ explainChoice })} /></div>
-              <p className="text-[11px] leading-5 text-[var(--ink-muted)]">These settings apply when task preferences are on. They guide Hermes; agent availability, manual inputs, and launch approvals still apply.</p>
             </section>
             <details className="border-t border-[var(--line)] px-5 py-3"><summary className="cursor-pointer text-xs text-[var(--ink-muted)]">Preview preferences for Hermes</summary>
               <pre className="mt-3 whitespace-pre-wrap break-words rounded-lg bg-[var(--paper-surface)] p-3 text-[11px] leading-5">{renderAgentPreferences({ ...settings, enabled: true }) || "No agent preferences selected. Hermes chooses freely for every task."}</pre>
@@ -193,7 +192,7 @@ export default function AgentPreferencesDialog({ onClose, returnFocusTo }: { onC
           {error ? <p role="alert" className="text-xs text-red-600 dark:text-red-400">{error} {!settings ? <button type="button" onClick={() => setReload((value) => value + 1)} className="underline">Retry</button> : null}</p> : null}
           <div className="flex items-center justify-between gap-3"><p role="status" className="text-[11px] text-[var(--ink-muted)]">{status || (dirty ? "Unsaved changes" : "Changes apply to future messages.")}</p>
             <div className="flex shrink-0 gap-2"><button type="button" disabled={saving} onClick={onClose} className="rounded-lg px-3 py-2 text-xs text-[var(--ink-muted)] hover:bg-[var(--paper-surface)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">{dirty ? "Cancel" : "Done"}</button>
-              <button type="button" disabled={!dirty || saving} onClick={() => void save()} className="rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:opacity-40 active:scale-[0.97]">{saving ? "Saving…" : "Save changes"}</button></div>
+              <button data-enter-submit type="button" disabled={!dirty || saving} onClick={() => void save()} className="rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] disabled:opacity-40 active:scale-[0.97]">{saving ? "Saving…" : "Save changes"}</button></div>
           </div>
         </footer>
       </Dialog.Content>

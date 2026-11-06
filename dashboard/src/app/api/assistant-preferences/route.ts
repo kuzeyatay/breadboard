@@ -12,7 +12,7 @@ import {
   setHermesUserSettings,
 } from "@/lib/hermes/runtime-store";
 import { pickComposerSwitches } from "@/lib/hermes/composer-switches";
-import { providerErrorResponseInit, setDefaultModel } from "@/lib/chatmock-providers";
+import { providerErrorResponseInit, setFallbackModel } from "@/lib/chatmock-providers";
 import { corsHeaders } from "@/lib/hermes/quartz-support";
 import {
   ApiError,
@@ -31,6 +31,7 @@ async function optionalUserId(): Promise<number | null> {
 function defaults() {
   return {
     model: DEFAULT_MODEL,
+    fallbackModel: DEFAULT_MODEL,
     reasoningEffort: DEFAULT_ASSISTANT_REASONING_EFFORT,
     reasoningEffortByModel: {} as Record<string, string>,
     userPreference: false,
@@ -44,6 +45,7 @@ function payload(userId: number | null) {
   const settings = getHermesUserSettings(userId);
   return {
     model: settings.defaultModel,
+    fallbackModel: settings.fallbackModel,
     reasoningEffort: settings.reasoningEffort,
     // The picker needs the whole map, not just the active pair, so selecting a
     // model can restore its own effort without a round trip.
@@ -86,8 +88,12 @@ export async function PATCH(request: Request) {
     if (userId === null) throw new ApiError(401, "authentication_required", "Sign in to save this preference.");
     const body = await readJsonBody(request);
     const model = body.model === undefined ? undefined : normalizeAssistantModelId(body.model);
-    if (model === null) {
+    const fallbackModel = body.fallbackModel === undefined ? undefined : normalizeAssistantModelId(body.fallbackModel);
+    if (model === null || (model && ["default", "chat", "auto"].includes(model.toLowerCase()))) {
       throw new ApiError(400, "invalid_model", "Choose a supported assistant model.");
+    }
+    if (fallbackModel === null || (fallbackModel && ["default", "chat", "auto"].includes(fallbackModel.toLowerCase()))) {
+      throw new ApiError(400, "invalid_fallback_model", "Choose a supported fallback model.");
     }
     const reasoningEffort = body.reasoningEffort === undefined
       ? undefined
@@ -111,18 +117,18 @@ export async function PATCH(request: Request) {
     }
     if (
       model === undefined &&
+      fallbackModel === undefined &&
       reasoningEffort === undefined &&
       humanizerAuto === undefined &&
       switches === undefined
     ) {
       throw new ApiError(400, "preference_required", "A model or intelligence level is required.");
     }
-    // The profile fallback also governs background generation, including
-    // Thought Topology. Validate routing before saving the account preference;
-    // explicit chat and Learn selections are passed with their own requests.
-    if (model !== undefined) {
+    // Only the fallback governs gateway recovery and background generation.
+    // Startup preferences must not change routing for already running work.
+    if (fallbackModel !== undefined) {
       try {
-        await setDefaultModel(request, model);
+        await setFallbackModel(request, fallbackModel);
       } catch (error) {
         const { status, message } = providerErrorResponseInit(error);
         throw new ApiError(status, "model_unavailable", message);
@@ -130,6 +136,7 @@ export async function PATCH(request: Request) {
     }
     setHermesUserSettings(userId, {
       ...(model !== undefined ? { defaultModel: model } : {}),
+      ...(fallbackModel !== undefined ? { fallbackModel } : {}),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       // Sent on its own by the "Rewrite naturally" switch, which is not an
       // intelligence preference and must not mark one as set.

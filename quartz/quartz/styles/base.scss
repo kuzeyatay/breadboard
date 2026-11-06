@@ -165,9 +165,8 @@ a {
 }
 
 .page {
-  // The Garden is an application workspace, not a centered reading card. Let
-  // the fixed sidebars sit against the viewport edges and give every reclaimed
-  // pixel to the flexible center column on wide desktop windows.
+  // Keep the sidebars at the viewport edges while the document uses the same
+  // comfortable reading width in both normal and reader mode.
   max-width: none;
   margin: 0;
 
@@ -300,20 +299,10 @@ a {
 
     & .center,
     & footer {
-      max-width: 100%;
-      min-width: 100%;
-      margin-left: auto;
-      margin-right: auto;
-      @media all and ($tablet) {
-        margin-right: 0;
-      }
-      @media all and ($mobile) {
-        margin-right: 0;
-        margin-left: 0;
-      }
-    }
-    & footer {
-      margin-left: 0;
+      width: 100%;
+      max-width: $pageWidth;
+      min-width: 0;
+      margin-inline: auto;
     }
   }
 }

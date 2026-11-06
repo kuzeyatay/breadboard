@@ -55,3 +55,15 @@ test('event streams clean up on cancellation and aborted requests',async()=>{
   await second.cancel();
   assert.doesNotThrow(()=>events.publishSpotifyPlayback(104,'local-player',playback));
 });
+
+test('SDK queue and repeat evidence survives validation and replay',()=>{
+  const received=[];const off=events.subscribeSpotifyPlayback(105,sample=>received.push(sample));
+  for(const invalid of [{hasNextTrack:'false'},{repeatMode:-1},{repeatMode:3},{repeatMode:'0'}]) {
+    assert.throws(()=>events.publishSpotifyPlayback(105,'local-player',{...playback,...invalid}),/invalid/);
+  }
+  assert.equal(received.length,0);
+  events.publishSpotifyPlayback(105,'local-player',{...playback,hasNextTrack:false,repeatMode:0});
+  assert.equal(received[0].playback.hasNextTrack,false);
+  assert.equal(received[0].playback.repeatMode,0);
+  off();
+});

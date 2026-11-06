@@ -104,12 +104,10 @@ export async function POST(request: Request) {
     // Ownership first: an id that names somebody else's conversation must be
     // indistinguishable from one that names nothing.
     const conversation = getConversationForUser(parsed.value.conversationId, userId);
+    const messageId = assistantMessageRowId(conversation.id, parsed.value.messageId);
     const state = addAssistantContentVersion({
       conversationId: conversation.id,
-      messageId: assistantMessageRowId(
-        conversation.id,
-        parsed.value.messageId,
-      ),
+      messageId,
       expectedContent: parsed.value.expectedContent,
       content: parsed.value.rewrittenText,
       origin: "humanizer",

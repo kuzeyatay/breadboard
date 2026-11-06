@@ -308,7 +308,10 @@ test("Hermes model provider is environment-driven ChatMock", () => {
     "{env:CHATMOCK_API_KEY}",
   );
   for (const id of [
+    "gpt-6.1-sol",
     "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -321,10 +324,11 @@ test("Hermes model provider is environment-driven ChatMock", () => {
       "high",
     );
   }
-  for (const id of ["gpt-6-astra", "gpt-5.6-sol"]) {
+  for (const id of ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"]) {
     assert.equal(config.provider.chatmock.models[id].variants.max.reasoningEffort, "max");
   }
   assert.equal(config.provider.chatmock.models["gpt-6-astra"].variants.none, undefined);
+  assert.equal(config.provider.chatmock.models["gpt-6.1-sol"].variants.none, undefined);
   assert.equal(
     config.provider.chatmock.models["gpt-5.5"].variants.max,
     undefined,

@@ -51,6 +51,7 @@ export async function POST(
       syllabusSourceId,
       sourceOnly: body.sourceOnly !== false,
       includeSourceSnapshots: body.includeSourceSnapshots === true,
+      reuseCropVerdictsAcrossModels: body.reuseCropVerdictsAcrossModels === true,
       autoConfirmTopicMap: body.skipManualReview === true,
       userInstruction,
     }, `planning for ${cluster.slug}`);

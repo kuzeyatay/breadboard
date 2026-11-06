@@ -79,3 +79,40 @@ test("the target id is read from the exact bootstrap page, never a look-alike", 
 test("an invalid port never resolves", async () => {
   assert.equal(await resolveDebuggingTargetId(80, chatgptWebBootstrapUrl(nonce), 100), null);
 });
+
+test("a tab request may switch ChatGPT voice's microphone with a boolean", () => {
+  assert.equal(isChatgptWebTabRequest({ foreground: false, lane: "interactive", microphone: true }), true);
+  assert.equal(isChatgptWebTabRequest({ foreground: false, microphone: false }), true);
+  assert.equal(isChatgptWebTabRequest({ foreground: false, microphone: "on" }), false);
+});
+
+test("the ChatGPT page's lent microphone is audio-only, chatgpt.com-only and taken back", async () => {
+  const { BrowserNotifications } = await import("../src/main/browser-notifications");
+  const preferences = { mediaPermission: () => "default", permission: () => "default" };
+  const notifications = new BrowserNotifications(
+    preferences as never, () => undefined, () => false, () => {}, () => {},
+  );
+  let check: (...args: unknown[]) => boolean = () => false;
+  let request: (...args: unknown[]) => void = () => {};
+  notifications.installSession({
+    setPermissionCheckHandler: (handler: typeof check) => { check = handler; },
+    setPermissionRequestHandler: (handler: typeof request) => { request = handler; },
+  } as never);
+  let url = "https://chatgpt.com/c/6ac60436";
+  const page = { isDestroyed: () => false, getURL: () => url, once: () => {} };
+  const asked = (mediaTypes: string[], requestingUrl = url) => new Promise<boolean>((resolve) =>
+    request(page, "media", resolve, { requestingUrl, mediaTypes }));
+
+  assert.equal(await asked(["audio"]), false);
+  notifications.allowMicrophone(page as never, "https://chatgpt.com", true);
+  assert.equal(await asked(["audio"]), true);
+  assert.equal(check(page, "media", "https://chatgpt.com", { mediaType: "audio" }), true);
+  assert.equal(await asked(["audio", "video"]), false);
+  assert.equal(check(page, "media", "https://chatgpt.com", { mediaType: "video" }), false);
+  assert.equal(await asked(["audio"], "https://evil.example/"), false);
+  url = "https://evil.example/";
+  assert.equal(await asked(["audio"], "https://chatgpt.com/"), false);
+  url = "https://chatgpt.com/";
+  notifications.allowMicrophone(page as never, "https://chatgpt.com", false);
+  assert.equal(await asked(["audio"]), false);
+});

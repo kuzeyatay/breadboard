@@ -614,7 +614,8 @@ enum ControlRouteAuthority {
 fn route_authority(path: &str) -> ControlRouteAuthority {
     if path == "/v1/status" {
         ControlRouteAuthority::Either
-    } else if path == "/v1/shutdown" || path.starts_with("/v1/lifecycle/services/") {
+    } else if path == "/v1/shutdown" || path.starts_with("/v1/lifecycle/services/")
+        || matches!(path, "/v1/lifecycle/quiesce" | "/v1/lifecycle/resume") {
         ControlRouteAuthority::Lifecycle
     } else if path == "/v1/internal/jobs/learn-recovery"
         || path == "/v1/jobs"
@@ -955,6 +956,21 @@ where
     }
 
     match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/v1/lifecycle/quiesce") => {
+            match shutdown.quiesce() {
+                Ok((workers, leases)) => write_control_response(stream, 200, "OK",
+                    &bounded_json(&serde_json::json!({"ok":true,"workers":workers,"leases":leases}))?)?,
+                Err(_) => write_control_response(stream, 503, "Service Unavailable",
+                    b"{\"error\":\"maintenance-unavailable\"}")?,
+            }
+        }
+        ("POST", "/v1/lifecycle/resume") => {
+            match shutdown.open_admission() {
+                Ok(()) => write_control_response(stream, 200, "OK", b"{\"ok\":true}")?,
+                Err(_) => write_control_response(stream, 503, "Service Unavailable",
+                    b"{\"error\":\"maintenance-unavailable\"}")?,
+            }
+        }
         ("GET", "/v1/status") => {
             let services = service_statuses().map_err(|_| ControlError::Status)?;
             let status = RuntimeStatusMessage::RuntimeStatus {
@@ -978,7 +994,7 @@ where
             let body = bounded_json(&acknowledgement)?;
             write_control_response(stream, 200, "OK", &body)?;
         }
-        (_, "/v1/status" | "/v1/shutdown") => {
+        (_, "/v1/status" | "/v1/shutdown" | "/v1/lifecycle/quiesce" | "/v1/lifecycle/resume") => {
             write_control_response(
                 stream,
                 405,
@@ -3912,6 +3928,10 @@ mod tests {
         assert!(role_allows(dashboard, route_authority("/v1/status")));
         assert!(role_allows(lifecycle, route_authority("/v1/shutdown")));
         assert!(!role_allows(dashboard, route_authority("/v1/shutdown")));
+        for route in ["/v1/lifecycle/quiesce", "/v1/lifecycle/resume"] {
+            assert!(role_allows(lifecycle, route_authority(route)));
+            assert!(!role_allows(dashboard, route_authority(route)));
+        }
         assert!(role_allows(
             lifecycle,
             route_authority("/v1/lifecycle/services/dashboard/retry")

@@ -309,7 +309,7 @@ test("a launch request is read from either surface's event shape", async () => {
   );
 });
 
-test("the continuation turn carries the outcome and refuses to relaunch", async () => {
+test("the continuation carries the outcome and repairs failures while respecting a refusal", async () => {
   const {
     agentLaunchContinuationMessage,
     MAX_AGENT_LAUNCH_HOPS,
@@ -346,11 +346,22 @@ test("the continuation turn carries the outcome and refuses to relaunch", async 
     content: "Error: EISDIR: illegal operation on a directory, lstat 'C:'",
   });
   assert.match(failed, /did not finish/);
-  assert.match(failed, /ViMax was selected for this task because ViMax can create/);
-  assert.match(failed, /someone who may not know what agents, runtimes, launchers/);
-  assert.match(failed, /Do not repeat a stack trace, raw path, runtime version/);
-  assert.match(failed, /ordinary language what prevented it/);
-  assert.match(failed, /Do not relaunch it without being asked\./);
+  assert.match(failed, /Diagnose the cause and continue the authorized work/);
+  assert.match(failed, /Resume the existing project and reuse successful outputs/);
+  assert.match(failed, /never blindly replay external side effects/);
+  assert.doesNotMatch(failed, /Do not relaunch it without being asked\./);
+
+  const denied = agentLaunchContinuationMessage({
+    agentName: "ViMax",
+    reason: "ViMax can create the requested video artifact.",
+    outcome: "failed",
+    content: "Permission denied",
+  });
+  assert.match(denied, /ViMax was selected for this task because ViMax can create/);
+  assert.match(denied, /someone who may not know what agents, runtimes, launchers/);
+  assert.match(denied, /Do not repeat a stack trace, raw path, runtime version/);
+  assert.match(denied, /ordinary language what prevented it/);
+  assert.match(denied, /Do not relaunch it without being asked\./);
 
   const retainedResearch = agentLaunchContinuationMessage({
     agentName: "Max Research",

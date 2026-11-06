@@ -62,6 +62,8 @@ export interface SpeechSettings {
   modelSize: SpeechModelSize;
   transcriptionLanguage: SpeechLanguage | null;
   transcriptionModel: TranscriptionModel;
+  /** Voice mode talks to ChatGPT's own voice and copies it into the chat. */
+  chatgptVoiceMode: boolean;
 }
 
 const DEFAULT_SETTINGS: SpeechSettings = {
@@ -77,6 +79,7 @@ const DEFAULT_SETTINGS: SpeechSettings = {
   modelSize: "1.7B",
   transcriptionLanguage: null,
   transcriptionModel: "base",
+  chatgptVoiceMode: false,
 };
 
 db.exec(`
@@ -111,6 +114,9 @@ db.transaction(() => {
   if (!columns.some((column) => column.name === "elevenlabs_model")) {
     db.exec("ALTER TABLE speech_user_settings ADD COLUMN elevenlabs_model TEXT NOT NULL DEFAULT 'eleven_flash_v2_5'");
   }
+  if (!columns.some((column) => column.name === "chatgpt_voice_mode")) {
+    db.exec("ALTER TABLE speech_user_settings ADD COLUMN chatgpt_voice_mode INTEGER NOT NULL DEFAULT 0");
+  }
 }).immediate();
 
 type SpeechSettingsRow = {
@@ -126,6 +132,7 @@ type SpeechSettingsRow = {
   model_size: string;
   transcription_language: string | null;
   transcription_model: string;
+  chatgpt_voice_mode: number;
 };
 
 function includes<T extends readonly string[]>(values: T, value: string): value is T[number] {
@@ -155,6 +162,7 @@ function rowToSettings(row: SpeechSettingsRow | undefined): SpeechSettings {
     transcriptionModel: includes(TRANSCRIPTION_MODELS, row.transcription_model)
       ? row.transcription_model
       : DEFAULT_SETTINGS.transcriptionModel,
+    chatgptVoiceMode: row.chatgpt_voice_mode === 1,
   };
 }
 
@@ -162,7 +170,7 @@ export function getSpeechSettings(userId: number): SpeechSettings {
   const row = db
     .prepare(
       `SELECT enabled, profile_id, language, engine, model_size,
-              transcription_language, transcription_model, speech_provider, openai_voice, elevenlabs_voice_id, elevenlabs_model, pronunciations
+              transcription_language, transcription_model, speech_provider, openai_voice, elevenlabs_voice_id, elevenlabs_model, pronunciations, chatgpt_voice_mode
        FROM speech_user_settings
        WHERE user_id = ?`,
     )
@@ -217,13 +225,14 @@ export function updateSpeechSettings(
       includes(TRANSCRIPTION_MODELS, input.transcriptionModel)
         ? input.transcriptionModel
         : current.transcriptionModel,
+    chatgptVoiceMode: typeof input.chatgptVoiceMode === "boolean" ? input.chatgptVoiceMode : current.chatgptVoiceMode,
   };
 
   db.prepare(
     `INSERT INTO speech_user_settings (
        user_id, enabled, profile_id, language, engine, model_size,
-       transcription_language, transcription_model, speech_provider, openai_voice, elevenlabs_voice_id, elevenlabs_model, pronunciations, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       transcription_language, transcription_model, speech_provider, openai_voice, elevenlabs_voice_id, elevenlabs_model, pronunciations, chatgpt_voice_mode, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(user_id) DO UPDATE SET
        enabled = excluded.enabled,
        profile_id = excluded.profile_id,
@@ -237,6 +246,7 @@ export function updateSpeechSettings(
        elevenlabs_voice_id = excluded.elevenlabs_voice_id,
        elevenlabs_model = excluded.elevenlabs_model,
        pronunciations = excluded.pronunciations,
+       chatgpt_voice_mode = excluded.chatgpt_voice_mode,
        updated_at = excluded.updated_at`,
   ).run(
     userId,
@@ -252,6 +262,7 @@ export function updateSpeechSettings(
     next.elevenlabsVoiceId,
     next.elevenlabsModel,
     next.pronunciations,
+    next.chatgptVoiceMode ? 1 : 0,
   );
   return next;
 }

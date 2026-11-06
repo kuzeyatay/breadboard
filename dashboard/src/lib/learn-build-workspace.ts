@@ -99,6 +99,7 @@ const DISPOSABLE_TOP_LEVEL = new Set([
 const DURABLE_BREADBOARD_ENTRIES = new Set([
   "learn-artifacts.json", // user-selected, versioned supplementary teaching aids
   "source-visuals.json", // canonical source extraction ledger
+  "visual-descriptions", // cached source image captions shared with image search
   "source-visual-source-index.json", // durable garden-global S<n> ownership
   "source-formula-reviews", // AI-authored formula fidelity records + PDF-render evidence
   "source-formula-review-set.json", // stable reviewed-formula set/source-hash binding
@@ -927,27 +928,46 @@ function durableFingerprintRecordPath(relPath: string): string {
   return segments.join("/");
 }
 
-/** Stable content fingerprint used as the optimistic publication boundary. */
-export function fingerprintDurableGardenState(gardenDir: string, separateUserContent = false): string {
-  const records: string[] = [];
+/** Per-file sha256 of every durable (non-Learn-output) garden file, keyed by
+ * its canonical record path. The base a concurrent-change merge diffs against. */
+export function durableGardenFileDigests(
+  gardenDir: string,
+  separateUserContent = false,
+  /** Skip an entry (and, for a folder, everything under it) before reading. */
+  include: (relPath: string) => boolean = () => true,
+): Map<string, string> {
+  const digests = new Map<string, string>();
   const visit = (directory: string, relative = ""): void => {
     const entries = fs.readdirSync(directory, { withFileTypes: true });
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       const relPath = relative ? `${relative}/${entry.name}` : entry.name;
+      if (!include(relPath)) continue;
       if (!durableFingerprintIncludes(relPath) || (separateUserContent && isGardenUserOrNavigationPath(relPath))) continue;
       const absolute = path.join(directory, entry.name);
       if (entry.isDirectory()) {
         visit(absolute, relPath);
       } else if (entry.isFile()) {
-        const digest = crypto.createHash("sha256").update(fs.readFileSync(absolute)).digest("hex");
-        records.push(`${durableFingerprintRecordPath(relPath)}\0${digest}`);
+        digests.set(
+          durableFingerprintRecordPath(relPath),
+          crypto.createHash("sha256").update(fs.readFileSync(absolute)).digest("hex"),
+        );
       } else if (entry.isSymbolicLink()) {
         throw new Error(`Learn durable input contains unsupported symbolic link: ${relPath}`);
       }
     }
   };
   visit(gardenDir);
+  return digests;
+}
+
+export function fingerprintDurableGardenDigests(digests: ReadonlyMap<string, string>): string {
+  const records = [...digests].map(([relPath, digest]) => `${relPath}\0${digest}`);
   return crypto.createHash("sha256").update(records.sort().join("\n")).digest("hex");
+}
+
+/** Stable content fingerprint used as the optimistic publication boundary. */
+export function fingerprintDurableGardenState(gardenDir: string, separateUserContent = false): string {
+  return fingerprintDurableGardenDigests(durableGardenFileDigests(gardenDir, separateUserContent));
 }
 
 const WORKSPACE_DESCRIPTOR = "build-workspace.json";
@@ -988,6 +1008,7 @@ export function retainLearnBuildWorkspace(
     gardenSlug: workspace.gardenSlug,
     keepJobIds: [workspace.jobId],
   });
+  pruneSupersededLearnBuildWorkspaces({ gardenSlug: workspace.gardenSlug });
 }
 
 /** Retained failed workspaces kept per garden, newest first; the rest are
@@ -1049,6 +1070,179 @@ export function pruneRetainedLearnBuildWorkspaces(input: {
     disposed.push(workspace.workspaceRoot);
   }
   return disposed;
+}
+
+/** Resume preference of a retained checkpoint: 0 = deterministically
+ * corrupt, 1 = ordinary, 2 = deterministic-valid. */
+function retainedCheckpointRank(workspace: LearnBuildWorkspace): number {
+  let checkpointRank = 1;
+  try {
+    const statusPath = path.join(
+      workspace.stagingGardenDir,
+      ".breadboard",
+      "acceptance-status.json",
+    );
+    const statusStat = fs.statSync(statusPath);
+    const workspaceCreatedAt = Date.parse(workspace.createdAt);
+    // Fresh workspaces start without an acceptance receipt, and current
+    // resumed workspaces explicitly remove the inherited one. The mtime
+    // comparison remains only for descriptors created before that reset
+    // marker existed.
+    const receiptBelongsToWorkspace =
+      !workspace.resumedFromBuildId ||
+      workspace.inheritedAcceptanceStatusCleared === true ||
+      (Number.isFinite(workspaceCreatedAt) &&
+        statusStat.mtimeMs >= workspaceCreatedAt);
+    if (receiptBelongsToWorkspace) {
+      const status = JSON.parse(fs.readFileSync(statusPath, "utf8")) as Record<string, unknown>;
+      if (status.deterministicPass === false) checkpointRank = 0;
+      // A deterministic-valid semantic-repair checkpoint is safe to resume
+      // even when its critic receipt still has a blocker. Rank it alongside
+      // a publish-ready checkpoint so recency preserves later successful
+      // repairs; only deterministically corrupt candidates fall behind.
+      else if (status.deterministicPass === true) checkpointRank = 2;
+    }
+  } catch {
+    // Missing/partial acceptance state is an ordinary resumable checkpoint.
+  }
+  return checkpointRank;
+}
+
+/** Accepted-page keys recorded in one staged garden (empty when none). */
+function acceptedPageKeys(stagingGardenDir: string): Set<string> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(
+      path.join(stagingGardenDir, ".breadboard", "Internal", "learn-accepted-pages.json"),
+      "utf8",
+    )) as { pages?: Record<string, unknown> };
+    return new Set(Object.keys(parsed?.pages ?? {}));
+  } catch {
+    return new Set();
+  }
+}
+
+/** Every workspace descriptor of one garden, across all base directories. */
+function gardenWorkspaces(gardenSlug: string): LearnBuildWorkspace[] {
+  const found: LearnBuildWorkspace[] = [];
+  const seenRoots = new Set<string>();
+  for (const baseDir of learnWorkspaceBaseCandidates()) {
+    const gardenRoot = path.resolve(baseDir, gardenSlug);
+    if (!sameResolvedWorkspacePath(path.dirname(gardenRoot), baseDir)) continue;
+    let entries: Dirent[];
+    try {
+      entries = fs.readdirSync(gardenRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const workspaceRoot = path.resolve(gardenRoot, entry.name);
+      const rootKey = process.platform === "win32" ? workspaceRoot.toLowerCase() : workspaceRoot;
+      if (seenRoots.has(rootKey)) continue;
+      seenRoots.add(rootKey);
+      const workspace = workspaceDescriptorAt(workspaceRoot);
+      if (workspace?.gardenSlug === gardenSlug) found.push(workspace);
+    }
+  }
+  return found;
+}
+
+/**
+ * Dispose retained workspaces that a later retained workspace fully
+ * supersedes. Each resume clones its newest retained source into a new ~3 GB
+ * tree and leaves the source behind (em1, 2026-10-14: three 3.1 GB copies, C:
+ * down to 5.6 GB free). A retained workspace A is disposed only when ALL hold:
+ *  - A is `retained_after_failure` (never an active or in-flight tree);
+ *  - a workspace D descends from A through `resumedFromJobId` (D's descriptor
+ *    is written only after its clone finished, so A is no longer being read);
+ *  - D is itself `retained_after_failure` (durable and resume-eligible, not a
+ *    running job that could still fail without retaining its copy);
+ *  - D's staged tree exists and holds every accepted lesson receipt A holds;
+ *  - D ranks at least as high as A for resume (a deterministically corrupt
+ *    successor never supersedes a valid checkpoint).
+ * So one complete retained copy always survives, and the source of a running
+ * resume is kept until that run is retained in turn.
+ */
+export function pruneSupersededLearnBuildWorkspaces(input: { gardenSlug: string }): string[] {
+  const workspaces = gardenWorkspaces(input.gardenSlug);
+  const byJobId = new Map(workspaces.map((workspace) => [workspace.jobId, workspace]));
+  const disposable = new Map<string, LearnBuildWorkspace>();
+  for (const descendant of workspaces) {
+    if (descendant.lifecycle !== "retained_after_failure") continue;
+    if (!fs.existsSync(descendant.stagingGardenDir)) continue;
+    const descendantPages = acceptedPageKeys(descendant.stagingGardenDir);
+    const descendantRank = retainedCheckpointRank(descendant);
+    const visited = new Set<string>([descendant.jobId]);
+    let ancestorJobId = descendant.resumedFromJobId;
+    while (ancestorJobId && !visited.has(ancestorJobId)) {
+      visited.add(ancestorJobId);
+      const ancestor = byJobId.get(ancestorJobId);
+      if (!ancestor) break;
+      const ancestorPages = acceptedPageKeys(ancestor.stagingGardenDir);
+      if (
+        ancestor.lifecycle === "retained_after_failure" &&
+        // A successor the resume picker would rank below the ancestor (e.g. it
+        // failed deterministically) does not supersede it: the ancestor is
+        // still the preferred checkpoint.
+        descendantRank >= retainedCheckpointRank(ancestor) &&
+        [...ancestorPages].every((page) => descendantPages.has(page))
+      ) {
+        disposable.set(ancestor.jobId, ancestor);
+      }
+      ancestorJobId = ancestor.resumedFromJobId;
+    }
+  }
+  const disposed: string[] = [];
+  for (const workspace of disposable.values()) {
+    disposeWorkspaceRootBestEffort(workspace.workspaceRoot);
+    disposed.push(workspace.workspaceRoot);
+  }
+  return disposed;
+}
+
+/** Gardens that have any Learn workspace directory, across all base dirs. */
+export function learnWorkspaceGardenSlugs(): string[] {
+  const slugs = new Set<string>();
+  for (const baseDir of learnWorkspaceBaseCandidates()) {
+    try {
+      for (const entry of fs.readdirSync(baseDir, { withFileTypes: true })) {
+        if (entry.isDirectory() && !entry.isSymbolicLink()) slugs.add(entry.name);
+      }
+    } catch {
+      // Missing base directory: nothing to sweep there.
+    }
+  }
+  return [...slugs];
+}
+
+let hygieneTimer: ReturnType<typeof setInterval> | undefined;
+
+/** Start the routine background sweep once per process: a minute after the
+ * worker starts, then every 20 minutes. Timers are unref'd and failures are
+ * swallowed, so disk hygiene never keeps a worker alive or affects a run. */
+export function startLearnWorkspaceHygiene(intervalMs = 20 * 60_000): void {
+  if (hygieneTimer) return;
+  const sweep = () => {
+    try {
+      sweepSupersededLearnBuildWorkspaces();
+    } catch {
+      // Disk hygiene never affects the run.
+    }
+  };
+  setTimeout(sweep, 60_000).unref?.();
+  hygieneTimer = setInterval(sweep, intervalMs);
+  hygieneTimer.unref?.();
+}
+
+/** Background sweep: dispose superseded retained workspaces in every garden. */
+export function sweepSupersededLearnBuildWorkspaces(): string[] {
+  return learnWorkspaceGardenSlugs().flatMap((gardenSlug) => {
+    try {
+      return pruneSupersededLearnBuildWorkspaces({ gardenSlug });
+    } catch {
+      return [];
+    }
+  });
 }
 
 function sameResolvedWorkspacePath(left: string, right: string): boolean {
@@ -1203,37 +1397,7 @@ export function findLatestCompatibleRetainedLearnBuildWorkspace(input: {
       // own final receipt proves deterministic corruption. The rejected tree is
       // still retained for diagnosis and remains the fallback when it is the
       // only compatible checkpoint.
-      let checkpointRank = 1;
-      try {
-        const statusPath = path.join(
-          workspace.stagingGardenDir,
-          ".breadboard",
-          "acceptance-status.json",
-        );
-        const statusStat = fs.statSync(statusPath);
-        const workspaceCreatedAt = Date.parse(workspace.createdAt);
-        // Fresh workspaces start without an acceptance receipt, and current
-        // resumed workspaces explicitly remove the inherited one. The mtime
-        // comparison remains only for descriptors created before that reset
-        // marker existed.
-        const receiptBelongsToWorkspace =
-          !workspace.resumedFromBuildId ||
-          workspace.inheritedAcceptanceStatusCleared === true ||
-          (Number.isFinite(workspaceCreatedAt) &&
-            statusStat.mtimeMs >= workspaceCreatedAt);
-        if (receiptBelongsToWorkspace) {
-          const status = JSON.parse(fs.readFileSync(statusPath, "utf8")) as Record<string, unknown>;
-          if (status.deterministicPass === false) checkpointRank = 0;
-          // A deterministic-valid semantic-repair checkpoint is safe to resume
-          // even when its critic receipt still has a blocker. Rank it alongside
-          // a publish-ready checkpoint so recency preserves later successful
-          // repairs; only deterministically corrupt candidates fall behind.
-          else if (status.deterministicPass === true) checkpointRank = 2;
-        }
-      } catch {
-        // Missing/partial acceptance state is an ordinary resumable checkpoint.
-      }
-      candidates.push({ workspace, retainedAt, checkpointRank });
+      candidates.push({ workspace, retainedAt, checkpointRank: retainedCheckpointRank(workspace) });
     }
   }
   candidates.sort((left, right) =>

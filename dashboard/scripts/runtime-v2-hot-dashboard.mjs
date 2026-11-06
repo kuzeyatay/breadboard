@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath } from "./runtime-v2-paths.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -21,14 +22,6 @@ const IGNORABLE_DOTENV_TEXT = /^(?:[^\S\r\n]*(?:#[^\r\n]*)?(?:\r\n|\r|\n|$))*$/u
 function isInside(parent, child) {
   const relative = path.relative(path.resolve(parent), path.resolve(child));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function samePath(left, right) {
-  const normalizedLeft = path.resolve(left);
-  const normalizedRight = path.resolve(right);
-  return process.platform === "win32"
-    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
-    : normalizedLeft === normalizedRight;
 }
 
 function rejectDotenv(fileName, reason) {

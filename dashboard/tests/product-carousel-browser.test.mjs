@@ -15,6 +15,8 @@ test("product cards preserve scrolling and actions across themes and mobile widt
       { id: "one", title: "Acme X4 External SSD 2 TB", merchant: "Example Store", price: { amount: "199", currency: "EUR", display: "€199.00" }, rating: 4.8, reviewCount: 128, imageUrl: "https://images.example/ssd.svg" },
       { id: "two", title: "Acme Portable USB4 SSD 1 TB", merchant: "Example Electronics", price: { amount: "149", currency: "EUR", display: "€149.00" }, imageUrl: "https://images.example/broken.jpg" },
       { id: "three", title: "Acme Pro External SSD 4 TB", merchant: "Example Store", price: { amount: "349", currency: "EUR", display: "€349.00" } },
+      { id: "four", title: "Acme Portable External SSD 2 TB", merchant: "Example Store", price: { amount: "229", currency: "EUR", display: "€229.00" } },
+      { id: "five", title: "Acme Ultra External SSD 4 TB", merchant: "Example Store", price: { amount: "399", currency: "EUR", display: "€399.00" } },
     ].map(product => ({ ...product, url: `https://shop.example/products/${product.id}`, sourceIds: [] })) },
   };
   const bundle = await build({
@@ -49,20 +51,42 @@ test("product cards preserve scrolling and actions across themes and mobile widt
   await page.addStyleTag({ content: `${css.css}\n${bundle.outputFiles.find(file => file.path.endsWith(".css")).text}\nbody{background:#faf8f2;margin:0} main{max-width:1024px;margin:auto;padding:32px 20px} :root{--color-white:#13201b}` });
   await page.addScriptTag({ content: bundle.outputFiles.find(file => file.path.endsWith(".js")).text });
   const cards = page.locator("article");
-  await expect(cards).toHaveCount(3);
+  await expect(cards).toHaveCount(5);
+  await expect(page.getByText("Product picks")).toHaveCount(0);
   await expect(cards.nth(1).getByText("Image unavailable")).toBeVisible();
   const track = page.locator(".grid-flow-col");
   const original = await track.evaluate(element => ({ width: element.clientWidth, behavior: getComputedStyle(element).scrollBehavior, snap: getComputedStyle(element).scrollSnapType, touch: getComputedStyle(element).touchAction }));
   assert.equal(original.behavior, "smooth");
   assert.equal(original.snap, "x mandatory");
   assert.equal(original.touch, "pan-x");
-  await track.evaluate(element => { const scrollBy = element.scrollBy.bind(element); element.scrollBy = options => { window.scrollOptions = options; scrollBy(options); }; });
+  await expect(page.getByRole("button", { name: "Previous products" })).toBeDisabled();
+  const firstCardLeft = await cards.first().evaluate(element => element.getBoundingClientRect().left);
   await page.getByRole("button", { name: "Next products" }).click();
   await expect.poll(() => track.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
-  assert.deepEqual(await page.evaluate(() => window.scrollOptions), { left: original.width, behavior: "smooth" });
+  await expect.poll(() => cards.nth(1).evaluate(element => element.getBoundingClientRect().left)).toBeLessThan(firstCardLeft + 3);
   assert.equal(await page.evaluate(() => window.scrollY), 0);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  for (let i = 0; i < 5; i++) {
+    const remaining = await track.evaluate(element => element.scrollWidth - element.clientWidth - element.scrollLeft);
+    if (remaining < 2) break;
+    const before = await track.evaluate(element => element.scrollLeft);
+    await page.getByRole("button", { name: "Next products" }).click();
+    await expect.poll(() => track.evaluate(element => element.scrollLeft)).toBeGreaterThan(before + 2);
+  }
+  await expect(page.getByRole("button", { name: "Next products" })).toBeDisabled();
+  await expect(cards.last()).toBeInViewport({ ratio: 1 });
+  for (let i = 0; i < 5; i++) {
+    const before = await track.evaluate(element => element.scrollLeft);
+    if (before < 2) break;
+    await page.getByRole("button", { name: "Previous products" }).click();
+    await expect.poll(() => track.evaluate(element => element.scrollLeft)).toBeLessThan(before - 2);
+  }
+  await expect(page.getByRole("button", { name: "Next products" })).toBeEnabled();
+  await page.getByRole("button", { name: "Next products" }).focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => track.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
   await page.getByRole("button", { name: "Previous products" }).click();
-  await expect.poll(() => track.evaluate(element => element.scrollLeft)).toBe(0);
+  await expect.poll(() => track.evaluate(element => element.scrollLeft)).toBeLessThan(2);
   await cards.first().getByRole("button", { name: /Select .* for comparison/ }).click();
   await expect(cards.first().getByRole("button", { name: /Deselect .* for comparison/ })).toHaveAttribute("aria-pressed", "true");
   for (const [name, type] of [[/Open details/, "product.open-details"], [/Find products similar/, "product.find-similar"], [/Visit Example/, "product.visit"]]) {
@@ -78,6 +102,10 @@ test("product cards preserve scrolling and actions across themes and mobile widt
   await page.setViewportSize({ width: 390, height: 750 });
   await page.evaluate(() => { document.documentElement.dataset.theme = "light"; document.body.style.background = "#faf8f2"; });
   await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.getByRole("button", { name: "Next products" }).click();
+  await expect.poll(() => track.evaluate(element => element.scrollLeft)).toBeGreaterThan(100);
+  await page.getByRole("button", { name: "Previous products" }).click();
+  await expect.poll(() => track.evaluate(element => element.scrollLeft)).toBeLessThan(2);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.ok(await cards.first().evaluate(element => element.clientWidth < innerWidth));
   await page.locator("section").screenshot({ path: path.join(artifacts, "mobile.png") });

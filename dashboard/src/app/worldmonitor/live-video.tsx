@@ -197,8 +197,7 @@ export function LiveNewsView() {
           offAir={answered.has(channel.handle) && !liveIds[channel.handle]}
         />
         <p className="bb-wm-ink-faint mt-1.5 px-0.5 text-[0.6rem] leading-relaxed">
-          Muted by default — browsers block autoplay with sound. Broadcasters
-          rotate stream ids; if a channel is blank, its name opens the live page.
+          Streams start muted. If a channel is blank, select its name to open the live page.
         </p>
       </div>
     </div>

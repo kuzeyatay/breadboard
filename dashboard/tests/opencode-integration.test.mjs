@@ -172,8 +172,11 @@ test("Garden cards connect repositories using the private desktop folder picker"
   assert.match(cards, /breadboardDesktop\?: \{ pickFolder:/);
   assert.match(cards, /await desktop\.pickFolder\(\)/);
   assert.match(cards, /aria-label=\{/);
-  assert.match(cards, /Connect a local repository/);
-  assert.match(cards, /backgroundColor: "var\(--paper-surface\)"/);
+  const settings = source("src/app/dashboard/garden-card-settings-menu.tsx");
+  assert.match(cards, /onConnectRepository=\{\(\) => void handleConnectRepository\(cluster\)\}/);
+  assert.match(settings, /onSelect=\{onConnectRepository\}/);
+  assert.match(settings, /Connect repository/);
+  assert.match(source("src/app/dashboard/garden-card-settings-menu.module.css"), /background: var\(--paper-surface\)/);
   assert.doesNotMatch(cards, /\.repo_path/);
 });
 

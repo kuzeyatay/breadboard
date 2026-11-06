@@ -3,8 +3,9 @@ import type { ChatTextSelectionReference } from "../chat-text-selection.ts";
 import { normalizeChatTokenUsage, type ChatTokenUsage } from "../chat-token-usage.ts";
 import { applyGardenStableTextEvent } from "../hermes/garden-stable-stream.ts";
 import { readGardenResponseData } from "../hermes/garden-response-stream.ts";
-import { abortGardenTurnCheckpoint, reserveGardenTurnCheckpoint } from "./garden-turn-client.ts";
+import { abortGardenTurnCheckpoint, fetchGardenChat, reserveGardenTurnCheckpoint } from "./garden-turn-client.ts";
 import type { VerificationSummary } from "../hermes/evidence.ts";
+import type { QuartzAssistantSelectionRequest } from "../quartz-assistant-selection.ts";
 
 export interface InlineQuestionMessage {
   id?: string;
@@ -12,6 +13,7 @@ export interface InlineQuestionMessage {
   role: "user" | "assistant";
   content: string;
   textSelection: ChatTextSelectionReference;
+  inlineSelection?: Pick<QuartzAssistantSelectionRequest, "requestId" | "highlightId" | "pageSlug">;
   createdAt: string;
   pending?: boolean;
   failed?: boolean;
@@ -53,6 +55,27 @@ export function reconcileInlineQuestionMessages<T extends {
   return preserveInlineQuestionMessages(local, updates);
 }
 
+/** A saved terminal answer releases its own HTTP viewer and retry lock. */
+export function retireCompletedInlineQuestionViewers<T extends {
+  sessionId: number | null; clientMessageId: string;
+  retired: boolean; viewerController: AbortController;
+}>(runs: Map<string, T>, sessionId: number, messages: readonly {
+  role: string; clientMessageId?: string; responseCompletedAt?: string;
+  failed?: boolean; interrupted?: boolean;
+}[]): void {
+  for (const [key, run] of runs) {
+    if (run.sessionId !== sessionId) continue;
+    const answer = messages.findLast(message => message.role === 'assistant' && message.clientMessageId === run.clientMessageId);
+    if (!answer || !(answer.failed || answer.interrupted ||
+      (answer.responseCompletedAt && Number.isFinite(Date.parse(answer.responseCompletedAt))))) continue;
+    // Set before abort: the reader's catch/finally must not replace this saved
+    // answer with "Stopped" or hold up a retry on the same highlight.
+    run.retired = true;
+    runs.delete(key);
+    run.viewerController.abort();
+  }
+}
+
 /** A highlight has its own stream and controller, never the main chat's activity hook. */
 export async function runGardenInlineQuestion(input: {
   sessionId: number;
@@ -61,18 +84,33 @@ export async function runGardenInlineQuestion(input: {
   question: string;
   selection: ChatTextSelectionReference;
   sourceResponse?: string;
+  /** Preserve the Quartz page anchor and page context alongside the runtime selection. */
+  quartzSelection?: QuartzAssistantSelectionRequest;
+  activeMarkdown?: { cluster: string; slug: string; title: string; content: string };
+  superAgent?: boolean;
+  yoloMode?: boolean;
+  adhdMode?: boolean;
+  personalize?: boolean;
   attachments: readonly ChatAttachment[];
   model: string;
   reasoningEffort: string;
   selectedDocumentSlugs: string[];
   signal: AbortSignal;
+  /** Retire a stale HTTP viewer without issuing Stop to the server. */
+  viewerSignal?: AbortSignal;
   publish: (messages: InlineQuestionMessage[]) => void;
 }): Promise<void> {
   const startedAt = performance.now();
+  const viewerSignal = input.viewerSignal ? AbortSignal.any([input.signal, input.viewerSignal]) : input.signal;
   const user = {
     clientMessageId: input.clientMessageId, role: "user" as const,
     content: input.question, createdAt: new Date().toISOString(),
     textSelection: input.selection, selectedText: input.selection.quote,
+    ...(input.quartzSelection ? { inlineSelection: {
+      requestId: input.quartzSelection.requestId,
+      highlightId: input.quartzSelection.highlightId,
+      pageSlug: input.quartzSelection.pageSlug,
+    } } : {}),
     attachments: chatMessageAttachments(input.attachments),
     attachmentNames: input.attachments.map(item => item.name),
   };
@@ -81,7 +119,7 @@ export async function runGardenInlineQuestion(input: {
   publish();
   let reserved = false;
   try {
-    const checkpoint = await reserveGardenTurnCheckpoint(input.sessionId, input.clientMessageId, user);
+    const checkpoint = await reserveGardenTurnCheckpoint(input.sessionId, input.clientMessageId, user, input.signal);
     Object.assign(user, { id: checkpoint.userMessageId });
     answer.id = checkpoint.assistantMessageId;
     reserved = true;
@@ -89,8 +127,8 @@ export async function runGardenInlineQuestion(input: {
     input.signal.throwIfAborted();
     publish();
     const selection = input.selection;
-    const response = await fetch("/api/chat", {
-      method: "POST", headers: { "Content-Type": "application/json" }, signal: input.signal,
+    const response = await fetchGardenChat(input.sessionId, input.clientMessageId, {
+      method: "POST", headers: { "Content-Type": "application/json" }, signal: viewerSignal,
       body: JSON.stringify({
         clusterSlug: input.clusterSlug, chatSessionId: input.sessionId,
         clientMessageId: input.clientMessageId,
@@ -98,7 +136,10 @@ export async function runGardenInlineQuestion(input: {
         model: input.model, reasoningEffort: input.reasoningEffort,
         attachments: input.attachments, selectedDocumentSlugs: input.selectedDocumentSlugs,
         textSelection: selection,
-        selectedTextContext: {
+        activeMarkdown: input.activeMarkdown,
+        superAgent: input.superAgent, yoloMode: input.yoloMode,
+        adhdMode: input.adhdMode, personalize: input.personalize,
+        selectedTextContext: input.quartzSelection ?? {
           requestId: selection.id, highlightId: selection.id, mode: "inline",
           text: selection.quote, prefix: selection.prefix, suffix: selection.suffix,
           sourceMessageId: selection.sourceMessageId, sourceResponse: input.sourceResponse,
@@ -109,7 +150,7 @@ export async function runGardenInlineQuestion(input: {
       const body = await response.json().catch(() => ({}));
       throw new Error(typeof body.error === "string" ? body.error : body.error?.message ?? "Could not answer this highlight.");
     }
-    for await (const payload of readGardenResponseData(response.body, input.signal)) {
+    for await (const payload of readGardenResponseData(response.body, viewerSignal)) {
       if (payload === "[DONE]") break;
       const event = JSON.parse(payload);
       if (["delta", "thinking", "replace", "provisional", "segment"].includes(event.type)) {

@@ -33,6 +33,7 @@ function changed() {
   window.dispatchEvent(new Event(AUDIO_FOCUS_EVENT)); const s = state(); audioFocusChannel()?.postMessage({ id: s.id, holds: s.holds });
 }
 export function foregroundAudioActive() { const s = state(); return s.holds > 0 || [...s.peers.values()].some(until => until > Date.now()); }
+export function otherForegroundAudioActive() { return [...state().peers.values()].some(until => until > Date.now()); }
 export function holdForegroundAudio(): () => void {
   state().holds++; changed();
   let done = false;

@@ -1,6 +1,6 @@
 ---
 name: breadboard-use
-description: Operate Breadboard tabs, pages, Profile settings and switches, browser, and voice mode; launch Clicky for screen guidance.
+description: "Control Breadboard's UI and built-in browser: inspect pages, click controls, fill forms, use signed-in websites, record screen video, and manage tabs and settings."
 license: MIT
 allowed-tools:
   - breadboard_use
@@ -28,15 +28,11 @@ Garden", "close voice assistant", and clicking, typing, switching tabs, or
 scrolling inside Breadboard. `/breadboard-use` selects it explicitly. Ordinary
 research without a request to operate the app can use the existing search tools.
 
-Also use for "launch Clicky", "use Clicky to help me with this app", "open the
-screen companion", "help me understand what is on my screen", or "show me where
-to click in this window". Clicky is a floating screen-aware teaching companion.
-Choose it for guidance while the user operates their screen, including other
-apps. A request to click, type, or complete a task autonomously belongs to the
-appropriate app/browser/computer tool unless the user specifically asks for
-Clicky. Do not launch it for questions about Clicky, code changes to Clicky,
-quoted examples, hypothetical requests, or instructions not to open it.
-Requests to open it later or on a condition do not authorize opening it now.
+Also use for actions on signed-in websites: WhatsApp Web, Instagram, TikTok,
+X/Twitter, or any other site. Examples include reading a feed, scrolling posts,
+saving/bookmarking a post, opening chats, and sending the user's specified
+message to a specified recipient. The built-in browser retains its sign-ins;
+these actions do not require a separate service integration or browser profile.
 
 ## Prerequisites
 
@@ -45,6 +41,10 @@ account. If the tool is deferred, discover `breadboard_use` with `tool_search`.
 If the bridge is unavailable, report the returned error; do not launch the QA
 harness or another app instance to stand in for the user's session.
 
+You may choose this skill whenever the task requires interacting with this UI,
+even without a slash command or the word "browser" in the request. Use native
+`computer-use` for other desktop apps; this bridge needs no `cua-driver` setup.
+
 ## How to run
 
 Start with `breadboard_use({"action":"state"})`. It returns targets with
@@ -52,9 +52,60 @@ Start with `breadboard_use({"action":"state"})`. It returns targets with
 `app` targets are Breadboard pages, `chrome` targets are browser controls, and
 `browser` targets are the web content inside those tabs. Choose the appropriate
 target from that state. IDs must come from tool results.
-State also includes `clicky` availability and its platform-specific message.
+
+For website work, inspect state first and reuse a matching `browser` target.
+Snapshot it to check the actual page and whether it is signed in. URL/title
+alone do not establish login. If no matching tab exists, open the requested site
+in the built-in browser and inspect it; its persistent session may already be
+signed in. Only ask the user to sign in when the page actually requires it.
+Never read, copy, or export cookies, passwords, or session tokens.
+
+All AI-opened pages, including Garden, Profile, other Breadboard pages and
+artifact viewers, stay in new background tabs and carry an AI marker. Read and
+interact with these app and browser targets without activating them. The app closes
+tabs created by the current task (including popups) when its response finishes,
+fails, or is stopped. Existing user tabs stay open. The user can anchor an AI
+tab to keep it. Do not activate a tab just to read a feed or finish a task;
+activate only when the user explicitly asks to see it or must interact with it
+for sign-in. Use `screenshot` for an individual visual capture of any returned
+app, browser, or browser-controls target, including background tabs and artifact
+viewers. Captures leave the user's selected tab and keyboard focus unchanged.
+Each call returns the current viewport as an image; scroll and capture again
+for content farther down the page. A text snapshot is not visual evidence.
+
+Input stays inside the chosen page and never moves the user's system mouse.
+The blue cursor is a separate visual marker in that page; it stays with
+the agent's tab, ignores the user's mouse movement, and disappears when idle.
+It does not give a second keyboard focus within the same page. Prefer an
+AI-owned background tab when the user is working in the existing page.
+
+`messaging_send` delivers to the owner's own phone thread only. That tool's
+recipient limit does not limit this browser tool: use the website UI for an
+authorized message to another person. A general capability question does not
+specify a recipient or message; inspect availability and ask for those missing
+details. When the user already specified the recipient, content, and action,
+carry it out without another generic confirmation. Verify the recipient in the
+chat header before sending and verify the resulting message afterwards.
 
 ## Quick reference
+
+For a requested screen video, call `recording_sources` and choose the requested
+monitor, window, or Breadboard tab. Prefer a `tab` source for a built-in page,
+including a background tab. Call `recording_start` with its `sourceId`, `durationSeconds`
+(1–120, default 30), and optionally `fps` (1–30, default 15). None of these
+recording actions needs `targetId` or a DOM snapshot. Recording runs without
+switching tabs, raising windows, or taking keyboard focus. A small tray icon
+lets the user stop it. Audio is not recorded.
+
+Keep the task running while capturing, then call `recording_stop` with the
+returned `recordingId`. `recording_status` also publishes the artifact after
+the duration limit stops capture. Return the resulting video artifact to the
+user; MP4 is preferred, with WebM used when the runtime lacks MP4 encoding.
+Only report a saved video when the artifact is returned. Recording stops on
+task cancellation/completion and app quit; unclaimed temporary clips are
+removed. Do not end the task before collecting its video. These are bounded
+clips, not Recall's continuous screen history. Only start capture for a user
+request to record; a question about recording or a coding request is not one.
 
 | Task | Tool arguments |
 | --- | --- |
@@ -65,7 +116,6 @@ State also includes `clicky` availability and its platform-specific message.
 | Open Profile settings | `{"action":"open","surface":"profile"}` (also works with tab navigation off) |
 | Open another page | `action: "open"`, `surface: "home", "dashboard", "settings", "calendar", "plan", "workflows", "processes"` |
 | Close voice assistant | `{"action":"close_voice"}` |
-| Launch Clicky | `{"action":"launch_clicky"}` (no targetId) |
 | Switch or close a tab | `action: "activate"` or `"close"`, `targetId` |
 | Navigate an existing browser | `action: "navigate"`, `targetId`, `url` or `query` |
 | Read controls and text | `action: "snapshot"`, `targetId` |
@@ -80,6 +130,15 @@ Keys: Enter, Escape, Tab, Space, ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
 Backspace, Delete. `fill` replaces a text field's contents; on a select it takes
 an option value returned in the snapshot. Password and file inputs require the
 user's interaction. For a named Garden, open Garden and choose its observed link.
+
+Chat composers may be contenteditable textboxes; `fill` replaces their text
+using browser text input. For feeds and message lists, snapshots also expose
+scrollable regions. Pass their `ref` (or a control within them) to `scroll` to
+move that panel. Without a ref, scrolling uses the page or its largest visible
+scrollable panel. Read a fresh snapshot after scrolling to observe newly loaded
+posts. Identify each post by its author/text before using its Save/Bookmark
+control, and verify the resulting saved state. Stop at the user's requested
+count or when no further content loads; do not endlessly scroll.
 
 ## Profile settings
 
@@ -110,18 +169,13 @@ account or a missing device, report that specific prerequisite.
 ## Procedure
 
 Use direct open/navigation/voice actions for the corresponding request. For
-other interactions, activate the correct tab, wait until state says it has loaded,
-and take a snapshot. Use its `snapshotId` and a control `ref` for one action,
+other interactions, wait until the target has loaded and take a snapshot. Browser
+targets and AI-opened app targets support interaction in the background. Open a
+new AI tab for app work instead of switching to or navigating a user's app tab.
+Use its `snapshotId` and a control `ref` for one action,
 then take a new snapshot to verify the result. Refs are session-bound, expire
 after two minutes, and are consumed by an action. Capture a screenshot when the
 task depends on appearance; page text alone is not visual evidence.
-
-For Clicky, read state and call `launch_clicky` when available. Use the native
-launcher action, not an ordinary `/clicky` web tab or a shell command. Launching
-only opens/focuses the companion; it does not send the user's question, capture
-their screen, enable automatic clicking, or complete their task. Tell the user
-to type or speak their screen question in Clicky. Preserve and address any
-other parts of the original request in the Hermes conversation.
 
 ## Pitfalls
 
@@ -143,6 +197,3 @@ Confirm the intended URL/title, visible page content, selected control state,
 or disappearance of the voice overlay. `close_voice` returns `closed: false`
 when no active voice overlay was found; report that accurately. End with a
 brief description of what actually happened.
-For Clicky, confirm opening only if `launch.ok` and `performed` are true. On
-failure, report `launch.message` (including unavailable/unsupported platforms)
-and do not claim that the companion opened.

@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "incremental": false },
+  "include": [
+    "next-env.d.ts",
+    "src/vendor/genoffice/pptx-render/src/bidi-js.d.ts",
+    "src/lib/bots/**/*.ts",
+    "src/app/components/bots/**/*.tsx",
+    "src/app/api/bots/route.ts",
+    "src/app/components/hermes/command-hub.tsx",
+    "src/app/components/hermes/agent-runtime-panel.tsx",
+    "src/lib/conversations/turn-service.ts",
+    "src/lib/conversations/direct-turn-service.ts",
+    "src/lib/hermes/garden-chat-adapter.ts"
+  ],
+  "exclude": ["node_modules", "runtime-v2"]
+}

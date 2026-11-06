@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { readRecallBody, recallErrorResponse } from "@/lib/recall/route-helpers.ts";
-import { getRecallSettings, updateRecallSettings } from "@/lib/recall/settings.ts";
+import { getRecallSettings } from "@/lib/recall/settings.ts";
+import { saveRecallSettings } from "@/lib/recall/service.ts";
 import { requireUserId } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +25,7 @@ export async function PATCH(request: Request) {
   try {
     const userId = await requireUserId();
     const body = await readRecallBody(request);
-    return NextResponse.json({ settings: updateRecallSettings(userId, body) });
+    return NextResponse.json({ settings: await saveRecallSettings(userId, body) });
   } catch (error) {
     return recallErrorResponse(error);
   }

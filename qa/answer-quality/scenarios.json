@@ -67,6 +67,208 @@
           "Treats the large vendor chunk as evidence of the cause."
         ]
       }
+    },
+    {
+      "id": "teaching-bayes",
+      "reason": "missed_point",
+      "origin": "seed",
+      "note": "Cross-subject teaching regression: assess the actual reasoning, prerequisite order and requested scope. This is synthetic evaluation material, not a private conversation export.",
+      "question": "Teach me Bayes theorem. I understand fractions and percentages but conditional probability confuses me. Use a spam filter as the example.",
+      "attachmentName": null,
+      "evidence": null,
+      "rubric": {
+        "must": [
+          "Uses hypothetical counts to establish the reference group for each conditional probability.",
+          "Derives the probability of spam among flagged messages by counting both spam and non-spam ways to receive a flag.",
+          "Connects that calculation to the general formula without requiring unexplained notation."
+        ],
+        "mustNot": [
+          "Confuses the proportion of spam caught with the proportion of flagged messages that are spam.",
+          "Presents illustrative filter rates as measured facts."
+        ]
+      }
+    },
+    {
+      "id": "teaching-osmosis",
+      "reason": "missed_point",
+      "origin": "seed",
+      "note": "Cross-subject teaching regression: assess the actual reasoning, prerequisite order and requested scope. This is synthetic evaluation material, not a private conversation export.",
+      "question": "Why does a plant cell swell when put in pure water? I know cells have a membrane and a wall, but I have not studied osmosis.",
+      "attachmentName": null,
+      "evidence": null,
+      "rubric": {
+        "must": [
+          "Explains selective permeability and distinguishes movement both ways from net inward movement.",
+          "Connects dissolved solutes to the direction of net movement through an intelligible physical principle or mechanism, rather than restating that water tends to enter.",
+          "Explains how rising internal pressure and the cell wall limit swelling."
+        ],
+        "mustNot": [
+          "Attributes intentions to water molecules.",
+          "Claims that no molecules cross at equilibrium or that the cell wall is the selectively permeable barrier."
+        ]
+      }
+    },
+    {
+      "id": "teaching-recursion",
+      "reason": "missed_point",
+      "origin": "seed",
+      "note": "Cross-subject teaching regression: assess the actual reasoning, prerequisite order and requested scope. This is synthetic evaluation material, not a private conversation export.",
+      "question": "I know Python loops and functions. Teach me recursion using a folder that can contain files and more folders.",
+      "attachmentName": null,
+      "evidence": null,
+      "rubric": {
+        "must": [
+          "Motivates recursion through the repeated task of counting files inside nested folders.",
+          "Traces a concrete nested call and return, explaining the caller resuming with its own state.",
+          "Explains both the stopping case and progress toward it, including empty folders under the stated tree assumptions."
+        ],
+        "mustNot": [
+          "Only gives code and defines recursion as a function calling itself.",
+          "Claims that every possible filesystem is a finite acyclic folder tree."
+        ]
+      }
+    },
+    {
+      "id": "teaching-grammar",
+      "reason": "missed_point",
+      "origin": "seed",
+      "note": "Cross-subject teaching regression: assess the actual reasoning, prerequisite order and requested scope. This is synthetic evaluation material, not a private conversation export.",
+      "question": "What is the difference between \"I lived here for five years\" and \"I have lived here for five years\"? English is my second language. Keep it to a few paragraphs.",
+      "attachmentName": null,
+      "evidence": null,
+      "rubric": {
+        "must": [
+          "Uses situations to explain how the two time intervals relate to the present.",
+          "Distinguishes the usual implication of no longer living there from a logical guarantee.",
+          "Keeps the answer to a few paragraphs at a suitable level for an English learner."
+        ],
+        "mustNot": [
+          "Only labels the two tenses without explaining their meaning.",
+          "Forces a mathematical derivation or unrelated prerequisite lesson."
+        ]
+      }
+    },
+    {
+      "id": "teaching-source-history",
+      "reason": "missed_point",
+      "origin": "seed",
+      "note": "Cross-subject teaching regression: assess the actual reasoning, prerequisite order and requested scope. This is synthetic evaluation material, not a private conversation export.",
+      "question": "Write a connected explanation of why the fictional town of Merrow changed its water system, using all the relevant evidence in this packet. I want to understand the causes, not a list of dates.",
+      "attachmentName": "fictional-water-records.txt",
+      "evidence": "Record A, council minutes, 1880: The old communal wells supplied drinking water. The council rejected a pipe proposal because the initial construction cost was too high.\nRecord B, maintenance accounts, 1882: Two wells repeatedly failed during dry months. Repairs and carted water cost twice the annual estimate.\nRecord C, merchants petition, 1883: Shopkeepers asked for more reliable water for daily work. The petition did not mention illness.\nRecord D, council minutes, 1884: A grant paid half the upfront cost of pipes. The council approved a piped supply, citing reliability and the reduced local construction bill.\nAppendix, household letters, 1885: Some poorer households still used a working communal well because they could not afford the connection fee.\nUnrelated appendix: The town painted its clock tower blue in 1884.",
+      "rubric": {
+        "must": [
+          "Connects unreliable wells, changed costs, the petition and the grant to the council decision.",
+          "Includes the later household evidence and explains why building the system did not guarantee everyone could connect.",
+          "Keeps documented reasons distinct from plausible inference."
+        ],
+        "mustNot": [
+          "Invents an illness outbreak or a health campaign.",
+          "Uses the unrelated clock-tower color as a cause of the water-system change."
+        ]
+      }
+    },
+    {
+      "id": "teaching-ac",
+      "reason": "missed_point",
+      "origin": "seed",
+      "note": "Cross-subject teaching regression: assess the actual reasoning, prerequisite order and requested scope. This is synthetic evaluation material, not a private conversation export.",
+      "question": "Write a first-principles lesson on sinusoidal steady-state AC circuit analysis, including impedance and reactance. I know DC resistors, current, voltage and basic derivatives, but I have not used complex numbers in circuits. Use one circuit to connect the ideas.",
+      "attachmentName": null,
+      "evidence": null,
+      "rubric": {
+        "must": [
+          "Establishes a concrete AC circuit problem that a single real resistance cannot fully describe.",
+          "Makes amplitude and phase meaningful and motivates complex notation before relying on it.",
+          "Derives an element voltage-current relation for a sinusoid and uses it to construct impedance.",
+          "Explains reactance through out-of-phase voltage/current and reversible energy storage, not only its name or imaginary-part definition.",
+          "Returns to the same circuit with an interpreted prediction and states the sinusoidal steady-state assumptions."
+        ],
+        "mustNot": [
+          "Introduces impedance only as a table of formulas to substitute.",
+          "Treats reactance as resistive energy dissipation."
+        ]
+      }
+    },
+    {
+      "id": "teaching-buoyancy",
+      "reason": "missed_point",
+      "origin": "reviewed-benchmark",
+      "note": "Promoted from the completed 2026-09-30 independent instruction-cleanup comparison. This synthetic case is now a development regression, not an unseen holdout. Candidate answers improved concreteness but one used undefined symbols.",
+      "question": "Explain why a solid steel nail sinks but a steel ship can float. I know about mass, volume, gravity and pressure increasing with depth. Build a connected explanation rather than just naming Archimedes' principle.",
+      "attachmentName": null,
+      "evidence": null,
+      "rubric": {
+        "must": [
+          "Builds the upward imbalance of pressure forces into buoyant force before relying on the name.",
+          "Connects displaced water volume and equilibrium to the ship's shape and total weight, then contrasts the solid nail.",
+          "Distinguishes the submerged external volume of a hollow hull from the volume of steel alone.",
+          "Gives a usable meaning to every symbol needed in the central argument when introducing it."
+        ],
+        "mustNot": [
+          "Claims gravity is absent, that the water supports every object, or that hollowness alone guarantees flotation.",
+          "Only names Archimedes' principle or average density without explaining the force or volume connection."
+        ]
+      }
+    },
+    {
+      "id": "teaching-logarithms",
+      "reason": "missed_point",
+      "origin": "reviewed-benchmark",
+      "note": "Promoted from the completed 2026-09-30 independent instruction-cleanup comparison. This synthetic case is now a development regression, not an unseen holdout. One candidate introduced a power rule in its application without establishing it.",
+      "question": "I understand powers such as 2^3=8 but I have never understood logarithms. Explain what they are, why multiplying numbers turns into adding logarithms, and when that helps. Please build the ideas from what I know.",
+      "attachmentName": null,
+      "evidence": null,
+      "rubric": {
+        "must": [
+          "Defines a logarithm as the exponent needed for a fixed positive base other than one, with positive real arguments in this setting.",
+          "Derives the product rule from exponent addition through a concrete example and connects it to the general relationship.",
+          "Gives an application in which converting multiplication to addition has an explained purpose.",
+          "Establishes any additional logarithm rule essential to its chosen application before relying on it."
+        ],
+        "mustNot": [
+          "Treats the product rule as the definition of logarithms or claims logs distribute over addition.",
+          "Uses an unexplained rule to solve the application after promising to build from powers."
+        ]
+      }
+    },
+    {
+      "id": "teaching-database-index",
+      "reason": "missed_point",
+      "origin": "reviewed-benchmark",
+      "note": "Promoted from the completed 2026-09-30 independent instruction-cleanup comparison. This synthetic case is now a development regression, not an unseen holdout. All four baseline/candidate generations asserted that organized lookup is fast without showing the narrowing decisions.",
+      "question": "I have a table containing a million customer records. Why can adding an index make looking up one customer faster, yet make adding customers slower? I know what a table and a sorted list are, but not database internals.",
+      "attachmentName": null,
+      "evidence": null,
+      "rubric": {
+        "must": [
+          "Shows the work required by a scan and by a concrete indexed lookup, including how a comparison or branch decision rules out records without reading each one.",
+          "Explains the additional stored lookup structure and how its entries lead to the actual customer row.",
+          "Connects slower writes to maintaining that structure, with a concrete insertion or update example.",
+          "Makes clear that an index helps suitable lookups and need not improve every query."
+        ],
+        "mustNot": [
+          "Only asserts that sorted or tree search is faster without demonstrating the search mechanism.",
+          "Claims that every database index is a hash table or that every query is accelerated."
+        ]
+      }
+    },
+    {
+      "id": "teaching-does-not-expand-a-literal-edit",
+      "reason": "too_long",
+      "origin": "seed",
+      "note": "Teaching applies to requests for understanding, not every sentence containing a technical term.",
+      "question": "Correct only the spelling in this sentence and return only the corrected sentence: An explanaton of memory and impulse responce.",
+      "attachmentName": null,
+      "evidence": null,
+      "rubric": {
+        "must": [
+          "Returns exactly: An explanation of memory and impulse response."
+        ],
+        "mustNot": [
+          "Adds an explanation of either term, a preamble, or an offer."
+        ]
+      }
     }
   ]
 }

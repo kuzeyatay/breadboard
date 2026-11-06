@@ -279,8 +279,7 @@ export default function SettingsTelegram({
             </button>
           </div>
           <p className="text-[11px] text-[var(--ink-muted)]">
-            The token stays on this machine, in Breadboard&apos;s private data directory. It is
-            never sent back to the browser.
+            Your token is stored only on this device.
           </p>
         </div>
       ) : (
@@ -335,10 +334,9 @@ export default function SettingsTelegram({
 
       <div className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-4 py-4">
         <div>
-          <p className="text-sm font-medium text-[var(--ink-heading)]">Who can talk to it</p>
+          <p className="text-sm font-medium text-[var(--ink-heading)]">Who gets replies</p>
           <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
-            Anyone can find a bot by its @name, so nobody is answered until you list them
-            here. Use your own @username, or * to answer everyone.
+            Your bot replies only to people listed here. Add your @username, or use * to allow everyone.
           </p>
         </div>
         <div className="flex gap-2">
@@ -428,15 +426,13 @@ export default function SettingsTelegram({
             ))}
           </ul>
           <p className="mt-2 text-[11px] text-[var(--ink-muted)]">
-            They appear in the Terminal&apos;s Recents, where you can keep replying by hand.
+            Continue these conversations in the Terminal’s Recents.
           </p>
         </div>
       ) : null}
 
       <p className="text-[11px] leading-relaxed text-[var(--ink-muted)]">
-        This is Telegram&apos;s official Bot API, so the bot only ever sees what is sent to it.
-        In groups it reads nothing unless you turn off BotFather&apos;s privacy mode or make it
-        an admin. Send /help to it for the commands, or /new to start a fresh chat.
+        Your bot receives messages sent to it. Group access depends on BotFather’s privacy mode and admin permissions. Use /help for commands or /new for a new chat.
       </p>
     </div>
   );

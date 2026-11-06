@@ -55,15 +55,17 @@ export async function POST(
     const { sessionId } = await params;
     const conversation = getConversationForUser(sessionId, userId);
     const body = await readJsonBody(request, MAX_REQUEST_BYTES);
+    const surface = conversationRequestSurface(conversation, parseSurface(body.surface ?? "dashboard_terminal"));
     return await startDirectProviderTurn({
       request,
       conversation,
       clientMessageId: requireString(body.clientMessageId, "clientMessageId", 128),
       text: requireString(body.text, "text", 100_000),
-      surface: conversationRequestSurface(conversation, parseSurface(body.surface ?? "dashboard_terminal")),
+      surface,
       model: body.model,
       reasoningEffort: body.reasoningEffort,
       textSelection: normalizeChatTextSelectionReference(body.textSelection) ?? undefined,
+      concurrentInline: body.concurrentInline === true,
       // A regenerated turn sends a document's pointer without its words,
       // because the transcript never held them; this reads them back. Then
       // ColPali narrows a long document to the pages this question is about —
@@ -79,7 +81,7 @@ export async function POST(
       adhdMode: body.adhdMode === true,
       currentLocation:
         parseCurrentLocationPayload(body.currentLocation) ?? undefined,
-      browserAccess: (body.surface ?? "dashboard_terminal") === "dashboard_terminal" ? parseBrowserTerminalAccess(body.browserAccess) : undefined,
+      browserAccess: surface !== "quartz_ai" ? parseBrowserTerminalAccess(body.browserAccess) : undefined,
       internalAgentContinuation: body.internalAgentContinuation === true,
       scheduledChatReceipt: scheduledChatReceiptForUser(
         userId,

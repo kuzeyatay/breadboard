@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -296,9 +297,15 @@ func (w *WhisperXAdapter) PrepareEnvironment(ctx context.Context) error {
 	logger.Info("Preparing WhisperX environment", "env_path", w.envPath)
 
 	whisperxPath := filepath.Join(w.envPath, "WhisperX")
+	if err := pruneStaleWhisperXTorchMetadata(whisperxPath, runtime.GOOS, runtime.GOARCH); err != nil {
+		return fmt.Errorf("failed to repair WhisperX package metadata: %w", err)
+	}
 
-	// Check if WhisperX is already set up and working (using cache to speed up repeated checks)
-	if CheckEnvironmentReady(whisperxPath, "import whisperx") {
+	// A plain import is not enough on Windows: uv considers torch 2.8.0+cpu
+	// compatible with a lock that selected 2.8.0+cu126. Without checking the
+	// installed build, a later `uv run` keeps the CPU wheel and every CUDA job
+	// fails only after the media has already been uploaded.
+	if whisperXEnvironmentReady(whisperxPath, runtime.GOOS, runtime.GOARCH) {
 		logger.Info("WhisperX environment already ready")
 		w.initialized = true
 		return nil
@@ -309,9 +316,16 @@ func (w *WhisperXAdapter) PrepareEnvironment(ctx context.Context) error {
 		return fmt.Errorf("failed to create environment directory: %w", err)
 	}
 
-	// Clone WhisperX
-	if err := w.cloneWhisperX(); err != nil {
-		return fmt.Errorf("failed to clone WhisperX: %w", err)
+	// Preserve an existing checkout when only its virtual environment needs
+	// repair. Cloning over that directory would fail and make the bad wheel
+	// impossible to self-heal.
+	if _, err := os.Stat(filepath.Join(whisperxPath, "pyproject.toml")); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to inspect WhisperX checkout: %w", err)
+		}
+		if err := w.cloneWhisperX(); err != nil {
+			return fmt.Errorf("failed to clone WhisperX: %w", err)
+		}
 	}
 
 	// Update dependencies
@@ -320,8 +334,14 @@ func (w *WhisperXAdapter) PrepareEnvironment(ctx context.Context) error {
 	}
 
 	// Install dependencies
-	if err := w.uvSyncWhisperX(whisperxPath); err != nil {
+	if err := w.uvSyncWhisperX(whisperxPath, runtime.GOOS, runtime.GOARCH); err != nil {
 		return fmt.Errorf("failed to sync WhisperX: %w", err)
+	}
+	if err := pruneStaleWhisperXTorchMetadata(whisperxPath, runtime.GOOS, runtime.GOARCH); err != nil {
+		return fmt.Errorf("failed to repair WhisperX package metadata after sync: %w", err)
+	}
+	if !whisperXEnvironmentReady(whisperxPath, runtime.GOOS, runtime.GOARCH) {
+		return fmt.Errorf("WhisperX environment is missing the required CUDA-enabled PyTorch build")
 	}
 
 	w.initialized = true
@@ -367,6 +387,7 @@ func (w *WhisperXAdapter) updateWhisperXDependencies(whisperxPath string) error 
 	// The repo already has the correct [tool.uv.sources] configuration, we just need to update the CUDA version
 	// This allows using cu126 for legacy GPUs (GTX 10-series through RTX 40-series) or cu128 for Blackwell (RTX 50-series)
 	content = strings.ReplaceAll(content, "https://download.pytorch.org/whl/cu128", GetPyTorchWheelURL())
+	content = addWhisperXTorchvisionSource(content)
 
 	if err := os.WriteFile(pyprojectPath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write pyproject.toml: %w", err)
@@ -375,9 +396,116 @@ func (w *WhisperXAdapter) updateWhisperXDependencies(whisperxPath string) error 
 	return nil
 }
 
+func whisperXUsesCUDAWheels(goos, goarch string) bool {
+	return goos != "darwin" && goarch == "amd64"
+}
+
+func whisperXEnvironmentReady(whisperxPath, goos, goarch string) bool {
+	check := "import whisperx"
+	if whisperXUsesCUDAWheels(goos, goarch) {
+		check += "; import importlib.metadata as metadata; import torch; import transformers; assert metadata.version('torch') == torch.__version__; assert torch.version.cuda is not None"
+	}
+	cmd := exec.Command(
+		"uv", "run", "--native-tls", "--no-sync", "--project", whisperxPath,
+		"python", "-c", check,
+	)
+	return cmd.Run() == nil
+}
+
+func pruneStaleWhisperXTorchMetadata(whisperxPath, goos, goarch string) error {
+	if !whisperXUsesCUDAWheels(goos, goarch) {
+		return nil
+	}
+
+	sitePackages := []string{filepath.Join(whisperxPath, ".venv", "Lib", "site-packages")}
+	linuxMatches, err := filepath.Glob(filepath.Join(whisperxPath, ".venv", "lib", "python*", "site-packages"))
+	if err != nil {
+		return err
+	}
+	sitePackages = append(sitePackages, linuxMatches...)
+
+	for _, root := range sitePackages {
+		entries, err := os.ReadDir(root)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		hasCUDA := false
+		for _, entry := range entries {
+			name := strings.ToLower(entry.Name())
+			if entry.IsDir() && strings.HasPrefix(name, "torch-") && strings.Contains(name, "+cu") && strings.HasSuffix(name, ".dist-info") {
+				if _, err := os.Stat(filepath.Join(root, entry.Name(), "METADATA")); err == nil {
+					hasCUDA = true
+					break
+				}
+			}
+		}
+		if !hasCUDA {
+			continue
+		}
+
+		for _, entry := range entries {
+			name := strings.ToLower(entry.Name())
+			if !entry.IsDir() || !strings.HasPrefix(name, "torch-") || !strings.Contains(name, "+cpu") || !strings.HasSuffix(name, ".dist-info") {
+				continue
+			}
+			stalePath := filepath.Join(root, entry.Name())
+			if _, err := os.Stat(filepath.Join(stalePath, "METADATA")); err == nil {
+				continue
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+			children, err := os.ReadDir(stalePath)
+			if err != nil {
+				return err
+			}
+			if len(children) == 0 {
+				if err := os.Remove(stalePath); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func addWhisperXTorchvisionSource(content string) string {
+	if strings.Contains(content, "\ntorchvision = [") {
+		return content
+	}
+	const anchor = "\ntriton = ["
+	const source = `
+torchvision = [
+  { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+  { index = "pytorch-cpu", marker = "platform_machine != 'x86_64' and platform_machine != 'AMD64' and sys_platform != 'darwin'" },
+  { index = "pytorch", marker = "(platform_machine == 'x86_64' or platform_machine == 'AMD64') and sys_platform != 'darwin'" },
+]
+`
+	if !strings.Contains(content, anchor) {
+		return content
+	}
+	return strings.Replace(content, anchor, source+"triton = [", 1)
+}
+
+func whisperXSyncArgs(goos, goarch string) []string {
+	args := []string{"sync", "--all-extras", "--dev", "--native-tls"}
+	if whisperXUsesCUDAWheels(goos, goarch) {
+		// uv does not replace an already-installed local-version variant such as
+		// +cpu with the +cu126 variant selected by the lock unless explicitly
+		// told to reinstall these packages.
+		for _, name := range []string{"torch", "torchaudio", "torchvision"} {
+			args = append(args, "--reinstall-package", name)
+		}
+	}
+	return args
+}
+
 // uvSyncWhisperX runs uv sync for WhisperX
-func (w *WhisperXAdapter) uvSyncWhisperX(whisperxPath string) error {
-	cmd := exec.Command("uv", "sync", "--all-extras", "--dev", "--native-tls")
+func (w *WhisperXAdapter) uvSyncWhisperX(whisperxPath, goos, goarch string) error {
+	cmd := exec.Command("uv", whisperXSyncArgs(goos, goarch)...)
 	cmd.Dir = whisperxPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -506,8 +634,11 @@ func (w *WhisperXAdapter) Transcribe(ctx context.Context, input interfaces.Audio
 func (w *WhisperXAdapter) buildWhisperXArgs(input interfaces.AudioInput, params map[string]interface{}, outputDir string) ([]string, error) {
 	whisperxPath := filepath.Join(w.envPath, "WhisperX")
 
+	// --no-sync: PrepareEnvironment has already synced and verified this venv.
+	// Without it uv re-resolves at job time and has been seen swapping the
+	// +cu126 torch wheels back to +cpu mid-job, which strands the CUDA run.
 	args := []string{
-		"run", "--native-tls", "--project", whisperxPath, "python", "-m", "whisperx",
+		"run", "--native-tls", "--no-sync", "--project", whisperxPath, "python", "-m", "whisperx",
 		input.FilePath,
 		"--output_dir", outputDir,
 	}

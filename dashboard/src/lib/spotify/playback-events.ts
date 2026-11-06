@@ -11,7 +11,7 @@ const state = globalState.spotifyPlaybackEvents ??= { samples: new Map(), listen
 const FRESH_MS = 15_000;
 
 /** Only authenticated engine registrations can publish local playback. */
-export function publishSpotifyPlayback(userId: number, deviceId: string, value: unknown): void {
+export function publishSpotifyPlayback(userId: number, deviceId: string, value: unknown): SpotifyPlaybackState | null {
   let playback: SpotifyPlaybackState | null = null;
   if (value !== null) {
     const input = value as SpotifyPlaybackState;
@@ -21,7 +21,9 @@ export function publishSpotifyPlayback(userId: number, deviceId: string, value: 
       ![track.name, track.artist, track.album].every(text => typeof text === "string" && text.length <= 1024) ||
       !(track.imageUrl === null || (typeof track.imageUrl === "string" && track.imageUrl.length <= 2048 && /^https:\/\//.test(track.imageUrl))) ||
       !Number.isSafeInteger(track.durationMs) || track.durationMs < 0 ||
-      !Number.isSafeInteger(input.positionMs) || input.positionMs < 0 || typeof input.isPlaying !== "boolean") {
+      !Number.isSafeInteger(input.positionMs) || input.positionMs < 0 || typeof input.isPlaying !== "boolean" ||
+      (input.hasNextTrack !== undefined && typeof input.hasNextTrack !== "boolean") ||
+      (input.repeatMode !== undefined && ![0, 1, 2].includes(input.repeatMode))) {
       throw new ApiError(400, "invalid_spotify_playback", "The player state is invalid.");
     }
     playback = {
@@ -29,12 +31,15 @@ export function publishSpotifyPlayback(userId: number, deviceId: string, value: 
         album: track.album, imageUrl: track.imageUrl, durationMs: track.durationMs },
       positionMs: Math.min(input.positionMs, track.durationMs), isPlaying: input.isPlaying,
       shuffle: input.shuffle === true, deviceId, deviceName: "Breadboard",
+      ...(input.hasNextTrack !== undefined ? {hasNextTrack: input.hasNextTrack} : {}),
+      ...(input.repeatMode !== undefined ? {repeatMode: input.repeatMode} : {}),
     };
   }
   const sample = { playback, receivedAt: Date.now() };
   for (const [id, previous] of state.samples) if (sample.receivedAt - previous.receivedAt > FRESH_MS) state.samples.delete(id);
   state.samples.set(userId, sample);
   for (const listener of state.listeners.get(userId) ?? []) listener(sample);
+  return playback;
 }
 
 export function subscribeSpotifyPlayback(userId: number, listener: Listener): () => void {

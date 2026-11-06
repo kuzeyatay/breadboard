@@ -14,7 +14,7 @@ This does not call the billed OpenAI Audio API, and never uses OPENAI_API_KEY or
 
 ## UX and limits
 
-Voice mode holds one connection across listening and speaking. Microphone input is sent live, and read-aloud plays from the remote audio track as it arrives. Transcripts go to Breadboard's normal selected-model chat; the voice service must not answer questions or execute tools itself. Composer dictation also streams microphone input directly and shows partial transcripts. Response actions, previews and Clicky read-aloud stream playback. Clicky microphone input also uses the live connection.
+Voice mode holds one connection across listening and speaking. Microphone input is sent live, and read-aloud plays from the remote audio track as it arrives. Transcripts go to Breadboard's normal selected-model chat; the voice service must not answer questions or execute tools itself. Composer dictation also streams microphone input directly and shows partial transcripts. Response actions and previews stream read-aloud playback.
 
 Preview voice reads the editable preview text. Read-aloud connections use speech mode, and the bridge frames each supplied text as a JSON script with explicit verbatim-reading instructions. Questions inside that script are read, not answered. The live acceptance test checks the returned transcript against the exact supplied words as well as recording audible output and transcribing it back.
 

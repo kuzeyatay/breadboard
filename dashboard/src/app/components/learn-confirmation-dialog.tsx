@@ -15,7 +15,7 @@ const CONTENT = {
   full_rebuild: {
     title: "Rebuild the entire garden?",
     description:
-      "This recreates the Learning Map, Learning Unit Contract, all learner pages, and interactive visuals.",
+      "This replaces the learning plan, all lesson pages, and interactive visuals.",
     guidanceLabel: "Before you rebuild",
     guidance:
       "Use Repair issues when only validation errors need to be fixed. Unaffected content is preserved during a repair.",

@@ -1,0 +1,283 @@
+/* HIG layout principles: shared alignment, balanced margins, safe areas, and
+   adaptation at smaller window sizes. Values are Breadboard's web spacing;
+   Apple does not prescribe a universal pixel margin for desktop webpages. */
+.surface {
+  --home-inset: 24px;
+  --home-gap: 24px;
+  --terminal-collapsed-height: var(--terminal-bar-height, 42px);
+  --home-widget-tint: rgb(252 250 244 / 66%);
+  --home-widget-border: rgb(255 255 255 / 24%);
+  --home-widget-shadow: 0 14px 34px rgb(12 24 18 / 14%);
+  position: relative;
+  isolation: isolate;
+  min-width: 0;
+  padding-bottom: calc(var(--bb-dock-height, 61px) + 40px + env(safe-area-inset-bottom, 0px)) !important;
+}
+
+:global(html[data-theme="dark"]) .surface:not([data-wallpaper-tone]),
+.surface[data-wallpaper-tone="dark"] {
+  --home-widget-tint: rgb(13 18 15 / 48%);
+  --home-widget-border: rgb(255 255 255 / 13%);
+  --home-widget-shadow: 0 14px 38px rgb(0 0 0 / 25%);
+}
+
+.backdrop:global(.browser-start-page) {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  padding: 0;
+  pointer-events: none;
+}
+
+/* Terminal space changes the document height while opening and resizing.
+   Keep the wallpaper's cover crop tied to the viewport, painted only here.
+   Viewport units also keep the crop stable when the terminal locks scrolling. */
+.backdrop:global(.browser-start-page)[data-has-wallpaper="true"],
+.backdrop:global(.browser-start-page)[data-spotify-ambient="true"] {
+  position: fixed;
+  width: 100vw;
+  height: 100vh;
+  transition: none;
+}
+
+/* A transformed browser split pane is its own fixed-position containing box. */
+:global([data-browser-split-pane]) .backdrop[data-has-wallpaper="true"],
+:global([data-browser-split-pane]) .backdrop[data-spotify-ambient="true"] {
+  width: 100%;
+  height: 100%;
+}
+
+.backdrop:global(.browser-start-page)::before,
+.backdrop:global(.browser-start-page)::after {
+  content: none;
+}
+
+/* The rings belong to the opening search area, not the fixed wallpaper. */
+.rings:global(.browser-start-page) {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: none;
+  pointer-events: none;
+}
+
+.backdrop:has([data-spotify-background][data-active="true"]) + .rings::before,
+.backdrop:has([data-spotify-background][data-active="true"]) + .rings::after {
+  border-color: color-mix(in srgb, var(--browser-wallpaper-foreground) 18%, transparent);
+}
+
+.rings::before, .rings::after {
+  top: 260px;
+  left: 25%;
+}
+
+.chrome {
+  position: sticky;
+  top: calc(var(--breadboard-titlebar-height, 0px) + var(--home-browser-toolbar-inset, 0px));
+  z-index: 30;
+  flex-shrink: 0;
+  padding-bottom: 8px;
+}
+.chrome :global(.breadboard-flower-navbar) { position: relative; top: 0; }
+
+.accessories {
+  --browser-dock-height: 92px;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(760px, 1020px) minmax(180px, 1fr);
+  align-items: center;
+  gap: var(--home-gap);
+  margin: var(--home-inset) max(var(--home-inset), env(safe-area-inset-right, 0px)) 0 max(var(--home-inset), env(safe-area-inset-left, 0px));
+}
+
+.accessories :global(.browser-daily-quote),
+.accessories :global(.browser-dock),
+.accessories :global(.browser-home-calendar) {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  margin: 0;
+  transform: none;
+}
+
+.accessories :global(.browser-daily-quote) { display: flex; padding-block: 11px 9px; }
+.accessories :global(.browser-dock) { padding-block: 7px; }
+.accessories :global(.browser-dock-weather) { padding-block: 7px; }
+.accessories :global(.browser-home-calendar) { padding-block: 10px; gap: 8px; }
+.accessories :global(.browser-dock-network) { display: flex; }
+.accessories :global(.browser-dock-weather) { display: grid; }
+.accessories :global(.browser-battery) { display: flex; }
+
+.accessories :global(.browser-spotify-popover) {
+  --browser-spotify-popover-offset: -12px;
+  top: calc(100% + 12px);
+  bottom: auto;
+  transform-origin: calc(100% - 88px) 0;
+}
+
+/* Match the original quote's wallpaper tint on the other two outer surfaces. */
+.surface :global([data-terminal-notepad]),
+.surface .accessories :is(:global(.browser-dock), :global(.browser-home-calendar)),
+.surface .launcher :global(.browser-quick-link-icon) {
+  background: var(--home-widget-tint);
+  border-color: var(--home-widget-border);
+  box-shadow: var(--home-widget-shadow);
+  -webkit-backdrop-filter: blur(18px) saturate(125%);
+  backdrop-filter: blur(18px) saturate(125%);
+}
+.surface .launcher :global(.browser-add-shortcut) :global(.browser-quick-link-icon) {
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--browser-wallpaper-foreground);
+}
+.surface :global([data-terminal-notepad]),
+.surface .accessories :global(.browser-home-calendar) {
+  --quartz-dark: var(--browser-wallpaper-foreground);
+  --ink: var(--browser-wallpaper-foreground);
+  --ink-heading: var(--browser-wallpaper-foreground);
+  --ink-muted: var(--browser-wallpaper-muted);
+  color: var(--browser-wallpaper-foreground);
+}
+
+/* Keep the search field and cluster rows on the same content edges. */
+.launchArea,
+.gardens {
+  width: 100%;
+  min-width: 0;
+  max-width: 1072px;
+  margin-inline: auto;
+  padding-inline: max(var(--home-inset), env(safe-area-inset-left, 0px)) max(var(--home-inset), env(safe-area-inset-right, 0px));
+}
+
+.launchArea {
+  position: relative;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: 0 minmax(0, 1fr) 0;
+  margin-block: 40px;
+}
+
+.heading { grid-column: 2; grid-row: 1; }
+.launcher { position: relative; min-width: 0; grid-column: 2; grid-row: 2; }
+/* Anchor to the search row, with a small upward offset. */
+.notchAnchor {
+  --provider-notch-position: fixed;
+  --provider-notch-top: 300px;
+  --provider-notch-transform: translateY(-24px);
+  position: relative;
+  grid-column: 3;
+  grid-row: 2;
+}
+.launcher :global(.browser-quick-links) { margin-inline: auto; }
+.launcher :global(.browser-quick-link):nth-child(n) { display: grid; }
+.surface[data-wallpaper-tone] .launcher nav :is(a, button) {
+  --ink-muted: var(--browser-wallpaper-muted);
+}
+.surface[data-wallpaper-tone] .heading h1,
+.surface[data-wallpaper-tone] .launcher nav :is(a, button),
+.surface[data-wallpaper-tone] .launcher :global(.browser-quick-link) > span:last-child {
+  color: var(--browser-wallpaper-foreground);
+  text-shadow: 0 1px 10px rgb(0 0 0 / 16%);
+}
+
+.gardens {
+  container: home-gardens / inline-size;
+  position: relative;
+  padding-bottom: 24px;
+  flex: 1;
+}
+.gardenControls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.surface .gardens {
+  --quartz-dark: var(--browser-wallpaper-foreground);
+  --quartz-darkgray: var(--browser-wallpaper-foreground);
+  --ink-heading: var(--browser-wallpaper-foreground);
+  --ink-muted: var(--browser-wallpaper-muted);
+  --bb-color-white: var(--browser-wallpaper-foreground);
+  --bb-color-gray-300: var(--browser-wallpaper-foreground);
+  --bb-color-gray-400: var(--browser-wallpaper-foreground);
+  --bb-color-gray-500: var(--browser-wallpaper-muted);
+  --bb-color-gray-600: var(--browser-wallpaper-muted);
+  color: var(--browser-wallpaper-foreground);
+}
+.surface .gardens :is(:global(.dashboard-garden-card), :global(.neu-segmented), :global(.neu-popover), :global(.dashboard-garden-card-overlay)) {
+  background: var(--home-widget-tint);
+  box-shadow: var(--home-widget-shadow);
+  -webkit-backdrop-filter: blur(18px) saturate(125%);
+  backdrop-filter: blur(18px) saturate(125%);
+}
+.surface .gardens :is(button, a):not([aria-label^="Use border color"], [aria-label^="Resize"]) {
+  background: var(--home-widget-tint);
+  color: var(--browser-wallpaper-foreground);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 10%);
+  -webkit-backdrop-filter: blur(18px) saturate(125%);
+  backdrop-filter: blur(18px) saturate(125%);
+}
+.surface .gardens :is(button, a):not([aria-label^="Use border color"], [aria-label^="Resize"]):hover {
+  background: color-mix(in srgb, var(--home-widget-tint), var(--browser-wallpaper-foreground) 12%);
+}
+.surface .gardens :global(.dashboard-garden-card-controls) > :global(.dashboard-garden-icon-action),
+.surface .gardens :global(.dashboard-garden-card-controls) > :global(.dashboard-garden-icon-action):hover {
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.surface .gardens a.clusterIconAction {
+  background: transparent;
+  color: var(--browser-wallpaper-muted);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.surface .gardens a.clusterIconAction:is(:hover, :focus-visible) {
+  background: color-mix(in srgb, var(--browser-wallpaper-foreground) 12%, transparent);
+  color: var(--browser-wallpaper-foreground);
+}
+.surface .gardenControls :global(.neu-segmented) > button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--home-widget-tint), var(--browser-wallpaper-foreground) 18%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--browser-wallpaper-foreground) 35%, transparent);
+  font-weight: 600;
+}
+.surface :global(.browser-site-icon) > img { filter: none; }
+
+@container home-gardens (max-width: 640px) {
+  .gardens :global(.dashboard-garden-card) { grid-column: 1 / -1 !important; min-width: 0; }
+}
+
+@media (max-width: 1399px) {
+  .accessories { grid-template-columns: minmax(128px, 1fr) minmax(680px, 4fr) minmax(128px, 1fr); gap: 16px; }
+}
+
+/* Keep the original three widgets alongside each other at laptop widths.
+   Only their available width changes; the controls retain their own UI. */
+@media (min-width: 1024px) and (max-width: 1399px) {
+  .accessories :global(.browser-dock-time) { width: clamp(96px, 9vw, 120px); }
+  .accessories :global(.browser-dock-weather) { width: clamp(148px, 14.8vw, 190px); }
+  .accessories :global(.browser-dock-network) { width: clamp(112px, 11vw, 138px); }
+  .accessories :global(.browser-battery) { width: clamp(64px, 6vw, 78px); }
+}
+
+@media (max-width: 1023px) {
+  .accessories { grid-template-columns: 1fr 1fr; }
+  .accessories :global(.browser-dock) { grid-row: 1; grid-column: 1 / -1; }
+  .accessories :global(.browser-dock) { display: grid; height: auto; grid-template-columns: 1fr 1fr; }
+  .accessories :global(.browser-dock) > button { width: auto; min-width: 0; height: 76px; }
+  .accessories :global(.browser-spotify-dock) { grid-column: 1 / -1; min-width: 0; }
+  .launchArea { margin-block: 32px; }
+}
+
+@media (max-width: 600px) {
+  .surface { --home-inset: 16px; --home-gap: 16px; }
+  .accessories { gap: 12px; }
+  .accessories :global(.browser-home-calendar), .accessories :global(.browser-daily-quote) { height: auto; min-height: 116px; }
+  .accessories :global(.browser-home-calendar-date) { display: none; }
+  .launchArea, .gardens { padding-right: calc(var(--home-inset) + 52px); }
+  .launcher :global(.browser-quick-links) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .gardenControls > :global(.neu-segmented) { flex-wrap: wrap; }
+  .gardenControls :is(button, a) { min-height: 44px; }
+}
+
+.browserHome { min-height: 0; overflow: auto; flex: 1; }
+.browserHome[data-persistent-shell] { --home-browser-toolbar-inset: 103px; }

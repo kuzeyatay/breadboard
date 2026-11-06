@@ -13,6 +13,8 @@
 import path from "node:path";
 import { externalRuntimePathExists } from "../external-runtime-filesystem.ts";
 import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import { configuredManagedPayloadRoot, managedPayloadTarget } from "../../../scripts/runtime-v2-bulk-paths.mjs";
+import { sameRuntimePath } from "../../../scripts/runtime-v2-paths.mjs";
 
 /** Files that identify a directory as the OpenMAIC clone rather than a namesake. */
 const MARKERS = [
@@ -42,12 +44,23 @@ export function resolveClassroomSourceRoot(env: NodeJS.ProcessEnv = process.env)
 }
 
 function toolchainsRoot(): string {
-  return path.join(dashboardDataDir(), "runtime-v2", "toolchains");
+  return path.dirname(classroomInstallationRoot());
 }
 
 /** The built copy the service runs from. Its `data/` holds every classroom. */
 export function classroomRuntimeRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return configured(env.OPENMAIC_RUNTIME_ROOT) ?? path.join(toolchainsRoot(), "openmaic");
+  return configuredManagedPayloadRoot(dashboardDataDir(), "runtime-v2/toolchains/openmaic", env.OPENMAIC_RUNTIME_ROOT, env);
+}
+
+/** Setup always writes to the approved target; reads retain C until D is built. */
+export function classroomInstallationRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const target = managedPayloadTarget(dashboardDataDir(), "runtime-v2/toolchains/openmaic", env);
+  const explicit = configured(env.OPENMAIC_RUNTIME_ROOT);
+  const legacy = path.join(dashboardDataDir(), "runtime-v2", "toolchains", "openmaic");
+  if (explicit && !sameRuntimePath(explicit, target) && !sameRuntimePath(explicit, legacy)) {
+    throw new Error("Classroom setup manages Breadboard's own installation directory. Remove the custom runtime override before installing here.");
+  }
+  return target;
 }
 
 /** Where setup stages a new copy before swapping it in. */
@@ -61,7 +74,7 @@ export function classroomStagingRoot(token: string): string {
  * corepack is how it is meant to be reached, so the shim forwards to corepack.
  */
 export function classroomToolsDir(): string {
-  return path.join(toolchainsRoot(), "openmaic-tools");
+  return managedPayloadTarget(dashboardDataDir(), "runtime-v2/toolchains/openmaic-tools");
 }
 
 /**

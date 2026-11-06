@@ -12,6 +12,7 @@
 // than the router, so switching views never pushes onto the back stack.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import CalendarClient from "./calendar/calendar-client";
@@ -40,6 +41,8 @@ import type {
 } from "@/lib/plan/types.ts";
 
 interface Props {
+  initialTaskId?: number;
+  initialEventId?: number;
   initialProjects: PlanProjectSummary[];
   initialBoard: PlanBoardData | null;
   initialLabels: PlanLabel[];
@@ -100,6 +103,8 @@ async function readError(response: Response, fallback: string): Promise<string> 
 }
 
 export default function PlanClient({
+  initialTaskId,
+  initialEventId,
   initialProjects,
   initialBoard,
   initialLabels,
@@ -319,6 +324,10 @@ export default function PlanClient({
     }
   }, []);
 
+  useEffect(() => {
+    if (initialTaskId) void openTask(initialTaskId);
+  }, [initialTaskId, openTask]);
+
   async function patchTask(patch: Record<string, unknown>) {
     if (!detail) return;
     setSavingTask(true);
@@ -419,17 +428,17 @@ export default function PlanClient({
   );
 
   return (
-    <main className="bb-calendar-shell flex min-h-0 flex-col bg-gray-950 text-gray-300">
+    <main data-hide-scrollbars className="bb-calendar-shell flex min-h-0 flex-col bg-gray-950 text-gray-300">
       <header className="bb-neu-toolbar breadboard-flower-navbar relative flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2.5">
         <NavbarFlowerWind showFlowers={showNavbarFlowers} />
-        <a
-          href="/dashboard"
+        <Link
+          href="/new-tab"
           className="relative z-10 flex items-center gap-2 text-sm font-medium text-white"
           title="Back to breadboard"
         >
           <PlanIcon className="h-4 w-4" />
           Plan
-        </a>
+        </Link>
 
         <button
           type="button"
@@ -614,6 +623,7 @@ export default function PlanClient({
           ) : (
             <CalendarClient
               embedded
+              initialEventId={initialEventId}
               showNavbarFlowers={showNavbarFlowers}
               initialCalendars={initialCalendars}
               initialToday={initialToday}

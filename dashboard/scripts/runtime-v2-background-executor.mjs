@@ -65,6 +65,10 @@ export function validateRuntimeV2BackgroundRequest(value, executionScope) {
   if (!isRecord(value) || value.protocolVersion !== PROTOCOL_VERSION) {
     fail("The Runtime V2 background request has an unsupported protocol version.");
   }
+  if (value.operation === "source-repair") {
+    if (!hasExactKeys(value, ["protocolVersion", "operation", "repairId"]) || !/^sr-[a-f0-9]{24}$/.test(value.repairId)) fail("Invalid source repair checkpoint.");
+    return { ...value, userId: validateUserScope(executionScope, true) };
+  }
   if (value.operation === "gateway-reconcile") {
     if (
       !hasExactKeys(value, [
@@ -185,6 +189,10 @@ async function runBackgroundOperation(request, sourceRoot) {
         sourceUrl(sourceRoot, "lib/hermes/run-recovery.ts")
       );
       const resumed = resumeAbandonedRuntimeRuns();
+      if (process.env.BREADBOARD_SOURCE_REPAIR_READY === "1") {
+        const { reconcileSourceRepairs } = await import(sourceUrl(sourceRoot, "lib/source-repair/service.ts"));
+        await reconcileSourceRepairs();
+      }
       await drainDetachedPumps(sourceRoot);
       return { operation: request.operation, resumed };
     }
@@ -428,8 +436,13 @@ export async function executeRuntimeV2BackgroundRequest({
   request,
   executionScope,
   sourceRoot,
+  signal,
 }) {
   const validated = validateRuntimeV2BackgroundRequest(request, executionScope);
+  if (validated.operation === "source-repair") {
+    const { runSourceRepairJob } = await import(sourceUrl(sourceRoot, "lib/source-repair/service.ts"));
+    return runSourceRepairJob(validated.repairId, validated.userId, signal);
+  }
   if (validated.operation === "gateway-reconcile") {
     return runGatewayReconciliation(validated, sourceRoot);
   }

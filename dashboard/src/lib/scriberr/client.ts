@@ -163,6 +163,8 @@ export function normalizeScriberrTranscriptPayload(raw: unknown): {
 export interface ScriberrStartParams {
   modelFamily?: string;
   model?: string;
+  device?: "cpu" | "cuda";
+  computeType?: "default" | "float16" | "float32" | "int8";
   batchSize?: number;
   language?: string | null;
   diarize?: boolean;
@@ -486,6 +488,16 @@ export class ScriberrClient {
       batch_size: params.batchSize ?? 4,
       diarize: params.diarize ?? false,
     };
+    if ((params.modelFamily ?? "whisper") === "whisper") {
+      const device = params.device ?? "cpu";
+      // Scriberr defaults to CPU even when CUDA is available. Keep CPU as the
+      // portable default, but allow an attested local GPU configuration to
+      // select CUDA and its efficient float16 path.
+      body.device = device;
+      body.compute_type =
+        params.computeType ?? (device === "cuda" ? "float16" : "int8");
+      body.vad_method = "silero";
+    }
     if (params.language) body.language = params.language;
     const response = await this.rawRequest(
       "POST",

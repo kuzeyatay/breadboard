@@ -123,7 +123,7 @@ test("the chat client routes by agent mode and sends its selected runtime modes 
   // when it was sent, not the one rendered when the hook last ran.
   assert.match(
     agentSession,
-    /if \(!isAgentModeEnabled\(\)\) \{[\s\S]{0,400}?streamDirectTurn\(\{/,
+    /if \(!agentModeEnabled\) \{[\s\S]{0,400}?streamDirectTurn\(\{/,
   );
   assert.match(agentSession, /sessions\/\$\{input\.sessionId\}\/direct/);
   assert.match(agentSession, /const superAgentEnabled = isSuperAgentEnabled\(\)/);
@@ -321,13 +321,12 @@ test("super agent staffs web research across every instrument it has", () => {
     assert.match(superAgentDirective, new RegExp("`" + id + "` —"));
     assert.match(superAgentDirective, new RegExp('"' + id + '"'));
   }
-  // agent-browser is deliberately not one of them. It is the slowest and most
-  // failure-prone instrument, so it is kept out of the staffing list entirely
-  // and gated behind a cheaper attempt that actually came back short.
+  // Public research still prefers extraction; requested website interactions
+  // can use the user's live session immediately.
   assert.match(superAgentDirective, /"agent-browser"/);
   assert.match(superAgentDirective, /`agent-browser` is not on that list/);
-  assert.match(superAgentDirective, /never part of an opening plan/);
-  assert.match(superAgentDirective, /Treat it as the last resort it is/);
+  assert.match(superAgentDirective, /For public research, use it when extraction came back short/);
+  assert.match(superAgentDirective, /does not apply to requested website actions or signed-in account work/);
   assert.match(superAgentDirective, /Wanting more coverage is not a reason/);
   assert.doesNotMatch(superAgentDirective, /- `agent-browser` —/);
   assert.match(

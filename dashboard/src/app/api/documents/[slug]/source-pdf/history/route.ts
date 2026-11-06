@@ -4,6 +4,7 @@ import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesyst
 import db from "@/lib/db";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
+import { normalizeDocumentSlug } from "@/lib/garden-document-path";
 import { resolveGardenSourcePdfPath as resolveSourcePdfPath } from "@/lib/garden-source-pdf-path";
 import {
   requireOwnedClusterFromSlug,
@@ -20,49 +21,6 @@ type HistoryRecord = {
   saved_by_user_id: number | null;
   saved_at: string;
 };
-
-function decodeSlug(value: string): string {
-  let current = value;
-  for (let index = 0; index < 4; index += 1) {
-    try {
-      const decoded = decodeURIComponent(current);
-      if (decoded === current) return current;
-      current = decoded;
-    } catch {
-      return current;
-    }
-  }
-  return current;
-}
-
-function normalizeDocumentSlug(
-  clusterSlug: string,
-  slug: string,
-): string | null {
-  const cluster = clusterSlug.trim();
-  const cleaned = decodeSlug(slug)
-    .replace(/\\/g, "/")
-    .replace(/[?#].*$/, "")
-    .replace(/\.md$/i, "")
-    .trim();
-  let segments = cleaned
-    .split("/")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const clusterIndex = segments.findIndex((s) => s === cluster);
-  if (clusterIndex >= 0) segments = segments.slice(clusterIndex + 1);
-  if (segments[0] === "garden" && segments[1] === cluster)
-    segments = segments.slice(2);
-  const noteSlug = segments.at(-1);
-  if (
-    !noteSlug ||
-    noteSlug.toLowerCase() === "index" ||
-    noteSlug.toLowerCase() === "_index"
-  ) {
-    return null;
-  }
-  return noteSlug;
-}
 
 function safeClusterDir(
   contentPath: string,

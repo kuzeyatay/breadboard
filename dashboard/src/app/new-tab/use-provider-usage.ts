@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStartupLoading } from "@/app/components/startup-readiness";
+import { readTerminalData } from "@/lib/terminal-data-client";
 import { notchProviders, type NotchProvider, type NotchUsagePayload } from "@/lib/usage-notch";
 
 interface Reading { data?: NotchUsagePayload; loading: boolean; error?: string }
 
-/** Each new tab refreshes limits once; subsequent ChatGPT polls read the report. */
+/** Opening a tab reads the existing report; only a manual refresh forces a probe. */
 export function useProviderUsage() {
   const [providers, setProviders] = useState<NotchProvider[]>([]);
   const [catalogError, setCatalogError] = useState<string>();
@@ -17,11 +18,11 @@ export function useProviderUsage() {
   const pending = useRef(new Map<string, AbortController>());
   const catalogPending = useRef<AbortController | null>(null);
   const catalogs = useRef({ models: [] as string[], subscriptions: [] as string[] });
-  const refreshedOnOpen = useRef(new Set<string>());
   const retryAt = useRef(new Map<string, number>());
   useStartupLoading(!catalogReady || providers.some((provider) => {
     const model = provider.models.includes(selection[provider.id]) ? selection[provider.id] : provider.models[0];
-    return !readings[model] || readings[model].loading;
+    const reading = readings[model];
+    return !reading || (reading.loading && !reading.data);
   }));
 
   const loadCatalog = useCallback(async () => {
@@ -30,7 +31,7 @@ export function useProviderUsage() {
     catalogPending.current = controller;
     try {
       const readCatalog = async (url: string, subscriptions = false): Promise<string[]> => {
-        const response = await fetch(url, { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]) });
+        const response = await readTerminalData(url, AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]));
         if (!response.ok) throw new Error("Couldn’t load providers. Try again.");
         const payload = await response.json();
         const rows = subscriptions ? payload.models : payload.data;
@@ -68,16 +69,14 @@ export function useProviderUsage() {
     if (provider.id !== "anthropic" && Date.now() < (retryAt.current.get(model) ?? 0)) return;
     const controller = new AbortController();
     pending.current.set(model, controller);
-    const firstRefresh = !refreshedOnOpen.current.has(provider.id);
-    refreshedOnOpen.current.add(provider.id);
     setReadings((current) => ({ ...current, [model]: { ...current[model], loading: true } }));
     try {
       const query = new URLSearchParams({ model });
-      let response = await fetch(`/api/usage-limits?${query}`, {
-        method: (manual || firstRefresh) && provider.id === "chatgpt" ? "POST" : "GET",
+      let response = manual && provider.id === "chatgpt" ? await fetch(`/api/usage-limits?${query}`, {
+        method: "POST",
         cache: "no-store",
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]),
-      });
+      }) : await readTerminalData(`/api/usage-limits?${query}`, AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]));
       let data: NotchUsagePayload = await response.json();
       if (controller.signal.aborted) return;
       if (provider.id === "anthropic" && data.recovery_required) {
@@ -105,7 +104,6 @@ export function useProviderUsage() {
       } }));
     } finally {
       if (pending.current.get(model) === controller) {
-        if (controller.signal.aborted && firstRefresh) refreshedOnOpen.current.delete(provider.id);
         pending.current.delete(model);
       }
     }
@@ -117,7 +115,6 @@ export function useProviderUsage() {
     const onFocus = () => { if (!document.hidden) void loadCatalog(); };
     window.addEventListener("focus", onFocus);
     const requests = pending.current;
-    const opened = refreshedOnOpen.current;
     return () => {
       window.clearInterval(catalogTimer);
       window.removeEventListener("focus", onFocus);
@@ -125,7 +122,6 @@ export function useProviderUsage() {
       catalogPending.current = null;
       for (const request of requests.values()) request.abort();
       requests.clear();
-      opened.clear();
     };
   }, [loadCatalog]);
 

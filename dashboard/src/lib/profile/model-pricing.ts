@@ -23,7 +23,7 @@ export interface ModelRate {
 }
 
 /**
- * Published list prices, current as of August 2026.
+ * Published list prices, current as of September 2026.
  *
  * OpenAI source: https://developers.openai.com/api/docs/models/compare
  * Google source: https://ai.google.dev/gemini-api/docs/latest-model
@@ -57,6 +57,7 @@ export const MODEL_RATES: Readonly<Record<string, ModelRate>> = {
   // rate here would double-count it.
   "claude-fable-5-efficient": { input: 10, output: 50 },
   "claude-mythos-5": { input: 10, output: 50 },
+  "claude-opus-5-5": { input: 4, output: 20 },
   "claude-opus-5": { input: 5, output: 25 },
   "claude-opus-4-8": { input: 5, output: 25 },
   "claude-opus-4-7": { input: 5, output: 25 },

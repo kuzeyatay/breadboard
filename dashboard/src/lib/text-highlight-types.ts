@@ -7,6 +7,7 @@ export interface HighlightMutation {
 }
 
 export const TEXT_HIGHLIGHT_PREFIXES = [
+  "breadboard:web-highlights:v1:",
   "breadboard:garden-highlights:v1:",
   "breadboard:garden-highlight-answers:v1:",
   "breadboard:chat-highlights:",

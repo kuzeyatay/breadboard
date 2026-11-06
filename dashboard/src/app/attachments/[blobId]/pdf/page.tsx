@@ -59,7 +59,6 @@ export default async function ChatAttachmentPdfPage({
       <PdfViewerClient
         title={fileName}
         browserTitle={fileName}
-        kicker="PDF attachment"
         sourceUrl={`/api/chat-attachments/documents/${encodeURIComponent(blob.blobId)}`}
         readOnly
         fastRead={getNavbarShortcuts(userId).fastRead}

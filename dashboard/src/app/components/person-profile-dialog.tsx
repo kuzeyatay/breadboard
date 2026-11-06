@@ -118,7 +118,7 @@ export default function PersonProfileDialog({
           <div className="mt-4">
             <p className="text-xs text-gray-600">This is you.</p>
             <Link
-              href="/profile"
+              href="/settings"
               onClick={onClose}
               className="neu-button mt-3 inline-flex items-center rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-700 hover:text-white"
             >

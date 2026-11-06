@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useGreetingTypewriter } from "@/app/components/use-greeting-typewriter";
-import styles from "./browser-private.module.css";
+import controls from "@/app/new-tab/new-tab-controls.module.css";
 
 const GREETINGS = [
   "Whatcha watchin’?",
@@ -24,8 +24,8 @@ const GREETINGS = [
 ] as const;
 
 export default function PrivateBrowserGreeting() {
-  const [greeting, setGreeting] = useState("");
-  const { displayed, animating } = useGreetingTypewriter(greeting);
+  const [greeting, setGreeting] = useState<string>("What’s the cover story?");
+  const { displayed, animating } = useGreetingTypewriter(greeting, greeting);
 
   useEffect(() => {
     // Keep the selection in memory; private greetings need no account signals
@@ -45,14 +45,13 @@ export default function PrivateBrowserGreeting() {
   }, []);
 
   return (
-    <div className={`browser-greeting ${greeting ? "is-ready" : ""} ${styles.greeting}`} data-animating={animating}>
-      <h1>
-        <span className="sr-only">{greeting}</span>
-        <span aria-hidden="true">
-          {displayed || "\u00a0"}
-          {animating ? <span className="browser-greeting-caret" /> : null}
-        </span>
-      </h1>
-    </div>
+    <h1 className={controls.greeting} data-animating={animating}>
+      <span className="sr-only">{greeting}</span>
+      <span className={controls.greetingSizer} aria-hidden="true">{greeting}</span>
+      <span className={controls.greetingText} aria-hidden="true">
+        {displayed || "\u00a0"}
+        {animating ? <span className="browser-greeting-caret" /> : null}
+      </span>
+    </h1>
   );
 }

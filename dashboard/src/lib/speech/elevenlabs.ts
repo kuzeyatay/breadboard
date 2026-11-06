@@ -56,11 +56,29 @@ export function elevenLabsTextChunks(text: string): string[] {
   return splitSpeechPassages(text, { maxCharacters: 4_000 });
 }
 
-export async function synthesizeElevenLabsSpeech(userId: number, text: string, voiceId: string, model: ElevenLabsSpeechModel, signal?: AbortSignal): Promise<Response> {
+export async function synthesizeElevenLabsSpeech(userId: number, text: string, voiceId: string, model: ElevenLabsSpeechModel, signal?: AbortSignal, streaming = false): Promise<Response> {
   if (!validElevenLabsVoiceId(voiceId)) throw new RouteError(409, "Choose an ElevenLabs voice in Voice settings first.");
   const audio: Uint8Array<ArrayBuffer>[] = [];
   let size = 0;
   const chunks = elevenLabsTextChunks(text);
+  if (streaming && chunks.length === 1) {
+    const response = await elevenLabsFetch(userId, `/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream?output_format=mp3_44100_128`, {
+      method: 'POST', signal, headers: { 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
+      body: JSON.stringify({ text, model_id: model }),
+    });
+    if (!response.body || !response.headers.get('Content-Type')?.startsWith('audio/')) {
+      await response.body?.cancel();
+      throw new RouteError(502, 'ElevenLabs returned no playable audio.');
+    }
+    const bounded = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        size += chunk.byteLength;
+        if (size > MAX_AUDIO_BYTES) throw new Error('ElevenLabs audio exceeds 64 MB.');
+        controller.enqueue(chunk);
+      },
+    }));
+    return new Response(bounded, { headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store' } });
+  }
   for (const [index, chunk] of chunks.entries()) {
     signal?.throwIfAborted();
     const response = await elevenLabsFetch(userId, `/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {

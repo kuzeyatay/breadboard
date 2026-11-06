@@ -52,6 +52,12 @@
 .icon img { position: absolute; inset: 0; width: 32px; height: 32px; object-fit: contain; }
 .icon:has(img:not([hidden])) > svg { visibility: hidden; }
 .pipIcon { color: #87b9ef; }
+.shieldIcon { color: #86d6a4; }
+.toggle { position: relative; width: 26px; height: 16px; flex: none; border-radius: 10px; background: #64676d; }
+.toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 10px; height: 10px; border-radius: 50%; background: white; }
+.toggle[data-enabled="true"] { background: #278553; }
+.toggle[data-enabled="true"]::after { left: 13px; }
+.siteLabel { overflow-wrap: anywhere; }
 .copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 0; }
 .copy strong, .copy small { overflow: hidden; font: inherit; text-overflow: ellipsis; white-space: nowrap; }
 .copy strong { color: #f4f4f5; }

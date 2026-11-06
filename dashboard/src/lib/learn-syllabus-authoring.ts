@@ -48,7 +48,7 @@ const MAX_CONTEXT_DOCUMENTS = 40;
 
 const AUTHORING_SYSTEM_PROMPT = breadSystemPrompt(`You write a course syllabus from a learner's description of what they want to learn.
 
-The syllabus is a planning document: it states what the course covers, in what order, and to what depth. Breadboard then writes the actual lessons from the learner's own uploaded material, using this syllabus as the plan.
+The syllabus is a planning document: it states what the course covers and to what depth, with a suggested sequence. Breadboard writes the actual lessons from the learner's own uploaded material and chooses their teaching order from conceptual dependencies, placing prerequisites near their first substantive use.
 
 Write the syllabus like a real course outline:
 - courseTitle: the course's name, as a course would state it ("Introduction to Electronics"). No marketing language.

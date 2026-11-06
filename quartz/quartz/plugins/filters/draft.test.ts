@@ -92,6 +92,22 @@ describe("RemoveDrafts", () => {
     )
   })
 
+  test("publishes saved chat lessons and user notes in Generated while keeping internal pages hidden", () => {
+    const savedChat = {
+      knowledge_type: "textbook-page", breadboardType: "textbook_page",
+      source: "chat", saved_from: "chat", generated_by: "chatmock",
+    }
+    for (const folder of ["Generated", "generated", "My notes"]) {
+      assert.equal(shouldPublish(savedChat, `course/${folder}/charged-wire.md`), true)
+      assert.equal(shouldPublish({ ...savedChat, draft: "true" }, `course/${folder}/draft.md`), false)
+      assert.equal(shouldPublish({ ...savedChat, internal: "true" }, `course/${folder}/internal.md`), false)
+      assert.equal(shouldPublish({ knowledge_type: "user-note" }, `course/${folder}/note.md`), true)
+    }
+    assert.equal(shouldPublish(savedChat, "course/Internal/Concept Graph/note.md"), false)
+    assert.equal(shouldPublish(savedChat, "course/generated subtopics/note.md"), false)
+    assert.equal(shouldPublish({ knowledge_type: "textbook-page" }, "course/Generated/scaffold.md"), false)
+  })
+
   test("publishes source documents under a visible Sources folder", () => {
     // Source notes ground the lessons and are now learner-facing.
     assert.equal(

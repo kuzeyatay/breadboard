@@ -1070,9 +1070,7 @@ export default function SettingsAccounts() {
 
       {!proxyRunning && providers.some((provider) => !provider.connected) ? (
         <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
-          The subscription proxy is {subscriptions?.installed ? "not running" : "not installed"},
-          so disconnected providers cannot be signed in. Restarting Breadboard usually starts it;
-          from a repository checkout, run <span className="font-mono">npm run cliproxy</span>.
+          Account sign-in is unavailable. Restart Breadboard to try again.
         </p>
       ) : null}
 
@@ -1082,9 +1080,7 @@ export default function SettingsAccounts() {
             Waiting for authorization
           </p>
           <p className="mt-1 text-[11px] leading-5 text-[var(--ink-muted)]">
-            Approve the sign-in in the browser tab that just opened. This updates as soon as it
-            finishes. The page reuses whatever ChatGPT session your browser already has, so to
-            reach a different account, sign out of chatgpt.com first or use a private window.
+            Finish signing in in the browser tab. To use a different ChatGPT account, sign out of chatgpt.com first or use a private window.
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {login?.authorizationUrl ? (

@@ -34,7 +34,7 @@ test("tab documents become revealable at DOM-ready without waiting for load comp
     path.resolve(__dirname, "..", "..", "src", "main", "tab-manager.ts"),
     "utf8",
   );
-  assert.match(source, /contents\.on\("dom-ready", markDocumentReady\)/);
+  assert.match(source, /contents\.on\("dom-ready", \(\) => \{[\s\S]*?markDocumentReady\(\);\s+\}\)/);
   assert.match(
     source,
     /contents\.once\("destroyed", \(\) => \{\s+markDocumentReady\(\);\s+this\.hostByContents\.delete\(contents\.id\);/,

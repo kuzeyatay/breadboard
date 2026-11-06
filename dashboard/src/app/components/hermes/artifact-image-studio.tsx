@@ -383,7 +383,7 @@ export default function ArtifactImageStudio({
                     onChange={(event) => setPrompt(event.target.value)}
                   />
                 </label>
-                <p className="mt-2 text-[10px] leading-4 text-[var(--ink-muted)]">AI image work uses the provider selected for Breadboard chat. Credentials stay on the server.</p>
+                <p className="mt-2 text-[10px] leading-4 text-[var(--ink-muted)]">Uses the image provider selected for chat.</p>
                 <button type="button" className={`${primaryButtonClass} mt-4 w-full`} disabled={busy || !prompt.trim()} onClick={() => void submitJson(editing ? "edit" : "generate")}>
                   {busy ? (editing ? "Editing…" : "Generating…") : (editing ? "Create AI edit" : "Generate artifact")}
                 </button>

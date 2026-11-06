@@ -9,43 +9,38 @@ import {
   buildLearningPageFrontmatter,
   emojiMatches,
   OPENING_MOVE_BRIEFS,
-  withLearningQuestionPrompt,
+  lessonOverviewProblems,
+  lessonOverviewText,
+  withoutLegacyLearningQuestionPrompt,
 } from "../src/lib/learn-utils.ts";
 
 // ---------------------------------------------------------------------------
-// Learning question is surfaced to the learner
+// Every lesson opens with a short plain-language overview
 //
-// The Topic Overview promises that each subsection is organized around a
-// learning question and asks the reader to answer it before working through the
-// equations. The question was model-authored in the contract but never rendered,
-// so the promise could not be acted on.
+// The "Before you read" learning question asked readers to answer in terms
+// they had not met yet (em1 review, 2026-10-16). A short model-written
+// overview of what the lesson teaches replaced it.
 // ---------------------------------------------------------------------------
 
-test("learning question is rendered directly under the page heading", () => {
-  const body = "## Electric Flux and Gauss's Law\n\nYou already know that charge creates a field.";
-  const out = withLearningQuestionPrompt(body, "Why does enclosed charge fix the total outward flux?");
-  const lines = out.split("\n");
-  assert.equal(lines[0], "## Electric Flux and Gauss's Law");
-  assert.equal(lines[1], "");
-  assert.equal(
-    lines[2],
-    "> **Before you read.** Why does enclosed charge fix the total outward flux?",
-  );
-  assert.equal(lines[3], "");
-  assert.equal(lines[4], "You already know that charge creates a field.");
+const overview = "> **Overview.** When you rub a balloon on your hair it pulls on scraps of paper without touching them. You will learn how to describe that invisible pull at every point around a charge, and how to add up the pulls of several charges.";
+
+test("a lesson opening with a short plain overview passes", () => {
+  const body = `${overview}\n\nImagine two charges.`;
+  assert.match(lessonOverviewText(body) ?? "", /^When you rub a balloon/);
+  assert.deepEqual(lessonOverviewProblems(body), []);
 });
 
-test("learning question prompt is not stacked twice across repairs", () => {
-  const body = "## Title\n\nProse.";
-  const once = withLearningQuestionPrompt(body, "Why?");
-  const twice = withLearningQuestionPrompt(once, "Why?");
-  assert.equal(twice, once);
+test("a missing, long, or mathematical overview is a hard problem", () => {
+  assert.deepEqual(lessonOverviewProblems("Imagine two charges.").map((p) => p.code), ["missing-overview"]);
+  const long = `> **Overview.** ${"word ".repeat(120)}\n\nProse.`;
+  assert.deepEqual(lessonOverviewProblems(long).map((p) => p.code), ["overview-too-long"]);
+  const math = `${overview} It uses $\\mathbf{E}=q/r^2$.\n\nProse.`;
+  assert.deepEqual(lessonOverviewProblems(math).map((p) => p.code), ["overview-has-math"]);
 });
 
-test("body without a heading or question is returned untouched", () => {
-  assert.equal(withLearningQuestionPrompt("Prose only.", "Why?"), "Prose only.");
-  assert.equal(withLearningQuestionPrompt("## Title\n\nProse.", "   "), "## Title\n\nProse.");
-  assert.equal(withLearningQuestionPrompt("## Title\n\nProse.", undefined), "## Title\n\nProse.");
+test("the obsolete Before you read line is removed from preserved pages", () => {
+  const body = "> **Before you read.** Why does enclosed charge fix the total outward flux?\n\nYou already know that charge creates a field.";
+  assert.equal(withoutLegacyLearningQuestionPrompt(body), "You already know that charge creates a field.");
 });
 
 test("learning question reaches page frontmatter for review tooling", () => {

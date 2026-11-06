@@ -228,7 +228,7 @@ test("client maps yt-dlp failures to youtube_download_failed without leaking det
   );
 });
 
-test("startTranscription forwards the bounded WhisperX batch size", async () => {
+test("startTranscription forwards the bounded WhisperX GPU settings", async () => {
   const calls = [];
   const client = new ScriberrClient({
     baseUrl: "http://scriberr.local",
@@ -242,6 +242,8 @@ test("startTranscription forwards the bounded WhisperX batch size", async () => 
   await client.startTranscription("j1", {
     modelFamily: "whisper",
     model: "small.en",
+    device: "cuda",
+    computeType: "float16",
     batchSize: 4,
     language: "en",
   });
@@ -252,8 +254,26 @@ test("startTranscription forwards the bounded WhisperX batch size", async () => 
     model: "small.en",
     batch_size: 4,
     diarize: false,
+    device: "cuda",
+    compute_type: "float16",
+    vad_method: "silero",
     language: "en",
   });
+});
+
+test("Whisper memory settings do not override other model families", async () => {
+  let body;
+  const client = new ScriberrClient({
+    baseUrl: "http://scriberr.local",
+    apiToken: "k",
+    fetchImpl: async (_url, init) => {
+      body = JSON.parse(init.body);
+      return jsonResponse({ id: "j1", status: "pending" });
+    },
+  });
+  await client.startTranscription("j1", { modelFamily: "nvidia_parakeet" });
+  assert.equal(body.compute_type, undefined);
+  assert.equal(body.vad_method, undefined);
 });
 
 test("killJob tolerates 'not running' and missing jobs", async () => {

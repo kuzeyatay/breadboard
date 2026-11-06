@@ -117,8 +117,8 @@ test("a paused goal offers to resume, and never claims to be running", () => {
 
 test("a goal out of turns asks for more rather than pretending to continue", () => {
   const html = render({ ...GOAL, status: "budget_limited", turnBudget: 4 });
-  assert.match(html, /Goal out of turns/);
-  assert.match(html, /aria-label="Give this goal more turns"/);
+  assert.match(html, /Goal budget reached/);
+  assert.match(html, /aria-label="Increase the goal budget"/);
   assert.doesNotMatch(html, /4\/4 turns/);
 });
 

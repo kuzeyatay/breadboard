@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import path from 'path';
 import { pageUnderstanding } from '@/lib/page-understanding.ts';
 import { pageFlagColor, understandingPageSlug } from '@/lib/page-understanding-types.ts';
-import { listClusterFolders, scanClusterKnowledge } from '@/lib/knowledge';
+import { listClusterFolders, scanClusterKnowledgeCooperatively } from '@/lib/knowledge';
 import { INTERNAL_CONCEPT_TYPE, isLegacySubtopicRelPath, readingOrderRank } from '@/lib/learning-garden';
 import { createGardenDocument } from '@/lib/garden-documents.ts';
 import { requireOwnedClusterFromSlug, requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
@@ -29,7 +29,7 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'QUARTZ_CONTENT_PATH not configured' }, { status: 500 });
     }
 
-    const knowledge = scanClusterKnowledge(contentPath, cluster.slug);
+    const knowledge = await scanClusterKnowledgeCooperatively(contentPath, cluster.slug);
     const linkCountBySlug = new Map<string, number>();
     for (const edge of knowledge.edges) {
       linkCountBySlug.set(

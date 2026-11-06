@@ -128,7 +128,7 @@ test("the main Garden workspace routes Max Research and preserves the user's wor
   const workspace = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");
   assert.match(workspace, /maxResearchInvocation\(text,\s*superAgentEnabled\)/);
   assert.match(workspace, /await launchMaxResearch\(maxResearch\.question,\s*text\)/);
-  assert.match(workspace, /if \(!internalAgentContinuation && !textSelection\)/);
+  assert.match(workspace, /if \(!internalAgentContinuation && !textSelection && !workflowPlanning\)/);
 });
 
 test("stopping is offered from the moment a run is asked for", () => {

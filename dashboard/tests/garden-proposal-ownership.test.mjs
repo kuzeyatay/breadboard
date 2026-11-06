@@ -6,6 +6,7 @@ import test from "node:test";
 import { build } from "esbuild";
 import ts from "typescript";
 import { ensureProposalOwnershipSchema, proposalAssistantMessageId } from "../src/lib/hermes/proposal-ownership.ts";
+import { applyGardenRevision } from "../src/lib/garden-revision.ts";
 
 function fixture() {
   const db = new DatabaseSync(":memory:");
@@ -50,6 +51,37 @@ test("old revisions recover their creating turns, remain stable on restart, and 
   } finally { db.close(); }
 });
 
+test("proposal listing previews patches with their complete math context without changing source or hiding stale revisions", async () => {
+  const original="---\ntitle: Fields\n---\n\n# Fields\n\n$$\n\\mathbf E = \\mathbf F\n$$\n";
+  const patch="@@\n-\\mathbf E = \\mathbf F\n+\\mathbf E = \\frac{\\mathbf F}{q}";
+  const makeRow=(id,payload,garden="em-1")=>({id,kind:"page_revision",garden_id:garden,page_slug:"fields",assistant_message_id:101,payload:JSON.stringify(payload)});
+  const rows=[makeRow(1,{patchOrReplacement:patch}),
+    makeRow(2,{patchOrReplacement:"@@\n-Stale equation\n+New equation"}),
+    makeRow(3,{originalText:"Old introduction",patchOrReplacement:"New introduction"}),
+    makeRow(4,{patchOrReplacement:patch},"not-owned")];
+  const route=fs.readFileSync(new URL("../src/app/api/hermes/proposals/route.ts",import.meta.url),"utf8");
+  const tree=ts.createSourceFile("route.ts",route,ts.ScriptTarget.Latest,true);
+  const handler=tree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==="GET");
+  const js=ts.transpileModule(handler.getText(tree).replace("export ",""),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+  const reads=[];
+  const deps={requireUserId:async()=>10,getConversationForUser:()=>{},
+    authorizeGardenAccess:(_user,garden)=>({isOwner:garden!=="not-owned"}),
+    listPendingProposalsForConversation:()=>rows,applyGardenRevision,
+    readGardenPage:async(root,garden,slug)=>{reads.push({root,garden,slug});return{rawContent:original}},
+    NextResponse:{json:value=>Response.json(value)},apiErrorResponse:error=>{throw error},
+    process:{env:{QUARTZ_CONTENT_PATH:"/fixture/content"}}};
+  const get=new Function(...Object.keys(deps),`${js};return GET`)(...Object.values(deps));
+  const {proposals}=await(await get(new Request("http://localhost/api/hermes/proposals?conversationId=conv-current"))).json();
+  assert.equal(proposals.length,3,"Preview failure does not hide the pending revision; unauthorized rows are excluded");
+  assert.equal(proposals[0].previewContent,"\n# Fields\n\n$$\n\\mathbf E = \\frac{\\mathbf F}{q}\n$$\n");
+  assert.equal(proposals[0].content,patch,"The exact source patch remains reviewable");
+  assert.equal(proposals[0].previewError,null);
+  assert.equal(proposals[1].previewContent,null);
+  assert.match(proposals[1].previewError,/could not be previewed/);
+  assert.equal(proposals[2].previewContent,null,"Passage replacements already have a Markdown preview");
+  assert.deepEqual(reads,[{root:"/fixture/content",garden:"em-1",slug:"fields"},{root:"/fixture/content",garden:"em-1",slug:"fields"}]);
+});
+
 test("legacy recovery refuses ambiguous, malformed, unmatched and cross-user run ownership", () => {
   const db = fixture();
   try {
@@ -86,7 +118,7 @@ test("new proposals persist the current server-owned assistant and the authentic
     new Function("require", "module", "exports", bundle.outputFiles[0].text)(createRequire(import.meta.url), loaded, loaded.exports);
     const { createProposal, listPendingProposalsForConversation } = loaded.exports;
     const row = createProposal({ clusterId: 1, gardenId: "em-1", surface: "garden_chat", kind: "page_revision",
-      payload: { patchOrReplacement: "New introduction" }, runtimeSessionId: 5, createdByUserId: 10,
+      payload: { patchOrReplacement: "New introduction", originalText: "Old introduction" }, runtimeSessionId: 5, createdByUserId: 10,
       assistantMessageId: 201 }); // A supplied owner must not override the server's run.
     assert.equal(row.assistant_message_id, 103);
     db.exec("UPDATE hermes_runs SET status='complete', finished_at=datetime('now') WHERE id='later-run'");
@@ -104,5 +136,7 @@ test("new proposals persist the current server-owned assistant and the authentic
     const data = await response.json();
     assert.equal(data.proposals.find(p => p.id === 2).assistantMessageId, "msg_101");
     assert.equal(data.proposals.find(p => p.id === row.id).assistantMessageId, "msg_103");
+    assert.equal(data.proposals.find(p => p.id === row.id).originalText, "Old introduction");
+    assert.equal(data.proposals.find(p => p.id === row.id).content, "New introduction");
   } finally { delete globalThis.__proposalOwnershipDb; db.close(); }
 });

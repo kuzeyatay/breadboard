@@ -1,11 +1,12 @@
 import path from "node:path";
 import { Readable } from "node:stream";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
+import { contentDisposition } from "@/lib/content-disposition";
 import {
   audioAttachmentFormat,
   audioFormatMimeType,
 } from "@/lib/audio-attachments.ts";
-import { scanClusterKnowledge } from "@/lib/knowledge.ts";
+import { scanClusterKnowledgeCooperatively } from "@/lib/knowledge.ts";
 import {
   RouteError,
   requireReadableClusterFromSlug,
@@ -51,8 +52,7 @@ function mediaMimeType(filename: string): string {
 
 function inlineDisposition(filename: string): string {
   const base = path.basename(filename.replace(/\\/g, "/")) || "media";
-  const ascii = base.replace(/[\x00-\x1f\x7f"\\]/g, "_");
-  return `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(base)}`;
+  return contentDisposition(base);
 }
 
 /** Stream one retained Garden media source, including seekable range requests. */
@@ -70,7 +70,7 @@ export async function GET(
       throw new RouteError(500, "QUARTZ_CONTENT_PATH not configured");
     }
 
-    const source = scanClusterKnowledge(contentPath, cluster.slug).nodes.find(
+    const source = (await scanClusterKnowledgeCooperatively(contentPath, cluster.slug)).nodes.find(
       (node) =>
         node.type === "source-document" && node.slug === sourceSlug.trim(),
     );

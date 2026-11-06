@@ -11,7 +11,7 @@ interface Props {
   /** The name the message kept, already reduced to a name. */
   fileName: string;
   /** "Word", "Excel", "PowerPoint" — what the header calls this file. */
-  kicker: string;
+  formatLabel: string;
   /** What is in the file besides prose, in the words a person would use. */
   description: string;
   /** The document read as markdown, with figures pointing at their sidecars. */
@@ -191,7 +191,7 @@ function OutlineItem({
  */
 export default function DocumentViewerClient({
   fileName,
-  kicker,
+  formatLabel,
   description,
   markdown,
   warnings,
@@ -391,9 +391,6 @@ export default function DocumentViewerClient({
             Back
           </button>
           <div className="min-w-0">
-            <p className="text-[10px] uppercase tracking-wider text-gray-600">
-              {kicker} attachment
-            </p>
             <h1 className="truncate text-sm font-semibold text-white">{fileName}</h1>
           </div>
         </div>
@@ -511,7 +508,7 @@ export default function DocumentViewerClient({
               clearMatches();
               setError("");
             }}
-            placeholder={`Find in ${kicker.toLowerCase()} file`}
+            placeholder={`Find in ${formatLabel.toLowerCase()} file`}
             className="h-8 w-full max-w-64 rounded-md border border-gray-700 bg-gray-950 px-3 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-600 focus:border-gray-500"
           />
           <span className="w-20 text-center text-xs text-gray-500">

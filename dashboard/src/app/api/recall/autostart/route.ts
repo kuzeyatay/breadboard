@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 /**
  * "Breadboard just opened." Called once per app load by the browser, because
  * the session is the only thing that knows which user opened it — and capture
- * is that user's opt-in, not the machine's. Idempotent: reloading the page, or
+ * follows that user's saved settings. Idempotent: reloading the page, or
  * having two windows open, never starts a second recorder.
  */
 export async function POST() {

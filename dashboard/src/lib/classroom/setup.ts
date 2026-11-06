@@ -20,12 +20,15 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import { managedPayloadTarget, markManagedPayloadReady } from "../../../scripts/runtime-v2-bulk-paths.mjs";
+import { sameRuntimePath } from "../../../scripts/runtime-v2-paths.mjs";
+import { dashboardDataDir } from "../runtime-paths.ts";
 import { currentService, FRAME_ANCESTORS, stopService } from "./service.ts";
 import {
   classroomAvailability,
   classroomDataDir,
   classroomDataLink,
-  classroomRuntimeRoot,
+  classroomInstallationRoot,
   classroomStagingRoot,
   classroomToolsDir,
   corepackEntry,
@@ -163,16 +166,16 @@ export function applyImporterBuildFix(root: string, platform: NodeJS.Platform = 
  * in every workspace package by bare name, and corepack is how pnpm is meant to
  * be reached here, so the shim just forwards to corepack through this Node.
  */
-export function writePnpmShims(toolsDir: string, corepack: string, execPath: string = process.execPath): void {
+export function writePnpmShims(toolsDir: string, corepack: string, execPath: string = process.execPath, throughCorepack = true): void {
   fs.mkdirSync(toolsDir, { recursive: true });
   fs.writeFileSync(
     path.join(toolsDir, "pnpm.cmd"),
-    `@echo off\r\n"${execPath}" "${corepack}" pnpm %*\r\n`,
+    `@echo off\r\n"${execPath}" "${corepack}" ${throughCorepack ? "pnpm " : ""}%*\r\n`,
     "utf8",
   );
   fs.writeFileSync(
     path.join(toolsDir, "pnpm"),
-    `#!/bin/sh\nexec "${execPath}" "${corepack}" pnpm "$@"\n`,
+    `#!/bin/sh\nexec "${execPath}" "${corepack}" ${throughCorepack ? "pnpm " : ""}"$@"\n`,
     { encoding: "utf8", mode: 0o755 },
   );
 }
@@ -243,6 +246,40 @@ function runStep(
   });
 }
 
+/** Modern bundled Node may omit Corepack. Install only the package-manager
+ * version and tarball integrity pinned by the trusted OpenMAIC source. */
+export async function prepareClassroomPackageManager(
+  source: string, toolsDir: string, env: NodeJS.ProcessEnv,
+  run: typeof runStep = runStep,
+  corepack: string | null = corepackEntry(),
+): Promise<{ entry: string; prefix: string[] }> {
+  if (corepack) return {entry: corepack, prefix: ["pnpm"]};
+  const manifest = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8"));
+  const pin = /^pnpm@(\d+\.\d+\.\d+)\+sha512\.([a-f0-9]{128})$/u.exec(manifest.packageManager ?? "");
+  if (!pin) throw new Error("OpenMAIC must pin its pnpm version and SHA-512 integrity before setup.");
+  const entry = path.join(toolsDir, "node_modules", "pnpm", "bin", "pnpm.cjs");
+  const valid = () => {
+    try {
+      const metadata = fs.lstatSync(entry);
+      if (!metadata.isFile() || metadata.isSymbolicLink() || !sameRuntimePath(fs.realpathSync.native(entry), entry)) return false;
+      const installed = JSON.parse(fs.readFileSync(path.join(toolsDir, "node_modules", "pnpm", "package.json"), "utf8"));
+      const lock = JSON.parse(fs.readFileSync(path.join(toolsDir, "package-lock.json"), "utf8"));
+      const expected = `sha512-${Buffer.from(pin[2], "hex").toString("base64")}`;
+      return installed.version === pin[1] && lock.packages?.["node_modules/pnpm"]?.integrity === expected;
+    } catch { return false; }
+  };
+  if (!valid()) {
+    const npm = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+    if (!fs.statSync(npm, {throwIfNoEntry: false})?.isFile()) throw new Error("The bundled Node package manager is missing. Repair Breadboard's Node runtime before setting up Classroom.");
+    fs.mkdirSync(toolsDir, {recursive: true});
+    await run("Preparing the package manager", process.execPath,
+      [npm, "install", "--prefix", toolsDir, "--save-exact", "--ignore-scripts", "--no-audit", "--no-fund", `pnpm@${pin[1]}`],
+      {cwd: toolsDir, env, timeoutMs: INSTALL_TIMEOUT_MS});
+    if (!valid()) throw new Error("The installed pnpm package does not match OpenMAIC's pinned integrity.");
+  }
+  return {entry, prefix: []};
+}
+
 /**
  * Point the runtime copy's `data` at the stable data directory. A junction on
  * Windows (no privilege needed), a symlink elsewhere; idempotent, and a real
@@ -290,21 +327,18 @@ async function perform(): Promise<void> {
       "The OpenMAIC clone was not found. Clone THU-MAIC/OpenMAIC beside the dashboard first.",
     );
   }
-  const corepack = corepackEntry();
-  if (!corepack) {
-    throw new Error(
-      "corepack was not found next to this Node, and OpenMAIC installs with pnpm through it.",
-    );
-  }
-  const destination = classroomRuntimeRoot();
+  const destination = classroomInstallationRoot();
   const staging = classroomStagingRoot(randomUUID().slice(0, 8));
   const previous = `${destination}.previous-${randomUUID().slice(0, 8)}`;
   const toolsDir = classroomToolsDir();
+  const cache = managedPayloadTarget(dashboardDataDir(), "runtime-v2/toolchains/cache");
+  const env = { ...installEnvironment(toolsDir), COREPACK_HOME: path.join(cache, "corepack"), npm_config_cache: path.join(cache, "npm") };
+  const manager = await prepareClassroomPackageManager(source, toolsDir, env);
 
   state.step = "Copying the source";
   copySource(source, staging);
   applyImporterBuildFix(staging);
-  writePnpmShims(toolsDir, corepack);
+  writePnpmShims(toolsDir, manager.entry, process.execPath, manager.prefix.length > 0);
 
   // The running server holds files open on Windows; it restarts on the next run.
   stopService();
@@ -318,17 +352,16 @@ async function perform(): Promise<void> {
   }
 
   try {
-    const env = installEnvironment(toolsDir);
     await runStep(
       "Installing dependencies",
       process.execPath,
-      [corepack, "pnpm", "install", "--frozen-lockfile"],
+      [manager.entry, ...manager.prefix, "install", "--frozen-lockfile", "--store-dir", path.join(cache, "pnpm")],
       { cwd: destination, env, timeoutMs: INSTALL_TIMEOUT_MS },
     );
     await runStep(
       "Building the app",
       process.execPath,
-      [corepack, "pnpm", "run", "build"],
+      [manager.entry, ...manager.prefix, "run", "build"],
       { cwd: destination, env, timeoutMs: BUILD_TIMEOUT_MS },
     );
     if (!fs.existsSync(path.join(destination, ".next", "BUILD_ID"))) {
@@ -348,6 +381,9 @@ async function perform(): Promise<void> {
     ensureClassroomDataLink(previousData);
   }
   fs.rmSync(previous, { recursive: true, force: true });
+  if (sameRuntimePath(destination, managedPayloadTarget(dashboardDataDir(), "runtime-v2/toolchains/openmaic"))) {
+    markManagedPayloadReady(dashboardDataDir(), "runtime-v2/toolchains/openmaic");
+  }
 }
 
 /**

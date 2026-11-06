@@ -116,7 +116,7 @@ test("browser selection messages and trusted rail bounds are narrow and validate
   );
   assert.equal(browserSelectionText("breadboard-selection://ask?text=%20%20"), null);
   assert.equal(browserSelectionText("https://example.com/?text=forged"), null);
-  assert.match(browserSelectionBootstrapScript(), /breadboard-selection:\/\/ask\?text=/);
+  assert.match(browserSelectionBootstrapScript(), /breadboard-selection:\/\/annotation\?data=/);
   assert.match(browserSelectionBootstrapScript(), /window\.getSelection\(\)/);
   assert.equal(browserContentLeft(1_280, false), BROWSER_RAIL_WIDTH);
   assert.equal(browserContentLeft(1_280, true), BROWSER_TERMINAL_WIDTH);

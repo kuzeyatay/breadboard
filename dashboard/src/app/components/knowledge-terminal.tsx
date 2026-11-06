@@ -58,6 +58,7 @@ import {
   type ChatAttachment,
 } from '@/lib/chat-attachments';
 import { distillAttachments } from '@/lib/document-skills/client';
+import { useAttachmentPreparation } from '@/app/components/use-attachment-preparation';
 import {
   normalizeChatTokenUsage,
   type ChatTokenUsage,
@@ -368,7 +369,8 @@ export default function KnowledgeTerminal({ scope }: Props) {
     messages, model, onModelChange: setModel,
   });
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
-  const [extractingAttachments, setExtractingAttachments] = useState(false);
+  const { begin: beginAttachmentPreparation, busy: extractingAttachments, error: attachmentUploadError } =
+    useAttachmentPreparation(`${draftSurface}:${activeId ?? ""}`);
   const [attachmentStatus, setAttachmentStatus] = useState('');
   const attachmentInputRef = useRef<HTMLInputElement>(null);
 
@@ -519,6 +521,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
     textOverride?: string,
     historyOverride?: ChatMessage[],
     attachmentOverride?: readonly ChatAttachment[],
+    voice?: import('@/lib/speech/voice-request').VoiceRequestOptions,
   ) {
     const text = (textOverride ?? input).trim();
     const pendingAttachments = attachmentOverride
@@ -576,8 +579,9 @@ export default function KnowledgeTerminal({ scope }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: nextMessages.map(({ role, content }) => ({ role, content })),
-          model,
-          reasoningEffort,
+          model: voice?.model ?? model,
+          reasoningEffort: voice?.reasoningEffort ?? reasoningEffort,
+          browserAccess: voice?.browserAccess,
           attachments: pendingAttachments,
           scope,
           adhdMode: isDirectModeEnabled(),
@@ -734,23 +738,23 @@ export default function KnowledgeTerminal({ scope }: Props) {
 
   async function addAttachmentFiles(files: File[]) {
     if (files.length === 0) return;
-    setExtractingAttachments(true);
-    // The add-documents button spins while the read runs, so a status line
-    // saying the same thing only adds noise under the composer. Clear it so a
-    // message from an earlier attachment does not sit there stale.
+    const preparation = beginAttachmentPreparation();
+    let errors: string[] = [];
     setAttachmentStatus('');
     try {
-      const result = await extractChatAttachments(files);
-      setChatAttachments((current) => [...current, ...result.attachments]);
-      setAttachmentStatus([...result.errors, ...result.warnings].join(' · '));
-      // Distil now, while the user is still typing, so the answer comes from a
-      // structured document rather than a dumped one.
-      const distillErrors = await distillAttachments(result.attachments, {
-        onStatus: setAttachmentStatus,
+      const result = await extractChatAttachments(files, {
+        onStatus: status => { if (preparation.isCurrent()) setAttachmentStatus(status); },
       });
-      if (distillErrors.length > 0) setAttachmentStatus(distillErrors.join(' · '));
+      errors = result.errors;
+      if (!preparation.isCurrent()) return;
+      setChatAttachments(current => [...current, ...result.attachments]);
+      setAttachmentStatus([...result.errors, ...result.warnings].join(' · '));
+      void distillAttachments(result.attachments).catch(() => undefined);
+    } catch (cause) {
+      errors = [cause instanceof Error ? cause.message : 'Could not attach the files.'];
+      if (preparation.isCurrent()) setAttachmentStatus(errors.join(' · '));
     } finally {
-      setExtractingAttachments(false);
+      preparation.finish(errors);
     }
   }
 
@@ -1061,13 +1065,14 @@ export default function KnowledgeTerminal({ scope }: Props) {
               className="hidden"
             />
             <AssistantComposer
+              personalizedSuggestions={scope !== 'public'}
               className="mx-auto w-full max-w-3xl"
               compact
               value={input}
               onChange={setInput}
               textareaRef={composerTextareaRef}
               history={sentMessages}
-              onSubmit={() => void sendMessage()}
+              onSubmit={voice => void sendMessage(undefined, undefined, undefined, voice)}
               placeholder={isPublic ? 'Ask anything across all public gardens...' : 'Ask anything.'}
               isSending={isStreaming}
               runState={isStreaming ? 'running' : 'idle'}
@@ -1086,6 +1091,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
               onAddDocuments={() => attachmentInputRef.current?.click()}
               onPasteFiles={addAttachmentFiles}
               isAddingDocuments={extractingAttachments}
+              attachmentUploadError={attachmentUploadError}
               attachments={chatAttachments}
               onRemoveAttachment={(index) =>
                 setChatAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))

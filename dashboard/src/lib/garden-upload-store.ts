@@ -84,6 +84,7 @@ export interface GardenUploadRecovery {
     model: string | null;
   };
   resumedJobId: string | null;
+  resumedState?: string | null;
 }
 
 export type GardenUploadToast = {
@@ -819,8 +820,8 @@ async function runUploadTask(
       for (const warning of hiddenContentWarnings) {
         sinkToast(clusterSlug, {
           message: warning,
-          type: "error",
-          title: "Hidden content detected",
+          type: "success",
+          title: "Document content to review",
         });
       }
       for (const warning of screenshotWarnings) {

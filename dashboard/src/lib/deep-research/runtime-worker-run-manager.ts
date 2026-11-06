@@ -266,7 +266,9 @@ function scheduleCleanup(run: RunState): void {
 export function startRuntimeWorkerRun(
   input: StartDeepResearchRuntimeWorkerInput,
 ): { runId: string; status: RunStatus } {
-  if (!/^[A-Za-z0-9_-]{1,64}$/u.test(input.runtimeJobId)) {
+  // Native IDs are `job_` plus a 64-character digest. Match the outer worker's
+  // bounded identity contract rather than truncating that valid 68-byte ID.
+  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(input.runtimeJobId)) {
     throw new Error("Deep Research Runtime identity is invalid.");
   }
   if (runs.has(input.runtimeJobId)) {

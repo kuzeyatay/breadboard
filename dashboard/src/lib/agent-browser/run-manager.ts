@@ -527,6 +527,23 @@ export async function startRun(input: {
   return { runId: job.jobId, status: runtimeStatus(job) };
 }
 
+/** Lightweight lifecycle read for desktop cleanup, independent of mounted cards. */
+export async function isAgentBrowserRunFinished(userId: number, runId: string): Promise<boolean> {
+  const mapping = store.getRuntimeRunByOwner(userId, runId);
+  if (!mapping) return false;
+  if (mapping.terminal_at) return true;
+  try {
+    const job = await inspectMappedRun(userId, mapping.agent_id, runId);
+    return Boolean(job && TERMINAL_RUNTIME_STATES.has(job.state));
+  } catch (error) {
+    if (error instanceof RuntimeJobControlError && error.code === "JOB_NOT_FOUND") {
+      store.markRuntimeRunTerminal(runId);
+      return true;
+    }
+    throw error;
+  }
+}
+
 export async function readRunView(
   userId: number,
   agentId: string,

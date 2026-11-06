@@ -1,4 +1,13 @@
 "use client";
+
+import { normalizeUnifiedWorkflowDispatch, parseUnifiedWorkflowCommand } from "@/lib/workflows/unified-command.ts";
+
+import { LearnMarkdownSources } from "@/app/components/learn-markdown-sources";
+import WorkspaceSideChat from "@/app/components/hermes/workspace-side-chat";
+import SideChatSurface from "@/app/components/side-chat-surface";
+import { gardenSourceDisplay, isPptxSource } from "@/lib/garden-source-display";
+import { isLearnSelectableSource, toggleLearnSourceSelection } from "@/lib/learn-source-selection";
+import { chatQuestionSelections } from "@/lib/chat-text-selection";
 import { PAGE_FLAG_COLORS, type PageUnderstanding } from "@/lib/page-understanding-types";
 import { useStartupLoading } from "@/app/components/startup-readiness";
 import { runGardenInlineQuestion, preserveInlineQuestionMessages, reconcileInlineQuestionMessages } from "@/lib/conversations/garden-inline-question";
@@ -38,14 +47,17 @@ import ProductDetailsPanel, {
   type ProductPanelSelection,
 } from "@/app/components/hermes/product-details-panel";
 import GenerativeUiRenderer from "@/app/components/hermes/generative-ui-renderer";
+import InlineProposalCards, { InlineProposalCardsProvider } from "@/app/components/hermes/inline-proposal-cards";
 import { useRailResize } from "@/app/components/hermes/use-rail-resize";
 import { useUnreadChats } from "@/lib/conversations/unread-client";
 import { recordLastOpenedChat } from "@/lib/conversations/last-opened";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
+import { useAttachmentPreparation } from "@/app/components/use-attachment-preparation";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import DocumentContextMenu from "@/app/components/document-context-menu";
-import LinkContextMenu from "@/app/components/link-context-menu";
+import LinkContextMenu, { ContextMenuSurface, CONTEXT_MENU_ITEM_CLASS } from "@/app/components/link-context-menu";
+import * as ContextMenu from "@radix-ui/react-context-menu";
 import { useLearnHumanizerMode } from "@/app/components/use-learn-humanizer-mode";
 import {
   restoreQueuedFollowUpDraft,
@@ -113,6 +125,7 @@ import GardenSettingsDialog, {
   GardenSettingsIcon,
 } from "@/app/components/garden-settings-dialog";
 import { useLegacyAgentActivity } from "@/app/components/hermes/use-legacy-agent-activity";
+import type { ChatRuntimeControl } from "@/lib/hermes/chat-runtime-control.ts";
 import { isRecoverableAgentStreamDisconnect } from "@/app/components/hermes/agent-stream-watchdog";
 import {
   gardenTurnCompletedOnServer,
@@ -168,6 +181,8 @@ import {
   type ChatTextSelectionReference,
 } from "@/lib/chat-text-selection";
 import StarredMessagesPanel from "@/app/components/hermes/starred-messages-panel";
+import ArchivedChatsPanel from "@/app/components/hermes/archived-chats-panel";
+import { HERMES_SESSIONS_CHANGED_EVENT, notifyHermesSessionsChanged } from "@/lib/hermes/session-client";
 import { initialStarredMessageTarget, useStarredMessageJump, type StarredMessageTarget } from "@/app/components/use-starred-message-jump";
 import {
   DEFAULT_CHAT_HIGHLIGHT_COLOR,
@@ -177,6 +192,9 @@ import {
 } from "@/lib/chat-highlights";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
+import { useGardenUploadRecoveries } from "@/app/components/use-garden-upload-recoveries";
+import { useGardenRestoredUploads } from "@/app/components/use-garden-restored-uploads";
+import { RestoredGardenUploadRows } from "@/app/components/restored-garden-upload-rows";
 import GardenVideoImport from "@/app/components/garden-video-import";
 import OverflowMarquee from "@/app/components/overflow-marquee";
 import {
@@ -328,6 +346,7 @@ import ViewportPopover from "@/app/components/viewport-popover";
 import KnowledgeGraph from "@/app/components/knowledge-graph";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useToast, Toaster } from "@/app/components/toast";
+import { normalizeDocumentSearch } from "@/lib/document-discovery";
 import { startNavigationProgress } from "@/app/components/navigation-progress";
 import { useAssistantModels } from "@/app/components/use-assistant-models";
 import {
@@ -340,7 +359,7 @@ import {
   formatAssistantModelName,
   groupAssistantModels,
 } from "@/lib/ai-models";
-import { chatTimeSeparatorLabels } from "@/lib/chat-time-separators";
+import { chatTimeSeparatorLabels, parseChatTimestamp } from "@/lib/chat-time-separators";
 import {
   documentUploadTimeTitle,
   formatDocumentUploadTime,
@@ -377,17 +396,14 @@ import { sumIngestTokenUsage } from "@/lib/ingest-token-usage";
 import {
   beginRuntimeIngestRecovery,
   bindRuntimeIngestResponse,
-  cancelPendingRuntimeIngest,
   forgetRuntimeIngestRecovery,
   recoverRuntimeIngest,
-  runtimeIngestRecoveries,
   runtimeIngestRecoveryRecord,
 } from "@/lib/runtime-v2/ingest-recovery-client";
 import {
   cancelGardenUploadTask,
   gardenUploadTasksServerSnapshot,
   gardenUploadTasksSnapshot,
-  hasLiveGardenUploadRequest,
   registerGardenUploadSink,
   removeGardenUploadTask,
   resumeGardenUploadRecovery,
@@ -552,17 +568,20 @@ import {
   notifyChatResponseReady,
 } from "@/lib/task-completion-notification";
 import {
-  setActiveChatNotificationTarget,
   setActiveLearnNotificationGarden,
   takeChatNotificationReply,
   type ChatNotificationTarget,
 } from "@/lib/chat-notification-inbox";
+import { useChatNotificationView } from "@/lib/use-chat-notification-view";
 import { isLearnRunningStatus, LEARN_ACTIVE_STAGE_LABELS } from "@/lib/learn-stage-labels";
 import { learnOperationActivity } from "@/lib/learn-operation-activity";
 import {
   abortGardenTurnCheckpoint,
+  fetchGardenChat,
   reserveGardenTurnCheckpoint,
+  saveGardenChatSession,
 } from "@/lib/conversations/garden-turn-client";
+import { touchRecent, transcriptsToRelease } from "@/lib/conversations/transcript-cache";
 import { gardenDocumentHref } from "@/lib/garden-document-route";
 import {
   isPlayableVideoFormat,
@@ -724,6 +743,7 @@ const GARDEN_PANELS: readonly TerminalPanel[] = [
   "scheduled",
   "hooks",
   "starred",
+  "archived",
   "processes",
 ];
 
@@ -733,6 +753,7 @@ const PANEL_TITLES: Record<TerminalPanel, string> = {
   scheduled: "Scheduled chats",
   hooks: "Hooks",
   starred: "Starred messages",
+  archived: "Archived chats",
   processes: "Processes",
 };
 
@@ -740,8 +761,11 @@ const RAIL_WIDTH_KEY = "breadboard:garden-workspace:sidebar-width";
 /** Read once, so a rail that was shut before it had a width comes back shut. */
 const RAIL_COLLAPSED_KEY = "breadboard:garden-workspace:sidebar-collapsed";
 const NO_MESSAGES: Message[] = [];
+/** Recently used chats whose transcripts stay in memory besides any with live work. */
+const WARM_TRANSCRIPTS = 5;
 
 interface ChatSession {
+  runtimeControl?: ChatRuntimeControl | null;
   id: number;
   user_id?: number;
   /** Stable canonical id used by runtime-scoped capability endpoints. */
@@ -761,6 +785,7 @@ interface ChatSession {
    * pinned there.
    */
   pinned?: boolean;
+  archived?: boolean;
   highlight?: string | null;
   /** A turn or an agent run is in flight in this chat right now. */
   active?: boolean;
@@ -778,9 +803,47 @@ interface ChatSessionSummary {
   isOwn?: boolean;
   ownerUsername?: string;
   pinned: boolean;
+  archived?: boolean;
   highlight: string | null;
   active: boolean;
   latestAssistantVersion: string | null;
+}
+
+/**
+ * Lay the server's chat rows over the chats already held. A chat keeps the
+ * transcript it has, or the one shared empty array when it was never read, and
+ * takes every row field from the server. A row with nothing held is unloaded by
+ * definition, so it leaves `loaded` too.
+ */
+function mergeChatSummaries(
+  previous: readonly ChatSession[],
+  rows: readonly ChatSessionSummary[],
+  loaded: Map<number, string>,
+): ChatSession[] {
+  const cached = new Map(previous.map((item) => [item.id, item]));
+  return rows.map((row) => {
+    const held = cached.get(row.id);
+    if (!held) loaded.delete(row.id);
+    return {
+      // A chat whose transcript has not been read yet keeps one shared
+      // empty array, so its identity is stable between polls.
+      ...(held ?? { messages: NO_MESSAGES }),
+      id: row.id,
+      conversationId: row.conversationId ?? held?.conversationId ?? null,
+      title: row.title,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      isOwn: row.isOwn,
+      ownerUsername: row.ownerUsername,
+      pinned: row.pinned,
+      archived: row.archived,
+      highlight: row.highlight,
+      active: row.active,
+      // Without it the first full read after a poll looks like a new answer in
+      // every chat and announces (and refetches) all of them.
+      latestAssistantVersion: row.latestAssistantVersion,
+    };
+  });
 }
 
 function latestAssistantResponse(messages: readonly Message[]): string | undefined {
@@ -897,7 +960,10 @@ interface SavedChatHighlight extends Omit<ChatTextSelectionReference, "mode"> {
 interface InlineSelectionThread {
   selection: ChatTextSelectionReference;
   question?: string;
+  attachments?: ChatAttachment[];
   answer?: string;
+  reasoning?: string;
+  progressNotes?: string[];
   pending: boolean;
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
@@ -907,6 +973,7 @@ interface InlineSelectionThread {
   /** The answer message's own id, so text inside the popover is selectable
    * and can host highlights and nested "Ask here" threads of its own. */
   answerMessageId?: string;
+  artifactMessageId?: string;
 }
 
 /**
@@ -1094,9 +1161,7 @@ function gardenChatSourceAttachment(
   const aliases = [doc.title, doc.name, doc.sourceFile]
     .map((value) => value.trim())
     .filter((value, index, values) => value && values.indexOf(value) === index);
-  const isPdf =
-    doc.sourceType.trim().toLowerCase() === "pdf" || /\.pdf$/i.test(doc.sourceFile);
-  if (isPdf && doc.sourcePdf) {
+  if (doc.sourcePdf) {
     return {
       slug: doc.slug,
       kind: "pdf",
@@ -1152,7 +1217,7 @@ function normalizedSearchText(value: string): string {
 }
 
 function documentSearchText(doc: DocInfo): string {
-  return normalizedSearchText(
+  return normalizeDocumentSearch(
     [
       doc.title,
       doc.description,
@@ -1826,6 +1891,8 @@ interface ChatTranscriptProps {
   chatSessionId: number | null;
   isStreaming: boolean;
   loadingChats: boolean;
+  /** Set when this chat's transcript could not be read; offers another try. */
+  onRetryLoad?: (() => void) | null;
   messages: Message[];
   gardenSourceAttachments: readonly GardenChatSourceAttachment[];
   activities: ActivityItem[];
@@ -1942,6 +2009,7 @@ const ChatTranscript = memo(function ChatTranscript({
   chatSessionId,
   isStreaming: turnStreaming,
   loadingChats,
+  onRetryLoad,
   messages,
   gardenSourceAttachments,
   activities,
@@ -2096,6 +2164,20 @@ const ChatTranscript = memo(function ChatTranscript({
   // The artifact query is part of opening a chat. Keeping this cover outside
   // the provider prevents any message row from painting before its file cards
   // can mount from the warmed cache in that same reveal.
+  if (onRetryLoad) {
+    return (
+      <div role="alert" className="flex flex-col items-center justify-center gap-3 py-28 text-sm text-gray-400">
+        <p>This chat could not be loaded.</p>
+        <button
+          type="button"
+          onClick={onRetryLoad}
+          className="neu-button flex h-[30px] items-center rounded-md border border-gray-800 px-3 text-xs text-gray-300 transition-colors hover:border-gray-700 hover:text-white"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
   if (loadingChats) {
     return (
       <div className="flex items-center justify-center py-28 text-gray-700">
@@ -2222,8 +2304,12 @@ const ChatTranscript = memo(function ChatTranscript({
                 msg.content,
                 msg,
               );
+              // Match ActivityPanel: a finished response owns its completion,
+              // even if a chat poll or connection still reports streaming.
+              const responseStreaming = i === lastAssistantIndex && isStreaming &&
+                parseChatTimestamp(msg.responseCompletedAt) === null;
               const continuation = delegatedResponsePresentation(messages, i, {
-                streaming: i === lastAssistantIndex && isStreaming,
+                streaming: responseStreaming,
                 failed: i === lastAssistantIndex && connection === "error",
                 interrupted: delegationInterrupted,
               });
@@ -2238,7 +2324,7 @@ const ChatTranscript = memo(function ChatTranscript({
                   ? revealedAssistantContent
                   : storedAssistantContent) || (!isStreaming ? storedAssistantContent : "") ||
                 (!externalRun && (responseFailed || (i === lastAssistantIndex && connection === "error"))
-                  ? "Response failed." : ""));
+                  ? msg.runtimeError || "Response failed." : ""));
               const visibleUserContent = visibleChatMessageText(
                 msg.content,
                 msg.attachments,
@@ -2541,7 +2627,7 @@ const ChatTranscript = memo(function ChatTranscript({
                             inline run widgets otherwise stretch to the full
                             virtualized row even though the answer stops at 90%. */}
                         <MessageActionsSlot
-                          branch={!(isStreaming && i === lastAssistantIndex) ? (() => {
+                          branch={!responseStreaming ? (() => {
                             const branch = branchForAssistant(msg, i);
                             return branch ? {
                               current: branch.activeIndex + 1,
@@ -2571,6 +2657,7 @@ const ChatTranscript = memo(function ChatTranscript({
                               pendingPermission={null}
                               usage={msg.usage}
                               responseDurationMs={msg.responseDurationMs}
+                              responseCompletedAt={delegatedAgentActive ? undefined : msg.responseCompletedAt}
                               activePhaseStartedAt={delegatedAgentStartedAt}
                               onPermissionDecision={onPermissionDecision}
                               stateLabel={delegatedAgentLabel}
@@ -2626,6 +2713,7 @@ const ChatTranscript = memo(function ChatTranscript({
                               }
                               usage={totalUsage}
                               responseDurationMs={msg.responseDurationMs}
+                              responseCompletedAt={delegatedAgentActive ? undefined : msg.responseCompletedAt}
                               responseStartedAt={
                                 delegatedAgentActive ||
                                 isAgentContinuationResponse
@@ -3445,18 +3533,20 @@ const ChatTranscript = memo(function ChatTranscript({
                           {chatSessionId ? (
                             <InlineArtifactCards
                               ownerMessageId={
-                                msg.artifactMessageId ?? msg.id ?? null
+                                msg.artifactMessageId ?? msg.id ?? msg.clientMessageId ?? ""
                               }
+                              includeUnassigned={i === lastVisibleAssistantIndex}
                               thinking={
                                 delegatedAgentActive || hasRunningExternalAgent(msg) ||
-                                (isStreaming && i === lastAssistantIndex)
+                                responseStreaming
                               }
                             />
                           ) : null}
+                          <InlineProposalCards ownerMessageId={msg.id ?? null} />
                           {!externalRun &&
                           !delegatedAgentActive &&
                           Boolean(visibleAssistantContent.trim() || branchForAssistant(msg, i)) &&
-                          !(isStreaming && i === lastAssistantIndex) ? (
+                          !responseStreaming ? (
                             <AssistantMessageActions
                               content={visibleAssistantContent}
                               humanizerReview={messageRewriteReview(msg)}
@@ -3492,7 +3582,7 @@ const ChatTranscript = memo(function ChatTranscript({
             }}
           />
         ) : null}
-        {chatSessionId ? (
+        {chatSessionId && lastVisibleAssistantIndex < 0 ? (
           <div className="bb-garden-assistant-response w-full max-w-[90%]">
             <InlineArtifactCards ownerMessageId={null} thinking={
               isStreaming || delegationInFlight || messages.some(hasRunningExternalAgent)
@@ -3665,7 +3755,6 @@ export default function WorkspaceClient({
   const [loadingDocs, setLoadingDocs] = useState(true);
   // Failed uploads the server kept (bytes + request) so they can be resumed
   // without uploading again; listed above the source documents.
-  const [uploadRecoveries, setUploadRecoveries] = useState<GardenUploadRecovery[]>([]);
   const [graphRefreshVersion, setGraphRefreshVersion] = useState(0);
   const [docsExpanded, setDocsExpanded] = useState(false);
   const [sourceDocsExpanded, setSourceDocsExpanded] = useState(false);
@@ -3681,7 +3770,7 @@ export default function WorkspaceClient({
   const [linksLoading, setLinksLoading] = useState(true);
   const [newLinkTitle, setNewLinkTitle] = useState("");
   const [newLinkUrl, setNewLinkUrl] = useState("");
-  const [newLinkScope, setNewLinkScope] = useState<"site" | "section" | "page">("site");
+  const [newLinkScope, setNewLinkScope] = useState<"site" | "section" | "page">("page");
   const [savingLink, setSavingLink] = useState(false);
   const [linkImportTasks, setLinkImportTasks] = useState<LinkImportTask[]>([]);
   const linkImportControllersRef = useRef(new Map<string, AbortController>());
@@ -3741,6 +3830,21 @@ export default function WorkspaceClient({
 
   // Chat
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  const chatSessionsRef = useRef(chatSessions);
+  chatSessionsRef.current = chatSessions;
+  // Transcripts load per chat, on open or hover; the list itself is rows only.
+  // Holding every message of every chat cost 300-500 MB per tab in a large
+  // garden. Ids map to the server's updated_at when the transcript was read,
+  // so reopening an unchanged chat costs nothing. A chat missing here has no
+  // messages in memory and must never be saved: the save replaces them all.
+  const loadedTranscriptsRef = useRef<Map<number, string>>(new Map());
+  const recentTranscriptsRef = useRef<number[]>([]);
+  const transcriptLoadsRef = useRef<Map<number, Promise<boolean>>>(new Map());
+  // Set once loadChatTranscript exists; the history load above it needs it.
+  const loadChatTranscriptRef = useRef<(sessionId: number, force?: boolean) => Promise<boolean>>(
+    async () => false,
+  );
+  const [transcriptLoadFailed, setTranscriptLoadFailed] = useState<number | null>(null);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
   const [temporaryChat, setTemporaryChat] = useState(false);
   // Leaving temporary mode returns to the saved chat the reader stepped away
@@ -3782,6 +3886,7 @@ export default function WorkspaceClient({
   // stale by definition. Dropping them prevents a slow refresh from briefly
   // restoring the old title over the optimistic one.
   const chatHistoryEpoch = useRef(0);
+  const archivingChatIds = useRef(new Set<number>());
   // A full-history response is allowed to refresh every idle transcript, but
   // never the one this tab is actively streaming. The server only has the
   // durable checkpoint until the detached runtime finishes, so replacing the
@@ -3981,7 +4086,11 @@ export default function WorkspaceClient({
     streamingChatIdsRef.current = next;
     setStreamingChatIds(next);
   }, []);
-  const agentActivity = useLegacyAgentActivity();
+  const activityChat = chatSessions.find((chat) => chat.id === activeChatId);
+  const agentActivity = useLegacyAgentActivity({
+    sessionReference: activityChat?.conversationId ?? activeChatId,
+    runtimeControl: activityChat?.isOwn === false ? null : activityChat?.runtimeControl,
+  });
   const inlineQuestionRunsRef = useRef(new Map<string, { clientMessageId: string; controller: AbortController }>());
   const activeGardenTurnRef = useRef<{
     sessionId: number;
@@ -4216,8 +4325,9 @@ export default function WorkspaceClient({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Chat attachments (per-message, sent directly to the AI)
-  const [extractingAttachments, setExtractingAttachments] = useState(false);
-  /** What a blocking document distillation is doing right now, or null. */
+  const { begin: beginAttachmentPreparation, busy: extractingAttachments, error: attachmentUploadError } =
+    useAttachmentPreparation(`${clusterSlug}:${activeChatId ?? ''}`);
+  /** Upload and document-reading progress, or null. */
   const [attachmentDistillStatus, setAttachmentDistillStatus] = useState<
     string | null
   >(null);
@@ -4250,6 +4360,9 @@ export default function WorkspaceClient({
     useState<LearnDestructiveAction | null>(null);
   const [learnSourceOnly, setLearnSourceOnly] = useState(true);
   const [learnSkipManualReview, setLearnSkipManualReview] = useState(false);
+  // Figure-crop verdicts are cached per authoring model, so changing model
+  // re-reviews every page. Opt in to keep the saved verdicts instead.
+  const [learnReuseCropVerdicts, setLearnReuseCropVerdicts] = useState(false);
   const [humanizerEnabled, setHumanizerEnabled] = useLearnHumanizerMode();
   const [learnHumanizerRequestBusy, setLearnHumanizerRequestBusy] =
     useState(false);
@@ -4433,27 +4546,14 @@ export default function WorkspaceClient({
     void fetchSavedLinks();
   }, [fetchSavedLinks]);
 
-  const fetchUploadRecoveries = useCallback(async () => {
-    try {
-      const res = await fetch(
-        `/api/gardens/${encodeURIComponent(clusterSlug)}/ingest-recovery`,
-        { cache: "no-store" },
-      );
-      if (!res.ok) return;
-      const data = (await res.json()) as { recoveries?: unknown };
-      setUploadRecoveries(
-        Array.isArray(data.recoveries)
-          ? (data.recoveries as GardenUploadRecovery[])
-          : [],
-      );
-    } catch {
-      // The list is advisory; the next refresh retries.
-    }
-  }, [clusterSlug]);
-
-  useEffect(() => {
-    void fetchUploadRecoveries();
-  }, [fetchUploadRecoveries]);
+  const {
+    recoveries: uploadRecoveries,
+    setRecoveries: setUploadRecoveries,
+    refresh: fetchUploadRecoveries,
+  } = useGardenUploadRecoveries(clusterSlug, () => {
+    void fetchDocuments();
+    setGraphRefreshVersion((value) => value + 1);
+  });
 
   useEffect(() => {
     const refresh = (event: Event) => {
@@ -4517,59 +4617,24 @@ export default function WorkspaceClient({
     return () => window.removeEventListener(LEARN_ARTIFACTS_CHANGED_EVENT, changed);
   }, [clusterSlug, fetchLearnStatus]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    for (const stored of runtimeIngestRecoveries(clusterSlug)) {
-      // An upload loop still running in the module store owns this record;
-      // attaching here too would double-stream and double-report the job.
-      if (hasLiveGardenUploadRequest(stored.requestId)) continue;
-      void (async () => {
-        let record = stored;
-        if (record.cancelRequested) {
-          await cancelPendingRuntimeIngest(record.requestId, {
-            signal: controller.signal,
-          });
-          const current = runtimeIngestRecoveryRecord(record.requestId);
-          if (current && !current.jobId) {
-            return;
-          }
-          if (!current) {
-            await fetchDocuments();
-            return;
-          }
-          record = current;
-        }
-        const outcome = await recoverRuntimeIngest(
-          record,
-          (event) => {
-            if (event.type === "result") {
-              if (record.purpose === "syllabus" && typeof event.slug === "string") {
-                setLearnSyllabusSlug(event.slug);
-                setLearnIncludedSourceSlugs((current) =>
-                  current?.filter((slug) => slug !== event.slug) ?? null,
-                );
-              }
-            } else if (
-              event.type === "error" &&
-              event.canceled !== true &&
-              typeof event.error === "string"
-            ) {
-              if (!showUploadRef.current) {
-                addToast(`${record.filename}: ${event.error}`);
-              }
-            }
-          },
-          { signal: controller.signal },
-        );
-        if (outcome?.terminalEvent) {
-          await fetchDocuments();
-          void fetchLearnStatus();
-          setGraphRefreshVersion((value) => value + 1);
-        }
-      })().catch(() => undefined);
-    }
-    return () => controller.abort();
-  }, [addToast, clusterSlug, fetchDocuments, fetchLearnStatus]);
+  const restoredUploads = useGardenRestoredUploads(clusterSlug, {
+    onRestored: () => setSourceDocsExpanded(true),
+    onEvent: (record, event) => {
+      if (event.type === "result" && record.purpose === "syllabus" && typeof event.slug === "string") {
+        setLearnSyllabusSlug(event.slug);
+        setLearnIncludedSourceSlugs(current => current?.filter(slug => slug !== event.slug) ?? null);
+      } else if (event.type === "error" && event.canceled !== true && typeof event.error === "string" && !showUploadRef.current) {
+        addToast(`${record.filename}: ${event.error}`);
+      }
+    },
+    onSettled: () => {
+      void fetchDocuments();
+      void fetchUploadRecoveries();
+      void fetchLearnStatus();
+      setGraphRefreshVersion(value => value + 1);
+    },
+  });
+  const hasRestoredUploads = restoredUploads.length > 0;
 
   // Hand the module-level upload engine this page's notification and refresh
   // hooks while mounted. Toasts raised while the page was away are delivered
@@ -4744,7 +4809,7 @@ export default function WorkspaceClient({
     if (loadingDocs) return;
     const availableSourceSlugs = new Set(
       documents
-        .filter((doc) => doc.type === "source-document")
+        .filter(isLearnSelectableSource)
         .map((doc) => doc.slug),
     );
     setLearnIncludedSourceSlugs((current) =>
@@ -4841,35 +4906,22 @@ export default function WorkspaceClient({
   const fetchChatSessions = useCallback(async () => {
     const epoch = chatHistoryEpoch.current;
     try {
-      const params = new URLSearchParams({ clusterSlug });
+      // Rows only. Each transcript is read when its chat is opened (see
+      // loadChatTranscript); reading all of them here was 102 MB in one garden.
+      const params = new URLSearchParams({ clusterSlug, summary: "1" });
       if (canViewPublicChats && viewPublicChats)
         params.set("includePublicChats", "1");
-      const res = await fetch(`/api/chat-sessions?${params.toString()}`);
+      const res = await fetch(`/api/chat-sessions?${params.toString()}`, {
+        cache: "no-store",
+      });
       if (!res.ok) throw new Error("Failed to load chats");
       const data = await res.json();
-      const sessions = ((data.sessions ?? []) as ChatSession[]).filter(
+      const sessions = ((data.sessions ?? []) as ChatSessionSummary[]).filter(
         (session) => !deletingChatIds.current.has(session.id),
       );
-      if (chatHistoryEpoch.current !== epoch) return;
+      if (chatHistoryEpoch.current !== epoch || archivingChatIds.current.size > 0) return;
       setChatSessions((previous) => {
-        // The rail's marks come from its own feed and are not in this answer,
-        // so whatever it already established stays put.
-        const cached = new Map(previous.map((item) => [item.id, item]));
-        const visible = sessions.map((session) => {
-          const inFlight = inFlightChatMessagesRef.current.get(session.id);
-          const messages = reconcileInlineQuestionMessages(preserveInlineQuestionMessages(
-            inFlight ? reconcileExternalAgentMessages(inFlight, session.messages) : session.messages,
-            cached.get(session.id)?.messages ?? [],
-          ), session.messages);
-          if (inFlight) inFlightChatMessagesRef.current.set(session.id, messages);
-          return {
-            ...session,
-            messages,
-            pinned: cached.get(session.id)?.pinned ?? false,
-            highlight: cached.get(session.id)?.highlight ?? null,
-            active: session.active ?? cached.get(session.id)?.active ?? false,
-          };
-        });
+        const visible = mergeChatSummaries(previous, sessions, loadedTranscriptsRef.current);
         const mountedTemporary = previous.find(
           (session) =>
             session.temporary === true &&
@@ -4889,8 +4941,14 @@ export default function WorkspaceClient({
           // creation: whatever is in the composer belongs to the blank chat it
           // was typed in, not to this one.
           setCreatedChatId(null);
-          selectChat(sessions[0]?.id ?? null);
+          selectChat(sessions.find((session) => !session.archived)?.id ?? null);
         }
+      }
+      // A reload after a turn is how the open chat learns its canonical ids and
+      // server title; the rows above do not carry its messages.
+      const open = activeChatIdRef.current;
+      if (open !== null && loadedTranscriptsRef.current.has(open)) {
+        void loadChatTranscriptRef.current(open, true);
       }
     } catch {
       addToast("Failed to load chats");
@@ -4952,6 +5010,78 @@ export default function WorkspaceClient({
   }, [canViewPublicChats, clusterSlug, viewPublicChats]);
 
   /**
+   * Make one chat's transcript resident. Resolves true once its messages are in
+   * memory. A transcript already read at the row's current updated_at is not
+   * read again unless `force`; concurrent calls share one request.
+   */
+  const loadChatTranscript = useCallback((sessionId: number, force = false): Promise<boolean> => {
+    const loadedAt = loadedTranscriptsRef.current.get(sessionId);
+    const row = chatSessionsRef.current.find((session) => session.id === sessionId);
+    if (!force && loadedAt !== undefined && (!row || row.updated_at === loadedAt)) {
+      return Promise.resolve(true);
+    }
+    const pending = transcriptLoadsRef.current.get(sessionId);
+    if (pending) return pending;
+    const load = refreshChatSession(sessionId)
+      .then((refreshed) => {
+        if (!refreshed) return loadedTranscriptsRef.current.has(sessionId);
+        // refreshChatSession only writes chats already in the list; one that
+        // is not there yet has nothing held and must not count as loaded.
+        if (chatSessionsRef.current.some((session) => session.id === sessionId)) {
+          loadedTranscriptsRef.current.set(sessionId, refreshed.updated_at);
+        }
+        return loadedTranscriptsRef.current.has(sessionId);
+      })
+      .finally(() => transcriptLoadsRef.current.delete(sessionId));
+    transcriptLoadsRef.current.set(sessionId, load);
+    return load;
+  }, [refreshChatSession]);
+  loadChatTranscriptRef.current = loadChatTranscript;
+
+  /** Drop the transcripts of chats not used lately, keeping any with live work. */
+  const releaseIdleTranscripts = useCallback(() => {
+    const pinned = new Set<number>([
+      ...streamingChatIdsRef.current,
+      ...inFlightChatMessagesRef.current.keys(),
+      ...transcriptLoadsRef.current.keys(),
+    ]);
+    if (activeChatIdRef.current !== null) pinned.add(activeChatIdRef.current);
+    for (const key of inlineQuestionRunsRef.current.keys()) pinned.add(Number(key.split(":")[0]));
+    for (const session of chatSessionsRef.current) {
+      if (session.active === true || session.messages.some((message) =>
+        message.pending || hasRunningExternalAgent(message))) pinned.add(session.id);
+    }
+    const recent = recentTranscriptsRef.current.filter((id) => loadedTranscriptsRef.current.has(id));
+    const released = new Set(transcriptsToRelease(recent, pinned, WARM_TRANSCRIPTS));
+    recentTranscriptsRef.current = recent.filter((id) => !released.has(id));
+    if (released.size === 0) return;
+    for (const id of released) loadedTranscriptsRef.current.delete(id);
+    setChatSessions((previous) => previous.map((session) =>
+      released.has(session.id) ? { ...session, messages: NO_MESSAGES } : session));
+  }, []);
+
+  // Opening a chat reads its transcript (shown at once when already resident)
+  // and lets the least recently used ones go.
+  useEffect(() => {
+    if (loadingChats || activeChatId === null || temporaryChat) return;
+    const sessionId = activeChatId;
+    recentTranscriptsRef.current = touchRecent(recentTranscriptsRef.current, sessionId);
+    setTranscriptLoadFailed(null);
+    void loadChatTranscript(sessionId).then((loaded) => {
+      if (!loaded && activeChatIdRef.current === sessionId) setTranscriptLoadFailed(sessionId);
+      releaseIdleTranscripts();
+    });
+  }, [activeChatId, loadChatTranscript, loadingChats, releaseIdleTranscripts, temporaryChat]);
+
+  // Hovering a row reads that transcript ahead of the click.
+  const prefetchChatTranscript = useCallback((chatId: string) => {
+    const sessionId = Number(chatId);
+    if (!Number.isInteger(sessionId) || loadedTranscriptsRef.current.has(sessionId)) return;
+    recentTranscriptsRef.current = touchRecent(recentTranscriptsRef.current, sessionId);
+    void loadChatTranscript(sessionId).then(releaseIdleTranscripts);
+  }, [loadChatTranscript, releaseIdleTranscripts]);
+
+  /**
    * The rail's own feed: rows only, polled.
    *
    * A different request from the full read above on purpose — that one carries
@@ -4970,28 +5100,10 @@ export default function WorkspaceClient({
       });
       if (!res.ok) throw new Error("Chats could not be loaded.");
       const data = (await res.json()) as { sessions?: ChatSessionSummary[] };
-      if (chatHistoryEpoch.current !== epoch) return;
+      if (chatHistoryEpoch.current !== epoch || archivingChatIds.current.size > 0) return;
       const rows = Array.isArray(data.sessions) ? data.sessions : [];
       setChatSessions((previous) => {
-        const cached = new Map(previous.map((item) => [item.id, item]));
-        const visible = rows.map((row) => ({
-          // A chat whose transcript has not been read yet keeps one shared
-          // empty array, so its identity is stable between polls.
-          ...(cached.get(row.id) ?? { messages: NO_MESSAGES }),
-          id: row.id,
-          conversationId:
-            row.conversationId ??
-            cached.get(row.id)?.conversationId ??
-            null,
-          title: row.title,
-          created_at: row.created_at,
-          updated_at: row.updated_at,
-          isOwn: row.isOwn,
-          ownerUsername: row.ownerUsername,
-          pinned: row.pinned,
-          highlight: row.highlight,
-          active: row.active,
-        }));
+        const visible = mergeChatSummaries(previous, rows, loadedTranscriptsRef.current);
         const mountedTemporary = previous.find(
           (session) =>
             session.temporary === true &&
@@ -5018,9 +5130,11 @@ export default function WorkspaceClient({
       if (document.visibilityState === "visible") void refreshRail();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener(HERMES_SESSIONS_CHANGED_EVENT, onVisibilityChange);
     return () => {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener(HERMES_SESSIONS_CHANGED_EVENT, onVisibilityChange);
     };
   }, [refreshRail]);
 
@@ -5028,9 +5142,10 @@ export default function WorkspaceClient({
   // its search, upload and process controls all speak; this surface's chats are
   // numbered, so the number is carried as its own decimal string throughout.
   const sidebarChats: TerminalSidebarChat[] = chatSessions
-    .filter((session) => session.temporary !== true)
+    .filter((session) => session.temporary !== true && session.archived !== true)
     .map((session) => ({
     id: String(session.id),
+    href: `/gardens/${encodeURIComponent(clusterSlug)}?chat=${encodeURIComponent(String(session.id))}`,
     title: session.title,
     updatedAt: session.updated_at,
     // The poll is ten seconds behind a turn this tab is running, so a chat
@@ -5159,19 +5274,14 @@ export default function WorkspaceClient({
 
   // A notice is only an invitation to visit an unseen answer. Selecting that
   // conversation by any route makes every notice belonging to it disappear.
-  useEffect(() => {
-    const target: ChatNotificationTarget | null = viewingChatId && !temporaryChat
+  useChatNotificationView(viewingChatId && !temporaryChat
       ? {
           surface: "garden_chat",
           gardenSlug: clusterSlug,
           chatId: viewingChatId,
           conversationId: viewingConversationId,
         }
-      : null;
-    setActiveChatNotificationTarget(target);
-    if (target) dismissChatToasts(target);
-    return () => setActiveChatNotificationTarget(null);
-  }, [clusterSlug, dismissChatToasts, temporaryChat, viewingChatId, viewingConversationId]);
+      : null);
 
   // The Learn panel shows the run's stage, progress and outcome itself, so a
   // Learn notice for this Garden must not repeat it in the corner while the
@@ -5233,13 +5343,14 @@ export default function WorkspaceClient({
   const refreshChatTitles = useCallback(async () => {
     const epoch = chatHistoryEpoch.current;
     try {
-      const params = new URLSearchParams({ clusterSlug });
+      // Titles only: the full read carries every transcript (102 MB for one garden).
+      const params = new URLSearchParams({ clusterSlug, summary: "1" });
       if (canViewPublicChats && viewPublicChats)
         params.set("includePublicChats", "1");
       const res = await fetch(`/api/chat-sessions?${params.toString()}`);
       if (!res.ok) return;
       const data = await res.json();
-      const sessions = (data.sessions ?? []) as ChatSession[];
+      const sessions = (data.sessions ?? []) as ChatSessionSummary[];
       // A rename or delete that landed while this was in flight owns the title
       // now, exactly as it does for the full reload above.
       if (chatHistoryEpoch.current !== epoch) return;
@@ -5317,8 +5428,15 @@ export default function WorkspaceClient({
     activeChatId !== null && activeChatId === createdChatId;
   // Do not hold a saved-message jump behind the separate artifact request.
   const openingStarredMessage = starredMessageTarget?.chatId === String(activeChatId);
+  // Read as a ref during render: the state update that delivers the messages
+  // is what re-renders this, and it lands after the ref is set.
+  const activeTranscriptFailed = activeChatId !== null && transcriptLoadFailed === activeChatId;
+  const activeTranscriptPending = activeChatId !== null && !temporaryChat && !visibleChatJustCreated &&
+    !activeTranscriptFailed && activeChat?.messages === NO_MESSAGES &&
+    !loadedTranscriptsRef.current.has(activeChatId);
   const chatContentLoading =
-    loadingChats || (!visibleChatJustCreated && !openingStarredMessage && !inlineArtifactsReady);
+    loadingChats || activeTranscriptPending ||
+    (!visibleChatJustCreated && !openingStarredMessage && !inlineArtifactsReady);
   const hasRunningExternalAgentInActiveChat = messages.some(
     hasRunningExternalAgent,
   );
@@ -5528,24 +5646,30 @@ export default function WorkspaceClient({
       const current = byId.get(selection.id) ?? { selection, pending: false };
       if (message.role === "user") {
         current.question = message.content;
+        current.attachments = reusableChatAttachments(message.attachments).filter(item => item.context !== "pdf");
         // Pending from the moment the question is sent, not from the moment
         // its answer row exists, so a re-asked question never flashes its
         // predecessor's answer.
         if (isStreaming && messageIndex === messages.length - 1) {
           current.pending = true;
           current.answer = undefined;
+          current.reasoning = undefined;
+          current.progressNotes = undefined;
           current.usage = undefined;
           current.responseDurationMs = undefined;
           current.startedAt = message.createdAt;
         }
       } else {
         current.answer = message.content || message.runtimeError || (message.interrupted ? "Stopped." : message.failed ? "Could not answer this highlight." : undefined);
+        current.reasoning = message.thinking;
+        current.progressNotes = delegatedThinkingUpdates(message);
         current.pending = message.pending === true;
         current.usage = message.usage;
         current.responseDurationMs = message.responseDurationMs;
         current.startedAt = message.createdAt;
         current.responseCompletedAt = message.responseCompletedAt;
         current.verification = message.verification;
+        current.artifactMessageId = message.artifactMessageId ?? message.id;
         current.answerMessageId = messageSelectionSourceId(
           message,
           messageIndex,
@@ -5556,8 +5680,14 @@ export default function WorkspaceClient({
     return byId;
   }, [deletedInlineSelectionIds, isStreaming, messages, savedInlineSelections]);
 
+  const chatSelections = useMemo(() => chatQuestionSelections(messages, composerSelection), [messages, composerSelection]);
   const annotationsByMessage = useMemo(() => {
     const byMessage = new Map<string, ChatTextAnnotation[]>();
+    for (const selection of chatSelections.values()) {
+      const entries = byMessage.get(selection.sourceMessageId) ?? [];
+      entries.push({ ...selection, kind: "chat" });
+      byMessage.set(selection.sourceMessageId, entries);
+    }
     for (const thread of inlineSelectionThreads.values()) {
       const entries = byMessage.get(thread.selection.sourceMessageId) ?? [];
       entries.push({ ...thread.selection, kind: "answer" });
@@ -5569,7 +5699,7 @@ export default function WorkspaceClient({
       byMessage.set(highlight.sourceMessageId, entries);
     }
     return byMessage;
-  }, [inlineSelectionThreads, savedChatHighlights]);
+  }, [chatSelections, inlineSelectionThreads, savedChatHighlights]);
 
   const selectedChatHighlight = selectionMenu
     ? savedChatHighlights.find(
@@ -5728,12 +5858,19 @@ export default function WorkspaceClient({
         ),
       );
       setSavedInlineSelections((current) => [...current, selection]);
+      setOpenInlineAnswers((current) => {
+        const parent = current.findIndex((open) =>
+          inlineSelectionThreads.get(open.id)?.answerMessageId === selection.sourceMessageId,
+        );
+        return [...current.slice(0, parent + 1), { id: selection.id, anchor: selectionMenu.anchor }];
+      });
+    } else {
+      setComposerSelection(selection);
+      setOpenInlineAnswers([]);
+      window.setTimeout(() => textareaRef.current?.focus(), 0);
     }
-    setComposerSelection(selection);
     setSelectionMenu(null);
-    if (mode === "chat") setOpenInlineAnswers([]);
     window.getSelection()?.removeAllRanges();
-    window.setTimeout(() => textareaRef.current?.focus(), 0);
   }
 
   const replyToMessage = useCallback((sourceMessageId: string, content: string) => {
@@ -5745,6 +5882,18 @@ export default function WorkspaceClient({
     window.getSelection()?.removeAllRanges();
     window.setTimeout(() => textareaRef.current?.focus(), 0);
   }, []);
+
+  function replyToInlineAnswer(selection: ChatTextSelectionReference, anchor: FloatingAnchorRect) {
+    setSavedInlineSelections((current) => [...current, selection]);
+    setSelectionMenu(null);
+    setOpenInlineAnswers((current) => {
+      const parent = current.findIndex((open) =>
+        inlineSelectionThreads.get(open.id)?.answerMessageId === selection.sourceMessageId,
+      );
+      return [...current.slice(0, parent + 1), { id: selection.id, anchor }];
+    });
+    window.getSelection()?.removeAllRanges();
+  }
 
   function cancelSelectionQuestion() {
     const selection = composerSelection;
@@ -5761,6 +5910,17 @@ export default function WorkspaceClient({
 
   const openAnnotation = useCallback(
     (annotationId: string, anchor: FloatingAnchorRect) => {
+      if (chatSelections.has(annotationId)) {
+        setSelectionMenu(null);
+        setOpenInlineAnswers([]);
+        window.getSelection()?.removeAllRanges();
+        if (messages.some(message => message.role === "user" && message.textSelection?.id === annotationId)) {
+          setStarredMessageTarget({ chatId: String(activeChatId), messageId: "", selectionId: annotationId, requestId: Date.now() });
+        } else {
+          window.setTimeout(() => textareaRef.current?.focus(), 0);
+        }
+        return;
+      }
       const highlight = savedChatHighlights.find(
         (candidate) => candidate.id === annotationId,
       );
@@ -5779,11 +5939,8 @@ export default function WorkspaceClient({
       }
       const thread = inlineSelectionThreads.get(annotationId);
       if (!thread) return;
-      if (!thread.question) {
-        setComposerSelection(thread.selection);
-        window.setTimeout(() => textareaRef.current?.focus(), 0);
-        return;
-      }
+      setSelectionMenu(null);
+      window.getSelection()?.removeAllRanges();
       setOpenInlineAnswers((current) => {
         const openIndex = current.findIndex(
           (openAnswer) => openAnswer.id === annotationId,
@@ -5802,7 +5959,7 @@ export default function WorkspaceClient({
           : [{ id: annotationId, anchor }];
       });
     },
-    [inlineSelectionThreads, savedChatHighlights],
+    [chatSelections, messages, activeChatId, inlineSelectionThreads, savedChatHighlights],
   );
 
   function deleteInlineSelection(annotationId: string) {
@@ -5831,15 +5988,16 @@ export default function WorkspaceClient({
   function askInlineSelectionAgain(
     selection: ChatTextSelectionReference,
     question: string,
+    attachments: readonly ChatAttachment[],
   ) {
     const trimmed = question.trim();
     if (!trimmed || chatContentLoading || !canAskSelection) {
       return;
     }
-    void sendInlineQuestion(trimmed, selection, []);
+    void sendInlineQuestion(trimmed, selection, attachments);
   }
 
-  async function sendInlineQuestion(question: string, selection: ChatTextSelectionReference, attachments: readonly ChatAttachment[]) {
+  async function sendInlineQuestion(question: string, selection: ChatTextSelectionReference, attachments: readonly ChatAttachment[], voice?: import('@/lib/speech/voice-request').VoiceRequestOptions) {
     const session = activeChat;
     if (!session || session.isOwn === false) return;
     const key = `${session.id}:${selection.id}`;
@@ -5856,7 +6014,7 @@ export default function WorkspaceClient({
     try {
       await runGardenInlineQuestion({
         sessionId: session.id, clusterSlug, clientMessageId: run.clientMessageId,
-        question, selection, attachments, model, reasoningEffort,
+        question, selection, attachments, model, reasoningEffort, ...voice,
         sourceResponse: messages.find((message, index) => messageSelectionSourceId(message, index) === selection.sourceMessageId)?.content,
         selectedDocumentSlugs, signal: run.controller.signal,
         publish: pair => updateChatMessages(session.id, current => {
@@ -5890,9 +6048,9 @@ export default function WorkspaceClient({
   }
 
   /** The composer's submit: a held selected-text question rides the turn. */
-  function submitComposer() {
+  function submitComposer(voice?: import('@/lib/speech/voice-request').VoiceRequestOptions) {
     if (!composerSelection || !canAskSelection) {
-      void handleSubmit();
+      void handleSubmit(undefined, undefined, undefined, false, undefined, { voice });
       return;
     }
     const question = input.trim();
@@ -5905,7 +6063,7 @@ export default function WorkspaceClient({
       const attachments = [...chatAttachments];
       setInput("");
       setChatAttachments([]);
-      void sendInlineQuestion(question, selection, attachments);
+      void sendInlineQuestion(question, selection, attachments, voice);
       return;
     }
     if (isStreaming || externalRunHoldsQueue || stoppingGardenChat) {
@@ -5917,7 +6075,7 @@ export default function WorkspaceClient({
     // Keep this a composer send so uploaded files reach the checkpoint and
     // the complete draft can be restored if saving fails.
     void handleSubmit(undefined, undefined, undefined, false, undefined, {
-      textSelection: selection,
+      textSelection: selection, voice,
     });
   }
 
@@ -6282,14 +6440,9 @@ export default function WorkspaceClient({
     hasRunningExternalAgentInActiveChat ||
     delegationInFlight ||
     launchingExternalAgent !== null;
-  // Steering needs this tab's stream. Stopping uses the durable conversation,
-  // including restored turns and delegated workers without a local stream.
+  // A reopened chat can steer its durable run without owning the original stream.
   const steerableTurnActive =
-    chatTurnStreaming &&
-    activeGardenTurnRef.current?.sessionId === activeChatId && (
-    agentActivity.connection === "connecting" ||
-    agentActivity.connection === "streaming" ||
-    agentActivity.connection === "waiting");
+    Boolean(agentActivity.activeRunId) && activeChat?.isOwn !== false;
   const stoppingGardenChat = stoppingGardenChats.has(activeChatId);
   const canStopGardenChat = isStreaming || externalRunHoldsQueue || stoppingGardenChat;
   const newChatPageSelected =
@@ -6502,14 +6655,37 @@ export default function WorkspaceClient({
   const activeServerChatKey = activeServerChatIds.join(",");
   useEffect(() => {
     if (!activeServerChatKey) return;
-    const reconcile = () => {
+    // A whole transcript every 2 s was 7.5 MB per tick for a long chat. The
+    // rows (15 KB) say which chats moved; every fifth tick still re-reads all
+    // of them, which covers changes the row cannot see (an older message's run).
+    const seen = new Map<number, string>();
+    let tick = 0;
+    const changedRows = async (): Promise<Map<number, string> | null> => {
+      try {
+        const params = new URLSearchParams({ clusterSlug, summary: "1" });
+        if (canViewPublicChats && viewPublicChats) params.set("includePublicChats", "1");
+        const res = await fetch(`/api/chat-sessions?${params.toString()}`, { cache: "no-store" });
+        if (!res.ok) return null;
+        const data = (await res.json()) as { sessions?: ChatSessionSummary[] };
+        return new Map((data.sessions ?? []).map((row) =>
+          [row.id, `${row.updated_at}|${row.latestAssistantVersion ?? ""}|${row.active ? 1 : 0}`]));
+      } catch {
+        return null;
+      }
+    };
+    const reconcile = async () => {
       if (document.visibilityState !== "visible") return;
+      tick += 1;
+      const rows = tick % 5 === 1 ? null : await changedRows();
       for (const sessionId of activeServerChatIds) {
+        const mark = rows?.get(sessionId);
+        if (mark !== undefined && seen.get(sessionId) === mark) continue;
+        if (mark !== undefined) seen.set(sessionId, mark);
         void refreshChatSession(sessionId);
       }
     };
-    reconcile();
-    const timer = window.setInterval(reconcile, 2_000);
+    void reconcile();
+    const timer = window.setInterval(() => void reconcile(), 2_000);
     document.addEventListener("visibilitychange", reconcile);
     window.addEventListener("focus", reconcile);
     return () => {
@@ -6520,7 +6696,7 @@ export default function WorkspaceClient({
     // The key is the stable identity of the active set. Depending on the array
     // itself would tear down this poll on every transcript delta.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeServerChatKey, refreshChatSession]);
+  }, [activeServerChatKey, canViewPublicChats, clusterSlug, refreshChatSession, viewPublicChats]);
 
   // One lightweight clock drives elapsed time for every concurrent upload.
   useEffect(() => {
@@ -6717,8 +6893,48 @@ export default function WorkspaceClient({
 
   async function handleDeleteLink(linkId: string) {
     if (deletingLinkId) return;
+    const link = savedLinks.find((item) => item.id === linkId);
+    // The import made a source note, lesson pages and published Quartz pages;
+    // removing only the link record left all of those behind.
+    const sourceSlug = link?.sourceSlug &&
+      !savedLinks.some((item) => item.id !== linkId && item.sourceSlug === link.sourceSlug)
+      ? link.sourceSlug
+      : undefined;
+    if (sourceSlug) {
+      const confirmed = await confirmDestructive({
+        title: "Delete this link?",
+        subject: link?.title ?? link?.url ?? "",
+        body: "This will permanently delete the imported source and all lesson pages created from it.",
+        detail: "This action cannot be undone.",
+        confirmLabel: "Delete link",
+        tone: "danger",
+      });
+      if (!confirmed) return;
+    }
     setDeletingLinkId(linkId);
     try {
+      if (sourceSlug) {
+        const sourceRes = await fetch(
+          `/api/documents/${encodeURIComponent(sourceSlug)}?clusterSlug=${encodeURIComponent(clusterSlug)}`,
+          { method: "DELETE" },
+        );
+        const sourceData = (await sourceRes.json().catch(() => ({}))) as {
+          error?: string;
+          deletedSlugs?: unknown;
+        };
+        // 404: the source was already removed by hand; still drop the link.
+        if (!sourceRes.ok && sourceRes.status !== 404) {
+          addToast(sourceData.error ?? "Failed to delete link");
+          return;
+        }
+        const deleted = new Set(
+          Array.isArray(sourceData.deletedSlugs)
+            ? sourceData.deletedSlugs.filter((slug): slug is string => typeof slug === "string")
+            : [sourceSlug],
+        );
+        setDocuments((prev) => prev.filter((item) => !deleted.has(item.slug)));
+        setGraphRefreshVersion((v) => v + 1);
+      }
       const res = await fetch(
         `/api/gardens/${encodeURIComponent(clusterSlug)}/links`,
         {
@@ -6848,13 +7064,6 @@ export default function WorkspaceClient({
 
   function resumeUploadRecovery(recovery: GardenUploadRecovery) {
     const taskId = resumeGardenUploadRecovery({ clusterSlug, recovery });
-    setUploadRecoveries((current) =>
-      current.map((candidate) =>
-        candidate.recoveryId === recovery.recoveryId
-          ? { ...candidate, resumedJobId: candidate.resumedJobId ?? "pending" }
-          : candidate,
-      ),
-    );
     selectedUploadTaskIdRef.current = taskId;
     setSelectedUploadTaskId(taskId);
     setShowUpload(true);
@@ -6905,27 +7114,27 @@ export default function WorkspaceClient({
   async function attachChatFiles(files: File[]) {
     if (files.length === 0) return;
 
-    setExtractingAttachments(true);
+    const preparation = beginAttachmentPreparation();
+    let errors: string[] = [];
     try {
       const extracted = await extractChatAttachments(files, {
+        onStatus: status => { if (preparation.isCurrent()) setAttachmentDistillStatus(status); },
         isHandwriting: (file) =>
           isHandwriting && HANDWRITING_FILE_RE.test(file.name),
       });
+      errors = extracted.errors;
+      if (!preparation.isCurrent()) return;
       for (const message of [...extracted.warnings, ...extracted.errors]) {
         addToast(message);
       }
       setChatAttachments((prev) => [...prev, ...extracted.attachments]);
-      // A document too large to paste into every turn becomes a book-to-skill
-      // skill now, while the user is still typing. The turn builds it too if it
-      // has to, but by then this has almost always already cached it.
-      const distillErrors = await distillAttachments(extracted.attachments, {
-        clusterSlug,
-        onStatus: (status) => setAttachmentDistillStatus(status),
-      });
-      for (const message of distillErrors) addToast(message);
+      void distillAttachments(extracted.attachments, { clusterSlug }).catch(() => undefined);
+    } catch (cause) {
+      errors = [cause instanceof Error ? cause.message : "Could not attach the files."];
+      if (preparation.isCurrent()) addToast(errors[0]);
     } finally {
-      setAttachmentDistillStatus(null);
-      setExtractingAttachments(false);
+      if (preparation.isCurrent()) setAttachmentDistillStatus(null);
+      preparation.finish(errors);
     }
   }
 
@@ -6944,7 +7153,8 @@ export default function WorkspaceClient({
     if (imageFiles.length === 0) return;
 
     e.preventDefault();
-    setExtractingAttachments(true);
+    const preparation = beginAttachmentPreparation();
+    let errors: string[] = [];
     try {
       const pastedImages = await Promise.all(
         imageFiles.map(async (file, index) => ({
@@ -6953,11 +7163,12 @@ export default function WorkspaceClient({
           name: pastedImageName(file, index),
         })),
       );
-      setChatAttachments((prev) => [...prev, ...pastedImages]);
+      if (preparation.isCurrent()) setChatAttachments((prev) => [...prev, ...pastedImages]);
     } catch {
-      addToast("Could not read pasted image");
+      errors = ["Could not read pasted image"];
+      if (preparation.isCurrent()) addToast(errors[0]);
     } finally {
-      setExtractingAttachments(false);
+      preparation.finish(errors);
     }
   }
 
@@ -7082,9 +7293,11 @@ export default function WorkspaceClient({
       setDocuments((prev) => prev.filter((item) => !deleted.has(item.slug)));
       setGraphRefreshVersion((v) => v + 1);
       addToast(isSource ? "Source deleted" : "Document deleted", "success");
-    } catch {
+    } catch (error) {
       setDocuments(previousDocuments);
-      addToast("Failed to delete document");
+      // The route already names the real reason (garden busy, file in use, …);
+      // a generic toast made every failure look identical.
+      addToast(error instanceof Error && error.message ? error.message : "Failed to delete document");
     } finally {
       setDeletingDocumentSlug(null);
     }
@@ -7126,6 +7339,9 @@ export default function WorkspaceClient({
         throw new Error(data.error ?? "Failed to create chat");
       const session = data.session as ChatSession;
       chatHistoryEpoch.current += 1;
+      // A new chat's whole transcript is the empty one it was created with.
+      loadedTranscriptsRef.current.set(session.id, session.updated_at);
+      recentTranscriptsRef.current = touchRecent(recentTranscriptsRef.current, session.id);
       setChatSessions((previous) => [session, ...previous]);
       // The turn still belongs to this new session if the reader left while
       // the POST was pending, but the reader's newly chosen transcript wins.
@@ -7150,6 +7366,12 @@ export default function WorkspaceClient({
       branchGroups?: Record<string, ConversationBranchGroup<Message> | null>;
     } = {},
   ): Promise<boolean> {
+    // The PATCH replaces every saved message. Saving a chat whose transcript
+    // was never read (or was released) would erase it on the server.
+    if (!loadedTranscriptsRef.current.has(sessionId)) {
+      console.warn(`[garden-chat] refused to save chat ${sessionId}: its transcript is not loaded`);
+      return false;
+    }
     const saveFailureLabel = chatSaveFailureLabel(
       sessionId, title ?? chatSessions.find(session => session.id === sessionId)?.title,
       nextMessages, clusterName,
@@ -7165,12 +7387,7 @@ export default function WorkspaceClient({
       Promise.resolve(true);
     const write = previous.catch(() => false).then(async () => {
       try {
-        const res = await fetch(`/api/chat-sessions/${sessionId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) throw new Error("Failed to save chat");
+        await saveGardenChatSession(sessionId, body);
         if (
           options.updateLocal !== false &&
           chatPersistenceVersionsRef.current.get(sessionId) === version
@@ -7191,8 +7408,9 @@ export default function WorkspaceClient({
           );
         }
         return true;
-      } catch {
-        addToast(saveFailureLabel, "error", "Chat was not saved", String(sessionId));
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "Please try again.";
+        addToast(`${saveFailureLabel}. ${reason}`, "error", "Chat was not saved", String(sessionId));
         return false;
       }
     });
@@ -7409,17 +7627,18 @@ export default function WorkspaceClient({
    */
   async function patchChatMark(
     chat: TerminalSidebarChat,
-    body: { pinned?: boolean; highlight?: string | null },
+    body: { pinned?: boolean; highlight?: string | null; archived?: boolean },
     failure: string,
   ) {
     const id = Number(chat.id);
+    const original = chatSessions.find((session) => session.id === id);
+    if (!original || original.isOwn === false || archivingChatIds.current.has(id)) return;
+    if (body.archived !== undefined) archivingChatIds.current.add(id);
     setRailError(null);
     chatHistoryEpoch.current += 1;
-    let original: ChatSession | undefined;
     setChatSessions((current) =>
       current.map((session) => {
         if (session.id !== id) return session;
-        original = session;
         return { ...session, ...body };
       }),
     );
@@ -7444,6 +7663,9 @@ export default function WorkspaceClient({
                 ...(body.pinned !== undefined && session.pinned === body.pinned
                   ? { pinned: before.pinned }
                   : {}),
+                ...(body.archived !== undefined && session.archived === body.archived
+                  ? { archived: before.archived }
+                  : {}),
                 ...(body.highlight !== undefined &&
                 session.highlight === body.highlight
                   ? { highlight: before.highlight }
@@ -7452,6 +7674,10 @@ export default function WorkspaceClient({
             : session,
         ),
       );
+    } finally {
+      archivingChatIds.current.delete(id);
+      chatHistoryEpoch.current += 1;
+      if (body.archived !== undefined) notifyHermesSessionsChanged("garden_chat");
     }
   }
 
@@ -7663,6 +7889,7 @@ export default function WorkspaceClient({
               ).filter((sourceSlug) => sourceSlug !== learnSyllabusSlug),
               syllabusSourceId: learnSyllabusSlug,
               includeSourceSnapshots: false,
+              reuseCropVerdictsAcrossModels: learnReuseCropVerdicts,
               // Keep planning interruptible from the UI. The live checkbox is
               // evaluated when the proposed map reaches the review boundary.
               skipManualReview:
@@ -8119,6 +8346,11 @@ export default function WorkspaceClient({
     // keep offering. Only safe for the last message, since retrying an earlier
     // one relies on the snapshot to preserve everything after it.
     const groupId = messageBranchId(previousUser, userIndex);
+    const retryTextSelection = previousUser.textSelection ?? branchGroups[groupId]?.variants
+      .flatMap(variant => variant)
+      .find(message => message.role === "user" && message.content === previousUser.content &&
+        (message.clientMessageId === groupId || message.branchGroupId === groupId || message.id === groupId) &&
+        message.textSelection)?.textSelection;
     if (!attemptDiedEmpty) {
       const branch = createConversationBranch<Message>({
         messages,
@@ -8166,6 +8398,7 @@ export default function WorkspaceClient({
       false,
       undefined,
       {
+        textSelection: retryTextSelection,
         focusedDocumentNames: retryFocusedDocumentNames,
         focusedDocumentSlugs: retryFocusedDocumentSlugs,
       },
@@ -8282,8 +8515,12 @@ export default function WorkspaceClient({
     textSelection?: ChatTextSelectionReference,
   ): Promise<boolean> {
     const correction = text.trim() || attachmentOnlyMessageText(attachments);
-    const context = activeSteerContextRef.current;
-    if (!correction || !context) return false;
+    const sessionId = activeChatId;
+    const context = activeSteerContextRef.current?.sessionId === sessionId ? activeSteerContextRef.current : null;
+    if (!correction) return false;
+    if (agentActivity.pendingClarification && attachments.length === 0 && !textSelection) {
+      return agentActivity.respondToClarification(correction);
+    }
 
     let accepted = false;
     try {
@@ -8296,7 +8533,12 @@ export default function WorkspaceClient({
       );
       return false;
     }
-    if (!accepted || activeSteerContextRef.current !== context) return false;
+    if (!accepted) return false;
+    if (!context) {
+      if (sessionId !== null) await refreshChatSession(sessionId);
+      return true;
+    }
+    if (activeSteerContextRef.current !== context) return true;
 
     const correctionMessage: Message = {
       role: "user",
@@ -8613,21 +8855,25 @@ export default function WorkspaceClient({
    * has nothing to read is the failure worth catching before the first
    * question, not after a vague answer.
    */
-  async function selectDeepTutor(): Promise<ExternalAgentSelection | null> {
+  async function selectDeepTutor({ checkHealth = true } = {}): Promise<ExternalAgentSelection | null> {
     setExternalAgentStatus("");
     try {
-      const response = await fetch(
-        `/api/deep-tutor/health?gardenSlug=${encodeURIComponent(clusterSlug)}`,
-      );
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.available !== true) {
-        throw new Error(
-          typeof data?.reason === "string"
-            ? data.reason
-            : typeof data?.error === "string"
-              ? data.error
-              : "Deep Tutor is unavailable.",
+      let scope: { rootCount?: number } | undefined;
+      if (checkHealth) {
+        const response = await fetch(
+          `/api/deep-tutor/health?gardenSlug=${encodeURIComponent(clusterSlug)}`,
         );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.available !== true) {
+          throw new Error(
+            typeof data?.reason === "string"
+              ? data.reason
+              : typeof data?.error === "string"
+                ? data.error
+                : "Deep Tutor is unavailable.",
+          );
+        }
+        scope = data.scope;
       }
       const selected = { id: DEEP_TUTOR_AGENT_ID, name: DEEP_TUTOR_AGENT_NAME };
       setAgentBrowserAgent(null);
@@ -8646,8 +8892,7 @@ export default function WorkspaceClient({
       setDeerFlowAgent(null);
       setShortsAgent(null);
       setDeepTutorAgent(selected);
-      const scope = data.scope as { rootCount?: number } | undefined;
-      if (!scope?.rootCount) {
+      if (checkHealth && !scope?.rootCount) {
         setExternalAgentStatus(
           `Deep Tutor selected, but ${clusterName} has no files on disk yet — it will answer from the conversation alone.`,
         );
@@ -9967,6 +10212,7 @@ async function selectCareerOps(): Promise<ExternalAgentSelection | null> {
           content: `The tutoring turn could not start: ${
             error instanceof Error ? error.message : "unknown error"
           }`,
+          externalAgentOutcome: "failed",
         },
         prepared.title,
       );
@@ -10190,7 +10436,7 @@ async function selectCareerOps(): Promise<ExternalAgentSelection | null> {
         setExternalAgentStatus(data.reason);
       } else if (data.serviceRunning !== true) {
         setExternalAgentStatus(
-          "Stock Analyst selected. Its backend starts with the first question, which takes about a minute.",
+          "Stock Analyst is ready for your question. The first response may take about a minute to start.",
         );
       }
       return selected;
@@ -12005,7 +12251,7 @@ async function launchCareerOps(task: string) {
     if (!brief || externalAgentLaunchRef.current) {
       if (!brief)
         setExternalAgentStatus(
-          "Describe the artifact Resource2Skill should build.",
+          "Describe what you want to create.",
         );
       return;
     }
@@ -12824,6 +13070,7 @@ async function launchCareerOps(task: string) {
     internalAgentContinuation = false,
     onTurnStarted?: () => void,
     turnOptions?: {
+      voice?: import('@/lib/speech/voice-request').VoiceRequestOptions;
       textSelection?: ChatTextSelectionReference;
       focusedDocumentNames?: string[];
       focusedDocumentSlugs?: string[];
@@ -12838,7 +13085,15 @@ async function launchCareerOps(task: string) {
     // Only a retry sets the branch it is replacing, and only a retry passes a
     // history. Anything else that reaches a launcher appends as usual.
     if (historyOverride === undefined) retryBranchRef.current = null;
-    const text = (textOverride ?? input).trim();
+    let text: string;
+    let workflowPlanning: boolean;
+    try {
+      text = normalizeUnifiedWorkflowDispatch((textOverride ?? input).trim());
+      workflowPlanning = Boolean(parseUnifiedWorkflowCommand(text));
+    } catch (error) {
+      setExternalAgentStatus(error instanceof Error ? error.message : "This workflow could not be selected.");
+      return;
+    }
     // Capture the switches with the send, before preparing the chat or files.
     // The same mode must decide routing and reach the server's capability broker.
     const superAgentEnabled = isSuperAgentEnabled();
@@ -12848,12 +13103,23 @@ async function launchCareerOps(task: string) {
       : composerSend
         ? chatAttachments
         : [];
+    if (text && agentActivity.pendingClarification && !internalAgentContinuation && !textSelection && pendingAttachments.length === 0) {
+      const answered = await agentActivity.respondToClarification(text);
+      if (answered && composerSend) setInput(current => current.trim() === text ? "" : current);
+      return;
+    }
     if (
       (!text && pendingAttachments.length === 0) ||
       (internalAgentContinuation ? steerableTurnActive : isStreaming) ||
       launchingExternalAgent
     )
       return;
+    // A turn appends to the transcript on screen; without it there is nothing
+    // to append to, and saving would replace the chat with this one turn.
+    if (activeChat && !temporaryChat && !loadedTranscriptsRef.current.has(activeChat.id)) {
+      addToast("This chat is still loading. Try again in a moment.");
+      return;
+    }
 
     // Only the composer calls this with no override, so this is the one place
     // that knows a human is speaking: it ends whatever hand-off chain was
@@ -12872,7 +13138,7 @@ async function launchCareerOps(task: string) {
     // starting the Super Agent synthesis, leaving the delegating row terminal.
     // A selected-text question is likewise bound to its excerpt: it is always
     // answered here, never routed into a launcher or an external agent.
-    if (!internalAgentContinuation && !textSelection) {
+    if (!internalAgentContinuation && !textSelection && !workflowPlanning) {
     // Refuse an impossible combination before anything is dispatched. The
     // branches below are a priority cascade, so without this a second runtime
     // agent or a stacked skill would be silently swallowed into the winner's
@@ -12995,11 +13261,16 @@ async function launchCareerOps(task: string) {
 
     const deepTutorTask = taskFromDeepTutorCommand(text);
     if (deepTutorTask !== null) {
-      setInput("");
-      setChatAttachments([]);
+      if (externalAgentLaunchRef.current) return;
+      if (deepTutorTask) {
+        setInput("");
+        setChatAttachments([]);
+      }
       void (async () => {
-        const selected = deepTutorAgent ?? (await selectDeepTutor());
-        if (selected) await launchDeepTutor(deepTutorTask);
+        const selected = deepTutorAgent ?? (await selectDeepTutor({ checkHealth: !deepTutorTask }));
+        if (!selected) return;
+        if (deepTutorTask) await launchDeepTutor(deepTutorTask);
+        else setInput((current) => current.trim() === text ? "" : current);
       })();
       return;
     }
@@ -13593,6 +13864,7 @@ if (careerOpsAgent) {
     setChatStreaming(sessionId, true);
     chatHistoryEpoch.current += 1;
     updateChatMessages(sessionId, finalMessages);
+    agentSignal ??= agentActivity.start(session.conversationId ?? null);
     // Both halves of the turn must exist in one durable commit before any
     // attachment, skill, model, or runtime preparation starts. A service
     // restart can now either resume this answer or terminalize it; it can no
@@ -13796,7 +14068,7 @@ if (careerOpsAgent) {
         agentSignal ?? agentActivity.start(session.conversationId ?? null);
       gardenTurnObserversRef.current.set(sessionId, observer);
       const viewerSignal = AbortSignal.any([agentSignal, viewerRecovery.signal]);
-      const res = await fetch("/api/chat", {
+      const res = await fetchGardenChat(sessionId, clientMessageId, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -13805,8 +14077,8 @@ if (careerOpsAgent) {
           clusterSlug,
           chatSessionId: sessionId,
           clientMessageId,
-          model,
-          reasoningEffort,
+          model: turnOptions?.voice?.model ?? model,
+          reasoningEffort: turnOptions?.voice?.reasoningEffort ?? reasoningEffort,
           attachments: pendingAttachments,
           selectedDocumentSlugs: focusedDocumentSlugs,
           ...(textSelection
@@ -13857,7 +14129,7 @@ if (careerOpsAgent) {
 
       if (res.headers.get("X-Breadboard-AI-Fallback") === "1") {
         assistantMsg.thinking =
-          "Hermes failed at runtime. HERMES_MODE=preferred allowed this visible legacy ChatMock fallback.\n";
+          "The assistant is unavailable. Continuing in basic chat.\n";
       }
 
       for await (const payload of readGardenResponseData(res.body, viewerSignal)) {
@@ -14172,6 +14444,11 @@ if (careerOpsAgent) {
   const resumingRecoveryIds = new Set(
     activeUploadTasks.flatMap((task) => Object.values(task.resumingRecoveryIds)),
   );
+  // The live upload row already shows progress for these recovery records.
+  const visibleUploadRecoveries = uploadRecoveries.filter(
+    (recovery) => !resumingRecoveryIds.has(recovery.recoveryId) &&
+      !restoredUploads.some(upload => upload.jobId !== null && upload.jobId === recovery.resumedJobId),
+  );
   const modalUploadRecoveryIds = selectedUploadTask?.recoveryIds ?? {};
   const activeLinkImportTasks = linkImportTasks.filter(
     (task) => task.status === "importing",
@@ -14219,7 +14496,7 @@ if (careerOpsAgent) {
     wordCount: doc.wordCount,
     flagColor: doc.flagColor,
   }));
-  const sourceDocSearchTerms = normalizedSearchText(sourceDocSearch)
+  const sourceDocSearchTerms = normalizeDocumentSearch(sourceDocSearch)
     .trim()
     .split(/\s+/)
     .filter(Boolean);
@@ -14248,12 +14525,13 @@ if (careerOpsAgent) {
     selectedDocumentSlugs.includes(doc.slug),
   );
   const primarySourceDocument = sourceDocuments[0];
+  const learnAvailableSourceDocuments = documents.filter(isLearnSelectableSource);
   const availableLearnSourceSlugSet = new Set(
-    sourceDocuments.map((doc) => doc.slug),
+    learnAvailableSourceDocuments.map((doc) => doc.slug),
   );
-  // The syllabus controls lesson order and scope; it is not itself a teaching
+  // The syllabus defines coverage and depth; it is not itself a teaching
   // document. Keep it out of both the usable count and the checkbox selection.
-  const learnEligibleSourceDocuments = sourceDocuments.filter(
+  const learnEligibleSourceDocuments = learnAvailableSourceDocuments.filter(
     (doc) => doc.slug !== learnSyllabusSlug,
   );
   const learnEligibleSourceGroups = LEARN_SOURCE_KINDS.map((kind) => ({
@@ -14263,7 +14541,7 @@ if (careerOpsAgent) {
   })).filter((group) => group.sources.length > 0);
   const effectiveLearnIncludedSourceSlugs =
     learnIncludedSourceSlugs === null
-      ? learnEligibleSourceDocuments.map((doc) => doc.slug)
+      ? learnEligibleSourceDocuments.filter((doc) => doc.type === "source-document").map((doc) => doc.slug)
       : learnIncludedSourceSlugs.filter(
           (sourceSlug) =>
             availableLearnSourceSlugSet.has(sourceSlug) &&
@@ -14291,7 +14569,7 @@ if (careerOpsAgent) {
     (learnState?.sourceSetChanged === true || hasLocallyAddedLearnMaterial);
 
   const learnSyllabusDocument =
-    sourceDocuments.find((doc) => doc.slug === learnSyllabusSlug) ?? null;
+    learnAvailableSourceDocuments.find((doc) => doc.slug === learnSyllabusSlug) ?? null;
   // Only meaningful for the syllabus the last run actually read; a freshly
   // picked one has no coverage until Learn runs again.
   const learnSyllabusCoverage =
@@ -14499,27 +14777,20 @@ if (careerOpsAgent) {
       );
       if (previousSyllabusSlug) selected.add(previousSyllabusSlug);
       if (sourceSlug) selected.delete(sourceSlug);
-      return sourceDocuments
+      return learnAvailableSourceDocuments
         .map((doc) => doc.slug)
         .filter((slug) => selected.has(slug));
     });
   }
 
   function toggleLearnSourceDocument(sourceSlug: string) {
-    if (sourceSlug === learnSyllabusSlug) return;
-    setLearnIncludedSourceSlugs((current) => {
-      const selected = new Set(
-        current ??
-          sourceDocuments
-            .filter((doc) => doc.slug !== learnSyllabusSlug)
-            .map((doc) => doc.slug),
-      );
-      if (selected.has(sourceSlug)) selected.delete(sourceSlug);
-      else selected.add(sourceSlug);
-      return sourceDocuments
-        .map((doc) => doc.slug)
-        .filter((slug) => selected.has(slug));
-    });
+    toggleLearnSourceDocuments([sourceSlug]);
+  }
+
+  function toggleLearnSourceDocuments(sourceSlugs: string[]) {
+    setLearnIncludedSourceSlugs((current) => toggleLearnSourceSelection(
+      learnAvailableSourceDocuments, current, sourceSlugs, learnSyllabusSlug,
+    ));
   }
 
   const graphRefreshKey = `${graphRefreshVersion}:${documents
@@ -14669,10 +14940,10 @@ if (careerOpsAgent) {
           !hasSelectedLearnSources
             ? learnSyllabusDocument
               ? "The syllabus is reserved for planning; select at least one other source to teach from."
-              : `No sources selected from ${sourceDocuments.length} available.`
+              : `No sources selected from ${learnAvailableSourceDocuments.length} available.`
             : null,
           status === "awaiting_confirmation" && !staleReviewForExistingGarden
-            ? "Pipeline paused for review; timer stopped."
+            ? "Paused for review. Timer stopped."
             : null,
           paused
             ? "Timer stopped. Everything written so far is kept and the run continues from here."
@@ -14721,7 +14992,7 @@ if (careerOpsAgent) {
                     className="neu-button flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-gray-800 px-2 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
                     aria-expanded={learnDocumentMenuOpen}
                     aria-haspopup="menu"
-                    title="Choose which documents, links, videos, and audio Learn may use"
+                    title="Choose documents, Markdown, folders, links, videos, and audio for Learn"
                   >
                     <svg
                       className="h-3.5 w-3.5"
@@ -14770,8 +15041,8 @@ if (careerOpsAgent) {
                             Sources for Learn
                           </p>
                           <p className="mt-0.5 text-[10px] text-gray-600">
-                            Select documents, links, video transcripts, and
-                            audio transcripts. Unchecked sources are excluded.
+                            Select sources, Markdown files, or whole folders.
+                            Unchecked sources are excluded.
                           </p>
                         </div>
                         <button
@@ -14856,6 +15127,13 @@ if (careerOpsAgent) {
                             </div>
                           </div>
                         ))}
+                        <LearnMarkdownSources
+                          documents={learnAvailableSourceDocuments}
+                          selectedIds={effectiveLearnIncludedSourceSlugSet}
+                          syllabusId={learnSyllabusSlug}
+                          locked={learnDocumentSelectionLocked}
+                          onToggle={toggleLearnSourceDocuments}
+                        />
                       </div>
                       {selectedLearnArtifacts.artifacts.length > 0 ? (
                         <div className="mt-2 border-t border-gray-800 pt-2">
@@ -14950,9 +15228,7 @@ if (careerOpsAgent) {
                           Syllabus for Learn
                         </p>
                         <p className="mt-0.5 text-[10px] text-gray-600">
-                          A study guide Learn plans against: it sets which
-                          topics to cover, in what order, and how deep. It is
-                          not taught as source material.
+                          Sets the topics and depth. Learn arranges the teaching order; the syllabus itself is not source material.
                         </p>
                       </div>
                       <div className="max-h-56 space-y-1 overflow-y-auto">
@@ -14969,7 +15245,7 @@ if (careerOpsAgent) {
                             No syllabus
                           </span>
                         </label>
-                        {sourceDocuments.map((doc) => {
+                        {learnAvailableSourceDocuments.map((doc) => {
                           const fileLabel =
                             doc.sourcePdf ||
                             doc.sourceFile ||
@@ -15136,10 +15412,7 @@ if (careerOpsAgent) {
                           )}
                         </button>
                         <p className="mt-1.5 text-[10px] text-gray-600">
-                          Written as a course outline over the documents in this
-                          garden, then saved to Documents like any other
-                          syllabus. It assigns no outside readings, so every
-                          unit is one your material can teach.
+                          Create a course outline from this garden’s documents and save it to Documents.
                         </p>
                       </div>
                       <div className="mt-2 border-t border-gray-800 pt-2">
@@ -15269,9 +15542,7 @@ if (careerOpsAgent) {
                             Guide Learn
                           </p>
                           <p className="mt-1 text-[11px] leading-4 text-gray-500">
-                            Give the pipeline one natural-language request. It
-                            can change scope, emphasis, order, or what gets
-                            redone.
+                            Describe what to cover, emphasize, reorder, or redo.
                           </p>
                         </div>
                         {hasLearnUserInstruction ? (
@@ -15345,9 +15616,7 @@ if (careerOpsAgent) {
 
                       {hasExistingLearnContent ? (
                         <p className="mt-2 rounded-lg border border-gray-800 bg-gray-900/60 px-2.5 py-2 text-[10px] leading-4 text-gray-500">
-                          This garden already has lessons. Learn will preserve
-                          their units and prose, then place new material where it
-                          fits in the existing teaching order.
+                          Existing lessons are kept. New material is added where it fits.
                         </p>
                       ) : null}
 
@@ -15427,6 +15696,19 @@ if (careerOpsAgent) {
                   />
                   Skip review
                 </label>
+                <label
+                  className="flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-gray-500"
+                  title="Keep figure-crop verdicts saved by a previous model instead of re-reviewing every page. Verdicts are cached per authoring model, so switching model normally discards them all; the saved receipt still records which model judged each crop."
+                >
+                  <input
+                    type="checkbox"
+                    checked={learnReuseCropVerdicts}
+                    onChange={(event) => setLearnReuseCropVerdicts(event.target.checked)}
+                    disabled={learnBusy || active}
+                    className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+                  />
+                  Reuse crop verdicts
+                </label>
                 {status === "complete" && (
                   <button
                     type="button"
@@ -15484,7 +15766,7 @@ if (careerOpsAgent) {
                       onClick={handleFullRebuild}
                       disabled={!canStart}
                       className="neu-button-destructive h-[30px] shrink-0 whitespace-nowrap rounded-lg border border-red-900/70 px-3 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
-                      title="Destructive: recreate the Learning Map, contract, all pages, and visuals"
+                      title="Replace the learning plan, all lesson pages, and visuals"
                     >
                       Rebuild entire garden
                     </button>
@@ -15584,8 +15866,8 @@ if (careerOpsAgent) {
                     }
                     title={
                       paused
-                        ? "Resume this Learn run from the checkpoint it stopped at"
-                        : "Hold this Learn run at the next checkpoint. Nothing is discarded and the timer stops."
+                        ? "Continue from the last saved step"
+                        : "Pause after the current step and save progress. The timer also stops."
                     }
                   >
                     {learnPauseBusy ? (
@@ -15691,16 +15973,15 @@ if (careerOpsAgent) {
             role="status"
             title={runtimeUnavailable.reason}
           >
-            Runtime is not reachable, so the state of the Learn{" "}
+            Connection lost. Showing the last saved progress for the Learn{" "}
             {runtimeUnavailable.operation === "plan"
               ? "planning"
               : runtimeUnavailable.operation === "humanizer"
                 ? "humanizer"
                 : "generation"}{" "}
-            run submitted at{" "}
-            {new Date(runtimeUnavailable.submittedAt).toLocaleTimeString()} is
-            unknown. This shows the last saved state; it refreshes once Runtime
-            is back.
+            task started at{" "}
+            {new Date(runtimeUnavailable.submittedAt).toLocaleTimeString()}.
+            Its current status is unknown. Updates resume when the connection returns.
           </p>
         )}
 
@@ -16015,18 +16296,10 @@ if (careerOpsAgent) {
           const isSelectedForChat =
             isSource && selectedDocumentSlugs.includes(doc.slug);
           const isPdf = isSource && doc.sourceType?.toLowerCase() === "pdf";
-          const isPdfSource = isPdf && Boolean(doc.sourcePdf);
-          const displayTitle =
-            (isPdf ? doc.sourceFile?.trim() : "") || doc.title || doc.name;
-          // Existing PDF notes predate the explicit description field and have
-          // the generated description in `title`. Preserve it as a UI fallback
-          // so they also adopt the filename-first presentation immediately.
-          const storedDescription = doc.description?.trim() || "";
-          const sourceDescription =
-            (storedDescription !== displayTitle ? storedDescription : "") ||
-            (isPdf && doc.title?.trim() !== displayTitle
-              ? doc.title.trim()
-              : "");
+          const sourceDisplay = gardenSourceDisplay(doc);
+          const isPdfSource = isSource && sourceDisplay.hasPdf;
+          const displayTitle = isSource ? sourceDisplay.title : doc.title || doc.name;
+          const sourceDescription = sourceDisplay.description;
           const documentHref = isPdfSource
             ? `/gardens/${clusterSlug}/pdf/${encodeURIComponent(doc.slug)}`
             : gardenDocumentHref(clusterSlug, doc);
@@ -16166,6 +16439,8 @@ if (careerOpsAgent) {
                 >
                   {isPdf
                     ? "PDF source"
+                    : isSource && isPptxSource(doc.sourceType, doc.sourceFile)
+                      ? "PowerPoint source"
                     : isSource
                       ? "full source content"
                       : markdownTypeLabel(doc)}{" "}
@@ -16183,12 +16458,12 @@ if (careerOpsAgent) {
                 ].join(" ")}
                 title={
                   isSource
-                    ? "Delete source PDF and lesson pages"
+                    ? "Delete source document and lesson pages"
                     : "Delete document"
                 }
                 aria-label={
                   isSource
-                    ? "Delete source PDF and lesson pages"
+                    ? "Delete source document and lesson pages"
                     : "Delete document"
                 }
               >
@@ -16846,15 +17121,14 @@ if (careerOpsAgent) {
               </div>
             )}
             <div className="max-h-44 overflow-y-auto">
-              {uploadRecoveries.length > 0 && (
+              <RestoredGardenUploadRows uploads={restoredUploads} />
+              {visibleUploadRecoveries.length > 0 && (
                 <div
                   className="border-b border-gray-800/70 py-1"
                   data-testid="upload-recoveries"
                 >
-                  {uploadRecoveries.map((recovery) => {
-                    const resuming =
-                      resumingRecoveryIds.has(recovery.recoveryId) ||
-                      recovery.resumedJobId !== null;
+                  {visibleUploadRecoveries.map((recovery) => {
+                    const resuming = recovery.resumedJobId !== null;
                     return (
                       <div
                         key={recovery.recoveryId}
@@ -16877,7 +17151,13 @@ if (careerOpsAgent) {
                           </OverflowMarquee>
                           <span className="block truncate text-[11px] text-amber-300/90">
                             {resuming
-                              ? "Resuming from the kept upload…"
+                              ? recovery.resumedState === "queued"
+                                ? "Queued — waiting to resume"
+                                : recovery.resumedState === "cancelling"
+                                  ? "Cancelling upload…"
+                                  : recovery.resumedState == null
+                                    ? "Checking upload status…"
+                                    : "Resuming from the kept upload…"
                               : recovery.failure.kind === "provider-quota"
                                 ? "Upload kept — the model was rate-limited or out of credits"
                                 : "Upload kept — processing failed"}
@@ -16991,7 +17271,7 @@ if (careerOpsAgent) {
                   <Spinner className="w-4 h-4 text-gray-700" />
                 </div>
               ) : documentSourceDocuments.length === 0 ? (
-                !isUploading && uploadRecoveries.length === 0 && (
+                !isUploading && !hasRestoredUploads && uploadRecoveries.length === 0 && (
                   <div className="flex flex-col items-center py-6 px-4 text-center">
                     <p className="text-xs text-gray-600 mb-2">
                       No source documents yet
@@ -17261,6 +17541,11 @@ if (careerOpsAgent) {
                           ) : null}
                         </span>
                       </button>
+                      <ContextMenuSurface label="Source link actions" menu={
+                        <ContextMenu.Item className={CONTEXT_MENU_ITEM_CLASS} onSelect={() => handleOpenLinkUrl(link.url)}>
+                          Open website
+                        </ContextMenu.Item>
+                      }>
                       <Link
                         href={documentHref ?? "#"}
                         onClick={(event) => {
@@ -17268,11 +17553,6 @@ if (careerOpsAgent) {
                             event.preventDefault();
                             addToast("This link has no imported Markdown yet");
                           }
-                        }}
-                        onContextMenu={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          handleOpenLinkUrl(link.url);
                         }}
                         className="min-w-0 flex-1 text-left"
                         title={documentHref ? "Open Markdown; right-click to open website" : "No imported Markdown; right-click to open website"}
@@ -17284,6 +17564,7 @@ if (careerOpsAgent) {
                           {link.url}
                         </span>
                       </Link>
+                      </ContextMenuSurface>
                       {isOwner ? (
                         <button
                           type="button"
@@ -17478,6 +17759,7 @@ if (careerOpsAgent) {
   );
 
   return (
+    <WorkspaceSideChat gardenSlug={clusterSlug} messages={messages}>
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
       {/* Header */}
       <header className="bb-neu-toolbar breadboard-flower-navbar neu-surface-subtle relative flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0">
@@ -17491,9 +17773,14 @@ if (careerOpsAgent) {
               teardown to a client transition can leave the first click waiting
               on that tree. A document navigation leaves on the first click and
               still gives modified clicks normal browser behavior. */}
-          <LinkContextMenu href="/dashboard" label="Dashboard">
-          <a
-            href="/dashboard"
+          <LinkContextMenu href="/new-tab" label="Home">
+          <Link
+            href="/new-tab"
+            prefetch={false}
+            onNavigate={(event) => {
+              event.preventDefault();
+              window.location.assign("/new-tab");
+            }}
             className="text-gray-500 hover:text-white transition-colors text-sm flex items-center gap-1.5"
           >
             <svg
@@ -17509,8 +17796,8 @@ if (careerOpsAgent) {
                 d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"
               />
             </svg>
-            Back to dashboard
-          </a>
+            Back to home
+          </Link>
           </LinkContextMenu>
           <span className="text-gray-700">/</span>
           <LinkContextMenu
@@ -17586,7 +17873,7 @@ if (careerOpsAgent) {
                         learnOperationActive
                       ? "Learn is running. Open Learn panel"
                       : "Open Learn panel"
-                  : "Upload sources before learning"
+                  : "Add sources or Markdown notes before learning"
               }
               className="neu-button-primary flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
@@ -17691,6 +17978,7 @@ if (careerOpsAgent) {
             setSidePanel((current) => (current === panel ? null : panel));
           }}
           onOpenSearch={() => setSearchOpen(true)}
+          onPrefetchChat={(chat) => prefetchChatTranscript(chat.id)}
           onOpenChat={(chat) => {
             if (chat.pending) {
               setSidePanel(null);
@@ -17710,6 +17998,7 @@ if (careerOpsAgent) {
             )
           }
           onDeleteChat={(chat) => void deleteChatFromRail(chat)}
+          onArchiveChat={(chat) => void patchChatMark(chat, { archived: true }, "This chat could not be archived.")}
           onDeleteChats={(selected) => void deleteChatsFromRail(selected)}
           onHighlightChat={(chat, highlight) =>
             void patchChatMark(
@@ -18026,7 +18315,7 @@ if (careerOpsAgent) {
               title={
                 temporaryChat
                   ? "Temporary chat is on — click to return. This chat is not in your history and is not used or saved as memory."
-                  : "Temporary chat: start a chat kept out of your history and memory, both ways"
+                  : "Temporary chats stay out of your history and don’t use or save memory."
               }
               aria-label={
                 temporaryChat
@@ -18082,10 +18371,18 @@ if (careerOpsAgent) {
           {/* Positioning context for the jump control, so it floats at the foot
               of the transcript rather than below the composer. */}
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+            <SideChatSurface>
             <main
               ref={transcriptScrollRef}
               className="bb-chat-scroller bb-chat-scroll-tail flex flex-1 flex-col overflow-y-auto px-4 py-6"
             >
+              <InlineProposalCardsProvider
+                key={viewingConversationId}
+                conversationId={activeChat?.isOwn !== false ? viewingConversationId : null}
+                gardenSlug={activeChat?.isOwn !== false && viewingConversationId ? clusterSlug : null}
+                refreshKey={`${transcriptResponding}:${messages.length}`}
+                onRequestRevision={prompt => queueFollowUp(prompt, [])}
+              >
               <ChatTranscript
                 modelChangesFor={modelChangesFor}
                 naturalRewriteFor={naturalRewriteFor}
@@ -18104,6 +18401,15 @@ if (careerOpsAgent) {
                 chatSessionId={activeChatId}
                 isStreaming={transcriptResponding || delegationInFlight}
                 loadingChats={chatContentLoading}
+                onRetryLoad={activeTranscriptFailed && activeChatId !== null
+                  ? () => {
+                      const sessionId = activeChatId;
+                      setTranscriptLoadFailed(null);
+                      void loadChatTranscript(sessionId, true).then((loaded) => {
+                        if (!loaded && activeChatIdRef.current === sessionId) setTranscriptLoadFailed(sessionId);
+                      });
+                    }
+                  : null}
                 messages={messages}
                 gardenSourceAttachments={gardenSourceAttachments}
                 activities={agentActivity.activities}
@@ -18131,8 +18437,10 @@ if (careerOpsAgent) {
                 transcriptScrollRef={transcriptScrollRef}
                 transcriptVirtual={transcriptVirtual}
               />
+              </InlineProposalCardsProvider>
               {messages.length > 0 ? <ChatDisclaimer /> : null}
             </main>
+            </SideChatSurface>
             <ChatMessageRail
               surface="garden-chat"
               items={railItems}
@@ -18181,7 +18489,10 @@ if (careerOpsAgent) {
                 anchor={openAnswer.anchor}
                 selection={thread.selection}
                 question={thread.question}
+                questionAttachments={thread.attachments}
                 answer={thread.answer}
+                reasoning={thread.reasoning}
+                progressNotes={thread.progressNotes}
                 pending={thread.pending}
                 usage={thread.usage}
                 responseDurationMs={thread.responseDurationMs}
@@ -18189,6 +18500,13 @@ if (careerOpsAgent) {
                 verification={thread.verification}
                 startedAt={thread.startedAt}
                 answerMessageId={thread.answerMessageId}
+                artifacts={thread.artifactMessageId ? <InlineArtifactCards
+                  legacyChatSessionId={activeChatId} gardenSlug={clusterSlug}
+                  ownerMessageId={thread.artifactMessageId} /> : undefined}
+                conversationId={activeChatId === null ? null : String(activeChatId)}
+                canStar={!temporaryChat}
+                persistDraft={!temporaryChat}
+                onReply={canAskSelection && !chatContentLoading ? replyToInlineAnswer : undefined}
                 annotations={
                   thread.answerMessageId
                     ? annotationsByMessage.get(thread.answerMessageId)
@@ -18214,8 +18532,8 @@ if (careerOpsAgent) {
                 }
                 onAskAgain={
                   canAskSelection && !thread.pending && !chatContentLoading
-                    ? (question: string) =>
-                        askInlineSelectionAgain(thread.selection, question)
+                    ? (question, attachments) =>
+                        askInlineSelectionAgain(thread.selection, question, attachments)
                     : undefined
                 }
               />
@@ -18298,6 +18616,7 @@ if (careerOpsAgent) {
             />
 
             <AssistantComposer
+              personalizedSuggestions={!temporaryChat}
               capabilitySessionId={activeChat?.conversationId ?? null}
               capabilitySurface="garden_chat"
               capabilityGardenSlug={clusterSlug}
@@ -18345,6 +18664,7 @@ if (careerOpsAgent) {
               intelligenceModes={intelligenceModes}
               onAddDocuments={() => chatFileInputRef.current?.click()}
               isAddingDocuments={extractingAttachments}
+              attachmentUploadError={attachmentUploadError}
               attachments={chatAttachments}
               onRemoveAttachment={removeChatAttachment}
               voiceMessages={messages}
@@ -18525,8 +18845,8 @@ onClearCareerOps={() => {
           </div>
         </div>
 
-        {/* Menu panels cover the garden overview without taking another column. */}
-        <div className="absolute inset-y-0 right-0 z-30 flex">
+        {/* Menu panels cover the overview and any open artifact without taking another column. */}
+        <div className="absolute inset-y-0 right-0 z-40 flex">
           {productPanel ? (
             <SidePanelDock
               label="Product details"
@@ -18558,6 +18878,8 @@ onClearCareerOps={() => {
                 />
               ) : sidePanel === "hooks" ? (
                 <HooksPanel gardenSlug={clusterSlug} />
+              ) : sidePanel === "archived" ? (
+                <ArchivedChatsPanel gardenSlug={clusterSlug} onOpenChat={openChatById} />
               ) : sidePanel === "starred" ? (
                 <StarredMessagesPanel gardenSlug={clusterSlug} onOpenMessage={(message) => {
                   setStarredMessageTarget({ chatId: message.chatId, messageId: message.messageId, clientMessageId: message.clientMessageId, requestId: Date.now() });
@@ -18580,7 +18902,6 @@ onClearCareerOps={() => {
           refreshKey={graphRefreshKey}
           sourceLibrary={renderDocumentLibrary()}
           showInternalConceptGraph={showInternalConceptGraph}
-          savedLinkCount={savedLinks.length}
         />
         </GardenArtifactDock>
       </div>
@@ -18688,9 +19009,9 @@ onClearCareerOps={() => {
                       aria-label="Website import scope"
                       className="neu-control h-10 w-full rounded-lg border border-gray-800 bg-gray-950 px-3 text-sm text-gray-200"
                     >
-                      <option value="site">Whole website</option>
-                      <option value="section">This section and its articles</option>
                       <option value="page">Only this page</option>
+                      <option value="section">This section and its articles</option>
+                      <option value="site">Whole website</option>
                     </select>
                     <p className="text-xs text-gray-500">
                       {newLinkScope === "site"
@@ -19631,7 +19952,7 @@ onClearCareerOps={() => {
                     <p className="text-[11px] text-gray-600 mt-0.5">
                       {handwritingUploadEnabled
                         ? "Required for handwritten uploads so the map is built from OCR text."
-                        : "Build the Learning Spine, Source Map, and Scope Contract - slower but richer"}
+                        : "Create a detailed learning plan from your sources. Takes longer."}
                     </p>
                   </div>
                 </label>
@@ -19729,5 +20050,6 @@ onClearCareerOps={() => {
         onOpenChat={openChatFromNotification}
       />
     </div>
+    </WorkspaceSideChat>
   );
 }

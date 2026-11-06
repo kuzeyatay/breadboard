@@ -67,7 +67,7 @@ export async function POST(request: Request) {
     let connectionStatus: unknown = {
       status: "failed",
       error:
-        "Connection saved, but the runtime test failed. Secret-bearing error details were not exposed.",
+        "Connection saved, but the connection test failed. Check your settings and try again.",
     };
     try {
       const statuses = await runtime.addMcpConnection(

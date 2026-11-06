@@ -405,7 +405,13 @@ function cropQualityProblems(gardenDir: string, gardenSlug: string, visual: Reco
   } else {
     const minWidth = type === "equation" ? 180 : type === "table" ? 260 : 160;
     const minHeight = type === "equation" ? 48 : type === "table" ? 120 : 90;
-    if (dims.width < minWidth || dims.height < minHeight) {
+    // Same rule as garden-finalize.ts cropQualityFindings: area plus 75% of
+    // each side, and only for crops a learner actually sees.
+    const tooSmall = dims.width * dims.height < minWidth * minHeight ||
+      dims.width < minWidth * 0.75 || dims.height < minHeight * 0.75;
+    const shown = cropStatus === "embedded" ||
+      (String(visual.usageStatus ?? "") === "assigned" && requiresEmbeddedCrop);
+    if (tooSmall && shown) {
       problems.push(`${id}: crop too small (${dims.width}x${dims.height}, expected at least ${minWidth}x${minHeight})`);
     }
   }
@@ -753,11 +759,16 @@ function sectionSemanticInputs(
   return inputs;
 }
 
-function idsUsedByLearners(lessonPages: PageFile[]): Set<string> {
+function idsUsedByLearners(
+  lessonPages: PageFile[],
+  { includeProvenanceAnchors = true }: { includeProvenanceAnchors?: boolean } = {},
+): Set<string> {
   const ids = new Set<string>();
   for (const page of lessonPages) {
     for (const id of fmArray(page.frontmatter, "sourceVisualIds")) ids.add(id);
-    for (const id of fmArray(page.frontmatter, "sourceAnchors")) ids.add(id);
+    if (includeProvenanceAnchors) {
+      for (const id of fmArray(page.frontmatter, "sourceAnchors")) ids.add(id);
+    }
     for (const entry of formulaEntriesFromFrontmatter(page.rawFrontmatter)) {
       if (entry.sourceAnchor) ids.add(entry.sourceAnchor);
     }
@@ -854,7 +865,8 @@ function sourceAnchorUsageVsCropStatusProblems(
   ledger: Array<Record<string, unknown>>,
   lessonPages: PageFile[],
 ): string[] {
-  const usedIds = idsUsedByLearners(lessonPages);
+  // Page `sourceAnchors` is provenance, not use (see garden-finalize.ts).
+  const usedIds = idsUsedByLearners(lessonPages, { includeProvenanceAnchors: false });
   const problems: string[] = [];
   for (const visual of ledger) {
     const id = String(visual.sourceVisualId ?? "");
@@ -3298,7 +3310,8 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
 // ---------------------------------------------------------------------------
 
 const HEADING_RE = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/gm;
-const WIKILINK_RE = /(!?)\[\[([^\]]+?)\]\]/g;
+// `[[label]](#anchor)` is a Markdown link with a bracketed label, not a wikilink.
+const WIKILINK_RE = /(!?)\[\[([^\]]+?)\]\](?!\()/g;
 
 function headingSlugs(body: string): Set<string> {
   const slugs = new Set<string>();

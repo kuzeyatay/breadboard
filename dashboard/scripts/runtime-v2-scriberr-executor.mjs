@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -17,6 +18,9 @@ const MAX_TEXT_BYTES = 4096;
 const DEVELOPMENT_SCRIBERR_SETTING_NAMES = new Set([
   "SCRIBERR_MODEL_FAMILY",
   "SCRIBERR_MODEL",
+  "SCRIBERR_DEVICE",
+  "SCRIBERR_COMPUTE_TYPE",
+  "SCRIBERR_BATCH_SIZE",
   "SCRIBERR_LANGUAGE",
   "SCRIBERR_DIARIZATION",
 ]);
@@ -79,26 +83,6 @@ export function projectDevelopmentScriberrSettings(repositoryRoot, env = process
     projected.push(name);
   }
   return projected;
-}
-
-function samePath(left, right) {
-  const normalize = (value) => {
-    let resolved = path.resolve(value);
-    if (process.platform === "win32") {
-      if (resolved.startsWith("\\\\?\\UNC\\")) resolved = `\\\\${resolved.slice(8)}`;
-      else if (resolved.startsWith("\\\\?\\")) resolved = resolved.slice(4);
-    }
-    return resolved;
-  };
-  const a = normalize(left);
-  const b = normalize(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" ||
-    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function directDirectory(value, label) {

@@ -421,7 +421,8 @@ export function isFormulaExpression(expr: string): boolean {
   // word boundary. This recognizes bounded integrals such as `\\int_S` and
   // contour integrals such as `\\oint` without accepting longer prose words.
   if (/\\(?:frac|sum|prod|oint|int|sqrt|min|max|log|exp|Delta|tau|lambda|eta|theta|operatorname)(?![A-Za-z])/.test(expr)) return true;
-  if (/[=<>≤≥≈∝]/.test(expr) || /\\(?:geq|leq|neq|approx)\b/.test(expr)) {
+  // `\equiv` states an identity (em1 9.3: \nabla\cdot\nabla\times\mathbf{A}\equiv 0).
+  if (/[=<>≤≥≈∝≡]/.test(expr) || /\\(?:geq?|leq?|neq?|approx|ll|gg|sim|propto|equiv|cong)\b/.test(expr)) {
     return /[A-Za-z0-9\\]/.test(expr);
   }
   if (/[=<>≤≥≈∝]/.test(expr)) return /[A-Za-z\\]/.test(expr);
@@ -579,8 +580,22 @@ export function parseJsonObjectResponse(content: string): Record<string, any> {
   const text = content.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
   if (text.startsWith("{")) {
     const end = balancedJsonEnd(text, 0);
-    if (end >= 0 && /^[}\s]*$/.test(text.slice(end + 1))) {
+    // Surplus closers after a complete root are noise: '...]}]}' for '...]}'
+    // (live 2026-09-25, a complete 146 KB Source Map from gpt-6-luna).
+    if (end >= 0 && /^[}\]\s]*$/.test(text.slice(end + 1))) {
       return JSON.parse(text.slice(0, end + 1));
+    }
+    // A root closed one brace early and then continued with more members
+    // ('...]},"evidenceGaps":[]}'): dropping that brace is the intended object.
+    // Live 2026-09-25 (gpt-6-luna): a complete 161 KB Source Map parsed as
+    // nothing and its repair was told every unit was omitted.
+    if (end >= 0 && /^\s*,\s*"/.test(text.slice(end + 1))) {
+      try {
+        const merged = JSON.parse(text.slice(0, end) + text.slice(end + 1));
+        if (merged && typeof merged === "object" && !Array.isArray(merged)) return merged;
+      } catch {
+        // Not that shape; fall through to the strict parse and its error.
+      }
     }
     return JSON.parse(text);
   }
@@ -923,6 +938,9 @@ export const RAW_REFERENCE_DUMP_RE = /\[\d+\]\s+[A-Z][^"\n]+,\s*["“].+["”]/;
  * removed, so caption-only phrasing is not judged as teaching voice. */
 export function teachingProse(markdown: string): string {
   return stripMarkdownFrontmatter(markdown)
+    // The compiled reference list names sources by title; it is provenance,
+    // not teaching voice (relocateSourceProvenance).
+    .replace(/(?:^|\n)\*\*References\*\*\n\n(?:- [^\n]*(?:\n|$))+/g, "\n")
     .replace(/```[\s\S]*?```/g, " ")
     // `<!-- learning-unit:U2:interactive-visual -->` and friends are pipeline
     // markers the renderer consumes; they are never read by a learner.
@@ -1345,6 +1363,22 @@ export function emptyBulletScaffoldLines(markdown: string): string[] {
   return hits;
 }
 
+/** Drop empty/filler bullet lines (`-`, `- ...`, `- TBD`) outside math and
+ * code. They carry no content; a repair that fixed missing source questions
+ * kept leaving one behind and the next round flagged it again (em1 lesson 2.2,
+ * 2026-10-11: six rounds alternating the two problems). */
+export function removeEmptyBulletScaffolds(markdown: string): string {
+  const lines = markdown.split(/\r?\n/);
+  const masked = blankNonProseBlocks(markdown).split(/\r?\n/);
+  if (masked.length !== lines.length) return markdown;
+  return lines
+    .filter((_, index) => {
+      const line = masked[index];
+      return THEMATIC_BREAK_RE.test(line) || !(BARE_BULLET_RE.test(line) || FILLER_BULLET_RE.test(line));
+    })
+    .join("\n");
+}
+
 /** True when the markdown carries two or more empty/filler bullet scaffolds. */
 export function hasEmptyBulletScaffold(markdown: string): boolean {
   return emptyBulletScaffoldLines(markdown).length >= 2;
@@ -1438,6 +1472,129 @@ export function bodyBeatHeadings(body: string): string[] {
     if (match) headings.push(match[2].trim());
   }
   return headings;
+}
+
+/** Turns body beat headings (### and deeper, outside code fences) into bold
+ * lead-in lines: the words stay, the forbidden heading level goes. Six repairs
+ * kept re-adding three headings to telecom-1 lesson 4.3 (2026-10-06). */
+export function demoteBodyBeatHeadings(body: string): string {
+  let inFence = false;
+  return body.split("\n").map((line) => {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      return line;
+    }
+    if (inFence) return line;
+    const match = /^#{3,6}\s+(\S.*?)\s*#*\s*$/.exec(line);
+    return match ? `**${match[1].replace(/^\*\*(.*)\*\*$/, "$1")}**` : line;
+  }).join("\n");
+}
+
+/** `$$ \[ x \] $$` keeps one display delimiter. The review parked telecom-1
+ * lesson 6.2 on a doubled display (2026-10-07). */
+export function unwrapNestedDisplayMath(body: string): string {
+  return body.replace(/\$\$(\s*)\\\[([\s\S]*?)\\\](\s*)\$\$/g, "$$$$$1$2$3$$$$");
+}
+
+/** Put back assigned figures a repair dropped (telecom-1 2.5 lost one in three
+ * of five repairs, 2026-10-07). The figure keeps its caption and the prose
+ * paragraphs beside it that the repair also removed - the figure gates need
+ * interpretation nearby - and goes after the nearest earlier paragraph that
+ * survived. Appending a bare figure at the end failed those gates instead. */
+export function restoreDroppedVisuals(previous: string, next: string, urls: readonly string[]): string {
+  const oldBlocks = previous.split(/\n\s*\n/);
+  let blocks = next.split(/\n\s*\n/);
+  const isProse = (block: string | undefined) =>
+    Boolean(block?.trim()) && !/^\s*(#|!\[|\*(Figure|Table|Fig\.)|\$\$|<)/i.test(block ?? "");
+  for (const url of urls) {
+    if (blocks.join("\n\n").includes(url) || !previous.includes(url)) continue;
+    const index = oldBlocks.findIndex((block) => block.includes(url));
+    let start = index;
+    while (start > 0 && isProse(oldBlocks[start - 1]) && !blocks.includes(oldBlocks[start - 1]) && index - start < (url.trim().startsWith("$$") ? 0 : 2)) start -= 1;
+    let end = index + 1;
+    if (/^\s*\*(Figure|Table|Fig\.)/i.test(oldBlocks[end] ?? "")) end += 1;
+    const captionEnd = end;
+    while (end < oldBlocks.length && isProse(oldBlocks[end]) && !blocks.includes(oldBlocks[end]) && end - captionEnd < (url.trim().startsWith("$$") ? 0 : 2)) end += 1;
+    const group = oldBlocks.slice(start, end);
+    let anchor = -1;
+    for (let k = start - 1; k >= 0 && anchor < 0; k -= 1) anchor = blocks.indexOf(oldBlocks[k]);
+    blocks = anchor >= 0
+      ? [...blocks.slice(0, anchor + 1), ...group, ...blocks.slice(anchor + 1)]
+      : [...blocks, ...group];
+  }
+  return blocks.join("\n\n");
+}
+
+export interface ProvenanceSource {
+  slug: string;
+  title: string;
+  /** Garden-global S<n> index for structured artifact ids. */
+  index?: number;
+}
+
+const ANCHOR_ID_PATTERN = String.raw`(?:S\d+\.P\d+\.[A-Z]\d+|text-[a-z0-9-]+)`;
+const REFERENCES_HEADING = "**References**";
+
+function cleanSourceTitle(title: string): string {
+  return title.replace(/\s*\((?:z-library|1lib|z-lib)[^)]*\)/gi, "").replace(/\.pdf$/i, "").replace(/\s+/g, " ").trim();
+}
+
+/** One reference line per source the page drew on, with its pages, from the
+ * page's anchor ids (S16.P389.F1, text-<slug>-page-3). */
+export function compiledReferenceLines(anchorIds: readonly string[], sources: readonly ProvenanceSource[]): string[] {
+  const pagesBySource = new Map<ProvenanceSource, Set<number>>();
+  const bySlugLength = [...sources].sort((a, b) => b.slug.length - a.slug.length);
+  for (const id of new Set(anchorIds)) {
+    const structured = /^S(\d+)\.P(\d+)\./.exec(id);
+    const text = /^text-(.+)-page-(\d+)$/.exec(id);
+    const source = structured
+      ? sources.find((candidate) => candidate.index === Number(structured[1]))
+      : text ? bySlugLength.find((candidate) => text[1] === candidate.slug || text[1].startsWith(`${candidate.slug}-`)) : undefined;
+    const page = Number(structured?.[2] ?? text?.[2]);
+    if (!source || !Number.isFinite(page)) continue;
+    if (!pagesBySource.has(source)) pagesBySource.set(source, new Set());
+    pagesBySource.get(source)!.add(page);
+  }
+  return [...pagesBySource.entries()]
+    .sort(([a], [b]) => cleanSourceTitle(a.title).localeCompare(cleanSourceTitle(b.title)))
+    .map(([source, pages]) => {
+      const sorted = [...pages].sort((a, b) => a - b);
+      return `- ${cleanSourceTitle(source.title)}, ${sorted.length === 1 ? "p." : "pp."} ${sorted.join(", ")}.`;
+    });
+}
+
+/** Moves source provenance out of the lesson story (telecom-1 review,
+ * 2026-10-08: up to 73 anchor ids per lesson, page markers in every caption):
+ * drops id-only parentheticals and caption id/page markers, then ends the page
+ * with one compiled reference list. Displays, code, and comments are left as
+ * they are; a rerun replaces the list instead of adding another. */
+export function relocateSourceProvenance(body: string, referenceLines: readonly string[]): string {
+  const idParenthetical = new RegExp(String.raw`[ \t]*\((?:\s*${ANCHOR_ID_PATTERN}\s*[;,]?)+\s*\)`, "g");
+  const captionId = new RegExp(String.raw`^(\s*\*)${ANCHOR_ID_PATTERN}:\s*`);
+  const withoutOldList = body.replace(/\n+\*\*References\*\*\n\n(?:- [^\n]*\n?)+/g, "\n");
+  const markers: string[] = [];
+  let inFence = false;
+  let inDisplay = false;
+  const lines = withoutOldList.split("\n").filter((line) => {
+    if (!inFence && !inDisplay && /^\s*<!--\s*restated-source-formulas:/.test(line)) {
+      markers.push(line.trim());
+      return false;
+    }
+    return true;
+  }).map((line) => {
+    if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; return line; }
+    if (inFence) return line;
+    if (/^\s*\$\$\s*$/.test(line)) { inDisplay = !inDisplay; return line; }
+    if (inDisplay || /^\s*<!--/.test(line)) return line;
+    let out = line.replace(idParenthetical, "");
+    if (/^\s*\*[^*\n]+\*(?:\s*\*\([^)\n]*\)\*)?\s*$/.test(out)) {
+      out = out.replace(captionId, "$1").replace(/\s*\*\(p\.\s*\d+(?:\s*[-–]\s*\d+)?\)\*\s*$/, "");
+    }
+    return out;
+  });
+  const story = lines.join("\n").replace(/\s+$/, "");
+  const references = referenceLines.length > 0 ? `\n\n${REFERENCES_HEADING}\n\n${referenceLines.join("\n")}` : "";
+  return `${story}${references}${markers.length ? `\n\n${markers.join("\n")}` : ""}\n`;
 }
 
 /** Pictographic characters in learner prose. Matched by Unicode property so no
@@ -1630,21 +1787,6 @@ const TAG_ROOT_FIXES: Record<string, string> = {
 /** Pull clean concept-handle tag seeds from the final lesson body. */
 export function extractTagSeeds(body: string): string[] {
   return semanticConceptTagsFromText(body, 8, body);
-}
-
-/**
- * A title that lists three or more topics ("Work, Potential, Energy, and
- * Current") is a table of contents standing where one teaching step should
- * be. It is the visible symptom of a unit that skims several ideas, so the
- * planner is sent back to split it rather than the title being trimmed.
- */
-export function topicListTitleProblem(title: string): string | null {
-  const clean = title.trim().replace(/^\d+(?:\.\d+)*\.?\s*/, "");
-  const parts = clean.split(/\s*,\s*/).filter(Boolean);
-  if (parts.length < 3) return null;
-  // A sentence-shaped title can carry commas without being a list.
-  if (/^(?:how|why|what|when|where|from|choosing|comparing|measuring|reading)\b/i.test(clean)) return null;
-  return `title lists ${parts.length} topics instead of naming one teaching step: "${clean}"; split it into the units it hides, each with its own learning question`;
 }
 
 /** Rewrites a planned section/subsection title that frames itself as paper
@@ -1959,6 +2101,23 @@ type SourceVisualCoverageRecord = {
 const DECLARED_SOURCE_VISUAL_CAPTION_RE =
   /(?:^|\n)\s*(?:#{1,6}\s*)?(?:[*_]{0,2})?(Fig(?:ure)?\.?|Table)\s+(\d+)[a-z]?\s*(?=[:.\-–—])/gim;
 
+/**
+ * Largest `## Page` block still readable as one page of text.
+ *
+ * Page-scoped counting assumes a block holds one page's captions. An OCR body
+ * whose page delimiters stop partway leaves the entire remainder of the book
+ * inside the last block, and every caption in it is then enforced against the
+ * one page image that was actually scanned (telecom-1, 2026-09-22: the Couch
+ * textbook's "page 789" block held 1,646,439 characters against a 1,448
+ * median, declaring 8 figures and 6 tables where the page has 3 and 5, and the
+ * completeness gate refused the run twice). A block this far outside the range
+ * is not one page, so its captions are not a per-page lower bound and belong
+ * to pages that were never supplied to the detector.
+ *
+ * Generous on purpose: a dense page with large tables stays far below it.
+ */
+const MAX_DECLARING_PAGE_BLOCK_CHARS = 60_000;
+
 function declaredSourceVisualCaptionCounts(
   body: string,
   allowedPageNumbers?: ReadonlySet<number>,
@@ -1987,8 +2146,10 @@ function declaredSourceVisualCaptionCounts(
   const pageBlockRe = /(?:^|\n)## Page\s+(\d+)\s*([\s\S]*?)(?=(?:^|\n)## Page\s+\d+\b|$)/g;
   for (const match of body.matchAll(pageBlockRe)) {
     const pageNumber = Number.parseInt(match[1] ?? "", 10);
+    const pageBody = match[2] ?? "";
+    if (pageBody.length > MAX_DECLARING_PAGE_BLOCK_CHARS) continue;
     if (Number.isSafeInteger(pageNumber) && allowedPageNumbers.has(pageNumber)) {
-      countCaptions(match[2] ?? "");
+      countCaptions(pageBody);
     }
   }
   return { figures: figures.size, tables: tables.size };
@@ -2426,28 +2587,67 @@ export function assignedOpeningMove(input: {
   return next === input.previousMove ? order[0] : next;
 }
 
-/** The Topic Overview tells learners that each subsection is organized around a
- * learning question and asks them to answer it in words before working through
- * the equations. The question is model-authored in the Learning Unit Contract,
- * so render it where that instruction can actually be followed: directly under
- * the page heading, before any explanation has given it away. Returns the body
- * unchanged when there is no question or when one is already present. */
-export function withLearningQuestionPrompt(
-  body: string,
-  learningQuestion: string | undefined,
-): string {
-  const question = (learningQuestion ?? "").trim();
-  if (!question) return body;
+/** Every lesson opens with a short, plain-language overview of what it teaches,
+ * written by the lesson writer. It replaced the "Before you read" learning
+ * question, which asked readers to answer a question in terms they had not
+ * met yet (em1 review, 2026-10-16). */
+export const LESSON_OVERVIEW_LABEL = "**Overview.**";
+export const LESSON_OVERVIEW_MIN_WORDS = 20;
+export const LESSON_OVERVIEW_MAX_WORDS = 90;
+
+/** The overview's text when the page opens with `> **Overview.** ...`
+ * (headings, comments, and blank lines before it are skipped), else null. */
+export function lessonOverviewText(body: string): string | null {
   const lines = body.split("\n");
-  const headingIndex = lines.findIndex((line) => /^#{1,6}\s+\S/.test(line));
-  if (headingIndex < 0) return body;
-  // Re-running finalization or a repair must not stack a second prompt.
-  if (lines.some((line) => line.startsWith("> **Before you read.**"))) return body;
-  const prompt = `> **Before you read.** ${question}`;
-  const rest = lines.slice(headingIndex + 1);
-  const restStart = rest.findIndex((line) => line.trim().length > 0);
-  const tail = restStart < 0 ? [] : rest.slice(restStart);
-  return [...lines.slice(0, headingIndex + 1), "", prompt, "", ...tail].join("\n");
+  let index = 0;
+  while (
+    index < lines.length &&
+    (!lines[index].trim() || /^#{1,6}\s/.test(lines[index]) || /^<!--.*-->$/.test(lines[index].trim()))
+  ) index += 1;
+  if (!lines[index]?.startsWith(`> ${LESSON_OVERVIEW_LABEL}`)) return null;
+  const block: string[] = [];
+  for (; index < lines.length && lines[index].startsWith(">"); index += 1) {
+    block.push(lines[index].replace(/^>\s?/, ""));
+  }
+  return block.join(" ").replace(LESSON_OVERVIEW_LABEL, "").replace(/\s+/g, " ").trim();
+}
+
+/** Hard problems for a missing, oversized, or mathematical overview. Whether
+ * its terms are explained is judged by the lesson term review. */
+export function lessonOverviewProblems(body: string): QualityProblem[] {
+  const text = lessonOverviewText(body);
+  if (text === null) {
+    return [{
+      code: "missing-overview",
+      hard: true,
+      message: `the page does not open with its overview: a \`> ${LESSON_OVERVIEW_LABEL}\` block of ${LESSON_OVERVIEW_MIN_WORDS}-${LESSON_OVERVIEW_MAX_WORDS} words saying, in everyday words, what this lesson teaches and why a reader would want it`,
+    }];
+  }
+  const problems: QualityProblem[] = [];
+  const words = text.split(/\s+/).filter(Boolean).length;
+  if (words < LESSON_OVERVIEW_MIN_WORDS || words > LESSON_OVERVIEW_MAX_WORDS) {
+    problems.push({
+      code: words > LESSON_OVERVIEW_MAX_WORDS ? "overview-too-long" : "overview-too-short",
+      hard: true,
+      message: `the overview has ${words} words; keep it to ${LESSON_OVERVIEW_MIN_WORDS}-${LESSON_OVERVIEW_MAX_WORDS} words of everyday language`,
+      evidence: [text],
+    });
+  }
+  if (/\$|\\[A-Za-z]/.test(text)) {
+    problems.push({
+      code: "overview-has-math",
+      hard: true,
+      message: "the overview contains symbols or formulas; say in plain words what is being worked out",
+      evidence: [text],
+    });
+  }
+  return problems;
+}
+
+/** Pages written before overviews carried a `> **Before you read.**` line;
+ * drop it so a preserved page no longer shows it. */
+export function withoutLegacyLearningQuestionPrompt(body: string): string {
+  return body.replace(/^> \*\*Before you read\.\*\*[^\n]*\n(?:[ \t]*\n)?/m, "");
 }
 
 export function buildLearningPageFrontmatter({
@@ -2464,6 +2664,7 @@ export function buildLearningPageFrontmatter({
   visualIds,
   sourceVisualIds,
   sourceFormulaAnchors,
+  sourceFormulaErrata,
   formulas,
   learningUnitId,
   learningUnitRole,
@@ -2496,6 +2697,9 @@ export function buildLearningPageFrontmatter({
   sourceVisualIds?: string[];
   /** Source formula anchors (S1.P6.E1 style) taught or referenced by this page. */
   sourceFormulaAnchors?: string[];
+  /** Required source formulas the page cites but deliberately does not
+   * display, because the transcription is wrong; it teaches the correction. */
+  sourceFormulaErrata?: string[];
   formulas?: FormulaGroundingEntry[];
   /** Learning Unit Contract breadcrumb for validation and provenance. */
   learningUnitId?: string;
@@ -2538,6 +2742,8 @@ export function buildLearningPageFrontmatter({
       sourceVisualIds && sourceVisualIds.length > 0 ? sourceVisualIds : undefined,
     sourceFormulaAnchors:
       sourceFormulaAnchors && sourceFormulaAnchors.length > 0 ? sourceFormulaAnchors : undefined,
+    sourceFormulaErrata:
+      sourceFormulaErrata && sourceFormulaErrata.length > 0 ? sourceFormulaErrata : undefined,
     formulas: formulas && formulas.length > 0 ? formulas.map((entry) => ({ ...entry })) : undefined,
     learningUnitId,
     learningUnitRole,
@@ -2572,17 +2778,15 @@ export function validateLearningMapDepth(
   const problems: string[] = [];
   const sections = map.sections ?? [];
 
-  if (sections.length < 2) {
-    problems.push(`only ${sections.length} section(s); a learning spine needs an ordered sequence`);
+  if (sections.length === 0) {
+    problems.push("the learning spine contains no sections");
   }
-  const shallowSections = sections.filter((section) => section.subsections.length <= 1);
-  if (sections.length >= 2 && shallowSections.length * 2 > sections.length) {
-    problems.push(
-      `${shallowSections.length} of ${sections.length} sections have at most one subsection — the map is a table of contents, not a learning sequence`,
-    );
-  }
+  // Section count does not measure explanatory depth. The unit contract owns
+  // coherent boundaries and requires a reason for intentionally single-unit
+  // sections; a compact learner request may need only one substantial section.
 
   for (const section of sections) {
+    if (section.subsections.length === 0) problems.push(`section "${section.title}" contains no teaching units`);
     if (MAP_TITLE_BANNED_RE.test(section.title)) {
       problems.push(`section title reads as source commentary: "${section.title}"`);
     }

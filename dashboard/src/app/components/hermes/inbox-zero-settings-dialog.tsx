@@ -114,9 +114,9 @@ export default function InboxZeroSettingsDialog({ onClose }: { onClose: () => vo
   const load = useCallback(async () => {
     try {
       const response = await fetch("/api/inbox-zero/health", { cache: "no-store" });
-      const data = (await response.json().catch(() => ({}))) as Health & { error?: string };
+      const data = (await response.json().catch(() => ({}))) as Health & { error?: string; message?: string };
       if (!response.ok || !data.setup) {
-        throw new Error(data.error || "Inbox Zero could not be checked.");
+        throw new Error(data.error || data.message || "Inbox Zero could not be checked.");
       }
       setHealth(data);
     } catch (error) {
@@ -200,9 +200,7 @@ export default function InboxZeroSettingsDialog({ onClose }: { onClose: () => vo
               Inbox Zero setup
             </h2>
             <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-              Runs the real Inbox Zero on your machine and connects it to your own mailbox.
-              Its AI runs on ChatMock, so no separate model key is needed — but Google or
-              Microsoft still has to let it read your mail, and only you can grant that.
+              Connect your Google or Microsoft mailbox to Inbox Zero. Uses your existing AI connection; you choose whether to grant email access.
             </p>
           </span>
           <button
@@ -408,8 +406,7 @@ export default function InboxZeroSettingsDialog({ onClose }: { onClose: () => vo
                   </button>
                 </div>
                 <p className="text-xs leading-5 text-[var(--ink-muted)]">
-                  Revoking drops the sessions Breadboard minted against your Inbox Zero. Your own
-                  sign-in and your connected mailbox are untouched — this only stops the agent.
+                  Disconnects the agent from Inbox Zero. Your own sign-in and connected mailbox stay unchanged.
                 </p>
               </div>
 

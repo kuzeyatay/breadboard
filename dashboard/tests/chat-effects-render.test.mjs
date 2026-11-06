@@ -6,8 +6,8 @@
 //
 //   * the orb appears beside a live status line and nowhere else, so a
 //     finished turn does not sit under a frozen thought orb;
-//   * the status-line orb is always `composing`, and only the volumetric orbs
-//     are reachable through it; `breathing` is reserved for the loader;
+//   * the status-line orb follows the activity, preserving `composing` for
+//     Thinking; only volumetric orbs are reachable, with `breathing` for loaders;
 //   * every send button still renders exactly the button it rendered before,
 //     metal ring or not, disabled or not;
 //   * the composer's beam is off until a turn is in flight.
@@ -101,17 +101,27 @@ test("only the volumetric orbs are reachable", () => {
 });
 
 test("a status line picks the orb that matches what it says", () => {
-  assert.equal(orbStateForLabel("Thinking"), "working");
-  assert.equal(orbStateForLabel(undefined), "working");
+  assert.equal(orbStateForLabel("Thinking"), "composing");
+  assert.equal(orbStateForLabel(" thinking… "), "composing");
+  assert.equal(orbStateForLabel(undefined), "composing");
+  assert.equal(orbStateForLabel("Planning next step"), "solving");
+  assert.equal(orbStateForLabel("Planning research"), "solving");
   assert.equal(orbStateForLabel("Searching the web"), "searching");
   assert.equal(orbStateForLabel("Listening"), "listening");
   assert.equal(orbStateForLabel("Waiting for permission"), "connecting");
-  assert.equal(orbStateForLabel("Writing the answer"), "composing");
+  assert.equal(orbStateForLabel("Writing the answer"), "working");
+  assert.equal(orbStateForLabel("Summarizing web research"), "working");
+  assert.equal(orbStateForLabel("Recording research"), "working");
   assert.equal(orbStateForLabel("Building the artifact"), "weaving");
+  assert.equal(orbStateForLabel("Building a web page"), "weaving");
+  assert.equal(orbStateForLabel("Checking research coverage"), "solving");
   assert.equal(orbStateForLabel("Analysing the repository"), "solving");
   assert.equal(orbStateForLabel("Reading the PDF"), "solving");
   assert.equal(orbStateForLabel("Browsing github.com"), "searching");
   assert.equal(orbStateForLabel("Transcribing the recording"), "listening");
+  assert.equal(orbStateForLabel("Recording audio"), "listening");
+  assert.equal(orbStateForLabel("Delegating to Deep Research"), "connecting");
+  assert.equal(orbStateForLabel("Finding and ranking papers"), "searching");
   // An unrecognised label still gets an orb rather than nothing.
   assert.equal(orbStateForLabel("Frobnicating"), "working");
 });
@@ -124,21 +134,25 @@ test("the orb renders as a canvas and stays out of the accessibility tree", () =
   assert.match(markup, /role="presentation"/);
 });
 
-test("the status-line orb is always the composing sash", () => {
-  // The user picked `composing` (2026-09-15) for every live status line, so
-  // the label no longer chooses the orb.
-  const orbSource = fs.readFileSync(
-    path.join(dashboardRoot, "src", "app", "components", "effects", "thinking-orb.tsx"),
-    "utf8",
-  );
-  assert.match(orbSource, /state = "composing"/);
-  assert.doesNotMatch(orbSource, /orbStateForLabel\(label\)/);
-
-  const metaSource = fs.readFileSync(
-    path.join(dashboardRoot, "src", "app", "components", "assistant-response-meta.tsx"),
-    "utf8",
-  );
-  assert.match(metaSource, /<ThinkingOrb state="composing"/);
+test("live status rows use all seven spherical styles and reserve the sash for Thinking", () => {
+  const states = new Set();
+  for (const [label, expected] of [
+    ["Thinking", "composing"],
+    ["Planning next step", "solving"],
+    ["Searching the web", "searching"],
+    ["Listening", "listening"],
+    ["Waiting for permission", "connecting"],
+    ["Writing answer", "working"],
+    ["Building the artifact", "weaving"],
+  ]) {
+    const markup = renderToStaticMarkup(
+      React.createElement(AssistantResponseMeta, { active: true, label }),
+    );
+    const state = /data-orb-state="([^"]+)"/.exec(markup)?.[1];
+    assert.equal(state, expected, label);
+    states.add(state);
+  }
+  assert.deepEqual([...states].sort(), [...VOLUMETRIC_ORB_STATES].sort());
 });
 
 test("the generic loader is the breathing orb, with the sketch rings kept", () => {

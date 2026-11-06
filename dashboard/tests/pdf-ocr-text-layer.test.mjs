@@ -52,6 +52,9 @@ async function textItemsInView(bytes) {
         x: t[4] / view.width,
         baseline: t[5] / view.height,
         width: width / view.width,
+        height: Math.hypot(t[2], t[3]) / view.height,
+        ascentRatio: content.styles[item.fontName].ascent /
+          (content.styles[item.fontName].ascent - content.styles[item.fontName].descent),
       });
     }
     return items;
@@ -238,6 +241,50 @@ describe("OCR text layer", () => {
     assert.match(pages[0], /fallback words here/);
   });
 
+  test("selection bounds fit irregular words, narrow formulas and cropped rotations", async () => {
+    const lines = [
+      { box: [0.1, 0.2, 0.45, 0.212], text: "wide" },
+      { box: [0.55, 0.19, 0.59, 0.245], text: "narrow-formula-x=(a+b)/c" },
+      { box: [0.65, 0.202, 0.77, 0.231], text: "handwriting" },
+    ];
+    for (const rotation of [0, 90, 180, 270]) {
+      const doc = await PDFDocument.create();
+      const page = doc.addPage([800, 1000]);
+      page.setCropBox(70, 120, 600, 800);
+      page.setRotation(degrees(rotation));
+      const result = await embedOcrTextLayer({
+        pdf: await doc.save(), pages: [{ pageNumber: 1, text: "", lines }],
+      });
+      const items = await textItemsInView(result.bytes);
+      for (const line of lines) {
+        const item = items.find(item => item.str === line.text);
+        assert.ok(item, `extracted ${line.text}`);
+        const top = item.baseline - item.height * item.ascentRatio;
+        const actual = [item.x, top, item.x + item.width, top + item.height];
+        actual.forEach((value, i) => assert.ok(Math.abs(value - line.box[i]) < 0.001,
+          `rotation ${rotation}, ${line.text}, bound ${i}: ${value} != ${line.box[i]}`));
+      }
+    }
+  });
+
+  test("ingestion can refuse fabricated selection positions without losing positioned pages", async () => {
+    const original = await blankScan(2);
+    const result = await embedOcrTextLayer({
+      pdf: original,
+      requirePositions: true,
+      pages: [
+        { pageNumber: 1, text: "keep this in the source note" },
+        { pageNumber: 2, text: "located text", lines: [{text: "located text", box: [0.2, 0.3, 0.7, 0.33]}] },
+      ],
+    });
+    assert.deepEqual(result.skippedPages, [1]);
+    assert.equal(result.positionedPages, 1);
+    assert.equal(result.pagesWritten, 1);
+    const pages = await extractPages(result.bytes);
+    assert.equal(pages[0].trim(), "");
+    assert.match(pages[1], /located text/);
+  });
+
   test("creates a visible text-only companion in source-page order", async () => {
     const result = await createOcrTextCompanionPdf({
       pages: [
@@ -272,6 +319,9 @@ describe("ingest wiring", () => {
     assert.match(executor, /searchable_pdf: searchablePdfPath/);
     assert.match(executor, /await embedOcrTextLayer\(/);
     assert.match(executor, /await spotPageTextLines\(/);
+    assert.match(executor, /await locateOcrText\(/);
+    assert.match(executor, /requirePositions: true/);
+    assert.match(executor, /locate: async \(\{ prompt, dataUrl, signal \}\)/);
     assert.doesNotMatch(executor, /preserveOriginalSourcePdf/);
     // Pages that already have text get neither a second layer nor a spotting pass.
     assert.match(

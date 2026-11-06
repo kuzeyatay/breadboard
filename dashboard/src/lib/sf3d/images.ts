@@ -13,6 +13,7 @@
 
 import { messageAttachments } from "../conversations/uploads.ts";
 import type { ChatAttachment, ChatMessageAttachment } from "../chat-attachments.ts";
+import { parseImageDataUrl } from "../image-data-url.ts";
 
 /** How far back a follow-up may reach for the picture it is about. */
 export const RECENT_MESSAGE_LOOKBACK = 12;
@@ -26,8 +27,6 @@ export interface ResolvedImage {
   /** True when the picture came from an earlier message rather than the newest one. */
   carriedForward: boolean;
 }
-
-const IMAGE_DATA_URL = /^data:(image\/(?:jpeg|png|webp|gif));base64,([a-z0-9+/=\s]+)$/i;
 
 /** SF3D reads a still. An animated GIF has no single frame to reconstruct from. */
 const RECONSTRUCTABLE = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -47,11 +46,11 @@ export function isReconstructableAttachment(dataUrl: string): boolean {
 }
 
 export function decodeImageAttachment(attachment: ImageAttachment): ResolvedImage | null {
-  const match = IMAGE_DATA_URL.exec(attachment.dataUrl.trim());
-  if (!match) return null;
-  const mimeType = match[1]!.toLowerCase();
+  const parsed = parseImageDataUrl(attachment.dataUrl.trim());
+  if (!parsed) return null;
+  const { mimeType, payload } = parsed;
   if (!RECONSTRUCTABLE.has(mimeType)) return null;
-  const bytes = Buffer.from(match[2]!.replace(/\s+/g, ""), "base64");
+  const bytes = Buffer.from(payload.replace(/\s/g, ""), "base64");
   if (bytes.byteLength === 0) return null;
   return { name: attachment.name, bytes, mimeType, carriedForward: false };
 }

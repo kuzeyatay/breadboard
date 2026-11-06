@@ -23,6 +23,7 @@ import { useCallback, useEffect, useImperativeHandle, useRef, useState } from "r
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { ModelAttachmentFormat } from "@/lib/model-attachments";
+import { installCadNavigationContext } from "./aircursor-context";
 
 export type StandardView = "isometric" | "front" | "rear" | "left" | "right" | "top" | "bottom";
 
@@ -632,6 +633,9 @@ export default function ModelViewer({
     renderer.domElement.addEventListener("pointercancel", onPointerUp);
     renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
     renderer.domElement.addEventListener("contextmenu", onContextMenu);
+    const releaseNavigationContext = installCadNavigationContext(
+      renderer.domElement, () => Boolean(refs.current?.model),
+    );
 
     const resize = () => {
       const width = mount.clientWidth || 640;
@@ -664,6 +668,7 @@ export default function ModelViewer({
       const state = refs.current;
       if (state) cancelAnimationFrame(state.frame);
       observer.disconnect();
+      releaseNavigationContext();
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       renderer.domElement.removeEventListener("pointermove", onPointerMove);
       renderer.domElement.removeEventListener("pointerup", onPointerUp);
@@ -809,7 +814,7 @@ export default function ModelViewer({
         </p>
       ) : null}
       {status === "ready" && showGrid && gridLabel ? (
-        <p className="pointer-events-none absolute bottom-2 left-3 text-[11px] uppercase tracking-wide text-[var(--ink-muted)]">
+        <p className="pointer-events-none absolute bottom-2 left-3 text-[11px] text-[var(--ink-muted)]">
           {gridLabel}
         </p>
       ) : null}

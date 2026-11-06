@@ -1,5 +1,6 @@
 "use client";
 
+import SkillAccessReview from "./skill-access-review";
 import { useMemo, useState } from "react";
 import {
   validateSkillDraft,
@@ -69,7 +70,7 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
       setInstructions(payload.draft.instructions);
       setReferences(payload.draft.references ?? []);
       setShowIssues(false);
-      setMessage("Draft ready. Review and adjust every field before staging it for review.");
+      setMessage("Draft ready. Check the instructions, then review installation.");
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Drafting is unavailable.");
     } finally {
@@ -98,7 +99,7 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
       if (!response.ok || !payload.report) throw new Error(payload.message ?? payload.error ?? "The skill could not enter review.");
       setReport(payload.report);
       setApprovedPermissions(new Set());
-      setMessage("Review the staged files, capabilities, and hashes. Nothing runs until you approve.");
+      setMessage(null);
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "The skill could not enter review.");
     } finally {
@@ -133,7 +134,7 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
         await onInstalledChange?.();
       } else {
         setReport(null);
-        setMessage("The staged revision was discarded. Your draft is unchanged below.");
+        setMessage("Installation cancelled. You can keep editing your draft.");
       }
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : `Could not ${decision} the skill.`);
@@ -153,7 +154,7 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
       <section className="p-3" aria-label="Skill created">
         <button type="button" onClick={onBack} className="text-xs font-medium text-[var(--botanical)]">← Back to skills</button>
         <h3 className="mt-3 text-sm font-semibold text-[var(--ink-heading)]">Skill installed</h3>
-        <p className="mt-2 text-xs text-[var(--ink)]">The approved revision is in the command registry. Type <span className="font-mono font-medium text-[var(--chat-link)]">/{installedToken}</span> in the composer, or pick it from the capability palette.</p>
+        <p className="mt-2 text-xs text-[var(--ink)]">Select it from My skills or type <span className="font-mono font-medium text-[var(--chat-link)]">/{installedToken}</span> in your next message.</p>
         <button
           type="button"
           onClick={() => { setInstalledToken(null); setReport(null); setName(""); setDescription(""); setInstructions(""); setReferences([]); setIntent(""); setMessage(null); setShowIssues(false); }}
@@ -168,48 +169,23 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
   return (
     <section className="p-3" aria-label="Create a skill">
       <div className="flex items-center justify-between gap-3">
-        <button type="button" onClick={onBack} className="text-xs font-medium text-[var(--botanical)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">← Back to skills</button>
+        <button type="button" disabled={busy || drafting} onClick={onBack} className="text-xs font-medium text-[var(--botanical)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">← Back to skills</button>
       </div>
       <h3 className="mt-3 text-sm font-semibold text-[var(--ink-heading)]">Create a skill</h3>
       <p className="mt-1 text-xs text-[var(--ink-muted)]">
-        Built on Anthropic&apos;s skill-creator practice: a clear name, a description that says what the skill does and when to use it, and lean imperative instructions. Created skills pass the same quarantine review as downloaded ones before they can run.
+        Create reusable instructions for a task. Review the skill before enabling it.
       </p>
 
       {report ? (
         <div className="mt-4 border-t border-[var(--line)] pt-4">
-          <h4 className="text-sm font-semibold text-[var(--ink-heading)]">Breadboard review</h4>
-          <p className="mt-1 text-xs text-[var(--ink-muted)]">{report.riskSummary}</p>
-          {report.risks.length ? <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-[var(--ink)]">{report.risks.map((risk) => <li key={risk}>{risk}</li>)}</ul> : null}
-          {report.nameCollision ? <p className="mt-2 text-xs text-[#9a6b19]">Approving replaces the already installed skill with this name.</p> : null}
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <div>
-              <p className="text-xs font-medium text-[var(--ink-heading)]">Requested capabilities</p>
-              {report.requestedPermissions.length ? report.requestedPermissions.map((permission) => (
-                <label key={permission} className="mt-2 flex items-center gap-2 text-xs">
-                  <input type="checkbox" checked={approvedPermissions.has(permission)} onChange={() => setApprovedPermissions((current) => { const next = new Set(current); if (next.has(permission)) next.delete(permission); else next.add(permission); return next; })} />
-                  {permission}
-                </label>
-              )) : <p className="mt-1 text-xs text-[var(--ink-muted)]">None declared or derived.</p>}
-            </div>
-            <div className="text-xs text-[var(--ink-heading)]">
-              <p className="font-medium">Runtime category</p>
-              <p className="mt-1 text-[var(--ink-muted)]">
-                {report.classification.classification ===
-                "eligible_coding_conditional"
-                  ? "Software implementation skill. It will always launch OpenCode in a connected repository."
-                  : "Knowledge-work capability with a verified Breadboard execution path."}
-              </p>
-            </div>
-          </div>
-          <details className="mt-3 border-t border-[var(--line)] pt-3">
-            <summary className="cursor-pointer text-xs font-medium">Staged files and SHA-256 ({report.files.length})</summary>
-            <ul className="mt-2 max-h-40 overflow-y-auto font-mono text-[10px] text-[var(--ink-muted)]">{report.files.map((file) => <li key={file} className="break-all py-0.5">{file} · {report.fileHashes[file]}</li>)}</ul>
-          </details>
+          <h4 className="mb-3 text-sm font-semibold text-[var(--ink-heading)]">Install {report.name}</h4>
+          {report.nameCollision ? <p className="mb-3 text-xs text-[#9a6b19]">Installing replaces the skill you already have with this name.</p> : null}
+          <SkillAccessReview report={report} approved={approvedPermissions} onChange={setApprovedPermissions} disabled={busy} />
           {message ? <p role="status" className="mt-3 rounded-lg bg-[var(--paper-surface)] px-3 py-2 text-xs text-[var(--ink)]">{message}</p> : null}
           <div className="mt-4 flex flex-wrap justify-end gap-2">
             <button disabled={busy} type="button" onClick={() => setReport(null)} className="rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-medium">Back to editing</button>
             <button disabled={busy} type="button" onClick={() => void decide("reject")} className="rounded-lg border border-[#b87268] px-3 py-2 text-xs font-medium text-[#9a4438]">Discard</button>
-            <button disabled={busy || !report.integrityVerified} type="button" onClick={() => void decide("promote")} className="rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50">Approve and install</button>
+            <button disabled={busy || !report.integrityVerified || report.requestedPermissions.some(permission => !approvedPermissions.has(permission))} type="button" onClick={() => void decide("promote")} className="rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50">{busy ? "Installing…" : "Install"}</button>
           </div>
         </div>
       ) : (
@@ -224,17 +200,17 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
           <label className="mt-4 block text-xs font-medium text-[var(--ink-heading)]">Skill name
             <input value={name} onChange={(event) => setName(event.target.value)} placeholder="flashcard-builder" className={`${inputClass} font-mono`} />
           </label>
-          <p className="mt-1 text-[11px] text-[var(--ink-muted)]">Lowercase letters, digits, and hyphens. This becomes the folder and the slash command.</p>
+          <p className="mt-1 text-[11px] text-[var(--ink-muted)]">Use lowercase letters, digits, and hyphens. This is also the slash command.</p>
 
           <label className="mt-3 block text-xs font-medium text-[var(--ink-heading)]">Description
             <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={2} placeholder="Builds spaced-repetition flashcards from notes. Use when the user asks for flashcards, review questions, or self-testing material." className={`${inputClass} resize-y`} />
           </label>
-          <p className="mt-1 text-[11px] text-[var(--ink-muted)]">Say what it does and when to use it — this is the only text the assistant always sees, so it decides triggering.</p>
+          <p className="mt-1 text-[11px] text-[var(--ink-muted)]">Describe what the skill does and when to use it.</p>
 
-          <label className="mt-3 block text-xs font-medium text-[var(--ink-heading)]">Instructions (SKILL.md body)
+          <label className="mt-3 block text-xs font-medium text-[var(--ink-heading)]">Instructions
             <textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} rows={10} placeholder={"## Workflow\n1. Read the source notes…\n2. …\n\n## Output format\n…"} className={`${inputClass} resize-y font-mono text-xs`} />
           </label>
-          <p className="mt-1 text-[11px] text-[var(--ink-muted)]">Imperative markdown with a concrete workflow and exact output format. Keep it under 500 lines; move deep detail into reference docs below.</p>
+          <p className="mt-1 text-[11px] text-[var(--ink-muted)]">List the steps and expected output. Keep under 500 lines; put extra detail in reference docs.</p>
 
           <div className="mt-3">
             <p className="text-xs font-medium text-[var(--ink-heading)]">Reference docs (optional)</p>
@@ -259,7 +235,7 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
           {message ? <p role="status" className="mt-3 rounded-lg bg-[var(--paper-surface)] px-3 py-2 text-xs text-[var(--ink)]">{message}</p> : null}
 
           <div className="mt-4 flex justify-end">
-            <button type="button" disabled={busy || !name.trim() || !description.trim() || !instructions.trim()} onClick={() => void stageForReview()} className="rounded-lg bg-[var(--botanical)] px-4 py-2 text-xs font-medium text-white disabled:opacity-40">{busy ? "Staging…" : "Stage for review"}</button>
+            <button type="button" disabled={busy || !name.trim() || !description.trim() || !instructions.trim()} onClick={() => void stageForReview()} className="rounded-lg bg-[var(--botanical)] px-4 py-2 text-xs font-medium text-white disabled:opacity-40">{busy ? "Checking…" : "Review installation"}</button>
           </div>
         </>
       )}

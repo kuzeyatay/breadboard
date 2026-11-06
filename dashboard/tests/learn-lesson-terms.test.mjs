@@ -178,25 +178,27 @@ test("a callout the reader cannot use is a hard unearned-callout problem", () =>
 test("a paragraph that teaches an earlier unit's concept again is a hard reteaches-earlier-unit problem", () => {
   // Reader feedback 2026-09-16 (telecom-1 M2 section 4): resource partitioning
   // was introduced in 1.2 and then re-introduced on every page of section 4.
+  const earlier = { pageId: "lesson-1", title: "Resources", concepts: ["resource partitioning"], markdown: "Resource partitioning divides the available spectrum into bands assigned to different users." };
+  const priorExplanation = { pageId: earlier.pageId, quote: earlier.markdown };
   const outcome = lessonTermReviewProblems({
-    terms: [],
+    terms: [], restatements: [], concepts: [], results: [], callouts: [], flow: [],
     reteaching: [
-      { concept: "resource partitioning", paragraph: "The starting point is resource partitioning.", reason: "re-motivates finite spectrum" },
-      { concept: "Resource partitioning", paragraph: "A radio system has a finite amount of spectrum, so supporting many users requires some way to divide it.", reason: "redefines" },
-      { concept: "resource partitioning", paragraph: "The starting point is resource partitioning.", reason: "dup" },
+      { concept: "resource partitioning", paragraph: "The starting point is resource partitioning.", priorExplanation, reason: "re-motivates finite spectrum" },
+      { concept: "Resource partitioning", paragraph: "A radio system has a finite amount of spectrum, so supporting many users requires some way to divide it.", priorExplanation, reason: "redefines" },
+      { concept: "resource partitioning", paragraph: "The starting point is resource partitioning.", priorExplanation, reason: "repeats the same motivation before the new calculation" },
     ],
-  });
+  }, { assumedBackground: [], earlierLessons: [earlier] });
   assert.equal(outcome.reviewError, undefined);
   assert.equal(outcome.problems.length, 1, "one problem per earlier concept");
   const [problem] = outcome.problems;
   assert.equal(problem.code, "reteaches-earlier-unit");
   assert.equal(problem.hard, true);
   assert.equal(problem.evidence.length, 2);
-  assert.match(problem.message, /one-sentence reminder/);
+  assert.match(problem.message, /preserving all instruction, examples and coverage/);
   assert.match(lessonTermReviewProblems({ terms: [], reteaching: [{ concept: "", paragraph: "x" }] }).reviewError, /invalid reteaching/);
 });
 
-test("a later unit's concept named as a destination passes; reasoning built on it is leans-on-later-unit, never explained here", () => {
+test("a later destination passes; an unexplained dependency requires removal or a supported local bridge", () => {
   // Generation #10 (telecom-1 1.1, 2026-09-16): the reviewer marked FDMA and
   // CDMA - later units - as shallow, the repair tried to teach them on the
   // intro page, and the findings never converged.
@@ -216,7 +218,8 @@ test("a later unit's concept named as a destination passes; reasoning built on i
   assert.equal(outcome.problems.length, 1);
   const [problem] = outcome.problems;
   assert.equal(problem.code, "leans-on-later-unit");
-  assert.match(problem.message, /Do not explain it here/);
+  assert.match(problem.message, /remove or defer the dependency/);
+  assert.match(problem.message, /smallest source-supported bridge/);
   assert.deepEqual(problem.evidence, ["Because CDMA lets every user transmit at once, the access rule can be relaxed."]);
   assert.match(LESSON_TERM_REVIEW_PROMPT, /"named_later"/);
 });
@@ -243,19 +246,33 @@ test("the review hands back what it accepted so the next review keeps those verd
 // course term and wanted a fiber lesson to teach that j squared is minus one,
 // and it marked the V number abstract_only while itself recording that the
 // assigned sources do not establish the numbers such an example would need.
-test("ordinary engineering mathematics is background, not a term this course teaches", () => {
-  assert.match(LESSON_TERM_REVIEW_PROMPT, /imaginary unit/i);
-  assert.match(LESSON_TERM_REVIEW_PROMPT, /phasor/i);
-  assert.match(LESSON_TERM_REVIEW_PROMPT, /taught_earlier/);
-  // The exemption must be conditional, or a course that really does teach
-  // complex notation would lose its own gate.
-  assert.match(LESSON_TERM_REVIEW_PROMPT, /only when the course itself introduces them/i);
+test("engineering mathematics is background only when explicitly declared", () => {
+  const review = { terms: [{ term: "phasor", status: "taught_earlier", backgroundItem: "complex numbers and phasors" }],
+    restatements: [], concepts: [], results: [], callouts: [], reteaching: [], flow: [] };
+  assert.equal(lessonTermReviewProblems(review, { assumedBackground: ["complex numbers and phasors"], earlierLessons: [] }).problems.length, 0);
+  assert.equal(lessonTermReviewProblems(review, { assumedBackground: ["high-school algebra"], earlierLessons: [] }).problems[0].code, "unverified-prerequisite");
+});
+
+test("retrieved source labels and invented earlier quotes cannot justify cutting explanations", () => {
+  const earlier = { pageId: "prior", title: "Prior", concepts: [], markdown: "A unit vector has magnitude one and identifies a direction." };
+  const finding = { concept: "unit vector", paragraph: "A unit vector identifies a direction.", reason: "The same definition is repeated without a new use.",
+    priorExplanation: { pageId: earlier.pageId, quote: earlier.markdown } };
+  const review = entry => ({ terms: [], restatements: [], concepts: [], results: [], callouts: [], flow: [], reteaching: [entry] });
+  for (const [entry, earlierLessons] of [
+    [finding, []],
+    [{ ...finding, priorExplanation: { ...finding.priorExplanation, pageId: "retrieved-source" } }, [earlier]],
+    [{ ...finding, priorExplanation: { pageId: earlier.pageId, quote: "A fabricated explanation that was never present in the prior lesson." } }, [earlier]],
+    [{ ...finding, reason: "" }, [earlier]],
+  ]) {
+    const result = lessonTermReviewProblems(review(entry), { assumedBackground: [], earlierLessons });
+    assert.match(result.reviewError, /actual earlier reader lesson/);
+    assert.deepEqual(result.problems, []);
+  }
 });
 
 test("a concept the sources cannot ground is not floating; the boundary sentence anchors it", () => {
-  assert.match(LESSON_TERM_REVIEW_PROMPT, /source boundary applies here/i);
-  assert.match(LESSON_TERM_REVIEW_PROMPT, /never record a concept as abstract_only/i);
-  // And the escape stays narrow: a concept the sources do ground still needs
-  // its instance, which is the rule the whole grounding check exists for.
-  assert.match(LESSON_TERM_REVIEW_PROMPT, /Abstract_only is for a concept whose instance the sources do supply/i);
+  assert.match(LESSON_TERM_REVIEW_PROMPT, /Measurements, specifications, empirical laws, and claims about a real system require source evidence/);
+  assert.match(LESSON_TERM_REVIEW_PROMPT, /never demand that the lesson invent it/);
+  assert.match(LESSON_TERM_REVIEW_PROMPT, /A clear boundary plus the supported meaning and use is sufficient/);
+  assert.match(LESSON_TERM_REVIEW_PROMPT, /clearly labelled as an illustration and worked using supported rules/);
 });

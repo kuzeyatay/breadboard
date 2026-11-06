@@ -32,7 +32,7 @@ export default function Resource2SkillSettingsDialog({ onClose }: { onClose: () 
   return <div className="bb-modal-backdrop fixed inset-0 z-[150] flex items-center justify-center p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="resource2skill-title" className="bb-modal-panel neu-dialog w-full max-w-[42rem] rounded-2xl border text-[var(--ink)]">
       <header className="flex items-start gap-3 border-b border-[var(--line)] p-5">
-        <div className="min-w-0 flex-1"><h2 id="resource2skill-title" className="font-serif text-lg text-[var(--ink-heading)]">Resource2Skill setup</h2><p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">Runs Microsoft’s distilled Web, PowerPoint, Excel, Blender, and audio skills locally through ChatMock.</p></div>
+        <div className="min-w-0 flex-1"><h2 id="resource2skill-title" className="font-serif text-lg text-[var(--ink-heading)]">Resource2Skill setup</h2><p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">Create web pages, presentations, spreadsheets, Blender projects, and audio.</p></div>
         <button type="button" className="neu-button-icon h-9 w-9 rounded-full" onClick={onClose} aria-label="Close">×</button>
       </header>
       <div className="space-y-4 p-5">

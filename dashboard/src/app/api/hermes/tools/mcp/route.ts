@@ -45,6 +45,7 @@ import { connectionToolAllowed } from "@/lib/hermes/capability-policy.ts";
 import { codeIndexConnectionForSession } from "@/lib/code-index/chat-turn.ts";
 import { isCodeIndexConnectionSlug } from "@/lib/code-index/repository-digest.ts";
 import { getConversationById } from "@/lib/conversations/store.ts";
+import { missingRunArtifact } from "@/lib/hermes/artifact-completion.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -160,7 +161,12 @@ export async function POST(request: Request) {
         payload: { runId: run.id, tool },
       });
       try {
-        const result = callGoalModeTool({
+        const missing = tool === "update_goal" && args.status === "complete"
+          ? missingRunArtifact(run, conversation.id) : null;
+        const result = missing ? {
+          isError: true,
+          text: `Completion is not verified: the required ${missing.kind} artifact (${missing.rendererId}) is not ready. Continue the task, publish and verify the requested deliverable before marking the goal complete.`,
+        } : callGoalModeTool({
           conversationPublicId: conversation.public_id,
           tool,
           args,
@@ -376,6 +382,16 @@ export async function POST(request: Request) {
         "mcp_not_connected",
         "That connection is not connected.",
       );
+    }
+    if (tool === "__breadboard_list_tools") {
+      // Read-only discovery on the selected, same-user connection. Return
+      // schemas only for actions the current capability mode can call; the
+      // ordinary execution path below rechecks policy and declarations.
+      const available = proxyMcpTools(session.user_id, slug).filter(candidate =>
+        decision.mode === "scoped_implementation" ||
+        (connectionToolAllowed(candidate.name) && candidate.annotations?.destructiveHint !== true),
+      );
+      return NextResponse.json({ ok: true, data: { tools: available } });
     }
     const declared = proxyMcpTools(session.user_id, slug).find(
       (candidate) => candidate.name === tool,

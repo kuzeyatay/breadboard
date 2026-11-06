@@ -173,6 +173,9 @@ export async function startRuntimeV2GatewayHttpService({
     process.off("SIGINT", onSignal);
     await onStop?.().catch(() => undefined);
     await new Promise((resolve) => server?.close(() => resolve()));
+    // On Windows, pause() leaves the supervisor stdin pipe referenced.
+    // Release it only after cleanup and HTTP draining have both finished.
+    process.stdin.unref?.();
   };
   server = http.createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/health") {

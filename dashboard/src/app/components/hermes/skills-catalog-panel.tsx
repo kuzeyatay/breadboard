@@ -1,5 +1,7 @@
 "use client";
 
+import { skillProductDescription } from "@/lib/hermes/skill-product-copy.ts";
+
 import {
   useEffect,
   useId,
@@ -7,6 +9,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
+import SkillAccessReview from "./skill-access-review";
 import SkillCreatorPanel from "./skill-creator-panel";
 import FavoriteBox, {
   DEFAULT_CAPABILITY_HIGHLIGHT_COLOR,
@@ -19,9 +22,13 @@ import {
   peekCachedSkillsCatalog,
   skillsCatalogUrl,
 } from "@/lib/hermes/skills-catalog-client-cache";
+import { canUseSkill } from "@/lib/hermes/skill-library";
+import type { SkillAvailability } from "@/lib/hermes/skill-compatibility";
+import type { DocumentSkillStatus } from "@/lib/document-skills/types";
 import ReloadableFetchError from "@/app/components/reloadable-fetch-error";
 
 type CatalogFilter =
+  | "my"
   | "all"
   | "recent"
   | "featured"
@@ -73,7 +80,8 @@ type CatalogSkill = {
     reasons: string[];
   };
   requiresOpenCode?: boolean;
-  availability?: "ready" | "unavailable" | "incompatible" | "needs_review";
+  availability?: SkillAvailability;
+  documentStatus?: DocumentSkillStatus;
   reasons?: string[];
   contract?: {
     category?: string;
@@ -214,17 +222,23 @@ const FILTER_GROUPS: Array<{
   filters: Array<{ id: CatalogFilter; label: string }>;
 }> = [
   {
+    label: "Library",
+    filters: [
+      { id: "my", label: "My skills" },
+      { id: "recent", label: "Recent" },
+      { id: "documents", label: "Documents" },
+    ],
+  },
+  {
     label: "Browse",
     filters: [
-      { id: "all", label: "All" },
-      { id: "recent", label: "Recent" },
+      { id: "all", label: "Discover" },
       { id: "featured", label: "Featured" },
       { id: "scientific", label: "Scientific" },
       { id: "reverse", label: "Reverse" },
       { id: "design", label: "Design" },
       { id: "engineering", label: "Engineering" },
       { id: "office", label: "Office" },
-      { id: "documents", label: "Documents" },
       { id: "omh", label: "Workflow" },
       { id: "official", label: "Official" },
     ],
@@ -243,9 +257,8 @@ const FILTER_GROUPS: Array<{
     ],
   },
   {
-    label: "Library",
+    label: "Manage",
     filters: [
-      { id: "installed", label: "Installed" },
       { id: "updates", label: "Updates" },
     ],
   },
@@ -276,7 +289,7 @@ export default function SkillsCatalogPanel({
   const initialCatalog = peekCachedSkillsCatalog<CatalogResponse>(
     skillsCatalogUrl({ surface }),
   );
-  const [filter, setFilter] = useState<CatalogFilter>("all");
+  const [filter, setFilter] = useState<CatalogFilter>("my");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
   const [skills, setSkills] = useState<CatalogSkill[]>(() =>
@@ -311,13 +324,16 @@ export default function SkillsCatalogPanel({
   const selectedButtonRef = useRef<HTMLButtonElement | null>(null);
   const descriptionRequestsRef = useRef(new Set<string>());
   const catalogRequestRef = useRef(0);
+  const detailRequestRef = useRef(0);
   const recentSkillIdsKey = recentSkillIds.join("\n");
+  const pinnedSkillIdsKey = favoriteIds.join("\n");
+  const localView = ["my", "installed", "recent", "documents", "featured"].includes(filter);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadCatalog(), query.trim() ? 280 : 0);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter, page, query, recentSkillIdsKey]);
+  }, [filter, page, query, recentSkillIdsKey, pinnedSkillIdsKey, surface]);
 
   useEffect(() => setActiveIndex((value) => Math.min(value, Math.max(0, skills.length - 1))), [skills.length]);
 
@@ -400,6 +416,7 @@ export default function SkillsCatalogPanel({
       perPage: 50,
       query,
       recentSkillIds,
+      pinnedSkillIds: favoriteIds.map((id) => id.replace(/^skill:/, "")),
       surface,
     });
     const cached = force
@@ -411,7 +428,7 @@ export default function SkillsCatalogPanel({
     const applyPayload = (payload: CatalogResponse & { stale?: boolean }) => {
       if (requestId !== catalogRequestRef.current) return;
       let nextSkills = Array.isArray(payload.skills) ? payload.skills : [];
-      if (query.trim() && filter !== "all") {
+      if (query.trim() && filter !== "all" && !localView) {
         nextSkills = applyClientFilter(nextSkills, filter, recentSkillIds);
       }
       setSkills(nextSkills);
@@ -464,7 +481,7 @@ export default function SkillsCatalogPanel({
       } catch {
         const ids = new Set(batch.map((skill) => skill.upstreamId));
         setSkills((current) => current.map((skill) => ids.has(skill.upstreamId)
-          ? { ...skill, description: "Description is temporarily unavailable from the publisher.", descriptionLoaded: true }
+          ? { ...skill, description: "No description available.", descriptionLoaded: true }
           : skill));
       }
     }
@@ -474,6 +491,12 @@ export default function SkillsCatalogPanel({
     setRefreshing(true);
     setError(null);
     try {
+      if (localView) {
+        invalidateSkillsCatalogCache();
+        await onInstalledChange?.();
+        await loadCatalog(true);
+        return;
+      }
       const response = await fetch("/api/hermes/skills", { method: "POST" });
       const payload = (await response.json().catch(() => ({}))) as { message?: string; error?: string };
       if (!response.ok) throw new Error(payload.message ?? payload.error ?? "Catalog refresh failed.");
@@ -487,6 +510,7 @@ export default function SkillsCatalogPanel({
   }
 
   async function openSkill(skill: CatalogSkill, button?: HTMLButtonElement | null) {
+    const requestId = ++detailRequestRef.current;
     selectedButtonRef.current = button ?? null;
     setSelected(skill);
     setDetail(null);
@@ -506,16 +530,20 @@ export default function SkillsCatalogPanel({
       const response = await fetch(`/api/hermes/skills/detail?${parameters}`, { cache: "no-store" });
       const payload = (await response.json().catch(() => ({}))) as SkillDetailResponse;
       if (!response.ok && !payload.cached) throw new Error(payload.message ?? payload.error ?? "Skill details are unavailable.");
+      if (requestId !== detailRequestRef.current) return;
       setDetail(payload);
       if (payload.skill) setSelected((current) => current ? { ...current, ...payload.skill } : payload.skill ?? null);
     } catch (cause) {
+      if (requestId !== detailRequestRef.current) return;
       setActionMessage(cause instanceof Error ? cause.message : "Skill details are unavailable.");
     } finally {
-      setDetailLoading(false);
+      if (requestId === detailRequestRef.current) setDetailLoading(false);
     }
   }
 
-  function closeDetails() {
+  function closeDetails(force = false) {
+    if (actionBusy && !force) return;
+    detailRequestRef.current += 1;
     setSelected(null);
     setDetail(null);
     setReport(null);
@@ -526,7 +554,7 @@ export default function SkillsCatalogPanel({
   async function prepareReview() {
     if (!selected) return;
     setActionBusy(true);
-    setActionMessage("Retrieving the current immutable revision into inactive quarantine…");
+    setActionMessage("Checking this skill before installation…");
     try {
       const response = await fetch("/api/hermes/skills/install", {
         method: "POST",
@@ -537,7 +565,7 @@ export default function SkillsCatalogPanel({
       if (!response.ok || !payload.report) throw new Error(payload.message ?? payload.error ?? "The skill could not enter review.");
       setReport(payload.report);
       setApprovedPermissions(new Set());
-      setActionMessage("Review the files, risk signals, capabilities, and hashes before approval.");
+      setActionMessage(null);
     } catch (cause) {
       setActionMessage(cause instanceof Error ? cause.message : "The skill could not enter review.");
     } finally {
@@ -566,11 +594,14 @@ export default function SkillsCatalogPanel({
       const payload = (await response.json().catch(() => ({}))) as { message?: string; error?: string };
       if (!response.ok) throw new Error(payload.message ?? payload.error ?? `Could not ${decision} the skill.`);
       setReport(null);
-      setActionMessage(decision === "promote" ? "Approved revision installed. The slash command is ready." : "Quarantined revision removed.");
+      setActionMessage(decision === "promote" ? "Skill installed." : "Installation cancelled.");
       await onInstalledChange?.();
       invalidateSkillsCatalogCache();
       await loadCatalog(true);
-      if (decision === "promote") await openSkill({ ...selected, installationStatus: "installed" });
+      if (decision === "promote") {
+        await openSkill({ ...selected, installationStatus: "installed" });
+        setActionMessage("Installed. Use this skill to select it for your next message.");
+      }
     } catch (cause) {
       setActionMessage(cause instanceof Error ? cause.message : `Could not ${decision} the skill.`);
     } finally {
@@ -591,7 +622,8 @@ export default function SkillsCatalogPanel({
         });
         const payload = (await response.json().catch(() => ({}))) as { error?: string };
         if (!response.ok) throw new Error(payload.error ?? "The document skill could not be removed.");
-        closeDetails();
+        closeDetails(true);
+        await onInstalledChange?.();
         invalidateSkillsCatalogCache();
         await loadCatalog(true);
         return;
@@ -604,7 +636,7 @@ export default function SkillsCatalogPanel({
       const payload = (await response.json().catch(() => ({}))) as { message?: string; error?: string };
       if (!response.ok) throw new Error(payload.message ?? payload.error ?? "The skill could not be removed.");
       await onInstalledChange?.();
-      closeDetails();
+      closeDetails(true);
       invalidateSkillsCatalogCache();
       await loadCatalog(true);
     } catch (cause) {
@@ -647,26 +679,43 @@ export default function SkillsCatalogPanel({
   }
 
   if (selected) {
+    const setupRequirement = selected.requirements?.find(item => item.required && item.status !== "satisfied" && item.action && item.action !== "review_skill");
+    const canInstall = !isLocallyOwnedSkill(selected) && selected.availability !== "incompatible";
+    const originalDescription = detail?.skill?.description ?? selected.description;
+    const description = skillProductDescription({ ...selected, description: originalDescription });
     return (
       <section className="p-3" aria-label={`${selected.command} details`}>
-        <button type="button" onClick={closeDetails} className="text-xs font-medium text-[var(--botanical)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">← Back to skills</button>
+        <button type="button" onClick={() => closeDetails()} disabled={actionBusy} className="text-xs font-medium text-[var(--botanical)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">← Back to skills</button>
         <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h3 className="break-all font-mono text-base font-semibold text-[var(--ink-heading)]">{selected.command}</h3>
-            <p className="mt-1 text-sm text-[var(--ink)]">{(detail?.skill?.description ?? selected.description) || "Loading description…"}</p>
+            <h3 className="break-words text-base font-semibold text-[var(--ink-heading)]">{selected.name}</h3>
+            <p className="mt-1 font-mono text-xs text-[var(--ink-muted)]">{selected.command}</p>
+            <p className="mt-1 text-sm text-[var(--ink)]">{description || "Loading description…"}</p>
+            {originalDescription && description !== originalDescription ? (
+              <details className="mt-2 text-xs text-[var(--ink-muted)]">
+                <summary className="cursor-pointer">Original description</summary>
+                <p className="mt-1 whitespace-pre-line">{originalDescription}</p>
+              </details>
+            ) : null}
             <p className="mt-1 break-all text-xs text-[var(--ink-muted)]">
               {selected.sourceType === "first-party"
                 ? "Built into Breadboard"
                 : selected.sourceType === "local-install"
                   ? "Installed in Breadboard"
                   : selected.sourceType === "document"
-                    ? "Distilled from your document with book-to-skill"
+                    ? "Created from your document"
                     : `${selected.source} · ${formatInstalls(selected.installs)} installs`}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            {selected.installationStatus === "installed" && selected.availability === "ready" ? (
-              <button type="button" onClick={() => onUse(selected)} className="neu-button-accent rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white">Use {selected.command}</button>
+            {!report && canUseSkill(selected) ? (
+              <button type="button" disabled={actionBusy} onClick={() => onUse(selected)} className="neu-button-accent rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50">Use {selected.command}</button>
+            ) : null}
+            {!report && !canUseSkill(selected) && selected.installationStatus === "installed" && selected.availability !== "needs_review" && setupRequirement ? (
+              <button type="button" disabled={actionBusy} onClick={() => void satisfyRequirement(setupRequirement)} className="neu-button-accent rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white">Set up</button>
+            ) : null}
+            {!report && canInstall && (selected.installationStatus !== "installed" || selected.updateStatus === "update_available" || selected.availability === "needs_review" || (!canUseSkill(selected) && !setupRequirement)) ? (
+              <button type="button" disabled={actionBusy} onClick={() => void prepareReview()} className="neu-button-accent rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50">{actionBusy ? "Checking…" : selected.updateStatus === "update_available" ? "Review update" : selected.installationStatus !== "installed" ? "Install skill" : selected.availability === "needs_review" ? "Review access" : "Repair installation"}</button>
             ) : null}
             {isLocallyOwnedSkill(selected) ? null : (
               <a href={selected.pageUrl ?? `https://skills.sh/${selected.source}/${selected.slug}`} target="_blank" rel="noreferrer" className="neu-button rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-medium text-[var(--ink)]">Open source</a>
@@ -674,19 +723,21 @@ export default function SkillsCatalogPanel({
           </div>
         </div>
 
-        {detailLoading ? <p role="status" className="mt-5 text-sm text-[var(--ink-muted)]">Loading official files and audits…</p> : null}
+        {detailLoading ? <p role="status" className="mt-5 text-sm text-[var(--ink-muted)]">Loading files and reviews…</p> : null}
         {actionMessage ? <p role="status" className="mt-4 rounded-lg bg-[var(--paper-surface)] px-3 py-2 text-xs text-[var(--ink)]">{actionMessage}</p> : null}
-        {selected.availability && selected.availability !== "ready" ? (
+        {selected.availability && selected.availability !== "ready" && !(report && selected.availability === "needs_review") ? (
           <div className="mt-4 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-xs text-[var(--ink)]">
             <p className="font-medium text-[var(--ink-heading)]">
-              {selected.availability === "needs_review" ? "Review required before installation" : "Unavailable on this surface"}
+              {selected.documentStatus === "building" ? "Building document skill"
+                : selected.documentStatus === "failed" ? "Document skill build failed"
+                : selected.availability === "needs_review" ? "Review required" : "Unavailable here"}
             </p>
             <ul className="mt-1 space-y-1 text-[var(--ink-muted)]">
               {(selected.reasons?.length
                 ? selected.reasons
                 : selected.classification?.reasons?.length
                   ? selected.classification.reasons
-                  : ["This skill does not currently have a compatible Breadboard execution path."]
+                  : ["This skill cannot run here."]
               ).map((reason) => <li key={reason}>{reason}</li>)}
             </ul>
           </div>
@@ -702,19 +753,16 @@ export default function SkillsCatalogPanel({
                   className="neu-chip inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--paper-raised)] px-2.5 py-1 text-[11px] font-medium text-[var(--ink)]"
                 >
                   <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-[var(--botanical)]" />
-                  {artifactKindLabel(kind)} artifact
+                  {artifactKindLabel(kind)}
                 </span>
               ))}
             </div>
-            <p className="mt-2 text-[11px] text-[var(--ink-muted)]">
-              The finished product is attached to the message and stays in the chat where it was generated.
-            </p>
           </section>
         ) : null}
 
         {selected.requirements?.length ? (
-          <section className="neu-card mt-4 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-3">
-            <h4 className="text-xs font-semibold text-[var(--ink-heading)]">Requirements</h4>
+          <details open={Boolean(setupRequirement)} className="neu-card mt-4 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-3">
+            <summary className="cursor-pointer text-xs font-semibold text-[var(--ink-heading)]">{setupRequirement ? "Setup needed" : "Requirements"}</summary>
             <ul className="mt-2 divide-y divide-[var(--line)]">
               {selected.requirements
                 .filter((item) => item.type !== "artifact")
@@ -754,55 +802,23 @@ export default function SkillsCatalogPanel({
                   </li>
                 ))}
             </ul>
-          </section>
+          </details>
         ) : null}
 
         {report ? (
           <div className="mt-4 border-t border-[var(--line)] pt-4">
-            <h4 className="text-sm font-semibold text-[var(--ink-heading)]">Breadboard review</h4>
-            <p className="mt-1 text-xs text-[var(--ink-muted)]">{report.riskSummary}</p>
-            {report.risks.length ? <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-[var(--ink)]">{report.risks.map((risk) => <li key={risk}>{risk}</li>)}</ul> : null}
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <div>
-                <p className="text-xs font-medium text-[var(--ink-heading)]">Requested capabilities</p>
-                {report.requestedPermissions.length ? report.requestedPermissions.map((permission) => (
-                  <label key={permission} className="mt-2 flex items-center gap-2 text-xs">
-                    <input type="checkbox" checked={approvedPermissions.has(permission)} onChange={() => setApprovedPermissions((current) => toggleSet(current, permission))} />
-                    {permission}
-                  </label>
-                )) : <p className="mt-1 text-xs text-[var(--ink-muted)]">None declared or derived.</p>}
-                {report.discoveredScripts.length ? (
-                  <p className="mt-2 text-[11px] text-[var(--ink-muted)]">
-                    Scripts: {report.discoveredScripts.join(", ")}
-                  </p>
-                ) : null}
-                {report.externalNetworkRequirements.length ? (
-                  <p className="mt-2 text-[11px] text-[var(--ink-muted)]">
-                    Network requirements: {report.externalNetworkRequirements.join(", ")}
-                  </p>
-                ) : null}
-              </div>
-              <div className="text-xs text-[var(--ink-heading)]">
-                <p className="font-medium">Runtime category</p>
-                <p className="mt-1 text-[var(--ink-muted)]">
-                  {report.classification.classification === "eligible_coding_conditional"
-                    ? "Software implementation guidance. This skill always launches OpenCode in the connected repository and cannot widen its repository or permission boundary."
-                    : "Reviewed local or knowledge-work guidance. The skill cannot widen Breadboard permissions."}
-                </p>
-              </div>
-            </div>
-            <details className="mt-3 border-t border-[var(--line)] pt-3">
-              <summary className="cursor-pointer text-xs font-medium">Reviewed files and SHA-256 ({report.files.length})</summary>
-              <ul className="mt-2 max-h-40 overflow-y-auto font-mono text-[10px] text-[var(--ink-muted)]">{report.files.map((file) => <li key={file} className="break-all py-0.5">{file} · {report.fileHashes[file]}</li>)}</ul>
-            </details>
+            <h4 className="mb-3 text-sm font-semibold text-[var(--ink-heading)]">Install {selected.name}</h4>
+            <SkillAccessReview report={report} approved={approvedPermissions} onChange={setApprovedPermissions} disabled={actionBusy} />
             <div className="mt-4 flex justify-end gap-2">
               <button disabled={actionBusy} type="button" onClick={() => void decideReview("reject")} className="neu-button rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-medium">Cancel</button>
-              <button disabled={actionBusy || !report.integrityVerified || report.requestedPermissions.some((permission) => !approvedPermissions.has(permission))} type="button" onClick={() => void decideReview("promote")} className="neu-button-accent rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50">Approve and install</button>
+              <button disabled={actionBusy || !report.integrityVerified || report.requestedPermissions.some((permission) => !approvedPermissions.has(permission))} type="button" onClick={() => void decideReview("promote")} className="neu-button-accent rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50">{actionBusy ? "Installing…" : selected.updateStatus === "update_available" ? "Install update" : "Install"}</button>
             </div>
           </div>
         ) : detail?.detail ? (
           <div className="mt-4 space-y-4 border-t border-[var(--line)] pt-4 text-xs">
-            <dl className="grid grid-cols-[max-content,1fr] gap-x-3 gap-y-2">
+            <details>
+              <summary className="cursor-pointer font-medium">Technical details</summary>
+            <dl className="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-2">
               <dt className="text-[var(--ink-muted)]">Upstream ID</dt><dd className="break-all font-mono">{selected.upstreamId}</dd>
               <dt className="text-[var(--ink-muted)]">Upstream hash</dt><dd className="break-all font-mono">{detail.detail.hash ?? "Snapshot unavailable"}</dd>
               <dt className="text-[var(--ink-muted)]">Approved hash</dt><dd className="break-all font-mono">{selected.approvedHash ?? "Not approved"}</dd>
@@ -810,22 +826,25 @@ export default function SkillsCatalogPanel({
               <dt className="text-[var(--ink-muted)]">Duplicate</dt><dd>{selected.duplicate ? "Marked duplicate upstream" : "No duplicate flag"}</dd>
               <dt className="text-[var(--ink-muted)]">State</dt><dd>{statusLabel(selected)}</dd>
             </dl>
-            <div>
-              <h4 className="font-medium text-[var(--ink-heading)]">Upstream audits</h4>
-              {detail.audits?.length ? <ul className="mt-2 divide-y divide-[var(--line)]">{detail.audits.map((audit) => <li key={`${audit.provider}-${audit.auditedAt}`} className="py-2"><span className="font-medium">{audit.provider}: {audit.status}</span>{audit.riskLevel ? ` · ${audit.riskLevel}` : ""}{audit.summary ? <p className="mt-0.5 text-[var(--ink-muted)]">{audit.summary}</p> : null}</li>)}</ul> : <p className="mt-1 text-[var(--ink-muted)]">No upstream audit result was returned.</p>}
+            <div className="mt-3">
+              <h4 className="font-medium text-[var(--ink-heading)]">Publisher reviews</h4>
+              {detail.audits?.length ? <ul className="mt-2 divide-y divide-[var(--line)]">{detail.audits.map((audit) => <li key={`${audit.provider}-${audit.auditedAt}`} className="py-2"><span className="font-medium">{audit.provider}: {audit.status}</span>{audit.riskLevel ? ` · ${audit.riskLevel}` : ""}{audit.summary ? <p className="mt-0.5 text-[var(--ink-muted)]">{audit.summary}</p> : null}</li>)}</ul> : <p className="mt-1 text-[var(--ink-muted)]">No publisher review available.</p>}
               {detail.auditError ? <p className="mt-1 text-[#9a6b19]">Audit endpoint: {detail.auditError}</p> : null}
-              <p className="mt-1 text-[var(--ink-muted)]">Upstream audits do not replace Breadboard inspection or permission review.</p>
+              <p className="mt-1 text-[var(--ink-muted)]">Breadboard also checks files and permissions before installation.</p>
             </div>
             <details>
               <summary className="cursor-pointer font-medium">Files ({detail.detail.files?.length ?? 0})</summary>
-              <ul className="mt-2 max-h-40 overflow-y-auto font-mono text-[10px] text-[var(--ink-muted)]">{detail.detail.files?.map((file) => <li key={file.path} className="break-all py-0.5">{file.path}</li>) ?? <li>No upstream snapshot is available.</li>}</ul>
+              <ul className="mt-2 max-h-40 overflow-y-auto font-mono text-[10px] text-[var(--ink-muted)]">{detail.detail.files?.map((file) => <li key={file.path} className="break-all py-0.5">{file.path}</li>) ?? <li>Source files are unavailable.</li>}</ul>
+            </details>
             </details>
             <div className="flex flex-wrap justify-end gap-2">
               {!isLocallyOwnedSkill(selected) && selected.installationStatus === "installed" ? <button disabled={actionBusy} type="button" onClick={() => void removeSkill()} className="neu-button-destructive rounded-lg border border-[#b87268] px-3 py-2 font-medium text-[#9a4438]">Remove</button> : null}
-              {!isLocallyOwnedSkill(selected) && selected.availability !== "incompatible" ? <button disabled={actionBusy} type="button" onClick={() => void prepareReview()} className="neu-button-accent rounded-lg bg-[var(--botanical)] px-3 py-2 font-medium text-white">{selected.updateStatus === "update_available" ? "Review update" : selected.installationStatus === "installed" ? "Re-review" : "Review for install"}</button> : null}
             </div>
           </div>
         ) : null}
+        {selected.sourceType === "document" && !report ? <div className="mt-4 border-t border-[var(--line)] pt-3 text-right">
+          <button type="button" disabled={actionBusy} onClick={() => void removeSkill()} className="text-xs text-[#9a4438]">Remove document skill</button>
+        </div> : null}
       </section>
     );
   }
@@ -871,10 +890,19 @@ export default function SkillsCatalogPanel({
   const activeFilter = FILTERS.find((item) => item.id === filter) ?? FILTERS[0];
 
   return (
-    <section className="min-h-0" aria-label="skills.sh catalog">
+    <section className="min-h-0" aria-label="Skills">
       <div className="sticky top-0 z-10 bg-[var(--paper-raised)] px-3 pb-2 pt-3">
+        <div className="mb-3 flex gap-1" role="group" aria-label="Skills views">
+          {[{ id: "my", label: "My skills" }, { id: "all", label: "Discover" }].map((view) => (
+            <button key={view.id} type="button" aria-pressed={view.id === "my" ? localView : !localView}
+              onClick={() => selectCatalogFilter(view.id as CatalogFilter)}
+              className={`rounded-lg px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-[var(--botanical)] ${(view.id === "my" ? localView : !localView) ? "neu-selected bg-[var(--paper-surface)] text-[var(--ink-heading)]" : "text-[var(--ink-muted)]"}`}>
+              {view.label}
+            </button>
+          ))}
+        </div>
         <div className="flex gap-2">
-          <input ref={searchRef} value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="Search every public skill" aria-label="Search skills.sh" className="neu-control min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--botanical)]" />
+          <input ref={searchRef} value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder={localView ? "Search my skills" : "Search every public skill"} aria-label={localView ? "Search my skills" : "Search public skills"} className="neu-control min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--botanical)]" />
           <div ref={filterMenuRootRef} className="relative shrink-0">
             <button
               ref={filterTriggerRef}
@@ -887,13 +915,13 @@ export default function SkillsCatalogPanel({
               aria-controls={filterMenuId}
               title={`Filter skills: ${activeFilter.label}`}
               className={`neu-button-icon relative flex h-9 w-9 items-center justify-center rounded-lg border text-[var(--ink)] ${
-                filter !== "all"
+                filter !== "all" && filter !== "my"
                   ? "neu-selected border-[var(--botanical)] bg-[var(--paper-strong)] text-[var(--botanical)]"
                   : "border-[var(--line)] bg-[var(--paper-raised)]"
               }`}
             >
               <FilterIcon />
-              {filter !== "all" ? <span aria-hidden className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[var(--botanical)]" /> : null}
+              {filter !== "all" && filter !== "my" ? <span aria-hidden className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[var(--botanical)]" /> : null}
             </button>
             {filterMenuOpen ? (
               <div
@@ -948,7 +976,7 @@ export default function SkillsCatalogPanel({
         </div>
         <p className="mt-2 text-[10px] text-[var(--ink-muted)]" role="status">
           {catalogStatusText(status, pagination.total, query, refreshing, filter)}
-          {status?.stale ? <span className="text-[#9a6b19]"> · Showing a stale last-known-good catalog{status.lastFailure ? ` · ${status.lastFailure}` : ""}</span> : null}
+          {!localView && status?.stale ? <span className="text-[#9a6b19]"> · Showing a stale last-known-good catalog{status.lastFailure ? ` · ${status.lastFailure}` : ""}</span> : null}
         </p>
         {error ? (
           <ReloadableFetchError
@@ -961,7 +989,7 @@ export default function SkillsCatalogPanel({
       </div>
       <div onKeyDown={onRowsKeyDown}>
         {loading ? <p className="px-3 py-8 text-center text-sm text-[var(--ink-muted)]">Loading skills…</p> : skills.length ? (
-          <ul role="listbox" aria-label="Public skills" className="divide-y divide-[var(--line)]">
+          <ul role="listbox" aria-label={localView ? "My skills" : "Public skills"} className="divide-y divide-[var(--line)]">
             {skills.map((skill, index) => {
               const identity = `skill:${skill.upstreamId}`;
               const highlightColor = highlightColors[identity]
@@ -976,8 +1004,8 @@ export default function SkillsCatalogPanel({
                       <span className="flex items-start justify-between gap-3">
                         <span className="min-w-0">
                           <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{skill.command}</span>
-                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">{skill.descriptionLoaded ? skill.description : "Loading description…"}</span>
-                          <span className="mt-1 block break-all text-[10px] text-[var(--ink-muted)]">{skill.source} · {formatInstalls(skill.installs)} installs{skill.duplicate ? " · duplicate" : ""}</span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">{skillProductDescription(skill) || (skill.descriptionLoaded ? skill.description : "Loading description…")}</span>
+                          <span className="mt-1 block break-all text-[10px] text-[var(--ink-muted)]">{skill.sourceType === "first-party" ? "Built into Breadboard" : skill.sourceType === "document" ? "From your document" : skill.sourceType === "local-install" ? "Installed in Breadboard" : <>{skill.source} · {formatInstalls(skill.installs)} installs{skill.duplicate ? " · duplicate" : ""}</>}</span>
                         </span>
                         <span className="shrink-0 pt-0.5 text-[10px] font-medium text-[var(--ink-muted)]">{rowAction(skill)}</span>
                       </span>
@@ -996,7 +1024,7 @@ export default function SkillsCatalogPanel({
           </ul>
         ) : <p className="px-4 py-10 text-center text-sm text-[var(--ink-muted)]">{query ? "No skills matched this search." : filter === "recent" ? "No recently used skills yet." : "No skills are available in this view."}</p>}
       </div>
-      {!query && pagination.total > pagination.perPage ? (
+      {(localView || !query) && pagination.total > pagination.perPage ? (
         <div className="flex items-center justify-between border-t border-[var(--line)] px-3 py-2 text-xs">
           <button type="button" disabled={page === 0} onClick={() => setPage((value) => Math.max(0, value - 1))} className="rounded-md px-2 py-1 disabled:opacity-30">Previous</button>
           <span className="text-[var(--ink-muted)]">{page * pagination.perPage + 1}–{Math.min((page + 1) * pagination.perPage, pagination.total)} of {pagination.total}</span>
@@ -1059,18 +1087,18 @@ function applyClientFilter(
   return skills;
 }
 
-function toggleSet(current: Set<string>, value: string): Set<string> {
-  const next = new Set(current);
-  if (next.has(value)) next.delete(value);
-  else next.add(value);
-  return next;
-}
-
 function formatInstalls(value: number): string {
   return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
 function rowAction(skill: CatalogSkill): string {
+  if (skill.documentStatus === "building") return "Building";
+  if (skill.documentStatus === "failed") return "Build failed";
+  if (skill.installationStatus === "installed") {
+    if (skill.availability === "needs_review") return "Needs review";
+    if (skill.availability === "incompatible") return "Unavailable here";
+    if (skill.availability === "unavailable") return "Setup required";
+  }
   if (
     skill.requiresOpenCode ||
     skill.classification?.classification ===
@@ -1080,15 +1108,16 @@ function rowAction(skill: CatalogSkill): string {
       ? "OpenCode · installed"
       : "Coding agent required";
   }
+  if (skill.sourceType === "document" && canUseSkill(skill)) return "Ready";
   if (skill.sourceType === "first-party") return "Built in";
   if (skill.sourceType === "local-install") return "Installed";
-  if (skill.upstreamStatus === "unlisted_upstream") return "Removed upstream";
-  if (skill.updateStatus === "local_content_changed") return "Local content changed";
-  if (skill.updateStatus === "upstream_unavailable") return "Upstream unavailable";
+  if (skill.upstreamStatus === "unlisted_upstream") return "Removed by publisher";
+  if (skill.updateStatus === "local_content_changed") return "Modified locally";
+  if (skill.updateStatus === "upstream_unavailable") return "Publisher unavailable";
   if (skill.updateStatus === "update_available") return "Update available";
   if (skill.reviewStatus === "quarantined") return "Reviewing";
   if (skill.installationStatus === "installed") return "Installed";
-  if (skill.availability === "needs_review") return "Needs compatibility";
+  if (skill.availability === "needs_review") return "Needs review";
   if (skill.availability && skill.availability !== "ready") return "Incompatible";
   return "Review";
 }
@@ -1139,6 +1168,9 @@ function requirementActionLabel(item: SkillRequirement): string {
 }
 
 function catalogStatusText(status: CatalogStatus | null, total: number, query: string, refreshing: boolean, filter: CatalogFilter): string {
+  if (["my", "installed", "recent", "documents", "featured"].includes(filter)) {
+    return `${refreshing ? "Refreshing · " : ""}${total.toLocaleString()} ${query ? "matching skills" : "skills"}`;
+  }
   if (refreshing || status?.synchronizing) return `Synchronizing skills.sh · ${total.toLocaleString()} currently shown`;
   if (!status) return query ? `${total.toLocaleString()} search results` : `${total.toLocaleString()} skills`;
   const updated = status.lastSuccessfulSyncAt ? new Date(status.lastSuccessfulSyncAt).toLocaleString() : "never";

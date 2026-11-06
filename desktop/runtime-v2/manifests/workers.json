@@ -2,6 +2,29 @@
   "version": 2,
   "workers": [
     {
+      "kind": "source-repair-node",
+      "jobTypes": ["source-repair"],
+      "capabilityIds": ["workflow:source-repair"],
+      "submissionAuthority": "user",
+      "environmentSource": "background",
+      "allowedExecutable": "runtimes/node/node.exe",
+      "allowedEntrypoint": "dashboard/scripts/runtime-v2-source-repair-worker.mjs",
+      "protocolVersion": 1,
+      "resourceClass": "document-processing",
+      "estimatedColdStartCommitMb": 11264,
+      "softCommitLimitMb": 14336,
+      "hardCommitLimitMb": 16384,
+      "maximumConcurrency": 1,
+      "minimumInputBlobs": 0,
+      "maximumInputBlobs": 0,
+      "workspacePolicy": "private-per-job",
+      "readyTimeoutMs": 30000,
+      "heartbeatTimeoutMs": 120000,
+      "gracefulCancellationMs": 15000,
+      "maximumRuntimeMs": 7200000,
+      "exitAfterJob": true
+    },
+    {
       "kind": "learn-node",
       "jobTypes": ["learn"],
       "capabilityIds": ["workflow:learn", "recovery:learn-checkpoints"],
@@ -19,7 +42,7 @@
       "readyTimeoutMs": 30000,
       "heartbeatTimeoutMs": 30000,
       "gracefulCancellationMs": 180000,
-      "maximumRuntimeMs": 43200000,
+      "maximumRuntimeMs": 172800000,
       "exitAfterJob": true
     },
     {
@@ -336,7 +359,7 @@
       "allowedEntrypoint": "dashboard/scripts/runtime-v2-terminal-command-worker.mjs",
       "protocolVersion": 1,
       "resourceClass": "document-processing",
-      "estimatedColdStartCommitMb": 2048,
+      "estimatedColdStartCommitMb": 512,
       "softCommitLimitMb": 4096,
       "hardCommitLimitMb": 6144,
       "maximumConcurrency": 1,

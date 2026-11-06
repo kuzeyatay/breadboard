@@ -19,7 +19,21 @@ app.whenReady().then(async () => {
   const prepareSlow = () => { slowReady = new Promise(resolve => { slowStarted = resolve; }); };
   prepareSlow();
   const server = http.createServer((req, res) => {
-    if (req.url === '/courses/42/files/7/download') {
+    const url = new URL(req.url, 'http://fixture');
+    if (url.pathname === '/courses/42/modules/items/780702') {
+      res.writeHead(302, { location: '/courses/42/files/7?module_item_id=780702' }); res.end(); return;
+    }
+    if (url.pathname === '/courses/42/files/7' || url.pathname === '/files/8/preview') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<!doctype html><title>Lab preview</title><a href="/courses/42/files/7/download">Download lab</a>'); return;
+    }
+    if (url.pathname === '/files/8/download') {
+      assert.equal(url.searchParams.get('verifier'), 'fixture-verifier');
+      assert.equal(url.searchParams.has('wrap'), false);
+      assert.equal(url.searchParams.has('preview'), false);
+      res.writeHead(302, { location: '/private-file' }); res.end(); return;
+    }
+    if (url.pathname === '/courses/42/files/7/download') {
       if (!req.headers.cookie?.includes('fixture_session=signed-in')) { res.writeHead(401); res.end(); return; }
       res.writeHead(302, { location: '/private-file' }); res.end(); return;
     }
@@ -75,6 +89,13 @@ app.whenReady().then(async () => {
     const file = await downloadBrowserTerminalSource(access, link.downloadUrl);
     assert.equal(file.name, '5ECE0_LAB.pdf');
     assert.deepEqual(Buffer.from(await file.arrayBuffer()), pdf);
+    // Canvas module links redirect to an HTML file preview, not the PDF itself.
+    for (const source of ['/courses/42/modules/items/780702', '/files/8/preview?wrap=1&preview=1&verifier=fixture-verifier']) {
+      const imported = await downloadBrowserTerminalSource(access, origin + source);
+      assert.equal(imported.name, '5ECE0_LAB.pdf');
+      assert.deepEqual(Buffer.from(await imported.arrayBuffer()), pdf);
+      assert.equal(page.getURL(), origin + '/course', 'import must not navigate the source tab');
+    }
     const completeLarge = await downloadBrowserTerminalSource(access, origin + '/complete-large.pdf');
     assert.deepEqual(Buffer.from(await completeLarge.arrayBuffer()), largePdf);
     assert.ok(!JSON.stringify(snapshot).includes('fixture_session'));
@@ -104,6 +125,26 @@ app.whenReady().then(async () => {
     });
     await response.response.body.cancel();
     assert.deepEqual(requests.map(request => request[1]), ['include', 'omit']);
+    // A login page at /download must fail once, rather than loop or become a file.
+    const previewRequests = [];
+    await assert.rejects(fetchBrowserSource(page.session, origin, origin + '/courses/42/files/9',
+      new AbortController().signal, () => {}, async url => {
+        previewRequests.push(url);
+        return new Response('<html>Sign in</html>', { headers: { 'content-type': 'text/html' } });
+      }), /page instead of a file/);
+    assert.deepEqual(previewRequests, [origin + '/courses/42/files/9', origin + '/courses/42/files/9/download']);
+    // Only same-site HTML previews qualify, never JSON or a CDN's preview page.
+    for (const external of [false, true]) {
+      const rejectedRequests = [];
+      await assert.rejects(fetchBrowserSource(page.session, origin, origin + '/files/9',
+        new AbortController().signal, () => {}, async url => {
+          rejectedRequests.push(url);
+          return external && rejectedRequests.length === 1
+            ? new Response(null, { status: 302, headers: { location: 'https://203.0.113.9/files/9' } })
+            : new Response('{}', { headers: { 'content-type': external ? 'text/html' : 'application/json' } });
+        }), /page instead of a file/);
+      assert.equal(rejectedRequests.length, external ? 2 : 1);
+    }
     const interrupted = assert.rejects(downloadBrowserTerminalSource(access, origin + '/slow.pdf'), /interrupted|changed|abort/i);
     await slowReady;
     await page.loadURL(origin + '/elsewhere');

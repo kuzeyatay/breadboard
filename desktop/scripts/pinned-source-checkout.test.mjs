@@ -114,6 +114,13 @@ test("pinned source check accepts an explicitly receipted vendored snapshot", ()
       pinnedSourceTree(vendoredRoot, "tracked.txt"),
       git(fixtureRoot, "rev-parse", "HEAD:vendored-source/tracked.txt"),
     );
+    // An isolated repair reuses reviewed dependencies through a junction. Git
+    // reports the real root; both proof and tree identity must follow that root.
+    const alias = path.join(fixtureRoot, "dependency-alias");
+    fs.symlinkSync(vendoredRoot, alias, process.platform === "win32" ? "junction" : "dir");
+    assert.equal(assertPinnedCleanCheckout({ label: "Linked vendored fixture", sourceRoot: alias,
+      expectedCommit: upstreamCommit, allowVendoredSnapshot: true }), upstreamCommit);
+    assert.equal(pinnedSourceTree(alias, "tracked.txt"), pinnedSourceTree(vendoredRoot, "tracked.txt"));
     assert.throws(
       () =>
         assertPinnedCleanCheckout({
@@ -125,6 +132,8 @@ test("pinned source check accepts an explicitly receipted vendored snapshot", ()
     );
 
     fs.writeFileSync(path.join(vendoredRoot, "untracked.txt"), "not reviewed\n", "utf8");
+    assert.throws(() => assertPinnedCleanCheckout({ label: "Linked vendored fixture", sourceRoot: alias,
+      expectedCommit: upstreamCommit, allowVendoredSnapshot: true }), /must be tracked and match the outer Git index/u);
     assert.throws(
       () =>
         assertPinnedCleanCheckout({
@@ -189,7 +198,7 @@ test("mem0 source pinning accepts the receipted vendored checkout", () => {
   assert.match(setup, /label:\s*["']mem0["'][\s\S]*?allowVendoredSnapshot:\s*true/u);
   assert.match(prepare, /label:\s*["']Mem0["'][\s\S]*?allowVendoredSnapshot:\s*true/u);
   assert.equal(
-    fs.readFileSync(path.join(repoRoot, "mem0", SOURCE_COMMIT_RECEIPT_NAME), "utf8"),
-    "4debc58a83377b18be81ae1e5969a300736b2fac\n",
+    fs.readFileSync(path.join(repoRoot, "mem0", SOURCE_COMMIT_RECEIPT_NAME), "utf8").trim(),
+    "4debc58a83377b18be81ae1e5969a300736b2fac",
   );
 });

@@ -11,6 +11,7 @@
 // about me" should be answerable by looking, not by trusting this copy.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { RECALL_SETTINGS_CHANGED_EVENT } from "./recall-autostart-lifecycle";
 
 const ACTIVE_POLL_MS = 3_000;
 const INSTALL_POLL_MS = 2_000;
@@ -147,6 +148,9 @@ export default function SettingsRecall() {
           return;
         }
         await refresh();
+        if (patch.captureEnabled !== undefined || patch.autoStartCapture !== undefined) {
+          window.dispatchEvent(new Event(RECALL_SETTINGS_CHANGED_EVENT));
+        }
       } catch {
         setError("Breadboard could not save that.");
       } finally {
@@ -172,6 +176,9 @@ export default function SettingsRecall() {
           return false;
         }
         await refresh();
+        if (url === "/api/recall/install") {
+          window.dispatchEvent(new Event(RECALL_SETTINGS_CHANGED_EVENT));
+        }
         return true;
       } catch {
         setError("Breadboard could not reach the capture engine.");
@@ -228,8 +235,7 @@ export default function SettingsRecall() {
   if (!status.supported) {
     return (
       <p className="rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-4 py-3 text-sm text-[var(--ink-muted)]">
-        Recall has no capture engine for this operating system, so there is nothing to
-        record with here.
+        Screen recording is not supported on this operating system.
       </p>
     );
   }
@@ -281,7 +287,7 @@ export default function SettingsRecall() {
             </h3>
             <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">
               About 130 MB, downloaded once and kept inside Breadboard&rsquo;s own folder.
-              Nothing is recorded until you switch capture on below.
+              Installs automatically when capture and automatic startup are enabled.
             </p>
           </div>
           {status.installStatus ? (
@@ -312,9 +318,8 @@ export default function SettingsRecall() {
           <div>
             <h3 className="text-sm font-medium text-[var(--ink-heading)]">Capture</h3>
             <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">
-              Records this computer&rsquo;s screen and microphone to a local index. Nothing
-              leaves the machine, and stopping capture leaves what was already recorded
-              in place.
+              Capture starts by default when Breadboard opens. Recordings stay on this device;
+              text retrieved in chats is shared with your selected model. Stopping keeps existing recordings.
             </p>
           </div>
           <button
@@ -322,7 +327,7 @@ export default function SettingsRecall() {
             role="switch"
             aria-label="Allow capture"
             aria-checked={settings?.captureEnabled ?? false}
-            disabled={busy !== null || !status.install.installed}
+            disabled={busy !== null}
             onClick={() =>
               void patchSettings({ captureEnabled: !settings?.captureEnabled }, "captureEnabled")
             }
@@ -405,14 +410,12 @@ export default function SettingsRecall() {
       </section>
 
       {/* --- Never record -------------------------------------------------- */}
-      <section className="space-y-3 rounded-2xl border border-[var(--line)] p-4">
+      <section data-enter-submit-scope className="space-y-3 rounded-2xl border border-[var(--line)] p-4">
         <div>
           <h3 className="text-sm font-medium text-[var(--ink-heading)]">Never record</h3>
           <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">
-            One app or window per line. Matched anywhere in the app name or window title;
-            write <code>Slack::#hr</code> to exclude a single channel, or{" "}
-            <code>1Password</code> to exclude an app entirely. Anything listed here is also
-            filtered out of past recordings when the agent reads them back.
+            Enter one app name or window title per line; partial matches work. Use <code>Slack::#hr</code> to exclude a single channel, or{" "}
+            <code>1Password</code> to exclude an entire app. Exclusions also apply when searching past recordings.
           </p>
         </div>
         <textarea
@@ -423,7 +426,7 @@ export default function SettingsRecall() {
           placeholder={"1Password\nSlack::#hr\nBank"}
         />
         <div className="flex items-center gap-2">
-          <button
+          <button data-enter-submit
             type="button"
             className={secondaryButton}
             disabled={busy !== null || exclusionDraft === null}
@@ -454,11 +457,9 @@ export default function SettingsRecall() {
       <section className="space-y-3 rounded-2xl border border-[var(--line)] p-4">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h3 className="text-sm font-medium text-[var(--ink-heading)]">Your agent</h3>
+            <h3 className="text-sm font-medium text-[var(--ink-heading)]">Chat access</h3>
             <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">
-              Lets chats answer questions about your own day &mdash; what you were working
-              on, what someone said in a meeting. Turning this off takes effect on the very
-              next question.
+              Let chats use your recordings to answer questions about your day. Changes apply to your next question.
             </p>
           </div>
           <button
@@ -484,7 +485,7 @@ export default function SettingsRecall() {
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <label className="text-xs text-[var(--ink-muted)]">
-            Starting and stopping capture
+            Start and stop recording
             <select
               className={`${fieldClass} mt-1`}
               value={settings?.agentControl ?? "ask"}
@@ -502,7 +503,7 @@ export default function SettingsRecall() {
             </select>
           </label>
           <label className="text-xs text-[var(--ink-muted)]">
-            Default window searched
+            Default search period
             <select
               className={`${fieldClass} mt-1`}
               value={String(settings?.defaultLookbackHours ?? 24)}
@@ -544,10 +545,10 @@ export default function SettingsRecall() {
       <section className="space-y-3 rounded-2xl border border-[var(--line)] p-4">
         <div>
           <h3 className="text-sm font-medium text-[var(--ink-heading)]">
-            See what your agent would see
+            Preview search results
           </h3>
           <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">
-            Runs exactly the search a chat would run, with the same limits and exclusions.
+            Uses the same search limits and exclusions as your chats.
           </p>
         </div>
         <div className="flex gap-2">

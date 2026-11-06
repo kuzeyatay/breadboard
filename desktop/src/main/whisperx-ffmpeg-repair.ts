@@ -39,19 +39,30 @@ const MANGLED_SUFFIX = /^(.+)-[0-9a-f]{32}$/;
 const PTH_NAME = "zz-torchcodec-ffmpeg.pth";
 const SHIM_DIR = "ffmpeg-shared";
 const AV_LIBS = "av.libs";
-
 /**
  * One line, because site.py executes each `.pth` line separately. It also runs
  * them with split globals/locals, which is why this avoids a comprehension —
  * a comprehension body cannot see names bound earlier on the same line.
+ *
+ * `torch/lib` is registered for a second, unrelated loader: ctranslate2
+ * (faster-whisper's backend, which is how WhisperX actually transcribes)
+ * bundles the cuDNN 9 *dispatcher* `cudnn64_9.dll` but none of the
+ * sub-libraries that dispatcher loads by name, so a CUDA job died with
+ * "Could not locate cudnn_ops64_9.dll" and aborted the process (0xc0000409)
+ * after the media had already been downloaded. The Windows PyTorch CUDA wheel
+ * ships those DLLs — plus the cuBLAS ctranslate2 also links — in `torch/lib`,
+ * so pointing at that directory is the whole fix: nothing extra is installed
+ * and nothing is copied.
  */
 const PTH_LINE =
   "import os, sys; " +
   `_p = os.path.join(sys.prefix, 'Lib', 'site-packages'); ` +
   `_a = os.path.join(_p, '${SHIM_DIR}'); ` +
   `_c = os.path.join(_p, '${AV_LIBS}'); ` +
+  `_t = os.path.join(_p, 'torch', 'lib'); ` +
   "os.path.isdir(_a) and os.add_dll_directory(_a); " +
-  "os.path.isdir(_c) and os.add_dll_directory(_c)\n";
+  "os.path.isdir(_c) and os.add_dll_directory(_c); " +
+  "os.path.isdir(_t) and os.add_dll_directory(_t)\n";
 
 export interface WhisperXFfmpegRepairResult {
   applied: boolean;

@@ -9,11 +9,13 @@ const groups = [
     shortcuts: [
       ["Send or queue a message", ["Enter"]],
       ["New line in a message", ["Shift", "Enter"]],
+      ["Submit a form or save an edit", ["Enter"]],
       ["Copy", ["Mod", "C"]],
       ["Cut", ["Mod", "X"]],
       ["Paste", ["Mod", "V"]],
       ["Select all", ["Mod", "A"]],
       ["Undo", ["Mod", "Z"]],
+      ["Dictate anywhere (Windows desktop; hold both, release to insert)", ["Ctrl", "Shift"]],
     ],
   },
   {
@@ -76,10 +78,11 @@ export default function KeyboardShortcutsPanel() {
         </h2>
         <p className="mt-0.5 text-xs text-gray-500">Everyday keys for chat, tabs, and browsing.</p>
       </header>
-      <p className="mb-4 rounded-xl border border-gray-800 bg-white/[0.03] p-3 text-xs leading-relaxed text-gray-400">
-        <span className="font-medium text-white">Right-click to paste.</span>{" "}
-        In the desktop app, right-click an editable text field to paste from your clipboard, including chat and browser fields.
-      </p>
+      <ul className="mb-4 space-y-2 rounded-xl border border-gray-800 bg-white/[0.03] p-3 text-xs leading-relaxed text-gray-400">
+        <li><span className="font-medium text-white">Right-click to paste</span> in text fields in the desktop app.</li>
+        <li><span className="font-medium text-white">Dictate on Windows:</span> hold Ctrl + Shift, speak when the dots appear, then release both keys to insert. Escape cancels. End with “send message” to press Enter automatically.</li>
+        <li><span className="font-medium text-white">Draft from your screen:</span> hold Ctrl + Shift + Win, describe what you need, then release to insert a draft in the selected field.</li>
+      </ul>
       <label className="relative mb-3 block">
         <span className="sr-only">Search keyboard shortcuts</span>
         <Search size={14} aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />

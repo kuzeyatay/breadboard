@@ -2219,7 +2219,9 @@ export function modelAuthoredSourceArtifactOmissionParseProblems(raw: unknown): 
       const summaryWords = contentWords(artifactSummary);
       const reasonWords = contentWords(reason);
       if (summaryWords.size > 0 && ![...summaryWords].some((word) => reasonWords.has(word))) {
-        problems.push(`${at}.reason must refer to the artifactSummary's specific content`);
+        problems.push(
+          `${at}.reason must refer to the artifactSummary's specific content: reuse at least one of its key terms (${[...summaryWords].slice(0, 6).join(", ")})`,
+        );
       }
     }
     if (disposition === "redundant_with_assigned_artifact") {
@@ -2500,6 +2502,53 @@ export function assignSourceArtifacts(units: LearningUnitContract[]): SourceArti
   }
   return dedupeSourceArtifactAssignments(assignments, units);
 }
+
+/** Words of planned lesson per source artifact the lesson can actually teach. */
+export const PLANNED_WORDS_PER_TEACHABLE_ARTIFACT = 100;
+const MIN_ARTIFACTS_PER_UNIT_CAP = 12;
+const MAX_PLANNED_WORDS_FOR_ARTIFACT_CAP = 4000;
+
+/**
+ * A lesson must be able to teach what it is assigned. Live 2026-09-23
+ * (telecom-1 M1, gpt-6-luna): one unit per syllabus unit gave single lessons
+ * 137, 80, and 75 figures/formulas/tables at ~2,500 words, i.e. ~20 words per
+ * artifact, and every depth gate passed. This measures load, not length, so it
+ * never asks for a split merely to fit a word count. The unit is named by its
+ * title (not its id) so only the full-contract repair, which can split units,
+ * handles it.
+ */
+/** How many teachable artifacts a unit carries, and how many it can teach. */
+export function learningUnitArtifactLoad(unit: LearningUnitContract): {
+  artifacts: number;
+  cap: number;
+  plannedUpper: number;
+} {
+  const artifacts = unit.sourceFigures.filter((figure) => figure.placement !== "not_used_with_reason").length + unit.sourceFormulas.length + unit.sourceTables.length;
+  const plannedUpper = Array.isArray(unit.expectedWordRange) ? Number(unit.expectedWordRange[1]) : Number.NaN;
+  const words = Math.min(
+    Number.isFinite(plannedUpper) && plannedUpper > 0 ? plannedUpper : LESSON_MIN_WORDS_FOR_LOAD,
+    MAX_PLANNED_WORDS_FOR_ARTIFACT_CAP,
+  );
+  return { artifacts, cap: Math.max(MIN_ARTIFACTS_PER_UNIT_CAP, Math.floor(words / PLANNED_WORDS_PER_TEACHABLE_ARTIFACT)), plannedUpper };
+}
+
+export function learningUnitLoadProblems(
+  units: readonly LearningUnitContract[],
+  exemptUnitIds: ReadonlySet<string> = new Set(),
+): string[] {
+  const problems: string[] = [];
+  for (const unit of units) {
+    if (exemptUnitIds.has(unit.id)) continue;
+    const { artifacts, cap, plannedUpper } = learningUnitArtifactLoad(unit);
+    if (artifacts > cap) {
+      problems.push(
+        `the learning unit titled "${unit.title}" carries ${artifacts} source figures, formulas, and tables for a lesson planned at up to ${Number.isFinite(plannedUpper) ? plannedUpper : "an unstated number of"} words; a lesson can teach at most about one source artifact per ${PLANNED_WORDS_PER_TEACHABLE_ARTIFACT} planned words (${cap} here). Split it at coherent conceptual boundaries into several focused learning units that each own the artifacts they actually teach, or omit artifacts that add no in-scope teaching value with a model-authored reason`,
+      );
+    }
+  }
+  return problems;
+}
+const LESSON_MIN_WORDS_FOR_LOAD = 1400;
 
 /** Reject ambiguous artifact ownership; active Learn never scores competing owners. */
 export function sourceArtifactOwnershipProblems(units: readonly LearningUnitContract[]): string[] {
@@ -3045,6 +3094,8 @@ export function figurePlacementProblems(
   options: {
     maxDistanceParagraphs?: number;
     maxFiguresPerPage?: number;
+    /** Figures embedded in required verbatim source questions: never extras. */
+    sourceQuestionFigureUrls?: ReadonlyArray<string>;
     requiredInterpretations?: ReadonlyArray<{
       sourceVisualId: string;
       url: string;
@@ -3071,8 +3122,25 @@ export function figurePlacementProblems(
   });
 
   const sourceFigureBlockIndexes = imageBlockIndexes.filter((index) => !sourceImageBlockLooksLikeTable(blocks[index] ?? ""));
-  if (sourceFigureBlockIndexes.length > maxFigures) {
-    problems.push(`page embeds ${sourceFigureBlockIndexes.length} source figures (> ${maxFigures}) without justification`);
+  // Name the embeds to remove. A bare count left six repairs guessing which
+  // of 18 figures was the extra one (telecom-1 2.2 and 2.3, 2026-10-03).
+  const figureUrls = sourceFigureBlockIndexes.map((index) => (blocks[index].match(/!\[[^\]]*\]\(([^)]*)\)/) ?? [])[1] ?? "");
+  const repeated = [...new Set(figureUrls.filter((url, index) => url && figureUrls.indexOf(url) !== index))];
+  for (const url of repeated) {
+    problems.push(`source figure ${url} is embedded more than once; keep only its first, interpreted embed`);
+  }
+  // A required question's prompt is copied verbatim, images included, so its
+  // figures cannot be removed: em1 lesson 8.1 (2026-10-14) alternated between
+  // "remove these 4 figures" and "missing source question" for 8 repairs.
+  const questionFigures = new Set(options.sourceQuestionFigureUrls ?? []);
+  const distinctUrls = [...new Set(figureUrls.filter((url) => url && !questionFigures.has(url)))];
+  if (distinctUrls.length > maxFigures) {
+    const required = new Set((options.requiredInterpretations ?? []).map((requirement) => requirement.url));
+    const extras = distinctUrls.filter((url) => !required.has(url));
+    problems.push(
+      `page embeds ${distinctUrls.length} source figures (> ${maxFigures}) without justification` +
+        (extras.length ? `; remove these figures the lesson plan did not assign: ${extras.join(", ")}` : ""),
+    );
   }
 
   const isProse = (block: string): boolean => {
@@ -3122,12 +3190,29 @@ export function figurePlacementProblems(
     "about", "after", "before", "describe", "explain", "figure", "graph", "image",
     "inside", "interpret", "notice", "result", "shows", "table", "that", "their", "this",
     "what", "where", "which", "with",
+    // Words of an instruction to the writer, not of the figure's content:
+    // "Identify its figure dependency without teaching analog FM as binary
+    // FSK" demanded prose say "identify" and "teaching" (2.5, 2026-10-05).
+    "identify", "dependency", "without", "teaching", "teach", "learner", "reader",
+    "lesson", "page", "show", "showing", "connect", "relate", "discuss", "using",
+    "confusing", "distinguish", "locate", "read", "readers", "learners",
+    // "Apply the previously introduced delayed-reference mechanism" (3.4).
+    "apply", "applies", "previously", "introduced", "earlier", "later", "mechanism",
+    // Generic connective words ("attribute differences between plotted cases
+    // only to conditions identified", 4.2).
+    "change", "changes", "attribute", "difference", "differences", "between",
+    "case", "cases", "only", "condition", "conditions", "identified", "identify",
+    "plotted", "graph", "shown", "using", "each", "both", "same", "other", "value", "values",
   ]);
+  // Acronyms carry the content ("Read the BER change with SNR": BER and SNR,
+  // not "change" or "between"; telecom-1 lesson 4.2, 2026-10-06), so keep
+  // 2-5 letter all-caps words even though ordinary words need four letters.
   const interpretationKeywords = (value: string): string[] => [
-    ...new Set(
-      (value.toLowerCase().match(/[a-z0-9]+/g) ?? [])
+    ...new Set([
+      ...(value.match(/\b[A-Z][A-Z0-9]{1,4}\b/g) ?? []).map((word) => word.toLowerCase()),
+      ...(value.toLowerCase().match(/[a-z0-9]+/g) ?? [])
         .filter((word) => word.length >= 4 && !interpretationStopWords.has(word)),
-    ),
+    ]),
   ];
   const interpretationStem = (value: string): string => {
     let stem = value;
@@ -3163,14 +3248,21 @@ export function figurePlacementProblems(
     const prose = nearbyProse.join(" ").toLowerCase();
     const proseWords = new Set(prose.match(/[a-z0-9]+/g) ?? []);
     const proseStems = new Set([...proseWords].map(interpretationStem));
+    // A word family shares its first six letters (spectral/spectrum). Live
+    // 2026-10-01: prose explaining DC, mid-bit changes and spectral spread
+    // beside S13.P24.F1 matched none of "transitions, behavior, spectral,
+    // occupancy" and three repairs never learned which words were missing.
+    const proseRoots = new Set([...proseWords].filter((word) => word.length >= 6).map((word) => word.slice(0, 6)));
     const matchedKeywords = keywords.filter((keyword) => {
       if (proseWords.has(keyword)) return true;
-      return proseStems.has(interpretationStem(keyword));
+      if (proseStems.has(interpretationStem(keyword))) return true;
+      return keyword.length >= 6 && proseRoots.has(keyword.slice(0, 6));
     });
     const requiredMatches = keywords.length >= 3 ? 2 : keywords.length;
     if (requiredMatches > 0 && matchedKeywords.length < requiredMatches) {
+      const missing = keywords.filter((keyword) => !matchedKeywords.includes(keyword));
       problems.push(
-        `source figure ${requirement.sourceVisualId} does not address its interpretation goal near the embed (${requirement.interpretationGoal})`,
+        `source figure ${requirement.sourceVisualId} does not address its interpretation goal near the embed (${requirement.interpretationGoal}); in the paragraphs beside this figure, explicitly connect it to at least ${requiredMatches - matchedKeywords.length} more of these goal terms: ${missing.join(", ")}`,
       );
     }
   }

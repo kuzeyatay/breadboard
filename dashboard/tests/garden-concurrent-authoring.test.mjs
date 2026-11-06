@@ -54,7 +54,7 @@ test('real authoring helpers and document routes save a copy while Learn runs an
       builder.onResolve({ filter: /.*/ }, args => {
         const key = stubs[args.path] !== undefined ? args.path : args.path.replace(/^.*\//, '').replace(/\.ts$/, '');
         if (stubs[key] !== undefined) return { path: key, namespace: 'fixture' };
-        if (args.path.startsWith('@/lib/')) return { path: path.join(lib, args.path.slice(6) + '.ts') };
+        if (args.path.startsWith('@/lib/')) return { path: path.join(lib, args.path.slice(6).replace(/\.ts$/, '') + '.ts') };
       });
       builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: stubs[args.path], loader: 'ts', resolveDir: lib }));
     } }],
@@ -75,7 +75,7 @@ test('real authoring helpers and document routes save a copy while Learn runs an
   await app.renameGardenFolder({ ...input, folder: 'learning-copy', name: 'My Revision' });
   await app.createGardenFolder({ ...input, folder: 'my-notes' });
   const note = await app.createGardenDocument({ ...input, folder: 'my-notes', title: 'Question', content: 'My question' });
-  await app.reviseGardenDocument({ ...input, pageSlug: note.slug, patchOrReplacement: 'My revised question' });
+  await app.reviseGardenDocument({ ...input, pageSlug: note.slug, originalText: 'My question', patchOrReplacement: 'My revised question' });
   await app.moveGardenDocument({ ...input, slug: note.slug, toFolder: 'my-revision' });
   const params = { params: Promise.resolve({ slug: 'lesson-copy' }) };
   const request = (method, body) => new Request('http://localhost/api/documents/lesson-copy?clusterSlug=physics', { method, ...(body ? { body: JSON.stringify(body) } : {}) });

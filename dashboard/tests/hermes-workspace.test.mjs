@@ -8,6 +8,7 @@ import {
   workspaceKeyFor,
   resolveWorkspace,
   directoryForWorkspaceKey,
+  conversationWorkspaceIdentity,
 } from "../src/lib/hermes/workspace.ts";
 
 const config = {
@@ -19,6 +20,29 @@ const config = {
   agents: { terminal: "t", garden: "g", quartz: "q", capabilityScout: "s" },
   requestTimeoutMs: 1000,
 };
+
+test("conversation files survive model-runtime recreation while inline workspaces stay isolated", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-conversation-files-"));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const local = {...config, root};
+  const request = {surface: "garden_chat", ...conversationWorkspaceIdentity("conv_oscillator")};
+  const original = resolveWorkspace(local, request, {create: true});
+  fs.mkdirSync(path.join(original.directory, ".breadboard", "multisim"), {recursive: true});
+  const receipt = path.join(".breadboard", "multisim", "accepted.json");
+  fs.writeFileSync(path.join(original.directory, receipt), '{"frequency":10012.9}');
+  const restored = resolveWorkspace(local, {
+    surface: "dashboard_terminal", ...conversationWorkspaceIdentity("conv_oscillator"),
+  }, {create: true});
+  assert.equal(restored.workspaceKey, original.workspaceKey);
+  assert.equal(fs.readFileSync(path.join(restored.directory, receipt), "utf8"), '{"frequency":10012.9}');
+  for (const identity of [conversationWorkspaceIdentity("conv_other"),
+                          conversationWorkspaceIdentity("conv_oscillator", "highlight-a")]) {
+    const isolated = resolveWorkspace(local, {surface: "garden_chat", ...identity}, {create: true});
+    assert.notEqual(isolated.directory, restored.directory);
+    assert.equal(fs.existsSync(path.join(isolated.directory, receipt)), false);
+    assert.equal(resolveWorkspace(local, {surface: "garden_chat", ...identity}).workspaceKey, isolated.workspaceKey);
+  }
+});
 
 test("sanitizeSegment neutralizes traversal and separators", () => {
   assert.equal(sanitizeSegment("../../etc/passwd"), "etc-passwd");

@@ -3,6 +3,8 @@ import fs from "node:fs";
 import test from "node:test";
 
 import { directSlashCommandItems } from "../src/lib/hermes/direct-slash-commands.ts";
+import { UNIFIED_WORKFLOWS } from "../src/lib/workflows/unified-catalog.ts";
+import { RUNTIME_AGENT_PROFILES } from "../src/lib/hermes/capability-combinations.ts";
 
 const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
@@ -49,7 +51,7 @@ test("direct slash commands exclude setup entries and include usable agents", ()
   });
 
   assert.deepEqual(
-    items.map((item) => item.token),
+    items.filter(item => !item.token.startsWith("workflows:")).map((item) => item.token),
     ["ready", "agents:deep-research", "agents:agency-agents:researcher", "brief", "drive"],
   );
   assert.ok(items.every((item) => item.enabled !== false && item.healthy !== false));
@@ -79,7 +81,7 @@ test("matching commands are ordered skills, agents, prompts, then workflows", ()
   });
 
   assert.deepEqual(
-    items.map((item) => item.token),
+    items.filter(item => !item.token.startsWith("workflows:")).map((item) => item.token),
     [
       "review-notes",
       "agent:aris",
@@ -103,7 +105,20 @@ test("slash queries filter commands without exposing the full manager", () => {
   // The token being replaced is the one under the caret, which is not the whole
   // box once the sentence has a body after the capability.
   assert.ok(
-    composer.includes("slashQueryReplacementRange(value, node?.selectionStart)"),
+    composer.includes("slashQueryReplacementRange(value, draftCaret)"),
   );
   assert.match(composer, /slashCommandMenuRef\.current\?\.handleKeyDown\(event\)/);
+});
+
+test("all eight workflows and every supported specialist remain directly selectable", () => {
+  for (const surface of ["dashboard_terminal", "garden_chat"]) {
+    const items = directSlashCommandItems({ surface, groups: null,
+      availableRuntimeAgentIds: RUNTIME_AGENT_PROFILES.map(agent => agent.id) });
+    assert.deepEqual(items.filter(item => item.token.startsWith("workflows:")).map(item => `/${item.token}`),
+      UNIFIED_WORKFLOWS.map(workflow => workflow.command));
+    for (const agent of RUNTIME_AGENT_PROFILES.filter(agent => agent.surfaces.includes(surface))) {
+      assert.ok(items.some(item => item.token === agent.token), `${surface}: ${agent.name}`);
+    }
+  }
+  assert.equal(directSlashCommandItems({ surface: "quartz_ai", groups: null }).some(item => item.token.startsWith("workflows:")), false);
 });

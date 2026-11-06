@@ -91,11 +91,17 @@ test("a valid GLB imports as a previewable 3D model and impostors are rejected",
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-formsmith-glb-"));
   try {
     const valid = path.join(root, "shape.glb");
-    const bytes = Buffer.alloc(12);
-    bytes.write("glTF", 0, "ascii");
-    bytes.writeUInt32LE(2, 4);
-    bytes.writeUInt32LE(12, 8);
-    fs.writeFileSync(valid, bytes);
+    // A header alone is a truncated container. Include the required padded
+    // JSON chunk so the import check exercises an actual glTF 2.0 document.
+    const json = Buffer.from(JSON.stringify({ asset: { version: "2.0" }, scene: 0, scenes: [{ nodes: [] }] }));
+    const chunk = Buffer.concat([json, Buffer.alloc((4 - json.length % 4) % 4, 0x20)]);
+    const header = Buffer.alloc(20);
+    header.write("glTF", 0, "ascii");
+    header.writeUInt32LE(2, 4);
+    header.writeUInt32LE(header.length + chunk.length, 8);
+    header.writeUInt32LE(chunk.length, 12);
+    header.writeUInt32LE(0x4e4f534a, 16);
+    fs.writeFileSync(valid, Buffer.concat([header, chunk]));
     assert.deepEqual(artifacts.inspectArtifactImport(valid, "model"), {
       rendererId: "model-file",
       mimeType: "model/gltf-binary",
@@ -106,6 +112,9 @@ test("a valid GLB imports as a previewable 3D model and impostors are rejected",
     const fake = path.join(root, "fake.glb");
     fs.writeFileSync(fake, Buffer.from("not a model"));
     assert.throws(() => artifacts.inspectArtifactImport(fake, "model"), /does not match/i);
+    const truncated = path.join(root, "truncated.glb");
+    fs.writeFileSync(truncated, header.subarray(0, 12));
+    assert.throws(() => artifacts.inspectArtifactImport(truncated, "model"), /does not match/i);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

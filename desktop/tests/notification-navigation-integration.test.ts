@@ -30,11 +30,11 @@ test("notification Open reuses live chats and opens missing chats in the foregro
         }
         createRoot(document.getElementById('root')).render(<App/>);
       ` },
-      bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
+      bundle: true, write: false, outfile: path.join(dir, "app.js"), platform: "browser", format: "iife", jsx: "automatic",
       alias: { "next/navigation": routerStub, "@": path.join(dashboard, "src") },
       define: { "process.env.NODE_ENV": '"production"' },
     });
-    fs.writeFileSync(path.join(dir, "app.js"), bundle.outputFiles[0].text);
+    fs.writeFileSync(path.join(dir, "app.js"), bundle.outputFiles.find((file: { path: string }) => file.path.endsWith(".js")).text);
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
     const run = spawnSync(path.join(desktop, "node_modules/electron/dist/electron.exe"), [

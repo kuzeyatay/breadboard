@@ -130,7 +130,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:deep-research",
     summary: "Multi-round web research that returns a sourced report.",
     appliesWhen:
-      "Applies to every research run you start from chat. Breadth times depth is roughly how many model calls with web search a run costs, so it is also how long you wait.",
+      "More search directions and follow-up rounds take longer and use more AI requests.",
     fields: [
       {
         key: "breadth",
@@ -172,7 +172,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:get-doc",
     summary: "Finds academic papers and saves the free full texts to your artifacts.",
     appliesWhen:
-      "Applies to every document search you start from chat. Downloads are always limited to full texts the publisher or a repository offers for free.",
+      "Only free full-text papers can be downloaded.",
     fields: [
       {
         key: "limit",
@@ -228,14 +228,14 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:meeting-notes",
     summary: "Transcribes a meeting recording and writes structured notes from it.",
     appliesWhen:
-      "Applies to every run, whether you attach a recording, record one, or paste a transcript. Transcribing is nearly all of the wait on a long meeting.",
+      "Applies to uploaded recordings, new recordings, and pasted transcripts. Longer recordings take more time.",
     fields: [
       {
         key: "speakers",
         kind: "toggle",
         label: "Separate speakers",
         help:
-          "Label each turn with who was talking, so an action item keeps its owner. Needs Scriberr running; with only the local speech model the notes have no attributions either way.",
+          "Identify speakers in the transcript and notes. Requires Scriberr; the basic local transcription option does not identify speakers.",
         flag: "--no-speakers",
         default: true,
       },
@@ -244,7 +244,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "text",
         label: "Spoken language",
         help:
-          "A two-letter code (en, nl, de) to stop the transcriber guessing. Leave empty to let it detect the language per recording.",
+          "Enter a language code such as en, nl, or de, or leave blank to detect it.",
         flag: "--lang nl",
         placeholder: "auto-detect",
         maxLength: 5,
@@ -255,7 +255,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "toggle",
         label: "Transcript only",
         help:
-          "Stop after the transcript instead of writing notes from it. Much cheaper — it skips a model call per five thousand characters — and useful when you only want the record of what was said.",
+          "Create only a transcript. Skips notes and uses fewer AI requests.",
         flag: "--transcript-only",
         default: false,
       },
@@ -267,7 +267,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:deep-tutor",
     summary: "Teaches from your own material — explaining, solving, quizzing, and remembering what you have covered.",
     appliesWhen:
-      "Applies to every tutoring turn you start from chat. What the tutor may read is decided by where you ask, not here: in a Garden it reads that Garden, in the Terminal it reads your workspace.",
+      "In a Garden, the tutor reads that Garden. In the Terminal, it reads your workspace.",
     fields: [
       {
         key: "capability",
@@ -337,7 +337,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:hardware-blueprint",
     summary: "Turns an electronics idea into a checked, buildable circuit.",
     appliesWhen:
-      "These are preferences, not orders. A brief that names its own board or build style is followed; these fill in what the brief leaves open.",
+      "Used unless your request specifies a board or build style.",
     fields: [
       {
         key: "board",
@@ -471,7 +471,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:vimax",
     summary: "Writes, storyboards, and produces a short film from an idea.",
     appliesWhen:
-      "Applies to every production started from chat. Drawing the storyboard is the slow, expensive part of a run.",
+      "Storyboard images add time and cost to each production.",
     fields: [
       {
         key: "mode",
@@ -490,7 +490,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "select",
         label: "Frame generator",
         help:
-          "Which model draws the storyboard. The two run on different subscriptions, so a quota that has run out on one does not stop the other.",
+          "Choose the image model. Each uses a separate subscription quota.",
         flag: "--gemini / --chatgpt",
         options: [
           { value: "auto", label: "Auto — whichever can draw right now" },
@@ -563,7 +563,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     summary:
       "Turns a topic into a narrated paper-collage explainer and renders it locally as an MP4.",
     appliesWhen:
-      "Applies to every production started from chat. Drawing the posters with ComfyUI and animating them frame by frame are the two slow parts of a run.",
+      "Creating poster images and animations takes most of the processing time.",
     fields: [
       {
         key: "duration",
@@ -593,7 +593,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "select",
         label: "Motion",
         help:
-          "Element-level motion cuts each poster into pieces and flies them back into place. Ken Burns is one slow push over the whole poster, and is much faster to render.",
+          "Animate individual pieces, or choose Ken Burns for a slower camera movement that renders faster.",
         flag: "--motion kenburns",
         options: [
           { value: "local", label: "Element-level - the pieces assemble" },
@@ -608,7 +608,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "text",
         label: "House look",
         help:
-          "A theme preset from the skill's library (american-retro, swiss-modern, punk-zine, chinese-ink...) or a look in words. Empty lets the art director match the topic, which is usually better.",
+          "Enter a theme such as american-retro or describe a look. Leave blank to match the topic.",
         flag: '--style "punk-zine"',
         placeholder: "american-retro, punk-zine, newsprint-editorial...",
         maxLength: 120,
@@ -619,7 +619,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "text",
         label: "ComfyUI checkpoint",
         help:
-          "Which model file draws the posters. Empty uses the first checkpoint ComfyUI reports. Ignored when ComfyUI is not running.",
+          "Choose a ComfyUI model file, or leave blank to use the first available one. Requires ComfyUI.",
         placeholder: "sd_xl_base_1.0.safetensors",
         maxLength: 160,
         default: "",
@@ -641,7 +641,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "toggle",
         label: "Draw the posters",
         help:
-          "Off renders the deterministic paper title cards instead of asking ComfyUI, which is much faster and needs no model file.",
+          "Turn off to use simple title cards. Faster, with no image model required.",
         flag: "--no-images",
         default: true,
       },
@@ -650,7 +650,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "toggle",
         label: "Score it",
         help:
-          "Lay a track from the local music folder under the narration. Nothing is generated and nothing is downloaded; with no local track the film has narration only.",
+          "Add music from your local folder. Without a local track, the video has narration only.",
         flag: "--no-music",
         default: true,
       },
@@ -662,7 +662,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:shorts",
     summary: "Cuts a long video into short vertical clips of its best moments.",
     appliesWhen:
-      "Fills in the form when you select the agent, and decides how the audio is transcribed. Transcribing is most of the wait on a long video.",
+      "Defaults for the video picker and transcription. Longer videos take more time.",
     fields: [
       {
         key: "clips",
@@ -689,7 +689,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "resolution",
         kind: "select",
         label: "Download quality",
-        help: "How large a copy of the source video is fetched. Higher costs download time and re-encoding time.",
+        help: "Choose the download quality. Higher quality takes longer to download and process.",
         options: [
           { value: "360", label: "360p" },
           { value: "480", label: "480p" },
@@ -703,7 +703,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "select",
         label: "Transcription model",
         help:
-          "Which Whisper size listens to the audio. Larger is more accurate and much slower on a CPU; each one downloads once on first use.",
+          "Larger transcription models may be more accurate but are slower on a CPU. Each downloads on first use.",
         options: [
           { value: "tiny", label: "Tiny — fastest" },
           { value: "base", label: "Base — recommended" },
@@ -717,7 +717,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "text",
         label: "Spoken language",
         help:
-          "A two-letter code (en, nl, de) to stop Whisper guessing. Leave empty to let it detect the language per video.",
+          "Enter a language code such as en, nl, or de, or leave blank to detect it.",
         placeholder: "auto-detect",
         maxLength: 2,
         default: "",
@@ -730,7 +730,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:money-printer",
     summary: "Turns a topic into a finished short video — script, footage, voiceover and subtitles.",
     appliesWhen:
-      "Applies to every video started from chat. Downloading footage and re-encoding it is most of the wait, so clip length and the number of cuts are what change how long a run takes.",
+      "Longer videos and more cuts take more time to produce.",
     fields: [
       {
         key: "aspect",
@@ -750,7 +750,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "select",
         label: "Footage library",
         help:
-          "Where the clips come from. Each hosted library needs its own key, which you add in this agent's setup above; local cuts from files you have put in the clone's storage folder.",
+          "Online footage libraries need an API key added above. Local footage uses videos in the agent’s storage folder.",
         flag: "--pixabay",
         options: [
           { value: "pexels", label: "Pexels" },
@@ -765,7 +765,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "select",
         label: "Narrator",
         help:
-          "Who reads the script. These are Edge voices, so they cost nothing and need no account. Any other voice the clone knows can be named with the flag.",
+          "Choose a narrator. These Edge voices are free and need no account.",
         flag: "--voice en-GB-RyanNeural-Male",
         options: MONEY_PRINTER_VOICE_OPTIONS,
         default: "en-US-JennyNeural-Female",
@@ -775,7 +775,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "text",
         label: "Script language",
         help:
-          "A code like en, nl or de to pin the language the narration is written in. Leave empty to follow the language of what you asked for.",
+          "Enter a language code such as en, nl, or de, or leave blank to follow your request.",
         flag: "--language nl",
         placeholder: "follow the subject",
         maxLength: 12,
@@ -795,7 +795,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "clipSeconds",
         kind: "number",
         label: "Seconds per clip",
-        help: "How long one piece of footage is held before cutting to the next. Shorter cuts feel faster and need more clips.",
+        help: "Time before switching clips. Shorter cuts need more footage.",
         flag: "--clip 4",
         min: 1,
         max: 30,
@@ -825,7 +825,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "music",
         kind: "toggle",
         label: "Background music",
-        help: "Plays one of the clone's bundled tracks under the voiceover.",
+        help: "Plays an included music track under the narration.",
         flag: "--no-music",
         default: true,
       },
@@ -834,7 +834,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "number",
         label: "Cuts per run",
         help:
-          "How many videos to build from the same script, so you can pick one. Each extra cut re-encodes the whole video again.",
+          "Create multiple versions of the same script. Each extra version takes more processing time.",
         flag: "--count 3",
         min: 1,
         max: 5,
@@ -848,14 +848,14 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:openwork",
     summary: "Works inside your OpenWork workspace — its skills, connections and files.",
     appliesWhen:
-      "Applies to every run in the workspace. The workspace itself is durable: what a run leaves behind is there for the next one, whichever of these you change.",
+      "Files stay in the workspace between tasks.",
     fields: [
       {
         key: "deliverFiles",
         kind: "toggle",
         label: "Ask for files, not just an answer",
         help:
-          "Tells a run to write documents, spreadsheets and reports into the workspace outbox so they come back attached to the answer. Off leaves the answer as prose unless the task asks for a file.",
+          "Attach generated files to the reply. When off, replies use text unless you ask for a file.",
         default: true,
       },
       {
@@ -874,14 +874,14 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:openscience",
     summary: "Runs the research loop — literature, code, experiments, write-up — in its own workspace.",
     appliesWhen:
-      "Applies to every run. The workspace is durable: what one run leaves behind is there for the next, whichever of these you change.",
+      "Files stay in the workspace between tasks.",
     fields: [
       {
         key: "harness",
         kind: "select",
         label: "How it works",
         help:
-          "Research does the work: it writes code, runs experiments and reports what came out. Plan investigates and tells you what it would do without changing anything.",
+          "Research writes code, runs experiments, and reports results. Plan investigates without making changes.",
         options: [
           { value: "research", label: "Research" },
           { value: "plan", label: "Plan only (read-only)" },
@@ -893,7 +893,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "toggle",
         label: "Keep what it makes",
         help:
-          "Attaches the scripts, data and figures a run produces to the answer. Off still leaves them in the workspace; they just are not listed on the turn.",
+          "Attach scripts, data, and figures to the reply. When off, files still stay in the workspace.",
         default: true,
       },
     ],
@@ -904,14 +904,14 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:inbox-zero",
     summary: "Reads, sorts, drafts and replies to the mail in your connected mailbox.",
     appliesWhen:
-      "Applies to every run. Inbox Zero asks before it sends anything either way — these decide what a run is allowed to reach for in the first place.",
+      "Choose what the agent can do with your mailbox. Sending always requires confirmation.",
     fields: [
       {
         key: "allowActions",
         kind: "toggle",
         label: "Let it change the mailbox",
         help:
-          "On, a run can archive, label, mark read, unsubscribe and send once you confirm. Off restricts it to reading and drafting, so it can answer questions and write replies but never act on them.",
+          "Allow archiving, labeling, marking as read, unsubscribing, and sending after confirmation. When off, only reading and drafting are allowed.",
         default: true,
       },
       {
@@ -932,7 +932,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:socials-manager",
     summary: "Drafts and schedules social posts across your connected networks.",
     appliesWhen:
-      "Applies to every drafting run. Nothing is published without you — posts land on the calendar as drafts either way.",
+      "Posts are saved as drafts for you to review before publishing.",
     fields: [
       {
         key: "networks",
@@ -959,7 +959,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:ruflo",
     summary: "Runs a hive-mind swarm of coding workers over a garden's repository.",
     appliesWhen:
-      "Applies to every swarm spawned from chat. Bigger swarms are not automatically better — they cost proportionally more and coordinate worse.",
+      "Larger teams use more AI requests and may take longer to coordinate.",
     fields: [
       {
         key: "workers",
@@ -1017,13 +1017,13 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:matraix",
     summary: "Puts a question to a sampled population of persona agents and reports what they said.",
     appliesWhen:
-      "Applies to every study. The questionnaire is always written from the message; these decide how many people answer it and how they are drawn.",
+      "Choose how many simulated people respond and how they are selected.",
     fields: [
       {
         key: "respondents",
         kind: "number",
         label: "Respondents",
-        help: "How many personas answer. Each one is a separate model call, so this is what a study costs.",
+        help: "Each simulated person adds one AI request.",
         flag: "--personas",
         min: 1,
         max: 60,
@@ -1033,7 +1033,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "seed",
         kind: "number",
         label: "Sampling seed",
-        help: "The same seed and the same filters draw the same people, which is what makes two studies comparable.",
+        help: "Use the same seed and filters to select the same simulated people across studies.",
         flag: "--seed",
         min: 0,
         max: 100000,
@@ -1068,7 +1068,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "sources",
         kind: "multiselect",
         label: "Persona sources",
-        help: "Which provenance the personas are drawn from. Leave all unticked to draw from every source.",
+        help: "Choose where the simulated profiles come from. Leave all unchecked to use every source.",
         flag: "--source",
         options: [
           { value: "wiki", label: "Wikipedia", help: "Grounded in public biographical records." },
@@ -1089,13 +1089,13 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:bolt-slides",
     summary: "Builds a presentation as a running web app — every slide a live, responsive page.",
     appliesWhen:
-      "Applies to every deck. What the deck is about always comes from the message; these decide how long it runs and what it looks like when the brief does not say.",
+      "Default length and style, unless your request specifies them.",
     fields: [
       {
         key: "slides",
         kind: "number",
         label: "Slides to aim for",
-        help: "How long the deck runs. The plan lands where the material ends, so treat this as a target rather than a count.",
+        help: "Target presentation length. The final length depends on the material.",
         flag: "--slides",
         min: 5,
         max: 24,
@@ -1105,7 +1105,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "theme",
         kind: "select",
         label: "Theme family",
-        help: "The look the deck is dressed in. On automatic, the plan chooses from the topic and the audience — which is usually right, and always right when a brand is named.",
+        help: "Choose a style, or use Automatic to match the topic, audience, and any brand you name.",
         flag: "--theme",
         options: [
           { value: "auto", label: "Choose per deck", help: "The plan picks the family the topic calls for." },
@@ -1129,13 +1129,13 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:classroom",
     summary: "Teaches a topic or your documents as an interactive classroom — slides, quizzes, simulations.",
     appliesWhen:
-      "Applies to every lesson. What to teach always comes from the message and its attachments; these decide what the classroom is made of when the brief does not say.",
+      "Choose which features to include in lessons. Your request can override these defaults.",
     fields: [
       {
         key: "tts",
         kind: "toggle",
         label: "Narrate the slides",
-        help: "Record the teacher's lines with text-to-speech. Needs a TTS provider OpenMAIC can reach; without one the lesson plays silently.",
+        help: "Add spoken narration. Requires a speech provider connected to OpenMAIC.",
         flag: "--tts",
         default: false,
       },
@@ -1143,7 +1143,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "images",
         kind: "toggle",
         label: "Illustrate the slides",
-        help: "Generate an image where the outline calls for one. Needs an image provider OpenMAIC can reach.",
+        help: "Generate lesson images. Requires an image provider connected to OpenMAIC.",
         flag: "--images",
         default: false,
       },
@@ -1151,7 +1151,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "webSearch",
         kind: "toggle",
         label: "Ground in a web search",
-        help: "Search the web before writing the outline, so a current topic is taught from current sources. Needs a search provider OpenMAIC can reach.",
+        help: "Search for current sources before planning the lesson. Requires a search provider connected to OpenMAIC.",
         flag: "--search",
         default: false,
       },
@@ -1159,11 +1159,11 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "agentMode",
         kind: "select",
         label: "Generation mode",
-        help: "How OpenMAIC writes the scenes. The pipeline is the app's default; agent mode hands each scene to its agent runtime, which is slower and more elaborate.",
+        help: "Use the standard lesson builder, or agent mode for more detailed scenes that take longer to create.",
         flag: "--mode",
         options: [
           { value: "default", label: "Pipeline", help: "Outline first, then each scene in turn." },
-          { value: "generate", label: "Agent mode", help: "OpenMAIC's agent runtime writes the scenes." },
+          { value: "generate", label: "Agent mode", help: "Creates scenes with an AI agent." },
         ],
         default: "default",
       },
@@ -1175,7 +1175,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:agent-reach",
     summary: "Reads the open internet — threads, posts, videos, repositories.",
     appliesWhen:
-      "Applies to every reading run. A step is one command or one model turn, so the limit is how far a run may dig before it has to answer.",
+      "Limit how many steps the agent can take before answering. Each command or AI response counts as a step.",
     fields: [
       {
         key: "maxSteps",
@@ -1246,7 +1246,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     // request form asks for the symbol, the date and the run's shape; every
     // other decision is made here and used unchanged.
     appliesWhen:
-      "Applies to every analysis. The form you fill in before a run starts from these, and everything the form does not ask about is taken from here.",
+      "Defaults for new analyses. You can change them in the request form.",
     fields: [
       {
         key: "analysts",
@@ -1287,7 +1287,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "assetType",
         kind: "select",
         label: "Asset type",
-        help: "Which pipeline a run uses. Crypto reads different sentiment and market sources.",
+        help: "Choose the market to analyze. Crypto uses different news and data sources.",
         options: [
           { value: "stock", label: "Stock" },
           { value: "crypto", label: "Crypto" },
@@ -1339,7 +1339,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "marketVendor",
         kind: "select",
         label: "Price and fundamentals data",
-        help: "Where prices, indicators and financial statements come from. The chosen chain is used exactly — nothing falls back to a vendor you did not pick.",
+        help: "Choose the sources for prices, indicators, and financial statements. Only selected sources are used.",
         options: [
           { value: "yfinance", label: "Yahoo Finance", help: "No account needed." },
           { value: "alpha_vantage", label: "Alpha Vantage", help: "Needs a free API key." },
@@ -1376,13 +1376,13 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     summary:
       "Reviews, analyses and drafts on the documents you attach, and hands back the deliverable.",
     appliesWhen:
-      "Applies to every assignment you start from chat, and takes effect on the next run. A flag typed in the message wins over any of these.",
+      "Applies to the next task. Options in your message override these defaults.",
     fields: [
       {
         key: "maxTurns",
         kind: "number",
         label: "Turn budget",
-        help: "How many times the agent may think and act before the run is stopped. A data-room review needs far more than a single-contract read.",
+        help: "Maximum steps per task. Reviewing many documents needs more steps than reviewing one.",
         flag: "--turns 40",
         min: 5,
         max: 200,
@@ -1392,7 +1392,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "effort",
         kind: "select",
         label: "Reasoning effort",
-        help: "How hard the model thinks on each turn. Following the chat keeps it in step with everything else you send.",
+        help: "Higher effort gives the model more time to reason. Use the chat setting to match your conversation.",
         flag: "--effort high",
         options: [
           { value: "", label: "Follow the chat", help: "Use whatever the chat is set to." },
@@ -1407,7 +1407,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "skills",
         kind: "multiselect",
         label: "Document formats",
-        help: "Which file formats the agent is taught to produce. None selected means it writes markdown only, which is faster to read and quicker to finish.",
+        help: "Choose output formats. Leave all unchecked for Markdown only.",
         flag: "--skills docx,xlsx",
         options: [
           { value: "docx", label: "Word", help: "Memos, letters, agreements, redlines." },
@@ -1429,7 +1429,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "shellTimeout",
         kind: "number",
         label: "Command time limit",
-        help: "Seconds one command may take before it is killed. Building a long document from a script is the slow case.",
+        help: "Maximum time for each command. Longer documents may need more time.",
         min: 10,
         max: 900,
         default: 120,
@@ -1443,13 +1443,13 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     summary:
       "Turns photos of your clothes into catalog cutouts and modeled photos, and files them in your wardrobe.",
     appliesWhen:
-      "Applies to every import you start from chat. A flag typed in the message wins over either of these, and changing the image quality restarts the wardrobe server on the next run.",
+      "Applies to future imports unless your request overrides it. Changing image quality restarts Wardrobe on the next run.",
     fields: [
       {
         key: "maxItemsPerPhoto",
         kind: "number",
         label: "Pieces per photo",
-        help: "How many garments one photograph may contribute. A full outfit shot yields five or six; a single laid-out item yields one. Anything found past this is named in the result rather than dropped silently.",
+        help: "Maximum garments to import from one photo. Additional items are listed in the result.",
         flag: "--items 4",
         min: 1,
         max: 8,
@@ -1459,7 +1459,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "quality",
         kind: "select",
         label: "Image quality",
-        help: "How hard the provider works on each cutout and modeled photo. Every piece costs two images, so a batch of holiday photos is where the lower settings earn their keep.",
+        help: "Choose image quality. Each garment generates two images; lower settings reduce processing.",
         flag: "--quality medium",
         options: [
           { value: "auto", label: "Automatic", help: "Let the provider decide per image." },
@@ -1480,13 +1480,13 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     // no inline flags to override these with: a flag would arrive as prose. The
     // fields are the harness's own switches instead.
     appliesWhen:
-      "Applies to every task you start from chat. Everything except running commands takes effect on the next run; that one restarts the DeerFlow service first.",
+      "Applies to the next task. Changing command access restarts DeerFlow first.",
     fields: [
       {
         key: "subagents",
         kind: "toggle",
         label: "Delegate to subagents",
-        help: "Let a run split work off to its own helpers and gather the results. Off keeps everything in one thread of work.",
+        help: "Let helper agents work on parts of a task. When off, one agent does all the work.",
         default: true,
       },
       {
@@ -1509,7 +1509,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "web",
         kind: "toggle",
         label: "Search and read the web",
-        help: "Offer web search, page fetching and image search. Off leaves a run with only what you gave it and what it writes itself.",
+        help: "Allow web and image searches. When off, the agent uses only the material you provide and its own files.",
         default: true,
       },
       {
@@ -1540,7 +1540,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     // field here is a real environment variable, and changing one restarts the
     // service before the next run rather than being quietly ignored.
     appliesWhen:
-      "Applies to every run. Changing any of these restarts the Vibe Trading service, so the next run takes a little longer to start.",
+      "Changes restart Vibe Trading, so the next task may take longer to start.",
     fields: [
       {
         key: "model",
@@ -1584,7 +1584,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         key: "dataCache",
         kind: "toggle",
         label: "Cache market data",
-        help: "Keep settled historical bars on disk so repeat backtests skip the network. Today's bars are always re-fetched.",
+        help: "Save historical prices for faster repeat tests. Today’s prices are always fetched again.",
         default: true,
       },
       {
@@ -1614,7 +1614,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     // setting, and changing one restarts the backend before the next run rather
     // than being quietly ignored.
     appliesWhen:
-      "Applies to every question. Changing any of these restarts the Stock Analyst backend, so the next run takes a little longer to start.",
+      "Changes restart Stock Analyst, so the next task may take longer to start.",
     fields: [
       {
         key: "model",
@@ -1630,14 +1630,14 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "select",
         label: "How far it goes",
         help:
-          "A quick answer is one agent with tools. The deeper settings run a staged pipeline — data, news, strategy, risk, decision — which is where the full decision report comes from, at several model calls per stage.",
+          "Quick uses one analyst. Deeper options add news, strategy, and risk reviews, taking more time and AI requests.",
         options: [
           {
             value: "single",
             label: "Quick answer",
             help: "One agent with tools. Enough for a single question about one stock.",
           },
-          { value: "multi-quick", label: "Short review", help: "The shortest staged pipeline." },
+          { value: "multi-quick", label: "Short review", help: "A brief review of the stock’s outlook." },
           {
             value: "multi-standard",
             label: "Standard review",
@@ -1673,7 +1673,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "text",
         label: "Your stocks",
         help:
-          "The codes a question can refer to without naming them, in the project's own format: 600519, hk00700, AAPL, 7203.T, 005930.KS, 2330.TW. A question that names its own stock never needs this.",
+          "Default stocks when your question does not name one. Examples: 600519, hk00700, AAPL, 7203.T, 005930.KS, 2330.TW.",
         placeholder: "600519,hk00700,AAPL",
         maxLength: 400,
         default: "",
@@ -1683,7 +1683,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "select",
         label: "Strategy playbooks",
         help:
-          "Which of the fifteen built-in strategies the analyst may reason with — moving averages, Chan theory, Elliott waves, volume breakout, sentiment cycle and the rest.",
+          "Choose which built-in strategies the analyst can use.",
         options: [
           {
             value: "auto",
@@ -1723,14 +1723,14 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     command: "/agents:video-use",
     summary: "Edits a video you already have — cuts, pacing, framing, look and captions.",
     appliesWhen:
-      "Applies to every edit, whether it starts from a video you attach in chat or from the studio on an existing video artifact. Encoding is most of the wait, so quality is what changes how long a pass takes.",
+      "Applies to videos edited from chat or the video editor. Higher quality takes longer.",
     fields: [
       {
         key: "quality",
         kind: "select",
         label: "Render quality",
         help:
-          "Final is the delivered encode. Preview is the same cut at a lower bitrate — several times faster, and enough to judge whether the edit is right.",
+          "Final gives full-quality output. Preview is faster and lower quality, for checking the edit.",
         flag: "quality in the studio",
         options: [
           { value: "final", label: "Final — 1080p, CRF 20" },
@@ -1743,7 +1743,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
         kind: "select",
         label: "Planning effort",
         help:
-          "How hard the model thinks about where the cuts go. Higher is slower and noticeably better on long or messy footage.",
+          "Higher effort gives the model more time to plan edits, especially for long or complex videos.",
         options: [
           { value: "low", label: "Low — quickest" },
           { value: "medium", label: "Medium — recommended" },

@@ -471,7 +471,9 @@ test("all fixed workers use private homes and strip model, control, and proxy se
   const before = new Map(names.map((name) => [name, process.env[name]]));
   const priorCwd = process.cwd();
   try {
-    for (const kind of ["legal", "shorts", "tradingagents"]) {
+    const variants = ["legal", "shorts", "tradingagents"].flatMap((kind) =>
+      (process.platform === "win32" ? [false, true] : [false]).map((namespaced) => ({ kind, namespaced })));
+    for (const { kind, namespaced } of variants) {
       const workspace = path.join(dataRoot, "runtime", "jobs", `job_${kind}`, "workspace");
       fs.mkdirSync(workspace, { recursive: true });
       const python = path.join(
@@ -495,6 +497,11 @@ test("all fixed workers use private homes and strip model, control, and proxy se
         ".venv",
         process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
       );
+      if (namespaced) {
+        for (const name of ["HARVEY_LABS_ROOT", "SHORTS_ROOT", "TRADINGAGENTS_ROOT", "SHORTS_PYTHON"]) {
+          process.env[name] = path.toNamespacedPath(process.env[name]);
+        }
+      }
       process.env.CHATMOCK_API_KEY = "must-not-reach-probe";
       process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN = "must-not-reach-probe";
       process.env.OPENAI_API_KEY = "must-not-reach-probe";

@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 description = "Durable lifecycle, registry, admission, and recovery core for Breadboard Runtime V2"
 
+[features]
+# Cross-crate supervisor tests inspect names only; no environment values or
+# launch authority are exposed, and ordinary production builds omit this seam.
+environment-contract-tests = []
+
 [dependencies]
 breadboard-runtime-protocol = { path = "../runtime-protocol" }
 getrandom = "0.2"

@@ -13,10 +13,8 @@ export {
 
 export interface ThinkingOrbProps {
   /**
-   * Which orb to draw. The chat always shows `composing` — the undulating
-   * multi-band sash the user picked (2026-09-15) — regardless of what the
-   * status line says; `orbStateForLabel()` is still exported for a surface
-   * that wants the label-matched orb instead.
+   * Which orb to draw. `composing` preserves the undulating multi-band sash
+   * for Thinking; live status rows use `orbStateForLabel()` for other activity.
    */
   state?: VolumetricOrbState;
   /** 20 is the inline-text preset, 64 the chat-avatar one. */
@@ -43,6 +41,7 @@ export default function ThinkingOrb({
   return (
     <Orb
       state={state}
+      data-orb-state={state}
       size={size}
       // Until the theme resolves, let the library's own detection stand rather
       // than painting light ink on paper for a frame.

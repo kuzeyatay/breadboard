@@ -25,7 +25,7 @@
 import { spawnSync } from "node:child_process";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
-import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import { dashboardDataDir, repositoryRoot, runtimeV2ConfiguredPayloadRoot } from "../runtime-paths.ts";
 export { configRoot, dataRoot, stateRoot, workspaceRoot } from "./state-paths.ts";
 
 export interface OpenscienceLauncher {
@@ -103,7 +103,7 @@ export function targetCliVersion(env: NodeJS.ProcessEnv = process.env): string {
  */
 export function managedCliRoot(env: NodeJS.ProcessEnv = process.env): string {
   return plainPath(
-    configured(env.OPENSCIENCE_CLI_ROOT) ?? path.join(dashboardDataDir(), "openscience-cli"),
+    runtimeV2ConfiguredPayloadRoot("openscience-cli", env.OPENSCIENCE_CLI_ROOT, env),
   );
 }
 

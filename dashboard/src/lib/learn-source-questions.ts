@@ -1,3 +1,4 @@
+import { verbatimQuoteOf } from "./learn-planning-evidence.ts";
 /**
  * Source-authored questions that must survive Learn planning and reach the
  * learner page that teaches their underlying concept.
@@ -131,7 +132,7 @@ export function sourceQuestionReferencesFromCaption(caption: string | undefined)
   for (const match of text.matchAll(mention)) {
     const kind = `${match[1]![0]!.toUpperCase()}${match[1]!.slice(1).toLowerCase()}`;
     const identifiers = [...match[2]!.matchAll(
-      /(?:^|,\s*|\band\s+|&\s*|\/\s*)([A-Za-z]?\d+(?:\.\d+)*)\b/gi,
+      /(?:^|,\s*|\band\s+|&\s*|\/\s*)([A-Za-z]?\d+(?:[.-]\d+)*)\b/gi,
     )].map((identifier) => identifier[1]!);
     for (const identifier of identifiers) references.push(`${kind} ${identifier}`);
   }
@@ -139,10 +140,11 @@ export function sourceQuestionReferencesFromCaption(caption: string | undefined)
 }
 
 function referenceTokens(reference: string): string[] {
-  const identifiers = reference.match(/\b[A-Za-z]?\d+(?:\.\d+)*\b/g) ?? [];
-  const expanded = [...reference.matchAll(
-    /\b([A-Za-z]?\d+(?:\.\d+)*)\s*(?:-|–|—|\bto\b)\s*([A-Za-z]?\d+(?:\.\d+)*)\b/gi,
-  )].flatMap((match) => expandedReferenceRange(match[1]!, match[2]!));
+  const identifiers = reference.match(/\b[A-Za-z]?\d+(?:[.-]\d+)*\b/g) ?? [];
+  const ranges = [...reference.matchAll(
+    /\b([A-Za-z]?\d+(?:\.\d+)*)(?:\s*[–—]\s*|\s+to\s+|\s+-\s+)([A-Za-z]?\d+(?:\.\d+)*)\b/gi,
+  ), ...reference.matchAll(/\b([A-Za-z]?\d+(?:\.\d+)+)\s*-\s*([A-Za-z]?\d+(?:\.\d+)+)\b/gi)];
+  const expanded = ranges.flatMap((match) => expandedReferenceRange(match[1]!, match[2]!));
   const tokens = [...new Set([...identifiers, ...expanded])];
   return tokens.length > 0 ? tokens : [reference];
 }
@@ -293,7 +295,7 @@ export function sourceQuestionPlanProblems(input: {
   value: unknown;
   sourceIds: readonly string[];
   sourceBodies: readonly { sourceId: string; body: string }[];
-  canonicalAnchors: readonly { id: string; sourceId: string }[];
+  canonicalAnchors: readonly { id: string; sourceId: string; exactText?: string }[];
   registeredFigures: readonly SourceQuestionFigureInput[];
   syllabusUnits?: readonly SourceQuestionSyllabusUnitInput[];
 }): string[] {
@@ -334,10 +336,14 @@ export function sourceQuestionPlanProblems(input: {
         problems.push(`${at}.${field} must be a non-empty string`);
       }
     }
+    // A sub-question is stated as its shared stem plus its own part, each
+    // verbatim but not adjacent ("stem ... c) Briefly explain ..."); the
+    // multi-piece rule accepts that and still rejects any retyped piece.
+    // Live 2026-09-25 (gpt-6-luna): exam Question 1(c) failed three attempts.
     if (typeof question.prompt === "string" && sourceId) {
-      const body = normalizedEvidenceText(sourceBodyById.get(sourceId) ?? "");
+      const body = (sourceBodyById.get(sourceId) ?? "").replace(/^## Page \d+[^\n]*$/gm, "");
       const prompt = normalizedEvidenceText(question.prompt);
-      if (prompt && !body.includes(prompt)) {
+      if (prompt && !verbatimQuoteOf(question.prompt, body)) {
         problems.push(`${at}.prompt must be copied verbatim from source ${sourceId}`);
       }
     }
@@ -349,6 +355,15 @@ export function sourceQuestionPlanProblems(input: {
         if (!anchor) problems.push(`${at}.sourceAnchorIds references unknown anchor ${anchorId}`);
         else if (anchor.sourceId !== sourceId) {
           problems.push(`${at}.sourceAnchorIds anchor ${anchorId} belongs to another source`);
+        }
+      }
+      if (input.canonicalAnchors.some((anchor) => typeof anchor.exactText === "string")) {
+        const selectedText = question.sourceAnchorIds.map((id) => anchorById.get(id)?.exactText ?? "").join("\n");
+        const prompt = typeof question.prompt === "string" ? normalizedEvidenceText(question.prompt) : "";
+        // Check selected pages as well as the entire book. A correct prompt
+        // tied to its introduction would otherwise pass and starve the writer.
+        if (prompt && !verbatimQuoteOf(question.prompt as string, selectedText.replace(/^## Page \d+[^\n]*$/gm, ""))) {
+          problems.push(`${at}.prompt is not contained in its selected sourceAnchorIds; include its complete question and continuation pages`);
         }
       }
     }
@@ -466,6 +481,12 @@ export function sourceQuestionAssignmentProblems(
   const problems: string[] = [];
   const questionById = new Map(questions.map((question) => [question.id, question]));
   const owners = new Map<string, string[]>();
+  const figureOwners = new Map<string, string[]>();
+  for (const unit of units) {
+    for (const figure of unit.sourceFigures) {
+      figureOwners.set(figure.id, [...(figureOwners.get(figure.id) ?? []), unit.id]);
+    }
+  }
   for (const unit of units) {
     const unitAnchors = new Set(unit.sourceAnchors);
     const unitFigures = new Set(unit.sourceFigures.map((figure) => figure.id));
@@ -486,7 +507,14 @@ export function sourceQuestionAssignmentProblems(
       }
       for (const figureId of question.relatedFigureIds) {
         if (!unitFigures.has(figureId)) {
-          problems.push(`unit "${unit.id}": source question ${question.id} must own its related figure ${figureId}`);
+          // Name where the figure is now, so the repair can resolve it: one
+          // figure has one owner, and U10 could not take S16.P433.G1 from a
+          // unit the repair never saw (telecom-1 M1, 2026-10-02, 5 repairs).
+          const elsewhere = (figureOwners.get(figureId) ?? []).filter((owner) => owner !== unit.id);
+          const where = elsewhere.length
+            ? `; it is currently owned by ${elsewhere.map((owner) => `unit "${owner}"`).join(", ")}: move the figure to unit "${unit.id}", or move ${question.id} to the unit that owns the figure`
+            : `; no unit owns it yet: add it to unit "${unit.id}" sourceFigures (and drop any omission of it)`;
+          problems.push(`unit "${unit.id}": source question ${question.id} must own its related figure ${figureId}${where}`);
         }
       }
       for (const assignment of question.syllabusAssignments) {

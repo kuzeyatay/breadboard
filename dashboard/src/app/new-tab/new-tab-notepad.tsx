@@ -1,141 +1,129 @@
 "use client";
 
-import Link from "next/link";
-import { ArrowUpRight, CalendarDays, Check, ChevronDown, GripHorizontal, Minus, Plus } from "lucide-react";
-import { useId, useRef, useState } from "react";
+import { Check, List, Trash2, GripHorizontal, Maximize2, Minimize2, Minus, Plus, StickyNote } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import * as Menu from "@radix-ui/react-dropdown-menu";
+import { useTerminalNotes } from "./use-terminal-notes";
 import { BrowserSketchOutline } from "@/app/browser/browser-home-widgets";
-import { todayDate } from "@/lib/calendar/wallclock";
-import { formatShortDate } from "@/lib/calendar/format";
-import type { PlanColumn, PlanTask, UpdateTaskInput } from "@/lib/plan/types";
+import { NOTE_BODY_LIMIT, NOTE_TITLE_LIMIT } from "@/lib/terminal-note";
 import { useNotepadPosition } from "./use-notepad-position";
-import { useNotepadTasks } from "./use-notepad-tasks";
+import { useTerminalNote } from "./use-terminal-note";
 import styles from "./new-tab-notepad.module.css";
 
-function TaskDate({ value, label, disabled, onChange }: {
-  value: string | null; label: string; disabled?: boolean; onChange: (value: string) => void;
-}) {
-  return (
-    <label className={styles.date} title={label}>
-      <CalendarDays size={12} aria-hidden="true" />
-      <span>{value ? value === todayDate() ? "Today" : formatShortDate(value) : "Date"}</span>
-      <input type="date" aria-label={label} value={value ?? ""} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
-    </label>
-  );
-}
+export default function NewTabNotepad({ ownerKey, topAnchorRef }: { ownerKey: string; topAnchorRef?: RefObject<HTMLElement | null> }) {
+  const viewport = useRef<HTMLDivElement>(null);
+  const { panelRef, ready, dragging, collapsed, enlarged, handleProps, open, toggleCollapsed, toggleEnlarged } = useNotepadPosition(ownerKey);
+  const notes = useTerminalNotes(ownerKey);
+  const note = useTerminalNote(ownerKey, notes.selectedId);
+  const [menuOpen, setMenuOpen] = useState(false), [confirmDelete, setConfirmDelete] = useState(false);
+  const titleRef = useRef<HTMLInputElement>(null), focusEditor = useRef(false);
+  useEffect(() => {
+    if (focusEditor.current && !menuOpen && !collapsed && note.status !== "loading") {
+      focusEditor.current = false;
+      titleRef.current?.focus();
+    }
+  }, [menuOpen, collapsed, note.status, notes.selectedId]);
+  const showNote = (id: string) => {
+    note.flush(); notes.select(id); open(); setMenuOpen(false); focusEditor.current = true;
+  };
+  const createNote = async (copy = false) => {
+    note.flush();
+    if (await notes.create(copy ? note.note : undefined)) { open(); setMenuOpen(false); focusEditor.current = true; }
+  };
+  const headingId = useId(), contentId = useId();
 
-function TodoRow({ task, columns, onUpdate }: {
-  task: PlanTask; columns: PlanColumn[]; onUpdate: (id: number, patch: UpdateTaskInput, onSaved?: () => void) => Promise<boolean>;
-}) {
-  // A local draft survives both background refreshes and a failed save.
-  const [draft, setDraft] = useState<string | null>(null);
-  const [pendingDone, setPendingDone] = useState<boolean | null>(null);
-  const [previousColumn, setPreviousColumn] = useState(task.completedAt ? null : task.columnId);
-  const done = pendingDone ?? Boolean(task.completedAt);
-  const targetColumn = task.completedAt
-    ? columns.find((column) => column.id === previousColumn && !column.isFinal) ?? columns.find((column) => !column.isFinal)
-    : columns.find((column) => column.isFinal);
+  useLayoutEffect(() => {
+    const layer = viewport.current, anchor = topAnchorRef?.current;
+    if (!layer || !anchor) return;
+    const align = () => {
+      // Fixed-position coordinates also work inside a transformed split pane.
+      const origin = layer.getBoundingClientRect().top - (parseFloat(getComputedStyle(layer).top) || 0);
+      layer.style.top = `${Math.max(0, anchor.getBoundingClientRect().bottom - origin) + 8}px`;
+    };
+    align();
+    const observer = new ResizeObserver(align);
+    observer.observe(anchor);
+    window.addEventListener("resize", align);
+    return () => { observer.disconnect(); window.removeEventListener("resize", align); };
+  }, [topAnchorRef]);
 
-  async function saveTitle() {
-    if (draft === null) return;
-    const title = draft.trim();
-    if (!title || title === task.title) { setDraft(null); return; }
-    await onUpdate(task.id, { title }, () => setDraft((current) => current?.trim() === title ? null : current));
-  }
-
-  async function toggleDone() {
-    if (!targetColumn || pendingDone !== null) return;
-    if (!task.completedAt) setPreviousColumn(task.columnId);
-    setPendingDone(!task.completedAt);
-    await onUpdate(task.id, { columnId: targetColumn.id });
-    setPendingDone(null);
-  }
-
-  return (
-    <li className={styles.row} data-done={done}>
-      <label className={styles.check}>
-        <input type="checkbox" checked={done} disabled={!targetColumn || pendingDone !== null}
-          aria-label={`Complete ${task.title}`} onChange={() => void toggleDone()} />
-        <span aria-hidden="true">{done && <Check size={12} strokeWidth={2.5} />}</span>
-      </label>
-      <div className={styles.taskContent}>
-        <input className={styles.title} value={draft ?? task.title} aria-label={`Edit ${task.title}`} maxLength={200}
-          onChange={(event) => setDraft(event.target.value)} onBlur={() => void saveTitle()}
-          onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing) return;
-            if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); }
-            if (event.key === "Escape") { event.preventDefault(); setDraft(null); }
-          }} />
-        <TaskDate value={task.dueDate} label={`Due date for ${task.title}`} onChange={(value) => { void onUpdate(task.id, { dueDate: value || null }); }} />
-      </div>
-    </li>
-  );
-}
-
-export default function NewTabNotepad({ ownerKey }: { ownerKey: string }) {
-  const { panelRef, ready, dragging, collapsed, handleProps, toggleCollapsed } = useNotepadPosition(ownerKey);
-  const data = useNotepadTasks(ownerKey);
-  const [title, setTitle] = useState("");
-  const [date, setDate] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const contentId = useId();
-  const headingId = useId();
-  const today = todayDate();
-  const todayTasks = data.tasks.filter((task) => task.dueDate === today);
-  const remaining = todayTasks.filter((task) => !task.completedAt).length;
-  const canAdd = !data.loading && data.columns.some((column) => !column.isFinal);
-  const calendarHref = `/plan?${new URLSearchParams({ view: "calendar", ...(data.projectId ? { project: String(data.projectId) } : {}) })}`;
-
-  async function addTask(event: React.FormEvent) {
-    event.preventDefault();
-    if (!title.trim() || adding || !canAdd) return;
-    setAdding(true);
-    const submittedTitle = title.trim();
-    await data.addTask(submittedTitle, date ?? todayDate(), () => {
-      setTitle((current) => current.trim() === submittedTitle ? "" : current);
-      requestAnimationFrame(() => inputRef.current?.focus());
-    });
-    setAdding(false);
-  }
-
-  return (
+  const status = note.status === "loading" ? "Opening your note…" : note.status === "saving" ? "Saving…" : "All changes saved";
+  return <div ref={viewport} className={styles.viewport} data-terminal-notepad-layer>
     <aside ref={panelRef} aria-labelledby={headingId} className={styles.notepad}
-      data-ready={ready} data-dragging={dragging} data-collapsed={collapsed}>
+      data-terminal-notepad data-ready={ready} data-dragging={dragging} data-collapsed={collapsed} data-enlarged={enlarged}>
       <BrowserSketchOutline targetRef={panelRef} index={4} />
       <header className={styles.header}>
-        <button type="button" className={styles.handle} {...handleProps}
-          aria-label="Move to-do notepad" title="Drag to move · Arrow keys to reposition">
+        <button type="button" className={styles.handle} {...handleProps} aria-label="Move notepad" title="Drag to move · Arrow keys to reposition">
           <GripHorizontal size={16} aria-hidden="true" />
-          <span id={headingId}>To-do</span>
-          {!data.loading && <span className={styles.count}>{remaining}</span>}
+          <StickyNote className={styles.noteIcon} size={17} aria-hidden="true" />
+          <span id={headingId}>Notes</span>
         </button>
-        <Link href={calendarHref} className={styles.iconButton} aria-label="Open to-dos in calendar" title="Open calendar"><ArrowUpRight size={16} aria-hidden="true" /></Link>
-        <button type="button" className={styles.iconButton} aria-label={collapsed ? "Expand to-do notepad" : "Minimize to-do notepad"}
+        <Menu.Root open={menuOpen} onOpenChange={value => { setMenuOpen(value); setConfirmDelete(false); if (value) { notes.clearError(); void notes.refresh(); } }} modal={false}>
+          <Menu.Trigger asChild><button type="button" className={styles.iconButton} aria-label="Notes menu" title="Your notes"><List size={17} aria-hidden="true" /></button></Menu.Trigger>
+          <Menu.Portal container={viewport.current}>
+            <Menu.Content className={styles.menu} align="start" sideOffset={8} collisionPadding={16}
+              onCloseAutoFocus={event => { if (focusEditor.current) event.preventDefault(); }}>
+              <Menu.Label className={styles.menuLabel}>Your notes</Menu.Label>
+              <Menu.Item className={styles.menuAction} disabled={notes.busy} onSelect={event => { event.preventDefault(); void createNote(); }}>
+                <Plus size={16} aria-hidden="true" />{notes.busy ? "Please wait…" : "New note"}
+              </Menu.Item>
+              <Menu.Separator className={styles.menuSeparator} />
+              <div className={styles.noteList}>
+                {notes.notes.map(item => <Menu.Item key={item.id} className={styles.noteItem} disabled={notes.busy} onSelect={() => showNote(item.id)}>
+                  <StickyNote size={15} aria-hidden="true" />
+                  <span><strong>{item.id === notes.selectedId ? note.note.title || "Untitled note" : item.title || "Untitled note"}</strong>
+                    <small>{(item.id === notes.selectedId ? note.note.body : item.preview).trim().replace(/\s+/g, " ") || "No text yet"}</small></span>
+                  {item.id === notes.selectedId && <Check size={15} aria-label="Selected" />}
+                </Menu.Item>)}
+              </div>
+              {notes.loaded && !notes.notes.length && <p className={styles.menuHint}>No notes yet. Start a new one.</p>}
+              {!notes.loaded && !notes.error && <p className={styles.menuHint}>Loading notes…</p>}
+              {notes.selectedId && <>
+                <Menu.Separator className={styles.menuSeparator} />
+                {confirmDelete ? <>
+                  <Menu.Label className={styles.menuHint}>Delete this note? This cannot be undone.</Menu.Label>
+                  <Menu.Item className={styles.menuAction} disabled={notes.busy || note.status !== "saved"} onSelect={event => {
+                    event.preventDefault(); void notes.remove(note.note.revision).then(ok => { if (ok) { setConfirmDelete(false); setMenuOpen(false); } else note.retry(); });
+                  }}><Trash2 size={15} aria-hidden="true" />Confirm delete</Menu.Item>
+                  <Menu.Item className={styles.menuAction} onSelect={event => { event.preventDefault(); setConfirmDelete(false); }}>Cancel</Menu.Item>
+                </> : <Menu.Item className={styles.menuAction} disabled={notes.busy || note.status !== "saved"}
+                  onSelect={event => { event.preventDefault(); setConfirmDelete(true); }}><Trash2 size={15} aria-hidden="true" />Delete current note</Menu.Item>}
+              </>}
+              {notes.error && <div className={styles.menuError} role="alert">{notes.error}
+                <button type="button" onClick={() => { notes.clearError(); void notes.refresh(); }}>Refresh notes</button></div>}
+            </Menu.Content>
+          </Menu.Portal>
+        </Menu.Root>
+        {!collapsed && <button type="button" className={styles.iconButton} aria-label={enlarged ? "Make notepad compact" : "Enlarge notepad"}
+          title={enlarged ? "Compact view" : "Enlarge"} onClick={toggleEnlarged}>
+          {enlarged ? <Minimize2 size={16} aria-hidden="true" /> : <Maximize2 size={16} aria-hidden="true" />}
+        </button>}
+        <button type="button" className={styles.iconButton} aria-label={collapsed ? "Open notepad" : "Minimize notepad"}
           aria-expanded={!collapsed} aria-controls={contentId} onClick={toggleCollapsed}>
-          {collapsed ? <Plus size={16} aria-hidden="true" /> : <Minus size={16} aria-hidden="true" />}
+          {collapsed ? <Plus size={17} aria-hidden="true" /> : <Minus size={17} aria-hidden="true" />}
         </button>
       </header>
       <div id={contentId} className={styles.body} hidden={collapsed}>
-        <div className={styles.project}>
-          <select aria-label="To-do project" value={data.projectId ?? ""} disabled={data.busy || data.loading} onChange={(event) => data.selectProject(Number(event.target.value))}>
-            {!data.projectId && <option value="">To-dos</option>}
-            {data.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-          </select>
-          <ChevronDown size={12} aria-hidden="true" />
-        </div>
-        {data.error && <div className={styles.error} role="alert"><span>{data.error.message}</span><button type="button" onClick={data.error.retry} disabled={data.busy}>Retry</button></div>}
-        <ul className={styles.tasks} aria-label="Today's to-dos" aria-busy={data.loading}>
-          {todayTasks.map((task) => <TodoRow key={task.id} task={task} columns={data.columns} onUpdate={data.updateTask} />)}
-        </ul>
-        {!data.loading && !todayTasks.length && !data.error && <p className={styles.empty}>{data.projectId ? "No to-dos for today." : <Link href="/plan">Create a project in Plan</Link>}</p>}
-        <form className={styles.composer} onSubmit={(event) => void addTask(event)}>
-          <div className={styles.composerLine}>
-            <button type="submit" className={styles.add} aria-label="Add to-do" disabled={!title.trim() || adding || !canAdd}><Plus size={18} aria-hidden="true" /></button>
-            <input ref={inputRef} aria-label="New to-do" placeholder="Add a to-do…" value={title} maxLength={200} disabled={!canAdd || adding} onChange={(event) => setTitle(event.target.value)} />
-          </div>
-          {title && <TaskDate value={date ?? todayDate()} label="New to-do due date" disabled={adding} onChange={(value) => setDate(value || null)} />}
-        </form>
+        {notes.selectedId ? <>
+        <input ref={titleRef} disabled={note.status === "loading" || note.status === "deleted"} className={styles.title} aria-label="Note title" placeholder="Title" value={note.note.title} maxLength={NOTE_TITLE_LIMIT}
+          onChange={event => note.edit("title", event.target.value)} onBlur={note.flush} />
+        <textarea disabled={note.status === "loading" || note.status === "deleted"} className={styles.editor} aria-label="Note text" placeholder="Start writing…" value={note.note.body} maxLength={NOTE_BODY_LIMIT}
+          spellCheck onChange={event => note.edit("body", event.target.value)} onBlur={note.flush}
+          onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); note.flush(); } }} />
+        {note.status === "deleted" ? <div className={styles.error} role="alert">
+          <span>This note was deleted in another tab. You can keep this copy as a new note.</span>
+          <button type="button" disabled={notes.busy} onClick={() => { void createNote(true); }}>Save as new note</button>
+        </div> : note.status === "conflict" && note.conflict ? <div className={styles.error} role="alert">
+          <p>This note changed in another tab. Your writing is kept here.</p>
+          <details><summary>View saved version</summary><strong>{note.conflict.title || "Untitled note"}</strong><pre>{note.conflict.body}</pre></details>
+          <div><button type="button" onClick={() => note.resolve(true)}>Keep my version</button><button type="button" onClick={() => note.resolve(false)}>Use saved version</button></div>
+        </div> : note.status === "error" ? <div className={styles.error} role="alert">
+          <span>{note.backedUp ? "Couldn’t sync. Your draft is kept on this device." : "Couldn’t save. Keep this tab open."}</span>
+          <button type="button" onClick={note.retry}>Retry</button>
+        </div> : <footer className={styles.footer}><span role="status">{status}</span></footer>}
+        </> : <div className={styles.empty}><p>A little space for your thoughts.</p><button type="button" disabled={notes.busy} onClick={() => { void createNote(); }}>New note</button>
+          {notes.error && <p role="alert">{notes.error}</p>}</div>}
       </div>
     </aside>
-  );
+  </div>;
 }

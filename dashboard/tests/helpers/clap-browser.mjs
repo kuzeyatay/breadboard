@@ -42,7 +42,7 @@ export async function clapBrowser() {
       return <><h1>Current tab</h1>{provider&&<Provider/>}{location.search.includes('profile')?(settings&&<><Profile initial={window.initialAction} userId="1"/>{location.search.includes('snaps')&&<Profile control="snap" initial={window.initialSnapAction} userId="1"/>}</>):<div hidden={!settings}><Settings visible={settings}/></div>}{chat&&<Chat name="A"/>}{second&&<Chat name="B"/>}</>;
     }
     createRoot(document.getElementById('root')).render(<StrictMode><App/></StrictMode>);
-  ` }, bundle: true, write: false, format: 'iife', platform: 'browser', define: { 'process.env.NODE_ENV': '"development"' },
+  ` }, bundle: true, write: false, outdir: path.join(root, 'node_modules/.cache/clap-browser'), format: 'iife', platform: 'browser', define: { 'process.env.NODE_ENV': '"development"' },
     plugins: [{ name: 'fixture-services', setup(build) {
       const stubs = {
         'next/navigation': `import{useState,useEffect}from'react';const router={push:path=>{window.navigated.push(path);history.pushState({},'',path);window.dispatchEvent(new Event('test-route'));},replace:path=>{window.navigated.push(path);history.replaceState({},'',path);window.dispatchEvent(new Event('test-route'));},prefetch:()=>{}};export const useRouter=()=>router;export function usePathname(){const[p,s]=useState(location.pathname);useEffect(()=>{const f=()=>s(location.pathname);window.addEventListener('test-route',f);return()=>window.removeEventListener('test-route',f);},[]);return p;}`,
@@ -63,7 +63,7 @@ export async function clapBrowser() {
   greetingWav.writeUInt32LE(32000,28);greetingWav.writeUInt16LE(2,32);greetingWav.writeUInt16LE(16,34);greetingWav.write('data',36);greetingWav.writeUInt32LE(3200,40);
   const server = http.createServer(async(req,res)=>{
     if(req.url==='/app.js'){res.setHeader('Content-Type','text/javascript');res.end(bundle.outputFiles[0].text);return;}
-    if(req.url==='/style.css'){res.setHeader('Content-Type','text/css');res.end(css);return;}
+    if(req.url==='/style.css'){res.setHeader('Content-Type','text/css');res.end([css, ...bundle.outputFiles.filter(file => file.path.endsWith('.css')).map(file => file.text)].join('\n'));return;}
     if(req.url==='/audio/clap-controls.js'){res.setHeader('Content-Type','text/javascript');res.end(worklet);return;}
     if(req.url.startsWith('/api/')){
       fixture.requests.push(req.url);let raw='';for await(const c of req)raw+=c;const body=raw?JSON.parse(raw):{};const url=new URL(req.url,'http://fixture.test'),pathname=url.pathname,snap=url.searchParams.get('control')==='snap';res.setHeader('Content-Type','application/json');

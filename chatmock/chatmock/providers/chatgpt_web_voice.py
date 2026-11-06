@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import difflib
 import json
+import queue
 import re
 import sys
 import time
@@ -53,6 +54,10 @@ REPEAT_TURN_SECONDS = web._env_seconds("CHATMOCK_CHATGPT_WEB_REPEAT_TIMEOUT", 18
 # has returned. Measured 2026-09-15: a reader returned 2 words of a 344-word
 # repeat, and the whole turn had to be spent again.
 STORED_ANSWER_WAIT_SECONDS = web._env_seconds("CHATMOCK_CHATGPT_WEB_STORED_ANSWER_WAIT", 45)
+# How long the stream's own end may trail the rendered answer. The turn reader
+# returns once the page stops changing; the stream's last event, which names
+# the chat and the message, follows a moment later (measured 2026-10-07).
+STREAM_DONE_WAIT_SECONDS = web._env_seconds("CHATMOCK_CHATGPT_WEB_STREAM_DONE_WAIT", 8)
 # How long the page may take to show the chat's real address after an answer.
 ID_WAIT_SECONDS = web._env_seconds("CHATMOCK_CHATGPT_WEB_ANSWER_ID_WAIT", 20)
 NOT_READY_RETRIES = 2
@@ -255,14 +260,18 @@ def _synthesize_expression(message_id: str, conversation_id: str, voice: str) ->
 
 
 def _hide_expression(conversation_id: str) -> str:
+    # Not awaited: measured 2026-10-07, the site took 8-10 s to answer this
+    # PATCH, and the reading waited for it before its audio was handed back.
+    # `keepalive` lets the request finish even when the next turn navigates
+    # the page straight away.
     return "(async () => {" + _SESSION_TOKEN + """
   if (!token) return 401;
-  const response = await fetch('/backend-api/conversation/' + encodeURIComponent(%s), {
-    method: 'PATCH', credentials: 'include',
+  fetch('/backend-api/conversation/' + encodeURIComponent(%s), {
+    method: 'PATCH', credentials: 'include', keepalive: true,
     headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
     body: JSON.stringify({ is_visible: false }),
   }).catch(() => null);
-  return response ? response.status : 0;
+  return 0;
 })()""" % json.dumps(conversation_id)
 
 
@@ -429,7 +438,30 @@ def transcribe(audio: bytes, mime: str, filename: str, language: str | None = No
 # --------------------------------------------------------------------------
 
 
-def _answer_ids(page: "web._Page", result: "web.TurnResult", started_at: float) -> Tuple[str | None, str | None]:
+def _stream_done(page: "web._Page", turn_id: str, result: "web.TurnResult") -> Dict[str, Any] | None:
+    """The stream's ``done`` event for this turn, if it arrives soon.
+
+    The turn reader may return from the rendered page before the stream ends.
+    The stream's ``done`` names the chat and message, so waiting a moment for
+    it is cheaper than searching the chat list. A turn with no stream never
+    sends one.
+    """
+    if result.mode not in ("sse", "ws"):
+        return None
+    deadline = time.time() + STREAM_DONE_WAIT_SECONDS
+    while (left := deadline - time.time()) > 0:
+        try:
+            event = page.events.get(timeout=left)
+        except queue.Empty:
+            return None
+        if event.get("turn") == turn_id and event.get("type") == "done":
+            return event
+    return None
+
+
+def _answer_ids(
+    page: "web._Page", result: "web.TurnResult", turn_id: str, started_at: float
+) -> Tuple[str | None, str | None]:
     """(message, conversation) of the repeat: from the event stream, else from
     chatgpt.com's own list of chats. Never from the rendered page.
 
@@ -442,6 +474,9 @@ def _answer_ids(page: "web._Page", result: "web.TurnResult", started_at: float) 
     message_id, conversation_id = result.message_id, result.conversation_id
     if conversation_id:
         return message_id, conversation_id
+    done = _stream_done(page, turn_id, result)
+    if done and isinstance(done.get("conversationId"), str):
+        return (done.get("messageId") if isinstance(done.get("messageId"), str) else message_id), done["conversationId"]
     deadline = time.time() + ID_WAIT_SECONDS
     while True:
         found = _evaluate(page, _recent_repeat_expression(started_at), timeout=60)
@@ -482,7 +517,8 @@ def _begin_repeat(model: str, prompt: str) -> Tuple["web._Page", str]:
     """
     for waited in range(NOT_READY_RETRIES + 1):
         try:
-            return web._begin_turn(model, prompt, None, [], temporary=False)
+            # Through the site's router: a read-aloud waits on this navigation.
+            return web._begin_turn(model, prompt, None, [], temporary=False, soft=True)
         except ProviderError as exc:
             if "(not_ready)" not in str(exc) or waited == NOT_READY_RETRIES:
                 raise
@@ -515,7 +551,7 @@ def _repeat(passage: str, model: str) -> Tuple["web._Page", str, str]:
         except ProviderError as exc:
             _log(f"repeat turn failed on attempt {attempt}: {exc}")
             raise WebSpeechError(str(exc), exc.status_code or 502) from None
-        message_id, conversation_id = _answer_ids(page, result, started_at)
+        message_id, conversation_id = _answer_ids(page, result, turn_id, started_at)
         if not conversation_id:
             # A chat that cannot be found cannot be read or deleted either, so
             # no further blind turns are sent after it.

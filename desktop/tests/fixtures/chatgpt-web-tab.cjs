@@ -70,7 +70,7 @@ app.whenReady().then(async () => {
   const window = windows.createMainWindow();
   await window.loadURL(origin + '/dashboard');
   window.show();
-  const page = window.webContents;
+  const page = manager.page(window);
   const ask = (foreground, reset = false, lane = undefined) =>
     page.executeJavaScript(`window.breadboardDesktop.chatgptWebTab(${JSON.stringify(lane ? { foreground, reset, lane } : { foreground, reset })})`);
 

@@ -51,7 +51,7 @@ export async function POST(request: Request) {
       text: message,
       surface: conversation.surface,
       surfaceContext: activeGardenSlug ? { activeGardenSlug } : undefined,
-      model: settings.defaultModel,
+      model: settings.fallbackModel,
       reasoningEffort: settings.reasoningEffort,
       superAgent: switches.superAgent === true,
       adhdMode: switches.directMode === true,

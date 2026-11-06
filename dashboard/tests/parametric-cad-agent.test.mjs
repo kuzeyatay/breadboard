@@ -16,6 +16,21 @@ const errors = await import("../src/lib/cad/errors.ts");
 const tools = await import("../src/lib/cad/tools.ts");
 const enclosures = await import("../src/lib/cad/board-enclosures.ts");
 const designService = await import("../src/lib/cad/design-service.ts");
+
+test("explicit sibling designs use fresh planning without requiring a hidden CLI flag", () => {
+  for (const brief of [
+    "Preserve the previous hand. Create a separately named sibling project for the ball joint.",
+    "Bounded deliverable: a separately named sibling project 'Retained ball-joint prototype'.",
+    "Start a new CAD project for a seven-part coupon.",
+    "Generate a separate project and leave the existing hand unchanged.",
+  ]) assert.equal(identity.parseParametricCadRequest(brief).fresh, true, brief);
+  for (const brief of [
+    "Change the ball diameter in the existing project.",
+    "Do not create a new project; revise the current one.",
+    "Continue without creating a new project.",
+    "Add a new ball joint to this project.",
+  ]) assert.equal(identity.parseParametricCadRequest(brief).fresh, false, brief);
+});
 const { artifactRenderer, availableArtifactRenderers } = await import(
   "../src/lib/hermes/artifact-renderers.ts"
 );
@@ -166,6 +181,13 @@ test("inline flags are parsed out of the brief", () => {
   assert.equal(plain.fresh, false);
 });
 
+test("CAD request parsing preserves multiline reference source and Python indentation", () => {
+  const reference = "def build_model(params):\n    if params['wide']:\n        return wide_shape\n    return narrow_shape";
+  const parsed = identity.parseParametricCadRequest(`--fresh\nReuse this source:\n${reference}`);
+  assert.equal(parsed.fresh, true);
+  assert.equal(parsed.brief, `Reuse this source:\n${reference}`);
+});
+
 test("the runtime-agent table knows the agent", () => {
   const agent = runtimeAgentByToken("agents:parametric-cad");
   assert.equal(agent?.id, "parametric-cad");
@@ -232,7 +254,7 @@ test("the agent is reachable from every chat surface", () => {
   const hub = source("src/app/components/hermes/command-hub.tsx");
   assert.match(hub, /PARAMETRIC_CAD_COMMAND/);
   assert.match(hub, /onSelectParametricCad/);
-  assert.match(hub, /3D-printable part/);
+  assert.match(hub, /Design a dimensioned 3D part with an interactive preview and STEP, STL, GLB, or 3MF downloads/);
 
   const composer = source("src/app/components/assistant-composer.tsx");
   assert.match(composer, /insertCommandToken\(PARAMETRIC_CAD_COMMAND\)/);

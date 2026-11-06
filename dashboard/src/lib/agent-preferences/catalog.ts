@@ -1,7 +1,8 @@
+import { agencyAgentProductDescription } from "../hermes/agency-agent-product-copy.ts";
 import { RUNTIME_AGENT_PROFILES } from "../hermes/capability-combinations.ts";
 import { loadAgencyAgentsCatalog } from "../hermes/agency-agents.ts";
 import { agencyAgentToken } from "../hermes/agency-agent-command.ts";
-import { runtimeAgentBrief } from "../hermes/runtime-agent-briefs.ts";
+import { UNIFIED_WORKFLOWS } from "../workflows/unified-catalog.ts";
 import type { AgentPreferenceOption } from "./preferences.ts";
 import { loadArisAgentDefinition } from "../aris/agent.ts";
 import { loadSpotifyAgentDefinition } from "../spotify-agent/agent.ts";
@@ -17,8 +18,8 @@ export function agentPreferenceCatalog(): { agents: AgentPreferenceOption[]; not
   const agents: AgentPreferenceOption[] = [
     ...RUNTIME_AGENT_PROFILES.map((agent) => ({
       command: agent.command, name: agent.name,
-      description: runtimeAgentBrief(agent.id)?.does ?? "",
-      group: "Runtime agents", manualOnly: !agent.launchableByModel,
+      description: UNIFIED_WORKFLOWS.flatMap(workflow => workflow.modes).find(mode => mode.agentIds.includes(agent.id))?.description ?? "",
+      group: "Task agents", manualOnly: !agent.launchableByModel,
     })),
     ...builtins.flatMap(({ agent, command }) => agent ? [{
       command, name: agent.name, description: agent.description,
@@ -26,7 +27,7 @@ export function agentPreferenceCatalog(): { agents: AgentPreferenceOption[]; not
     }] : []),
     ...agency.agents.filter((agent) => agent.slug !== ARIS_AGENT_SLUG && agent.slug !== SPOTIFY_AGENT_SLUG).map((agent) => ({
       command: `/${agencyAgentToken(agent.slug)}`, name: agent.name,
-      description: agent.description, group: `Agency · ${agent.divisionLabel}`, manualOnly: true,
+      description: agencyAgentProductDescription(agent), group: `Agency · ${agent.divisionLabel}`, manualOnly: true,
     })),
   ];
   return { agents: agents.sort((a, b) => a.name.localeCompare(b.name)), notice: agency.message };

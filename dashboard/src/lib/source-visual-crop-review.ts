@@ -67,7 +67,9 @@ export type FigureCropReviewCompletion = (request: {
   stageLabel: string;
 }) => Promise<string>;
 
-export const FIGURE_CROP_REVIEW_VERSION = 1 as const;
+/** 2: a reviewer-supplied bbox is cropped verbatim (see figureCropRenderBBox).
+ *  Bumped to re-review crops whose cached verdict came from padded geometry. */
+export const FIGURE_CROP_REVIEW_VERSION = 2 as const;
 export const FIGURE_CROP_REVIEW_MAX_ROUNDS = 3;
 /** One page image plus at most this many crops keeps a request under the
  * provider's per-message image limit. */
@@ -104,6 +106,31 @@ export function tightFigureCropBBox(bbox: FigureCropBBox, type: FigureCropVisual
   const x1 = Math.min(1, bbox.x + bbox.width + pad);
   const y1 = Math.min(1, bbox.y + bbox.height + pad);
   return { x: x0, y: y0, width: Math.max(0, x1 - x0), height: Math.max(0, y1 - y0) };
+}
+
+/**
+ * The bbox a crop is actually cut from, for review and for the stored artifact.
+ *
+ * A detector bbox gets the small uniform pad above, because nothing has vetted
+ * its bounds. A bbox the reviewer supplied is used verbatim: the reviewer is
+ * told to tightly enclose the visual including its printed caption, and its
+ * correction is usually there to stop the crop slicing a neighbouring element.
+ * Padding that correction puts the neighbour straight back, so the next round
+ * sees the same defect and returns the same bbox - the loop cannot converge and
+ * the detection is dropped at round exhaustion (telecom-1, 2026-09-21: two
+ * Sauter tables spent all three rounds on an unchanged "the crop's top edge
+ * slices through the neighboring running header", were dropped, and failed the
+ * source-visual extraction completeness gate, killing the run).
+ *
+ * Both the review loop and the artifact writer go through here, so the stored
+ * crop stays byte-identical to the crop the reviewer actually approved.
+ */
+export function figureCropRenderBBox(
+  bbox: FigureCropBBox,
+  type: FigureCropVisualType,
+  reviewerSupplied: boolean,
+): FigureCropBBox {
+  return reviewerSupplied ? bbox : tightFigureCropBBox(bbox, type);
 }
 
 /**
@@ -176,9 +203,11 @@ export function figureCropReviewCacheKey(input: {
   model: string;
   pageFingerprint: string;
   candidates: readonly FigureCropCandidate[];
+  /** A saved receipt's own version, so a reusable v1 receipt can still match its key. */
+  version?: number;
 }): string {
   return crypto.createHash("sha256").update(JSON.stringify({
-    version: FIGURE_CROP_REVIEW_VERSION,
+    version: input.version === 1 ? 1 : FIGURE_CROP_REVIEW_VERSION,
     systemPromptSha256: crypto.createHash("sha256").update(FIGURE_CROP_REVIEW_SYSTEM_PROMPT).digest("hex"),
     model: input.model,
     pageFingerprint: input.pageFingerprint,
@@ -196,7 +225,20 @@ export function figureCropReviewReceiptMatches(
   cacheKey: string,
   candidates: readonly FigureCropCandidate[],
 ): receipt is FigureCropReviewReceipt {
-  if (!receipt || receipt.version !== FIGURE_CROP_REVIEW_VERSION || receipt.cacheKey !== cacheKey) return false;
+  // A v1 receipt was produced before figureCropRenderBBox stopped padding a
+  // reviewer-supplied bbox. Its approved and corrected outcomes were still
+  // verified against the exact crop they describe, and the writer renders them
+  // the way they were approved, so they stay reusable - re-reviewing all of
+  // them costs hours of model calls for no verdict change. A rejected outcome
+  // is the one the padding loop could not converge out of, so a receipt
+  // carrying any is re-reviewed under v2.
+  const reusableVersion = receipt
+    ? receipt.version === FIGURE_CROP_REVIEW_VERSION ||
+      (receipt.version === 1 &&
+        Array.isArray(receipt.outcomes) &&
+        !receipt.outcomes.some((outcome) => outcome.status === "rejected"))
+    : false;
+  if (!receipt || !reusableVersion || receipt.cacheKey !== cacheKey) return false;
   if (!Array.isArray(receipt.outcomes) || receipt.outcomes.length !== candidates.length) return false;
   return candidates.every((candidate) => receipt.outcomes.some((outcome) =>
     outcome.detectionIndex === candidate.detectionIndex &&
@@ -285,7 +327,12 @@ export async function reviewFigureCropsOnPage(input: {
   const reviewPage = resizePngToMaxDimension(input.pageImage, REVIEW_PAGE_IMAGE_MAX_DIMENSION) ?? input.pageImage;
   const pageUrl = `data:image/png;base64,${reviewPage.toString("base64")}`;
   const outcomes = new Map<number, FigureCropReviewOutcome>();
-  let pending = input.candidates.map((candidate) => ({ candidate, bbox: candidate.bbox, lastReason: "" }));
+  let pending = input.candidates.map((candidate) => ({
+    candidate,
+    bbox: candidate.bbox,
+    lastReason: "",
+    reviewerSupplied: false,
+  }));
   let modelCalls = 0;
 
   for (let round = 1; round <= FIGURE_CROP_REVIEW_MAX_ROUNDS && pending.length > 0; round += 1) {
@@ -294,7 +341,10 @@ export async function reviewFigureCropsOnPage(input: {
       input.checkpoint?.();
       const batch = pending.slice(start, start + FIGURE_CROP_REVIEW_MAX_CROPS_PER_REQUEST);
       const items = batch.map((item, offset) => {
-        const crop = cropPng(input.pageImage, tightFigureCropBBox(item.bbox, item.candidate.type));
+        const crop = cropPng(
+          input.pageImage,
+          figureCropRenderBBox(item.bbox, item.candidate.type, item.reviewerSupplied),
+        );
         const edges = crop ? cropEdgeInk(crop) : { top: false, right: false, bottom: false, left: false };
         return {
           item,
@@ -367,7 +417,23 @@ export async function reviewFigureCropsOnPage(input: {
         }
       }
       if (!parsed) {
-        throw new Error(`Figure crop review for page ${input.pageNumber} returned no valid response: ${diagnostic}`);
+        // Same condition as an empty response above: the model gave no usable
+        // verdict for this batch. That branch already keeps the detector crops
+        // and marks them unreviewed, so throwing here only differs in losing
+        // the whole run over one unparseable page (telecom-1, 2026-09-21: a
+        // non-JSON answer on page 4 discarded 73 minutes of completed review).
+        // An unreviewed crop keeps detector geometry and still registers, so
+        // the extraction completeness gate is unaffected.
+        for (const entry of items) {
+          outcomes.set(entry.item.candidate.detectionIndex, {
+            detectionIndex: entry.item.candidate.detectionIndex,
+            status: "unreviewed",
+            bbox: entry.item.bbox,
+            reason: `crop review returned no valid response (${diagnostic}); detector crop kept`,
+            rounds: round,
+          });
+        }
+        parsed = new Map();
       }
 
       for (const entry of items) {
@@ -390,7 +456,7 @@ export async function reviewFigureCropsOnPage(input: {
             rounds: round,
           });
         } else {
-          next.push({ candidate, bbox: review.bbox, lastReason: review.reason });
+          next.push({ candidate, bbox: review.bbox, lastReason: review.reason, reviewerSupplied: true });
         }
       }
     }

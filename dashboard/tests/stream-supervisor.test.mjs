@@ -9,6 +9,7 @@ import {
   SILENT_STREAM_TIMEOUT_MS,
   runtimeIdentityKey,
   streamSupervisorDecision,
+  streamSupervisorTiming,
 } from "../src/lib/hermes/stream-supervisor.ts";
 
 const eventStream = fs.readFileSync(
@@ -25,6 +26,62 @@ const base = {
   finalized: false,
   timedOut: false,
 };
+
+test("an old turn gets a full recovery window after its pump restarts", () => {
+  const subscriptionOpenedAt = Date.parse("2026-10-09T19:39:05Z");
+  const timing = {
+    subscriptionOpenedAt,
+    submittedAt: "2026-10-09T19:27:06.967Z",
+    lastRuntimeEventAt: subscriptionOpenedAt,
+  };
+  for (const elapsed of [1_000, 15_000, SILENT_STREAM_TIMEOUT_MS - 1]) {
+    assert.equal(streamSupervisorDecision({
+      ...base,
+      ...streamSupervisorTiming({ ...timing, now: subscriptionOpenedAt + elapsed }),
+    }), null, "a recovered turn must be allowed to query its saved result");
+  }
+  assert.deepEqual(streamSupervisorDecision({
+    ...base,
+    ...streamSupervisorTiming({ ...timing, now: subscriptionOpenedAt + SILENT_STREAM_TIMEOUT_MS }),
+  }), { kind: "silent_timeout" }, "unavailable recovery is still bounded");
+});
+
+test("a slow prompt dispatch receives its recovery window after submission", () => {
+  const subscriptionOpenedAt = 1_000_000;
+  const submittedAt = subscriptionOpenedAt + 180_000;
+  const timing = streamSupervisorTiming({
+    now: submittedAt + 1_000,
+    subscriptionOpenedAt,
+    submittedAt: new Date(submittedAt).toISOString(),
+    lastRuntimeEventAt: subscriptionOpenedAt,
+  });
+  assert.deepEqual(timing, { elapsedMs: 1_000, msSinceLastEvent: 1_000 });
+  assert.equal(streamSupervisorDecision({ ...base, ...timing }), null);
+});
+
+test("a replacement subscription does not inherit the abandoned connection's silence", () => {
+  const subscriptionOpenedAt = 2_000_000;
+  const timing = streamSupervisorTiming({
+    now: subscriptionOpenedAt + 1_000,
+    subscriptionOpenedAt,
+    submittedAt: new Date(subscriptionOpenedAt - 600_000).toISOString(),
+    lastRuntimeEventAt: subscriptionOpenedAt - 300_000,
+  });
+  assert.deepEqual(timing, { elapsedMs: 1_000, msSinceLastEvent: 1_000 });
+  assert.equal(streamSupervisorDecision({ ...base, ...timing, sawRuntimeEvent: true }), null);
+});
+
+test("missing dispatch timestamps cannot make a recovery window unbounded", () => {
+  for (const submittedAt of [undefined, "invalid"]) {
+    const timing = streamSupervisorTiming({
+      now: 1_000_000 + SILENT_STREAM_TIMEOUT_MS,
+      subscriptionOpenedAt: 1_000_000,
+      submittedAt,
+      lastRuntimeEventAt: 1_000_000,
+    });
+    assert.deepEqual(streamSupervisorDecision({ ...base, ...timing }), { kind: "silent_timeout" });
+  }
+});
 
 test("a replaced runtime identity is adopted rather than waited out", () => {
   // The regression: Hermes restarts, the first dispatch fails, the turn is
@@ -52,6 +109,7 @@ test("a live session reissued under the same durable id still rebinds", () => {
 test("an unchanged identity is left alone", () => {
   assert.equal(streamSupervisorDecision({ ...base }), null);
 });
+
 
 test("an unreadable row never triggers a rebind to nothing", () => {
   assert.equal(

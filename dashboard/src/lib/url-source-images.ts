@@ -1,5 +1,9 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import sharp from "sharp";
 import { assertPublicHost } from "./get-doc/download.ts";
+import { slugify } from "./tags.ts";
 
 const DEFAULT_MAX_IMAGES = 128;
 const DEFAULT_MAX_IMAGE_BYTES = 32 * 1024 * 1024;
@@ -617,4 +621,56 @@ export async function captureUrlSourceImages({
     referencedImageCount: references.length,
     warningCount,
   };
+}
+
+/** Below this edge an image is an icon, avatar or tracking pixel, not a figure. */
+const MIN_SNAPSHOT_EDGE_PX = 96;
+
+/**
+ * Save captured images as the source's page snapshots
+ * (`/<garden>/assets/<source>-page-NNN.png`), the way video frames are, so
+ * Learn's source-visual scan registers them like PDF pages. Returns their URLs
+ * in document order. Images sharp cannot decode, and tiny ones, are skipped.
+ */
+export async function saveUrlImagesAsPageSnapshots(input: {
+  contentPath: string;
+  gardenSlug: string;
+  sourceSlug: string;
+  images: ReadonlyArray<{ bytes: Buffer }>;
+}): Promise<string[]> {
+  const assetDir = path.join(input.contentPath, input.gardenSlug, "assets");
+  const sourceAssetId = slugify(input.sourceSlug) || "source";
+  const urls: string[] = [];
+  for (const image of input.images) {
+    let png: Buffer;
+    try {
+      const { data, info } = await sharp(image.bytes, { limitInputPixels: 40_000_000 })
+        .rotate()
+        .flatten({ background: "#ffffff" })
+        .png()
+        .toBuffer({ resolveWithObject: true });
+      if (info.width < MIN_SNAPSHOT_EDGE_PX || info.height < MIN_SNAPSHOT_EDGE_PX) continue;
+      png = data;
+    } catch {
+      continue;
+    }
+    const fileName = `${sourceAssetId}-page-${String(urls.length + 1).padStart(3, "0")}.png`;
+    fs.mkdirSync(assetDir, { recursive: true });
+    fs.writeFileSync(path.join(assetDir, fileName), png);
+    urls.push(`/${input.gardenSlug}/assets/${fileName}`);
+  }
+  return urls;
+}
+
+/** Put page snapshot URLs first in a source note's `source_images` frontmatter. */
+export function withSnapshotSourceImages(markdown: string, snapshotUrls: readonly string[]): string {
+  const frontmatter = markdown.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/);
+  if (!frontmatter || snapshotUrls.length === 0) return markdown;
+  const quoted = snapshotUrls.map((url) => JSON.stringify(url)).join(", ");
+  const head = /^source_images:\s*\[\s*\]/m.test(frontmatter[0])
+    ? frontmatter[0].replace(/^source_images:\s*\[\s*\]/m, `source_images: [${quoted}]`)
+    : /^source_images:\s*\[/m.test(frontmatter[0])
+      ? frontmatter[0].replace(/^source_images:\s*\[/m, `source_images: [${quoted}, `)
+      : frontmatter[0].replace(/\r?\n---\r?\n$/, `\nsource_images: [${quoted}]\n---\n`);
+  return head + markdown.slice(frontmatter[0].length);
 }

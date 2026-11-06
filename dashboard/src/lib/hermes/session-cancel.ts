@@ -21,6 +21,10 @@ import { revokeCapabilityDecision, type RuntimeSessionRow } from "./runtime-stor
 import { cancelAuthorizedTerminalCommand } from "./terminal-execution.ts";
 import { cancelInteractiveVisualizerWork } from "./interactive-visualizer-browser.ts";
 import { finishRuntimeRun, getActiveRuntimeRun } from "./run-store.ts";
+import { getConversationById } from "../conversations/store.ts";
+import { readGoalModeState, setGoalModeStatus } from "../goal-mode.ts";
+import { cancelTaskRecovery } from "./task-recovery.ts";
+import { captureEventPumpRetirement } from "./detached-event-pump.ts";
 
 export interface RuntimeWorkStopReport {
   runtimeStopAcknowledged: boolean;
@@ -75,7 +79,13 @@ export async function cancelRuntimeSessionWork(
   userId: number,
   row: RuntimeSessionRow,
 ): Promise<RuntimeSessionCancelReport> {
+  const conversation = row.conversation_id ? getConversationById(row.conversation_id) : null;
+  if (conversation) cancelTaskRecovery(conversation.id);
+  if (conversation && readGoalModeState(conversation.public_id)?.status === "active") {
+    setGoalModeStatus({ conversationPublicId: conversation.public_id, status: "paused" });
+  }
   const activeRun = getActiveRuntimeRun(row.id);
+  const retireStream = captureEventPumpRetirement(`hermes:${row.id}`);
   let session: AuthorizedRuntimeSession | null = null;
   // Addressing the runtime is a network call, and a chat can own a long tail of
   // retired runtime sessions. Only a session with a live run has a turn to
@@ -94,6 +104,10 @@ export async function cancelRuntimeSessionWork(
   const report = await stopRuntimeSessionWork(row.id, session);
   const cancelledRunId =
     activeRun && finishRuntimeRun(activeRun.id, "cancelled") ? activeRun.id : null;
+  // An upstream abort event may arrive after this API returns. Stop must retire
+  // its replay buffer now, or a quick spoken follow-up reattaches to old words
+  // and never receives its own streaming answer.
+  retireStream(new TextEncoder().encode('data: {"type":"cancelled"}\n\n'));
   if (session) markStatus(session, "aborted");
 
   // Whatever this session was allowed to touch, it is not allowed to touch now.

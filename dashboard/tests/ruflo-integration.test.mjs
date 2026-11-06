@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 
 const source = (relativePath) =>
   fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
@@ -12,6 +13,13 @@ const repoSource = (relativePath) =>
 const identity = await import("../src/lib/ruflo/identity.ts");
 const runManager = await import("../src/lib/ruflo/run-manager.ts");
 const runtime = await import("../src/lib/ruflo/runtime.ts");
+
+test("Ruflo exposes the real child-process error rather than Node's version footer",()=>{
+  assert.equal(runManager.rufloProcessError("node:fs:2733\nError: EISDIR: illegal operation on a directory, lstat 'C:'\n    at Object.realpathSync (node:fs:2733:25)\nNode.js v24.14.1\n"),"Error: EISDIR: illegal operation on a directory, lstat 'C:'");
+  assert.equal(runManager.rufloProcessError("Error [ERR_MODULE_NOT_FOUND]: Missing fixture\nNode.js v24.14.1"),"Error [ERR_MODULE_NOT_FOUND]: Missing fixture");
+  assert.equal(runManager.rufloProcessError("Account authentication required"),"Account authentication required");
+  assert.equal(runManager.rufloProcessError("Node.js v24.14.1"),"");
+});
 
 test("Ruflo slash command parsing is canonical and case-insensitive", () => {
   assert.equal(
@@ -317,6 +325,31 @@ test("packaged Ruflo and Claude receipts are resolved without global tools", () 
     assert.doesNotMatch(resolverSource, /`ruflo@\$\{version\}`/u);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sealed Windows planner paths launch through Node without the device namespace", {skip:process.platform!=="win32"}, () => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"breadboard-ruflo-node-path-"));
+  try {
+    const planner=path.join(dir,"bin","cli.js");
+    fs.mkdirSync(path.dirname(planner),{recursive:true});
+    fs.mkdirSync(path.join(dir,"dist","src"),{recursive:true});
+    fs.writeFileSync(path.join(dir,"package.json"),JSON.stringify({name:"@claude-flow/cli",version:"3.34.0"}));
+    fs.writeFileSync(path.join(dir,"dist","src","index.js"),"// built fixture");
+    fs.writeFileSync(planner,"console.log('RUFLO_PLANNER_PATH_OK')");
+    for(const env of [
+      {RUFLO_ROOT:path.toNamespacedPath(dir),RUFLO_BIN:path.toNamespacedPath(planner)},
+      {RUFLO_ROOT:path.toNamespacedPath(dir)},
+    ]) {
+      const launcher=runtime.resolveRufloLauncher(env);
+      assert.ok(launcher);
+      const result=spawnSync(launcher.command,launcher.args,{encoding:"utf8",windowsHide:true,timeout:10000});
+      assert.equal(result.status,0,result.stderr||result.error?.message);
+      assert.equal(result.stdout.trim(),"RUFLO_PLANNER_PATH_OK");
+    }
+  } finally {
+    assert.ok(path.resolve(dir).startsWith(path.resolve(os.tmpdir())+path.sep));
+    fs.rmSync(dir,{recursive:true,force:true});
   }
 });
 

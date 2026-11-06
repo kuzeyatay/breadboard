@@ -1,0 +1,8 @@
+{
+  "title": "5 V resistor divider",
+  "components": [
+    {"id": "V1", "type": "voltage_source", "value": 5, "nodes": ["vin", "0"], "ac": 1},
+    {"id": "R1", "type": "resistor", "value": "10k", "nodes": ["vin", "vout"], "tolerance": 0.01},
+    {"id": "R2", "type": "resistor", "value": "10k", "nodes": ["vout", "0"], "tolerance": 0.01}
+  ]
+}

@@ -67,7 +67,7 @@ export async function POST(
       baseURL: resolveChatmockBaseUrl(request).baseURL,
       url: typeof body.url === "string" ? body.url : "",
       title: typeof body.title === "string" ? body.title : undefined,
-      scope: body.scope === "page" || body.scope === "section" ? body.scope : "site",
+      scope: body.scope === "site" || body.scope === "section" ? body.scope : "page",
       signal: request.signal,
     });
     return NextResponse.json(result);

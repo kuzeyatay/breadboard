@@ -26,7 +26,7 @@ function PronunciationEditor({ value, busy, onSave }: Props) {
     setError('');
     if (!await onSave(draft)) setError('Corrections could not be saved. Try again.');
   }
-  return <div className="mt-3 space-y-3">
+  return <div data-enter-submit-scope className="mt-3 space-y-3">
       <label htmlFor={id} className="block text-xs text-[var(--ink-muted)]">Words and their pronunciations</label>
       <textarea id={id} value={draft} onChange={event => { setDraft(event.target.value); setError(''); }}
         rows={4} maxLength={MAX_PRONUNCIATION_CHARACTERS} disabled={busy} spellCheck={false}
@@ -34,7 +34,7 @@ function PronunciationEditor({ value, busy, onSave }: Props) {
         className="neu-inset w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm text-[var(--ink)] outline-none focus:border-[var(--line-strong)] focus:ring-2 focus:ring-[var(--botanical)]/15" />
       <p id={`${id}-help`} className="text-xs leading-5 text-[var(--ink-muted)]">One correction per line: word = pronunciation. Match capitalization exactly. Changes apply to speech only; your written text stays the same. Restart an active voice conversation to use newly saved corrections.</p>
       {error && <p id={`${id}-error`} role="alert" className="text-xs text-[var(--danger)]">{error}</p>}
-      <button type="button" disabled={busy || draft.trim() === value.trim()} onClick={() => void save()}
+      <button data-enter-submit type="button" disabled={busy || draft.trim() === value.trim()} onClick={() => void save()}
         className="neu-button rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-3 py-2 text-sm text-[var(--ink)] disabled:opacity-45">
         {busy ? 'Saving…' : 'Save pronunciations'}
       </button>

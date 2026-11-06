@@ -1,5 +1,8 @@
 import type { Stats } from "node:fs";
+import { buildKnowledgeTree } from "./knowledge-tree.ts";
+import { isPptxSource } from "./garden-source-display.ts";
 import { withoutDetachedVisualPayloads } from "./garden-detached-visual.ts";
+import { runCooperatively } from "./cooperative-task.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import OpenAI from "openai";
@@ -158,6 +161,7 @@ export interface KnowledgeNode {
   sourceType: string;
   sourceFile: string;
   sourcePdf: string;
+  sourceImages?: string[];
   sourceMedia: string;
   sourceDocument: string;
   textbookPage: string;
@@ -200,6 +204,7 @@ export interface ClusterKnowledge {
     documents: number;
     topics: number;
     textbookPages: number;
+    conceptPages: number;
     conceptNodes: number;
     learningPages: number;
     generatedNotes: number;
@@ -696,15 +701,26 @@ export interface ClusterMarkdownEntry {
 export function walkClusterMarkdown(
   clusterDir: string,
 ): ClusterMarkdownEntry[] {
+  const steps = walkClusterMarkdownSteps(clusterDir);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** The walk above, yielding between files so a cooperative scan stays responsive. */
+function* walkClusterMarkdownSteps(
+  clusterDir: string,
+): Generator<void, ClusterMarkdownEntry[]> {
   if (!fs.existsSync(clusterDir)) return [];
 
   const results: ClusterMarkdownEntry[] = [];
-  const walk = (dir: string, relDir: string) => {
+  const walk = function* (dir: string, relDir: string): Generator<void> {
     for (const dirent of fs.readdirSync(dir, { withFileTypes: true })) {
       const name = dirent.name;
       if (dirent.isDirectory()) {
         if (name === "assets" || name.startsWith(".")) continue;
-        walk(path.join(dir, name), relDir ? `${relDir}/${name}` : name);
+        yield* walk(path.join(dir, name), relDir ? `${relDir}/${name}` : name);
         continue;
       }
       if (!dirent.isFile() || !name.endsWith(".md")) continue;
@@ -712,6 +728,7 @@ export function walkClusterMarkdown(
       if (lower === "_index.md" || lower === "index.md") continue;
 
       const filePath = path.join(dir, name);
+      yield;
       results.push({
         entry: name,
         filePath,
@@ -722,7 +739,7 @@ export function walkClusterMarkdown(
     }
   };
 
-  walk(clusterDir, "");
+  yield* walk(clusterDir, "");
   return results.sort((a, b) => a.relPath.localeCompare(b.relPath));
 }
 
@@ -826,6 +843,39 @@ function writeKnowledgeTextFile(
 }
 
 let knowledgeBinaryWriteSequence = 0;
+
+/** Add a viewer to a legacy upload without replacing its source note or lessons. */
+export function attachPresentationSourcePreview(
+  filePath: string,
+  sourcePdf: string,
+  sourcePresentation: string,
+  transaction: KnowledgeWriteTransaction,
+): void {
+  const content = fs.readFileSync(filePath, "utf8");
+  const { data } = parseMarkdownFile(content);
+  const filename = frontmatterString(data, "source_file");
+  if (!isPptxSource(frontmatterString(data, "source_type"), filename)) {
+    throw new Error("The source is not a PowerPoint presentation.");
+  }
+  const oldTitle = frontmatterString(data, "title");
+  const fields = {
+    title: filename,
+    description: frontmatterString(data, "description") || (oldTitle !== filename ? oldTitle : ""),
+    source_pdf: sourcePdf,
+    source_presentation: sourcePresentation,
+  };
+  // Preserve the rest of the frontmatter byte-for-byte, including multiline
+  // metadata, and use the existing durable write journal for rollback.
+  const updated = content.replace(/^---\r?\n([\s\S]*?)\r?\n---/, (_match, header: string) => {
+    for (const [key, value] of Object.entries(fields)) {
+      const line = `${key}: ${JSON.stringify(value)}`;
+      const pattern = new RegExp(`^${key}:.*$`, "m");
+      header = pattern.test(header) ? header.replace(pattern, () => line) : `${header}\n${line}`;
+    }
+    return `---\n${header}\n---`;
+  });
+  writeKnowledgeTextFile(filePath, updated, transaction);
+}
 
 function writeKnowledgeBinaryFile(
   filePath: string,
@@ -1090,7 +1140,10 @@ function legacyIngestSections(clusterDir: string): LegacyIngestSection[] {
         .filter((child) => child.name.toLowerCase() !== "_index.md")
         .map((child) => path.join(directoryPath, child.name))
         .sort((left, right) => left.localeCompare(right));
-      if (!fs.existsSync(indexPath) || pagePaths.length === 0) return [];
+      // Older ingestion also left source-linked section indexes without any
+      // child pages. Those still belong under Concepts; requiring a page here
+      // strands the empty sections at the Garden root on every later ingest.
+      if (!fs.existsSync(indexPath)) return [];
 
       const indexData = parseMarkdownFile(
         fs.readFileSync(indexPath, "utf-8"),
@@ -1218,8 +1271,8 @@ function writeMigratedConceptSectionIndex({
 /**
  * Move the legacy, hidden document-ingestion layout from numbered Garden-root
  * folders into the public Concepts collection. Detection deliberately requires
- * an internal generated section plus internal source-linked learning pages, so
- * Learn-authored curricula and user-created numbered folders are never moved.
+ * an internal source-linked section and validates every child page, if present,
+ * so Learn-authored curricula and user-created numbered folders are never moved.
  */
 export function migrateLegacyIngestSectionsToConcepts(
   contentPath: string,
@@ -1763,7 +1816,9 @@ async function requestKnowledgeExtraction({
 
 /** Concept extraction could not produce a knowledge map for this source. */
 export class KnowledgeExtractionFailedError extends Error {
-  constructor(cause: unknown) {
+  readonly model: string;
+
+  constructor(cause: unknown, model: string) {
     super(
       `Concept extraction failed for this source, so nothing was published: ${
         cause instanceof Error ? cause.message : String(cause)
@@ -1771,16 +1826,20 @@ export class KnowledgeExtractionFailedError extends Error {
     );
     this.name = "KnowledgeExtractionFailedError";
     this.cause = cause;
+    this.model = model;
   }
 }
 
 export class IncompleteKnowledgeExtractionError extends Error {
-  constructor(index: number, total: number, cause: unknown) {
+  readonly model: string;
+
+  constructor(index: number, total: number, cause: unknown, model: string) {
     super(
       `Concept extraction failed for section ${index + 1} of ${total}; refusing to publish an incomplete knowledge map.`,
     );
     this.name = "IncompleteKnowledgeExtractionError";
     this.cause = cause;
+    this.model = model;
   }
 }
 
@@ -1915,7 +1974,12 @@ export async function extractDocumentKnowledge({
       } catch (error) {
         // Completed sections are already durable. Surface the failure so the job
         // retries the missing section instead of publishing a silently incomplete map.
-        throw new IncompleteKnowledgeExtractionError(index, chunks.length, error);
+        throw new IncompleteKnowledgeExtractionError(
+          index,
+          chunks.length,
+          error,
+          selectedModel,
+        );
       }
     }
 
@@ -1926,7 +1990,7 @@ export async function extractDocumentKnowledge({
     // wants to keep the raw source anyway must decide that for itself, in the
     // open, rather than receiving a fabricated map it cannot tell apart from a
     // real one.
-    throw new KnowledgeExtractionFailedError(error);
+    throw new KnowledgeExtractionFailedError(error, selectedModel);
   }
 }
 
@@ -2979,7 +3043,7 @@ export async function writeDocumentKnowledge({
     extraction.documentTitle = sectionTitle;
     const isUploadedMedia = Boolean(sourceMetadata?.original_filename);
     const visibleSourceTitle =
-      sourceType.toLowerCase() === "pdf" || isUploadedMedia
+      sourceType.toLowerCase() === "pdf" || isPptxSource(sourceType, sourceFileName) || isUploadedMedia
         ? sourceFileName.trim() || sourceTitle
         : sectionTitle || sourceTitle;
     ensureKnowledgeDirectory(sourcesDir, transaction);
@@ -3434,11 +3498,44 @@ function frontmatterArray(data: Frontmatter, key: string): string[] {
 }
 
 function excerpt(body: string): string {
-  return compactText(
-    body
-      .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, "$2")
-      .replace(/^#+\s+/gm, ""),
-  ).slice(0, 220);
+  const clean = (text: string) =>
+    compactText(
+      text
+        .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, "$2")
+        .replace(/^#+\s+/gm, ""),
+    );
+  // Sources run to megabytes, and cleaning one whole to keep 220 characters
+  // dominated a Garden scan. A prefix ending at a paragraph break gives the
+  // same answer when every link opened in it also closes in it and it still
+  // yields well over 220 characters; anything else cleans the whole body.
+  // The break itself stays in the prefix so a heading marker before it is
+  // stripped exactly as it is in the whole body.
+  const breaks = body.length > 8192
+    ? [body.indexOf("\n\n", 4096) + 2, body.indexOf("\r\n\r\n", 4096) + 4].filter(end => end > 4096)
+    : [];
+  if (breaks.length > 0) {
+    const prefix = body.slice(0, Math.min(...breaks));
+    const cleaned = prefix.lastIndexOf("[[") > prefix.lastIndexOf("]]") ? "" : clean(prefix);
+    if (cleaned.length > 512) return cleaned.slice(0, 220);
+  }
+  return clean(body).slice(0, 220);
+}
+
+// The code units JavaScript's `\s` matches.
+const WHITESPACE = new Uint8Array(65536);
+for (const code of [9, 10, 11, 12, 13, 32, 0xa0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff]) WHITESPACE[code] = 1;
+WHITESPACE.fill(1, 0x2000, 0x200b);
+
+/** Whitespace-separated words, as `text.trim().split(/\s+/)` counts them, without the array. */
+export function countWords(text: string): number {
+  let words = 0;
+  let inWord = false;
+  for (let i = 0; i < text.length; i++) {
+    const space = WHITESPACE[text.charCodeAt(i)] === 1;
+    if (!space && !inWord) words++;
+    inWord = !space;
+  }
+  return words;
 }
 
 function wikilinkTargets(body: string): string[] {
@@ -3462,11 +3559,45 @@ function wikilinkTargets(body: string): string[] {
  */
 export const GARDEN_SUMMARY_FRESHNESS_MS = 10_000;
 
+type ScanClusterKnowledgeOptions = { migrateSources?: boolean; maxStaleMs?: number };
+
 export function scanClusterKnowledge(
   contentPath: string,
   clusterSlug: string,
-  options: { migrateSources?: boolean; maxStaleMs?: number } = {},
+  options: ScanClusterKnowledgeOptions = {},
 ): ClusterKnowledge {
+  const steps = scanClusterKnowledgeSteps(contentPath, clusterSlug, options);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/**
+ * The same scan in short slices. A cold large garden takes seconds to parse,
+ * and the synchronous form froze every tab on the dashboard's only thread.
+ */
+export function scanClusterKnowledgeCooperatively(
+  contentPath: string,
+  clusterSlug: string,
+  options: ScanClusterKnowledgeOptions = {},
+): Promise<ClusterKnowledge> {
+  // A Garden open asks from several routes at once; they share one pass.
+  const key = `${path.resolve(contentPath, clusterSlug.trim())}|${options.migrateSources !== false}|${options.maxStaleMs ?? ""}`;
+  const running = cooperativeScans.get(key);
+  if (running) return running;
+  const scan = runCooperatively(scanClusterKnowledgeSteps(contentPath, clusterSlug, options))
+    .finally(() => cooperativeScans.delete(key));
+  cooperativeScans.set(key, scan);
+  return scan;
+}
+const cooperativeScans = new Map<string, Promise<ClusterKnowledge>>();
+
+function* scanClusterKnowledgeSteps(
+  contentPath: string,
+  clusterSlug: string,
+  options: ScanClusterKnowledgeOptions,
+): Generator<void, ClusterKnowledge> {
   const clusterDir = path.join(contentPath, clusterSlug.trim());
   let nodes: KnowledgeNode[] = [];
 
@@ -3481,6 +3612,7 @@ export function scanClusterKnowledge(
         documents: 0,
         topics: 0,
         textbookPages: 0,
+        conceptPages: 0,
         conceptNodes: 0,
         learningPages: 0,
         generatedNotes: 0,
@@ -3507,7 +3639,7 @@ export function scanClusterKnowledge(
   if (options.migrateSources !== false) {
     migrateRootSourceDocumentsToSources(clusterDir);
   }
-  const markdownEntries = walkClusterMarkdown(clusterDir);
+  const markdownEntries = yield* walkClusterMarkdownSteps(clusterDir);
   const semanticArtifacts = readGardenSemanticArtifacts(
     clusterDir,
     clusterSlug,
@@ -3528,6 +3660,7 @@ export function scanClusterKnowledge(
   if (cached) dropClusterKnowledge(cacheKey);
 
   for (const { entry, filePath, folder, relPath, stat } of markdownEntries) {
+    yield;
     const modifiedAt = stat.mtime.toISOString();
     const content = fs.readFileSync(filePath, "utf-8");
     const { data, body: rawBody } = parseMarkdownFile(content);
@@ -3565,8 +3698,11 @@ export function scanClusterKnowledge(
     const legacyTerms = frontmatterArray(data, "tags");
     const publicTerms =
       assignmentTerms.length > 0 ? assignmentTerms : legacyTerms;
-    const resolvedTerms =
-      semanticArtifacts.registry.concepts.length > 0
+    // Only learner pages keep tags; grounding them against a whole source
+    // book's body was the slowest step of a scan.
+    const resolvedTerms = !isLearnerPage
+      ? []
+      : semanticArtifacts.registry.concepts.length > 0
         ? publicTerms
             .map(
               (term) => resolveConcept(term, semanticArtifacts.registry)?.slug,
@@ -3593,7 +3729,7 @@ export function scanClusterKnowledge(
           )
       : [];
     const date = frontmatterString(data, "date") || modifiedAt;
-    const wordCount = body.trim().split(/\s+/).filter(Boolean).length;
+    const wordCount = countWords(body);
 
     nodes.push({
       id: slug,
@@ -3655,6 +3791,7 @@ export function scanClusterKnowledge(
   }
 
   for (const node of nodes) {
+    yield;
     if (node.sourceDocument) addEdge(node.slug, node.sourceDocument, "source");
     for (const target of node.related) addEdge(node.slug, target, "related");
     for (const target of wikilinkTargets(node.content))
@@ -3720,26 +3857,7 @@ export function scanClusterKnowledge(
       node.draft !== "true",
   );
   const generatedNotes = nodes.filter((node) => node.type === "generated-note");
-  const usedTopicSlugs = new Set<string>();
-
-  const tree = sourceNodes.map((source) => {
-    const topics = topicNodes.filter((topic) => {
-      const linkedToSource = edges.some(
-        (edge) =>
-          edge.relation !== "shared-topic" &&
-          ((edge.source === topic.slug && edge.target === source.slug) ||
-            (edge.source === source.slug && edge.target === topic.slug)),
-      );
-      if (linkedToSource) usedTopicSlugs.add(topic.slug);
-      return linkedToSource;
-    });
-
-    return { source, topics };
-  });
-
-  const orphanTopics = topicNodes.filter(
-    (node) => !usedTopicSlugs.has(node.slug),
-  );
+  const { tree, orphanTopics } = buildKnowledgeTree(sourceNodes, topicNodes, edges);
 
   const knowledge = {
     nodes,
@@ -3750,6 +3868,7 @@ export function scanClusterKnowledge(
       documents: sourceNodes.length,
       topics: topicNodes.length,
       textbookPages: textbookNodes.length,
+      conceptPages: ingestConceptTopics.length,
       conceptNodes: conceptNodes.length,
       learningPages: learningNodes.length,
       generatedNotes: generatedNotes.length,

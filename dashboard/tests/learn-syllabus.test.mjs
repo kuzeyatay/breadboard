@@ -402,7 +402,7 @@ describe("Learn syllabus prompting", () => {
   test("every planning stage receives the syllabus", () => {
     assert.match(
       learnSource,
-      /withSyllabusRules\(SOURCE_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus\)/,
+      /withSyllabusRules\([\s\S]{0,650}: SOURCE_MAP_PROMPT,\s*SYLLABUS_PLANNING_RULES,\s*hasSyllabus/,
     );
     assert.match(
       learnSource,
@@ -410,7 +410,7 @@ describe("Learn syllabus prompting", () => {
     );
     assert.match(
       learnSource,
-      /withSyllabusRules\(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus\)/,
+      /withSyllabusRules\(topicMapSystemPrompt, SYLLABUS_PLANNING_RULES, hasSyllabus\)/,
     );
     assert.match(learnSource, /syllabus: syllabusPayload,/);
   });
@@ -568,7 +568,7 @@ describe("Learn panel syllabus controls", () => {
   test("the syllabus does not count as material to teach from", () => {
     assert.match(
       workspaceSource,
-      /learnEligibleSourceDocuments = sourceDocuments\.filter\(/,
+      /learnEligibleSourceDocuments = learnAvailableSourceDocuments\.filter\(/,
     );
     assert.match(
       workspaceSource,

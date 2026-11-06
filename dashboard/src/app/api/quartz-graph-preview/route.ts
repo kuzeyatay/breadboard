@@ -198,6 +198,7 @@ function injectPreviewShell(
 ): string {
   const baseHref = quartzUrl(clusterSlug);
   const contentIndexUrl = proxyUrl(origin, 'contentIndex', refresh, clusterSlug);
+  const contentMetadataUrl = proxyUrl(origin, 'contentMetadata', refresh, clusterSlug);
   const prescriptUrl = proxyUrl(origin, 'prescript', refresh, clusterSlug);
   const postscriptUrl = proxyUrl(origin, 'postscript', refresh, clusterSlug);
   const topologyUrl = new URL('/api/thought-topology', origin);
@@ -220,6 +221,20 @@ function injectPreviewShell(
     .replace(
       /const fetchData = fetch\((["']).*?contentIndex\.json\1\)\.then\(data => data\.json\(\)\)/,
       `const fetchData = fetch("${contentIndexUrl}").then(data => data.json())`,
+    )
+    // Current Quartz reads contentMetadata.json and falls back to
+    // contentIndex.json. Under the <base> above both resolve to the Quartz
+    // origin, which the browser blocks from this dashboard-served page, so
+    // each goes through the same-origin proxy. Keep them apart: the full
+    // index carries every note's text (126 MB), and parsing a garden's share
+    // of it blocked the page for 5 s.
+    .replace(
+      /fetch\((["'])[^"']*static\/contentMetadata\.json\1\)/g,
+      `fetch("${contentMetadataUrl}")`,
+    )
+    .replace(
+      /fetch\((["'])[^"']*static\/contentIndex\.json\1\)/g,
+      `fetch("${contentIndexUrl}")`,
     )
     .replace(
       /src=(["'])(?:\.\.\/)?prescript\.js(?:\?[^"']*)?\1/g,
@@ -352,19 +367,21 @@ async function publishedQuartzRevision(clusterSlug: string): Promise<{
   };
 }
 
-async function readQuartzContentIndex(): Promise<{
+async function readQuartzContentIndex(
+  fileName: 'contentIndex.json' | 'contentMetadata.json' = 'contentIndex.json',
+): Promise<{
   ok: true;
   text: string;
 } | {
   ok: false;
   status: number;
 }> {
-  const localContentIndex = readLocalQuartzTextFile('static', 'contentIndex.json');
+  const localContentIndex = readLocalQuartzTextFile('static', fileName);
   if (localContentIndex !== null) {
     return { ok: true, text: localContentIndex };
   }
 
-  const response = await fetch(`${QUARTZ_BASE_URL}/static/contentIndex.json`, {
+  const response = await fetch(`${QUARTZ_BASE_URL}/static/${fileName}`, {
     cache: 'no-store',
   });
 
@@ -388,8 +405,10 @@ export async function GET(request: NextRequest) {
       return proxyQuartzJavaScript(asset);
     }
 
-    if (asset === 'contentIndex') {
-      const contentIndex = await readQuartzContentIndex();
+    if (asset === 'contentIndex' || asset === 'contentMetadata') {
+      const contentIndex = await readQuartzContentIndex(
+        asset === 'contentMetadata' ? 'contentMetadata.json' : 'contentIndex.json',
+      );
       if (!contentIndex.ok) {
         return NextResponse.json(
           { error: 'Quartz content index is not available.' },

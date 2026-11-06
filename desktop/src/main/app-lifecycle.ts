@@ -13,6 +13,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { LogManager } from "./log-manager";
+import { initializeAppSession } from "./app-session";
+import { installAppAssetTransport } from "./app-assets";
+import { sendSpotifyRequest } from "./spotify-control";
+import { registerTextHighlightHandler } from "./text-highlight-transport";
+import { registerTerminalDataHandlers } from "./terminal-data-transport";
+import { SpotifyViewLeases } from "./spotify-view-leases";
+import { activeLearnGardens } from "./learn-quit-guard";
 import { isOpenLocalPathRequest, openLocalPath } from "./local-path-opener";
 import { restoreBrowserSession, flushBrowserSession } from "./browser-session-persistence";
 import {
@@ -36,7 +43,9 @@ import {
   MIGRATION_VERSION,
 } from "./migration";
 import { preflightQaDashboardDevelopment } from "./provisioning";
+import { refreshQuartzRuntimeAssets } from "./quartz-runtime-assets";
 import { prepareDevelopmentCliproxyRuntime } from "./cliproxy";
+import { repairWhisperXFfmpeg } from "./whisperx-ffmpeg-repair";
 import {
   WindowManager,
   defaultPreloadPath,
@@ -44,6 +53,8 @@ import {
 } from "./window-manager";
 import { BROWSER_SESSION_PARTITION, BROWSER_TAB_PATH } from "./tab-manager";
 import { BrowserDownloads } from "./browser-downloads";
+import { DownloadSettings, registerDownloadSettingsHandlers } from "./download-settings";
+import { registerPdfDownloadHandler } from "./pdf-download";
 import { BreadboardUseBridge } from "./breadboard-use";
 import {
   allowThemeLocationFor,
@@ -137,10 +148,11 @@ import {
   defaultComputerUseOverlayHtmlPath,
 } from "./computer-use-indicator";
 import { rebuildDevelopmentInstallation } from "./development-rebuild";
-import { createClickyLauncher } from "./clicky-launcher";
-import { ClickyCompanion } from "./clicky-companion";
+import { initializeSourceRepair, recoverInterruptedRepairActivation, readRepairJournal,
+  writeRepairJournal, updateSourceRepair } from "../shared/source-repair";
+import { SourceRepairActivator } from "../shared/source-repair-activation";
 import { VoiceCompanion } from "./voice-companion";
-import { createWindowsInput } from "./windows-click";
+import { SystemDictation } from "./system-dictation";
 
 export interface StartupFailure {
   serviceId: string;
@@ -270,8 +282,11 @@ export class AppLifecycle {
   private logs!: LogManager;
   private windows!: WindowManager;
   private browserDownloads!: BrowserDownloads;
+  private downloadSettings!: DownloadSettings;
   private runtime: RuntimeProcess | null = null;
+  private sourceRepairActivator: SourceRepairActivator | null = null;
   private runtimeDashboardUrl: string | null = null;
+  private readonly spotifyViews = new Map<number, { origin: string; client: SpotifyViewLeases }>();
   private allowedOrigins!: AllowedOrigins;
   private runtimeStatusTimer: NodeJS.Timeout | null = null;
   private runtimeStatusRefreshInFlight = false;
@@ -289,9 +304,10 @@ export class AppLifecycle {
   };
   private quitting = false;
   private runtimeStopped = false;
+  private learnQuitConfirmed = false;
   private computerUseIndicator: ComputerUseIndicator | null = null;
-  private clickyCompanion: ClickyCompanion | null = null;
   private voiceCompanion: VoiceCompanion | null = null;
+  private systemDictation: SystemDictation | null = null;
   /** Random loopback-only CDP port reserved for visible browser-agent tabs. */
   private browserAgentDebuggingPort: number | null = null;
   /** Decided pre-ready, logged once the log exists. */
@@ -362,6 +378,8 @@ export class AppLifecycle {
     });
 
     await app.whenReady();
+    initializeAppSession();
+    installAppAssetTransport(session.defaultSession, () => this.runtimeDashboardUrl);
 
     inhibitSystemSleepUntilQuit(powerSaveBlocker, (listener) => {
       app.once("will-quit", listener);
@@ -385,6 +403,7 @@ export class AppLifecycle {
         runtimeProductText(redactSecrets(line, this.persistentConfig)),
     });
     const supervisorLog = this.logs.forService("desktop");
+    supervisorLog.write("[desktop] local app HTTP cache disabled; immutable app assets use a separate transport/cache; browser cache retained");
     // Renderer exits and Node warnings otherwise only reach the terminal,
     // leaving an unexplained clean shutdown in the persistent log.
     app.on("render-process-gone", (_event, contents, details) => {
@@ -401,6 +420,31 @@ export class AppLifecycle {
     );
 
     const launchMode = runtimeLaunchMode(this.paths.mode);
+    if (!this.paths.qaMode && launchMode === "lean" && fs.existsSync(path.join(this.paths.appRoot, ".git"))) {
+      try {
+      initializeSourceRepair(this.paths.dataRoot, this.paths.appRoot, true);
+      recoverInterruptedRepairActivation(this.paths.dataRoot);
+      this.sourceRepairActivator = new SourceRepairActivator(this.paths.dataRoot, this.paths.appRoot, {
+        quiesce: async () => {
+          if (!this.runtime || this.runtime.state === "stopped" || this.runtime.state === "failed") return { workers: 0, leases: 0 };
+          return this.runtime.quiesceForRepair();
+        },
+        resumeAdmission: async () => { if (this.runtime?.state === "ready") await this.runtime.resumeAfterRepairDeferral(); },
+        restart: () => this.retryRuntimeRoot(),
+        healthy: async (releaseId) => {
+          if (!this.runtimeDashboardUrl || this.runtime?.state !== "ready") return false;
+          try {
+            const response = await fetch(new URL("/api/health", this.runtimeDashboardUrl), { signal: AbortSignal.timeout(5000), cache: "no-store" });
+            const health = await response.json() as { status?: string; sourceReleaseId?: string | null };
+            return response.ok && health.status === "ok" && (health.sourceReleaseId ?? null) === releaseId;
+          } catch { return false; }
+        },
+        log: message => supervisorLog.write(`[source-repair] ${message}`),
+      });
+      } catch (error) {
+        supervisorLog.write(`[source-repair] Controller unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     const attachedDashboardUrl = (() => {
       const configured = process.env["BREADBOARD_DESKTOP_ATTACH_DASHBOARD_URL"]?.trim();
       if (!configured) return null;
@@ -465,10 +509,11 @@ export class AppLifecycle {
     // Record it so the next launch can route around the driver.
     installGpuCrashRecorder(
       {
-        onGpuProcessCrash: (listener) =>
+        onChildProcessGone: (listener) =>
           void app.on("child-process-gone", (_event, details) => {
-            if (details.type === "GPU" && details.reason !== "clean-exit") listener();
+            listener(details);
           }),
+        shouldRecordCrashes: () => !this.quitting && !this.gpuPreferences?.softwareGl,
       },
       app.getPath("userData"),
       (line) => supervisorLog.write(line),
@@ -523,7 +568,12 @@ export class AppLifecycle {
 
     await restoreBrowserSession(session.fromPartition(BROWSER_SESSION_PARTITION), line => supervisorLog.write(line));
 
+    this.downloadSettings = new DownloadSettings(this.paths.configDir, app.getPath("downloads"), line => supervisorLog.write(line));
+    this.downloadSettings.attach(session.defaultSession);
+    this.downloadSettings.attach(session.fromPartition(BROWSER_SESSION_PARTITION));
+    app.on("session-created", created => this.downloadSettings.attach(created));
     this.browserDownloads = new BrowserDownloads(this.paths.configDir, shell, (line) => supervisorLog.write(line));
+    this.browserDownloads.attach(session.defaultSession);
     this.browserDownloads.attach(session.fromPartition(BROWSER_SESSION_PARTITION));
     app.on("before-quit", () => this.browserDownloads.prepareForQuit());
 
@@ -539,6 +589,7 @@ export class AppLifecycle {
       // is written down. A reconnect scene that never lifts is unexplainable
       // without this.
       log: (line) => supervisorLog.write(line),
+      confirmMainWindowClose: (window) => this.confirmQuitDuringLearn(window),
       onMainWindowCloseRequested: () => {
         this.computerUseIndicator?.stop();
         // Popup/controller windows must not turn closing Breadboard's main
@@ -590,7 +641,7 @@ export class AppLifecycle {
     this.breadboardUse = new BreadboardUseBridge({
       tabs: this.windows.tabs, dataRoot: this.paths.dataRoot,
       dashboardUrl: () => this.runtimeDashboardUrl,
-      clicky: () => this.clickyLauncher(),
+      cdpPort: () => this.browserAgentDebuggingPort,
     });
     await this.breadboardUse.start();
 
@@ -637,6 +688,7 @@ export class AppLifecycle {
       this.allowDashboardOrigin(attachedDashboardUrl);
       this.startVoiceCompanion();
       this.windows.tabs.setNewTabUrl(new URL("/new-tab", attachedDashboardUrl).toString());
+      this.windows.tabs.setAuthenticationUrl(attachedDashboardUrl);
       this.windows.tabs.setBrowserUrl(new URL(BROWSER_TAB_PATH, attachedDashboardUrl).toString());
       this.dashboardShown = true;
       this.setStartupState({ phase: "ready", message: "Ready", services: [] });
@@ -680,6 +732,7 @@ export class AppLifecycle {
         appRoot: this.paths.appRoot,
         runtimeRoot: this.paths.runtimeRoot,
         dataRoot: this.paths.dataRoot,
+        bulkRoot: this.paths.bulkRoot,
         configRoot: this.paths.configDir,
       },
       ...DESKTOP_RUNTIME_EXIT_TIMEOUTS,
@@ -691,6 +744,11 @@ export class AppLifecycle {
 
   private async prepareDataLayer(): Promise<void> {
     preflightQaDashboardDevelopment(this.paths);
+    const quartzAssets = refreshQuartzRuntimeAssets(
+      path.join(this.paths.dashboardServerDir, 'public', 'quartz-runtime'),
+      path.join(this.paths.quartzWorkspace, 'public'),
+    );
+    this.logs.forService('desktop').write(`[desktop] Refreshed ${quartzAssets} Quartz shared assets`);
 
     // QA data is always fresh/disposable. Never detect or copy a developer
     // checkout into it: doing so would make scenarios non-deterministic and
@@ -748,6 +806,15 @@ export class AppLifecycle {
       savePersistentConfig(this.paths.configDir, persistent);
     }
 
+    const whisperXRepair = repairWhisperXFfmpeg(
+      path.join(this.paths.runtimeDir, "scriberr"),
+    );
+    this.logs
+      .forService("desktop")
+      .write(
+        `[desktop] WhisperX FFmpeg repair: ${whisperXRepair.reason} (${whisperXRepair.linked} linked)`,
+      );
+
     // Runtime V2's hot/lean CLIProxyAPI launch profile uses a data-root
     // executable. Restore the first-run preparation that the cutover omitted;
     // subscriptions remain optional, so an offline download never blocks the
@@ -791,6 +858,7 @@ export class AppLifecycle {
       this.allowDashboardOrigin(ready.dashboardUrl);
       this.startVoiceCompanion();
       this.windows.tabs.setNewTabUrl(new URL("/new-tab", ready.dashboardUrl).toString());
+      this.windows.tabs.setAuthenticationUrl(ready.dashboardUrl);
       this.windows.tabs.setBrowserUrl(new URL(BROWSER_TAB_PATH, ready.dashboardUrl).toString());
       const status = await this.runtime.status();
       this.startRuntimeStatusPolling();
@@ -891,6 +959,8 @@ export class AppLifecycle {
       this.allowedOrigins.origins.delete(new URL(this.runtimeDashboardUrl).origin);
     }
     this.runtimeDashboardUrl = null;
+    this.systemDictation?.stop();
+    this.systemDictation = null;
     this.windows.tabs.setNewTabUrl(null);
     this.windows.tabs.setBrowserUrl(null);
     this.dashboardShown = false;
@@ -1000,6 +1070,7 @@ export class AppLifecycle {
     this.runtimeStatusRefreshInFlight = true;
     try {
       await this.applyRuntimeSnapshot(await runtime.status());
+      await this.sourceRepairActivator?.tick();
     } catch {
       // A transient control read cannot create a second owner or change the UI
       // to a false terminal state. Process exit is reported by the fixed-root
@@ -1030,6 +1101,17 @@ export class AppLifecycle {
     readonly signal: NodeJS.Signals | null;
   }): void {
     if (this.quitting || this.runtimeStopped) return;
+    if (this.sourceRepairActivator) {
+      try {
+      const journal = readRepairJournal(this.paths.dataRoot);
+      if (journal.phase === "probation" && journal.repairId) {
+        writeRepairJournal(this.paths.dataRoot, { ...journal, phase: "rolling_back", active: journal.previous });
+        updateSourceRepair(this.paths.dataRoot, journal.repairId, { stage: "rollback_requested", reason: "The provisional runtime exited unexpectedly." });
+      }
+      } catch (error) {
+        this.logs.forService("desktop").write(`[source-repair] Could not persist runtime rollback: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     this.stopRuntimeStatusPolling();
     this.clearRuntimeRootStabilityTimer();
     this.lastRuntimeStatusSignature = null;
@@ -1110,10 +1192,20 @@ export class AppLifecycle {
         JSON.stringify(runtimeProductCopy(diagnostics), null, 2),
       );
     });
-    ipcMain.handle(IPC_CHANNELS.quit, () => {
+    ipcMain.handle(IPC_CHANNELS.quit, (event) => {
+      // Browser tabs are created with the product preload, so every page the
+      // in-app browser loads can invoke this - including the hidden
+      // chatgpt.com page the openaiweb provider drives. Without this check a
+      // web page can end the process and every job running inside it, and the
+      // log shows only an unattributed clean shutdown (2026-09-22 06:43: a
+      // seven-hour telecom-1 Learn run died exactly this way). Quitting is the
+      // product's own decision, never a loaded page's.
+      if (this.refuseProcessEndFromPage(event.sender, "quit")) return;
       app.quit();
     });
     ipcMain.handle(IPC_CHANNELS.restartApp, (event) => {
+      // Same hazard: a restart ends the current process too.
+      if (this.refuseProcessEndFromPage(event.sender, "restart")) return false;
       const window = this.windowForSender(event.sender);
       if (!window || window.isDestroyed()) return false;
       return this.restartApplication();
@@ -1270,6 +1362,56 @@ export class AppLifecycle {
       event.senderFrame === event.sender.mainFrame
         ? this.windows.tabs.browserTerminalAccess(event.sender) : null,
     );
+    ipcMain.handle(IPC_CHANNELS.spotifyRequest, async (event, request: unknown) => {
+      if (!this.runtimeDashboardUrl || event.senderFrame !== event.sender.mainFrame ||
+          !this.windowForSender(event.sender) ||
+          new URL(event.senderFrame.url).origin !== new URL(this.runtimeDashboardUrl).origin) {
+        throw new Error("Spotify controls are only available in Breadboard.");
+      }
+      const sender = event.sender;
+      const origin = new URL(this.runtimeDashboardUrl).origin;
+      let entry = this.spotifyViews.get(sender.id);
+      if (entry && entry.origin !== origin) {
+        void entry.client.dispose();
+        this.spotifyViews.delete(sender.id);
+        entry = undefined;
+      }
+      if (!entry) {
+        const session = sender.session;
+        const client = new SpotifyViewLeases(async request => {
+          // Cleanup can release an old hold after navigation, but a stale tab
+          // can never keep renewing across sign-out or a Runtime replacement.
+          if (request.method !== "DELETE" && (this.quitting || sender.isDestroyed() ||
+              this.runtimeDashboardUrl === null || new URL(this.runtimeDashboardUrl).origin !== origin ||
+              new URL(sender.getURL()).origin !== origin)) {
+            return {status:401,body:JSON.stringify({message:"The Spotify player view is closed."})};
+          }
+          return sendSpotifyRequest({dashboardUrl:origin,request,readCookies:url=>session.cookies.get({url})});
+        });
+        entry = {origin,client};
+        this.spotifyViews.set(sender.id,entry);
+        const clear = () => {
+          if (this.spotifyViews.get(sender.id)?.client === client) this.spotifyViews.delete(sender.id);
+          sender.removeListener("did-start-navigation", navigated);
+          sender.removeListener("destroyed", clear);
+          void client.dispose();
+        };
+        const navigated = (_event: Electron.Event, _url: string, inPlace: boolean, mainFrame: boolean) => {
+          if (mainFrame && !inPlace) clear();
+        };
+        sender.on("did-start-navigation",navigated);
+        sender.once("destroyed",clear);
+      }
+      return entry.client.request(request);
+    });
+    registerTextHighlightHandler(ipcMain, {
+      ownsSender: sender => Boolean(this.windowForSender(sender)),
+      dashboardUrl: () => this.runtimeDashboardUrl,
+    });
+    registerTerminalDataHandlers(ipcMain, {
+      ownsSender: sender => Boolean(this.windowForSender(sender)),
+      dashboardUrl: () => this.runtimeDashboardUrl,
+    });
     ipcMain.handle(IPC_CHANNELS.tabsCommand, (event, command: unknown) => {
       if (!isTabsCommand(command)) return false;
       if (command.type === 'voice-open') {
@@ -1279,7 +1421,7 @@ export class AppLifecycle {
         this.startVoiceCompanion();
         return this.voiceCompanion?.launch(command.conversationKey).catch(() => false) ?? false;
       }
-      if (command.type === 'voice-overlay' && event.senderFrame !== event.sender.mainFrame) return false;
+      if ((command.type === 'voice-overlay' || command.type === 'auth-sync') && event.senderFrame !== event.sender.mainFrame) return false;
       return this.windows.tabs.handleCommand(event.sender, command);
     });
     ipcMain.handle(IPC_CHANNELS.getBrowserNavigation, () => this.windows.tabs.isEnabled);
@@ -1307,6 +1449,7 @@ export class AppLifecycle {
         foreground: request.foreground,
         reset: request.reset === true,
         lane: request.lane,
+        microphone: request.microphone,
         cdpPort: this.browserAgentDebuggingPort,
       });
     });
@@ -1401,43 +1544,42 @@ export class AppLifecycle {
       }
       return this.browserDownloads.snapshot();
     });
+    registerDownloadSettingsHandlers(ipcMain, {
+      settings: this.downloadSettings,
+      trusted: event => {
+        try {
+          return Boolean(this.windowForSender(event.sender) && this.runtimeDashboardUrl &&
+            event.senderFrame === event.sender.mainFrame && event.senderFrame &&
+            new URL(event.senderFrame.url).origin === new URL(this.runtimeDashboardUrl).origin);
+        } catch { return false; }
+      },
+      chooseDirectory: async (event, current) => {
+        const result = await dialog.showOpenDialog(this.windowForSender(event.sender)!, {
+          title: "Download folder", defaultPath: current, properties: ["openDirectory", "createDirectory"],
+        });
+        return result.canceled ? null : result.filePaths[0] ?? null;
+      },
+    });
+    registerPdfDownloadHandler(ipcMain, {
+      ownsSender: (sender) => Boolean(this.windowForSender(sender)),
+      dashboardUrl: () => this.runtimeDashboardUrl,
+      downloadsDirectory: () => this.downloadSettings.read().directory,
+      askWhereToSave: () => this.downloadSettings.read().askWhereToSave,
+      chooseSavePath: async (sender, defaultPath) => {
+        const result = await dialog.showSaveDialog(this.windowForSender(sender)!, {
+          title: "Save PDF", defaultPath, filters: [{ name: "PDF document", extensions: ["pdf"] }],
+        });
+        return result.canceled ? null : result.filePath ?? null;
+      },
+      onSaved: (savePath, sourceUrl) => this.browserDownloads.recordSavedPdf(savePath, sourceUrl),
+      log: (line) => this.logs.forService("desktop").write(line),
+    });
     ipcMain.handle(IPC_CHANNELS.browserDownloadCommand, (event, command: unknown) => {
       if (!this.windowForSender(event.sender) || !event.senderFrame ||
           !isNavigationAllowed(this.allowedOrigins, event.senderFrame.url) || !isBrowserDownloadCommand(command)) {
         return { ok: false, error: "Invalid download action." };
       }
       return this.browserDownloads.command(command);
-    });
-    ipcMain.handle(IPC_CHANNELS.getClickyState, () =>
-      this.clickyLauncher().state(),
-    );
-    ipcMain.handle(IPC_CHANNELS.launchClicky, async (event) => {
-      const window = this.windowForSender(event.sender);
-      if (!window || window.isDestroyed()) {
-        return {
-          ok: false,
-          code: "launch_failed",
-          message: "Clicky can only be launched from a Breadboard window.",
-          state: this.clickyLauncher().state(),
-        };
-      }
-      const launch = await this.clickyLauncher().launch();
-      this.logs
-        .forService("desktop")
-        .write(`[desktop] Clicky launch ${launch.ok ? "accepted" : "refused"}: ${launch.code}`);
-      return launch;
-    });
-    ipcMain.handle(IPC_CHANNELS.openClickyProject, async (event) => {
-      const window = this.windowForSender(event.sender);
-      if (!window || window.isDestroyed()) {
-        return {
-          ok: false,
-          code: "project_open_failed",
-          message: "The Clicky project can only be opened from a Breadboard window.",
-          state: this.clickyLauncher().state(),
-        };
-      }
-      return this.clickyLauncher().openProject();
     });
     ipcMain.handle(IPC_CHANNELS.openLocalPath, async (event, request: unknown) => {
       if (!this.windowForSender(event.sender) || !event.senderFrame ||
@@ -1457,38 +1599,40 @@ export class AppLifecycle {
   }
 
   private startVoiceCompanion() {
+    if (process.platform === 'win32') {
+      this.systemDictation ??= new SystemDictation({ dashboardUrl: () => this.runtimeDashboardUrl,
+        allowed: this.allowedOrigins, log: line => this.logs.forService('desktop').write(line) });
+      void this.systemDictation.start().catch(error => this.logs.forService('desktop').write(`[dictation] ${String(error)}`));
+    }
     this.voiceCompanion ??= new VoiceCompanion({ dashboardUrl: () => this.runtimeDashboardUrl, allowed: this.allowedOrigins,
+      prepareCapture: contents => this.windows.tabs.prepareBreadboardUseInput(contents),
       contextTargets: window => this.windows.tabs.voiceContextTargets(window) });
     this.windows.tabs.onVoiceNotification = notice => this.voiceCompanion?.notify(notice);
     void this.voiceCompanion.start().catch(error => this.logs.forService('desktop').write(`[voice] ${String(error)}`));
-  }
-
-  private clickyLauncher() {
-    return createClickyLauncher({
-      platform: process.platform,
-      appRoot: this.paths.appRoot,
-      resourcesRoot: this.paths.resourcesRoot,
-      homeDirectory: app.getPath("home"),
-      configuredApplicationPath:
-        process.env["BREADBOARD_CLICKY_APP_PATH"]?.trim() || undefined,
-      openPath: (applicationPath) => shell.openPath(applicationPath),
-      launchWindowsCompanion: process.platform === "win32" ? async () => {
-        const nativeInput = createWindowsInput(this.paths.appRoot);
-        this.clickyCompanion ??= new ClickyCompanion({
-          dashboardUrl: () => this.runtimeDashboardUrl,
-          allowed: this.allowedOrigins,
-          clickAt: nativeInput.click,
-          typeText: nativeInput.typeText,
-        });
-        await this.clickyCompanion.launch();
-      } : undefined,
-    });
   }
 
   /**
    * The window a request came from. A window's own page is found by Electron;
    * a page inside one of the window's tabs is known only to the tab manager.
    */
+  /**
+   * Refuse a process-ending request that came from a loaded page, and say so
+   * in the log so the next one is attributable rather than an unexplained
+   * clean shutdown.
+   */
+  private refuseProcessEndFromPage(sender: Electron.WebContents, action: string): boolean {
+    if (!this.windows.tabs.isTabPageContents(sender)) return false;
+    try {
+      const url = sender.getURL();
+      this.logs?.forService("desktop").write(
+        `[desktop] refused ${action} requested by page content: ${url || "(no url)"}`,
+      );
+    } catch {
+      // Diagnostics must never turn a refusal into a crash.
+    }
+    return true;
+  }
+
   private windowForSender(sender: Electron.WebContents): BrowserWindow | null {
     return BrowserWindow.fromWebContents(sender) ?? this.windows.tabs.windowFor(sender);
   }
@@ -1627,15 +1771,44 @@ export class AppLifecycle {
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));
   }
 
+  /** Closing Breadboard stops the runtime, and with it any Learn run, which
+   * then rolls back and has to start over. Ask first. */
+  private confirmQuitDuringLearn(window?: BrowserWindow): boolean {
+    if (this.learnQuitConfirmed || this.quitting) return true;
+    const gardens = activeLearnGardens(this.paths.dataRoot);
+    if (gardens.length === 0) return true;
+    const options = {
+      type: "warning" as const,
+      buttons: ["Keep Breadboard open", "Quit and stop Learn"],
+      defaultId: 0,
+      cancelId: 0,
+      title: "Learn is still running",
+      message: `Learn is building ${gardens.join(", ")}.`,
+      detail: "Quitting stops the run. Its changes are rolled back and it has to start over.",
+    };
+    const choice = window && !window.isDestroyed()
+      ? dialog.showMessageBoxSync(window, options)
+      : dialog.showMessageBoxSync(options);
+    this.logs?.forService("desktop").write(
+      `[desktop] quit during Learn (${gardens.join(", ")}): ${choice === 1 ? "confirmed" : "declined"}`,
+    );
+    if (choice !== 1) return false;
+    this.learnQuitConfirmed = true;
+    return true;
+  }
+
   private registerExitGuards(): void {
     app.on("before-quit", (event) => {
+      if (!this.runtimeStopped && !this.confirmQuitDuringLearn(this.windows?.window ?? undefined)) {
+        event.preventDefault();
+        return;
+      }
       this.windows?.tabs.freezeSession();
       this.computerUseIndicator?.stop();
-      this.clickyCompanion?.stop();
-      this.clickyCompanion = null;
       this.voiceCompanion?.stop();
       this.voiceCompanion = null;
-      void this.breadboardUse?.close();
+      this.systemDictation?.stop();
+      this.systemDictation = null;
       if (this.runtimeStopped) return;
       event.preventDefault();
       if (this.quitting) return;
@@ -1643,7 +1816,7 @@ export class AppLifecycle {
       this.logs?.forService("desktop").write(`[desktop] quit requested: ${new Error().stack}`);
       this.clearScheduledRuntimeRootRetry();
       this.clearRuntimeRootStabilityTimer();
-      void this.shutdownRuntime().then(() => {
+      void Promise.all([this.breadboardUse?.close(), this.shutdownRuntime()]).then(() => {
         this.runtimeStopped = true;
         app.quit();
       });

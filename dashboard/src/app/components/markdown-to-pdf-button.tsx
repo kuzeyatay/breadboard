@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { downloadPdf } from "@/lib/pdf-download-client";
 
 interface ActiveNote {
   clusterSlug: string;
@@ -36,17 +37,6 @@ function isMarkdownDocument(
       !clean.endsWith("/_index") &&
       !clean.startsWith("tags/"),
   );
-}
-
-function downloadBlob(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function filenameFromDisposition(
@@ -139,12 +129,14 @@ export default function MarkdownToPdfButton({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           clusterSlug: activeNote.clusterSlug,
-          slug: activeNote.slug,
+          slug: typeof documentBody.sourceSlug === "string" ? documentBody.sourceSlug : activeNote.slug,
           fileName:
             typeof documentBody.fileName === "string"
               ? documentBody.fileName
               : activeNote.slug,
           content: documentBody.content,
+          title: typeof documentBody.title === "string" ? documentBody.title : undefined,
+          folderTitle: typeof documentBody.folderTitle === "string" ? documentBody.folderTitle : undefined,
         }),
       });
       if (!pdfResponse.ok) {
@@ -159,7 +151,7 @@ export default function MarkdownToPdfButton({
         pdfResponse.headers.get("Content-Disposition"),
         `${activeNote.slug.replace(/^.*\//, "") || "markdown-note"}.pdf`,
       );
-      downloadBlob(blob, fileName);
+      await downloadPdf(blob, fileName);
     } catch (downloadError) {
       setError(
         downloadError instanceof Error

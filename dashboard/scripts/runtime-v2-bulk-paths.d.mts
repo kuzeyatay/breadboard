@@ -1,0 +1,10 @@
+export function runtimeBulkDataRoot(dataRoot: string, environment?: NodeJS.ProcessEnv): string;
+export function managedPayloadTarget(dataRoot: string, relative: string, environment?: NodeJS.ProcessEnv): string;
+export function managedPayloadRoot(dataRoot: string, relative: string, environment?: NodeJS.ProcessEnv): string;
+export function managedVenvRoot(dataRoot: string, serviceId: string, environment?: NodeJS.ProcessEnv): string;
+export function managedModelCacheEnvironment(dataRoot: string, environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+export function configuredManagedPayloadRoot(dataRoot: string, relative: string, configured?: string, environment?: NodeJS.ProcessEnv): string;
+export const BULK_READY_MARKER: string;
+export function managedPayloadReady(root: string, relative: string): boolean;
+export function clearManagedPayloadReady(dataRoot: string, relative: string, environment?: NodeJS.ProcessEnv): string;
+export function markManagedPayloadReady(dataRoot: string, relative: string, environment?: NodeJS.ProcessEnv): void;

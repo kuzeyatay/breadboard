@@ -13,15 +13,14 @@ import {
   truncateCapturedText,
 } from "../src/lib/recall/policy.ts";
 
-test("capture is opt-in: the default settings record nothing", () => {
-  assert.equal(DEFAULT_RECALL_SETTINGS.captureEnabled, false);
+test("Recall captures and starts automatically by default", () => {
+  assert.equal(DEFAULT_RECALL_SETTINGS.captureEnabled, true);
   assert.deepEqual(DEFAULT_RECALL_SETTINGS.excludedWindows, []);
   // The agent may read history, but only history that capture actually made.
   assert.equal(DEFAULT_RECALL_SETTINGS.agentAccess, true);
   // Starting or stopping the recorder always asks first out of the box.
   assert.equal(DEFAULT_RECALL_SETTINGS.agentControl, "ask");
-  // And nothing records unattended until asked for separately.
-  assert.equal(DEFAULT_RECALL_SETTINGS.autoStartCapture, false);
+  assert.equal(DEFAULT_RECALL_SETTINGS.autoStartCapture, true);
 });
 
 const READY_TO_AUTO_START = {
@@ -31,7 +30,7 @@ const READY_TO_AUTO_START = {
   installed: true,
 };
 
-test("opening Breadboard starts capture only after both opt-ins", () => {
+test("opening Breadboard respects either saved opt-out and the build switch", () => {
   assert.equal(recallAutoStartDecision(READY_TO_AUTO_START), "start");
 
   // Allowing capture is not the same as asking for it to begin on its own.
@@ -58,7 +57,7 @@ test("opening Breadboard starts capture only after both opt-ins", () => {
   );
 });
 
-test("an unattended start never adds a second recorder, and never needs an install", () => {
+test("an unattended start never adds a second recorder and identifies missing installation", () => {
   assert.equal(
     recallAutoStartDecision({ ...READY_TO_AUTO_START, engineRunning: true }),
     "already_running",
@@ -146,7 +145,7 @@ test("omitted fields in a patch are left alone", () => {
   assert.equal(patched.autoStartCapture, true);
 });
 
-test("auto-start is a real, storable choice and not a widened default", () => {
+test("auto-start can be disabled and invalid patches preserve the saved choice", () => {
   assert.equal(
     applyRecallSettingsPatch(DEFAULT_RECALL_SETTINGS, { autoStartCapture: true }).autoStartCapture,
     true,
@@ -159,7 +158,7 @@ test("auto-start is a real, storable choice and not a widened default", () => {
   // A junk value keeps whatever the user last chose rather than turning
   // unattended recording on by accident.
   assert.equal(
-    applyRecallSettingsPatch(DEFAULT_RECALL_SETTINGS, { autoStartCapture: "maybe" })
+    applyRecallSettingsPatch(off, { autoStartCapture: "maybe" })
       .autoStartCapture,
     false,
   );

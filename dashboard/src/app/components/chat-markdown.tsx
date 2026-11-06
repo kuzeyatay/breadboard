@@ -3,8 +3,10 @@
 import {
   isValidElement,
   memo,
+  useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -19,11 +21,17 @@ import remarkMath from 'remark-math';
 import { parseGodsEyeResult } from '@/lib/gods-eye/view';
 import { isSameTabNavigationClick, rememberWorkflowReturnPath } from '@/lib/workflows/navigation';
 import ChatImageResults from './chat-image-results';
+import ChatMarkdownImage from './chat-markdown-image';
+import { ArtifactLinkContext } from './hermes/artifact-link-context';
 import { remarkLimitImageResults } from '@/lib/hermes/image-results';
 import ChatWeatherResults from './chat-weather-results';
 import type { ChatHighlightColor } from '@/lib/chat-highlights';
-import { resolveChatTextSelectionAnchor } from '@/lib/chat-text-selection';
+import { allowMarkTextSelection, resolveChatTextSelectionAnchor } from '@/lib/chat-text-selection';
 import { repairDamagedLatex } from '@/lib/markdown-safety';
+import { chatMarkdownHref } from '@/lib/chat-markdown-links';
+import { remarkChatDetails } from '@/lib/chat-markdown-details';
+import { normalizeMathDelimiters, outsideCode } from '@/lib/chat-markdown-math';
+import { containLongChatMarkdown } from '@/lib/chat-markdown-containment';
 
 interface Props {
   content: string;
@@ -36,12 +44,13 @@ export interface ChatTextAnnotation {
   id: string;
   start: number;
   end: number;
-  kind?: 'answer' | 'highlight';
+  kind?: 'answer' | 'highlight' | 'chat';
   color?: ChatHighlightColor;
   note?: string;
   /** A selection spanning steered segments shows its note only at the start. */
   noteContinuation?: boolean;
   quote?: string;
+  wholeMessage?: true;
   prefix?: string;
   suffix?: string;
 }
@@ -52,83 +61,6 @@ interface HastNode {
   tagName?: string;
   properties?: Record<string, unknown>;
   children?: HastNode[];
-}
-
-/**
- * Code spans and fenced blocks, which no prose transform may touch.
- *
- * A dollar inside `console.log("$5")` is one the author typed, and rewriting it
- * would put a backslash on the reader's screen.
- */
-const CODE_REGIONS = /```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]*`/g;
-
-/** Apply a prose transform to everything except code. */
-function outsideCode(content: string, transform: (prose: string) => string): string {
-  let result = "";
-  let index = 0;
-  for (const match of content.matchAll(CODE_REGIONS)) {
-    result += transform(content.slice(index, match.index)) + match[0];
-    index = match.index + match[0].length;
-  }
-  return result + transform(content.slice(index));
-}
-
-/**
- * A dollar sign that opens a price rather than a formula.
- *
- * `remark-math` reads a `$...$` pair as inline math, so "Helsing at $18B,
- * Hadrian at $7.87B" parsed as the formula "18B, Hadrian at" and rendered in
- * italic serif with both amounts swallowed. A dollar followed by a digit is
- * usually money, but it can also open valid number-led maths such as
- * `$0 < x < 1$`. Those pairs are identified before the remaining currency
- * dollars are escaped.
- */
-const CURRENCY_DOLLAR = /(?<![\\$])\$(?=\d)/g;
-
-function opensNumberLedMath(content: string, openingIndex: number): boolean {
-  const tail = content.slice(openingIndex + 1);
-  const closingMatch = /(?<![\\$])\$(?!\$)/u.exec(tail);
-  if (!closingMatch) return false;
-
-  const candidate = tail.slice(0, closingMatch.index);
-  if (!candidate || candidate.includes('\n')) return false;
-
-  // A matched `$5$` is unambiguously delimited math; prose currency has no
-  // trailing dollar. For longer expressions, require actual math syntax so
-  // separate prices such as "$18B, Hadrian at $7.87B" are not paired up.
-  if (/^\s*\d+(?:[.,]\d+)?\s*$/u.test(candidate)) return true;
-  return (
-    /\\[A-Za-z]+|[_^=<>]/u.test(candidate) ||
-    /\d\s*[+*/-]\s*\d/u.test(candidate)
-  );
-}
-
-function normalizeMathDelimiters(content: string): string {
-  return outsideCode(content, (prose) =>
-    prose
-      .replace(/\\\[([\s\S]*?)\\\]/g, (_match, math: string, offset: number, source: string) => {
-        // Existing block delimiters already carry their list indentation and
-        // blockquote prefixes. Trimming the body drops that context and lets a
-        // closing $$ open a new math block around the following explanation.
-        if (/^[\t ]*\r?\n/u.test(math) && /\n[\t >]*$/u.test(math)) {
-          return `$$${math}$$`;
-        }
-
-        // One-line display equations need new lines, with the same Markdown
-        // container prefix as their opening delimiter (including list markers).
-        const linePrefix = source.slice(source.lastIndexOf('\n', offset - 1) + 1, offset);
-        const continuation = linePrefix.replace(
-          /(?:[-+*]|\d+[.)])[\t ]+$/u,
-          (marker) => ' '.repeat(marker.length),
-        );
-        const prefix = /^[\t >]*$/u.test(continuation) ? continuation : '';
-        return `$$\n${prefix}${math.trim()}\n${prefix}$$`;
-      })
-      .replace(/\\\(([\s\S]*?)\\\)/g, (_match, math: string) => `$${math.trim()}$`)
-      .replace(CURRENCY_DOLLAR, (dollar, offset: number, source: string) =>
-        opensNumberLedMath(source, offset) ? dollar : `\\${dollar}`,
-      ),
-  );
 }
 
 /**
@@ -184,7 +116,7 @@ function normalizeTableCellBreaks(content: string): string {
   return lines.join('\n');
 }
 
-const remarkPlugins = [remarkGfm, remarkMath, remarkLimitImageResults];
+const remarkPlugins = [remarkGfm, remarkMath, remarkChatDetails, remarkLimitImageResults];
 const rehypePlugins = [rehypeKatex];
 
 const languageNames: Record<string, string> = {
@@ -455,30 +387,27 @@ function MarkdownTable({ node, ...props }: MarkdownTableProps) {
 }
 
 const baseComponents = {
-  a: ({ children, href }: { children?: ReactNode; href?: string }) => {
+  a: function MarkdownLink({ children, href }: { children?: ReactNode; href?: string }) {
+    const openArtifactLink = useContext(ArtifactLinkContext);
+    if (!href) return <span>{children}</span>;
     const isWorkflowLink = href === '/workflows' || href?.startsWith('/workflows?');
+    const sameTab = isWorkflowLink || href.startsWith('#');
     return (
       <a
         href={href}
-        target={isWorkflowLink ? undefined : '_blank'}
-        rel={isWorkflowLink ? undefined : 'noreferrer'}
-        onClick={isWorkflowLink ? (event) => {
-          if (isSameTabNavigationClick(event)) rememberWorkflowReturnPath();
-        } : undefined}
+        target={sameTab ? undefined : '_blank'}
+        rel={sameTab ? undefined : 'noreferrer noopener'}
+        onClick={(event) => {
+          if (!isSameTabNavigationClick(event)) return;
+          if (openArtifactLink?.(href)) event.preventDefault();
+          else if (isWorkflowLink) rememberWorkflowReturnPath();
+        }}
       >
         {children}
       </a>
     );
   },
-  img: ({ alt, src }: ComponentProps<'img'>) => (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      alt={alt ?? ''}
-      src={typeof src === 'string' ? src : undefined}
-      className="max-w-full rounded-xl border border-gray-800/80 shadow-lg my-3"
-      loading="lazy"
-    />
-  ),
+  img: ChatMarkdownImage,
   pre: MarkdownPre,
   blockquote: CopyableBlockquote,
   table: MarkdownTable,
@@ -552,6 +481,10 @@ function annotationPlainText(tree: HastNode): string {
   return text;
 }
 
+const annotationBlockContainers = new Set([
+  'blockquote', 'ul', 'ol', 'li', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'details',
+]);
+
 function rehypeTextAnnotations(annotations: readonly ChatTextAnnotation[]) {
   const valid = [...annotations].filter(
     (annotation) =>
@@ -565,6 +498,9 @@ function rehypeTextAnnotations(annotations: readonly ChatTextAnnotation[]) {
     const text = annotationPlainText(tree);
     const sorted = valid
       .flatMap((annotation) => {
+        // Reply quotes the original Markdown, while highlights use rendered
+        // text offsets. The whole-message marker covers that entire text map.
+        if (annotation.wholeMessage) return [{ ...annotation, start: 0, end: text.length }];
         if (!annotation.quote) return [annotation];
         const span = resolveChatTextSelectionAnchor(text, {
           start: annotation.start,
@@ -575,7 +511,10 @@ function rehypeTextAnnotations(annotations: readonly ChatTextAnnotation[]) {
         });
         return span ? [{ ...annotation, ...span }] : [];
       })
-      .sort((left, right) => left.start - right.start || left.end - right.end);
+      .sort((left, right) =>
+        ({ answer: 0, chat: 1, highlight: 2 }[left.kind ?? 'answer'] -
+          { answer: 0, chat: 1, highlight: 2 }[right.kind ?? 'answer']) ||
+        left.start - right.start || left.end - right.end);
     let offset = 0;
     const started = new Set<string>();
 
@@ -628,6 +567,18 @@ function rehypeTextAnnotations(annotations: readonly ChatTextAnnotation[]) {
         const nodeStart = offset;
         const nodeEnd = nodeStart + child.value.length;
         offset = nodeEnd;
+        // Markdown inserts newlines between blocks. Wrapping those invisible
+        // separators in a padded mark creates stray bars (and extra line boxes).
+        // Keep them in the text/offset map, but leave them unpainted. Inline
+        // spaces and whitespace inside code still belong to the highlight.
+        if (
+          !child.value.trim() &&
+          (parent.type === 'root' ||
+            (annotationBlockContainers.has(parent.tagName ?? '') && /[\r\n]/u.test(child.value)))
+        ) {
+          nextChildren.push(child);
+          continue;
+        }
         const matches = sorted.filter(
           (annotation) => annotation.start < nodeEnd && annotation.end > nodeStart,
         );
@@ -636,21 +587,18 @@ function rehypeTextAnnotations(annotations: readonly ChatTextAnnotation[]) {
           continue;
         }
 
-        let cursor = 0;
-        for (const annotation of matches) {
-          const start = Math.max(cursor, annotation.start - nodeStart);
-          const end = Math.min(child.value.length, annotation.end - nodeStart);
-          if (end <= start) continue;
-          if (start > cursor) {
-            nextChildren.push({ type: 'text', value: child.value.slice(cursor, start) });
-          }
-          nextChildren.push(
-            markElement(annotation, [{ type: 'text', value: child.value.slice(start, end) }]),
-          );
-          cursor = end;
-        }
-        if (cursor < child.value.length) {
-          nextChildren.push({ type: 'text', value: child.value.slice(cursor) });
+        // A question can cover part of an existing colored highlight. Split
+        // at each boundary so its link wins there without erasing saved notes
+        // or nesting interactive marks.
+        const boundaries = [...new Set([0, child.value.length, ...matches.flatMap(annotation => [
+          Math.max(0, annotation.start - nodeStart),
+          Math.min(child.value!.length, annotation.end - nodeStart),
+        ])])].sort((left, right) => left - right);
+        for (let index = 1; index < boundaries.length; index += 1) {
+          const start = boundaries[index - 1], end = boundaries[index];
+          const annotation = matches.find(item => item.start < nodeStart + end && item.end > nodeStart + start);
+          const text: HastNode = { type: 'text', value: child.value.slice(start, end) };
+          nextChildren.push(annotation ? markElement(annotation, [text]) : text);
         }
       }
       parent.children = nextChildren;
@@ -661,6 +609,7 @@ function rehypeTextAnnotations(annotations: readonly ChatTextAnnotation[]) {
 }
 
 function chatUrlTransform(url: string, key: string): string {
+  if (key === 'href') return chatMarkdownHref(url) ?? '';
   if (key === 'src' && /^data:image\//i.test(url)) {
     return url;
   }
@@ -728,6 +677,8 @@ function ChatMarkdown({
   onTextAnnotationClick,
 }: Props) {
   const noteIdPrefix = useId();
+  const annotationClickRef = useRef(onTextAnnotationClick);
+  useLayoutEffect(() => { annotationClickRef.current = onTextAnnotationClick; }, [onTextAnnotationClick]);
   const notesById = useMemo(() => {
     const map = new Map<string, string>();
     for (const { id, note, noteContinuation } of textAnnotations) {
@@ -769,6 +720,10 @@ function ChatMarkdown({
         : rehypePlugins,
     [textAnnotations],
   );
+  const markdownRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (markdownRef.current) return containLongChatMarkdown(markdownRef.current);
+  }, [normalizedContent, annotatedRehypePlugins]);
   const markdownComponents = useMemo<Components>(
     () => ({
       ...baseComponents,
@@ -780,6 +735,8 @@ function ChatMarkdown({
         const annotationKind =
           (props as Record<string, unknown>)['data-chat-selection-kind'] === 'highlight'
             ? 'highlight'
+            : (props as Record<string, unknown>)['data-chat-selection-kind'] === 'chat'
+            ? 'chat'
             : 'answer';
         const hasNote = Boolean((props as Record<string, unknown>)['data-chat-note']);
         const showNote = (element: HTMLElement) => {
@@ -793,7 +750,7 @@ function ChatMarkdown({
         const open = (element: HTMLElement) => {
           if (!annotationId) return;
           hideNote();
-          onTextAnnotationClick?.(annotationId, element.getBoundingClientRect());
+          annotationClickRef.current?.(annotationId, element.getBoundingClientRect());
         };
         return (
           <mark
@@ -807,13 +764,18 @@ function ChatMarkdown({
                 ? 'Edit note on selected text'
                 : annotationKind === 'highlight'
                 ? 'Open highlight options'
+                : annotationKind === 'chat'
+                ? 'Open question in chat'
                 : 'Open answer for highlighted text'
             }
             onMouseEnter={(event) => showNote(event.currentTarget)}
             onMouseLeave={hideNote}
             onFocus={(event) => showNote(event.currentTarget)}
             onBlur={hideNote}
+            onPointerDown={(event) => { if (event.button === 0) allowMarkTextSelection(event.currentTarget); }}
             onClick={(event) => {
+              // A drag beginning inside a saved passage still selects text.
+              if (window.getSelection()?.isCollapsed === false) return;
               event.stopPropagation();
               open(event.currentTarget);
             }}
@@ -832,11 +794,11 @@ function ChatMarkdown({
         );
       },
     }),
-    [noteIdPrefix, onTextAnnotationClick],
+    [noteIdPrefix],
   );
 
   return (
-    <div className={compact ? 'chat-markdown compact' : 'chat-markdown'}>
+    <div ref={markdownRef} className={compact ? 'chat-markdown compact' : 'chat-markdown'}>
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={annotatedRehypePlugins}
@@ -879,6 +841,7 @@ export function chatTextAnnotationsEqual(
       annotation.note === b[index].note &&
       annotation.noteContinuation === b[index].noteContinuation &&
       annotation.quote === b[index].quote &&
+      annotation.wholeMessage === b[index].wholeMessage &&
       annotation.prefix === b[index].prefix &&
       annotation.suffix === b[index].suffix,
   );

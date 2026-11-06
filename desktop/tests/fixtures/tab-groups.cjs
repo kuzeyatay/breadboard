@@ -8,6 +8,7 @@ const { readTabSession } = require("../../dist/main/tab-session.js");
 const [dir, phase] = process.argv.slice(2);
 app.setPath("userData", path.join(dir, "profile"));
 app.on("window-all-closed", () => {});
+app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 const until = async probe => {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) { if (await probe()) return; await new Promise(resolve => setTimeout(resolve, 25)); }
@@ -15,7 +16,10 @@ const until = async probe => {
 };
 
 app.whenReady().then(async () => {
+  let groupRouteRequests = 0;
   const server = http.createServer((req, res) => {
+    // Group controls must still open when the dashboard menu route is stalled.
+    if (req.url.startsWith("/browser/tab-group-popover")) { groupRouteRequests++; return; }
     res.writeHead(200, { "content-type": "text/html" });
     res.end(`<!doctype html><html><head><title>${req.url}</title></head><body>Tab group fixture</body></html>`);
   });
@@ -28,10 +32,12 @@ app.whenReady().then(async () => {
   const windows = [];
   const createWindow = (url = origin + "/new-tab") => {
     const window = new BrowserWindow({ show: false, webPreferences: { preload: preloadPath, contextIsolation: true, sandbox: true } });
-    manager.attach(window);
+    manager.attach(window, true);
+    window.setOpacity(0);
+    window.showInactive();
     windows.push(window);
     manager.trackSessionWindow(window);
-    window.fixtureReady = window.loadURL(url);
+    window.fixtureReady = manager.baseContents(window).loadURL(url);
     return window;
   };
   manager = new TabManager({ allowed: { origins: new Set([origin]), localFiles: new Set() }, preloadPath,
@@ -41,17 +47,42 @@ app.whenReady().then(async () => {
   manager.setBrowserUrl(origin + "/browser");
   const main = createWindow();
   await main.fixtureReady;
-  const state = window => manager.stateFor(window.webContents);
-  const command = (window, value) => manager.handleCommand(window.webContents, value);
+  const state = window => manager.stateFor(manager.baseContents(window));
+  const { AI_TAB_GROUP_ID } = require('../../dist/shared/tab-groups.js');
+  const userGroups = window => state(window).groups.filter(group => group.id !== AI_TAB_GROUP_ID);
+  const command = (window, value) => manager.handleCommand(manager.baseContents(window), value);
   await manager.restoreSession(main, origin, createWindow);
   if (phase === "save") {
+    const initialCount = state(main).tabs.length;
+    const showAiInfo = { type: "group-action", groupId: AI_TAB_GROUP_ID, action: "show-ai-info" };
+    assert.equal(await command(main, showAiInfo), true);
+    const infoId = state(main).activeId;
+    assert.equal(state(main).tabs[0].id, infoId, "idle page opens inside the leftmost AI group");
+    assert.equal(state(main).tabs[0].url, origin + "/ai-tabs");
+    assert.equal(state(main).tabs[0].aiOpened, false, "the explainer is not a running AI task");
+    for (const result of await Promise.all([command(main, showAiInfo), command(main, showAiInfo)])) assert.equal(result, true);
+    assert.equal(state(main).tabs.length, initialCount + 1, "repeated clicks reuse one idle tab, including during loading");
+    await command(main, { type: "group-update", groupId: AI_TAB_GROUP_ID, collapsed: true });
+    await command(main, showAiInfo);
+    assert.equal(state(main).activeId, infoId);
+    assert.equal(state(main).groups.find(group => group.id === AI_TAB_GROUP_ID).collapsed, false);
+    assert.equal(manager.openBreadboardUseApp(manager.baseContents(main), origin + "/ai-work", "idle-page-check"), true);
+    const duringWork = state(main).tabs.length;
+    assert.equal(await command(main, showAiInfo), false, "native owner rejects a stale idle click while an AI task is working");
+    assert.equal(state(main).tabs.length, duringWork);
+    manager.closeAutomationTabs("idle-page-check");
+    await command(main, { type: "close", id: infoId });
+    await command(main, showAiInfo);
+    assert.notEqual(state(main).activeId, infoId, "closing the explainer allows a new one on the next idle click");
+    await command(main, { type: "close", id: state(main).activeId });
+    assert.equal(state(main).tabs.length, initialCount);
     await command(main, { type: "browser", url: origin + "/a" });
     const a = state(main).activeId;
     await command(main, { type: "browser", url: origin + "/b" });
     const b = state(main).activeId;
-    await until(() => state(main).tabs.filter(tab => [a, b].includes(tab.id)).every(tab => tab.browser?.pageReady));
+    await until(() => manager.hosts.get(main.id).tabs.filter(tab => [a, b].includes(tab.id)).every(tab => tab.browser?.documentCommitted));
     assert.equal(await command(main, { type: "group-tabs", id: b, targetId: a }), true);
-    const id = state(main).groups[0].id;
+    const id = userGroups(main)[0].id;
     const initialOrder = state(main).tabs.map(tab => tab.id);
     const activeBeforeMove = state(main).activeId;
     assert.equal(await command(main, { type: "group-move", groupId: id, index: 0 }), true);
@@ -60,10 +91,10 @@ app.whenReady().then(async () => {
     assert.equal(await command(main, { type: "group-move", groupId: id, index: 1 }), true);
     assert.deepEqual(state(main).tabs.map(tab => tab.id), initialOrder);
     await command(main, { type: "group-update", groupId: id, name: "Shopping", color: "purple", collapsed: true });
-    assert.equal(state(main).groups[0].collapsed, true);
+    assert.equal(userGroups(main)[0].collapsed, true);
     assert.ok(!state(main).tabs.find(tab => tab.id === state(main).activeId).groupId, "collapse moves selection outside the group");
     await command(main, { type: "activate", id: b });
-    assert.equal(state(main).groups[0].collapsed, false, "shortcut activation reveals hidden members");
+    assert.equal(userGroups(main)[0].collapsed, false, "shortcut activation reveals hidden members");
     await command(main, { type: "group-action", groupId: id, action: "new-tab" });
     assert.equal(state(main).tabs.filter(tab => tab.groupId === id).length, 3);
     await command(main, { type: "anchor", id: a });
@@ -73,67 +104,102 @@ app.whenReady().then(async () => {
     // The menu is a native view above a real website, and only that view can resize itself.
     await command(main, { type: "browser", url: origin + "/site" });
     const browserId = state(main).activeId;
-    await until(() => state(main).tabs.find(tab => tab.id === browserId)?.browser?.pageReady);
-    assert.equal(await command(main, { type: "group-menu", groupId: id, x: 15, y: 32 }), true);
-    const menu = webContents.getAllWebContents().find(contents => contents.getURL().includes("/tab-group-popover"));
-    assert.ok(menu);
+    await until(() => state(main).tabs.find(tab => tab.id === browserId)?.browser?.pageReady && !manager.hosts.get(main.id).pending);
+    const host = manager.hosts.get(main.id);
+    await command(main, { type: "group-update", groupId: id, collapsed: true });
+    await until(() => host.shell.contents.executeJavaScript(`!!document.querySelector('[data-group-marker="${id}"]')`));
+    const point = await host.shell.contents.executeJavaScript(`(() => {
+      const box = document.querySelector('[data-group-marker="${id}"]').getBoundingClientRect();
+      return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
+    })()`);
+    const openedAt = performance.now();
+    host.shell.contents.sendInputEvent({ type: "mouseDown", button: "right", clickCount: 1, ...point });
+    host.shell.contents.sendInputEvent({ type: "mouseUp", button: "right", clickCount: 1, ...point });
+    await until(() => host.groupPopover && host.groupPopover.view.getBounds().y >= 0 && host.groupPopover.view.getBounds().height > 300);
+    const menu = host.groupPopover.contents;
+    console.log(`Group controls visible in ${Math.round(performance.now() - openedAt)}ms`);
+    assert.ok(menu.getURL().includes("/window-shell/tab-group.html"));
+    assert.equal(groupRouteRequests, 0);
+    assert.equal(state(main).activeId, browserId, "right-click keeps the selected page");
+    assert.equal(userGroups(main)[0].collapsed, true, "right-click keeps the group collapsed");
+    await until(() => menu.executeJavaScript(`document.querySelector('input')?.value === 'Shopping'`));
+    assert.equal(await menu.executeJavaScript(`window.breadboardDesktop.tabs({type:'new'})`), false, "menu bridge only accepts group commands");
+    await menu.executeJavaScript(`document.querySelector('[aria-label="Cyan"]').click()`);
+    await until(() => userGroups(main)[0].color === "cyan");
+    await menu.executeJavaScript(`document.querySelector('input').select()`);
+    await menu.insertText("Research");
+    menu.sendInputEvent({ type: "keyDown", keyCode: "Tab" });
+    menu.sendInputEvent({ type: "keyUp", keyCode: "Tab" });
+    await until(() => userGroups(main)[0].name === "Research");
+    await command(main, { type: "group-update", groupId: id, name: "Shopping", color: "purple" });
     assert.equal(await command(main, { type: "group-menu-resize", height: 380 }), false);
     assert.equal(await manager.handleCommand(menu, { type: "group-menu-resize", height: 380 }), true);
-    assert.equal(main.contentView.children.at(-1).webContents, menu);
-    assert.equal(main.contentView.children.at(-1).getBounds().height, 380);
-    assert.equal(await manager.handleCommand(menu, { type: "group-menu-close" }), true);
+    const menuView = host.groupPopover.view;
+    assert.ok(main.contentView.children.indexOf(menuView) > main.contentView.children.indexOf(host.shell.view));
+    assert.ok(main.contentView.children.indexOf(menuView) > main.contentView.children.indexOf(host.tabs.find(tab => tab.id === browserId).browser.view));
+    assert.equal(menuView.getBounds().height, 380);
+    await menu.executeJavaScript(`document.querySelector('[aria-label="Close menu"]').click(); true`);
+    await until(() => !host.groupPopover);
     await command(main, { type: "close", id: browserId });
-    const liveIds = webContents.getAllWebContents().filter(contents => manager.windowFor(contents) === main && [a, b].includes(manager.stateFor(contents).selfId)).map(contents => contents.id);
+    const liveIds = manager.hosts.get(main.id).tabs.filter(tab => [a, b].includes(tab.id)).map(tab => tab.browser.contents.id);
     assert.equal(liveIds.length, 2);
+    await command(main, {type:"browser",url:origin+"/remaining"});
+    const remaining = state(main).activeId;
+    const remainingChrome = manager.hosts.get(main.id).browserChrome.contents;
     assert.equal(await command(main, { type: "group-action", groupId: id, action: "new-window" }), true);
     const popup = windows.at(-1);
     assert.notEqual(popup, main);
-    assert.equal(state(popup).groups[0].name, "Shopping");
+    assert.equal(userGroups(popup)[0].name, "Shopping");
     for (const liveId of liveIds) assert.equal(manager.windowFor(webContents.fromId(liveId)), popup, "moving carries the existing renderer");
+    assert.notEqual(manager.hosts.get(popup.id).browserChrome.contents, remainingChrome, "partial browser groups use their destination's shared UI");
+    assert.equal(remainingChrome.isDestroyed(), false);
+    await command(main, {type:"close",id:remaining});
     assert.equal(await command(popup, { type: "group-action", groupId: id, action: "save-close" }), true);
-    assert.equal(state(popup).groups.length, 0);
+    assert.equal(userGroups(popup).length, 0);
     assert.equal(state(popup).savedGroups[0].tabCount, 3);
     fs.writeFileSync(path.join(dir, "group-order.json"), JSON.stringify(readTabSession(dir).windows.find(window => window.savedGroups?.length).savedGroups[0].tabs.map(tab => tab.title)));
     // Persist one open collapsed group and one saved closed group across a new runtime port.
     await command(main, { type: "open", url: origin + "/c" });
     const c = state(main).activeId;
     await command(main, { type: "group-tabs", id: c, targetId: state(main).tabs[0].id });
-    const openId = state(main).groups[0].id;
+    const openId = userGroups(main)[0].id;
     await command(main, { type: "group-update", groupId: openId, name: "Research", color: "cyan", collapsed: true });
     assert.equal(state(main).tabs.length, 3, "collapsing the only group opens a fresh visible tab");
-    // Only anchors and grouped tabs return at startup; keep the outside tab durable too.
-    await command(main, { type: "anchor", id: state(main).activeId });
+    // Ordinary tabs beside a group must survive without being anchored.
+    assert.equal(state(main).tabs.find(tab => tab.id === state(main).activeId).anchored, false);
     const membersBeforeMove = state(main).tabs.filter(tab => tab.groupId === openId).map(tab => tab.id);
     assert.equal(await command(main, { type: "group-move", groupId: openId, index: 1 }), true);
     assert.deepEqual(state(main).tabs.slice(1).map(tab => tab.id), membersBeforeMove);
-    assert.equal(state(main).groups[0].collapsed, true);
+    assert.equal(userGroups(main)[0].collapsed, true);
     // Leave the group open on exit; startup still folds it.
     await command(main, { type: "group-update", groupId: openId, collapsed: false });
-    assert.equal(state(main).groups[0].collapsed, false);
+    assert.equal(userGroups(main)[0].collapsed, false);
     manager.freezeSession();
     const saved = readTabSession(dir);
-    assert.equal(saved.windows[0].groups[0].name, "Research");
-    assert.equal(saved.windows[0].groups[0].collapsed, false);
+    assert.equal(saved.windows[0].groups.find(group => group.id !== AI_TAB_GROUP_ID).name, "Research");
+    assert.equal(saved.windows[0].groups.find(group => group.id !== AI_TAB_GROUP_ID).collapsed, false);
     assert.equal(saved.windows[1].savedGroups[0].tabs.length, 3);
   } else {
-    assert.equal(state(main).groups[0].name, "Research");
-    assert.equal(state(main).groups[0].color, "cyan");
-    assert.equal(state(main).groups[0].collapsed, true, "groups open folded at startup regardless of how they were left");
+    assert.equal(userGroups(main)[0].name, "Research");
+    assert.equal(userGroups(main)[0].color, "cyan");
+    assert.equal(userGroups(main)[0].collapsed, true, "groups open folded at startup regardless of how they were left");
     assert.equal(state(main).tabs.filter(tab => tab.groupId).length, 2);
     assert.equal(state(main).tabs[0].groupId, undefined, "the reordered group position survives restart");
-    assert.ok(state(main).tabs.slice(1, 3).every(tab => tab.groupId === state(main).groups[0].id));
+    assert.equal(state(main).tabs[0].anchored, false);
+    assert.equal(state(main).tabs.length, 3, "the ordinary New tab is reused alongside the restored group");
+    assert.ok(state(main).tabs.slice(1, 3).every(tab => tab.groupId === userGroups(main)[0].id));
     assert.ok(state(main).tabs.every(tab => tab.url.startsWith(origin)), "internal URLs follow the new runtime port");
     const popup = windows.find(window => state(window).savedGroups.length);
     assert.ok(popup, "saved groups restore even without anchored tabs");
     const id = state(popup).savedGroups[0].id;
     assert.equal(await command(popup, { type: "group-action", groupId: id, action: "restore" }), true);
-    assert.equal(state(popup).groups[0].name, "Shopping");
+    assert.equal(userGroups(popup)[0].name, "Shopping");
     assert.equal(state(popup).savedGroups.length, 0);
     assert.equal(state(popup).tabs.filter(tab => tab.groupId).length, 3);
     assert.deepEqual(state(popup).tabs.filter(tab => tab.groupId).map(tab => tab.title), JSON.parse(fs.readFileSync(path.join(dir, "group-order.json"), "utf8")), "saved browser tabs return in their original order");
-    const restoredId = state(popup).groups[0].id;
+    const restoredId = userGroups(popup)[0].id;
     assert.equal(await command(popup, { type: "group-action", groupId: restoredId, action: "ungroup" }), true);
-    assert.equal(state(popup).groups.length, 0);
+    assert.equal(userGroups(popup).length, 0);
     assert.equal(state(popup).tabs.length, 4, "ungroup keeps every tab open");
   }
   manager.freezeSession();

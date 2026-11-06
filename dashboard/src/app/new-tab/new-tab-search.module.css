@@ -1,0 +1,48 @@
+.shortcut { padding: 2px 8px; border: 1px solid var(--line); border-radius: 5px; font-size: 12px; color: var(--ink-muted); }
+.hint { margin: 10px 0 2px; color: var(--ink-muted); font-size: 12px; text-align: center; }
+.hint span { margin: 0 6px; opacity: .55; }
+:global([data-wallpaper-tone]) .hint { color: var(--browser-wallpaper-foreground); text-shadow: 0 1px 6px rgb(0 0 0 / 20%); }
+.results { margin-top: 23px; padding: 0 18px 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper-surface); color: var(--ink); box-shadow: 0 4px 16px color-mix(in srgb, var(--neu-shadow) 18%, transparent); }
+.filters { display: flex; gap: 16px; overflow-x: auto; scrollbar-width: thin; border-bottom: 1px solid var(--line); }
+.filter { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 15px 0 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--ink-muted); font: inherit; font-size: 12px; cursor: pointer; }
+.filter[aria-pressed=true] { color: var(--botanical); border-bottom-color: var(--botanical); font-weight: 600; }
+.filter span { font-size: 10px; font-variant-numeric: tabular-nums; opacity: .8; }
+.summary { display: flex; justify-content: space-between; gap: 12px; padding: 13px 0 6px; color: var(--ink-muted); font-size: 11px; }
+.list { list-style: none; margin: 0; padding: 0; }
+.list li + li { border-top: 1px solid color-mix(in srgb, var(--line) 55%, transparent); }
+.result { display: flex; align-items: flex-start; gap: 13px; padding: 17px 8px; margin: 0 -8px; border-radius: 8px; color: inherit; text-decoration: none; scroll-margin-block: 8px; }
+.icon { display: grid; place-items: center; flex-shrink: 0; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 10px; color: var(--botanical); background: color-mix(in srgb, var(--botanical) 5%, transparent); }
+.resultContent { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 5px; }
+.context { overflow: hidden; color: var(--ink-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.context > span { margin: 0 5px; opacity: .55; }
+.title { color: var(--ink-heading); font-size: 16px; line-height: 1.4; font-weight: 550; overflow-wrap: anywhere; }
+.snippet { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: var(--ink-muted); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.result mark { background: color-mix(in srgb, var(--botanical) 13%, transparent); color: inherit; border-radius: 2px; font-weight: 600; }
+.open { flex-shrink: 0; margin-top: 17px; color: var(--ink-muted); opacity: .6; }
+.result:focus-visible { outline: 2px solid var(--botanical); outline-offset: -2px; background: color-mix(in srgb, var(--botanical) 7%, transparent); }
+.empty { display: flex; align-items: center; flex-direction: column; padding: 36px 12px; color: var(--ink-muted); text-align: center; }
+.empty h2 { margin: 16px 0 6px; color: var(--ink-heading); font-size: 16px; font-weight: 550; overflow-wrap: anywhere; max-width: 100%; }
+.empty p { margin: 0; font-size: 13px; }
+.empty button, .error button { border: 0; background: transparent; color: var(--botanical); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.empty button { margin-top: 16px; padding: 10px; font-size: 13px; }
+.error { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; color: var(--ink-muted); font-size: 12px; }
+.error button { padding: 8px; }
+.more { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 44px; margin-top: 6px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--botanical); font: inherit; font-size: 13px; cursor: pointer; }
+.more span { font-size: 11px; color: var(--ink-muted); }
+.limit { margin: 14px 0 8px; color: var(--ink-muted); font-size: 12px; text-align: center; }
+.filter:focus-visible, .more:focus-visible, .empty button:focus-visible, .error button:focus-visible { outline: 2px solid var(--botanical); outline-offset: -2px; }
+@media (hover: hover) and (pointer: fine) {
+  .result:hover, .more:hover { background: color-mix(in srgb, var(--botanical) 6%, transparent); }
+  .result:hover .title, .filter:hover { color: var(--botanical); }
+  .result:hover .open { opacity: 1; }
+}
+@media (max-width: 540px) {
+  .results { padding: 0 12px 8px; }
+  .filters { gap: 16px; }
+  .filter { min-height: 44px; }
+  .result { gap: 9px; }
+  .icon { width: 28px; height: 28px; border-radius: 8px; }
+  .title { font-size: 15px; }
+  .summary > span:last-child, .open { display: none; }
+  .hint { font-size: 11px; line-height: 1.5; }
+}

@@ -370,6 +370,10 @@ interface Options {
   weeks?: number;
 }
 
+// Every message query starts `FROM conversations c CROSS JOIN conversation_messages m`.
+// CROSS JOIN pins that order: given a plain JOIN, SQLite preferred
+// idx_conversation_messages_answers(role, status) and walked every assistant
+// row's metadata instead of this user's covering index (7.1 s -> 0.19 s).
 export function readProfileStats(
   database: Database.Database,
   userId: number,
@@ -392,8 +396,8 @@ export function readProfileStats(
     .prepare(
       `WITH profile_messages AS (
          SELECT m.*
-         FROM conversation_messages m
-         JOIN conversations c ON c.id = m.conversation_id
+         FROM conversations c
+         CROSS JOIN conversation_messages m ON m.conversation_id = c.id
          WHERE c.user_id = ? AND ${UNIQUE_REPORTED_USAGE}
        )
        SELECT
@@ -447,10 +451,16 @@ export function readProfileStats(
   // and a streak has to break on the boundary the person actually lived.
   const dayRows = database
     .prepare(
-      `SELECT date(m.created_at, 'localtime') AS day, COUNT(*) AS n
-       FROM conversation_messages m
-       JOIN conversations c ON c.id = m.conversation_id
-       WHERE c.user_id = ? AND m.role = 'user'
+      `WITH sent AS MATERIALIZED (
+         SELECT m.created_at
+         FROM conversations c
+         CROSS JOIN conversation_messages m ON m.conversation_id = c.id
+         WHERE c.user_id = ? AND m.role = 'user'
+       )
+       -- Rows first, grouped after: grouped directly, SQLite picks an index
+       -- without created_at/metadata and reads every message row (0.9 s -> 4 ms).
+       SELECT date(created_at, 'localtime') AS day, COUNT(*) AS n
+       FROM sent
        GROUP BY day
        ORDER BY day`,
     )
@@ -551,8 +561,8 @@ function readActivityGrid(
               g.name AS garden_name,
               g.slug AS garden_slug,
               COUNT(*) AS n
-       FROM conversation_messages m
-       JOIN conversations c ON c.id = m.conversation_id
+       FROM conversations c
+       CROSS JOIN conversation_messages m ON m.conversation_id = c.id
        LEFT JOIN clusters g
          ON g.id = c.default_garden_id AND g.user_id = c.user_id
        WHERE c.user_id = ?
@@ -642,12 +652,18 @@ function readHabit(database: Database.Database, userId: number): ProfileHabit {
 
   const rows = database
     .prepare(
-      `SELECT CAST(strftime('%H', m.created_at, 'localtime') AS INTEGER) AS hour,
-              CAST(strftime('%w', m.created_at, 'localtime') AS INTEGER) AS weekday,
+      `WITH sent AS MATERIALIZED (
+         SELECT m.created_at
+         FROM conversations c
+         CROSS JOIN conversation_messages m ON m.conversation_id = c.id
+         WHERE c.user_id = ? AND m.role = 'user'
+       )
+       -- Rows first, grouped after: grouped directly, SQLite picks an index
+       -- without created_at/metadata and reads every message row (0.9 s -> 4 ms).
+       SELECT CAST(strftime('%H', created_at, 'localtime') AS INTEGER) AS hour,
+              CAST(strftime('%w', created_at, 'localtime') AS INTEGER) AS weekday,
               COUNT(*) AS n
-       FROM conversation_messages m
-       JOIN conversations c ON c.id = m.conversation_id
-       WHERE c.user_id = ? AND m.role = 'user'
+       FROM sent
        GROUP BY hour, weekday`,
     )
     .all(userId) as Array<{ hour: number; weekday: number; n: number }>;
@@ -683,8 +699,8 @@ function readSurfaceUse(database: Database.Database, userId: number): SurfaceUse
   const rows = database
     .prepare(
       `SELECT m.surface AS surface, COUNT(*) AS n
-       FROM conversation_messages m
-       JOIN conversations c ON c.id = m.conversation_id
+       FROM conversations c
+       CROSS JOIN conversation_messages m ON m.conversation_id = c.id
        WHERE c.user_id = ? AND m.role = 'user'
        GROUP BY m.surface`,
     )
@@ -777,13 +793,13 @@ function readArtifactKinds(database: Database.Database, userId: number): Artifac
 function readAgentUse(database: Database.Database, userId: number): AgentUse[] {
   const rows = database
     .prepare(
-      `SELECT json_extract(m.metadata, '$.externalAgentRun.kind') AS kind,
-              json_extract(m.metadata, '$.externalAgentRun.runId') AS run_id,
-              json_extract(m.metadata, '$.externalAgentOutcome') AS outcome
-       FROM conversation_messages m
-       JOIN conversations c ON c.id = m.conversation_id
+      `SELECT json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.externalAgentRun.kind') AS kind,
+              json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.externalAgentRun.runId') AS run_id,
+              json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.externalAgentOutcome') AS outcome
+       FROM conversations c
+       CROSS JOIN conversation_messages m ON m.conversation_id = c.id
        WHERE c.user_id = ?
-         AND json_extract(m.metadata, '$.externalAgentRun.kind') IS NOT NULL`,
+         AND json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.externalAgentRun.kind') IS NOT NULL`,
     )
     .all(userId) as Array<{ kind: string; run_id: string | null; outcome: string | null }>;
 
@@ -823,7 +839,7 @@ function readAgentUse(database: Database.Database, userId: number): AgentUse[] {
  */
 const REPLY_DURATION_MS = `COALESCE(
   json_extract(m.token_usage, '$.responseDurationMs'),
-  json_extract(m.metadata, '$.responseDurationMs')
+  json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.responseDurationMs')
 )`;
 
 /**
@@ -839,7 +855,7 @@ const UNIQUE_REPORTED_USAGE = `NOT (
   AND COALESCE(json_extract(m.token_usage, '$.totalTokens'), 0) > 0
   AND (
     m.client_message_id LIKE 'legacy-%'
-    OR COALESCE(json_extract(m.metadata, '$.migrated'), 0) = 1
+    OR COALESCE(json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.migrated'), 0) = 1
   )
   AND EXISTS (
     SELECT 1
@@ -851,13 +867,13 @@ const UNIQUE_REPORTED_USAGE = `NOT (
       AND (
         (
           sibling.client_message_id NOT LIKE 'legacy-%'
-          AND COALESCE(json_extract(sibling.metadata, '$.migrated'), 0) <> 1
+          AND COALESCE(json_extract(CASE WHEN json_valid(sibling.metadata) THEN sibling.metadata END, '$.migrated'), 0) <> 1
         )
         OR (
           sibling.id < m.id
           AND (
             sibling.client_message_id LIKE 'legacy-%'
-            OR COALESCE(json_extract(sibling.metadata, '$.migrated'), 0) = 1
+            OR COALESCE(json_extract(CASE WHEN json_valid(sibling.metadata) THEN sibling.metadata END, '$.migrated'), 0) = 1
           )
         )
       )
@@ -909,9 +925,9 @@ function readCost(database: Database.Database, userId: number): ProfileCost {
   let configuredFallback = DEFAULT_MODEL;
   try {
     const row = database
-      .prepare("SELECT default_model FROM hermes_user_settings WHERE user_id = ?")
-      .get(userId) as { default_model: string | null } | undefined;
-    configuredFallback = row?.default_model?.trim() || DEFAULT_MODEL;
+      .prepare("SELECT fallback_model FROM hermes_user_settings WHERE user_id = ?")
+      .get(userId) as { fallback_model: string | null } | undefined;
+    configuredFallback = row?.fallback_model?.trim() || DEFAULT_MODEL;
   } catch {
     // Older/test databases can predate per-user Hermes settings.
   }
@@ -920,28 +936,40 @@ function readCost(database: Database.Database, userId: number): ProfileCost {
       ? DEFAULT_MODEL
       : configuredFallback;
 
+  // A dispatch can contain a whole conversation. Extract its small model lookup
+  // once per run: a correlated lookup reparses those large JSON records for
+  // every reply and can block the dashboard while the profile loads.
+  // MATERIALIZED on message_usage keeps it a plain scan of the covering
+  // idx_conversation_messages_profile_values_v2: grouped directly, SQLite reads
+  // every message's metadata instead (7 s -> 36 ms, same rows).
   const rows = database
     .prepare(
-      `WITH message_usage AS (
+      `WITH runtime_models AS MATERIALIZED (
+         SELECT s.conversation_id,
+                json_extract(CASE WHEN json_valid(r.dispatch_json) THEN r.dispatch_json END, '$.clientMessageId') AS client_message_id,
+                COALESCE(
+                  json_extract(CASE WHEN json_valid(r.dispatch_json) THEN r.dispatch_json END, '$.modelIdentity.modelID'),
+                  NULLIF(json_extract(CASE WHEN json_valid(r.dispatch_json) THEN r.dispatch_json END, '$.model.modelID'), 'default')
+                ) AS model,
+                r.started_at,
+                r.id
+         FROM hermes_runs r
+         JOIN hermes_runtime_sessions s ON s.id = r.runtime_session_id
+         JOIN conversations c ON c.id = s.conversation_id
+         WHERE c.user_id = ?
+       ), ranked_runtime_models AS MATERIALIZED (
+         SELECT conversation_id, client_message_id, model,
+                ROW_NUMBER() OVER (
+                  PARTITION BY conversation_id, client_message_id
+                  ORDER BY started_at DESC, id DESC
+                ) AS position
+         FROM runtime_models
+         WHERE model IS NOT NULL AND client_message_id IS NOT NULL
+       ), message_usage AS MATERIALIZED (
          SELECT COALESCE(
-                  (
-                    SELECT COALESCE(
-                             json_extract(r.dispatch_json, '$.modelIdentity.modelID'),
-                             NULLIF(json_extract(r.dispatch_json, '$.model.modelID'), 'default')
-                           )
-                    FROM hermes_runs r
-                    JOIN hermes_runtime_sessions s ON s.id = r.runtime_session_id
-                    WHERE s.conversation_id = m.conversation_id
-                      AND json_extract(r.dispatch_json, '$.clientMessageId') = m.client_message_id
-                      AND COALESCE(
-                            json_extract(r.dispatch_json, '$.modelIdentity.modelID'),
-                            NULLIF(json_extract(r.dispatch_json, '$.model.modelID'), 'default')
-                          ) IS NOT NULL
-                    ORDER BY r.started_at DESC, r.id DESC
-                    LIMIT 1
-                  ),
-                  NULLIF(json_extract(m.metadata, '$.model'), 'default'),
-                  json_extract(m.metadata, '$.model'),
+                  r.model,
+                  NULLIF(json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.model'), 'default'),
+                  json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.model'),
                   NULLIF(json_extract(m.token_usage, '$.model'), 'default'),
                   json_extract(m.token_usage, '$.model')
                 ) AS model,
@@ -949,8 +977,12 @@ function readCost(database: Database.Database, userId: number): ProfileCost {
                 ${REPORTED_INPUT_TOKENS} AS input_tokens,
                 ${REPORTED_OUTPUT_TOKENS} AS output_tokens,
                 ${REPORTED_TOTAL_TOKENS} AS total_tokens
-         FROM conversation_messages m
-         JOIN conversations c ON c.id = m.conversation_id
+         FROM conversations c
+         CROSS JOIN conversation_messages m ON m.conversation_id = c.id
+         LEFT JOIN ranked_runtime_models r
+           ON r.conversation_id = m.conversation_id
+          AND r.client_message_id = m.client_message_id
+          AND r.position = 1
          WHERE c.user_id = ?
            AND m.role = 'assistant'
            AND m.status <> 'pending'
@@ -965,7 +997,7 @@ function readCost(database: Database.Database, userId: number): ProfileCost {
        FROM message_usage
        GROUP BY model`,
     )
-    .all(userId) as Array<{
+    .all(userId, userId) as Array<{
     model: string | null;
     n: number;
     failed: number;
@@ -1073,8 +1105,8 @@ function readReliability(
          COALESCE(SUM(CASE WHEN m.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
          COALESCE(SUM(CASE WHEN m.status = 'aborted' THEN 1 ELSE 0 END), 0) AS aborted,
          MAX(CASE WHEN m.status IN ('failed','aborted') THEN m.created_at END) AS last_failure_at
-       FROM conversation_messages m
-       JOIN conversations c ON c.id = m.conversation_id
+       FROM conversations c
+       CROSS JOIN conversation_messages m ON m.conversation_id = c.id
        WHERE c.user_id = ? AND m.role = 'assistant' AND m.status <> 'pending'`,
     )
     .get(userId) as {
@@ -1086,12 +1118,18 @@ function readReliability(
 
   const errorRows = database
     .prepare(
-      `SELECT json_extract(m.metadata, '$.error') AS error, COUNT(*) AS n
-       FROM conversation_messages m
-       JOIN conversations c ON c.id = m.conversation_id
-       WHERE c.user_id = ? AND m.role = 'assistant'
-         AND m.status IN ('failed','aborted')
-         AND json_extract(m.metadata, '$.error') IS NOT NULL
+      `WITH failures AS MATERIALIZED (
+         SELECT json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.error') AS error
+         FROM conversations c
+         CROSS JOIN conversation_messages m ON m.conversation_id = c.id
+         WHERE c.user_id = ? AND m.role = 'assistant'
+           AND m.status IN ('failed','aborted')
+           AND json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.error') IS NOT NULL
+       )
+       -- Rows first, grouped after: grouped directly, SQLite picks an index
+       -- without created_at/metadata and reads every message row (0.9 s -> 4 ms).
+       SELECT error, COUNT(*) AS n
+       FROM failures
        GROUP BY error
        ORDER BY n DESC, error
        LIMIT 4`,
@@ -1129,8 +1167,8 @@ function readLatency(database: Database.Database, userId: number): ProfileLatenc
   const rows = database
     .prepare(
       `SELECT ${REPLY_DURATION_MS} AS ms
-       FROM conversation_messages m
-       JOIN conversations c ON c.id = m.conversation_id
+       FROM conversations c
+       CROSS JOIN conversation_messages m ON m.conversation_id = c.id
        WHERE c.user_id = ? AND m.role = 'assistant' AND m.status = 'complete'
          AND ${REPLY_DURATION_MS} IS NOT NULL
        ORDER BY ms`,
@@ -1304,8 +1342,8 @@ function readPhrases(database: Database.Database, userId: number): ProfilePhrase
   const rows = database
     .prepare(
       `SELECT m.content
-       FROM conversation_messages m
-       JOIN conversations c ON c.id = m.conversation_id
+       FROM conversations c
+       CROSS JOIN conversation_messages m ON m.conversation_id = c.id
        WHERE c.user_id = ?
          AND c.temporary = 0
          AND m.role = 'user'
@@ -1404,15 +1442,15 @@ function readAuditFeed(database: Database.Database, userId: number): AuditEntry[
   const runs = database
     .prepare(
       `SELECT m.created_at AS at,
-              json_extract(m.metadata, '$.externalAgentRun.kind') AS kind,
-              json_extract(m.metadata, '$.externalAgentOutcome') AS outcome,
+              json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.externalAgentRun.kind') AS kind,
+              json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.externalAgentOutcome') AS outcome,
               c.title AS conversation_title
-       FROM conversation_messages m
-       JOIN conversations c ON c.id = m.conversation_id
+       FROM conversations c
+       CROSS JOIN conversation_messages m ON m.conversation_id = c.id
        WHERE c.user_id = ?
-         AND json_extract(m.metadata, '$.externalAgentRun.kind') IS NOT NULL
-         AND json_extract(m.metadata, '$.externalAgentOutcome') IS NOT NULL
-         AND json_extract(m.metadata, '$.externalAgentOutcome') <> 'running'
+         AND json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.externalAgentRun.kind') IS NOT NULL
+         AND json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.externalAgentOutcome') IS NOT NULL
+         AND json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END, '$.externalAgentOutcome') <> 'running'
        ORDER BY datetime(m.created_at) DESC
        LIMIT ?`,
     )
@@ -1547,4 +1585,57 @@ function readFirstConversation(
     .get(userId) as { title: string; created_at: string } | undefined;
 
   return row ? { title: row.title, createdAt: row.created_at } : null;
+}
+
+// ------------------------------------------------------------------ caching
+
+/** Tables whose new rows move the profile's numbers. */
+const STATS_TABLES = [
+  "conversation_messages", "conversations", "hermes_runs", "durable_memories",
+  "hermes_artifacts", "clusters", "scheduled_chat_jobs",
+];
+/** Rows that changed in place (a reply finishing) are picked up this late. */
+const STATS_MIN_AGE_MS = 5 * 60_000;
+const STATS_MAX_AGE_MS = 30 * 60_000;
+
+type CachedStats = { fingerprint: string; at: number; stats: ProfileStats };
+const statsCache: Map<string, CachedStats> =
+  ((globalThis as { __breadboardProfileStats?: Map<string, CachedStats> }).__breadboardProfileStats ??= new Map());
+
+function statsFingerprint(database: Database.Database): string {
+  return [todayDate(), ...STATS_TABLES.map((table) => {
+    try {
+      // MAX(rowid) reads one b-tree edge: microseconds on any table size.
+      return String((database.prepare(`SELECT MAX(rowid) AS n FROM ${table}`).get() as { n: number | null }).n ?? 0);
+    } catch {
+      return "-";
+    }
+  })].join(":");
+}
+
+/**
+ * {@link readProfileStats} behind a cache. Computing the stats is about 28
+ * synchronous queries over every message (20.7 s on a 5.3 GB brain.db,
+ * 2026-10-27), and better-sqlite3 holds the dashboard's only thread for all of
+ * it: every tab froze while Profile opened. Reopening now costs a fingerprint
+ * of MAX(rowid)s; new activity is recomputed at most every 5 minutes.
+ */
+export function readProfileStatsCached(
+  database: Database.Database,
+  userId: number,
+  now = Date.now(),
+): ProfileStats {
+  const key = `${database.name}\u0000${userId}`;
+  const cached = statsCache.get(key);
+  const fingerprint = statsFingerprint(database);
+  if (cached) {
+    const age = now - cached.at;
+    const unchanged = cached.fingerprint === fingerprint;
+    if ((unchanged && age < STATS_MAX_AGE_MS) || (!unchanged && age < STATS_MIN_AGE_MS && cached.fingerprint.split(":")[0] === fingerprint.split(":")[0])) {
+      return cached.stats;
+    }
+  }
+  const stats = readProfileStats(database, userId);
+  statsCache.set(key, { fingerprint, at: now, stats });
+  return stats;
 }

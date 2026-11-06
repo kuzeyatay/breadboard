@@ -18,7 +18,10 @@ export const HERMES_CHATMOCK_PROVIDER_ID = "chatmock";
 export const HERMES_MODEL_IDS: readonly string[] = DEFAULT_ASSISTANT_MODELS;
 
 const MAX_REASONING_MODELS = new Set([
+  "gpt-6.1-sol",
   "gpt-6-astra",
+  "gpt-6-sol",
+  "gpt-6-luna",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -48,7 +51,7 @@ export interface HermesEngineSelection {
  * sent as the `chat` sentinel: ChatMock expands it to the chat model, and the
  * runtime pins that turn to exactly the model that was picked.
  * So the chat runs on the chosen model without the runtime needing to know
- * its name. The profile default remains the fallback for Learn and background
+ * its name. The profile fallback provider handles Learn and background
  * work such as Thought Topology; explicit turn and run picks leave it intact.
  */
 function resolveModelId(value: unknown): string {

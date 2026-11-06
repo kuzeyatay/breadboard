@@ -37,11 +37,11 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   globalThis.__profileModelTest = {
     ...runtimeStore,
     session: () => signedIn ? { user: { id: "1" } } : null,
-    async setDefaultModel(_request, model) {
+    async setFallbackModel(_request, model) {
       gatewayWrites.push(model);
       if (gatewayFailure) throw Object.assign(new Error("This provider is not connected."), { status: 400 });
       // The route must validate routing before writing the account preference.
-      assert.notEqual(runtimeStore.getHermesUserSettings(1).defaultModel, model);
+      assert.notEqual(runtimeStore.getHermesUserSettings(1).fallbackModel, model);
       gatewayModel = model;
       return { defaultModel: model, chatModel: model, storedChatModel: null };
     },
@@ -55,7 +55,7 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
       export const setHermesUserSettings = (id, value) => globalThis.__profileModelTest.setHermesUserSettings(id, value);`,
     "@/lib/hermes/quartz-support": "export const corsHeaders = () => ({});",
     "@/lib/chatmock-providers": `
-      export const setDefaultModel = (request, model) => globalThis.__profileModelTest.setDefaultModel(request, model);
+      export const setFallbackModel = (request, model) => globalThis.__profileModelTest.setFallbackModel(request, model);
       export const providerErrorResponseInit = error => ({status: error.status || 503, message: error.message});`,
   };
   const routeBundle = await esbuild.build({
@@ -80,6 +80,10 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   assert.equal((await route.PATCH(request({ model: "gpt-6-astra" }))).status, 401);
   signedIn = true;
   assert.equal((await route.PATCH(request({ model: "invalid model" }))).status, 400);
+  for (const value of [null, "invalid model", "default", "chat", "AUTO"]) {
+    assert.equal((await route.PATCH(request({ fallbackModel: value }))).status, 400);
+    assert.equal((await route.PATCH(request({ model: value }))).status, 400);
+  }
   assert.equal((await route.PATCH(request({ model: "gpt-6-astra", reasoningEffort: "invalid" }))).status, 400);
   assert.deepEqual(gatewayWrites, [], "invalid or unauthenticated changes never reach the gateway");
 
@@ -87,7 +91,8 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
     stdin: { loader: "tsx", resolveDir: root, contents: `
       import React from 'react';
       import {createRoot} from 'react-dom/client';
-      import DefaultModelPanel from './src/app/profile/default-model-panel';
+      import DefaultModelPanel, {FallbackModelPanel} from './src/app/profile/default-model-panel';
+      function ProviderPanels() {return <><DefaultModelPanel/><FallbackModelPanel/></>}
       import {useAssistantIntelligence} from './src/app/components/use-assistant-intelligence';
       function Chat() { const {model, reasoningEffort} = useAssistantIntelligence();
         return <output aria-label="Chat model">{model}|{reasoningEffort}</output>; }
@@ -120,7 +125,7 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
           <Controls name="Switched chat" scope="fixture-chat" sessionId={id} createdSessionId={created}/>
         </>;
       }
-      function Scopes() {const [extra,setExtra] = React.useState(false);return <><DefaultModelPanel/>
+      function Scopes() {const [extra,setExtra] = React.useState(false);return <><ProviderPanels/>
         <Controls name="Chat A" scope="fixture-chat" sessionId="a"/>
         <Controls name="Chat B" scope="fixture-chat" sessionId="b"/>
         <Controls name="Learn" scope="fixture-learn"/>
@@ -132,7 +137,7 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
         <Switcher/>
       </>}
       createRoot(document.getElementById('root')).render(<React.StrictMode>
-        {location.pathname === '/scopes' ? <Scopes/> : location.pathname === '/chat' ? <Chat/> : <><DefaultModelPanel/><Chat/></>}
+        {location.pathname === '/scopes' ? <Scopes/> : location.pathname === '/chat' ? <Chat/> : <><ProviderPanels/><Chat/></>}
       </React.StrictMode>);` },
     absWorkingDir: root, bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
     define: { "process.env.NODE_ENV": '"development"' },
@@ -232,9 +237,11 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   ])).serving;
   await page.goto(base);
   const select = page.getByRole("combobox", { name: "Default model", exact: true });
-  await page.getByRole("alert").waitFor();
+  const fallback = page.getByRole("combobox", { name: "Fallback model", exact: true });
+  await page.getByRole("alert").first().waitFor();
   assert.equal(await select.isDisabled(), true);
   failReads = false;
+  await page.getByRole("button", { name: "Retry" }).first().click();
   await page.getByRole("button", { name: "Retry" }).click();
   await page.waitForFunction(() => !document.querySelector("select").disabled);
   assert.equal(await select.inputValue(), "gpt-5.6-sol");
@@ -244,8 +251,14 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   await chat.getByText("gpt-5.6-sol|max", { exact: true }).waitFor();
   await select.selectOption("cliproxy/claude-opus-5");
   await page.getByText("Saved. Claude Opus 5 is your default model.", { exact: true }).waitFor();
-  await page.getByText("cliproxy/claude-opus-5|high", { exact: true }).waitFor();
-  await chat.getByText("cliproxy/claude-opus-5|high", { exact: true }).waitFor();
+  await page.getByText("gpt-5.6-sol|max", { exact: true }).waitFor();
+  await chat.getByText("gpt-5.6-sol|max", { exact: true }).waitFor();
+  assert.equal(gatewayModel, "gpt-5.6-sol");
+  assert.equal(await topologyModel(), "gpt-5.6-sol");
+  assert.equal(selectedModelForUser(1), "gpt-5.6-sol");
+  assert.deepEqual(gatewayWrites, [], "startup preferences never change gateway routing");
+  await fallback.selectOption("cliproxy/claude-opus-5");
+  await page.getByText("Saved. Claude Opus 5 is your fallback model.", { exact: true }).waitFor();
   assert.equal(gatewayModel, "cliproxy/claude-opus-5");
   assert.equal(await topologyModel(), "cliproxy/claude-opus-5");
   assert.equal(topologyRequests.at(-1).model, "default");
@@ -256,16 +269,22 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   await page.reload();
   await page.waitForFunction(() => !document.querySelector("select").disabled);
   assert.equal(await select.inputValue(), "cliproxy/claude-opus-5");
+  await page.getByText("cliproxy/claude-opus-5|high", { exact: true }).waitFor();
+  assert.equal(await fallback.inputValue(), "cliproxy/claude-opus-5");
   gatewayFailure = true;
-  await select.selectOption("gpt-6-astra");
+  await fallback.selectOption("gpt-6-astra");
   await page.getByRole("alert").filter({ hasText: "not connected" }).waitFor();
   assert.equal(await select.inputValue(), "cliproxy/claude-opus-5");
+  assert.equal(await fallback.inputValue(), "cliproxy/claude-opus-5");
   assert.equal(selectedModelForUser(1), "cliproxy/claude-opus-5");
   assert.equal(gatewayModel, "cliproxy/claude-opus-5");
 
   gatewayFailure = false;
   await select.selectOption("gpt-5.6-sol");
-  await page.getByText("gpt-5.6-sol|max", { exact: true }).waitFor();
+  await page.getByText("Saved. GPT-5.6 Sol is your default model.", { exact: true }).waitFor();
+  await page.getByText("cliproxy/claude-opus-5|high", { exact: true }).waitFor();
+  await fallback.selectOption("gpt-5.6-sol");
+  await page.getByText("Saved. GPT-5.6 Sol is your fallback model.", { exact: true }).waitFor();
   assert.equal(selectedModelForUser(1), "gpt-5.6-sol");
   assert.equal(gatewayModel, "gpt-5.6-sol");
   assert.equal(await topologyModel(), "gpt-5.6-sol", "an existing topology generator follows the new default without restarting");
@@ -290,6 +309,13 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   await expectValue("Chat A", "gpt-5.6-sol", "max");
   await expectValue("Learn", "gpt-5.6-sol", "max");
   assert.equal(selectedModelForUser(1), "gpt-5.6-sol", "a shared pick is still not the account default");
+  await select.selectOption("cliproxy/claude-opus-5");
+  await page.getByText("Saved. Claude Opus 5 is your default model.", { exact: true }).waitFor();
+  await chat.waitForFunction(() => document.querySelector('[aria-label="Default model"]').value === "cliproxy/claude-opus-5");
+  await expectValue("Shared terminal", "gpt-6-astra", "max");
+  await expectValue("Shared garden", "gpt-6-astra", "max");
+  await select.selectOption("gpt-5.6-sol");
+  await page.getByText("Saved. GPT-5.6 Sol is your default model.", { exact: true }).waitFor();
   // Asking for the default back is an instruction about every chat surface.
   await page.getByRole("button", {name:"Reset Shared terminal", exact:true}).click();
   await expectValue("Shared terminal", "gpt-5.6-sol", "max");
@@ -310,16 +336,16 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   await select.selectOption("cliproxy/claude-opus-5");
   await expectValue("Chat B", "gpt-5.6-sol", "max");
   await expectValue("Chat A", "gpt-6-astra", "high");
-  await expectValue("Switched chat", "cliproxy/claude-opus-5", "high");
+  await expectValue("Switched chat", "gpt-5.6-sol", "max");
   // A previously opened tab must not republish its stale cached profile on remount.
   await chat.getByRole("button", {name:"Open another chat", exact:true}).click();
-  await chat.getByLabel("Extra value").filter({hasText:"cliproxy/claude-opus-5|high"}).waitFor();
+  await chat.getByLabel("Extra value").filter({hasText:"gpt-5.6-sol|max"}).waitFor();
   await chat.getByLabel("Chat A value").filter({hasText:"gpt-6-astra|high"}).waitFor();
   await chat.getByLabel("Chat B value").filter({hasText:"gpt-5.6-sol|max"}).waitFor();
   await page.getByRole("button", {name:"Reset Chat A", exact:true}).click();
-  await chat.getByLabel("Chat A value").filter({hasText:"cliproxy/claude-opus-5|high"}).waitFor();
+  await chat.getByLabel("Chat A value").filter({hasText:"gpt-5.6-sol|max"}).waitFor();
   await select.selectOption("gpt-5.6-sol");
-  await expectValue("Chat A", "cliproxy/claude-opus-5", "high");
+  await expectValue("Chat A", "gpt-5.6-sol", "max");
   await expectValue("Switched chat", "gpt-5.6-sol", "max");
   await expectValue("Learn", "cliproxy/claude-opus-5", "high");
   await page.getByRole("button", {name:"Start Learn", exact:true}).click();
@@ -349,12 +375,16 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   await expectValue("Switched chat", "gpt-6-astra", "high");
   assert.equal(selectedModelForUser(1), "gpt-5.6-sol");
   assert.equal(runtimeStore.getHermesUserSettings(1).reasoningEffort, "max");
-  assert.equal(gatewayWrites.length, writesBeforeOverrides + 2);
+  assert.equal(gatewayWrites.length, writesBeforeOverrides);
 
   await page.getByLabel("Learn picker").selectOption("cliproxy/claude-opus-5");
   await select.selectOption("none");
-  await page.getByRole("status").filter({hasText: "Saved. No default model selected. Tasks that require it will fail."}).waitFor();
+  await page.getByRole("status").filter({hasText: "Saved. No model will be selected at startup."}).waitFor();
   assert.equal(runtimeStore.getHermesUserSettings(1).defaultModel, "none");
+  assert.equal(selectedModelForUser(1), "gpt-5.6-sol");
+  assert.equal(await topologyModel(), "gpt-5.6-sol");
+  await fallback.selectOption("none");
+  await page.getByRole("status").filter({hasText: "Saved. Fallback is disabled."}).waitFor();
   assert.equal(selectedModelForUser(1), "none");
   assert.equal(gatewayModel, "none");
   await expectValue("Chat B", "gpt-5.6-sol", "max");
@@ -366,10 +396,15 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   await page.waitForFunction(() => !document.querySelector("select").disabled);
   assert.equal(await select.inputValue(), "none");
   assert.equal(await select.locator('option[value="none"]').count(), 1);
+  assert.equal(await fallback.inputValue(), "none");
   await expectValue("Chat B", "gpt-5.6-sol", "max");
   await expectValue("Switched chat", "none", "max");
   await expectValue("Learn", "cliproxy/claude-opus-5", "high");
   await select.selectOption("gpt-5.6-sol");
+  await page.getByText("Saved. GPT-5.6 Sol is your default model.", { exact: true }).waitFor();
+  assert.equal(selectedModelForUser(1), "none", "startup changes do not re-enable fallback");
+  await fallback.selectOption("gpt-5.6-sol");
+  await page.getByText("Saved. GPT-5.6 Sol is your fallback model.", { exact: true }).waitFor();
   await expectValue("Chat B", "gpt-5.6-sol", "max");
   assert.equal(await topologyModel(), "gpt-5.6-sol");
   assert.deepEqual(errors, []);

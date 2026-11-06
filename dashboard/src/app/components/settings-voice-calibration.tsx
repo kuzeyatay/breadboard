@@ -147,11 +147,14 @@ export default function SettingsVoiceCalibration() {
   if (state && !state.available) {
     return (
       <div className="space-y-3">
-        <h3 className="text-sm font-medium text-[var(--ink-heading)]">Tone calibration</h3>
+        <h3 className="text-sm font-medium text-[var(--ink-heading)]">Writing style</h3>
         <p className="neu-inset rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-6 text-center text-xs text-[var(--ink-muted)]">
-          The unslop skill isn&apos;t installed. Clone it into the repo root (a{" "}
-          <code className="font-mono">unslop/</code> folder) to calibrate your tone.
+          Tone matching is unavailable because its required skill is missing.
         </p>
+        <details className="text-xs text-[var(--ink-muted)]">
+          <summary className="cursor-pointer">Technical setup</summary>
+          <p className="mt-2">Install the unslop skill in the <code className="font-mono">unslop/</code> folder at the repository root.</p>
+        </details>
       </div>
     );
   }
@@ -163,23 +166,21 @@ export default function SettingsVoiceCalibration() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-sm font-medium text-[var(--ink-heading)]">Tone calibration</h3>
+          <h3 className="text-sm font-medium text-[var(--ink-heading)]">Writing style</h3>
           <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">
-            The default &ldquo;human&rdquo; tone is still someone else&apos;s. Paste a few things you
-            wrote yourself and the model humanizes UI answers using your tone, not an averaged
-            &ldquo;good style&rdquo;.
+            Add examples of your writing so replies sound more like you.
           </p>
         </div>
         {state?.exists ? (
           <span className="shrink-0 rounded-full bg-[var(--paper-strong)] px-2.5 py-1 text-[11px] text-[var(--botanical)]">
-            Calibrated
+            Style saved
           </span>
         ) : null}
       </div>
 
       {/* Current profile */}
       {state?.exists ? (
-        <section className="neu-surface-subtle space-y-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-3.5">
+        <section data-enter-submit-scope className="neu-surface-subtle space-y-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-3.5">
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-medium text-[var(--ink-heading)]">
               Your profile{updated ? ` · updated ${updated}` : ""}
@@ -187,7 +188,7 @@ export default function SettingsVoiceCalibration() {
             <div className="flex gap-1.5">
               {editing ? (
                 <>
-                  <button
+                  <button data-enter-submit
                     type="button"
                     disabled={anyBusy}
                     onClick={() => void saveEdit()}
@@ -214,7 +215,7 @@ export default function SettingsVoiceCalibration() {
                   }}
                   className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-2.5 py-1 text-[11px] text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
                 >
-                  Edit by hand
+                  Edit
                 </button>
               )}
             </div>
@@ -252,8 +253,7 @@ export default function SettingsVoiceCalibration() {
           </span>
         </div>
         <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
-          Use 3–5 texts you wrote without AI, different genres if you can. Nothing is stored except
-          the extracted profile.
+          Add 3–5 samples you wrote without AI, ideally in different styles. Only your style profile is saved.
         </p>
 
         <div className="space-y-2">
@@ -310,10 +310,10 @@ export default function SettingsVoiceCalibration() {
               className="neu-button rounded-lg border border-[var(--botanical)] bg-[var(--botanical)] px-3 py-1.5 text-xs font-medium text-white transition hover:opacity-90 disabled:opacity-50"
             >
               {busy === "calibrate"
-                ? "Calibrating…"
+                ? "Matching your style…"
                 : state?.exists
-                  ? "Recalibrate from scratch"
-                  : "Calibrate to my style"}
+                  ? "Rebuild style profile"
+                  : "Match my style"}
             </button>
           </div>
         </div>
@@ -336,12 +336,6 @@ export default function SettingsVoiceCalibration() {
         </p>
       ) : null}
 
-      <p className="border-t border-[var(--line)] pt-3 text-[11px] leading-5 text-[var(--ink-muted)]">
-        Calibration tunes conventions (em dash tolerance, quote style), keeps your pet words and
-        quirks, and sets rhythm and registers. It will not enable invented facts, switch off the
-        honesty rules, or imitate another named author. The profile is plain markdown you can edit
-        above.
-      </p>
     </div>
   );
 }

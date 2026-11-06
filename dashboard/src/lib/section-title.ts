@@ -649,8 +649,24 @@ export function validateSectionTitleVocabulary(
 export function foreignTitleContentWords(title: string, conceptTexts: string[]): string[] {
   const conceptTokens = new Set(conceptTexts.flatMap((text) => contentTokens(text)));
   const foreign: string[] = [];
-  for (const raw of stripNumberPrefix(title).split(/\s+/)) {
-    const cleaned = raw.replace(/[^A-Za-z0-9-]/g, "");
+  const words = stripNumberPrefix(title).split(/\s+/).map((raw) => raw.replace(/[^A-Za-z0-9-]/g, ""));
+  // "Wireless LAN" is the concepts' "WLAN": a run of title words whose
+  // initials (or a whole acronym word) spell a concept acronym names the
+  // section's own concept (telecom-1 section 9, 2026-10-08).
+  const acronymWords = new Set<number>();
+  for (let start = 0; start < words.length; start += 1) {
+    let acronym = "";
+    for (let end = start; end < Math.min(words.length, start + 4); end += 1) {
+      const word = words[end];
+      if (!word) break;
+      acronym += /^[A-Z]{2,}$/.test(word) ? word.toLowerCase() : word[0].toLowerCase();
+      if (end > start && acronym.length >= 3 && conceptTokens.has(acronym)) {
+        for (let k = start; k <= end; k += 1) acronymWords.add(k);
+      }
+    }
+  }
+  for (const [index, cleaned] of words.entries()) {
+    if (acronymWords.has(index)) continue;
     if (!cleaned) continue;
     const lower = cleaned.toLowerCase();
     if (TITLE_STOPWORDS.has(lower)) continue;

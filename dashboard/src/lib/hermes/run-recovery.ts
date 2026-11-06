@@ -27,6 +27,7 @@ import {
   setRuntimeStatus,
 } from "./runtime-store.ts";
 import { currentRuntimeIdentity } from "./session-service.ts";
+import { resumePendingTaskRecoveries, recordTaskRecoveryOutcome } from "./task-recovery.ts";
 
 /**
  * End an abandoned run and the turn it was carrying. Returns false when
@@ -53,6 +54,8 @@ export function reclaimAbandonedRun(run: RuntimeRunRow): boolean {
     }
   }
   if (session) setRuntimeStatus(session.id, "failed");
+  recordTaskRecoveryOutcome({ runId: run.id, status: "failed", tools: [],
+    failure: { code: "runtime_run_abandoned", message: "The runtime stopped before returning a result. Inspect saved progress before resuming." } });
 
   recordAuditEvent({
     eventType: "run.reclaimed",
@@ -113,5 +116,5 @@ export function resumeAbandonedRuntimeRuns(now = Date.now()): number {
       reclaimAbandonedRun(run);
     }
   }
-  return resumed;
+  return resumed + resumePendingTaskRecoveries();
 }

@@ -75,7 +75,7 @@ import { useRufloAgent } from "./use-ruflo-agent";
 import { useAssistantModels } from "../use-assistant-models";
 import type { ChatTextSelectionReference } from "@/lib/chat-text-selection";
 import { useUnreadChats } from "@/lib/conversations/unread-client";
-import { setActiveChatNotificationTarget } from "@/lib/chat-notification-inbox";
+import { useChatNotificationView } from "@/lib/use-chat-notification-view";
 
 interface Props {
   gardenSlug: string;
@@ -181,11 +181,8 @@ export default function GardenAgentChat({
   const { confirm, confirmDialog } = useConfirmDialog();
   const deepResearchDispatchingRef = useRef(false);
   const [researchNotice, setResearchNotice] = useState("");
-  useEffect(() => {
-    setActiveChatNotificationTarget(view === "chat" && session.sessionId
-      ? { surface: "dashboard_terminal", chatId: session.sessionId } : null);
-    return () => setActiveChatNotificationTarget(null);
-  }, [view, session.sessionId]);
+  useChatNotificationView(view === "chat" && session.sessionId
+    ? { surface: "dashboard_terminal", chatId: session.sessionId } : null);
   // Unsent text survives a reload here too. The garden is part of the surface
   // key: an unstarted chat belongs to the garden it was opened from.
   const draftSurface = `garden_chat:${gardenSlug}`;
@@ -529,7 +526,7 @@ export default function GardenAgentChat({
     [codex, deepResearch, openCode, ruflo],
   );
 
-  const submit = useCallback(() => {
+  const submit = useCallback((voice?: import('@/lib/speech/voice-request').VoiceRequestOptions) => {
     // Nothing may be dispatched into a chat that is still arriving -- not a
     // Hermes turn and not one of the agent launches below, which bind their run
     // to whichever conversation is selected when they start.
@@ -610,7 +607,7 @@ export default function GardenAgentChat({
     }
     if (!text) return;
     setInput("");
-    void session.send(text, { model, reasoningEffort });
+    void session.send(text, { model, reasoningEffort, ...voice });
   }, [
     deepResearch,
     codex,
@@ -625,12 +622,14 @@ export default function GardenAgentChat({
   ]);
 
   const askSelection = useCallback(
-    async (question: string, selection: ChatTextSelectionReference) => {
+    async (question: string, selection: ChatTextSelectionReference, attachments: readonly ChatAttachment[] = [], voice?: import('@/lib/speech/voice-request').VoiceRequestOptions) => {
       if (busy) await session.abort();
       await session.send(question, {
         model,
         reasoningEffort,
+        ...voice,
         textSelection: selection,
+        attachments: [...attachments],
       });
     },
     [busy, model, reasoningEffort, session],
@@ -1061,6 +1060,7 @@ export default function GardenAgentChat({
           surface="garden_chat"
           gardenSlug={gardenSlug}
           messages={session.messages}
+          appendExternalAgentTurn={session.appendExternalAgentTurn}
           connection={session.connection}
           runState={session.runState}
           externalRunLaunching={externalRunLaunching}

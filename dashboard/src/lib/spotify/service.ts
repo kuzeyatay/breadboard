@@ -54,6 +54,7 @@ export interface SpotifyTrack {
   name: string;
   artist: string;
   album: string;
+  albumUri?: string;
   imageUrl: string | null;
   durationMs: number;
 }
@@ -98,6 +99,9 @@ export interface SpotifyPlaybackState {
   shuffle: boolean;
   deviceId: string | null;
   deviceName: string | null;
+  /** Authenticated SDK queue hints; absent on cloud/older-engine samples. */
+  hasNextTrack?: boolean;
+  repeatMode?: 0 | 1 | 2;
 }
 
 export interface SpotifyPlaylist {
@@ -243,7 +247,7 @@ export async function spotifyApiRequest(input: {
   const readKey = input.method === "GET" ? `${input.userId}:${input.endpoint}:${JSON.stringify(input.query ?? {})}` : null;
   const pending = readKey ? spotifyRequestPolicy.reads.get(readKey) : null;
   if (pending) return pending;
-  const request: Promise<unknown> = Promise.resolve().then(() => embeddedProviderRequest({
+  const send = () => embeddedProviderRequest({
     userId: input.userId,
     integration,
     request: {
@@ -252,7 +256,19 @@ export async function spotifyApiRequest(input: {
       ...(input.query ? { query: input.query } : {}),
       ...(input.body !== undefined ? { body: input.body } : {}),
     },
-  })).catch((error: unknown) => {
+  });
+  const request: Promise<unknown> = Promise.resolve().then(async () => {
+    try {
+      return await send();
+    } catch (error) {
+      // One broken connection must not blank every mounted player. Retry only
+      // the read: a timed-out next/previous command may already have succeeded.
+      if (input.method !== "GET" || input.endpoint !== "/v1/me/player" ||
+        !(error instanceof ApiError) || error.code !== "provider_unavailable") throw error;
+      await new Promise(resolve => setTimeout(resolve, 250));
+      return send();
+    }
+  }).catch((error: unknown) => {
     if (error instanceof ApiError && error.code === "spotify_rate_limited") {
       const supplied = (error as ApiError & { retryAfterMs?: number }).retryAfterMs;
       const retryAfterMs = typeof supplied === "number" && Number.isFinite(supplied) ? Math.max(1_000, supplied) : 60_000;
@@ -334,6 +350,7 @@ function spotifyTrack(value: unknown): SpotifyTrack | null {
   const uri = typeof track?.uri === "string" ? track.uri : "";
   const name = typeof track?.name === "string" ? track.name.trim() : "";
   const albumName = typeof album?.name === "string" ? album.name.trim() : "";
+  const albumUri = typeof album?.uri === "string" && /^spotify:album:[A-Za-z0-9]{10,64}$/.test(album.uri) ? album.uri : undefined;
   const durationMs = Number(track?.duration_ms);
   if (
     !/^[A-Za-z0-9]{10,64}$/.test(id) ||
@@ -351,6 +368,7 @@ function spotifyTrack(value: unknown): SpotifyTrack | null {
     name: name.slice(0, 300),
     artist: artistNames.join(", ").slice(0, 300),
     album: albumName.slice(0, 300),
+    ...(albumUri ? { albumUri } : {}),
     imageUrl,
     durationMs: Math.round(durationMs),
   };
@@ -642,31 +660,6 @@ export async function spotifyArtistProfile(userId: number, artistId: string): Pr
       .map(spotifyLibraryPlaylist).filter((playlist): playlist is SpotifyLibraryPlaylist => Boolean(playlist)),
     errors,
   };
-}
-
-export async function spotifyRecommendedTracks(
-  userId: number,
-  seedTrackId: string,
-  limit = 10,
-): Promise<SpotifyTrack[]> {
-  if (!/^[A-Za-z0-9]{10,64}$/.test(seedTrackId)) {
-    throw new ApiError(400, "invalid_spotify_track", "The Spotify track is invalid.");
-  }
-  const payload = objectRecord(
-    await spotifyApiRequest({
-      userId,
-      method: "GET",
-      endpoint: "/v1/recommendations",
-      query: {
-        seed_tracks: seedTrackId,
-        limit: Math.min(20, Math.max(1, limit)),
-      },
-    }),
-  );
-  return (Array.isArray(payload?.tracks) ? payload.tracks : [])
-    .map(spotifyTrack)
-    .filter((track): track is SpotifyTrack => Boolean(track))
-    .filter((track) => track.id !== seedTrackId);
 }
 
 const spotifyLibraryMetadataCache = new Map<string, {

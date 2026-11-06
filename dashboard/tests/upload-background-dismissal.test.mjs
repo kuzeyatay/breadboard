@@ -10,6 +10,10 @@ const store = fs.readFileSync(
   new URL("../src/lib/garden-upload-store.ts", import.meta.url),
   "utf8",
 );
+const restoredUploads = fs.readFileSync(
+  new URL("../src/app/components/use-garden-restored-uploads.ts", import.meta.url),
+  "utf8",
+);
 
 test("the Documents add action always opens a fresh upload draft", () => {
   const openUploadModal =
@@ -51,8 +55,8 @@ test("upload tasks live outside the page so navigation cannot lose them", () => 
   // The remount recovery pass must not double-attach to jobs the live engine
   // still owns.
   assert.match(
-    workspace,
-    /if \(hasLiveGardenUploadRequest\(stored\.requestId\)\) continue;/,
+    restoredUploads,
+    /!hasLiveGardenUploadRequest\(stored\.requestId\)/,
   );
 });
 

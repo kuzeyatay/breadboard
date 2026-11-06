@@ -27,6 +27,7 @@ import {
 import {
   installState,
   readInstallStatus,
+  startInstall,
   type RecallInstallState,
   type RecallInstallStatus,
 } from "./install.ts";
@@ -44,7 +45,7 @@ import {
   reconcileRecallRuntime,
   type RecallRuntimeStatus,
 } from "./runtime-service.ts";
-import { getRecallSettings, type RecallSettings } from "./settings.ts";
+import { getRecallSettings, updateRecallSettings, type RecallSettings } from "./settings.ts";
 
 export interface RecallStatus {
   /** Feature switch — false disables the tab, the routes, and the tools. */
@@ -387,20 +388,24 @@ export async function controlRecall(
 
 export interface RecallAutoStartResult {
   started: boolean;
-  outcome: RecallAutoStartOutcome | "start_failed";
+  outcome:
+    | RecallAutoStartOutcome
+    | "start_failed"
+    | "installing"
+    | "install_failed"
+    | "unsupported_platform";
   state: RecallProcessState;
 }
 
 /**
- * Resume capture because Breadboard opened, for a user who asked it to.
+ * Prepare and resume capture when Breadboard opens, unless the owner opted out.
  *
- * This is the only way the recorder starts without somebody pressing Start, so
+ * This is the way the recorder starts without somebody pressing Start, so
  * it answers rather than throws: it runs unattended on every app open, where a
  * thrown error has no one to read it and the settings tab already explains
  * every reason capture might not be running. `recallAutoStartDecision` holds
- * the rule; this adds only what it cannot see — whether an engine nobody
- * recorded a pid for is nonetheless already answering, which is what keeps a
- * second recorder off the port.
+ * the rule; this also checks for an existing engine and prepares a missing
+ * installation before asking the native Runtime to start capture.
  */
 export async function autoStartRecallCapture(
   userId: number,
@@ -431,16 +436,51 @@ export async function autoStartRecallCapture(
       .catch(() => false);
   }
 
+  // The probes above await I/O. Honor an opt-out or updated exclusions saved
+  // while they were in flight, rather than starting from a stale snapshot.
+  const currentSettings = getRecallSettings(userId);
   const decision = recallAutoStartDecision({
     featureEnabled: config.enabled,
-    settings,
+    settings: currentSettings,
     engineRunning,
     installed: install.installed,
   });
+  if (decision === "not_installed") {
+    if (!install.supported) return { started: false, outcome: "unsupported_platform", state };
+    const progress = readInstallStatus(config);
+    if (progress?.phase === "installing" && !progress.stalled) {
+      return { started: false, outcome: "installing", state };
+    }
+    // A failed download needs an explicit retry in Settings, not a download
+    // loop on every poll or navigation. A first installation is automatic.
+    if (progress && (progress.stalled || ["error", "interrupted"].includes(progress.phase))) {
+      return { started: false, outcome: "install_failed", state };
+    }
+    try {
+      await startInstall(userId, config);
+      return { started: false, outcome: "installing", state };
+    } catch (error) {
+      return {
+        started: false,
+        outcome: error instanceof RecallError && error.code === "install_in_progress"
+          ? "installing" : "install_failed",
+        state,
+      };
+    }
+  }
   if (decision !== "start") return { started: false, outcome: decision, state };
 
   try {
-    await reconcileRecallRuntime(userId, "running", settings);
+    await reconcileRecallRuntime(userId, "running", currentSettings);
+    const latest = getRecallSettings(userId);
+    if (!latest.captureEnabled || !latest.autoStartCapture) {
+      await reconcileRecallRuntime(userId, "stopped", null);
+      return {
+        started: false,
+        outcome: latest.captureEnabled ? "not_opted_in" : "capture_disabled",
+        state: reconciledProcessState(false),
+      };
+    }
     return {
       started: true,
       outcome: "start",
@@ -454,4 +494,23 @@ export async function autoStartRecallCapture(
       state: projectRecallProcessState(after, managed),
     };
   }
+}
+
+/** Persist the switch and apply it to the actual recorder, including opt-out. */
+export async function saveRecallSettings(
+  userId: number,
+  patch: Record<string, unknown>,
+): Promise<RecallSettings> {
+  const settings = updateRecallSettings(userId, patch);
+  if (!settings.captureEnabled) {
+    // Do not swallow a failed stop: Settings must tell the user if the recorder
+    // could still be running even though the durable preference is now off.
+    const status = await readRecallRuntimeStatus(userId);
+    if (status?.ownedByRequester && status.desiredState === "running") {
+      await reconcileRecallRuntime(userId, "stopped", null);
+    }
+  } else if (patch.captureEnabled === true || patch.autoStartCapture === true) {
+    await autoStartRecallCapture(userId);
+  }
+  return settings;
 }

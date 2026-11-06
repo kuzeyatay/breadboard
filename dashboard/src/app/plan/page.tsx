@@ -57,7 +57,19 @@ export default async function PlanPage({
     projects.find((project) => project.id === requestedProject) ?? projects[0];
   const board = activeProject ? planStore.getBoard(userId, activeProject.id) : null;
 
-  const calendars = getCalendarStore().listCalendarsEnsuringDefault(userId);
+  let calendars = getCalendarStore().listCalendarsEnsuringDefault(userId);
+  const requestedTask = Number(first("task"));
+  const requestedEvent = Number(first("event"));
+  let initialEventId: number | undefined;
+  if (Number.isSafeInteger(requestedEvent) && requestedEvent > 0) {
+    try {
+      const event = getCalendarStore().getEvent(userId, requestedEvent);
+      initialEventId = event.id;
+      // A search link can open an event in a hidden calendar without changing
+      // the user's saved calendar visibility.
+      calendars = calendars.map(calendar => calendar.id === event.calendarId ? { ...calendar, visible: true } : calendar);
+    } catch { /* Deleted or inaccessible events keep the ordinary calendar usable. */ }
+  }
 
   const rawView = first("view");
   const view: PlanView = isPlanView(rawView) ? rawView : "board";
@@ -78,6 +90,8 @@ export default async function PlanPage({
       initialProjects={projects}
       initialBoard={board}
       initialLabels={labels}
+      initialTaskId={Number.isSafeInteger(requestedTask) && requestedTask > 0 ? requestedTask : undefined}
+      initialEventId={initialEventId}
       initialView={view}
       initialBoardScope={boardScope}
       initialCalendars={calendars}

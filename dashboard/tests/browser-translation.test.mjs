@@ -13,8 +13,19 @@ test("translation validates its bounded input and maps reordered output back to 
   for (const value of ["invalid", '{}', '{"segments":[{"id":1,"text":"hello"}]}', '{"segments":[{"id":1,"text":"hello"},{"id":1,"text":"world"}]}', '{"segments":[{"id":1,"text":"hello"},{"id":3,"text":"world"}]}']) assert.throws(() => parsePageTranslation(value, input), /incomplete/);
 });
 
-test("translation calls the configured provider with text only and no agent tools", async () => {
+test("translation uses Google MT first and keeps fragment boundary whitespace", async () => {
+  const fragments = { language: "en", segments: [{ id: 1, text: "Hola ", context: "" }, { id: 2, text: " mundo", context: "" }] };
+  const output = await translatePageText(fragments, undefined, async (url, options) => {
+    assert.match(String(url), /translate\.googleapis\.com.*tl=en/);
+    assert.deepEqual(options.body.getAll("q"), ["Hola ", " mundo"]);
+    return new Response(JSON.stringify([["Hello", "es"], ["world", "es"]]));
+  });
+  assert.deepEqual(output, [{ id: 1, text: "Hello " }, { id: 2, text: " world" }]);
+});
+
+test("translation falls back to the configured provider with text only and no agent tools", async () => {
   const output = await translatePageText(input, undefined, async (url, options) => {
+    if (String(url).includes("googleapis")) return new Response("blocked", { status: 429 });
     assert.ok(url.endsWith("/chat/completions"));
     const body = JSON.parse(options.body);
     assert.equal(body.stream, false);
@@ -26,4 +37,9 @@ test("translation calls the configured provider with text only and no agent tool
   });
   assert.deepEqual(output, [{ id: 1, text: "Hello" }, { id: 2, text: "world" }]);
   await assert.rejects(translatePageText(input, undefined, async () => new Response("offline", { status: 503 })), /AI connection/);
+});
+
+test("live Google MT round trip", { skip: !process.env.LIVE_TRANSLATE }, async () => {
+  const [hello] = await translatePageText({ language: "en", segments: [{ id: 1, text: "Guten Morgen ", context: "" }] });
+  assert.match(hello.text, /^Good morning $/i);
 });

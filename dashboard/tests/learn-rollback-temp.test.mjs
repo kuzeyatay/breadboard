@@ -79,3 +79,17 @@ test("Learn rollback uses the managed temporary-root lifecycle", () => {
   );
   assert.doesNotMatch(source, /path\.join\(os\.tmpdir\(\), "breadboard-learn-rollback-"\)/);
 });
+
+test("a recent root whose recorded owner has exited is reclaimed at once", (t) => {
+  // Live 2026-09-30: six dead-owner copies waited out the day-long age rule
+  // across failed runs and filled the disk.
+  const tempDir = fixtureRoot(t);
+  const dead = fs.mkdtempSync(path.join(tempDir, LEARN_ROLLBACK_TEMP_PREFIX));
+  fs.writeFileSync(
+    path.join(dead, ".breadboard-rollback-owner.json"),
+    `${JSON.stringify({ pid: 4243, createdAt: new Date().toISOString() })}\n`,
+  );
+  const reclaim = reclaimStaleLearnRollbackRoots({ tempDir, isProcessRunning: () => false });
+  assert.deepEqual(reclaim.removed, [dead]);
+  assert.equal(fs.existsSync(dead), false);
+});

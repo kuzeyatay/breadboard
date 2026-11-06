@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath } from "./runtime-v2-paths.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -55,12 +56,6 @@ export function validateGeneratedVisualBrowserRequest(value) {
     !Number.isSafeInteger(value.timeoutMs) || value.timeoutMs < 5_000 || value.timeoutMs > 90_000
   ) fail("The generated visual browser request is invalid.");
   return value;
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function directFile(candidate) {

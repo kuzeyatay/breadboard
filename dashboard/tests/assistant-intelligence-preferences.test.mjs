@@ -30,6 +30,7 @@ test("the profile intelligence preference remains a durable user default", () =>
     filesystemMode: "restricted",
     lastActiveDirectory: null,
     defaultModel: "gpt-5.6-sol",
+    fallbackModel: "gpt-5.6-sol",
     reasoningEffort: "high",
     reasoningEffortByModel: {},
     intelligencePreferenceSet: false,
@@ -48,6 +49,7 @@ test("the profile intelligence preference remains a durable user default", () =>
     filesystemMode: "restricted",
     lastActiveDirectory: null,
     defaultModel: "gpt-5.6-terra",
+    fallbackModel: "gpt-5.6-sol",
     reasoningEffort: "xhigh",
     reasoningEffortByModel: { "gpt-5.6-terra": "xhigh" },
     intelligencePreferenceSet: true,
@@ -126,7 +128,7 @@ test("only profile saves change the account; dashboard and Quartz chat picks rem
   assert.match(hook, /breadboard:intelligence-override:/);
   assert.doesNotMatch(hook, /patchAssistantPreferences/);
   const profile = source("../src/app/profile/default-model-panel.tsx");
-  assert.match(profile, /patchAssistantPreferences\(\{ model: normalized \}\)/);
+  assert.match(profile, /patchAssistantPreferences\(\{ \[field\]: normalized \}\)/);
   assert.match(route, /intelligencePreferenceSet/);
   assert.match(route, /setHermesUserSettings/);
   assert.match(quartz, /api\/assistant-preferences/);

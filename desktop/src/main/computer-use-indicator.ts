@@ -10,8 +10,6 @@ import {
 } from "./computer-use-state";
 
 const STATE_POLL_MS = 150;
-const CURSOR_POLL_MS = 16;
-const CURSOR_WINDOW_SIZE = 92;
 
 export interface ComputerUseIndicatorOptions {
   dataDir: string;
@@ -29,9 +27,7 @@ export class ComputerUseIndicator {
   private readonly dataDir: string;
   private readonly cancelPath: string;
   private readonly edgeWindows = new Map<number, BrowserWindow>();
-  private cursorWindow: BrowserWindow | null = null;
   private stateTimer: NodeJS.Timeout | null = null;
-  private cursorTimer: NodeJS.Timeout | null = null;
   private active = false;
   private appearance: ComputerUseAppearance | null = null;
   private started = false;
@@ -94,22 +90,19 @@ export class ComputerUseIndicator {
     this.active = true;
     this.cancelRequested = false;
     this.syncEdgeWindows();
-    this.ensureCursorWindow();
+    // The input backend owns its agent cursor. Following the system pointer
+    // here falsely labels the person's mouse as Bread's and duplicates it.
     screen.on("display-added", this.handleDisplaysChanged);
     screen.on("display-removed", this.handleDisplaysChanged);
     screen.on("display-metrics-changed", this.handleDisplaysChanged);
     this.shortcutRegistered = globalShortcut.register("Escape", () => this.requestCancel());
     if (!this.shortcutRegistered) this.log("could not register the global Escape shortcut");
-    this.cursorTimer = setInterval(() => this.placeCursorWindow(), CURSOR_POLL_MS);
-    this.cursorTimer.unref?.();
   }
 
   private deactivate(): void {
-    if (!this.active && this.edgeWindows.size === 0 && !this.cursorWindow) return;
+    if (!this.active && this.edgeWindows.size === 0) return;
     this.active = false;
     this.cancelRequested = false;
-    if (this.cursorTimer) clearInterval(this.cursorTimer);
-    this.cursorTimer = null;
     screen.removeListener("display-added", this.handleDisplaysChanged);
     screen.removeListener("display-removed", this.handleDisplaysChanged);
     screen.removeListener("display-metrics-changed", this.handleDisplaysChanged);
@@ -117,8 +110,6 @@ export class ComputerUseIndicator {
     this.shortcutRegistered = false;
     for (const window of this.edgeWindows.values()) this.destroyWindow(window);
     this.edgeWindows.clear();
-    if (this.cursorWindow) this.destroyWindow(this.cursorWindow);
-    this.cursorWindow = null;
   }
 
   private readonly handleDisplaysChanged = (): void => {
@@ -186,49 +177,6 @@ export class ComputerUseIndicator {
     return window;
   }
 
-  private ensureCursorWindow(): void {
-    if (this.cursorWindow && !this.cursorWindow.isDestroyed()) return;
-    const point = screen.getCursorScreenPoint();
-    const half = Math.floor(CURSOR_WINDOW_SIZE / 2);
-    const window = new BrowserWindow({
-      x: point.x - half,
-      y: point.y - half,
-      width: CURSOR_WINDOW_SIZE,
-      height: CURSOR_WINDOW_SIZE,
-      show: false,
-      frame: false,
-      transparent: true,
-      backgroundColor: "#00000000",
-      resizable: false,
-      movable: false,
-      minimizable: false,
-      maximizable: false,
-      closable: false,
-      focusable: false,
-      fullscreenable: false,
-      hasShadow: false,
-      skipTaskbar: true,
-      title: "Bread cursor highlight",
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        spellcheck: false,
-        backgroundThrottling: false,
-      },
-    });
-    this.cursorWindow = window;
-    this.prepareOverlayWindow(window);
-    void window
-      .loadFile(this.options.overlayHtmlPath, {
-        query: { surface: "cursor", appearance: this.appearance ?? "green" },
-      })
-      .then(() => {
-        if (!window.isDestroyed() && this.active) window.showInactive();
-      })
-      .catch((error) => this.log(`cursor overlay failed to load: ${this.errorMessage(error)}`));
-  }
-
   private prepareOverlayWindow(window: BrowserWindow): void {
     hardenWindow(window, this.options.allowed);
     window.setIgnoreMouseEvents(true, { forward: false });
@@ -237,16 +185,6 @@ export class ComputerUseIndicator {
     // The person sees the safety affordance; screenshots given to the model do
     // not, so it cannot mistake the border or notice for part of the target UI.
     window.setContentProtection(true);
-  }
-
-  private placeCursorWindow(): void {
-    if (!this.active) return;
-    this.ensureCursorWindow();
-    const window = this.cursorWindow;
-    if (!window || window.isDestroyed()) return;
-    const point = screen.getCursorScreenPoint();
-    const half = Math.floor(CURSOR_WINDOW_SIZE / 2);
-    window.setPosition(point.x - half, point.y - half, false);
   }
 
   private requestCancel(): void {

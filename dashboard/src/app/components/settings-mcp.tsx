@@ -50,7 +50,10 @@ export default function SettingsMcp() {
       const response = await fetchCachedSettings(MCP_SETTINGS_URL, { force });
       const payload = (await response.json().catch(() => ({}))) as McpPayload;
       if (!response.ok) {
-        throw new Error(payload.message ?? payload.error ?? "MCP servers could not be loaded.");
+        const message = payload.message ?? payload.error;
+        throw new Error(!message || message === "Internal server error"
+          ? "Could not load MCP servers. Try again."
+          : message);
       }
       setConnections(Array.isArray(payload.connections) ? payload.connections : []);
     } catch (cause) {
@@ -277,7 +280,7 @@ export default function SettingsMcp() {
   return (
     <div className="space-y-3">
       <div className="flex items-start justify-between gap-3">
-        <p className="max-w-lg text-xs leading-5 text-[var(--ink-muted)]">MCP servers connect approved tools to Breadboard. Once a server is enabled and healthy, its command appears in the direct slash menu.</p>
+        <p className="max-w-lg text-xs leading-5 text-[var(--ink-muted)]">Add tools through MCP servers. Connected tools appear in the slash menu.</p>
         <button type="button" onClick={() => { setAdding(true); setNotice(null); }} className="neu-button shrink-0 rounded-xl px-3 py-2 text-xs font-medium text-[var(--botanical)]">Add MCP</button>
       </div>
       <div className="relative">

@@ -1,13 +1,14 @@
 "use client";
 
-import { useCallback, useMemo, useState, type RefObject } from "react";
+import { useCallback, useMemo, useState, type ReactNode, type RefObject } from "react";
 import {
   isChatHighlightColor,
   normalizeChatHighlightNote,
   type ChatHighlightColor,
 } from "@/lib/chat-highlights";
-import { chatTextSelectionsOverlap, normalizeChatTextSelectionReference, type ChatTextSelectionReference } from "@/lib/chat-text-selection";
+import { chatQuestionSelections, chatTextSelectionsOverlap, normalizeChatTextSelectionReference, type ChatTextSelectionReference } from "@/lib/chat-text-selection";
 import type { ChatTokenUsage } from "@/lib/chat-token-usage";
+import { reusableChatAttachments, type ChatAttachment, type ChatMessageAttachment } from "@/lib/chat-attachments";
 import type { VerificationSummary } from "@/lib/hermes/evidence";
 import type { ChatTextAnnotation } from "./chat-markdown";
 import { ChatSelectionMenu, InlineSelectionAnswerPopover, type ChatTextSelectionCandidate, type FloatingAnchorRect } from "./chat-text-selection-ui";
@@ -16,14 +17,19 @@ import { useTextHighlights } from "./use-text-highlights";
 
 export interface SelectableChatMessage {
   id: string;
+  starMessageId?: string;
   role: "user" | "assistant";
   content: string;
+  attachments?: ChatMessageAttachment[];
+  thinking?: string;
+  progressNotes?: string[];
   textSelection?: ChatTextSelectionReference;
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
   responseCompletedAt?: string;
   verification?: VerificationSummary;
   createdAt?: string;
+  pending?: boolean;
 }
 
 type Highlight = ChatTextSelectionReference & { color?: ChatHighlightColor; note?: string };
@@ -58,14 +64,20 @@ function selectionReference(candidate: ChatTextSelectionCandidate, mode: "chat" 
 }
 
 /** Shared selection controls for assistant surfaces; the host owns turn dispatch. */
-export function useTextSelectionController({ scope, messages, busy, composerRef, onAsk, onStop, onBeginQuestion }: {
+export function useTextSelectionController({ scope, conversationId, canStar, persistDraft = true, renderArtifacts, messages, busy, concurrentInline = false, composerRef, onAsk, onStop, onBeginQuestion, onOpenChatQuestion }: {
   scope: string | null;
+  conversationId?: string;
+  canStar?: boolean;
+  persistDraft?: boolean;
+  renderArtifacts?: (answerMessageId: string) => ReactNode;
   messages: readonly SelectableChatMessage[];
   busy: boolean;
+  concurrentInline?: boolean;
   composerRef: RefObject<HTMLTextAreaElement | null>;
-  onAsk: (question: string, selection: ChatTextSelectionReference) => void;
-  onStop: () => void;
+  onAsk: (question: string, selection: ChatTextSelectionReference, attachments: readonly ChatAttachment[]) => void;
+  onStop: (selectionId: string) => void;
   onBeginQuestion: () => void;
+  onOpenChatQuestion: (selectionId: string) => void;
 }) {
   const [highlights, setHighlights, highlightError] = useTextHighlights(scope ? `breadboard:chat-highlights:${scope}` : null, normalizeHighlights);
   const [savedSelections, setSavedSelections, selectionError] = useTextHighlights(scope ? `breadboard:inline-selections:${scope}` : null, normalizeSelections);
@@ -82,7 +94,7 @@ export function useTextSelectionController({ scope, messages, busy, composerRef,
   }
 
   const threads = useMemo(() => {
-    const result = new Map<string, { selection: ChatTextSelectionReference; question?: string; answer?: SelectableChatMessage }>();
+    const result = new Map<string, { selection: ChatTextSelectionReference; question?: string; attachments?: ChatAttachment[]; answer?: SelectableChatMessage }>();
     for (const selection of savedSelections) {
       if (!deleted.includes(selection.id)) result.set(selection.id, { selection });
     }
@@ -91,7 +103,10 @@ export function useTextSelectionController({ scope, messages, busy, composerRef,
       const selection = message.textSelection;
       if (message.role === "user") {
         pending = selection?.mode === "inline" ? selection.id : undefined;
-        if (pending && selection && !deleted.includes(pending)) result.set(pending, { selection, question: message.content });
+        if (pending && selection && !deleted.includes(pending)) result.set(pending, {
+          selection, question: message.content,
+          attachments: reusableChatAttachments(message.attachments).filter(item => item.context !== "pdf"),
+        });
       } else {
         const id = selection?.mode === "inline" ? selection.id : pending;
         const thread = id ? result.get(id) : undefined;
@@ -102,6 +117,7 @@ export function useTextSelectionController({ scope, messages, busy, composerRef,
     return result;
   }, [deleted, messages, savedSelections]);
 
+  const chatSelections = useMemo(() => chatQuestionSelections(messages, composerSelection), [messages, composerSelection]);
   const annotations = useMemo(() => {
     const result = new Map<string, ChatTextAnnotation[]>();
     const add = (selection: ChatTextSelectionReference, annotation: ChatTextAnnotation) => {
@@ -109,17 +125,29 @@ export function useTextSelectionController({ scope, messages, busy, composerRef,
       list.push(annotation);
       result.set(selection.sourceMessageId, list);
     };
+    for (const selection of chatSelections.values()) add(selection, { ...selection, kind: "chat" });
     for (const highlight of highlights) add(highlight, { ...highlight, kind: "highlight" });
     for (const { selection } of threads.values()) add(selection, { ...selection, kind: "answer" });
     return result;
-  }, [highlights, threads]);
+  }, [chatSelections, highlights, threads]);
 
   const retainParents = useCallback((current: OpenAnswer[], sourceId: string) => {
     const parent = current.findIndex(open => threads.get(open.id)?.answer?.id === sourceId);
     return parent < 0 ? [] : current.slice(0, parent + 1);
   }, [threads]);
 
-  const openAnnotation = useCallback((id: string, anchor: FloatingAnchorRect) => {
+  const openAnnotation = useCallback((id: string, anchor: FloatingAnchorRect, toggle = true) => {
+    if (chatSelections.has(id)) {
+      setMenu(null);
+      setOpenAnswers([]);
+      window.getSelection()?.removeAllRanges();
+      if (messages.some(message => message.role === "user" && message.textSelection?.id === id)) onOpenChatQuestion(id);
+      else {
+        onBeginQuestion();
+        window.setTimeout(() => composerRef.current?.focus(), 0);
+      }
+      return;
+    }
     const highlight = highlights.find(item => item.id === id);
     const thread = threads.get(id);
     if (highlight) {
@@ -127,20 +155,21 @@ export function useTextSelectionController({ scope, messages, busy, composerRef,
       setMenu({ ...highlight, anchor });
     } else if (thread) {
       setMenu(null);
-      setOpenAnswers(current => [...retainParents(current, thread.selection.sourceMessageId), { id, anchor }]);
-      if (!thread.question) {
-        setComposerSelection(thread.selection);
-        onBeginQuestion();
-        window.setTimeout(() => composerRef.current?.focus(), 0);
+      const openIndex = openAnswers.findIndex(answer => answer.id === id);
+      if (toggle && openIndex >= 0) {
+        setOpenAnswers(current => current.slice(0, openIndex));
+        window.getSelection()?.removeAllRanges();
+        return;
       }
+      setOpenAnswers(current => [...retainParents(current, thread.selection.sourceMessageId), { id, anchor }]);
     }
     window.getSelection()?.removeAllRanges();
-  }, [composerRef, highlights, onBeginQuestion, retainParents, threads]);
+  }, [chatSelections, messages, onOpenChatQuestion, composerRef, highlights, onBeginQuestion, openAnswers, retainParents, threads]);
 
   const receiveSelection = useCallback((selection: ChatTextSelectionCandidate) => {
     if (!scope) return;
     const answer = annotations.get(selection.sourceMessageId)?.find(item => item.kind === "answer" && chatTextSelectionsOverlap(item, selection));
-    if (answer) { openAnnotation(answer.id, selection.anchor); return; }
+    if (answer) { openAnnotation(answer.id, selection.anchor, false); return; }
     setOpenAnswers(current => retainParents(current, selection.sourceMessageId));
     setMenu(selection);
   }, [annotations, openAnnotation, retainParents, scope]);
@@ -195,17 +224,19 @@ export function useTextSelectionController({ scope, messages, busy, composerRef,
   }
   function beginQuestion(mode: "chat" | "inline") {
     if (!menu) return;
-    cancelQuestion();
     const selection = selectionReference(menu, mode);
     if (mode === "inline") {
       removeOverlapping(selection);
       setSavedSelections(current => [...current, selection]);
       setOpenAnswers(current => [...retainParents(current, selection.sourceMessageId), { id: selection.id, anchor: menu.anchor }]);
-    } else setOpenAnswers([]);
-    setComposerSelection(selection);
-    onBeginQuestion();
+    } else {
+      cancelQuestion();
+      setOpenAnswers([]);
+      setComposerSelection(selection);
+      onBeginQuestion();
+      window.setTimeout(() => composerRef.current?.focus(), 0);
+    }
     clearMenu();
-    window.setTimeout(() => composerRef.current?.focus(), 0);
   }
   function deleteAnswer(id: string) {
     setSavedSelections(current => current.filter(item => item.id !== id));
@@ -213,6 +244,13 @@ export function useTextSelectionController({ scope, messages, busy, composerRef,
     setOpenAnswers(current => current.slice(0, current.findIndex(item => item.id === id)));
     setComposerSelection(current => current?.id === id ? null : current);
   }
+
+  const replyToAnswer = useCallback((selection: ChatTextSelectionReference, anchor: FloatingAnchorRect) => {
+    setSavedSelections(current => [...current, selection]);
+    setMenu(null);
+    setOpenAnswers(current => [...retainParents(current, selection.sourceMessageId), { id: selection.id, anchor }]);
+    window.getSelection()?.removeAllRanges();
+  }, [retainParents, setSavedSelections]);
 
   const selectedHighlight = menu ? highlights.find(item => item.sourceMessageId === menu.sourceMessageId && chatTextSelectionsOverlap(item, menu)) : undefined;
   const lastMessage = messages.at(-1);
@@ -225,17 +263,24 @@ export function useTextSelectionController({ scope, messages, busy, composerRef,
     {openAnswers.map((open, index) => {
       const thread = threads.get(open.id);
       if (!thread) return null;
+      const pending = concurrentInline ? thread.answer?.pending === true : busy && lastMessage?.textSelection?.id === open.id;
       return <InlineSelectionAnswerPopover key={open.id} anchor={open.anchor} selection={thread.selection} question={thread.question}
+        persistDraft={persistDraft}
+        questionAttachments={thread.attachments}
         answer={thread.answer?.content} answerMessageId={thread.answer?.id}
-        pending={busy && lastMessage?.textSelection?.id === open.id}
+        conversationId={conversationId} canStar={canStar} starMessageId={thread.answer?.starMessageId}
+        reasoning={thread.answer?.thinking} progressNotes={thread.answer?.progressNotes}
+        artifacts={thread.answer?.id ? renderArtifacts?.(thread.answer.id) : undefined}
+        onReply={concurrentInline || !busy ? replyToAnswer : undefined}
+        pending={pending}
         usage={thread.answer?.usage} responseDurationMs={thread.answer?.responseDurationMs} startedAt={thread.answer?.createdAt}
         responseCompletedAt={thread.answer?.responseCompletedAt} verification={thread.answer?.verification}
         annotations={thread.answer ? annotations.get(thread.answer.id) ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS}
-        onSelection={receiveSelection} onOpenAnnotation={openAnnotation} onStop={onStop}
-        onAskAgain={!busy ? question => onAsk(question, thread.selection) : undefined}
+        onSelection={receiveSelection} onOpenAnnotation={openAnnotation} onStop={() => onStop(open.id)}
+        onAskAgain={(concurrentInline ? !pending : !busy) ? (question, attachments) => onAsk(question, thread.selection, attachments) : undefined}
         onClose={() => setOpenAnswers(current => current.slice(0, index))} onDelete={() => deleteAnswer(open.id)} />;
     })}
   </>;
-  return { annotations, receiveSelection, openAnnotation, composerSelection, cancelQuestion,
+  return { annotations, receiveSelection, openAnnotation, replyToAnswer, composerSelection, cancelQuestion,
     clearComposerSelection: () => setComposerSelection(null), restoreComposerSelection: setComposerSelection, overlays };
 }

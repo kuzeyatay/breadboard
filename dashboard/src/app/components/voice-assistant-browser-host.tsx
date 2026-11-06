@@ -8,7 +8,7 @@ import VoiceAssistantRuntime from './voice-assistant-runtime';
 /** Browser fallback elects one page; Electron has its own persistent voice window. */
 export default function VoiceAssistantBrowserHost() {
   const path = usePathname();
-  const allowed = !/^\/(?:api|notification-overlay|preview|login|register|auth|share|embed)(?:\/|$)/.test(path);
+  const allowed = !/^\/(?:api|dictation|notification-overlay|preview|login|register|auth|share|embed)(?:\/|$)/.test(path);
   const [owner, setOwner] = useState(false);
   useEffect(() => {
     if (!allowed || desktopTabsBridge() || voiceCompanionBridge() || !navigator.locks) return;

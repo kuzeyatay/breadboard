@@ -61,7 +61,7 @@ export default function UserMessageControls({
   return (
     <div className="group/user-message flex w-full min-w-0 flex-col items-end" data-editing={editing}>
       {editing ? (
-        <div className="neu-chat-message neu-chat-message-user w-full min-w-0 rounded-[22px] p-3">
+        <div data-enter-submit-scope className="neu-chat-message neu-chat-message-user w-full min-w-0 rounded-[22px] p-3">
           <textarea
             autoFocus
             aria-label="Edit message"
@@ -69,7 +69,7 @@ export default function UserMessageControls({
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Escape") { event.preventDefault(); setEditing(false); }
-              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+              if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.repeat && !event.nativeEvent.isComposing) {
                 event.preventDefault();
                 saveEdit();
               }
@@ -79,7 +79,7 @@ export default function UserMessageControls({
           />
           <div className="mt-2 flex justify-end gap-2">
             <button type="button" onClick={() => setEditing(false)} className="rounded-full px-3 py-1 text-xs text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]">Cancel</button>
-            <button type="button" onClick={saveEdit} disabled={disabled || !draft.trim()} className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] px-3 text-xs font-medium text-[var(--paper-raised)] shadow-sm transition-colors hover:bg-[var(--botanical-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)] disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)] disabled:shadow-none">
+            <button data-enter-submit type="button" onClick={saveEdit} disabled={disabled || !draft.trim()} className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] px-3 text-xs font-medium text-[var(--paper-raised)] shadow-sm transition-colors hover:bg-[var(--botanical-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)] disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)] disabled:shadow-none">
               <span>Save &amp; send</span>
               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2} aria-hidden>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 19.5v-15m0 0-6 6m6-6 6 6" />

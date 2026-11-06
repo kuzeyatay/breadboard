@@ -136,3 +136,74 @@ export async function playSpeechBlob(blob: Blob, onFinished: (error?: Error) => 
     throw error;
   }
 }
+
+/** Play streaming MP3 immediately; other providers keep their existing audio decoder. */
+export async function playSpeechResponse(response: Response, signal: AbortSignal, onProgress?: (progress: number) => void): Promise<void> {
+  const mime = response.headers.get('content-type')?.split(';')[0];
+  if (!response.body || mime !== 'audio/mpeg' || typeof MediaSource === 'undefined' || !MediaSource.isTypeSupported('audio/mpeg')) {
+    const blob = await response.blob();
+    signal.throwIfAborted();
+    await new Promise<void>((resolve, reject) => {
+      const stop = () => { stopSpeechPlayback(); reject(signal.reason); };
+      signal.addEventListener('abort', stop, { once: true });
+      const finish = (error?: Error) => { signal.removeEventListener('abort', stop); if (error) reject(error); else resolve(); };
+      void playSpeechBlob(blob, finish, onProgress).catch(finish);
+    });
+    return;
+  }
+  signal.throwIfAborted();
+  stopSpeechPlayback();
+  const media = new MediaSource();
+  const reader = response.body.getReader();
+  const url = URL.createObjectURL(media);
+  const audio = new Audio(url);
+  activeAudio = audio; activeUrl = url;
+  releaseClapPlayback = holdForegroundAudio();
+  let retired = false;
+  const waits = new Set<(error: Error) => void>();
+  const stop = () => { if (activeAudio === audio) finishSpeechPlayback(); };
+  const waitFor = (target: EventTarget, name: string) => new Promise<void>((resolve, reject) => {
+    const clean = () => { target.removeEventListener(name, done); target.removeEventListener('error', failed); waits.delete(cancel); };
+    const done = () => { clean(); resolve(); };
+    const cancel = (error: Error) => { clean(); reject(error); };
+    const failed = () => cancel(new Error('The selected voice audio could not play.'));
+    waits.add(cancel);
+    target.addEventListener(name, done, { once: true });
+    target.addEventListener('error', failed, { once: true });
+  });
+  await new Promise<void>((resolve, reject) => {
+    activeFinished = error => {
+      retired = true;
+      signal.removeEventListener('abort', stop);
+      void reader.cancel().catch(() => {});
+      for (const cancel of [...waits]) cancel(new DOMException('Playback stopped', 'AbortError'));
+      if (error) reject(error); else if (signal.aborted) reject(signal.reason); else resolve();
+    };
+    signal.addEventListener('abort', stop, { once: true });
+    audio.addEventListener('ended', () => { onProgress?.(1); stop(); }, { once: true });
+    audio.addEventListener('error', () => {
+      if (activeAudio === audio) finishSpeechPlayback(new Error('The selected voice audio could not play.'));
+    }, { once: true });
+    audio.addEventListener('timeupdate', () => {
+      if (!retired && Number.isFinite(audio.duration) && audio.duration > 0) onProgress?.(Math.min(1, audio.currentTime / audio.duration));
+    });
+    void (async () => {
+      if (media.readyState !== 'open') await waitFor(media, 'sourceopen');
+      if (retired) return;
+      const buffer = media.addSourceBuffer('audio/mpeg');
+      let playing = false;
+      while (!retired) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (retired) return;
+        const updated = waitFor(buffer, 'updateend');
+        try { buffer.appendBuffer(new Uint8Array(value)); }
+        catch (error) { void updated.catch(() => {}); throw error; }
+        await updated;
+        if (!playing && !retired) { playing = true; void audio.play().catch(error => { if (activeAudio === audio) finishSpeechPlayback(error); }); }
+      }
+      if (!retired && media.readyState === 'open') media.endOfStream();
+      if (!playing && !retired) throw new Error('The voice provider returned empty audio.');
+    })().catch(error => { if (activeAudio === audio) finishSpeechPlayback(error); });
+  });
+}

@@ -37,7 +37,9 @@ export async function musicBrowser() {
     import Setup from './src/app/components/agents/music-producer-setup';
     const query=new URLSearchParams(location.search),surface=query.get('surface')||'terminal';
     const message=window.fixtureMessage,msg=message,index=0,i=0,lastAssistantIndex=0,activeRun=null,isStreaming=false;
-    const runInFlight=false,lastVisibleAssistantIndex=0,delegationInFlight=false,delegationInterrupted=false,editingAssistantMessageId=null,assistantMessageEditId='music-message';
+    const sessionId='fixture-session',runInFlight=false,lastVisibleAssistantIndex=0,delegationInFlight=false,delegationInterrupted=false,editingAssistantMessageId=null,assistantMessageEditId='music-message';
+    const temporaryChat=false,sideChat=false,onAskSelection=null,conversationLocked=false,responseStreaming=false,chatSessionId=1;
+    const onReply=()=>{},messageSelectionSourceId=()=> 'music-client';
     const branchNavigationForAssistant=()=>({current:2,total:2,onPrevious:()=>window.branches.push(-1),onNext:()=>window.branches.push(1)});
     const branchForAssistant=()=>({id:'music-branch',activeIndex:1,variants:[{},{}]}),onSwitchBranch=(_id,direction)=>window.branches.push(direction);
     const onRetryMessage=()=>{},retryAssistantAsBranch=()=>window.retries++,onRetryAssistant=()=>window.retries++;
@@ -70,6 +72,7 @@ export async function musicBrowser() {
         if(req.method==="GET"&&fixture.failSetup){res.statusCode=503;res.end('{"error":"Setup status is unavailable."}');}
         else {if(req.method==="POST")fixture.setupState="running";if(req.method==="DELETE")fixture.setupState="cancelled";res.end(JSON.stringify({jobId:fixture.setupState?"job_setup":null,state:fixture.setupState,stage:fixture.setupState,message:fixture.setupMessage,detail:fixture.setupDetail}));}
       }
+      else if(req.url.startsWith("/api/starred-messages"))res.end('{"messages":[]}');
       else res.end('{"ok":true}');return;
     }
     res.setHeader("content-type","text/html; charset=utf-8");res.end(`<!doctype html><html lang="en" data-theme="light"><head><meta charset="utf-8"><link rel="stylesheet" href="/style.css"></head><body style="padding:24px"><main id="root" style="max-width:720px;margin:auto"></main><script>window.fixtureMessage=${JSON.stringify(fixture.message).replaceAll("<","\\u003c")}</script><script src="/app.js"></script></body></html>`);

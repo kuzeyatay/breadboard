@@ -107,7 +107,7 @@ function render(props) {
   return renderToStaticMarkup(
     React.createElement(DocumentViewerClient, {
       fileName: "quarterly report.docx",
-      kicker: "Word",
+      formatLabel: "Word",
       description: "1 figure and 1 table",
       markdown: REPORT,
       warnings: [],
@@ -121,7 +121,6 @@ test("a document that is not a PDF still opens in a reader, not a download promp
   const markup = render();
 
   // The header names the file the way the PDF viewer names a PDF.
-  assert.match(markup, /Word attachment/);
   assert.match(markup, /quarterly report\.docx/);
   assert.match(markup, /Contains 1 figure and 1 table/);
 
@@ -167,7 +166,7 @@ test("a figure lifted out of the file is pointed at where it was written", () =>
   const markup = renderToStaticMarkup(
     React.createElement(DocumentViewerClient, {
       fileName: "quarterly report.docx",
-      kicker: "Word",
+      formatLabel: "Word",
       description: "",
       markdown: resolved,
       warnings: [],

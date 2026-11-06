@@ -58,7 +58,7 @@ export interface LearnHumanizerVersionState {
 interface HumanizeFinishedLearnBuildInput {
   userId?: number;
   gardenDir: string;
-  validate: () => LearnHumanizerValidation;
+  validate: () => LearnHumanizerValidation | Promise<LearnHumanizerValidation>;
   checkCancelled?: () => void;
   onStart?: (fileCount: number) => void;
   /** Absolute learner Markdown paths whose already-published prose must remain
@@ -446,7 +446,7 @@ export async function humanizeFinishedLearnBuild(
   cancellationCheckpoint(input.checkCancelled, originals);
   let validation: LearnHumanizerValidation;
   try {
-    validation = input.validate();
+    validation = await input.validate();
   } catch (error) {
     validation = {
       accepted: false,

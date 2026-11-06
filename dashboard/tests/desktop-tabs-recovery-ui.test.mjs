@@ -75,6 +75,33 @@ test("the rendered tab bar survives UI replacement and a failed shell read", { t
     window.ui.mount();
   });
   await page.getByRole("tab", { name: "Gardens", exact: true }).waitFor();
+  assert.equal(await page.locator(".bb-tab .bb-loader").count(), 0, "idle tabs keep their icons");
+  await page.evaluate(() => {
+    window.state = { ...window.state, tabs: window.state.tabs.map(tab => ({ ...tab, loading: true })) };
+    window.publish();
+  });
+  await page.locator('[data-tab-id="1"] .bb-loader-orb canvas').waitFor();
+  await page.locator('[data-tab-id="2"] .bb-loader-orb canvas').waitFor();
+  assert.deepEqual(await page.locator('[data-tab-id="1"] .bb-loader').evaluate(node => {
+    const box = node.getBoundingClientRect();
+    return { width: box.width, height: box.height };
+  }), { width: 14, height: 14 }, "the shared loader fits the tab icon box");
+  // A browser favicon must not hide an active load; it returns when ready.
+  await page.evaluate(() => {
+    window.state = { ...window.state, tabs: window.state.tabs.map(tab => tab.id === 2 ? {
+      ...tab, browser: { address: "https://example.org/", favicon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" },
+    } : tab) };
+    window.publish();
+  });
+  await page.locator('[data-tab-id="2"] .bb-loader-orb canvas').waitFor();
+  assert.equal(await page.locator('[data-tab-id="2"] .bb-tab-favicon').count(), 0);
+  await page.evaluate(() => {
+    window.state = { ...window.state, tabs: window.state.tabs.map(tab => ({ ...tab, loading: false })) };
+    window.publish();
+  });
+  await page.locator(".bb-tab .bb-loader").waitFor({ state: "detached" });
+  await page.locator('[data-tab-id="2"] .bb-tab-favicon').waitFor({ state: "attached" });
+  assert.equal(await page.locator('.bb-tab[data-loading="true"]').count(), 0);
   const dragRegion = draggable => page.locator(`.desktop-title-bar[data-window-drag="${draggable}"]`);
   await dragRegion(true).waitFor();
   assert.equal(await page.locator(".bb-tabstrip").evaluate(node => getComputedStyle(node).webkitAppRegion), "no-drag");

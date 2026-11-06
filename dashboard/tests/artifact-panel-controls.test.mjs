@@ -158,13 +158,14 @@ test("Artifacts has one shared search field across Terminal and Garden", () => {
   assert.equal(filterArtifactsForSearch([image, report], "").length, 2);
 });
 
-test("the archive hides generating and failed artifacts", () => {
+test("the archive hides unfinished and failed artifacts", () => {
   const panel = source("../src/app/components/hermes/artifact-panel.tsx");
   const ready = { id: "ready", status: "ready" };
+  const draft = { id: "draft", status: "draft" };
   const generating = { id: "generating", status: "generating" };
   const failed = { id: "failed", status: "failed" };
 
-  assert.deepEqual(filterArtifactsForArchive([ready, generating, failed]), [ready]);
+  assert.deepEqual(filterArtifactsForArchive([ready, draft, generating, failed]), [ready]);
   assert.match(panel, /filterArtifactsForArchive\(artifacts\)/);
   assert.doesNotMatch(panel, />\s*Generating\s*</);
   assert.doesNotMatch(panel, />\s*Failed\s*</);

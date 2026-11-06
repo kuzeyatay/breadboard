@@ -86,9 +86,7 @@ export default function BoltSlidesSettingsDialog({ onClose }: { onClose: () => v
               Bolt Slides setup
             </h2>
             <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-              Builds a presentation as a running web app — every slide a live, responsive page with
-              click-builds, annotation, and a presenter view. Decks are written by your configured
-              model and compiled here.
+              Create interactive presentations with annotations and a presenter view.
             </p>
           </div>
           <button

@@ -6,7 +6,7 @@
 // whichever path was forgotten.
 
 import { ApiError, requireString } from "./hermes/route-core.ts";
-import type { ChatAttachment } from "./chat-attachments.ts";
+import { pdfPageAttachmentMetadata, type ChatAttachment } from "./chat-attachments.ts";
 import {
   isModelAttachmentFormat,
   isModelBlobId,
@@ -45,7 +45,8 @@ export function parseChatAttachments(value: unknown): ChatAttachment[] {
       );
     }
     const attachment = item as Record<string, unknown>;
-    const context = attachment.context === "pdf" ? { context: "pdf" as const } : {};
+    const context = attachment.context === "pdf"
+      ? { context: "pdf" as const, ...pdfPageAttachmentMetadata(attachment.pdfPage) } : {};
     const name = requireString(attachment.name, `attachments[${index}].name`, 500);
     if (
       (attachment.type === "product" && /\0/.test(name)) ||

@@ -7,6 +7,8 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { build } from "esbuild";
 import { chromium } from "playwright";
+import { canonicalQuartzReaderShell } from "../scripts/quartz-reader-shell.mjs";
+import { withCanonicalQuartzReader } from "../../quartz/quartz/components/scripts/canonicalReader.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 
@@ -26,12 +28,20 @@ async function fixture() {
     "@/lib/server-auth": `export async function requireOwnedClusterFromSlug(slug) {
       if (!globalThis.__folderFixture.allowed || slug !== 'physics') throw Error('Forbidden');
       return {cluster:{slug,id:1},userId:7};
-    } export const routeErrorResponse=e=>Response.json({error:e.message},{status:403});`,
+    } export const requireReadableClusterFromSlug=requireOwnedClusterFromSlug;
+    export const routeErrorResponse=e=>Response.json({error:e.message},{status:403});`,
     "./db.ts": "export default {};",
     "./runtime-paths.ts": "export const dashboardDataDir=()=>'';",
-    "./knowledge.ts": `export const slugify=s=>s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+    "./knowledge.ts": `import fs from 'node:fs';import path from 'node:path';
+      export const slugify=s=>s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
       export const refreshClusterIndex=()=>{globalThis.__folderFixture.refreshes++};
-      export const walkClusterMarkdown=()=>[];`,
+      export const walkClusterMarkdown=root=>{const files=[];const walk=(dir,folder='')=>{
+        for(const entry of fs.readdirSync(dir,{withFileTypes:true})){
+          const filePath=path.join(dir,entry.name),relPath=folder?folder+'/'+entry.name:entry.name;
+          if(entry.isDirectory())walk(filePath,relPath);
+          else if(entry.name.endsWith('.md'))files.push({entry:entry.name,filePath,relPath,folder});
+        }
+      };walk(root);return files;};`,
     "./garden-documents.ts": `import {slugify} from './knowledge.ts'; ${normalization}`,
     "./quartz-publish.ts": `export async function publishQuartzAfterMutation(){
       const state=globalThis.__folderFixture;
@@ -47,10 +57,12 @@ async function fixture() {
   };
   const bundle = await build({
     entryPoints: [path.join(root, "src/app/api/folders/route.ts")],
-    bundle: true, platform: "node", format: "cjs", packages: "external", write: false,
+    bundle: true, platform: "node", format: "cjs", write: false,
     plugins: [{ name: "folder-fixture", setup(builder) {
       builder.onResolve({ filter: /.*/ }, args => stubs[args.path] === undefined ? undefined : { path: args.path, namespace: "fixture" });
+      builder.onResolve({ filter: /generated\/quartz-reader\.mjs$/ }, () => ({ path: path.join(root, '../quartz/quartz/reader.ts') }));
       builder.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ contents: stubs[args.path], loader: "ts" }));
+      builder.onLoad({ filter: /(?:\.scss|\.inline\.(?:ts|js))$/ }, () => ({ contents: '', loader: 'text' }));
     } }],
   });
   const module = { exports: {} };
@@ -65,6 +77,177 @@ async function fixture() {
 
 const createRequest = folder => new Request("http://localhost/api/folders", {
   method: "POST", body: JSON.stringify({ clusterSlug: "physics", folder }),
+});
+
+test("saved folder pages render empty folders, recursive totals, and current contents before publication", async () => {
+  const app = await fixture();
+  const read = folder => app.GET(new Request(`http://localhost/api/folders?${new URLSearchParams({ clusterSlug: 'physics', folder, render: '1' })}`));
+  try {
+    await app.POST(createRequest('Introduction'));
+    let response = await read('introduction');
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    let { reader } = await response.json();
+    assert.equal(reader.slug, 'physics/introduction/index');
+    assert.equal(reader.title, 'Introduction');
+    assert.match(reader.html, /page-listing/);
+    assert.match(reader.contentMetaHtml, /0 words/);
+    assert.doesNotMatch(reader.folderActionsHtml, /folder-pdf-export/);
+    fs.mkdirSync(path.join(app.content, 'physics/introduction/More & examples'), { recursive: true });
+    fs.writeFileSync(path.join(app.content, 'physics/introduction/lesson.md'), '---\ntitle: From abstract vector spaces to electromagnetism\n---\n\n' + 'field '.repeat(201));
+    fs.writeFileSync(path.join(app.content, 'physics/introduction/More & examples/example.md'), '---\ntitle: Nested example\n---\n\n' + 'vector '.repeat(399));
+    fs.writeFileSync(path.join(app.content, 'physics/outside.md'), 'outside '.repeat(5000));
+    ({ reader } = await (await read('introduction')).json());
+    assert.match(reader.html, /From abstract vector spaces to electromagnetism/);
+    assert.match(reader.html, /More &amp; examples/);
+    assert.doesNotMatch(reader.html, /Nested example|outside/);
+    assert.match(reader.contentMetaHtml, /600 words/);
+    assert.match(reader.contentMetaHtml, /3 min read total/);
+    assert.match(reader.folderActionsHtml, /Nested example/);
+    assert.match(reader.folderActionsHtml, /Knowledge Map/);
+    assert.equal(Object.keys(reader.index).length, 4);
+    const nested = await (await read('introduction/More--and--examples')).json();
+    assert.equal(nested.reader.title, 'More & examples');
+    assert.match(nested.reader.html, /Nested example/);
+    fs.renameSync(path.join(app.content, 'physics/introduction/lesson.md'), path.join(app.content, 'physics/lesson.md'));
+    ({ reader } = await (await read('introduction')).json());
+    assert.doesNotMatch(reader.html, /From abstract vector spaces/);
+    assert.match(reader.contentMetaHtml, /399 words/);
+    assert.equal((await read('../introduction')).status, 404);
+    assert.equal((await read('missing')).status, 404);
+    app.state.allowed = false;
+    assert.equal((await read('introduction')).status, 403);
+  } finally { app.close(); }
+});
+
+test("custom folder names open a live folder page by mouse and keyboard, with reload and retry", { timeout: 30_000 }, async () => {
+  const app = await fixture();
+  let server, browser;
+  try {
+    await app.POST(createRequest('Introduction'));
+    const bundle = await build({ stdin: { resolveDir: root, contents: `
+      import '../quartz/quartz/components/scripts/explorer.inline.ts';
+      import '../quartz/quartz/components/scripts/spa.inline.ts';
+    ` }, bundle: true, write: false, platform: 'browser', format: 'iife' });
+    const host = await build({ stdin: { resolveDir: root, loader: 'tsx', contents: `
+      import React,{useRef} from 'react';import {createRoot} from 'react-dom/client';
+      import Bridge from './src/app/garden/garden-document-editor-bridge';
+      import {useCanonicalGardenFolders} from './src/app/garden/use-canonical-garden-folders';
+      function App(){const iframeRef=useRef(null);useCanonicalGardenFolders(iframeRef,location.origin,'physics');
+        return <><Bridge iframeRef={iframeRef} quartzOrigin={location.origin}/><iframe ref={iframeRef} src='/physics/start' style={{width:'100%',height:750}}/></>;}
+      createRoot(document.getElementById('root')).render(<App/>);
+    ` }, bundle: true, write: false, platform: 'browser', format: 'iife' });
+    const template = `<html><head><title>Start</title><style data-persist>[hidden]{display:none!important}.folder-outer{display:none}.folder-outer.open{display:block}</style>
+      <script data-persist>window.fetchData=Promise.resolve({'physics/index':{slug:'physics/index',filePath:'physics/_index.md',title:'Physics',links:[],tags:[],content:''}});</script>
+      <script src='/quartz.js' defer data-persist></script></head><body data-slug='physics/start'>
+      <div class='explorer' data-behavior='link' data-collapsed='collapsed' data-savestate='true' data-graph-clusters='["physics"]' data-garden-scope='private'><ul class='explorer-ul'><li class='overflow-end'></li></ul></div>
+      <template id='template-folder'><li><div class='folder-container'><svg class='folder-icon'></svg><div><button class='folder-button'><span class='folder-title'></span></button></div></div><div class='folder-outer'><ul></ul></div></li></template>
+      <template id='template-file'><li><a></a></li></template>
+      <h1 class='article-title'>Start</h1><p class='content-meta'>Old metadata</p>
+      <div class="markdown-actions" data-note-slug='physics/start'><button>Edit</button></div>
+      <article class='popover-hint'><p>Published start</p></article></body></html>`;
+    let failRead = false;
+    server = http.createServer(async (req, res) => {
+      try {
+        const url = new URL(req.url, 'http://localhost');
+        if (url.pathname === '/quartz.js' || url.pathname === '/host.js') {
+          res.setHeader('content-type', 'text/javascript'); res.end((url.pathname === '/quartz.js' ? bundle : host).outputFiles[0].text); return;
+        }
+        if (url.pathname === '/api/folders') {
+          const response = failRead && url.searchParams.has('render') ? Response.json({ error: 'Read interrupted' }, { status: 503 }) : await app.GET(new Request(url));
+          res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(await response.text()); return;
+        }
+        if (url.pathname.startsWith('/api/documents')) {
+          res.setHeader('content-type', 'application/json');
+          if (url.pathname === '/api/documents') res.end(JSON.stringify({ documents: [] }));
+          else if (url.pathname === '/api/documents/start') res.end(JSON.stringify({ success: true, reader: { slug: 'physics/start', title: 'Start', html: '<p>Saved start</p>', toc: [] } }));
+          else if (url.pathname === '/api/documents/introduction') res.end(JSON.stringify({ success: true, reader: { slug: 'physics/introduction', title: 'Wrong same-named note', html: '<p>Not the folder</p>', toc: [] } }));
+          else { res.statusCode = 404; res.end(JSON.stringify({ error: 'Note not found' })); }
+          return;
+        }
+        res.setHeader('content-type', 'text/html');
+        if (!url.pathname.startsWith('/physics/')) { res.end('<div id="root"></div><script src="/host.js"></script>'); return; }
+        const slug = decodeURIComponent(url.pathname).replace(/^\/|\/$/g, '');
+        res.end(withCanonicalQuartzReader(slug === 'physics/start' ? template : canonicalQuartzReaderShell(template, '/physics/start.html', slug)));
+      } catch (error) { res.statusCode = 500; res.end(error.stack); }
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const executablePath = [chromium.executablePath(), 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find(fs.existsSync);
+    browser = await chromium.launch({ headless: true, executablePath });
+    const page = await browser.newPage(), errors = [];
+    page.setDefaultTimeout(5_000);
+    page.on('pageerror', error => errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    const frame = page.frameLocator('iframe');
+    const folder = frame.locator('[data-folderpath="physics/introduction/index"]');
+    await folder.getByRole('link', { name: 'Introduction', exact: true }).waitFor();
+    assert.equal(await folder.getByRole('link').getAttribute('href'), '/physics/introduction/index');
+    await frame.getByText('Saved start', { exact: true }).waitFor();
+    await folder.locator('.folder-icon').dispatchEvent('click');
+    assert.equal(await frame.locator('h1.article-title').textContent(), 'Start', 'The chevron only expands');
+    await folder.getByRole('link', { name: 'Introduction', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await frame.locator('.page-listing').waitFor();
+    assert.equal(await frame.locator('h1.article-title').textContent(), 'Introduction');
+    assert.match(await frame.locator('.content-meta').textContent(), /0 words/);
+    assert.equal(await frame.locator('.markdown-actions').count(), 0);
+    assert.equal(await frame.locator('.graph').count(), 1, 'Saved folder includes the standard topology surface');
+    fs.writeFileSync(path.join(app.content, 'physics/introduction/lesson.md'), '---\ntitle: From abstract vector spaces to electromagnetism\n---\n\n' + 'field '.repeat(201));
+    await folder.getByRole('link', { name: 'Introduction', exact: true }).click();
+    await frame.locator('.page-listing').getByRole('link', { name: 'From abstract vector spaces to electromagnetism' }).waitFor();
+    assert.match(await frame.locator('.content-meta').textContent(), /201 words/);
+    await page.locator('iframe').evaluate(element => element.contentWindow.location.reload());
+    await frame.locator('.page-listing').getByRole('link', { name: 'From abstract vector spaces to electromagnetism' }).waitFor();
+    failRead = true;
+    await folder.getByRole('link', { name: 'Introduction', exact: true }).click();
+    await frame.getByRole('alert').getByRole('button', { name: 'Retry' }).waitFor();
+    assert.equal(await frame.locator('h1.article-title').textContent(), 'Introduction', 'A failed navigation keeps the current folder visible');
+    failRead = false;
+    fs.renameSync(path.join(app.content, 'physics/introduction/lesson.md'), path.join(app.content, 'physics/lesson.md'));
+    await frame.getByRole('button', { name: 'Retry', exact: true }).click();
+    await frame.getByRole('alert').waitFor({ state: 'detached' });
+    await frame.locator('.page-listing a').waitFor({ state: 'detached' });
+    assert.equal(await frame.locator('.page-listing a').count(), 0);
+    assert.match(await frame.locator('.content-meta').textContent(), /0 words/);
+    assert.deepEqual(errors, []);
+  } finally {
+    if (browser) await browser.close();
+    if (server) await new Promise(resolve => server.close(resolve));
+    app.close();
+  }
+});
+
+test("document moves acknowledge persistence before publication and preserve exact files and folder names", { timeout: 5_000 }, async () => {
+  const app = await fixture();
+  try {
+    const root = path.join(app.content, "physics"), target = "learning/1. Fields and Space";
+    for (const folder of ["notes", "other", target]) fs.mkdirSync(path.join(root, folder), { recursive: true });
+    fs.writeFileSync(path.join(root, "notes/lesson.md"), "The moved lesson");
+    fs.writeFileSync(path.join(root, "other/lesson.md"), "Another lesson with the same basename");
+    const move = (slug, toFolder) => app.PATCH(new Request("http://localhost/api/folders", {
+      method: "PATCH", body: JSON.stringify({ clusterSlug: "physics", slug, toFolder }),
+    }));
+    assert.equal((await move("lesson", target)).status, 409, "ambiguous basenames must not move the wrong file");
+    app.state.allowed = false;
+    assert.equal((await move("notes/lesson.md", target)).status, 403);
+    app.state.allowed = true;
+    let timer;
+    const response = await Promise.race([move("notes/lesson.md", target), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Error("Move waited for a stalled Quartz publication")), 1_000);
+    })]).finally(() => clearTimeout(timer));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { success: true, slug: "lesson", folder: target,
+      relPath: `${target}/lesson.md`, previousRelPath: "notes/lesson.md" });
+    assert.equal(fs.existsSync(path.join(root, "notes/lesson.md")), false);
+    assert.equal(fs.readFileSync(path.join(root, target, "lesson.md"), "utf8"), "The moved lesson");
+    assert.equal(fs.existsSync(path.join(root, "learning/1-fields-and-space")), false);
+    assert.equal(app.state.leased, false);
+    assert.equal(app.state.publishes, 1);
+    assert.equal((await move(`${target}/lesson.md`, "")).status, 200);
+    assert.equal((await move("lesson.md", "notes")).status, 200, "a root path remains exact despite a duplicate basename");
+    assert.equal((await move("other/lesson.md", "notes")).status, 409);
+    assert.equal(fs.readFileSync(path.join(root, "other/lesson.md"), "utf8"), "Another lesson with the same basename");
+  } finally { app.close(); }
 });
 
 test("folder API confirms real persistence before a stalled rebuild, with safe retries and ownership", async () => {
@@ -269,14 +452,24 @@ test("Explorer closes promptly, displays normalized and nested folders, and rest
       await row(folder).waitFor({ state: "visible" });
       assert.ok(performance.now() - start < 2500, "Save and visible confirmation are prompt even with a stalled build");
       assert.ok(fs.statSync(path.join(app.content, "physics", folder)).isDirectory());
-      assert.equal(await row(folder).getByRole("link").count(), 0, "Unpublished folders do not navigate to a 404");
+      assert.equal(await row(folder).getByRole("link").count(), 1, "Unpublished folders open their saved folder page");
       await row(folder).getByRole("button", { name: "New sub-folder", exact: true }).click();
       await frame.getByLabel("Folder name", { exact: true }).fill("Child");
       await frame.getByRole("button", { name: "Create folder", exact: true }).click();
       await row(`${folder}/child`).waitFor({ state: "visible" });
+      let releaseFolders;
+      const heldFolders = new Promise(resolve => { releaseFolders = resolve; });
+      await page.route('**/api/folders?*', async route => { await heldFolders; await route.continue(); });
       await page.reload();
-      await row(`${folder}/child`).waitFor({ state: "visible" });
+      await row(`${folder}/child`).waitFor({ state: "visible", timeout: 1000 });
+      assert.equal(await row(folder).getByRole('link').count(), 1, 'Custom folders are usable before the next folder scan finishes');
+      releaseFolders();
+      await page.unroute('**/api/folders?*');
       assert.equal(await row(folder).count(), 1, "Snapshot updates do not duplicate the tree");
+      // Collapsed descendants are populated lazily; expand before checking
+      // that canonical disk paths merge into the existing Quartz section.
+      await row("learning").locator(".folder-icon").dispatchEvent("click");
+      await row("learning/1.-Fields-and-Space").waitFor({ state: "visible" });
       assert.equal(await row("learning/1.-Fields-and-Space").count(), 1);
       assert.equal(await row("learning/1. Fields and Space").count(), 0,
         "Canonical disk names merge into their existing Quartz slugs");

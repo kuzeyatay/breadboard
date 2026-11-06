@@ -189,6 +189,7 @@ test("standalone refresh stages an exact runnable esbuild closure", () => {
       "interactive-visualizer-custom.ts",
       "interactive-visualizer-config.ts",
       "interactive-visualizer-types.ts",
+      "interactive-visualizer-wheel.ts",
     ]) {
       fs.copyFileSync(
         path.join(repositoryRoot, "dashboard", "src", "lib", "hermes", name),

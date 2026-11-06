@@ -60,8 +60,8 @@ type ScatterNode = {
  * coordinates. Longitude sectors keep folders together; their share of the
  * sphere follows their population, including a single large folder. Uniform
  * latitude and cube-root radius fill the volume without poles or box corners.
- * Pass the complete scope before filtering so toggles and previews use the
- * same homes. Personal pins are applied afterwards by the renderer. */
+ * Pass visible nodes to fill the sphere after filtering, or the complete scope
+ * to retain a cross-section. Personal pins are applied afterwards by the renderer. */
 export function sphericalTopologyPositions(nodes: readonly ScatterNode[]): Map<string, Point3D> {
   const positions = new Map<string, Point3D>()
   const sectors = new Map<string, ScatterNode[]>()

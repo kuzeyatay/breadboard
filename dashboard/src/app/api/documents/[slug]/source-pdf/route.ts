@@ -12,6 +12,9 @@ import {
   rangeIsStillValid,
 } from "@/lib/http-range";
 import db from "@/lib/db";
+import { contentDisposition } from "@/lib/content-disposition";
+import { sourcePdfFileName } from "@/lib/garden-source-display";
+import { normalizeDocumentSlug } from "@/lib/garden-document-path";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
 import { resolveSourcePdfMarkdownPath } from "@/lib/source-pdf-garden";
@@ -48,54 +51,6 @@ type SourcePdfRecord = {
 };
 
 const MAX_PDF_BYTES = 100 * 1024 * 1024;
-
-function decodeSlug(value: string): string {
-  let current = value;
-  for (let index = 0; index < 4; index += 1) {
-    try {
-      const decoded = decodeURIComponent(current);
-      if (decoded === current) return current;
-      current = decoded;
-    } catch {
-      return current;
-    }
-  }
-  return current;
-}
-
-function normalizeDocumentSlug(
-  clusterSlug: string,
-  slug: string,
-): string | null {
-  const cluster = clusterSlug.trim();
-  const cleaned = decodeSlug(slug)
-    .replace(/\\/g, "/")
-    .replace(/[?#].*$/, "")
-    .replace(/\.md$/i, "")
-    .trim();
-  let segments = cleaned
-    .split("/")
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-  const clusterIndex = segments.findIndex((segment) => segment === cluster);
-  // A bare document slug can legitimately equal the garden slug (for
-  // example, the Math 1 source note is `math-1` in garden `math-1`). Only
-  // remove the garden prefix when another path segment follows it.
-  if (clusterIndex > 0 || (clusterIndex === 0 && segments.length > 1)) {
-    segments = segments.slice(clusterIndex + 1);
-  }
-  if (segments[0] === "garden" && segments[1] === cluster)
-    segments = segments.slice(2);
-  const noteSlug = segments.at(-1);
-  if (
-    !noteSlug ||
-    noteSlug.toLowerCase() === "index" ||
-    noteSlug.toLowerCase() === "_index"
-  ) {
-    return null;
-  }
-  return noteSlug;
-}
 
 function parseYamlString(value: string): string {
   const trimmed = value.trim();
@@ -134,10 +89,6 @@ function safeClusterDir(
   );
   if (!clusterDir.startsWith(root + path.sep)) return null;
   return clusterDir;
-}
-
-function contentDispositionName(value: string): string {
-  return value.replace(/[\r\n"]/g, "_") || "document.pdf";
 }
 
 async function getSourcePdfContext(
@@ -227,9 +178,7 @@ async function getSourcePdfContext(
     clusterId: cluster.id,
     clusterSlug: cluster.slug,
     documentSlug,
-    fileName: contentDispositionName(
-      frontmatter.source_file ?? path.basename(originalPath),
-    ),
+    fileName: sourcePdfFileName(frontmatter.source_file || path.basename(originalPath)),
     pdfPath: useSearchable ? searchablePath : originalPath,
     // Saved edits are keyed by the file they were made on, so a restore from
     // history lands on the twin and never on the original.
@@ -266,7 +215,7 @@ function isPdf(bytes: Buffer): boolean {
 function pdfHeaders(context: SourcePdfContext, validator: string): Headers {
   return new Headers({
     "Content-Type": "application/pdf",
-    "Content-Disposition": `inline; filename="${context.fileName}"`,
+    "Content-Disposition": contentDisposition(context.fileName),
     // The viewer must always see the current document, but an unchanged one
     // revalidates to a 304 instead of being sent again (IO-04/IO-05).
     "Cache-Control": "private, max-age=0, must-revalidate",

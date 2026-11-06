@@ -27,10 +27,16 @@ test("the composer grows with a draft up to a cap, then scrolls", () => {
     /textarea\.style\.overflowY = 'hidden';\s*\n\s*textarea\.style\.height = 'auto'/,
   );
   assert.match(composer, /useLayoutEffect\(\(\) => \{[\s\S]*?resizeTextarea\(\)/);
-  assert.match(composer, /new ResizeObserver\(\(\) => resizeTextarea\(\)\)/);
+  assert.match(composer, /entry\.contentRect\.width === previousWidth/);
   assert.match(composer, /overflow-y-hidden/);
   assert.match(composer, /wrap="soft"/);
   assert.doesNotMatch(composer, /max-h-40 w-full resize-none overflow-y-auto/);
+});
+
+test("unrelated renders keep the textarea ref stable and height-only changes do not remeasure", () => {
+  assert.match(composer, /const assignTextareaRef = useCallback\([\s\S]*?\}, \[resizeTextarea\]\)/);
+  assert.match(composer, /if \(!entry \|\| entry\.contentRect\.width === previousWidth\) return/);
+  assert.match(composer, /previousWidth = entry\.contentRect\.width;\s*resizeTextarea\(\)/);
 });
 
 test("the cap is a line count bounded by the viewport", () => {

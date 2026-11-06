@@ -124,6 +124,8 @@ export interface VoiceMessage {
   readonly role: 'user' | 'assistant';
   readonly content: string;
   readonly clientMessageId?: string;
+  /** Public words arriving before the final chat answer is committed. */
+  readonly voiceStream?: { readonly text: string; readonly segment: number };
   /** Completed, user-visible narration shown in the thinking dropdown. */
   readonly progressNotes?: readonly string[];
   readonly delegatedAgentPreamble?: string;
@@ -193,14 +195,47 @@ export function voiceTranscriptMessages(
 export interface VoiceNarration {
   readonly text: string;
   readonly kind: 'progress' | 'answer';
+  /** A streamed sentence is audible before the complete assistant turn is done. */
+  readonly final?: boolean;
 }
 
-/** One spoken turn: sealed progress notes first, then its settled answer. */
+/** Only seal sentences outside unfinished Markdown/code/math. Never read a partial token. */
+export function voiceSentenceBoundary(text: string): number {
+  let end = 0;
+  for (const match of text.matchAll(/[.!?](?:["'”’)]*)\s+|\n\n/g)) {
+    const candidate = match.index! + match[0].length;
+    const prefix = text.slice(0, candidate);
+    if ((prefix.match(/```|~~~/g)?.length ?? 0) % 2 || (prefix.match(/\$\$/g)?.length ?? 0) % 2 || (prefix.match(/\$/g)?.length ?? 0) % 2) continue;
+    if ((prefix.match(/\\\[/g)?.length ?? 0) !== (prefix.match(/\\\]/g)?.length ?? 0)) continue;
+    if ((prefix.match(/\\\(/g)?.length ?? 0) !== (prefix.match(/\\\)/g)?.length ?? 0)) continue;
+    if (/(?:\b(?:Mr|Mrs|Ms|Dr|Prof|vs|etc|e\.g|i\.e)|\b[A-Z])\.\s*$/u.test(prefix)) continue;
+    if (prefix.trim().length >= 24) { end = candidate; break; }
+  }
+  return end;
+}
+
+export const VOICE_PROGRESS_DELAY_MS = 1_500;
+export const VOICE_PROGRESS_INTERVAL_MS = 12_000;
+const VOICE_ANSWER_PHRASE_CHARACTERS = 480;
+export const VOICE_ANSWER_COALESCE_MS = 240;
+
+/** A brief public status, never raw reasoning, tool arguments or a log dump. */
+function spokenProgress(note: string): string {
+  const text = note.replace(/\s+/g, ' ').trim();
+  if (!text || /^(?:thinking|working|processing|loading|please wait)[.\s…!]*$/i.test(text)
+    || /```|^\s*[\[{]|https?:\/\//.test(text)) return '';
+  if (text.length <= 220) return text;
+  const boundary = voiceSentenceBoundary(text);
+  return boundary && boundary <= 220 ? text.slice(0, boundary).trim() : '';
+}
+
+/** One spoken turn: occasional current progress and uninterrupted answer phrases. */
 export function createVoiceNarrationQueue(options: {
   startIndex: number;
   /** A clarification resumes the same assistant message. Skip what it said
    * before the question, but keep watching that message for its continuation. */
   initialMessage?: VoiceMessage;
+  streamAnswers?: boolean;
   speak: (item: VoiceNarration, signal: AbortSignal) => Promise<void>;
   onIdle: (answered: boolean) => void;
   onError: (error: unknown, item: VoiceNarration) => void;
@@ -209,10 +244,77 @@ export function createVoiceNarrationQueue(options: {
   const pending: VoiceNarration[] = [];
   const seen = new Set<string>();
   for (const note of [...(options.initialMessage?.progressNotes ?? []), options.initialMessage?.delegatedAgentPreamble ?? '']) {
-    if (note.trim()) seen.add(`${options.startIndex}:${note.trim()}`);
+    const text = spokenProgress(note);
+    if (text) seen.add(`${options.startIndex}:${text.toLocaleLowerCase()}`);
   }
   let running = false;
   let answerQueued = false;
+  let hasWorked = false;
+  let answerStarted = false;
+  let progressCandidate = '';
+  let progressTimer: ReturnType<typeof setTimeout> | undefined;
+  let phraseTimer: ReturnType<typeof setTimeout> | undefined;
+  let nextProgressAt = Date.now() + VOICE_PROGRESS_DELAY_MS;
+  const spokenPrefixes = new Map<string, string>();
+  const latestSegments = new Map<number, number>();
+  const streamKey = (index: number, message?: VoiceMessage) => {
+    const segment = message?.voiceStream?.segment;
+    if (segment !== undefined) latestSegments.set(index, segment);
+    // A canonical refresh drops ephemeral stream fields. Keep the last known
+    // segment so its final tail is neither lost nor spoken a second time.
+    return String(index) + ':' + String(segment ?? latestSegments.get(index) ?? 0);
+  };
+  if (options.initialMessage?.voiceStream) {
+    spokenPrefixes.set(streamKey(options.startIndex, options.initialMessage), options.initialMessage.voiceStream.text);
+  }
+
+  function clearProgress() {
+    progressCandidate = '';
+    clearTimeout(progressTimer);
+    progressTimer = undefined;
+    for (let index = pending.length - 1; index >= 0; index--) {
+      if (pending[index].kind === 'progress') pending.splice(index, 1);
+    }
+  }
+
+  function scheduleProgress() {
+    if (!progressCandidate || progressTimer !== undefined || running || answerStarted || answerQueued || controller.signal.aborted) return;
+    progressTimer = setTimeout(() => {
+      progressTimer = undefined;
+      if (!progressCandidate || answerStarted || answerQueued || controller.signal.aborted) return;
+      pending.push({ text: progressCandidate, kind: 'progress' });
+      progressCandidate = '';
+      nextProgressAt = Date.now() + VOICE_PROGRESS_INTERVAL_MS;
+      void drain();
+    }, Math.max(0, nextProgressAt - Date.now()));
+  }
+
+  function queueAnswer(item: VoiceNarration) {
+    answerStarted = true;
+    clearProgress();
+    const previous = pending.at(-1);
+    // Speech arriving while an utterance plays becomes a connected phrase,
+    // instead of opening a new synthesis request for every short sentence.
+    if (previous?.kind === 'answer' && previous.text.length + item.text.length + 1 <= VOICE_ANSWER_PHRASE_CHARACTERS) {
+      pending[pending.length - 1] = { ...item, text: [previous.text, item.text].filter(Boolean).join(' ') };
+    } else pending.push(item);
+  }
+
+  function scheduleAnswer() {
+    if (running || controller.signal.aborted || !pending.length) return;
+    // A stream often delivers adjacent sentences in separate token batches.
+    // Give a short opening phrase one bounded window to collect its neighbor,
+    // avoiding another provider round trip in the middle of a short answer.
+    // Complete answers and substantial phrases can start immediately.
+    const first = pending[0];
+    if (first.kind !== 'answer' || first.final !== false || first.text.length >= 160) {
+      clearTimeout(phraseTimer);
+      phraseTimer = undefined;
+      void drain();
+    } else if (phraseTimer === undefined) {
+      phraseTimer = setTimeout(() => { phraseTimer = undefined; void drain(); }, VOICE_ANSWER_COALESCE_MS);
+    }
+  }
 
   async function drain() {
     if (running || controller.signal.aborted || !pending.length) return;
@@ -227,11 +329,14 @@ export function createVoiceNarrationQueue(options: {
           if (controller.signal.aborted) return;
           options.onError(error, item);
         }
-        answered = item.kind === 'answer';
+        answered = item.kind === 'answer' && item.final !== false;
       }
     } finally {
       running = false;
-      if (!controller.signal.aborted) options.onIdle(answered);
+      if (!controller.signal.aborted) {
+        options.onIdle(answered);
+        scheduleProgress();
+      }
     }
   }
 
@@ -239,31 +344,63 @@ export function createVoiceNarrationQueue(options: {
     get speaking() { return running; },
     update(messages: readonly VoiceMessage[], busy: boolean): boolean {
       if (controller.signal.aborted || answerQueued) return answerQueued;
+      hasWorked ||= busy;
       let latest: VoiceMessage | undefined;
+      let latestIndex = -1;
       for (let index = options.startIndex; index < messages.length; index += 1) {
         const message = messages[index];
         if (message.role !== 'assistant') continue;
+        latestIndex = index;
         const previous = index === options.startIndex ? options.initialMessage?.content : undefined;
         latest = previous && message.content.startsWith(previous)
           ? { ...message, content: message.content.slice(previous.length) }
           : message;
         for (const note of [...(message.progressNotes ?? []), message.delegatedAgentPreamble ?? '']) {
-          const text = note.trim();
-          const key = `${index}:${text}`;
+          const text = spokenProgress(note);
+          const key = `${index}:${text.toLocaleLowerCase()}`;
           if (!text || seen.has(key)) continue;
           seen.add(key);
-          pending.push({ text, kind: 'progress' });
+          if (busy && !answerStarted) progressCandidate = text;
+        }
+      }
+      if (options.streamAnswers && latest) {
+        const key = streamKey(latestIndex, latest);
+        let prefix = spokenPrefixes.get(key) ?? '';
+        const content = latest.voiceStream?.text ?? latest.content;
+        // A rewritten prefix cannot be unspoken. Wait for finalization instead
+        // of replaying content or guessing which revision the user heard.
+        if (content.startsWith(prefix)) {
+          let remaining = content.slice(prefix.length);
+          for (let boundary = voiceSentenceBoundary(remaining); busy && boundary; boundary = voiceSentenceBoundary(remaining)) {
+            queueAnswer({ text: remaining.slice(0, boundary).trim(), kind: 'answer', final: false });
+            prefix += remaining.slice(0, boundary);
+            spokenPrefixes.set(key, prefix);
+            remaining = remaining.slice(boundary);
+          }
         }
       }
       if (!busy && latest && (latest.content.trim() || latest.uiResources?.length)) {
         answerQueued = true;
-        pending.push({ text: latest.content.trim(), kind: 'answer' });
+        const prefix = spokenPrefixes.get(streamKey(latestIndex, latest)) ?? '';
+        const text = latest.content.startsWith(prefix) ? latest.content.slice(prefix.length).trim() : '';
+        queueAnswer({ text, kind: 'answer' });
+      } else if (!busy && latest && hasWorked && !options.initialMessage) {
+        // A finished run with no answer must not strand the microphone on
+        // Thinking forever. Show the failure and return the floor to the user.
+        answerQueued = true;
+        const item: VoiceNarration = { text: '', kind: 'answer' };
+        options.onError(new Error('Breadboard finished without an answer. You can try again.'), item);
+        queueAnswer(item);
       }
-      void drain();
+      scheduleAnswer();
+      scheduleProgress();
       return answerQueued;
     },
     cancel() {
       pending.length = 0;
+      clearProgress();
+      clearTimeout(phraseTimer);
+      phraseTimer = undefined;
       controller.abort();
     },
   };

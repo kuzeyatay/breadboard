@@ -16,7 +16,7 @@ use breadboard_runtime_core::{
     ServiceLeaseError, ServiceLeaseReleaseDisposition, ServiceLeaseReleaseReason, StoreError,
     TrustedDirectoryPin, TrustedOsEnvironment, TrustedOsEnvironmentCaptureError,
     TrustedServiceEnvironmentError, TrustedServiceEnvironmentSet, TrustedWorkerEnvironmentSet,
-    WorkerServiceDependencyAdmission,
+    WorkerServiceDependencyAdmission, MAX_PROCESS_OWNER_GRACEFUL_SHUTDOWN,
 };
 use breadboard_runtime_protocol::{
     JobState, JobSubmissionPayload, RestartPolicy, RuntimeDesiredState, RuntimeGatewayId,
@@ -50,6 +50,8 @@ const SERVICE_TIMER_INTERVAL: Duration = Duration::from_secs(1);
 const OUTBOX_CLAIM_TTL_MS: u64 = 30_000;
 const MAX_INTENTS_PER_TICK: usize = MAX_MANIFEST_ENTRIES;
 const MAX_HELD_LEASES: usize = MAX_MANIFEST_ENTRIES * MAX_CONCURRENCY as usize;
+const MAX_IDLE_STOP_WAITERS: usize = MAX_MANIFEST_ENTRIES;
+const MAX_IDLE_STOP_RECHECKS_PER_TICK: usize = 32;
 const MAX_RELEASE_TOMBSTONES: usize = 256;
 const RELEASE_TOMBSTONE_TTL_MS: u64 = 10 * 60 * 1000;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
@@ -75,15 +77,19 @@ type ServiceKey = (String, u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ServiceAcquireTimeouts {
     pending: Duration,
+    idle_pending: Duration,
     response: Duration,
 }
 
-fn service_acquire_timeouts(startup_ms: u64) -> ServiceAcquireTimeouts {
+fn service_acquire_timeouts(startup_ms: u64, graceful_stop_ms: u64) -> ServiceAcquireTimeouts {
+    let pending = Duration::from_millis(startup_ms + SERVICE_LEASE_SETTLEMENT_GRACE_MS);
+    let idle_pending = pending
+        .saturating_add(Duration::from_millis(graceful_stop_ms).min(MAX_PROCESS_OWNER_GRACEFUL_SHUTDOWN))
+        .saturating_add(FORCE_STOP_PADDING);
     ServiceAcquireTimeouts {
-        pending: Duration::from_millis(startup_ms + SERVICE_LEASE_SETTLEMENT_GRACE_MS),
-        response: Duration::from_millis(
-            startup_ms + SERVICE_LEASE_SETTLEMENT_GRACE_MS + SERVICE_LEASE_RESPONSE_GRACE_MS,
-        ),
+        pending,
+        idle_pending,
+        response: idle_pending.saturating_add(Duration::from_millis(SERVICE_LEASE_RESPONSE_GRACE_MS)),
     }
 }
 
@@ -608,7 +614,7 @@ fn service_acquire_timeout_map(
         let definition = registry.service(service_id)?;
         timeouts.insert(
             service_id.to_owned(),
-            service_acquire_timeouts(definition.readiness.startup_timeout_ms),
+            service_acquire_timeouts(definition.readiness.startup_timeout_ms, definition.graceful_shutdown_ms),
         );
     }
     Ok(timeouts)
@@ -713,6 +719,15 @@ struct HeldLease {
     pending_worker_dependency: Option<WorkerServiceDependencyAdmission>,
     worker_cold_start_target_exit: bool,
     worker_cold_start_restart: Option<DurableServiceRestartSchedule>,
+    worker_cold_start_reacquire_used: bool,
+}
+
+struct PendingIdleAcquire {
+    authority: OwnedServiceAcquireAuthority,
+    owner: HeldLeaseOwner,
+    reply: AcquireReplySender,
+    deadline: Instant,
+    stopping_generation: u64,
     worker_cold_start_reacquire_used: bool,
 }
 
@@ -873,6 +888,7 @@ struct ServiceController {
     scheduler_context: AuthenticatedJobContext,
     bindings: BTreeMap<String, ServiceBinding>,
     held_leases: BTreeMap<String, HeldLease>,
+    pending_idle_acquires: VecDeque<PendingIdleAcquire>,
     gateway_lease_ids: BTreeMap<String, String>,
     pending_gateway_acquires: BTreeMap<String, PendingGatewayAcquire>,
     recall_lease_id: Option<String>,
@@ -947,6 +963,7 @@ impl ServiceController {
             scheduler_context,
             bindings,
             held_leases: BTreeMap::new(),
+            pending_idle_acquires: VecDeque::new(),
             gateway_lease_ids: BTreeMap::new(),
             pending_gateway_acquires: BTreeMap::new(),
             recall_lease_id: None,
@@ -1329,10 +1346,10 @@ impl ServiceController {
         let service_id = authority.service_id().to_owned();
         // Runtime-owned gateway/worker leases are renewed by this controller;
         // dashboard leases remain generation-fenced and wire-compatible.
-        let (lease_duration_ms, pending_timeout) = match self.registry.service(&service_id) {
+        let (lease_duration_ms, timeouts) = match self.registry.service(&service_id) {
             Ok(definition) => (
                 definition.maximum_lease_ms,
-                service_acquire_timeouts(definition.readiness.startup_timeout_ms).pending,
+                service_acquire_timeouts(definition.readiness.startup_timeout_ms, definition.graceful_shutdown_ms),
             ),
             Err(RegistryError::UnknownService(_)) => {
                 let _ = reply.send_control(Err(RuntimeServiceControlError::NotFound));
@@ -1340,7 +1357,7 @@ impl ServiceController {
             }
             Err(error) => return Err(error.into()),
         };
-        if self.held_leases.len() >= MAX_HELD_LEASES {
+        if self.held_leases.len().saturating_add(self.pending_idle_acquires.len()) >= MAX_HELD_LEASES {
             let _ = reply.send_control(Err(RuntimeServiceControlError::Unavailable));
             return Ok(());
         }
@@ -1412,6 +1429,20 @@ impl ServiceController {
                 return Ok(());
             }
             Err(error) => {
+                if let DurableServiceStoreError::IdleStopPending { generation, .. } = &error {
+                    if self.pending_idle_acquires.len() >= MAX_IDLE_STOP_WAITERS {
+                        let _ = reply.send_control(Err(RuntimeServiceControlError::Unavailable));
+                        return Ok(());
+                    }
+                    let deadline = pending_deadline_override.unwrap_or_else(|| {
+                        Instant::now().checked_add(timeouts.idle_pending).unwrap_or_else(Instant::now)
+                    });
+                    self.pending_idle_acquires.push_back(PendingIdleAcquire {
+                        authority, owner, reply, deadline, stopping_generation: *generation,
+                        worker_cold_start_reacquire_used,
+                    });
+                    return Ok(());
+                }
                 if let Some(control_error) = expected_acquire_error(&error) {
                     let _ = reply.send_control(Err(control_error));
                     return Ok(());
@@ -1436,7 +1467,7 @@ impl ServiceController {
             pending_deadline: pending.then(|| {
                 pending_deadline_override.unwrap_or_else(|| {
                     Instant::now()
-                        .checked_add(pending_timeout)
+                        .checked_add(timeouts.pending)
                         .unwrap_or_else(Instant::now)
                 })
             }),
@@ -1864,6 +1895,9 @@ impl ServiceController {
             self.process_outbox(now_ms, false)?;
         }
         self.refresh_and_reconcile()?;
+        if !draining {
+            self.advance_pending_idle_acquires()?;
+        }
         if !draining && self.shutdown.is_accepting_work() && !self.schedule_drive_active {
             self.schedule_drive_active = true;
             let schedule_result = self.drive_runtime_schedules(now_ms);
@@ -1871,6 +1905,50 @@ impl ServiceController {
             schedule_result?;
         }
         self.prune_tombstones(now_ms);
+        Ok(())
+    }
+
+    fn advance_pending_idle_acquires(&mut self) -> Result<(), ServiceEngineError> {
+        // Recheck a bounded slice without blocking this controller or holding
+        // a store mutex while the old process tree drains. Retrying the exact
+        // opaque authority revalidates job cancellation/admission atomically.
+        let count = self.pending_idle_acquires.len().min(MAX_IDLE_STOP_RECHECKS_PER_TICK);
+        for _ in 0..count {
+            let pending = self.pending_idle_acquires.pop_front().expect("counted idle waiter");
+            if self.shutdown.is_requested() || Instant::now() >= pending.deadline {
+                let _ = pending.reply.send_control(Err(RuntimeServiceControlError::Unavailable));
+                continue;
+            }
+            let owner_current = match &pending.owner {
+                HeldLeaseOwner::DashboardGeneration(generation) => {
+                    let dashboard = self.store.durable_service_snapshot("dashboard")?;
+                    dashboard_generation_can_own_lease(dashboard.generation, dashboard.status.state, *generation)
+                }
+                HeldLeaseOwner::RuntimeGateway { schedule_id, decision_epoch } => self.store
+                    .runtime_schedule_snapshot(schedule_id)?.is_some_and(|schedule| {
+                        schedule.kind == RuntimeScheduleKind::Gateway
+                            && schedule.decision_epoch == *decision_epoch
+                            && schedule.desired_state == RuntimeScheduleDesiredState::Running
+                    }),
+                HeldLeaseOwner::RuntimeServiceIntent { service_id, decision_epoch } => self.store
+                    .runtime_schedule_snapshot(service_id)?.is_some_and(|schedule| {
+                        schedule.kind == RuntimeScheduleKind::Service
+                            && schedule.decision_epoch == *decision_epoch
+                            && schedule.desired_state == RuntimeScheduleDesiredState::Running
+                    }),
+                HeldLeaseOwner::WorkerInstance { .. } => true, // Revalidated in the acquisition transaction below.
+            };
+            let service = self.store.durable_service_snapshot(pending.authority.service_id())?;
+            if !owner_current || (service.status.state == RuntimeServiceState::Stopping
+                && service.generation != pending.stopping_generation) {
+                let _ = pending.reply.send_control(Err(RuntimeServiceControlError::Unavailable));
+                continue;
+            }
+            self.begin_owned_acquire_with_deadline(
+                pending.authority, pending.owner, pending.reply, Some(pending.deadline),
+                pending.worker_cold_start_reacquire_used, false,
+            )?;
+        }
         Ok(())
     }
 
@@ -2752,7 +2830,7 @@ impl ServiceController {
                     ("app-root", self.paths.resolve_app(&probe.path))
                 }
                 ServiceInstallProbeAuthority::DataRoot => {
-                    ("data-root", self.paths.resolve_data(&probe.path))
+                    ("managed-data-root", self.paths.resolve_service_data(&probe.path))
                 }
             };
             match resolved {
@@ -3791,6 +3869,9 @@ impl ServiceController {
     }
 
     fn fail_pending_acquires(&mut self) {
+        for pending in self.pending_idle_acquires.drain(..) {
+            let _ = pending.reply.send_control(Err(RuntimeServiceControlError::Unavailable));
+        }
         for held in self.held_leases.values_mut() {
             if let Some(reply) = held.pending_reply.take() {
                 let _ = reply.send_control(Err(RuntimeServiceControlError::Unavailable));
@@ -4181,7 +4262,8 @@ fn expected_acquire_error(error: &DurableServiceStoreError) -> Option<RuntimeSer
             | ServiceLeaseError::ServiceStopping(_)
             | ServiceLeaseError::DuplicateLease(_),
         )
-        | DurableServiceStoreError::DuplicateLease(_) => Some(RuntimeServiceControlError::Conflict),
+        | DurableServiceStoreError::DuplicateLease(_)
+        | DurableServiceStoreError::Store(StoreError::InstallationBusy(_)) => Some(RuntimeServiceControlError::Conflict),
         DurableServiceStoreError::Store(StoreError::AdmissionClosed)
         | DurableServiceStoreError::Lease(
             ServiceLeaseError::AcquisitionClosed(_)
@@ -4478,7 +4560,7 @@ mod tests {
 
     #[test]
     fn service_acquire_deadlines_follow_the_manifest_cold_start() {
-        let voicebox = service_acquire_timeouts(1_800_000);
+        let voicebox = service_acquire_timeouts(1_800_000, 60_000);
         assert_eq!(
             voicebox.pending,
             Duration::from_millis(1_800_000 + SERVICE_LEASE_SETTLEMENT_GRACE_MS),
@@ -4486,11 +4568,43 @@ mod tests {
         assert_eq!(
             voicebox.response,
             Duration::from_millis(
-                1_800_000 + SERVICE_LEASE_SETTLEMENT_GRACE_MS + SERVICE_LEASE_RESPONSE_GRACE_MS,
+                1_800_000 + 60_000 + 2_000 + SERVICE_LEASE_SETTLEMENT_GRACE_MS + SERVICE_LEASE_RESPONSE_GRACE_MS,
             ),
         );
         assert!(voicebox.response > voicebox.pending);
         assert!(voicebox.response > CONTROL_RESPONSE_TIMEOUT);
+    }
+
+    #[test]
+    fn idle_wait_budget_preserves_startup_and_closed_transport_bounds() {
+        let timeouts = service_acquire_timeouts(30_000, 60_000);
+        assert_eq!(timeouts.pending, Duration::from_secs(35));
+        assert_eq!(timeouts.idle_pending, Duration::from_secs(97));
+        assert_eq!(timeouts.response, Duration::from_secs(102));
+        // Oversized manifest shutdown values cannot increase the wait beyond
+        // the actual process owner's five-minute graceful-stop ceiling.
+        let maximum = service_acquire_timeouts(
+            breadboard_runtime_protocol::MAX_TIMEOUT_MS,
+            breadboard_runtime_protocol::MAX_TIMEOUT_MS,
+        );
+        assert_eq!(maximum.response.as_millis(),
+            u128::from(breadboard_runtime_protocol::MAX_SERVICE_LEASE_ACQUIRE_TIMEOUT_MS));
+        assert_eq!((maximum.idle_pending - maximum.pending).as_millis(),
+            u128::from(breadboard_runtime_protocol::MAX_SERVICE_IDLE_STOP_WAIT_MS));
+    }
+
+    #[test]
+    fn idle_wait_is_distinct_from_generic_conflicts_and_failure_stops() {
+        assert_eq!(expected_acquire_error(&DurableServiceStoreError::IdleStopPending {
+            service_id: "inbox-zero-stack".into(), generation: 8,
+        }), None);
+        for error in [
+            DurableServiceStoreError::Lease(ServiceLeaseError::ServiceStopping("inbox-zero-stack".into())),
+            DurableServiceStoreError::Store(StoreError::InstallationBusy("inbox-zero-stack".into())),
+            DurableServiceStoreError::DuplicateLease("existing-lease".into()),
+        ] {
+            assert_eq!(expected_acquire_error(&error), Some(RuntimeServiceControlError::Conflict));
+        }
     }
 
     fn service_status(

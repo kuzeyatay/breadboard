@@ -2,8 +2,14 @@
 
 import json
 import uuid
+import base64
+from copy import deepcopy
+from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from run_agent import AIAgent
 
@@ -84,6 +90,56 @@ def _hard_stop_config(**overrides) -> dict:
     }
     cfg["tool_loop_guardrails"].update(overrides)
     return cfg
+
+
+@pytest.mark.parametrize("dispatch", ["sequential", "concurrent"])
+@pytest.mark.parametrize("supports_vision", [True, False])
+def test_attachment_pixels_survive_execution_and_repeat_guidance(tmp_path, monkeypatch, dispatch, supports_vision):
+    from PIL import Image
+    from plugins.breadboard import _browser_terminal_result
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    picture = BytesIO()
+    Image.new("RGB", (16, 16), "green").save(picture, format="JPEG")
+    data_url = "data:image/jpeg;base64," + base64.b64encode(picture.getvalue()).decode()
+    # Use the real image adapter and its on-disk cache, not a fabricated text
+    # result that would bypass the dict path responsible for the live failure.
+    result = _browser_terminal_result({"image": 1, "screenshot": {"dataUrl": data_url}}, source="Attached image")
+    original = deepcopy(result)
+    assert Path(result["meta"]["screenshot_path"]).read_bytes() == picture.getvalue()
+    agent = _make_agent("attachment_image")
+    agent._model_supports_vision = lambda: supports_vision
+    completed = []
+    agent.tool_complete_callback = lambda call_id, name, args, payload: completed.append((call_id, payload))
+    execute = getattr(agent, f"_execute_tool_calls_{dispatch}")
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value=result):
+        execute(SimpleNamespace(content="", tool_calls=[_mock_tool_call("attachment_image", '{"image":1}', "image-first")]), messages, "image-task")
+        first_message = deepcopy(messages[0])
+        execute(SimpleNamespace(content="", tool_calls=[
+            _mock_tool_call("attachment_image", '{"image":1}', "image-repeat-1"),
+            _mock_tool_call("attachment_image", '{"image":1}', "image-repeat-2"),
+        ]), messages, "image-task")
+
+    assert [m["tool_call_id"] for m in messages] == ["image-first", "image-repeat-1", "image-repeat-2"]
+    assert messages[0] == first_message  # Cached history must not be mutated.
+    assert result == original
+    assert len(completed) == 3
+    for _, payload in completed:
+        assert payload["_multimodal"] is True
+        assert payload["content"][1]["image_url"]["url"] == data_url
+    for message in messages:
+        content = message["content"]
+        if supports_vision:
+            assert isinstance(content, list)
+            urls = [part["image_url"]["url"] for part in content if part["type"] == "image_url"]
+            assert urls == [data_url]
+        else:
+            assert isinstance(content, str)
+            assert data_url not in content
+    for message in messages[1:]:
+        assert "idempotent_no_progress_warning" in json.dumps(message["content"])
 
 
 def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_execution():

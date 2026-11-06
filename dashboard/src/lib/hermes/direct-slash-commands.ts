@@ -1,3 +1,5 @@
+import { skillProductDescription } from "./skill-product-copy.ts";
+
 import type { CommandHubItem } from "./commands.ts";
 import type { HermesSurface } from "./config.ts";
 import {
@@ -6,6 +8,7 @@ import {
 import type { PublicAgencyAgent } from "./agency-agents-client.ts";
 import { agencyAgentToken } from "./agency-agent-command.ts";
 import { isWorkflowCommand } from "./omh-command.ts";
+import { UNIFIED_WORKFLOWS } from "../workflows/unified-catalog.ts";
 
 export interface DirectCommandGroups {
   skills: CommandHubItem[];
@@ -89,7 +92,14 @@ export function directSlashCommandItems({
   const installedSkills = groups?.skills ?? [];
   const skills = installedSkills.filter((item) => !isWorkflowCommand(item));
   const workflows = installedSkills.filter((item) => isWorkflowCommand(item));
+  const unifiedWorkflows: CommandHubItem[] = surface === "quartz_ai" ? [] : UNIFIED_WORKFLOWS.map(workflow => ({
+    id: `unified-workflow:${workflow.id}`, kind: "agent", slug: workflow.command.slice(1),
+    token: workflow.command.slice(1), name: workflow.name, description: workflow.description,
+    category: "Workflow", source: "Unified workflows", installed: true, enabled: true, healthy: true,
+    searchTerms: workflow.modes.map(mode => mode.name).join(" "),
+  }));
   const candidates = [
+    ...unifiedWorkflows,
     ...skills,
     ...runtimeAgents,
     ...(groups?.agents ?? []),
@@ -110,6 +120,7 @@ export function directSlashCommandItems({
       token,
       item.name,
       item.description,
+      skillProductDescription(item),
       item.category,
       item.searchTerms,
     ].some((value) => value?.toLowerCase().includes(normalizedQuery));

@@ -48,7 +48,7 @@ test("Skills has a persistent Recent view ordered by actual command-hub use", ()
   assert.match(hub, /localStorage\.setItem\(RECENTS_KEY/);
   assert.match(catalogRoute, /CatalogFilter \| "recent"/);
   assert.match(catalogRoute, /url\.searchParams[\s\S]*\.getAll\("id"\)/);
-  assert.match(catalogRoute, /recentIds[\s\S]*\.flatMap\(\(id\)/);
+  assert.match(catalogRoute, /querySkillLibrary[\s\S]*recentOnly: filter === "recent"/);
 });
 
 test("Skills filter selection preserves search, resets paging, and filters search results locally", () => {
@@ -108,13 +108,13 @@ test("Skills exposes synchronization, stale, offline, details, and explicit life
   assert.match(ui, /Catalog refresh failed/);
   assert.match(ui, /Refresh/);
   assert.match(ui, /Upstream ID[\s\S]*Upstream hash[\s\S]*Approved hash[\s\S]*Install URL/);
-  assert.match(ui, /Review for install/);
-  assert.match(ui, /Approve and install/);
+  assert.match(ui, /Install skill/);
+  assert.match(ui, /SkillAccessReview/);
   assert.match(ui, /Review update/);
   assert.match(ui, /Remove/);
   assert.match(ui, /Open source/);
   assert.doesNotMatch(ui, /Available for inspection, not installation/);
-  assert.match(ui, /Software implementation guidance/);
+  assert.match(ui, /setupRequirement/);
   assert.match(ui, /Coding agent required/);
   assert.match(ui, /availability === "needs_review"/);
 });
@@ -123,12 +123,12 @@ test("clicked skills expose products, every prerequisite, and actionable setup",
   const ui = read("src/app/components/hermes/skills-catalog-panel.tsx");
   const hub = read("src/app/components/hermes/command-hub.tsx");
   assert.match(ui, />Produces</);
-  assert.match(ui, />Requirements</);
+  assert.match(ui, /"Requirements"/);
   assert.match(ui, /selected\.requirements[\s\S]*\.map\(\(item\)/);
   assert.match(ui, /connect_mcp[\s\S]*onOpenConnections/);
   assert.match(ui, /configure_environment[\s\S]*navigator\.clipboard\.writeText/);
   assert.match(ui, /onPrepareWithOpenCode\(selected, item\)/);
-  assert.match(ui, /stays in the chat where it was generated/);
+  assert.match(ui, /canUseSkill\(selected\)/);
   assert.match(hub, /onPrepareWithOpenCode=[\s\S]*onSelectOpenCode\(\)[\s\S]*chooseCatalogSkill\(skill\)/);
 });
 
@@ -142,7 +142,7 @@ test("Skills supports keyboard navigation, focus return, narrow widths, and them
   assert.match(ui, /event\.key === "Escape"/);
   assert.match(ui, /filterTriggerRef\.current\?\.focus/);
   assert.match(ui, /selectedButtonRef\.current\?\.focus/);
-  assert.match(ui, /sm:grid-cols-2/);
+  assert.match(ui, /flex-wrap/);
   assert.match(ui, /var\(--paper-raised\)/);
   assert.match(ui, /var\(--ink\)/);
 });

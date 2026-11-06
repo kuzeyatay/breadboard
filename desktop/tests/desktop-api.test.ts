@@ -33,43 +33,6 @@ class FakeIpcRenderer implements IpcRendererLike {
     if (channel === IPC_CHANNELS.setBrowserBookmarks) return true;
     if (channel === IPC_CHANNELS.getBrowserShortcuts) return [];
     if (channel === IPC_CHANNELS.setBrowserShortcuts) return true;
-    if (channel === IPC_CHANNELS.getClickyState) {
-      return {
-        supported: true,
-        available: true,
-        projectAvailable: true,
-        status: "ready",
-        message: "Clicky is ready.",
-      };
-    }
-    if (channel === IPC_CHANNELS.launchClicky) {
-      return {
-        ok: true,
-        code: "launched",
-        message: "Clicky launched.",
-        state: {
-          supported: true,
-          available: true,
-          projectAvailable: true,
-          status: "ready",
-          message: "Clicky is ready.",
-        },
-      };
-    }
-    if (channel === IPC_CHANNELS.openClickyProject) {
-      return {
-        ok: true,
-        code: "project_opened",
-        message: "The Clicky project opened.",
-        state: {
-          supported: true,
-          available: false,
-          projectAvailable: true,
-          status: "not_built",
-          message: "Build Clicky once.",
-        },
-      };
-    }
     return undefined;
   }
 
@@ -98,9 +61,6 @@ test("preload API invokes only the declared IPC contract", async () => {
   assert.equal(await api.setStartupSound(false), true);
   assert.equal(await api.getCurrentLocationPreference(), true);
   assert.equal(await api.setCurrentLocationPreference(true), true);
-  assert.equal((await api.getClickyState()).status, "ready");
-  assert.equal((await api.launchClicky()).code, "launched");
-  assert.equal((await api.openClickyProject()).code, "project_opened");
   await api.continueToDashboard();
 
   assert.deepEqual(
@@ -121,9 +81,6 @@ test("preload API invokes only the declared IPC contract", async () => {
       IPC_CHANNELS.setStartupSound,
       IPC_CHANNELS.getCurrentLocationPreference,
       IPC_CHANNELS.setCurrentLocationPreference,
-      IPC_CHANNELS.getClickyState,
-      IPC_CHANNELS.launchClicky,
-      IPC_CHANNELS.openClickyProject,
       IPC_CHANNELS.startupContinue,
     ],
   );

@@ -17,8 +17,13 @@ export function assessImageRouting(scenario, message) {
       (!(typeof message.content === 'string' && message.content.trim()) && !message.tool_calls?.length)) {
     return { passed: false, failures: ['Model returned no answer or tool decision.'], count: 0, queries: [] };
   }
-  const calls = (message.tool_calls ?? []).filter(call => call?.function?.name === 'image_search');
-  if (Boolean(calls.length) !== scenario.search) failures.push(scenario.search ? 'Expected image_search.' : 'Image search was inappropriate.');
+  const searchTool = scenario.searchTool ?? 'image_search';
+  const imageCalls = (message.tool_calls ?? []).filter(call => ['image_search', 'garden_get_source_figure'].includes(call?.function?.name));
+  const calls = imageCalls.filter(call => call.function.name === searchTool);
+  if (scenario.search) {
+    if (!calls.length) failures.push(`Expected ${searchTool}.`);
+    if (imageCalls.some(call => call.function.name !== searchTool)) failures.push('Used the wrong image source or searched the web before checking Garden results.');
+  } else if (imageCalls.length) failures.push('Image search was inappropriate.');
   const queries = [];
   let count = 0;
   for (const call of calls) {
@@ -27,11 +32,17 @@ export function assessImageRouting(scenario, message) {
     if (!args || typeof args.query !== 'string' || !args.query.trim() || args.query.length > 512) {
       failures.push('Missing or invalid search query.');
     } else queries.push(args.query.toLowerCase());
-    if (!Number.isInteger(args?.count) || args.count < 1 || args.count > 5) failures.push('Count must be an integer from 1 to 5.');
-    else count += args.count;
+    if (searchTool === 'garden_get_source_figure') {
+      if (args?.scope !== 'all' || args.gardenId !== undefined || args.slug !== undefined) {
+        failures.push('Search must cover all authorized Gardens, not just the active Garden or page.');
+      }
+    } else {
+      if (!Number.isInteger(args?.count) || args.count < 1 || args.count > 5) failures.push('Count must be an integer from 1 to 5.');
+      else count += args.count;
+    }
   }
   if (count > 5) failures.push('Combined image count exceeds five.');
-  if (scenario.count !== undefined && count !== scenario.count) failures.push(`Expected the requested count, capped at ${scenario.count}.`);
+  if (searchTool === 'image_search' && scenario.count !== undefined && count !== scenario.count) failures.push(`Expected the requested count, capped at ${scenario.count}.`);
   const joined = queries.join(' ');
   for (const alternatives of scenario.subjects ?? []) {
     if (!alternatives.some(subject => joined.includes(subject.toLowerCase()))) failures.push(`Query lost subject or constraint: ${alternatives.join(' / ')}.`);
@@ -41,6 +52,8 @@ export function assessImageRouting(scenario, message) {
 
 export async function evaluateImageRouting({ model, tools, prompt, scenarios = imageRoutingCases,
   baseUrl = localChatmockBaseUrl(), fetcher = fetch, onResult = () => {} }) {
+  const defaultSearchTool = tools.some(tool => tool.function?.name === 'garden_get_source_figure')
+    ? 'garden_get_source_figure' : 'image_search';
   const results = [];
   for (const scenario of scenarios) {
     let result;
@@ -54,7 +67,7 @@ export async function evaluateImageRouting({ model, tools, prompt, scenarios = i
       });
       if (!response.ok) throw new Error(`Provider returned HTTP ${response.status}.`);
       const payload = await response.json();
-      result = { id: scenario.id, ...assessImageRouting(scenario, payload.choices?.[0]?.message) };
+      result = { id: scenario.id, ...assessImageRouting({ ...scenario, searchTool: scenario.searchTool ?? defaultSearchTool }, payload.choices?.[0]?.message) };
     } catch (error) {
       result = { id: scenario.id, passed: false, unavailable: true, failures: [error.message] };
     }
@@ -74,7 +87,7 @@ function runtimeTools() {
   const python = [process.env.HERMES_PYTHON, path.join(hermes, '.venv/Scripts/python.exe'), path.join(hermes, '.venv/bin/python')]
     .find(candidate => candidate && fs.existsSync(candidate));
   if (!python) throw new Error('The Hermes Python environment is unavailable. Set HERMES_PYTHON to its interpreter.');
-  const script = "import json; from plugins.breadboard import _TOOLS; print(json.dumps([{'type':'function','function':schema} for name,route,kind,schema in _TOOLS if name in {'image_search','attachment_image','artifact_image_generate','browser_terminal'}]))";
+  const script = "import json; from plugins.breadboard import _TOOLS; print(json.dumps([{'type':'function','function':schema} for name,route,kind,schema in _TOOLS if name in {'image_search','garden_get_source_figure','garden_search','garden_get_page','attachment_image','artifact_image_generate','browser_terminal'}]))";
   return JSON.parse(execFileSync(python, ['-c', script], { cwd: hermes, encoding: 'utf8', windowsHide: true, timeout: 20_000 }));
 }
 
@@ -87,7 +100,8 @@ async function main() {
     return;
   }
   const tools = runtimeTools();
-  const prompt = fs.readFileSync(path.join(root, 'hermes-config/system/image-results.md'), 'utf8');
+  const prompt = ['image-results', 'garden-image-replies']
+    .map(name => fs.readFileSync(path.join(root, `hermes-config/system/${name}.md`), 'utf8')).join('\n\n');
   const report = await evaluateImageRouting({ model, tools, prompt,
     onResult: result => console.log(`${result.unavailable ? 'UNAVAILABLE' : result.passed ? 'PASS' : 'FAIL'} ${result.id}${result.failures.length ? ': ' + result.failures.join(' ') : ''}`),
   });

@@ -42,6 +42,9 @@ test('each prompt reads the current page without exposing credentials; unavailab
     assert.match(prompt, /Second page/);
     assert.match(prompt, /untrusted page content/);
     assert.match(prompt, /browser_terminal/);
+    assert.match(prompt, /download every picture here/);
+    assert.match(prompt, /'here' refers to this page/);
+    assert.match(prompt, /Filesystem writes still require an authorized destination/);
     assert.ok(!prompt.includes(access.token));
     assert.match(await browserTerminalPrompt(access, false), /Agent mode is off/);
     await readBrowserTerminal(access, 'scroll', 'down');
@@ -81,4 +84,21 @@ test('voice turns request fresh native view access and older shells still send n
   } finally {
     if (previous === undefined) delete globalThis.window; else globalThis.window = previous;
   }
+});
+
+test('voice screen availability never fetches or injects an unsolicited snapshot', async () => {
+  const originalFetch = globalThis.fetch;
+  let reads = 0;
+  globalThis.fetch = async () => { reads++; throw new Error('A closed or slow screen bridge must not block conversation'); };
+  try {
+    const access = { port: 43210, token: 'a'.repeat(64) };
+    const prompt = await browserTerminalPrompt(access, true, { onDemand: true });
+    assert.equal(reads, 0);
+    assert.match(prompt, /No screen content has been read/);
+    assert.match(prompt, /when the user refers to what they are viewing, read fresh context/);
+    assert.match(prompt, /Capture a screenshot before answering visual questions/);
+    assert.match(prompt, /untrusted data/);
+    assert.ok(!prompt.includes(access.token));
+    assert.equal(await browserTerminalPrompt(undefined, true, { onDemand: true }), '');
+  } finally { globalThis.fetch = originalFetch; }
 });

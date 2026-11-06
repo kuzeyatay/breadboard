@@ -8,6 +8,9 @@ import { encodePng } from "../src/lib/png-crop.ts";
 import {
   FIGURE_CROP_REVIEW_SYSTEM_PROMPT,
   cropEdgeInk,
+  figureCropRenderBBox,
+  figureCropReviewCacheKey,
+  figureCropReviewReceiptMatches,
   parseFigureCropReviewResponse,
   tightFigureCropBBox,
 } from "../src/lib/source-visual-crop-review.ts";
@@ -211,7 +214,136 @@ test("a saved crop review applies on a later pass without the review flag, so re
     await extractSourceVisuals({ ...base, force: true });
     assert.deepEqual(loadSourceVisuals(root, garden).map((v) => v.sourceVisualId), ["S1.P1.G1"], "the rejected crop must not come back");
     assert.equal(reviews, 1, "the saved review is reused, not re-requested");
+    // Generation on a different model than the reviewer still replays the verdict.
+    await extractSourceVisuals({ ...base, model: "other", force: true });
+    assert.deepEqual(loadSourceVisuals(root, garden).map((v) => v.sourceVisualId), ["S1.P1.G1"], "a verdict from another model must still apply on replay");
+    assert.equal(reviews, 1);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a reviewer-supplied box is cropped verbatim, so a correction can converge", () => {
+  // The reviewer corrects a crop whose top edge sliced the running header, so
+  // its box starts just below that header. Padding the correction puts the
+  // header back, the next round reports the same defect and returns the same
+  // box, and the detection is dropped at round exhaustion (telecom-1,
+  // 2026-09-21: two Sauter tables died this way and failed the completeness
+  // gate). A detector box still gets its pad - nothing has vetted it.
+  const corrected = { x: 0.136, y: 0.103, width: 0.738, height: 0.674 };
+
+  assert.deepEqual(figureCropRenderBBox(corrected, "table", true), corrected);
+
+  const padded = figureCropRenderBBox(corrected, "table", false);
+  assert.deepEqual(padded, tightFigureCropBBox(corrected, "table"));
+  assert.ok(padded.y < corrected.y, "padding a correction reaches back up into the header it excluded");
+});
+
+test("a v1 review is reused unless it carries the verdict the padding bug caused", () => {
+  // Re-reviewing every cached page costs ~2 min per model call across hundreds
+  // of pages. Approved and corrected v1 outcomes were verified against the
+  // exact crop they describe and are rendered the way they were approved, so
+  // they stay reusable. A rejected outcome is the one the padded loop could
+  // not converge out of, so that page is re-reviewed under v2.
+  const bbox = { x: 0.1, y: 0.2, width: 0.5, height: 0.3 };
+  const candidates = [{ detectionIndex: 0, type: "table", caption: "Table 1.1", bbox }];
+  const receipt = (version, status) => ({
+    version,
+    cacheKey: "k",
+    model: "m",
+    outcomes: [{ detectionIndex: 0, status, bbox, reason: "r", rounds: status === "approved" ? 1 : 2 }],
+    modelCalls: 1,
+  });
+
+  assert.equal(figureCropReviewReceiptMatches(receipt(1, "approved"), "k", candidates), true);
+  assert.equal(figureCropReviewReceiptMatches(receipt(1, "corrected"), "k", candidates), true);
+  assert.equal(figureCropReviewReceiptMatches(receipt(2, "corrected"), "k", candidates), true);
+
+  const rejected = { version: 1, cacheKey: "k", model: "m", modelCalls: 3,
+    outcomes: [{ detectionIndex: 0, status: "rejected", reason: "slices the running header", rounds: 3 }] };
+  assert.equal(figureCropReviewReceiptMatches(rejected, "k", candidates), false,
+    "a v1 rejection is re-reviewed under the fixed geometry");
+  assert.equal(figureCropReviewReceiptMatches({ ...rejected, version: 2 }, "k", candidates), true,
+    "a v2 rejection was already judged with verbatim crops and stands");
+});
+
+test("an unparseable crop review keeps the detector crop instead of failing the run", async () => {
+  // A transport that returns nothing already degrades to "unreviewed". A
+  // malformed answer is the same condition and must not be worse: throwing
+  // discarded a whole run mid-pass (telecom-1, 2026-09-21, page 4).
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "crop-badjson-"));
+  try {
+    const page = whitePng(600, 800, (fill) => fill(60, 80, 520, 300));
+    const pagePath = path.join(dir, "page-001.png");
+    fs.writeFileSync(pagePath, page);
+    const { reviewFigureCropsOnPage } = await import("../src/lib/source-visual-crop-review.ts");
+    const result = await reviewFigureCropsOnPage({
+      pageImage: page,
+      pageNumber: 4,
+      pageFingerprint: "fp",
+      model: "m",
+      candidates: [{ detectionIndex: 0, type: "table", caption: "Table 1.1", bbox: { x: 0.1, y: 0.1, width: 0.6, height: 0.3 } }],
+      complete: async () => "I cannot return JSON for this page.",
+    });
+    const outcome = result.outcomes.find((o) => o.detectionIndex === 0);
+    assert.equal(outcome.status, "unreviewed", "the page degrades instead of throwing");
+    assert.ok(outcome.bbox, "the detector crop is kept");
+    assert.match(outcome.reason, /no valid response/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("reuse keeps a verdict from another model but still binds everything else", () => {
+  // Cache keys bind a verdict to its authoring model, so a transport change
+  // re-reviews the whole garden (telecom-1, 2026-09-22: ~5 hours for 210
+  // pages). With reuse on, the saved verdict is checked against the key its
+  // OWN author would have produced, so prompt version, page bytes and
+  // candidate boxes must still match exactly.
+  const bbox = { x: 0.1, y: 0.2, width: 0.5, height: 0.3 };
+  const candidates = [{ detectionIndex: 0, type: "table", caption: "Table 1.1", bbox }];
+  const keyFor = (model) => figureCropReviewCacheKey({ model, pageFingerprint: "fp-1", candidates });
+  const receipt = {
+    version: 2,
+    cacheKey: keyFor("openaiweb/gpt-5-6-thinking"),
+    model: "openaiweb/gpt-5-6-thinking",
+    outcomes: [{ detectionIndex: 0, status: "approved", bbox, reason: "complete", rounds: 1 }],
+    modelCalls: 1,
+  };
+
+  // Default: a different model does not match, so the page is re-reviewed.
+  assert.notEqual(keyFor("gpt-5.6-sol"), receipt.cacheKey);
+  assert.equal(figureCropReviewReceiptMatches(receipt, keyFor("gpt-5.6-sol"), candidates), false);
+
+  // Reuse: check against the author's own key, which matches.
+  assert.equal(figureCropReviewReceiptMatches(receipt, keyFor(receipt.model), candidates), true);
+
+  // Reuse never relaxes the other bindings: a changed page still re-reviews.
+  const movedPage = figureCropReviewCacheKey({ model: receipt.model, pageFingerprint: "fp-2", candidates });
+  assert.equal(figureCropReviewReceiptMatches(receipt, movedPage, candidates), false);
+  const movedBox = figureCropReviewCacheKey({
+    model: receipt.model,
+    pageFingerprint: "fp-1",
+    candidates: [{ ...candidates[0], bbox: { ...bbox, y: 0.4 } }],
+  });
+  assert.equal(figureCropReviewReceiptMatches(receipt, movedBox, candidates), false);
+});
+
+test("a reusable v1 receipt matches the key it was written under", () => {
+  // The matcher accepts rejection-free v1 receipts, but the key hashed the
+  // current version, so none ever matched. Live 2026-09-23: all 54 v1
+  // receipts in telecom-1's scan cache were silently ignored on replay.
+  const bbox = { x: 0.1, y: 0.2, width: 0.5, height: 0.3 };
+  const candidates = [{ detectionIndex: 0, type: "figure", caption: "Fig. 1", bbox }];
+  const key = (version) => figureCropReviewCacheKey({ model: "m", pageFingerprint: "fp", candidates, version });
+  const receipt = {
+    version: 1,
+    cacheKey: key(1),
+    model: "m",
+    outcomes: [{ detectionIndex: 0, status: "approved", bbox, reason: "complete", rounds: 1 }],
+    modelCalls: 1,
+  };
+  assert.notEqual(key(undefined), key(1));
+  assert.equal(figureCropReviewReceiptMatches(receipt, key(receipt.version), candidates), true);
+  assert.equal(figureCropReviewReceiptMatches({ ...receipt, version: 2 }, key(2), candidates), false);
 });

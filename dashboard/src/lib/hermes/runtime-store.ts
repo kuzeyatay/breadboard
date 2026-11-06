@@ -136,6 +136,26 @@ export function getRuntimeSessionByConversation(
   return row ?? null;
 }
 
+/** Events and first-message dispatch can finish runtime startup concurrently. */
+export function registerConversationRuntime(
+  input: CreateRuntimeSessionInput & { conversationId: number },
+): { row: RuntimeSessionRow; created: boolean } {
+  return db.transaction(() => {
+    const inlineTurnId = input.runtimeMetadata?.inlineTurnId;
+    const existing = getRuntimeSessionByConversation(
+      input.conversationId,
+      typeof inlineTurnId === "string" ? inlineTurnId : undefined,
+    );
+    if (existing) {
+      if (existing.user_id !== input.userId || existing.surface !== input.surface) {
+        throw new Error("Runtime session ownership mismatch");
+      }
+      return { row: existing, created: false };
+    }
+    return { row: createRuntimeSession(input), created: true };
+  }).immediate();
+}
+
 /** Replace (never merge) temporary context so stale gardens cannot leak. */
 export function updateRuntimeActiveContext(input: {
   runtimeSessionId: number;
@@ -221,7 +241,10 @@ export function runtimeExternalSessionId(row: RuntimeSessionRow): string | null 
 export interface HermesUserSettings {
   filesystemMode: FilesystemAccessMode;
   lastActiveDirectory: string | null;
+  /** Initial model selection when Breadboard starts. */
   defaultModel: string;
+  /** Recovery, background work, and tasks without an explicit model. */
+  fallbackModel: string;
   reasoningEffort: AssistantReasoningEffort;
   /**
    * The effort last chosen for each model. Reasoning ladders are a property of
@@ -279,7 +302,7 @@ export function getHermesUserSettings(
 ): HermesUserSettings {
   const row = db
     .prepare(
-      `SELECT filesystem_mode, last_active_directory, default_model,
+      `SELECT filesystem_mode, last_active_directory, default_model, fallback_model,
               reasoning_effort, reasoning_effort_by_model, intelligence_preference_set,
               humanizer_auto, autonomy_tier, composer_switches
        FROM hermes_user_settings WHERE user_id = ?`,
@@ -289,6 +312,7 @@ export function getHermesUserSettings(
         filesystem_mode: FilesystemAccessMode;
         last_active_directory: string | null;
         default_model: string;
+        fallback_model: string | null;
         reasoning_effort: string;
         reasoning_effort_by_model: string | null;
         intelligence_preference_set: number;
@@ -301,6 +325,7 @@ export function getHermesUserSettings(
     filesystemMode: row?.filesystem_mode === "full" ? "full" : "restricted",
     lastActiveDirectory: row?.last_active_directory ?? null,
     defaultModel: row?.default_model?.trim() || DEFAULT_MODEL,
+    fallbackModel: row?.fallback_model?.trim() || DEFAULT_MODEL,
     reasoningEffort:
       row && ASSISTANT_REASONING_EFFORTS.includes(row.reasoning_effort as AssistantReasoningEffort)
         ? row.reasoning_effort as AssistantReasoningEffort
@@ -327,6 +352,7 @@ export function setHermesUserSettings(
         ? current.lastActiveDirectory
         : input.lastActiveDirectory,
     defaultModel,
+    fallbackModel: input.fallbackModel?.trim() || current.fallbackModel,
     // Selecting a model restores the effort last used *with that model*. An
     // explicit effort in the same call still wins, and a model never chosen
     // before keeps whatever is active so the switch is not a silent downgrade.
@@ -354,14 +380,15 @@ export function setHermesUserSettings(
   }
   db.prepare(
     `INSERT INTO hermes_user_settings
-       (user_id, filesystem_mode, last_active_directory, default_model,
+       (user_id, filesystem_mode, last_active_directory, default_model, fallback_model,
         reasoning_effort, reasoning_effort_by_model, intelligence_preference_set,
         humanizer_auto, autonomy_tier, composer_switches, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(user_id) DO UPDATE SET
        filesystem_mode = excluded.filesystem_mode,
        last_active_directory = excluded.last_active_directory,
        default_model = excluded.default_model,
+       fallback_model = excluded.fallback_model,
        reasoning_effort = excluded.reasoning_effort,
        reasoning_effort_by_model = excluded.reasoning_effort_by_model,
        intelligence_preference_set = excluded.intelligence_preference_set,
@@ -374,6 +401,7 @@ export function setHermesUserSettings(
     next.filesystemMode,
     next.lastActiveDirectory,
     next.defaultModel,
+    next.fallbackModel,
     next.reasoningEffort,
     JSON.stringify(next.reasoningEffortByModel),
     next.intelligencePreferenceSet ? 1 : 0,

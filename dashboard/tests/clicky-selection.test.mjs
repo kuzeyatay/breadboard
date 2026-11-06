@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isClickyRequest } from '../src/lib/clicky/intent.ts';
 import { breadboardUseCommandText } from '../src/lib/hermes/breadboard-use-intent.ts';
 import { computerUseCommandText } from '../src/lib/hermes/computer-use-intent.ts';
 
@@ -15,38 +14,12 @@ const requests = [
   'Can you walk me through this app on my screen?',
   'Show me where to click on my screen', 'Tell me what to click in this dialog',
 ];
-const otherRequests = [
-  'Clicky', 'What is Clicky?', 'How do I launch Clicky?', 'Can Hermes launch Clicky?',
-  'Explain how Clicky works', 'Should I use Clicky?', 'Can you explain how to open Clicky?',
-  "Don't launch Clicky", 'Please do not open Clicky', 'Never use Clicky',
-  'Use Clicky? No, do not open it.', 'Show me where to click without Clicky',
-  'Close Clicky', 'Stop Clicky', 'If I ask you later, launch Clicky',
-  'Open Clicky tomorrow', 'Launch Clicky when I ask', 'Start Clicky in 10 minutes',
-  'Write a guide that says launch Clicky', 'Build a screen companion',
-  'Make sure Hermes can launch Clicky', 'Fix the launch Clicky button',
-  'Open the Clicky repository', 'Open Clicky source code', "Open Clicky’s settings",
-  'Run Clicky tests', 'Use Clicky analytics',
-  '"Launch Clicky"', '`open Clicky`', '/computer-use click the button',
-  '/breadboard-use launch Clicky',
-  'Click the save button in Excel', 'Open Chrome and search for cats',
-  'Take a screenshot of my screen', 'Explain this attached screenshot',
-  'Help me understand screen readers', 'Open the companion repository',
-];
-
-test('Clicky selection recognizes launch and live guidance while rejecting discussion and unrelated work', () => {
-  for (const text of requests) assert.equal(isClickyRequest(text), true, text);
-  for (const text of otherRequests) assert.equal(isClickyRequest(text), false, text);
-});
-
-test('Clicky wins over generic desktop selection and retains the complete request on both chat surfaces', () => {
+test('retired companion requests stay ordinary chat messages on both chat surfaces', () => {
   for (const surface of ['dashboard_terminal', 'garden_chat']) {
     for (const text of requests) {
       const input = { text, surface, authenticated: true };
       const selected = breadboardUseCommandText(input);
-      assert.deepEqual(selected, { text: `/breadboard-use ${text}`, automatic: true }, text);
-      assert.deepEqual(computerUseCommandText({ ...input, text: selected.text }), {
-        text: selected.text, automatic: false,
-      });
+      assert.deepEqual(selected, { text, automatic: false }, text);
     }
   }
   for (const input of [
@@ -59,7 +32,7 @@ test('Clicky wins over generic desktop selection and retains the complete reques
   }
 });
 
-test('Clicky does not convert later desktop actions into companion launches', () => {
+test('old companion conversations do not interfere with desktop action selection', () => {
   const input = { text: 'Click the save button in Excel', surface: 'dashboard_terminal', authenticated: true,
     priorMessages: [{ role: 'user', content: 'Launch Clicky' }, { role: 'assistant', content: 'Clicky opened.' }] };
   assert.equal(breadboardUseCommandText(input).automatic, false);

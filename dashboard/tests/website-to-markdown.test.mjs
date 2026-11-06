@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   convertWebsiteToMarkdown, IncompleteWebsiteError, websitePageUrl,
-  websiteHtmlLinks, websiteHtmlSectionLinks, websiteCrawlRoot, isWithinWebsiteRoot, websiteSnapshotMarkdown,
+  websiteHtmlLinks, websiteHtmlSectionLinks, websiteCrawlRoot, isWithinWebsiteRoot, websiteSnapshotMarkdown, appendSourceFigures,
 } from "../src/lib/website-to-markdown.ts";
 
 const site = "https://example.com/";
@@ -246,4 +246,20 @@ test("full text and equation figures survive conversion, with internal links ope
   assert.match(result, /^## Website page 1$/m);
   assert.match(result, /^## Website page 2$/m);
   assert.doesNotMatch(result, /<a id=/, "chapter anchors must survive the garden's HTML escaping");
+});
+
+test("a single page import recovers figures a reader dropped, and survives a page it cannot re-read",async()=>{
+  const html='<img src="/logo.png" alt="Logo"><img width="400" src="https://cdn.test/field.png"><img src="/kept.png" alt="Kept">';
+  const fetchImpl=async input=>{
+    const url=String(input);
+    if(url===site+'notes')return new Response(null,{status:301,headers:{location:'/notes/'}});
+    if(url===site+'notes/')return new Response(html,{status:200,headers:{'content-type':'text/html; charset=utf-8'}});
+    return new Response('nope',{status:500});
+  };
+  const options={fetchImpl,assertPublicHostImpl:async()=>{}};
+  const recovered=await appendSourceFigures('Plain text the reader returned.\n\n![Kept](/kept.png)',site+'notes',options);
+  assert.match(recovered,/!\[Logo\]\(https:\/\/example.com\/logo.png\)/);
+  assert.match(recovered,/!\[Source figure\]\(https:\/\/cdn.test\/field.png\)/);
+  assert.equal(recovered.match(/kept.png/g).length,1,"an image the reader kept is not duplicated");
+  assert.equal(await appendSourceFigures('Body.',site+'missing',options),'Body.');
 });

@@ -1,22 +1,14 @@
-// What a chat turn does with the documents it can see.
-//
-// One rule decides everything here: a document big enough that dumping it would
-// crowd out the conversation gets distilled into a skill and enters the turn as
-// a structured index; anything smaller stays verbatim, because for a two-page
-// memo the raw text is both cheaper and more faithful than a distillation of it.
-//
-// Both chat surfaces call `prepareDocumentContext` and use its two outputs: the
-// prompt block for skills, and the attachments that should still be inlined.
-
+// Chat reads exact source text: smaller attachments inline, larger documents in lossless chunks.
 import fs from "node:fs";
 import path from "node:path";
 import type { ChatAttachment } from "../chat-attachments.ts";
+import { ApiError } from "../hermes/route-core.ts";
 import { scanClusterKnowledge, type KnowledgeNode } from "../knowledge.ts";
 import {
   gardenMediaKind,
   gardenTranscriptName,
 } from "../garden-media-kind.ts";
-import { documentSkillContext, ensureDocumentSkill, gardenDocumentText, shouldDistill } from "./service.ts";
+import { documentSkillContext, ensureDocumentSource, gardenDocumentText } from "./service.ts";
 import type { DocumentSkillProgress, DocumentSkillRecord } from "./types.ts";
 
 /** Garden pages that are a document rather than authored notes. */
@@ -41,7 +33,7 @@ export interface PrepareDocumentContextInput {
 export interface PreparedDocumentContext {
   /** System-prompt block describing every skill in play. Empty when there are none. */
   context: string;
-  /** Attachments small enough to keep sending verbatim. */
+  /** Small readings, indexed document references, and non-text attachments. */
   inlineAttachments: ChatAttachment[];
   records: DocumentSkillRecord[];
   warnings: string[];
@@ -86,41 +78,45 @@ export async function prepareDocumentContext(
     conversationId: input.conversationId ?? null,
   };
 
-  const report = (document: string) => (progress: DocumentSkillProgress) =>
-    input.onProgress?.({ ...progress, document });
-
   for (const attachment of input.attachments ?? []) {
-    if (attachment.type !== "text") {
+    if (attachment.type !== "text" && attachment.type !== "document") {
       inlineAttachments.push(attachment);
       continue;
     }
-    if (!shouldDistill(attachment.text)) {
+    // PDFs and Office files carry their extracted reading as `document`, not
+    // `text`. Both must share the budget, including hydrated retry attachments.
+    const inlineCharacters = inlineAttachments.reduce((sum, item) =>
+      sum + (item.type === "text" || item.type === "document" ? item.text.length : 0), 0);
+    if (inlineCharacters + attachment.text.length <= 60_000) {
       inlineAttachments.push(attachment);
       continue;
     }
     try {
-      const result = await ensureDocumentSkill({
+      const record = ensureDocumentSource({
         userId: input.userId,
         text: attachment.text,
         title: attachmentTitle(attachment.name),
         origin: { kind: "upload", fileName: attachment.name },
-        runtimeScope,
-        baseURL: input.baseURL,
-        model: input.model,
-        signal: input.signal,
-        onProgress: report(attachment.name),
       });
-      records.push(result.record);
-      warnings.push(...result.warnings);
+      records.push(record);
+      if (attachment.type === "document") {
+        // Keep its place, blob and figures so positional references and image
+        // tools still refer to the same attachment. Only the prompt reading
+        // changes; the original and the exact indexed text remain available.
+        inlineAttachments.push({ ...attachment, text:
+          `The full extracted text is stored in document source ${JSON.stringify(record.slug)}. ` +
+          "Use its index in Documents in play and document_skill_read to read the relevant source/ files. " +
+          "The original document remains attached. This reference is not source evidence.",
+        });
+      }
     } catch (error) {
-      // A failed distillation must not cost the user their document: fall back
-      // to the behaviour that existed before this feature.
-      warnings.push(
-        `${attachment.name}: could not be distilled (${
-          error instanceof Error ? error.message : "unknown error"
-        }); using its raw text instead.`,
-      );
-      inlineAttachments.push(attachment);
+      // Sending the raw fallback would recreate the context overflow and leave
+      // an uncompressible user turn in the runtime. Keep the original stored
+      // and fail before dispatch so this preparation can be retried.
+      const failure = new ApiError(503, "document_context_unavailable",
+        `Could not prepare ${attachment.name} for reading. Retry this response.`);
+      failure.cause = error;
+      throw failure;
     }
   }
 
@@ -148,7 +144,7 @@ export async function prepareDocumentContext(
       }
       if (mediaKind === "video") continue;
       const body = node.content ?? "";
-      if (!shouldDistill(body)) continue;
+      if (!body.trim()) continue;
       try {
         const text = await gardenDocumentText(
           contentPath,
@@ -159,7 +155,7 @@ export async function prepareDocumentContext(
           runtimeScope,
           input.signal,
         );
-        const result = await ensureDocumentSkill({
+        const record = ensureDocumentSource({
           userId: input.userId,
           text,
           title: node.title || attachmentTitle(node.fileName),
@@ -169,18 +165,12 @@ export async function prepareDocumentContext(
             documentSlug: node.slug,
             fileName: node.sourceFile || node.fileName,
           },
-          runtimeScope,
-          baseURL: input.baseURL,
-          model: input.model,
-          signal: input.signal,
-          onProgress: report(node.title || node.slug),
         });
-        records.push(result.record);
-        warnings.push(...result.warnings);
+        records.push(record);
       } catch (error) {
         // The garden tools can still read this page, so the turn is not lost.
         warnings.push(
-          `${node.title || node.slug}: could not be distilled (${
+          `${node.title || node.slug}: could not be indexed (${
             error instanceof Error ? error.message : "unknown error"
           }); the garden tools can still read it.`,
         );

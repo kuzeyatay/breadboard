@@ -18,14 +18,18 @@ export function useWorldCities() {
     const read = () => {
       try {
         const stored = window.localStorage.getItem(CITY_STORAGE_KEY);
-        setIds(stored === null ? [...DEFAULT_CITY_IDS] : normalizeCityIds(JSON.parse(stored)));
+        const next = stored === null ? [...DEFAULT_CITY_IDS] : normalizeCityIds(JSON.parse(stored));
+        setIds(previous => previous.length === next.length && previous.every((id, index) => id === next[index]) ? previous : next);
       } catch { /* Keep the default cities when storage is unavailable. */ }
     };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === null || event.key === CITY_STORAGE_KEY) read();
+    };
     read();
-    window.addEventListener("storage", read);
+    window.addEventListener("storage", onStorage);
     window.addEventListener(CITY_CHANGE_EVENT, read);
     return () => {
-      window.removeEventListener("storage", read);
+      window.removeEventListener("storage", onStorage);
       window.removeEventListener(CITY_CHANGE_EVENT, read);
     };
   }, []);
@@ -49,8 +53,9 @@ const PANEL_META = {
   calendar: { title: "Calendar", subtitle: "Your upcoming events this week.", Icon: CalendarDays },
 };
 
-export function DockPopover({ panel, open, onOpenChange, trigger, children }: {
+export function DockPopover({ panel, open, onOpenChange, trigger, children, side = "top" }: {
   panel: Exclude<DockPanel, "spotify">;
+  side?: "top" | "bottom";
   open: boolean;
   onOpenChange: (open: boolean) => void;
   trigger: ReactNode;
@@ -66,7 +71,7 @@ export function DockPopover({ panel, open, onOpenChange, trigger, children }: {
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
-          className={styles.popover} side="top" align="start" sideOffset={18} collisionPadding={{ top: 48, bottom: 16, left: 16, right: 16 }}
+          className={styles.popover} side={side} align="start" sideOffset={18} collisionPadding={{ top: 48, bottom: 16, left: 16, right: 16 }}
           aria-labelledby={headingId} data-panel={panel} data-motion={pointerOpened}
           onInteractOutside={(event) => {
             // The shared dock state switches panels; outside-dismissal must not
@@ -179,13 +184,18 @@ function useWorldWeather(cities: WorldCity[]) {
     return () => { cancelled = true; controller.abort(); window.clearTimeout(timeout); };
   }, [cities, attempt]);
   useEffect(() => {
-    const timer = window.setInterval(() => setAttempt((value) => value + 1), 10 * 60_000);
-    return () => window.clearInterval(timer);
+    const refresh = () => setAttempt((value) => value + 1);
+    const timer = window.setInterval(refresh, 10 * 60_000);
+    window.addEventListener("online", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("online", refresh); };
   }, []);
   return { readings, retry: () => { setReadings({}); setAttempt((value) => value + 1); } };
 }
 
-export function WorldWeather({ cities, save, localWeather }: { cities: WorldCity[]; save: (ids: string[]) => void; localWeather: DockWeather | null }) {
+export function WorldWeather({ cities, save, localWeather, localWeatherUnavailable = false, onRetryLocalWeather }: {
+  cities: WorldCity[]; save: (ids: string[]) => void; localWeather: DockWeather | null;
+  localWeatherUnavailable?: boolean; onRetryLocalWeather?: () => void;
+}) {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pointerOpened, setPointerOpened] = useState(false);
@@ -221,7 +231,11 @@ export function WorldWeather({ cities, save, localWeather }: { cities: WorldCity
       {cities.map((city) => weatherRow(city.name, readings[city.id], city))}
       {!cities.length && <p className={styles.note}>Add a city above to see its weather.</p>}
     </div>}
-    {cities.some((city) => readings[city.id] === "unavailable") && <button type="button" className={styles.action} onClick={retry}>Retry unavailable weather</button>}
+    {localWeatherUnavailable && <p className={styles.note}>Local weather is unavailable right now.</p>}
+    {(localWeatherUnavailable || cities.some((city) => readings[city.id] === "unavailable")) && <button type="button" className={styles.action} onClick={() => {
+      retry();
+      if (localWeatherUnavailable) onRetryLocalWeather?.();
+    }}>Retry unavailable weather</button>}
     <footer className={styles.footer}><span>Current conditions · °C</span><a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Weather by Open-Meteo</a></footer>
   </>;
 }

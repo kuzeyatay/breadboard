@@ -1,5 +1,7 @@
 "use client";
 
+import { normalizeUnifiedWorkflowDispatch, parseUnifiedWorkflowCommand } from "@/lib/workflows/unified-command.ts";
+
 import { watchLegacyDocumentAssistantHistory } from "@/lib/document-assistant-history-client";
 
 // The dashboard terminal keeps the original Breadboard dock, history sidebar,
@@ -30,6 +32,8 @@ import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactiv
 import { isModalDialogOpen, isPrimaryShortcut } from "@/lib/keyboard-shortcuts";
 import AgentRuntimePanel from "./agent-runtime-panel";
 import StarredMessagesPanel from "./starred-messages-panel";
+import WorkspaceSideChat from "./workspace-side-chat";
+import ArchivedChatsPanel from "./archived-chats-panel";
 import { initialStarredMessageTarget, type StarredMessageTarget } from "../use-starred-message-jump";
 import ChatGreetingEmptyState from "./chat-greeting-empty-state";
 import { useChatGreeting } from "./use-chat-greeting";
@@ -54,6 +58,7 @@ import {
   forgetChatDrafts,
 } from "@/lib/conversations/drafts";
 import { useChatDraft } from "./use-chat-draft";
+import { useAttachmentPreparation } from "../use-attachment-preparation";
 import {
   invalidateHermesSessionSummaries,
   notifyHermesSessionsChanged,
@@ -96,11 +101,13 @@ import {
   type AgentMessage,
   type ExternalAgentTurnResult,
 } from "./use-agent-session";
+import { useInlineAgentQuestions } from "./use-inline-agent-questions";
 import { externalAgentCardContent } from "@/lib/conversations/external-agent-runs";
 import { useWorkflowAutomation } from "./use-workflow-automation";
 import { useAssistantModels } from "../use-assistant-models";
 import { useLiquidGlassBar } from "./use-liquid-glass-bar";
 import { useTerminalHeaderClickGuard } from "../terminal-header-click-guard";
+import TerminalDockHandle from "./terminal-dock-handle";
 import {
   productForAction,
   productForResource,
@@ -331,12 +338,13 @@ import {
 } from "./use-agent-launch-queue";
 import AgentLaunchPrompt from "./agent-launch-prompt";
 import type { ChatTextSelectionReference } from "@/lib/chat-text-selection";
+import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
 import {
   CHAT_NOTIFICATION_OPEN_REQUEST_EVENT,
-  setActiveChatNotificationTarget,
   takeChatNotificationReply,
   type ChatNotificationTarget,
 } from "@/lib/chat-notification-inbox";
+import { useChatNotificationView } from "@/lib/use-chat-notification-view";
 
 type TerminalScope = "mine" | "public";
 
@@ -363,6 +371,9 @@ interface Props {
   drawerSidebarExpanded?: boolean;
   /** A browser text selection can arrive after mount and seed the composer. */
   initialDraft?: string | null;
+  /** Distinguishes two deliberate selections of the same suggested prompt. */
+  initialDraftKey?: number;
+  webSelection?: { requestId: string; reference: ChatTextSelectionReference; conversationId?: string } | null;
   /** The website currently displayed beside the browser Terminal. */
   viewingWebsite?: string | null;
 }
@@ -633,7 +644,7 @@ async function loadRuntimeHealth({
 // Keep the failure actionable and runtime-neutral. Required mode still never
 // silently falls back to the legacy transport.
 const RUNTIME_UNAVAILABLE_MESSAGE =
-  "The agent runtime is temporarily unavailable. Reconnect and try again.";
+  "The assistant is temporarily unavailable. Reconnect and try again.";
 
 // Liquid-glass bar: paused, not removed.
 //
@@ -685,6 +696,8 @@ export default function DashboardAgentTerminal({
   presentation = "dock",
   drawerSidebarExpanded = false,
   initialDraft = null,
+  initialDraftKey,
+  webSelection = null,
   viewingWebsite = null,
 }: Props) {
   const [health, setHealth] = useState<HealthState>({
@@ -776,6 +789,8 @@ export default function DashboardAgentTerminal({
         presentation={presentation}
         drawerSidebarExpanded={drawerSidebarExpanded}
         initialDraft={initialDraft}
+        initialDraftKey={initialDraftKey}
+        webSelection={webSelection}
         viewingWebsite={viewingWebsite}
         runtimeUnavailable={health.status === "unavailable"}
         onRefreshRuntime={refreshRuntimeHealth}
@@ -802,6 +817,8 @@ export default function DashboardAgentTerminal({
         presentation={presentation}
         drawerSidebarExpanded={drawerSidebarExpanded}
         initialDraft={initialDraft}
+        initialDraftKey={initialDraftKey}
+        webSelection={webSelection}
         viewingWebsite={viewingWebsite}
         runtimeUnavailable={health.status === "unavailable"}
         onRefreshRuntime={refreshRuntimeHealth}
@@ -820,6 +837,8 @@ export default function DashboardAgentTerminal({
         presentation={presentation}
         drawerSidebarExpanded={drawerSidebarExpanded}
         initialDraft={initialDraft}
+        initialDraftKey={initialDraftKey}
+        webSelection={webSelection}
         viewingWebsite={viewingWebsite}
         runtimeUnavailable
         onRefreshRuntime={refreshRuntimeHealth}
@@ -834,7 +853,7 @@ export default function DashboardAgentTerminal({
       <KnowledgeTerminal scope={scope} />
       {health.status === "unavailable" ? (
         <div className="pointer-events-none fixed bottom-14 right-3 z-[60] rounded-md border border-amber-700/70 bg-amber-950/80 px-2.5 py-1 text-[11px] text-amber-200 shadow">
-          Agent runtime unavailable — using legacy chat
+          The assistant is unavailable. Switched to basic chat.
         </div>
       ) : null}
     </>
@@ -850,6 +869,8 @@ function RuntimeTerminal({
   presentation = "dock",
   drawerSidebarExpanded = false,
   initialDraft = null,
+  initialDraftKey,
+  webSelection = null,
   viewingWebsite = null,
   runtimeUnavailable = false,
   onRefreshRuntime,
@@ -943,7 +964,7 @@ function RuntimeTerminal({
     if (!next) return;
     setInput(next);
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
-  }, [initialDraft]);
+  }, [initialDraft, initialDraftKey]);
   // A click or keyboard press on the collapsed bar is an intent to start
   // chatting. Remember it across the render that mounts the textarea so focus
   // can follow the dock open instead of remaining on the header.
@@ -962,9 +983,10 @@ function RuntimeTerminal({
   // change until the next tick. Such responses are dropped; a poll dispatched
   // after the settle bump can only see the committed state.
   const historyEpoch = useRef(0);
+  const archivingChatIds = useRef(new Set<string>());
+  const archivedChatIds = useRef(new Set<string>());
   const [refreshingTerminal, setRefreshingTerminal] = useState(false);
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
-  const [extractingAttachments, setExtractingAttachments] = useState(false);
   const [attachmentStatus, setAttachmentStatus] = useState("");
   const [attachingArtifactIds, setAttachingArtifactIds] = useState<Set<string>>(
     () => new Set(),
@@ -1355,12 +1377,21 @@ function RuntimeTerminal({
       title: "New chat",
       temporary: temporaryChat,
       browser: drawerPresentation,
+      concurrentInline: true,
       workspaceSlug: newChatWorkspace?.slug,
       restoreLastConversation: false,
     }),
     [temporaryChat, drawerPresentation, newChatWorkspace],
   );
   const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
+  const { begin: beginAttachmentPreparation, busy: extractingAttachments, error: attachmentUploadError } =
+    useAttachmentPreparation(session.sessionId);
+  const inlineQuestions = useInlineAgentQuestions({
+    sessionId: session.sessionId,
+    messages: session.messages,
+    ensureConversation: session.ensureConversation,
+  });
+  const messages = inlineQuestions.messages;
   const {
     model: selectedModel,
     setModel: setSelectedModel,
@@ -1478,7 +1509,7 @@ function RuntimeTerminal({
       temporaryChat ||
       session.loadingSession ||
       !session.sessionId ||
-      session.messages.length === 0
+      messages.length === 0
     ) {
       return;
     }
@@ -1486,7 +1517,7 @@ function RuntimeTerminal({
       writeActiveTerminalChatSnapshot(
         restoreOwnerKey,
         session.sessionId!,
-        session.messages,
+        messages,
       );
     };
     const timer = window.setTimeout(persist, 150);
@@ -1499,7 +1530,7 @@ function RuntimeTerminal({
     };
   }, [
     session.loadingSession,
-    session.messages,
+    messages,
     session.sessionId,
     restoreOwnerKey,
     temporaryChat,
@@ -1510,14 +1541,14 @@ function RuntimeTerminal({
       !temporaryChat &&
       !session.loadingSession &&
       session.sessionId &&
-      session.messages.length > 0
+      messages.length > 0
         ? {
             ownerKey: restoreOwnerKey,
             sessionId: session.sessionId,
-            messages: session.messages,
+            messages,
           }
         : null;
-  }, [restoreOwnerKey, session.loadingSession, session.messages, session.sessionId, temporaryChat]);
+  }, [restoreOwnerKey, session.loadingSession, messages, session.sessionId, temporaryChat]);
   useEffect(
     () => () => {
       // Client-side route changes unmount the terminal without firing
@@ -1830,7 +1861,7 @@ function RuntimeTerminal({
         signal: historyController.signal,
       })
         .then((sessions) => {
-          if (cancelled || historyEpoch.current !== epoch) return;
+          if (cancelled || historyEpoch.current !== epoch || archivingChatIds.current.size > 0) return;
           // A list that lands clears the note a previous miss left behind.
           setHistoryError((current) =>
             current === HISTORY_REFRESH_FAILED ? null : current,
@@ -1958,14 +1989,9 @@ function RuntimeTerminal({
   // one that lands in a chat the user walked away from.
   const viewingChatId = bodyMounted ? session.sessionId : null;
 
-  useEffect(() => {
-    setActiveChatNotificationTarget(
-      viewingChatId
-        ? { surface: "dashboard_terminal", chatId: viewingChatId }
-        : null,
-    );
-    return () => setActiveChatNotificationTarget(null);
-  }, [viewingChatId]);
+  useChatNotificationView(viewingChatId
+    ? { surface: "dashboard_terminal", chatId: viewingChatId }
+    : null);
 
   // Selecting Agent TARS resolves the browser-operator agent to run against.
   // The runtime, workspace, and secrets stay server-side; we only need its id.
@@ -2447,19 +2473,23 @@ function RuntimeTerminal({
    * cannot read is the failure worth catching early: the clone's environment,
    * and whether this surface actually has material in scope.
    */
-  const selectDeepTutor = useCallback(async () => {
+  const selectDeepTutor = useCallback(async ({ checkHealth = true } = {}) => {
     setAttachmentStatus("");
     try {
-      const response = await fetch("/api/deep-tutor/health");
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.available !== true) {
-        throw new Error(
-          typeof data?.reason === "string"
-            ? data.reason
-            : typeof data?.error === "string"
-              ? data.error
-              : "Deep Tutor is unavailable.",
-        );
+      let scope: { rootCount?: number; label?: string } | undefined;
+      if (checkHealth) {
+        const response = await fetch("/api/deep-tutor/health");
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.available !== true) {
+          throw new Error(
+            typeof data?.reason === "string"
+              ? data.reason
+              : typeof data?.error === "string"
+                ? data.error
+                : "Deep Tutor is unavailable.",
+          );
+        }
+        scope = data.scope;
       }
       const selected = { id: DEEP_TUTOR_AGENT_ID, name: DEEP_TUTOR_AGENT_NAME };
       setBrowserAgent(null);
@@ -2476,9 +2506,7 @@ function RuntimeTerminal({
       clearOpenCode();
       clearRuflo();
       setDeepTutorAgent(selected);
-      const scope = data.scope as
-        { rootCount?: number; label?: string } | undefined;
-      if (!scope?.rootCount) {
+      if (checkHealth && !scope?.rootCount) {
         setAttachmentStatus(
           "Deep Tutor selected, but there are no files in scope here — it will answer from the conversation alone.",
         );
@@ -2983,7 +3011,7 @@ const selectCareerOps = useCallback(async () => {
         setAttachmentStatus(data.reason);
       } else if (data.serviceRunning !== true) {
         setAttachmentStatus(
-          "Stock Analyst selected. Its backend starts with the first question, which takes about a minute.",
+          "Stock Analyst is ready for your question. The first response may take about a minute to start.",
         );
       }
       return selected;
@@ -6481,12 +6509,20 @@ const launchCareerOpsRun = useCallback(
   >([]);
 
   const submit = useCallback(
-    async (textOverride?: string) => {
+    async (textOverride?: string, voice?: import('@/lib/speech/voice-request').VoiceRequestOptions) => {
       // Nothing may be dispatched into a chat that is still arriving -- not a
       // Hermes turn and not one of the runtime-agent launches below, which bind
       // their run to whichever conversation is selected when they start.
       if (session.loadingSession) return;
-      const text = (textOverride ?? input).trim();
+      let text: string;
+      let workflowPlanning: boolean;
+      try {
+        text = normalizeUnifiedWorkflowDispatch((textOverride ?? input).trim());
+        workflowPlanning = Boolean(parseUnifiedWorkflowCommand(text));
+      } catch (error) {
+        setAttachmentStatus(error instanceof Error ? error.message : "This workflow could not be selected.");
+        return;
+      }
       // Only the composer calls this with no override, so this is the one place
       // that knows a human is speaking: it ends whatever hand-off chain was
       // running.
@@ -6510,7 +6546,7 @@ const launchCareerOpsRun = useCallback(
           const response = await fetch("/api/calendar/reminder-requests", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompt: text, model, reasoningEffort }),
+            body: JSON.stringify({ prompt: text, model, reasoningEffort, ...voice }),
           });
           const payload = (await response.json().catch(() => ({}))) as {
             error?: string;
@@ -6530,6 +6566,7 @@ const launchCareerOpsRun = useCallback(
           await session.send(text, {
             model,
             reasoningEffort,
+            ...voice,
             scheduledChatReceipt: receipt,
           });
         } catch (cause) {
@@ -6591,6 +6628,7 @@ const launchCareerOpsRun = useCallback(
           await session.send(text, {
             model,
             reasoningEffort,
+            ...voice,
             scheduledChatReceipt: receipt,
           });
         } catch (cause) {
@@ -6613,12 +6651,15 @@ const launchCareerOpsRun = useCallback(
         text,
         surface: "dashboard_terminal",
         attachmentCount: chatAttachments.length,
-        activeRuntimeAgentId,
+        activeRuntimeAgentId: workflowPlanning ? null : activeRuntimeAgentId,
       });
       if (conflict) {
         setAttachmentStatus(conflict.message);
         return;
       }
+      // A workflow has its own planner; a previously selected specialist must
+      // not consume its request or files before it reaches that planner.
+      if (!workflowPlanning) {
       const codexTask = taskFromCodexCommand(text);
       if (codexTask !== null) {
         if (codex.launching) return;
@@ -6703,12 +6744,15 @@ const launchCareerOpsRun = useCallback(
       const deepTutorTask = taskFromDeepTutorCommand(text);
       if (deepTutorTask !== null) {
         if (launchingDeepTutorRun) return;
-        setInput("");
         setAttachmentStatus("");
+        // A submitted question belongs in the transcript immediately. Let the
+        // run report startup failures there instead of losing it to preflight.
+        if (deepTutorTask) setInput("");
         void (async () => {
-          const selected = deepTutorAgent ?? (await selectDeepTutor());
-          if (selected && deepTutorTask)
-            await launchDeepTutorRun(deepTutorTask, selected);
+          const selected = deepTutorAgent ?? (await selectDeepTutor({ checkHealth: !deepTutorTask }));
+          if (!selected) return;
+          if (deepTutorTask) await launchDeepTutorRun(deepTutorTask, selected);
+          else setInput((current) => current.trim() === text ? "" : current);
         })();
         return;
       }
@@ -6861,7 +6905,7 @@ const careerOpsTask = taskFromCareerOpsCommand(text);
         const commandVideo = videoUseSource(videoUseTask, chatAttachments);
         if (!commandVideo) {
           setAttachmentStatus(
-            "Video Use edits a video you already have. Attach one, paste its link, or open a video artifact and use its studio.",
+            "Attach a video or paste its link to start editing. You can also open a video in the studio.",
           );
           return;
         }
@@ -7123,6 +7167,7 @@ if (careerOpsAgent) {
         void launchVideoUseRun(text, editableVideo, { userContent: text });
         return;
       }
+      }
       if ((!text && chatAttachments.length === 0) || runtimeUnavailable || busy)
         return;
       const pendingAttachments = chatAttachments;
@@ -7144,8 +7189,10 @@ if (careerOpsAgent) {
       setChatAttachments([]);
       setAttachmentStatus("");
       void session.send(displayText, {
-        model,
-        reasoningEffort,
+        model: voice?.model ?? model,
+        reasoningEffort: voice?.reasoningEffort ?? reasoningEffort,
+        browserAccess: voice?.browserAccess,
+        voice: voice?.voice,
         attachments: pendingAttachments,
         onTurnPersisted: (persistedSessionId) => {
           setSubmittedDraft((current) =>
@@ -7818,19 +7865,42 @@ if (careerOpsAgent) {
     sendAgentContinuation,
   ]);
 
+  const boundWebSelection = useRef<string | null>(null);
+  useEffect(() => {
+    const selection = webSelection?.reference;
+    const chatId = session.sessionId;
+    if (!selection?.sourceUrl || !chatId || !messages.some(message => message.textSelection?.id === selection.id)) return;
+    const identity = `${selection.id}:${chatId}`;
+    if (boundWebSelection.current === identity) return;
+    boundWebSelection.current = identity;
+    void sendDesktopTabsCommand({ type: "browser-selection-conversation", id: selection.id, url: selection.sourceUrl, conversationId: chatId })
+      .then(saved => { if (!saved && boundWebSelection.current === identity) boundWebSelection.current = null; });
+  }, [messages, session.sessionId, webSelection]);
+
   const askSelection = useCallback(
-    async (question: string, selection: ChatTextSelectionReference) => {
+    async (question: string, selection: ChatTextSelectionReference, attachments?: readonly ChatAttachment[], voice?: import('@/lib/speech/voice-request').VoiceRequestOptions) => {
       if (runtimeUnavailable) return;
-      const pendingAttachments = chatAttachments;
-      setChatAttachments([]);
-      setAttachmentStatus("");
-      // "Ask here" owns a new inline answer. Finish the response the excerpt
-      // came from first; steering would fold the question into that response
-      // and leave the highlight without its own answer.
+      const pendingAttachments = attachments ? [...attachments] : selection.mode === "inline" ? [] : chatAttachments;
+      if (selection.mode !== "inline") {
+        setChatAttachments([]);
+        setAttachmentStatus("");
+      }
+      // Side questions own their runtime and Stop control. The main chat can
+      // keep responding while the selected excerpt is answered in its popover.
+      if (selection.mode === "inline") {
+        await inlineQuestions.send(question, selection, {
+          model,
+          reasoningEffort,
+          ...voice,
+          attachments: pendingAttachments,
+        });
+        return;
+      }
       if (busy) await session.abort();
       await session.send(question, {
         model,
         reasoningEffort,
+        ...voice,
         attachments: pendingAttachments,
         textSelection: selection,
       });
@@ -7838,6 +7908,7 @@ if (careerOpsAgent) {
     [
       busy,
       chatAttachments,
+      inlineQuestions,
       model,
       reasoningEffort,
       runtimeUnavailable,
@@ -8080,30 +8151,29 @@ if (careerOpsAgent) {
 
   const addAttachmentFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
-    setExtractingAttachments(true);
-    // The add-documents button spins while the read runs, so a status line
-    // saying the same thing only adds noise under the composer. Clear it so a
-    // message from an earlier attachment does not sit there stale.
+    const preparation = beginAttachmentPreparation();
+    let errors: string[] = [];
+    // Clear the previous result before reporting this batch's progress.
     setAttachmentStatus("");
     try {
       const result = await extractChatAttachments(files, {
         allowVideo: true,
-        onStatus: setAttachmentStatus,
+        onStatus: (status) => { if (preparation.isCurrent()) setAttachmentStatus(status); },
       });
+      errors = result.errors;
+      if (!preparation.isCurrent()) return;
       setChatAttachments((current) => [...current, ...result.attachments]);
       setAttachmentStatus([...result.errors, ...result.warnings].join(" · "));
-      // A document too large to paste into every turn is distilled into a
-      // book-to-skill skill now, while the user is still typing, rather than
-      // after they hit send.
-      const distillErrors = await distillAttachments(result.attachments, {
-        onStatus: setAttachmentStatus,
-      });
-      if (distillErrors.length > 0)
-        setAttachmentStatus(distillErrors.join(" · "));
+      // Optional indexing also runs on the turn path. It must not keep an
+      // already uploaded and readable file in the composer's loading state.
+      void distillAttachments(result.attachments).catch(() => undefined);
+    } catch (cause) {
+      errors = [cause instanceof Error ? cause.message : "Could not attach the files."];
+      if (preparation.isCurrent()) setAttachmentStatus(errors.join(" · "));
     } finally {
-      setExtractingAttachments(false);
+      preparation.finish(errors);
     }
-  }, []);
+  }, [beginAttachmentPreparation]);
 
   const toggleArtifactAttachment = useCallback(async (
     artifact: PresentedArtifact,
@@ -8117,7 +8187,8 @@ if (careerOpsAgent) {
     if (!artifact.downloadAvailable || attachingArtifactIds.size > 0) return;
 
     setAttachingArtifactIds(new Set([artifact.id]));
-    setExtractingAttachments(true);
+    const preparation = beginAttachmentPreparation();
+    let errors: string[] = [];
     setAttachmentStatus(`Attaching ${artifact.title}…`);
     try {
       const response = await fetch(artifactUrl(artifact, "download"));
@@ -8134,8 +8205,10 @@ if (careerOpsAgent) {
       });
       const result = await extractChatAttachments([file], {
         allowVideo: true,
-        onStatus: setAttachmentStatus,
+        onStatus: (status) => { if (preparation.isCurrent()) setAttachmentStatus(status); },
       });
+      errors = result.errors;
+      if (!preparation.isCurrent()) return;
       const scoped = result.attachments.map((attachment) => ({
         ...attachment,
         sourceArtifactId: artifact.id,
@@ -8147,21 +8220,15 @@ if (careerOpsAgent) {
         ]);
       }
       setAttachmentStatus([...result.errors, ...result.warnings].join(" · "));
-      const distillErrors = await distillAttachments(scoped, {
-        onStatus: setAttachmentStatus,
-      });
-      if (distillErrors.length > 0) {
-        setAttachmentStatus(distillErrors.join(" · "));
-      }
+      void distillAttachments(scoped).catch(() => undefined);
     } catch (cause) {
-      setAttachmentStatus(
-        cause instanceof Error ? cause.message : `Could not attach ${artifact.title}.`,
-      );
+      errors = [cause instanceof Error ? cause.message : `Could not attach ${artifact.title}.`];
+      if (preparation.isCurrent()) setAttachmentStatus(errors.join(" · "));
     } finally {
       setAttachingArtifactIds(new Set());
-      setExtractingAttachments(false);
+      preparation.finish(errors);
     }
-  }, [attachedArtifactIds, attachingArtifactIds]);
+  }, [attachedArtifactIds, attachingArtifactIds, beginAttachmentPreparation]);
 
   const handleAttachmentInput = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -8407,6 +8474,33 @@ if (careerOpsAgent) {
     startNewSavedChat();
   }
 
+  // Archive optimistically while keeping the selected transcript and its work.
+  async function archiveHistorySession(item: TerminalSidebarChat) {
+    if (archivingChatIds.current.has(item.id)) return;
+    archivingChatIds.current.add(item.id);
+    archivedChatIds.current.add(item.id);
+    historyEpoch.current += 1;
+    setHistoryError(null);
+    const original = history.find((entry) => entry.id === item.id);
+    setHistory((current) => current.filter((entry) => entry.id !== item.id));
+    try {
+      const response = await fetch(`/api/hermes/sessions/${encodeURIComponent(item.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived: true }),
+      });
+      if (!response.ok) throw new Error("This chat could not be archived.");
+    } catch {
+      archivedChatIds.current.delete(item.id);
+      setHistoryError("This chat could not be archived.");
+      if (original) setHistory((current) => current.some((entry) => entry.id === item.id) ? current : [...current, original]);
+    } finally {
+      archivingChatIds.current.delete(item.id);
+      historyEpoch.current += 1;
+      notifyHermesSessionsChanged("garden_chat");
+    }
+  }
+
   // Deleting a chat stops it: the route cancels the turn, the terminal command
   // and any agent run it still has going before it removes the rows. So this no
   // longer refuses while a response is streaming — that was a rule about our
@@ -8421,7 +8515,7 @@ if (careerOpsAgent) {
     const confirmed = await confirm({
       title: "Delete this chat?",
       subject: `“${item.title}”`,
-      body: "Anything it is still running is stopped, and its messages and any artifacts it produced are removed for good.",
+      body: "Stops its active tasks and permanently deletes its messages and generated files.",
       confirmLabel: "Delete chat",
     });
     if (!confirmed) return;
@@ -8461,7 +8555,7 @@ if (careerOpsAgent) {
       title: single ? "Delete this chat?" : `Delete ${items.length} chats?`,
       subject: single ? `“${items[0].title}”` : null,
       body: single
-        ? "Anything it is still running is stopped, and its messages and any artifacts it produced are removed for good."
+        ? "Stops its active tasks and permanently deletes its messages and generated files."
         : "Anything they are still running is stopped, and their messages and any artifacts they produced are removed for good.",
       confirmLabel: single ? "Delete chat" : `Delete ${items.length} chats`,
     });
@@ -8506,6 +8600,7 @@ if (careerOpsAgent) {
     () =>
       history.map((item) => ({
         id: item.id,
+        href: `/dashboard?terminalChat=${encodeURIComponent(item.id)}`,
         title: item.title,
         titlePrefix: item.titlePrefix,
         updatedAt: item.updatedAt,
@@ -8529,7 +8624,8 @@ if (careerOpsAgent) {
       ? PENDING_CHAT_ROW_ID
       : session.sessionId !== null &&
           session.createdSessionId === session.sessionId &&
-          !history.some((item) => item.id === session.sessionId)
+          !history.some((item) => item.id === session.sessionId) &&
+          !archivedChatIds.current.has(session.sessionId)
         ? session.sessionId
         : null
     : null;
@@ -8827,8 +8923,8 @@ if (careerOpsAgent) {
     setIsResizing(true);
     document.body.style.cursor = "var(--bb-cursor-row-resize, row-resize)";
     document.body.style.userSelect = "none";
-    // Only the header toggles on release, so only a press there is worth
-    // prewarming; the thin edge handle above it is always a drag.
+    // The header owns its toggle; the separate border handle owns its click
+    // action and shares these resize callbacks.
     if (isHeader && !isOpen) prewarmOpen();
   }
 
@@ -9007,6 +9103,8 @@ if (careerOpsAgent) {
     : "terminal-boot-reveal";
 
   return (
+    <>
+    <WorkspaceSideChat messages={messages}>
     <section
       ref={dockRef}
       // Positioned against the viewport, so page padding cannot move it: the
@@ -9055,24 +9153,6 @@ if (careerOpsAgent) {
             className="bb-terminal-glass-scene"
           />
         </>
-      ) : null}
-
-      {!drawerPresentation ? (
-        <div
-          onPointerDown={handleResizeStart}
-          onPointerMove={handleResizeMove}
-          onPointerUp={handleResizeEnd}
-          onPointerCancel={handleResizeEnd}
-          className="group absolute inset-x-0 -top-1.5 z-10 flex h-3 cursor-row-resize items-center justify-center"
-        >
-          <span
-            className={`h-1.5 w-14 rounded-full border border-[rgba(169,193,177,0.7)] shadow-[0_1px_4px_rgba(74,91,70,0.10)] transition-colors ${
-              isResizing
-                ? "bg-[#8faf9a]"
-                : "bg-[#A9C1B1] group-hover:bg-[#8faf9a]"
-            }`}
-          />
-        </div>
       ) : null}
 
       <header
@@ -9264,6 +9344,7 @@ if (careerOpsAgent) {
                 )
               }
               onDeleteChat={(chat) => void deleteHistorySession(chat)}
+              onArchiveChat={(chat) => void archiveHistorySession(chat)}
               onDeleteChats={(selected) => void deleteHistorySessions(selected)}
               onHighlightChat={(chat, highlight) =>
                 void patchHistorySession(
@@ -9303,7 +9384,7 @@ if (careerOpsAgent) {
                       ? "Temporary chat can be changed after the current response finishes"
                       : temporaryChat
                         ? "Temporary chat is on — click to leave it. This chat is not in your history and is not used or saved as memory."
-                        : "Temporary chat: start a chat that is kept out of your history and out of memory, both ways"
+                        : "Temporary chats stay out of your history and don’t use or save memory."
                   }
                   aria-label={
                     temporaryChat
@@ -9365,12 +9446,14 @@ if (careerOpsAgent) {
                 </div>
               ) : null}
               <AgentRuntimePanel
+                personalizedSuggestions={scope !== 'public'}
                 starredMessageTarget={starredMessageTarget}
                 compact={drawerPresentation}
                 sessionId={session.sessionId}
                 createdSessionId={session.createdSessionId}
                 surface="dashboard_terminal"
-                messages={session.messages}
+                messages={messages}
+                appendExternalAgentTurn={session.appendExternalAgentTurn}
                 connection={session.connection}
                 runState={session.runState}
                 persistedRunActive={Boolean(session.activeRunId)}
@@ -9396,7 +9479,7 @@ if (careerOpsAgent) {
                     }
                   : null}
                 composerTextareaRef={composerTextareaRef}
-                onSubmit={submit}
+                onSubmit={voice => void submit(undefined, voice)}
                 beforeComposer={
                   agentLaunchQueue.pending || (drawerPresentation && viewingWebsite) ? (
                     <>
@@ -9422,6 +9505,8 @@ if (careerOpsAgent) {
                 }
                 onRunWorkflow={runWorkflowAutomation}
                 onAskSelection={askSelection}
+                onAbortInline={inlineQuestions.stop}
+                webSelection={webSelection}
                 onSteer={steer}
                 steerableRun={Boolean(session.activeRunId) && !runtimeUnavailable}
                 onSendQueued={sendQueued}
@@ -9643,8 +9728,10 @@ onClearCareerOps={() => {
                   setAttachmentStatus("");
                 }}
                 onAddDocuments={() => attachmentInputRef.current?.click()}
+                onOpenGardenChat={openHistorySession}
                 onPasteFiles={addAttachmentFiles}
                 isAddingDocuments={extractingAttachments}
+                attachmentUploadError={attachmentUploadError}
                 attachments={chatAttachments}
                 onRemoveAttachment={removeChatAttachment}
                 onRestoreQueuedAttachments={(attachments) =>
@@ -9691,6 +9778,7 @@ onClearCareerOps={() => {
                         : sidePanel === "hooks"
                           ? "Hooks"
                           : sidePanel === "starred" ? "Starred messages"
+                          : sidePanel === "archived" ? "Archived chats"
                           : "Processes"
                 }
                 defaultWidth={520}
@@ -9716,6 +9804,11 @@ onClearCareerOps={() => {
                   <TerminalScheduledPanel surface="dashboard_terminal" />
                 ) : sidePanel === "hooks" ? (
                   <HooksPanel />
+                ) : sidePanel === "archived" ? (
+                  <ArchivedChatsPanel onOpenChat={(chatId) => {
+                    archivedChatIds.current.add(chatId);
+                    openHistorySession(chatId);
+                  }} />
                 ) : sidePanel === "starred" ? (
                   <StarredMessagesPanel onOpenMessage={(message) => {
                     setStarredMessageTarget({ chatId: message.chatId, messageId: message.messageId, clientMessageId: message.clientMessageId, requestId: Date.now() });
@@ -9754,5 +9847,17 @@ onClearCareerOps={() => {
 
       {confirmDialog}
     </section>
+    </WorkspaceSideChat>
+    {!drawerPresentation ? (
+      <TerminalDockHandle
+        dockStyle={terminalStyle}
+        resizing={isResizing}
+        onOpen={() => toggleDock(true)}
+        onResizeStart={handleResizeStart}
+        onResizeMove={handleResizeMove}
+        onResizeEnd={handleResizeEnd}
+      />
+    ) : null}
+    </>
   );
 }

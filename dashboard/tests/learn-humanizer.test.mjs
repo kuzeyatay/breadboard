@@ -182,6 +182,21 @@ test("Learn restores every original byte when final verification rejects a rewri
   );
 });
 
+test("Learn awaits semantic validation and restores the original when it fails", async () => {
+  settings.setHermesUserSettings(1, { composerSwitches: { learnHumanizerAuto: true } });
+  let reviewed = false;
+  const outcome = await humanizeFinishedLearnBuild({ userId: 1, gardenDir: gardenRoot,
+    validate: async () => {
+      await Promise.resolve();
+      reviewed = true;
+      return { accepted: false, problems: ["The rewrite uses a term before its explanation."] };
+    } });
+  assert.equal(reviewed, true);
+  assert.equal(outcome.adopted, false);
+  assert.equal(outcome.reason, "validation_failed");
+  assert.equal(fs.readFileSync(path.join(gardenRoot, "learning", "01 Intro", "Lesson.md"), "utf8"), PAGE);
+});
+
 test("a completed humanized Learn version can switch back to its saved AI copy", async () => {
   settings.setHermesUserSettings(1, { composerSwitches: { learnHumanizerAuto: true } });
   const versionId = "learning_test_version";

@@ -415,13 +415,17 @@ export async function generateInteractiveVisualizer(input: {
     throw new InteractiveVisualizerInputError(packageProblems.join("; ").slice(0, 1_500));
   }
   const visualizer = visualizerRow(input.artifact.id);
-  const attempt = visualizer.repair_attempt + 1;
+  // The bound is per reasoning turn. A supervised recovery turn may repair the
+  // saved package on the same artifact instead of discarding its plan/history.
+  const priorAttempts = db.prepare(`SELECT COUNT(*) AS count FROM hermes_interactive_visualizer_jobs
+    WHERE artifact_id = ? AND run_id = ?`).get(input.artifact.id, input.context.runId) as { count: number };
+  const attempt = priorAttempts.count + 1;
   const maxAttempts = Math.min(
     INTERACTIVE_VISUALIZER_MAX_REPAIR_ATTEMPTS,
     interactiveVisualizerConfig().maxAttempts,
   );
   if (attempt > maxAttempts) {
-    throw new Error("The bounded repair limit has been exhausted. Start a new visualizer plan.");
+    throw new Error("The repair limit for this turn has been exhausted. Preserve this artifact and its diagnostics for the next recovery turn.");
   }
   const candidateVersion = visualizer.active_version === 0
     ? 1

@@ -232,6 +232,7 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
         : {};
     const preDispatchRecovery = {
       agentMode: rawPreDispatchRecovery.agentMode !== false,
+      ...(rawPreDispatchRecovery.voice === true ? { voice: true } : {}),
       ...(typeof rawPreDispatchRecovery.model === "string"
         ? { model: rawPreDispatchRecovery.model }
         : {}),

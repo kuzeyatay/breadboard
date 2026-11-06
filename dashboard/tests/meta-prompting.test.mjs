@@ -284,53 +284,29 @@ test("the recursion is innate: a misfitting frame is repaired, not reported", ()
 
 // --- composition into every Hermes surface ---------------------------------
 
-test("the meta prompting discipline ships on every surface and mode", () => {
+test("normal chat uses one reasoning contract across surfaces and capability modes", () => {
   for (const surface of ["dashboard_terminal", "garden_chat", "quartz_ai"]) {
     for (const mode of ["knowledge", "technical_read", "scoped_implementation"]) {
-      const system = composeHermesSystemPrompt({
-        surface,
-        decision: decision({ mode }),
-        userText: "hi",
-      });
-      assert.match(
-        system,
-        /# meta_prompting/,
-        `${surface}/${mode} lost the meta prompting discipline`,
-      );
-      assert.doesNotMatch(
-        system,
-        /# meta_prompt\n/,
-        `${surface}/${mode} scaffolded a trivial turn`,
-      );
+      const system = composeHermesSystemPrompt({ surface, decision: decision({mode}), userText: "hi" });
+      assert.match(system, /# Breadboard assistant/);
+      assert.doesNotMatch(system, /# meta_prompt/);
+      assert.match(system, new RegExp(`Mode: ${mode}`));
     }
   }
 });
 
-test("the per-turn scaffold reaches the composed system prompt", () => {
-  const system = composeHermesSystemPrompt({
-    surface: "garden_chat",
-    decision: decision(),
-    userText: "Summarize what my sources say about interleaving and cite the pages.",
-    additional: "# garden_context\nActive garden: study.",
-  });
-  assert.match(system, /# meta_prompt\nTask category: research_synthesis/);
-  // The frame is read after the policy record and before the evidence.
-  assert.ok(
-    system.indexOf("# server_capability_decision") <
-      system.indexOf("# meta_prompt\nTask category"),
-  );
-  assert.ok(
-    system.indexOf("# meta_prompt\nTask category") < system.indexOf("# garden_context"),
-  );
+test("research requests keep evidence and authority without a classified scaffold", () => {
+  const system = composeHermesSystemPrompt({ surface: "garden_chat", decision: decision(),
+    userText: "Summarize my sources", additional: "# garden_context\nActive garden: study." });
+  assert.doesNotMatch(system, /# meta_prompt/);
+  assert.match(system, /Cite sources for sourced claims/);
+  assert.match(system, /Active garden: study/);
+  assert.match(system, /# server_capability_decision/);
 });
 
-test("omitting the turn text degrades to the discipline with no scaffold", () => {
-  const system = composeHermesSystemPrompt({
-    surface: "dashboard_terminal",
-    decision: decision(),
-  });
-  assert.match(system, /# meta_prompting/);
-  assert.doesNotMatch(system, /# meta_prompt\nTask category/);
+test("omitting legacy classification inputs keeps the same shared contract", () => {
+  const base = {surface: "dashboard_terminal", decision: decision()};
+  assert.equal(composeHermesSystemPrompt(base), composeHermesSystemPrompt({...base, userText: "Explain convolution"}));
 });
 
 test("ENABLE_META_PROMPTING=0 removes both halves", () => {

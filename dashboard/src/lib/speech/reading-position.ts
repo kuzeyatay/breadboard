@@ -1,9 +1,9 @@
-/** Locate the spoken script in rendered prose, independently of its height.
- * Voice may read only a prefix of an answer; widgets, tables and code can also
- * occupy several screens without contributing any words to that script.
+/** Locate the spoken script in rendered content, independently of its height.
+ * Voice may read only part of an answer. Code and tables contribute words too,
+ * while controls and embedded widgets must not consume the spoken position.
  */
 export function createReadingPosition(root: HTMLElement, spoken: string): (progress: number) => DOMRect | null {
-  const excluded = '.voice-response-resources, .chat-weather-results, .chat-image-results, .chat-code-block, pre, table, .katex, button, [data-selection-exclude], [aria-hidden="true"]';
+  const excluded = '.voice-response-resources, .chat-weather-results, .chat-image-results, .katex, button, [data-selection-exclude], [aria-hidden="true"]';
   const points: { node: Text; offset: number; length: number }[] = [];
   let rendered = '';
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {

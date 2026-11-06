@@ -1,3 +1,4 @@
+import { parseImageDataUrl } from './image-data-url.ts';
 import {
   isModelAttachmentFormat,
   isModelBlobId,
@@ -73,6 +74,8 @@ export const TERMINAL_ATTACHMENT_ACCEPT =
 interface ChatAttachmentScope {
   /** Automatic reader context, retained for the model but hidden in the chat. */
   context?: 'pdf';
+  /** The page open when Send was pressed, displayed with the saved message. */
+  pdfPage?: { title: string; pageNumber: number };
   /** The artifact row that placed this file in the current composer, if any. */
   sourceArtifactId?: string;
 }
@@ -181,7 +184,7 @@ export type ChatAttachment = ChatAttachmentScope & (
  * `sizeBytes` is the size of the file the user actually picked, recorded so the
  * Uploads list can report it for files whose contents were never retained.
  */
-export type ChatMessageAttachment = Pick<ChatAttachmentScope, 'context'> & (
+export type ChatMessageAttachment = Pick<ChatAttachmentScope, 'context' | 'pdfPage'> & (
   | {
       type: 'file';
       name: string;
@@ -224,6 +227,14 @@ export type ChatMessageAttachment = Pick<ChatAttachmentScope, 'context'> & (
       summary?: DocumentAttachmentSummary;
       figures?: string[];
     });
+
+export function pdfPageAttachmentMetadata(value: unknown): Pick<ChatAttachmentScope, 'pdfPage'> {
+  if (!value || typeof value !== 'object') return {};
+  const page = value as Record<string, unknown>;
+  if (typeof page.title !== 'string' || !page.title.trim() ||
+      typeof page.pageNumber !== 'number' || !Number.isSafeInteger(page.pageNumber) || page.pageNumber < 1) return {};
+  return { pdfPage: { title: page.title.trim().slice(0, 500), pageNumber: page.pageNumber } };
+}
 
 /** Keep automatic reader evidence out of previews and filename fallbacks. */
 export function visibleChatMessageAttachments(
@@ -387,8 +398,6 @@ export function attachmentOrderManifest(
   ].join('\n');
 }
 
-const CHAT_IMAGE_DATA_URL = /^data:image\/(?:jpeg|png|webp|gif);base64,[a-z0-9+/=\s]+$/i;
-
 function safeAttachmentName(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const name = value.trim().replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 240);
@@ -428,8 +437,9 @@ export function chatMessageAttachments(
     const size = {
       ...(sizeBytes === undefined ? {} : { sizeBytes }),
       ...(attachment.context === 'pdf' ? { context: 'pdf' as const } : {}),
+      ...(attachment.context === 'pdf' ? pdfPageAttachmentMetadata(attachment.pdfPage) : {}),
     };
-    if (attachment.type === 'image' && CHAT_IMAGE_DATA_URL.test(attachment.dataUrl)) {
+    if (attachment.type === 'image' && parseImageDataUrl(attachment.dataUrl)) {
       return [{ type: 'image' as const, name, dataUrl: attachment.dataUrl, ...size }];
     }
     if (
@@ -550,7 +560,7 @@ export function reusableChatAttachments(
     if (attachment.type === 'product') {
       return [{ type: 'product' as const, name: attachment.name, product: attachment.product }];
     }
-    if (attachment.type === 'image' && CHAT_IMAGE_DATA_URL.test(attachment.dataUrl)) {
+    if (attachment.type === 'image' && parseImageDataUrl(attachment.dataUrl)) {
       return [{ type: 'image' as const, name: attachment.name, dataUrl: attachment.dataUrl, ...context }];
     }
     if (attachment.type === 'video') {
@@ -658,6 +668,7 @@ export function normalizeChatMessageAttachments(
     const size = {
       ...(sizeBytes === undefined ? {} : { sizeBytes }),
       ...(record.context === 'pdf' ? { context: 'pdf' as const } : {}),
+      ...(record.context === 'pdf' ? pdfPageAttachmentMetadata(record.pdfPage) : {}),
     };
     if (record.type === 'product') {
       const product = normalizeProductAttachment(record.product);
@@ -666,7 +677,7 @@ export function normalizeChatMessageAttachments(
     if (
       record.type === 'image' &&
       typeof record.dataUrl === 'string' &&
-      CHAT_IMAGE_DATA_URL.test(record.dataUrl)
+      parseImageDataUrl(record.dataUrl)
     ) {
       return [{ type: 'image' as const, name, dataUrl: record.dataUrl, ...size }];
     }
@@ -1084,6 +1095,8 @@ export async function attachDocumentFile(
   format: DocumentAttachmentFormat,
   signal?: AbortSignal,
   handwriting = false,
+  ocrPages?: number[],
+  sourceUrl?: string,
 ): Promise<ChatAttachment> {
   if (file.size > MAX_DOCUMENT_ATTACHMENT_BYTES) {
     throw new Error(
@@ -1096,6 +1109,8 @@ export async function attachDocumentFile(
     headers: {
       [DOCUMENT_FILENAME_HEADER]: encodeURIComponent(file.name),
       'X-Document-Handwriting': String(handwriting),
+      ...(ocrPages ? { 'X-PDF-OCR-Pages': JSON.stringify(ocrPages) } : {}),
+      ...(sourceUrl ? { 'X-PDF-Source-Url': sourceUrl } : {}),
       'Content-Type': 'application/octet-stream',
     },
     body: file,
@@ -1236,7 +1251,7 @@ export async function extractChatAttachments(
   files: readonly File[],
   options: {
     allowVideo?: boolean;
-    /** Progress for the one attachment kind whose upload can take minutes. */
+    /** Upload and reading progress, including batches of files. */
     onStatus?: (message: string) => void;
     /** Garden Chat can opt scanned images/documents into handwriting OCR. */
     isHandwriting?: (file: File) => boolean;
@@ -1246,6 +1261,30 @@ export async function extractChatAttachments(
   errors: string[];
   warnings: string[];
 }> {
+  if (files.length > 1) {
+    // A slow PDF must not prevent the other files from starting. Bound the
+    // work so a large drop cannot flood the document reader or the network.
+    const results: Awaited<ReturnType<typeof extractChatAttachments>>[] = new Array(files.length);
+    let next = 0;
+    let completed = 0;
+    const report = () => options.onStatus?.(`Preparing files (${completed}/${files.length})…`);
+    report();
+    await Promise.all(Array.from({ length: Math.min(3, files.length) }, async () => {
+      while (next < files.length) {
+        const index = next++;
+        results[index] = await extractChatAttachments([files[index]], { ...options, onStatus: undefined });
+        completed += 1;
+        report();
+      }
+    }));
+    options.onStatus?.('');
+    // Completion order must not change what "the second file" refers to.
+    return {
+      attachments: results.flatMap(result => result.attachments),
+      errors: results.flatMap(result => result.errors),
+      warnings: results.flatMap(result => result.warnings),
+    };
+  }
   const attachments: ChatAttachment[] = [];
   const errors: string[] = [];
   const warnings: string[] = [];

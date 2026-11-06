@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath } from "./runtime-v2-paths.mjs";
 import {
   createDecipheriv,
   createHash,
@@ -45,12 +46,6 @@ function isRecord(value) {
 function exactRecord(value, keys) {
   return isRecord(value) &&
     Object.keys(value).sort().join(",") === [...keys].sort().join(",");
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function directDirectory(directory, label) {

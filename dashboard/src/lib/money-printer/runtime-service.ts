@@ -1,5 +1,5 @@
 import type { MoneyPrinterService, StartOptions } from "./service.ts";
-import type { MoneyPrinterHealth } from "./runtime.ts";
+import { missingMoneyPrinterInstallation, type MoneyPrinterHealth } from "./runtime.ts";
 import {
   callRuntimeAgentService,
   inspectRuntimeAgentService,
@@ -62,7 +62,7 @@ export function inspectMoneyPrinterRuntime(userId: number) {
   }>;
 }
 
-export function readMoneyPrinterRuntimeStatus(
+export async function readMoneyPrinterRuntimeStatus(
   scope: RuntimeAgentScope,
   refresh = false,
 ): Promise<{
@@ -70,6 +70,8 @@ export function readMoneyPrinterRuntimeStatus(
   service: MoneyPrinterService | null;
   log: string;
 }> {
+  const missing = missingMoneyPrinterInstallation();
+  if (missing) return { availability: missing, service: null, log: "" };
   return withRuntimeAgentServiceLease("money-printer", "authenticated-status", () =>
     callRuntimeAgentService(
       "money-printer",

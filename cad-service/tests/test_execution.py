@@ -214,6 +214,18 @@ class ExecutionTest(unittest.TestCase):
         self.assertAlmostEqual(collisions[0].actual, 2_000.0, places=3)
         self.assertFalse(passed(outcome.result.issues))
 
+    def test_touching_split_faces_are_not_assembly_interference(self):
+        source = (
+            "import cadquery as cq\n"
+            "def build_model(params):\n"
+            "    lower = cq.Workplane('XY').box(20, 20, 10)\n"
+            "    upper = cq.Workplane('XY').box(20, 20, 10).translate((0, 0, 10))\n"
+            "    return {'base': lower, 'cap': upper}\n"
+        )
+        outcome = build(source, expectations={"expectedSolidCount": 2})
+        self.assertTrue(outcome.result.ok, outcome.result.failure)
+        self.assertFalse(any(issue.code == "assembly_interference" for issue in outcome.result.issues))
+
     def test_an_empty_model_is_refused(self):
         outcome = build("def build_model(params):\n    return None\n")
         self.assertFalse(outcome.result.ok)

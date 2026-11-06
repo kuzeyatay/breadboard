@@ -1,4 +1,5 @@
 import { highlightEntries, highlightEntryId, TEXT_HIGHLIGHT_PREFIXES, type HighlightEntry, type HighlightMutation } from "./text-highlight-types.ts";
+import { requestTextHighlightSync } from "./text-highlight-transport.ts";
 
 type Listener = (entries: HighlightEntry[], error: string | null) => void;
 const stores = new Map<string, TextHighlightClient>();
@@ -92,10 +93,7 @@ export class TextHighlightClient {
     // the app closes. The operation receipts make this independent flush safe.
     const body = JSON.stringify({ key: this.key, mutations: [...this.pending.values()] });
     if (new TextEncoder().encode(body).length >= 60_000) return;
-    void fetch(this.endpoint, {
-      method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
-      body, keepalive: true,
-    }).catch(() => { /* The journal retries on the next open. */ });
+    void requestTextHighlightSync(this.endpoint, body, "high").catch(() => { /* The journal retries on the next open. */ });
   };
   private onStorage = (event: StorageEvent) => {
     if (event.key?.startsWith(this.journalPrefix)) void this.flush();
@@ -209,13 +207,7 @@ export class TextHighlightClient {
       }
       try {
         const body = JSON.stringify({ key: this.key, entries, mutations });
-        const response = await fetch(this.endpoint, {
-          method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body,
-          priority: mutations.length || entries.length ? "high" : "low",
-          // Keep ordinary edits alive when the user navigates away immediately.
-          keepalive: new TextEncoder().encode(body).length < 60_000,
-          signal: AbortSignal.timeout(15_000),
-        });
+        const response = await requestTextHighlightSync(this.endpoint, body, mutations.length || entries.length ? "high" : "low");
         const data = await response.json();
         if (!response.ok || !Array.isArray(data.entries) || !Array.isArray(data.acknowledged)) throw new Error("Highlight sync failed");
         for (const id of data.acknowledged as string[]) {

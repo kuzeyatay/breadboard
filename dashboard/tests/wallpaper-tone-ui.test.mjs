@@ -39,6 +39,7 @@ test("greetings follow uploaded and Pixabay images across theme changes, reloads
       import React, { StrictMode } from 'react';
       import { createRoot } from 'react-dom/client';
       import { usePageAppearance } from './src/app/components/use-page-appearance';
+      import PageAppearance from './src/app/components/page-appearance';
       import { APP_THEME_CHANGE_EVENT } from './src/lib/app-theme';
       import { AnimatedBrowserGreeting, BrowserQuickLinks } from './src/app/browser/browser-home-widgets';
       import NewTabGreeting from './src/app/new-tab/new-tab-greeting';
@@ -47,6 +48,7 @@ test("greetings follow uploaded and Pixabay images across theme changes, reloads
         const page = new URLSearchParams(location.search).get('surface') || 'browser';
         const appearance = usePageAppearance('contrast-qa', page);
         const personalization = appearance;
+        const hasNativePage = false;
         const backgroundImage = appearance.wallpaper?.src;
         window.choose = value => appearance.save({background: {theme: appearance.theme, value}});
         window.setTheme = theme => {
@@ -54,6 +56,10 @@ test("greetings follow uploaded and Pixabay images across theme changes, reloads
           document.documentElement.dataset.theme = theme;
           window.dispatchEvent(new Event(APP_THEME_CHANGE_EVENT));
         };
+        if (new URLSearchParams(location.search).has('picker')) return <>
+          <output data-testid="background">{backgroundImage || ''}</output>
+          <PageAppearance page={page} ownerKey="contrast-qa" initialOpen />
+        </>;
         return page === 'browser' ? ${browserMain}
           <div className="browser-start-copy">
             <AnimatedBrowserGreeting greeting={{lead: 'Happy Sunday', question: 'What are you trying to work out?'}} />
@@ -72,7 +78,27 @@ test("greetings follow uploaded and Pixabay images across theme changes, reloads
   const globals = fs.readFileSync(path.join(root, "src/app/globals.css"), "utf8").replace(/^@import[^;]+;/gm, "");
   const scripts = bundle.outputFiles.find(file => file.path.endsWith(".js")).text;
   const modules = bundle.outputFiles.find(file => file.path.endsWith(".css")).text;
-  const server = http.createServer((request, response) => {
+  const saved = new Map();
+  const handler = async (request, response) => {
+    const preset = new URL(request.url, 'http://localhost').pathname.match(/^\/browser-wallpapers\/((?:thumbnails\/)?[a-z-]+\.webp)$/)?.[1];
+    if (preset) {
+      response.setHeader('Content-Type', 'image/webp');
+      return response.end(fs.readFileSync(path.join(root, 'public/browser-wallpapers', preset)));
+    }
+    if (request.url.startsWith('/api/profile/page-appearance?')) {
+      const page = new URL(request.url, 'http://localhost').searchParams.get('page');
+      response.setHeader('Content-Type', 'application/json');
+      if (request.method === 'PATCH') {
+        const chunks = [];
+        for await (const chunk of request) chunks.push(chunk);
+        const body = JSON.parse(Buffer.concat(chunks).toString());
+        const preferences = saved.get(page) || {};
+        if (!body.onlyIfMissing || !preferences[body.theme]) preferences[body.theme] = body.value;
+        saved.set(page, preferences);
+        response.end(JSON.stringify({ value: preferences[body.theme] }));
+      } else response.end(JSON.stringify({ preferences: saved.get(page) || {} }));
+      return;
+    }
     const isScript = request.url === "/fixture.js";
     response.setHeader("Content-Type", isScript ? "text/javascript" : "text/html");
     response.end(isScript ? scripts : `<!doctype html><html data-theme="light"><head><style>${globals}\n${modules}
@@ -80,7 +106,8 @@ test("greetings follow uploaded and Pixabay images across theme changes, reloads
       body { margin: 0; } #root { display: flex; height: 100vh; } main { width: 100%; }
       .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
       </style></head><body><div id="root"></div><script src="/fixture.js"></script></body></html>`);
-  });
+  };
+  const server = http.createServer(handler);
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const executablePath = ["C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "C:/Program Files/Microsoft/Edge/Application/msedge.exe", "/usr/bin/chromium"].find(fs.existsSync);
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
@@ -110,7 +137,7 @@ test("greetings follow uploaded and Pixabay images across theme changes, reloads
     const question = page.locator(".browser-greeting p");
     if (await question.count()) assert.equal(await question.evaluate(el => getComputedStyle(el).color), expected);
     const addressee = page.locator('[class*="addressee"]');
-    if (await addressee.count()) assert.equal(await addressee.evaluate(el => getComputedStyle(el).color), expected);
+    if (await addressee.count()) assert.equal(await addressee.evaluate(el => getComputedStyle(el).color), tone === "dark" ? "rgb(154, 198, 172)" : "rgb(106, 141, 117)");
   };
   for (const surface of ["browser", "new-tab"]) {
     await page.goto(`${base}?surface=${surface}`);
@@ -149,5 +176,51 @@ test("greetings follow uploaded and Pixabay images across theme changes, reloads
     // Corrupt photos retain a usable fallback and never throw into React.
     await choose("data:image/png;base64,YnJva2Vu"); await check("light");
   }
+  // Exercise the actual upload control, then change origins as the desktop
+  // does on restart: the new origin has no localStorage to fall back to.
+  await page.goto(`${base}?surface=new-tab&picker=1`);
+  assert.equal(await page.getByRole('group', { name: 'Page to customize', exact: true }).count(), 0);
+  const generated = page.locator('.browser-wallpaper-thumbnail img');
+  assert.equal(await generated.count(), 6);
+  await page.waitForFunction(() => [...document.querySelectorAll('.browser-wallpaper-thumbnail img')].every(image => image.complete && image.naturalWidth > 0));
+  await page.getByRole('button', { name: 'Alpine dawn, Places', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="background"]')?.textContent === '/browser-wallpapers/alpine-dawn.webp');
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('[data-testid="background"]')?.textContent === '/browser-wallpapers/alpine-dawn.webp');
+  assert.equal(await page.getByRole('button', { name: 'Alpine dawn, Places', exact: true }).getAttribute('aria-pressed'), 'true');
+  // Failed image requests leave the working background in place and can retry.
+  await page.route('**/browser-wallpapers/moonlit-coast.webp', route => route.fulfill({status:503, body:'unavailable'}));
+  await page.reload();
+  await page.waitForFunction(() => {
+    const image = document.querySelector('.browser-wallpaper-thumbnail img[src$="moonlit-coast.webp"]');
+    return image?.complete && image.naturalWidth > 0; // Preview remains usable when the full image fails.
+  });
+  await page.getByRole('button', { name: 'Moonlit coast, Places', exact: true }).click();
+  await page.getByRole('alert').filter({hasText:'Couldn’t load that image'}).waitFor();
+  assert.equal(await page.getByTestId('background').textContent(), '/browser-wallpapers/alpine-dawn.webp');
+  await page.unroute('**/browser-wallpapers/moonlit-coast.webp');
+  await page.getByRole('button', { name: 'Moonlit coast, Places', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="background"]')?.textContent === '/browser-wallpapers/moonlit-coast.webp');
+  await Promise.all([
+    page.waitForResponse(response => response.url().includes('/api/profile/page-appearance') && response.request().method() === 'PATCH'),
+    page.getByLabel('Upload background image', { exact: true }).setInputFiles({ name: 'night.webp', mimeType: 'image/webp', buffer: darkPhoto }),
+  ]);
+  await page.waitForFunction(() => document.querySelector('[data-testid="background"]')?.textContent.startsWith('data:image/'));
+  await page.waitForFunction(() => !document.querySelector('[aria-busy="true"]'));
+  const uploaded = await page.getByTestId('background').textContent();
+  assert.equal(saved.get('new-tab').light.background, uploaded);
+  const restartedServer = http.createServer(handler);
+  await new Promise(resolve => restartedServer.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => restartedServer.close(resolve)));
+  await page.goto(`http://127.0.0.1:${restartedServer.address().port}?surface=new-tab&picker=1`);
+  await page.waitForFunction(image => document.querySelector('[data-testid="background"]')?.textContent === image, uploaded);
+  assert.equal(await page.getByRole('img', { name: 'Your uploaded background' }).count(), 1);
+  await Promise.all([
+    page.waitForResponse(response => response.url().includes('/api/profile/page-appearance') && response.request().method() === 'PATCH'),
+    page.getByRole('button', { name: 'Remove uploaded image', exact: true }).click(),
+  ]);
+  await page.waitForFunction(() => document.querySelector('[data-testid="background"]')?.textContent === '');
+  await page.reload();
+  assert.equal(await page.getByRole('img', { name: 'Your uploaded background' }).count(), 0);
   assert.deepEqual(errors, []);
 });

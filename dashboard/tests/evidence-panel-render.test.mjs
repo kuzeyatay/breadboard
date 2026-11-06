@@ -103,7 +103,7 @@ test("explanation review outcomes remain distinct from factual verification", ()
     coverage: [{ id: "m1", status: "missing", quotes: [], reason: "The initiating interaction was missing.", consequence: "The reader could infer the wrong order." }],
   };
   const repaired = render(summary({ explanationReview: review }));
-  assert.match(repaired, /Explanation coverage/);
+  assert.match(repaired, /Explanation review/);
   assert.match(repaired, /Addressed:/);
   assert.match(repaired, /not independent factual verification/);
   const unavailable = render(summary({ explanationReview: { ...review, status: "unavailable", reason: "Review timed out; draft retained." } }));
@@ -111,7 +111,7 @@ test("explanation review outcomes remain distinct from factual verification", ()
   assert.match(unavailable, /Review concern:/);
   const rejected = render(summary({ explanationReview: { ...review, status: "unavailable", repairConcerns: [{ quotes: ["Wrong direction."], reason: "The revision reversed the field direction." }] } }));
   assert.match(rejected, /Rejected repair: The revision reversed the field direction/);
-  assert.doesNotMatch(render(summary()), /Explanation coverage/);
+  assert.doesNotMatch(render(summary()), /Explanation review/);
 });
 
 test("delegated runtime agents appear in the ledger", () => {
@@ -412,7 +412,7 @@ test("an automatically selected skill is named, with the reason it fired", () =>
       },
     }),
   );
-  assert.match(markup, /Capabilities used/);
+  assert.match(markup, /Capabilities for this response/);
   assert.match(markup, /Watch/);
   assert.match(markup, /selected automatically/);
   assert.match(markup, /The message linked a video\./);
@@ -428,6 +428,16 @@ test("an automatically selected skill is named, with the reason it fired", () =>
 // Super agent alone no longer opens the section: with the inventory line gone
 // there is nothing left to say about a turn that used none of what it was
 // offered, and a bare heading reads as a claim that something is missing.
+test("instruction loading and historical selection remain distinct in evidence", () => {
+  const markup = render(summary({ capabilities: { superAgent: false, used: [
+    { kind: "skill", id: "writing", label: "Writing", selection: "requested", guidanceLoaded: true, calls: 0, failures: 0 },
+    { kind: "skill", id: "old", label: "Old selection", selection: "requested", calls: 0, failures: 0 },
+  ] } }));
+  assert.match(markup, /instructions loaded/);
+  assert.match(markup, /use not recorded/);
+  assert.doesNotMatch(markup, /not used/);
+});
+
 test("super agent with nothing used shows no capabilities section", () => {
   const markup = render(
     summary({
@@ -438,7 +448,7 @@ test("super agent with nothing used shows no capabilities section", () => {
       },
     }),
   );
-  assert.doesNotMatch(markup, /Capabilities used/);
+  assert.doesNotMatch(markup, /Capabilities for this response/);
   assert.doesNotMatch(markup, /Super agent/);
   assert.doesNotMatch(markup, /24 skills/);
 });
@@ -471,7 +481,7 @@ test("a carried delegation names the agent the answer came from", () => {
   assert.match(markup, /Answered by Deep Research/);
   assert.doesNotMatch(markup, /No external verification needed/);
   assert.doesNotMatch(markup, /delegated/);
-  assert.match(markup, /the work was done by the runtime agent below/);
+  assert.match(markup, /See the agent’s activity below for the tools used\./);
   assert.doesNotMatch(
     markup,
     /No external tool evidence was recorded for this answer/,
@@ -517,10 +527,10 @@ test("connections and automations are reported beside skills", () => {
 test("a turn that used no capability renders no capability section", () => {
   // A heading followed by a denial is two lines spent saying nothing happened.
   const empty = render(summary({ capabilities: { superAgent: false, used: [] } }));
-  assert.doesNotMatch(empty, /Capabilities used/);
+  assert.doesNotMatch(empty, /Capabilities for this response/);
   assert.doesNotMatch(empty, /No skill, connection or automation was used/);
   // Same for a summary persisted before capabilities were recorded at all.
-  assert.doesNotMatch(render(summary()), /Capabilities used/);
+  assert.doesNotMatch(render(summary()), /Capabilities for this response/);
 });
 
 test("renders web search results with search query and extracted websites from details.result", () => {

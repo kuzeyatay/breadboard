@@ -43,7 +43,7 @@ test("sent user messages expose copy and pencil actions only on hover or focus",
 
 test("editing a sent message creates and persists switchable transcript variants", () => {
   assert.match(branchHelpers, /ConversationBranchGroup/);
-  assert.match(runtimePanel, /BRANCH_STORAGE_PREFIX/);
+  assert.match(runtimePanel, /saveConversationBranches/);
   assert.match(branchHelpers, /variants\.push\(variant\)/);
   assert.match(runtimePanel, /createConversationBranch\(/);
   assert.match(runtimePanel, /onEditMessage\(messageIndex, text, branch\.groupId\)/);

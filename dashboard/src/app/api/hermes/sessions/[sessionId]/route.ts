@@ -14,6 +14,7 @@ import {
   renameConversation,
   setConversationHighlight,
   setConversationPinned,
+  setConversationArchived,
 } from "@/lib/conversations/store.ts";
 import { HERMES_SURFACES, type HermesSurface } from "@/lib/hermes/config.ts";
 import { presentHermesSessionDetail } from "@/lib/hermes/session-presentation.ts";
@@ -26,6 +27,8 @@ import {
 import { cancelRuntimeSessionWork } from "@/lib/hermes/session-cancel.ts";
 import { cancelRunningExternalAgentRuns } from "@/lib/conversations/external-agent-cancel.ts";
 import { reconcileMaxResearchConversation } from "@/lib/max-research/conversation-persistence.ts";
+import { requireSameOrigin } from "@/lib/request-origin";
+import { sideChatHasStars } from "@/lib/starred-messages-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -58,11 +61,10 @@ export async function GET(
 }
 
 /**
- * PATCH: rename, pin or highlight one chat.
+ * PATCH: rename, pin, highlight or archive one chat.
  *
- * All three are sidebar affordances, so all three stay deliberately small: a
- * rename never touches the transcript, and pinning and highlighting are marks
- * on the row that do not count as activity. None reaches the agent runtime.
+ * These sidebar changes never touch the transcript or reach the agent runtime.
+ * Pinning, highlighting and archiving do not count as chat activity.
  */
 export async function PATCH(
   request: Request,
@@ -74,6 +76,13 @@ export async function PATCH(
     const { sessionId } = await params;
     const body = await readJsonBody(request);
     let conversation = getConversationForUser(sessionId, userId);
+
+    if (body.archived !== undefined) {
+      if (typeof body.archived !== "boolean") {
+        throw new ApiError(400, "invalid_archived", "Archived must be true or false.");
+      }
+      conversation = setConversationArchived(conversation, body.archived);
+    }
 
     if (body.title !== undefined) {
       const title = typeof body.title === "string" ? body.title.trim() : "";
@@ -128,7 +137,7 @@ export async function PATCH(
  * ON DELETE SET NULL, so the record that work happened survives the chat.
  */
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
   try {
@@ -136,6 +145,13 @@ export async function DELETE(
     requireEnabled();
     const { sessionId } = await params;
     const conversation = getConversationForUser(sessionId, userId);
+    const discardSideChat = new URL(request.url).searchParams.get("discardSideChat") === "1";
+    if (discardSideChat) {
+      requireSameOrigin(request, "This origin cannot close side chats.");
+      if (conversation.origin_label !== "Side chat" || conversation.temporary !== 1) {
+        throw new ApiError(400, "not_side_chat", "Only a temporary side chat can be discarded this way.");
+      }
+    }
     const runtimeSessions = listRuntimeSessionsForConversation(conversation.id);
 
     // Agent runs are found by reading the transcript, so this has to happen
@@ -149,7 +165,7 @@ export async function DELETE(
 
     for (const runtimeSession of runtimeSessions) {
       recordAuditEvent({
-        eventType: "conversation.deleted",
+        eventType: discardSideChat ? "conversation.side_chat_closed" : "conversation.deleted",
         runtimeSessionId: runtimeSession.id,
         userId,
         gardenId: runtimeSession.garden_id,
@@ -165,15 +181,18 @@ export async function DELETE(
     // takes the messages, memory state and artifacts. The runtime-session rows
     // only reference it with ON DELETE SET NULL, so they have to be removed by
     // id or they linger forever with a null conversation.
-    db.transaction(() => {
+    const retained = db.transaction(() => {
+      if (discardSideChat && sideChatHasStars(db, userId, conversation.id)) return true;
       deleteConversation(conversation);
       for (const runtimeSession of runtimeSessions) {
         deleteRuntimeSession(runtimeSession.id);
       }
+      return false;
     })();
 
     return NextResponse.json({
-      deleted: true,
+      deleted: !retained,
+      retained,
       id: sessionId,
       cancelled: {
         runs: cancelledRunIds.length,

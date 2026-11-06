@@ -24,7 +24,7 @@ const {
   pathToFileURL(path.join(sourceRoot, "lib", "knowledge.ts")).href
 );
 
-function writeLegacyIngestSection(clusterDir) {
+function writeLegacyIngestSection(clusterDir, { empty = false } = {}) {
   const sectionDir = path.join(clusterDir, "1. legacy-source-material");
   fs.mkdirSync(sectionDir, { recursive: true });
   const files = new Map([
@@ -60,6 +60,7 @@ Grounded legacy concept body.
 `,
     ],
   ]);
+  if (empty) files.delete("legacy-concept.md");
   for (const [name, content] of files) {
     fs.writeFileSync(path.join(sectionDir, name), content, "utf8");
   }
@@ -301,56 +302,120 @@ test("legacy hidden ingestion sections migrate into Concepts and roll back atomi
   }
 });
 
-test("document ingestion migrates legacy sections before choosing its next Concepts number", async () => {
+test("index-only legacy ingestion sections migrate into Concepts and roll back atomically", () => {
   const fixture = createGardenFixture();
-  const legacy = writeLegacyIngestSection(fixture.clusterDir);
-  const beforeFiles = listFiles(fixture.clusterDir);
-  const beforeContent = new Map(
-    beforeFiles.map((relativePath) => [
-      relativePath,
-      fs.readFileSync(
-        path.join(fixture.clusterDir, ...relativePath.split("/")),
-        "utf8",
-      ),
-    ]),
-  );
+  const legacy = writeLegacyIngestSection(fixture.clusterDir, { empty: true });
   try {
-    const transaction = createKnowledgeWriteTransaction(
-      fixture.contentPath,
-      fixture.clusterSlug,
+    const inspection = migrateLegacyIngestSectionsToConcepts(
+      fixture.contentPath, fixture.clusterSlug, { apply: false },
     );
-    await writeFixtureKnowledge(fixture, {
-      knowledgeWriteTransaction: transaction,
-    });
+    assert.equal(inspection.detectedSections, 1);
+    assert.equal(inspection.detectedPages, 0);
+    assert.equal(fs.existsSync(legacy.sectionDir), true);
 
+    const transaction = createKnowledgeWriteTransaction(fixture.contentPath, fixture.clusterSlug);
+    const migration = migrateLegacyIngestSectionsToConcepts(
+      fixture.contentPath, fixture.clusterSlug, { transaction },
+    );
+    assert.equal(migration.migratedSections, 1);
+    assert.equal(migration.migratedPages, 0);
     assert.equal(fs.existsSync(legacy.sectionDir), false);
-    const conceptSections = fs
-      .readdirSync(path.join(fixture.clusterDir, "Concepts"), {
-        withFileTypes: true,
-      })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort();
-    assert.deepEqual(conceptSections, [
-      "1. legacy-source-material",
-      "2. new-course-material",
-    ]);
+    const index = fs.readFileSync(path.join(
+      fixture.clusterDir, "Concepts", "1. legacy-source-material", "_index.md",
+    ), "utf8");
+    assert.match(index, /knowledge_type: "concept-section"/);
+    assert.match(index, /source_document: "legacy-source"/);
+    assert.match(index, /No concepts were extracted from this document/);
+    assert.match(fs.readFileSync(path.join(fixture.clusterDir, "Concepts", "_index.md"), "utf8"),
+      /\[\[Concepts\/1\. legacy-source-material\/_index\|1\. Legacy Source Material\]\]/);
+    assert.equal(migrateLegacyIngestSectionsToConcepts(
+      fixture.contentPath, fixture.clusterSlug, { apply: false },
+    ).detectedSections, 0);
 
     transaction.rollback();
-    assert.deepEqual(listFiles(fixture.clusterDir), beforeFiles);
-    for (const [relativePath, content] of beforeContent) {
-      assert.equal(
-        fs.readFileSync(
-          path.join(fixture.clusterDir, ...relativePath.split("/")),
-          "utf8",
-        ),
-        content,
-      );
-    }
+    assert.equal(fs.readFileSync(path.join(legacy.sectionDir, "_index.md"), "utf8"),
+      legacy.files.get("_index.md"));
+    assert.equal(fs.existsSync(path.join(fixture.clusterDir, "Concepts")), false);
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }
 });
+
+test("index-only migration leaves Learn and user folders untouched", () => {
+  const fixture = createGardenFixture();
+  const legacy = writeLegacyIngestSection(fixture.clusterDir, { empty: true });
+  const indexPath = path.join(legacy.sectionDir, "_index.md");
+  const original = legacy.files.get("_index.md");
+  try {
+    for (const content of [
+      original.replace('internal: "true"', 'internal: "true"\ngenerated_by: "learn_button"'),
+      original.replace('internal: "true"\n', ""),
+      original.replace('source_document: "legacy-source"\n', ""),
+      original.replace('knowledge_type: "learning-section"', 'knowledge_type: "folder"'),
+    ]) {
+      fs.writeFileSync(indexPath, content);
+      const result = migrateLegacyIngestSectionsToConcepts(fixture.contentPath, fixture.clusterSlug);
+      assert.equal(result.detectedSections, 0);
+      assert.equal(fs.readFileSync(indexPath, "utf8"), content);
+    }
+    assert.equal(fs.existsSync(path.join(fixture.clusterDir, "Concepts")), false);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+for (const empty of [false, true]) {
+  test(`document ingestion migrates ${empty ? "index-only" : "populated"} legacy sections before choosing its next Concepts number`, async () => {
+    const fixture = createGardenFixture();
+    const legacy = writeLegacyIngestSection(fixture.clusterDir, { empty });
+    const beforeFiles = listFiles(fixture.clusterDir);
+    const beforeContent = new Map(
+      beforeFiles.map((relativePath) => [
+        relativePath,
+        fs.readFileSync(
+          path.join(fixture.clusterDir, ...relativePath.split("/")),
+          "utf8",
+        ),
+      ]),
+    );
+    try {
+      const transaction = createKnowledgeWriteTransaction(
+        fixture.contentPath,
+        fixture.clusterSlug,
+      );
+      await writeFixtureKnowledge(fixture, {
+        knowledgeWriteTransaction: transaction,
+      });
+
+      assert.equal(fs.existsSync(legacy.sectionDir), false);
+      const conceptSections = fs
+        .readdirSync(path.join(fixture.clusterDir, "Concepts"), {
+          withFileTypes: true,
+        })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort();
+      assert.deepEqual(conceptSections, [
+        "1. legacy-source-material",
+        "2. new-course-material",
+      ]);
+
+      transaction.rollback();
+      assert.deepEqual(listFiles(fixture.clusterDir), beforeFiles);
+      for (const [relativePath, content] of beforeContent) {
+        assert.equal(
+          fs.readFileSync(
+            path.join(fixture.clusterDir, ...relativePath.split("/")),
+            "utf8",
+          ),
+          content,
+        );
+      }
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("captured URL figures are written and rolled back with their source", async () => {
   const fixture = createGardenFixture();

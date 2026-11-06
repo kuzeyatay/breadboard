@@ -11,6 +11,7 @@ import {
   validatePublicWatchUrl,
   validateWatchExecutionScope,
   validateWatchRequest,
+  watchAnalysisText,
 } from "../scripts/runtime-v2-watch-executor.mjs";
 
 function request(overrides = {}) {
@@ -37,7 +38,7 @@ function request(overrides = {}) {
   };
 }
 
-function fixture() {
+function fixture({ withFrames = true } = {}) {
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-watch-worker-"));
   const workspacePath = path.join(dataRoot, "runtime", "jobs", "job_watch", "attempts",
     "1", "worker_watch", "workspace");
@@ -58,7 +59,7 @@ function fixture() {
     'console.log("# watch: video report");',
     'console.log("- **Source:** " + source);',
     'console.log("- **Title:** " + path.basename(source));',
-    'console.log("- `" + frame + "` (t=00:01, reason=selected)");',
+    ...(withFrames ? ['console.log("- `" + frame + "` (t=00:01, reason=selected)");'] : []),
     'console.log("## Transcript\\n\\n[00:00] hello");',
   ].join("\n"));
   const inputPath = path.join(dataRoot, "runtime", "jobs", "job_watch", "inputs", "input", "payload");
@@ -212,8 +213,11 @@ test("Watch rejects a runtime reached through a directory junction", { skip: pro
   }
 });
 
-test("Watch worker sends frame bytes only over sealed internal ChatMock access", async () => {
+for (const detail of ["efficient", "transcript"]) {
+test(`Watch worker analyzes requested frames over sealed internal ChatMock access (${detail})`, async () => {
   const value = fixture();
+  value.launch.request.options.detail = detail;
+  value.launch.request.options.timestamps = ["00:01"];
   let requestBody;
   const server = createServer((request, response) => {
     const chunks = [];
@@ -249,6 +253,9 @@ test("Watch worker sends frame bytes only over sealed internal ChatMock access",
     // garden video was ever actually analyzed.
     assert.equal(requestBody.input[0].type, "message");
     assert.equal(requestBody.input[0].role, "user");
+    const analysisText = requestBody.input[0].content[0].text;
+    assert.match(analysisText, /do not conclude that the whole video does not say it/);
+    assert.match(analysisText, /not independent verification of a causal mechanism/);
     assert.ok(requestBody.input[0].content.some((part) =>
       part.type === "input_image" && part.image_url.startsWith("data:image/jpeg;base64,")));
     assert.match(result.chatmockAnalysis, /interface changes/);
@@ -258,6 +265,68 @@ test("Watch worker sends frame bytes only over sealed internal ChatMock access",
     await new Promise((resolve) => server.close(resolve));
     cleanup(value);
   }
+});
+}
+
+for (const configured of [false, true]) {
+test(`Watch returns caption-only evidence without a second model call (ChatMock configured: ${configured})`, async () => {
+  const value = fixture({ withFrames: false });
+  value.launch.request.options.detail = "transcript";
+  value.launch.request.options.question = "Give me the transcript of my recording.";
+  let modelCalls = 0;
+  const server = createServer((_request, response) => {
+    modelCalls += 1;
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ output_text: "Unnecessary second analysis." }));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const result = await executeWatch(value.launch, new AbortController().signal, {}, value.inputPath, {
+      env: {
+        ...value.env,
+        ...(configured ? { CHATMOCK_BASE_URL: `http://127.0.0.1:${server.address().port}/v1` } : {}),
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(modelCalls, 0);
+    assert.equal(result.frameCount, 0);
+    assert.equal(result.analyzedFrameCount, 0);
+    assert.equal(result.chatmockAnalysis, null);
+    assert.equal(result.chatmockWarning, null);
+    const report = fs.readFileSync(path.join(value.dataRoot, result.reportRelativePath), "utf8");
+    assert.match(report, /## Transcript\s+\[00:00\] hello/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    cleanup(value);
+  }
+});
+}
+
+test("Watch preserves full transcript context when the model focuses an early interval", async () => {
+  const value = fixture();
+  const runner = path.join(value.env.BREADBOARD_WATCH_ROOT, "scripts", "watch.py");
+  // The fake process models a caption available outside the requested frames.
+  fs.appendFileSync(runner, '\nif (process.argv.includes("--full-transcript")) console.log("[08:46] The font experiment.");\n');
+  value.launch.request.options.start = "00:55";
+  value.launch.request.options.end = "02:30";
+  try {
+    const result = await executeWatch(value.launch, new AbortController().signal, {}, value.inputPath, { env: value.env });
+    const report = fs.readFileSync(path.join(value.dataRoot, result.reportRelativePath), "utf8");
+    assert.match(report, /\[08:46\] The font experiment\./);
+    assert.match(watchAnalysisText("Would this help a textbook chapter?", report), /\[08:46\] The font experiment\./);
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("Watch analysis discloses truncation before a full-transcript header", () => {
+  const report = "**Transcript coverage:** Full available transcript\n" + "x".repeat(180_000) + "[90:00] Omitted evidence";
+  const prompt = watchAnalysisText("Explain the experiment", report);
+  assert.ok(prompt.indexOf("COVERAGE LIMIT:") < prompt.indexOf("**Transcript coverage:**"));
+  assert.match(prompt, /full-transcript label describes the stored report, not this excerpt/);
+  assert.match(prompt, /remaining report omitted; coverage is partial/);
+  assert.doesNotMatch(prompt, /\[90:00\] Omitted evidence/);
+  assert.doesNotMatch(watchAnalysisText("Explain", "[00:01] Complete evidence"), /COVERAGE LIMIT:|remaining report omitted/);
 });
 
 test("Watch worker cancellation terminates the media child", async () => {

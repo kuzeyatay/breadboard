@@ -17,7 +17,7 @@ export const runtime = "nodejs";
 
 const MAX_PDF_BYTES = 128 * 1024 * 1024;
 
-type PdfMarkdownDocument = { content: string; title: string };
+type PdfMarkdownDocument = { content: string; title: string; slug?: string; folderTitle?: string };
 
 function sanitizeFileName(value: string): string {
   const base = value
@@ -155,7 +155,7 @@ export async function POST(request: Request): Promise<Response> {
 
   const documents: PdfMarkdownDocument[] = rawDocuments
     .filter(
-      (document: unknown): document is { content: string; title?: string } =>
+      (document: unknown): document is { content: string; title?: string; slug?: string; folderTitle?: string } =>
         Boolean(
           document &&
             typeof document === "object" &&
@@ -165,19 +165,27 @@ export async function POST(request: Request): Promise<Response> {
     .map((document) => {
       const parsed = parseMarkdownFrontmatter(document.content);
       return {
+        ...(typeof document.slug === "string" ? { slug: document.slug } : {}),
+        ...(typeof document.folderTitle === "string" && document.folderTitle.trim()
+          ? { folderTitle: document.folderTitle.trim() }
+          : typeof body.folderTitle === "string" && body.folderTitle.trim()
+            ? { folderTitle: body.folderTitle.trim() } : {}),
         content: parsed.body,
-        title:
+        title: parsed.title || (
           typeof document.title === "string" && document.title.trim()
             ? document.title.trim()
-            : parsed.title || "Markdown note",
+            : "Markdown note"),
       };
     });
 
   if (documents.length === 0 && rawContent.trim()) {
     const parsed = parseMarkdownFrontmatter(rawContent);
     documents.push({
+      ...(typeof body.slug === "string" ? { slug: body.slug } : {}),
+      ...(typeof body.folderTitle === "string" && body.folderTitle.trim()
+        ? { folderTitle: body.folderTitle.trim() } : {}),
       content: parsed.body,
-      title: parsed.title || "Markdown note",
+      title: parsed.title || (typeof body.title === "string" && body.title.trim() ? body.title.trim() : "Markdown note"),
     });
   }
 
@@ -219,7 +227,8 @@ export async function POST(request: Request): Promise<Response> {
     }
   }
   const requestDigest = createHash("sha256").update(JSON.stringify({
-    protocolVersion: 1,
+    // Invalidate exports made before visible folder and note headings.
+    protocolVersion: 3,
     userId,
     gardenId,
     title,

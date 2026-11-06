@@ -1,53 +1,15 @@
 import type { Metadata } from "next";
-import { randomInt } from "node:crypto";
-import { getServerSession } from "next-auth/next";
-import { redirect } from "next/navigation";
-import { authOptions } from "@/lib/auth-options";
-import db from "@/lib/db";
-import { readNewTabGardens } from "@/lib/new-tab-gardens";
-import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
-import NavBar from "@/app/components/navbar";
-import NewTabClient from "./new-tab-client";
-import { pickNewTabAddressee } from "./new-tab-greetings";
+import DashboardPageShell from "@/app/dashboard/dashboard-page-shell";
 
 export const dynamic = "force-dynamic";
+export const metadata: Metadata = { title: "Terminal — breadboard" };
 
-export const metadata: Metadata = {
-  title: "New tab — breadboard",
-};
-
-/**
- * Where a new tab starts.
- *
- * A tab exists to hold a different place than the one beside it — the
- * dashboard next to a workspace, a plan next to a garden's lessons. Opening on
- * a copy of the current page gives nobody that, so a fresh tab opens here, on
- * the places there are to go, and leaves as soon as one is chosen.
- */
-export default async function NewTabPage() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) redirect("/auth/login?callbackUrl=/new-tab");
-  const userId = Number((session.user as { id?: string }).id);
-  if (!Number.isFinite(userId) || userId <= 0) redirect("/auth/login?callbackUrl=/new-tab");
-
-  const email = session.user.email ?? "";
-  const username = session.user.name ?? email;
-  const gardens = readNewTabGardens(db, userId);
-
-  return (
-    <div className="dashboard-shell h-screen min-h-screen overflow-hidden bg-[var(--paper-bg)] text-white flex flex-col">
-      <NavBar
-        email={email}
-        username={username}
-        showActions={false}
-        showFlowers={getNavbarFlowers(userId)}
-      />
-      <NewTabClient
-        gardens={gardens}
-        addressee={pickNewTabAddressee({}, [], () => randomInt(0x1000000) / 0x1000000)}
-        greetingOwnerKey={String(userId)}
-        widgetOwnerKey={(email || String(userId)).trim().toLowerCase()}
-      />
-    </div>
-  );
+/** The shared home keeps the original gardens, terminal, and browser widgets live. */
+export default async function NewTabPage({ searchParams }: {
+  searchParams: Promise<{ terminalChat?: string | string[] }>;
+}) {
+  const requested = await searchParams;
+  const initialTerminalChatId = Array.isArray(requested.terminalChat)
+    ? requested.terminalChat[0] ?? null : requested.terminalChat ?? null;
+  return <DashboardPageShell combinedHome initialTerminalChatId={initialTerminalChatId} />;
 }

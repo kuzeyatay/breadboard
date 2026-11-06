@@ -1072,8 +1072,7 @@ function ProtectTab({ busy, run }: { busy: string; run: RunFn }) {
   return (
     <div className="space-y-3">
       <p className="rounded-md border border-gray-800 bg-gray-900 px-2 py-1.5 text-[11px] leading-4 text-gray-400">
-        An encrypted copy downloads to your machine. The stored PDF is left alone, so
-        the viewer can still open it.
+        Downloads a password-protected copy. The original PDF stays unchanged.
       </p>
       <Field label="Password to open">
         <input

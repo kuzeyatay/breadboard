@@ -85,6 +85,34 @@ def _error_text(error: Any) -> str:
     return " ".join(str(part) for part in parts if part is not None).lower()
 
 
+def is_sse_connection_error(error: BaseException) -> bool:
+    """Recognize transport failures carried inside a successful HTTP stream.
+
+    The OpenAI SDK raises APIError for SSE error envelopes, without an HTTP
+    status. Prefer their structured code so proxies can change the wording;
+    retain the connection phrases for older providers that send only text.
+    HTTP/auth/billing/policy errors remain owned by the outer classifier.
+    """
+    from openai import APIError
+
+    if not isinstance(error, APIError) or getattr(error, "status_code", None):
+        return False
+    body = getattr(error, "body", None)
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        body = body["error"]
+    code = getattr(error, "code", None)
+    if not code and isinstance(body, dict):
+        code = body.get("code")
+    if code == "upstream_incomplete":
+        return True
+    return any(phrase in str(error).lower() for phrase in (
+        "connection lost", "connection reset", "connection closed",
+        "connection terminated", "connection failed", "network error",
+        "network connection", "terminated", "peer closed", "broken pipe",
+        "upstream connect error",
+    ))
+
+
 def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, error: Any) -> bool:
     """Return True for Z.AI Coding Plan transient overload 429s.
 

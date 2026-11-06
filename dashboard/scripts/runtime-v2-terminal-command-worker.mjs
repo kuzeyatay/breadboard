@@ -16,10 +16,13 @@ const POWERSHELL_ERROR_MARKER = "[Breadboard PowerShell diagnostics]";
 // PowerShell can exit 0 with no output after SilentlyContinue swallowed every
 // error (including a bad regex inside a multi-million-file scan). Keep streaming
 // the command normally, then expose a bounded diagnostic from its error buffer.
-// The original script runs in a child scope, away from our bookkeeping variables.
+// Capture $? inside the child scope: the outer invocation can reset it to true
+// after a parameter-binding error in PowerShell 5.1.
 export function wrapPowerShellCommand(command) {
-  return `& {\n${command}\n}
-$breadboardTerminalSucceeded = $?
+  return `[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = [Console]::OutputEncoding
+$breadboardTerminalSucceeded = $true
+& {\n${command}\n$script:breadboardTerminalSucceeded = $?\n}
 if ($Error.Count -gt 0) {
   [Console]::Error.WriteLine('${POWERSHELL_ERROR_MARKER} ' + $Error.Count + ' error(s) recorded; recent errors (may include handled errors):')
   foreach ($breadboardTerminalError in ($Error | Microsoft.PowerShell.Utility\\Select-Object -First 3)) {
@@ -92,7 +95,16 @@ export function resolveRuntimeTerminalShell() {
   return fs.realpathSync.native(shell);
 }
 
-function sealedEnvironment() {
+// .NET Framework/Windows PowerShell cannot use Win32 verbatim paths for TEMP
+// (Add-Type's compiler fails before invoking any Windows API). Runtime retains
+// canonical paths for containment; children need the equivalent DOS/UNC spelling.
+export function legacyWindowsPath(value) {
+  if (/^\\\\\?\\UNC\\/i.test(value)) return `\\\\${value.slice(8)}`;
+  if (/^\\\\\?\\[a-z]:\\/i.test(value)) return value.slice(4);
+  return value;
+}
+
+export function sealedEnvironment(source = process.env) {
   const allowed = new Set([
     "APPDATA",
     "COMSPEC",
@@ -118,9 +130,11 @@ function sealedEnvironment() {
     "WINDIR",
   ]);
   return Object.fromEntries(
-    Object.entries(process.env).filter(
+    Object.entries(source).filter(
       ([name, value]) => allowed.has(name.toUpperCase()) && value !== undefined,
-    ),
+    ).map(([name, value]) => [name,
+      process.platform === "win32" && ["TEMP", "TMP"].includes(name.toUpperCase())
+        ? legacyWindowsPath(value) : value]),
   );
 }
 
@@ -184,7 +198,8 @@ function snapshot(launch, state, running) {
 
 export async function executeTerminalCommand(launch, signal, progress) {
   const request = validateTerminalCommandRequest(launch.request);
-  const workspaceRoot = directDirectory(request.workspaceRoot);
+  const directory = directDirectory(request.workspaceRoot);
+  const workspaceRoot = process.platform === "win32" ? legacyWindowsPath(directory) : directory;
   const executable = resolveRuntimeTerminalShell();
   const args = process.platform === "win32"
     ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", wrapPowerShellCommand(request.command)]

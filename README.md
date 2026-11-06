@@ -51,6 +51,7 @@ can still send the content you ask them to process to their respective services.
 | **Specialized agents** | Research, coding, browser, office, visualization, media, CAD, and other bounded workflows. Availability depends on local setup. |
 | **Connected tools** | MCP servers and optional connected apps, scoped through authenticated brokered routes. |
 | **Feynman research** | PaperRank reading priorities and evidence critiques from public literature, available in chat and Max Research with no new API keys. [Details](docs/FEYNMAN_INTEGRATION.md). |
+| **Multisim Agent** | Native circuit design, real ngspice simulation, measurements, verification and bounded optimization, adapted from multisim-mcp. [Setup and architecture](multisim-service/README.md). |
 | **Desktop runtime** | An Electron shell with a Rust-based Runtime V2 supervisor for service health, recovery, limits, logging, and shutdown. |
 
 ## Development Status

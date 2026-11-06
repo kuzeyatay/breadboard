@@ -1,0 +1,87 @@
+.background {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: #eef3ed;
+  isolation: isolate;
+  opacity: 0;
+  transition: opacity 1.4s ease;
+}
+.background[data-active="true"] { opacity: 1; }
+.background[data-theme="dark"] { background: #091014; }
+.layer {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 2.8s ease-in-out;
+}
+.layer[data-active="true"] { opacity: 1; }
+.layer[data-ambient-layer="random"] .light { filter: saturate(0.9); }
+.light {
+  position: absolute;
+  width: 110%;
+  height: 140%;
+  left: -45%;
+  top: -50%;
+  opacity: 0.94;
+  filter: saturate(1.35);
+  mask-image: radial-gradient(ellipse at center, #000 12%, rgb(0 0 0 / 85%) 32%, transparent 72%);
+  animation: drift 14s ease-in-out infinite alternate, breathe 7.8s ease-in-out infinite alternate;
+  animation-play-state: paused;
+}
+.light:nth-child(2) { left: 32%; top: -20%; animation-name: tide, breathe; animation-duration: 19s, 10.2s; animation-delay: -9s, -4s; }
+.light:nth-child(3) { left: -12%; top: 35%; animation-duration: 17s, 9.4s; animation-delay: -12s, -6s; animation-direction: alternate-reverse, alternate; }
+.background[data-theme="dark"] .light { mix-blend-mode: screen; }
+.background[data-playing="true"] .layer[data-active="true"] .light { animation-play-state: running; will-change: transform, opacity; }
+/* Keep both color textures static. Only opacity changes during the blend,
+   so large masked lights can remain on the compositor between palette updates. */
+.light::before,
+.light::after { content: ""; position: absolute; inset: 0; }
+.light::before { background-color: var(--ambient-previous-color); }
+.light::after {
+  background-color: var(--ambient-current-color);
+  opacity: 1;
+  animation: palette var(--ambient-color-period) ease-in-out 1 both;
+  animation-play-state: inherit;
+}
+.background[data-playing="true"] .layer[data-active="true"] .light::after { will-change: opacity; }
+.layer[data-ambient-layer="spotify"] .light::after { animation-name: albumPalette; }
+@keyframes albumPalette {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* Hold the final color until the next palette arrives. Repeating the old
+   palette on the compositor can flash its start color before a delayed timer. */
+@keyframes palette {
+  0% { opacity: 0; }
+  60%, 100% { opacity: 1; }
+}
+/* Keep the center readable while the edges carry the richer pools of light. */
+.wash {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 38%, rgb(250 252 248 / 52%), rgb(250 252 248 / 20%) 55%, rgb(250 252 248 / 10%));
+}
+.background[data-theme="dark"] .wash {
+  background: radial-gradient(ellipse at 50% 38%, rgb(3 8 12 / 42%), rgb(3 8 12 / 20%) 55%, rgb(3 8 12 / 12%));
+}
+@keyframes drift {
+  0% { transform: translate3d(-8%, -4%, 0) scale(0.92) rotate(-12deg); }
+  50% { transform: translate3d(12%, 15%, 0) scale(1.1) rotate(8deg); }
+  100% { transform: translate3d(25%, 3%, 0) scale(1.03) rotate(25deg); }
+}
+@keyframes tide {
+  0% { transform: translate3d(8%, 7%, 0) scale(1.1) rotate(16deg); }
+  50% { transform: translate3d(-18%, -12%, 0) scale(0.94) rotate(-10deg); }
+  100% { transform: translate3d(-6%, 15%, 0) scale(1.15) rotate(-26deg); }
+}
+@keyframes breathe {
+  from { opacity: 0.68; }
+  to { opacity: 0.98; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .background, .layer { transition: none; }
+  .background[data-playing] .light, .background[data-playing] .light::after { animation: none; transition: none; will-change: auto; }
+}

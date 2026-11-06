@@ -16,8 +16,9 @@ import {
   runBoundedLearnCouncilSemanticAttempts,
   type LearnCouncilTerminalReceiptProof,
 } from "./learn-council-semantic-recovery.ts";
+import { createSourceCompletenessCritic } from "./learn-source-completeness.ts";
 
-export type LearnFinalCriticRequestKind = "critic" | "anchor_critic" | "model_repair";
+export type LearnFinalCriticRequestKind = "critic" | "anchor_critic" | "model_repair" | "source_completeness";
 
 export interface LearnFinalCriticCouncilRequest {
   kind: LearnFinalCriticRequestKind;
@@ -32,6 +33,7 @@ export interface LearnFinalCriticCouncilRequest {
 }
 
 export interface LearnFinalCriticProviders {
+  /** The model critic, plus the source-completeness review when a garden is given. */
   critic: CriticFn;
   anchorConfirm: AnchorCriticFn;
   modelRepair: ModelRepairFn;
@@ -75,6 +77,8 @@ export function createLearnFinalCriticProviders(input: {
     nextSemanticAttempt: number;
     receipt: LearnCouncilTerminalReceiptProof;
   }) => void | Promise<void>;
+  /** The finished garden whose lessons are checked against their full source pages. */
+  sourceCompleteness?: { gardenDir: string; gardenSlug: string };
 }): LearnFinalCriticProviders {
   const maxSemanticAttempts = input.maxSemanticAttempts ?? 2;
 
@@ -128,8 +132,23 @@ export function createLearnFinalCriticProviders(input: {
     });
   };
 
-  return {
-    critic: async (packet) => executeBounded({
+  const sourceCompleteness = input.sourceCompleteness
+    ? createSourceCompletenessCritic({
+        ...input.sourceCompleteness,
+        review: (request) => executeBounded({
+          kind: "source_completeness",
+          payload: { kind: request.kind, system: request.system, user: request.user },
+          stageLabel: request.label,
+          taskType: "critique",
+          pageId: request.pageId,
+          system: request.system,
+          user: request.user,
+          sourceContext: { taskType: `final_source_completeness_${request.kind}`, ...(request.pageId ? { pageId: request.pageId } : {}) },
+          parse: (content) => content,
+        }),
+      })
+    : null;
+  const modelCritic: CriticFn = async (packet) => executeBounded({
       kind: "critic",
       payload: packet,
       stageLabel: "final semantic critic",
@@ -142,7 +161,12 @@ export function createLearnFinalCriticProviders(input: {
         sectionCount: packet.sections.length,
       },
       parse: parseCriticIssues,
-    }),
+    });
+
+  return {
+    critic: sourceCompleteness
+      ? async (packet) => [...await modelCritic(packet), ...await sourceCompleteness(packet)]
+      : modelCritic,
     anchorConfirm: async (packet) => executeBounded({
       kind: "anchor_critic",
       payload: packet,

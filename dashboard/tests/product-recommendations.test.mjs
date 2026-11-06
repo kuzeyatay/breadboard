@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import dns from "node:dns/promises";
 import test from "node:test";
-import { productPriceFromHtml, productPriceFromText, searchProducts } from "../src/lib/product-search/service.ts";
+import { productCandidatesFromSearchHtml, productPriceFromHtml, productPriceFromText, searchProducts } from "../src/lib/product-search/service.ts";
 import { parseReviewedProducts, reviewProductRecommendations } from "../src/lib/product-search/recommendations.ts";
 
 test("prices remain single validated amounts, including European separators", () => {
@@ -17,13 +17,16 @@ test("prices remain single validated amounts, including European separators", ()
 
 const candidate = { id: "ssd", title: "Acme X4 externe SSD 2 TB - Snelle levering", merchant: "shop.example.nl", url: "https://shop.example.nl/product/ssd", imageUrl: "https://shop.example.nl/ssd.jpg", price: { amount: "199", currency: "EUR", display: "€199.00" }, sourceIds: ["source:ssd"] };
 test("review can translate and rank, but cannot replace sourced commercial facts", () => {
-  const reviewed = parseReviewedProducts(JSON.stringify({ products: [{ id: "ssd", title: "Acme X4 External SSD 2 TB", url: "https://wrong.example/", price: { amount: "1" } }] }), [candidate]);
+  const reviewed = parseReviewedProducts(JSON.stringify({ products: [{ id: "ssd", title: "Acme X4 External SSD 2 TB", evidence: "Acme X4 externe SSD 2 TB", url: "https://wrong.example/", price: { amount: "1" } }] }), [candidate]);
   assert.deepEqual(reviewed, [{ ...candidate, title: "Acme X4 External SSD 2 TB" }]);
   assert.equal(candidate.title, "Acme X4 externe SSD 2 TB - Snelle levering");
   for (const products of [[{ id: "invented", title: "SSD" }], [{ id: "ssd", title: "" }], [{ id: "ssd", title: "SSD" }, { id: "ssd", title: "SSD" }]]) {
     assert.throws(() => parseReviewedProducts(JSON.stringify({ products }), [candidate]));
   }
   assert.deepEqual(parseReviewedProducts('{"products":[]}', [candidate]), []);
+  for (const evidence of [undefined, "", "   ", "USB4 3800 MB/s", "Thunderbolt 5"]) {
+    assert.throws(() => parseReviewedProducts(JSON.stringify({ products: [{ id: "ssd", title: candidate.title, evidence }] }), [candidate]));
+  }
 });
 
 test("a failed review never silently releases unreviewed candidates", async () => {
@@ -57,7 +60,7 @@ test("the full search reviews relevance before count limiting and emits only Eng
       assert.equal(review.candidates.length, 2, "sold-out product is not resurrected from its snippet");
       const ssd = review.candidates.find(product => product.title.includes("X4"));
       if (reviewMode === "failure") return new Response("unavailable", { status: 503 });
-      return Response.json({ choices: [{ message: { content: JSON.stringify({ products: reviewMode === "empty" ? [] : [{ id: ssd.id, title: "Acme X4 External SSD 2 TB" }] }) } }] });
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ products: reviewMode === "empty" ? [] : [{ id: ssd.id, title: "Acme X4 External SSD 2 TB", evidence: ssd.description }] }) } }] });
     }
     throw new Error(`Unexpected request: ${url}`);
   });
@@ -97,7 +100,7 @@ test("multiple structured products retain their own images, prices and destinati
     if (url.pathname.endsWith("/chat/completions")) {
       const { candidates } = JSON.parse(JSON.parse(init.body).messages[1].content);
       assert.equal(candidates.length, 2);
-      return Response.json({ choices: [{ message: { content: JSON.stringify({ products: candidates.map(({ id, title }) => ({ id, title })) }) } }] });
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ products: candidates.map(({ id, title }) => ({ id, title, evidence: title })) }) } }] });
     }
     throw new Error(`Unexpected request: ${url}`);
   });
@@ -106,4 +109,71 @@ test("multiple structured products retain their own images, prices and destinati
     ["https://shop.example.nl/product/main", "https://shop.example.nl/main.jpg", "199"],
     ["https://shop.example.nl/product/related", "https://shop.example.nl/related.jpg", "299"],
   ]);
+});
+
+test("Turkish prices and unpriced discovery results reach merchant verification", async (t) => {
+  for (const raw of ["₺4.999,90", "4.999,90 TL", "TRY 4.999,90", "4.999,90 ₺"]) {
+    assert.equal(productPriceFromText(raw, "tr-tr")?.amount, "4999.90", raw);
+    assert.equal(productPriceFromText(raw, "tr-tr")?.currency, "TRY", raw);
+  }
+  assert.equal(productCandidatesFromSearchHtml('<a class="result__a" href="https://shop.example.com/product/ssd">Portable SSD</a><span>External USB4 SSD</span>')[0].priceHint, undefined);
+  t.mock.method(dns, "lookup", async () => [{ address: "93.184.216.34", family: 4 }]);
+  t.mock.method(globalThis, "fetch", async (input, init) => {
+    const url = new URL(String(input));
+    if (url.hostname === "duckduckgo.com") throw new Error("image search unavailable");
+    if (url.hostname === "html.duckduckgo.com") {
+      assert.doesNotMatch(url.searchParams.get("q"), /site:/);
+      return new Response('<a class="result__a" href="https://www.trendyol.com/acme/ssd-p-123456">Acme X4 SSD</a><span>External USB4 SSD 2 TB</span>');
+    }
+    if (url.hostname === "www.trendyol.com") return new Response(`<script type="application/ld+json">${JSON.stringify({
+      "@type": "Product", name: "Acme X4 External SSD 2 TB", description: "External USB4 SSD 2 TB, 3800 MB/s read speed.",
+      offers: { price: "4999.90", priceCurrency: "TRY", availability: "https://schema.org/InStock" },
+    })}</script>`, { headers: { "content-type": "text/html" } });
+    if (url.pathname.endsWith("/chat/completions")) {
+      const { candidates, userRequest } = JSON.parse(JSON.parse(init.body).messages[1].content);
+      assert.equal(userRequest, "I need an external SSD at least 2 TB, under 6000 TL.");
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ products: candidates.map(({ id, title }) => ({ id, title, evidence: title })) }) } }] });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  const result = await searchProducts({ query: "external USB4 SSD", country: "tr-tr" }, { userRequest: "I need an external SSD at least 2 TB, under 6000 TL." });
+  assert.equal(result.productsReturned, 1);
+  assert.equal(result.uiResources[0].data.products[0].price.amount, "4999.90");
+  assert.equal(result.uiResources[0].data.products[0].price.currency, "TRY");
+});
+
+test("native discovery is only a locator; each fallback offer needs inspected merchant evidence", async (t) => {
+  t.mock.method(dns, "lookup", async () => [{ address: "93.184.216.34", family: 4 }]);
+  let searches = 0;
+  let reviews = 0;
+  t.mock.method(globalThis, "fetch", async (input, init) => {
+    const url = new URL(String(input));
+    if (url.hostname === "duckduckgo.com") throw new Error("image search unavailable");
+    if (url.hostname === "html.duckduckgo.com") return new Response('<a class="result__a" href="https://shop.example.nl/category/ssd">SSD products</a>');
+    if (url.hostname === "shop.example.nl") {
+      if (url.pathname.endsWith("blocked")) return new Response("blocked", { status: 403 });
+      if (url.pathname.endsWith("invented")) return new Response("<html>No product here</html>", { headers: { "content-type": "text/html" } });
+      return new Response(`<script type="application/ld+json">${JSON.stringify({ "@type": "Product", name: "Acme X4 External SSD 2 TB", description: "External USB4 SSD, 3800 MB/s reads.", offers: { price: "199", priceCurrency: "EUR", availability: "https://schema.org/InStock" } })}</script>`, { headers: { "content-type": "text/html" } });
+    }
+    if (url.pathname.endsWith("/chat/completions")) {
+      const body = JSON.parse(init.body);
+      if (body.responses_tools) {
+        searches++;
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ candidates: ["ssd", "invented", "blocked"].map(id => ({ title: "Locator title is not product evidence", url: `https://shop.example.nl/product/${id}`, price: "1", description: "Unsupported claimed speed" })) }) } }] });
+      }
+      reviews++;
+      assert.equal(body.responses_tool_choice, "none");
+      const { candidates } = JSON.parse(body.messages[1].content);
+      assert.equal(candidates.length, 1, "blocked and nonexistent products cannot use model-supplied facts");
+      assert.equal(candidates[0].price.amount, "199");
+      assert.equal(candidates[0].title, "Acme X4 External SSD 2 TB");
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ products: candidates.map(({ id, title }) => ({ id, title, evidence: title })) }) } }] });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  const result = await searchProducts({ query: "external USB4 SSD 2 TB", country: "nl-nl" });
+  assert.equal(searches, 1);
+  assert.equal(reviews, 1);
+  assert.equal(result.productsReturned, 1);
+  assert.equal(result.uiResources[0].data.products[0].url, "https://shop.example.nl/product/ssd");
 });

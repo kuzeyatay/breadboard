@@ -55,7 +55,7 @@ export function BlockPalette() {
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {blocks.length === 0 ? (
           <p className="px-1 py-4 text-xs leading-5 text-[var(--ink-muted)]">
-            Block definitions are loading. If this stays empty, the engine's block registry has not landed yet.
+            No blocks available yet.
           </p>
         ) : null}
         {["blocks", "tools", "triggers"].map((category) => {

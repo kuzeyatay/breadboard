@@ -1,6 +1,6 @@
 ---
 name: goal
-description: Hold one verified objective across every turn of this conversation until it is actually finished. Use when the user says to keep going until something is done, not to stop until it works, to work on something across several turns, or otherwise states a durable objective rather than a single request — "keep fixing this until the tests pass", "don't stop until the deploy is green", "your goal is to get this migrated".
+description: Hold one verified objective across turns until it is actually finished. Use when the user explicitly requests a goal or asks you to keep working toward a concrete finished result across turns, such as completing a checked analysis or a finished teaching section.
 license: MIT
 allowed-tools:
   - mcp_call
@@ -30,19 +30,18 @@ Before doing any of the work, record the objective:
     mcp_call connection="goal" tool="create_goal"
       args={ "objective": "<the objective in the user's own terms>" }
 
-Write the objective as the finished state, not as the next action. "Every test
-in dashboard/tests passes under npm test" is an objective. "Run the tests" is a
-step toward one. If the user gave a bound — a number of turns, an attempt limit
-— pass it as `turn_budget`; leave it out when they gave none rather than
-inventing a ceiling they never asked for.
+Write the objective as the finished state, with evidence that would establish
+completion. This can be a finished explanation, a checked analysis, a document,
+or any other requested result. Set `token_budget` only when the user explicitly
+requested a token budget. Otherwise leave it unbounded.
 
 The objective is theirs. Keep their scope and their wording where you can. Do
 not narrow it to the part you know how to do, and do not widen it into work they
 did not ask for. If the request is genuinely ambiguous about what "done" means,
 ask that one question first and create the goal from their answer.
 
-One goal governs one conversation. If a goal already exists here, `create_goal`
-refuses and that refusal is correct — read the existing one instead.
+One goal governs one conversation. `create_goal` refuses to replace an unfinished
+goal. A completed goal may be replaced when the user explicitly asks for a new one.
 
 ## Every later turn
 
@@ -78,8 +77,11 @@ Only when every requirement clears:
 The response carries a budget report; relay it in one line so the user sees what
 the goal cost.
 
-`update_goal` marks completion and nothing else. Pausing, resuming and
-abandoning belong to the user, through the goal card above the composer. Never
+`update_goal` accepts `complete` or `blocked`. Use `blocked` only when the same
+blocking condition has recurred for at least three consecutive goal turns and
+meaningful progress requires user input or an external change. A resumed blocked
+goal starts that audit afresh. Pausing, resuming and abandoning belong to the user,
+through the goal card above the composer. Never
 mark a goal complete to get out of hard work, and never mark it complete because
 the user seems ready to move on — if they want it dropped, they will drop it.
 
@@ -90,6 +92,11 @@ them is decided by the normal capability decision for the turn, exactly as it
 would be without a goal. A goal is a commitment about when you are allowed to
 stop, not a widening of what you are allowed to do.
 
-It also does not license running forever. When a turn budget is set and reached,
+Breadboard automatically continues an active goal when the chat is idle, preserving
+its model and context. Pending user input and other chat work take priority.
+An automatic continuation with no tool calls defers further automatic turns.
+Interruptions pause the goal; terminal errors and usage limits stop it.
+
+When an explicit token budget is set and reached,
 stop starting new work: report what is done, what is left, and the single next
 step, and let the user decide.

@@ -19,6 +19,7 @@ import {
 import { nextSpeechStep, requiredModelName, voiceProfileReady } from "@/lib/speech/voice-model";
 import SettingsSpeechPronunciations from './settings-speech-pronunciations';
 import { responseTextForSpeech } from '@/lib/speech/response-text';
+import { notifySpeechSettingsChanged } from '@/lib/speech/settings-client';
 
 type SpeechSettings = {
   pronunciations: string;
@@ -33,6 +34,7 @@ type SpeechSettings = {
   modelSize: string;
   transcriptionLanguage: string | null;
   transcriptionModel: string;
+  chatgptVoiceMode: boolean;
 };
 
 type VoiceProfile = {
@@ -128,7 +130,7 @@ const SPEECH_ACCELERATORS = [
     hardware: "NVIDIA GPU",
     platform: "Windows or Linux",
     backend: "CUDA",
-    note: "Uses Voicebox's CUDA-enabled PyTorch backend.",
+    note: "Uses NVIDIA graphics for faster voice generation.",
   },
   {
     hardware: "AMD Radeon",
@@ -146,7 +148,7 @@ const SPEECH_ACCELERATORS = [
     hardware: "Windows GPU",
     platform: "NVIDIA, AMD, or Intel",
     backend: "DirectML",
-    note: "The universal Windows path when a vendor backend is not a fit.",
+    note: "Works across supported Windows graphics cards.",
   },
 ] as const;
 
@@ -325,6 +327,8 @@ export default function SettingsSpeech() {
         });
         if (!response.ok) throw new Error(await apiError(response));
         const result = (await response.json()) as { settings: SpeechSettings };
+        resetSpeechPreparation();
+        notifySpeechSettingsChanged();
         if (!mountedRef.current) return result.settings;
         setDraft(result.settings);
         setStatus((current) => (current ? { ...current, settings: result.settings } : current));
@@ -673,7 +677,19 @@ export default function SettingsSpeech() {
             </button>
           ))}
         </div>
-        <p className="text-xs leading-5 text-[var(--ink-muted)]">Applies to voice conversations, dictation, Clicky, and response playback. Switch before starting a recording.</p>
+        <p className="text-xs leading-5 text-[var(--ink-muted)]">Applies to voice conversations, dictation, and response playback. Switch before starting a recording.</p>
+      </section>
+      <section className="space-y-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4">
+        <h3 className="text-sm font-medium text-[var(--ink-heading)]">Voice mode</h3>
+        <label className="flex items-center gap-2 text-sm text-[var(--ink)]">
+          <input type="checkbox" checked={draft.chatgptVoiceMode}
+            disabled={saveState === "saving" || Boolean(working)}
+            onChange={(event) => void updateSettings({ chatgptVoiceMode: event.target.checked })} />
+          Use ChatGPT voice in voice mode
+        </label>
+        <p className="text-xs leading-5 text-[var(--ink-muted)]">
+          Talk directly with ChatGPT using your OpenAI (web) sign-in. It receives recent chat context and saves each exchange here. Requires the desktop app.
+        </p>
       </section>
       {draft.speechProvider === "chatgpt" ? (
         <SettingsCloudSpeech cloud={status?.cloud} voice={draft.openaiVoice} enabled={draft.enabled}
@@ -751,9 +767,7 @@ export default function SettingsSpeech() {
                 ) : null}
                 <p>
                   {runningFor ? `Running for ${runningFor}. ` : ""}
-                  You can close this panel and keep using Breadboard; speech becomes ready on its
-                  own. The speech engines and GPU packages are several gigabytes, so the first
-                  setup usually takes a while.
+                  You can keep working during setup. The first download is several gigabytes and may take a while.
                 </p>
               </>
             ) : stalled ? (
@@ -905,8 +919,7 @@ export default function SettingsSpeech() {
               </ul>
             ) : (
               <p className="rounded-xl border border-dashed border-[var(--line-strong)] bg-[var(--paper-surface)] p-3 text-xs leading-5 text-[var(--ink-muted)]">
-                No voice yet. Choose a built-in voice below — Breadboard downloads that voice&rsquo;s
-                model once, then everything runs on this machine.
+                Choose a built-in voice below. Its model downloads once, then runs on this device.
               </p>
             )}
 
@@ -1094,7 +1107,7 @@ export default function SettingsSpeech() {
           <section className="space-y-3 rounded-2xl border border-[var(--line)] p-4">
             <div>
               <h3 className="text-sm font-medium text-[var(--ink-heading)]">Dictation</h3>
-              <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">Words appear in the composer while you speak. When you stop, Voicebox replaces the live draft with a final local Whisper transcription.</p>
+              <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">Words appear as you speak. When you stop, the transcript is finalized on this device.</p>
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label className="text-xs text-[var(--ink-muted)]">Spoken language<select className={`${fieldClass} mt-1`} value={draft.transcriptionLanguage || ""} onChange={(event) => void updateSettings({ transcriptionLanguage: event.target.value || null })}><option value="">Detect automatically</option>{LANGUAGES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>

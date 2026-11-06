@@ -16,6 +16,7 @@ test("real browser, workspace and main-window crashes recover after native teard
       [path.join(desktop, "tests/fixtures/renderer-crash-recovery.cjs"), dir], desktop, env, 45_000);
     assert.equal(result.error, undefined, `${result.error?.message}\n${result.output}`);
     assert.equal(result.status, 0, result.output);
+    assert.doesNotMatch(result.output, /Error sending from webFrameMain|page unavailable while sending tab state/u);
   } finally {
     assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

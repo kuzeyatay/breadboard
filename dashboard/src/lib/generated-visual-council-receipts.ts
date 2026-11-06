@@ -9,6 +9,7 @@ import {
   type CouncilRequestEnvelopeV1,
   withResolvedCouncilIdentityV1,
 } from "./council-request-hash.ts";
+import { ORPHANED_COUNCIL_RECEIPT_PROVIDER } from "./learn-council-receipt-accounting.ts";
 import { strictChatMockInternalRecoveryUrl } from "./learn-planning-internal-url.ts";
 import {
   expectedStrictLearnModelRoute,
@@ -1434,6 +1435,17 @@ function validFailedReceiptAttempt(
   prepared: PreparedGeneratedVisualCouncilRequest,
 ): value is Record<string, unknown> {
   const attempt = recordValue(value);
+  // ChatMock settles a call its previous process left in flight with model
+  // "unknown": it cannot know which model the dead process was calling. Such
+  // an attempt proves only that no answer was produced, so it skips the model
+  // binding check (live 2026-10-15: restart mid-visual failed the Learn run).
+  const routes = Array.isArray(attempt?.modelRouting) ? attempt.modelRouting : [];
+  const orphanSettled =
+    routes.length === 1 &&
+    recordValue(routes[0])?.provider === ORPHANED_COUNCIL_RECEIPT_PROVIDER &&
+    recordValue(routes[0])?.requestId === attempt?.councilRunId;
+  const modelMismatch = (actual: unknown, expected: string) =>
+    !(orphanSettled && actual === "unknown") && actual !== expected;
   if (
     !attempt ||
     Object.keys(attempt).some((key) => !SAFE_FAILED_ATTEMPT_KEYS.has(key)) ||
@@ -1453,15 +1465,15 @@ function validFailedReceiptAttempt(
         !routing ||
         Object.keys(routing).some((key) => !SAFE_FAILED_ROUTING_KEYS.has(key)) ||
         (Object.hasOwn(routing, "requestedModel") &&
-          routing.requestedModel !== prepared.route.requestedModel) ||
+          modelMismatch(routing.requestedModel, prepared.route.requestedModel)) ||
         (Object.hasOwn(routing, "resolvedModel") &&
-          routing.resolvedModel !== prepared.route.resolvedModel)
+          modelMismatch(routing.resolvedModel, prepared.route.resolvedModel))
       );
     }) ||
     (Object.hasOwn(attempt, "requestedModel") &&
-      attempt.requestedModel !== prepared.route.requestedModel) ||
+      modelMismatch(attempt.requestedModel, prepared.route.requestedModel)) ||
     (Object.hasOwn(attempt, "resolvedModel") &&
-      attempt.resolvedModel !== prepared.route.resolvedModel) ||
+      modelMismatch(attempt.resolvedModel, prepared.route.resolvedModel)) ||
     (Object.hasOwn(attempt, "createdAt") &&
       typeof attempt.createdAt !== "string") ||
     (Object.hasOwn(attempt, "updatedAt") &&

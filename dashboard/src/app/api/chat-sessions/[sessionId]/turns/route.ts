@@ -13,6 +13,7 @@ import {
   ensureConversationForLegacyChatSession,
   presentConversationMessage,
   reserveConversationTurn,
+  touchGardenPreDispatchTurn,
 } from "@/lib/conversations/store";
 import { apiErrorResponse } from "@/lib/hermes/route-helpers";
 import { getRuntimeSessionByConversation } from "@/lib/hermes/runtime-store.ts";
@@ -124,6 +125,38 @@ export async function POST(
       assistantMessage: presentConversationMessage(turn.assistantMessage),
       replayed: !turn.isNew,
     });
+  } catch (error) {
+    return apiErrorResponse(error);
+  }
+}
+
+/** Keep a live viewer's checkpoint owned until dispatch starts its heartbeat. */
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ sessionId: string }> },
+) {
+  try {
+    const session = await getServerSession(authOptions);
+    const userId = Number((session?.user as { id?: string } | undefined)?.id);
+    if (!Number.isSafeInteger(userId) || userId < 1) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const numericSessionId = Number((await params).sessionId);
+    if (!Number.isSafeInteger(numericSessionId) || numericSessionId < 1) {
+      return NextResponse.json({ error: "Invalid session id" }, { status: 400 });
+    }
+    const body = (await request.json()) as Record<string, unknown>;
+    const clientMessageId = typeof body.clientMessageId === "string"
+      ? body.clientMessageId.trim() : "";
+    if (!clientMessageId) {
+      return NextResponse.json({ error: "clientMessageId is required" }, { status: 400 });
+    }
+    const conversation = ensureConversationForLegacyChatSession(numericSessionId, userId);
+    const renewed = touchGardenPreDispatchTurn({
+      conversationId: conversation.id,
+      clientMessageId,
+    });
+    return NextResponse.json({ renewed });
   } catch (error) {
     return apiErrorResponse(error);
   }

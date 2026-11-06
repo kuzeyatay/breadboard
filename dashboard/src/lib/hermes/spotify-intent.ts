@@ -110,6 +110,29 @@ export interface SpotifyIntentInput {
   authenticated: boolean;
   hasAudioAttachment?: boolean;
   activeAgentSlug?: string | null;
+  priorMessages?: ReadonlyArray<{ role: string; content: string }>;
+}
+
+/** A voice interruption can leave the artist in the next user turn. */
+function spotifyContinuationRequest(input: SpotifyIntentInput): string | null {
+  const text = input.text.trim();
+  if (!text || text.length > 160 || NON_CATALOG.test(text) || FALSE_PLAY.test(text) ||
+    /\b(?:never\s+mind|cancel|forget\s+(?:it|that)|don['’]t|do\s+not|not\s+now)\b/i.test(text) ||
+    /^(?:what|why|how|who|when|where|explain|write|build|open|send|delete|thanks|thank\s+you)\b/i.test(text)) return null;
+  const messages = input.priorMessages ?? [];
+  const previousIndex = messages.findLastIndex(message => message.role === "user");
+  if (previousIndex < 0 || !isSpotifyRequest(messages[previousIndex].content)) return null;
+  const previous = withoutSpotifyCommand(messages[previousIndex].content).normalized;
+  const clarification = messages.slice(previousIndex + 1).some(message =>
+    message.role === "assistant" && /\b(?:which|what)\s+(?:artist|song|track|version|recording)\b/i.test(message.content));
+  // Selecting the skill supplies context and tools, not a playback command.
+  // The skill still requires the user's actual play request before acting.
+  const continuation = /\b(?:by|from|called|named)\s*[?.…]*$/i.test(previous) || clarification ||
+    /^(?:(?:and|actually|yes|no)[, ]+)*(?:by\b|from\b|I\s+meant\b|another\s+one\b|that\s+one\b|on\s+my\s+(?:phone|iPhone|Android)\b|in\s+Breadboard\b)/i.test(text) ||
+    /^the\s+.{1,80}\s+(?:version|recording)\b/i.test(text);
+  // Put both spoken fragments in the actual request. In a large prompt the
+  // unfinished first fragment can otherwise be missed in background memory.
+  return continuation ? `${previous}\n${input.text}` : null;
 }
 
 export function spotifyCommandText(
@@ -135,6 +158,7 @@ export function spotifyCommandText(
   if (eligible && input.activeAgentSlug === SPOTIFY_AGENT_SLUG && text) {
     return { text: `/${SPOTIFY_SKILL} ${input.text}`, automatic: true };
   }
-  const automatic = eligible && isSpotifyRequest(text);
-  return { text: automatic ? `/${SPOTIFY_SKILL} ${input.text}` : input.text, automatic };
+  const continuation = eligible && !isSpotifyRequest(text) ? spotifyContinuationRequest(input) : null;
+  const automatic = eligible && (isSpotifyRequest(text) || continuation !== null);
+  return { text: automatic ? `/${SPOTIFY_SKILL} ${continuation ?? input.text}` : input.text, automatic };
 }

@@ -15,6 +15,7 @@ import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import type { DocumentHit } from "./types.ts";
 import { summarizeAbstract } from "./search.ts";
 import { createLongHeaderTimeoutFetch } from "../chatmock-client.ts";
+import { exactArxivId } from "./sources.ts";
 
 const MODEL_TIMEOUT_MS = 5 * 60_000;
 const modelFetch = createLongHeaderTimeoutFetch({timeoutMs: MODEL_TIMEOUT_MS});
@@ -144,6 +145,8 @@ export async function planSearch(input: {
   model: string;
   reasoningEffort: string;
   task: string;
+  /** Unexpanded user query, so conversation context cannot rewrite an exact ID. */
+  catalogQuery?: string;
 }): Promise<{ plan: SearchPlan; usage: ModelUsage; modelUsed: boolean }> {
   const fallback: SearchPlan = {
     queries: [input.task],
@@ -151,6 +154,10 @@ export async function planSearch(input: {
     yearTo: null,
     intent: input.task,
   };
+  const identifier = exactArxivId(input.catalogQuery ?? input.task);
+  if (identifier) {
+    return { plan: { ...fallback, queries: [identifier] }, usage: NO_USAGE, modelUsed: false };
+  }
   try {
     const { content, usage } = await complete({
       baseUrl: input.baseUrl,

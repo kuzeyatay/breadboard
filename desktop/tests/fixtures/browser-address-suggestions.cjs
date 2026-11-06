@@ -24,21 +24,13 @@ const until = async (probe, label) => {
 app.whenReady().then(async () => {
   const dashboard = path.resolve(__dirname, "../../../dashboard");
   const requireDashboard = createRequire(path.join(dashboard, "package.json"));
-  const ts = requireDashboard("typescript");
-  const client = fs.readFileSync(path.join(dashboard, "src/app/browser/browser-client.tsx"), "utf8");
-  const source = ts.createSourceFile("browser-client.tsx", client, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  // Render the production list and overlay hook without loading unrelated
-  // dashboard services. The glyph's drawing has no bearing on list geometry.
-  const list = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "BrowserSuggestionList");
-  assert.ok(list, "production suggestion list exists");
+  // Render the shared production list and hook without dashboard services.
   const bundle = requireDashboard("esbuild").buildSync({
     stdin: { resolveDir: dashboard, loader: "tsx", contents: `
       import React, { useState } from 'react';
       import { createRoot } from 'react-dom/client';
       import { useBrowserAddressSuggestions } from './src/app/browser/use-browser-address-suggestions';
-      const STROKE = {};
-      const BrowserSuggestionGlyph = () => <svg className="browser-suggestion-glyph" />;
-      ${list.getText(source)}
+      import { BrowserSuggestionList } from './src/app/browser/browser-suggestion-list';
       function App() {
         const [count, setCount] = useState(2);
         const [open, setOpen] = useState(false);
@@ -54,11 +46,11 @@ app.whenReady().then(async () => {
           </div>
         </div><main className="browser-start-page" data-native-page="true" data-has-wallpaper="true" style={{background:'magenta'}} /></div>;
       }
-      const root = createRoot(document.getElementById('root'));
+      const root = createRoot(document.body);
       window.unmount = () => root.unmount();
       root.render(<App />);
     ` },
-    bundle: true, write: false, format: "iife", platform: "browser",
+    bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic",
     define: { "process.env.NODE_ENV": '"production"' },
   }).outputFiles[0].text;
   const css = fs.readFileSync(path.join(dashboard, "src/app/globals.css"), "utf8");
@@ -66,7 +58,7 @@ app.whenReady().then(async () => {
     if (req.url === "/app.js") { res.setHeader("Content-Type", "text/javascript"); return res.end(bundle); }
     if (req.url === "/global.css") { res.setHeader("Content-Type", "text/css"); return res.end(css); }
     res.setHeader("Content-Type", "text/html");
-    res.end('<!doctype html><html data-theme="light"><head><link rel="stylesheet" href="/global.css"><style>body{margin:0;font-family:Arial}*,::before,::after{box-sizing:border-box} :root{--font-schibsted:Arial;--font-source-sans:Arial}</style></head><body><div id="root"></div><script src="/app.js"></script></body></html>');
+    res.end('<!doctype html><html data-theme="light"><head><link rel="stylesheet" href="/global.css"><style>body{margin:0;font-family:Arial}*,::before,::after{box-sizing:border-box} :root{--font-schibsted:Arial;--font-source-sans:Arial}</style></head><body><script src="/app.js"></script></body></html>');
   });
   const external = http.createServer((_req, res) => {
     res.setHeader("Content-Type", "text/html");
@@ -107,6 +99,8 @@ app.whenReady().then(async () => {
   if (process.env.BB_ADDRESS_INPUT_ONLY) window.setOpacity(0);
   else window.setAlwaysOnTop(true);
   window.showInactive();
+  await until(() => !manager.hosts.get(window.id).pending && pageView()?.getBounds().y === BROWSER_CONTENT_TOP_INSET,
+    "website finishes presenting before overlay assertions");
   assert.equal(pageView().getBounds().y, BROWSER_CONTENT_TOP_INSET);
   const chromeView = () => window.contentView.children.find(view => view.webContents?.id === chrome.id);
   const chromeAbovePage = () => window.contentView.children.indexOf(chromeView()) > window.contentView.children.indexOf(pageView());

@@ -487,6 +487,20 @@ test("A video link or an earlier attachment selects Watch only when the turn ask
   );
 });
 
+test("Transcript requests select Watch without requiring a question or a singular noun", () => {
+  const url = "https://www.youtube.com/watch?v=IcrBqCFLHIY";
+  for (const text of [
+    `${url} whats the transcript of this video? can you give it to me in full text`,
+    `Get the transcripts from ${url}`,
+    `Download the transcription for ${url}`,
+    `Download transcriptions from ${url}`,
+    `Get subtitles from ${url}`,
+  ]) {
+    assert.equal(selection({ text }).automatic, true, text);
+  }
+  assert.equal(selection({ text: `download ${url}` }).automatic, false);
+});
+
 test("An attached video is linked into the workspace and named as the watch_run source", async () => {
   const store = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-video-store-"));
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-video-workspace-"));

@@ -275,6 +275,8 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
       // Keep the schedule pointed at the prompt it was built from. The
       // resulting sentence itself is the schedule's title.
       promptSlugRef.current = item.slug ?? null;
+      insertToken(item.content ?? "");
+      return;
     }
     const token = `/${item.token ?? item.slug ?? item.name}`;
     // A coding skill only means something behind a coding runtime, exactly as

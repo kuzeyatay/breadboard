@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { sourceRepairRelease } from "./source-repair-release.mjs";
 
 // Keep one manifest entrypoint relative to appRoot in both supported layouts:
 //   dev:      <repo>/dashboard/scripts/this-file
@@ -35,7 +36,14 @@ if (servers.length !== 1) {
   process.exit(78);
 }
 
-const server = servers[0];
+const release = await sourceRepairRelease();
+const server = release ? path.join(release.root, "dashboard", ".next-desktop", "standalone", "server.js") : servers[0];
+process.env.BREADBOARD_SOURCE_RELEASE_ID = release?.id ?? "";
+if (release) {
+  process.env.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR = path.join(release.root, "dashboard");
+  process.env.BREADBOARD_LEARN_WORKER_DASHBOARD_ROOT = path.join(release.root, "dashboard");
+  process.env.BREADBOARD_LEARN_SOURCE_ROOT = path.join(release.root, "dashboard", "src");
+}
 // Rust's canonical paths include the Windows namespace; Node's realpath omits
 // it. Keep dashboard data paths in Node's spelling, including in existing
 // standalone builds whose artifact guards compare canonical paths directly.

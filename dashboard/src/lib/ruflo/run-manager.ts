@@ -121,6 +121,13 @@ export function stripAnsi(value: string): string {
   return value.replace(ANSI, "");
 }
 
+/** Preserve the actual launcher error instead of Node's trailing version. */
+export function rufloProcessError(stderr: string): string {
+  const lines=stripAnsi(stderr).split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  return lines.find(line=>/^(?:[A-Z][A-Za-z]*)?Error(?:\s*\[[^\]]+\])?:/.test(line)) ??
+    lines.filter(line=>!/^Node\.js v\d/.test(line)).at(-1) ?? "";
+}
+
 /** Ruflo prints its hive summary as a decorated list; read it back field by field. */
 export function parseSwarmPlan(stdout: string): Omit<RufloSwarmPlan, "promptFile"> & {
   promptFile: string;
@@ -642,7 +649,7 @@ export function startRuntimeWorkerRun(
         const rufloError = /^\[ERROR\]\s*(.+)$/m.exec(stripAnsi(stdout));
         fail(
           rufloError?.[1]?.trim() ||
-            stripAnsi(run.stderr).trim().split(/\r?\n/).filter(Boolean).at(-1) ||
+            rufloProcessError(run.stderr) ||
             `${failureMessage} (exit code ${code ?? "unknown"}).`,
         );
         return;
@@ -837,7 +844,7 @@ export function startRuntimeWorkerRun(
       run.status = "failed";
       emit(run, "run.failed", {
         error:
-          stripAnsi(run.stderr).trim().split(/\r?\n/).filter(Boolean).at(-1) ||
+          rufloProcessError(run.stderr) ||
           `The Ruflo swarm exited with code ${code ?? "unknown"}.`,
         elapsedSec,
         toolCount: run.toolCount,

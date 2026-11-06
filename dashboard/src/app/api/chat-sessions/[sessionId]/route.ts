@@ -43,6 +43,7 @@ import {
   renameConversation,
   setConversationHighlight,
   setConversationPinned,
+  setConversationArchived,
 } from "@/lib/conversations/store";
 import { isChatHighlight } from "@/lib/conversations/highlights";
 import { cancelRuntimeSessionWork } from "@/lib/hermes/session-cancel";
@@ -121,6 +122,7 @@ function normalizeVerification(value: unknown): VerificationSummary | undefined 
 function mergeRuntimeMetadata(
   previous: string | null,
   message: ChatMessage,
+  storedVerification?: unknown,
 ): string | null {
   let metadata: Record<string, unknown> = {};
   try {
@@ -133,7 +135,13 @@ function mergeRuntimeMetadata(
   } catch {
     metadata = {};
   }
-  if (message.verification) metadata.verification = message.verification;
+  // Browsers get a copy without raw tool payloads (detailsTrimmed). Saving
+  // that copy back must not replace the stored summary it was made from.
+  if (message.verification && !message.verification.detailsTrimmed) {
+    metadata.verification = message.verification;
+  } else if (message.verification && !metadata.verification) {
+    metadata.verification = storedVerification ?? message.verification;
+  }
   const uiResources = normalizeGenerativeUiResources(message.uiResources);
   if (uiResources.length) metadata.uiResources = uiResources;
   if (message.attachmentNames?.length) {
@@ -510,6 +518,12 @@ export async function PATCH(
       (runtimeSession) => getActiveRuntimeRun(runtimeSession.id) !== null,
     );
   const messagesToPersist = runtimeOwnsMessages ? undefined : messages;
+  if (body.archived !== undefined && typeof body.archived !== "boolean") {
+    return NextResponse.json(
+      { error: "Archived must be true or false." },
+      { status: 400 },
+    );
+  }
   if (body.pinned !== undefined && typeof body.pinned !== "boolean") {
     return NextResponse.json(
       { error: "Pinned must be true or false." },
@@ -534,7 +548,7 @@ export async function PATCH(
   // loose in the other.
   const needsConversation =
     Boolean(title) || messagesToPersist !== undefined || body.pinned !== undefined ||
-    body.highlight !== undefined || body.branchGroups !== undefined;
+    body.highlight !== undefined || body.branchGroups !== undefined || body.archived !== undefined;
   let conversation = needsConversation
     ? ensureConversationForLegacyChatSession(sessionAccess.id, userId)
     : null;
@@ -583,6 +597,20 @@ export async function PATCH(
       );
     }
   }
+  const canonicalMessages = messagesToPersist?.map((message) => {
+    const publicCanonicalId = message.id?.startsWith("msg_")
+      ? Number(message.id.slice(4)) : Number.NaN;
+    return (Number.isSafeInteger(publicCanonicalId)
+      ? canonicalById.get(publicCanonicalId) : undefined) ??
+      (message.clientMessageId
+        ? canonicalByClientRole.get(`${message.clientMessageId}\u0000${message.role}`)
+        : undefined);
+  });
+  // Reserve all identified rows before matching older, identity-less messages
+  // by text. A repeated prompt can otherwise steal a later message's identity.
+  const reservedCanonicalIds = new Set(
+    canonicalMessages?.flatMap((message) => message ? [message.id] : []) ?? [],
+  );
   const update = db.transaction(() => {
     if (branchGroups) writeGardenResponseBranches(db, sessionAccess.id, branchGroups);
     if (title && conversation) {
@@ -623,6 +651,19 @@ export async function PATCH(
           metadataByCanonicalId.set(metadata.canonical_message_id, metadata);
         }
       }
+      const matchedMetadata = new Set<(typeof runtimeMetadata)[number]>();
+      // Where a trimmed verification finds its full original when the row
+      // match below does not: by turn id, then by identical text.
+      const storedVerifications = new Map<string, unknown>();
+      for (const metadata of runtimeMetadata) {
+        let stored: { verification?: unknown; clientMessageId?: unknown } | null = null;
+        try { stored = metadata.tool_calls ? JSON.parse(metadata.tool_calls) : null; } catch { stored = null; }
+        if (!stored?.verification) continue;
+        if (typeof stored.clientMessageId === "string") {
+          storedVerifications.set(`${metadata.role}\u0000id:${stored.clientMessageId}`, stored.verification);
+        }
+        storedVerifications.set(`${metadata.role}\u0000text:${metadata.content}`, stored.verification);
+      }
       db.prepare("DELETE FROM chat_messages WHERE session_id = ?").run(
         sessionAccess.id,
       );
@@ -633,22 +674,21 @@ export async function PATCH(
       );
       messagesToPersist.forEach((message, index) => {
         const key = `${message.role}\u0000${message.content}`;
-        const publicCanonicalId = message.id?.startsWith("msg_")
-          ? Number(message.id.slice(4))
-          : Number.NaN;
-        const canonical =
-          (Number.isSafeInteger(publicCanonicalId)
-            ? canonicalById.get(publicCanonicalId)
-            : undefined) ??
-          (message.clientMessageId
-            ? canonicalByClientRole.get(
-                `${message.clientMessageId}\u0000${message.role}`,
-              )
-            : undefined);
+        const canonical = canonicalMessages?.[index];
         const canonicalId = canonical?.id ?? null;
         const prior = canonicalId !== null
           ? metadataByCanonicalId.get(canonicalId)
-          : metadataByMessage.get(key)?.shift();
+          : !message.id && !message.clientMessageId
+            ? metadataByMessage.get(key)?.find((candidate) =>
+                !matchedMetadata.has(candidate) &&
+                (candidate.canonical_message_id === null ||
+                  !reservedCanonicalIds.has(candidate.canonical_message_id)),
+              )
+            : undefined;
+        // Consume matches from both lookup paths. Identified messages used to
+        // leave their row in the text queue, causing UNIQUE violations when a
+        // later legacy message had identical content (including empty answers).
+        if (prior) matchedMetadata.add(prior);
         insert.run(
           sessionAccess.id,
           message.role,
@@ -657,7 +697,14 @@ export async function PATCH(
             ? JSON.stringify(message.sources)
             : null,
           message.usage ? JSON.stringify(message.usage) : null,
-          mergeRuntimeMetadata(prior?.tool_calls ?? null, message),
+          mergeRuntimeMetadata(
+            prior?.tool_calls ?? null,
+            message,
+            message.verification?.detailsTrimmed
+              ? storedVerifications.get(`${message.role}\u0000id:${message.clientMessageId}`) ??
+                storedVerifications.get(`${message.role}\u0000text:${message.content}`)
+              : undefined,
+          ),
           prior?.permission_decisions ?? null,
           prior?.runtime_error ?? null,
           prior?.runtime_status ?? null,
@@ -712,6 +759,9 @@ export async function PATCH(
   if (conversation && body.pinned !== undefined) {
     conversation = setConversationPinned(conversation, body.pinned);
   }
+  if (conversation && body.archived !== undefined) {
+    conversation = setConversationArchived(conversation, body.archived);
+  }
   if (conversation && body.highlight !== undefined) {
     conversation = setConversationHighlight(conversation, body.highlight);
   }
@@ -730,6 +780,7 @@ export async function PATCH(
           ...(conversation
             ? {
                 pinned: conversation.pinned_at !== null,
+                archived: conversation.archived_at !== null,
                 highlight: isChatHighlight(conversation.highlight)
                   ? conversation.highlight
                   : null,

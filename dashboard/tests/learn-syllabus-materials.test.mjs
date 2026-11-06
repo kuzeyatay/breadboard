@@ -1332,3 +1332,17 @@ describe("per-lecture book sections from a study guide", () => {
     assert.equal(catalog.canonicalHeadingIndex.truncated, false);
   });
 });
+
+test("syllabus reading rejects a module that bundles a nested outline into one unit", () => {
+  const unit = (id, topics) => ({
+    id, label: id, title: id, objectives: [], topics, questionReferences: [], materialIds: [],
+  });
+  const plan = (units) => ({ courseTitle: "C", courseObjectives: [], referencedMaterials: [], units });
+  const many = Array.from({ length: 14 }, (_, index) => `topic ${index}`);
+  assert.match(
+    modelAuthoredSyllabusPlanProblems(plan([unit("SU1", many), unit("SU2", ["a"])])).join("; "),
+    /bundles 14 topics.*Split it/,
+  );
+  assert.deepEqual(modelAuthoredSyllabusPlanProblems(plan([unit("SU1", many)])), []);
+  assert.deepEqual(modelAuthoredSyllabusPlanProblems(plan([unit("SU1", ["a", "b", "c"]), unit("SU2", ["d"])])), []);
+});

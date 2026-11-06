@@ -33,35 +33,35 @@ export const DEPTHS = [
   {
     value: "single",
     label: "Quick answer",
-    help: "One agent with tools. Fastest, and enough for a single question about one stock.",
+    help: "A fast answer to a single question about one stock.",
     arch: "single",
     mode: "standard",
   },
   {
     value: "multi-quick",
     label: "Short review",
-    help: "The staged orchestrator with its shortest pipeline.",
+    help: "A brief review of the stock’s outlook.",
     arch: "multi",
     mode: "quick",
   },
   {
     value: "multi-standard",
     label: "Standard review",
-    help: "The staged orchestrator's normal pipeline: data, news, strategy, risk, decision.",
+    help: "Reviews market data, news, strategies, and risks before giving a recommendation.",
     arch: "multi",
     mode: "standard",
   },
   {
     value: "multi-full",
     label: "Full decision report",
-    help: "Every stage, for the complete report with scores, levels, risks and a checklist.",
+    help: "A complete report with scores, price levels, risks, and a checklist.",
     arch: "multi",
     mode: "full",
   },
   {
     value: "multi-specialist",
     label: "Strategy panel",
-    help: "Runs several strategy specialists in parallel and reconciles their views.",
+    help: "Compares several investment strategies and brings their findings together.",
     arch: "multi",
     mode: "specialist",
   },
@@ -72,7 +72,7 @@ export type Depth = (typeof DEPTHS)[number]["value"];
 /** The three languages the clone can write a report in. */
 export const REPORT_LANGUAGES = [
   { value: "en", label: "English" },
-  { value: "zh", label: "Chinese", help: "The project's own default." },
+  { value: "zh", label: "Chinese" },
   { value: "ko", label: "Korean" },
 ] as const;
 
@@ -87,7 +87,7 @@ export const STRATEGY_MODES = [
   {
     value: "auto",
     label: "Chosen automatically",
-    help: "The clone's router picks strategies from the current market state.",
+    help: "Selects strategies based on current market conditions.",
   },
   {
     value: "all",

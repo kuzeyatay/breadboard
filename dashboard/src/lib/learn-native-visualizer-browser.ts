@@ -247,13 +247,20 @@ export async function runLearnNativeVisualizerBrowserTests(
     }
     tests.push({ name: "native visual preview", passed: screenshotCreated });
   } finally {
-    // The observed browser runner returns only after its owned process has exited.
-    fs.rmSync(profiles, {
-      recursive: true,
-      force: true,
-      maxRetries: 3,
-      retryDelay: 100,
-    });
+    // The observed browser runner returns only after its owned process has
+    // exited, but Edge's helper processes can still hold the profile on
+    // Windows: EPERM here failed a whole lesson run (telecom-1, 2026-10-05).
+    // A leftover temp profile is harmless; never let cleanup replace results.
+    try {
+      fs.rmSync(profiles, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 500,
+      });
+    } catch {
+      // Left for OS temp cleanup.
+    }
   }
   return {
     tests,

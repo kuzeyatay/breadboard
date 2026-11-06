@@ -281,6 +281,44 @@ test("artifact publication refuses an invalid or non-current CAD revision", asyn
   }
 });
 
+test("publishing a sibling project cannot replace a previous project's artifact", async () => {
+  const context = harness();
+  const previousDataDir = process.env.BREADBOARD_DATA_DIR;
+  process.env.BREADBOARD_DATA_DIR = context.root;
+  try {
+    const { buildCadManifest, publishCadDesign, readStoredCadDesign } = await import("../src/lib/cad/artifact.ts");
+    const artifactContext = {
+      userId: 1, conversationPublicId: "conv_terminal", runtimeSessionId: 20,
+      hermesSessionId: "session", conversationId: 12, clusterId: null,
+      surface: "dashboard_terminal", runId: "run_one", assistantMessageId: null,
+    };
+    const first = createProject(context);
+    recordRevision(context, first, 1);
+    const firstManifest = buildCadManifest({ projectId: first.id, revision: 1, disclaimers: [], database: context.database });
+    const firstArtifact = await publishCadDesign({ context: artifactContext, manifest: firstManifest, database: context.database });
+    assert.ok(firstArtifact);
+    assert.equal(readStoredCadDesign(firstArtifact, context.database)?.projectId, first.id);
+    const sibling = createProject(context);
+    recordRevision(context, sibling, 1);
+    const siblingManifest = buildCadManifest({ projectId: sibling.id, revision: 1, disclaimers: [], database: context.database });
+    const siblingArtifact = await publishCadDesign({ context: artifactContext, manifest: siblingManifest, previousArtifactId: firstArtifact.id, database: context.database });
+    assert.ok(siblingArtifact);
+    assert.notEqual(siblingArtifact.id, firstArtifact.id);
+    assert.equal(readStoredCadDesign(siblingArtifact, context.database)?.projectId, sibling.id);
+    assert.equal(readStoredCadDesign(firstArtifact, context.database)?.projectId, first.id);
+    recordRevision(context, sibling, 2);
+    const revisionManifest = buildCadManifest({ projectId: sibling.id, revision: 2, disclaimers: [], database: context.database });
+    const revised = await publishCadDesign({ context: artifactContext, manifest: revisionManifest, previousArtifactId: siblingArtifact.id, database: context.database });
+    assert.equal(revised?.id, siblingArtifact.id);
+    assert.equal(revised?.current_version, 2);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.BREADBOARD_DATA_DIR;
+    else process.env.BREADBOARD_DATA_DIR = previousDataDir;
+    context.database.close();
+    fs.rmSync(context.root, { recursive: true, force: true });
+  }
+});
+
 test("earlier revisions and their files remain readable", () => {
   const context = harness();
   try {

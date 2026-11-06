@@ -11,6 +11,21 @@ from chatmock import subscription_voice as voice
 
 
 class SubscriptionVoiceTests(unittest.TestCase):
+    def test_native_session_publishes_owner_and_child_until_close(self):
+        proc = Mock(pid=os.getpid())
+        with patch.object(voice.subprocess, "Popen", return_value=proc), patch.object(
+            voice.threading, "Thread"
+        ), patch.object(voice.threading, "Timer"):
+            session = voice.VoiceSession("1", "codex")
+            try:
+                marker = session.temp_lease.path
+                self.assertEqual(json.loads(marker.read_text())["pids"], [os.getpid(), proc.pid])
+                session.record_usage = Mock()
+            finally:
+                session.close()
+            self.assertFalse(marker.exists())
+            self.assertFalse(os.path.exists(session.home))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="breadboard-voice-unit-")
         self.env = patch.dict(os.environ, {"CODEX_HOME": self.temp.name})

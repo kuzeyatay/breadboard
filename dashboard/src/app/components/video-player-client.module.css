@@ -1,0 +1,81 @@
+/* Media always sits on a dark stage. App-wide white/gray utilities deliberately
+   become dark ink in the light theme, so this surface owns its literal palette. */
+.player {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - var(--breadboard-titlebar-height, 0px));
+  min-height: 0;
+  overflow: hidden;
+  background: #101713;
+  color: #f3f7f4;
+  color-scheme: dark;
+}
+
+.player:fullscreen { height: 100dvh; width: 100%; }
+
+.header {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #405048;
+  background: #18231d;
+}
+
+.heading { flex: 1; min-width: 0; }
+.title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; color: #f3f7f4; }
+
+.button {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid #65776b;
+  border-radius: 8px;
+  background: #283a2f;
+  color: #f3f7f4;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) { background: #3c5444; }
+.button:focus-visible, .seek:focus-visible, .volumeSlider:focus-visible { outline: 2px solid #c0f1cb; outline-offset: 4px; }
+.button:disabled { opacity: .5; cursor: not-allowed; }
+.primary { background: #b4debf; color: #102519; border-color: #b4debf; min-width: 94px; }
+.primary:hover:not(:disabled) { background: #d0eed7; }
+
+.stage { display: flex; min-height: 0; flex: 1; align-items: center; justify-content: center; padding: 16px; background: #080d0a; }
+.video { width: 100%; height: 100%; min-height: 0; object-fit: contain; cursor: pointer; border-radius: 10px; }
+.error { max-width: 480px; text-align: center; color: #e0eae3; font-size: 14px; }
+.error a { color: #c0f1cb; text-decoration: underline; }
+.error .button { display: flex; margin: 16px auto 0; }
+
+.controls { flex-shrink: 0; padding: 12px 16px; border-top: 1px solid #405048; background: #18231d; }
+.timeline { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.time { flex-shrink: 0; color: #d4dfd7; font: 12px ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.seek { flex: 1; min-width: 0; height: 6px; border-radius: 999px; appearance: none; cursor: pointer; }
+.seek::-webkit-slider-thumb { appearance: none; width: 16px; height: 16px; border: 2px solid #18231d; border-radius: 50%; background: #d0eed7; }
+.seek::-moz-range-thumb { width: 14px; height: 14px; border: 2px solid #18231d; border-radius: 50%; background: #d0eed7; }
+.seek:disabled { cursor: default; }
+.transport { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.volume { display: flex; align-items: center; gap: 8px; }
+.volumeSlider { width: 88px; accent-color: #b4debf; cursor: pointer; }
+.fullscreen { margin-left: auto; }
+
+@media (max-width: 600px) {
+  .optionalLabel { display: none; }
+  .header { gap: 8px; padding: 8px; }
+  .controls { padding: 10px; }
+  .stage { padding: 8px; }
+  .button { padding: 8px; }
+  .volumeSlider { width: 64px; }
+}

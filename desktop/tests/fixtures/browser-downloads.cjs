@@ -5,6 +5,7 @@ const path = require("node:path");
 const { createRequire } = require("node:module");
 const { app, BrowserWindow, ipcMain, session } = require("electron");
 const { BrowserDownloads } = require("../../dist/main/browser-downloads.js");
+const { DownloadSettings } = require("../../dist/main/download-settings.js");
 const { IPC_CHANNELS, isBrowserDownloadCommand } = require("../../dist/shared/ipc-contract.js");
 const [dir, phase] = process.argv.slice(2);
 app.setPath("userData", path.join(dir, `profile-${phase}`));
@@ -25,8 +26,8 @@ app.whenReady().then(async () => {
     showItemInFolder: file => shown.push(file),
   });
   const browserSession = session.fromPartition("persist:breadboard-browser");
-  // Only the fixture supplies a save path, avoiding a native dialog in CI.
-  browserSession.on("will-download", (_event, item) => item.setSavePath(path.join(dir, item.getFilename())));
+  // Exercise the production download policy: automatic saves need no dialog.
+  new DownloadSettings(path.join(dir, "settings"), dir).attach(browserSession);
   downloads.attach(browserSession);
   ipcMain.handle(IPC_CHANNELS.getBrowserDownloads, () => downloads.snapshot());
   ipcMain.handle(IPC_CHANNELS.browserDownloadCommand, (_event, command) => {

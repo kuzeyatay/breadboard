@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import { createRequire } from "node:module";
+import { createRequire, registerHooks } from "node:module";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import os from "node:os";
@@ -11,7 +11,22 @@ import AdmZip from "adm-zip";
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-steering-"));
 process.env.BREADBOARD_DATA_DIR = dataRoot;
 process.env.BREADBOARD_CHAT_DOCUMENT_DIR = path.join(dataRoot, "documents");
+const hooks = registerHooks({ resolve(specifier, context, next) {
+  if (specifier === "server-only") return { url: "data:text/javascript,export {};", shortCircuit: true };
+  if (/^\.{1,2}\//.test(specifier) && !path.extname(specifier) && context.parentURL?.startsWith("file:")) {
+    const candidate = new URL(`${specifier}.ts`, context.parentURL);
+    if (fs.existsSync(fileURLToPath(candidate))) return { url: candidate.href, shortCircuit: true };
+  }
+  if (specifier.startsWith("@/")) {
+    const candidate = new URL(`../src/${specifier.slice(2)}${path.extname(specifier) ? "" : ".ts"}`, import.meta.url);
+    if (fs.existsSync(fileURLToPath(candidate))) return { url: candidate.href, shortCircuit: true };
+  }
+  return next(specifier, context);
+} });
 const { default: db } = await import("../src/lib/db.ts");
+const { prepareDocumentContext } = await import("../src/lib/document-skills/turn.ts");
+const { storeDocumentText } = await import("../src/lib/conversations/document-reading-store.ts");
+const sourceStore = await import("../src/lib/document-skills/store.ts");
 const runs = await import("../src/lib/hermes/run-store.ts");
 const conversations = await import("../src/lib/conversations/store.ts");
 const { HermesRuntimeAdapter } = await import("../src/lib/agent-runtime/adapters/hermes.ts");
@@ -19,7 +34,7 @@ const { hermesMessageId } = await import("../src/lib/hermes/message-id.ts");
 const documents = await import("../src/lib/document-attachments-server.ts");
 const routeCore = await import("../src/lib/hermes/route-core.ts");
 const { writeDocumentBlob } = await import("../src/lib/conversations/document-blob-store.ts");
-const state = { db, runs, conversations, documents, routeCore, calls: [], audit: [], session: null, deliver: async () => true };
+const state = { db, runs, conversations, documents, prepareDocumentContext, routeCore, calls: [], audit: [], session: null, deliver: async () => true };
 globalThis.__steeringTest = state;
 
 const bundle = await esbuild.build({
@@ -38,6 +53,7 @@ const bundle = await esbuild.build({
       });`,
       "@/lib/hermes/runtime-store.ts": "export const recordAuditEvent = event => globalThis.__steeringTest.audit.push(event);",
       "@/lib/document-attachments-server.ts": "export const { hydrateDocumentAttachments, stageEditableDocumentAttachments } = globalThis.__steeringTest.documents;",
+      "@/lib/document-skills/turn.ts": "export const { prepareDocumentContext } = globalThis.__steeringTest;",
       "@/lib/hermes/run-store.ts": `export const {
         acceptSteerRequest, failSteerRequest, getActiveRuntimeRun,
         getRuntimeRun, getSteerRequest, parseRuntimeRunDispatch, reserveSteerRequest
@@ -61,7 +77,7 @@ new Function("require", "module", "exports", bundle.outputFiles[0].text)(createR
 const { POST } = fixture.exports;
 
 beforeEach(() => {
-  db.exec("DELETE FROM hermes_runtime_sessions; DELETE FROM conversations; DELETE FROM users;");
+  db.exec("DELETE FROM document_skills; DELETE FROM hermes_runtime_sessions; DELETE FROM conversations; DELETE FROM users;");
   db.prepare("INSERT INTO users(id, username, email, password_hash) VALUES (1, 'steer', 'steer@example.test', 'x')").run();
   const chat = conversations.createConversation({ userId: 1, title: "Steering" });
   conversations.reserveConversationTurn({ conversation: chat, clientMessageId: "original-request-01", surface: "dashboard_terminal", content: "Original" });
@@ -75,7 +91,7 @@ beforeEach(() => {
   state.run = runs.beginRuntimeRun({ runtimeSessionId: state.session.row.id, instruction: "Original", dispatch: { clientMessageId: "original-request-01" } });
   state.calls = []; state.audit = []; state.deliver = async () => true;
 });
-after(() => { delete globalThis.__steeringTest; db.close(); fs.rmSync(dataRoot, { recursive: true, force: true }); });
+after(() => { delete globalThis.__steeringTest; db.close(); hooks.deregister(); fs.rmSync(dataRoot, { recursive: true, force: true }); });
 
 function request(clientRequestId = "correction-01", text = "Use SQLite", attachments = [], textSelection) {
   return POST(new Request("http://test/steer", {
@@ -137,6 +153,27 @@ test("steering accepts attachment payloads above the old text-only body limit", 
   const attachment = { type: "image", name: "scan.png", dataUrl: `data:image/png;base64,${"A".repeat(300_000)}` };
   assert.equal((await request("large-image", "Inspect this", [attachment])).status, 200);
   assert.equal(state.calls[0].attachments[0].dataUrl, attachment.dataUrl);
+});
+
+test("PDF steering hydrates a stored book but sends its index and current page instead of the whole reading", async () => {
+  const bytes = Buffer.from('%PDF-1.4\n%%EOF');
+  const blob = await writeDocumentBlob({ userId: 1, format: "pdf", body: new Blob([bytes]).stream() });
+  const text = '[[Page 1]]\n' + 'Exact source text. '.repeat(100_000);
+  storeDocumentText({ userId: 1, blobId: blob.blobId }, text);
+  const response = await request("pdf-correction", "What is q enclosed here?", [
+    { type: "text", context: "pdf", name: "PDF reading context.txt", text: "Current page 948: net enclosed charge." },
+    { type: "document", context: "pdf", name: "calculus.pdf", format: "pdf", blobId: blob.blobId, text: "" },
+  ]);
+  assert.equal(response.status, 200);
+  const sent = state.calls[0];
+  assert.match(sent.text, /What is q enclosed here\?/);
+  assert.match(sent.text, /Documents in play/);
+  assert.ok(sent.text.length + sent.attachments.reduce((sum, item) => sum + (item.text?.length ?? 0), 0) < 60_000);
+  assert.match(sent.attachments[0].text, /Current page 948/);
+  assert.equal(sent.attachments[1].blobId, blob.blobId);
+  const slug = sent.text.match(/<document_skill slug="([^"]+)"/)[1];
+  assert.equal(sourceStore.listSkillFiles(slug).filter(file => file.path.startsWith("source/"))
+    .map(file => sourceStore.readSkillFile(slug, file.path)).join(""), text);
 });
 
 test("completion before acknowledgement retains the original run and correction target", async () => {

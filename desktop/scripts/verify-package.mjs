@@ -986,7 +986,7 @@ const PACKAGED_SERVICE_CLOSURE_POLICIES = Object.freeze({
     externalBoundary: ["user-configured Bambu LAN printer, supported firmware/Developer Mode, and explicit print approval"],
   },
   cliproxy: { dataRoot: "none", bootstrap: ["runtime-root:bin/cliproxy-runtime-artifact.json"] },
-  quartz: { dataRoot: "none", bootstrap: ["app-root:dashboard/scripts/runtime-v2-quartz-static-service.mjs", "app-root:dashboard/scripts/quartz-canonical-reader-bridge.mjs"] },
+  quartz: { dataRoot: "none", bootstrap: ["app-root:dashboard/scripts/runtime-v2-quartz-static-service.mjs", "app-root:dashboard/scripts/quartz-canonical-reader-bridge.mjs", "app-root:dashboard/scripts/quartz-reader-shell.mjs"] },
   "ui-tars": { dataRoot: "none", bootstrap: ["app-root:ui-tars-adapter/package.json"] },
   cad: { dataRoot: "none", bootstrap: ["app-root:cad-service/runtime-artifact.json"] },
   "solidworks-mcp": {
@@ -2723,6 +2723,7 @@ function checkResourcesRoot(resources, binRoot, label) {
     "quartz-publication-contract.mjs",
     "runtime-v2-quartz-static-service.mjs",
     "quartz-canonical-reader-bridge.mjs",
+    "quartz-reader-shell.mjs",
     "runtime-v2-managed-python-service.mjs",
     "runtime-v2-managed-setup-worker.mjs",
     "runtime-v2-managed-setup-executor.mjs",
@@ -2817,6 +2818,8 @@ function checkResourcesRoot(resources, binRoot, label) {
     "runtime-v2-subsai-worker-layout.mjs",
     "runtime-v2-speech-media-worker.mjs",
     "runtime-v2-speech-media-executor.mjs",
+    "runtime-v2-paths.mjs",
+    "runtime-v2-bulk-paths.mjs",
     "runtime-v2-outer-agent-worker-core.mjs",
     "runtime-v2-outer-agent-adapters.mjs",
     "runtime-v2-system-location-worker.mjs",
@@ -5038,6 +5041,14 @@ function checkResourcesRoot(resources, binRoot, label) {
     path.join(resources, "app-services", "mcp-google-images-search", "src", "index.js"),
     `${label} Google image-search MCP entrypoint`,
   );
+  for (const file of ["dist/index.js", "extension/manifest.json", "LICENSE", "node_modules/@modelcontextprotocol/sdk/package.json", "node_modules/playwright/package.json", "node_modules/zod/package.json"]) {
+    requireFile(path.join(resources, "app-services", "google-flow-mcp", file), `${label} Google Flow ${file}`);
+  }
+  for (const script of ["launch-google-flow.mjs", "google-flow-browser.mjs", "connect-google-flow.mjs"]) {
+    requireFile(path.join(resources, "app-services", "scripts", script), `${label} Google Flow ${script}`);
+  }
+  requireFile(path.join(resources, "app-services", "hermes-skills", "prebuilt", "veo", "SKILL.md"), `${label} Featured Veo skill`);
+  requireSourceCommitReceipt(path.join(resources, "app-services", "google-flow-mcp"), `${label} Google Flow reviewed source`, "6826452a4a2e93bf7313d1be1626a9034fd7dc27");
   requireFile(
     path.join(resources, "app-services", "mcp-google-images-search", "LICENSE"),
     `${label} Google image-search MCP license`,
@@ -5269,7 +5280,7 @@ function checkResourcesRoot(resources, binRoot, label) {
     path.join(resources, "app-services", "quartz-template", "node_modules", "preact", "package.json"),
     `${label} Quartz node_modules`,
   );
-  for (const name of ["text-highlight-client.ts", "text-highlight-types.ts"]) {
+  for (const name of ["text-highlight-client.ts", "text-highlight-types.ts", "text-highlight-transport.ts"]) {
     requireFile(
       path.join(resources, "app-services", "quartz-template", "quartz", "components", "scripts", name),
       `${label} Quartz highlight persistence ${name}`,

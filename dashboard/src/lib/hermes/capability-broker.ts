@@ -34,6 +34,7 @@ import {
   SKILL_LESSON_TOOLS,
   MESSAGING_TOOLS,
   MANIM_TOOLS,
+  MULTISIM_TOOLS,
   MAP_TOOLS,
   IMAGE_SEARCH_TOOLS,
   FEYNMAN_TOOLS,
@@ -67,7 +68,6 @@ import {
   candidatePathsForAlias,
   describePermissions,
   isWithinRoot,
-  permissionsForCapabilities,
   realPathAllowingMissing,
   type ApprovedFilesystemRoot,
   type FilesystemOperation,
@@ -183,6 +183,7 @@ const GARDEN_READ_TOOLS = [
 const GARDEN_WRITE_TOOLS = [
   "garden_run_proposal_validation",
   "garden_save_note",
+  "garden_decide_proposals",
   "garden_create_folder",
   "garden_move_page",
   "garden_rename_folder",
@@ -244,6 +245,7 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...MUSIC_RECOGNITION_TOOLS,
       ...MANIM_TOOLS,
       ...AGENT_LOOP_TOOLS,
+      ...MULTISIM_TOOLS,
       ...OMH_TOOLS,
       ...MESSAGING_TOOLS,
       ...RECALL_TOOLS,
@@ -468,7 +470,7 @@ export function brokerCapabilities(input: BrokerInput): CapabilityGrant {
       interactiveApprovals: input.interactiveApprovals !== false,
     },
   );
-  if (isolated) for (const tool of FEYNMAN_TOOLS) allowedTools[tool] = false;
+  if (isolated) for (const tool of [...FEYNMAN_TOOLS, ...MULTISIM_TOOLS]) allowedTools[tool] = false;
   const permissionRules = buildPermissionRules(
     granted,
     authorizedRoots,
@@ -514,7 +516,7 @@ function buildFilesystemRequests(
   plan: TaskPlan,
   resources: TaskPlan["requiredResources"],
 ): PendingPermission[] {
-  const permissions: FilesystemPermissions = permissionsForCapabilities([capability]);
+  const permissions = permissionsFromOperations(operations);
   const pathResources = resources.filter((resource) => resource.kind === "path");
   if (pathResources.length === 0) {
     return [{
@@ -715,6 +717,17 @@ function buildToolMap(
   for (const tool of MEMORY_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  // The user's own Gardens are the product's own material, so reaching them is
+  // not a capability class the turn has to argue for. Gating them on the
+  // planner's lexical `garden` signal meant "check the study guides under my
+  // classes" arrived with no retrieval tool at all and the model answered that
+  // it could not see the workspace. Read and write both follow memory's scope:
+  // the two authenticated conversational surfaces, never anonymous Quartz,
+  // which keeps its narrower grant-driven path above. The capability token
+  // still pins the call to the gardens the server authorized.
+  if (authenticated && (surface === "dashboard_terminal" || surface === "garden_chat")) {
+    for (const tool of [...GARDEN_READ_TOOLS, ...GARDEN_WRITE_TOOLS]) map[tool] = true;
+  }
   // Proposing an automation is inert until the user accepts it, and the moment
   // to propose is whenever the agent notices the repetition -- which is not a
   // capability class of its own. So it follows memory's scope rather than the
@@ -762,6 +775,12 @@ function buildToolMap(
   // Loop design is a knowledge-work activity: it reads and writes only the
   // session's own workspace, so it does not depend on the turn's coding class.
   for (const tool of AGENT_LOOP_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
+  // Circuit simulation is confined to the owning conversation's workspace.
+  // Super Agent can choose it without a slash command or a filesystem grant;
+  // the callback validates the active grant and the runtime gates installation.
+  for (const tool of MULTISIM_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
   // Asking OMH which workflow a request belongs to is advisory reading over the

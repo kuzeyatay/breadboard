@@ -1,6 +1,9 @@
 """Pure tool-call guardrail primitive tests."""
 
 import json
+from copy import deepcopy
+
+import pytest
 
 
 def test_rephrasing_discovery_without_new_tools_triggers_finalization():
@@ -30,7 +33,58 @@ from agent.tool_guardrails import (
     ToolCallSignature,
     canonical_tool_args,
     classify_tool_failure,
+    append_toolguard_guidance,
+    ToolGuardrailDecision,
 )
+
+
+def _image_result(pixels="AAAA", text="Screenshot"):
+    return {
+        "_multimodal": True,
+        "content": [
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{pixels}"}},
+        ],
+        "text_summary": text,
+        "meta": {"native_vision": True},
+    }
+
+
+@pytest.mark.parametrize("explicit_failure", [True, False])
+def test_image_results_are_hashed_without_losing_pixels_or_repeat_detection(explicit_failure):
+    controller = ToolCallGuardrailController()
+    result = _image_result()
+    original = deepcopy(result)
+    kwargs = {"failed": False} if explicit_failure else {}
+    assert controller.after_call("attachment_image", {"image": 1}, result, **kwargs).action == "allow"
+    # Dictionary insertion order must not change the repeat identity.
+    repeat = controller.after_call("attachment_image", {"image": 1}, dict(reversed(list(result.items()))), **kwargs)
+    assert repeat.code == "idempotent_no_progress_warning"
+    assert repeat.count == 2
+    # The same caption with different pixels represents new evidence.
+    changed = controller.after_call("attachment_image", {"image": 1}, _image_result("BBBB"), **kwargs)
+    assert changed.action == "allow"
+    assert changed.count == 1
+    assert result == original
+
+
+@pytest.mark.parametrize("action", ["warn", "halt"])
+@pytest.mark.parametrize("has_text", [True, False])
+def test_guardrail_guidance_preserves_image_envelopes_and_prior_history(action, has_text):
+    result = _image_result()
+    if not has_text:
+        result["content"].pop(0)
+        result.pop("text_summary")
+    original = deepcopy(result)
+    decision = ToolGuardrailDecision(action=action, code="test_loop", count=2, message="Use the existing evidence.")
+    updated = append_toolguard_guidance(result, decision)
+    assert updated["_multimodal"] is True
+    assert updated["meta"] == result["meta"]
+    assert [p for p in updated["content"] if p["type"] == "image_url"] == [original["content"][-1]]
+    assert "Use the existing evidence." in next(p["text"] for p in updated["content"] if p["type"] == "text")
+    assert "Use the existing evidence." in updated["text_summary"]
+    assert "data:image" not in updated["text_summary"]
+    assert result == original
 
 
 def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposing_raw_args():

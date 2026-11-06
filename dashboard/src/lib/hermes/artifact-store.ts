@@ -673,7 +673,7 @@ export function createArtifact(input: CreateArtifactInput): ArtifactRow {
         kind, renderer_id, title, filename, mime_type, status, current_version,
         parent_artifact_id, source_skill, source_mcp_server, source_mcp_tool,
         source_hermes_tool, metadata_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating', 1, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       artifactId, input.userId, input.runtimeSessionId, input.hermesSessionId,
       input.conversationId, input.clusterId, input.runId, input.assistantMessageId,
@@ -685,10 +685,10 @@ export function createArtifact(input: CreateArtifactInput): ArtifactRow {
     database.prepare(`
       INSERT INTO hermes_artifact_versions (
         id, artifact_id, version, status, source_location, mime_type, metadata_json, created_at, updated_at
-      ) VALUES (?, ?, 1, 'generating', ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, 1, 'draft', ?, ?, ?, ?, ?)
     `).run(versionId, artifactId, sourceLocation, renderer.mimeType, metadata, now, now);
     insertEvent(database, artifactId, input.runId, input.conversationId, input.clusterId,
-      input.assistantMessageId, "artifact.created", "generating", version,
+      input.assistantMessageId, "artifact.created", "draft", version,
       { title, kind: input.kind, renderer: input.rendererId, filename });
   });
   transaction.immediate();
@@ -1785,28 +1785,28 @@ export function updateArtifactContent(input: {
         INSERT INTO hermes_artifact_versions (
           id, artifact_id, version, previous_version_id, status, source_location,
           mime_type, metadata_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'generating', ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)
       `).run(`artv_${randomUUID()}`, input.artifact.id, nextVersion, previous.id,
         sourceLocation, input.artifact.mime_type, metadata, now, now);
       insertEvent(database, input.artifact.id, input.runId, input.artifact.conversation_id,
         input.artifact.cluster_id, input.assistantMessageId, "artifact.version_created",
-        "generating", nextVersion, { previousVersion: input.artifact.current_version });
+        "draft", nextVersion, { previousVersion: input.artifact.current_version });
     } else {
       database.prepare(`
         UPDATE hermes_artifact_versions
-        SET status = 'generating', preview_location = NULL, output_location = NULL,
+        SET status = 'draft', preview_location = NULL, output_location = NULL,
             byte_size = NULL, content_hash = NULL, metadata_json = ?, error_json = NULL,
             updated_at = ? WHERE artifact_id = ? AND version = ?
       `).run(metadata, now, input.artifact.id, nextVersion);
     }
     database.prepare(`
       UPDATE hermes_artifacts
-      SET status = 'generating', current_version = ?, preview_location = NULL,
+      SET status = 'draft', current_version = ?, preview_location = NULL,
           output_location = NULL, byte_size = NULL, content_hash = NULL,
           metadata_json = ?, error_json = NULL, updated_at = ? WHERE id = ?
     `).run(nextVersion, metadata, now, input.artifact.id);
     insertEvent(database, input.artifact.id, input.runId, input.artifact.conversation_id,
-      input.artifact.cluster_id, input.assistantMessageId, "artifact.updated", "generating",
+      input.artifact.cluster_id, input.assistantMessageId, "artifact.updated", "draft",
       nextVersion, { mode: input.mode });
   });
   transaction.immediate();
@@ -1835,10 +1835,17 @@ async function renderArtifactInner(input: {
   const root = storageRoot(input.storageRoot);
   const directory = path.dirname(resolveStoredPath(root, version.source_location));
   const now = new Date().toISOString();
-  database.prepare(`UPDATE hermes_artifacts SET status = 'generating', updated_at = ? WHERE id = ?`).run(now, input.artifact.id);
-  insertEvent(database, input.artifact.id, input.runId, input.artifact.conversation_id,
-    input.artifact.cluster_id, input.assistantMessageId, "artifact.rendering", "generating",
-    version.version, { renderer: renderer.id });
+  // Saving source does not start a renderer. Only this execution may advertise
+  // active generation, so an interrupted create/update remains an honest draft.
+  const startRendering = database.transaction(() => {
+    database.prepare(`UPDATE hermes_artifacts SET status = 'generating', updated_at = ? WHERE id = ?`).run(now, input.artifact.id);
+    database.prepare(`UPDATE hermes_artifact_versions SET status = 'generating', updated_at = ? WHERE artifact_id = ? AND version = ?`)
+      .run(now, input.artifact.id, version.version);
+    insertEvent(database, input.artifact.id, input.runId, input.artifact.conversation_id,
+      input.artifact.cluster_id, input.assistantMessageId, "artifact.rendering", "generating",
+      version.version, { renderer: renderer.id });
+  });
+  startRendering.immediate();
   const runtimeStage = { cleanup: null as (() => void) | null };
   try {
     const metadata = parseObject(input.artifact.metadata_json);

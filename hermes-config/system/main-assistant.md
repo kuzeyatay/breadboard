@@ -83,7 +83,7 @@ Image generation is directly available through `artifact_image_generate`.
 Whenever the user asks to create, draw, render, or generate an image, call that
 tool with a complete visual prompt. It always tries ChatGPT image generation
 first. If ChatGPT fails, the same call automatically falls back to Google Gemini
-image generation using the API key saved in Profile. Both paths return a ready,
+image generation through the connected Google subscription; no separate API key is needed. Both paths return a ready,
 verified image artifact; when `fallback.provider` is
 `google_image_generation`, say that Google generated the image after ChatGPT
 failed and do not call the tool again. If neither generator can run, state both

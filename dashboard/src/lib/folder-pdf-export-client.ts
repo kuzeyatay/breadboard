@@ -1,3 +1,5 @@
+import { downloadPdf } from "./pdf-download-client";
+
 export interface FolderPdfExportMessage {
   requestId?: string;
   cluster?: string;
@@ -13,17 +15,7 @@ export interface FolderPdfExportResult {
   requestId: string;
   ok: boolean;
   error?: string;
-}
-
-function downloadBlob(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  message?: string;
 }
 
 function filenameFromDisposition(
@@ -88,7 +80,7 @@ export async function exportFolderPdf(
   }
 
   try {
-    const documents: Array<{ content: string; title: string }> = [];
+    const documents: Array<{ content: string; title: string; slug: string; folderTitle: string }> = [];
     for (let offset = 0; offset < selected.length; offset += 8) {
       const batch = selected.slice(offset, offset + 8);
       const loaded = await Promise.all(
@@ -110,7 +102,10 @@ export async function exportFolderPdf(
             );
           }
           return {
+            slug: typeof body.sourceSlug === "string" ? body.sourceSlug : slug,
             content: body.content,
+            folderTitle: typeof body.folderTitle === "string" && body.folderTitle.trim()
+              ? body.folderTitle.trim() : folderTitle,
             title:
               typeof document.title === "string" && document.title.trim()
                 ? document.title.trim()
@@ -127,6 +122,7 @@ export async function exportFolderPdf(
       body: JSON.stringify({
         clusterSlug,
         title: folderTitle,
+        folderTitle,
         fileName: folderTitle,
         documents,
       }),
@@ -139,14 +135,14 @@ export async function exportFolderPdf(
     }
 
     const blob = await pdfResponse.blob();
-    downloadBlob(
+    const savedMessage = await downloadPdf(
       blob,
       filenameFromDisposition(
         pdfResponse.headers.get("Content-Disposition"),
         fallbackFileName(folderTitle),
       ),
     );
-    return result(true);
+    return { ...result(true), message: savedMessage };
   } catch (error) {
     return result(
       false,

@@ -91,3 +91,78 @@ export async function transcribeWebAudio(
   if (typeof body?.text !== "string") throw new RouteError(502, "ChatGPT returned an invalid transcript.");
   return { text: body.text.trim() };
 }
+
+/** One thing said in a ChatGPT voice conversation, as ChatGPT stored it. */
+export interface WebLiveMessage { id: string; role: "user" | "assistant"; text: string }
+
+function liveMessages(value: unknown): WebLiveMessage[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((row): WebLiveMessage[] => {
+    if (!row || typeof row !== "object") return [];
+    const { id, role, text } = row as Record<string, unknown>;
+    if (typeof id !== "string" || (role !== "user" && role !== "assistant") || typeof text !== "string" || !text.trim()) return [];
+    return [{ id, role, text: text.trim() }];
+  });
+}
+
+async function liveJson(response: Response, fallback: string): Promise<Record<string, unknown>> {
+  if (!response.ok) throw await bridgeFailure(response, fallback);
+  return ((await response.json().catch(() => null)) ?? {}) as Record<string, unknown>;
+}
+
+/**
+ * ChatGPT voice: ChatGPT's own voice conversation in the driven page, posted
+ * the chat so far first so it knows the context. See chatgpt_web_live.py.
+ */
+export async function startWebLive(userId: number, context: string, signal?: AbortSignal): Promise<{ id: string }> {
+  const response = await voiceBridgeFetch(
+    userId,
+    "web/live",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ context }), signal },
+    // Opening a chat, posting the context and starting the voice.
+    { timeoutMs: 4 * 60_000, unavailable: UNAVAILABLE },
+  );
+  const body = await liveJson(response, "ChatGPT voice could not start.");
+  if (typeof body.id !== "string") throw new RouteError(502, "ChatGPT voice did not start.");
+  return { id: body.id };
+}
+
+export async function pollWebLive(userId: number, id: string, signal?: AbortSignal): Promise<{ active: boolean; messages: WebLiveMessage[]; speaking: boolean; muted: boolean }> {
+  const response = await voiceBridgeFetch(userId, `web/live/${encodeURIComponent(id)}`, { signal }, { timeoutMs: 60_000, unavailable: UNAVAILABLE });
+  const body = await liveJson(response, "ChatGPT voice stopped answering.");
+  return { active: body.active === true, messages: liveMessages(body.messages), speaking: body.speaking === true, muted: body.muted === true };
+}
+
+/** Voice mode's ring: mute or unmute the call with the site's own button. */
+export async function listenWebLive(userId: number, id: string, on: boolean): Promise<{ muted: boolean }> {
+  const response = await voiceBridgeFetch(
+    userId,
+    `web/live/${encodeURIComponent(id)}/microphone`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on }) },
+    { timeoutMs: 60_000, unavailable: UNAVAILABLE },
+  );
+  const body = await liveJson(response, "The microphone could not be switched.");
+  return { muted: body.muted === true };
+}
+
+/** The screen's presence: held open while it shows the call. Its closing
+ * (the tab closed, however abruptly) is how ChatMock learns the screen left. */
+export async function presenceWebLive(userId: number, id: string, signal: AbortSignal): Promise<Response> {
+  const response = await voiceBridgeFetch(userId, `web/live/${encodeURIComponent(id)}/presence`, { signal }, { timeoutMs: 5 * 60_000, unavailable: UNAVAILABLE });
+  if (response.ok && response.body) return response;
+  if (response.status === 404) {
+    await response.body?.cancel();
+    throw new RouteError(404, "That ChatGPT voice conversation has ended.");
+  }
+  throw await bridgeFailure(response, "ChatGPT voice stopped answering.");
+}
+
+export async function stopWebLive(userId: number, id: string): Promise<{ messages: WebLiveMessage[] }> {
+  const response = await voiceBridgeFetch(userId, `web/live/${encodeURIComponent(id)}`, { method: "DELETE" }, { timeoutMs: 60_000, unavailable: UNAVAILABLE });
+  if (response.status === 404) {
+    await response.body?.cancel();
+    return { messages: [] };
+  }
+  const body = await liveJson(response, "ChatGPT voice could not be ended.");
+  return { messages: liveMessages(body.messages) };
+}

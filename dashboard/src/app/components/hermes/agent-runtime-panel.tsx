@@ -1,5 +1,9 @@
 "use client";
 
+import { chatQuestionSelections } from "@/lib/chat-text-selection";
+import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
+import { useBrowserInlineAnswer } from "./use-browser-inline-answer";
+
 // Shared conversation UI for Hermes-backed surfaces. Renders streaming
 // assistant output, reasoning, tool activity, source citations, permission
 // prompts, an abort control, and error/reconnect state — without ever exposing
@@ -23,6 +27,7 @@ import ChatTimeSeparator from "@/app/components/chat-time-separator";
 import SteeredAssistantResponse from "@/app/components/steered-assistant-response";
 import ChatModelChangeSeparator from "@/app/components/chat-model-change-separator";
 import ChatMessageAttachments from "@/app/components/chat-message-attachments";
+import { reusableChatAttachments } from "@/lib/chat-attachments";
 import ChatVideoLinkEmbeds from "@/app/components/chat-video-link-embed";
 import AssistantComposer, {
   type ComposerAttachment,
@@ -51,11 +56,13 @@ import ChatJumpToBottom from "@/app/components/chat-jump-to-bottom";
 import { useComposerInset } from "@/app/components/chat/use-composer-inset";
 import { useSmoothStreamText } from "@/app/components/chat/use-smooth-stream-text";
 import ChatDisclaimer from "@/app/components/chat/chat-disclaimer";
+import SideChatSurface from "@/app/components/side-chat-surface";
 import { useConfirmDialog } from "@/app/components/confirm-dialog";
 import ChatMessageRail, {
   type ChatMessageRailItem,
 } from "@/app/components/chat-message-rail";
 import ActivityPanel from "./activity-panel";
+import { BotConversationProvider, BotConversationIdentity } from "../bots/bot-conversation";
 import InlineBrowserRun from "./inline-browser-run";
 import InlineAgentBrowserRun from "./inline-agent-browser-run";
 import InlineArtifactCards, {
@@ -135,6 +142,7 @@ import {
   type ConnectionState,
   type ClarificationPrompt,
   type PermissionPrompt,
+  type UseAgentSessionResult,
 } from "./use-agent-session";
 import type { HermesSurface } from "@/lib/hermes/config.ts";
 import {
@@ -163,6 +171,7 @@ import {
   retryTargetUserMessageIndex,
   type ConversationBranchGroup,
 } from "./conversation-branches";
+import { loadConversationBranches, saveConversationBranches } from "./conversation-branch-cache";
 import {
   ChatSelectionMenu,
   InlineSelectionAnswerPopover,
@@ -205,7 +214,11 @@ import {
 interface Props {
   starredMessageTarget?: StarredMessageTarget | null;
   messages: AgentMessage[];
+  /** Saves turns answered outside the runtime; ChatGPT voice copies into the chat with it. */
+  appendExternalAgentTurn?: UseAgentSessionResult["appendExternalAgentTurn"];
   connection: ConnectionState;
+  /** Work performed by a document reader before the answer request is sent. */
+  preparationLabel?: string;
   runState: AgentRunState;
   /**
    * A durable runtime run still owns this conversation even if the browser's
@@ -235,6 +248,9 @@ interface Props {
    * lives on the server.
    */
   temporaryChat?: boolean;
+  personalizedSuggestions?: boolean;
+  /** Side chats may retain starred answers while staying out of history. */
+  sideChat?: boolean;
   steerError: string | null;
   error: string | null;
   pendingPermission: PermissionPrompt | null;
@@ -254,14 +270,33 @@ interface Props {
    * keeps its own.
    */
   composerTextareaRef?: React.RefObject<HTMLTextAreaElement | null>;
-  onSubmit: () => void;
+  onSubmit: (voice?: import('@/lib/speech/voice-request').VoiceRequestOptions) => void;
   /** Rendered directly above the composer — currently the agent-launch prompt. */
   beforeComposer?: ReactNode;
+  webSelection?: { requestId: string; reference: ChatTextSelectionReference; conversationId?: string } | null;
+  /** A document reader shares the panel's selection draft and answer controls. */
+  selectionDraft?: {
+    value: ChatTextSelectionReference | null;
+    onChange: React.Dispatch<React.SetStateAction<ChatTextSelectionReference | null>>;
+    onCancel?: (selection: ChatTextSelectionReference) => void;
+  };
+  sourceAnswer?: {
+    selection: ChatTextSelectionReference;
+    anchor: FloatingAnchorRect;
+    loading?: boolean;
+    error?: string | null;
+    onClose: () => void;
+    onDelete: () => void;
+  };
   onRunWorkflow?: (workflow: LocalWorkflowSummary, input: string) => void | Promise<void>;
   onAskSelection?: (
     question: string,
     selection: ChatTextSelectionReference,
+    attachments?: readonly ComposerAttachment[],
+    voice?: import('@/lib/speech/voice-request').VoiceRequestOptions,
   ) => Promise<void>;
+  /** When supplied, side answers have their own pending state and Stop. */
+  onAbortInline?: (selectionId: string) => void;
   onSteer: (
     text: string,
     attachments: readonly ComposerAttachment[],
@@ -276,6 +311,8 @@ interface Props {
    * does not know keeps the old behaviour.
    */
   steerableRun?: boolean;
+  /** Freeze reader context when a follow-up is queued, before it is dispatched. */
+  captureQueuedAttachments?: () => ComposerAttachment[];
   onSendQueued: (
     text: string,
     attachments: readonly ComposerAttachment[],
@@ -318,8 +355,10 @@ interface Props {
   intelligenceModes?: IntelligenceMode[];
   disabled?: boolean;
   onAddDocuments?: () => void;
+  onOpenGardenChat?: (chatId: string) => void;
   onPasteFiles?: (files: File[]) => void | Promise<void>;
   isAddingDocuments?: boolean;
+  attachmentUploadError?: string;
   attachments?: ComposerAttachment[];
   onRemoveAttachment?: (index: number) => void;
   /** Returns a queued message's files to the external composer owner for editing. */
@@ -439,7 +478,6 @@ interface Props {
   onExternalAgentSourceReady?: () => void;
 }
 
-const BRANCH_STORAGE_PREFIX = "breadboard:conversation-branches:";
 const INLINE_SELECTION_STORAGE_PREFIX = "breadboard:inline-selections:";
 const DELETED_INLINE_SELECTION_STORAGE_PREFIX =
   "breadboard:deleted-inline-selections:";
@@ -453,7 +491,10 @@ interface SavedChatHighlight extends Omit<ChatTextSelectionReference, "mode"> {
 interface InlineSelectionThread {
   selection: ChatTextSelectionReference;
   question?: string;
+  attachments?: ComposerAttachment[];
   answer?: string;
+  reasoning?: string;
+  progressNotes?: string[];
   pending: boolean;
   usage?: AgentMessage["usage"];
   responseDurationMs?: number;
@@ -463,6 +504,8 @@ interface InlineSelectionThread {
   /** The answer message's own id, so text inside the popover is selectable
    * and can host highlights and nested "Ask here" threads of its own. */
   answerMessageId?: string;
+  starMessageId?: string;
+  artifactMessageId?: string;
 }
 
 function normalizeInlineSelections(parsed: unknown): ChatTextSelectionReference[] {
@@ -534,28 +577,6 @@ function messageSelectionSourceId(
   messageIndex: number,
 ): string {
   return message.clientMessageId ?? message.id ?? `assistant-${messageIndex}`;
-}
-
-function loadBranchGroups(sessionId: string): Record<string, ConversationBranchGroup> {
-  try {
-    const parsed = JSON.parse(
-      window.localStorage.getItem(`${BRANCH_STORAGE_PREFIX}${sessionId}`) ?? "{}",
-    ) as Record<string, ConversationBranchGroup>;
-    if (!parsed || typeof parsed !== "object") return {};
-    return Object.fromEntries(
-      Object.entries(parsed).filter(([, group]) =>
-        Boolean(
-          group &&
-            typeof group.id === "string" &&
-            Number.isInteger(group.activeIndex) &&
-            Array.isArray(group.variants) &&
-            group.variants.length > 1,
-        ),
-      ),
-    );
-  } catch {
-    return {};
-  }
 }
 
 /**
@@ -673,12 +694,16 @@ function inlineMapKindForAssistant(
 export default function AgentRuntimePanel({
   starredMessageTarget,
   messages,
+  appendExternalAgentTurn,
   connection,
+  preparationLabel,
   runState,
   persistedRunActive = false,
   externalRunLaunching = false,
   delegationInFlight = false,
   temporaryChat = false,
+  personalizedSuggestions = true,
+  sideChat = false,
   steerError,
   error,
   pendingPermission,
@@ -690,10 +715,15 @@ export default function AgentRuntimePanel({
   activeProductComparison = null,
   onSubmit,
   beforeComposer,
+  selectionDraft,
+  webSelection,
+  sourceAnswer,
   onRunWorkflow,
   onAskSelection,
+  onAbortInline,
   onSteer,
   steerableRun = true,
+  captureQueuedAttachments,
   onSendQueued,
   onEditMessage,
   onEditAssistantMessage,
@@ -715,8 +745,10 @@ export default function AgentRuntimePanel({
   intelligenceModes,
   disabled,
   onAddDocuments,
+  onOpenGardenChat,
   onPasteFiles,
   isAddingDocuments,
+  attachmentUploadError,
   attachments,
   onRemoveAttachment,
   onRestoreQueuedAttachments,
@@ -869,10 +901,13 @@ export default function AgentRuntimePanel({
     Record<string, ConversationBranchGroup>
   >({});
   const [branchStorageSession, setBranchStorageSession] = useState<string | null>(null);
+  const persistedBranchStructureRef = useRef<string | null>(null);
   const [selectionMenu, setSelectionMenu] =
     useState<ChatTextSelectionCandidate | null>(null);
-  const [composerSelection, setComposerSelection] =
+  const [localComposerSelection, setLocalComposerSelection] =
     useState<ChatTextSelectionReference | null>(null);
+  const composerSelection = selectionDraft ? selectionDraft.value : localComposerSelection;
+  const setComposerSelection = selectionDraft?.onChange ?? setLocalComposerSelection;
   const [savedInlineSelections, setSavedInlineSelections, inlineHighlightSaveError] = useTextHighlights(
     sessionId ? `${INLINE_SELECTION_STORAGE_PREFIX}${sessionId}` : null, normalizeInlineSelections,
   );
@@ -893,6 +928,7 @@ export default function AgentRuntimePanel({
   const [inlineSelectionRunId, setInlineSelectionRunId] = useState<
     string | null
   >(null);
+  const [webHighlightDeleteFailure, setWebHighlightDeleteFailure] = useState<ChatTextSelectionReference | null>(null);
   const streaming =
     !locallyStopped && (
       persistedRunActive ||
@@ -927,6 +963,7 @@ export default function AgentRuntimePanel({
     Boolean(sessionId) && sessionId === createdSessionId;
   // A saved-message jump needs its transcript immediately; artifact cards can
   // finish loading in their provider without holding the navigation hostage.
+  const [selectionMessageTarget, setSelectionMessageTarget] = useState<StarredMessageTarget | null>(null);
   const openingStarredMessage = starredMessageTarget?.chatId === sessionId;
   const conversationLoading =
     loadingTranscript || (!visibleConversationJustCreated && !openingStarredMessage && !artifactsReady);
@@ -1308,6 +1345,12 @@ export default function AgentRuntimePanel({
   );
   const inlineSelectionThreads = useMemo(() => {
     const byId = new Map<string, InlineSelectionThread>();
+    // A first web question can precede creation of its Terminal conversation.
+    // Keep its draft available until the normal saved turn takes ownership.
+    if (webSelection?.reference.mode === "inline" && !deletedInlineSelectionIds.has(webSelection.reference.id) &&
+        (!webSelection.conversationId || webSelection.conversationId === sessionId)) {
+      byId.set(webSelection.reference.id, { selection: webSelection.reference, pending: false });
+    }
     for (const selection of savedInlineSelections) {
       if (deletedInlineSelectionIds.has(selection.id)) continue;
       byId.set(selection.id, { selection, pending: false });
@@ -1327,6 +1370,7 @@ export default function AgentRuntimePanel({
       };
       if (message.role === "user") {
         current.question = message.content;
+        current.attachments = reusableChatAttachments(message.attachments).filter(item => item.context !== "pdf");
         // The turn is pending from the moment the question is sent, not from
         // the moment its answer row exists. Without this, a re-asked question
         // shows a retry — and its predecessor's answer — for the frames before
@@ -1334,18 +1378,24 @@ export default function AgentRuntimePanel({
         if (activeRun && messageIndex === messages.length - 1) {
           current.pending = true;
           current.answer = undefined;
+          current.reasoning = undefined;
+          current.progressNotes = undefined;
           current.usage = undefined;
           current.responseDurationMs = undefined;
           current.startedAt = message.createdAt;
         }
       } else {
         current.answer = message.content || undefined;
-        current.pending = activeRun && messageIndex === messages.length - 1;
+        current.reasoning = message.reasoning;
+        current.progressNotes = delegatedThinkingUpdates(message);
+        current.pending = onAbortInline ? message.pending === true : activeRun && messageIndex === messages.length - 1;
         current.usage = message.usage;
         current.responseDurationMs = message.responseDurationMs;
         current.startedAt = message.createdAt;
         current.responseCompletedAt = message.responseCompletedAt;
         current.verification = message.verification;
+        current.artifactMessageId = message.artifactMessageId ?? message.id;
+        current.starMessageId = message.clientMessageId ?? message.id;
         current.answerMessageId = messageSelectionSourceId(
           message,
           messageIndex,
@@ -1354,9 +1404,15 @@ export default function AgentRuntimePanel({
       byId.set(selection.id, current);
     });
     return byId;
-  }, [activeRun, deletedInlineSelectionIds, messages, savedInlineSelections]);
+  }, [activeRun, onAbortInline, deletedInlineSelectionIds, messages, savedInlineSelections, webSelection, sessionId]);
+  const chatSelections = useMemo(() => chatQuestionSelections(messages, composerSelection), [messages, composerSelection]);
   const annotationsByMessage = useMemo(() => {
     const byMessage = new Map<string, ChatTextAnnotation[]>();
+    for (const selection of chatSelections.values()) {
+      const entries = byMessage.get(selection.sourceMessageId) ?? [];
+      entries.push({ ...selection, kind: "chat" });
+      byMessage.set(selection.sourceMessageId, entries);
+    }
     for (const thread of inlineSelectionThreads.values()) {
       const entries = byMessage.get(thread.selection.sourceMessageId) ?? [];
       entries.push({ ...thread.selection, kind: "answer" });
@@ -1368,7 +1424,7 @@ export default function AgentRuntimePanel({
       byMessage.set(highlight.sourceMessageId, entries);
     }
     return byMessage;
-  }, [inlineSelectionThreads, savedChatHighlights]);
+  }, [chatSelections, inlineSelectionThreads, savedChatHighlights]);
   const selectedChatHighlight = selectionMenu
     ? savedChatHighlights.find(
         (highlight) =>
@@ -1378,7 +1434,7 @@ export default function AgentRuntimePanel({
     : undefined;
   const selectionIsHighlighted = Boolean(selectedChatHighlight?.color);
   const selectionHighlightColor = selectedChatHighlight?.color;
-  const inlineRunActive = activeRun && messages.some(
+  const inlineRunActive = !onAbortInline && activeRun && messages.some(
     (message) =>
       message.role === "assistant" &&
       message.textSelection?.mode === "inline" &&
@@ -1405,7 +1461,7 @@ export default function AgentRuntimePanel({
     [messages],
   );
   const respondingToInlineSelection =
-    activeRun &&
+    !onAbortInline && activeRun &&
     (inlineSelectionRunId !== null ||
       messages.findLast((message) => !message.modelChange)?.textSelection
         ?.mode === "inline");
@@ -1440,7 +1496,7 @@ export default function AgentRuntimePanel({
     virtual: transcriptVirtual,
   });
   useStarredMessageJump({
-    target: starredMessageTarget, chatId: sessionId, loading: conversationLoading,
+    target: selectionMessageTarget && selectionMessageTarget.chatId === sessionId && selectionMessageTarget.requestId > (starredMessageTarget?.requestId ?? -1) ? selectionMessageTarget : starredMessageTarget, chatId: sessionId, loading: conversationLoading,
     rows: transcriptRows, bridge: transcriptVirtual, scrollRef: transcriptScrollRef, scrollToMessage,
   });
 
@@ -1473,33 +1529,64 @@ export default function AgentRuntimePanel({
   );
 
   useEffect(() => {
-    if (!sessionId) {
-      setBranchGroups({});
-      setBranchStorageSession(null);
-      return;
-    }
-    setBranchGroups(loadBranchGroups(sessionId));
-    setBranchStorageSession(sessionId);
+    setBranchGroups({});
+    setBranchStorageSession(null);
+    if (!sessionId) return;
+    let cancelled = false;
+    void loadConversationBranches<AgentMessage>(sessionId).then(saved => {
+      if (cancelled) return;
+      // A retry made while the cache opens is newer than its saved variant.
+      setBranchGroups(current => ({ ...saved, ...current }));
+      setBranchStorageSession(sessionId);
+    });
+    return () => { cancelled = true; };
   }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId || branchStorageSession !== sessionId) return;
-    try {
-      window.localStorage.setItem(
-        `${BRANCH_STORAGE_PREFIX}${sessionId}`,
-        JSON.stringify(branchGroups),
-      );
-    } catch {
-      // Branch switching remains available for this page even if storage is full.
-    }
-  }, [branchGroups, branchStorageSession, sessionId]);
+    const structure = JSON.stringify([sessionId, Object.values(branchGroups).map(group =>
+      [group.id, group.activeIndex, group.variants.length])]);
+    if ((runInFlight || streaming) && persistedBranchStructureRef.current === structure) return;
+    persistedBranchStructureRef.current = structure;
+    // Preserve a newly created alternative even if the tab closes mid-response,
+    // then save its final content when the run settles, rather than each token.
+    // localStorage broadcasts old/new strings to every tab and used gigabytes
+    // after a retry with attachments. IndexedDB keeps these snapshots local.
+    void saveConversationBranches(sessionId, branchGroups).catch(() => {
+      // Branch switching remains available in memory if browser storage fails.
+    });
+  }, [branchGroups, branchStorageSession, sessionId, runInFlight, streaming]);
 
   useEffect(() => {
     setSelectionMenu(null);
     setComposerSelection(null);
     setInlineSelectionRunId(null);
     setOpenInlineAnswers([]);
-  }, [sessionId]);
+  }, [sessionId, setComposerSelection]);
+
+  const receivedWebSelection = useRef<{ requestId: string; sessionId: string | null } | null>(null);
+  useEffect(() => {
+    if (!webSelection || conversationLoading || (webSelection.conversationId && webSelection.conversationId !== sessionId)) return;
+    const previous = receivedWebSelection.current;
+    const sameRequest = previous?.requestId === webSelection.requestId;
+    const newlyCreated = sameRequest && previous.sessionId === null && sessionId === createdSessionId &&
+      messages.some(message => message.textSelection?.id === webSelection.reference.id);
+    if (sameRequest && !newlyCreated) return;
+    receivedWebSelection.current = { requestId: webSelection.requestId, sessionId: sessionId ?? null };
+    const selection = webSelection.reference;
+    setSelectionMenu(null);
+    if (selection.mode === "inline") {
+      setSavedInlineSelections(current => current.some(item => item.id === selection.id) ? current : [...current, selection]);
+      const drawer = document.querySelector(".browser-terminal-drawer")?.getBoundingClientRect();
+      const left = (drawer?.left ?? 0) + 32;
+      const top = (drawer?.top ?? 0) + 70;
+      setOpenInlineAnswers([{ id: selection.id, anchor: { left, right: left, top, bottom: top, width: 0, height: 0 } }]);
+    } else if (!newlyCreated) {
+      setComposerSelection(selection);
+      setOpenInlineAnswers([]);
+      window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+    }
+  }, [webSelection, sessionId, createdSessionId, messages, conversationLoading, setComposerSelection, setSavedInlineSelections, composerTextareaRef]);
 
   useEffect(() => {
     const restored = messages.flatMap((message) => {
@@ -1990,12 +2077,19 @@ export default function AgentRuntimePanel({
         ),
       );
       setSavedInlineSelections((current) => [...current, selection]);
+      setOpenInlineAnswers((current) => {
+        const parent = current.findIndex((open) =>
+          inlineSelectionThreads.get(open.id)?.answerMessageId === selection.sourceMessageId,
+        );
+        return [...current.slice(0, parent + 1), { id: selection.id, anchor: selectionMenu.anchor }];
+      });
+    } else {
+      setComposerSelection(selection);
+      setOpenInlineAnswers([]);
+      window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
     }
-    setComposerSelection(selection);
     setSelectionMenu(null);
-    if (mode === "chat") setOpenInlineAnswers([]);
     window.getSelection()?.removeAllRanges();
-    window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
   }
 
   function replyToMessage(message: AgentMessage, index: number, content: string) {
@@ -2008,9 +2102,22 @@ export default function AgentRuntimePanel({
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
   }
 
+  function replyToInlineAnswer(selection: ChatTextSelectionReference, anchor: FloatingAnchorRect) {
+    setSavedInlineSelections((current) => [...current, selection]);
+    setSelectionMenu(null);
+    setOpenInlineAnswers((current) => {
+      const parent = current.findIndex((open) =>
+        inlineSelectionThreads.get(open.id)?.answerMessageId === selection.sourceMessageId,
+      );
+      return [...current.slice(0, parent + 1), { id: selection.id, anchor }];
+    });
+    window.getSelection()?.removeAllRanges();
+  }
+
   function cancelSelectionQuestion() {
     const selection = composerSelection;
     setComposerSelection(null);
+    if (selection) selectionDraft?.onCancel?.(selection);
     if (
       selection?.mode === "inline" &&
       !messages.some((message) => message.textSelection?.id === selection.id)
@@ -2021,12 +2128,12 @@ export default function AgentRuntimePanel({
     }
   }
 
-  function submitComposer() {
+  function submitComposer(voice?: import('@/lib/speech/voice-request').VoiceRequestOptions) {
     // Voice mode submits through here without going near the send button, so
     // the lock is re-checked rather than left to the disabled control.
     if (conversationLoading) return;
     if (!composerSelection || !onAskSelection) {
-      onSubmit();
+      onSubmit(voice);
       return;
     }
     const question = input.trim();
@@ -2037,7 +2144,7 @@ export default function AgentRuntimePanel({
     if (selection.mode === "chat") setOpenInlineAnswers([]);
     if (selection.mode === "inline") setInlineSelectionRunId(selection.id);
     onInputChange("");
-    void onAskSelection(question, selection).catch(() => {
+    void onAskSelection(question, selection, undefined, voice).catch(() => {
       if (selection.mode !== "inline") return;
       setInlineSelectionRunId((current) =>
         current === selection.id ? null : current,
@@ -2047,6 +2154,17 @@ export default function AgentRuntimePanel({
 
   const openAnnotation = useCallback(
     (annotationId: string, anchor: FloatingAnchorRect) => {
+      if (chatSelections.has(annotationId)) {
+        setSelectionMenu(null);
+        setOpenInlineAnswers([]);
+        window.getSelection()?.removeAllRanges();
+        if (messages.some(message => message.role === "user" && message.textSelection?.id === annotationId)) {
+          setSelectionMessageTarget({ chatId: String(sessionId), messageId: "", selectionId: annotationId, requestId: Date.now() });
+        } else {
+          window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+        }
+        return;
+      }
       const highlight = savedChatHighlights.find(
         (candidate) => candidate.id === annotationId,
       );
@@ -2087,10 +2205,16 @@ export default function AgentRuntimePanel({
           : [{ id: annotationId, anchor }];
       });
     },
-    [inlineSelectionThreads, savedChatHighlights],
+    [chatSelections, messages, sessionId, inlineSelectionThreads, savedChatHighlights],
   );
 
-  function deleteInlineSelection(annotationId: string) {
+  async function deleteInlineSelection(selection: ChatTextSelectionReference) {
+    const annotationId = selection.id;
+    if (selection.sourceUrl && webSelection?.reference.id === annotationId) {
+      setWebHighlightDeleteFailure(null);
+      const deleted = await sendDesktopTabsCommand({ type: "browser-selection-delete", id: annotationId, url: selection.sourceUrl });
+      if (!deleted) { setWebHighlightDeleteFailure(selection); return; }
+    }
     setOpenInlineAnswers((current) => {
       const openIndex = current.findIndex(
         (openAnswer) => openAnswer.id === annotationId,
@@ -2124,14 +2248,15 @@ export default function AgentRuntimePanel({
   function askInlineSelectionAgain(
     selection: ChatTextSelectionReference,
     question: string,
+    attachments: readonly ComposerAttachment[],
   ) {
     const trimmed = question.trim();
-    if (!trimmed || !onAskSelection || activeRun || conversationLocked) return;
+    if (!trimmed || !onAskSelection || inlineSelectionThreads.get(selection.id)?.pending || conversationLocked) return;
     // A question the composer is still holding for some other highlight is
     // left alone: it belongs to that highlight, not to this turn.
     setComposerSelection((current) => current?.id === selection.id ? null : current);
     setInlineSelectionRunId(selection.id);
-    void onAskSelection(trimmed, selection).catch(() => {
+    void onAskSelection(trimmed, selection, attachments).catch(() => {
       setInlineSelectionRunId((current) =>
         current === selection.id ? null : current,
       );
@@ -2144,22 +2269,52 @@ export default function AgentRuntimePanel({
   // The transcript owns 1rem of padding on each side. Add that padding outside
   // the content cap so its inner edges equal the composer's outer edges.
   const transcriptColumnWidthClass = compact ? "max-w-[50rem]" : "max-w-[66rem]";
+  const webThread = webSelection?.reference.mode === "inline" ? inlineSelectionThreads.get(webSelection.reference.id) : undefined;
+  const webAnswerContent = useMemo(() => webThread ? {
+    question: webThread.question, questionAttachments: webThread.attachments,
+    answer: conversationLoading ? "Loading saved answer…" : webThread.answer,
+    reasoning: webThread.reasoning, progressNotes: webThread.progressNotes, pending: webThread.pending,
+    usage: webThread.usage, responseDurationMs: webThread.responseDurationMs, responseCompletedAt: webThread.responseCompletedAt,
+    verification: webThread.verification, startedAt: webThread.startedAt, answerMessageId: webThread.answerMessageId,
+    starMessageId: webThread.starMessageId, artifactMessageId: webThread.artifactMessageId,
+    conversationId: sessionId, canStar: (!temporaryChat || sideChat) && surface !== "quartz_ai",
+    persistDraft: !temporaryChat || sideChat,
+    canAsk: Boolean(onAskSelection && !webThread.pending && !conversationLocked),
+    ...(webHighlightDeleteFailure?.id === webThread.selection.id ? { error: "The highlight could not be deleted. Try deleting it again." } : {}),
+  } : null, [webThread, conversationLoading, sessionId, temporaryChat, sideChat, surface, onAskSelection, conversationLocked, webHighlightDeleteFailure]);
+  const nativeWebAnswer = useBrowserInlineAnswer({ selection: webSelection, content: webAnswerContent,
+    onAsk: (question, attachments) => { if (webThread) askInlineSelectionAgain(webThread.selection, question, attachments); },
+    onStop: () => { if (webThread && onAbortInline) onAbortInline(webThread.selection.id); else stopInlineAnswer(); },
+    onDelete: () => { if (webThread) void deleteInlineSelection(webThread.selection); },
+    onClose: () => setOpenInlineAnswers(current => current.filter(answer => answer.id !== webSelection?.reference.id)),
+  });
+  const visibleInlineAnswers = (sourceAnswer
+    ? [{ id: sourceAnswer.selection.id, anchor: sourceAnswer.anchor },
+        ...openInlineAnswers.filter(answer => answer.id !== sourceAnswer.selection.id)]
+    : openInlineAnswers).filter(answer => !nativeWebAnswer || answer.id !== webSelection?.reference.id);
 
   return (
     // One attribute rather than a prop on every bubble: user messages are drawn
     // in three places (a turn, an edit form, a steered segment) and some of them
     // are nested components, so the mode is announced once here and the styling
     // is a descendant rule in globals.css.
+    <BotConversationProvider conversationId={sessionId}>
     <div
       className="relative flex min-h-0 flex-1 flex-col"
       style={composerInset.style}
       data-temporary-chat={temporaryChat ? "true" : undefined}
     >
+      <BotConversationIdentity />
       <TextHighlightSaveStatus error={highlightSaveError || inlineHighlightSaveError || deletedHighlightSaveError} />
+      {webHighlightDeleteFailure && <p role="alert" className="px-4 py-2 text-xs text-gray-400">
+        The webpage highlight could not be deleted.{" "}
+        <button type="button" className="cursor-pointer underline" onClick={() => void deleteInlineSelection(webHighlightDeleteFailure)}>Retry deleting</button>
+      </p>}
       {/* Positioning context for the jump control, so it floats at the foot of
           the transcript rather than below the composer. The transcript keeps
           its own indentation; only this wrapper is new. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
+      <SideChatSurface>
       <div
         ref={transcriptScrollRef}
         className="bb-chat-scroller min-h-0 flex-1 overflow-y-auto"
@@ -2198,6 +2353,7 @@ export default function AgentRuntimePanel({
               conversationId={surface !== "quartz_ai" ? sessionId : null}
               gardenSlug={surface !== "quartz_ai" && sessionId ? gardenSlug : null}
               refreshKey={activeRun}
+              onRequestRevision={conversationLocked ? undefined : prompt => queueFollowUp(prompt, [])}
             >
             <div className="space-y-5">
               <VirtualizedMessageList
@@ -2384,8 +2540,8 @@ export default function AgentRuntimePanel({
                       branch={message.role === "assistant" && !(runInFlight && index === lastAssistantIndex)
                         ? branchNavigationForAssistant(message, index) : undefined}
                       conversationId={surface !== "quartz_ai" ? sessionId : null}
-                      messageId={message.id ?? message.clientMessageId ?? null}
-                      canStar={!temporaryChat && surface !== "quartz_ai"}
+                      messageId={message.clientMessageId ?? message.id ?? null}
+                      canStar={(!temporaryChat || sideChat) && surface !== "quartz_ai"}
                       onReply={onAskSelection && !conversationLocked
                         ? (content) => replyToMessage(message, index, content) : undefined}
                       responseStartedAt={
@@ -2425,6 +2581,7 @@ export default function AgentRuntimePanel({
                           pendingPermission={null}
                           usage={message.usage}
                           responseDurationMs={message.responseDurationMs}
+                          responseCompletedAt={delegatedAgentActive ? undefined : message.responseCompletedAt}
                           activePhaseStartedAt={delegatedAgentStartedAt}
                           onPermissionDecision={onPermissionDecision}
                           stateLabel={delegatedAgentLabel}
@@ -3574,8 +3731,10 @@ export default function AgentRuntimePanel({
                               : null
                           }
                           restoredActivityLabel={message.activityLabel}
+                          preparationLabel={index === lastAssistantIndex ? preparationLabel : undefined}
                           usage={totalUsage}
                           responseDurationMs={message.responseDurationMs}
+                          responseCompletedAt={delegatedAgentActive ? undefined : message.responseCompletedAt}
                           // The row survives navigation even though this
                           // component's activity state does not. Its timestamp
                           // keeps a restored live timer on the original turn.
@@ -3741,8 +3900,9 @@ export default function AgentRuntimePanel({
                     surface !== "quartz_ai" ? (
                       <InlineArtifactCards
                         ownerMessageId={
-                          message.artifactMessageId ?? message.id ?? null
+                          message.artifactMessageId ?? message.id ?? message.clientMessageId ?? ""
                         }
+                        includeUnassigned={index === lastVisibleAssistantIndex}
                         thinking={
                           delegatedAgentActive ||
                           ((runInFlight || streaming) && index === lastAssistantIndex)
@@ -3802,7 +3962,7 @@ export default function AgentRuntimePanel({
               );
               }}
               />
-              {sessionId && surface !== "quartz_ai" ? (
+              {sessionId && surface !== "quartz_ai" && lastVisibleAssistantIndex < 0 ? (
                 <InlineArtifactCards ownerMessageId={null} thinking={runInFlight || streaming} />
               ) : null}
             </div>
@@ -3826,6 +3986,7 @@ export default function AgentRuntimePanel({
           ) : null}
         </div>
       </div>
+      </SideChatSurface>
         <ChatMessageRail
           surface={surface === "quartz_ai" ? "quartz-ai" : "hermes-chat"}
           items={railItems}
@@ -3857,8 +4018,11 @@ export default function AgentRuntimePanel({
           onClose={() => setSelectionMenu(null)}
         />
       ) : null}
-      {openInlineAnswers.map((openAnswer) => {
-        const thread = inlineSelectionThreads.get(openAnswer.id);
+      {visibleInlineAnswers.map((openAnswer) => {
+        const source = sourceAnswer?.selection.id === openAnswer.id ? sourceAnswer : undefined;
+        const thread: InlineSelectionThread | undefined = source?.loading || source?.error
+          ? { selection: source.selection, pending: false, answer: source.error || "Loading saved answer…" }
+          : inlineSelectionThreads.get(openAnswer.id) ?? (source ? { selection: source.selection, pending: false } : undefined);
         if (!thread) return null;
         return (
           <InlineSelectionAnswerPopover
@@ -3866,7 +4030,10 @@ export default function AgentRuntimePanel({
             anchor={openAnswer.anchor}
             selection={thread.selection}
             question={thread.question}
+            questionAttachments={thread.attachments}
             answer={thread.answer}
+            reasoning={thread.reasoning}
+            progressNotes={thread.progressNotes}
             pending={thread.pending}
             usage={thread.usage}
             responseDurationMs={thread.responseDurationMs}
@@ -3874,6 +4041,13 @@ export default function AgentRuntimePanel({
             verification={thread.verification}
             startedAt={thread.startedAt}
             answerMessageId={thread.answerMessageId}
+            starMessageId={thread.starMessageId}
+            artifacts={thread.artifactMessageId && surface !== "quartz_ai" ? <InlineArtifactCards
+              conversationId={sessionId} ownerMessageId={thread.artifactMessageId} /> : undefined}
+            conversationId={surface !== "quartz_ai" ? sessionId : null}
+            canStar={(!temporaryChat || sideChat) && surface !== "quartz_ai"}
+            persistDraft={!temporaryChat || sideChat}
+            onReply={onAskSelection && !thread.pending && !conversationLocked && !source?.loading && !source?.error ? replyToInlineAnswer : undefined}
             annotations={
               thread.answerMessageId
                 ? annotationsByMessage.get(thread.answerMessageId)
@@ -3881,20 +4055,28 @@ export default function AgentRuntimePanel({
             }
             onSelection={receiveTextSelection}
             onOpenAnnotation={openAnnotation}
-            onClose={() =>
+            onClose={() => {
+              if (source) {
+                source.onClose();
+                setOpenInlineAnswers([]);
+                return;
+              }
               setOpenInlineAnswers((current) => {
                 const openIndex = current.findIndex(
                   (candidate) => candidate.id === openAnswer.id,
                 );
                 return openIndex >= 0 ? current.slice(0, openIndex) : current;
-              })
-            }
-            onDelete={() => deleteInlineSelection(thread.selection.id)}
-            onStop={thread.pending ? stopInlineAnswer : undefined}
+              });
+            }}
+            onDelete={() => {
+              if (source) { source.onDelete(); setOpenInlineAnswers([]); }
+              void deleteInlineSelection(thread.selection);
+            }}
+            onStop={thread.pending ? (onAbortInline ? () => onAbortInline(thread.selection.id) : stopInlineAnswer) : undefined}
             onAskAgain={
-              onAskSelection && !activeRun && !conversationLocked
-                ? (question: string) =>
-                    askInlineSelectionAgain(thread.selection, question)
+              onAskSelection && !thread.pending && !conversationLocked && !source?.loading && !source?.error
+                ? (question, attachments) =>
+                    askInlineSelectionAgain(thread.selection, question, attachments)
                 : undefined
             }
           />
@@ -3910,6 +4092,7 @@ export default function AgentRuntimePanel({
           </div>
         ) : null}
         <AssistantComposer
+          personalizedSuggestions={personalizedSuggestions && !temporaryChat}
           className={`mx-auto w-full ${chatColumnWidthClass}`}
           compact={compact}
           value={input}
@@ -3945,8 +4128,10 @@ export default function AgentRuntimePanel({
           onReasoningEffortChange={onReasoningEffortChange ?? (() => undefined)}
           intelligenceModes={intelligenceModes}
           onAddDocuments={onAddDocuments}
+          onOpenGardenChat={onOpenGardenChat}
           onPasteFiles={onPasteFiles}
           isAddingDocuments={isAddingDocuments}
+          attachmentUploadError={attachmentUploadError}
           attachments={attachments}
           onRemoveAttachment={onRemoveAttachment}
           statusMessage={statusMessage}
@@ -4037,6 +4222,12 @@ onSelectCareerOps={onSelectCareerOps}
           onClearRuflo={onClearRuflo}
           onSelectRuflo={onSelectRuflo}
           voiceMessages={messages}
+          onVoiceRecord={appendExternalAgentTurn ? (exchange) => appendExternalAgentTurn({
+            clientMessageId: exchange.clientMessageId,
+            userContent: exchange.user,
+            assistantContent: exchange.assistant,
+            outcome: "completed",
+          }) : undefined}
           voiceCreatedConversationId={createdSessionId}
           voiceClarification={pendingClarification}
           headerContent={queuedFollowUpsHeader || composerSelection ? (
@@ -4058,7 +4249,7 @@ onSelectCareerOps={onSelectCareerOps}
           runState={respondingToInlineSelection || locallyStopped ? "idle" : runState}
           externalRunActive={externalRunActive || respondingToInlineSelection}
           onQueueSteer={(text, queuedAttachments) => {
-            queueFollowUp(text, queuedAttachments, composerSelection ?? undefined);
+            queueFollowUp(text, [...(captureQueuedAttachments?.() ?? []), ...queuedAttachments], composerSelection ?? undefined);
             setComposerSelection(null);
           }}
           // An "Ask here" turn is the popover's run, not the chat's: its
@@ -4078,5 +4269,6 @@ onSelectCareerOps={onSelectCareerOps}
       ) : null}
       {messageDeleteDialog}
     </div>
+    </BotConversationProvider>
   );
 }

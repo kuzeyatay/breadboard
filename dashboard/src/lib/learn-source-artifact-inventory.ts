@@ -280,8 +280,11 @@ export function selectedSourceArtifactInventorySnapshot(input: {
  * reauthorizations when scanning its exact selected pages reveals previously
  * unregistered artifacts. The cap is deliberately fixed and low: new evidence
  * is never mechanically assigned, omitted, or folded into an earlier map.
+ * Raised from 2: each healing round selects pages whose figures are only then
+ * scanned, so a large garden (em1, 74 sources, 1500+ figures, 2026-10-10)
+ * still adds a few figures in round 2 while converging.
  */
-export const MAX_SOURCE_MAP_EVIDENCE_REAUTHORS = 2;
+export const MAX_SOURCE_MAP_EVIDENCE_REAUTHORS = 4;
 
 function boundedSourceMapEvidenceTransition({
   changed,

@@ -36,6 +36,15 @@ test("garden visualizer actions resolve this launch’s dashboard from its embed
     generatedVisualDashboardBaseUrl("https://garden.example.org/a", ""),
     "https://example.org",
   );
+  // The Learning Map preview is served by the dashboard itself.
+  assert.equal(
+    generatedVisualDashboardBaseUrl(
+      "http://127.0.0.1:64644/api/quartz-graph-preview?clusterSlug=g&embed=graph",
+      "http://127.0.0.1:64644/gardens/g",
+      "http://127.0.0.1:64644",
+    ),
+    "http://127.0.0.1:64644",
+  );
 });
 
 test("wheel zoom updates the scene through existing controls in an opaque stored-artifact iframe", async (t) => {

@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 const component = fs.readFileSync(
-  new URL("../src/app/components/navigation-progress.tsx", import.meta.url),
+  new URL("../src/app/components/navigation-progress-bar.tsx", import.meta.url),
   "utf8",
 );
 const globals = fs.readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
@@ -75,6 +75,6 @@ test("a bar pinned at its ceiling still reads as working", () => {
 
 test("the bar is thick enough to notice inside the desktop frame", () => {
   assert.match(component, /fixed inset-x-0 top-0 z-\[10000\] h-\[4px\]/);
-  assert.match(component, /shadow-\[0_0_8px_rgba\(9,105,218,0\.7\)\]/);
+  assert.match(globals, /box-shadow: 0 0 8px color-mix\(in srgb, var\(--bb-nav-progress-color\) 70%, transparent\)/);
   assert.match(component, /aria-busy=\{pending\}/);
 });

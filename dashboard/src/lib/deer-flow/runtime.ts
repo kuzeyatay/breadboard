@@ -169,10 +169,9 @@ async function probe(): Promise<DeerFlowHealth> {
     serviceRunning = await externalServiceRunning(endpoint.url);
   }
 
-  const installed =
-    lifecycle !== null
-      ? lifecycle !== "installation-unavailable"
-      : environmentReady;
+  // A registered, stopped controller is not evidence that its managed Python
+  // environment has been provisioned.
+  const installed = environmentReady && lifecycle !== "installation-unavailable";
   const available =
     Boolean(endpoint) &&
     installed &&

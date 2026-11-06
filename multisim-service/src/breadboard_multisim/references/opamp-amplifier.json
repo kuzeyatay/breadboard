@@ -1,0 +1,13 @@
+{
+  "title": "20 dB non-inverting amplifier",
+  "assumptions": ["Built-in op amp is a finite-gain single-pole educational model, not a low-noise device qualification"],
+  "components": [
+    {"id": "VPLUS", "type": "voltage_source", "value": 12, "nodes": ["vplus", "0"]},
+    {"id": "VMINUS", "type": "voltage_source", "value": -12, "nodes": ["vminus", "0"]},
+    {"id": "VIN", "type": "voltage_source", "value": 0.1, "ac": 1, "nodes": ["vin", "0"], "waveform": "SIN(0 0.05 1000)"},
+    {"id": "RF", "type": "resistor", "value": "9k", "nodes": ["vout", "feedback"]},
+    {"id": "RG", "type": "resistor", "value": "1k", "nodes": ["feedback", "0"]},
+    {"id": "RL", "type": "resistor", "value": "100k", "nodes": ["vout", "0"]},
+    {"id": "XU1", "type": "opamp", "nodes": ["vin", "feedback", "vplus", "vminus", "vout"], "parameters": {"A0": 100000, "GBW": 10000000}}
+  ]
+}

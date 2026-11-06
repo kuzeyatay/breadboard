@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 
 import { syncDocumentAssistantHistoryClient } from "@/lib/document-assistant-history-client";
 import type { DocumentAssistantChatEntry, DocumentAssistantKind } from "@/lib/document-assistant-history-types";
 import { useUnreadChats } from "@/lib/conversations/unread-client";
-import { registerChatNotificationTarget } from "@/lib/chat-notification-inbox";
+import { useChatNotificationView } from "@/lib/use-chat-notification-view";
 
 /** Sync only settled snapshots back into the editor; never replace a turn in progress. */
 export function useDocumentAssistantHistory({ artifactId, kind, chat, setChat, busy, hydrated = true, viewing = true }: {
@@ -20,10 +20,8 @@ export function useDocumentAssistantHistory({ artifactId, kind, chat, setChat, b
   const [identity, setIdentity] = useState<{ artifactId: string; conversationId: string | null } | null>(null);
   const conversationId = identity?.artifactId === artifactId ? identity.conversationId : null;
   const { unreadChats } = useUnreadChats();
-  useEffect(() => {
-    if (!viewing || !hydrated || !conversationId) return;
-    return registerChatNotificationTarget({ surface: "dashboard_terminal", chatId: conversationId });
-  }, [conversationId, hydrated, viewing]);
+  useChatNotificationView(viewing && hydrated && conversationId
+    ? { surface: "dashboard_terminal", chatId: conversationId } : null);
   const latest = useRef({ chat, busy });
   latest.current = { chat, busy };
   const refreshRef = useRef<(() => void) | null>(null);

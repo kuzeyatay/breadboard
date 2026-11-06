@@ -1,3 +1,5 @@
+@use "../../../../dashboard/src/lib/chat-lens-rail.css";
+
 .breadboard-ai {
   &[hidden], [hidden] {
     display: none !important;
@@ -282,6 +284,7 @@
   // faint because it overlays the far edge of the conversation, and comes up to
   // full strength as soon as a pointer is near it.
   .breadboard-ai-rail {
+    --lens-current: var(--bb-ai-fg);
     position: absolute;
     right: 0.15rem;
     top: 50%;
@@ -289,72 +292,7 @@
     z-index: 2;
     display: flex;
     align-items: center;
-    opacity: 0.55;
-    transition: opacity 180ms ease;
-
-    &:hover,
-    &:focus-within {
-      opacity: 1;
-    }
-
-    .breadboard-ai-rail-track {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      max-height: 55%;
-      max-height: min(55vh, 18rem);
-      overflow-y: auto;
-      // A scrollbar on a strip of hairlines would be wider than what it scrolls.
-      scrollbar-width: none;
-      -ms-overflow-style: none;
-      overscroll-behavior: contain;
-      padding: 0.2rem 0.2rem 0.2rem 1rem;
-
-      &::-webkit-scrollbar {
-        display: none;
-      }
-    }
-
-    .breadboard-ai-rail-tick {
-      flex: 0 0 auto;
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      width: 2rem;
-      height: 0.875rem;
-      padding: 0;
-      border: 0;
-      background: none;
-      cursor: pointer;
-
-      // Width carries which tick is the one being read, so it is the width that
-      // animates; the tick grows out of the right edge it is anchored to.
-      &::after {
-        content: "";
-        display: block;
-        width: 1rem;
-        height: 1px;
-        border-radius: 999px;
-        background: #9ca3af;
-        opacity: 0.5;
-        transition:
-          width 180ms ease,
-          opacity 180ms ease,
-          background-color 180ms ease;
-      }
-
-      &:hover::after,
-      &:focus-visible::after {
-        width: 1.5rem;
-        opacity: 0.9;
-      }
-
-      &[aria-current="true"]::after {
-        width: 1.5rem;
-        opacity: 1;
-        background: var(--bb-ai-accent);
-      }
-    }
+    opacity: 1;
 
     // Drawn outside the track: the track clips its own overflow on both axes, so
     // a label inside it would be cut off at the left rather than reaching out

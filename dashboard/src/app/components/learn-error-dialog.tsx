@@ -65,8 +65,7 @@ export default function LearnErrorDialog({
                 Learn section failed
               </h2>
               <p id="learn-error-description" className="mt-1 text-sm leading-6 text-gray-400">
-                A section could not be created. Once closed, this dialog stays hidden for this
-                failed attempt.
+                A section could not be created. See the error below.
               </p>
             </div>
           </div>

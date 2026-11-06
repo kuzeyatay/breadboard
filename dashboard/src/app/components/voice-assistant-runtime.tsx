@@ -7,8 +7,12 @@ import { notificationSpeechText, notificationSpeechKey, notificationSpeechId, no
 import { AUDIO_FOCUS_EVENT, audioFocusChannel, foregroundAudioActive, holdForegroundAudio } from '@/lib/speech/clap/audio-focus';
 import { openVoiceWindow, voiceCompanionBridge } from '@/lib/speech/voice-window';
 import { isChatNotificationRecordViewed, isChatNotificationRecord } from '@/lib/chat-notification-inbox';
+import { subscribeNotificationViews } from '@/lib/notification-view-presence';
 import { preloadSubscriptionVoice, clearSubscriptionPreload } from '@/lib/speech/subscription-live';
 import type { SpeechSettings } from '@/lib/speech/settings';
+import { loadSpeechSettings, onSpeechSettingsChanged } from '@/lib/speech/settings-client';
+import { resetSpeechPreparation } from '@/lib/speech/prepare-client';
+import { dictationHasPriority, dictationStandbyReserved, watchDictationPriority } from '@/lib/speech/dictation-priority';
 
 interface QueuedNotificationSpeech { id: string; key: string; text: string; inbox: boolean }
 
@@ -20,6 +24,7 @@ export default function VoiceAssistantRuntime({ conversationOpen = false }: { co
     let lastStatus = '', baseline = false;
     let speechSettings: SpeechSettings | null = null;
     let preloadReady = Promise.resolve();
+    let startupKey = '', nextWarmAt = 0, warming = false;
     const seen = new Set<string>(), dismissed = new Set<string>(), pending: QueuedNotificationSpeech[] = [];
     const delivered = new Map<string, NotificationSpeechNotice & { id: string }>();
     const deferredUntilPreferences = new Map<string, NotificationSpeechNotice & { id: string }>();
@@ -29,6 +34,29 @@ export default function VoiceAssistantRuntime({ conversationOpen = false }: { co
     const lifecycle = new AbortController(), channel = new BroadcastChannel(VOICE_ASSISTANT_CHANNEL);
     const status = (message: string) => { lastStatus = message; channel.postMessage({ type: 'status', message }); };
     const stopWake = () => { wake?.abort(); wake = null; };
+    function warmStartup() {
+      const key = preferences.startVoiceOnStartup && speechSettings?.enabled && userId ? JSON.stringify([userId, speechSettings]) : '';
+      if (key !== startupKey) { startupKey = key; nextWarmAt = 0; resetSpeechPreparation(); }
+      if (!key || warming || Date.now() < nextWarmAt) return;
+      warming = true;
+      // Warm the answering runtime as well as speech. Otherwise the first
+      // spoken turn still pays for a cold Hermes process after the microphone
+      // and reader are already ready. This owns no conversation or microphone,
+      // and an unavailable answer service must not delay dictation warmup.
+      void fetch('/api/hermes/health', { method: 'POST', signal: lifecycle.signal }).catch(() => {});
+      void fetch('/api/speech/prepare', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ startup: true }), signal: lifecycle.signal })
+        .then(async response => {
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.error || 'Voice could not prepare.');
+          if (!alive || startupKey !== key) return;
+          nextWarmAt = Date.now() + (body.warming ? 3_000 : 60_000);
+          if (body.missing?.length) status('Download the selected models in Voice settings to finish preparing voice.');
+          else if (body.warming) status('Loading your voice models in the background.');
+          else if (body.ready) status('Voice service prepared.');
+        }).catch(error => {
+          if (alive && !lifecycle.signal.aborted && startupKey === key) { nextWarmAt = Date.now() + 60_000; status(error.message); }
+        }).finally(() => { warming = false; });
+    }
     function dismiss(ids: readonly string[]) {
       for (const id of ids) { dismissed.add(id); delivered.delete(id); deferredUntilPreferences.delete(id); }
       for (let index = pending.length - 1; index >= 0; index--) {
@@ -36,13 +64,22 @@ export default function VoiceAssistantRuntime({ conversationOpen = false }: { co
       }
       if (reading?.id && dismissed.has(reading.id)) speech?.abort();
     }
+    function dismissViewedInbox() {
+      const ids = lastInbox?.messages.filter(isChatNotificationRecordViewed)
+        .map(record => `chat-notification:${record.id}`) ?? [];
+      if (ids.length) dismiss(ids);
+    }
+    const unsubscribeViews = subscribeNotificationViews(dismissViewedInbox);
     function sync() {
       if (!alive) return;
-      const blocked = foregroundAudioActive() || openRef.current || busy;
-      // The companion owns at most the two available voice slots. External
-      // audio gets them back; its own conversation/notification adopts them.
-      if (speechSettings && userId && !(foregroundAudioActive() && !openRef.current && !busy)) {
-        preloadReady = preloadSubscriptionVoice(userId, speechSettings, !preferences.alwaysOnVoiceAssistant, !openRef.current && !busy);
+      warmStartup();
+      dismissViewedInbox();
+      const priority = dictationHasPriority();
+      const blocked = priority || foregroundAudioActive() || openRef.current || busy;
+      // Configure reuse without opening metered sessions. Voice connections
+      // are acquired only when speech or an explicitly enabled wake listener starts.
+      if (!priority && preferences.startVoiceOnStartup && speechSettings && userId && !(foregroundAudioActive() && !openRef.current && !busy)) {
+        preloadReady = preloadSubscriptionVoice(userId, speechSettings, !preferences.alwaysOnVoiceAssistant && !dictationStandbyReserved());
       } else {
         preloadReady = clearSubscriptionPreload();
       }
@@ -121,7 +158,7 @@ export default function VoiceAssistantRuntime({ conversationOpen = false }: { co
         userId = body.userId; preferences = parseVoiceAssistantPreferences(body.preferences) ?? DEFAULT_VOICE_ASSISTANT;
         if (!preferences.readAloudNotifications) { pending.length = 0; speech?.abort(); deferredUntilPreferences.clear(); baseline = false; }
         {
-          const settings = await fetch('/api/speech/settings', { cache: 'no-store', signal: lifecycle.signal }).then(r => r.json());
+          const settings = await loadSpeechSettings(lifecycle.signal);
           if (!alive) return;
           speechSettings = settings.settings ?? null;
           const nextProvider = settings.settings?.speechProvider;
@@ -162,8 +199,10 @@ export default function VoiceAssistantRuntime({ conversationOpen = false }: { co
       finally { polling = false; }
     }
     audioFocusChannel(); window.addEventListener(AUDIO_FOCUS_EVENT, sync);
+    const stopPriority = watchDictationPriority(sync);
+    const removeSettings = onSpeechSettingsChanged(() => { resetSpeechPreparation(); nextWarmAt = 0; void refresh(); });
     void refresh(); const poll = window.setInterval(() => void refresh(), 3000), tick = window.setInterval(sync, 500);
-    return () => { alive = false; lifecycle.abort(); stopWake(); speech?.abort(); void clearSubscriptionPreload(); channel.close(); removeNotifications?.(); window.clearInterval(poll); window.clearInterval(tick); window.removeEventListener(AUDIO_FOCUS_EVENT, sync); };
+    return () => { alive = false; stopPriority(); lifecycle.abort(); stopWake(); speech?.abort(); void clearSubscriptionPreload(); channel.close(); removeSettings(); removeNotifications?.(); unsubscribeViews(); window.clearInterval(poll); window.clearInterval(tick); window.removeEventListener(AUDIO_FOCUS_EVENT, sync); };
   }, []);
   return null;
 }

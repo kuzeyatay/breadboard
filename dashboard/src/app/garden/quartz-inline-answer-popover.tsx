@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type RefObject } from 'react';
+import { useEffect, useState, type ReactNode, type RefObject } from 'react';
 import {
   InlineSelectionAnswerPopover,
   type ChatTextSelectionCandidate,
@@ -8,6 +8,8 @@ import {
 } from '@/app/components/chat-text-selection-ui';
 import type { ChatTextAnnotation } from '@/app/components/chat-markdown';
 import type { QuartzInlineAnswerUpdate } from '@/lib/quartz-assistant-selection';
+import type { ChatTextSelectionReference } from '@/lib/chat-text-selection';
+import type { ChatAttachment } from '@/lib/chat-attachments';
 
 /**
  * The Assistant's own selection controller. A page answer is a message in its
@@ -16,9 +18,15 @@ import type { QuartzInlineAnswerUpdate } from '@/lib/quartz-assistant-selection'
  */
 export interface QuartzAnswerSelection {
   messageIdFor: (requestId: string) => string | undefined;
+  starMessageIdFor?: (requestId: string) => string | undefined;
+  conversationId?: string;
+  canStar?: boolean;
+  persistDraft?: boolean;
+  attachmentsFor?: (requestId: string) => readonly ChatAttachment[] | undefined;
   annotations: ReadonlyMap<string, readonly ChatTextAnnotation[]>;
   onSelection: (selection: ChatTextSelectionCandidate) => void;
   onOpenAnnotation: (annotationId: string, anchor: FloatingAnchorRect) => void;
+  onReply?: (selection: ChatTextSelectionReference, anchor: FloatingAnchorRect) => void;
 }
 
 const NO_ANNOTATIONS: readonly ChatTextAnnotation[] = [];
@@ -46,10 +54,11 @@ function pageAnswer(value: unknown): PageAnswer | null {
 }
 
 /** Page highlights stay in Quartz; their answers use the same UI as chat selections. */
-export default function QuartzInlineAnswerPopover({ iframeRef, quartzOrigin, answerSelection }: {
+export default function QuartzInlineAnswerPopover({ iframeRef, quartzOrigin, answerSelection, renderArtifacts }: {
   iframeRef: RefObject<HTMLIFrameElement | null>;
   quartzOrigin: string;
   answerSelection?: QuartzAnswerSelection;
+  renderArtifacts?: (answerMessageId: string) => ReactNode;
 }) {
   const [answer, setAnswer] = useState<PageAnswer | null>(null);
   const open = answer !== null;
@@ -121,31 +130,42 @@ export default function QuartzInlineAnswerPopover({ iframeRef, quartzOrigin, ans
     };
   }, [open, iframeRef, quartzOrigin]);
 
-  function act(action: 'close' | 'delete' | 'stop' | 'retry', question?: string) {
+  function act(action: 'close' | 'delete' | 'stop' | 'retry', question?: string, attachments?: readonly ChatAttachment[]) {
     if (!answer) return;
     iframeRef.current?.contentWindow?.postMessage({
       type: 'second-brain:assistant-inline-popover-action', action, question,
+      ...(attachments ? { attachments } : {}),
       requestId: answer.requestId, highlightId: answer.highlightId,
     }, quartzOrigin);
-    if (action !== 'stop') setAnswer(null);
+    if (action === 'close' || action === 'delete') setAnswer(null);
   }
   if (!answer) return null;
   const answerMessageId = answerSelection?.messageIdFor(answer.requestId);
   return <InlineSelectionAnswerPopover
     answerMessageId={answerMessageId}
+    starMessageId={answerSelection?.starMessageIdFor?.(answer.requestId)}
+    conversationId={answerSelection?.conversationId}
+    canStar={answerSelection?.canStar}
+    persistDraft={answerSelection?.persistDraft}
+    artifacts={answerMessageId ? renderArtifacts?.(answerMessageId) : undefined}
     annotations={answerMessageId ? answerSelection?.annotations.get(answerMessageId) ?? NO_ANNOTATIONS : undefined}
     onSelection={answerSelection?.onSelection}
     onOpenAnnotation={answerSelection?.onOpenAnnotation}
+    onReply={answerSelection?.onReply}
     key={answer.requestId}
     anchor={answer.anchor}
     notificationSelectionId={answer.requestId}
+    draftId={answer.highlightId}
     question={answer.question}
+    questionAttachments={answerSelection?.attachmentsFor?.(answer.requestId)}
     answer={answer.answer}
+    reasoning={answer.thinking}
+    progressNotes={answer.progressNotes}
     pending={answer.state === 'pending' || answer.state === 'streaming'}
     responseDurationMs={answer.responseDurationMs}
     onClose={() => act('close')}
     onDelete={() => act('delete')}
     onStop={() => act('stop')}
-    onAskAgain={question => act('retry', question)}
+    onAskAgain={(question, attachments) => act('retry', question, attachments)}
   />;
 }

@@ -241,15 +241,17 @@ type AgentStreamReader = Pick<
  * whole ownership boundary: a normal terminal event returns from the consumer
  * without aborting. Explicit cancellation closes that response body promptly,
  * and releasing the lock lets the stream and its queued chunks be collected.
- * Cleanup is best-effort because an already errored/aborted stream may reject
- * either operation; one failed step must not prevent the other.
+ * Cancellation can stay pending after a terminal event (for example while a
+ * proxy closes the response). Do not await it: the caller must settle the turn
+ * and reveal its artifacts and response actions independently of that cleanup.
+ * Both operations are best-effort, including a late cancellation rejection.
  */
 export async function disposeAgentStreamReader(
   reader: AgentStreamReader | null | undefined,
 ): Promise<void> {
   if (!reader) return;
   try {
-    await reader.cancel();
+    void reader.cancel().catch(() => undefined);
   } catch {
     // The transport may already be aborted or errored.
   }

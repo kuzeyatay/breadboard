@@ -32,7 +32,7 @@ beforeEach(() => {
   ).run();
 });
 
-function createInitialTurn(responseStartedAt) {
+function createInitialTurn(responseStartedAt, voice = false) {
   return store.createConversationWithInitialTurn({
     conversation: {
       userId: 1,
@@ -47,6 +47,7 @@ function createInitialTurn(responseStartedAt) {
         responseStartedAt,
         preDispatchRecovery: {
           agentMode: true,
+          ...(voice ? { voice: true } : {}),
           model: "openai/gpt-5.6",
           reasoningEffort: "high",
           superAgent: false,
@@ -64,6 +65,14 @@ function presentedAssistant(conversation) {
     .presentHermesSessionDetail(conversation)
     .messages.find((message) => message.role === "assistant");
 }
+
+test("a reserved voice turn retains its agent routing and voice instructions after restoration", () => {
+  const created = createInitialTurn(new Date().toISOString(), true);
+  const assistant = presentedAssistant(created.conversation);
+  assert.equal(assistant.pending, true);
+  assert.equal(assistant.preDispatchRecovery.agentMode, true);
+  assert.equal(assistant.preDispatchRecovery.voice, true);
+});
 
 test("failed replies restore their diagnostics separately from answer content", () => {
   for (const field of ["error", "runtimeError"]) {

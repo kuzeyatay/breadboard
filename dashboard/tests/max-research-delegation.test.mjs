@@ -5,6 +5,7 @@ import ts from "typescript";
 import { agentLaunchContinuationMessage } from "../src/lib/hermes/agent-launch.ts";
 import * as combinations from "../src/lib/hermes/capability-combinations.ts";
 import { ApiError, describeError, readJsonBody } from "../src/lib/hermes/route-core.ts";
+import { unifiedWorkflowSelectionAllows, unifiedWorkflowRepeatsCompletedWork } from "../src/lib/workflows/unified-command.ts";
 
 // Run the actual POST handler with storage/auth/worker I/O replaced. The launch
 // policy, command parsing, capability conflicts, and response handling are real.
@@ -22,7 +23,7 @@ async function launch({ instruction, agentId = "max-research", delegatedAgents =
   const conversation = { id: 9, user_id: 7 };
   const dispatch = { clientMessageId: "original-turn", model: { modelID: "test-model" }, delegatedAgents };
   const scope = {
-    ...combinations, ApiError, readJsonBody,
+    ...combinations, ApiError, readJsonBody, unifiedWorkflowSelectionAllows, unifiedWorkflowRepeatsCompletedWork,
     MAX_PARALLEL_AGENT_LAUNCHES: 4,
     NextResponse: Response,
     requireEnabled: () => {},
@@ -88,10 +89,20 @@ test("Max Research still starts and attaches durably for the fitness request", a
   assert.equal(result.calls.queued[0].startedRun.runId, "max-run");
 });
 
-test("Max Research hand-backs keep recommendations in the research answer", () => {
-  for (const outcome of ["completed", "failed", "cancelled"]) {
+test("completed Max Research hand-backs preserve recommendations without claiming failed work was reviewed", () => {
+  const completed = agentLaunchContinuationMessage({ agentName: "Max Research", outcome: "completed", content: "Findings about training [S1]." });
+  assert.match(completed, /Max Research owns this request/);
+  assert.match(completed, /Deliver the supplied findings, recommendations, citations, and evidence gaps now/);
+  assert.match(completed, /Do not start another research or citation-audit pass/);
+  for (const outcome of ["failed", "cancelled"]) {
     const message = agentLaunchContinuationMessage({ agentName: "Max Research", outcome, content: "Findings about training." });
-    assert.match(message, /Max Research owns this request/);
+    assert.doesNotMatch(message, /completed report has already been synthesized and reviewed/);
+    assert.match(message, /Do not invent findings or silently substitute a new research run/);
+    assert.match(message, /Do not relaunch it without being asked/);
   }
+  const retained = agentLaunchContinuationMessage({ agentName: "Max Research", outcome: "failed", content: '[MAX_RESEARCH_RETAINED_FINDINGS_V1]\n<retained-finding>Training evidence [S1].</retained-finding>' });
+  assert.match(retained, /Synthesize the retained findings/);
+  assert.match(retained, /Preserve every citation and direct URL attached to a claim/);
+  assert.match(retained, /Do not restart research or relaunch the worker during this hand-back/);
   assert.doesNotMatch(agentLaunchContinuationMessage({ agentName: "Deep Research", outcome: "completed", content: "Findings." }), /Max Research owns this request/);
 });

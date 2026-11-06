@@ -42,7 +42,7 @@ export async function POST(request: Request) {
       {
         ok: true,
         message: progress.running
-          ? "Setting up OpenMAIC. This copies the clone, installs its dependencies and builds it — several minutes the first time."
+          ? "Setting up Classroom. This takes several minutes the first time."
           : progress.error || "Setup finished.",
         status: setupStatus(),
       },

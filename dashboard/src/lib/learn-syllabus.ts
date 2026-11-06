@@ -185,6 +185,14 @@ export interface SyllabusCoverage {
  * text; source metadata is intentionally small and remains outside it.
  */
 const SYLLABUS_COVERAGE_CATALOG_TOTAL_SOURCE_CHARS = 120_000;
+// A fixed aggregate cannot hold every source's identity prefix once a garden
+// has many sources: live 2026-10-08 em1's 73 sources needed 223k characters
+// and planning failed. Grow the envelope with the source count (~1k tokens of
+// identity pages per source), keeping 120k as the floor for small gardens.
+const SYLLABUS_COVERAGE_CATALOG_CHARS_PER_SOURCE = 4_000;
+function syllabusCoverageCatalogSourceChars(sourceCount: number): number {
+  return Math.max(SYLLABUS_COVERAGE_CATALOG_TOTAL_SOURCE_CHARS, sourceCount * SYLLABUS_COVERAGE_CATALOG_CHARS_PER_SOURCE);
+}
 const SYLLABUS_COVERAGE_RAW_PAGE_MIN_CHARS_PER_SOURCE = 2_000;
 const SYLLABUS_COVERAGE_RAW_PAGE_MAX_CHARS_PER_SOURCE = 24_000;
 export const SYLLABUS_COVERAGE_RAW_PAGE_MAX_PAGES_PER_SOURCE = 8;
@@ -193,6 +201,14 @@ export const SYLLABUS_COVERAGE_RAW_PAGE_MAX_PAGES_PER_SOURCE = 8;
 // 120k-character catalog envelope. Later pages remain available through the
 // bounded recovery rereview when the planner selects them explicitly.
 const SYLLABUS_COVERAGE_IDENTITY_PAGE_PREFIX = 5;
+// An unpaged source (a slide deck converted without page markers) has no
+// pages for the recovery rereview to select, so this first review is the only
+// time its text is seen. It was cut to the 2k baseline: telecom-1 M3's GE.3
+// deck (17k) showed only its opening slides and subnets/CIDR were judged
+// unteachable (2026-10-16). Send each unpaged source complete, up to the
+// per-source maximum, from its own aggregate budget so paged sources and the
+// planning index keep theirs.
+const SYLLABUS_COVERAGE_UNPAGED_TOTAL_CHARS = 240_000;
 // A textbook's section headings, with the page each one sits on, let the
 // coverage model see that "3.2 GAUSS'S LAW" exists on page 47 without the
 // catalog carrying page 47 itself. Headings are verbatim lines copied from
@@ -704,11 +720,12 @@ export function buildSyllabusCoverageSourceCatalog(
     }
     sourceIds.add(source.slug);
   }
+  const catalogSourceChars = syllabusCoverageCatalogSourceChars(sources.length);
   const baselineRawChars = Math.max(
     1,
     Math.min(
       SYLLABUS_COVERAGE_RAW_PAGE_MIN_CHARS_PER_SOURCE,
-      Math.floor(SYLLABUS_COVERAGE_CATALOG_TOTAL_SOURCE_CHARS / Math.max(1, sources.length)),
+      Math.floor(catalogSourceChars / Math.max(1, sources.length)),
     ),
   );
   // Reserve each source's complete canonical identity prefix before allocating
@@ -718,7 +735,8 @@ export function buildSyllabusCoverageSourceCatalog(
   // transport bound.
   const preparedSources = sources.map((source) => {
     const rawMaterial = canonicalSourceMaterialBody(source.body);
-    const requiredRawPageChars = parseCanonicalSourceRawPages(source.slug, source.body)
+    const parsed = parseCanonicalSourceRawPages(source.slug, source.body);
+    const requiredRawPageChars = parsed
       .pages
       .slice(0, SYLLABUS_COVERAGE_IDENTITY_PAGE_PREFIX)
       .reduce((sum, page) => sum + page.exactText.length, 0);
@@ -727,23 +745,45 @@ export function buildSyllabusCoverageSourceCatalog(
         `Canonical source-page evidence cannot carry its complete fixed identity prefix for source "${source.slug}" within its bounded transport budget.`,
       );
     }
+    const unpaged = parsed.pages.length === 0 && parsed.ambiguousPageNumbers.length === 0;
     return {
       source,
       rawMaterial,
+      unpaged,
       rawPageChars: Math.max(baselineRawChars, requiredRawPageChars),
+      unpagedExtraChars: 0,
     };
   });
+  // Grow unpaged sources toward their complete text, smallest first, inside
+  // their own budget (water-filling keeps the allocation deterministic).
+  {
+    let budget = SYLLABUS_COVERAGE_UNPAGED_TOTAL_CHARS;
+    const unpagedSources = preparedSources
+      .filter((prepared) => prepared.unpaged)
+      .sort((a, b) => a.rawMaterial.length - b.rawMaterial.length);
+    unpagedSources.forEach((prepared, index) => {
+      const fairShare = Math.floor(budget / (unpagedSources.length - index));
+      const extra = Math.max(0, Math.min(
+        prepared.rawMaterial.length,
+        SYLLABUS_COVERAGE_RAW_PAGE_MAX_CHARS_PER_SOURCE,
+        fairShare,
+      ) - prepared.rawPageChars);
+      prepared.unpagedExtraChars = extra;
+      budget -= extra;
+    });
+  }
+  // Unpaged extras come from their own budget, not the shared catalog envelope.
   const totalRawPageChars = preparedSources.reduce(
     (sum, source) => sum + source.rawPageChars,
     0,
   );
-  if (totalRawPageChars > SYLLABUS_COVERAGE_CATALOG_TOTAL_SOURCE_CHARS) {
+  if (totalRawPageChars > catalogSourceChars) {
     throw new Error(
       "Canonical source-page evidence cannot carry every complete fixed identity prefix within the bounded catalog transport budget.",
     );
   }
   const planningIndexChars = Math.floor(
-    (SYLLABUS_COVERAGE_CATALOG_TOTAL_SOURCE_CHARS - totalRawPageChars)
+    (catalogSourceChars - totalRawPageChars)
       / Math.max(1, sources.length),
   );
   // The heading budget is shared by need rather than split evenly: a
@@ -762,7 +802,7 @@ export function buildSyllabusCoverageSourceCatalog(
           (headingChars(index) / Math.max(1, totalHeadingChars))
             * SYLLABUS_COVERAGE_HEADING_INDEX_TOTAL_CHARS,
         );
-  return preparedSources.map(({ source, rawMaterial, rawPageChars }, index) => {
+  return preparedSources.map(({ source, rawMaterial, rawPageChars, unpagedExtraChars }, index) => {
     const planningIndex = sourcePlanningIndexForCoverage(source.body, planningIndexChars);
     const canonicalHeadingIndex = canonicalSourceHeadingIndex(source.slug, source.body, {
       maxChars: headingBudgetFor(fullHeadingIndexes[index]!),
@@ -780,7 +820,7 @@ export function buildSyllabusCoverageSourceCatalog(
         planningIndexTruncated: planningIndex.truncated,
       },
       canonicalRawSourceSha256: createHash("sha256").update(rawMaterial).digest("hex"),
-      canonicalRawPageEvidence: boundedCanonicalSourcePageEvidence(source.slug, source.body, rawPageChars),
+      canonicalRawPageEvidence: boundedCanonicalSourcePageEvidence(source.slug, source.body, rawPageChars + (unpagedExtraChars ?? 0)),
       canonicalHeadingIndex,
     };
   });
@@ -937,6 +977,10 @@ function exactAuthoredStringArray(value: unknown, path: string, problems: string
 /** Strict active-Learn parser boundary. It reports malformed model output but
  * never trims, truncates, drops, defaults, renames, or de-duplicates semantic
  * fields before the model receives a repair attempt. */
+// ponytail: topic-count proxy for "collapsed a nested outline into modules";
+// fine-grained readings carry 1-3 topics per unit, collapsed ones 9-14.
+const MAX_SYLLABUS_UNIT_TOPICS = 8;
+
 export function modelAuthoredSyllabusPlanProblems(value: unknown): string[] {
   const root = asRecord(value);
   if (!root) return ["syllabus plan must be a JSON object"];
@@ -991,7 +1035,15 @@ export function modelAuthoredSyllabusPlanProblems(value: unknown): string[] {
     optionalAuthoredString(unit.label, `${prefix}.label`, problems);
     exactAuthoredString(unit.title, `${prefix}.title`, problems);
     exactAuthoredStringArray(unit.objectives, `${prefix}.objectives`, problems);
-    exactAuthoredStringArray(unit.topics, `${prefix}.topics`, problems);
+    if (
+      exactAuthoredStringArray(unit.topics, `${prefix}.topics`, problems) &&
+      units.length > 1 &&
+      unit.topics.length > MAX_SYLLABUS_UNIT_TOPICS
+    ) {
+      problems.push(
+        `${prefix} (${String(unit.label ?? unit.id)}) bundles ${unit.topics.length} topics; a unit is the finest numbered item in the syllabus outline or schedule. Split it into one unit per numbered sub-item (e.g. M1.a.i.1, M1.a.i.2), each with its own topics and the materials it assigns`,
+      );
+    }
     exactAuthoredStringArray(unit.questionReferences, `${prefix}.questionReferences`, problems);
     if (exactAuthoredStringArray(unit.materialIds, `${prefix}.materialIds`, problems)) {
       for (const materialId of unit.materialIds) {

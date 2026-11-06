@@ -1,0 +1,75 @@
+{
+  "revision": "c18718adc33e82a086d996d0b0f75deb3d01745a",
+  "files": [
+    {
+      "file": "ublock-badware.txt",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/badware.txt",
+      "sha256": "00b6e789c148541dfafab5f5a433fe83d2f3fd20e426eb5baf4c490afd325d1c"
+    },
+    {
+      "file": "ublock-filters.txt",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/filters.txt",
+      "sha256": "f64eb22a4421a0813adcb04afd8739cdc0ad9de9842dc0178feb05d917becf14"
+    },
+    {
+      "file": "ublock-filters-2020.txt",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/filters-2020.txt",
+      "sha256": "589dba6de1d45f9be4f96f8dc5a5520d93bb7209dbd88c172622328627da1473"
+    },
+    {
+      "file": "ublock-filters-2021.txt",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/filters-2021.txt",
+      "sha256": "95178374dc83e09cf3b8b75aeaf100c225beb6717cd079dd33014b1bc42ff9cd"
+    },
+    {
+      "file": "ublock-filters-2022.txt",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/filters-2022.txt",
+      "sha256": "2d04863c46844e34c8e77c3193718d65c237560ebfbb97d6ea55a20e81d6a855"
+    },
+    {
+      "file": "ublock-filters-2023.txt",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/filters-2023.txt",
+      "sha256": "e57280ddc43de90fd798712c71ac10f1c10270b7815da17d26c9d8997737090a"
+    },
+    {
+      "file": "ublock-filters-2024.txt",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/filters-2024.txt",
+      "sha256": "61c6370caf313fe15c1fba4a371ffd2b31c2255309052bbb1ccb4f41696434a4"
+    },
+    {
+      "file": "ublock-filters-2025.txt",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/filters-2025.txt",
+      "sha256": "3f46fa2ce32ab2b49e0aa3aafcf44aeb2f4cd1243b9bb64210d819776f893604"
+    },
+    {
+      "file": "ublock-filters-2026.txt",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/filters-2026.txt",
+      "sha256": "df88d16a5480c54ee5cb54a406ee1cb8a66e5a6cb526e7e44250e3c037aeb671"
+    },
+    {
+      "file": "ublock-quick-fixes.txt",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/quick-fixes.txt",
+      "sha256": "61d766e66cf971d417e105f0b0ad869f80ef28ed407028f9555332bdd3fc0822"
+    },
+    {
+      "file": "ublock-resource-abuse.txt",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/resource-abuse.txt",
+      "sha256": "a7f06a353f79141a4c1eded476fc26409a76d8f02be1c2e7c225e96666fbe64d"
+    },
+    {
+      "file": "ublock-unbreak.txt",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/unbreak.txt",
+      "sha256": "d06b9a46309f8d2555b69f9c2e789e61299ecec0f947c5cf13ce5e5febb5a22e"
+    },
+    {
+      "file": "ublock-privacy.txt",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/privacy.txt",
+      "sha256": "62d173cbfa87251b305e4a695d0d5b8afefb96a2e32d3f70f21e2b422fae6dbe"
+    },
+    {
+      "file": "resources.json",
+      "source": "https://raw.githubusercontent.com/ghostery/adblocker/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin/resources.json",
+      "sha256": "5ce0ce483f0e5514308ccb0240960a9dd7bfeab417debeef96960dce2c95f690"
+    }
+  ]
+}

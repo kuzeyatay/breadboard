@@ -40,12 +40,17 @@ export function trieFromAllFiles(allFiles: QuartzPluginData[]): FileTrieNode<Bui
   const trie = new FileTrieNode<BuildTimeTrieData>([])
   allFiles.forEach((file) => {
     if (file.frontmatter) {
-      trie.add({
-        ...file,
-        slug: file.slug!,
-        title: file.frontmatter.title,
-        filePath: file.filePath!,
-      })
+      // Spilled page trees live behind getters. Spreading metadata invokes
+      // those getters and pins the entire library's HTML in this cached trie.
+      // Copy descriptors so navigation keeps metadata without loading trees.
+      const data = Object.defineProperties(
+        {},
+        Object.getOwnPropertyDescriptors(file),
+      ) as BuildTimeTrieData
+      data.slug = file.slug!
+      data.title = file.frontmatter.title
+      data.filePath = file.filePath!
+      trie.add(data)
     }
   })
 

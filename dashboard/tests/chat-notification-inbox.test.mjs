@@ -104,7 +104,7 @@ test("notification links open the exact originating chat", () => {
   );
   assert.equal(
     chatNotificationHref(terminalTarget),
-    "/dashboard?terminalChat=conv_example123",
+    "/new-tab?terminalChat=conv_example123",
   );
 });
 
@@ -732,7 +732,7 @@ test("every surface reports the chat it shows and opens notices in place", () =>
   const schema = source("../src/lib/conversations/schema.ts");
 
   // The list on screen is the server's list; nothing is kept per browser.
-  assert.match(toast, /listPendingChatNotifications|fetch\('\/api\/chat-notifications'/);
+  assert.match(toast, /['"]\/api\/chat-notifications(?:\?center=1)?['"]/);
   assert.doesNotMatch(toast, /localStorage/);
   assert.match(toast, /postChatNotificationDismissal\(\{ dismiss: \[notificationId\] \}\)/);
   assert.match(toast, /postChatNotificationDismissal\(\{ seen: target \}\)/);
@@ -749,8 +749,8 @@ test("every surface reports the chat it shows and opens notices in place", () =>
   // Viewing a chat is reported by both surfaces; the Terminal only while the
   // dock is actually showing it.
   assert.match(terminal, /const viewingChatId = bodyMounted \? session\.sessionId : null/);
-  assert.match(terminal, /setActiveChatNotificationTarget\(\s*viewingChatId/);
-  assert.match(gardenWorkspace, /setActiveChatNotificationTarget\(target\)/);
+  assert.match(terminal, /useChatNotificationView\(viewingChatId/);
+  assert.match(gardenWorkspace, /useChatNotificationView\(viewingChatId/);
 
   // A Terminal notice on the dashboard opens the dock without a navigation.
   assert.match(dashboard, /onOpenChat=\{openChatFromNotification\}/);
@@ -764,7 +764,7 @@ test("both destination pages accept notification deep links", () => {
   const gardenWorkspace = source(
     "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
   );
-  const dashboardPage = source("../src/app/dashboard/page.tsx");
+  const terminalPage = source("../src/app/new-tab/page.tsx");
   const terminal = source(
     "../src/app/components/hermes/dashboard-agent-terminal.tsx",
   );
@@ -772,9 +772,9 @@ test("both destination pages accept notification deep links", () => {
   assert.match(gardenPage, /requested\.chat/);
   assert.match(gardenPage, /initialChatId=\{initialChatId\}/);
   assert.match(gardenWorkspace, /openChatById\(requested\)/);
-  assert.match(dashboardPage, /requested\.terminalChat/);
+  assert.match(terminalPage, /requested\.terminalChat/);
   assert.match(
-    dashboardPage,
+    terminalPage,
     /initialTerminalChatId=\{initialTerminalChatId\}/,
   );
   assert.match(terminal, /openHistorySession\(requested\)/);
@@ -789,7 +789,7 @@ test("an upload failure already shown in the dialog is not repeated in the corne
   assert.match(gardenWorkspace, /showUploadRef\.current = showUpload/);
   assert.match(
     gardenWorkspace,
-    /if \(!showUploadRef\.current\) \{\s*addToast\(`\$\{record\.filename\}: \$\{event\.error\}`\)/,
+    /event\.type === "error" && event\.canceled !== true && typeof event\.error === "string" && !showUploadRef\.current\) \{\s*addToast\(`\$\{record\.filename\}: \$\{event\.error\}`\)/,
   );
   assert.match(
     gardenWorkspace,
@@ -798,5 +798,10 @@ test("an upload failure already shown in the dialog is not repeated in the corne
   const gatedTaskErrors = uploadStore.match(
     /if \(!taskStatusVisible\(clusterSlug, taskId\)\) \{\s*sinkToast\(clusterSlug, \{ message: `\$\{file\.name\}: \$\{(?:message|streamError)\}` \}\);/g,
   );
-  assert.equal(gatedTaskErrors?.length, 6);
+  assert.equal(gatedTaskErrors?.length, 4);
+  // Stream failures and restored-job errors now share failFile's visibility gate.
+  const failFile = uploadStore.match(/const failFile = \([\s\S]*?\n  \};/)?.[0] ?? "";
+  assert.match(failFile, /if \(!taskStatusVisible\(clusterSlug, taskId\)\) \{\s*sinkToast\(clusterSlug,/);
+  assert.match(uploadStore, /failFile\(key, file\.name, streamError, streamRecoveryId\)/);
+  assert.match(uploadStore, /failFile\(key, file\.name, message, recoveryIdFromEvent\(event\)\)/);
 });

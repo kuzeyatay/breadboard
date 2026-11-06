@@ -5,7 +5,8 @@
   "include": [
     "src/app/components/desktop-title-bar.tsx",
     "src/app/browser/tab-group-popover/**/*.tsx",
-    "src/lib/desktop-tab-drag.ts"
+    "src/lib/desktop-tab-drag.ts",
+    "src/app/browser/browser-tab-panes.tsx"
   ],
   "exclude": ["node_modules"]
 }

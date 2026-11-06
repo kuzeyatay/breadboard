@@ -27,11 +27,21 @@ test("garden Explorer keeps legacy Learning and Sources folders", () => {
 })
 
 test("garden Explorer hides internal and unindexed folders", () => {
-  for (const name of [".breadboard", "assets", "generated", "Internal", "static", "tags"]) {
+  for (const name of [".breadboard", "assets", "Internal", "static", "tags"]) {
     assert.equal(isVisibleGardenRootEntry(folder(name, true)), false, name)
   }
 
   assert.equal(isVisibleGardenRootEntry(folder("empty-folder")), false)
+  assert.equal(isVisibleGardenRootEntry(folder("generated")), false)
+})
+
+test("garden Explorer shows Generated when saved pages exist without a folder index", () => {
+  const page = { isFolder: false, slugSegment: "charged-wire", data: { title: "Charged wire" } }
+  assert.equal(isVisibleGardenRootEntry({ ...folder("Generated"), children: [page] }), true)
+  assert.equal(isVisibleGardenRootEntry({ ...folder("Generated"), children: [
+    { ...folder("nested"), children: [page] },
+  ] }), true)
+  assert.equal(isVisibleGardenRootEntry({ ...folder("Internal"), children: [page] }), false)
 })
 
 test("garden Explorer includes notes stored directly at the garden root", () => {

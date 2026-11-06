@@ -54,6 +54,16 @@ export function parametricCadUserMessage(task: string): string {
 
 const BED = /(?:^|\s)--bed[= ](\d{1,4})\s*[x×]\s*(\d{1,4})\s*[x×]\s*(\d{1,4})\b/i;
 
+/** Explicit sibling-project requests must never bind the previous design. */
+export function requestsNewCadProject(brief: string): boolean {
+  return brief.split(/[.!?;\n]+/).some((sentence) => {
+    // Keep ordinary edits and negated creation requests on their current project.
+    if (/\b(?:do not|don't|never|without)\s+(?:create|start|build|generate)\b/i.test(sentence)) return false;
+    return /\b(?:create|start|build|generate)\s+(?:a\s+|an\s+)?(?:new|separate(?:ly)?(?:\s+named)?(?:\s+sibling)?|sibling)\s+(?:cad\s+)?project\b/i.test(sentence)
+      || /\bbounded deliverable:\s*(?:a\s+)?separately named sibling project\b/i.test(sentence);
+  });
+}
+
 /**
  * Split a prompt into the brief and its run shape. Options stay inline flags so
  * chat remains the only surface:
@@ -74,7 +84,7 @@ export function parseParametricCadRequest(
   let process: ParametricCadRequest["process"] = defaults?.process ?? null;
   let printerBed: ParametricCadRequest["printerBed"] = defaults?.printerBed ?? null;
   let units: ParametricCadRequest["units"] = defaults?.units ?? null;
-  let fresh = false;
+  let fresh = requestsNewCadProject(task);
 
   const bed = BED.exec(task);
   if (bed) {
@@ -95,7 +105,6 @@ export function parseParametricCadRequest(
       fresh = true;
       return " ";
     })
-    .replace(/\s+/g, " ")
     .trim();
 
   return { brief, process, printerBed, units, fresh };

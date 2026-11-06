@@ -178,6 +178,8 @@ export async function resolveBrowserAgentDebuggingPort(
 // Here the outside party is ChatMock, which then navigates the tab to
 // chatgpt.com itself and drives the site's composer over CDP.
 
+/** The site ChatMock drives in that tab; the only origin its microphone serves. */
+export const CHATGPT_WEB_ORIGIN = "https://chatgpt.com";
 const CHATGPT_WEB_BOOTSTRAP_PREFIX = "about:blank#breadboard-chatgpt-web=";
 const CHATGPT_WEB_NONCE = /^[0-9a-f]{32}$/u;
 

@@ -147,7 +147,12 @@ async function bundles() {
         <button onClick={removeSelectionHighlight}>Erase</button></>;
     }createRoot(document.getElementById('root')).render(<App/>);
   `}});
-  return {quartz:quartz.outputFiles[0].text, react:react.outputFiles[0].text,garden:garden.outputFiles[0].text};
+  const bridge = await build({...options,stdin:{resolveDir:dashboardRoot,contents:`
+    import {installTextHighlightBridge} from './src/lib/text-highlight-transport';
+    const frame=document.querySelector('iframe');
+    if(frame) installTextHighlightBridge(()=>frame.contentWindow,new URL(frame.src).origin);
+  `}});
+  return {quartz:quartz.outputFiles[0].text, react:react.outputFiles[0].text,garden:garden.outputFiles[0].text,bridge:bridge.outputFiles[0].text};
 }
 
 function html(script, article = 'Learning survives a restart. Another passage remains available.') {
@@ -171,9 +176,11 @@ async function harness(t) {
   let article;
   const requests = [];
   const held = [];
+  const occupied = [];
   const create = async () => {
     const server = createServer(async(req,res)=>{
       const send = (status,body,type='application/json') => {res.writeHead(status,{'Content-Type':type,'Access-Control-Allow-Origin':req.headers.origin??'*','Access-Control-Allow-Credentials':'true','Access-Control-Allow-Headers':'Content-Type','Access-Control-Allow-Methods':'POST, OPTIONS'});res.end(body);};
+      if(req.url.startsWith('/hold')) { occupied.push(()=>send(200,'{}')); return; }
       if (req.url === '/api/text-highlights') {
         if(req.method==='OPTIONS') return send(204,'');
         let raw=''; for await(const part of req) raw+=part;
@@ -186,8 +193,9 @@ async function harness(t) {
       if (req.url === '/quartz.js') return send(200,scripts.quartz,'application/javascript');
       if (req.url === '/react.js') return send(200,scripts.react,'application/javascript');
       if (req.url === '/garden.js') return send(200,scripts.garden,'application/javascript');
+      if (req.url === '/bridge.js') return send(200,scripts.bridge,'application/javascript');
       if (req.url === '/garden') return send(200,html('garden'),'text/html');
-      if (req.url === '/embedded') return send(200,`<iframe src="http://127.0.0.1:${quartzServer.address().port}/quartz-next" style="width:100%;height:90vh;border:0"></iframe><script>window.requests=[];addEventListener('message',e=>requests.push(e.data));</script>`,'text/html');
+      if (req.url === '/embedded') return send(200,`<iframe src="http://127.0.0.1:${quartzServer.address().port}/quartz-next" style="width:100%;height:90vh;border:0"></iframe><script src="/bridge.js"></script><script>window.requests=[];addEventListener('message',e=>requests.push(e.data));</script>`,'text/html');
       if (req.url.startsWith('/quartz-next')) return send(200,html('quartz',article), 'text/html');
       // Quartz's normal iframe discovers the actual host from its referrer.
       if (req.url === '/quartz') {
@@ -211,14 +219,14 @@ async function harness(t) {
   const close = async server => {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));};
   const executablePath = ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe','C:/Program Files/Google/Chrome/Application/chrome.exe'].find(fs.existsSync);
   const browser = await chromium.launch(executablePath ? {executablePath,headless:true} : {headless:true});
-  t.after(async()=>{for(const release of held) release();await browser.close();await close(quartzServer);await close(server);});
+  t.after(async()=>{for(const release of [...held,...occupied]) release();await browser.close();await close(quartzServer);await close(server);});
   const context = await browser.newContext();
   const page = await context.newPage();
   page.setDefaultTimeout(8_000);
   const errors=[]; page.on('pageerror',error=>errors.push(error.message));
   t.after(()=>assert.deepEqual(errors,[], 'browser JavaScript errors'));
   return {
-    page,browser,requests,
+    page,browser,requests,occupied,
     url:(p='/')=>`http://127.0.0.1:${p==='/quartz'?quartzServer.address().port:server.address().port}${p}`,
     setFail:value=>{fail=value;},setArticle:value=>{article=value;},setDelayed:value=>{delayed=value;},
     release:()=>{for(const release of held.splice(0))release();},
@@ -259,7 +267,10 @@ test('embedded Quartz keeps saving after full navigation, and inline answers fit
   // The fixture uses the same lesson document for its clean and query URL.
   await frame.waitForSelector('article');
   assert.equal(new URL(await frame.evaluate(()=>document.referrer)).origin,new URL(frame.url()).origin);
+  await page.evaluate(()=>document.querySelector('iframe').contentWindow.postMessage({type:'second-brain:assistant-inline-popover-host'},'*'));
   await color(frame,'Learning survives a restart.','Ask here');
+  await page.waitForFunction(()=>requests.some(r=>r.type==='second-brain:assistant-inline-popover'&&r.open));
+  await page.evaluate(()=>{const draft=requests.find(r=>r.type==='second-brain:assistant-inline-popover'&&r.open);document.querySelector('iframe').contentWindow.postMessage({type:'second-brain:assistant-inline-popover-action',action:'retry',question:'what does this paragraph mean',requestId:draft.requestId,highlightId:draft.highlightId},'*');});
   await page.waitForFunction(()=>requests.some(r=>r.type==='second-brain:assistant-ask-here'));
   const request=await page.evaluate(()=>requests.find(r=>r.type==='second-brain:assistant-ask-here'));
   assert.equal(request.text,'Learning survives a restart.');
@@ -340,13 +351,54 @@ test('published Quartz notes attach to highlights and survive a server restart',
   await page.getByRole('textbox',{name:'Note about highlighted text',exact:true}).fill('Compare this with the previous lesson.');
   await page.getByRole('button',{name:'Save note',exact:true}).click();
   await until(()=>sync(1,{key}).entries.some(entry=>entry.note==='Compare this with the previous lesson.'));
-  assert.equal(await page.locator('mark.bb-hl').getAttribute('title'),'Compare this with the previous lesson.');
+  assert.equal(await page.locator('mark.bb-hl').getAttribute('data-hl-note-text'),'Compare this with the previous lesson.');
   await page.goto('about:blank'); await h.restart(); await page.goto(h.url('/quartz'));
   const mark=page.locator('mark.bb-hl'); await mark.waitFor();
-  assert.equal(await mark.getAttribute('title'),'Compare this with the previous lesson.');
+  assert.equal(await mark.getAttribute('data-hl-note-text'),'Compare this with the previous lesson.');
+  assert.equal(sync(1,{key}).entries[0].noteOnly,true);
+  for (const theme of ['light','dark']) {
+    await page.evaluate(theme=>document.documentElement.setAttribute('saved-theme',theme),theme);
+    assert.deepEqual(await mark.evaluate(el=>({background:getComputedStyle(el).backgroundColor,decoration:getComputedStyle(el).textDecorationLine})),
+      {background:'rgba(0, 0, 0, 0)',decoration:'underline'});
+  }
   await mark.click();
   await page.getByRole('button',{name:'Edit note',exact:true}).click();
   assert.equal(await page.getByRole('textbox',{name:'Note about highlighted text',exact:true}).inputValue(),'Compare this with the previous lesson.');
+  await page.getByRole('button',{name:'Remove note',exact:true}).click();
+  assert.equal(await page.locator('mark.bb-hl').count(),0,'removing a standalone note leaves plain text');
+  await until(()=>sync(1,{key}).entries.length===0);
+});
+
+test('Quartz keeps manual highlights with notes in either action order and limits later highlighting to the selected text', {timeout:60_000}, async t=>{
+  const h=await harness(t); const {page}=h;
+  await page.goto(h.url('/quartz'));
+  const addNote=async quote=>{
+    await selectText(page,quote);
+    await page.getByRole('button',{name:'Add note',exact:true}).click();
+    await page.getByRole('textbox',{name:'Note about highlighted text',exact:true}).fill('Remember this.');
+    await page.getByRole('button',{name:'Save note',exact:true}).click();
+  };
+  await color(page,'Learning','Blue');
+  await addNote('Learning');
+  const manual=page.locator('mark.bb-hl').filter({hasText:/^Learning$/});
+  const style=mark=>mark.evaluate(el=>({background:getComputedStyle(el).backgroundColor,decoration:getComputedStyle(el).textDecorationLine}));
+  assert.deepEqual(await style(manual),{background:'rgb(143, 195, 235)',decoration:'underline'});
+  await manual.click(); await page.getByRole('button',{name:'Edit note',exact:true}).click();
+  await page.getByRole('button',{name:'Remove note',exact:true}).click();
+  assert.equal((await style(manual)).background,'rgb(143, 195, 235)','removing a note preserves manual color');
+  await addNote('survives a restart.');
+  const note=page.locator('mark[data-hl-note]');
+  assert.equal((await style(note)).background,'rgba(0, 0, 0, 0)');
+  await color(page,'restart','Blue');
+  const converted=page.locator('mark.bb-hl').filter({hasText:/^restart$/});
+  assert.deepEqual(await style(converted),{background:'rgb(143, 195, 235)',decoration:'underline'});
+  const remaining=page.locator('mark[data-hl-note-only="true"]');
+  assert.deepEqual(await remaining.allTextContents(),['survives a ','.']);
+  for (const part of await remaining.all()) assert.equal((await style(part)).background,'rgba(0, 0, 0, 0)');
+  await page.waitForFunction(()=>!Object.keys(localStorage).some(key=>key.startsWith('breadboard:highlight-outbox:')));
+  await page.reload(); await converted.waitFor();
+  assert.deepEqual(await style(converted),{background:'rgb(143, 195, 235)',decoration:'underline'});
+  assert.equal(await remaining.count(),2);
 });
 
 test('document switches cannot overwrite another document and failed saves replay after reload', {timeout:60_000}, async t=>{
@@ -540,17 +592,55 @@ test('existing annotations in unopened chats, PDFs and garden pages are migrated
   await until(()=>types.TEXT_HIGHLIGHT_PREFIXES.every(prefix=>sync(1,{key:prefix+'unopened'}).entries.length===1));
 });
 
+for (const view of ['dashboard','embedded Quartz']) test(`${view} saves while all six browser connections are occupied`, {timeout:30_000}, async t=>{
+  const h=await harness(t); const {page}=h;
+  await page.exposeFunction('nativeHighlightSave',async body=>{
+    const response=await fetch(h.url('/api/text-highlights'),{method:'POST',headers:{'Content-Type':'application/json'},body});
+    return {status:response.status,body:await response.text()};
+  });
+  await page.addInitScript(()=>{if(window===window.parent)window.breadboardDesktop={textHighlightRequest:body=>window.nativeHighlightSave(body)};});
+  await page.goto(h.url(view==='dashboard'?'/':'/embedded'));
+  const reader=view==='dashboard'?page:page.frames().find(f=>f.parentFrame());
+  await reader.waitForFunction(()=>!Object.keys(localStorage).some(k=>k.startsWith('breadboard:highlight-outbox:')));
+  await page.evaluate(()=>{window.blockedRequests=Array.from({length:6},(_,i)=>fetch('/hold?slot='+i));});
+  await until(()=>h.occupied.length===6);
+  const start=Date.now();
+  if(view==='dashboard')await page.getByRole('button',{name:'Mark',exact:true}).click();
+  else await color(reader,'Learning survives a restart.');
+  const key=view==='dashboard'?'breadboard:pdf-highlights:document-a':'breadboard:garden-highlights:v1:persistence-garden/lesson';
+  await until(()=>sync(1,{key}).entries.length===1);
+  await reader.waitForFunction(()=>!Object.keys(localStorage).some(k=>k.startsWith('breadboard:highlight-outbox:')));
+  assert.ok(Date.now()-start<3000,'saves must bypass browser socket starvation');
+  assert.equal(h.occupied.length,6);
+  h.setFail(true);
+  if(view==='dashboard')await page.getByRole('button',{name:'Erase',exact:true}).click();
+  else await color(reader,'Another passage remains available.');
+  await reader.waitForFunction(()=>[...document.querySelectorAll('[role="status"]')].some(el=>!el.hidden&&el.textContent.includes('could not be saved')));
+  assert.ok(await reader.evaluate(()=>Object.keys(localStorage).some(k=>k.startsWith('breadboard:highlight-outbox:'))));
+  h.setFail(false);
+  await reader.getByRole('button',{name:'Retry saving',exact:true}).click();
+  await reader.waitForFunction(()=>!Object.keys(localStorage).some(k=>k.startsWith('breadboard:highlight-outbox:')));
+  assert.equal(sync(1,{key}).entries.length,view==='dashboard'?0:2);
+});
+
 test('installed Quartz builds the same persistence client without development repository imports', async()=>{
   const {stageQuartzHighlightAssets}=await import('../../desktop/scripts/quartz-highlight-assets.mjs');
   const target=path.join(root,'quartz-template');
   const scripts=path.join(target,'quartz','components','scripts');fs.mkdirSync(scripts,{recursive:true});
-  for(const name of ['highlighter.inline.ts','highlightPalette.ts','generatedVisualHost.ts','pageUnderstanding.inline.ts','explorer.inline.ts']) {
+  for(const name of ['highlighter.inline.ts','highlightPalette.ts','highlightNoteTooltip.ts','mathAnnotationSource.ts','generatedVisualHost.ts','pageUnderstanding.inline.ts','explorer.inline.ts','pageExports.inline.ts']) {
     fs.copyFileSync(new URL('../../quartz/quartz/components/scripts/'+name,import.meta.url),path.join(scripts,name));
   }
+  const utilities=path.join(target,'quartz','util');fs.mkdirSync(utilities,{recursive:true});
+  for(const name of ['editorMarkdown.ts','mathAnnotation.ts']) fs.copyFileSync(new URL('../../quartz/quartz/util/'+name,import.meta.url),path.join(utilities,name));
   stageQuartzHighlightAssets(fileURLToPath(new URL('../../',import.meta.url)),target);
-  const bundled=await build({entryPoints:[path.join(scripts,'highlighter.inline.ts')],bundle:true,write:false,platform:'browser',format:'iife'});
+  // The installed template includes Quartz's node_modules; resolve those same
+  // dependencies here without copying the full package tree into the fixture.
+  const bundled=await build({entryPoints:[path.join(scripts,'highlighter.inline.ts')],nodePaths:[fileURLToPath(new URL('../../quartz/node_modules',import.meta.url))],bundle:true,write:false,platform:'browser',format:'iife'});
   assert.ok(bundled.outputFiles[0].text.includes('/api/text-highlights'));
   const understanding=await build({entryPoints:[path.join(scripts,'pageUnderstanding.inline.ts')],bundle:true,write:false,platform:'browser',format:'iife'});
   assert.ok(understanding.outputFiles[0].text.includes('/api/page-understanding'));
+  const pageExports=await build({entryPoints:[path.join(scripts,'pageExports.inline.ts')],bundle:true,write:false,platform:'browser',format:'iife'});
+  assert.ok(pageExports.outputFiles[0].text.includes('Copy Markdown'));
+  assert.ok(pageExports.outputFiles[0].text.includes('/api/markdown-to-pdf'));
   assert.equal(fs.readFileSync(path.join(scripts,'text-highlight-client.ts'),'utf8'),fs.readFileSync(new URL('../src/lib/text-highlight-client.ts',import.meta.url),'utf8'));
 });

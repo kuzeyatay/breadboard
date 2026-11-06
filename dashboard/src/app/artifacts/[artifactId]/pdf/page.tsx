@@ -64,7 +64,6 @@ export default async function ArtifactPdfPage({
         browserTitle={artifact.filename}
         sourceUrl={sourceUrl}
         readOnly={!editable}
-        kicker={editable ? "PDF artifact editor" : "PDF artifact"}
         aiEditArtifact={editable ? {
           id: artifact.id,
           title: artifact.title,

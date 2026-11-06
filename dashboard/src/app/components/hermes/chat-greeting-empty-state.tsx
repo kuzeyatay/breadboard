@@ -58,7 +58,18 @@ export default function ChatGreetingEmptyState({
           {greeting?.question ?? " "}
         </p>
       </div>
-      <div className="grid w-full max-w-xl gap-2 sm:grid-cols-2">
+      <ChatSuggestionCards suggestions={suggestions} disabled={disabled} onSelectSuggestion={onSelectSuggestion} />
+      {footnote ? (
+        <p className={`text-xs text-gray-700 transition-opacity duration-500 motion-reduce:transition-none ${greeting ? "opacity-100" : "opacity-0"}`}>
+          {footnote}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+export function ChatSuggestionCards({ suggestions, disabled = false, onSelectSuggestion }: Pick<Props, 'suggestions' | 'disabled' | 'onSelectSuggestion'>) {
+  return <div className="grid w-full max-w-xl gap-2 sm:grid-cols-2" aria-label="Suggested next steps">
         {suggestions.map((prompt, index) => (
           <SuggestionCard
             key={prompt}
@@ -68,18 +79,7 @@ export default function ChatGreetingEmptyState({
             onSelect={onSelectSuggestion}
           />
         ))}
-      </div>
-      {footnote ? (
-        <p
-          className={`text-xs text-gray-700 transition-opacity duration-500 motion-reduce:transition-none ${
-            greeting ? "opacity-100" : "opacity-0"
-          }`}
-        >
-          {footnote}
-        </p>
-      ) : null}
-    </div>
-  );
+      </div>;
 }
 
 /**
@@ -172,7 +172,7 @@ function SuggestionCard({
           </>
         ) : null}
       </svg>
-      {prompt}
+      <span className="block">{prompt}</span>
     </button>
   );
 }

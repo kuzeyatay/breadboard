@@ -95,8 +95,8 @@ test("the creator UI stages, reviews, and reuses the human promotion boundary", 
   const creator = read("src/app/components/hermes/skill-creator-panel.tsx");
   assert.match(creator, /\/api\/hermes\/skills\/create/);
   assert.match(creator, /\/api\/hermes\/skills\/promote/);
-  assert.match(creator, /Stage for review/);
-  assert.match(creator, /Approve and install/);
+  assert.match(creator, /Review installation/);
+  assert.match(creator, /SkillAccessReview/);
   assert.match(creator, /Discard/);
   assert.match(creator, /Draft with AI/);
   assert.match(creator, /skill-creator/);

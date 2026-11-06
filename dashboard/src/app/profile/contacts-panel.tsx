@@ -131,8 +131,7 @@ export default function ContactsPanel({
       <header className="mb-4">
         <h2 className="text-sm font-semibold text-white">Address book</h2>
         <p className="mt-0.5 text-xs text-gray-500">
-          Everyone you invite to something is filed here on its own. Correct a name and it is
-          yours to keep.
+          People you invite are added here automatically. You can edit their names.
         </p>
       </header>
 
@@ -176,8 +175,8 @@ export default function ContactsPanel({
         {contacts.length === 0 ? (
           <p className="neu-inset rounded-xl px-4 py-6 text-center text-xs text-gray-500">
             {query
-              ? "Nobody here by that name."
-              : "Empty for now. Invite someone to an event and they will appear."}
+              ? "No matching contacts."
+              : "Invite someone to an event to add them here."}
           </p>
         ) : (
           contacts.map((contact) => {

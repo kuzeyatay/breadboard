@@ -65,6 +65,15 @@ test("Quartz Runtime service serves only prebuilt output and exits cleanly", asy
   fs.writeFileSync(path.join(publicRoot, "garden", "Fields--and--50-percent.html"), "<p>CHARGE</p>");
   fs.writeFileSync(path.join(publicRoot, "garden", "exact file.txt"), "EXACT ASSET");
   fs.writeFileSync(path.join(publicRoot, "garden", "editable.html"), '<html><head><script src="/postscript.js" defer></script></head><body><div class="markdown-actions"></div><article>Published text</article></body></html>');
+  fs.mkdirSync(path.join(publicRoot, "fresh"), { recursive: true });
+  fs.writeFileSync(path.join(publicRoot, "fresh", "old-note.html"), `<html><head><title>OLD TITLE</title>
+    <link rel="stylesheet" href="../index.css"><script src="../prescript.js"></script>
+    <script>const fetchData=fetch("../static/contentIndex.json");</script></head>
+    <body data-slug="fresh/old-note"><h1 class="article-title">OLD TITLE</h1>
+    <div class="markdown-actions" data-note-slug="fresh/old-note"></div>
+    <article class="popover-hint"><p>OLD BODY MUST NEVER APPEAR</p><iframe srcdoc="&lt;article&gt;Nested&lt;/article&gt;"></iframe></article>
+    <ul class="toc-content"><li>OLD SECTION</li></ul><div class="content-meta">OLD DATE</div>
+    <script src="../postscript.js"></script></body></html>`);
   const port = await freePort();
   const child = spawn(process.execPath, [servicePath, "--port", String(port)], {
     env: {
@@ -100,6 +109,25 @@ test("Quartz Runtime service serves only prebuilt output and exits cleanly", asy
     const editableHead = await fetch(`${origin}/garden/editable`, { method: "HEAD" });
     assert.equal(editableHead.headers.get("content-length"), editable.headers.get("content-length"));
     assert.equal(await editableHead.text(), "");
+    for (const suffix of ["", "/", ".md", ".html"]) {
+      const missingNote = await fetch(`${origin}/fresh/notes/1.1-new-note${suffix}`);
+      assert.equal(missingNote.status, 200);
+      assert.equal(missingNote.headers.get('cache-control'), 'no-store');
+      const shell = await missingNote.text();
+      assert.match(shell, /data-note-slug="fresh\/notes\/1.1-new-note"/);
+      assert.match(shell, /data-slug="fresh\/notes\/1.1-new-note"/);
+      assert.match(shell, /<article class="popover-hint"><\/article>/);
+      assert.match(shell, /href="\/index.css"/);
+      assert.match(shell, /src="\/prescript.js"/);
+      assert.match(shell, /fetch\("\/static\/contentIndex.json"\)/);
+      assert.doesNotMatch(shell, /OLD TITLE|OLD BODY|OLD SECTION|OLD DATE|Nested/);
+      const head = await fetch(`${origin}/fresh/notes/1.1-new-note${suffix}`, {method: 'HEAD'});
+      assert.equal(head.headers.get('content-length'), missingNote.headers.get('content-length'));
+      assert.equal(await head.text(), '');
+    }
+    for (const asset of ['missing.pdf', 'missing.js', 'missing.json', '.env']) {
+      assert.equal((await fetch(`${origin}/fresh/${asset}`)).status, 404);
+    }
     const garden = await fetch(`${origin}/garden/`);
     assert.equal(garden.status, 200);
     assert.equal(await garden.text(), "<p>Garden</p>");

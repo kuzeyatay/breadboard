@@ -9,8 +9,9 @@ import test from "node:test";
 
 import {
   MANAGED_SETUP_OPERATIONS,
-  executeManagedSetup,
+  executeManagedSetup as executeManagedSetupWithExclusion,
   managedNpmLauncher,
+  managedUvLinkMode,
   prepareHyperframesBrowser,
   runManagedSetupCommand,
   validateManagedSetupRequest,
@@ -20,8 +21,18 @@ import {
   parseRuntimeV2ManagedSetupStopRecord,
 } from "../scripts/runtime-v2-managed-setup-worker.mjs";
 
+// Recipe tests model a worker launched by the native admission owner. Separate
+// exclusion tests exercise the fail-closed path for older supervisors.
+function executeManagedSetup(request, options) {
+  return executeManagedSetupWithExclusion(request, {
+    ...options,
+    env: { ...(options.env ?? process.env), BREADBOARD_MANAGED_SETUP_EXCLUSION: "2" },
+  });
+}
+
 const dashboardRoot = path.resolve(import.meta.dirname, "..");
 const repositoryRoot = path.dirname(dashboardRoot);
+const npmArguments = args => path.basename(args[0] ?? "") === "npm-cli.js" ? args.slice(1) : args;
 const workerPath = path.join(
   dashboardRoot,
   "scripts",
@@ -73,6 +84,21 @@ function fakeChild(output, after) {
   });
   return child;
 }
+
+test("managed setup launches validated Windows Python paths without extended namespace semantics", async () => {
+  const result = await runManagedSetupCommand(String.raw`\\?\D:\BreadboardLargeFiles\.venv\Scripts\python.exe`, ["-c", "from Crypto.Cipher import AES"], {
+    cwd: String.raw`\\?\C:\Breadboard\stock`, platform: "win32",
+    env: {}, signal: new AbortController().signal, timeoutMs: 1000,
+    spawnImpl: (executable, args, options) => {
+      assert.equal(executable, String.raw`D:\BreadboardLargeFiles\.venv\Scripts\python.exe`);
+      assert.equal(options.cwd, String.raw`C:\Breadboard\stock`);
+      assert.deepEqual(args, ["-c", "from Crypto.Cipher import AES"]);
+      assert.equal(options.shell, false);
+      return fakeChild("ok");
+    },
+  });
+  assert.equal(result.code, 0);
+});
 
 test("the operation registry is closed and rejects extra request fields", () => {
     assert.deepEqual(Object.keys(MANAGED_SETUP_OPERATIONS).sort(), [
@@ -216,6 +242,7 @@ test("a managed Python install uses only an attached child and a data-root venv"
         PATH: tools,
         PATHEXT: ".EXE",
         OPENAI_API_KEY: "provider-secret",
+        BREADBOARD_MANAGED_SETUP_EXCLUSION: "2",
         BREADBOARD_SUPERVISOR_CONTROL_TOKEN: "runtime-secret",
       },
       signal: new AbortController().signal,
@@ -250,7 +277,7 @@ test("Google image search builds a copied source closure under Runtime data", as
   const launches = [];
   const spawnImpl = (command, args, options) => {
     launches.push({ command, args, options });
-    return fakeChild("", args[0] === "run"
+    return fakeChild("", npmArguments(args)[0] === "run"
       ? () => fs.writeFileSync(path.join(options.cwd, "src", "index.js"), "export {};\n")
       : undefined);
   };
@@ -272,7 +299,7 @@ test("Google image search builds a copied source closure under Runtime data", as
   assert.equal(fs.existsSync(path.join(runtimeRoot, "node_modules")), false);
   assert.equal(fs.existsSync(path.join(source, "src", "index.js")), false);
   assert.equal(launches.length, 2);
-  assert.deepEqual(launches[0].args, [
+  assert.deepEqual(npmArguments(launches[0].args), [
     "ci",
     "--ignore-scripts",
     "--no-audit",
@@ -317,7 +344,7 @@ test("Bolt Slides installs locked dependencies into a Runtime toolchain", async 
   const launches = [];
   const spawnImpl = (command, args, options) => {
     launches.push({ command, args, options });
-    const installing = args[0] === "ci";
+    const installing = npmArguments(args)[0] === "ci";
     return fakeChild(installing ? "" : "6.0.0\n", installing
       ? () => {
           for (const name of packages) {
@@ -345,7 +372,7 @@ test("Bolt Slides installs locked dependencies into a Runtime toolchain", async 
   const toolchain = path.join(dataRoot, "runtime-v2", "toolchains", "bolt-slides");
   assert.equal(fs.existsSync(path.join(toolchain, "node_modules", "vite", "bin", "vite.js")), true);
   assert.equal(fs.existsSync(path.join(source, "node_modules")), false);
-  assert.deepEqual(launches[0].args.slice(0, 3), ["ci", "--no-audit", "--no-fund"]);
+  assert.deepEqual(npmArguments(launches[0].args).slice(0, 3), ["ci", "--no-audit", "--no-fund"]);
   for (const launch of launches) {
     assert.equal(launch.options.detached, false);
     assert.equal(launch.options.env.OPENAI_API_KEY, undefined);
@@ -448,7 +475,7 @@ test("Wardrobe stages its source and dependencies without mutating the clone", a
   const launches = [];
   const spawnImpl = (command, args, options) => {
     launches.push({ command, args, options });
-    const installing = args[0] === "ci";
+    const installing = npmArguments(args)[0] === "ci";
     return fakeChild(installing ? "" : "6.4.3\n", installing
       ? () => {
           const vite = path.join(options.cwd, "node_modules", "vite", "bin", "vite.js");
@@ -512,7 +539,7 @@ test("Career Ops keeps dependencies, browser files, and candidate state in Runti
   const launches = [];
   const spawnImpl = (command, args, options) => {
     launches.push({ command, args, options });
-    const installing = args[0] === "ci";
+    const installing = npmArguments(args)[0] === "ci";
     const browserInstall = args.at(-2) === "install" && args.at(-1) === "chromium";
     return fakeChild("", () => {
       if (installing) {
@@ -901,7 +928,7 @@ test("OpenMontage stages its runtime, Python, and Remotion under Runtime data", 
     launches.push({ command, args, options });
     const creating = args[0] === "venv";
     const verifying = command === python;
-    const npmInstall = args[0] === "ci";
+    const npmInstall = npmArguments(args)[0] === "ci";
     return fakeChild(verifying ? "ok\n" : "", () => {
       if (creating) {
         fs.mkdirSync(path.dirname(python), { recursive: true });
@@ -946,7 +973,7 @@ test("OpenMontage stages its runtime, Python, and Remotion under Runtime data", 
   );
   assert.equal(fs.existsSync(path.join(source, "remotion-composer", "node_modules")), false);
   const npmLaunch = launches.at(-1);
-  assert.deepEqual(npmLaunch.args.slice(0, 3), ["ci", "--no-audit", "--no-fund"]);
+  assert.deepEqual(npmArguments(npmLaunch.args).slice(0, 3), ["ci", "--no-audit", "--no-fund"]);
   assert.equal(npmLaunch.options.cwd, path.join(runtime, "remotion-composer"));
   for (const launch of launches) {
     assert.equal(launch.options.detached, false);
@@ -1004,6 +1031,7 @@ test("MoneyPrinter stages writable config and storage under Runtime data", async
       PATH: tools,
       PATHEXT: ".EXE",
       MONEY_PRINTER_ROOT: runtime,
+      BREADBOARD_MANAGED_SETUP_EXCLUSION: "2",
       BREADBOARD_SUPERVISOR_CONTROL_TOKEN: "runtime-secret",
     },
     signal: new AbortController().signal,
@@ -1032,6 +1060,26 @@ test("MoneyPrinter stages writable config and storage under Runtime data", async
   assert.equal(removed.ok, true);
   assert.equal(fs.existsSync(venv), false);
   assert.equal(fs.existsSync(path.join(runtime, "storage", "local_videos", "fixture.mp4")), true);
+});
+
+test("managed Python installs link only a same-volume Windows cache", () => {
+  assert.equal(managedUvLinkMode({UV_CACHE_DIR:"D:\\cache"},"D:\\agent\\.venv","win32"),"hardlink");
+  assert.equal(managedUvLinkMode({UV_CACHE_DIR:"D:\\cache"},"\\\\?\\D:\\agent\\.venv","win32"),"hardlink");
+  assert.equal(managedUvLinkMode({UV_CACHE_DIR:"D:\\cache"},"C:\\agent\\.venv","win32"),"copy");
+  assert.equal(managedUvLinkMode({},"D:\\agent\\.venv","win32"),"copy");
+  assert.equal(managedUvLinkMode({UV_CACHE_DIR:"relative-cache"},"D:\\agent\\.venv","win32"),"copy");
+  assert.equal(managedUvLinkMode({UV_CACHE_DIR:"/cache"},"/agent/.venv","linux"),"copy");
+});
+
+test("fixed npm recipe commands work with an empty native PATH", async () => {
+  const launcher = managedNpmLauncher();
+  assert.ok(launcher.baseArgs.length, "The product Node runtime must include npm-cli.js");
+  const result = await runManagedSetupCommand(process.platform === "win32" ? "npm.cmd" : "npm", ["--version"], {
+    cwd: dashboardRoot, env: { SystemRoot: process.env.SystemRoot, PATH: "" },
+    signal: new AbortController().signal, timeoutMs: 10_000,
+  });
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+$/u);
 });
 
 test("managed npm runs through its Node installation without relying on PATH", async (t) => {
@@ -1174,7 +1222,7 @@ test("OpenScience installs its pinned CLI and creates an isolated data workspace
   const launches = [];
   const spawnImpl = (command, args, options) => {
     launches.push({ command, args, options });
-    const installing = args[0] === "install";
+    const installing = npmArguments(args)[0] === "install";
     const initializing = args[0] === "init";
     return fakeChild(installing || initializing ? "" : "2.3.4\n", () => {
       if (installing) {
@@ -1243,12 +1291,19 @@ test("OpenWork copies a bounded source closure and installs only in Runtime data
     path.join(source, "apps", "server", "package.json"),
     '{"name":"@openwork/server","version":"3.4.5","dependencies":{"@opencode-ai/sdk":"1.0.0"}}\n',
   );
+  const dependencyStore = path.join(appRoot, "pnpm-store");
+  fs.mkdirSync(dependencyStore);
+  fs.writeFileSync(path.join(dependencyStore, "not-source.txt"), "must not be copied");
+  for (const name of ["paths", "types"]) {
+    fs.symlinkSync(dependencyStore, path.join(source, "packages", name, "node_modules"),
+      process.platform === "win32" ? "junction" : "dir");
+  }
   const bun = path.join(dataRoot, process.platform === "win32" ? "bun.exe" : "bun");
   fs.writeFileSync(bun, "fixture");
   const launches = [];
   const spawnImpl = (command, args, options) => {
     launches.push({ command, args, options });
-    const installing = args[0] === "install";
+    const installing = npmArguments(args)[0] === "install";
     return fakeChild(installing ? "installed\n" : "1.2.0\n", installing
       ? () => fs.mkdirSync(
           path.join(options.cwd, "node_modules", "@opencode-ai", "sdk"),
@@ -1279,11 +1334,25 @@ test("OpenWork copies a bounded source closure and installs only in Runtime data
   );
   assert.equal(fs.existsSync(path.join(prepared, "breadboard-source.json")), true);
   assert.equal(fs.existsSync(path.join(source, "apps", "server", "node_modules")), false);
+  for (const name of ["paths", "types"]) {
+    assert.equal(fs.existsSync(path.join(prepared, "packages", name, "node_modules")), false);
+  }
   assert.equal(launches.length, 2);
+  assert.ok(launches.find((launch) => npmArguments(launch.args)[0] === "install").args.includes("--install-links"),
+    "local workspace packages must survive publishing the staging directory");
   for (const launch of launches) {
     assert.equal(launch.options.detached, false);
     assert.equal(launch.options.env.OPENAI_API_KEY, undefined);
   }
+  fs.symlinkSync(dependencyStore, path.join(source, "apps", "server", "src", "indirect-source"),
+    process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(executeManagedSetup(
+    { protocolVersion: 1, operation: "openwork", action: "prepare-server" },
+    { dataRoot, appRoot, env: { OPENWORK_BUN_PATH: bun },
+      signal: new AbortController().signal, spawnImpl },
+  ), /contains an indirect path/);
+  assert.equal(fs.existsSync(path.join(prepared, "breadboard-source.json")), true,
+    "a rejected source must preserve the prepared runtime");
 });
 
 test("MatrAIx installs into its Runtime service venv without an editable source write", async (t) => {

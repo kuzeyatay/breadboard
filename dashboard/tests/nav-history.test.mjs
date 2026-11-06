@@ -192,7 +192,7 @@ test("garden chat leaves to the dashboard with a single native navigation", () =
   assert.doesNotMatch(gardenChat, /<Link\s+href="\/dashboard"/);
 });
 
-test("Profile returns to its source page, including the New tab launcher", () => {
+test("Profile returns to its source page, including the Terminal launcher", () => {
   const profile = fs.readFileSync(
     new URL("../src/app/profile/profile-client.tsx", import.meta.url),
     "utf8",
@@ -205,19 +205,27 @@ test("Profile returns to its source page, including the New tab launcher", () =>
   }
 });
 
-test("a fresh Profile tab retains its source through reloads and Knowledge tab changes", () => {
+test("a fresh Settings tab retains its source through reloads and Knowledge tab changes", () => {
   trail();
   const source = '/gardens/plants?note=roses#heading';
-  const href = withProfileReturnTo('/profile', source);
+  const href = withProfileReturnTo('/settings', source);
   recordVisit(href);
   assert.equal(resolveBackHref(href, '/dashboard'), source);
   assert.equal(resolveBackHref(`${href}&tab=knowledge`, '/dashboard'), source);
   assert.equal(backLabelFor(source, 'Back'), 'Back to workspace');
-  assert.equal(backLabelFor('/new-tab', 'Back'), 'Back to new tab');
+  assert.equal(backLabelFor('/new-tab', 'Back'), 'Back to Terminal');
+  assert.equal(backLabelFor('/settings', 'Back'), 'Back to settings');
+  assert.equal(backLabelFor('/profile', 'Back'), 'Back to settings');
   // A browser may copy the opener's session storage into the new tab.
   recordVisit('/calendar');
   recordVisit(href);
   assert.equal(resolveBackHref(href, '/dashboard'), source);
+});
+
+test("Settings treats the legacy Profile route as the same page", () => {
+  trail('/new-tab', '/profile', '/settings');
+  assert.equal(resolveBackHref('/settings', '/dashboard'), '/new-tab');
+  assert.equal(withProfileReturnTo('/settings', '/profile?tab=knowledge'), '/settings');
 });
 
 test("Profile return links reject external, auth, malformed and self destinations", () => {

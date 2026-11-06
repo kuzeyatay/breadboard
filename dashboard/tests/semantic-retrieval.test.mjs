@@ -468,6 +468,33 @@ $$`, { targetWords: 8, maxWords: 12, overlapWords: 0 });
     assert.equal(fallback.chunks[0]?.pageRelPath, "learning/neurons/lif.md");
   });
 
+  test("interactive semantic search uses only cached vectors in its authorized Gardens and model", async (t) => {
+    const { root, garden } = makeRetrievalGarden();
+    const queries = [];
+    const database = new Database(":memory:", { verbose: sql => queries.push(sql) });
+    t.after(() => { database.close(); fs.rmSync(root, { recursive: true, force: true }); });
+    const outside = { ...garden, slug: "outside", name: "Outside" };
+    await indexRetrievalGarden({ garden, database, embeddingProvider: null });
+    await indexRetrievalGarden({ garden: outside, database, embeddingProvider: null });
+    const target = database.prepare("SELECT * FROM semantic_chunks WHERE garden_slug = ? AND page_rel_path = ? LIMIT 1")
+      .get(garden.slug, "learning/neurons/threshold.md");
+    database.prepare("INSERT INTO semantic_embedding_cache(content_hash, model, vector_json, dimensions, created_at) VALUES(?,?,?,?,?)")
+      .run(target.content_hash, "partial-cache", "[1,0]", 2, new Date().toISOString());
+    const calls = [];
+    queries.length = 0;
+    const result = await retrieveGraphRag({ query: "unmatchedquery", gardens: [garden], database,
+      indexEmbeddings: false, embeddingProvider: { model: "partial-cache", embed: async texts => { calls.push(texts); return [[1, 0]]; } } });
+    assert.deepEqual(calls, [["unmatchedquery"]]);
+    assert.equal(result.semanticUsed, true);
+    assert.equal(result.chunks[0].id, target.id);
+    assert.ok(result.chunks.every(chunk => chunk.gardenSlug === garden.slug));
+    assert.equal(queries.filter(sql => /SELECT vector_json FROM semantic_embedding_cache WHERE content_hash/.test(sql)).length, 0,
+      "An interactive search must not issue a separate embedding lookup for every unembedded source chunk");
+    const otherModel = await retrieveGraphRag({ query: "unmatchedquery", gardens: [garden], database,
+      indexEmbeddings: false, embeddingProvider: { model: "different-model", embed: async () => [[1, 0]] } });
+    assert.equal(otherModel.semanticUsed, false);
+  });
+
   test("uses recorded source authority as a deterministic tie-break boost", async (t) => {
     const { root, garden } = makeRetrievalGarden();
     const database = new Database(":memory:");

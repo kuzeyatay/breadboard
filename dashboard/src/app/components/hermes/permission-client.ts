@@ -24,7 +24,7 @@ export async function submitClarificationAnswer(
       },
     );
   } catch {
-    throw new Error("The answer could not reach the runtime.");
+    throw new Error("Could not send your answer. Try again.");
   }
 
   const body = (await response.json().catch(() => ({}))) as {
@@ -65,13 +65,13 @@ export async function submitPermissionDecision(
       },
     );
   } catch {
-    throw new Error("The permission decision could not reach the runtime.");
+    throw new Error("Could not send your permission choice. Try again.");
   }
 
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as {
       error?: string;
     };
-    throw new Error(body.error ?? "The runtime rejected the permission decision.");
+    throw new Error(body.error ?? "Your permission choice was not accepted. Refresh and try again.");
   }
 }

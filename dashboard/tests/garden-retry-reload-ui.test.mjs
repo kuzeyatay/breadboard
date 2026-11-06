@@ -25,12 +25,14 @@ for (const node of tree.statements) {
     ...(clause.namedBindings && ts.isNamedImports(clause.namedBindings) ? clause.namedBindings.elements.filter(i => !i.isTypeOnly).map(i => ({ name: i.name.text, imported: i.propertyName?.text ?? i.name.text })) : [])];
   for (const { name, imported } of bindings) {
     if (!used.has(name)) continue;
-    if (/^[A-Z]/.test(name) && !real.has(name)) stubs.push(`const ${name}=({children})=>children??null;`);
+    if (/^[A-Z]/.test(name) && !real.has(name)) stubs.push(name === "InlineArtifactCards"
+      ? `const ${name}=({thinking})=>thinking?null:<div data-testid="response-artifacts"/>;`
+      : `const ${name}=({children})=>children??null;`);
     else imports.push(imported === "default" ? `import ${name} from ${JSON.stringify(node.moduleSpecifier.text)};` : `import {${imported} as ${name}} from ${JSON.stringify(node.moduleSpecifier.text)};`);
   }
 }
 
-test("Garden Retry replaces the answer without crashing its real virtual transcript", { timeout: 30_000 }, async () => {
+test("Garden Retry and completion update the real virtual transcript without a reload", { timeout: 30_000 }, async () => {
   const bundle = await build({ stdin: { resolveDir: path.dirname(file), loader: "tsx", contents: `
     ${imports.join('\n')}
     import React from 'react';import{createRoot}from'react-dom/client';
@@ -43,6 +45,8 @@ test("Garden Retry replaces the answer without crashing its real virtual transcr
     function App(){
       const [messages,setMessages]=useState(Array.from({length:18},(_,i)=>({id:'m'+i,clientMessageId:'turn'+Math.floor(i/2),role:i%2?'assistant':'user',content:i%2?'Saved answer '+i:'Question '+i,sources:[]})));
       const [branchGroups,setBranchGroups]=useState({});const [busy,setBusy]=useState(false);
+      window.replaceMessages=setMessages;
+      window.setBusy=setBusy;
       const scroll=useRef(null),bridge=useChatVirtualBridge();
       window.retryAt=index=>{
         const branch=createConversationBranch({messages,branchGroups,userMessageIndex:index-1,content:messages[index-1].content,createId:()=>crypto.randomUUID()});
@@ -51,7 +55,7 @@ test("Garden Retry replaces the answer without crashing its real virtual transcr
         setTimeout(()=>{setMessages([...branch.variant.slice(0,-1),{...branch.variant.at(-1),content:'Replacement answer'}]);setBusy(false)},100);
       };
       return <div ref={scroll} style={{height:600,overflow:'auto'}}><ChatTranscript clusterName='EM1' clusterSlug='em1' chatSessionId={1}
-        messages={messages} branchGroups={branchGroups} isStreaming={busy} connection={busy?'streaming':'idle'} loadingChats={false}
+        messages={messages} branchGroups={branchGroups} modelChangesFor={()=>[]} isStreaming={busy} connection={busy?'streaming':'idle'} loadingChats={false}
         gardenSourceAttachments={[]} activities={[]} pendingPermission={null} pendingClarification={null} onPermissionDecision={()=>{}} onClarificationAnswer={()=>{}}
         annotationsByMessage={new Map()} delegationInFlight={false} transcriptScrollRef={scroll} transcriptVirtual={bridge} naturalRewriteFor={()=>undefined}
         onRetryAssistant={window.retryAt} onSwitchBranch={()=>{}}/></div>;
@@ -71,6 +75,37 @@ test("Garden Retry replaces the answer without crashing its real virtual transcr
     assert.deepEqual(await page.evaluate(() => window.errors), []);
     await page.evaluate(() => window.retryAt(5));
     await page.waitForTimeout(200);
+    assert.deepEqual(await page.evaluate(() => window.errors), []);
+    assert.deepEqual(errors, []);
+    await page.evaluate(() => window.replaceMessages([
+      { role: 'user', clientMessageId: 'failed', content: 'Make the visualizer' },
+      { role: 'assistant', clientMessageId: 'failed', content: '', failed: true, runtimeError: 'Context length exceeded (59,983 tokens). Cannot compress further.' },
+    ]));
+    await page.getByText('Context length exceeded (59,983 tokens). Cannot compress further.', { exact: true }).waitFor();
+    await page.evaluate(() => {
+      window.setBusy(true);
+      window.replaceMessages([
+        { role: 'user', clientMessageId: 'am', content: 'Is analog AM in the course?' },
+        { role: 'assistant', clientMessageId: 'am', content: 'Analog AM is useful background.' },
+      ]);
+    });
+    await page.getByText('Thinking', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Copy response', exact: true }).count(), 0);
+    assert.equal(await page.getByTestId('response-artifacts').count(), 0);
+    // Complete only the message. The connection deliberately stays streaming,
+    // reproducing the stale status that previously required a tab refresh.
+    await page.evaluate(() => window.replaceMessages(current => current.map(message => message.role === 'assistant'
+      ? { ...message, responseCompletedAt: '2026-10-19T04:58:00Z' } : message)));
+    await page.getByText('Thought', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Copy response', exact: true }).waitFor();
+    await page.getByTestId('response-artifacts').waitFor({ state: 'attached' });
+    await page.evaluate(() => window.replaceMessages(current => [...current,
+      { role: 'user', clientMessageId: 'next', content: 'What about FM?' },
+      { role: 'assistant', clientMessageId: 'next', content: 'Starting the next answer' },
+    ]));
+    await page.getByText('Thinking', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Copy response', exact: true }).count(), 1, 'the new response stays pending while the earlier controls remain available');
+    assert.equal(await page.getByTestId('response-artifacts').count(), 1);
     assert.deepEqual(await page.evaluate(() => window.errors), []);
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
@@ -51,6 +56,29 @@ const quartzActivity = source(
   "../../quartz/quartz/components/scripts/breadboardAI.inline.ts",
 );
 
+// Render the production rows so copy and fallback changes are checked through
+// the states users see, rather than through the spelling of a ternary.
+const dashboardRoot = fileURLToPath(new URL("../", import.meta.url));
+const bundle = await build({
+  absWorkingDir: dashboardRoot,
+  stdin: { resolveDir: dashboardRoot, loader: "tsx", contents: `
+    export { default as AssistantResponseMeta } from './src/app/components/assistant-response-meta';
+    export { default as ActivityPanel } from './src/app/components/hermes/activity-panel';
+  ` },
+  bundle: true, write: false, platform: "node", format: "cjs", jsx: "automatic",
+  external: ["react", "react-dom", "react/jsx-runtime"], logLevel: "silent",
+});
+const renderedModule = { exports: {} };
+new Function("require", "module", "exports", bundle.outputFiles[0].text)(
+  createRequire(import.meta.url), renderedModule, renderedModule.exports,
+);
+const { AssistantResponseMeta, ActivityPanel } = renderedModule.exports;
+const renderMeta = props => renderToStaticMarkup(createElement(AssistantResponseMeta, props));
+const renderActivity = props => renderToStaticMarkup(createElement(ActivityPanel, {
+  activities: [], connection: "idle", pendingPermission: null,
+  onPermissionDecision() {}, ...props,
+}));
+
 test("thinking remains visible with response metadata and shimmers while active", () => {
   assert.match(activity, /<AssistantResponseMeta/);
   assert.match(responseMeta, /thinking-shimmer/);
@@ -69,7 +97,10 @@ test("thinking remains visible with response metadata and shimmers while active"
     "persisted duration owns completed rows while live rows use wall-clock timestamps",
   );
   assert.match(responseMeta, /formatTokenCount/);
-  assert.match(responseMeta, /counting tokens/);
+  const pending = renderMeta({ active: true, responseDurationMs: 2_000 });
+  assert.match(pending, /usage pending/);
+  assert.match(pending, /aria-label="Assistant thinking and token usage"/);
+  assert.match(pending, /thinking-shimmer/);
   assert.doesNotMatch(responseMeta, /tokens unavailable/);
   // The row states one answer's cost. A cumulative session snapshot belongs to
   // the whole conversation, so it must never be printed as this message's count.
@@ -105,7 +136,7 @@ test("thinking metadata never renders a second status-description line", () => {
   assert.doesNotMatch(responseMeta, /title=\{summary\}/);
 });
 
-test("live turns hold Thinking for five seconds, then settle on Thought", () => {
+test("live turns hold Thinking for five seconds, restore activity, then settle on Thought", t => {
   // The row stays on the message for good, so once the turn is over it should
   // say what the assistant did rather than what it is doing.
   assert.match(
@@ -117,7 +148,18 @@ test("live turns hold Thinking for five seconds, then settle on Thought", () => 
   // artifact's) and must be shown exactly as given.
   assert.match(activity, /const liveActivity = activities\.findLast/);
   assert.match(activity, /assistantLiveActivityReady\(elapsedMs\)/);
-  assert.match(activity, /liveActivity\?\.label \?\? "Thinking"/);
+  const now = Date.parse("2026-11-06T10:00:10Z");
+  t.mock.method(Date, "now", () => now);
+  const live = { connection: "streaming", restoredActivityLabel: "Reading sources" };
+  assert.match(renderActivity({ ...live, responseStartedAt: new Date(now - 4_999).toISOString() }), />Thinking<\/span>/);
+  assert.match(renderActivity({ ...live, responseStartedAt: new Date(now - 5_000).toISOString() }), />Reading sources<\/span>/);
+  assert.match(renderActivity({ ...live, responseStartedAt: new Date(now - 5_000).toISOString(), activities: [
+    { id: "tool", kind: "tool", status: "running", label: "Checking the result", startedAt: new Date(now - 5_000).toISOString() },
+  ] }), />Checking the result<\/span>/, "current activity outranks the restored fallback");
+  const completed = renderActivity({ ...live, responseStartedAt: new Date(now - 5_000).toISOString(), responseCompletedAt: new Date(now).toISOString(), answerContent: "The result." });
+  assert.match(completed, />Thought<\/span>/);
+  assert.match(completed, /data-response-state="complete"/);
+  assert.doesNotMatch(completed, /thinking-shimmer|usage pending|Reading sources/);
   assert.match(activity, /pendingPermission[\s\S]*?"Waiting for permission"/);
   assert.match(
     activity,
@@ -178,11 +220,16 @@ test("tool-boundary prose stays behind the thinking disclosure", () => {
   assert.match(serverCompletion, /forwardEvent = false/);
   assert.match(eventStream, /const emitStableAnswer = \(\) =>/);
   assert.match(eventStream, /replacementText: assistantText/);
-  assert.match(
-    eventStream,
-    /event\.payload\.status !== "idle" \|\| sawTurnOutput/,
-    "a replayed idle frame must not consume the stable answer emission",
-  );
+  const idleStart = eventStream.lastIndexOf('if (event.payload.status === "idle") {');
+  const idleCompletion = eventStream.slice(idleStart, eventStream.indexOf('finalize("idle");', idleStart));
+  const outputGuard = idleCompletion.indexOf("if (!sawTurnOutput) continue;");
+  const answerEmission = idleCompletion.indexOf("emitStableAnswer();");
+  assert.ok(idleStart >= 0 && outputGuard >= 0 && answerEmission > outputGuard,
+    "a replayed idle frame must not consume the stable answer emission");
+  assert.match(idleCompletion, /getRuntimeRun\(streamRun\.id\)\?\.status !== "active"[\s\S]*?return;/,
+    "a cancelled turn cannot publish a late answer");
+  assert.match(idleCompletion, /emitStableAnswer\(\);\s*emit\(event\);/,
+    "the owned answer must precede its terminal idle status");
   assert.ok(
     eventStream.indexOf("emitStableAnswer();", eventStream.indexOf("for await")) <
       eventStream.indexOf("if (forwardEvent) emit(event);"),
@@ -407,9 +454,17 @@ test("ordinary assistant rows omit missing provider metrics", () => {
     knowledgeTerminal,
     /responseDurationMs !== undefined \? \([\s\S]{0,180}Thinking/,
   );
-  assert.match(responseMeta, /counting tokens/);
-  assert.match(responseMeta, /:\s*null\s*\n\s*:\s*null/);
-  assert.match(responseMeta, /tokenLabel \? " and token usage" : ""/);
+  const emptyUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedInputTokens: 0, reasoningTokens: 0 };
+  for (const usage of [undefined, { ...emptyUsage, responseDurationMs: 1_000 }, { ...emptyUsage, scope: "session", inputTokens: 400, totalTokens: 400 }]) {
+    const markup = renderMeta({ active: false, usage, responseDurationMs: 1_000 });
+    assert.match(markup, /aria-label="Assistant thought"/);
+    assert.doesNotMatch(markup, /usage pending|tokens|token usage/,
+      "missing, duration-only and cumulative usage must not become a response token count");
+  }
+  const reported = renderMeta({ active: false, totalTokens: 42 });
+  assert.match(reported, /42 tokens/);
+  assert.match(reported, /aria-label="Assistant thought and token usage"/);
+  assert.doesNotMatch(renderMeta({ active: true, showTokenUsage: false }), /usage pending|tokens|token usage/);
 });
 
 test("permission requests use a softly layered action card", () => {

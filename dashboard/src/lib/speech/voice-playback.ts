@@ -1,10 +1,10 @@
 import { splitSpeechPassages } from './passages.ts';
 
 /** Start a short passage as soon as it is ready, preparing at most one ahead. */
-export async function playVoicePassages(text: string, options: {
+export async function playVoicePassages<Audio = Blob>(text: string, options: {
   signal: AbortSignal;
-  synthesize: (text: string, signal: AbortSignal) => Promise<Blob>;
-  play: (audio: Blob, signal: AbortSignal, onProgress: (progress: number) => void) => Promise<void>;
+  synthesize: (text: string, signal: AbortSignal) => Promise<Audio>;
+  play: (audio: Audio, signal: AbortSignal, onProgress: (progress: number) => void) => Promise<void>;
   onProgress?: (progress: number) => void;
 }): Promise<void> {
   const passages = splitSpeechPassages(text, { maxCharacters: 360, maxWords: 50 });

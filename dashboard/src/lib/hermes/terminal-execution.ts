@@ -392,8 +392,8 @@ export function authorizeTerminalCommand(
     return { allowed: false, category: "denied", approvalRequired: false, reason: "A command is required.", workspaceRoot };
   }
   const value = command.trim();
-  if (value.length > MAX_COMMAND_LENGTH) {
-    return { allowed: false, category: "denied", approvalRequired: false, reason: "The command is too long.", workspaceRoot };
+  if (Buffer.byteLength(value, "utf8") > MAX_COMMAND_LENGTH) {
+    return { allowed: false, category: "denied", approvalRequired: false, reason: "The command exceeds 2000 UTF-8 bytes. Save the script in the authorized workspace and invoke its file with the correct interpreter instead of embedding it in this command.", workspaceRoot };
   }
   if (options.approvedCommand?.trim() === value) {
     return {
@@ -531,6 +531,13 @@ export interface TerminalCommandResult {
   elapsedMs: number;
   /** Wall-clock ceiling this command is held to, for an honest timeout report. */
   maxRuntimeMs: number;
+  /** Supervisor evidence, never an instruction to bypass resource admission. */
+  resourceFailure?: {
+    retryable: false;
+    executionStarted: boolean;
+    requiredHeadroomMb: number | null;
+    availableHeadroomMb: number | null;
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -651,10 +658,14 @@ function emptyRunningResult(record: RunningCommand): TerminalCommandResult {
 
 function unsuccessfulResult(record: RunningCommand): TerminalCommandResult {
   const state = record.latest.state;
+  const exhaustion = record.latest.resourceExhaustion;
+  const executionStarted = record.latest.startedAt !== null;
   const message = state === "cancelled"
     ? "The Terminal command was cancelled."
     : state === "resource_exhausted"
-      ? "Windows memory pressure prevented the Terminal command from starting."
+      ? `Windows memory pressure ${executionStarted ? "stopped the Terminal command" : "prevented the Terminal command from starting"}.` +
+        (exhaustion ? ` Required commit headroom: ${exhaustion.requiredHeadroomMb} MiB; available: ${exhaustion.availableHeadroomMb} MiB.` : "") +
+        " Do not repeat commands while memory is unchanged. Preserve completed work; use authorized workspace file tools for file-only work. Resume terminal work only after sufficient memory is available."
       : state === "uncertain"
         ? "The Terminal command ended with an uncertain result and was not retried."
         : state === "interrupted"
@@ -672,6 +683,12 @@ function unsuccessfulResult(record: RunningCommand): TerminalCommandResult {
     commandId: null,
     elapsedMs: Math.max(0, Date.now() - record.startedAt),
     maxRuntimeMs: record.maxRuntimeMs,
+    ...(state === "resource_exhausted" ? {resourceFailure: {
+      retryable: false as const,
+      executionStarted,
+      requiredHeadroomMb: exhaustion?.requiredHeadroomMb ?? null,
+      availableHeadroomMb: exhaustion?.availableHeadroomMb ?? null,
+    }} : {}),
   };
 }
 

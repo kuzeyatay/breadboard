@@ -90,6 +90,18 @@ describe("a failed ingestion names its own reason", () => {
       publicIngestFailureMessage({ providerQuota: true, conceptExtraction: true }),
       /rate-limited or out of credits/,
     );
+    assert.match(
+      publicIngestFailureMessage({ providerQuota: true, model: "cliproxy/gemini-3.8-flash-high" }),
+      /^Model cliproxy\/gemini-3\.8-flash-high and its fallbacks were rate-limited/u,
+    );
+    assert.match(
+      publicIngestFailureMessage({ conceptExtraction: true, model: "gpt-5.6-luna" }),
+      /model gpt-5\.6-luna failed while building its summary and concepts/u,
+    );
+    assert.doesNotMatch(
+      publicIngestFailureMessage({ providerQuota: true, model: "bad model\nsecret" }),
+      /bad model|secret/u,
+    );
     assert.equal(publicIngestFailureMessage({}), "Runtime job execution failed.");
   });
 

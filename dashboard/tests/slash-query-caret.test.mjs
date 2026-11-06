@@ -58,7 +58,7 @@ test("both composers open the picker from the caret and filter on that token", (
     // The whole-box test is what missed a token with a sentence after it.
     assert.doesNotMatch(box, /\/\^\\\/\[\^\\s\]\*\$\//);
   }
-  assert.match(composer, /query=\{slashQuery\}/);
+  assert.match(composer, /query=\{menuSearch\?\.kind === 'commands' \? menuSearch\.query : slashQuery\}/);
   assert.match(scheduled, /query=\{slashQuery\}/);
   // The menu is told the query rather than re-deriving it from the sentence.
   assert.match(menu, /query: string;/);

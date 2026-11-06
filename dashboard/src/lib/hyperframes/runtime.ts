@@ -16,7 +16,7 @@
 
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { createHash } from "node:crypto";
-import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import { dashboardDataDir, repositoryRoot, runtimeV2ConfiguredPayloadRoot } from "../runtime-paths.ts";
 import {
   externalRuntimeAccess,
   externalRuntimeFilesystem as fs,
@@ -116,9 +116,7 @@ export function skillsRoot(env: NodeJS.ProcessEnv = process.env): string | null 
  * built. Kept beside the other run data so removing it is a directory delete.
  */
 export function managedCliRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return (
-    configured(env.HYPERFRAMES_CLI_ROOT) ?? path.join(dashboardDataDir(), "hyperframes-cli")
-  );
+  return runtimeV2ConfiguredPayloadRoot("hyperframes-cli", env.HYPERFRAMES_CLI_ROOT, env);
 }
 
 /** Per-run project workspaces. Durable: a rendered video is a deliverable. */

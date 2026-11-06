@@ -34,7 +34,7 @@ test("explicit setup runs only the fixed script as a Runtime-owned child with is
   const dataRoot=fs.mkdtempSync(path.join(os.tmpdir(),'bb-music-setup-'));t.after(()=>fs.rmSync(dataRoot,{recursive:true,force:true}));
   const tools=path.join(dataRoot,'tools');fs.mkdirSync(tools);const uv=path.join(tools,process.platform==='win32'?'uv.exe':'uv');fs.writeFileSync(uv,'fixture');
   let called=0;
-  const result=await executeManagedSetup({protocolVersion:1,operation:'acestep',action:'install'},{dataRoot,appRoot:repo,env:{PATH:tools,PATHEXT:'.EXE',BREADBOARD_SUPERVISOR_CONTROL_TOKEN:'fixture-secret'},signal:new AbortController().signal,spawnImpl:(executable,args,options)=>{
+  const result=await executeManagedSetup({protocolVersion:1,operation:'acestep',action:'install'},{dataRoot,appRoot:repo,env:{PATH:tools,PATHEXT:'.EXE',BREADBOARD_MANAGED_SETUP_EXCLUSION:'2',BREADBOARD_SUPERVISOR_CONTROL_TOKEN:'fixture-secret'},signal:new AbortController().signal,spawnImpl:(executable,args,options)=>{
     called++;assert.equal(executable.toLowerCase(),uv.toLowerCase());assert.deepEqual(args,['run','--no-project','--python','3.11',path.join(repo,'dashboard/scripts/acestep-setup.py'),dataRoot,executable]);
     assert.equal(options.cwd,dataRoot);assert.equal(options.detached,false);assert.equal(options.shell,false);assert.equal(options.windowsHide,true);assert.equal(options.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN,undefined);
     const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>true;setImmediate(()=>{child.stdout.end('fixture setup completion');child.stderr.end();child.emit('close',0,null);});return child;

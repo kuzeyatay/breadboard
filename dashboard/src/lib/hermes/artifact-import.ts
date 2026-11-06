@@ -9,6 +9,8 @@ import {
   isModelAttachmentFormat,
 } from "../model-attachments.ts";
 import { inspectModelUpload } from "../conversations/model-inspect.ts";
+import { isSpiceFilename, isCircuitProjectFilename } from "../netlist-viewer/format.ts";
+import { readCircuitDocument } from "../netlist-viewer/project.ts";
 
 export const MAX_IMPORTED_ARTIFACT_BYTES = 128 * 1024 * 1024;
 /**
@@ -87,6 +89,8 @@ export function inferArtifactKindForFile(filename: string): ArtifactKind {
   const extension = path.extname(filename).toLowerCase();
   const format = extension.slice(1);
   if (extension === ".pdf") return "pdf";
+  if (isSpiceFilename(filename)) return "code";
+  if (isCircuitProjectFilename(filename)) return "code";
   if (TEXT_EXTENSIONS.has(extension)) return "text";
   if (MARKDOWN_EXTENSIONS.has(extension)) return "markdown";
   if (HTML_EXTENSIONS.has(extension)) return "html";
@@ -355,6 +359,20 @@ export function inspectArtifactImport(
     fs.closeSync(descriptor);
   }
 
+  if (["code", "text", "data", "unknown"].includes(kind) && isCircuitProjectFilename(filePath)) {
+    if (stat.size > 2 * 1024 * 1024) throw new ArtifactImportError("artifact_import_too_large", "Circuit projects cannot exceed 2 MiB.");
+    validateText(filePath);
+    const parsed = readCircuitDocument(fs.readFileSync(filePath, "utf8"), filePath);
+    if (!parsed.project) throw new ArtifactImportError("artifact_import_signature", parsed.document.diagnostics[0]?.message ?? "Invalid circuit project.");
+    return profile("spice-netlist", "application/json; charset=utf-8", ".bbcir");
+  }
+  if (["code", "text", "data", "unknown"].includes(kind) && isSpiceFilename(filePath)) {
+    if (stat.size > MAX_TEXT_ARTIFACT_BYTES) {
+      throw new ArtifactImportError("artifact_import_too_large", "SPICE imports cannot exceed 16 MiB.");
+    }
+    validateText(filePath);
+    return profile("spice-netlist", "text/x-spice; charset=utf-8", extension);
+  }
   if (kind === "pdf") {
     // A PDF always starts with %PDF-; a paywall page saved under a .pdf name
     // does not, which is exactly the substitution worth catching here.

@@ -170,7 +170,7 @@ function createFakeScriberr({
 
 function makeHarness(
   fake,
-  { ingestFails = false, resumeIndexingFails = false, signal, decorateClient = client => client } = {},
+  { ingestFails = false, ingestError = null, resumeIndexingFails = false, signal, decorateClient = client => client } = {},
 ) {
   const db = new Database(":memory:");
   db.exec(`
@@ -224,6 +224,7 @@ function makeHarness(
       counters.ingestUserId = input.userId;
       counters.ingestMediaFilePath = input.mediaFilePath ?? null;
       counters.ingestMediaSha256 = input.mediaSha256 ?? null;
+      if (ingestError) throw ingestError;
       if (ingestFails) throw new Error("boom");
       const slug = slugify(input.sourceTitle) || "video-source";
       const relPath = `sources/${slug}.md`;
@@ -536,6 +537,25 @@ test("indexing failure after markdown write is recoverable without re-transcribi
     assert.equal(harness.counters.resumeIndexingCalls, 1, "indexing resumed exactly once");
     assert.equal(harness.counters.resumeIndexingUserId, 1);
     assert.equal(harness.counters.ingestCalls, 1, "ingest not repeated after markdown exists");
+  } finally {
+    await fake.close();
+    harness.cleanup();
+  }
+});
+
+test("concept extraction failure names the model without exposing its cause", async () => {
+  const fake = await createFakeScriberr();
+  const extractionFailure = new Error("secret upstream response");
+  extractionFailure.name = "KnowledgeExtractionFailedError";
+  extractionFailure.model = "cliproxy/gemini-3.8-flash-high";
+  const harness = makeHarness(fake, { ingestError: extractionFailure });
+  try {
+    const job = queueYouTubeJob(harness.store);
+    harness.runner.kick();
+    const failed = await waitForStatus(harness.store, job.id, "failed");
+    assert.equal(failed.errorCode, "concept_extraction_failed");
+    assert.match(failed.errorMessage, /model cliproxy\/gemini-3\.8-flash-high failed/u);
+    assert.doesNotMatch(failed.errorMessage, /secret upstream response/u);
   } finally {
     await fake.close();
     harness.cleanup();

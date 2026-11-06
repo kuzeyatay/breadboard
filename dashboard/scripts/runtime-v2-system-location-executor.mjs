@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath } from "./runtime-v2-paths.mjs";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -114,12 +115,6 @@ export function parseSystemLocationWorkerOutput(output) {
     };
   }
   return { state: "unavailable", reason: reasonFrom(parsed.reason, NO_FIX) };
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function trustedPowerShell(environment) {

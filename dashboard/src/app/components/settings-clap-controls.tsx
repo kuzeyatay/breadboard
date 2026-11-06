@@ -133,7 +133,7 @@ export default function SettingsClapControls({ visible = true, control = 'clap' 
         onClick={() => void save({ resumeOnStartup: !p.resumeOnStartup })} />
     </div>
     <div className="clap-toggle-option">
-      <div><p id={`${id}-parallel-label`}>Keep listening in parallel</p><p id={`${id}-parallel-hint`} className="clap-detail">Listen during other audio and in background tabs or windows. Playback may trigger your {gestureWord} action.</p></div>
+      <div><p id={`${id}-parallel-label`}>Keep listening during other audio</p><p id={`${id}-parallel-hint`} className="clap-detail">Listen during other audio and in background tabs or windows. Playback may trigger your {gestureWord} action.</p></div>
       <GestureSwitch checked={p.allowConcurrentListening}
         aria-labelledby={`${id}-parallel-label`} aria-describedby={`${id}-parallel-hint`} disabled={!state.loaded || saving}
         onClick={() => void save({ allowConcurrentListening: !p.allowConcurrentListening })} />
@@ -152,6 +152,6 @@ export default function SettingsClapControls({ visible = true, control = 'clap' 
     </div>}
     {state.fix && (binding.active || testing) && <MicrophonePermissionHelp fix={state.fix} onRetry={() => { updateClapRuntime(snap ? { snapActive: false } : { active: false }); void save({ enabled: true }, true); }} />}
     {(error || state.issue) && <p role="alert" className="clap-error">{error || state.issue}</p>}
-    <p className="clap-detail">Ambient sound stays in local memory and is never recorded or uploaded. Your chosen speech or workflow action uses its usual services. {p.allowConcurrentListening ? 'Parallel listening stays on while Breadboard is running. Device sleep or browser suspension can still pause it.' : 'Listening pauses for recording, voice playback, inactive tabs, and minimized windows.'}</p>
+    <p className="clap-detail">Ambient sound stays in local memory and is never recorded or uploaded. Your chosen speech or workflow action uses its usual services. {p.allowConcurrentListening ? "Listening continues while Breadboard is running, but may pause when the device or browser sleeps." : 'Listening pauses for recording, voice playback, inactive tabs, and minimized windows.'}</p>
   </section>;
 }

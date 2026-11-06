@@ -229,7 +229,7 @@ export async function routeTelegramMessage(
           prompt: scheduledReminder.prompt,
           cron: scheduledReminder.cron,
           surface: "dashboard_terminal",
-          model: preference.defaultModel,
+          model: preference.fallbackModel,
           reasoningEffort: preference.reasoningEffort,
           deliveryChannel: "telegram",
           deliveryMode: "reminder",

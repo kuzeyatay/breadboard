@@ -97,7 +97,11 @@ export async function POST(request: Request) {
         ...args,
         ...(market ? { country: market.locale } : {}),
       },
-      { signal: request.signal, baseUrl: resolveChatmockBaseUrl(request).baseURL },
+      {
+        signal: request.signal,
+        baseUrl: resolveChatmockBaseUrl(request).baseURL,
+        userRequest: decision?.requestedOutcome,
+      },
     );
     recordAuditEvent({
       eventType: "productSearch.tool_completed",

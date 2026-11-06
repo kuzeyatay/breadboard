@@ -6,6 +6,55 @@ import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
 import { chromium } from 'playwright';
 
+test('inactive native tabs stop polling the inbox while the overlay keeps checking', { timeout: 30_000 }, async t => {
+  const bundle = await esbuild.build({
+    stdin: { loader: 'tsx', resolveDir: fileURLToPath(new URL('../', import.meta.url)), contents: `
+      import React from 'react'; import {createRoot} from 'react-dom/client';
+      import {useToast} from './src/app/components/toast';
+      let state={selfId:'background',activeId:'foreground',windowFocused:true}; const listeners=new Set();
+      window.breadboardDesktop={getTabsState:async()=>state,tabs:async()=>{},onTabsState:fn=>{listeners.add(fn);return()=>listeners.delete(fn)}};
+      window.activate=active=>{state={...state,activeId:active?'background':'foreground'};for(const fn of listeners)fn(state);window.dispatchEvent(new Event('focus'));};
+      const overlay=location.pathname==='/overlay';
+      Object.defineProperty(document,'visibilityState',{configurable:true,value:overlay?'hidden':'visible'});
+      window.polls=0; window.fetch=async()=>{window.polls++;return Response.json({messages:[]});};
+      function App(){useToast({desktopOverlay:overlay});return <div>Ready</div>;}
+      createRoot(document.getElementById('root')).render(<App/>);
+    ` },
+    bundle: true, write: false, outfile: 'fixture.js', format: 'iife', platform: 'browser', jsx: 'automatic',
+    define: { 'process.env.NODE_ENV': '"production"' },
+    plugins: [{ name: 'navigation', setup(build) {
+      build.onResolve({ filter: /^(next\/navigation|\.\/navigation-progress)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
+      build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: 'export const useRouter=()=>({push(){}});export const startNavigationProgress=()=>{};' }));
+    } }],
+  });
+  const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.clock.install();
+  await page.route('https://native-inbox.test/**', route => route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' }));
+  await page.goto('https://native-inbox.test/tab');
+  await page.addScriptTag({ content: bundle.outputFiles.find(file => file.path.endsWith('.js')).text });
+  await page.getByText('Ready', { exact: true }).waitFor();
+  const before = await page.evaluate(() => window.polls);
+  await page.clock.runFor(20_001);
+  assert.equal(await page.evaluate(() => window.polls), before, 'parked but visible native tabs do not queue inbox reads');
+  await page.evaluate(() => window.activate(true));
+  await page.waitForFunction(before => window.polls > before, before);
+  const active = await page.evaluate(() => window.polls);
+  await page.clock.runFor(4_001);
+  assert.ok(await page.evaluate(() => window.polls) > active, 'the active tab refreshes normally');
+  await page.evaluate(() => window.activate(false));
+  const parked = await page.evaluate(() => window.polls);
+  await page.clock.runFor(20_001);
+  assert.equal(await page.evaluate(() => window.polls), parked);
+  await page.goto('https://native-inbox.test/overlay');
+  await page.addScriptTag({ content: bundle.outputFiles.find(file => file.path.endsWith('.js')).text });
+  await page.getByText('Ready', { exact: true }).waitFor();
+  const overlay = await page.evaluate(() => window.polls);
+  await page.clock.runFor(4_001);
+  assert.ok(await page.evaluate(() => window.polls) > overlay, 'the hidden native overlay still receives notifications');
+});
+
 test('notification sounds follow rendered cards, page visibility, native visibility, and scrolling', { timeout: 60_000 }, async t => {
   const root = fileURLToPath(new URL('../', import.meta.url));
   const bundle = await esbuild.build({
@@ -33,7 +82,7 @@ test('notification sounds follow rendered cards, page visibility, native visibil
       }
       createRoot(document.getElementById('root')).render(<App/>);
     ` },
-    bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic',
+    bundle: true, write: false, outfile: 'fixture.js', format: 'iife', platform: 'browser', jsx: 'automatic',
     define: { 'process.env.NODE_ENV': '"production"' },
     plugins: [{ name: 'navigation', setup(build) {
       build.onResolve({ filter: /^(next\/navigation|\.\/navigation-progress)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
@@ -41,7 +90,7 @@ test('notification sounds follow rendered cards, page visibility, native visibil
     } }],
   });
   const server = http.createServer((req, res) => {
-    if (req.url === '/app.js') { res.setHeader('Content-Type', 'text/javascript'); res.end(bundle.outputFiles[0].text); }
+    if (req.url === '/app.js') { res.setHeader('Content-Type', 'text/javascript'); res.end(bundle.outputFiles.find(file => file.path.endsWith('.js')).text); }
     else if (req.url.startsWith('/api/')) { res.setHeader('Content-Type', 'application/json'); res.end('{"messages":[]}'); }
     else { res.setHeader('Content-Type', 'text/html'); res.end(`<!doctype html><style>
       .bb-page-toast-host,.bb-desktop-toast-host{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;width:320px;max-height:80px;overflow:auto}

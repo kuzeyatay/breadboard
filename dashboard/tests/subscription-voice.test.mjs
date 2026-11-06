@@ -221,23 +221,30 @@ test("subscription speech selects its mode and reports progress only after audio
 });
 
 test("all microphone surfaces use a live subscription stream and release it", async () => {
-  for (const file of ["components/voice-conversation-overlay.tsx", "components/speech-dictation-button.tsx", "clicky/page.tsx"]) {
+  for (const file of ["components/voice-conversation-overlay.tsx", "components/speech-dictation-button.tsx"]) {
     const source = await fs.readFile(root + "src/app/" + file, "utf8");
-    assert.match(source, /connectSubscriptionVoice\(\{\s*microphone: stream/);
+    assert.match(source, /connectSubscriptionVoice\(\{\s*microphone: stream|openDictationProvider\(stream,/);
     assert.match(source, /finishTranscript\(/);
-    assert.match(source, /subscriptionRef\.current\?\.close\(/);
+    if (file === 'components/voice-conversation-overlay.tsx') {
+      assert.match(source, /const retiring = subscriptionRef\.current;/);
+      assert.match(source, /subscriptionRetirement\.current = Promise\.all\(\[subscriptionRetirement\.current, retiring\.close\(\)\]/);
+    } else assert.match(source, /subscriptionRef\.current\?\.close\(/);
   }
+  const provider = await fs.readFile(root + 'src/lib/speech/dictation-provider.ts', 'utf8');
+  assert.match(provider, /connectSubscriptionVoice\(\{ microphone, signal, onTranscript, onDisconnect, onInputReady, inputOnly: true \}\)/);
   const playback = await fs.readFile(root + "src/lib/speech/playback.ts", "utf8");
   assert.match(playback, /await voice!?\.speak\(text\)/);
   assert.match(playback, /activeSubscriptionStop/);
 });
 
-function transportFixture(t, { confirm = true, selectedVoice = 'sol', inboundPackets = 10 } = {}) {
+function transportFixture(t, { confirm = true, selectedVoice = 'sol', inboundPackets = 10, outboundPackets = 10 } = {}) {
   const players = recordedVoiceFixture(t);
   const previous = Object.fromEntries(['AudioContext', 'RTCPeerConnection'].map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
   const node = () => ({ gain: { value: 0 }, connect() { return this; }, disconnect() {}, start() {}, stop() {} });
+  let audioContext;
   globalThis.AudioContext = class {
     state = 'running'; destination = {};
+    constructor() { audioContext = this; }
     createGain = node; createOscillator = node; createMediaStreamSource = node;
     createMediaStreamDestination() { const track = node(); return { stream: { getAudioTracks: () => [track], getTracks: () => [track] } }; }
     async resume() {} async close() {}
@@ -254,7 +261,7 @@ function transportFixture(t, { confirm = true, selectedVoice = 'sol', inboundPac
     async createOffer() { return { sdp: 'v=0' }; }
     async setLocalDescription() {} async setRemoteDescription() { this.ontrack({ track: {} }); }
     async getStats() { return new Map([
-      ['audio', { type: 'outbound-rtp', kind: 'audio', packetsSent: 10 }],
+      ['audio', { type: 'outbound-rtp', kind: 'audio', packetsSent: outboundPackets }],
       ['incoming', { type: 'inbound-rtp', kind: 'audio', packetsReceived: inboundPackets, totalAudioEnergy: this.energy,
         jitterBufferDelay: this.bufferDelay, jitterBufferEmittedCount: 1, ...this.incomingStats }],
     ]); }
@@ -295,7 +302,7 @@ function transportFixture(t, { confirm = true, selectedVoice = 'sol', inboundPac
       else pending = deliver;
     });
   });
-  return { push, polls, players, scripts, set inboundPackets(value) { inboundPackets = value; }, get peer() {return peer;}, get creates() {return creates;}, get deletes() {return deletes;} };
+  return { push, polls, players, scripts, get context() { return audioContext; }, set inboundPackets(value) { inboundPackets = value; }, set outboundPackets(value) { outboundPackets = value; }, get peer() {return peer;}, get creates() {return creates;}, get deletes() {return deletes;} };
 }
 
 async function waitFor(predicate) {
@@ -317,6 +324,133 @@ test('subscription playback applies the saved voice and waits for the live sessi
   const voice = await connection;
   assert.equal(connected, true);
   await voice.close();
+});
+
+test('buffered microphone input waits for voice acknowledgment and remote media readiness', async t => {
+  const fixture = transportFixture(t, { confirm: false, inboundPackets: 0 });
+  let ready = 0, complete = false;
+  const connecting = connectSubscriptionVoice({ microphone: {}, onInputReady: () => ready++ }).then(voice => { complete = true; return voice; });
+  await waitFor(() => fixture.peer?.channel?.sent.length === 1);
+  fixture.peer.connectionState = 'connected'; fixture.peer.onconnectionstatechange(); fixture.peer.onconnectionstatechange();
+  assert.equal(ready, 0, 'a connected transport alone cannot drain the first words');
+  fixture.inboundPackets = 10;
+  assert.equal(ready, 0); assert.equal(complete, false);
+  fixture.peer.channel.emit({ type: 'session.updated' });
+  const voice = await connecting; assert.equal(ready, 1); await voice.close();
+});
+
+test('dictation starts when input media is ready without waiting for unused speaker setup', async t => {
+  const fixture = transportFixture(t, { confirm: false, inboundPackets: 0, outboundPackets: 0 });
+  let ready = 0;
+  const connecting = connectSubscriptionVoice({ microphone: {}, inputOnly: true, onInputReady: () => ready++ });
+  await waitFor(() => fixture.peer?.channel);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(ready, 0, 'an open control channel is not sufficient to send audio');
+  fixture.outboundPackets = 10;
+  const voice = await connecting;
+  assert.equal(ready, 1);
+  assert.deepEqual(fixture.peer.channel.sent, [], 'dictation requires no output voice update');
+  assert.ok(fixture.players.every(player => player.volume === 0), 'remote replies remain inaudible');
+  await voice.close(); assert.equal(fixture.deletes, 1);
+});
+
+test('a cached dictation transport is unusable immediately when media or control disconnects', async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {}, inputOnly: true });
+  t.after(() => voice.close());
+  assert.equal(voice.isHealthy(), true);
+  fixture.peer.connectionState = 'disconnected';
+  assert.equal(voice.isHealthy(), false, 'do not attach a new hold during the disconnect grace period');
+  fixture.peer.connectionState = 'connected';
+  assert.equal(voice.isHealthy(), true);
+  fixture.context.state = 'suspended';
+  assert.equal(voice.isHealthy(), false, 'a suspended audio graph cannot capture a new hold');
+  fixture.context.state = 'running';
+  assert.equal(voice.isHealthy(), true);
+  fixture.peer.channel.readyState = 'closing';
+  assert.equal(voice.isHealthy(), false, 'do not wait for onclose to invalidate a cached connection');
+});
+
+test('an empty media event cannot suppress live relay words until send message', async t => {
+  const fixture = transportFixture(t), notices = [];
+  const voice = await connectSubscriptionVoice({ microphone: {}, inputOnly: true, onTranscript: text => notices.push(text) });
+  t.after(() => voice.close());
+  fixture.peer.channel.emit({ type: 'input_transcript.added', start_ms: 0, end_ms: 200, item: { id: 'empty', text: '' } });
+  fixture.push(Response.json({ cursor: 2, events: [{ type: 'transcriptDelta', role: 'user', text: 'Words while speaking' }] }));
+  await waitFor(() => fixture.polls.length >= 3);
+  assert.equal(voice.transcript(), 'Words while speaking');
+  assert.deepEqual(notices, ['Words while speaking']);
+});
+
+test('finishing a buffered hold waits for final words even when partial recognition pauses', async t => {
+  const fixture = transportFixture(t);
+  const notifications = [];
+  const voice = await connectSubscriptionVoice({ microphone: {}, onTranscript: (text, final) => notifications.push({ text, final }) }); t.after(() => voice.close());
+  fixture.push(Response.json({ cursor: 2, events: [{ type: 'transcriptDelta', role: 'user', text: 'Keep my' }] }));
+  await waitFor(() => voice.transcript() === 'Keep my');
+  let finished = false;
+  const final = voice.finishTranscript({ settleFinal: true }).then(text => { finished = true; return text; });
+  await new Promise(resolve => setTimeout(resolve, 750)); assert.equal(finished, false, 'a 500ms pause between deltas is not a final transcript');
+  fixture.push(Response.json({ cursor: 3, events: [{ type: 'transcriptDelta', role: 'user', text: ' last words.' }] }));
+  await waitFor(() => voice.transcript() === 'Keep my last words.');
+  assert.equal(finished, false);
+  fixture.push(Response.json({ cursor: 4, events: [{ type: 'transcript', role: 'user', text: 'Keep my last words.' }] }));
+  assert.equal(await final, 'Keep my last words.');
+  assert.deepEqual(notifications.map(n => n.final), [false, false, true], 'commands can distinguish interim words from a completed utterance');
+});
+
+test('delta-only transcription settles without a final event or replaying the recording', async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} }); t.after(() => voice.close());
+  fixture.push(Response.json({ cursor: 2, events: [{ type: 'transcriptDelta', role: 'user', text: 'The complete final words.' }] }));
+  await waitFor(() => voice.transcript() === 'The complete final words.');
+  assert.equal(await voice.finishTranscript({ settleFinal: true }), 'The complete final words.');
+  assert.equal(fixture.creates, 1);
+});
+
+test('dictation accepts completed media turns without waiting for a missing or delayed relay', async t => {
+  const fixture = transportFixture(t), notices = [];
+  const voice = await connectSubscriptionVoice({ microphone: {}, inputOnly: true, onTranscript: (text, final) => notices.push({ text, final }) });
+  t.after(() => voice.close());
+  const emit = event => fixture.peer.channel.emit(event);
+  emit({ type: 'input_transcript.added', start_ms: 0, end_ms: 200, item: { id: 'one', text: 'Ready to send.' } });
+  emit({ type: 'turn.created', turn: { id: 'turn1', role: 'user', start_ms: 0, end_ms: 200 } });
+  emit({ type: 'input_transcript.added', start_ms: 200, end_ms: 400, item: { id: 'two', text: ' Send message.' } });
+  emit({ type: 'turn.done', turn: { id: 'turn1', role: 'user', start_ms: 0, end_ms: 600, transcript: 'Ready to send. Send message.' } });
+  assert.deepEqual(notices.at(-1), { text: 'Ready to send. Send message.', final: true }, 'command completion is immediate on the media event');
+  assert.equal(await voice.finishTranscript({ settleFinal: true }), 'Ready to send. Send message.');
+  voice.resetTranscript();
+  fixture.push(Response.json({ cursor: 2, events: [{ type: 'transcript', role: 'user', text: 'Ready to send. Send message.' }] }));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  emit({ type: 'turn.created', turn: { id: 'turn1', role: 'user', start_ms: 0, end_ms: 200 } });
+  emit({ type: 'turn.done', turn: { id: 'turn1', role: 'user', start_ms: 0, end_ms: 600, transcript: 'Ready to send. Send message.' } });
+  assert.equal(voice.transcript(), '', 'late media and relay events cannot enter the next hold');
+  emit({ type: 'input_transcript.added', start_ms: 800, end_ms: 1000, item: { id: 'three', text: 'Another message.' } });
+  emit({ type: 'turn.done', turn: { id: 'turn2', role: 'user', start_ms: 800, end_ms: 1200, transcript: 'Another message.' } });
+  assert.equal(await voice.finishTranscript({ settleFinal: true }), 'Another message.');
+});
+
+test('an earlier completed sentence cannot finish a hold while newer input is still being recognized', async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {}, inputOnly: true }); t.after(() => voice.close());
+  fixture.push(Response.json({ cursor: 2, events: [{ type: 'transcript', role: 'user', text: 'Keep every word.' }] }));
+  fixture.peer.channel.emit({ type: 'input_transcript.added', start_ms: 0, end_ms: 1000 });
+  fixture.peer.channel.emit({ type: 'turn.done', turn: { id: 'first', role: 'user', end_ms: 1000, transcript: 'Keep every word.' } });
+  await waitFor(() => voice.transcript() === 'Keep every word.');
+  // Data-channel input arrives before the bridge publishes the next turn.
+  fixture.peer.channel.emit({ type: 'input_transcript.added', start_ms: 1100, end_ms: 1500 });
+  let finished = false;
+  const final = voice.finishTranscript({ settleFinal: true }).then(text => { finished = true; return text; });
+  await new Promise(resolve => setTimeout(resolve, 750));
+  assert.equal(finished, false, 'the prior sentence must not authorize submission');
+  fixture.peer.channel.emit({ type: 'turn.created', turn: { id: 'last', role: 'user', start_ms: 1100, end_ms: 1500 } });
+  fixture.peer.channel.emit({ type: 'turn.done', turn: { id: 'last', role: 'user', start_ms: 1100, end_ms: 1500, transcript: 'Send message.' } });
+  await new Promise(resolve => setTimeout(resolve, 650));
+  assert.equal(finished, false, 'the data-channel final must also reach the transcript bridge');
+  fixture.push(Response.json({ cursor: 3, events: [{ type: 'transcript', role: 'user', text: 'Send message.' }] }));
+  assert.equal(await final, 'Keep every word. Send message.');
+  voice.resetTranscript();
+  assert.equal(voice.transcript(), '', 'a new hold starts without the previous turn state');
 });
 
 test('local RTP and voice confirmation cannot start speech before remote audio is ready', async t => {
@@ -601,6 +735,7 @@ test('voice confirmation can be cancelled and missing selections never fall back
 });
 
 function conversationFixture(t) {
+  const requests = [];
   const players = recordedVoiceFixture(t);
   const previous = Object.fromEntries(['AudioContext', 'RTCPeerConnection', 'Audio', 'MediaStream']
     .map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
@@ -646,6 +781,7 @@ function conversationFixture(t) {
     if (options.method === 'DELETE') { deleted.push(id); return Response.json({}); }
     if (options.method === 'POST') {
       posts.push({ id, text: requestedScript(options.body) });
+      requests.push(JSON.parse(options.body).text);
       if (postError) throw new TypeError('Ambiguous speech POST failure');
       return Response.json({});
     }
@@ -666,24 +802,28 @@ function conversationFixture(t) {
       };
     });
   });
-  return { players, sessions, posts, deleted, peers, microphones,
+  return { players, sessions, posts, requests, deleted, peers, microphones,
     set holdReaderSetup(value) { holdReaderSetup = value; },
     set postError(value) { postError = value; },
   };
 }
 
-test('background conversation and greeting hand off without reconnecting or opening a microphone early', { timeout: 10_000 }, async t => {
+test('startup and nine idle hours open no sessions; actual voice connects on demand', { timeout: 10_000 }, async t => {
   const fixture = conversationFixture(t);
   t.after(() => clearSubscriptionPreload());
-  await preloadSubscriptionVoice('1', { enabled: true, speechProvider: 'chatgpt', openaiVoice: 'sol' });
-  await waitFor(() => fixture.sessions.length === 2);
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-04T20:00:00Z') });
+  for (let minute = 0; minute < 9 * 60; minute++) {
+    await preloadSubscriptionVoice('1', { enabled: true, speechProvider: 'chatgpt', openaiVoice: 'sol' });
+    t.mock.timers.tick(60_000);
+  }
+  assert.equal(fixture.sessions.length, 0, 'startup preparation never opens a metered session');
   assert.equal(fixture.microphones.length, 0);
-  assert.deepEqual(fixture.posts, [], 'warmup sends no spoken script');
+  assert.deepEqual(fixture.requests, [], 'idle ticks make no voice requests');
   const microphone = {};
   const voice = await connectSubscriptionVoice({ microphone, listening: false });
   assert.deepEqual(fixture.microphones, [microphone]);
   await voice.prepareSpeaker();
-  assert.equal(fixture.sessions.length, 2, 'both ready sessions are adopted');
+  assert.equal(fixture.sessions.length, 2, 'input and output connect only for actual voice');
   assert.ok(fixture.players.every(player => player.volume === 0));
   voice.setListening(true);
   assert.equal(voice.isHealthy(), true);
@@ -1115,10 +1255,14 @@ test('closing a voice tab sends keepalive cleanup before waiting for audio shutd
   assert.equal(fixture.deletes, 1, 'page cleanup removes its listener and releases each session once');
 });
 
-test('read-aloud waits for both retiring preloads after voice gives up its slots', async t => {
+test('read-aloud waits for both retiring cached connections after voice gives up its slots', async t => {
   const fixture = conversationFixture(t);
   t.after(() => clearSubscriptionPreload());
   await preloadSubscriptionVoice('1', { enabled: true, speechProvider: 'chatgpt', openaiVoice: 'sol' });
+  const conversation = await connectSubscriptionVoice({ mode: 'conversation', listening: false });
+  const reader = await connectSubscriptionVoice({ mode: 'speak' });
+  await conversation.release(true);
+  await reader.release(true);
   await waitFor(() => fixture.sessions.length === 2);
   const fetch = globalThis.fetch;
   const finishDeletes = [];
@@ -1189,4 +1333,51 @@ test('ambiguous creation failures and non-capacity rejections are never replayed
     assert.equal(attempts, 1);
     assert.equal(fixture.peer.connectionState, 'closed');
   });
+});
+
+
+test('conversational wording reaches the separate reader without adding delivery instructions', { timeout: 10000 }, async t => {
+  const { sessions, posts, requests } = conversationFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} }); t.after(() => voice.close());
+  const text = "That's the latest result. The date is October 3.";
+  const reading = voice.speak(text, true);
+  await waitFor(() => posts.length === 1);
+  assert.equal(requests[0], `Read aloud exactly this text. Say only these words, with no introduction or commentary: ${text}`);
+  assert.equal(posts[0].text, text);
+  sessions[1].deliver(text); await reading;
+  const plain = voice.speak('Read this exact sentence.');
+  await waitFor(() => posts.length === 2);
+  assert.equal(requests[1], 'Read aloud exactly this text. Say only these words, with no introduction or commentary: Read this exact sentence.');
+  sessions[1].deliver('Read this exact sentence.'); await plain;
+});
+
+
+test('conversation uses the complete media transcript before a delayed or missing relay', async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} }); t.after(() => voice.close());
+  fixture.push(Response.json({ cursor: 2, events: [{ type: 'transcriptDelta', role: 'user', text: 'The incomplete' }] }));
+  await waitFor(() => voice.transcript() === 'The incomplete');
+  fixture.peer.channel.emit({ type: 'input_transcript.added', start_ms: 0, end_ms: 1000, item: { id: 'input', text: 'The complete final words.' } });
+  fixture.peer.channel.emit({ type: 'turn.done', turn: { id: 'final', role: 'user', start_ms: 0, end_ms: 1200, transcript: 'The complete final words.' } });
+  const started = performance.now();
+  assert.equal(await voice.finishTranscript({ settleFinal: true }), 'The complete final words.');
+  assert.ok(performance.now() - started < 1000, 'confirmed media words do not wait on the relay');
+  fixture.push(Response.json({ cursor: 3, events: [{ type: 'transcript', role: 'user', text: 'The incomplete' }] }));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(voice.transcript(), 'The complete final words.');
+});
+
+test('conversation with activity but no final event settles complete stable words without a timeout', async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} }); t.after(() => voice.close());
+  fixture.peer.channel.emit({ type: 'input_transcript.added', start_ms: 0, end_ms: 1000 });
+  fixture.push(Response.json({ cursor: 2, events: [{ type: 'transcriptDelta', role: 'user', text: 'Keep the' }] }));
+  await waitFor(() => voice.transcript() === 'Keep the');
+  let finished = false;
+  const final = voice.finishTranscript({ settleFinal: true }).then(text => { finished = true; return text; });
+  await new Promise(resolve => setTimeout(resolve, 750));
+  assert.equal(finished, false, 'do not send an incomplete delta after 500 ms');
+  fixture.push(Response.json({ cursor: 3, events: [{ type: 'transcriptDelta', role: 'user', text: ' last words.' }] }));
+  assert.equal(await final, 'Keep the last words.');
+  assert.equal(voice.isHealthy(), true);
 });

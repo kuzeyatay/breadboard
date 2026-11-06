@@ -142,6 +142,29 @@ export function normalizeQuartzMarkdown(markdown: string): string {
  * such as `\\tag{...}`, even though the writer later lowers that notation to a
  * KaTeX-safe equivalent.
  */
+/**
+ * Equal only for the same LaTeX written with different spacing or with braces
+ * around a single character (P_{S} vs P_S); anything else stays distinct. Two
+ * source pages printing one equation this way are one display, not two
+ * (telecom-1 lesson 1.2, 2026-10-02: S13.P20.E2 and S13.P29.E4).
+ */
+export function formulaNotationKey(latex: string): string {
+  return latex.replace(/\s+/g, "")
+    // Display delimiters are not the formula: S16.P522.E5 is transcribed as
+    // `\[V_T=…\]` while the lesson displays it once inside $$ (6.2, 2026-10-07).
+    .replace(/^\\\[([\s\S]*)\\\]$/, "$1")
+    .replace(/([_^])\{([A-Za-z0-9])\}/g, "$1$2")
+    // A book equation number is a label, not the formula: telecom-1 lesson
+    // 2.2 (2026-10-05) alternated between `... \ll f_c` and `... \ll
+    // f_c\quad{(4-75)}`. Lessons may drop the label (book numbering belongs in
+    // the references), in any of its printed shapes and wherever it sits,
+    // e.g. before \end{aligned} (2026-10-08). Plain numbers count too: em1
+    // 4.5 shows `\mathbf{E}=-\nabla V \qquad \text{(29)}` for the same law the
+    // book reprints as (23), and 12.2 shows (16b) for its reprint (17b).
+    .replace(/(?:\\q?quad)+(?:\\text)?\{?\((?:Eq\.?)?\d+(?:[.\-–]\d+)*(?:[a-z]|\\mathrm\{?[a-z]\}?)?\)\}?/g, "")
+    .replace(/\\tag\*?\{[^{}]*\}$/, "");
+}
+
 export function extractVerbatimDisplayMath(markdown: string): MathExpression[] {
   const expressions: MathExpression[] = [];
   const withoutCode = maskNonRenderedMarkdown(markdown);

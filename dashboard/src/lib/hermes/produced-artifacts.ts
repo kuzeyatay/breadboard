@@ -306,6 +306,21 @@ export async function publishProducedFilesForRun(
     // it would otherwise be discovered as a new file on the next sweep.
     excludeRoots: [dashboardDataDir(), ...(input.storageRoot ? [input.storageRoot] : [])],
   });
+  // Desktop workspaces live inside the data directory. The broad exclusion
+  // above protects app state when scanning user-granted folders, but also
+  // swallowed every output from those workspaces. Scan only the session's
+  // explicit workspace separately, keeping artifact storage excluded.
+  const dataRoot = realPathOrNull(dashboardDataDir());
+  const workspace = realPathOrNull(input.workspaceRoot);
+  if (dataRoot && workspace && normalizedKey(dataRoot) !== normalizedKey(workspace) && isInside(dataRoot, workspace)) {
+    const workspaceFiles = findProducedEntries({
+      roots: [workspace],
+      since,
+      excludeRoots: [path.join(dataRoot, "artifacts"), ...(input.storageRoot ? [input.storageRoot] : [])],
+    });
+    found.files.push(...workspaceFiles.files);
+    found.folders.push(...workspaceFiles.folders);
+  }
   report.scannedRoots = roots;
   const published = alreadyPublished(database, input.runId);
 

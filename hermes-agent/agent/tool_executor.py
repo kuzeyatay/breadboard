@@ -1590,15 +1590,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
 
-        if isinstance(function_result, str):
-            result_preview = function_result if agent.verbose_logging else (
-                function_result[:200] if len(function_result) > 200 else function_result
-            )
-            _result_len = len(function_result)
-        else:
-            # Multimodal dict result (_multimodal=True) — not sliceable as string
-            result_preview = function_result
-            _result_len = len(str(function_result))
+        result_text = _multimodal_text_summary(function_result)
+        result_preview = result_text if agent.verbose_logging else result_text[:200]
+        _result_len = len(result_text)
 
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
@@ -1632,9 +1626,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result,
                 failed=_is_error_result,
             )
-            result_preview = function_result if agent.verbose_logging else (
-                function_result[:200] if len(function_result) > 200 else function_result
-            )
+            result_text = _multimodal_text_summary(function_result)
+            result_preview = result_text if agent.verbose_logging else result_text[:200]
         if _is_error_result:
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
         else:

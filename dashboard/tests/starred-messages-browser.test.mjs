@@ -4,9 +4,13 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { chromium, expect } from "@playwright/test";
+import postcss from "postcss";
+import tailwindcss from "@tailwindcss/postcss";
 
-test("reply, star, reload, unstar and jump to a virtualized message", { timeout: 60_000 }, async (t) => {
+test("saved messages open draggable popups; right-click goes to the chat", { timeout: 60_000 }, async (t) => {
   const root = fileURLToPath(new URL("../", import.meta.url));
+  const cssPath = fileURLToPath(new URL("../src/app/globals.css", import.meta.url));
+  const css = (await postcss([tailwindcss({ base: root })]).process(readFileSync(cssPath, "utf8"), { from: cssPath })).css;
   const bundle = await build({
     stdin: { resolveDir: root, loader: "tsx", contents: `
       import React, {useState, useRef} from 'react';
@@ -37,7 +41,8 @@ test("reply, star, reload, unstar and jump to a virtualized message", { timeout:
           }}><AssistantMessageActions content={content}/></MessageActionsSlot>
           <textarea aria-label="Chat composer" ref={composer}/>
           {selection ? <p data-reply>{selection.quote}</p> : null}
-          <StarredMessagesPanel onOpenMessage={message => {
+          <output data-active-chat>{chatId}</output>
+          <StarredMessagesPanel gardenSlug={new URLSearchParams(location.search).get('garden') ?? undefined} onOpenMessage={message => {
             setTarget({chatId:message.chatId, messageId:message.messageId, clientMessageId:message.clientMessageId, requestId:Date.now()});
             if (chatId !== message.chatId) {
               setLoading(true); setChatId(message.chatId); setTimeout(() => setLoading(false), 60);
@@ -62,8 +67,15 @@ test("reply, star, reload, unstar and jump to a virtualized message", { timeout:
   page.on("pageerror", error => errors.push(error.message));
   let stars = [];
   let failSave = false;
+  let failRead = false;
+  const fullAnswer = '# Full saved answer\n\n**Formatted response** with $x^2$.\n\n' + 'Long answer. '.repeat(300) + '\n\nFINAL SENTENCE';
   const message = {conversationId:'conv_one', chatId:'conv_one', messageId:'msg_4', clientMessageId:'client-turn-one', title:'Saved chat', preview:'Saved response', gardenSlug:null, starredAt:'2026-09-19'};
   await page.route("https://starred.test/**", async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/starred-messages' && url.searchParams.has('message')) {
+      if (failRead) return route.fulfill({status:404, json:{detail:'This starred message is no longer available.'}});
+      return route.fulfill({json:{message:{messageId:url.searchParams.get('message'), content:fullAnswer}}});
+    }
     if (route.request().url().endsWith('/api/starred-messages')) {
       if (route.request().method() === 'PUT') {
         if (failSave) return route.fulfill({status:500, json:{error:'Could not save star'}});
@@ -75,6 +87,7 @@ test("reply, star, reload, unstar and jump to a virtualized message", { timeout:
     return route.fulfill({contentType:'text/html', body:'<!doctype html><div id="root"></div>'});
   });
   await page.goto("https://starred.test/");
+  await page.addStyleTag({content:css});
   await page.addScriptTag({content:bundle.outputFiles[0].text});
   await page.getByRole('button', {name:'Reply to message'}).click();
   await expect(page.getByRole('textbox', {name:'Chat composer'})).toBeFocused();
@@ -86,11 +99,48 @@ test("reply, star, reload, unstar and jump to a virtualized message", { timeout:
   await expect(page.getByRole('button', {name:'Star message', exact:true})).toHaveAttribute('aria-pressed','false');
   failSave = false;
   await page.getByRole('button', {name:'Star message', exact:true}).click();
-  await expect(page.getByRole('link', {name:'Saved chat Saved response'})).toBeVisible();
+  await expect(page.getByRole('button', {name:'Saved chat Saved response'})).toBeVisible();
   await page.reload();
+  await page.addStyleTag({content:css});
   await page.addScriptTag({content:bundle.outputFiles[0].text});
   await expect(page.getByRole('button', {name:'Unstar message', exact:true}).first()).toHaveAttribute('aria-pressed','true');
-  await page.getByRole('link', {name:'Saved chat Saved response'}).click();
+  const savedButton = page.getByRole('button', {name:'Saved chat Saved response'});
+  await savedButton.click();
+  const popup = page.getByRole('dialog', {name:'Starred message', exact:true});
+  await expect(popup).toBeVisible();
+  await expect(popup.getByRole('heading', {name:'Full saved answer'})).toBeVisible();
+  await expect(popup.locator('strong')).toHaveText('Formatted response');
+  await expect(popup.locator('.katex')).toBeVisible();
+  await expect(popup).toContainText('FINAL SENTENCE');
+  await expect(page.locator('[data-active-chat]')).toHaveText('conv_other');
+  await expect(page).toHaveURL('https://starred.test/');
+  await expect(page.locator('[data-starred-message-target]')).toHaveCount(0);
+  const before = await popup.boundingBox();
+  const handle = popup.getByRole('button', {name:'Move starred message'});
+  const grip = await handle.boundingBox();
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(grip.x + grip.width / 2 + 120, grip.y + grip.height / 2 + 70, {steps:5});
+  await page.mouse.up();
+  await expect.poll(async () => (await popup.boundingBox()).x).toBeGreaterThan(before.x + 100);
+  await handle.focus();
+  const moved = await popup.boundingBox();
+  await handle.press('ArrowLeft');
+  await expect.poll(async () => (await popup.boundingBox()).x).toBe(moved.x - 10);
+  await handle.press('Escape');
+  await expect(popup).toHaveCount(0);
+  await expect(savedButton).toBeFocused();
+  // A failed read remains in the popup and can be retried without navigating.
+  failRead = true;
+  await savedButton.press('Enter');
+  await expect(popup.getByRole('alert')).toContainText('no longer available');
+  failRead = false;
+  await popup.getByRole('button', {name:'Retry'}).click();
+  await expect(popup).toContainText('FINAL SENTENCE');
+  await popup.getByRole('button', {name:'Close starred message'}).click();
+  await savedButton.click({button:'right'});
+  await expect(popup).toHaveCount(0);
+  await page.getByRole('menuitem', {name:'Go to chat'}).click();
   const savedRow = page.locator('#scroller [data-index="4"]');
   await expect(savedRow).toHaveAttribute('data-starred-message-target','');
   await expect(savedRow).toBeFocused();
@@ -101,11 +151,55 @@ test("reply, star, reload, unstar and jump to a virtualized message", { timeout:
   await page.waitForTimeout(1400);
   await expect.poll(offset).toBeLessThan(3);
   await expect.poll(offset).toBeGreaterThan(-3);
-  await page.getByRole('link', {name:'Saved chat Saved response'}).click();
+  await savedButton.click({button:'right'});
+  await page.getByRole('menuitem', {name:'Go to chat'}).click();
   await expect(savedRow).toHaveAttribute('data-starred-message-target','');
   await page.getByRole('button', {name:'Unstar message', exact:true}).first().click();
   await expect(page.getByText('No starred messages yet.', {exact:false})).toBeVisible();
   assert.deepEqual(stars, []);
+  // Cross-garden stars also preview in place; their explicit menu link keeps
+  // the original garden/chat/message destination.
+  stars = [{...message, conversationId:'conv_garden', chatId:'42', messageId:'msg_42', gardenSlug:'my-garden'}];
+  await page.reload();
+  await page.addStyleTag({content:css});
+  await page.addScriptTag({content:bundle.outputFiles[0].text});
+  await savedButton.click();
+  await expect(popup).toContainText('FINAL SENTENCE');
+  await expect(page).toHaveURL('https://starred.test/');
+  await expect(page.locator('[data-active-chat]')).toHaveText('conv_other');
+  await popup.getByRole('button', {name:'Close starred message'}).click();
+  await savedButton.click({button:'right'});
+  await expect(page.getByRole('menuitem', {name:'Go to chat'})).toHaveAttribute('href','/gardens/my-garden?chat=42&message=msg_42');
+  await page.getByRole('menuitem', {name:'Go to chat'}).click();
+  await expect(page).toHaveURL('https://starred.test/gardens/my-garden?chat=42&message=msg_42');
+  // The same menu in a garden preserves that garden's active chat on click.
+  await page.goto('https://starred.test/?garden=my-garden');
+  await page.addStyleTag({content:css});
+  await page.addScriptTag({content:bundle.outputFiles[0].text});
+  await savedButton.click();
+  await expect(popup).toContainText('FINAL SENTENCE');
+  await expect(page.locator('[data-active-chat]')).toHaveText('conv_other');
+  await page.setViewportSize({width:390, height:640});
+  await expect.poll(async () => {
+    const rect = await popup.boundingBox();
+    return rect.x >= 16 && rect.y >= 16 && rect.x + rect.width <= 374 && rect.y + rect.height <= 624;
+  }).toBe(true);
+  await popup.getByRole('button', {name:'Close starred message'}).click();
+  await savedButton.click({button:'right'});
+  await page.getByRole('menuitem', {name:'Go to chat'}).click();
+  await expect(page.locator('[data-active-chat]')).toHaveText('42');
+  // Reader stars belong in this Garden, but must not open a numeric workspace chat.
+  stars = [{...message, conversationId:'conv_pdf', chatId:'conv_pdf', messageId:'msg_43', gardenSlug:'my-garden', workspaceChat:false}];
+  await page.reload();
+  await page.addStyleTag({content:css});
+  await page.addScriptTag({content:bundle.outputFiles[0].text});
+  await savedButton.click();
+  await expect(popup).toContainText('FINAL SENTENCE');
+  await popup.getByRole('button', {name:'Close starred message'}).click();
+  await savedButton.click({button:'right'});
+  await expect(page.getByRole('menuitem', {name:'Go to chat'})).toHaveAttribute('href','/dashboard?terminalChat=conv_pdf&message=msg_43');
+  await page.getByRole('menuitem', {name:'Go to chat'}).click();
+  await expect(page).toHaveURL('https://starred.test/dashboard?terminalChat=conv_pdf&message=msg_43');
   assert.deepEqual(errors, []);
 });
 
@@ -147,7 +241,7 @@ test("starred jumps survive transcript refreshes and late row measurements", { t
         return conversationLoading;
       }
       function gardenLoading(starredMessageTarget, loadingChats) {
-        const activeChatId = 42, visibleChatJustCreated = false, inlineArtifactsReady = false;
+        const activeChatId = 42, visibleChatJustCreated = false, inlineArtifactsReady = false, activeTranscriptPending = false;
         ${gardenGate}
         return chatContentLoading;
       }

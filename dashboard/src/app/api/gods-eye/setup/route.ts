@@ -70,7 +70,7 @@ export async function POST(request: Request) {
       {
         ok: true,
         message: progress.running
-          ? "Installing the clone's dependencies — a few minutes the first time."
+          ? "Installing the required tools. This takes a few minutes the first time."
           : progress.error || "Setup finished.",
         status: setupStatus(),
       },

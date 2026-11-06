@@ -20,6 +20,7 @@ import { synthesizeElevenLabsSpeech } from "./elevenlabs.ts";
 import { synthesizeWebSpeech } from "./web-speech.ts";
 import { voiceboxFetch, voiceboxJson, voiceboxResponseError } from "./voicebox-client.ts";
 import { applyPronunciations } from './pronunciation.ts';
+import { CONVERSATION_DELIVERY } from './conversation-delivery.ts';
 
 interface VoiceProfile {
   id: string;
@@ -49,10 +50,14 @@ export async function synthesizeSpeech({
   userId,
   text,
   signal,
+  streaming = false,
+  delivery = 'reading',
 }: {
   userId: number;
   text: unknown;
   signal?: AbortSignal;
+  streaming?: boolean;
+  delivery?: 'reading' | 'conversation';
 }): Promise<Response> {
   const settings = getSpeechSettings(userId);
   if (!settings.enabled) {
@@ -70,7 +75,7 @@ export async function synthesizeSpeech({
     throw new RouteError(409, "Subscription speech requires the browser audio connection. Reload Breadboard and try again.");
   }
   if (settings.speechProvider === "elevenlabs") {
-    return synthesizeElevenLabsSpeech(userId, spoken, settings.elevenlabsVoiceId, settings.elevenlabsModel, signal);
+    return synthesizeElevenLabsSpeech(userId, spoken, settings.elevenlabsVoiceId, settings.elevenlabsModel, signal, streaming);
   }
   if (settings.speechProvider === "openaiweb") {
     return synthesizeWebSpeech(userId, spoken, settings.openaiVoice, signal);
@@ -115,7 +120,7 @@ export async function synthesizeSpeech({
         // CustomVoice 1.7B supports delivery instructions. Cloning, Kokoro and
         // the smaller checkpoint do not provide equivalent instruction control.
         ...(engine === 'qwen_custom_voice' && settings.modelSize === '1.7B' ? {
-          instruct: 'Read naturally at a calm, steady conversational pace. Pause between paragraphs and list items. Use light emphasis on meaning-bearing words and natural question intonation. Keep headings neutral and maintain the same delivery throughout.',
+          instruct: delivery === 'conversation' ? CONVERSATION_DELIVERY : 'Read naturally at a calm, steady conversational pace. Pause between paragraphs and list items. Use light emphasis on meaning-bearing words and natural question intonation. Keep headings neutral and maintain the same delivery throughout.',
         } : {}),
       }),
     },

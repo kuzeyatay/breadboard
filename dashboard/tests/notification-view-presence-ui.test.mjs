@@ -128,16 +128,22 @@ test('green dots synchronize across chat surfaces, reloads, hidden tabs, and sta
 test('every notification host suppresses the viewed target and preserves background answers', { timeout: 60_000 }, async t => {
   const bundle = await esbuild.build({
     stdin: { loader: 'tsx', resolveDir: root, contents: `
-      import React from 'react'; import {createRoot} from 'react-dom/client';
+      import React from 'react'; import {createRoot} from 'react-dom/client'; import {flushSync} from 'react-dom';
       import {Toaster,useToast} from './src/app/components/toast';
-      import {setActiveChatNotificationTarget,setActiveLearnNotificationGarden,isChatNotificationTargetViewed} from './src/lib/chat-notification-inbox';
+      import {setActiveLearnNotificationGarden,isChatNotificationTargetViewed} from './src/lib/chat-notification-inbox';
+      import {useChatNotificationView} from './src/lib/use-chat-notification-view';
+      import {notifyChatResponseReady} from './src/lib/task-completion-notification';
       import {isNotificationPageActive,registerInlineSelectionNotificationView} from './src/lib/notification-view-presence';
       window.openInline=registerInlineSelectionNotificationView;
-      window.setChat=setActiveChatNotificationTarget; window.setLearn=setActiveLearnNotificationGarden;
+      window.complete=notifyChatResponseReady; window.setLearn=setActiveLearnNotificationGarden;
       window.isViewed=isChatNotificationTargetViewed; window.isActive=isNotificationPageActive;
+      function Surface({target}){useChatNotificationView(target);return null;}
       function App(){const {toasts,dismissToast}=useToast({desktopOverlay:location.pathname==='/overlay'});
+        const [target,setTarget]=React.useState(null),[surfaces,setSurfaces]=React.useState([]);
+        window.setChat=target=>flushSync(()=>setTarget(target));window.setSurfaces=surfaces=>flushSync(()=>setSurfaces(surfaces));
         window.shown=toasts.map(t=>t.notificationId); window.rendered.push(...window.shown);
-        return <><output>{JSON.stringify(window.shown)}</output><Toaster toasts={toasts} onDismiss={dismissToast}
+        return <><Surface target={target}/>{surfaces.map(s=><Surface key={s.id} target={s.target}/>)}
+          <output>{JSON.stringify(window.shown)}</output><Toaster toasts={toasts} onDismiss={dismissToast}
           mode={location.pathname==='/overlay'?'desktop-overlay':'page'}
           onOpenChat={target=>{window.openedTarget=target;return true;}}/></>;}
       createRoot(document.getElementById('root')).render(<App/>);
@@ -232,6 +238,41 @@ test('every notification host suppresses the viewed target and preserves backgro
   await overlay.waitForFunction(() => window.isViewed({surface:'dashboard_terminal',chatId:'conv_terminal'}));
   assert.ok(dismissed.has('msg_active'));
   await absent('msg_active');
+
+  // A mounted hidden PDF/sidebar must not erase the visible chat's presence.
+  await active.evaluate(() => window.setSurfaces([{id:'hidden-panel',target:null}]));
+  add('msg_hidden_panel_mounted', terminal);
+  await pollAll();
+  await absent('msg_hidden_panel_mounted');
+  assert.ok(dismissed.has('msg_hidden_panel_mounted'));
+
+  // Multiple visible surfaces each own their presence, even when two show the
+  // same chat. Closing one must leave all surviving surfaces registered.
+  await active.evaluate(target => window.setSurfaces([
+    {id:'editor',target}, {id:'second-editor',target}, {id:'hidden-panel',target:null},
+  ]), garden);
+  await overlay.waitForFunction(target => window.isViewed(target), garden);
+  add('msg_split_terminal', terminal); add('msg_split_garden', garden);
+  await pollAll();
+  await absent('msg_split_terminal'); await absent('msg_split_garden');
+  await active.evaluate(target => window.setSurfaces([{id:'second-editor',target}]), garden);
+  add('msg_remaining_editor', garden);
+  await pollAll(); await absent('msg_remaining_editor');
+
+  // Completion acknowledges any visible surface (including a canonical alias),
+  // before the next poll, so switching away cannot replay the finished answer.
+  add('msg_secondary_seen', garden);
+  const seenRequest = active.waitForResponse(r => r.request().method()==='POST' &&
+    r.request().postDataJSON()?.seen?.chatId === garden.chatId);
+  await active.evaluate(() => window.complete('Editor answer', {chatId:'conv_garden',activeChatId:'conv_garden'}));
+  await seenRequest;
+  assert.ok(dismissed.has('msg_secondary_seen'));
+  await active.evaluate(() => window.setSurfaces([]));
+  await pollAll(); await absent('msg_secondary_seen');
+  add('msg_closed_editor', garden);
+  await pollAll();
+  await overlay.waitForFunction(() => window.shown.includes('msg_closed_editor'));
+  assert.equal(await overlay.evaluate(target => window.isViewed(target), terminal), true);
 
   await active.evaluate(() => window.setChat({surface:'dashboard_terminal',chatId:'conv_garden'}));
   add('msg_hub', garden);

@@ -18,9 +18,9 @@ import {
   type DocumentPage,
   type KnowledgeExtraction,
 } from "../knowledge.ts";
-import { GLOBAL_MODEL_SENTINEL } from "../ai-models.ts";
 import { acquireGardenMutationLease } from "../garden-mutation-lease.ts";
 import { publishQuartzAfterMutation } from "../quartz-publish.ts";
+import { selectedModelForUser } from "../selected-model.ts";
 import { sourceSlugExists } from "./video-source-store.ts";
 import { deterministicTitleSuffix } from "./transcript-markdown.ts";
 
@@ -81,13 +81,18 @@ export async function ingestTranscriptSource(
   input: TranscriptIngestInput,
 ): Promise<TranscriptIngestResult> {
   const client = createChatmockClient();
+  // Bind the whole ingest to the user's configured model. Sending ChatMock's
+  // `default` sentinel would let its availability failover choose a different
+  // provider, which makes an upload appear successful with a model the user
+  // did not authorize for extraction.
+  const model = selectedModelForUser(input.userId);
   const pages: DocumentPage[] = [
     { label: "Transcript", text: input.plainText },
   ];
 
   const extraction: KnowledgeExtraction = await extractDocumentKnowledge({
     client,
-    model: GLOBAL_MODEL_SENTINEL,
+    model,
     title: input.sourceTitle,
     sourceType: input.mediaKind,
     sourceLabel: input.sourceLabel,
@@ -107,7 +112,7 @@ export async function ingestTranscriptSource(
 
   const saved = await writeDocumentKnowledge({
     client,
-    model: GLOBAL_MODEL_SENTINEL,
+    model,
     contentPath: input.contentPath,
     clusterSlug: input.clusterSlug,
     sourceTitle,

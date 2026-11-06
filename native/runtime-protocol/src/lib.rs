@@ -69,8 +69,12 @@ pub const SERVICE_LEASE_SETTLEMENT_GRACE_MS: u64 = 5_000;
 /// Keeps the engine reply deadline strictly outside the pending-lease deadline
 /// so a bounded timeout is delivered instead of racing the receiver itself.
 pub const SERVICE_LEASE_RESPONSE_GRACE_MS: u64 = 5_000;
+/// The process owner caps graceful shutdown at five minutes; allow its final
+/// two-second force/drain padding before the next cold start can begin.
+pub const MAX_SERVICE_IDLE_STOP_WAIT_MS: u64 = 302_000;
 pub const MAX_SERVICE_LEASE_ACQUIRE_TIMEOUT_MS: u64 =
-    MAX_TIMEOUT_MS + SERVICE_LEASE_SETTLEMENT_GRACE_MS + SERVICE_LEASE_RESPONSE_GRACE_MS;
+    MAX_TIMEOUT_MS + MAX_SERVICE_IDLE_STOP_WAIT_MS
+        + SERVICE_LEASE_SETTLEMENT_GRACE_MS + SERVICE_LEASE_RESPONSE_GRACE_MS;
 pub const MAX_SQLITE_UNSIGNED: u64 = 9_223_372_036_854_775_807;
 /// Largest integer that can cross the Rust/JavaScript control boundary without
 /// losing precision in a JavaScript `number`.
@@ -516,6 +520,8 @@ pub enum RuntimeBootstrapMessage {
         app_root: String,
         runtime_root: String,
         data_root: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bulk_root: Option<String>,
         config_root: String,
     },
 }
@@ -527,6 +533,7 @@ impl RuntimeBootstrapMessage {
             app_root,
             runtime_root,
             data_root,
+            bulk_root,
             config_root,
             ..
         } = self;
@@ -534,6 +541,7 @@ impl RuntimeBootstrapMessage {
         validate_root_text("appRoot", app_root)?;
         validate_root_text("runtimeRoot", runtime_root)?;
         validate_root_text("dataRoot", data_root)?;
+        if let Some(root) = bulk_root { validate_root_text("bulkRoot", root)?; }
         validate_root_text("configRoot", config_root)?;
         Ok(())
     }
@@ -5050,6 +5058,7 @@ mod tests {
                 .map(|worker| worker.kind.as_str())
                 .collect::<Vec<_>>(),
             [
+                "source-repair-node",
                 "learn-node",
                 "document-ingestion-node",
                 "quartz-publish-node",
@@ -5965,8 +5974,8 @@ mod tests {
             services
                 .services
                 .iter()
-                .all(|service| service.requirement.is_required()),
-            "every checked-in service must remain a mandatory product capability"
+                .all(|service| service.requirement.is_required() == (service.id != "acestep")),
+            "only the optional ACE-Step model service may be unavailable as a product capability"
         );
         assert_eq!(
             services

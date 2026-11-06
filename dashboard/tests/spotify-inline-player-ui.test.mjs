@@ -107,7 +107,7 @@ test("the dock migrates saved songs and replays all 20 after reload with browser
       import {BrowserSpotifyDock,useSpotifyDock} from './src/app/browser/browser-home-widgets';
       function App() {
         const [open,setOpen]=React.useState(true);
-        const spotify=useSpotifyDock();
+        const spotify=useSpotifyDock(true);
         return <BrowserSpotifyDock {...spotify} openConnections={()=>{}} open={open} setOpen={setOpen}/>;
       }
       createRoot(document.getElementById('root')).render(<App/>);

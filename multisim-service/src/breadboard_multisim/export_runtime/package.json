@@ -1,0 +1,10 @@
+{
+  "name": "breadboard-circuit-exporters",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned local dependencies for Weave LTspice and Multisim XML exports",
+  "dependencies": {
+    "elkjs": "0.9.3",
+    "electronics-workbench-decoder": "0.2.0"
+  }
+}

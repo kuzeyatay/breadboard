@@ -351,3 +351,23 @@ test("everyday time phrasing is translated into what the engine accepts", () => 
   assert.equal(normalizeTimeExpression("  "), undefined);
   assert.equal(normalizeTimeExpression(undefined), undefined);
 });
+
+test("a client probed before first startup picks up the newly created API key", async () => {
+  const config = temporaryRecallConfig();
+  const client = new RecallClient(config);
+  const seen = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    seen.push(init.headers.Authorization ?? null);
+    return new Response(JSON.stringify({status: "healthy", data: []}));
+  };
+  try {
+    await client.health();
+    const key = "sp-0123456789abcdef0123456789abcdef";
+    fs.writeFileSync(recallApiKeyPath(config), key);
+    await client.search({limit: 1});
+    assert.deepEqual(seen, [null, `Bearer ${key}`]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

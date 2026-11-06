@@ -163,8 +163,11 @@ test("archive extraction names the system tar, not whatever PATH finds first", (
   // Git Bash puts an MSYS tar on PATH that reads "C:\..." as a remote host and
   // fails with "Cannot connect to C: resolve failed". Windows' own bsdtar in
   // System32 handles zip and Windows paths, so it must be named by full path.
-  assert.match(source, /SystemRoot[\s\S]{0,80}System32[\s\S]{0,40}tar\.exe/);
-  assert.doesNotMatch(source, /run\(\s*"tar"/);
+  assert.match(source, /const systemRoot = context\.env\.SystemRoot \?\? context\.env\.SYSTEMROOT/);
+  assert.match(source, /const tar = systemRoot \? path\.join\(systemRoot, "System32", "tar\.exe"\) : null/);
+  assert.match(source, /if \(!tar\) return \{ ok: false/);
+  assert.match(source, /runAgentReachSetupCommand\(tar, \["-xf", archive, "-C", extracted\]/);
+  assert.doesNotMatch(source, /(?:run|runAgentReachSetupCommand)\(\s*"tar"/);
 });
 
 test("the settings panel only uses surfaces and variables that exist", () => {

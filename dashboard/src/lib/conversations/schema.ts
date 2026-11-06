@@ -61,6 +61,29 @@ export function ensureConversationSchema(database: Database.Database): void {
       ON conversation_messages(conversation_id, status, role);
     CREATE INDEX IF NOT EXISTS idx_conversation_messages_profile_evidence
       ON conversation_messages(conversation_id, role, status, id);
+    -- Profile stats read a few scalars out of metadata, which averages 170 KB a
+    -- message (1.7 GB here). A covering index on exactly those expressions let
+    -- them run without touching it: 20.7 s -> under 1 s (2026-10-27). SQLite
+    -- skips an index for an expression that is GROUPed BY, so such queries
+    -- select into a MATERIALIZED CTE first (see readProfileStats).
+    -- Each expression is json_valid-guarded: unguarded, the index would make
+    -- saving a message with malformed metadata fail. Queries must match exactly.
+    DROP INDEX IF EXISTS idx_conversation_messages_profile_values;
+    DROP INDEX IF EXISTS idx_conversation_messages_profile_values_safe;
+    CREATE INDEX IF NOT EXISTS idx_conversation_messages_profile_values_v2
+      ON conversation_messages(
+        conversation_id, role, status, created_at, id, client_message_id,
+        json_extract(CASE WHEN json_valid(metadata) THEN metadata END, '$.externalAgentRun.kind'),
+        json_extract(CASE WHEN json_valid(metadata) THEN metadata END, '$.externalAgentRun.runId'),
+        json_extract(CASE WHEN json_valid(metadata) THEN metadata END, '$.externalAgentOutcome'),
+        json_extract(CASE WHEN json_valid(metadata) THEN metadata END, '$.model'),
+        json_extract(CASE WHEN json_valid(metadata) THEN metadata END, '$.error'),
+        json_extract(CASE WHEN json_valid(metadata) THEN metadata END, '$.migrated'),
+        json_extract(CASE WHEN json_valid(metadata) THEN metadata END, '$.responseDurationMs'),
+        token_usage, surface,
+        -- History rows (summarizeConversationMessages) read these too.
+        updated_at, octet_length(content)
+      );
 
     CREATE TABLE IF NOT EXISTS conversation_memory_state (
       conversation_id          INTEGER PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
@@ -181,6 +204,7 @@ export function ensureConversationSchema(database: Database.Database): void {
   // pinning deliberately does not touch updated_at. A highlight is a marker on
   // the row rather than a place in the list, and is not activity either.
   ensureColumn(database, "conversations", "pinned_at", "pinned_at TEXT");
+  ensureColumn(database, "conversations", "archived_at", "archived_at TEXT");
   ensureColumn(database, "conversations", "highlight", "highlight TEXT");
   // Display provenance for companions that use the shared terminal runtime.
   ensureColumn(database, "conversations", "origin_label", "origin_label TEXT");
@@ -218,19 +242,16 @@ export function ensureConversationSchema(database: Database.Database): void {
   // server-created surface from their runtime/message history once, then keep
   // it immutable at the request layer. This closes the former privilege
   // escalation where a Garden request could relabel its runtime as Terminal.
-  database.exec(`
-    UPDATE conversations
-    SET surface = COALESCE(
-      (SELECT ors.surface FROM hermes_runtime_sessions ors
-       WHERE ors.conversation_id = conversations.id
-       ORDER BY ors.updated_at DESC, ors.id DESC LIMIT 1),
-      (SELECT cm.surface FROM conversation_messages cm
-       WHERE cm.conversation_id = conversations.id
-       ORDER BY cm.order_index ASC LIMIT 1),
-      surface
-    );
-  `);
-
+  // Every worker runs this on start; touching only rows whose surface would
+  // change keeps it from rewriting every conversation under the write lock.
+  // An UPDATE holds the write lock while it evaluates every row, so ask first.
+  if (database.prepare(`SELECT 1 FROM conversations WHERE surface IS NOT ${RECOVERED_SURFACE_SQL} LIMIT 1`).get()) {
+    database.exec(`
+      UPDATE conversations
+      SET surface = ${RECOVERED_SURFACE_SQL}
+      WHERE surface IS NOT ${RECOVERED_SURFACE_SQL};
+    `);
+  }
   database.exec(`
     UPDATE hermes_runtime_sessions
     SET allowed_garden_ids = '[' || cluster_id || ']'
@@ -261,6 +282,16 @@ export function ensureConversationSchema(database: Database.Database): void {
   ensureChatNotificationSchema(database);
   ensureLearnNotificationSchema(database);
 }
+
+const RECOVERED_SURFACE_SQL = `COALESCE(
+      (SELECT ors.surface FROM hermes_runtime_sessions ors
+       WHERE ors.conversation_id = conversations.id
+       ORDER BY ors.updated_at DESC, ors.id DESC LIMIT 1),
+      (SELECT cm.surface FROM conversation_messages cm
+       WHERE cm.conversation_id = conversations.id
+       ORDER BY cm.order_index ASC LIMIT 1),
+      surface
+    )`;
 
 function ensureColumn(
   database: Database.Database,
@@ -411,8 +442,11 @@ function backfillLegacyConversations(database: Database.Database): void {
       // Old data can contain more than one runtime for a chat. The most recent
       // one wins; the others remain as audit/history rows without ownership.
       if (!claimed.has(conversationId)) {
-        database.prepare("UPDATE hermes_runtime_sessions SET conversation_id = ? WHERE id = ?")
-          .run(conversationId, runtime.id);
+        // Even an UPDATE that matches nothing takes the write lock; skip it.
+        if (runtime.conversation_id !== conversationId) {
+          database.prepare("UPDATE hermes_runtime_sessions SET conversation_id = ? WHERE id = ?")
+            .run(conversationId, runtime.id);
+        }
         claimed.add(conversationId);
       } else if (runtime.conversation_id === conversationId) {
         database.prepare("UPDATE hermes_runtime_sessions SET conversation_id = NULL WHERE id = ?")
@@ -421,7 +455,17 @@ function backfillLegacyConversations(database: Database.Database): void {
     }
   });
 
-  migrate.immediate();
+  // Every worker start runs this, and once migrated it only reads, yet an
+  // IMMEDIATE transaction held the write lock for ~0.5 s each time: the
+  // dashboard's writes waited synchronously behind it. Deferred takes the lock
+  // only at the first write; if the snapshot is stale by then, SQLite refuses
+  // the upgrade and the whole pass reruns holding the lock from the start.
+  try {
+    migrate.deferred();
+  } catch (error) {
+    if (!/^SQLITE_BUSY/.test((error as { code?: string }).code ?? "")) throw error;
+    migrate.immediate();
+  }
 }
 
 function copyLegacyMessages(
@@ -498,15 +542,26 @@ function copyLegacyMessages(
     if (result.changes > 0) nextOrder += 1;
   }
 
-  database.prepare(`
-    UPDATE conversations
-    SET next_order_index = MAX(next_order_index, ?)
-    WHERE id = ?
-  `).run(nextOrder, conversationId);
-  database.prepare(`
-    INSERT OR IGNORE INTO conversation_memory_state(conversation_id)
-    VALUES (?)
-  `).run(conversationId);
+  // Read first: these run for every legacy chat on every worker start, and
+  // even a statement that changes nothing takes the write lock.
+  const current = database.prepare(`
+    SELECT c.next_order_index AS nextOrderIndex,
+           EXISTS (SELECT 1 FROM conversation_memory_state s WHERE s.conversation_id = c.id) AS hasMemoryState
+    FROM conversations c WHERE c.id = ?
+  `).get(conversationId) as { nextOrderIndex: number; hasMemoryState: number } | undefined;
+  if (!current || current.nextOrderIndex < nextOrder) {
+    database.prepare(`
+      UPDATE conversations
+      SET next_order_index = MAX(next_order_index, ?)
+      WHERE id = ?
+    `).run(nextOrder, conversationId);
+  }
+  if (!current?.hasMemoryState) {
+    database.prepare(`
+      INSERT OR IGNORE INTO conversation_memory_state(conversation_id)
+      VALUES (?)
+    `).run(conversationId);
+  }
 }
 
 function legacyStatus(message: Record<string, unknown>): "complete" | "failed" | "aborted" {

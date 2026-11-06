@@ -296,12 +296,32 @@ test("a fresh probe worker returns a fenced import result and exits", async (t) 
   );
 });
 
+test("the probe accepts Runtime's extended Windows paths", { skip: process.platform !== "win32" }, async (t) => {
+  const current = fixture(t, "probe");
+  if (!current) return;
+  const run = await runWorker({
+    ...current,
+    clone: path.toNamespacedPath(current.clone),
+    python: path.toNamespacedPath(current.python),
+    homeRoot: path.toNamespacedPath(current.homeRoot),
+    script: path.toNamespacedPath(current.script),
+  }, probeWorker);
+  assert.equal(run.exit.code, 0, run.stderr);
+  const result = JSON.parse(fs.readFileSync(path.join(current.jobRoot, "result.json"), "utf8"));
+  assert.equal(result.result.packageInstalled, true, result.result.detail);
+  assert.equal(result.result.mcpInstalled, true);
+});
+
 test("a fresh index worker atomically publishes progress and a durable manifest", async (t) => {
   const current = fixture(t, "index");
   if (!current) return;
   const run = await runWorker(current, indexWorker);
   assert.deepEqual(run.exit, { code: 0, signal: null }, run.stderr);
-  assert.deepEqual(run.events.map((event) => event.type), ["ready", "checkpoint", "complete"]);
+  assert.deepEqual(run.events.filter((event) => event.type !== "progress").map((event) => event.type), ["ready", "checkpoint", "complete"]);
+  const progressEvents = run.events.filter((event) => event.type === "progress");
+  assert.deepEqual(progressEvents.map((event) => event.current), [0, 45, 100]);
+  assert.ok(progressEvents.every((event) => event.stage === "processing" && event.total === 100));
+  assert.equal(run.events.at(-1).type, "complete", "no progress may follow terminal completion");
   const checkpoint = JSON.parse(
     fs.readFileSync(path.join(current.jobRoot, "checkpoint.json"), "utf8"),
   );
@@ -332,11 +352,15 @@ test("index cancellation is acknowledged and leaves no result or manifest", asyn
   if (!current) return;
   const run = await runWorker(current, indexWorker, { cancelAfterChildStarts: true });
   assert.deepEqual(run.exit, { code: 0, signal: null }, run.stderr);
-  assert.deepEqual(run.events.map((event) => event.type), [
+  assert.deepEqual(run.events.filter((event) => event.type !== "progress").map((event) => event.type), [
     "ready",
     "checkpoint",
     "cancellation-acknowledged",
   ]);
+  const progressEvents = run.events.filter((event) => event.type === "progress");
+  assert.equal(progressEvents[0]?.current, 0);
+  assert.ok(progressEvents.every((event) => event.current < 100 && event.total === 100));
+  assert.equal(run.events.at(-1).type, "cancellation-acknowledged", "cancellation fences all later progress and completion");
   assert.equal(fs.existsSync(path.join(current.jobRoot, "result.json")), false);
   assert.equal(
     fs.existsSync(

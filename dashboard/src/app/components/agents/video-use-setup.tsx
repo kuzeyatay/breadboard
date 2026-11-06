@@ -179,10 +179,7 @@ export default function VideoUseSetup() {
       </div>
 
       <p className="neu-surface-subtle rounded-xl px-3 py-2 text-[11px] leading-5 text-[var(--ink-muted)]">
-        <span className="font-medium text-[var(--ink-heading)]">Edits</span> a video you already
-        have. Attach one in chat and say what to change, or open any video artifact and use its
-        studio. Every pass replays the whole edit against the untouched original, so revisions never
-        stack up as re-encodes and any earlier version can be restored.
+        <span className="font-medium text-[var(--ink-heading)]">Edits</span> a video you attach in chat or open in the editor. Describe your changes; the original and earlier versions stay available.
       </p>
 
       {health?.root ? (
@@ -201,8 +198,8 @@ export default function VideoUseSetup() {
         </h4>
         <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
           {health?.scriberr.ready
-            ? "Edits can cut on what was said — filler words, false starts, a specific sentence — and burn in captions. Scriberr transcribes on this machine, so nothing is uploaded and no key is needed. Transcripts are made once per video and cached."
-            : "Speech is transcribed by Scriberr, the local service Breadboard already runs for garden video transcription. While it is down the editor plans from the silence map: trims, pacing, framing, speed and look all work; filler-word cuts and burned captions do not."}
+            ? "Cut filler words or specific sentences and add captions. Transcription runs on this device; no upload or API key is needed."
+            : "Transcription is unavailable. Trimming, framing, speed, and visual edits still work; speech-based cuts and captions need transcription."}
         </p>
         {health?.scriberr.reason && !health.scriberr.ready ? (
           <p className="text-[11px] leading-5 text-[#9a4e43] dark:text-[#efb4aa]">
@@ -232,8 +229,8 @@ export default function VideoUseSetup() {
         </h4>
         <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
           {health?.subtitles.available
-            ? "subsai stands in when Scriberr is down: Whisper runs in its own venv here, so speech-aware cuts keep working. The first run of each model size downloads its weights."
-            : "subsai runs Whisper in a venv of its own, as a stand-in for the times Scriberr is not up. It costs around a gigabyte and several minutes to build, so it is built only when you ask."}
+            ? "Keeps transcription available if the main service stops. Each model downloads on first use."
+            : "Optional backup for transcription. Setup takes several minutes and about 1 GB."}
         </p>
         {health?.subtitles.cloned ? (
           <div className="flex flex-wrap gap-2">
@@ -267,7 +264,7 @@ export default function VideoUseSetup() {
           </div>
         ) : (
           <p className="text-[11px] leading-5 text-[#9a4e43] dark:text-[#efb4aa]">
-            The subsai clone was not found next to the dashboard.
+            The transcription files are missing from this installation.
           </p>
         )}
         {health?.subtitles.reason && !health.subtitles.available ? (

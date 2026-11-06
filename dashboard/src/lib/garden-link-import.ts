@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import {
   createChatmockClient,
   extractDocumentKnowledge,
@@ -12,10 +15,11 @@ import {
   readGardenLinks,
 } from "./garden-links.ts";
 import { selectedModelForUser } from "./selected-model.ts";
-import { convertUrlToMarkdown, contentHashForMarkdown, normalizeSourceUrl } from "./url-to-markdown.ts";
-import { convertWebsiteToMarkdown, websiteCrawlRoot, websiteSnapshotMarkdown, type WebsiteSnapshot } from "./website-to-markdown.ts";
-import { captureUrlSourceImages } from "./url-source-images.ts";
+import { convertUrlToMarkdown, contentHashForMarkdown, normalizeSourceUrl, type UrlToMarkdownResult } from "./url-to-markdown.ts";
+import { appendSourceFigures, convertWebsiteToMarkdown, websiteCrawlRoot, websiteSnapshotMarkdown, type WebsiteSnapshot } from "./website-to-markdown.ts";
+import { captureUrlSourceImages, saveUrlImagesAsPageSnapshots, withSnapshotSourceImages } from "./url-source-images.ts";
 import { findExistingUrlSource } from "./url-source-store.ts";
+import { enrichGardenSourceVisuals } from "./garden-visual-enrichment.ts";
 
 function throwIfCanceled(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
@@ -27,6 +31,15 @@ function throwIfCanceled(signal?: AbortSignal): void {
 function titleFromInput(value: unknown, fallback: string): string {
   const title = typeof value === "string" ? value.trim() : "";
   return (title || fallback).slice(0, 180);
+}
+
+/** Whatever the reader returned, plus the page figures it dropped. */
+async function readPageWithFigures(url: string, signal?: AbortSignal): Promise<UrlToMarkdownResult> {
+  const converted = await convertUrlToMarkdown({ url, signal });
+  const markdown = await appendSourceFigures(converted.markdown, converted.originalUrl, { signal });
+  return markdown === converted.markdown
+    ? converted
+    : { ...converted, markdown, contentHash: contentHashForMarkdown(converted.originalUrl, markdown) };
 }
 
 function fallbackTitleForUrl(url: string): string {
@@ -55,7 +68,7 @@ export async function importGardenLink(input: {
   model?: string;
   /** Aborted when the caller cancels; nothing is published after that. */
   signal?: AbortSignal;
-  /** Website links include all discoverable same-site pages by default. */
+  /** Import one page by default; wider crawls must be selected explicitly. */
   scope?: "page" | "site" | "section";
   onProgress?: (message: string) => void;
   /** A previously verified crawl, used by resumable local imports. */
@@ -66,7 +79,7 @@ export async function importGardenLink(input: {
   // default here sent imports to a model the user had not chosen.
   const model = input.model?.trim() || selectedModelForUser(userId);
   const body = input;
-  const scope = input.scope ?? "site";
+  const scope = input.scope ?? "page";
   const website = scope !== "page"
     ? input.websiteSnapshot ?? await convertWebsiteToMarkdown({ url: body.url, scope, signal, onProgress: input.onProgress })
     : undefined;
@@ -81,7 +94,7 @@ export async function importGardenLink(input: {
     title: `${body.title?.trim() || website.pages[0].title || new URL(website.rootUrl).hostname} — ${scope === "section" ? "Full Section" : "Full Website"}`,
     markdown: websiteMarkdown,
     contentHash: contentHashForMarkdown(website.rootUrl, websiteMarkdown),
-  } : await convertUrlToMarkdown({ url: typeof body.url === "string" ? body.url : "", signal });
+  } : await readPageWithFigures(typeof body.url === "string" ? body.url : "", signal);
   throwIfCanceled(signal);
   const sourceTitle = titleFromInput(
     website ? converted.title : body.title,
@@ -209,6 +222,25 @@ export async function importGardenLink(input: {
     },
   });
 
+  // Learn registers source figures only from page snapshots, so give the
+  // captured images the same snapshot form video frames get.
+  const snapshotUrls = await saveUrlImagesAsPageSnapshots({
+    contentPath,
+    gardenSlug: cluster.slug,
+    sourceSlug: saved.sourceSlug,
+    images: captured.images,
+  });
+  if (snapshotUrls.length > 0) {
+    const sourceNotePath = path.join(contentPath, cluster.slug, saved.sourceRelPath);
+    fs.writeFileSync(
+      sourceNotePath,
+      withSnapshotSourceImages(fs.readFileSync(sourceNotePath, "utf8"), snapshotUrls),
+    );
+  }
+
+  const visualDescriptions = await enrichGardenSourceVisuals({ contentPath, gardenSlug: cluster.slug,
+    sourceRelPath: saved.sourceRelPath, client, model, signal, onProgress: input.onProgress });
+
   const link = addGardenLink(contentPath, cluster.slug, {
     title: sourceTitle,
     url: converted.originalUrl,
@@ -231,6 +263,7 @@ export async function importGardenLink(input: {
     capturedImages: captured.images.length,
     referencedImages: captured.referencedImageCount,
     imageCaptureWarnings: captured.warningCount,
+    visualDescriptions,
     importScope: scope,
     pageCount: website?.pages.length ?? 1,
     links: readGardenLinks(contentPath, cluster.slug),

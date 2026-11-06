@@ -13,6 +13,8 @@ const temporaryRoot = fs.mkdtempSync(
 const stateDirectory = path.join(temporaryRoot, 'state');
 const gatewayRequests: http.IncomingMessage[] = [];
 const gatewayClosures: Array<Promise<void>> = [];
+const NATIVE_RUN_ID = `job_${'a'.repeat(64)}`;
+const RECOVERED_NATIVE_RUN_ID = `job_${'b'.repeat(64)}`;
 
 const gateway = http.createServer((request, response) => {
   gatewayRequests.push(request);
@@ -43,7 +45,7 @@ before(async () => {
 
 function fixture(overrides: Partial<Run> = {}): Run {
   return {
-    runId: 'fixture-run',
+    runId: NATIVE_RUN_ID,
     ownerUserId: 7,
     query: 'What changed?',
     userContext: 'private requester profile',
@@ -182,13 +184,13 @@ test('event history is bounded while sequence numbers remain monotonic', () => {
 test('restart recovery exposes prior events and honestly terminates interrupted work', async () => {
   fs.mkdirSync(stateDirectory, { recursive: true });
   const completed = fixture({
-    runId: 'completed-run',
+    runId: RECOVERED_NATIVE_RUN_ID,
     createdAt: new Date(Date.now() - 1_000).toISOString(),
     completedAt: new Date().toISOString(),
   });
   const { userContext: _completedContext, ...safeCompleted } = completed;
   fs.writeFileSync(
-    path.join(stateDirectory, 'completed-run.json'),
+    path.join(stateDirectory, `${RECOVERED_NATIVE_RUN_ID}.json`),
     JSON.stringify({ schemaVersion: 1, ...safeCompleted }),
   );
   const interrupted = fixture({
@@ -231,7 +233,7 @@ test('restart recovery exposes prior events and honestly terminates interrupted 
     assert.equal(body.data.lastSequence, 2);
 
     const completedResponse = await fetch(
-      `${service.baseUrl}/runs/completed-run?userId=7`,
+      `${service.baseUrl}/runs/${RECOVERED_NATIVE_RUN_ID}?userId=7`,
       authorized(),
     );
     assert.equal(completedResponse.status, 200);
@@ -272,7 +274,7 @@ test('restart recovery exposes prior events and honestly terminates interrupted 
   }
 });
 
-test('abort immediately terminalizes a run and cancels its in-flight model request', async () => {
+test('native run identity survives HTTP creation, ownership checks, event replay and cancellation', async () => {
   const service = await listenApp();
   try {
     const createResponse = await fetch(
@@ -280,7 +282,7 @@ test('abort immediately terminalizes a run and cancels its in-flight model reque
       authorized({
         method: 'POST',
         body: JSON.stringify({
-          runId: 'cancelled-run',
+          runId: NATIVE_RUN_ID,
           ownerUserId: 7,
           query: 'Research cancellation behavior',
           breadth: 1,
@@ -290,6 +292,12 @@ test('abort immediately terminalizes a run and cancels its in-flight model reque
       }),
     );
     assert.equal(createResponse.status, 200);
+    const created = (await createResponse.json()) as { data: { runId: string } };
+    assert.equal(created.data.runId, NATIVE_RUN_ID, 'the supplied ID must not become a UUID');
+    const otherOwner = await fetch(`${service.baseUrl}/runs/${NATIVE_RUN_ID}?userId=8`, authorized());
+    assert.equal(otherOwner.status, 404);
+    const summary = await fetch(`${service.baseUrl}/runs/${NATIVE_RUN_ID}?userId=7`, authorized());
+    assert.equal((await summary.json()).data.runId, NATIVE_RUN_ID);
 
     const requestDeadline = Date.now() + 5_000;
     while (gatewayRequests.length === 0 && Date.now() < requestDeadline) {
@@ -302,7 +310,7 @@ test('abort immediately terminalizes a run and cancels its in-flight model reque
     );
 
     const abortResponse = await fetch(
-      `${service.baseUrl}/runs/cancelled-run/abort`,
+      `${service.baseUrl}/runs/${NATIVE_RUN_ID}/abort`,
       authorized({ method: 'POST', body: JSON.stringify({ userId: 7 }) }),
     );
     assert.equal(abortResponse.status, 200);
@@ -322,7 +330,7 @@ test('abort immediately terminalizes a run and cancels its in-flight model reque
     ]);
 
     const eventsResponse = await fetch(
-      `${service.baseUrl}/runs/cancelled-run/events?userId=7&since=0`,
+      `${service.baseUrl}/runs/${NATIVE_RUN_ID}/events?userId=7&since=0`,
       authorized(),
     );
     const eventsBody = (await eventsResponse.json()) as { data: RunEvent[] };
@@ -337,4 +345,34 @@ test('abort immediately terminalizes a run and cancels its in-flight model reque
   } finally {
     await service.close();
   }
+});
+
+test('snapshot identifiers preserve the native bound and reject unsafe values', () => {
+  const store = new api.DurableRunStore(path.join(temporaryRoot, 'identifier-contract'));
+  for (const runId of [NATIVE_RUN_ID, 'a'.repeat(128), 'legacy-short-id']) {
+    const run = fixture({ runId });
+    store.persist(run);
+    assert.equal(api.restoreRunSnapshot({ schemaVersion: 1, ...run })?.runId, runId);
+  }
+  assert.equal(store.load().length, 3);
+  for (const runId of ['a'.repeat(129), '../outside', 'path/name', 'path\\name', 'bad\u0000id', '']) {
+    assert.throws(() => store.persist(fixture({ runId })), /invalid_run_id/);
+    assert.equal(api.restoreRunSnapshot({ schemaVersion: 1, ...fixture({ runId }) }), null);
+  }
+});
+
+test('invalid supplied IDs are rejected before uncorrelated research begins', async () => {
+  const service = await listenApp();
+  const requestsBefore = gatewayRequests.length;
+  try {
+    for (const runId of ['a'.repeat(129), '../outside', '', null, 1]) {
+      const response = await fetch(`${service.baseUrl}/runs`, authorized({
+        method: 'POST',
+        body: JSON.stringify({ runId, ownerUserId: 7, query: 'Invalid identity must not launch research', breadth: 1, depth: 1, output: 'answer' }),
+      }));
+      assert.equal(response.status, 400);
+      assert.equal((await response.json()).error, 'invalid_run_id');
+    }
+    assert.equal(gatewayRequests.length, requestsBefore);
+  } finally { await service.close(); }
 });

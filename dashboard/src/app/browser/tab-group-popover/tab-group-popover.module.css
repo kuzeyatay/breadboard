@@ -4,6 +4,8 @@
 .content h2 { font-size: 13px; font-weight: 600; margin: 0; }
 .content header button { width: 24px; height: 24px; font-size: 20px; }
 .name { display: flex; flex-direction: column; gap: 5px; }
+.parent { display: flex; flex-direction: column; gap: 5px; padding: 8px; }
+.parent select { width: 100%; min-width: 0; padding: 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: var(--paper-strong); }
 .name input { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper-strong); color: var(--ink); outline: none; }
 .name input:focus { border-color: var(--group-color); box-shadow: 0 0 0 1px var(--group-color); }
 .colors { display: flex; justify-content: space-between; padding: 16px 2px; }

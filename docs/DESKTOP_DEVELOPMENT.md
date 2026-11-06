@@ -58,6 +58,20 @@ reserve during a rebuild, lean mode reuses the last complete compatible build.
 If no compatible build exists, it fails with an actionable error and does not
 fall back to a hot compiler.
 
+### Starting without internet
+
+After the dependencies and native runtimes have been prepared once, the same
+`npm run desktop:dev:lean` command works offline. Dashboard fonts (including the
+Pomodoro serif) are bundled in the checkout, so a dashboard rebuild does not
+need Google Fonts. Lean startup builds the native supervisor with Cargo's
+locked, offline dependency cache.
+
+A fresh checkout still needs the prerequisite installs and runtime preparation
+while online. If Cargo reports a missing cached dependency, run
+`npm --prefix desktop run prepare:native-runtime` while connected and retry.
+Cloud models, websites, and other online features still require a connection;
+they are not prerequisites for opening the local application.
+
 ## Explicit dashboard hot mode
 
 Use the hot Next compiler only while actively editing dashboard UI or API code:

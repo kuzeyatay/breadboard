@@ -34,7 +34,14 @@ export async function speakVoiceGreeting(text: string, signal: AbortSignal, voic
   if (signal.aborted) return;
   const timeout = new AbortController();
   const greetingSignal = AbortSignal.any([signal, timeout.signal]);
-  const timer = setTimeout(() => timeout.abort(new Error('The voice greeting timed out.')), 25_000);
+  const expired = () => timeout.abort(new Error('The voice greeting timed out.'));
+  let timer = setTimeout(expired, 25_000);
+  const playbackReady = () => {
+    // Audio arriving near the provider deadline must not be cut off mid-word.
+    // Keep playback bounded independently in case the media element stalls.
+    clearTimeout(timer);
+    timer = setTimeout(expired, 10_000);
+  };
   let aborted = () => {};
   try {
     // A stalled provider or media element must not keep the microphone waiting
@@ -42,7 +49,7 @@ export async function speakVoiceGreeting(text: string, signal: AbortSignal, voic
     await new Promise<void>((resolve, reject) => {
       aborted = () => reject(greetingSignal.reason);
       greetingSignal.addEventListener('abort', aborted, { once: true });
-      void playVoiceGreeting(text, greetingSignal, voice).then(resolve, reject);
+      void playVoiceGreeting(text, greetingSignal, voice, playbackReady).then(resolve, reject);
     });
   } finally {
     clearTimeout(timer);
@@ -50,7 +57,7 @@ export async function speakVoiceGreeting(text: string, signal: AbortSignal, voic
   }
 }
 
-async function playVoiceGreeting(text: string, signal: AbortSignal, voice?: Pick<SubscriptionVoice, 'speak' | 'stopSpeaking'>): Promise<void> {
+async function playVoiceGreeting(text: string, signal: AbortSignal, voice: Pick<SubscriptionVoice, 'speak' | 'stopSpeaking'> | undefined, playbackReady: () => void): Promise<void> {
   if (voice) {
     const stop = () => voice.stopSpeaking();
     signal.addEventListener('abort', stop, { once: true });
@@ -68,6 +75,7 @@ async function playVoiceGreeting(text: string, signal: AbortSignal, voice?: Pick
   }
   const blob = await response.blob();
   if (signal.aborted) return;
+  playbackReady();
   await new Promise<void>((resolve, reject) => {
     const finish = (error?: Error) => { signal.removeEventListener('abort', stop); if (error) reject(error); else resolve(); };
     const stop = () => { stopSpeechPlayback(); finish(); };

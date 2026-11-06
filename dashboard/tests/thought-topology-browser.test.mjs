@@ -664,14 +664,21 @@ test(
       "connection explanations in the drawer render formulas",
     );
 
-    // The narrow canvas uses a bottom drawer that covers this edge's midpoint.
-    // Hover its exposed segment after the drawer has finished opening.
+    // Hover an exposed segment after the drawer opens. A fixed fraction can
+    // land inside a node's hit target in the stationary 3D projection.
     const connectionSource = await point("nodes", "page:note-a");
     const connectionTarget = await point("nodes", "page:note-b");
-    const rightClickedConnection = {
-      x: connectionSource.x + (connectionTarget.x - connectionSource.x) * 0.8,
-      y: connectionSource.y + (connectionTarget.y - connectionSource.y) * 0.8,
-    };
+    const rightClickedConnection = await canvas.evaluate((canvas, { source, target }) => {
+      const bounds = canvas.getBoundingClientRect();
+      const nodes = Object.values(window.__breadboardThoughtTopologyDebug.nodes);
+      for (const fraction of [0.5, 0.35, 0.65, 0.2, 0.8]) {
+        const point = { x: source.x + (target.x - source.x) * fraction, y: source.y + (target.y - source.y) * fraction };
+        if (nodes.some(node => Math.hypot(node.x - point.x, node.y - point.y) < 16)) continue;
+        if (document.elementFromPoint(bounds.x + point.x, bounds.y + point.y) === canvas) return point;
+      }
+      return null;
+    }, { source: connectionSource, target: connectionTarget });
+    assert.ok(rightClickedConnection, "the highlighted connection has an exposed hover target");
     await page.mouse.move(
       box.x + rightClickedConnection.x,
       box.y + rightClickedConnection.y,
@@ -746,7 +753,7 @@ test(
 
     // The drawer is derived from the live render plan. Hiding a folder removes
     // its nodes and cross-folder connections from the next inspection.
-    await frame.locator(".graph-outer .thought-topology-filter-toggle").click();
+    await frame.getByRole("button", { name: "Filters", exact: true }).click();
     await frame
       .locator(".thought-topology-filter-row", {
         hasText: "Module V Waves And Oscilations",
@@ -786,7 +793,7 @@ test(
         Boolean(
           JSON.parse(
             Object.entries(localStorage).find(([key]) =>
-              key.startsWith("thought-topology-home-positions:"),
+              key.startsWith("thought-topology-3d-home-positions:"),
             )?.[1] ?? "{}",
           )["page:note-a"],
         ),

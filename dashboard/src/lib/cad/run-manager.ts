@@ -42,7 +42,7 @@ import {
 } from "./project-store.ts";
 import { cadServiceConfigured, ensureCadServiceReady } from "./service.ts";
 import type { ParametricCADArtifact } from "./types.ts";
-import type { ParametricCadRequest } from "./identity.ts";
+import { parseParametricCadRequest, requestsNewCadProject, type ParametricCadRequest } from "./identity.ts";
 import { conversationContextTranscript } from "../conversations/agent-context.ts";
 
 export { MAX_BUILD_ATTEMPTS };
@@ -259,7 +259,13 @@ async function drive(run: RunState, input: StartCadRunInput): Promise<void> {
   };
 
   // The design already in this chat, unless the user asked for a fresh one.
-  const previousArtifact = input.parsed.fresh
+  // Re-evaluate at the worker boundary too: queued payloads and older dashboard
+  // bundles may have parsed only the --fresh flag.
+  // Older dashboard bundles flattened whitespace in parsed.brief, destroying
+  // Python reference-source indentation. The sealed raw brief is lossless.
+  const parsedBrief = parseParametricCadRequest(input.brief, input.parsed).brief;
+  const fresh = input.parsed.fresh || requestsNewCadProject(parsedBrief);
+  const previousArtifact = fresh
     ? null
     : latestCadArtifact({
         userId: input.userId,
@@ -267,7 +273,7 @@ async function drive(run: RunState, input: StartCadRunInput): Promise<void> {
       });
   const previousDesign = previousArtifact ? readStoredCadDesign(previousArtifact) : null;
   const existingProject =
-    !input.parsed.fresh
+    !fresh
       ? previousDesign
         ? latestCadProjectForConversation({
             userId: input.userId,
@@ -285,11 +291,11 @@ async function drive(run: RunState, input: StartCadRunInput): Promise<void> {
     userId: input.userId,
     conversationId: conversation.id,
     clusterId: conversation.surface === "garden_chat" ? conversation.default_garden_id : null,
-    brief: input.parsed.fresh
-      ? `${input.parsed.brief}
+    brief: fresh
+      ? `${parsedBrief}
 
 Start a new project; do not modify the design already in this conversation.`
-      : input.parsed.brief,
+      : parsedBrief,
     // The conversation is already resolved here, so the chat is read from it
     // directly. It stays out of `brief`, which the safety assessment reads.
     conversationContext: conversationContextTranscript(conversation, {
@@ -305,7 +311,7 @@ Start a new project; do not modify the design already in this conversation.`
     ...(input.parsed.printerBed ? { printerBed: input.parsed.printerBed } : {}),
     ...(input.parsed.units ? { units: input.parsed.units } : {}),
     ...(existingProject ? { existingProject } : {}),
-    ...(existingProject && previousDesign
+    ...(existingProject && previousDesign?.projectId === existingProject.id
       ? {
           existingComponents: previousDesign.designSpec.components.map((component) => ({
             name: component.name,
@@ -387,12 +393,13 @@ Start a new project; do not modify the design already in this conversation.`
       const artifact = await publishCadDesign({
         context,
         manifest,
-        previousArtifactId: existingProject ? (previousArtifact?.id ?? null) : null,
+        previousArtifactId: existingProject && previousDesign?.projectId === manifest.projectId
+          ? (previousArtifact?.id ?? null) : null,
       });
       artifactId = artifact?.id ?? null;
       artifactVersion = artifact?.current_version ?? 0;
       if (artifact) {
-        emit(run, previousArtifact ? "cad.artifact.updated" : "cad.artifact.created", {
+        emit(run, artifact.id === previousArtifact?.id ? "cad.artifact.updated" : "cad.artifact.created", {
           artifactId: artifact.id,
           title: artifact.title,
           version: artifact.current_version,

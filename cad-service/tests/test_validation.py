@@ -169,6 +169,22 @@ class ValidationTest(unittest.TestCase):
         issues = run([solid()], {"printerBed": {"x": 220, "y": 220, "z": 5}})
         self.assertIn("exceeds_printer_bed", codes(issues, "error"))
 
+    def test_separate_print_bodies_are_not_rejected_for_the_assembled_footprint(self):
+        parts = [solid("left"), solid("right", bounds=box(origin=(250, 0, 0)))]
+        issues = run(parts, {"printerBed": {"x": 220, "y": 220, "z": 250}})
+        self.assertTrue(passed(issues))
+        self.assertIn("assembly_layout_exceeds_printer_bed", codes(issues, "warning"))
+        self.assertNotIn("exceeds_printer_bed", codes(issues, "error"))
+
+    def test_an_oversized_individual_body_still_fails_in_an_assembly(self):
+        parts = [solid("large", bounds=box(x=230)), solid("small", bounds=box(origin=(250, 0, 0)))]
+        issues = run(parts, {"printerBed": {"x": 220, "y": 220, "z": 250}})
+        errors = [issue for issue in issues if issue.code == "exceeds_printer_bed"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].actual, 230)
+        self.assertIn("large", errors[0].message)
+        self.assertFalse(passed(issues))
+
     def test_mesh_defects_are_errors(self):
         issues = run([solid()], tessellation=mesh(openEdgeCount=6))
         self.assertIn("open_mesh_edges", codes(issues, "error"))

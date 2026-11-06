@@ -52,6 +52,17 @@ const playlist = (id, owner, collaborative = false) => ({
 const track = { id: ownedId, uri: `spotify:track:${ownedId}`, name: "Song",
   artists: [{ name: "Artist" }], album: { name: "Album", images: [] }, duration_ms: 120000 };
 
+test("search retains validated album context for native Spotify continuation",async t=>{
+  const albumUri=`spotify:album:${followedId}`;
+  t.mock.method(globalThis,'fetch',async()=>Response.json({tracks:{items:[
+    {...track,album:{...track.album,uri:albumUri}},
+    {...track,id:followedId,uri:`spotify:track:${followedId}`,album:{...track.album,uri:'spotify:playlist:wrongcontext'}},
+  ]}}));
+  const result=await spotify.searchSpotifyTracks(601,'Song');
+  assert.equal(result[0].albumUri,albumUri);
+  assert.equal(result[1].albumUri,undefined);
+});
+
 test("catalog search validates artists, tolerates missing portraits, and preserves song-only searches", async t => {
   const requests = [];
   const artist = {id:ownedId,uri:`spotify:artist:${ownedId}`,name:"  Artist  ",images:[{url:"https://i.scdn.co/image/portrait"}]};
@@ -333,4 +344,39 @@ test("concurrent player status reads share one provider request but playback com
   assert.equal(calls,2,"completed reads do not hide fresh playback state");
   await Promise.all([1,2].map(()=>spotify.spotifyApiRequest({...input,method:"POST",endpoint:"/v1/me/player/next"})));
   assert.equal(calls,4,"commands must never be coalesced");
+});
+
+test("player status retries a broken transport once and shares recovery across readers", async t => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    if (calls === 1) throw new TypeError("fetch failed");
+    return Response.json({is_playing:true, progress_ms:12000});
+  });
+  const input = {userId:804, method:"GET", endpoint:"/v1/me/player"};
+  const [one, two] = await Promise.all([spotify.spotifyApiRequest(input), spotify.spotifyApiRequest(input)]);
+  assert.deepEqual(one, two);
+  assert.equal(one.progress_ms, 12000);
+  assert.equal(calls, 2, "all readers share the single recovery request");
+});
+
+test("player status recovery is bounded and never repeats an ambiguous playback command", async t => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => { calls++; throw new TypeError("fetch failed"); });
+  await assert.rejects(spotify.spotifyApiRequest({userId:805, method:"GET", endpoint:"/v1/me/player"}), {code:"provider_unavailable"});
+  assert.equal(calls, 2);
+  await assert.rejects(spotify.spotifyApiRequest({userId:805, method:"POST", endpoint:"/v1/me/player/next"}), {code:"provider_unavailable"});
+  assert.equal(calls, 3, "next may already have changed audio, so must not be replayed");
+});
+
+test("a dropped status response body gets the same bounded recovery as a failed connection", async t => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return calls === 1 ? new Response(new ReadableStream({start(controller) {
+      controller.error(new TypeError("socket closed"));
+    }})) : new Response(null, {status:204});
+  });
+  assert.deepEqual(await spotify.spotifyApiRequest({userId:806, method:"GET", endpoint:"/v1/me/player"}), {});
+  assert.equal(calls, 2, "a confirmed empty player remains a successful empty response");
 });

@@ -65,6 +65,7 @@ function createHarness(
   fetchImpl?: typeof fetch,
   onLog?: (source: "stdout" | "stderr", line: string) => void,
   hostEnvironment?: NodeJS.ProcessEnv,
+  bulkRoot?: string,
 ): {
   readonly runtime: RuntimeProcess;
   readonly child: FakeRuntimeChild;
@@ -104,6 +105,7 @@ function createHarness(
         appRoot: path.resolve("runtime-process-test", "app"),
         runtimeRoot: path.resolve("runtime-process-test", "runtime"),
         dataRoot: path.resolve("runtime-process-test", "data"),
+        ...(bulkRoot ? {bulkRoot} : {}),
         configRoot: path.resolve("runtime-process-test", "config"),
       },
       startupTimeoutMs: 1_000,
@@ -179,6 +181,22 @@ test("launches only the fixed Runtime V2 executable and keeps handshake authorit
   const publicJson = JSON.stringify({ runtime: harness.runtime, snapshot });
   assert.doesNotMatch(publicJson, new RegExp(CONTROL_TOKEN));
   assert.doesNotMatch(publicJson, /43121/);
+});
+
+test("bulk authority is private bootstrap only and ambient storage overrides are discarded", async () => {
+  const selected = path.resolve("runtime-process-test", "bulk");
+  const harness = createHarness(undefined, undefined, {
+    SystemRoot: "C:\\Windows",
+    BREADBOARD_BULK_DATA_DIR: path.resolve("runtime-process-test", "untrusted-bulk"),
+  }, selected);
+  const started = harness.runtime.start();
+  sendReady(harness.child);
+  await started;
+  const bootstrap = JSON.parse(Buffer.concat(harness.bootstrapChunks).toString("utf8"));
+  assert.equal(bootstrap.bulkRoot, selected);
+  assert.equal(bootstrap.dataRoot, path.resolve("runtime-process-test", "data"));
+  assert.equal(harness.spawnCalls[0]?.options.env.BREADBOARD_BULK_DATA_DIR, undefined);
+  assert.throws(() => createHarness(undefined, undefined, undefined, "relative-bulk"), /absolute/u);
 });
 
 test("forwards the exact native-gated product vocabulary and no arbitrary environment", async () => {

@@ -51,7 +51,28 @@ test("an accepted page is reused from the staging garden only when its inputs st
       inputHash: "x", pageBody: "b", visualIds: [], visualizationOutcomes: [], acceptedAt: "t", jobId: "j",
     });
     assert.equal(readAcceptedPage(staging, inputs.pageRelPath, hash).pageBody, "Imagine four users...");
+    const file = path.join(staging, ACCEPTED_PAGES_RELATIVE_PATH);
+    const changed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    changed.pages[inputs.pageRelPath].pageBody += ' A later rewrite.';
+    fs.writeFileSync(file, JSON.stringify(changed));
+    assert.equal(readAcceptedPage(staging, inputs.pageRelPath, hash), null, 'changed accepted text must be reviewed again');
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }
+});
+
+test("an accepted lesson replays when only earlier lessons' prose changed", async () => {
+  // 2026-10-06: one rewritten lesson cascaded into rewriting every later one.
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { readAcceptedPage, writeAcceptedPage } = await import("../src/lib/learn-accepted-pages.ts");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "accepted-stable-"));
+  const base = { pageBody: "Body.", visualIds: [], visualizationOutcomes: [], acceptedAt: "t", jobId: "j" };
+  writeAcceptedPage(dir, "a.md", { ...base, inputHash: "exact-1", stableInputHash: "stable-1" });
+  assert.equal(readAcceptedPage(dir, "a.md", "exact-2", "stable-1")?.pageBody, "Body.");
+  assert.equal(readAcceptedPage(dir, "a.md", "exact-2", "stable-2"), null);
+  writeAcceptedPage(dir, "legacy.md", { ...base, inputHash: "exact-1" });
+  assert.equal(readAcceptedPage(dir, "legacy.md", "exact-9", "stable-9")?.pageBody, "Body.");
+  fs.rmSync(dir, { recursive: true, force: true });
 });

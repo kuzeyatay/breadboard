@@ -473,6 +473,7 @@ const registry = new Map<ArtifactRendererId, ArtifactRenderer>([
   ["pdf", pdfRenderer],
   ["html", htmlRenderer],
   ["code", codeRenderer],
+  ["spice-netlist", importOnlyRenderer("spice-netlist", "code", "text/x-spice; charset=utf-8", ".cir")],
   ["json", jsonRenderer],
   ["csv", csvRenderer],
   ["presentation-html", presentationHtmlRenderer],

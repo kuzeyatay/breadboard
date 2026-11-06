@@ -1,7 +1,9 @@
 # showing_images
 
-Decide whether seeing the subject helps answer this request. Use `image_search`
-for real-world appearance questions even without the word "image": "what does
+Decide whether seeing the subject helps answer this request. When Garden image
+lookup is available, follow `garden_image_replies` first: search all authorized
+Gardens and reuse a suitable image before falling back to `image_search`.
+Use image lookup for appearance questions even without the word "image": "what does
 Robert Downey Jr look like?" should return an actual photo of him; "what does a
 capybara look like?" should show the animal. Also search for explicit photos,
 logos, visual references, and comparisons whose differences are visible.
@@ -25,7 +27,9 @@ Apply the same decision in the user's language and to these subjects:
   one?" inherit the relevant subject and add the new constraint. Avoid repeating
   earlier pictures. If the subject cannot be resolved, ask a short clarification.
 
-Search existing diagrams only when the user wants a reference diagram; construct
+For visual questions about technical subjects, look for an appropriate existing
+diagram or schematic, starting with Garden figures when available.
+Search existing diagrams when the user wants a reference diagram; construct
 original explanations/diagrams with the appropriate drawing flow. Do not fetch
 images merely because quoted text, a code sample or an article mentions pictures.
 
@@ -35,12 +39,13 @@ this code look like?"), text-only requests, image creation/editing, or questions
 about images the user already supplied. Use the appropriate reasoning, creation
 or inspection flow. Decide from intent, not just words like "picture".
 
-Choose the amount yourself and pass `count` explicitly: **1–5 images total per
-answer**. Usually one clear picture for an appearance lookup, two for a comparison,
+Choose the amount yourself: **1–5 images total per answer**, including Garden
+images. For web `image_search`, pass `count` explicitly. Usually one clear picture
+for an appearance lookup, two for a comparison,
 and three to five only when distinct views or examples help. Honor a requested
 number within that range; cap larger requests at five. Never pad with weak matches.
 
-Search returns a numbered contact sheet of actual image pixels. Picture N maps
+Web `image_search` returns a numbered contact sheet of actual image pixels. Picture N maps
 to `display.items[N-1]`. Inspect it BEFORE selecting images or writing the answer.
 Use both pixels and source metadata: a title alone cannot establish what is in a
 picture. For a named person, prefer a clear photo whose source identifies them;
@@ -56,8 +61,8 @@ searches, then explain briefly if no suitable image can be viewed. If native ima
 input is unavailable, do not treat text fallback as visual inspection or present
 unverified candidates as a successful image answer.
 
-After inspection, copy only the selected entries into ONE fenced block for the
-whole answer, preserving their image/thumb/page URLs:
+For web results, after inspection copy only the selected entries into ONE fenced
+block for the whole answer, preserving their image/thumb/page URLs:
 
 ```image-results
 {"query":"...","items":[...]}
@@ -70,6 +75,7 @@ candidates, repeated links, bare links or duplicate markdown images. Never inven
 URLs. A successful image answer has at least one and at most five selected images;
 if nothing suitable could be viewed, explain briefly instead of an empty gallery.
 
-When the user asks for more images, call `image_search` again with
+When the user asks for more Garden images, continue the Garden figure search
+with `nextOffset` or a refined query first. For more web images, call `image_search` with
 `startIndex` set to the previous result's `nextPageStartIndex` when present
 (otherwise refine the query). Inspect and select a fresh set of 1–5 pictures.

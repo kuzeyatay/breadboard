@@ -12,7 +12,13 @@ import {
   scanClusterKnowledge,
   semanticTagsFromText,
   slugify,
+  type KnowledgeNode,
 } from "@/lib/knowledge";
+import {
+  isInternalConceptMetadata,
+  isLegacySubtopicRelPath,
+  LEARNING_PAGE_TYPES,
+} from "@/lib/learning-garden";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import {
   requireOwnedClusterFromSlug,
@@ -173,6 +179,46 @@ function overlapScore(left: Set<string>, right: Set<string>): number {
   return intersection / Math.max(left.size, right.size);
 }
 
+/** Saved answers may only link to or merge into readable content pages. */
+function isChatNoteTarget(node: KnowledgeNode): boolean {
+  const relPath = node.relPath.replace(/\\/g, "/").toLowerCase();
+  if (
+    node.draft?.toLowerCase() === "true" ||
+    node.internal?.toLowerCase() === "true" ||
+    isInternalConceptMetadata(
+      {
+        knowledge_type: node.type,
+        breadboardType: node.breadboardType,
+      },
+      node.relPath,
+    ) ||
+    isLegacySubtopicRelPath(node.relPath, node.type) ||
+    relPath
+      .split("/")
+      .some(
+        (part) =>
+          part.startsWith(".") ||
+          part === "internal" ||
+          part === "sources" ||
+          /^\d+\.\s*source-snapshots$/.test(part),
+      ) ||
+    /(?:^|\/)_index\.md$/.test(relPath)
+  )
+    return false;
+
+  if (LEARNING_PAGE_TYPES.has(node.type)) {
+    const generatedBy = node.generated_by || node.generatedBy;
+    return (
+      generatedBy === "learn_button" ||
+      generatedBy === "chatmock" ||
+      (generatedBy === "document_ingestion" && relPath.startsWith("concepts/"))
+    );
+  }
+  return ["user-note", "note", "generated-note", "knowledge-topic"].includes(
+    node.type,
+  );
+}
+
 function findRelatedNotes({
   contentPath,
   clusterSlug,
@@ -196,12 +242,7 @@ function findRelatedNotes({
   const requested = new Set(relatedTitles.map(slugify));
 
   return scanClusterKnowledge(contentPath, clusterSlug)
-    .nodes.filter(
-      (node) =>
-        !exclude.has(node.slug) &&
-        node.type !== "source-document" &&
-        node.type !== "cluster-index",
-    )
+    .nodes.filter((node) => !exclude.has(node.slug) && isChatNoteTarget(node))
     .map((node) => {
       const nodeTags = new Set(node.tags);
       const sharedTags = [...tagSet].filter((tag) => nodeTags.has(tag)).length;
@@ -261,10 +302,7 @@ function chatPlacementCandidates({
   const tagSet = new Set(tags);
 
   return scanClusterKnowledge(contentPath, clusterSlug)
-    .nodes.filter(
-      (node) =>
-        node.type !== "source-document" && node.type !== "cluster-index",
-    )
+    .nodes.filter(isChatNoteTarget)
     .map((node) => {
       const sharedTags = node.tags.filter((tag) => tagSet.has(tag)).length;
       const titleOverlap = overlapScore(titleTokens, tokenSet(node.title));

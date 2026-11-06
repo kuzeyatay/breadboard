@@ -56,8 +56,8 @@ test('parallel listening switches save independently, roll back on failure, and 
  try{
   const page=await h.context.newPage();page.setDefaultTimeout(5000);
   await page.goto(h.url+'/profile?profile&snaps');await page.waitForFunction(()=>window.clapSnapshot?.().loaded);
-  const clap=page.locator('#clap-controls').getByRole('switch',{name:'Keep listening in parallel'});
-  const snap=page.locator('#snap-controls').getByRole('switch',{name:'Keep listening in parallel'});
+  const clap=page.locator('#clap-controls').getByRole('switch',{name:'Keep listening during other audio'});
+  const snap=page.locator('#snap-controls').getByRole('switch',{name:'Keep listening during other audio'});
   assert.equal(await clap.getAttribute('aria-checked'),'false');assert.equal(await snap.getAttribute('aria-checked'),'false');
   h.fixture.failSave=true;await snap.click();await page.getByRole('alert').filter({hasText:'Could not save preferences'}).waitFor();
   assert.equal(await snap.getAttribute('aria-checked'),'false');assert.equal(h.fixture.snapPreferences.allowConcurrentListening,false);
@@ -94,7 +94,7 @@ test('parallel snaps share foreground audio and run in the background while rest
   await page.evaluate(()=>window.emitClaps('snap'));await page.waitForFunction(()=>window.desktopCommands.length===1);
   assert.equal(await page.evaluate(()=>window.desktopCommands[0].type),'open');assert.match(await page.evaluate(()=>window.desktopCommands[0].url),/\/plan\?view=calendar$/);
   await page.waitForFunction(()=>window.clapSnapshot().status==='listening');
-  const snapSwitch=page.locator('#snap-controls').getByRole('switch',{name:'Keep listening in parallel'});
+  const snapSwitch=page.locator('#snap-controls').getByRole('switch',{name:'Keep listening during other audio'});
   await snapSwitch.click();await page.waitForFunction(()=>!window.clapSnapshot().snapPreferences.allowConcurrentListening&&window.captures.filter(c=>c.gestureCapture).every(c=>c.stream.getTracks()[0].readyState==='ended'));
   assert.equal(await page.evaluate(()=>window.foreground.getTracks()[0].readyState),'live','turning off parallel listening preserves the foreground recorder');
   await page.evaluate(()=>{window.stopForeground(window.foreground);window.setDesktopState({activeId:1,windowFocused:true});});
@@ -123,7 +123,7 @@ test('parallel ownership moves to the foreground and falls back to one backgroun
   assert.equal(await a.locator('#clap-controls .clap-status').innerText(),'Listening in another tab or window');
   await b.close();await a.waitForFunction(()=>window.clapSnapshot().status==='listening');
   assert.equal(await a.evaluate(()=>window.captures.filter(c=>c.stream.getTracks()[0].readyState==='live').length),1);
-  await a.locator('#clap-controls').getByRole('switch',{name:'Keep listening in parallel'}).click();
+  await a.locator('#clap-controls').getByRole('switch',{name:'Keep listening during other audio'}).click();
   await a.waitForFunction(()=>window.clapSnapshot().status==='paused'&&window.captures.every(c=>c.stream.getTracks()[0].readyState==='ended'));
   await a.evaluate(()=>window.setDesktopState({windowFocused:true}));await a.waitForFunction(()=>window.clapSnapshot().status==='listening');
  }finally{await h.close();}

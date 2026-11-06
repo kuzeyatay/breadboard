@@ -7,6 +7,9 @@ import sys
 
 def main():
     root = Path(os.environ["BREADBOARD_ACESTEP_DIR"]).resolve(strict=True)
+    source = Path(os.environ.get("BREADBOARD_ACESTEP_SOURCE_DIR", str(root / "source")))
+    if source.is_symlink() or source.resolve(strict=True) != source.absolute():
+        raise RuntimeError("The sealed ACE-Step source is redirected.")
     port = int(os.environ["BREADBOARD_ACESTEP_PORT"])
     marker = root / "models-ready.json"
     if marker.stat().st_size > 1024 * 1024:
@@ -15,10 +18,12 @@ def main():
     if prepared.get("sourceRevision") != "ca1e85fe9430179831e6bc6be790c332190a3866" or not prepared.get("files"):
         raise RuntimeError("ACE-Step setup is incomplete.")
     for item in prepared["files"]:
-        candidate = root / item["path"]
-        if candidate.is_symlink() or not candidate.resolve(strict=True).is_relative_to(root) or candidate.stat().st_size != item["size"]:
+        relative = Path(item["path"])
+        if relative.is_absolute() or relative.parts[:2] != ("source", "checkpoints") or ".." in relative.parts:
+            raise RuntimeError("Invalid prepared model path.")
+        candidate = source.joinpath(*relative.parts[1:])
+        if candidate.is_symlink() or not candidate.resolve(strict=True).is_relative_to(source) or candidate.stat().st_size != item["size"]:
             raise RuntimeError("Missing or changed model file; run explicit setup.")
-    source = root / "source"
     sys.path.insert(0, str(source))
     os.chdir(source)
     os.environ.update({"ACESTEP_API_KEY": (root / "api-key").read_text().strip(),
@@ -26,7 +31,7 @@ def main():
                        "ACESTEP_USE_FLASH_ATTENTION": "false", "ACESTEP_NO_INIT": "false", "ACESTEP_ON_DEMAND_MODEL_LOAD": "false",
                        "ACESTEP_CONFIG_PATH2": "", "ACESTEP_CONFIG_PATH3": "",
                        "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
-                       "HF_HOME": str(root / "cache"), "TMPDIR": str(root / "temp"),
+                       "HF_HOME": str(source.parent / "cache"), "TMPDIR": str(root / "temp"),
                        "TEMP": str(root / "temp"), "TMP": str(root / "temp")})
     (root / "temp").mkdir(exist_ok=True)
     # Fail closed even when upstream's download helpers try a ModelScope fallback.

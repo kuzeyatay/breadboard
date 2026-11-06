@@ -194,9 +194,7 @@ export default function MoneyPrinterSetup() {
       ) : null}
       {health?.cloned && !health.uvAvailable && !health.environmentReady ? (
         <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
-          Installing without uv falls back to pip and the system Python. uv is worth having here:
-          it installs the exact versions the project pins and can fetch a Python the speech engine
-          has wheels for. Install it from docs.astral.sh/uv, then reopen this panel.
+          For easier setup, install uv from docs.astral.sh/uv and reopen this panel. Otherwise, setup uses your installed Python.
         </p>
       ) : null}
 

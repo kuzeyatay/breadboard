@@ -1,0 +1,48 @@
+name: Multisim engineering regressions
+on:
+  push:
+    paths: ['multisim-service/**', 'skills/multisim-agent/**', 'hermes-skills/prebuilt/multisim-agent/**', 'hermes-agent/plugins/breadboard/**', 'dashboard/src/lib/hermes/**', 'dashboard/**/multisim*', 'dashboard/**/multisim/**', '.github/workflows/multisim.yml']
+  pull_request:
+    paths: ['multisim-service/**', 'skills/multisim-agent/**', 'hermes-skills/prebuilt/multisim-agent/**', 'hermes-agent/plugins/breadboard/**', 'dashboard/src/lib/hermes/**', 'dashboard/**/multisim*', 'dashboard/**/multisim/**', '.github/workflows/multisim.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ngspice:
+    runs-on: ubuntu-latest
+    steps:
+      # Avoid the repository's legacy gitlinks without .gitmodules entries.
+      - name: Fetch circuit package and test inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" .
+          git sparse-checkout set multisim-service skills/multisim-agent hermes-skills/prebuilt/multisim-agent hermes-agent/plugins/breadboard hermes-agent/tools dashboard/src dashboard/tests
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git checkout --detach "$GITHUB_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install real solver and package
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ngspice
+          python -m pip install './multisim-service[test]'
+      - name: Lint and verify simulation evidence
+        env:
+          BREADBOARD_REQUIRE_NGSPICE: '1'
+        run: |
+          python -m ruff check multisim-service/src multisim-service/tests
+          python -m pytest multisim-service/tests -q
+      - name: Exercise native broker and workspace boundaries
+        run: |
+          npm install --prefix "$RUNNER_TEMP/multisim-node-deps" --no-package-lock --ignore-scripts js-yaml@4
+          ln -s "$RUNNER_TEMP/multisim-node-deps/node_modules" node_modules
+          mkdir -p .runtime
+          python -c "import json,sys,shutil; from pathlib import Path; Path('.runtime/multisim.json').write_text(json.dumps({'python':sys.executable,'ngspice':shutil.which('ngspice')}))"
+          node --experimental-strip-types --test dashboard/tests/multisim-service.test.mjs dashboard/tests/multisim-route.test.mjs dashboard/tests/multisim-super-agent.test.mjs

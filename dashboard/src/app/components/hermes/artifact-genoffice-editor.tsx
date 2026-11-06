@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
+import ArtifactPreviewSurface from "./artifact-preview-surface";
 
 interface ArtifactGenOfficeEditorProps {
   artifact: PresentedArtifact;
@@ -57,13 +58,17 @@ export default function ArtifactGenOfficeEditor({
       data-genoffice-artifact-editor={readOnly ? undefined : ""}
       data-genoffice-artifact-preview={readOnly ? "" : undefined}
     >
+      <ArtifactPreviewSurface key={source}>{(ready, failed) => (
       <iframe
         ref={frameRef}
         src={source}
+        onLoad={ready}
+        onError={failed}
         title={readOnly ? `${artifact.title} Word preview` : `Edit ${artifact.title} in GenOffice`}
         className="h-full min-h-[42rem] w-full border-0 bg-[var(--background)]"
         allow={readOnly ? "" : "clipboard-read; clipboard-write"}
       />
+      )}</ArtifactPreviewSurface>
     </div>
   );
 }

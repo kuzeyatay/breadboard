@@ -121,6 +121,61 @@ class CatalogTests(IsolatedHome):
         self.assertEqual([row["slug"] for row in shaped], ["auto"])
 
 
+GARDEN_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "garden_search",
+            "description": "Search this garden's grounded knowledge.",
+            "parameters": {
+                "type": "object",
+                "properties": {"gardenId": {"type": "string"}, "query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {"name": "calendar_agenda", "description": "What is on the calendar."},
+    },
+]
+
+
+NL = chr(10)
+FENCED_REPLY = NL.join(
+    ["Sure.", "```tool_call", '{"name": "garden_search", "arguments": {"query": "EM1 exam"}}', "```"]
+)
+FENCED_CALL = NL.join(["```tool_call", '{"name": "calendar_agenda", "arguments": {"days": 60}}', "```"])
+JSON_BLOCK = NL.join(["```json", '{"exam": "EM1"}', "```"])
+
+
+class ToolProtocolTests(unittest.TestCase):
+    def test_manifest_lists_every_tool_with_its_required_arguments(self) -> None:
+        prompt = chatgpt_web.compose_prompt([{"role": "user", "content": "Plan my exams"}], GARDEN_TOOLS)
+        self.assertIn("garden_search(gardenId, query*)", prompt)
+        self.assertIn("calendar_agenda()", prompt)
+        self.assertIn(chatgpt_web.TOOL_FENCE, prompt)
+
+    def test_no_tools_leaves_the_prompt_untouched(self) -> None:
+        self.assertEqual(chatgpt_web.compose_prompt([{"role": "user", "content": "Hi"}], []), "Hi")
+        self.assertEqual(chatgpt_web.compose_prompt([{"role": "user", "content": "Hi"}], None), "Hi")
+
+    def test_a_fenced_block_becomes_an_openai_tool_call(self) -> None:
+        reply = FENCED_REPLY
+        calls = chatgpt_web._parse_tool_calls(reply)
+        self.assertEqual(calls[0]["function"]["name"], "garden_search")
+        self.assertEqual(json.loads(calls[0]["function"]["arguments"]), {"query": "EM1 exam"})
+        self.assertTrue(calls[0]["id"].startswith("call_"))
+
+    def test_a_bare_json_object_still_counts_as_a_call(self) -> None:
+        calls = chatgpt_web._parse_tool_calls('{"name": "calendar_agenda", "arguments": {"days": 30}}')
+        self.assertEqual(calls[0]["function"]["name"], "calendar_agenda")
+
+    def test_prose_is_never_mistaken_for_a_call(self) -> None:
+        self.assertIsNone(chatgpt_web._parse_tool_calls("I would call garden_search for that."))
+        self.assertIsNone(chatgpt_web._parse_tool_calls(JSON_BLOCK))
+
+
 class PromptTests(unittest.TestCase):
     def test_single_user_message_is_verbatim(self) -> None:
         self.assertEqual(chatgpt_web.compose_prompt([{"role": "user", "content": "Hello there"}]), "Hello there")
@@ -515,6 +570,58 @@ class TurnTests(IsolatedHome):
         self.assertEqual(payloads[-1]["choices"][0]["finish_reason"], "stop")
         self.assertIn("usage", payloads[-1])
         self.assertEqual(frames[-1], b"data: [DONE]\n\n")
+
+    def test_a_tool_call_is_returned_as_a_tool_call_not_as_prose(self) -> None:
+        page = FakePage(
+            [
+                {"type": "stream", "mode": "sse"},
+                {"type": "text", "append": FENCED_CALL[:14]},
+                {"type": "text", "append": FENCED_CALL[14:]},
+                {"type": "done", "text": FENCED_CALL, "reasoning": ""},
+            ]
+        )
+        body = {"messages": [{"role": "user", "content": "what is on my schedule"}], "tools": GARDEN_TOOLS}
+        response = self.run_request(page, stream=False, payload=body)
+        message = response.json()["choices"][0]["message"]
+        self.assertEqual(response.json()["choices"][0]["finish_reason"], "tool_calls")
+        self.assertEqual(message["tool_calls"][0]["function"]["name"], "calendar_agenda")
+        self.assertIsNone(message["content"])
+
+    def test_a_streamed_tool_call_never_reaches_the_client_as_text(self) -> None:
+        page = FakePage(
+            [
+                {"type": "stream", "mode": "sse"},
+                {"type": "text", "append": FENCED_CALL[:8]},
+                {"type": "text", "append": FENCED_CALL[8:]},
+                {"type": "done", "text": FENCED_CALL, "reasoning": ""},
+            ]
+        )
+        body = {"messages": [{"role": "user", "content": "hi"}], "stream": True, "tools": GARDEN_TOOLS}
+        response = self.run_request(page, stream=True, payload=body)
+        frames = list(chatgpt_web.relay_stream(response))
+        payloads = [json.loads(f.decode()[6:]) for f in frames if f.startswith(b"data: {")]
+        text = "".join(p["choices"][0]["delta"].get("content", "") for p in payloads)
+        self.assertEqual(text, "")
+        calls = [p["choices"][0]["delta"]["tool_calls"] for p in payloads if p["choices"][0]["delta"].get("tool_calls")]
+        self.assertEqual(calls[0][0]["function"]["name"], "calendar_agenda")
+        self.assertEqual(payloads[-1]["choices"][0]["finish_reason"], "tool_calls")
+
+    def test_a_plain_answer_is_still_streamed_when_tools_were_offered(self) -> None:
+        page = FakePage(
+            [
+                {"type": "stream", "mode": "sse"},
+                {"type": "text", "append": "`"},
+                {"type": "text", "append": "`no, just prose"},
+                {"type": "done", "text": "``no, just prose", "reasoning": ""},
+            ]
+        )
+        body = {"messages": [{"role": "user", "content": "hi"}], "stream": True, "tools": GARDEN_TOOLS}
+        response = self.run_request(page, stream=True, payload=body)
+        frames = list(chatgpt_web.relay_stream(response))
+        payloads = [json.loads(f.decode()[6:]) for f in frames if f.startswith(b"data: {")]
+        text = "".join(p["choices"][0]["delta"].get("content", "") for p in payloads)
+        self.assertEqual(text, "``no, just prose")
+        self.assertEqual(payloads[-1]["choices"][0]["finish_reason"], "stop")
 
     def test_the_sites_citation_markup_never_reaches_the_client(self) -> None:
         # Seen live 2026-09-14 on an answer about an attached image:
@@ -1145,7 +1252,7 @@ globalThis.TextDecoder = globalThis.TextDecoder || class { decode() { return '';
 const calls = [];
 const box = {
   tagName: 'DIV', isConnected: true, textContent: '',
-  focus() {}, getAttribute: () => null,
+  focus() {}, getAttribute: () => null, getClientRects: () => [{}],
   dispatchEvent(event) {
     calls.push(event.type);
     if (globalThis.__editorHandlesPaste) {
@@ -1160,6 +1267,7 @@ const box = {
 globalThis.DataTransfer = class { constructor() { this.items = {}; } setData(type, value) { this.items[type] = value; } getData(type) { return this.items[type]; } };
 globalThis.ClipboardEvent = class { constructor(type, init) { this.type = type; this.clipboardData = init.clipboardData; this.defaultPrevented = false; } };
 document.querySelector = (selector) => selector === '#prompt-textarea' ? box : null;
+document.querySelectorAll = (selector) => selector === '#prompt-textarea' ? [box] : [];
 document.getSelection = () => ({ selectAllChildren: () => {} });
 document.activeElement = box;
 document.createElement = () => ({ children: [], append(...nodes) { this.children.push(...nodes); }, innerHTML: 'serialised' });
@@ -1213,8 +1321,9 @@ document.execCommand = (name, _ui, _value) => { calls.push(name); box.textConten
             self.COMPOSER_STUB
             + "globalThis.MutationObserver = class { observe() {} disconnect() {} };\n"
             + "document.documentElement = {};\n"
+            + "const composerBoxes = document.querySelectorAll;\n"
             + "document.querySelectorAll = (selector) => selector.includes('role=\"alert\"')\n"
-            + "  ? [{ textContent: '  You have hit the limit for GPT-6 Pro.  ' }] : [];\n"
+            + "  ? [{ textContent: '  You have hit the limit for GPT-6 Pro.  ' }] : composerBoxes(selector);\n"
             + "window.__breadboardChatgptWeb.send(1).then((outcome) =>\n"
             + "  console.log(JSON.stringify({outcome})));"
         )
@@ -1287,6 +1396,56 @@ globalThis.__breadboardChatgptWebEmit = (payload) => emitted.push(JSON.parse(pay
         streamed = "".join(event.get("append", "") for event in result["emitted"] if event["type"] == "text")
         self.assertEqual(streamed, answer)
         self.assertEqual(json.loads(done["text"])["citation"], '5XTA0 "Intro" lecture')
+
+    def test_a_fetch_wrapped_twice_still_observes_the_answer_once(self) -> None:
+        # Live 2026-10-05: the site wraps fetch after the script does, so the
+        # DOMContentLoaded re-install wrapped it again and every answer arrived
+        # twice, interleaved ("pongpong 42 42").
+        sse = (
+            "data: " + json.dumps({"v": {"message": {"id": "a", "author": {"role": "assistant"}, "content": {"content_type": "text", "parts": [""]}}}}) + "\n\n"
+            + "data: " + json.dumps({"p": "/message/content/parts/0", "o": "append", "v": "pong 42"}) + "\n\n"
+            + "data: [DONE]\n\n"
+        )
+        result = self.run_node(
+            "window.__breadboardChatgptWeb.setTurn('t1');\n"
+            "const site = window.fetch;\n"
+            "window.fetch = function (...args) { return site.apply(this, args); };\n"
+            "for (const listener of loaded) listener();\n"
+            "window.fetch('/backend-api/f/conversation', { method: 'POST', body: JSON.stringify({ messages: [{ id: 'u' }] }) })\n"
+            "  .then(() => setTimeout(() => console.log(JSON.stringify(emitted)), 50));",
+            prelude=self.SOCKET_PRELUDE
+            + "const loaded = [];\n"
+            + "document.readyState = 'loading';\n"
+            + "document.addEventListener = (type, listener) => { if (type === 'DOMContentLoaded') loaded.push(listener); };\n"
+            + "globalThis.addEventListener = document.addEventListener;\n"
+            + f"const SSE = {json.dumps(sse)};\n"
+            + "globalThis.fetch = () => Promise.resolve(new Response(SSE, { headers: { 'content-type': 'text/event-stream' } }));\n",
+        )
+        done = [event for event in result if event["type"] == "done"]
+        self.assertEqual(len(done), 1, result)
+        self.assertEqual(done[0]["text"], "pong 42")
+        streamed = "".join(event.get("append", "") for event in result if event["type"] == "text")
+        self.assertEqual(streamed, "pong 42")
+
+    def test_a_stream_that_stops_before_its_end_is_not_the_answer(self) -> None:
+        # Live 2026-10-05: a tool call came back cut at the end of its first
+        # chunk because the body ended without message_stream_complete and the
+        # partial text was reported as `done`.
+        sse = (
+            "data: " + json.dumps({"v": {"message": {"id": "a", "author": {"role": "assistant"}, "content": {"content_type": "text", "parts": [""]}}}}) + "\n\n"
+            + "data: " + json.dumps({"p": "/message/content/parts/0", "o": "append", "v": '{"name":"x","arguments'}) + "\n\n"
+        )
+        result = self.run_node(
+            "window.__breadboardChatgptWeb.setTurn('t1');\n"
+            "window.fetch('/backend-api/f/conversation', { method: 'POST', body: '{}' })\n"
+            "  .then(() => setTimeout(() => console.log(JSON.stringify(emitted)), 50));",
+            prelude=self.SOCKET_PRELUDE
+            + f"const SSE = {json.dumps(sse)};\n"
+            + "globalThis.fetch = () => Promise.resolve(new Response(SSE, { headers: { 'content-type': 'text/event-stream' } }));\n",
+        )
+        kinds = [event["type"] for event in result]
+        self.assertNotIn("done", kinds)
+        self.assertEqual(kinds[-1], "handoff")
 
     def test_reducer_applies_an_operation_list_without_its_patch_marker(self) -> None:
         # The frame shape that cut a critic's JSON at its first citation: the

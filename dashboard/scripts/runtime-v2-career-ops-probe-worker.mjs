@@ -1,3 +1,5 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
+import { managedPayloadRoot } from "./runtime-v2-bulk-paths.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -32,18 +34,6 @@ function boundedText(value, maximumBytes) {
   return typeof value === "string" &&
     Buffer.byteLength(value, "utf8") <= maximumBytes &&
     !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value);
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" ||
-    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function directDirectory(candidate, root, message) {
@@ -143,19 +133,14 @@ function applicationLayout(dataRoot) {
       directFile(candidate, configuredSource, "The staged Career Ops clone is incomplete.");
     }
   }
-  const expectedBrowserRoot = path.join(
-    canonicalDataRoot,
-    "runtime-v2",
-    "toolchains",
-    "career-ops-browsers",
-  );
+  const expectedBrowserRoot = managedPayloadRoot(canonicalDataRoot, "runtime-v2/toolchains/career-ops-browsers");
   if (!samePath(process.env.PLAYWRIGHT_BROWSERS_PATH, expectedBrowserRoot)) {
     fail("The Career Ops browser probe path is outside Runtime data.");
   }
   if (fs.existsSync(expectedBrowserRoot)) {
     directDirectory(
       expectedBrowserRoot,
-      canonicalDataRoot,
+      expectedBrowserRoot,
       "The Career Ops browser probe path is indirect.",
     );
   }

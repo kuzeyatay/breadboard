@@ -16,7 +16,7 @@ async function eventually(check) {
   assert.fail("Usage UI did not settle");
 }
 
-test("new tabs refresh every provider, poll read-only, and recover from Claude cooldowns", { timeout: 60_000 }, async () => {
+test("new tabs read provider reports without forcing probes, and recover from Claude cooldowns", { timeout: 60_000 }, async () => {
   const bundle = await build({
     absWorkingDir: root,
     stdin: {
@@ -36,6 +36,7 @@ test("new tabs refresh every provider, poll read-only, and recover from Claude c
   let claudeExpired = false;
   let claudeSignedOut = false;
   let claudeRetryAt;
+  let activityState = "waiting";
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://localhost");
     const send = (payload, status = 200) => {
@@ -44,6 +45,14 @@ test("new tabs refresh every provider, poll read-only, and recover from Claude c
     };
     if (url.pathname === "/api/models") return send({ data: ["gpt-test", "cliproxy/claude-test"].map((id) => ({ id })) });
     if (url.pathname === "/api/cliproxy/status") return send({ models: ["gemini-test", "gemini-other", "claude-test"] });
+    if (url.pathname === "/api/agent-activity") return send({
+      captured_at: new Date(now).toISOString(),
+      providers: { anthropic: [{
+        id: "claude.fixture", name: "breadboard", detail: "Terminal · breadboard",
+        state: activityState, ...(activityState === "waiting" ? { waiting_for: "your answer" } : {}),
+        since: new Date(now - 180_000).toISOString(),
+      }] },
+    });
     if (url.pathname === "/api/usage-limits") {
       const model = url.searchParams.get("model");
       requests.push({ model, method: req.method });
@@ -88,13 +97,14 @@ test("new tabs refresh every provider, poll read-only, and recover from Claude c
     await label("chatgpt", "82% remaining");
     await label("anthropic", "76% remaining");
     await label("google", "70% remaining");
-    assert.equal(requests.filter((r) => r.method === "POST").length, 1, "StrictMode mounts refresh ChatGPT once");
+    await label("anthropic", "agent waiting");
+    assert.equal(requests.filter((r) => r.method === "POST").length, 0, "StrictMode mounts only read existing reports");
     assert.ok(requests.filter((r) => r.model.includes("cliproxy")).every((r) => r.method === "GET"));
 
     const second = await context.newPage();
     await second.goto(url);
     await eventually(async () => (await second.locator('[data-provider="chatgpt"]').getAttribute("aria-label"))?.includes("82% remaining"));
-    assert.equal(requests.filter((r) => r.method === "POST").length, 2, "a new tab starts its own fresh limit check");
+    assert.equal(requests.filter((r) => r.method === "POST").length, 0, "another tab does not trigger an expensive generation probe");
     await second.close();
     await page.bringToFront();
 
@@ -102,18 +112,24 @@ test("new tabs refresh every provider, poll read-only, and recover from Claude c
     now += 60_000;
     await page.clock.fastForward(60_000);
     await eventually(() => requests.length >= beforePoll + 3);
-    assert.equal(requests.filter((r) => r.method === "POST").length, 2, "background polling never generates more probes");
+    assert.equal(requests.filter((r) => r.method === "POST").length, 0, "background polling never generates more probes");
 
     // Focus reads current reports but does not turn into another generation probe.
     const beforeFocus = requests.length;
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await eventually(() => requests.length >= beforeFocus + 3);
-    assert.equal(requests.filter((r) => r.method === "POST").length, 2);
+    assert.equal(requests.filter((r) => r.method === "POST").length, 0);
 
     await ring("anthropic").click();
     const card = page.getByRole("dialog", { name: "Claude usage details" });
     const refresh = card.getByRole("button", { name: "Refresh Claude usage" });
     await refresh.waitFor();
+    assert.match(await card.innerText(), /breadboard.*waiting.*your answer/s);
+    for (const state of ["working", "complete", "idle"]) {
+      activityState = state;
+      await page.clock.fastForward(2_000);
+      await label("anthropic", `agent ${state}`);
+    }
     await eventually(async () => await refresh.isEnabled());
     throttled = true;
     claudeRetryAt = new Date(now + 120_000).toISOString();
@@ -157,10 +173,11 @@ test("new tabs refresh every provider, poll read-only, and recover from Claude c
     chatgptFailure = true;
     await chatRefresh.click();
     await label("chatgpt", "82% remaining, last known reading");
-    assert.equal(requests.filter((r) => !r.model.includes("claude") && r.method === "POST").length, 3, "manual ChatGPT refresh still probes");
+    assert.equal(requests.filter((r) => !r.model.includes("claude") && r.method === "POST").length, 1, "manual ChatGPT refresh still probes");
 
     // Capture with a real animation clock after the timer assertions above.
     throttled = true;
+    activityState = "waiting";
     const previewContext = await browser.newContext({ viewport: { width: 900, height: 700 } });
     const preview = await previewContext.newPage();
     preview.on("pageerror", (error) => errors.push(error.message));

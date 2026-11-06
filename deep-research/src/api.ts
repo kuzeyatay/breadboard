@@ -62,6 +62,12 @@ const MAX_BREADTH = 10;
 const MAX_DEPTH = 5;
 const VERSION = '1.1.0';
 const STATE_SCHEMA_VERSION = 1;
+// Runtime V2 uses a 68-character job ID. Creation and durable recovery must
+// accept the same bounded identity, without replacing a caller-supplied ID.
+const RUN_ID = /^[A-Za-z0-9_-]{1,128}$/u;
+function isRunId(value: unknown): value is string {
+  return typeof value === 'string' && RUN_ID.test(value);
+}
 
 type RunStatus = 'running' | 'completed' | 'failed' | 'aborted';
 type Output = 'report' | 'answer';
@@ -128,7 +134,7 @@ export class DurableRunStore {
   }
 
   private filename(runId: string): string {
-    if (!/^[\w-]{1,64}$/.test(runId)) throw new Error('invalid_run_id');
+    if (!isRunId(runId)) throw new Error('invalid_run_id');
     return path.join(this.directory, `${runId}.json`);
   }
 
@@ -166,7 +172,7 @@ export class DurableRunStore {
     for (const entry of fs.readdirSync(this.directory, {
       withFileTypes: true,
     })) {
-      if (!entry.isFile() || !/^[\w-]{1,64}\.json$/.test(entry.name)) continue;
+      if (!entry.isFile() || !entry.name.endsWith('.json') || !isRunId(entry.name.slice(0, -5))) continue;
       try {
         snapshots.push(
           JSON.parse(
@@ -236,7 +242,7 @@ function restoredUsage(value: unknown): LanguageModelUsage {
 export function restoreRunSnapshot(value: unknown): Run | null {
   if (!isRecord(value)) return null;
   if (value.schemaVersion !== STATE_SCHEMA_VERSION) return null;
-  if (typeof value.runId !== 'string' || !/^[\w-]{1,64}$/.test(value.runId)) {
+  if (!isRunId(value.runId)) {
     return null;
   }
   const ownerUserId = Number(value.ownerUserId);
@@ -519,6 +525,10 @@ app.post('/runs', async (req: Request, res: Response) => {
   if (!Number.isInteger(depth) || depth < 1 || depth > MAX_DEPTH) {
     return fail(res, 400, 'invalid_depth');
   }
+  if (req.body?.runId !== undefined && !isRunId(req.body.runId)) {
+    // A replacement UUID would create work its Runtime owner cannot follow.
+    return fail(res, 400, 'invalid_run_id');
+  }
   if (getModelInfo().provider === 'none')
     return fail(res, 409, 'model_not_configured');
   if (!searchBackend().configured)
@@ -530,10 +540,7 @@ app.post('/runs', async (req: Request, res: Response) => {
     return fail(res, 429, 'too_many_runs');
   }
 
-  const runId =
-    typeof req.body?.runId === 'string' && /^[\w-]{1,64}$/.test(req.body.runId)
-      ? req.body.runId
-      : crypto.randomUUID();
+  const runId = req.body?.runId ?? crypto.randomUUID();
   if (runs.has(runId)) return fail(res, 409, 'run_exists');
 
   const run: Run = {

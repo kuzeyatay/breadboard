@@ -23,6 +23,7 @@ import {
 } from "react";
 
 import type { ChatVirtualBridge } from "@/app/components/use-chat-auto-scroll";
+import { mountChatLensRail, type ChatLensRail } from "@/lib/chat-lens-rail";
 
 export type ChatMessageRailItem = {
   /** Where the message sits in the list the virtualizer draws. */
@@ -131,14 +132,10 @@ const RailTick = memo(function RailTick({
       onFocus={(event) => showLabel(index, event.currentTarget)}
       aria-label={`Go to message ${index + 1} of ${count}: ${summary}`}
       aria-current={isActive ? "true" : undefined}
-      className="group flex h-3.5 w-8 shrink-0 items-center justify-end"
+      className="bb-chat-lens-item"
     >
       <span
-        className={`bb-chat-rail-tick block h-px rounded-full ${
-          isActive
-            ? "w-6 bg-[var(--ink)] opacity-100"
-            : "w-4 bg-[var(--ink-muted)] opacity-50 group-hover:w-6 group-hover:opacity-90 group-focus-visible:w-6 group-focus-visible:opacity-90"
-        }`}
+        className="bb-chat-rail-tick bb-chat-lens-mark"
       />
     </button>
   );
@@ -208,6 +205,7 @@ export default function ChatMessageRail({
   className,
 }: ChatMessageRailProps) {
   const railRef = useRef<HTMLDivElement | null>(null);
+  const lensRef = useRef<ChatLensRail | null>(null);
   const frameRef = useRef<number | null>(null);
   const [active, setActive] = useState(0);
   /** The tick under the pointer, and how far down the rail its label belongs. */
@@ -247,7 +245,8 @@ export default function ChatMessageRail({
     // scroll frame (almost all of those searches used to find nothing).
     const mountedStarts = new Map<number, number>();
     if (list) {
-      for (const row of list.querySelectorAll(":scope > [data-index]")) {
+      for (const row of Array.from(list.children)) {
+        if (!row.hasAttribute("data-index")) continue;
         mountedStarts.set(Number(row.getAttribute("data-index")), offsetOf(row));
       }
     }
@@ -328,8 +327,8 @@ export default function ChatMessageRail({
       const list = scroller.querySelector("[data-chat-virtual-list]");
       if (list) {
         current.add(list);
-        for (const row of list.querySelectorAll(":scope > [data-index]")) {
-          current.add(row);
+        for (const row of Array.from(list.children)) {
+          if (row.hasAttribute("data-index")) current.add(row);
         }
       }
       const tail = scroller.querySelector(".bb-chat-scroll-tail");
@@ -349,11 +348,25 @@ export default function ChatMessageRail({
     };
 
     observeCurrentGeometry();
+    let geometryFrame: number | null = null;
     const mutationObserver =
       typeof window.MutationObserver === "function"
-        ? new window.MutationObserver(() => {
-            observeCurrentGeometry();
-            scheduleMeasure();
+        ? new window.MutationObserver(records => {
+            // Streaming markdown and animated content can mutate thousands of
+            // descendants. Row ResizeObservers already cover their size changes;
+            // only row/list placement and membership need this second signal.
+            const geometryChanged = records.some(record => {
+              const target = record.target;
+              if (record.type === "attributes") return observed.has(target as Element);
+              return record.type === "childList" && !(target instanceof Element &&
+                target.closest("[data-chat-virtual-list] > [data-index]"));
+            });
+            if (!geometryChanged || geometryFrame !== null) return;
+            geometryFrame = window.requestAnimationFrame(() => {
+              geometryFrame = null;
+              observeCurrentGeometry();
+              scheduleMeasure();
+            });
           })
         : null;
     mutationObserver?.observe(scroller, {
@@ -364,6 +377,7 @@ export default function ChatMessageRail({
     });
 
     return () => {
+      if (geometryFrame !== null) window.cancelAnimationFrame(geometryFrame);
       mutationObserver?.disconnect();
       resizeObserver?.disconnect();
     };
@@ -397,22 +411,6 @@ export default function ChatMessageRail({
     [],
   );
 
-  // A long conversation's rail scrolls inside itself. The tick being read has to
-  // be brought along, or the rail silently stops describing where the reader is.
-  useEffect(() => {
-    if (!enabled) return;
-    const rail = railRef.current;
-    const tick = rail?.children[active] as HTMLElement | undefined;
-    if (!rail || !tick) return;
-    const above = tick.offsetTop < rail.scrollTop;
-    const below =
-      tick.offsetTop + tick.offsetHeight > rail.scrollTop + rail.clientHeight;
-    if (above || below) {
-      rail.scrollTop =
-        tick.offsetTop - rail.clientHeight / 2 + tick.offsetHeight / 2;
-    }
-  }, [active, enabled]);
-
   const jumpTo = useCallback(
     (rowIndex: number) => {
       const reduceMotion =
@@ -444,13 +442,31 @@ export default function ChatMessageRail({
     });
   }, []);
 
+  useEffect(() => {
+    const track = railRef.current;
+    if (!enabled || !track?.parentElement) return;
+    const lens = mountChatLensRail({
+      root: track.parentElement,
+      track,
+      onHover: (index, tick) => {
+        if (index === null || !tick) setHovered(null);
+        else showLabel(index, tick);
+      },
+    });
+    lensRef.current = lens;
+    return () => { lens.destroy(); lensRef.current = null; };
+  }, [enabled, showLabel]);
+
+  useEffect(() => { lensRef.current?.refresh(); }, [items]);
+  useEffect(() => { lensRef.current?.setActive(active); }, [active, items]);
+
   if (!enabled) return null;
 
   const hoveredItem = hovered ? items[hovered.index] : undefined;
 
   return (
     <div
-      className={`bb-chat-rail pointer-events-none absolute right-0.5 top-1/2 z-20 flex -translate-y-1/2 items-center ${className ?? ""}`}
+      className={`bb-chat-rail bb-chat-lens pointer-events-none absolute right-0.5 top-1/2 z-20 flex -translate-y-1/2 items-center ${className ?? ""}`}
       data-chat-message-rail={surface}
       data-tick-count={items.length}
       data-active-tick={active}
@@ -479,7 +495,7 @@ export default function ChatMessageRail({
             setHovered(null);
           }
         }}
-        className="bb-chat-rail-track pointer-events-auto flex max-h-[min(60vh,20rem)] flex-col items-end overflow-y-auto py-1 pl-4 pr-1.5"
+        className="bb-chat-rail-track bb-chat-lens-track"
       >
         {items.map((item, index) => (
           <RailTick

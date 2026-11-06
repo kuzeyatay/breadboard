@@ -27,6 +27,8 @@ import { liteAdaptor } from "mathjax-full/js/adaptors/liteAdaptor.js";
 import { RegisterHTMLHandler } from "mathjax-full/js/handlers/html.js";
 import { AllPackages } from "mathjax-full/js/input/tex/AllPackages.js";
 import SVGtoPDF from "svg-to-pdfkit";
+import sharp from "sharp";
+import { PDF_VISUAL_LANGUAGES, PdfVisualSnapshots } from "./visual-snapshots.ts";
 import {
   HEADING_FACTORS,
   resolveDocumentTheme,
@@ -46,6 +48,9 @@ type MarkdownNode = {
   alt?: string;
   lang?: string;
   align?: Array<string | null>;
+  identifier?: string;
+  imageData?: Buffer;
+  caption?: string;
 };
 
 type PdfFonts = {
@@ -183,6 +188,7 @@ function registerFonts(doc: PDFKit.PDFDocument, theme: DocumentTheme): PdfFonts 
 interface RenderCtx {
   fonts: PdfFonts;
   theme: DocumentTheme;
+  requireImages: boolean;
   bodyStyle: InlineStyle;
   headingSizes: number[]; // index 1..6 -> point size
 }
@@ -679,34 +685,88 @@ function drawText(
   });
 }
 
-function resolveImagePath(url: string | undefined, clusterSlug: string): string | null {
+function resolveImagePath(url: string | undefined, clusterSlug: string, slug?: string): string | null {
   if (!url) return null;
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
   if (!contentPath) return null;
 
   const root = path.resolve(contentPath);
-  const cleanUrl = decodeURIComponent(
+  let cleanUrl: string;
+  try { cleanUrl = decodeURIComponent(
     url
       .trim()
       .replace(/[?#].*$/, "")
       .replace(/\\/g, "/"),
-  );
+  ); } catch { return null; }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(cleanUrl) || cleanUrl.startsWith("//")) return null;
   const parts = cleanUrl.split("/").filter(Boolean);
 
   let imagePath: string | null = null;
-  if (parts.length >= 3 && parts[1] === "assets") {
+  if (cleanUrl.startsWith("/") || parts[0] === clusterSlug) {
     // A PDF job is scoped to one authenticated Garden. An absolute Markdown
     // asset URL must name that same Garden; an empty Garden scope has no
     // authority to read any Garden asset directory.
     if (!clusterSlug || parts[0] !== clusterSlug) return null;
-    imagePath = path.resolve(root, parts[0], "assets", ...parts.slice(2));
+    imagePath = path.resolve(root, ...parts);
   } else if (parts.length >= 2 && parts[0] === "assets" && clusterSlug) {
     imagePath = path.resolve(root, clusterSlug, "assets", ...parts.slice(1));
+  } else if (slug && clusterSlug && slug.startsWith(`${clusterSlug}/`) && !cleanUrl.startsWith("/")) {
+    imagePath = path.resolve(root, path.dirname(slug), cleanUrl);
   }
 
-  if (!imagePath || !imagePath.startsWith(root + path.sep)) return null;
-  if (!/\.(png|jpe?g)$/i.test(imagePath)) return null;
-  return fs.existsSync(imagePath) ? imagePath : null;
+  const gardenRoot = path.resolve(root, clusterSlug);
+  if (!imagePath || !clusterSlug || !imagePath.startsWith(gardenRoot + path.sep) ||
+      !path.relative(gardenRoot, imagePath).split(path.sep).includes("assets")) return null;
+  if (!/\.(png|jpe?g|webp|gif|svg|avif)$/i.test(imagePath)) return null;
+  try {
+    if (fs.realpathSync(imagePath) !== imagePath || fs.realpathSync(gardenRoot) !== gardenRoot) return null;
+    return fs.statSync(imagePath).isFile() ? imagePath : null;
+  } catch { return null; }
+}
+
+async function prepareFigures(tree: MarkdownNode, clusterSlug: string, slug?: string, requireImages = false): Promise<void> {
+  const definitions = new Map<string, MarkdownNode>();
+  const collect = (node: MarkdownNode) => {
+    if (node.type === "definition" && node.identifier) definitions.set(node.identifier, node);
+    childrenOf(node).forEach(collect);
+  };
+  collect(tree);
+  const visit = async (node: MarkdownNode): Promise<void> => {
+    if (node.type === "imageReference") {
+      node.url = definitions.get(node.identifier ?? "")?.url;
+      node.type = "image";
+    }
+    // A linked image is still a figure, not an [Image] text placeholder.
+    if (node.type === "link" && node.children?.length === 1 && ["image", "imageReference"].includes(node.children[0].type)) {
+      Object.assign(node, node.children[0]);
+      delete node.children;
+      await visit(node);
+      return;
+    }
+    if (node.type === "image" && !node.imageData) {
+      const imagePath = resolveImagePath(node.url, clusterSlug, slug);
+      if (imagePath) {
+        try { node.imageData = await sharp(fs.readFileSync(imagePath), { limitInputPixels: 40_000_000 }).rotate().png().toBuffer(); }
+        catch { /* Preserve the readable missing-image label. */ }
+      }
+      if (requireImages && !node.imageData) {
+        throw new Error(`The PDF image could not be embedded: ${node.url ?? node.alt ?? "unnamed image"}. Use an existing image in this Garden's assets folder.`);
+      }
+    }
+    for (const child of childrenOf(node)) await visit(child);
+    const children = childrenOf(node);
+    for (let index = 0; index < children.length - 1; index++) {
+      const images = childrenOf(children[index]).filter(child => child.type !== "text" || child.value?.trim());
+      const caption = children[index + 1];
+      if (children[index].type === "paragraph" && images.length === 1 && images[0].type === "image" &&
+          caption.type === "paragraph" && childrenOf(caption).length > 0 &&
+          childrenOf(caption).every(child => child.type === "emphasis" || (child.type === "text" && !child.value?.trim()))) {
+        images[0].caption = inlineText(caption);
+        children.splice(index + 1, 1);
+      }
+    }
+  };
+  await visit(tree);
 }
 
 const ANNOTATION_RE = /^\[([A-Za-z][A-Za-z]*):\s*([\s\S]+?)\]$/;
@@ -757,9 +817,10 @@ function renderImage(
   clusterSlug: string,
   indent: number,
 ): void {
-  const imagePath = resolveImagePath(node.url, clusterSlug);
+  const imagePath = node.imageData ?? resolveImagePath(node.url, clusterSlug);
   const caption = node.alt || node.url || "Image";
   const drawPlaceholder = () => {
+    if (ctx.requireImages) throw new Error(`The PDF image could not be embedded: ${node.url ?? caption}.`);
     drawText(doc, `[Image: ${caption}]`, ctx.fonts, {
       indent,
       font: "italic",
@@ -780,13 +841,16 @@ function renderImage(
     // and move the cursor ourselves — otherwise following content overlaps it.
     const image = (
       doc as unknown as {
-        openImage: (src: string) => { width: number; height: number };
+        openImage: (src: string | Buffer) => { width: number; height: number };
       }
     ).openImage(imagePath);
     const maxWidth = contentWidth(doc, indent);
-    const maxHeight = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
-    let width = image.width;
-    let height = image.height;
+    const captionHeight = node.caption ? doc.font(ctx.fonts.italic).fontSize(9)
+      .heightOfString(node.caption, { width: maxWidth, lineGap: 2 }) + 6 : 0;
+    const pageHeight = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+    const maxHeight = Math.min(pageHeight * 0.78, pageHeight - captionHeight - 16);
+    let width = image.width * 0.75;
+    let height = image.height * 0.75;
     if (width > maxWidth) {
       const scale = maxWidth / width;
       width *= scale;
@@ -798,13 +862,25 @@ function renderImage(
       height *= scale;
     }
 
-    if (doc.y + height > doc.page.height - doc.page.margins.bottom) {
-      doc.addPage();
+    const available = doc.page.height - doc.page.margins.bottom - doc.y - captionHeight - 16;
+    if (height > available) {
+      // A modest reduction avoids stranding a figure on the next page; large
+      // figures keep their readable size and move with their caption.
+      if (available >= height * 0.8) {
+        width *= available / height;
+        height = available;
+      } else doc.addPage();
     }
     const x = left(doc, indent) + Math.max(0, (maxWidth - width) / 2);
-    doc.image(imagePath, x, doc.y, { width, height });
+    const y = doc.y + 4;
+    doc.image(imagePath, x, y, { width, height });
     doc.x = left(doc, indent);
-    doc.y += height + 8;
+    doc.y = y + height + 6;
+    if (node.caption) {
+      doc.font(ctx.fonts.italic).fontSize(9).fillColor(hex(ctx.theme.mutedColor))
+        .text(node.caption, left(doc, indent), doc.y, { width: maxWidth, align: "center", lineGap: 2 });
+    }
+    doc.y += 6;
   } catch {
     drawPlaceholder();
   }
@@ -839,13 +915,15 @@ function renderList(
       firstParagraphIndex >= 0 ? children[firstParagraphIndex] : null;
 
     ensureSpace(doc, 28);
+    const firstHasImage = firstParagraph && childrenOf(firstParagraph).some(child => child.type === "image");
     const runs: InlineRun[] = [{ kind: "text", text: `${marker} `, ...markerStyle }];
-    if (firstParagraph) buildInlineChildren(firstParagraph, itemStyle, runs, hex(ctx.theme.accent));
-    else buildInline(item, itemStyle, runs, hex(ctx.theme.accent));
+    if (firstParagraph) {
+      if (!firstHasImage) buildInlineChildren(firstParagraph, itemStyle, runs, hex(ctx.theme.accent));
+    } else buildInline(item, itemStyle, runs, hex(ctx.theme.accent));
     renderInline(doc, runs, ctx.fonts, { indent });
 
     children.forEach((child, childIndex) => {
-      if (childIndex !== firstParagraphIndex) {
+      if (childIndex !== firstParagraphIndex || firstHasImage) {
         renderNode(doc, child, ctx, clusterSlug, indent + 18);
       }
     });
@@ -1100,7 +1178,7 @@ function renderNode(
       };
       const startY = doc.y;
       childrenOf(node).forEach((child) => {
-        if (child.type === "paragraph") {
+        if (child.type === "paragraph" && !childrenOf(child).some(node => node.type === "image")) {
           const runs: InlineRun[] = [];
           buildInlineChildren(child, quoteStyle, runs, accent);
           renderInline(doc, runs, ctx.fonts, { indent: quoteIndent });
@@ -1140,6 +1218,7 @@ function renderNode(
       doc.moveDown(1.1);
       break;
     case "html":
+      if (/^\s*<!--[\s\S]*-->\s*$/.test(node.value ?? "")) break;
       drawText(doc, node.value ?? "", ctx.fonts, {
         indent,
         font: "italic",
@@ -1155,7 +1234,34 @@ function renderNode(
 export type PdfMarkdownDocument = {
   content: string;
   title: string;
+  slug?: string;
+  folderTitle?: string;
 };
+
+function headingText(node: MarkdownNode): string {
+  const text = (part: MarkdownNode): string => part.value ?? childrenOf(part).map(text).join("");
+  return text(node).replace(/\s+/g, " ").trim();
+}
+
+function renderDocumentTitles(doc: PDFKit.PDFDocument, ctx: RenderCtx, title: string, folderTitle: string): void {
+  if (folderTitle) {
+    drawText(doc, folderTitle, ctx.fonts, {
+      font: "headingBold", size: ctx.headingSizes[1] * 1.45,
+      color: hex(ctx.theme.headingColor), lineGap: 4,
+    });
+    doc.y += 16;
+  }
+  drawText(doc, title, ctx.fonts, {
+    font: "headingBold", size: ctx.headingSizes[1],
+    color: hex(ctx.theme.headingColor), lineGap: 3,
+  });
+  doc.y += 10;
+  if (ctx.theme.headingRule) {
+    doc.save().strokeColor(hex(ctx.theme.accent)).lineWidth(1)
+      .moveTo(left(doc), doc.y).lineTo(left(doc) + contentWidth(doc), doc.y).stroke().restore();
+    doc.y += 12;
+  }
+}
 
 export interface RenderMarkdownToPdfOptions {
   /** PDF metadata title (defaults to the first document's title). */
@@ -1164,6 +1270,9 @@ export interface RenderMarkdownToPdfOptions {
   clusterSlug?: string;
   /** Theme (preset name or explicit tokens) driving the document's look. */
   theme?: DocumentThemeInput;
+  /** Fail instead of publishing placeholders when an artifact needs figures. */
+  requireImages?: boolean;
+  signal?: AbortSignal;
 }
 
 /**
@@ -1196,6 +1305,7 @@ export async function renderMarkdownToPdf(
   const ctx: RenderCtx = {
     fonts,
     theme,
+    requireImages: options.requireImages ?? false,
     bodyStyle: { font: "body", size: theme.baseFontSize, color: hex(theme.bodyColor) },
     headingSizes: [
       0,
@@ -1212,15 +1322,55 @@ export async function renderMarkdownToPdf(
     doc.on("error", reject);
   });
 
-  documents.forEach((document, index) => {
-    if (index > 0) doc.addPage();
-    const tree = unified()
-      .use(remarkParse)
-      .use(remarkGfm)
-      .use(remarkMath)
-      .parse(document.content) as MarkdownNode;
-    renderNode(doc, tree, ctx, clusterSlug);
-  });
+  const snapshots = new PdfVisualSnapshots(options.signal);
+  try {
+    for (const [index, document] of documents.entries()) {
+      options.signal?.throwIfAborted();
+      if (index > 0) doc.addPage();
+      const parsed = parseFrontmatter(document.content);
+      const tree = unified()
+        .use(remarkParse)
+        .use(remarkGfm)
+        .use(remarkMath)
+        .parse(parsed.body) as MarkdownNode;
+      const firstContent = childrenOf(tree).find(node =>
+        node.type !== "definition" && !(node.type === "html" && /^\s*<!--[\s\S]*-->\s*$/.test(node.value ?? "")));
+      const leadingTitle = firstContent?.type === "heading" && firstContent.depth === 1 ? firstContent : undefined;
+      const noteTitle = parsed.title ||
+        (document.title.trim() && document.title !== "Markdown note" ? document.title.trim() : "") ||
+        (leadingTitle ? headingText(leadingTitle) : "Markdown note");
+      // The title belongs to the document header, not twice in succession.
+      if (leadingTitle && headingText(leadingTitle).toLocaleLowerCase() === noteTitle.replace(/\s+/g, " ").trim().toLocaleLowerCase()) {
+        tree.children = childrenOf(tree).filter(node => node !== leadingTitle);
+      }
+      renderDocumentTitles(doc, ctx, noteTitle, document.folderTitle?.trim() ?? "");
+      // Keep content headings subordinate to the note title, even if a note
+      // uses H1 for its internal sections.
+      const sectionCtx = { ...ctx, headingSizes: [0, ...ctx.headingSizes.slice(2), ctx.headingSizes[6]] };
+      const visuals: MarkdownNode[] = [];
+      const collectVisuals = (node: MarkdownNode) => {
+        if (node.type === "code" && PDF_VISUAL_LANGUAGES.has(node.lang ?? "")) visuals.push(node);
+        childrenOf(node).forEach(collectVisuals);
+      };
+      collectVisuals(tree);
+      if (visuals.length) {
+        const images = await snapshots.capture(document.content, document.slug, clusterSlug, document.title);
+        if (images.length !== visuals.length) throw new Error("Some visualizers could not be included in this PDF.");
+        visuals.forEach((node, index) => {
+          node.type = "image";
+          node.imageData = images[index];
+          delete node.value;
+        });
+      }
+      await prepareFigures(tree, clusterSlug, document.slug, ctx.requireImages);
+      renderNode(doc, tree, sectionCtx, clusterSlug);
+    }
+  } catch (error) {
+    doc.destroy();
+    throw error;
+  } finally {
+    await snapshots.close();
+  }
 
   const range = doc.bufferedPageRange();
   for (let index = range.start; index < range.start + range.count; index += 1) {

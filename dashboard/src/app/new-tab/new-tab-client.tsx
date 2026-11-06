@@ -1,10 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
-import { CalendarDays, ChevronDown, Compass, Globe2, LayoutGrid, ListTodo, PanelsTopLeft, Search, Timer, UserRound, UsersRound, X, type LucideIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ChevronDown, Compass, Globe2, LayoutGrid, ListTodo, PanelsTopLeft, Settings, Timer, UsersRound, type LucideIcon } from "lucide-react";
 import BrowserHomeAccessories from "@/app/browser/browser-home-accessories";
-import { BrowserSketchOutline } from "@/app/browser/browser-home-widgets";
 import LinkContextMenu from "@/app/components/link-context-menu";
 import NavigationLink from "@/app/components/navigation-link";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
@@ -17,8 +16,14 @@ import NewTabGreeting from "./new-tab-greeting";
 import NewTabNotepad from "./new-tab-notepad";
 import ProviderUsageNotch from "./provider-usage-notch";
 import PageAppearance from "@/app/components/page-appearance";
+import SpotifyAmbientBackground from "@/app/components/spotify-ambient-background";
+import AsciiArtwork from "@/app/components/ascii-artwork";
+import RainBackground from "@/app/components/rain-background";
+import { SpotifyAmbientProvider } from "@/app/components/spotify-ambient-context";
 import VoiceShortcut from "@/app/components/voice-shortcut";
+import NewTabSearch from "./new-tab-search";
 import type { NewTabGarden } from "@/lib/new-tab-gardens";
+import type { SearchHistoryEntry } from "@/lib/new-tab-search-suggestions";
 export type { NewTabGarden } from "@/lib/new-tab-gardens";
 
 interface Place {
@@ -31,9 +36,8 @@ const PLACES: Place[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutGrid },
   { href: "/plan", label: "Plan", icon: ListTodo },
   { href: "/buzz", label: "Organization", icon: UsersRound },
-  { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/pomodoro", label: "Work Timer", icon: Timer },
-  { href: "/profile", label: "Profile", icon: UserRound },
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 const RECENT_GARDEN_LIMIT = 6;
@@ -80,11 +84,13 @@ function BrowserShortcut({ query }: { query: string }) {
 
 export default function NewTabClient({
   gardens: initialGardens,
+  initialSearchHistory,
   addressee: initialAddressee,
   greetingOwnerKey = "local",
   widgetOwnerKey = greetingOwnerKey,
 }: {
   gardens: NewTabGarden[];
+  initialSearchHistory: SearchHistoryEntry[];
   addressee: string;
   greetingOwnerKey?: string;
   widgetOwnerKey?: string;
@@ -107,77 +113,52 @@ export default function NewTabClient({
   const addressee = useNewTabAddressee(initialAddressee, greetingOwnerKey);
   const appearance = usePageAppearance(widgetOwnerKey, "new-tab");
   const backgroundImage = appearance.wallpaper?.src;
-  const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
-  const searchRef = useRef<HTMLInputElement>(null);
-  const searchFrameRef = useRef<HTMLDivElement>(null);
-  const needle = query.trim().toLowerCase();
-  const matchingPlaces = PLACES.filter((place) => place.label.toLowerCase().includes(needle));
-  // Filter creates a new array, so sorting never changes the supplied gardens.
+  const [searching, setSearching] = useState(false);
+  // Copy the array so sorting never changes the supplied gardens.
   // Never-opened gardens keep their creation order.
-  const sortedGardens = gardens
-    .filter((garden) => garden.name.toLowerCase().includes(needle))
+  const sortedGardens = [...gardens]
     .sort((left, right) =>
       (right.lastViewedAt ?? "").localeCompare(left.lastViewedAt ?? ""),
     );
-  const visibleGardens = showAll || needle ? sortedGardens : sortedGardens.slice(0, RECENT_GARDEN_LIMIT);
-
-  function clearSearch() {
-    setQuery("");
-    searchRef.current?.focus();
-  }
+  const visibleGardens = showAll ? sortedGardens : sortedGardens.slice(0, RECENT_GARDEN_LIMIT);
 
   return (
+    <SpotifyAmbientProvider ownerKey={widgetOwnerKey}>
     <main
       className={`${styles.surface} browser-home-widget-surface`}
       data-wallpaper-ready={appearance.ready}
-      data-wallpaper-tone={backgroundImage ? appearance.wallpaperTone : undefined}
+      data-wallpaper-tone={appearance.asciiBackground ? "dark" : appearance.ambientBackground ? appearance.theme : backgroundImage ? appearance.wallpaperTone : undefined}
       style={backgroundImage ? { backgroundImage: `url("${backgroundImage}")`, backgroundSize: "cover", backgroundPosition: "center" } : undefined}
     >
+      {(appearance.ambientBackground || appearance.asciiBackground || appearance.rainMode !== "off") && <div className={styles.ambientBackdrop}>
+        {appearance.ambientBackground && <SpotifyAmbientBackground theme={appearance.theme} spotifyColors={appearance.spotifyBackground} randomColors={appearance.randomColorsBackground} />}
+        {appearance.asciiBackground && <AsciiArtwork slug={appearance.asciiBackground} />}
+        {appearance.rainMode !== "off" && <RainBackground theme={appearance.theme} mode={appearance.rainMode} />}
+      </div>}
       <PageAppearance page="new-tab" ownerKey={widgetOwnerKey} />
-      <div className={styles.launcher}>
+      <div className={styles.launcher} data-searching={searching || undefined}>
         <header className={styles.heading}>
           <NewTabGreeting addressee={addressee} />
         </header>
 
-        <div ref={searchFrameRef} className={styles.search} role="search">
-          <Search size={18} aria-hidden="true" />
-          <input
-            ref={searchRef}
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => { if (event.key === "Escape") clearSearch(); }}
-            placeholder="Find a garden or a place…"
-            aria-label="Find a garden or a place"
-            aria-controls="new-tab-garden-list new-tab-places"
-            autoComplete="off"
-            spellCheck={false}
-          />
-          {query && (
-            <button type="button" onClick={clearSearch} aria-label="Clear search" className={styles.clearSearch}>
-              <X size={16} aria-hidden="true" />
-            </button>
-          )}
-          <BrowserSketchOutline targetRef={searchFrameRef} index={0} />
-        </div>
-
+        <NewTabSearch key={greetingOwnerKey} ownerKey={greetingOwnerKey} gardens={gardens} initialHistory={initialSearchHistory} active={active} onSearchingChange={setSearching}>
         <nav id="new-tab-places" aria-label="Places" className={styles.places}>
-          {matchingPlaces.map(({ href, label, icon: Icon }) => (
+          {PLACES.map(({ href, label, icon: Icon }) => (
             <NavigationLink key={href} href={href} label={label} className={styles.destinationButton}>
               <Icon size={15} aria-hidden="true" />
               {label}
             </NavigationLink>
           ))}
-          <BrowserShortcut query={needle} />
-          {"voice".includes(needle) && <VoiceShortcut className={styles.destinationButton} errorClassName={styles.browserError} />}
+          <BrowserShortcut query="" />
+          <VoiceShortcut className={styles.destinationButton} errorClassName={styles.browserError} />
         </nav>
 
         <section aria-labelledby="new-tab-gardens" className={styles.gardens}>
           <div className={styles.sectionHeading}>
-            <h2 id="new-tab-gardens">{needle ? "Matching Gardens" : "Your Gardens"}</h2>
+            <h2 id="new-tab-gardens">Your Gardens</h2>
             <span className={styles.gardenCount} aria-live="polite" aria-atomic="true">
-              {needle ? `${sortedGardens.length} found` : `${gardens.length}`}
+              {gardens.length}
             </span>
           </div>
           <ul id="new-tab-garden-list" className={styles.gardenList}>
@@ -214,7 +195,7 @@ export default function NewTabClient({
               ) : "No gardens found. Try another name."}
             </p>
           )}
-          {!needle && gardens.length > RECENT_GARDEN_LIMIT && (
+          {gardens.length > RECENT_GARDEN_LIMIT && (
             <button
               type="button"
               className={styles.showAll}
@@ -227,10 +208,12 @@ export default function NewTabClient({
             </button>
           )}
         </section>
+        </NewTabSearch>
       </div>
       <NewTabNotepad key={widgetOwnerKey} ownerKey={widgetOwnerKey} />
       <ProviderUsageNotch key={`usage-${widgetOwnerKey}`} />
       <BrowserHomeAccessories ownerKey={widgetOwnerKey} />
     </main>
+    </SpotifyAmbientProvider>
   );
 }

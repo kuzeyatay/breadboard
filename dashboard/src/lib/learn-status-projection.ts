@@ -3,6 +3,8 @@ import type { Dir, Stats } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
+import { runCooperatively } from "./cooperative-task.ts";
+import { isLearnSelectableSource } from "./learn-source-selection.ts";
 
 import db from "@/lib/db";
 import { modelAuthoredLearningUnitParseProblems } from "@/lib/learning-unit-contract";
@@ -51,7 +53,10 @@ const STATUS_SOURCE_TOTAL_BYTE_LIMIT = 256 * 1024 * 1024;
 const STATUS_PENDING_WHITESPACE_LIMIT = 1024 * 1024;
 const STATUS_STREAM_CHUNK_BYTES = 64 * 1024;
 const STATUS_SOURCE_CACHE_LIMIT = 128;
-const STATUS_METADATA_CACHE_LIMIT = 128;
+// Metadata entries are a few frontmatter fields (most are just "not a source"),
+// and a garden can hold thousands of notes: at 128 every status poll reopened
+// every note's header. Cover as many notes as one walk accepts.
+const STATUS_METADATA_CACHE_LIMIT = STATUS_MARKDOWN_ENTRY_LIMIT;
 const STATUS_SOURCE_VISUAL_LEDGER_BYTE_LIMIT = 16 * 1024 * 1024;
 const STATUS_SOURCE_VISUAL_LIMIT = 16_384;
 const STATUS_SOURCE_IDENTITY_BYTE_LIMIT = 1024 * 1024;
@@ -381,6 +386,7 @@ interface StatusSourceProjection {
 }
 
 interface StatusSourceSummary extends LearnSourceSummary {
+  defaultSelected: boolean;
   statusFile: StatusFileIdentity;
   statusBodyHash: string | null;
 }
@@ -1002,20 +1008,22 @@ function sameStatusFile(stat: Stats, expected: Stats): boolean {
   );
 }
 
-function walkMarkdown(clusterDir: string): {
+function* walkMarkdown(clusterDir: string): Generator<void, {
   entries: StatusMarkdownEntry[];
   incomplete: boolean;
-} {
+}> {
   const entries: StatusMarkdownEntry[] = [];
   const pending = [{ directory: clusterDir, relativeDirectory: "", depth: 0 }];
   let visited = 0;
   let incomplete = false;
   while (pending.length > 0) {
+    yield;
     const current = pending.pop()!;
     let directory: Dir;
+    let canonicalDirectory: string;
     try {
       const directoryStat = fs.lstatSync(current.directory);
-      const canonicalDirectory = fs.realpathSync.native(current.directory);
+      canonicalDirectory = fs.realpathSync.native(current.directory);
       if (
         !directoryStat.isDirectory() ||
         directoryStat.isSymbolicLink() ||
@@ -1032,6 +1040,7 @@ function walkMarkdown(clusterDir: string): {
     }
     try {
       for (;;) {
+        yield;
         const entry = directory.readSync();
         if (!entry) break;
         visited += 1;
@@ -1084,11 +1093,11 @@ function walkMarkdown(clusterDir: string): {
             incomplete = true;
             continue;
           }
-          const realPath = fs.realpathSync.native(filePath);
-          if (!pathIsWithin(clusterDir, realPath)) {
-            incomplete = true;
-            continue;
-          }
+          // A regular file (not a link) in this verified directory resolves to
+          // the directory's canonical path plus its name; resolving each one
+          // again cost about 0.1 ms per note. Readers still compare fstat
+          // against this stat before trusting the bytes.
+          const realPath = path.join(canonicalDirectory, entry.name);
           entries.push({
             entry: entry.name,
             filePath,
@@ -1227,11 +1236,15 @@ function streamTrimmedStatusBody(
 function readMarkdownProjection(
   entry: StatusMarkdownEntry,
   remainingSourceBytes: number,
+  selectedSourceIds: ReadonlySet<string>,
 ): StatusMarkdownProjection {
-  const cacheKey = `${entry.identity.key}\0${entry.relPath}`;
+  const explicitlySelected = selectedSourceIds.has(entry.entry.replace(/\.md$/, ""));
+  const cacheKey = `${entry.identity.key}\0${entry.relPath}\0${explicitlySelected}`;
   const cached = cachedMarkdownProjection(cacheKey);
   if (cached) {
-    const cachedSize = cached.node?.sourceProjection?.identity.size ?? 0;
+    const cachedSize = cached.node?.type === "source-document" || explicitlySelected
+      ? cached.node?.sourceProjection?.identity.size ?? 0
+      : 0;
     if (cachedSize > remainingSourceBytes) {
       return {
         node: cached.node?.sourceProjection
@@ -1297,12 +1310,18 @@ function readMarkdownProjection(
       date: frontmatterString(data, "date") || opened.mtime.toISOString(),
       sourceImages: frontmatterArray(data, "source_images"),
     };
-    if (type !== "source-document" && !isLearnAuthoredLesson(node)) {
+    const selectable = isLearnSelectableSource(node);
+    if (!selectable && !isLearnAuthoredLesson(node)) {
       const projection = { node: null, incomplete: false };
       cacheMarkdownProjection(cacheKey, projection);
       return projection;
     }
-    if (type === "source-document") {
+    if (selectable) {
+      node.sourceProjection = { identity, bodyHash: null, wordCount: null };
+    }
+    // Unselected Markdown only needs metadata for availability. Do not hash
+    // every note on every poll or let an oversized unused note stale a course.
+    if (selectable && (type === "source-document" || explicitlySelected)) {
       const permitted = Math.min(
         STATUS_SOURCE_FILE_BYTE_LIMIT,
         remainingSourceBytes,
@@ -1336,18 +1355,20 @@ function readMarkdownProjection(
   }
 }
 
-function scanStatusKnowledge(
+function* scanStatusKnowledge(
   contentPath: string,
   gardenId: string,
-): StatusKnowledgeScan {
+  selectedSourceIds: ReadonlySet<string>,
+): Generator<void, StatusKnowledgeScan> {
   const clusterDir = statusGardenDirectory(contentPath, gardenId);
   if (!clusterDir) return { sources: [], hasTextbook: false, incomplete: false };
-  const walked = walkMarkdown(clusterDir);
+  const walked = yield* walkMarkdown(clusterDir);
   const nodes: StatusKnowledgeNode[] = [];
   let incomplete = walked.incomplete;
   let sourceBytes = 0;
   let frontmatterBytes = 0;
   for (const entry of walked.entries) {
+    yield;
     frontmatterBytes += Math.min(
       entry.identity.size,
       STATUS_FRONTMATTER_BYTE_LIMIT + 4,
@@ -1359,11 +1380,12 @@ function scanStatusKnowledge(
     const projection = readMarkdownProjection(
       entry,
       Math.max(0, STATUS_SOURCE_TOTAL_BYTE_LIMIT - sourceBytes),
+      selectedSourceIds,
     );
     incomplete ||= projection.incomplete;
     if (!projection.node) continue;
     nodes.push(projection.node);
-    if (projection.node.type === "source-document") {
+    if (projection.node.type === "source-document" || selectedSourceIds.has(projection.node.slug)) {
       sourceBytes += projection.node.sourceProjection?.identity.size ?? 0;
       if (sourceBytes > STATUS_SOURCE_TOTAL_BYTE_LIMIT) incomplete = true;
     }
@@ -1397,6 +1419,7 @@ function scanStatusKnowledge(
       !superseded.has(node.sourceDocument),
   );
   const toSummary = (node: StatusKnowledgeNode): StatusSourceSummary => ({
+    defaultSelected: node.type === "source-document",
     id: node.slug,
     slug: node.slug,
     title: node.title,
@@ -1412,7 +1435,10 @@ function scanStatusKnowledge(
     statusBodyHash: node.sourceProjection?.bodyHash ?? null,
   });
   return {
-    sources: visible.filter((node) => node.type === "source-document").map(toSummary),
+    sources: [
+      ...visible.filter((node) => node.type === "source-document"),
+      ...visible.filter((node) => node.type !== "source-document" && isLearnSelectableSource(node)),
+    ].map(toSummary),
     hasTextbook: visible.some(isLearnAuthoredLesson),
     incomplete,
   };
@@ -2485,15 +2511,37 @@ function learnLifecycleMapBindingMismatch({
  * no schema migration, generation, provider call, compiler invocation, child
  * creation, or persistent caching of source bodies.
  */
-export function getLearnStatusSnapshot({
+type LearnStatusInput = { userId?: number; gardenId: string; contentPath: string };
+const pendingSnapshots = new Map<string, Promise<LearnStatusSnapshot>>();
+
+export function getLearnStatusSnapshot(input: LearnStatusInput): LearnStatusSnapshot {
+  const task = projectLearnStatusSnapshot(input);
+  for (;;) {
+    const step = task.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Concurrent tabs share only an in-flight read; subsequent polls see fresh data. */
+export function getLearnStatusSnapshotAsync(input: LearnStatusInput): Promise<LearnStatusSnapshot> {
+  const key = JSON.stringify([path.resolve(input.contentPath), input.gardenId, input.userId]);
+  const existing = pendingSnapshots.get(key);
+  if (existing) return existing;
+  const work = runCooperatively(projectLearnStatusSnapshot(input)).finally(() => {
+    if (pendingSnapshots.get(key) === work) pendingSnapshots.delete(key);
+  });
+  pendingSnapshots.set(key, work);
+  return work;
+}
+
+function* projectLearnStatusSnapshot({
   gardenId,
   contentPath,
 }: {
   userId?: number;
   gardenId: string;
   contentPath: string;
-}): LearnStatusSnapshot {
-  const context = scanStatusKnowledge(contentPath, gardenId);
+}): Generator<void, LearnStatusSnapshot> {
   const publicationRecovery = pendingLearnPublicationRecovery(gardenId);
   const storedLatestJob = latestLearnJob(gardenId);
   const latestConfirmed = latestConfirmedLearnMap(gardenId);
@@ -2541,10 +2589,6 @@ export function getLearnStatusSnapshot({
         }
       : null;
   const latestVersion = latestLearnVersion(gardenId);
-  const hasTextbook = context.hasTextbook;
-  const availableSourceIdSet = new Set(
-    context.sources.map((source) => source.slug),
-  );
   const latestJobBoundMapId =
     latestJob?.proposedLearningMapId ?? latestJob?.confirmedLearningMapId;
   const latestJobBoundMapCandidate = latestJobBoundMapId
@@ -2558,11 +2602,27 @@ export function getLearnStatusSnapshot({
     latestJob ? latestJobBoundMap : contractProposed,
     confirmedMap,
   );
+  const versionMapCandidate = latestVersion
+    ? learnMapById(latestVersion.learning_map_id, gardenId)
+    : null;
+  const versionMap = isContractBackedLearningMap(versionMapCandidate)
+    ? versionMapCandidate
+    : null;
+  const sourceBindingMap = latestVersion
+    ? versionMap
+    : contractProposed ?? confirmedMap;
+  const context = yield* scanStatusKnowledge(contentPath, gardenId, new Set([
+    ...(selection?.sourceIds ?? []),
+    ...(sourceBindingMap?.sourceIds ?? []),
+    ...[selection?.syllabusSourceId, sourceBindingMap?.syllabusSourceId].filter((id): id is string => Boolean(id)),
+  ]));
+  const hasTextbook = context.hasTextbook;
+  const availableSourceIdSet = new Set(context.sources.map((source) => source.slug));
   const selectedSourceIds = selection
     ? context.incomplete
       ? [...selection.sourceIds]
       : selection.sourceIds.filter((sourceId) => availableSourceIdSet.has(sourceId))
-    : context.sources.map((source) => source.slug);
+    : context.sources.filter((source) => source.defaultSelected).map((source) => source.slug);
   const syllabusSourceId =
     selection?.syllabusSourceId &&
     (context.incomplete || availableSourceIdSet.has(selection.syllabusSourceId))
@@ -2587,15 +2647,6 @@ export function getLearnStatusSnapshot({
         }
       : null;
 
-  const versionMapCandidate = latestVersion
-    ? learnMapById(latestVersion.learning_map_id, gardenId)
-    : null;
-  const versionMap = isContractBackedLearningMap(versionMapCandidate)
-    ? versionMapCandidate
-    : null;
-  const sourceBindingMap = latestVersion
-    ? versionMap
-    : contractProposed ?? confirmedMap;
   let sourceSetChanged =
     context.incomplete ||
     Boolean(latestVersion && !versionMap) ||
@@ -2612,7 +2663,7 @@ export function getLearnStatusSnapshot({
   if (sourceBindingMap && !context.incomplete) {
     try {
       const selectedSources = selectSources(
-        context.sources,
+        sourceBindingMap.sourceIds.length ? context.sources : context.sources.filter((source) => source.defaultSelected),
         sourceBindingMap.sourceIds.length ? sourceBindingMap.sourceIds : undefined,
       );
       const syllabus = selectSyllabus(

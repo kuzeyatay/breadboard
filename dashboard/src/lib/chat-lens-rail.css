@@ -1,0 +1,94 @@
+/* The same lens rail is used by dashboard chats and the standalone Quartz AI. */
+.bb-chat-lens {
+  --lens-muted: var(--ink-muted, var(--bb-ai-muted, #50615a));
+  --lens-ink: var(--ink, var(--bb-ai-fg, #13201b));
+  /* Light paper needs graphite marks and shaded edges to reveal the curve. */
+  --lens-mark: #707b7d;
+  --lens-current: #465354;
+  --lens-edge: rgb(68 80 82 / 20%);
+  --lens-face: rgb(255 255 255 / 50%);
+  --lens-ring-opacity: .58;
+  --lens-ring-hover-opacity: .72;
+  --lens-ease: var(--neu-easing, cubic-bezier(.23, 1, .32, 1));
+  width: 44px;
+  opacity: 1;
+  pointer-events: none;
+}
+.bb-chat-lens .bb-chat-lens-track {
+  position: relative;
+  display: block;
+  width: 44px;
+  height: min(var(--lens-length, 310px), 60vh);
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  overscroll-behavior: contain;
+}
+.bb-chat-lens-track::before {
+  content: '';
+  position: absolute;
+  inset: 6px 0 6px auto;
+  width: 30px;
+  border-radius: 50%;
+  background: linear-gradient(90deg, transparent, var(--lens-edge) 14%, var(--lens-face) 50%, var(--lens-edge) 86%, transparent);
+  mask-image: linear-gradient(transparent, black 25%, black 75%, transparent);
+  opacity: var(--lens-ring-opacity);
+  pointer-events: none;
+}
+.bb-chat-lens .bb-chat-lens-item {
+  position: absolute;
+  top: 50%; left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px; height: 14px;
+  min-height: 0;
+  margin: 0; padding: 0; border: 0;
+  background: none;
+  cursor: pointer;
+  opacity: var(--lens-opacity, .6);
+  transition: opacity 180ms var(--lens-ease);
+}
+.bb-chat-lens-item .bb-chat-lens-mark {
+  display: block;
+  height: 1px; width: 14px;
+  border-radius: 1px;
+  background: var(--lens-mark);
+  opacity: 1;
+  transform: translateX(7px) scaleX(1);
+  transform-origin: center;
+  transition: transform 180ms var(--lens-ease), opacity 180ms var(--lens-ease), background-color 180ms var(--lens-ease);
+  pointer-events: none;
+}
+.bb-chat-lens-item[aria-current=true] .bb-chat-lens-mark { background: var(--lens-current); }
+.bb-chat-lens .bb-chat-lens-item[data-lens-hovered=true],
+.bb-chat-lens .bb-chat-lens-item:focus-visible { opacity: .9; }
+.bb-chat-lens .bb-chat-lens-item[data-lens-hovered=true][aria-current=true] { opacity: 1; }
+.bb-chat-lens-item[data-lens-hovered=true] .bb-chat-lens-mark,
+.bb-chat-lens-item:focus-visible .bb-chat-lens-mark { background: var(--lens-muted); opacity: 1; }
+.bb-chat-lens-item[data-lens-hovered=true]:not([aria-current=true]) .bb-chat-lens-mark,
+.bb-chat-lens-item:focus-visible:not([aria-current=true]) .bb-chat-lens-mark { transform: translateX(7px) scaleX(1.428571); }
+.bb-chat-lens-item:focus-visible { outline: 1px solid var(--lens-muted); outline-offset: 1px; border-radius: 3px; }
+.bb-chat-lens-item:focus-visible, .bb-chat-lens-item:focus-visible .bb-chat-lens-mark { transition: none; }
+.bb-chat-lens-track[data-lens-dragging=true], .bb-chat-lens-track[data-lens-dragging=true] .bb-chat-lens-item { cursor: grabbing; }
+/* Preserve the existing reflected-light treatment on dark surfaces.
+   Quartz's standalone assistant uses a dark panel in either page theme. */
+html[data-theme=dark] .bb-chat-lens,
+html[saved-theme=dark] .bb-chat-lens,
+.breadboard-ai .bb-chat-lens {
+  --lens-mark: #919a9b;
+  --lens-current: var(--lens-ink);
+  --lens-edge: #b8bec03b;
+  --lens-face: color-mix(in srgb, var(--surface-raised, var(--bb-ai-bg, white)) 38%, transparent);
+  --lens-ring-opacity: .48;
+  --lens-ring-hover-opacity: .65;
+}
+@media (hover: hover) and (pointer: fine) {
+  .bb-chat-lens-track:hover::before { opacity: var(--lens-ring-hover-opacity); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bb-chat-lens .bb-chat-lens-item, .bb-chat-lens .bb-chat-lens-mark { transition: none; }
+}

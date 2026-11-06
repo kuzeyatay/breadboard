@@ -10,17 +10,21 @@
 // from, and the file's own route still decides who may read it.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
+import {
+  ArrowLeft, Download, Maximize, Minimize, Pause, Play,
+  RotateCcw, RotateCw, Square, Volume2, VolumeX, X,
+} from "lucide-react";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { ReclaimingVideo } from "@/app/components/reclaiming-media";
+import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
+import { useDesktopTabs } from "./use-desktop-tabs";
+import styles from "./video-player-client.module.css";
 
 interface Props {
   /** Visible name of the video. */
   title: string;
   /** Same-origin address serving the video bytes. */
   sourceUrl: string;
-  /** Small label above the title, e.g. "Video artifact". */
-  kicker?: string;
   /** Where the back control goes; the browser's own history when absent. */
   backHref?: string;
   showNavbarFlowers?: boolean;
@@ -41,14 +45,16 @@ function formatTime(seconds: number): string {
 export default function VideoPlayerClient({
   title,
   sourceUrl,
-  kicker = "Video",
   backHref,
   showNavbarFlowers = true,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
+  const tabs = useDesktopTabs();
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const [fullscreen, setFullscreen] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [failed, setFailed] = useState(false);
@@ -56,9 +62,48 @@ export default function VideoPlayerClient({
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
-    if (video.paused) void video.play().catch(() => setFailed(true));
+    if (video.paused) void video.play().catch((error: unknown) => {
+      // A quick Stop/Pause can interrupt a pending play without breaking media.
+      if (!(error instanceof DOMException && error.name === "AbortError")) setFailed(true);
+    });
     else video.pause();
   }, []);
+
+  const stop = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.pause();
+    video.currentTime = 0;
+    setCurrentTime(0);
+    setPlaying(false);
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.muted || video.volume === 0) {
+      if (video.volume === 0) video.volume = 1;
+      video.muted = false;
+    } else video.muted = true;
+  }, []);
+
+  const goBack = useCallback(() => {
+    videoRef.current?.pause();
+    if (backHref) window.location.assign(backHref);
+    else if (window.history.length > 1) window.history.back();
+    else window.location.assign("/");
+  }, [backHref]);
+
+  const exitPlayer = useCallback(async () => {
+    videoRef.current?.pause();
+    if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
+    // Address this player explicitly so a delayed command cannot close another tab.
+    if (
+      tabs?.enabled && tabs.selfId != null &&
+      await sendDesktopTabsCommand({ type: "close", id: tabs.selfId })
+    ) return;
+    goBack();
+  }, [goBack, tabs]);
 
   const seekBy = useCallback((delta: number) => {
     const video = videoRef.current;
@@ -67,6 +112,12 @@ export default function VideoPlayerClient({
       Math.max(0, video.currentTime + delta),
       video.duration,
     );
+  }, []);
+
+  useEffect(() => {
+    const syncFullscreen = () => setFullscreen(document.fullscreenElement === shellRef.current);
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
   }, []);
 
   const toggleFullscreen = useCallback(() => {
@@ -84,7 +135,9 @@ export default function VideoPlayerClient({
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
       if (target?.isContentEditable) return;
-      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      // Let focused controls handle Space and arrow keys themselves.
+      if (target?.closest("input, textarea, select")) return;
+      if (event.key === " " && target?.closest("button, a, [role='button']")) return;
       switch (event.key) {
         case " ":
         case "k":
@@ -107,15 +160,10 @@ export default function VideoPlayerClient({
           event.preventDefault();
           seekBy(10);
           break;
-        case "m": {
+        case "m":
           event.preventDefault();
-          const video = videoRef.current;
-          if (video) {
-            video.muted = !video.muted;
-            setMuted(video.muted);
-          }
+          toggleMute();
           break;
-        }
         case "f":
           event.preventDefault();
           toggleFullscreen();
@@ -126,56 +174,54 @@ export default function VideoPlayerClient({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [seekBy, toggleFullscreen, togglePlay]);
+  }, [seekBy, toggleFullscreen, toggleMute, togglePlay]);
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
     <div
       ref={shellRef}
-      className="flex h-screen flex-col overflow-hidden bg-[var(--paper-sunken,#101713)] text-[var(--ink-on-dark,#e8efe9)]"
+      className={styles.player}
+      role="region"
+      aria-label="Video player"
     >
-      <header className="relative flex shrink-0 items-center gap-3 border-b border-white/10 px-4 py-2.5">
+      <header className={styles.header}>
         {showNavbarFlowers ? <NavbarFlowerWind /> : null}
-        {backHref ? (
-          <Link
-            href={backHref}
-            className="rounded-lg px-2 py-1 text-sm text-white/70 outline-none transition hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
-          >
-            ← Back
-          </Link>
-        ) : (
-          <button
-            type="button"
-            onClick={() => window.history.back()}
-            className="rounded-lg px-2 py-1 text-sm text-white/70 outline-none transition hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
-          >
-            ← Back
-          </button>
-        )}
-        <div className="min-w-0 flex-1">
-          <p className="text-[11px] uppercase tracking-wide text-white/45">{kicker}</p>
-          <h1 className="truncate text-sm font-medium text-white/90" title={title}>
+        <button type="button" onClick={goBack} className={styles.button} aria-label="Back">
+          <ArrowLeft aria-hidden="true" size={18} /><span className={styles.optionalLabel}>Back</span>
+        </button>
+        <div className={styles.heading}>
+          <h1 className={styles.title} title={title}>
             {title}
           </h1>
         </div>
         <a
           href={sourceUrl}
           download
-          className="rounded-lg px-2 py-1 text-sm text-white/70 outline-none transition hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
+          className={styles.button}
+          aria-label="Download video"
         >
-          Download
+          <Download aria-hidden="true" size={18} /><span className={styles.optionalLabel}>Download</span>
         </a>
+        <button type="button" onClick={() => void exitPlayer()} className={styles.button} aria-label="Exit player" title="Exit player">
+          <X aria-hidden="true" size={18} /> Exit
+        </button>
       </header>
 
-      <div className="flex min-h-0 flex-1 items-center justify-center bg-black/60 p-4">
+      <div className={styles.stage}>
         {failed ? (
-          <p className="max-w-md text-center text-sm text-white/70">
+          <p className={styles.error} role="alert">
             This video could not be played here.{" "}
             <a className="underline" href={sourceUrl} download>
               Download it
             </a>{" "}
             to open it in another player.
+            <button type="button" className={styles.button} onClick={() => {
+              setFailed(false);
+              setPlaying(false);
+              setCurrentTime(0);
+              setDuration(0);
+            }}>Retry</button>
           </p>
         ) : (
           <ReclaimingVideo
@@ -186,81 +232,101 @@ export default function VideoPlayerClient({
             onClick={togglePlay}
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
+            onEnded={() => setPlaying(false)}
+            onVolumeChange={(event) => {
+              setMuted(event.currentTarget.muted);
+              setVolume(event.currentTarget.volume);
+            }}
             onError={() => setFailed(true)}
             onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+            onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
             onLoadedMetadata={(event) => {
               const video = event.currentTarget;
               setDuration(Number.isFinite(video.duration) ? video.duration : 0);
               setMuted(video.muted);
+              setVolume(video.volume);
             }}
-            className="max-h-full max-w-full cursor-pointer rounded-xl bg-black shadow-[0_18px_48px_rgba(0,0,0,0.45)]"
+            className={styles.video}
           >
             Your browser cannot play this video.
           </ReclaimingVideo>
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-3 border-t border-white/10 px-4 py-3">
-        <button
-          type="button"
-          onClick={togglePlay}
-          aria-label={playing ? "Pause" : "Play"}
-          className="rounded-lg px-2 py-1 text-sm text-white/80 outline-none transition hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
-        >
-          {playing ? "Pause" : "Play"}
-        </button>
-        <span className="w-16 shrink-0 text-right font-mono text-xs text-white/60">
-          {formatTime(currentTime)}
-        </span>
-        <label className="relative flex min-w-0 flex-1 items-center">
-          <span className="sr-only">Seek</span>
-          <span
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/15"
-          >
-            <span
-              className="block h-full rounded-full bg-[var(--botanical,#6f9f79)]"
-              style={{ width: `${progress}%` }}
-            />
-          </span>
+      <div className={styles.controls} role="group" aria-label="Playback controls">
+        <div className={styles.timeline}>
+          <span className={styles.time}>{formatTime(currentTime)}</span>
           <input
             type="range"
+            aria-label="Seek"
+            aria-valuetext={`${formatTime(currentTime)} of ${formatTime(duration)}`}
             min={0}
             max={duration || 0}
             step="any"
             value={currentTime}
+            disabled={failed || duration <= 0}
             onChange={(event) => {
-              const video = videoRef.current;
               const next = Number(event.target.value);
-              if (video && Number.isFinite(next)) video.currentTime = next;
-              setCurrentTime(next);
+              if (videoRef.current && Number.isFinite(next)) {
+                videoRef.current.currentTime = next;
+                setCurrentTime(next);
+              }
             }}
-            className="relative w-full cursor-pointer appearance-none bg-transparent outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)] [&::-webkit-slider-runnable-track]:h-1 [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:mt-[-5px] [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white"
+            className={styles.seek}
+            style={{ background: `linear-gradient(to right, #a7d7b3 ${progress}%, #526159 ${progress}%)` }}
           />
-        </label>
-        <span className="w-16 shrink-0 font-mono text-xs text-white/60">
-          {formatTime(duration)}
-        </span>
-        <button
-          type="button"
-          onClick={() => {
-            const video = videoRef.current;
-            if (!video) return;
-            video.muted = !video.muted;
-            setMuted(video.muted);
-          }}
-          aria-label={muted ? "Unmute" : "Mute"}
-          className="rounded-lg px-2 py-1 text-sm text-white/80 outline-none transition hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
-        >
-          {muted ? "Unmute" : "Mute"}
-        </button>
-        <button
-          type="button"
-          onClick={toggleFullscreen}
-          className="rounded-lg px-2 py-1 text-sm text-white/80 outline-none transition hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
-        >
-          Fullscreen
-        </button>
+          <span className={styles.time}>{formatTime(duration)}</span>
+        </div>
+        <div className={styles.transport}>
+          <button
+            type="button"
+            onClick={togglePlay}
+            aria-label={playing ? "Pause" : "Play"}
+            disabled={failed}
+            title={playing ? "Pause (Space / K)" : "Play (Space / K)"}
+            className={`${styles.button} ${styles.primary}`}
+          >
+            {playing ? <Pause aria-hidden="true" size={18} /> : <Play aria-hidden="true" size={18} />}
+            {playing ? "Pause" : "Play"}
+          </button>
+          <button type="button" onClick={stop} disabled={failed} className={styles.button} title="Stop and return to the beginning">
+            <Square aria-hidden="true" size={16} /> Stop
+          </button>
+          <button type="button" onClick={() => seekBy(-10)} disabled={failed || duration <= 0} className={styles.button} aria-label="Rewind 10 seconds" title="Rewind 10 seconds (J)">
+            <RotateCcw aria-hidden="true" size={18} /> 10s
+          </button>
+          <button type="button" onClick={() => seekBy(10)} disabled={failed || duration <= 0} className={styles.button} aria-label="Forward 10 seconds" title="Forward 10 seconds (L)">
+            <RotateCw aria-hidden="true" size={18} /> 10s
+          </button>
+          <div className={styles.volume}>
+            <button
+              type="button"
+              onClick={toggleMute}
+              aria-label={muted || volume === 0 ? "Unmute" : "Mute"}
+              title={muted || volume === 0 ? "Unmute (M)" : "Mute (M)"}
+              className={styles.button}
+              disabled={failed}
+            >
+              {muted || volume === 0 ? <VolumeX aria-hidden="true" size={18} /> : <Volume2 aria-hidden="true" size={18} />}
+            </button>
+            <input type="range" aria-label="Volume" min={0} max={1} step={0.05} value={muted ? 0 : volume} disabled={failed} className={styles.volumeSlider} onChange={(event) => {
+              const video = videoRef.current;
+              if (!video) return;
+              video.volume = Number(event.target.value);
+              video.muted = false;
+            }} />
+          </div>
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            className={`${styles.button} ${styles.fullscreen}`}
+            aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+            title={fullscreen ? "Exit fullscreen (F / Esc)" : "Fullscreen (F)"}
+          >
+            {fullscreen ? <Minimize aria-hidden="true" size={18} /> : <Maximize aria-hidden="true" size={18} />}
+            <span className={styles.optionalLabel}>{fullscreen ? "Exit fullscreen" : "Fullscreen"}</span>
+          </button>
+        </div>
       </div>
     </div>
   );

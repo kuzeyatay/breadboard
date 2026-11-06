@@ -61,6 +61,7 @@ test("preparation produces a plan, a grant and a compatible decision", () => {
   assert.ok(prepared.grant.grantedCapabilities.includes("filesystem_read"));
   assert.equal(prepared.blocked, false);
   assert.equal(prepared.decision.mode, "technical_read");
+  assert.equal(prepared.decision.expiresAt, null);
   assert.ok(prepared.decision.allowedTools.includes("read"));
 });
 
@@ -108,6 +109,38 @@ test("a conversational turn is never blocked on a folder it never mentioned", ()
   assert.equal(prepared.blocked, false);
   assert.deepEqual(prepared.pendingPermissions, []);
   assert.ok(!prepared.grant.grantedCapabilities.includes("filesystem_write"));
+});
+
+test("page downloads reach source discovery before asking for a filesystem destination", () => {
+  for (const surface of ["dashboard_terminal", "garden_chat"]) {
+    for (const request of [
+      "download every picture here",
+      "the website i am currently viewing, download the photos here",
+      "Download all the images on this page.",
+      "Download this video and transcribe it.",
+    ]) {
+      const prepared = prepare(request, { surface });
+      assert.equal(prepared.blocked, false, request);
+      assert.ok(prepared.grant.grantedCapabilities.includes("web_research"));
+      assert.ok(prepared.grant.withheldCapabilities.includes("filesystem_write"));
+      assert.deepEqual(prepared.grant.authorizedRoots, []);
+      assert.ok(prepared.pendingPermissions.some((item) =>
+        item.kind === "filesystem" && !item.path));
+      assert.ok(!prepared.decision.allowedTools.includes("write"));
+      assert.equal(prepared.plan.requiresWebEvidence, false);
+    }
+  }
+});
+
+test("download discovery preserves permission checks for an explicit destination", () => {
+  for (const destination of ["my Downloads folder", "C:/Users/me/Photos"]) {
+    const prepared = prepare(`Download all the images on this page to ${destination}.`);
+    assert.equal(prepared.blocked, true);
+    assert.ok(prepared.pendingPermissions.some((item) =>
+      item.kind === "filesystem" && item.path));
+    assert.deepEqual(prepared.grant.authorizedRoots, []);
+  }
+  assert.equal(prepare("Inspect the files in this folder.").blocked, true);
 });
 
 test("a verified file follow-up runs after its delete grant is approved", () => {

@@ -7,6 +7,7 @@ const { app, BrowserWindow, webContents } = require('electron');
 const { TabManager } = require('../../dist/main/tab-manager.js');
 const [dir, scenario] = process.argv.slice(2);
 app.setPath('userData', path.join(dir, 'profile'));
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 app.on('window-all-closed', () => {});
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const until = async (probe, label) => {
@@ -42,6 +43,9 @@ app.whenReady().then(async () => {
     theme: () => 'light', openWindow: () => assert.fail('Unexpected window'),
   });
   const window = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true } });
+  // Exercise actual frames without placing an opaque test window over the app.
+  window.setOpacity(0);
+  window.showInactive();
   manager.attach(window);
   const base = window.webContents;
   await base.loadURL(origin + '/base');
@@ -86,6 +90,8 @@ app.whenReady().then(async () => {
     assert.equal(cold.contents.getURL(), origin + '/cold');
     assert.equal(cold.view.getBounds().x, 0);
   } else {
+    const host = manager.hosts.get(window.id);
+    await until(() => host.pending === null, 'outgoing page visible before closing');
     manager.handleCommand(page, { type: 'open', url: origin + '/cold' });
     await until(() => releaseCold, 'new page still loading');
     manager.handleCommand(base, { type: 'close', id: pageId });
@@ -94,9 +100,18 @@ app.whenReady().then(async () => {
     const count = state().tabs.length;
     assert.equal(manager.handleCommand(page, { type: 'open', url: origin + '/unwanted' }), true,
       'stale links are consumed so the renderer cannot fall back to a new window');
-    manager.handleCommand(page, { type: 'activate', id: state().tabs[0].id });
     assert.equal(state().tabs.length, count, 'a closed page cannot open tabs from a late callback');
-    assert.equal(state().activeId, active, 'a closed page cannot select a previous tab');
+    assert.equal(manager.handleCommand(page, { type: 'notification-open', urls: [origin + '/unwanted'] }), false,
+      'a retained page cannot navigate from a late content callback');
+    assert.equal(state().activeId, active);
+    assert.equal(manager.stateFor(page).selfId, null, 'the retained strip has no page ownership');
+    assert.equal(manager.stateFor(page).navigationPending, true);
+    assert.equal(manager.handleCommand(page, { type: 'activate', id: state().tabs[0].id }), true,
+      'the visible retained tab strip can cancel a slow selection');
+    assert.equal(state().activeId, state().tabs[0].id);
+    await until(() => page.isDestroyed(), 'the old renderer retires once the replacement is visible');
+    assert.equal(manager.handleCommand(page, { type: 'activate', id: active }), false,
+      'a fully retired renderer loses its temporary tab controls');
     releaseCold();
   }
   window.destroy();

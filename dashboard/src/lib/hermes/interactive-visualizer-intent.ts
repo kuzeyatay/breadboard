@@ -2,7 +2,7 @@ import type { HermesSurface } from "./config.ts";
 import { interactiveVisualizerAvailable } from "./interactive-visualizer-config.ts";
 
 const EXPLICIT_VISUALIZER =
-  /\b(?:interactive\s+(?:visuali[sz](?:ation|er)|diagram|model|simulation)|visuali[sz]e|simulation|simulate|2d\s+(?:model|diagram)|3d\s+(?:model|diagram)|three(?:\.js)?\s+(?:model|scene))\b/i;
+  /\b(?:interactive\s+(?:visuali[sz](?:ation|er)|diagram|model|simulation)|visuali[sz]e|2d\s+(?:model|diagram)|3d\s+(?:model|diagram)|three(?:\.js)?\s+(?:model|scene))\b/i;
 const MANIPULATION =
   /\b(?:rotate|zoom|scrub|play|pause|reset|step through|slider|control|change|adjust|compare|explore|animate|animation|orbit|drag)\b/i;
 const DYNAMIC_EXPLANATION =
@@ -20,7 +20,7 @@ const REQUEST_PREFIX =
 const CREATION_REQUEST =
   /^(?:please\s+)?(?:create|build|make|generate|draw|render|design|visuali[sz]e|simulate|animate|demonstrate|show|give|explain)\b/i;
 const BARE_VISUALIZER_REQUEST =
-  /^(?:an?\s+)?(?:interactive\s+(?:visuali[sz](?:ation|er)|diagram|model|simulation)|[23]d\s+(?:model|diagram)|simulation)\s+(?:of|for|showing|:)\s*/i;
+  /^(?:an?\s+)?(?:interactive\s+(?:visuali[sz](?:ation|er)|diagram|model|simulation)|[23]d\s+(?:model|diagram))\s+(?:of|for|showing|:)\s*/i;
 const TOOL_DISCOVERY =
   /\b(?:open[ -]source|alternatives?|libraries|frameworks|software|recommendations?)\b/i;
 

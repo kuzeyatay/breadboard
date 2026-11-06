@@ -145,6 +145,7 @@ test("caps are deterministic and always leave an endpoint-closed graph", () => {
 test("safe navigation accepts only allowlisted internal Breadboard routes", () => {
   assert.equal(safeBrainHref("/buzz?room=room_public"), "/buzz?room=room_public");
   assert.equal(safeBrainHref("/garden/a?note=b"), "/garden/a?note=b");
+  assert.equal(safeBrainHref("/settings?tab=knowledge"), "/settings?tab=knowledge");
   assert.equal(safeBrainHref("//attacker.invalid"), undefined);
   assert.equal(safeBrainHref("https://attacker.invalid"), undefined);
   assert.equal(safeBrainHref("/api/profile/brain-graph"), undefined);

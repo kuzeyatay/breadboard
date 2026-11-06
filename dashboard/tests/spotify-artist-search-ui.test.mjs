@@ -32,7 +32,7 @@ test("Spotify artists open browsable profiles without interrupting playback or s
     + fs.readFileSync(path.join(root,"src/app/globals.css"),"utf8").replace(/^@(?:import|source).*$/gm,"")
     + ".sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}";
   const artist = {id:"artist0123456789abcde",uri:"spotify:artist:artist0123456789abcde",name:"Post Malone",imageUrl:null};
-  const song = {id:"0123456789abcdefghijAB",uri:"spotify:track:0123456789abcdefghijAB",name:"Circles",artist:"Post Malone",album:"Hollywood's Bleeding",imageUrl:null,durationMs:215000};
+  const song = {id:"0123456789abcdefghijAB",uri:"spotify:track:0123456789abcdefghijAB",name:"Circles",artist:"Post Malone",album:"Hollywood's Bleeding",albumUri:"spotify:album:album0123456789abcde",imageUrl:null,durationMs:215000};
   const profile = {artist,tracksSource:"top",tracks:Array.from({length:7},(_,i)=>({...song,id:`track${i}`,uri:`spotify:track:track${i}`,name:i?`Song ${i+1}`:song.name})),
     releases:[{id:"album0123456789abcde",uri:"spotify:album:album0123456789abcde",name:"Hollywood's Bleeding",type:"album",imageUrl:null,releaseDate:"2019-09-06"},
       {id:"single0123456789abcd",uri:"spotify:album:single0123456789abcd",name:"I Had Some Help",type:"single",imageUrl:null,releaseDate:"2024-05-10"}],
@@ -117,6 +117,9 @@ test("Spotify artists open browsable profiles without interrupting playback or s
     await expect(search).toHaveValue("post malone");
     await expect(artistButton).toBeVisible();
     await page.getByRole("dialog",{name:"Spotify player and library"}).screenshot({path:path.join(artifacts,"artists-and-songs.png")});
+
+    await page.getByRole("button",{name:"Play Circles by Post Malone",exact:true}).click();
+    assert.deepEqual((await page.evaluate(()=>window.controls)).at(-1),{action:"play-track",trackUri:song.uri,previewTrack:song,albumUri:song.albumUri,queueUris:[]},"search playback retains Spotify's album context without queuing recommendations");
 
     profileFailure=true;
     await artistButton.click();

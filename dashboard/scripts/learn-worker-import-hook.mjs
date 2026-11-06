@@ -2,11 +2,18 @@ import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { registerHooks } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { sourceRepairRelease } from "./source-repair-release.mjs";
 
 const dashboardRoot = path.resolve(process.cwd());
-const sourceRoot = path.resolve(
+const originalSourceRoot = path.resolve(
   process.env.BREADBOARD_LEARN_SOURCE_ROOT?.trim() || path.join(dashboardRoot, "src"),
 );
+const release = await sourceRepairRelease();
+const sourceRoot = release ? path.join(release.root, "dashboard", "src") : originalSourceRoot;
+if (release) {
+  process.env.BREADBOARD_SOURCE_RELEASE_ID = release.id;
+  process.env.BREADBOARD_LEARN_SOURCE_ROOT = sourceRoot;
+}
 const emptyServerOnly = "data:text/javascript,export%20default%20undefined";
 
 function sourceCandidate(base) {
@@ -32,6 +39,14 @@ function sourceCandidate(base) {
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (release && specifier.startsWith("file:")) {
+      const target = fileURLToPath(specifier);
+      const relative = path.relative(originalSourceRoot, target);
+      if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
+        const candidate = sourceCandidate(path.join(sourceRoot, relative));
+        if (candidate) return { url: pathToFileURL(candidate).href, shortCircuit: true };
+      }
+    }
     if (specifier === "server-only") {
       return { url: emptyServerOnly, shortCircuit: true };
     }

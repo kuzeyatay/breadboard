@@ -1,10 +1,14 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, Schibsted_Grotesk, Source_Sans_3 } from "next/font/google";
+import localFont from "next/font/local";
 import { Suspense } from "react";
 import AppThemeRuntime from "@/app/components/app-theme-runtime";
+import EnterSubmitRuntime from "@/app/components/enter-submit-runtime";
+import { UserIdleRuntime } from "@/app/components/effects/use-user-idle";
 import AnchoredTabNavigationGuard from "@/app/components/anchored-tab-navigation-guard";
+import AuthenticationSync from "@/app/components/authentication-sync";
 import CurrentLocationAutoRefresh from "@/app/components/current-location-autorefresh";
 import DesktopTitleBar from "@/app/components/desktop-title-bar";
+import { chunkRecoveryScript } from "@/app/components/chunk-recovery";
 import { interactionHydrationBootstrapScript } from "@/app/components/interaction-hydration-bridge";
 import InteractionHydrationGate from "@/app/components/interaction-hydration-gate";
 import NavigationProgress from "@/app/components/navigation-progress";
@@ -17,20 +21,33 @@ import VoiceAssistantBrowserHost from "@/app/components/voice-assistant-browser-
 import "./globals.css";
 import "katex/dist/katex.min.css";
 
-const sourceSans = Source_Sans_3({
+// Keep startup/rebuilds independent of Google Fonts availability.
+const sourceSans = localFont({
+  src: "./fonts/sourcesans3/SourceSans3[wght].ttf",
   variable: "--font-source-sans",
-  subsets: ["latin"],
+  weight: "200 900",
+  style: "normal",
+  display: "swap",
 });
 
-const schibsted = Schibsted_Grotesk({
+const schibsted = localFont({
+  src: "./fonts/schibstedgrotesk/SchibstedGrotesk[wght].ttf",
   variable: "--font-schibsted",
-  subsets: ["latin"],
+  weight: "400 900",
+  style: "normal",
+  display: "swap",
 });
 
-const ibmPlexMono = IBM_Plex_Mono({
+const ibmPlexMono = localFont({
+  src: [
+    { path: "./fonts/ibmplexmono/IBMPlexMono-Regular.ttf", weight: "400", style: "normal" },
+    { path: "./fonts/ibmplexmono/IBMPlexMono-Medium.ttf", weight: "500", style: "normal" },
+    { path: "./fonts/ibmplexmono/IBMPlexMono-SemiBold.ttf", weight: "600", style: "normal" },
+    { path: "./fonts/ibmplexmono/IBMPlexMono-Bold.ttf", weight: "700", style: "normal" },
+  ],
   variable: "--font-ibm-plex-mono",
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+  display: "swap",
+  adjustFontFallback: false,
 });
 
 /**
@@ -89,10 +106,14 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitializationScript }} />
         <script dangerouslySetInnerHTML={{ __html: desktopChromeScript }} />
+        <script dangerouslySetInnerHTML={{ __html: chunkRecoveryScript }} />
         <script dangerouslySetInnerHTML={{ __html: interactionHydrationBootstrapScript }} />
       </head>
       <body className="min-h-full flex flex-col">
         <AppThemeRuntime />
+        <EnterSubmitRuntime />
+        <UserIdleRuntime />
+        <AuthenticationSync />
         <AnchoredTabNavigationGuard />
         <CurrentLocationAutoRefresh />
         <RecallAutoStart />

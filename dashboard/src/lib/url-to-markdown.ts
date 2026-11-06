@@ -142,6 +142,17 @@ export function parseReaderMarkdownResult({
   const title =
     metadataString(parsed.data, "title", "pageTitle") ??
     cleanMarkdown.match(/^#\s+(.+)$/m)?.[1]?.trim();
+  // Readers can return HTTP 200 for a publisher's CAPTCHA or access-denied
+  // screen. Those screens must never become a source or seed extracted concepts.
+  const warning = metadataString(parsed.data, "warning") ?? "";
+  const blockedTitle = /^(?:just a moment(?:\.{3}|…)?|access denied|attention required!?|security verification|robot check)$/i.test(title ?? "");
+  const challengeBody = /performing security verification|verif(?:y|ying) (?:that )?you are (?:a human|not a bot)|enable javascript and cookies to continue|checking your browser before accessing/i.test(cleanMarkdown);
+  if (/requiring CAPTCHA|target URL returned (?:error )?(?:401|403|429)\b/i.test(warning) ||
+      (blockedTitle && (challengeBody || cleanMarkdown.length < 2_000))) {
+    throw new Error(
+      "Reader returned an access or security-check page instead of article content. Use an accessible article/PDF link or upload the document.",
+    );
+  }
   const canonicalUrl = metadataString(parsed.data, "url", "canonical", "canonicalUrl");
   return {
     originalUrl: normalizedUrl,

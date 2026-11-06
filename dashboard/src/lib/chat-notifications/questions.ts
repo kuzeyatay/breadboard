@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { ChatNotificationRecord, ChatNotificationTarget } from "../chat-notification-inbox.ts";
 import { isRuntimeRunAbandoned } from "../hermes/run-liveness.ts";
+import { saveRuntimeClarification, clearRuntimeClarification } from "../hermes/chat-runtime-control.ts";
 
 /** Questions have their own receipts: reading one must not dismiss the final answer. */
 export function ensureQuestionNotificationSchema(database: Database.Database): void {
@@ -30,6 +31,11 @@ export function recordQuestionNotification(database: Database.Database, input: {
 }): void {
   ensureQuestionNotificationSchema(database);
   if (!input.question.trim() || !input.requestId) return;
+  // Controls must survive a closed chat, including chats that do not notify.
+  // An old replay must not revive a question already answered or expired.
+  const receipt = database.prepare(`SELECT resolved FROM chat_question_notifications
+    WHERE runtime_session_id = ? AND request_id = ?`).get(input.runtimeSessionId, input.requestId) as { resolved: number } | undefined;
+  if (receipt?.resolved !== 1) saveRuntimeClarification(database, input);
   const question = [input.question.trim(), ...input.choices.map(choice => `• ${choice}`)].join("\n\n");
   // Replayed events retain the original receipt and cannot revive a closed question.
   database.prepare(`
@@ -47,6 +53,7 @@ export function recordQuestionNotification(database: Database.Database, input: {
 
 export function resolveQuestionNotification(database: Database.Database, runtimeSessionId: number, requestId: string): void {
   ensureQuestionNotificationSchema(database);
+  clearRuntimeClarification(database, runtimeSessionId, requestId);
   database.prepare(`UPDATE chat_question_notifications SET resolved = 1
     WHERE runtime_session_id = ? AND request_id = ?`).run(runtimeSessionId, requestId);
 }
@@ -75,20 +82,29 @@ const QUESTION_SOURCE_SQL = `
     ${NOTIFIABLE_QUESTION_SQL}
 `;
 
-export function listPendingQuestionNotifications(database: Database.Database, userId: number): ChatNotificationRecord[] {
+export function listPendingQuestionNotifications(database: Database.Database, userId: number,
+  includeDismissed = false): ChatNotificationRecord[] {
   ensureQuestionNotificationSchema(database);
   const rows = database.prepare(`
-    SELECT q.id, q.question, q.created_at, c.public_id, c.title, c.surface,
-           c.legacy_chat_session_id, g.slug, r.started_at, r.heartbeat_at
+    SELECT q.id, q.question, q.request_id, q.runtime_session_id, q.created_at, c.public_id, c.title, c.surface,
+           c.legacy_chat_session_id, g.slug, r.started_at, r.heartbeat_at, r.dispatch_json
     ${QUESTION_SOURCE_SQL}
-      AND q.resolved = 0 AND q.dismissed = 0 AND r.status = 'active'
+      AND q.resolved = 0 ${includeDismissed ? '' : 'AND q.dismissed = 0'} AND r.status = 'active'
     ORDER BY q.id ASC
   `).all({ userId }) as Array<{
     id: number; question: string; created_at: string; public_id: string; title: string;
     surface: 'dashboard_terminal' | 'garden_chat'; legacy_chat_session_id: number | null;
     slug: string | null; started_at: string; heartbeat_at: string | null;
+    request_id: string; runtime_session_id: number; dispatch_json: string;
   }>;
   return rows.filter(row => !isRuntimeRunAbandoned(row)).flatMap(row => {
+    let pending: { requestId?: unknown; question?: unknown; choices?: unknown } | null | undefined;
+    try { pending = JSON.parse(row.dispatch_json)?.pendingClarification; } catch { /* legacy run */ }
+    // A replaced or cleared question must never offer controls for a later request.
+    if (pending === null || (pending !== undefined && pending.requestId !== row.request_id)) return [];
+    const clarification = { sessionId: row.runtime_session_id, requestId: row.request_id,
+      question: typeof pending?.question === 'string' ? pending.question : row.question,
+      choices: Array.isArray(pending?.choices) ? pending.choices.filter((choice): choice is string => typeof choice === 'string') : [] };
     const target: ChatNotificationTarget | null = row.surface === 'garden_chat'
       ? row.legacy_chat_session_id !== null && row.slug
         ? { surface: 'garden_chat', chatId: String(row.legacy_chat_session_id), gardenSlug: row.slug, conversationId: row.public_id }
@@ -96,7 +112,7 @@ export function listPendingQuestionNotifications(database: Database.Database, us
       : { surface: 'dashboard_terminal', chatId: row.public_id };
     return target ? [{ id: `question_${row.id}`, kind: 'chat_question' as const,
       title: 'Answer needed' as const, type: 'success' as const, response: row.question,
-      chatTitle: row.title, target, updatedAt: row.created_at }] : [];
+      chatTitle: row.title, target, clarification, updatedAt: row.created_at }] : [];
   });
 }
 

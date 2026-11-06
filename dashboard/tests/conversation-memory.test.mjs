@@ -1213,3 +1213,17 @@ test("mentioning a question's keywords never resolves it, including objections w
   assert.ok(state.workingState.openQuestions.some(q => q.includes("Why does redistribution")));
   assert.ok(state.workingState.openQuestions.some(q => q.includes("what adjustment bro")));
 });
+
+
+test("a bare server error is stored as failed while explanatory prose remains complete", () => {
+  const chat = conversation();
+  for (const [id, content, expected] of [
+    ["error-only", "Internal server error", "failed"],
+    ["error-discussion", "Internal server error means the server could not handle the request.", "complete"],
+  ]) {
+    store.reserveConversationTurn({ conversation: chat, clientMessageId: id, surface: "garden_chat", content: "Explain this." });
+    const result = store.completeAssistantMessage({ conversationId: chat.id, clientMessageId: id, content });
+    assert.equal(result.status, expected);
+    assert.equal(result.content, content);
+  }
+});

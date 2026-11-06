@@ -26,9 +26,7 @@ export default function SettingsWebSpeech({ web, voice, enabled, language, langu
       <div>
         <h3 className="text-sm font-medium text-[var(--ink-heading)]">OpenAI (web) speech · Experimental</h3>
         <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-          Uses ChatGPT&apos;s own website voice through the chatgpt.com sign-in from Accounts → OpenAI (web).
-          No API key and no Codex app are needed. ChatGPT&apos;s limits for your plan apply.
-          Audio and text are sent to OpenAI; voices are AI-generated.
+          Uses your ChatGPT sign-in from Accounts → OpenAI (web). Your plan’s limits apply; no API key is needed. Audio and text are sent to OpenAI; voices are AI-generated.
         </p>
       </div>
       <div className="space-y-2">
@@ -58,10 +56,7 @@ export default function SettingsWebSpeech({ web, voice, enabled, language, langu
         </label>
         <button type="button" className={buttonClass} disabled={!web?.configured || !enabled || !previewText.trim()} onClick={onPreview}>Preview voice</button>
         <p className="text-xs leading-5 text-[var(--ink-muted)]">
-          Read-aloud and spoken notifications use ChatGPT&apos;s Read aloud voice: the text is placed in a temporary
-          ChatGPT chat and read back, so the first word takes a few seconds. Dictation and voice conversations use
-          ChatGPT&apos;s transcription. The chatgpt.com page answers one request at a time, so a long OpenAI (web) chat
-          answer can delay a reading.
+          Read-aloud uses a temporary ChatGPT chat and may take a few seconds to start. An ongoing OpenAI (web) response can delay playback.
         </p>
       </fieldset>
     </section>

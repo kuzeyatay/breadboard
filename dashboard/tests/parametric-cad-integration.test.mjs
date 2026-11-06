@@ -330,6 +330,41 @@ async function createProject(harnessValue, toolContext, spec, parameters) {
 
 // ---------------------------------------------------------------------------
 
+test("component list correction rebuilds stored CAD and still rejects a wrong body count", { skip, concurrency: false }, async (t) => {
+  t.after(stopService);
+  await startService();
+  const h = harness();
+  const ctx = context(h);
+  const source = 'import cadquery as cq\ndef build_model(params):\n    return {"body":cq.Workplane("XY").box(10,10,3),"cover":cq.Workplane("XY").box(10,10,2).translate((0,0,2.5))}\n';
+  const body = { id: "body", name: "Base", quantity: 1, bodyRole: "primary" };
+  const cover = { id: "cover", name: "Cover", quantity: 1, bodyRole: "lid" };
+  const assembly = { overview: "Place the cover on the base.", hardware: [], steps: [{ order: 1, summary: "Place the cover on the base at the mating face.", parts: ["body", "cover"] }], notes: [] };
+  try {
+    const projectId = await createProject(h, ctx, { name: "component correction", description: "Two separate mating bodies.", units: "mm", manufacturingProcess: "fdm", parameters: [], components: [body], constraints: [], assumptions: [], exportSettings: exportSettings() }, {});
+    const first = await runCadTool("cad_generate_model", { projectId, source, parameters: {} }, ctx);
+    assert.equal(first.validationPassed, false);
+    assert.ok(first.issues.some((issue) => issue.code === "solid_count_mismatch"));
+    const wrong = await runCadTool("cad_validate_model", { projectId, revision: first.revision, components: [{ ...body, quantity: 2 }, cover], assembly }, ctx);
+    assert.equal(wrong.passed, false);
+    assert.ok(wrong.issues.some((issue) => issue.code === "solid_count_mismatch"));
+    const fixed = await runCadTool("cad_validate_model", { projectId, revision: first.revision, components: [body, cover], assembly }, ctx);
+    assert.equal(fixed.passed, true, JSON.stringify(fixed));
+    assert.equal(fixed.revalidated, true);
+    assert.equal(fixed.revision, 3);
+    const reopened = await runCadTool("cad_get_project", { projectId }, ctx);
+    assert.equal(reopened.source, source);
+    assert.equal(reopened.currentRevision, 3);
+    assert.equal(reopened.designSpec.components.length, 2);
+    assert.equal(reopened.designSpec.assembly.steps[0].parts.length, 2);
+    assert.equal(store.getCadRevision(projectId, first.revision, h.database).status, "invalid");
+  } finally {
+    h.database.close();
+    assert.equal(path.dirname(h.root), os.tmpdir());
+    assert.ok(path.basename(h.root).startsWith("breadboard-cad-itest-"));
+    fs.rmSync(h.root, { recursive: true, force: true });
+  }
+});
+
 test("parametric CAD, end to end", { skip, concurrency: false }, async (t) => {
   await startService();
   t.after(stopService);

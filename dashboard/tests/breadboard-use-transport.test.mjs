@@ -20,7 +20,7 @@ test('browser recovery errors reach the agent through the real transport and rou
     assert.equal(req.headers.authorization, `Bearer ${token}`);
     let body = '';
     for await (const chunk of req) body += chunk;
-    assert.deepEqual(JSON.parse(body), { args: { action: 'snapshot', targetId: 9 }, sessionId: 'session', userId: 7 });
+    assert.deepEqual(JSON.parse(body), { args: { action: 'snapshot', targetId: 9 }, sessionId: 'session', userId: 7, runId: 'session' });
     res.writeHead(reply.status, { 'Content-Type': 'application/json', Connection: 'close' });
     res.end(typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body));
   });

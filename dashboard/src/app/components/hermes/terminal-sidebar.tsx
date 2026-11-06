@@ -17,10 +17,12 @@ import type { RailResize } from "./use-rail-resize";
 import { CHAT_HIGHLIGHTS, chatHighlight } from "@/lib/conversations/highlights";
 import { conversationDisplayTitle } from "@/lib/conversations/origin-label";
 import { useOverflowMarquee } from "../overflow-marquee";
-import { Star } from "lucide-react";
+import { textEraseMs as titleEraseMs, textTypeMs as titleTypeMs } from '@/lib/text-replacement-motion';
+import LinkContextMenu from "../link-context-menu";
+import { Archive, Star } from "lucide-react";
 import TerminalWorkspaceMenu, { type TerminalWorkspacePicker } from "./terminal-workspace-menu";
 
-export type TerminalPanel = "artifacts" | "uploads" | "scheduled" | "hooks" | "starred" | "processes";
+export type TerminalPanel = "artifacts" | "uploads" | "scheduled" | "hooks" | "starred" | "archived" | "processes";
 
 /**
  * The rail's own widths, so every surface that mounts it agrees on them —
@@ -47,11 +49,14 @@ export const TERMINAL_PANELS: readonly TerminalPanel[] = [
   "scheduled",
   "hooks",
   "starred",
+  "archived",
   "processes",
 ];
 
 export interface TerminalSidebarChat {
   id: string;
+  /** Durable destination for opening this chat in another tab or window. */
+  href?: string;
   title: string;
   /** Source path shown by the terminal hub; kept outside the editable title. */
   titlePrefix?: string;
@@ -103,6 +108,7 @@ interface Props {
   onStopChat?: (chat: TerminalSidebarChat) => void | Promise<void>;
   onRenameChat: (chat: TerminalSidebarChat, title: string) => void;
   onTogglePin: (chat: TerminalSidebarChat) => void;
+  onArchiveChat: (chat: TerminalSidebarChat) => void;
   onDeleteChat: (chat: TerminalSidebarChat) => void;
   /** Bulk delete from the Recents menu. Confirmation lives with the caller. */
   onDeleteChats: (chats: TerminalSidebarChat[]) => void;
@@ -158,23 +164,6 @@ const TITLE_PHASE_ATTRIBUTE: Record<TitleTransition["phase"], string | undefined
   erasing: "erase",
   typing: "type",
 };
-
-/** Deleting reads faster than writing, the way a hand backspaces a word. */
-const TITLE_ERASE_MS_PER_CHARACTER = 34;
-const TITLE_TYPE_MS_PER_CHARACTER = 46;
-
-/** Long names would otherwise hold the rail hostage; short ones would blink. */
-function titleAnimationMs(text: string, perCharacter: number, min: number, max: number): number {
-  return Math.round(Math.min(max, Math.max(min, Math.max(1, text.length) * perCharacter)));
-}
-
-function titleEraseMs(text: string): number {
-  return titleAnimationMs(text, TITLE_ERASE_MS_PER_CHARACTER, 320, 700);
-}
-
-function titleTypeMs(text: string): number {
-  return titleAnimationMs(text, TITLE_TYPE_MS_PER_CHARACTER, 520, 1300);
-}
 
 function prefersReducedTitleMotion(): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
@@ -456,6 +445,7 @@ interface ChatRowProps {
    * it, and blur commits whatever was typed so far. */
   onRenamingChange: (chatId: string, renaming: boolean) => void;
   onTogglePin: (chat: TerminalSidebarChat) => void;
+  onArchive: (chat: TerminalSidebarChat) => void;
   onDelete: (chat: TerminalSidebarChat) => void;
   /** One chat's mark, chosen from the row menu's Highlight dialog. */
   onHighlight: (chat: TerminalSidebarChat, highlight: string | null) => void;
@@ -485,6 +475,7 @@ function chatRowPropsEqual(prev: ChatRowProps, next: ChatRowProps): boolean {
     prev.onRename === next.onRename &&
     prev.onRenamingChange === next.onRenamingChange &&
     prev.onTogglePin === next.onTogglePin &&
+    prev.onArchive === next.onArchive &&
     prev.onDelete === next.onDelete &&
     prev.onHighlight === next.onHighlight
   );
@@ -493,6 +484,7 @@ function chatRowPropsEqual(prev: ChatRowProps, next: ChatRowProps): boolean {
 function sameSidebarChat(a: TerminalSidebarChat, b: TerminalSidebarChat): boolean {
   return (
     a.id === b.id &&
+    a.href === b.href &&
     a.title === b.title &&
     a.titlePrefix === b.titlePrefix &&
     a.updatedAt === b.updatedAt &&
@@ -521,6 +513,7 @@ const ChatRow = memo(function ChatRow({
   onRename,
   onRenamingChange,
   onTogglePin,
+  onArchive,
   onDelete,
   onHighlight,
 }: ChatRowProps) {
@@ -613,6 +606,61 @@ const ChatRow = memo(function ChatRow({
   }
 
   const highlight = chatHighlight(chat.highlight);
+  const chatButton = (
+    <button
+      type="button"
+      onClick={mode === "idle" ? () => onOpen(chat) : () => onPick?.(chat)}
+      onMouseEnter={showIntent}
+      onMouseLeave={marquee.stop}
+      onFocus={showIntent}
+      onBlur={marquee.stop}
+      onPointerDown={() => {
+        if (mode === "idle" && !chat.pending) onPrefetch?.(chat);
+      }}
+      title={
+        mode === "highlighting"
+          ? `Highlight ${chat.title}`
+          : chat.pending
+            ? chat.title
+            : `${conversationDisplayTitle(chat.title, chat.titlePrefix)} · ${formatChatTime(chat.updatedAt)}`
+      }
+      className="min-w-0 flex-1 rounded-lg px-2.5 py-[7px] text-left"
+    >
+      <span className="bb-chat-marquee text-[13px]">
+        <span
+          ref={titleRef}
+          className="bb-chat-marquee-text"
+          data-marquee={marquee.running ? "run" : undefined}
+          data-title-renaming={TITLE_PHASE_ATTRIBUTE[titleTransition.phase]}
+          onAnimationEnd={(event) => {
+            if (event.animationName === "bb-chat-title-erase") {
+              setTitleTransition((current) =>
+                current.phase === "erasing" ? { ...current, phase: "typing" } : current,
+              );
+            } else if (
+              event.animationName === "bb-chat-title-type" ||
+              event.animationName === "bb-chat-title-fade"
+            ) {
+              setTitleTransition((current) => ({
+                ...current,
+                phase: "idle",
+              }));
+            }
+          }}
+          style={
+            {
+              ...marquee.style,
+              "--bb-title-character-count": Math.max(1, transitionTitle.length),
+              "--bb-title-erase-duration": `${titleEraseMs(titleTransition.erasingTitle)}ms`,
+              "--bb-title-type-duration": `${titleTypeMs(chat.title)}ms`,
+            } as CSSProperties
+          }
+        >
+          {conversationDisplayTitle(transitionTitle, chat.titlePrefix)}
+        </span>
+      </span>
+    </button>
+  );
 
   return (
     <li
@@ -648,59 +696,11 @@ const ChatRow = memo(function ChatRow({
           className="ml-2.5 h-3.5 w-3.5 shrink-0 accent-[var(--botanical)]"
         />
       ) : null}
-      <button
-        type="button"
-        onClick={mode === "idle" ? () => onOpen(chat) : () => onPick?.(chat)}
-        onMouseEnter={showIntent}
-        onMouseLeave={marquee.stop}
-        onFocus={showIntent}
-        onBlur={marquee.stop}
-        onPointerDown={() => {
-          if (mode === "idle" && !chat.pending) onPrefetch?.(chat);
-        }}
-        title={
-          mode === "highlighting"
-            ? `Highlight ${chat.title}`
-            : chat.pending
-              ? chat.title
-              : `${conversationDisplayTitle(chat.title, chat.titlePrefix)} · ${formatChatTime(chat.updatedAt)}`
-        }
-        className="min-w-0 flex-1 rounded-lg px-2.5 py-[7px] text-left"
-      >
-        <span className="bb-chat-marquee text-[13px]">
-          <span
-            ref={titleRef}
-            className="bb-chat-marquee-text"
-            data-marquee={marquee.running ? "run" : undefined}
-            data-title-renaming={TITLE_PHASE_ATTRIBUTE[titleTransition.phase]}
-            onAnimationEnd={(event) => {
-              if (event.animationName === "bb-chat-title-erase") {
-                setTitleTransition((current) =>
-                  current.phase === "erasing" ? { ...current, phase: "typing" } : current,
-                );
-              } else if (
-                event.animationName === "bb-chat-title-type" ||
-                event.animationName === "bb-chat-title-fade"
-              ) {
-                setTitleTransition((current) => ({
-                  ...current,
-                  phase: "idle",
-                }));
-              }
-            }}
-            style={
-              {
-                ...marquee.style,
-                "--bb-title-character-count": Math.max(1, transitionTitle.length),
-                "--bb-title-erase-duration": `${titleEraseMs(titleTransition.erasingTitle)}ms`,
-                "--bb-title-type-duration": `${titleTypeMs(chat.title)}ms`,
-              } as CSSProperties
-            }
-          >
-            {conversationDisplayTitle(transitionTitle, chat.titlePrefix)}
-          </span>
-        </span>
-      </button>
+      {chat.href && !chat.pending && mode === "idle" ? (
+        <LinkContextMenu href={chat.href} label={`Open ${chat.title}`}>
+          {chatButton}
+        </LinkContextMenu>
+      ) : chatButton}
       {/* One spot for the whole life of a run: the automation marker and
           spinner while it works, then the dot until someone reads what came
           back. */}
@@ -801,6 +801,10 @@ const ChatRow = memo(function ChatRow({
             onCloseMenu();
             setHighlighting(true);
           }}
+          onArchive={() => {
+            onCloseMenu();
+            onArchive(chat);
+          }}
           onDelete={() => {
             onCloseMenu();
             onDelete(chat);
@@ -828,7 +832,7 @@ interface MenuPosition {
 }
 
 const MENU_WIDTH = 176;
-const MENU_HEIGHT = 168;
+const MENU_HEIGHT = 204;
 // Five swatches, a heading and the eraser row, so it clamps against its own
 // height rather than the shorter menu's.
 const HIGHLIGHT_DIALOG_HEIGHT = 244;
@@ -876,6 +880,7 @@ function RowMenu({
   onRename,
   onTogglePin,
   onHighlight,
+  onArchive,
   onDelete,
 }: {
   chat: TerminalSidebarChat;
@@ -884,6 +889,7 @@ function RowMenu({
   onRename: () => void;
   onTogglePin: () => void;
   onHighlight: () => void;
+  onArchive: () => void;
   onDelete: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -925,6 +931,15 @@ function RowMenu({
       >
         <HighlighterIcon className="h-4 w-4 text-[var(--ink-muted)]" />
         Highlight chat
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={onArchive}
+        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-[var(--ink)] transition hover:bg-[var(--paper-surface)]"
+      >
+        <Archive className="h-4 w-4 text-[var(--ink-muted)]" strokeWidth={1.7} aria-hidden />
+        Archive
       </button>
       <button
         type="button"
@@ -1234,6 +1249,7 @@ export default function TerminalSidebar({
   onStopChat,
   onRenameChat,
   onTogglePin,
+  onArchiveChat,
   onDeleteChat,
   onDeleteChats,
   onHighlightChat,
@@ -1368,6 +1384,7 @@ export default function TerminalSidebar({
     onRenameChat(chat, title),
   );
   const togglePinned = useEvent((chat: TerminalSidebarChat) => onTogglePin(chat));
+  const archiveChat = useEvent((chat: TerminalSidebarChat) => onArchiveChat(chat));
   const deleteChat = useEvent((chat: TerminalSidebarChat) => onDeleteChat(chat));
   const highlightChat = useEvent(
     (chat: TerminalSidebarChat, highlight: string | null) => onHighlightChat(chat, highlight),
@@ -1401,6 +1418,7 @@ export default function TerminalSidebar({
       onRename={renameChat}
       onRenamingChange={handleRenamingChange}
       onTogglePin={togglePinned}
+      onArchive={archiveChat}
       onDelete={deleteChat}
       onHighlight={highlightChat}
     />
@@ -1499,6 +1517,15 @@ export default function TerminalSidebar({
               active={openPanel === "starred"}
               compact={collapsed}
               onClick={() => onTogglePanel("starred")}
+            />
+          ) : null}
+          {panels.includes("archived") ? (
+            <NavButton
+              label="Archived"
+              icon={<Archive className="h-[18px] w-[18px]" strokeWidth={1.7} />}
+              active={openPanel === "archived"}
+              compact={collapsed}
+              onClick={() => onTogglePanel("archived")}
             />
           ) : null}
           {panels.includes("processes") ? (

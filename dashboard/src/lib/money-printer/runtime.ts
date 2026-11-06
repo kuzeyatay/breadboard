@@ -14,8 +14,9 @@
 // again.
 
 import { spawn } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
+import { managedModelCacheEnvironment } from "../../../scripts/runtime-v2-bulk-paths.mjs";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import {
   dashboardDataDir,
   repositoryRoot,
@@ -217,6 +218,7 @@ export function moneyPrinterEnv(
   const ffmpeg = resolveFfmpeg(env);
   return {
     ...env,
+    ...managedModelCacheEnvironment(dashboardDataDir(), env),
     ELECTRON_RUN_AS_NODE: "1",
     NO_COLOR: "1",
     FORCE_COLOR: "0",
@@ -335,27 +337,40 @@ export function setCurrentServiceUrl(url: string | null): void {
   globalService.__breadboardMoneyPrinterServiceUrl = url;
 }
 
-async function probe(availableSources: () => string[]): Promise<MoneyPrinterHealth> {
+/** A process-free preflight for status readers before acquiring a service. */
+export function missingMoneyPrinterInstallation(
+  availableSources: () => string[] = () => [],
+): MoneyPrinterHealth | null {
   const runtime = resolveMoneyPrinterRoot();
-  const serviceUrl = currentServiceUrl();
   const ffmpegPath = resolveFfmpeg();
-  if (!runtime) {
+  if (!runtime || !venvPython(runtime.root)) {
     return {
       available: false,
-      cloned: false,
-      root: null,
+      cloned: Boolean(runtime),
+      root: runtime?.root ?? null,
       environmentReady: false,
       packageInstalled: false,
       systemPython: findSystemPython(),
       uvAvailable: Boolean(uvPath()),
       ffmpegPath,
-      version: null,
+      version: runtime ? cloneVersion(runtime.root) : null,
       serviceRunning: false,
       serviceUrl: null,
       footageSources: availableSources(),
-      reason: "The MoneyPrinterTurbo clone was not found next to the dashboard.",
+      reason: runtime
+        ? "MoneyPrinter is cloned but its Python environment has not been built yet. Build it from its settings."
+        : "The MoneyPrinterTurbo clone was not found next to the dashboard.",
     };
   }
+  return null;
+}
+
+async function probe(availableSources: () => string[]): Promise<MoneyPrinterHealth> {
+  const missing = missingMoneyPrinterInstallation(availableSources);
+  if (missing) return missing;
+  const runtime = resolveMoneyPrinterRoot()!;
+  const serviceUrl = currentServiceUrl();
+  const ffmpegPath = resolveFfmpeg();
 
   const base = {
     cloned: true,

@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath } from "../runtime-v2/path-policy.ts";
 // Durable orchestration for Formsmith's fresh Runtime V2 ShapeR jobs. Runtime
 // owns Python/CUDA descendants; this manager owns the unchanged chat event and
 // artifact contracts and can reconcile an idempotent job after a Next restart.
@@ -93,11 +94,6 @@ function boundedText(value: unknown, maximumBytes: number): value is string {
     !/\p{Cc}/u.test(value);
 }
 
-function samePath(left: string, right: string): boolean {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
 
 function bindingsRoot(): string {
   const root = path.join(dashboardDataDir(), "runtime-v2-formsmith-runs");

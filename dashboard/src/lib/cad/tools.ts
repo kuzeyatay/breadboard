@@ -26,6 +26,7 @@ import { buildWithSolidWorks } from "./solidworks/backend.ts";
 import { SUPPORTED_OPERATIONS } from "./solidworks/operations.ts";
 import {
   cadAssemblySchema,
+  cadComponentSchema,
   cadConstraintSchema,
   cadDesignSpecDraftSchema,
   parseWithSchema,
@@ -141,6 +142,19 @@ export type CadToolResult = Record<string, unknown>;
 // Argument schemas
 // ---------------------------------------------------------------------------
 
+/** Preserve enough time to rebuild a previously successful complex assembly. */
+export function cadRebuildTimeoutMs(provenanceJson: string): number {
+  try {
+    const duration = JSON.parse(provenanceJson)?.buildDurationMs;
+    if (typeof duration === "number" && Number.isFinite(duration) && duration > 0) {
+      return Math.min(300_000, Math.max(90_000, Math.ceil(duration * 1.5 + 10_000)));
+    }
+  } catch {
+    // Older or malformed provenance must not remove the bounded default.
+  }
+  return 90_000;
+}
+
 const parameterValueSchema = z.union([z.number().finite(), z.string().max(200), z.boolean()]);
 const parametersSchema = z.record(z.string().max(80), parameterValueSchema).default({});
 
@@ -160,7 +174,9 @@ const generateModelArgs = z.object({
     .regex(/^[A-Za-z][A-Za-z0-9_]*$/)
     .default("build_model"),
   parameters: parametersSchema,
-  timeoutMs: z.number().int().min(1_000).max(120_000).default(45_000),
+  // Match the isolated CAD service's bounded execution limit. Large assemblies
+  // need time for meshing, exports and interference checks after geometry builds.
+  timeoutMs: z.number().int().min(1_000).max(300_000).default(45_000),
   /** What changed, for the revision log. */
   note: z.string().max(2_000).default(""),
   /**
@@ -175,11 +191,14 @@ const generateModelArgs = z.object({
   constraints: z.array(cadConstraintSchema).max(120).optional(),
   /** How the bodies this program returns go together, for the same reason. */
   assembly: cadAssemblySchema.optional(),
+  components: z.array(cadComponentSchema).min(1).max(64).optional(),
 });
 
 const validateModelArgs = z.object({
   projectId: z.string().min(1),
   revision: z.number().int().min(1).optional(),
+  components: z.array(cadComponentSchema).min(1).max(64).optional(),
+  assembly: cadAssemblySchema.optional(),
 });
 
 const exportModelArgs = z.object({
@@ -223,8 +242,8 @@ const DESIGN_SPEC_SCHEMA: Record<string, unknown> = {
     "The structured design. Every number the part depends on belongs in `parameters`, and every " +
     "value you chose rather than the user belongs in `assumptions`.",
   properties: {
-    name: { type: "string" },
-    description: { type: "string" },
+    name: { type: "string", maxLength: 160 },
+    description: { type: "string", maxLength: 4_000 },
     units: { type: "string", enum: ["mm", "inch"] },
     manufacturingProcess: { type: "string", enum: ["fdm", "sla", "sls", "unknown"] },
     parameters: {
@@ -236,7 +255,7 @@ const DESIGN_SPEC_SCHEMA: Record<string, unknown> = {
             type: "string",
             description: "The exact key used in the CadQuery program's params dict.",
           },
-          label: { type: "string" },
+          label: { type: "string", maxLength: 120 },
           value: { type: ["number", "string", "boolean"] },
           unit: { type: "string" },
           minimum: { type: "number" },
@@ -249,7 +268,7 @@ const DESIGN_SPEC_SCHEMA: Record<string, unknown> = {
               "`user` when the person stated it, `default` when you took it from the process " +
               "defaults, `derived` when you computed it from other parameters.",
           },
-          description: { type: "string" },
+          description: { type: "string", maxLength: 400 },
         },
         required: ["id", "label", "value", "editable", "source"],
       },
@@ -297,7 +316,7 @@ const DESIGN_SPEC_SCHEMA: Record<string, unknown> = {
               "custom",
             ],
           },
-          description: { type: "string" },
+          description: { type: "string", maxLength: 600 },
           expected: {},
           tolerance: { type: "number" },
           unit: { type: "string" },
@@ -311,8 +330,8 @@ const DESIGN_SPEC_SCHEMA: Record<string, unknown> = {
         type: "object",
         properties: {
           id: { type: "string" },
-          description: { type: "string" },
-          reason: { type: "string" },
+          description: { type: "string", maxLength: 600 },
+          reason: { type: "string", maxLength: 600 },
           userEditable: { type: "boolean" },
         },
         required: ["id", "description", "reason", "userEditable"],
@@ -328,6 +347,7 @@ const DESIGN_SPEC_SCHEMA: Record<string, unknown> = {
       properties: {
         overview: {
           type: "string",
+          maxLength: 1_200,
           description: "The assembled product in one or two sentences.",
         },
         hardware: {
@@ -343,7 +363,7 @@ const DESIGN_SPEC_SCHEMA: Record<string, unknown> = {
                 description: 'What to order, e.g. "M3 × 12 socket cap screw".',
               },
               quantity: { type: "integer", minimum: 1 },
-              purpose: { type: "string", description: "Where it goes." },
+              purpose: { type: "string", maxLength: 400, description: "Where it goes." },
             },
             required: ["id", "name", "quantity"],
           },
@@ -355,7 +375,7 @@ const DESIGN_SPEC_SCHEMA: Record<string, unknown> = {
             type: "object",
             properties: {
               order: { type: "integer", minimum: 1 },
-              summary: { type: "string" },
+              summary: { type: "string", maxLength: 400 },
               parts: {
                 type: "array",
                 description: "Component ids this step joins, including reference envelopes.",
@@ -366,7 +386,7 @@ const DESIGN_SPEC_SCHEMA: Record<string, unknown> = {
                 description: "Hardware ids used in this step.",
                 items: { type: "string" },
               },
-              detail: { type: "string" },
+              detail: { type: "string", maxLength: 1_200 },
             },
             required: ["order", "summary", "parts"],
           },
@@ -374,7 +394,7 @@ const DESIGN_SPEC_SCHEMA: Record<string, unknown> = {
         notes: {
           type: "array",
           description: "Tools or preparation the steps assume.",
-          items: { type: "string" },
+          items: { type: "string", maxLength: 600 },
         },
       },
       required: ["overview", "hardware", "steps"],
@@ -468,7 +488,8 @@ export const CAD_TOOL_DEFINITIONS: ToolDefinition[] = [
         },
         entrypoint: { type: "string" },
         parameters: { type: "object", additionalProperties: true },
-        timeoutMs: { type: "integer", minimum: 1000, maximum: 120000 },
+        timeoutMs: { type: "integer", minimum: 1000, maximum: 300000 },
+        components: (DESIGN_SPEC_SCHEMA.properties as Record<string, unknown>).components,
         note: { type: "string", description: "One sentence on what this build changes." },
         constraints: {
           type: "array",
@@ -549,12 +570,15 @@ export const CAD_TOOL_DEFINITIONS: ToolDefinition[] = [
     name: "cad_validate_model",
     description:
       "Re-check a stored revision against the project's current design specification and return " +
-      "every issue. Use it after changing the specification without changing the geometry.",
+      "every issue. Supply the complete replacement components/assembly when correcting the " +
+      "specification without changing geometry; this rebuilds and validates the stored source.",
     parameters: {
       type: "object",
       properties: {
         projectId: { type: "string" },
         revision: { type: "integer", minimum: 1 },
+        components: (DESIGN_SPEC_SCHEMA.properties as Record<string, unknown>).components,
+        assembly: (DESIGN_SPEC_SCHEMA.properties as Record<string, unknown>).assembly,
       },
       required: ["projectId"],
     },
@@ -862,9 +886,9 @@ function specWithParameters(
  */
 function specWithSubmittedIntent(
   spec: CADDesignSpec,
-  submitted: { constraints?: CADConstraint[]; assembly?: CADAssembly },
+  submitted: { constraints?: CADConstraint[]; assembly?: CADAssembly; components?: CADDesignSpec["components"] },
 ): CADDesignSpec {
-  if (!submitted.constraints?.length && !submitted.assembly) return spec;
+  if (!submitted.constraints?.length && !submitted.assembly && !submitted.components) return spec;
   const constraints = [...spec.constraints];
   for (const constraint of submitted.constraints ?? []) {
     const existing = constraints.findIndex((candidate) => candidate.id === constraint.id);
@@ -874,6 +898,7 @@ function specWithSubmittedIntent(
   return {
     ...spec,
     constraints: constraints.slice(0, 120),
+    ...(submitted.components ? { components: submitted.components } : {}),
     ...(submitted.assembly ? { assembly: submitted.assembly } : {}),
   };
 }
@@ -1305,7 +1330,7 @@ async function generateModelTool(
   // Kept on the project as well as on the revision: a follow-up turn reads the
   // project's specification, and a constraint or assembly recorded only against
   // one revision would vanish the next time the design is opened.
-  if (parsed.value.constraints?.length || parsed.value.assembly) {
+  if (parsed.value.constraints?.length || parsed.value.assembly || parsed.value.components) {
     saveProjectSpec(project.id, spec, context);
   }
 
@@ -1385,7 +1410,7 @@ async function validateModelTool(
     };
   }
 
-  const spec = projectSpec(project);
+  const spec = specWithSubmittedIntent(projectSpec(project), parsed.value);
   const expectations = expectationsFromSpec(spec, context.defaults);
   const stored = JSON.parse(revision.validation_json) as {
     passed?: boolean;
@@ -1399,7 +1424,8 @@ async function validateModelTool(
   // implementation of them. When the specification has not moved since the
   // build, the recorded result is that same answer and a rebuild would only
   // cost time.
-  if (JSON.stringify(stored.expectations ?? {}) === JSON.stringify(expectations)) {
+  if (!parsed.value.components && !parsed.value.assembly &&
+      JSON.stringify(stored.expectations ?? {}) === JSON.stringify(expectations)) {
     const issues = stored.issues ?? [];
     return {
       ok: true,
@@ -1425,6 +1451,7 @@ async function validateModelTool(
     };
   }
   context.attemptsRemaining -= 1;
+  if (parsed.value.components || parsed.value.assembly) saveProjectSpec(project.id, spec, context);
   const outcome = await buildAndRecord({
     project,
     spec,
@@ -1432,7 +1459,7 @@ async function validateModelTool(
     entrypoint: revision.entrypoint,
     parameters: readRevisionParameters(project.id, revisionNumber, context.database),
     instruction: `Re-validated against the updated specification.`,
-    timeoutMs: 45_000,
+    timeoutMs: cadRebuildTimeoutMs(revision.provenance_json),
     context,
   });
   if (!outcome.ok) {
@@ -1612,7 +1639,7 @@ async function updateParametersTool(
     entrypoint: revision.entrypoint,
     parameters,
     instruction: parsed.value.note || context.instruction,
-    timeoutMs: 45_000,
+    timeoutMs: cadRebuildTimeoutMs(revision.provenance_json),
     context,
   });
   if (!outcome.ok) {

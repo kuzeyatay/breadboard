@@ -24,8 +24,13 @@ import { removePathWithRetries } from "./paths.ts";
 export const VISUAL_ANALYSIS_QUESTION =
   "This is a lecture recording that will become study material. Using both the transcript and the frames, describe everything the video shows that a reader of the transcript alone would miss: every slide, diagram, equation, derivation step, table, plot, and board sketch, with its timestamp, what it depicts, and how it connects to what is being said at that moment. Quote equations exactly. Be exhaustive and ordered by time.";
 
-/** Sampled frames kept per source; Learn treats each as a page snapshot. */
-export const MAX_SOURCE_FRAMES = 24;
+export function hasCompletedVisualAnalysis(markdown: string): boolean {
+  return (
+    /^source_images:\s*\[[^\]]+\]\s*$/m.test(markdown) &&
+    /^## What the video shows\s*$/m.test(markdown) &&
+    /^## Frames\s*$/m.test(markdown)
+  );
+}
 
 export interface WatchRunLike {
   report: string;
@@ -39,7 +44,8 @@ export interface VisualAnalysisDeps {
   contentPath: string;
   ffmpegPath: string;
   runWatch(input: { userId: number; jobId: string; source: string; workspaceRoot: string }): Promise<WatchRunLike>;
-  publish(reason: string, gardenSlug: string): Promise<void>;
+  publish(reason: string, gardenSlug: string, userId: number): Promise<void>;
+  describeSource?(userId: number, gardenSlug: string, sourceRelPath: string): Promise<void>;
   log?(message: string): void;
 }
 
@@ -168,6 +174,16 @@ export function augmentSourceMarkdown(input: {
   return `${head}${body.replace(/\s+$/, "")}\n${appended}`;
 }
 
+async function describeSavedFrames(deps: VisualAnalysisDeps, job: VideoTranscriptionJob, sourceRelPath: string) {
+  try {
+    await deps.describeSource?.(job.userId, job.gardenId, sourceRelPath);
+  } catch {
+    // The frame-grounded Watch analysis and its saved frames are already valid.
+    // Optional per-image retrieval descriptions can resume in a later backfill.
+    deps.log?.(`Saved frame descriptions are pending for ${job.id}; source context remains searchable.`);
+  }
+}
+
 async function runVisualAnalysisForJob(deps: VisualAnalysisDeps, job: VideoTranscriptionJob): Promise<void> {
   const sourceRelPath = job.outputRelativePath;
   const sourceSlug = job.sourceSlug;
@@ -176,6 +192,14 @@ async function runVisualAnalysisForJob(deps: VisualAnalysisDeps, job: VideoTrans
   }
   const sourcePath = path.join(deps.contentPath, job.gardenId, sourceRelPath);
   if (!fs.existsSync(sourcePath)) throw new Error(`The transcript source is missing at ${sourceRelPath}.`);
+  // A previous attempt can finish the expensive frame reading and durable
+  // source write, then fail while publishing Quartz. Resume at publication so
+  // a retry neither re-reads the video nor appends a duplicate analysis.
+  if (hasCompletedVisualAnalysis(fs.readFileSync(sourcePath, "utf8"))) {
+    await describeSavedFrames(deps, job, sourceRelPath);
+    await deps.publish(`video visual analysis for ${sourceSlug}`, job.gardenId, job.userId);
+    return;
+  }
   const source = job.inputKind === "youtube"
     ? (job.canonicalUrl ?? job.originalUrl ?? "")
     : (job.mediaTempPath ?? "");
@@ -216,11 +240,14 @@ async function runVisualAnalysisForJob(deps: VisualAnalysisDeps, job: VideoTrans
     gardenSlug: job.gardenId,
     sourceSlug,
     ffmpegPath: deps.ffmpegPath,
-    frames: evenlySample(watched.framePaths, MAX_SOURCE_FRAMES),
+    // Watch already selects/deduplicates frames. A second 24-frame cap dropped
+    // distinct diagrams which the visual analysis had actually inspected.
+    frames: watched.framePaths,
   });
   const markdown = fs.readFileSync(sourcePath, "utf8");
   fs.writeFileSync(sourcePath, augmentSourceMarkdown({ markdown, analysis, frames, transcript }));
-  await deps.publish(`video visual analysis for ${sourceSlug}`, job.gardenId);
+  await describeSavedFrames(deps, job, sourceRelPath);
+  await deps.publish(`video visual analysis for ${sourceSlug}`, job.gardenId, job.userId);
 }
 
 async function discardTempMedia(deps: VisualAnalysisDeps, job: VideoTranscriptionJob): Promise<void> {

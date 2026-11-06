@@ -7,8 +7,10 @@ export function useBrowserContextBookmark<T extends { url: string }>(
   store: { items: T[]; ready: boolean; saving: boolean; save(next: T[]): Promise<boolean> },
   normalize: (value: unknown) => T | null,
   limit: number,
+  active = true,
 ) {
   useEffect(() => {
+    if (!active) return;
     const bookmark = (event: Event) => {
       const detail = (event as CustomEvent<{ bookmark?: unknown; complete?: (saved: boolean) => void }>).detail;
       if (!detail || typeof detail.complete !== "function") return;
@@ -23,5 +25,5 @@ export function useBrowserContextBookmark<T extends { url: string }>(
     };
     window.addEventListener("breadboard:bookmark-browser-page", bookmark);
     return () => window.removeEventListener("breadboard:bookmark-browser-page", bookmark);
-  }, [store, normalize, limit]);
+  }, [store, normalize, limit, active]);
 }

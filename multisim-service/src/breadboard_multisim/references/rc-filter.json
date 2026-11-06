@@ -1,0 +1,8 @@
+{
+  "title": "159 Hz RC low-pass filter",
+  "components": [
+    {"id": "V1", "type": "voltage_source", "value": 0, "ac": 1, "nodes": ["vin", "0"], "waveform": "PULSE(0 1 1u 1n 1n 10m 20m)"},
+    {"id": "R1", "type": "resistor", "value": "1k", "nodes": ["vin", "vout"], "tolerance": 0.01},
+    {"id": "C1", "type": "capacitor", "value": "1u", "nodes": ["vout", "0"], "tolerance": 0.05}
+  ]
+}

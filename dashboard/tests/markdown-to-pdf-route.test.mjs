@@ -4,6 +4,7 @@ import { registerHooks } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createHash } from "node:crypto";
 
 const state = globalThis.__markdownPdfRouteTest = {};
 const modules = {
@@ -46,7 +47,7 @@ const selectedNotes = {
   title: "Selected notes",
   documents: [
     { title: "Second note", content: "---\ntitle: Second note\n---\n# Second\nSelected first." },
-    { title: "First note", content: "# First\nSelected second." },
+    { title: "First note", content: "# First\nSelected second.", slug: "electromagnetism/learning/First note" },
   ],
 };
 const request = (body = selectedNotes) => new Request("http://localhost/api/markdown-to-pdf", {
@@ -126,4 +127,43 @@ test("a real disk flush failure is reported and leaves no partial PDF download",
   assert.deepEqual(await response.json(), { error: "PDF disk flush failed" });
   assert.equal(state.cleanups, 1);
   assert.deepEqual(fs.readdirSync(exports), []);
+});
+
+test("folder and single-note exports preserve folder headings and prefer the Markdown title", async t => {
+  fixture(t);
+  const response = await POST(request({
+    title: "Course folder", folderTitle: "Course folder",
+    documents: [
+      { content: "---\ntitle: Real Markdown Title\n---\nBody", title: "Stale label", folderTitle: "Chapter One" },
+      { content: "Another body", title: "Second note" },
+    ],
+  }));
+  assert.equal(response.status, 200);
+  await response.arrayBuffer();
+  assert.deepEqual(state.calls[0].input.documents, [
+    { content: "Body", title: "Real Markdown Title", folderTitle: "Chapter One" },
+    { content: "Another body", title: "Second note", folderTitle: "Course folder" },
+  ]);
+  const single = await POST(request({
+    content: "---\ntitle: Single Note\n---\nBody", folderTitle: "Chapter Two", slug: "demo/chapter-two/note",
+  }));
+  assert.equal(single.status, 200);
+  await single.arrayBuffer();
+  assert.deepEqual(state.calls[1].input.documents, [
+    { content: "Body", title: "Single Note", folderTitle: "Chapter Two", slug: "demo/chapter-two/note" },
+  ]);
+});
+
+test("exports cached before the title layout update are rendered again", async t => {
+  const exports = fixture(t);
+  const documents = [{ content: "Body", title: "Note" }];
+  const oldDigest = createHash("sha256").update(JSON.stringify({
+    protocolVersion: 2, userId: 17, gardenId: null, title: "Note", fileName: "note.pdf", documents,
+  })).digest("hex");
+  fs.mkdirSync(exports, { recursive: true });
+  fs.writeFileSync(path.join(exports, `${oldDigest}.pdf`), "%PDF-1.7\nold titleless PDF\n%%EOF");
+  const response = await POST(request({ title: "Note", documents }));
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), pdfBytes);
+  assert.equal(state.calls.length, 1);
 });

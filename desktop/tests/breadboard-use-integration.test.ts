@@ -5,12 +5,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-test("Breadboard use controls real Electron tabs through the dashboard transport", async () => {
+for (const persistentShell of [false, true]) test(`Breadboard use controls ${persistentShell ? "persistent shell" : "legacy"} Electron tabs through the dashboard transport`, async () => {
   const desktop = path.resolve(__dirname, "../..");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-use-"));
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.NODE_TEST_CONTEXT;
+  env.BB_USE_PERSISTENT_SHELL = persistentShell ? "1" : "0";
   try {
     const dashboard = path.join(desktop, "..", "dashboard");
     const esbuild = require(require.resolve("esbuild", { paths: [dashboard] }));

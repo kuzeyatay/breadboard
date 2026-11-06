@@ -177,6 +177,11 @@ const DIGITAL_NAVIGATION = new RegExp(
   "giu",
 );
 
+// HTTP endpoints are not travel routes. Remove only the technical reference,
+// preserving any separate request for real directions in the same message.
+const DIGITAL_ROUTE_REFERENCE =
+  /\b(?:(?:api|https?|rest|artifact(?:\s+download)?)\s+routes?\b|download\s+routes?\b(?=\s*(?:(?:is|at)\s+|:\s*)?(?:\/api\/|https?:\/\/)))/gi;
+
 const OPT_OUT =
   /\b(?:do not|don'?t|without|no need to|skip)\b.{0,30}\b(?:use|check|call|look up)?\s*(?:the )?(?:map|maps|map tools?)\b/;
 
@@ -214,7 +219,7 @@ export function requiresGeographicGrounding(
 ): GeographicGroundingAssessment {
   const original = (request ?? "").trim();
   if (!original) return { required: false, asks: [], reason: "empty request" };
-  const raw = original.replace(DIGITAL_NAVIGATION, " ").trim();
+  const raw = original.replace(DIGITAL_NAVIGATION, " ").replace(DIGITAL_ROUTE_REFERENCE, " ").trim();
   const folded = foldRequestText(raw);
 
   if (OPT_OUT.test(folded)) {
@@ -311,11 +316,18 @@ export function requiresGeographicGroundingInContext(
  * with no successful map evidence behind it is the failure this whole feature
  * exists to prevent, so each is reported as an unsupported claim.
  */
-const GEOGRAPHIC_CLAIMS: { pattern: RegExp; claim: string }[] = [
+// A numbered coordinate can describe a plot, vector or image. Only explicit
+// geographic language creates an answer-side map obligation; place requests
+// already carry their own groundingRequired flag.
+export const GEOGRAPHIC_COORDINATE_CLAIM =
+  /\b(?:latitude|longitude|lat\s*\/\s*lon|(?:gps|geographic|geographical)\s+coordinates?)\b[^\n]{0,30}[-−+]?\d/i;
+
+const GEOGRAPHIC_CLAIMS: { pattern: RegExp; claim: string; needsGeographicRequest?: boolean }[] = [
   {
     pattern:
       /\b\d+(?:[.,]\d+)?\s?(?:km|kilometres?|kilometers?|miles?|metres?|meters?)\b[^.\n]{0,60}\b(?:away|from|to|walk\w*|driv\w*|cycl\w*|apart|on foot|by car|by bike|journey|trip)\b/i,
-    claim: "Distance claim has no successful map-service result behind it.",
+    claim: "Distance claim has no successful map-service result.",
+    needsGeographicRequest: true,
   },
   {
     // A bare "m" is only a metre in lowercase and only when it is not a
@@ -324,29 +336,49 @@ const GEOGRAPHIC_CLAIMS: { pattern: RegExp; claim: string }[] = [
     // report about robotics funding for making an unsourced distance claim.
     pattern:
       /(?<![$€£¥])\b\d+(?:[.,]\d+)?\s?m\b[^.\n]{0,60}\b(?:away|from|to|walk\w*|driv\w*|cycl\w*|apart|on foot|by car|by bike|journey|trip)\b/,
-    claim: "Distance claim has no successful map-service result behind it.",
+    claim: "Distance claim has no successful map-service result.",
+    needsGeographicRequest: true,
   },
   {
-    pattern: /\b(?:about|roughly|around|approximately|takes?|it'?s)\b.{0,30}\b\d+\s?(?:minute|min|hour|hr)s?\b.{0,40}\b(?:walk|on foot|drive|driving|cycle|cycling|away|to get)\b/i,
-    claim: "Travel-time claim has no successful routing result behind it.",
+    pattern:
+      /\b(?:about|roughly|around|approximately|takes?|it'?s)\b[^.\n]{0,30}\b\d+\s?(?:minutes?|min|hours?|hrs?)\b[^.\n]{0,40}\b(?:walk|on foot|drive|driving|cycle|cycling|away|to get)\b/i,
+    claim: "Travel-time claim has no successful routing result.",
+    needsGeographicRequest: true,
   },
   {
-    pattern: /\b(?:the address is|located at|situated at|it'?s at)\b\s+\S/i,
-    claim: "Address claim has no successful map-service result behind it.",
+    // "located at" is geometry as often as it is geography: "charge
+    // elements located at equal distances above and below", "every point
+    // located at a distance $r$ from the wire" (an EM1 chat, 2026-09-16,
+    // whose physics answers were badged contradicted for it). It only
+    // counts as an address when what follows looks like one: a house
+    // number and a name, a named street, or a postcode. "the address is"
+    // says what it is and needs no such check.
+    pattern:
+      /\bthe address is\s+\S|\b(?:located|situated) at\s+(?:\d{1,5}[A-Za-z]?\s+(?!(?:m|cm|mm|km|metres?|meters?|units?|points?|nodes?|positions?|degrees?|radians?|seconds?|s|and|or)\b)[A-Za-z][\w'.-]+|[A-Za-z][\w'.-]+(?:\s+[A-Za-z][\w'.-]+){0,3}\s+(?:Street|St\.?|Road|Rd\.?|Avenue|Ave\.?|Lane|Ln\.?|Boulevard|Blvd\.?|Drive|Dr\.?|Way|Square|Plaza|Place|Court|Terrace|Straat|Laan|Weg|Plein|Gracht|Kade)\b|\d{4}\s?[A-Za-z]{2}\b|\d{5}\b)/i,
+    claim: "Address claim has no successful map-service result.",
   },
   {
-    pattern: /\b(?:coordinates?|latitude|longitude|lat\/lon)\b.{0,20}[-\d]/i,
-    claim: "Coordinate claim has no successful map-service result behind it.",
+    pattern: GEOGRAPHIC_COORDINATE_CLAIM,
+    claim: "Coordinate claim has no successful map-service result.",
   },
   {
     pattern: /\b(?:opens? at|closes? at|open from|opening hours are)\b/i,
-    claim: "Opening-hours claim has no successful place-details result behind it.",
+    claim: "Opening-hours claim has no successful place-details result.",
   },
   {
-    pattern: /\b(?:the nearest|closest)\b.{0,40}\b(?:is|are)\b/i,
-    claim: "Nearest-place claim has no successful POI result behind it.",
+    pattern: /\b(?:the nearest|the closest)\b[^.\n]{0,40}\b(?:is|are)\b/i,
+    claim: "Nearest-place claim has no successful POI result.",
   },
 ];
+
+/** Numeric distances and times also occur in worked examples. Their units alone
+ * cannot create a map obligation; use the request's geographic classification.
+ * Explicit addresses, geographic coordinates and place claims remain checked. */
+export function geographicClaimsWithoutMapEvidence(answer: string, groundingRequired: boolean): string[] {
+  return [...new Set(GEOGRAPHIC_CLAIMS.filter(rule =>
+    (!rule.needsGeographicRequest || groundingRequired) && rule.pattern.test(answer),
+  ).map(rule => rule.claim))];
+}
 
 export interface GeographicVerdict {
   /** The request needed map data. */
@@ -374,11 +406,7 @@ export function assessGeographicGrounding(input: {
   const answer = input.answer ?? "";
   const unsupportedClaims: string[] = [];
   if (!satisfied) {
-    for (const { pattern, claim } of GEOGRAPHIC_CLAIMS) {
-      if (pattern.test(answer) && !unsupportedClaims.includes(claim)) {
-        unsupportedClaims.push(claim);
-      }
-    }
+    unsupportedClaims.push(...geographicClaimsWithoutMapEvidence(answer, input.groundingRequired));
     if (input.groundingRequired && answer.trim() && !unsupportedClaims.length) {
       // The request needed map data and none was obtained. Even a hedged answer
       // is recorded as ungrounded so the turn cannot read as verified.

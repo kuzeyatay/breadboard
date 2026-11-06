@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { notchProviders, notchUsageRows, notchHeadline, notchPercent, notchRemaining, notchResetCopy, notchColor } from "../src/lib/usage-notch.ts";
+import { notchActivityElapsed, notchActivitySummary, notchAvailabilityCopy, notchProviders, notchUsageRows, notchHeadline, notchPercent, notchRemaining, notchResetCopy, notchColor } from "../src/lib/usage-notch.ts";
+
+test("agent activity keeps the original attention-first state order", () => {
+  const row = (state, since = "2026-09-21T10:00:00Z") => ({ id: state, name: state, detail: state, state, since });
+  assert.equal(notchActivitySummary([]), "idle");
+  assert.equal(notchActivitySummary([row("idle"), row("complete")]), "complete");
+  assert.equal(notchActivitySummary([row("complete"), row("working")]), "working");
+  assert.equal(notchActivitySummary([row("working"), row("waiting")]), "waiting");
+  assert.equal(notchActivityElapsed("2026-09-21T10:00:00Z", Date.parse("2026-09-21T10:03:30Z")), "3m");
+});
 
 test("notch discovers metered subscriptions from the Intelligence catalog without mixing API-provider budgets", () => {
   const providers = notchProviders(["gpt-test", "cliproxy/claude-test", "cliproxy/gemini-test", "cliproxy/gemini-other", "anthropic/claude-api", "openai/gpt-api", "default", "cliproxy/grok-test", "gpt-test"]);
@@ -56,6 +65,18 @@ test("Google preserves separate account readings and summarizes the most-used ac
   assert.equal(notchHeadline("google", rows), 52);
   assert.equal(rows[0].label, "personal");
   assert.equal(rows[1].used, 52);
+});
+
+test("Gemini availability is reported separately from its remaining allowance", () => {
+  assert.equal(notchAvailabilityCopy({ available: true }), null);
+  assert.equal(
+    notchAvailabilityCopy({
+      available: true,
+      model_unavailable: true,
+      unavailable_model: "cliproxy/gemini-3.8-flash-high",
+    }),
+    "cliproxy/gemini-3.8-flash-high is temporarily unavailable even though Google reports quota remaining. This usually means a short-term rate or capacity limit.",
+  );
 });
 
 test("missing, invalid and mismatched readings never turn into a zero-percent allowance", () => {

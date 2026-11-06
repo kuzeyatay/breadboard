@@ -26,12 +26,11 @@ function createDatabase() {
   return db;
 }
 
-test("the work timer, Clicky and Plan sit by default; Buzz and Fast-read are asked for", () => {
+test("the work timer and Plan sit by default; Buzz and Fast-read are asked for", () => {
   assert.equal(DEFAULT_NAVBAR_FLOWERS, true);
   assert.deepEqual(DEFAULT_NAVBAR_SHORTCUTS, {
     workTimer: true,
     browser: true,
-    clicky: true,
     voice: false,
     plan: true,
     fastRead: false,
@@ -73,7 +72,6 @@ test("a patch only moves the keys it names, and only with booleans", () => {
   const current = {
     workTimer: true,
     browser: true,
-    clicky: true,
     voice: false,
     plan: true,
     fastRead: false,
@@ -83,16 +81,15 @@ test("a patch only moves the keys it names, and only with booleans", () => {
   assert.deepEqual(applyNavbarShortcutPatch(current, { buzz: true }), {
     workTimer: true,
     browser: true,
-    clicky: true,
     voice: false,
     plan: true,
     fastRead: false,
     buzz: true,
   });
   assert.deepEqual(
-    applyNavbarShortcutPatch(current, { map: true, worldMonitor: true }),
+    applyNavbarShortcutPatch(current, { map: true, worldMonitor: true, clicky: true }),
     current,
-    "the withdrawn map and world monitor shortcuts are no longer keys a patch can set",
+    "the withdrawn shortcuts are no longer keys a patch can set",
   );
   assert.deepEqual(
     applyNavbarShortcutPatch(current, { workTimer: "yes", nonsense: true }),
@@ -110,7 +107,6 @@ test("a toggle survives being written and read back, per user", () => {
   assert.deepEqual(writeNavbarShortcuts(db, 1, { buzz: true }), {
     workTimer: true,
     browser: true,
-    clicky: true,
     voice: false,
     plan: true,
     fastRead: false,
@@ -120,7 +116,6 @@ test("a toggle survives being written and read back, per user", () => {
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: true,
     browser: true,
-    clicky: true,
     voice: false,
     plan: true,
     fastRead: false,
@@ -137,7 +132,6 @@ test("a toggle survives being written and read back, per user", () => {
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: false,
     browser: true,
-    clicky: true,
     voice: false,
     plan: true,
     fastRead: false,
@@ -148,7 +142,6 @@ test("a toggle survives being written and read back, per user", () => {
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: false,
     browser: true,
-    clicky: true,
     voice: false,
     plan: true,
     fastRead: false,
@@ -159,7 +152,6 @@ test("a toggle survives being written and read back, per user", () => {
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: false,
     browser: true,
-    clicky: true,
     voice: false,
     plan: false,
     fastRead: false,
@@ -170,18 +162,17 @@ test("a toggle survives being written and read back, per user", () => {
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: false,
     browser: true,
-    clicky: true,
     voice: false,
     plan: false,
     fastRead: true,
     buzz: false,
   });
 
-  writeNavbarShortcuts(db, 1, { clicky: false });
+  // An old client cannot restore a retired shortcut.
+  writeNavbarShortcuts(db, 1, { clicky: true });
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: false,
     browser: true,
-    clicky: false,
     voice: false,
     plan: false,
     fastRead: true,
@@ -196,7 +187,6 @@ test("applying the schema twice is safe", () => {
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: true,
     browser: true,
-    clicky: true,
     voice: false,
     plan: true,
     fastRead: false,
@@ -228,10 +218,11 @@ test("a database from before those shortcuts were withdrawn still writes", () =>
       world_monitor INTEGER NOT NULL DEFAULT 0,
       plan INTEGER NOT NULL DEFAULT 1,
       map_page INTEGER NOT NULL DEFAULT 0,
+      clicky INTEGER NOT NULL DEFAULT 1,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    INSERT INTO navbar_shortcut_settings (user_id, work_timer, world_monitor, plan, map_page)
-    VALUES (1, 1, 1, 1, 1);
+    INSERT INTO navbar_shortcut_settings (user_id, work_timer, world_monitor, plan, map_page, clicky)
+    VALUES (1, 1, 1, 1, 1, 1);
   `);
 
   ensureNavbarShortcutSchema(db);
@@ -240,7 +231,6 @@ test("a database from before those shortcuts were withdrawn still writes", () =>
   assert.deepEqual(writeNavbarShortcuts(db, 1, { buzz: true }), {
     workTimer: true,
     browser: true,
-    clicky: true,
     voice: false,
     plan: true,
     fastRead: false,
@@ -270,7 +260,6 @@ test("existing shortcut rows gain later entries without losing their choices", (
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: false,
     browser: true,
-    clicky: true,
     voice: false,
     plan: true,
     fastRead: false,
@@ -283,7 +272,6 @@ test("existing shortcut rows gain later entries without losing their choices", (
   assert.deepEqual(writeNavbarShortcuts(db, 1, { fastRead: true }), {
     workTimer: false,
     browser: true,
-    clicky: true,
     voice: false,
     plan: true,
     fastRead: true,

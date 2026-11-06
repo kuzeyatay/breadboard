@@ -7,6 +7,7 @@ interface RgbColor {
 }
 
 export interface PlayerPalette {
+  ambientColors: string[];
   surface: string;
   foreground: string;
   playingForeground: string;
@@ -64,7 +65,7 @@ function contrastRatio(first: RgbColor, second: RgbColor): number {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-function playerPalette(coverColor: RgbColor): PlayerPalette {
+function playerPalette(coverColor: RgbColor, accents: RgbColor[] = [coverColor]): PlayerPalette {
   const surface = mixColor(
     coverColor,
     DARK_INK,
@@ -86,6 +87,7 @@ function playerPalette(coverColor: RgbColor): PlayerPalette {
   const overlayMiddle = rgba(surface, 0.84);
   const overlayEnd = rgba(surface, 0.94);
   return {
+    ambientColors: [accents[0], accents[1] ?? mixColor(coverColor, LIGHT_INK, 0.25), accents[2] ?? mixColor(coverColor, DARK_INK, 0.25)].map(rgb),
     surface: rgb(surface),
     foreground: rgb(foreground),
     playingForeground: rgb(playingForeground),
@@ -107,12 +109,33 @@ function playerPalette(coverColor: RgbColor): PlayerPalette {
 
 export const DEFAULT_PLAYER_PALETTE = playerPalette({ red: 37, green: 61, blue: 55 });
 
+const coverCache = new Map<string, Promise<PlayerPalette>>();
+
 export function paletteFromCover(url: string): Promise<PlayerPalette> {
+  const cached = coverCache.get(url);
+  if (cached) return cached;
+  const pending = loadCoverPalette(url).catch(error => {
+    coverCache.delete(url);
+    throw error;
+  });
+  if (coverCache.size >= 24) coverCache.delete(coverCache.keys().next().value!);
+  coverCache.set(url, pending);
+  return pending;
+}
+
+function loadCoverPalette(url: string): Promise<PlayerPalette> {
   return new Promise((resolve, reject) => {
     const image = new Image();
+    const timer = setTimeout(() => {
+      image.onload = null;
+      image.onerror = null;
+      image.src = "";
+      reject(new Error("The cover took too long to load."));
+    }, 12_000);
     image.crossOrigin = "anonymous";
     image.decoding = "async";
     image.onload = () => {
+      clearTimeout(timer);
       try {
         const canvas = document.createElement("canvas");
         const size = 32;
@@ -132,9 +155,14 @@ export function paletteFromCover(url: string): Promise<PlayerPalette> {
             score: number;
           }
         >();
+        const average = { red: 0, green: 0, blue: 0, weight: 0 };
         for (let index = 0; index < pixels.length; index += 4) {
           const alpha = pixels[index + 3] / 255;
           if (alpha < 0.1) continue;
+          average.red += pixels[index] * alpha;
+          average.green += pixels[index + 1] * alpha;
+          average.blue += pixels[index + 2] * alpha;
+          average.weight += alpha;
           const maximum = Math.max(pixels[index], pixels[index + 1], pixels[index + 2]);
           const minimum = Math.min(pixels[index], pixels[index + 1], pixels[index + 2]);
           const saturation = maximum ? (maximum - minimum) / maximum : 0;
@@ -160,22 +188,28 @@ export function paletteFromCover(url: string): Promise<PlayerPalette> {
           bucket.score += pixelWeight;
           buckets.set(key, bucket);
         }
-        const dominant = [...buckets.values()].sort(
+        const ranked = [...buckets.values()].sort(
           (first, second) => second.score - first.score,
-        )[0];
-        if (!dominant?.weight) throw new Error("The cover has no visible pixels.");
-        resolve(
-          playerPalette({
-            red: Math.round(dominant.red / dominant.weight),
-            green: Math.round(dominant.green / dominant.weight),
-            blue: Math.round(dominant.blue / dominant.weight),
-          }),
         );
+        const dominant = ranked[0] ?? average;
+        if (!dominant.weight) throw new Error("The cover has no visible pixels.");
+        const color = (bucket: typeof average): RgbColor => ({
+          red: Math.round(bucket.red / bucket.weight),
+          green: Math.round(bucket.green / bucket.weight),
+          blue: Math.round(bucket.blue / bucket.weight),
+        });
+        const accents = [color(dominant)];
+        for (const bucket of ranked) {
+          const candidate = color(bucket);
+          if (accents.every(existing => Math.hypot(existing.red - candidate.red, existing.green - candidate.green, existing.blue - candidate.blue) >= 72)) accents.push(candidate);
+          if (accents.length === 3) break;
+        }
+        resolve(playerPalette(accents[0], accents));
       } catch (error) {
         reject(error);
       }
     };
-    image.onerror = () => reject(new Error("The cover could not be sampled."));
+    image.onerror = () => { clearTimeout(timer); reject(new Error("The cover could not be sampled.")); };
     image.src = url;
   });
 }

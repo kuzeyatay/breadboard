@@ -16,6 +16,8 @@ export type GoalCardStatus =
   | 'active'
   | 'paused'
   | 'budget_limited'
+  | 'blocked'
+  | 'usage_limited'
   | 'complete';
 
 export interface GoalCardState {
@@ -23,6 +25,8 @@ export interface GoalCardState {
   objective: string;
   status: GoalCardStatus;
   turnBudget: number | null;
+  tokenBudget: number | null;
+  continuationDeferred: boolean;
   turnsUsed: number;
   remainingTurns: number | null;
   tokensUsed: number;
@@ -64,7 +68,9 @@ function formatElapsed(totalSeconds: number): string {
 function statusLabel(status: GoalCardStatus): string {
   if (status === 'complete') return 'Goal complete';
   if (status === 'paused') return 'Goal paused';
-  if (status === 'budget_limited') return 'Goal out of turns';
+  if (status === 'budget_limited') return 'Goal budget reached';
+  if (status === 'blocked') return 'Goal blocked';
+  if (status === 'usage_limited') return 'Goal usage limit reached';
   return 'Pursuing goal';
 }
 
@@ -126,13 +132,20 @@ export default function GoalCard({
   // does, and re-creating every handler on each poll would churn the row.
   const endpointRef = useRef(endpoint);
   endpointRef.current = endpoint;
+  const requestVersion = useRef(0);
+  const mutating = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetch(endpoint, { cache: 'no-store', signal: controller.signal })
+    let reading = false;
+    const refresh = () => {
+      if (reading || mutating.current || controller.signal.aborted) return;
+      reading = true;
+      const version = ++requestVersion.current;
+      void fetch(endpoint, { cache: 'no-store', signal: controller.signal })
       .then(async (response) => (response.ok ? await response.json() : null))
       .then((payload: { goal?: GoalCardState | null } | null) => {
-        if (!payload) return;
+        if (!payload || controller.signal.aborted || version !== requestVersion.current) return;
         setGoal(payload.goal ?? null);
         setError(null);
       })
@@ -141,11 +154,23 @@ export default function GoalCard({
         // other failure leaves the last known goal on screen: a card that
         // vanishes on one bad poll reads as "the goal was dropped", which is
         // the one thing it must never say by accident.
-        if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
+        if (!controller.signal.aborted && version === requestVersion.current &&
+            !(cause instanceof DOMException && cause.name === 'AbortError')) {
           setError('The goal could not be refreshed.');
         }
-      });
-    return () => controller.abort();
+      })
+      .finally(() => { reading = false; });
+    };
+    refresh();
+    // Goals also change through tools, API clients and detached continuation;
+    // none of those necessarily changes this viewer's run-state refresh key.
+    const timer = window.setInterval(refresh, 5_000);
+    window.addEventListener('focus', refresh);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+    };
   }, [endpoint, refreshKey]);
 
   // A goal that is not moving does not need a ticking clock, and a complete one
@@ -160,16 +185,24 @@ export default function GoalCard({
 
   const send = useCallback(
     async (init: RequestInit) => {
+      const target = endpointRef.current;
+      const version = ++requestVersion.current;
+      mutating.current = true;
       setBusy(true);
       try {
-        const response = await fetch(endpointRef.current, init);
+        const response = await fetch(target, init);
         if (!response.ok) throw new Error('goal_update_failed');
         const payload = (await response.json()) as { goal?: GoalCardState | null };
-        setGoal(payload.goal ?? null);
-        setError(null);
+        if (endpointRef.current === target && version === requestVersion.current) {
+          setGoal(payload.goal ?? null);
+          setError(null);
+        }
       } catch {
-        setError('That change to the goal did not take.');
+        if (endpointRef.current === target && version === requestVersion.current) {
+          setError('That change to the goal did not take.');
+        }
       } finally {
+        mutating.current = false;
         setBusy(false);
       }
     },
@@ -197,13 +230,14 @@ export default function GoalCard({
     });
 
   const turnBudget = goal.turnBudget;
+  const tokenBudget = goal.tokenBudget ?? null;
   const primaryAction =
     goal.status === 'complete'
       ? null
-      : goal.status === 'paused'
+      : goal.status === 'paused' || goal.status === 'blocked' || goal.status === 'usage_limited'
         ? { kind: 'resume' as const, label: 'Resume this goal' }
         : goal.status === 'budget_limited'
-          ? { kind: 'budget' as const, label: 'Give this goal more turns' }
+          ? { kind: 'budget' as const, label: 'Increase the goal budget' }
           : running
             ? { kind: 'pause' as const, label: 'Pause this goal' }
             : { kind: 'continue' as const, label: 'Keep working on this goal' };
@@ -219,13 +253,13 @@ export default function GoalCard({
     else if (primaryAction.kind === 'continue') onContinue?.();
     else {
       setExpanded(true);
-      setBudgetDraft(turnBudget === null ? '' : String(turnBudget + 10));
+      setBudgetDraft(tokenBudget === null ? '' : String(tokenBudget));
     }
   };
 
   const toggleDetails = () => {
     setExpanded((open) => {
-      if (!open) setBudgetDraft(turnBudget === null ? '' : String(turnBudget));
+      if (!open) setBudgetDraft(tokenBudget === null ? '' : String(tokenBudget));
       return !open;
     });
   };
@@ -336,6 +370,7 @@ export default function GoalCard({
               {goal.objective}
             </p>
             <dl className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[var(--ink-muted)]">
+              <div className="flex gap-1"><dt>Tokens</dt><dd>{goal.tokensUsed}{tokenBudget === null ? ' (unlimited)' : ` of ${tokenBudget}`}</dd></div>
               <div className="flex gap-1">
                 <dt>Turns</dt>
                 <dd className="tabular-nums text-[var(--ink)]">
@@ -365,22 +400,22 @@ export default function GoalCard({
                   const trimmed = budgetDraft.trim();
                   const parsed = trimmed === '' ? null : Number(trimmed);
                   if (parsed !== null && (!Number.isInteger(parsed) || parsed <= 0)) {
-                    setError('A turn budget is a whole number of turns, or blank for unlimited.');
+                    setError('A token budget is a positive whole number, or blank for unlimited.');
                     return;
                   }
                   // Lifting a ceiling is only ever asked for by someone who
                   // wants the work to carry on, so the goal comes off the
                   // budget stop in the same request.
-                  patch({ turnBudget: parsed, status: 'active' });
+                  patch({ tokenBudget: parsed, ...(turnBudget !== null ? { turnBudget: null } : {}), status: 'active' });
                 }}
               >
-                <label htmlFor={`goal-budget-${goal.goalId}`}>Turn budget</label>
+                <label htmlFor={`goal-budget-${goal.goalId}`}>Token budget</label>
                 <input
                   id={`goal-budget-${goal.goalId}`}
                   value={budgetDraft}
                   onChange={(event) => setBudgetDraft(event.target.value)}
                   inputMode="numeric"
-                  placeholder={goal.turnBudget === null ? 'unlimited' : String(goal.turnBudget)}
+                  placeholder={tokenBudget === null ? 'unlimited' : String(tokenBudget)}
                   className="w-20 rounded-md border border-[var(--line)] bg-transparent px-2 py-1 text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
                 />
                 <button

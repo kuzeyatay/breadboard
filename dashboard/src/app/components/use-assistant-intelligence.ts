@@ -10,6 +10,7 @@ import { invalidateAssistantPreferences, loadAssistantModelHealth, loadAssistant
 
 // These keys mirror only the profile default. Local picks use separate keys.
 export const ASSISTANT_MODEL_STORAGE_KEY = "breadboard:assistant-model";
+export const ASSISTANT_FALLBACK_MODEL_STORAGE_KEY = "breadboard:assistant-fallback-model";
 export const ASSISTANT_EFFORT_STORAGE_KEY = "breadboard:assistant-reasoning-effort";
 export const ASSISTANT_EFFORT_BY_MODEL_STORAGE_KEY = "breadboard:assistant-reasoning-effort-by-model";
 // The last model a person actually picked, wherever they picked it. Every chat
@@ -17,9 +18,13 @@ export const ASSISTANT_EFFORT_BY_MODEL_STORAGE_KEY = "breadboard:assistant-reaso
 // workspace opens with. A chat the person gave its own model keeps that model:
 // only the pick is shared, not the pinning.
 export const ASSISTANT_CURRENT_SELECTION_STORAGE_KEY = "breadboard:assistant-current-selection";
-const ASSISTANT_INTELLIGENCE_EVENT = "breadboard:assistant-intelligence-change";
+export const ASSISTANT_INTELLIGENCE_EVENT = "breadboard:assistant-intelligence-change";
 const OVERRIDE_PREFIX = "breadboard:intelligence-override:";
 const transientOverrides = new Map<string, string>();
+// Capture the startup choice once per page runtime. Saving a future startup
+// preference must not move an open composer or a newly mounted chat surface.
+let startupModel: string | null = null;
+let startupEffort: string | null = null;
 
 function isEffort(value: unknown): value is AssistantReasoningEffort {
   return typeof value === "string" && ASSISTANT_REASONING_EFFORTS.includes(value as AssistantReasoningEffort);
@@ -65,7 +70,13 @@ function parseRecord(value: string | null): Record<string, unknown> {
 export function applySavedAssistantIntelligence(data: AssistantPreferencesPayload): void {
   const model = normalizeAssistantModelId(data.model);
   if (!model || typeof window === "undefined") return;
+  if (startupModel === null) {
+    startupModel = model;
+    startupEffort = isEffort(data.reasoningEffort) ? data.reasoningEffort : DEFAULT_ASSISTANT_REASONING_EFFORT;
+  }
   window.localStorage.setItem(ASSISTANT_MODEL_STORAGE_KEY, model);
+  const fallbackModel = normalizeAssistantModelId(data.fallbackModel);
+  if (fallbackModel) window.localStorage.setItem(ASSISTANT_FALLBACK_MODEL_STORAGE_KEY, fallbackModel);
   if (isEffort(data.reasoningEffort)) window.localStorage.setItem(ASSISTANT_EFFORT_STORAGE_KEY, data.reasoningEffort);
   window.localStorage.setItem(ASSISTANT_EFFORT_BY_MODEL_STORAGE_KEY, JSON.stringify(normalizeRememberedEfforts(data.reasoningEffortByModel)));
   window.dispatchEvent(new Event(ASSISTANT_INTELLIGENCE_EVENT));
@@ -136,7 +147,7 @@ export function useAssistantIntelligence(options: AssistantIntelligenceScope = {
     window.addEventListener(ASSISTANT_INTELLIGENCE_EVENT, listener);
     const onStorage = (event: StorageEvent) => {
       // A pick in another window reaches this one as a storage event.
-      if (event.key === null || [ASSISTANT_MODEL_STORAGE_KEY, ASSISTANT_EFFORT_STORAGE_KEY, ASSISTANT_EFFORT_BY_MODEL_STORAGE_KEY].includes(event.key)) invalidateAssistantPreferences();
+      if (event.key === null || [ASSISTANT_MODEL_STORAGE_KEY, ASSISTANT_FALLBACK_MODEL_STORAGE_KEY, ASSISTANT_EFFORT_STORAGE_KEY, ASSISTANT_EFFORT_BY_MODEL_STORAGE_KEY].includes(event.key)) invalidateAssistantPreferences();
       listener();
     };
     window.addEventListener("storage", onStorage);
@@ -146,7 +157,7 @@ export function useAssistantIntelligence(options: AssistantIntelligenceScope = {
     };
   }, []);
   const getSnapshot = useCallback(() => JSON.stringify([
-    readStorage(ASSISTANT_MODEL_STORAGE_KEY), readStorage(ASSISTANT_EFFORT_STORAGE_KEY),
+    startupModel, startupEffort,
     readStorage(ASSISTANT_EFFORT_BY_MODEL_STORAGE_KEY), readOverride(key),
     sharesSelection ? readStorage(ASSISTANT_CURRENT_SELECTION_STORAGE_KEY) : null,
   ]), [key, readOverride, sharesSelection]);
@@ -201,7 +212,7 @@ export function useAssistantIntelligence(options: AssistantIntelligenceScope = {
     // An existing chat owns its inherited selection too. Otherwise changing
     // the profile replaces its model underneath the conversation, and the
     // next highlight question unexpectedly runs on the new default.
-    // Drafts and standalone controls continue to inherit the profile.
+    // Drafts and standalone controls continue to inherit the startup choice.
     // Wait for an actual preference instead of saving the hydration fallback.
     if (options.sessionId == null || !normalizeAssistantModelId(defaultModel)) return;
     // Read again because the draft-transfer layout effect may have just saved

@@ -11,6 +11,7 @@ import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.
 import { dashboardDataDir } from "../runtime-paths.ts";
 
 const MAX_GENERATED_IMAGE_BYTES = 32 * 1024 * 1024;
+const IMAGE_GENERATION_TIMEOUT_MS = 6 * 60_000;
 
 export class ArtifactImageServiceError extends Error {
   readonly status: number;
@@ -61,6 +62,9 @@ function imageProviderError(error: unknown): ArtifactImageServiceError {
         record.error?.resets_in_seconds,
       )}`,
     );
+  }
+  if (error instanceof OpenAI.APIError && /maximum call stack size exceeded/i.test(upstream)) {
+    return new ArtifactImageServiceError(502, "image_generation_upstream_internal_error", upstream);
   }
   return new ArtifactImageServiceError(
     status,
@@ -124,7 +128,12 @@ function imageResultFromOutput(output: unknown): {
 
 function decodeGeneratedImage(value: string): Buffer {
   const encoded = value.replace(/^data:image\/[a-z0-9.+-]+;base64,/i, "").replace(/\s+/g, "");
-  if (!encoded || !/^[a-z0-9+/]+={0,2}$/i.test(encoded)) {
+  // A whole-string quantified match can exhaust V8's regexp stack on the
+  // multi-megabyte strings returned by the image tool. Search for an invalid
+  // character instead; neither this scan nor the bounded padding match needs
+  // a backtracking stack proportional to the image size.
+  const payload = encoded.replace(/={1,2}$/, "");
+  if (!payload || /[^a-z0-9+/]/i.test(payload)) {
     throw new ArtifactImageServiceError(
       502,
       "image_generation_invalid_result",
@@ -152,7 +161,7 @@ function decodeGeneratedImage(value: string): Buffer {
  * sees a successful turn carrying no image at all. Garden chat already consumes
  * the item events; this does the same rather than trusting the aggregate.
  */
-export async function generateArtifactImage(input: {
+interface GenerateArtifactImageInput {
   baseURL: string;
   prompt: string;
   sourceImage?: { dataUrl: string } | null;
@@ -166,7 +175,31 @@ export async function generateArtifactImage(input: {
   sourceImages?: ReadonlyArray<{ dataUrl: string }>;
   /** Requested output size. Defaults to letting the model pick. */
   size?: GeneratedImageSize;
-}): Promise<ImageGenerationResult> {
+  signal?: AbortSignal;
+}
+
+export async function generateArtifactImage(input: GenerateArtifactImageInput): Promise<ImageGenerationResult> {
+  const signal = AbortSignal.any([
+    AbortSignal.timeout(IMAGE_GENERATION_TIMEOUT_MS),
+    ...(input.signal ? [input.signal] : []),
+  ]);
+  // The image tool can fail inside an otherwise successful Responses stream.
+  // The SDK cannot retry that event. Retry this transient upstream failure once
+  // before the caller switches providers; never retry decoding or persistence.
+  for (let attempt = 0; ; attempt++) {
+    signal.throwIfAborted();
+    try {
+      return await generateArtifactImageAttempt({ ...input, signal });
+    } catch (error) {
+      signal.throwIfAborted();
+      if (attempt === 0 && error instanceof ArtifactImageServiceError &&
+          error.code === "image_generation_upstream_internal_error") continue;
+      throw error;
+    }
+  }
+}
+
+async function generateArtifactImageAttempt(input: GenerateArtifactImageInput): Promise<ImageGenerationResult> {
   const content: Array<
     | { type: "input_text"; text: string }
     | { type: "input_image"; image_url: string; detail: "auto" }
@@ -212,7 +245,7 @@ export async function generateArtifactImage(input: {
         },
       ],
       tool_choice: { type: "image_generation" },
-    });
+    }, { signal: input.signal, timeout: IMAGE_GENERATION_TIMEOUT_MS });
   } catch (error) {
     // The provider's own reason is the only thing that tells a person what to
     // do next — a quota that resets on Thursday needs a different response than
@@ -244,6 +277,7 @@ export async function generateArtifactImage(input: {
         const response = record.response as { error?: { message?: unknown } } | undefined;
         const message = response?.error?.message ?? record.message;
         if (typeof message === "string" && message.trim()) refusal = message.trim();
+        break;
       } else if (event.type === "response.image_generation_call.partial_image") {
         const record = event as unknown as Record<string, unknown>;
         if (typeof record.partial_image_b64 === "string" && record.partial_image_b64.trim()) {
@@ -254,16 +288,21 @@ export async function generateArtifactImage(input: {
         }
       }
     }
-  } catch {
+  } catch (error) {
+    input.signal?.throwIfAborted();
+    const providerError = imageProviderError(error);
+    if (!generated && providerError.code === "image_generation_upstream_internal_error") {
+      throw providerError;
+    }
     if (!generated && !partial) {
-      throw new ArtifactImageServiceError(
-        502,
-        "image_generation_unavailable",
-        "Image generation is unavailable from the configured AI provider.",
-      );
+      throw providerError;
     }
   }
 
+  input.signal?.throwIfAborted();
+  if (!generated && refusal && /maximum call stack size exceeded/i.test(refusal)) {
+    throw new ArtifactImageServiceError(502, "image_generation_upstream_internal_error", refusal);
+  }
   const image = generated ?? partial;
   if (!image) {
     throw new ArtifactImageServiceError(

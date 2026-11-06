@@ -454,8 +454,7 @@ export default function MapClient({
         <header>
           <h1 className="text-base font-medium">Map</h1>
           <p className="mt-1 text-xs text-[var(--ink-muted)]">
-            Places, routes and results come from OpenStreetMap. The assistant reads and
-            writes this same state.
+            Search places and plan routes with OpenStreetMap.
           </p>
         </header>
 

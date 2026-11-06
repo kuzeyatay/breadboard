@@ -8,7 +8,9 @@ import {
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
 import { parseChatTimestamp } from "@/lib/chat-time-separators";
-import ThinkingOrb from "@/app/components/effects/thinking-orb";
+import ThinkingOrb, { orbStateForLabel } from "@/app/components/effects/thinking-orb";
+import BotAvatar from "./bots/bot-avatar";
+import { useConversationBot } from "./bots/bot-conversation";
 
 function timestamp(value: string | number | undefined): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -54,6 +56,7 @@ export default function AssistantResponseMeta({
   disclosureControls?: string;
   onDisclosureToggle?: () => void;
 }) {
+  const bot = useConversationBot();
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -143,12 +146,14 @@ export default function AssistantResponseMeta({
     : label;
   const metaContents = (
     <>
-      {/* The orb only exists while something is actually happening: a finished
-          turn says "Thought", and a still picture of a thought orb beside it
-          would claim otherwise. The label already carries the meaning, so the
-          orb is decoration and stays out of the accessibility tree. */}
-      {active ? (
-        <ThinkingOrb state="composing" size={20} className="self-center" />
+      {/* Bot identity remains visible on saved turns; only live work animates.
+          Regular chats keep the existing active-only thinking orb. */}
+      {bot ? (
+        <BotAvatar avatar={bot.avatar} name={bot.name} size={32}
+          state={!active ? "sleeping" : /waiting|permission|your answer/i.test(label) ? "default" : "working"}
+          paused={!active} />
+      ) : active ? (
+        <ThinkingOrb state={orbStateForLabel(label)} size={20} className="self-center" />
       ) : null}
       <span className={`assistant-response-label ${shimmer ? "thinking-shimmer" : ""}`}>{displayLabel}</span>
       {metadata ? (
@@ -191,7 +196,7 @@ export default function AssistantResponseMeta({
 
   return (
     <section
-      aria-label={`${agentName} ${displayLabel.toLowerCase()}${tokenLabel ? " and token usage" : ""}`}
+      aria-label={`${bot?.name ?? agentName} ${displayLabel.toLowerCase()}${tokenLabel ? " and token usage" : ""}`}
       className="assistant-response-meta my-1 text-[var(--ink)]"
       data-response-state={failed ? "failed" : active ? "active" : "complete"}
     >

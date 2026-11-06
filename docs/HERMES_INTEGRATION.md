@@ -54,7 +54,9 @@ ends the turn with a message instead of running out the iteration budget.
 
 1. The dashboard authorizes the Breadboard conversation and active Garden.
 2. A server-owned capability decision selects knowledge, technical-read, or
-   scoped-implementation permissions.
+   scoped-implementation permissions. The decision lasts for the turn and is
+   revoked on completion, cancellation, failure, or replacement by a new turn.
+   Active turns have no fixed wall-clock permission cutoff.
 3. `HermesRuntimeAdapter` creates/restores a Hermes session through the
    authenticated loopback gateway.
 4. Hermes streams JSON-RPC events; Breadboard normalizes and journals them before

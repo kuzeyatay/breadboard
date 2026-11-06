@@ -568,7 +568,9 @@ export async function indexRetrievalGarden(input: {
       node.draft !== 'true' &&
       (node.type === 'learning-page' ||
         node.breadboardType === 'learning_page' ||
-        node.type === 'source-document'),
+        node.type === 'source-document' ||
+        node.type === 'user-note' ||
+        node.type === 'generated-note'),
   );
   const chunks = eligibleNodes.flatMap((node) =>
     retrievalChunksForNode({ garden: input.garden, node, registry, claims: claims.claims }),
@@ -711,14 +713,6 @@ function relationNeighbors(
   return neighbors;
 }
 
-function rowsForGardens(database: SqliteDatabase, gardenSlugs: string[]): ChunkRow[] {
-  if (gardenSlugs.length === 0) return [];
-  const placeholders = gardenSlugs.map(() => '?').join(', ');
-  return database.prepare(
-    `SELECT * FROM semantic_chunks WHERE garden_slug IN (${placeholders})`,
-  ).all(...gardenSlugs) as ChunkRow[];
-}
-
 export async function retrieveGraphRag(input: {
   query: string;
   gardens: RetrievalGarden[];
@@ -782,23 +776,29 @@ export async function retrieveGraphRag(input: {
 
   let semanticRows: ChunkRow[] = [];
   let semanticUsed = false;
-  if (provider && !embeddingWarning) {
+  if (provider && !embeddingWarning && gardenSlugs.length > 0) {
     try {
       const [queryVector] = await provider.embed([input.query]);
-      const rows = rowsForGardens(database, gardenSlugs);
-      const vectorStatement = database.prepare(
-        'SELECT vector_json FROM semantic_embedding_cache WHERE content_hash = ? AND model = ?',
-      );
-      semanticRows = rows
-        .map((row) => {
-          const cached = vectorStatement.get(row.content_hash, provider.model) as { vector_json?: string } | undefined;
-          const vector = cached?.vector_json ? JSON.parse(cached.vector_json) as number[] : [];
-          return { row, score: cosineSimilarity(queryVector ?? [], vector) };
-        })
-        .filter((item) => item.score > 0)
-        .sort((left, right) => right.score - left.score)
-        .slice(0, 60)
-        .map((item) => item.row);
+      // Most source chunks have no cached vector. Do not load every page's
+      // text and issue one SQLite lookup per chunk during an interactive search.
+      // Stream only available vectors, then fetch the winning passages.
+      const placeholders = gardenSlugs.map(() => '?').join(', ');
+      const candidates = database.prepare(`
+        SELECT c.id, e.vector_json
+        FROM semantic_chunks c
+        JOIN semantic_embedding_cache e ON e.content_hash = c.content_hash AND e.model = ?
+        WHERE c.garden_slug IN (${placeholders})
+      `).iterate(provider.model, ...gardenSlugs) as Iterable<{ id: string; vector_json: string }>;
+      const best: Array<{ id: string; score: number }> = [];
+      for (const row of candidates) {
+        const score = cosineSimilarity(queryVector ?? [], JSON.parse(row.vector_json) as number[]);
+        if (!(score > 0)) continue;
+        best.push({ id: row.id, score });
+        best.sort((left, right) => right.score - left.score);
+        if (best.length > 60) best.pop();
+      }
+      const chunkById = database.prepare('SELECT * FROM semantic_chunks WHERE id = ?');
+      semanticRows = best.map(({ id }) => chunkById.get(id) as ChunkRow);
       semanticUsed = semanticRows.length > 0;
     } catch (error) {
       embeddingWarning = error instanceof Error ? error.message : 'Embedding retrieval failed';
@@ -831,7 +831,6 @@ export async function retrieveGraphRag(input: {
     chunk.score += chunk.sourcePriority * 0.01;
   }
 
-  const allRows = rowsForGardens(database, gardenSlugs);
   for (const garden of input.gardens) {
     const registry = registries.get(garden.slug)!;
     const directIds = new Set(
@@ -844,13 +843,29 @@ export async function retrieveGraphRag(input: {
       }
     }
     const neighbors = relationNeighbors(directIds, registry, claimsByGarden.get(garden.slug) ?? []);
+    // Build the two-passages-per-concept lookup once. Parsing the entire
+    // multi-Garden corpus again for every graph neighbor made broad searches
+    // exceed the tool timeout even when their lexical results were ready.
+    const neighborChunks = new Map<string, RetrievalChunk[]>();
+    if (neighbors.size > 0) {
+      const rows = database.prepare('SELECT * FROM semantic_chunks WHERE garden_slug = ?')
+        .iterate(garden.slug) as Iterable<ChunkRow>;
+      for (const row of rows) {
+        const matches = [...new Set([...jsonStrings(row.primary_concepts), ...jsonStrings(row.supporting_concepts)])]
+          .filter(slug => neighbors.has(slug) && (neighborChunks.get(slug)?.length ?? 0) < 2);
+        if (!matches.length) continue;
+        const chunk = chunkFromRow(row);
+        for (const slug of matches) {
+          const chunks = neighborChunks.get(slug) ?? [];
+          chunks.push(chunk);
+          neighborChunks.set(slug, chunks);
+        }
+        if (neighborChunks.size === neighbors.size && [...neighborChunks.values()].every(chunks => chunks.length === 2)) break;
+      }
+    }
     let expanded = 0;
     for (const [slug, relationPath] of neighbors) {
-      const candidates = allRows
-        .filter((row) => row.garden_slug === garden.slug)
-        .map(chunkFromRow)
-        .filter((chunk) => chunk.primaryConcepts.includes(slug) || chunk.supportingConcepts.includes(slug))
-        .slice(0, 2);
+      const candidates = neighborChunks.get(slug) ?? [];
       for (const chunk of candidates) {
         const current = fused.get(chunk.id) ?? { ...chunk, score: 0.01, relationshipPaths: [] };
         current.score += chunk.primaryConcepts.includes(slug) ? 0.08 : 0.04;
@@ -871,26 +886,28 @@ export async function retrieveGraphRag(input: {
   const selected: RankedRetrievalChunk[] = [];
   const selectedIds = new Set<string>();
   const chunksPerPage = new Map<string, number>();
+  // Different Gardens commonly contain the same relative page paths.
+  const pageKey = (chunk: RankedRetrievalChunk) => `${chunk.gardenSlug}/${chunk.pageRelPath}`;
   let usedCharacters = 0;
   const trySelect = (chunk: RankedRetrievalChunk): boolean => {
     const estimate = chunk.content.length + chunk.claimTexts.join(' ').length + 500;
     if (selected.length > 0 && usedCharacters + estimate > budget) return false;
     selected.push(chunk);
     selectedIds.add(chunk.id);
-    chunksPerPage.set(chunk.pageRelPath, (chunksPerPage.get(chunk.pageRelPath) ?? 0) + 1);
+    chunksPerPage.set(pageKey(chunk), (chunksPerPage.get(pageKey(chunk)) ?? 0) + 1);
     usedCharacters += estimate;
     return true;
   };
   // Preserve page diversity before adding a second chunk from any page. This
   // prevents a long high-scoring page from consuming the entire context budget.
   for (const chunk of ranked) {
-    if ((chunksPerPage.get(chunk.pageRelPath) ?? 0) > 0) continue;
+    if ((chunksPerPage.get(pageKey(chunk)) ?? 0) > 0) continue;
     trySelect(chunk);
     if (selected.length >= maxChunks) break;
   }
   if (selected.length < maxChunks) {
     for (const chunk of ranked) {
-      if (selectedIds.has(chunk.id) || (chunksPerPage.get(chunk.pageRelPath) ?? 0) >= 2) continue;
+      if (selectedIds.has(chunk.id) || (chunksPerPage.get(pageKey(chunk)) ?? 0) >= 2) continue;
       trySelect(chunk);
       if (selected.length >= maxChunks) break;
     }

@@ -1,3 +1,5 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
+import { managedPayloadRoot, managedVenvRoot, runtimeBulkDataRoot } from "./runtime-v2-bulk-paths.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -54,18 +56,6 @@ function boundedText(value, maximumBytes = MAX_TEXT_BYTES) {
   return typeof value === "string" &&
     Buffer.byteLength(value, "utf8") <= maximumBytes &&
     !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value);
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" ||
-    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function directDirectory(candidate, root, message) {
@@ -132,19 +122,24 @@ export function validateRuntimeV2OpenMontageProbeEnvironment(environment) {
   }
 }
 
-function optionalManagedSource(candidate, dataRoot) {
+function optionalManagedSource(candidate, dataRoot, label = "managed") {
   if (!fs.existsSync(candidate)) return null;
-  const root = directDirectory(candidate, dataRoot, "The managed OpenMontage source is indirect.");
+  const root = directDirectory(candidate, dataRoot, `The ${label} OpenMontage source is indirect.`);
   for (const relative of REQUIRED_SOURCE_FILES) {
     const marker = path.join(root, ...relative.split("/"));
     if (!fs.existsSync(marker)) return null;
     directFile(
       marker,
       root,
-      "The managed OpenMontage source is incomplete.",
+      `The ${label} OpenMontage source is incomplete.`,
     );
   }
   return root;
+}
+
+/** Read installation markers only; never import or execute from the checkout. */
+export function openMontageInstallationSource(appRoot) {
+  return optionalManagedSource(path.join(appRoot, "OpenMontage"), appRoot, "application");
 }
 
 function optionalConfiguredFile(candidate, label) {
@@ -202,18 +197,20 @@ function applicationLayout(launch) {
     dataRoot,
     "The private OpenMontage probe workspace is indirect.",
   );
-  const managedRoot = path.join(dataRoot, "runtime-v2", "toolchains", "openmontage");
-  const root = optionalManagedSource(managedRoot, dataRoot);
-  const venv = path.join(dataRoot, "runtime-v2", "services", "openmontage", ".venv");
+  const bulkRoot = runtimeBulkDataRoot(dataRoot);
+  const managedRoot = managedPayloadRoot(dataRoot, "runtime-v2/toolchains/openmontage");
+  const root = optionalManagedSource(managedRoot, managedRoot);
+  const installationSource = root ? null : openMontageInstallationSource(appRoot);
+  const venv = managedVenvRoot(dataRoot, "openmontage");
   if (fs.existsSync(venv)) {
-    directDirectory(venv, dataRoot, "The managed OpenMontage Python environment is indirect.");
+    directDirectory(venv, venv, "The managed OpenMontage Python environment is indirect.");
     for (const candidate of [
       path.join(venv, "Scripts", "python.exe"),
       path.join(venv, "bin", "python3"),
       path.join(venv, "bin", "python"),
     ]) {
       if (fs.existsSync(candidate)) {
-        directFile(candidate, dataRoot, "The managed OpenMontage Python is indirect.");
+        directFile(candidate, venv, "The managed OpenMontage Python is indirect.");
       }
     }
   }
@@ -245,6 +242,7 @@ function applicationLayout(launch) {
   for (const name of Object.keys(process.env)) delete process.env[name];
   for (const [name, value] of retained) process.env[name] = value;
   process.env.BREADBOARD_DATA_DIR = dataRoot;
+  process.env.BREADBOARD_BULK_DATA_DIR = bulkRoot;
   process.env.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR = development ? dashboardRoot : "";
   process.env.BREADBOARD_LEARN_SOURCE_ROOT = sourceRoot;
   process.env.BREADBOARD_REPO_ROOT = appRoot;
@@ -274,7 +272,7 @@ function applicationLayout(launch) {
     .filter(Boolean)
     .join(path.delimiter);
   process.chdir(dashboardRoot);
-  return { sourceRoot, managedRoot, root, venv, home, temporary };
+  return { sourceRoot, managedRoot, root, installationSource, venv, home, temporary };
 }
 
 function canonicalPiece(value, label) {
@@ -374,7 +372,24 @@ export async function executeRuntimeV2OpenMontageProbe(
     return setup.toolchainStatus(process.env);
   });
   progress.checkpoint({ stage: "probing", percent: 30 });
-  const status = canonicalOpenMontageStatus(await loadStatus(layout, signal));
+  let status = canonicalOpenMontageStatus(await loadStatus(layout, signal));
+  if (!layout.root && layout.installationSource) {
+    const missing = ["the managed Runtime source"];
+    if (!status.python.found) missing.push("Python");
+    else if (!status.python.dependencies) missing.push("the Python dependencies");
+    if (!status.ffmpeg.found) missing.push("ffmpeg");
+    if (!status.codex.found) missing.push("the coding runtime");
+    // A verified application checkout makes setup possible, but it must not
+    // become an execution fallback or imply the managed copy is installed.
+    status = canonicalOpenMontageStatus({
+      ...status,
+      ready: false,
+      reason: `OpenMontage source is available. Install ${missing.join(", ")} from Agent Manager or OpenMontage settings.`,
+      clone: { found: true, path: layout.installationSource },
+      python: { ...status.python, installable: true },
+      remotion: { ...status.remotion, installable: status.node.found },
+    });
+  }
   if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
   progress.checkpoint({ stage: "complete", percent: 100 });
   return status;

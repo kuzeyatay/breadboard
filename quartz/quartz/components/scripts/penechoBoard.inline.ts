@@ -1,3 +1,4 @@
+import { onObjectDispose } from "../../util/objectLifecycle"
 // Whiteboard cards.
 //
 // A ```penecho block in a note becomes a board: a framed drawing surface, hosted
@@ -459,11 +460,13 @@ function disposeActiveBoards(keepConnected = false): void {
 
 window.addEventListener("pagehide", () => disposeActiveBoards())
 
-document.addEventListener("nav", () => {
+const penechoBoardEditorHydrate = (event: Event) => {
+  const root: ParentNode = (event as CustomEvent).detail?.root ?? document
+
   // Rehydrating an unchanged article must not tear down a live canvas (or
   // cancel a lazy mount). Only cards removed by navigation need disposal.
   disposeActiveBoards(true)
-  const nodes = document.querySelectorAll("code.penecho-board-block") as NodeListOf<HTMLElement>
+  const nodes = root.querySelectorAll("code.penecho-board-block") as NodeListOf<HTMLElement>
   for (const code of nodes) {
     const host = (code.closest("pre") as HTMLElement | null) ?? code
     if (host.dataset.penechoBound === "true") continue
@@ -475,6 +478,9 @@ document.addEventListener("nav", () => {
     }
     const built = buildPenechoCard(board)
     activeBoardCleanups.set(built.card, built.dispose)
+    onObjectDispose(built.card, built.dispose)
     host.replaceWith(built.card)
   }
-})
+}
+document.addEventListener("nav", penechoBoardEditorHydrate)
+document.addEventListener("bb:hydrate-objects", penechoBoardEditorHydrate)

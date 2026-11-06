@@ -15,7 +15,7 @@ export default async function Home({
   // inline initializer can apply it before the first dashboard paint.
   redirect(
     theme === "dark" || theme === "light"
-      ? `/dashboard?theme=${theme}`
-      : "/dashboard",
+      ? `/new-tab?theme=${theme}`
+      : "/new-tab",
   );
 }

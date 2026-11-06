@@ -27,6 +27,14 @@ function connectDevice(value: unknown): SpotifyConnectDevice | null {
   };
 }
 
+export function spotifyConnectDevices(payload: unknown): SpotifyConnectDevice[] {
+  const record = objectRecord(payload);
+  const devices = Array.isArray(record?.devices) ? record.devices : [];
+  return devices.map(connectDevice)
+    .filter((device): device is SpotifyConnectDevice => device !== null)
+    .filter((device, index, all) => all.findIndex(item => item.id === device.id) === index);
+}
+
 /**
  * Pick the phone Spotify can actually control, preferring the currently active
  * phone when an account exposes more than one mobile Connect device.
@@ -34,10 +42,7 @@ function connectDevice(value: unknown): SpotifyConnectDevice | null {
 export function selectSpotifyPhoneDevice(
   payload: unknown,
 ): SpotifyConnectDevice | null {
-  const record = objectRecord(payload);
-  const devices = Array.isArray(record?.devices) ? record.devices : [];
-  const phones = devices
-    .map(connectDevice)
+  const phones = spotifyConnectDevices(payload)
     .filter(
       (device): device is SpotifyConnectDevice =>
         device !== null &&

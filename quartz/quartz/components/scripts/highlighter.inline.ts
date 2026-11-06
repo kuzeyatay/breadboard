@@ -1,8 +1,14 @@
+import { normalizeQuartzChatLink, type QuartzChatLink } from "../../../../dashboard/src/lib/quartz-chat-link"
+import { allowMarkTextSelection } from "../../../../dashboard/src/lib/chat-text-selection"
 import { DEFAULT_HIGHLIGHT_COLOR, HighlightColor, isHighlightColor } from "./highlightPalette"
 import { openTextHighlights } from "../../../../dashboard/src/lib/text-highlight-client"
 import { generatedVisualDashboardBaseUrl } from "./generatedVisualHost"
+import { installHighlightNoteTooltip } from "./highlightNoteTooltip"
+import { mathAnnotationText } from "../../util/mathAnnotation"
+import { restoreMathSources } from "./mathAnnotationSource"
 
 interface StoredHighlight {
+  chatLink?: QuartzChatLink
   id: string
   color: HighlightColor
   /** Offset into the article's plain text, used as the fast path on restore. */
@@ -14,6 +20,8 @@ interface StoredHighlight {
   suffix: string
   createdAt: number
   note?: string
+  /** Notes created without a manual highlight have no background fill. */
+  noteOnly?: boolean
 }
 
 interface StoredInlineAnswer {
@@ -21,13 +29,15 @@ interface StoredInlineAnswer {
   highlightId: string
   question: string
   answer: string
+  thinking?: string
+  progressNotes?: string[]
   state: "pending" | "streaming" | "complete" | "error"
   responseDurationMs?: number
   updatedAt: number
 }
 
 interface TextEntry {
-  node: Text
+  node: Text | HTMLElement
   start: number
   end: number
 }
@@ -35,7 +45,7 @@ interface TextEntry {
 interface TextMap {
   text: string
   entries: TextEntry[]
-  index: Map<Text, TextEntry>
+  index: Map<Node, TextEntry>
 }
 
 interface Span {
@@ -54,9 +64,18 @@ const CONTEXT = 48
 const QUESTION_CONTEXT = 4_000
 const MAX_NOTE_LENGTH = 4_000
 
-// Widgets, media, and rendered math own their DOM: wrapping their text in a
-// <mark> would fight their layout, so they are invisible to the highlighter and
-// their text is left out of the offsets entirely.
+const MATH_SELECTOR = "[data-bb-math-source], .katex"
+// Equations are indexed as one source token, never as individual KaTeX glyphs.
+const mathSource = (node: HTMLElement): string => {
+  if (node.dataset.bbMathSource) return node.dataset.bbMathSource
+  const source = node.querySelector('annotation[encoding="application/x-tex"]')?.textContent
+  return source ? mathAnnotationText(source, Boolean(node.closest('.katex-display'))) : ''
+}
+const mathElement = (node: Node): HTMLElement | null => {
+  const element = node instanceof Element ? node : node.parentElement
+  return element?.closest<HTMLElement>('[data-bb-math-source]') ?? element?.closest<HTMLElement>('.katex') ?? null
+}
+// Widgets and media own their DOM and stay outside text annotation offsets.
 const SKIP_SELECTOR = [
   "script",
   "style",
@@ -104,8 +123,13 @@ function normalizeStored(parsed: unknown): StoredHighlight[] {
     ) return []
     const note = normalizeNote(entry.note)
     const normalized = { ...entry }
+    const chatLink = normalizeQuartzChatLink(entry.chatLink)
+    if (chatLink) normalized.chatLink = chatLink
+    else delete normalized.chatLink
     if (note) normalized.note = note
     else delete normalized.note
+    if (note && entry.noteOnly === true) normalized.noteOnly = true
+    else delete normalized.noteOnly
     return [normalized]
   })
 }
@@ -140,12 +164,12 @@ function newId(): string {
  * came from. Marks are walked into rather than skipped, so an offset means the
  * same thing whether or not the page is currently painted.
  */
-function buildTextMap(root: HTMLElement): TextMap {
+function buildTextMap(root: HTMLElement, includeMath = true): TextMap {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
-      // Reject math/widget subtrees at their root. Walking every glyph and then
-      // checking its ancestors made indexing a textbook needlessly expensive.
+      if (node.parentElement?.closest(MATH_SELECTOR)) return NodeFilter.FILTER_REJECT
       if (node instanceof Element) {
+        if (node.matches(MATH_SELECTOR)) return includeMath && mathSource(node as HTMLElement) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
         return node.matches(SKIP_SELECTOR) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_SKIP
       }
       if (!node.nodeValue) return NodeFilter.FILTER_REJECT
@@ -154,13 +178,14 @@ function buildTextMap(root: HTMLElement): TextMap {
   })
 
   const entries: TextEntry[] = []
-  const index = new Map<Text, TextEntry>()
+  const index = new Map<Node, TextEntry>()
   let text = ""
 
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    const value = node.nodeValue ?? ""
+    const value = node instanceof HTMLElement ? mathSource(node) : node.nodeValue ?? ""
+    if (!value) continue
     const entry: TextEntry = {
-      node: node as Text,
+      node: node as Text | HTMLElement,
       start: text.length,
       end: text.length + value.length,
     }
@@ -173,7 +198,10 @@ function buildTextMap(root: HTMLElement): TextMap {
 }
 
 /** Where a DOM boundary point falls in the article's plain text. */
-function pointOffset(map: TextMap, container: Node, offset: number): number {
+function pointOffset(map: TextMap, container: Node, offset: number, end = false): number {
+  const math = mathElement(container)
+  const atom = math && map.index.get(math)
+  if (atom) return end ? atom.end : atom.start
   if (container.nodeType === Node.TEXT_NODE) {
     const entry = map.index.get(container as Text)
     if (entry) return entry.start + Math.min(Math.max(offset, 0), entry.end - entry.start)
@@ -191,7 +219,10 @@ function pointOffset(map: TextMap, container: Node, offset: number): number {
 
   for (const entry of map.entries) {
     try {
-      if (point.comparePoint(entry.node, 0) >= 0) return entry.start
+      const boundary = document.createRange()
+      if (entry.node instanceof HTMLElement) boundary.selectNode(entry.node)
+      else boundary.selectNodeContents(entry.node)
+      if (point.compareBoundaryPoints(Range.START_TO_START, boundary) <= 0) return entry.start
     } catch {
       continue
     }
@@ -207,7 +238,7 @@ function selectionSpan(map: TextMap, root: HTMLElement): Span | null {
   if (!root.contains(range.commonAncestorContainer)) return null
 
   let start = pointOffset(map, range.startContainer, range.startOffset)
-  let end = pointOffset(map, range.endContainer, range.endOffset)
+  let end = pointOffset(map, range.endContainer, range.endOffset, true)
   if (end < start) [start, end] = [end, start]
 
   // A sloppy drag usually grabs the whitespace at either end; painting it would
@@ -216,6 +247,35 @@ function selectionSpan(map: TextMap, root: HTMLElement): Span | null {
   while (end > start && /\s/.test(map.text[end - 1])) end -= 1
 
   return end > start ? { start, end } : null
+}
+
+/** Copy a rendered formula once, using its source instead of duplicated glyphs. */
+function copyMathSelection(event: ClipboardEvent, root: HTMLElement) {
+  const selection = window.getSelection()
+  if (!event.clipboardData || !selection?.rangeCount || selection.isCollapsed) return
+  const range = selection.getRangeAt(0).cloneRange()
+  if (!root.contains(range.commonAncestorContainer)) return
+  const first = mathElement(range.startContainer), last = mathElement(range.endContainer)
+  if (first) range.setStartBefore(first)
+  if (last) range.setEndAfter(last)
+  const fragment = document.createElement('div')
+  fragment.append(range.cloneContents())
+  const equations = Array.from(fragment.querySelectorAll<HTMLElement>(MATH_SELECTOR))
+    .filter(node => !node.parentElement?.closest(MATH_SELECTOR))
+  if (!equations.some(node => mathSource(node))) return
+  for (const equation of equations) {
+    const source = mathSource(equation)
+    if (source) equation.replaceWith(document.createTextNode(source))
+  }
+  fragment.querySelectorAll('.bb-object-tools').forEach(node => node.remove())
+  const html = fragment.innerHTML
+  fragment.querySelectorAll('p,div,h1,h2,h3,h4,h5,h6,li,blockquote,pre,tr,.katex-display').forEach(node => node.append(document.createTextNode('\n\n')))
+  fragment.querySelectorAll('br').forEach(node => node.replaceWith(document.createTextNode('\n')))
+  fragment.querySelectorAll('td,th').forEach(node => node.append(document.createTextNode('\t')))
+  event.clipboardData.setData('text/plain', (fragment.textContent ?? '').replace(/\n{3,}/g, '\n\n').trim())
+  event.clipboardData.setData('text/html', html)
+  event.preventDefault()
+  event.stopImmediatePropagation()
 }
 
 function makeHighlight(
@@ -245,6 +305,10 @@ function clipHighlight(
 ): StoredHighlight {
   const next = makeHighlight(text, start, end, highlight.color)
   next.createdAt = highlight.createdAt
+  if (highlight.noteOnly) {
+    next.noteOnly = true
+    next.note = highlight.note
+  }
   if (keepId) {
     next.id = highlight.id
     if (highlight.note) next.note = highlight.note
@@ -272,7 +336,7 @@ function addSpan(
   for (let pass = 0; pass < 8; pass += 1) {
     let widened = false
     for (const highlight of list) {
-      if (highlight.color !== color || !resolveHighlight(text, highlight)) continue
+      if (highlight.noteOnly || highlight.color !== color || !resolveHighlight(text, highlight)) continue
       if (highlight.end < start || highlight.start > end) continue
       if (highlight.start < start) {
         start = highlight.start
@@ -289,7 +353,9 @@ function addSpan(
   const carriedNote = list.find((highlight) => {
     if (!highlight.note) return false
     const resolved = resolveHighlight(text, highlight)
-    return Boolean(resolved && resolved.start >= start && resolved.end <= end)
+    return Boolean(resolved && (highlight.noteOnly
+      ? resolved.start < end && resolved.end > start
+      : resolved.start >= start && resolved.end <= end))
   })?.note
 
   const kept: StoredHighlight[] = []
@@ -298,7 +364,7 @@ function addSpan(
       kept.push(highlight)
       continue
     }
-    if (highlight.color === color) continue // merged into the new span
+    if (!highlight.noteOnly && highlight.color === color) continue // merged into the new span
 
     let idTaken = false
     if (highlight.start < start) {
@@ -369,6 +435,14 @@ function resolveHighlight(text: string, highlight: StoredHighlight): Span | null
 }
 
 function clearMarks(root: HTMLElement) {
+  for (const math of root.querySelectorAll<HTMLElement>('.bb-hl-math')) {
+    math.classList.remove('bb-hl', 'bb-hl-math')
+    for (const attr of [...math.attributes]) if (attr.name.startsWith('data-hl-')) math.removeAttribute(attr.name)
+    math.removeAttribute('aria-describedby')
+    math.removeAttribute('aria-label')
+    math.removeAttribute('role')
+    math.removeAttribute('tabindex')
+  }
   const parents = new Set<Node>()
   for (const mark of Array.from(root.querySelectorAll("mark.bb-hl"))) {
     const parent = mark.parentNode
@@ -382,7 +456,7 @@ function clearMarks(root: HTMLElement) {
 }
 
 function paint(map: TextMap, list: StoredHighlight[]) {
-  const pieces: { node: Text; from: number; to: number; highlight: StoredHighlight }[] = []
+  const pieces: { node: Text | HTMLElement; from: number; to: number; highlight: StoredHighlight }[] = []
   for (const highlight of list) {
     let low = 0
     let high = map.entries.length
@@ -399,7 +473,7 @@ function paint(map: TextMap, list: StoredHighlight[]) {
       if (to <= from) continue
       // The whitespace between two blocks is part of the range but painting it
       // would leave coloured slivers hanging in the margin.
-      if (!(entry.node.nodeValue ?? "").slice(from, to).trim()) continue
+      if (!(entry.node instanceof HTMLElement) && !(entry.node.nodeValue ?? "").slice(from, to).trim()) continue
       pieces.push({ node: entry.node, from, to, highlight })
     }
   }
@@ -412,17 +486,26 @@ function paint(map: TextMap, list: StoredHighlight[]) {
     const piece = pieces[i]
     try {
       const range = document.createRange()
-      range.setStart(piece.node, piece.from)
-      range.setEnd(piece.node, piece.to)
-      const mark = document.createElement("mark")
-      mark.className = "bb-hl"
+      const atomic = piece.node instanceof HTMLElement
+      const mark = atomic ? piece.node as HTMLElement : document.createElement("mark")
+      mark.classList.add("bb-hl")
+      if (atomic) mark.classList.add("bb-hl-math")
       mark.dataset.hlId = piece.highlight.id
       mark.dataset.hlColor = piece.highlight.color
+      if (piece.highlight.noteOnly) mark.dataset.hlNoteOnly = "true"
       if (piece.highlight.note) {
         mark.dataset.hlNote = "true"
-        mark.title = piece.highlight.note
+        mark.dataset.hlNoteText = piece.highlight.note
+        mark.tabIndex = 0
+        mark.setAttribute("role", "button")
+        mark.setAttribute("aria-label", "Open note options")
+        mark.setAttribute("aria-describedby", "bb-highlight-note-tooltip")
       }
-      range.surroundContents(mark)
+      if (!atomic) {
+        range.setStart(piece.node, piece.from)
+        range.setEnd(piece.node, piece.to)
+        range.surroundContents(mark)
+      }
     } catch {
       // A piece that will not wrap (an unbalanced range) is simply not painted.
     }
@@ -430,15 +513,40 @@ function paint(map: TextMap, list: StoredHighlight[]) {
 }
 
 /** Repaints the page from storage, healing anchors that moved. */
+function documentEditor(): {
+  renderHighlights: (entries: StoredHighlight[]) => StoredHighlight[];
+  getHighlights: () => StoredHighlight[];
+  setAnswerStates?: (entries: { highlightId: string; state: string }[]) => void;
+} | undefined {
+  return (window as unknown as { __quartzDocumentEditor?: ReturnType<typeof documentEditor> }).__quartzDocumentEditor
+}
+
 function render(root: HTMLElement, stored: StoredHighlight[]): StoredHighlight[] {
+  const editor = documentEditor()
+  if (editor) return editor.renderHighlights(stored)
   clearMarks(root)
   if (stored.length === 0) return []
   const map = buildTextMap(root)
 
   const resolved: StoredHighlight[] = []
   const unresolved: StoredHighlight[] = []
+  let legacy: TextMap | undefined
   for (const highlight of stored) {
-    const span = resolveHighlight(map.text, highlight)
+    let span = resolveHighlight(map.text, highlight)
+    if (!span) {
+      // Older annotations omitted equations from their quote. Preserve those
+      // passages by translating their prose endpoints into the new index.
+      legacy ??= buildTextMap(root, false)
+      const old = resolveHighlight(legacy.text, highlight)
+      if (old) {
+        const first = legacy.entries.find(entry => entry.end > old.start)
+        const last = legacy.entries.find(entry => entry.end >= old.end)
+        if (first && last) span = {
+          start: map.index.get(first.node)!.start + old.start - first.start,
+          end: map.index.get(last.node)!.start + old.end - last.start,
+        }
+      }
+    }
     if (!span) {
       // Loading, regeneration, or a temporary edit can hide the quote. Reading
       // a page must never delete the user's saved annotation.
@@ -449,6 +557,7 @@ function render(root: HTMLElement, stored: StoredHighlight[]): StoredHighlight[]
       ...highlight,
       start: span.start,
       end: span.end,
+      text: map.text.slice(span.start, span.end),
       prefix: map.text.slice(Math.max(0, span.start - CONTEXT), span.start),
       suffix: map.text.slice(span.end, span.end + CONTEXT),
     })
@@ -476,6 +585,7 @@ document.addEventListener("nav", () => {
   const root = articleRoot()
   if (!container || !root || container.dataset.bound === "true") return
   container.dataset.bound = "true"
+  const disposeNoteTooltip = installHighlightNoteTooltip(root)
 
   let repaintObserver: MutationObserver | undefined
   const repaint = (stored: StoredHighlight[]) => {
@@ -615,17 +725,30 @@ document.addEventListener("nav", () => {
     [...inlineAnswers].reverse().find((answer) => answer.highlightId === highlightId)
 
   const syncAnswerMarks = () => {
+    const editor = documentEditor()
+    if (editor?.setAnswerStates) {
+      editor.setAnswerStates(inlineAnswers)
+      return
+    }
     const answered = new Map(inlineAnswers.map((answer) => [answer.highlightId, answer.state]))
-    for (const mark of root.querySelectorAll<HTMLElement>("mark.bb-hl")) {
+    const chatLinks = new Map(highlights.map(item => [item.id, item.chatLink]))
+    for (const mark of root.querySelectorAll<HTMLElement>(".bb-hl")) {
       const state = mark.dataset.hlId ? answered.get(mark.dataset.hlId) : undefined
       if (state) mark.dataset.hlAnswer = state
       else delete mark.dataset.hlAnswer
+      const chatLink = mark.dataset.hlId ? chatLinks.get(mark.dataset.hlId) : undefined
+      if (chatLink) {
+        mark.dataset.hlChat = "true"
+        mark.setAttribute("role", "button")
+        mark.tabIndex = 0
+        mark.setAttribute("aria-label", "Open question in chat")
+      } else delete mark.dataset.hlChat
     }
   }
 
   const highlightRect = (highlightId: string): DOMRect | null => {
     const pieces = Array.from(
-      root.querySelectorAll<HTMLElement>(`mark.bb-hl[data-hl-id="${CSS.escape(highlightId)}"]`),
+      root.querySelectorAll<HTMLElement>(`.bb-hl[data-hl-id="${CSS.escape(highlightId)}"]`),
     )
     if (pieces.length === 0) return null
     const range = document.createRange()
@@ -724,6 +847,7 @@ document.addEventListener("nav", () => {
   }
 
   const showForSelection = () => {
+    if (documentEditor()) highlights = documentEditor()!.getHighlights()
     const selection = window.getSelection()
     if (!selection || selection.isCollapsed || selection.rangeCount === 0 ||
       !root.contains(selection.getRangeAt(0).commonAncestorContainer)) {
@@ -752,6 +876,7 @@ document.addEventListener("nav", () => {
   }
 
   const currentSpan = (): { map: TextMap; span: Span } | null => {
+    if (documentEditor()) highlights = documentEditor()!.getHighlights()
     const map = buildTextMap(root)
     const span = selectionSpan(map, root)
     return span ? { map, span } : null
@@ -760,7 +885,7 @@ document.addEventListener("nav", () => {
   const finish = () => {
     highlights = repaint(highlights)
     syncAnswerMarks()
-    window.getSelection()?.removeAllRanges()
+    if (!documentEditor()) window.getSelection()?.removeAllRanges()
     hide()
   }
 
@@ -813,10 +938,9 @@ document.addEventListener("nav", () => {
       ? highlights.find((candidate) => candidate.id === target.highlightId)
       : undefined
     if (!highlight) {
-      highlights = addSpan(highlights, target.text, target.span, "blue")
-      highlight = highlights.find(
-        (candidate) => candidate.start <= target.span.start && candidate.end >= target.span.end,
-      )
+      highlight = makeHighlight(target.text, target.span.start, target.span.end, "blue")
+      highlight.noteOnly = true
+      highlights = sortHighlights([...highlights, highlight])
     }
     if (!highlight) return
     highlight.note = note
@@ -826,7 +950,9 @@ document.addEventListener("nav", () => {
 
   const removeNote = () => {
     if (!noteTarget?.highlightId) return
-    highlights = highlights.map((highlight) => {
+    highlights = highlights.filter((highlight) =>
+      highlight.id !== noteTarget?.highlightId || !highlight.noteOnly,
+    ).map((highlight) => {
       if (highlight.id !== noteTarget?.highlightId) return highlight
       const withoutNote = { ...highlight }
       delete withoutNote.note
@@ -838,7 +964,7 @@ document.addEventListener("nav", () => {
 
   const askSelection = (
     mode: "chat" | "inline",
-    supplied?: { map: TextMap; span: Span; highlightId?: string; question?: string },
+    supplied?: { map: TextMap; span: Span; highlightId?: string; question?: string; attachments?: unknown[] },
   ) => {
     const current = supplied ?? currentSpan()
     if (!current) return
@@ -846,7 +972,7 @@ document.addEventListener("nav", () => {
     if (!text) return
 
     // Asking is also a highlighting action. Keep the selected passage visibly
-    // anchored while focus moves into Assistant's composer.
+    // anchored while focus moves into the question editor.
     if (!supplied?.highlightId) {
       highlights = addSpan(highlights, current.map.text, current.span, DEFAULT_HIGHLIGHT_COLOR)
     }
@@ -866,6 +992,18 @@ document.addEventListener("nav", () => {
     const suffix = current.map.text.slice(current.span.end, current.span.end + QUESTION_CONTEXT)
     writeStored(highlights)
     finish()
+    // A new inline question starts at its mark. The host supplies the same
+    // focused editor used by Reply; only submitting it dispatches a turn.
+    if (mode === "inline" && !supplied?.question && window.parent !== window) {
+      inlineAnswers = [
+        ...inlineAnswers.filter(answer => answer.highlightId !== highlightId),
+        { requestId, highlightId, question: "", answer: "", state: "complete", updatedAt: Date.now() },
+      ]
+      writeInlineAnswers(inlineAnswers)
+      syncAnswerMarks()
+      renderAnswer(highlightId, true)
+      return
+    }
     if (window.parent !== window) {
       window.parent.postMessage(
         {
@@ -877,6 +1015,7 @@ document.addEventListener("nav", () => {
           prefix,
           suffix,
           ...(supplied?.question ? { question: supplied.question } : {}),
+          ...(supplied?.attachments ? { attachments: supplied.attachments } : {}),
           pageSlug: document.body.dataset.slug ?? window.location.pathname,
         },
         "*",
@@ -961,11 +1100,15 @@ document.addEventListener("nav", () => {
   document.addEventListener("pointerup", onPointerUp)
 
   const onPointerDown = (event: PointerEvent) => {
+    const mark = (event.target as HTMLElement)?.closest<HTMLElement>(".bb-hl")
+    if (event.button === 0 && mark) allowMarkTextSelection(mark)
     if (container.contains(event.target as Node) || answerPopover.contains(event.target as Node)) {
       return
     }
     dismissed = false
     hide()
+    // Keep the open state until the mark's click handler can toggle it.
+    if (mark?.dataset.hlId && answerForHighlight(mark.dataset.hlId)) return
     closeAnswer()
   }
   document.addEventListener("pointerdown", onPointerDown)
@@ -975,7 +1118,7 @@ document.addEventListener("nav", () => {
   const onKeyUp = (event: KeyboardEvent) => {
     if (dismissed) return
     const target = event.target as HTMLElement | null
-    if (target?.closest("input, textarea, select, [contenteditable]")) return
+    if (target?.closest("input, textarea, select") || target?.closest("[contenteditable]") && !target.closest(".ProseMirror")) return
     const selection = window.getSelection()
     if (!selection || selection.isCollapsed) return
     showForSelection()
@@ -1002,6 +1145,28 @@ document.addEventListener("nav", () => {
     if (!selection || selection.isCollapsed) hide()
   }
   document.addEventListener("selectionchange", onSelectionChange)
+  const onCopy = (event: ClipboardEvent) => copyMathSelection(event, root)
+  document.addEventListener('copy', onCopy, true)
+
+  const saveChatLink = (data: { highlightId?: unknown; pageSlug?: unknown; chatLink?: unknown }) => {
+    const chatLink = normalizeQuartzChatLink(data.chatLink)
+    if (!chatLink || typeof data.highlightId !== "string" ||
+        (data.pageSlug && data.pageSlug !== (document.body.dataset.slug ?? window.location.pathname))) return
+    let changed = false
+    highlights = highlights.map(item => {
+      if (item.id !== data.highlightId || JSON.stringify(item.chatLink) === JSON.stringify(chatLink)) return item
+      changed = true
+      return { ...item, chatLink }
+    })
+    if (changed) { writeStored(highlights); syncAnswerMarks() }
+  }
+  const onChatLink = (event: MessageEvent) => {
+    if (event.source !== window.parent || event.origin !== dashboard || event.data?.type !== "second-brain:assistant-chat-link") return
+    saveChatLink(event.data)
+  }
+  const onLocalChatLink = (event: Event) => saveChatLink((event as CustomEvent).detail ?? {})
+  window.addEventListener("message", onChatLink)
+  window.addEventListener("breadboard:assistant-chat-link", onLocalChatLink)
 
   const onInlineAnswer = (event: MessageEvent) => {
     if (event.source !== window.parent) return
@@ -1030,6 +1195,10 @@ document.addEventListener("nav", () => {
       highlightId,
       question,
       answer,
+      thinking: typeof data.thinking === "string" ? data.thinking.slice(0, 100_000) : undefined,
+      progressNotes: Array.isArray(data.progressNotes)
+        ? data.progressNotes.filter((note): note is string => typeof note === "string").slice(-100)
+        : undefined,
       state: state as StoredInlineAnswer["state"],
       ...(Number.isFinite(duration) && duration >= 0
         ? { responseDurationMs: Math.trunc(duration) }
@@ -1044,7 +1213,7 @@ document.addEventListener("nav", () => {
     ]
     writeInlineAnswers(inlineAnswers)
     syncAnswerMarks()
-    // The first pending event is the handoff from the side composer. Put the
+    // The first pending event follows submission from the question editor. Put the
     // working answer next to its passage immediately; closing it is respected
     // for the rest of the stream, and clicking the mark opens it again.
     const shouldOpen = state === "pending" && !autoOpenedAnswerRequests.has(requestId)
@@ -1053,7 +1222,7 @@ document.addEventListener("nav", () => {
   }
   window.addEventListener("message", onInlineAnswer)
 
-  const answerAction = (action: string, question?: string) => {
+  const answerAction = (action: string, question?: string, attachments?: unknown[]) => {
     if (action === "close") {
       closeAnswer()
       return
@@ -1097,8 +1266,7 @@ document.addEventListener("nav", () => {
       const map = buildTextMap(root)
       const span = resolveHighlight(map.text, highlight)
       if (!span) return
-      closeAnswer()
-      askSelection("inline", { map, span, highlightId, question: question ?? answerForHighlight(highlightId)?.question })
+      askSelection("inline", { map, span, highlightId, question: question ?? answerForHighlight(highlightId)?.question, attachments })
     }
   }
   const onAnswerClick = (event: MouseEvent) => {
@@ -1119,7 +1287,8 @@ document.addEventListener("nav", () => {
     if (event.data?.type !== "second-brain:assistant-inline-popover-action" || event.origin !== answerHostOrigin) return
     const answer = openAnswerHighlightId ? answerForHighlight(openAnswerHighlightId) : undefined
     if (!answer || event.data.requestId !== answer.requestId || event.data.highlightId !== answer.highlightId) return
-    answerAction(event.data.action, typeof event.data.question === "string" ? event.data.question.slice(0, 8_000) : undefined)
+    answerAction(event.data.action, typeof event.data.question === "string" ? event.data.question.slice(0, 8_000) : undefined,
+      Array.isArray(event.data.attachments) ? event.data.attachments.slice(0, 12) : undefined)
   }
   const onAnswerScroll = () => { if (answerHostOrigin) onResize() }
   window.addEventListener("message", onAnswerHost)
@@ -1131,22 +1300,40 @@ document.addEventListener("nav", () => {
   // Clicking a highlight selects it whole, so the menu can recolour or lift it.
   const onArticleClick = (event: MouseEvent) => {
     const target = event.target as HTMLElement
-    if (target.closest("a")) return
-    const mark = target.closest<HTMLElement>("mark.bb-hl")
+    if (target.closest("a, button")) return
+    const mark = target.closest<HTMLElement>(".bb-hl")
     const id = mark?.dataset.hlId
     if (!id) return
+    // A drag over a painted equation is a new selection, not a click on its mark.
+    if (mark.classList.contains('bb-hl-math') && !window.getSelection()?.isCollapsed) return
+
+    const chatLink = highlights.find(item => item.id === id)?.chatLink
+    if (chatLink) {
+      if (window.getSelection()?.toString().trim()) return
+      event.preventDefault()
+      event.stopPropagation()
+      hide()
+      closeAnswer()
+      if (window.parent !== window) window.parent.postMessage(
+        { type: "second-brain:assistant-open-chat", chatLink }, dashboard,
+      )
+      else window.dispatchEvent(new CustomEvent("breadboard:assistant-open-chat", { detail: { chatLink } }))
+      return
+    }
 
     if (answerForHighlight(id)) {
+      if (window.getSelection()?.toString().trim()) return
       event.preventDefault()
       event.stopPropagation()
       window.getSelection()?.removeAllRanges()
       hide()
-      renderAnswer(id, true)
+      if (openAnswerHighlightId === id) closeAnswer()
+      else renderAnswer(id, true)
       return
     }
 
     const pieces = Array.from(
-      root.querySelectorAll<HTMLElement>(`mark.bb-hl[data-hl-id="${CSS.escape(id)}"]`),
+      root.querySelectorAll<HTMLElement>(`.bb-hl[data-hl-id="${CSS.escape(id)}"]`),
     )
     if (pieces.length === 0) return
 
@@ -1159,6 +1346,14 @@ document.addEventListener("nav", () => {
     showForSelection()
   }
   root.addEventListener("click", onArticleClick)
+  const onMarkKeyDown = (event: KeyboardEvent) => {
+    const mark = (event.target as HTMLElement)?.closest<HTMLElement>(".bb-hl[data-hl-chat]")
+    if (!mark || (event.key !== "Enter" && event.key !== " ")) return
+    event.preventDefault()
+    window.getSelection()?.removeAllRanges()
+    mark.click()
+  }
+  root.addEventListener("keydown", onMarkKeyDown)
 
   const saveStatus = document.createElement("div")
   saveStatus.setAttribute("role", "status")
@@ -1198,7 +1393,7 @@ document.addEventListener("nav", () => {
   // A lesson may finish rendering after navigation. Retry anchors when its text
   // changes, without observing the <mark> wrappers created by our own repaint.
   const observer = new MutationObserver((changes) => {
-    if (highlights.length === 0) return
+    if (documentEditor() || highlights.length === 0) return
     // Reading controls are excluded from text anchors. Updating their save
     // status must not unwrap and repaint every highlight in a long lesson.
     if (changes.every(change => {
@@ -1211,13 +1406,39 @@ document.addEventListener("nav", () => {
     highlights = repaint(highlights)
     syncAnswerMarks()
   })
+  const onEditorReady = () => { highlights = repaint(highlights); syncAnswerMarks() }
+  const stopMathRestore = restoreMathSources(root, dashboard, () => { highlights = repaint(highlights); syncAnswerMarks() })
+  const onAnnotationList = (event: Event) => {
+    const panel = (event as CustomEvent).detail?.root as HTMLElement | undefined
+    if (!panel) return
+    for (const answer of inlineAnswers) {
+      const item = panel.querySelector(`[data-annotation-id="${CSS.escape(answer.highlightId)}"]`)
+      if (!item) continue
+      const question = document.createElement("strong"), content = document.createElement("p")
+      question.textContent = answer.question
+      content.textContent = answer.answer || (answer.state === "error" ? "Answer incomplete" : "Thinking…")
+      item.append(question, content)
+    }
+  }
+  document.addEventListener("bb:annotation-list", onAnnotationList)
+  const onEditorSaved = (event: Event) => {
+    const entries = (event as CustomEvent).detail?.highlights
+    if (Array.isArray(entries)) { highlights = entries; writeStored(highlights); syncAnswerMarks() }
+  }
+  document.addEventListener("bb:editor-ready", onEditorReady)
+  document.addEventListener("bb:editor-saved", onEditorSaved)
   repaintObserver = observer
   const observe = () => observer.observe(root, { childList: true, characterData: true, subtree: true })
   observe()
 
   window.addCleanup(() => {
+    stopMathRestore()
+    disposeNoteTooltip()
     closeAnswer()
     observer.disconnect()
+    document.removeEventListener("bb:editor-ready", onEditorReady)
+    document.removeEventListener("bb:annotation-list", onAnnotationList)
+    document.removeEventListener("bb:editor-saved", onEditorSaved)
     unsubscribeHighlights()
     unsubscribeAnswers()
     retrySave.removeEventListener("click", onRetrySave)
@@ -1231,7 +1452,11 @@ document.addEventListener("nav", () => {
     document.removeEventListener("keyup", onKeyUp)
     document.removeEventListener("keydown", onKeyDown)
     document.removeEventListener("selectionchange", onSelectionChange)
+    document.removeEventListener('copy', onCopy, true)
     window.removeEventListener("message", onInlineAnswer)
+    window.removeEventListener("message", onChatLink)
+    window.removeEventListener("breadboard:assistant-chat-link", onLocalChatLink)
+    root.removeEventListener("keydown", onMarkKeyDown)
     window.removeEventListener("message", onAnswerHost)
     window.removeEventListener("scroll", onAnswerScroll, true)
     answerPopover.removeEventListener("click", onAnswerClick)

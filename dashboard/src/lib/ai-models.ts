@@ -3,10 +3,10 @@ export const DEFAULT_MODEL = 'gpt-5.6-sol';
 
 /** An explicit opt-out, persisted and routed without choosing a fallback. */
 export const NO_MODEL_SENTINEL = 'none';
-export const NO_DEFAULT_MODEL_MESSAGE = 'No default model is selected. Choose a model for this task or set a default model in your profile.';
+export const NO_DEFAULT_MODEL_MESSAGE = "No fallback model is selected. Choose a model for this task or set a fallback model in Settings.";
 
 /**
- * Model id meaning "whatever the user picked as the default model" on the
+ * Legacy model id meaning "whatever the user picked as the fallback provider" on the
  * profile page. ChatMock expands it per request, so a subsystem that
  * sends this (Hermes, OpenCode, UI-TARS, deep research) follows the choice
  * without being restarted. With no choice stored it resolves to DEFAULT_MODEL.
@@ -15,7 +15,7 @@ export const GLOBAL_MODEL_SENTINEL = 'default';
 
 /**
  * Model id for a concrete model pinned by a running chat. It follows the
- * global default until the runtime pins a turn's provider-prefixed model.
+ * fallback provider until the runtime pins a turn's provider-prefixed model.
  * Profile changes leave this runtime pin intact.
  */
 export const CHAT_MODEL_SENTINEL = 'chat';
@@ -29,7 +29,10 @@ export const CHATMOCK_PROVIDER = 'chatmock';
 
 /** Models shown when ChatMock's model endpoint is unavailable or incomplete. */
 export const DEFAULT_ASSISTANT_MODELS: readonly string[] = [
+  'gpt-6.1-sol',
   'gpt-6-astra',
+  'gpt-6-sol',
+  'gpt-6-luna',
   DEFAULT_MODEL,
   'gpt-5.6-terra',
   'gpt-5.6-luna',
@@ -293,7 +296,10 @@ export function formatAssistantModelName(modelId: string): string {
   const withPrefix = slash < 0 ? modelId : modelId.slice(slash + 1);
   const bare = withPrefix.replace(RELEASE_DATE_SUFFIX, '') || withPrefix;
 
+  if (bare === 'gpt-6.1-sol') return 'GPT-6.1 Sol';
   if (bare === 'gpt-6-astra') return 'GPT-6 Astra';
+  if (bare === 'gpt-6-sol') return 'GPT-6 Sol';
+  if (bare === 'gpt-6-luna') return 'GPT-6 Luna';
   if (bare === 'gpt-5.6-sol' || bare === 'gpt-5.6') return 'GPT-5.6 Sol';
   if (bare === 'gpt-5.6-terra') return 'GPT-5.6 Terra';
   if (bare === 'gpt-5.6-luna-reserve') return 'GPT-5.6 Luna (Reserve)';

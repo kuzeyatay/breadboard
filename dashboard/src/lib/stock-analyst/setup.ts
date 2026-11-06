@@ -4,20 +4,20 @@
 export const SETUP_ACTIONS = [
   {
     id: "install",
-    label: "Build environment",
+    label: "Set up Stock Analyst",
     unlocks:
-      "Creates a managed environment and installs the analysis backend, its market-data sources and its API server.",
+      "Installs Stock Analyst and its market-data tools.",
   },
   {
     id: "reinstall",
     label: "Repair",
-    unlocks: "Reinstalls the requirements into the existing environment.",
+    unlocks: "Reinstalls the required tools.",
   },
   {
     id: "remove",
-    label: "Remove environment",
+    label: "Remove installed tools",
     unlocks:
-      "Stops the service and deletes its managed environment. Nothing in the clone is touched.",
+      "Stops Stock Analyst and removes its installed tools. Your other files are kept.",
   },
 ] as const;
 

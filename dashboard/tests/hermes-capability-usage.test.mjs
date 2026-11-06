@@ -31,6 +31,9 @@ test("skill-owned tools are attributed to the skill that owns them", () => {
     id: "computer-use",
     label: "Computer use",
   });
+  assert.deepEqual(capabilityForTool("breadboard_use"), {
+    kind: "skill", id: "breadboard-use", label: "Breadboard use",
+  });
   // Breadboard's own products are named too, but never as skills: nobody
   // installed them and there is no slash command to type.
   assert.deepEqual(capabilityForTool("calendar_agenda"), {
@@ -190,7 +193,7 @@ test("only a selection the resolver kept becomes automatic", () => {
     superAgent: true,
     inventory: { skills: 3, connections: 1, workflows: 0 },
   });
-  assert.deepEqual(selection.skills, [{ slug: "watch", selection: "automatic" }]);
+  assert.deepEqual(selection.skills, [{ slug: "watch", guidanceLoaded: true, selection: "automatic" }]);
   assert.deepEqual(selection.connections, [{ slug: "notion" }]);
   assert.equal(selection.superAgent, true);
 });

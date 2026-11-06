@@ -989,7 +989,7 @@ export default function GardenVideoImport({
               <span>
                 Analyze what the video shows
                 <span className="block text-[10px] text-gray-600">
-                  Sampled frames and a frame-grounded reading (slides, boards, equations) are saved with the transcript, the way /watch reads a video.
+                  Save key frames and notes on slides, diagrams, and equations alongside the transcript.
                 </span>
               </span>
             </label>

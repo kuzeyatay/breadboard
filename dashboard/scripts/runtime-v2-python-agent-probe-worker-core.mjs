@@ -1,3 +1,5 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
+import { managedVenvRoot } from "./runtime-v2-bulk-paths.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -63,18 +65,6 @@ function boundedText(value, maximumBytes) {
   return typeof value === "string" &&
     Buffer.byteLength(value, "utf8") <= maximumBytes &&
     !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value);
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" ||
-    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function directDirectory(candidate, root, message) {
@@ -182,13 +172,7 @@ function applicationLayout(adapterId, launch) {
     fail("The Python agent source root is outside the sealed application closure.");
   }
   validateOptionalDirectRoot(expectedRoot, appRoot, adapter.markers);
-  const venv = path.join(
-    dataRoot,
-    "runtime-v2",
-    "services",
-    adapter.serviceId,
-    ".venv",
-  );
+  const venv = managedVenvRoot(dataRoot, adapter.serviceId);
   const python = process.platform === "win32"
     ? path.join(venv, "Scripts", "python.exe")
     : path.join(venv, "bin", "python");
@@ -197,7 +181,7 @@ function applicationLayout(adapterId, launch) {
     !samePath(process.env[adapter.pythonEnvironment], python)
   ) fail("The Python agent interpreter escaped its managed Runtime environment.");
   if (fs.existsSync(python)) {
-    directFile(python, dataRoot, "The managed Python agent interpreter is indirect.");
+    directFile(python, venv, "The managed Python agent interpreter is indirect.");
   }
   const privateRoot = path.join(workspace, `${adapterId}-probe-process`);
   const home = path.join(privateRoot, "home");

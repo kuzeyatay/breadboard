@@ -269,11 +269,11 @@ internal static class BreadboardWindowsInput
             throw new FormatException("Invalid desktop coordinates.");
         string text = Console.In.ReadToEnd();
         if (text.Length == 0 || text.Length > 1000)
-            throw new FormatException("Clicky can type between 1 and 1,000 characters.");
+            throw new FormatException("Desktop input accepts between 1 and 1,000 characters.");
         foreach (char character in text)
         {
             if (character < 0x20 || character == 0x7F)
-                throw new FormatException("Clicky cannot type control characters.");
+                throw new FormatException("Desktop input cannot include control characters.");
         }
 
         RequireNoHeldModifiers();

@@ -42,6 +42,19 @@ test("the default queue admits a lecture batch while retaining a bounded worker 
   const config = loadVideoTranscriptionConfig({});
   assert.equal(config.maxQueuedJobsPerGarden, 100);
   assert.equal(config.maxConcurrentJobs, 1);
+  assert.equal(config.scriberrDevice, "cpu");
+  assert.equal(config.scriberrComputeType, "int8");
+});
+
+test("the local Scriberr device selects a matching Whisper compute type", () => {
+  const gpu = loadVideoTranscriptionConfig({ SCRIBERR_DEVICE: "cuda" });
+  assert.equal(gpu.scriberrDevice, "cuda");
+  assert.equal(gpu.scriberrComputeType, "float16");
+  const explicit = loadVideoTranscriptionConfig({
+    SCRIBERR_DEVICE: "cuda",
+    SCRIBERR_COMPUTE_TYPE: "int8",
+  });
+  assert.equal(explicit.scriberrComputeType, "int8");
 });
 
 test("a full queue rejects a request before buffering its media body", async () => {
@@ -467,7 +480,10 @@ test("cancel and retry flow through the runner with proper status gating", async
   assert.equal(cancelled.status, 200);
   assert.equal(cancelled.body.job.status, "cancelled");
 
-  // Retry requires a failed job.
+  const retriedCancellation = await handleRetryVideoTranscription(deps, "physics", jobId);
+  assert.equal(retriedCancellation.status, 200);
+  assert.equal(retriedCancellation.body.job.status, "queued");
+
   const retryWrongState = await handleRetryVideoTranscription(deps, "physics", jobId);
   assert.equal(retryWrongState.status, 409);
 

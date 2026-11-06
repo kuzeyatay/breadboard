@@ -158,7 +158,7 @@ test("the transcript exposes highlight and both question actions", () => {
     panel,
     /onSubmitDuringRun=\{[\s\S]*?composerSelection\?\.mode === "inline"/,
   );
-  assert.match(garden, /void sendInlineQuestion\(question, selection, attachments\)/);
+  assert.match(garden, /void sendInlineQuestion\(question, selection, attachments, voice\)/);
   assert.doesNotMatch(garden, /replacesActiveTurn|pendingImmediateInlineQuestion/);
 });
 
@@ -183,24 +183,23 @@ test("an inline answer is stopped, retried and edited where it lives", () => {
     ui.indexOf("export function InlineSelectionAnswerPopover"),
     ui.indexOf("function SelectionArrowIcon"),
   );
-  // The corner that used to close the popover carries the run instead: a stop
-  // while the answer is being written, a retry once it is not.
-  assert.doesNotMatch(popover, /aria-label="Close answer"/);
+  // Dismissal is separate from the answer's own stop/retry control.
+  assert.match(popover, /aria-label="Close answer"/);
   assert.match(popover, /aria-label=\{stopRequested \? "Stopping this answer" : "Stop this answer"\}/);
   assert.match(popover, /aria-label="Ask this question again"/);
   assert.match(popover, /onStop\?\.\(\)/);
-  // Escape and an outside click still close it, so removing the button leaves
-  // no dead end.
+  // Escape and an outside click keep the unsent draft.
   assert.match(popover, /closeOnOutsidePointer/);
   assert.match(popover, /\.bb-chat-selection-menu, \.bb-inline-answer/);
-  assert.match(popover, /if \(editing\) \{\s*setDraft\(null\);/);
+  assert.match(popover, /useInlineQuestionDraft/);
+  assert.match(popover, /clearDraft\(\)/);
   // The question itself is the edit affordance, and sending the edit is the
   // same path as a retry: ask again against the same highlight.
   assert.match(popover, /onClick=\{\(\) => setDraft\(question\)\}/);
   assert.match(popover, /aria-label="Edit question about highlighted text"/);
-  assert.match(popover, /onAskAgain\?\.\(next\)/);
+  assert.match(popover, /onAskAgain\(next, attachments\)/);
   assert.match(panel, /function askInlineSelectionAgain\(/);
-  assert.match(panel, /void onAskSelection\(trimmed, selection\)/);
+  assert.match(panel, /void onAskSelection\(trimmed, selection, attachments\)/);
   // The inline card owns its run. The dialogue stays visually free and the
   // transcript never follows an inline retry down to the bottom of the chat.
   assert.match(panel, /onStop=\{canStop && !respondingToInlineSelection \? stopEverything : undefined\}/);
@@ -221,9 +220,9 @@ test("nested Ask here cards preserve their ancestors", () => {
     "src/app/gardens/[clusterSlug]/workspace-client.tsx",
   ]) {
     const surface = source(file);
-    assert.match(surface, /openInlineAnswers\.map/);
+    assert.match(surface, /(?:openInlineAnswers|visibleInlineAnswers)\.map/);
     assert.match(surface, /current\.slice\(0, parentIndex \+ 1\)/);
-    assert.match(surface, /if \(mode === "chat"\) setOpenInlineAnswers\(\[\]\)/);
+    assert.match(surface, /else \{\s*setComposerSelection\(selection\);\s*setOpenInlineAnswers\(\[\]\)/);
     assert.doesNotMatch(surface, /setOpenInlineAnswer\(null\)/);
   }
   // Typing a follow-up keeps the reading panel open.
@@ -240,10 +239,10 @@ test("inline answers use Breadboard's pastel-yellow theme token", () => {
   assert.match(css, /--selection-yellow: #f4e7ad/);
   assert.match(css, /\.bb-chat-text-highlight[\s\S]*background: var\(--selection-yellow\)/);
   assert.match(css, /\.bb-inline-answer[\s\S]*var\(--neu-shadow-strong\)/);
-  assert.match(popover, /Math\.min\(580, window\.innerWidth - 32\)/);
-  assert.match(popover, /neu-popover/);
+  assert.match(popover, /Math\.min\(expanded \? 960 : 400, window\.innerWidth - 32\)/);
+  assert.match(popover, /aria-label="More highlight actions"/);
   assert.match(popover, /neu-button-accent[^"]*bg-\[var\(--botanical\)\]/);
-  assert.match(popover, /AssistantResponseMeta/);
+  assert.match(popover, /ActivityPanel/);
   assert.match(popover, /aria-label="Delete highlight"/);
   assert.match(popover, /onDelete/);
   assert.doesNotMatch(popover, /Asked here/);

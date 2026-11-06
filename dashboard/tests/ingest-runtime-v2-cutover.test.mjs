@@ -367,7 +367,7 @@ test("a quota-classified worker failure checkpoint reaches the upload dialog ver
     workerInstanceId: "worker_ingest_quota_failure",
   };
   const quotaMessage =
-    "The selected model and its fallbacks were rate-limited or out of credits, so the document could not be processed. Add provider credits or wait for the usage limit to reset, or choose another model, then retry the upload.";
+    "Model openrouter/stealth/union-alpha and its fallbacks were rate-limited or out of credits, so the document could not be processed. Add provider credits or wait for the usage limit to reset, or choose another model, then retry the upload.";
   const job = {
     jobId: identity.jobId,
     jobType: "document-ingestion",
@@ -517,6 +517,8 @@ test("terminal inspect drains the completion event committed after the first rep
   let replayCalls = 0;
   const waits = [];
   const outputKinds = [];
+  const visualDescriptions = { total: 3, described: 1, existing: 0, pending: 2, unavailable: 0,
+    serviceUnavailable: true, warnings: ["Visual description service unavailable; remaining images retain searchable source context and can be retried."] };
   const response = createRuntimeIngestSseResponse({
     authority: { userId: 42, gardenId: "garden-1", conversationId: null },
     job: baseJob,
@@ -599,6 +601,7 @@ test("terminal inspect drains the completion event committed after the first rep
               wordCount: 2,
               topicCount: 0,
               imageCount: 0,
+              visualDescriptions,
               mapGenerated: false,
               durationMs: 3,
               tokenUsage,
@@ -620,6 +623,7 @@ test("terminal inspect drains the completion event committed after the first rep
     "assignment must not authorize a checkpoint read before worker-checkpoint",
   );
   assert.equal(JSON.parse(payloads.at(-2)).type, "result");
+  assert.deepEqual(JSON.parse(payloads.at(-2)).visualDescriptions, visualDescriptions);
   assert.equal(payloads.at(-1), "[DONE]");
 });
 
@@ -660,9 +664,12 @@ test("existing upload clients provide trusted stream metadata and explicit cance
     assert.match(source, /X-Breadboard-Ingest-Request-Id/u);
     assert.match(source, /beginRuntimeIngestRecovery/u);
     assert.match(source, /bindRuntimeIngestResponse/u);
-    assert.match(source, /cancelPendingRuntimeIngest/u);
+    const recoverySource = source.includes("useGardenRestoredUploads")
+      ? fs.readFileSync(path.join(dashboardRoot, "src/app/components/use-garden-restored-uploads.ts"), "utf8")
+      : source;
+    assert.match(recoverySource, /cancelPendingRuntimeIngest/u);
     assert.match(source, /recoverRuntimeIngest/u);
-    assert.match(source, /runtimeIngestRecoveries/u);
+    assert.match(recoverySource, /runtimeIngestRecoveries/u);
     const requestIdentity = source.indexOf("const requestId = crypto.randomUUID()");
     const persisted = source.indexOf("beginRuntimeIngestRecovery({", requestIdentity);
     const submitted = source.indexOf('fetch("/api/ingest"', persisted);

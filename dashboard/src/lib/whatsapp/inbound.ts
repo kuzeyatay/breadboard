@@ -215,7 +215,7 @@ export async function routeWhatsAppMessage(
       // The chat is a Terminal chat like any other, so the surface alone would
       // have the agent answering as if the reader were looking at the app.
       surfaceContext: { deliveryChannel: "whatsapp" },
-      model: preference.defaultModel,
+      model: preference.fallbackModel,
       reasoningEffort: preference.reasoningEffort,
       // Messaging has no composer switch, so every inbound phone turn uses
       // Breadboard's full inventory-aware router by default.

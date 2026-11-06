@@ -58,11 +58,44 @@ function translationDocument(key: string, operation: string, payload?: unknown) 
     return applied;
   }
   if (operation !== "collect") return [];
-  const skipped = "script,style,noscript,template,code,pre,kbd,samp,textarea,[contenteditable]:not([contenteditable='false']),[translate='no'],.notranslate,[data-breadboard-selection]";
+  // Identity labels are not prose. Auto-detecting each fragment independently
+  // otherwise turns the profile name "Kuzey" into "North" and mangles handles.
+  const identities = ".vcard-fullname,.vcard-username,.h-card .p-name,.h-card .p-nickname,.vcard .fn,.vcard .nickname,[itemprop~='givenName'],[itemprop~='familyName'],[itemprop~='additionalName'],[itemtype$='/Person'] [itemprop~='name'],[itemtype$='/Organization'] [itemprop~='name'],[rel~='author']";
+  const skipped = `script,style,noscript,template,code,pre,kbd,samp,textarea,[contenteditable]:not([contenteditable='false']),[translate='no'],.notranslate,[data-breadboard-selection],${identities}`;
+  const github = location.hostname === "github.com";
+  const identityLink = (element: Element) => {
+    if (!github) return false;
+    if (element.closest("[data-hovercard-type='user'],[data-hovercard-type='organization'],[data-hovercard-type='repository']")) return true;
+    const anchor = element.closest("a[href]");
+    if (!anchor) return false;
+    try {
+      const url = new URL(anchor.getAttribute("href")!, document.baseURI);
+      const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      const label = anchor.textContent?.trim().replace(/^@/, "");
+      // Account/repository breadcrumbs need not have a hovercard. Match their
+      // literal identifier, not navigation labels such as "Overview".
+      return url.origin === location.origin && Boolean(label) && parts.length <= 2 &&
+        (label === parts.at(-1) || label === parts.join("/"));
+    } catch { return false; }
+  };
   const excluded = (element: Element) => {
     let parent: Element | null = element;
     while (parent) {
-      if (parent.closest(skipped)) return true;
+      if (parent.closest(skipped) || identityLink(parent)) return true;
+      parent = (parent.getRootNode() as ShadowRoot).host ?? null;
+    }
+    return false;
+  };
+  const language = (payload as { language?: string } | null)?.language?.toLowerCase();
+  const alreadyInTargetLanguage = (element: Element) => {
+    if (!language) return false;
+    let parent: Element | null = element;
+    while (parent) {
+      const declared = parent.closest("[lang]");
+      if (declared) {
+        const source = declared.getAttribute("lang")?.trim().toLowerCase();
+        return source === language || Boolean(source?.startsWith(`${language}-`));
+      }
       parent = (parent.getRootNode() as ShadowRoot).host ?? null;
     }
     return false;
@@ -129,7 +162,7 @@ function translationDocument(key: string, operation: string, payload?: unknown) 
   for (const [id, entry] of current.entries) {
     if (entry.pending || entry.done || !entry.node.isConnected) continue;
     const element = entry.node.nodeType === Node.ELEMENT_NODE ? entry.node as Element : entry.node.parentElement;
-    if (!element || excluded(element) || element.closest("[hidden],[aria-hidden='true']")) continue;
+    if (!element || excluded(element) || alreadyInTargetLanguage(element) || element.closest("[hidden],[aria-hidden='true']")) continue;
     const layoutElement = element.closest("select") ?? element;
     let layout = visibility.get(layoutElement);
     if (!layout) {

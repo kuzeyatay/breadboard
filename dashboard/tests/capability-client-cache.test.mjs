@@ -134,7 +134,7 @@ test("the default Skills page is prefetchable and cached independently", async (
     const url = skillsCatalogUrl({ surface: "dashboard_terminal" });
     assert.equal(
       url,
-      "/api/hermes/skills?filter=all&page=0&perPage=50&surface=dashboard_terminal",
+      "/api/hermes/skills?filter=my&page=0&perPage=50&surface=dashboard_terminal",
     );
     const [first, concurrent] = await Promise.all([
       loadCachedSkillsCatalog(url),

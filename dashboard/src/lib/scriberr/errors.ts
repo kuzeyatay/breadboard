@@ -113,6 +113,15 @@ export function isKnowledgeExtractionFailure(error: unknown): boolean {
   );
 }
 
+const PUBLIC_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u;
+
+/** Model identifier safe to include in a browser-facing extraction error. */
+export function knowledgeExtractionFailureModel(error: unknown): string | null {
+  if (!isKnowledgeExtractionFailure(error)) return null;
+  const model = (error as Error & { model?: unknown }).model;
+  return typeof model === "string" && PUBLIC_MODEL_ID.test(model) ? model : null;
+}
+
 const RETRYABLE_CODES: ReadonlySet<VideoTranscriptionErrorCode> = new Set([
   "BREADBOARD_RESOURCE_EXHAUSTED",
   "scriberr_unavailable",

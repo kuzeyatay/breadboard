@@ -241,17 +241,22 @@ class CadQueryModel:
         face/edge contact has zero volume and is deliberately left alone.
         """
         overlaps: list[tuple[str, str, float]] = []
+        boxes = [_bounding_box(shape) for _, shape in self._named]
         for index, (left_name, left) in enumerate(self._named):
-            left_box = _bounding_box(left)
-            for right_name, right in self._named[index + 1 :]:
-                right_box = _bounding_box(right)
+            left_box = boxes[index]
+            for right_index in range(index + 1, len(self._named)):
+                right_name, right = self._named[right_index]
+                right_box = boxes[right_index]
+                # OCCT enlarges bounds by its modelling tolerance. Split faces
+                # touching within 1 nm cannot indicate a printable collision;
+                # avoid expensive coincident-face booleans on such contacts.
                 if (
-                    left_box.xmax <= right_box.xmin
-                    or right_box.xmax <= left_box.xmin
-                    or left_box.ymax <= right_box.ymin
-                    or right_box.ymax <= left_box.ymin
-                    or left_box.zmax <= right_box.zmin
-                    or right_box.zmax <= left_box.zmin
+                    left_box.xmax <= right_box.xmin + 1e-6
+                    or right_box.xmax <= left_box.xmin + 1e-6
+                    or left_box.ymax <= right_box.ymin + 1e-6
+                    or right_box.ymax <= left_box.ymin + 1e-6
+                    or left_box.zmax <= right_box.zmin + 1e-6
+                    or right_box.zmax <= left_box.zmin + 1e-6
                 ):
                     continue
                 try:
@@ -465,10 +470,10 @@ def _read_file(path: str) -> bytes:
         os.close(handle)
 
 
-#: Mesh vertices are welded on a 0.1 µm lattice — far finer than any printable
-#: feature, coarse enough to absorb the last-bit differences between two faces'
-#: discretization of the same edge.
-_WELD_SCALE = 10_000.0
+#: A 0.000001 mm lattice absorbs last-bit face-seam differences without merging
+#: distinct vertices on small fillet triangles. The former 0.0001 mm lattice
+#: could turn nearby closed edges into a false non-manifold edge.
+_WELD_SCALE = 1_000_000.0
 
 
 def _weld_key(point: tuple[float, float, float]) -> tuple[int, int, int]:

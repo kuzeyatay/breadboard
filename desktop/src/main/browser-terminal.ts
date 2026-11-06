@@ -2,14 +2,14 @@ import * as http from "node:http";
 import { randomBytes } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { WebContents } from "electron";
-import { capturePagePreservingVisibility } from "./capture-page";
+import { capturePageWithFreshFrame } from "./capture-page";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { BROWSER_SOURCE_MAX_BYTES, BROWSER_SOURCE_TIMEOUT_MS, fetchBrowserSource } from "./browser-source-download";
 
 export interface BrowserTerminalAccess { port: number; token: string }
 type Target = () => WebContents | null;
-type ContextOptions = { source?: "voice"; appTarget?: Target };
+type ContextOptions = { source?: "voice"; appTarget?: Target; prepareCapture?: (target: WebContents) => Promise<() => void> };
 const TTL = 30 * 60_000;
 
 async function bounded<T>(operation: Promise<T>): Promise<T> {
@@ -232,19 +232,15 @@ export class BrowserTerminalBridge {
       } : undefined;
       let screenshot: { dataUrl: string; width: number; height: number } | undefined;
       if (body.action === "screenshot") {
-        // A newly attached view may not have a compositor surface yet.
-        const captureDeadline = Date.now() + 1_000;
-        let capture = await bounded(capturePagePreservingVisibility(target));
-        while (capture.isEmpty() && Date.now() < captureDeadline && !navigated && resolveTarget() === target) {
-          await new Promise(resolve => setTimeout(resolve, 50));
-          capture = await bounded(capturePagePreservingVisibility(target));
-        }
-        if (capture.isEmpty()) throw new Error("The browser screenshot is empty. Bring this tab into view and try again.");
-        const size = capture.getSize();
-        if (Math.max(size.width, size.height) > 1600) {
-          capture = capture.resize(size.width >= size.height ? { width: 1600 } : { height: 1600 });
-        }
-        screenshot = { dataUrl: `data:image/jpeg;base64,${capture.toJPEG(80).toString("base64")}`, ...capture.getSize() };
+        const release = await grant.options.prepareCapture?.(target);
+        try {
+          let capture = await capturePageWithFreshFrame(target);
+          const size = capture.getSize();
+          if (Math.max(size.width, size.height) > 1600) {
+            capture = capture.resize(size.width >= size.height ? { width: 1600 } : { height: 1600 });
+          }
+          screenshot = { dataUrl: `data:image/jpeg;base64,${capture.toJPEG(80).toString("base64")}`, ...capture.getSize() };
+        } finally { release?.(); }
       }
       // Never label a capture with a URL from a document it has already left.
       if (this.grants.get(token!) !== grant || navigated || resolveTarget() !== target || target.isDestroyed() || target.getURL() !== url

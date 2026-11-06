@@ -27,3 +27,21 @@ test('crowded phone layouts stay within the viewport and above the composer',()=
   assert.ok(next.top>occupied[0].top,'the prior card keeps an exposed top edge');
   assert.ok(next.left>=16&&next.right<=374&&next.bottom<=600);
 });
+
+test('visualizer answers use a wider column and fall back to a readable bounded stack', () => {
+  for (const viewportWidth of [1900, 1073, 390]) {
+    const bounds = {left:16, top:68, right:viewportWidth-16, bottom:840};
+    const parent = {left:16, top:100, right:Math.min(596, bounds.right), bottom:620};
+    const placement = placeNestedInlineAnswer({anchor:parent, bounds, occupied:[parent],
+      desiredHeight:1000, desiredWidth:960, maxHeight:772, minimumWidth:640});
+    const card = rect(placement);
+    assert.ok(placement.width >= Math.min(640, bounds.right-bounds.left));
+    assert.ok(card.left >= bounds.left && card.right <= bounds.right);
+    assert.ok(card.top >= bounds.top && card.bottom <= bounds.bottom);
+    if (viewportWidth === 1900) {
+      assert.equal(placement.width, 960);
+      assert.ok(placement.maxHeight > 520);
+      assert.ok(separate(parent, card));
+    }
+  }
+});

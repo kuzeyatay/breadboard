@@ -122,10 +122,10 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
             </svg>
           </button>
           <div class="breadboard-ai-messages" aria-live="polite"></div>
-          <div class="breadboard-ai-rail" hidden>
+          <div class="breadboard-ai-rail bb-chat-lens" hidden>
             <div class="breadboard-ai-rail-label" aria-hidden="true"></div>
             <div
-              class="breadboard-ai-rail-track"
+              class="breadboard-ai-rail-track bb-chat-lens-track"
               role="toolbar"
               aria-orientation="vertical"
               aria-label="Messages you sent"

@@ -270,6 +270,11 @@ function validTimeOrder(origin: LearnCouncilRetryJobRow, current: LearnCouncilRe
  * hash from an unrelated user/selection/map epoch from becoming a retry
  * candidate.  A prior committed Learn version is never a failed retry source.
  */
+/** A full rebuild whose lesson writing stopped and whose confirmed map was
+ * kept for a resume. Recovery may record it as failed or, after a user
+ * cancel, as cancelled; both are valid Council predecessors. */
+export const LEARN_REBUILD_MAP_KEPT_STEP = "Lesson writing failed; confirmed Learning Map kept for resume";
+
 export function exactLearnCouncilRetryJobBinding(
   origin: LearnCouncilRetryJobRow,
   current: LearnCouncilRetryJobRow,
@@ -278,7 +283,8 @@ export function exactLearnCouncilRetryJobBinding(
   const currentSources = canonicalStringArrayJson(current.source_ids_json);
   return Boolean(
     origin.id !== current.id &&
-      origin.status === "failed" &&
+      (origin.status === "failed" ||
+        (origin.status === "cancelled" && origin.current_step === LEARN_REBUILD_MAP_KEPT_STEP)) &&
       !Number(origin.requires_replan ?? 0) &&
       origin.version_count === 0 &&
       !["failed", "cancelled", "complete"].includes(current.status) &&

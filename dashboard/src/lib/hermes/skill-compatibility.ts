@@ -626,7 +626,7 @@ export function resolveSkillCompatibility(input: {
         ? "incompatible"
         : "needs_review",
       reasons: [
-        "The skill has not yet passed Breadboard's eligibility review.",
+        "This skill needs a review before installation.",
       ],
       contract,
       requirements: [
@@ -635,7 +635,7 @@ export function resolveSkillCompatibility(input: {
           type: "review",
           label: "Breadboard review",
           detail:
-            "Inspect the pinned files, permissions, scripts, and compatibility before installing.",
+            "Review files, permissions, and requirements before installing.",
           required: true,
           status: "action_required",
           action: "review_skill",
@@ -658,8 +658,8 @@ export function resolveSkillCompatibility(input: {
             ? "Assistant"
             : "Terminal",
       detail: surfaceAllowed
-        ? "This skill is allowed on the current surface."
-        : "This skill is not allowed on the current surface.",
+        ? "Available in this chat."
+        : "Unavailable in this chat.",
       required: true,
       status: surfaceAllowed ? "satisfied" : "unsupported",
     },
@@ -667,10 +667,10 @@ export function resolveSkillCompatibility(input: {
   );
   if (!contract.surfaces.length) {
     reasons.push(
-      "The contract declares no recognized Breadboard surface.",
+      "This skill does not support any Breadboard chat.",
     );
   } else if (!surfaceAllowed) {
-    reasons.push(`The skill is not permitted on ${input.surface}.`);
+    reasons.push(`This skill is unavailable in this chat.`);
   }
 
   const surfaceTools = new Set(allowedToolsForSurface(input.surface));
@@ -682,8 +682,8 @@ export function resolveSkillCompatibility(input: {
         type: "tool",
         label: tool.replaceAll("_", " "),
         detail: available
-          ? "Breadboard authorizes this tool on the current surface."
-          : `This tool is unavailable on ${input.surface}.`,
+          ? "Available in this chat."
+          : `This tool is unavailable in this chat.`,
         required: true,
         status: available ? "satisfied" : "unsupported",
       },
@@ -691,7 +691,7 @@ export function resolveSkillCompatibility(input: {
     );
     if (!available) {
       reasons.push(
-        `Required tool ${tool} is unavailable on ${input.surface}.`,
+        `Required tool ${tool} is unavailable in this chat.`,
       );
     }
   }
@@ -712,16 +712,16 @@ export function resolveSkillCompatibility(input: {
         label: `${kindLabel(kind)} artifact`,
         detail: available
           ? IMPORT_ARTIFACT_KINDS.has(kind)
-            ? "The finished file will be imported from the authorized workspace and attached to the originating chat."
-            : "The finished product will be rendered and attached to the originating chat."
-          : "Breadboard has no production renderer or import profile for this output.",
+            ? "Files are attached to the chat when ready."
+            : "Results appear in the chat when ready."
+          : "This output format is not supported.",
         required: true,
         status: available ? "satisfied" : "unsupported",
       },
       requirements,
     );
     if (!available) {
-      reasons.push(`Artifact kind ${kind} has no production renderer.`);
+      reasons.push(`The ${kind} output format is not supported.`);
     }
   }
   for (const runtime of contract.requiredRuntimes) {
@@ -736,8 +736,8 @@ export function resolveSkillCompatibility(input: {
           label: "OpenCode",
           detail:
             input.surface === "garden_chat"
-              ? "Runs in the repository connected to this Garden."
-              : "Runs in the repository selected for this Terminal task.",
+              ? "Uses the project connected to this Garden."
+              : "Uses the project selected for this chat.",
           required: true,
           status: allowed ? "satisfied" : "unsupported",
           action: allowed ? "use_opencode" : undefined,
@@ -746,7 +746,7 @@ export function resolveSkillCompatibility(input: {
       );
       if (!allowed) {
         reasons.push(
-          "Software and coding skills require OpenCode in Terminal or a repository-connected Garden.",
+          "Use OpenCode in Terminal or a Garden with a connected project.",
         );
       }
       continue;
@@ -760,15 +760,15 @@ export function resolveSkillCompatibility(input: {
         type: "runtime",
         label: runtime.replaceAll("-", " "),
         detail: available
-          ? "Production delivery path available."
-          : "The required production runtime is unavailable.",
+          ? "Ready."
+          : "A required tool is unavailable.",
         required: true,
         status: available ? "satisfied" : "unsupported",
       },
       requirements,
     );
     if (!available) {
-      reasons.push(`Required runtime ${runtime} is unavailable.`);
+      reasons.push(`Required tool ${runtime} is unavailable.`);
     }
   }
 
@@ -785,8 +785,8 @@ export function resolveSkillCompatibility(input: {
         type: "mcp",
         label: `${server} connection`,
         detail: isConnected
-          ? "Connected and enabled for this user."
-          : "Add or enable this connection before using the skill.",
+          ? "Connected."
+          : "Connect this service to use the skill.",
         required: true,
         status: isConnected ? "satisfied" : "action_required",
         action: isConnected ? undefined : "connect_mcp",
@@ -796,7 +796,7 @@ export function resolveSkillCompatibility(input: {
     );
     if (!isConnected) {
       reasons.push(
-        `Required MCP server ${server} is not connected and authorized.`,
+        `Connect ${server} to use this skill.`,
       );
     }
   }
@@ -808,8 +808,8 @@ export function resolveSkillCompatibility(input: {
         type: "mcp",
         label: `${server} connection`,
         detail: isConnected
-          ? "Optional connection is enabled."
-          : "Optional; connect it to expand this skill.",
+          ? "Connected."
+          : "Optional connection.",
         required: false,
         status: isConnected ? "satisfied" : "information",
         action: isConnected ? undefined : "connect_mcp",
@@ -838,7 +838,7 @@ export function resolveSkillCompatibility(input: {
         detail:
           variable.description ??
           (configured
-            ? "Configured for the local Breadboard runtime."
+            ? "Configured."
             : variable.required
               ? "Configure this environment variable, then refresh compatibility."
               : "Optional environment variable."),
@@ -869,7 +869,7 @@ export function resolveSkillCompatibility(input: {
         type: "dependency",
         label: binary,
         detail:
-          "Breadboard will ask OpenCode to verify this dependency inside the authorized workspace; it is never installed silently.",
+          "OpenCode checks this tool in the connected project. Installation requires your approval.",
         required: true,
         status: "information",
         action: "use_opencode",

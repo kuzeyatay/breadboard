@@ -58,16 +58,18 @@ function Field({
   label,
   hint,
   labelId,
+  enterSubmit = false,
   children,
 }: {
   label: string;
   hint?: string;
   /** Set when a listbox inside needs to point at this label. */
   labelId?: string;
+  enterSubmit?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <div className="px-5 py-4">
+    <div className="px-5 py-4" data-enter-submit-scope={enterSubmit || undefined}>
       <span id={labelId} className={labelText}>
         {label}
       </span>
@@ -511,7 +513,7 @@ export default function GardenSettingsDialog({
           ) : null}
 
           {/* --------------------------------------------------- instructions */}
-          <Field
+          <Field enterSubmit
             label="Instructions"
             hint="Set context and customize how the assistant responds in this garden."
           >
@@ -527,7 +529,7 @@ export default function GardenSettingsDialog({
               }
             />
             {instructionsDirty ? (
-              <button
+              <button data-enter-submit
                 type="button"
                 disabled={busy}
                 onClick={() =>

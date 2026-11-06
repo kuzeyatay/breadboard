@@ -18,7 +18,7 @@ View.prototype.setVisible = function (visible) {
 app.setPath("userData", path.join(dir, "profile"));
 app.on("window-all-closed", () => {});
 const until = async (probe, label) => {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + (process.argv[3] === "orphaned" ? 35_000 : 20_000);
   while (Date.now() < deadline) {
     if (await probe()) return;
     await new Promise(resolve => setTimeout(resolve, 25));
@@ -39,6 +39,11 @@ app.whenReady().then(async () => {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://fixture");
     requests.add(url.pathname);
+    if (url.pathname === "/api/auth/session") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ user: { id: "1" } }));
+      return;
+    }
     if (url.pathname.startsWith("/widget/")) {
       if (widgetsReleased.has(url.pathname)) return res.end("ready");
       widgetHeld.set(url.pathname, [...(widgetHeld.get(url.pathname) ?? []), res]);
@@ -70,8 +75,8 @@ app.whenReady().then(async () => {
   const origin = "http://127.0.0.1:" + server.address().port;
   const saved = (kind, url, anchored = true) => ({ kind, url, anchored, title: url });
   writeTabSession(dir, { version: 1, windows: [
-    { activeIndex: 0, tabs: [saved("dashboard", "/slow?redirect=1"), saved("browser", origin + "/external"), saved("browser", ""), saved("dashboard", "/not-restored", false)] },
-    { activeIndex: 0, tabs: [saved("dashboard", "/popup")] },
+    { activeIndex: 0, tabs: [saved("dashboard", "/slow?redirect=1"), saved("browser", origin + "/external", false), saved("browser", "", false), { ...saved("dashboard", "/ungrouped", false), ...(process.argv[3] === "lazy" ? { keepLoaded: true } : {}) }] },
+    { activeIndex: 0, tabs: [saved("dashboard", "/popup", false)] },
   ] });
   const savedSession = fs.readFileSync(path.join(dir, "tab-session.json"), "utf8");
   const startup = path.join(dir, "startup.html");
@@ -81,10 +86,13 @@ app.whenReady().then(async () => {
     preloadPath: path.resolve(__dirname, "../../dist/preload/preload.js"),
     minimumStartupVisibleMs: 0, tabSessionConfigDir: dir,
     startupPageLoadMaxWaitMs: process.argv[3] === "stalled" ? 500 : undefined,
+    // Every other phase checks the eager restore that can still be asked for.
+    restoreAllTabsAtStartup: process.argv[3] !== "lazy",
     allowed: { origins: new Set([origin]), localFiles: new Set([pathToFileURL(startup).toString()]) },
   });
   manager.tabs.setNewTabUrl(origin + "/new-tab");
   manager.tabs.setBrowserUrl(origin + "/browser");
+  if (process.argv[3] === "authenticated") manager.tabs.setAuthenticationUrl(origin);
   await manager.showStartupScreen();
   const loadingWindow = manager.window;
   let openedDuringRestore;
@@ -132,17 +140,43 @@ app.whenReady().then(async () => {
     for (const response of held.get(url)) response.end("done");
   };
   await until(() => widgetHeld.has("/widget/new-tab"), "new-tab widgets start first");
+  if (process.argv[3] === "lazy") {
+    await releaseWidget("/new-tab");
+    await until(() => ready && shown, "startup opens without loading the saved tabs");
+    await Promise.all([showing, readiness]);
+    for (const path of ["/slow", "/external", "/ungrouped", "/popup"]) {
+      assert.equal(requests.has(path), false, path + " waits until its tab is selected");
+    }
+    const state = manager.tabs.stateFor(manager.page(manager.window));
+    assert.equal(state.tabs.length, 5, "the whole saved strip is restored");
+    const ungrouped = state.tabs.find(tab => tab.url.endsWith("/ungrouped"));
+    assert.ok(ungrouped, "the restored tab keeps its address");
+    assert.equal(ungrouped.title, "/ungrouped", "and its saved title");
+    assert.equal(ungrouped.loading, false, "an unselected restored tab is not shown as loading");
+    assert.equal(manager.tabs.handleCommand(manager.page(manager.window), { type: "activate", id: ungrouped.id }), true);
+    await until(() => requests.has("/ungrouped"), "selecting a restored tab loads it");
+    assert.equal(requests.has("/slow"), false, "selecting one tab does not load the others");
+    manager.tabs.freezeSession();
+    for (const window of BrowserWindow.getAllWindows()) window.destroy();
+    server.closeAllConnections();
+    server.close();
+    app.exit(0);
+    return;
+  }
   if (process.argv[3] === "stalled") await new Promise(resolve => setTimeout(resolve, 1_500));
   await assertStillLoading();
   assert.equal(held.size, 0, "restored pages do not compete with the fresh new-tab widgets");
   await releaseWidget("/new-tab");
   await until(() => ["local", "shell", "external"].every(name => held.has("/resource/" + name)), "two queued tabs start loading");
   assert.equal(requests.has("/popup"), false, "remaining tabs wait for a loading slot");
+  const restoring = BrowserWindow.getAllWindows().find(window => manager.page(window).getURL().startsWith(origin + "/new-tab"));
+  assert.equal(manager.tabs.stateFor(manager.page(restoring)).tabs.length, 5,
+    "the complete saved strip is available while the first pair is still loading");
   if (process.argv[3] === "concurrent") {
     const restoringWindow = BrowserWindow.getAllWindows().find(window =>
-      window !== loadingWindow && window.webContents.getURL().startsWith(origin + "/new-tab"));
+      window !== loadingWindow && manager.page(window).getURL().startsWith(origin + "/new-tab"));
     assert.ok(restoringWindow);
-    assert.equal(manager.tabs.handleCommand(restoringWindow.webContents, {
+    assert.equal(manager.tabs.handleCommand(manager.page(restoringWindow), {
       type: "open", url: origin + "/opened-during-restore",
     }), true);
     await until(() => {
@@ -167,10 +201,13 @@ app.whenReady().then(async () => {
     await releaseResource(name);
     await assertStillLoading();
   }
-  await releaseWidget("/slow");
+  if (process.argv[3] !== "orphaned") await releaseWidget("/slow");
   await releaseWidget("/browser");
   await until(() => held.has("/resource/popup"), "secondary window restores after the first window is ready");
-  await until(() => overlays().length === 3, "startup and restored windows have notification overlays");
+  // The signed-in check happens in the preloaded workspace. Its welcome
+  // window never owns account notifications; the two workspace windows do.
+  const expectedOverlays = process.argv[3] === "authenticated" ? 2 : 3;
+  await until(() => overlays().length === expectedOverlays, "restored windows have notification overlays");
   if (process.argv[3] === "stalled") await new Promise(resolve => setTimeout(resolve, 1_500));
   await assertStillLoading();
   await releaseResource("popup");
@@ -188,8 +225,8 @@ app.whenReady().then(async () => {
   await Promise.all([showing, readiness]);
   assert.equal(loadingWindow.isDestroyed(), true);
   assert.equal(BrowserWindow.getAllWindows().length, 2);
-  assert.equal(requests.has("/not-restored"), false);
-  assert.equal(manager.tabs.stateFor(manager.window.webContents).tabs.length, openedDuringRestore ? 5 : 4);
+  assert.equal(requests.has("/ungrouped"), true);
+  assert.equal(manager.tabs.stateFor(manager.page(manager.window)).tabs.length, openedDuringRestore ? 6 : 5);
   if (openedDuringRestore) {
     const state = manager.tabs.stateFor(openedDuringRestore);
     assert.notEqual(state.selfId, null, "the native view must retain its tab registration");
@@ -200,24 +237,32 @@ app.whenReady().then(async () => {
     await until(() => {
       const [width, height] = manager.window.getContentSize();
       const bounds = liveView.getBounds();
-      return bounds.width === width && bounds.height === height;
+      return bounds.width === width && bounds.height === height - 32;
     }, "the live tab resizes with the restored window");
-    const baseId = manager.tabs.stateFor(manager.window.webContents).selfId;
+    const baseId = manager.tabs.stateFor(manager.page(manager.window)).selfId;
     assert.equal(manager.tabs.handleCommand(openedDuringRestore, { type: "activate", id: baseId }), true);
-    await until(() => !manager.window.contentView.children.includes(liveView),
-      "switching to New tab removes the previous view instead of leaving an overlay");
+    await until(() => manager.tabs.stateFor(manager.page(manager.window)).presentedId === baseId,
+      "switching to New tab presents it above the cached previous document");
+    const baseView = manager.window.contentView.children.find(view => view.webContents === manager.page(manager.window));
+    assert.ok(manager.window.contentView.children.indexOf(baseView) > manager.window.contentView.children.indexOf(liveView));
   }
   for (const contents of webContents.getAllWebContents()) {
     if (contents.isDestroyed()) continue;
     if (contents.getURL().startsWith(origin) && manager.tabs.windowFor(contents)) {
       assert.equal(contents.isLoading(), false, contents.getURL() + " has unexpected loading state at reveal");
-      assert.notEqual(await contents.executeJavaScript("document.documentElement.dataset.breadboardStartup"), "loading",
-        "tab widgets are ready before the app opens");
+      if (process.argv[3] !== "orphaned" || !contents.getURL().includes("/slow")) {
+        assert.notEqual(await contents.executeJavaScript("document.documentElement.dataset.breadboardStartup"), "loading",
+          "tab widgets are ready before the app opens");
+      }
     }
   }
   for (const window of BrowserWindow.getAllWindows()) {
     assert.equal(window.getOpacity(), 1);
   }
+  const prepared = webContents.getAllWebContents().find(contents => !contents.isDestroyed() && contents.getURL() === origin + "/ungrouped");
+  assert.ok(prepared, "the restored background tab exists");
+  await until(async () => await prepared.executeJavaScript("document.visibilityState") === "hidden",
+    "a tab prepared during startup is hidden once it is in the background");
   assert.equal(overlays().length, 2);
   for (const view of overlays()) {
     assert.equal(visibilityCalls.get(view)?.at(-1), true, "pending notifications appear in every window after welcome");

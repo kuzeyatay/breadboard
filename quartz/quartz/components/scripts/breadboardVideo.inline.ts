@@ -1,3 +1,4 @@
+import { onObjectDispose } from "../../util/objectLifecycle"
 /**
  * Breadboard video widgets. Upgrades the markup emitted by the BreadboardVideos
  * transformer:
@@ -247,7 +248,7 @@ function upgradeFilePlayer(figure: HTMLElement): void {
       void figure.requestFullscreen?.().catch(() => {})
     }
   })
-  document.addEventListener("fullscreenchange", () => {
+  const fullscreenChanged = () => {
     const active = document.fullscreenElement === figure
     figure.classList.toggle("bb-video--fullscreen", active)
     setIcon(
@@ -255,7 +256,9 @@ function upgradeFilePlayer(figure: HTMLElement): void {
       active ? ICONS.collapse : ICONS.expand,
       active ? "Exit full screen" : "Full screen",
     )
-  })
+  }
+  document.addEventListener("fullscreenchange", fullscreenChanged)
+  onObjectDispose(figure, () => { document.removeEventListener("fullscreenchange", fullscreenChanged); video.pause() })
 
   // Keyboard shortcuts apply while focus is inside the widget, so they never
   // steal Space or the arrow keys from the page.
@@ -330,8 +333,10 @@ function upgradeYouTubeFacade(figure: HTMLElement): void {
   poster?.addEventListener("click", load)
 }
 
-document.addEventListener("nav", () => {
-  const figures = document.querySelectorAll("[data-bb-video]") as NodeListOf<HTMLElement>
+const breadboardVideoEditorHydrate = (event: Event) => {
+  const root: ParentNode = (event as CustomEvent).detail?.root ?? document
+
+  const figures = root.querySelectorAll("[data-bb-video]") as NodeListOf<HTMLElement>
   for (const figure of figures) {
     if (figure.dataset.bbVideoBound === "true") continue
     figure.dataset.bbVideoBound = "true"
@@ -342,4 +347,6 @@ document.addEventListener("nav", () => {
       // A failed upgrade leaves the native player in place rather than nothing.
     }
   }
-})
+}
+document.addEventListener("nav", breadboardVideoEditorHydrate)
+document.addEventListener("bb:hydrate-objects", breadboardVideoEditorHydrate)

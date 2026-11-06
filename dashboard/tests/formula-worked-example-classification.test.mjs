@@ -64,3 +64,7 @@ test("genuine energy formulas still classify as energy", () => {
   assert.equal(formulaMetricFamily("energy per inference"), "energy");
   assert.equal(formulaMetricFamily("Total energy consumption in joules"), "energy");
 });
+
+test("an identity written with \equiv is a formula expression", () => {
+  assert.equal(isFormulaExpression(String.raw`\nabla \cdot \nabla \times \mathbf{A} \equiv 0 \tag{31}`), true);
+});

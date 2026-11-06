@@ -85,6 +85,7 @@ const KNOWLEDGE_TOOLS = [
   "garden_get_recent_events",
   "garden_list_files",
   "garden_save_note",
+  "garden_decide_proposals",
   "garden_create_folder",
   "garden_move_page",
   "garden_rename_folder",
@@ -308,7 +309,6 @@ export function decideCapabilityMode(
   let allowedOperations: CapabilityOperation[] = ["knowledge_work"];
   let allowedTools: string[] = [...KNOWLEDGE_TOOLS];
   let allowedCommandPatterns: string[] = [];
-  let expiresAt: string | null = null;
 
   if (
     implementationIntent &&
@@ -332,7 +332,6 @@ export function decideCapabilityMode(
       requestedOutcome,
       dependencyPackage,
     );
-    expiresAt = new Date(now.getTime() + 30 * 60_000).toISOString();
   } else if (
     READ_INTENT.test(requestedOutcome) &&
     TECHNICAL_MATERIAL.test(requestedOutcome) &&
@@ -345,7 +344,6 @@ export function decideCapabilityMode(
       "The request concerns technical material but does not require a code change.";
     allowedOperations = ["knowledge_work", "source_read", "git_inspect"];
     allowedTools = [...KNOWLEDGE_TOOLS, ...TECHNICAL_READ_TOOLS];
-    expiresAt = new Date(now.getTime() + 15 * 60_000).toISOString();
   } else if (highImpactIntent) {
     decisionReason =
       "High-impact repository or production actions require a separate dedicated authorization and were not granted.";
@@ -376,7 +374,8 @@ export function decideCapabilityMode(
     selectedConditionalSkills: [],
     selectedConnections: [],
     createdAt: now.toISOString(),
-    expiresAt,
+    // Turn completion, cancellation, and failure revoke this decision.
+    expiresAt: null,
     revokedAt: null,
   };
 }

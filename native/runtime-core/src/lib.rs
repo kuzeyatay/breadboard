@@ -5,6 +5,7 @@ mod completion_proof;
 mod control_views;
 mod generation_guard;
 mod input_uploads;
+mod managed_setup_guard;
 mod paths;
 mod process_owner;
 mod registry;

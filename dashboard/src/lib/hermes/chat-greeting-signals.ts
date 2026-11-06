@@ -93,8 +93,10 @@ export function readChatGreetingSignals(
            0
          ) AS today,
          CAST((julianday('now') - julianday(MAX(m.created_at))) * 1440 AS INTEGER) AS minutes
-       FROM conversation_messages m
-       JOIN conversations c ON c.id = m.conversation_id
+       FROM conversations c
+       -- CROSS JOIN pins this user's chats as the outer loop so the covering
+       -- index answers it; a plain JOIN scanned every user message (1.2 s).
+       CROSS JOIN conversation_messages m ON m.conversation_id = c.id
        WHERE c.user_id = ? AND m.role = 'user'`,
     )
     .get(userId) as { today: number | null; minutes: number | null };

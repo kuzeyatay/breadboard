@@ -235,6 +235,48 @@ test("long-chat rail measurements query mounted rows once rather than searching 
   }
 });
 
+test("animated and streaming descendants do not rescan or measure the message rail", { skip }, async () => {
+  const React = require("react");
+  const { act } = React;
+  const { createRoot } = require("react-dom/client");
+  const scroller = makeScroller({ scrollTop: 0 });
+  const list = scroller.querySelector("[data-chat-virtual-list]");
+  const row = list.firstElementChild;
+  const content = document.createElement("span");
+  row.append(content);
+  let reads = 0;
+  for (const item of list.children) {
+    const rect = item.getBoundingClientRect.bind(item);
+    item.getBoundingClientRect = () => { reads++; return rect(); };
+  }
+  // Even a direct-child CSS selector can traverse a giant markdown subtree.
+  list.querySelectorAll = () => { throw Error("Rail must iterate direct children"); };
+  const root = createRoot(document.getElementById("root"));
+  const frames = async () => {
+    for (let i = 0; i < 4; i++) await new Promise(resolve => window.requestAnimationFrame(resolve));
+  };
+  try {
+    await act(async () => {
+      root.render(React.createElement(R, { items: ITEMS, scrollRef: { current: scroller }, bridge: BRIDGE, surface: "mutations" }));
+    });
+    await act(frames);
+    reads = 0;
+    await act(async () => {
+      for (let i = 0; i < 100; i++) {
+        content.style.opacity = String(i / 100);
+        content.append(document.createElement("span"));
+      }
+      await frames();
+    });
+    assert.equal(reads, 0, "content mutations are covered by row ResizeObserver, not another tree scan");
+    await act(async () => { row.style.transform = "translateY(50px)"; await frames(); });
+    assert.ok(reads > 0, "moving a virtual row still updates the active message");
+  } finally {
+    await act(async () => { root.unmount(); });
+    scroller.remove();
+  }
+});
+
 test("the highlight follows the reader through a very long answer", { skip }, async () => {
   const React = require("react");
   const { act } = require("react");

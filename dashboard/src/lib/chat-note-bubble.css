@@ -1,0 +1,57 @@
+/* Shared by transcript notes and Quartz annotations. */
+.bb-chat-note {
+  position: fixed;
+  z-index: 60;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--paper-raised);
+  padding: 0.6rem 0.85rem;
+  color: var(--ink-heading);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--ink-heading) 10%, transparent);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  animation: bb-chat-note-in 120ms ease-out;
+}
+
+/* Point back to the underlined text on either side of the bubble. */
+.bb-chat-note::before {
+  content: "";
+  position: absolute;
+  left: var(--bb-chat-note-tail, 1rem);
+  width: 10px;
+  height: 10px;
+  background: var(--paper-raised);
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.bb-chat-note[data-placement="below"]::before {
+  top: -6px;
+  transform: rotate(45deg);
+}
+
+.bb-chat-note[data-placement="above"]::before {
+  bottom: -6px;
+  transform: rotate(225deg);
+}
+
+@keyframes bb-chat-note-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bb-chat-note {
+    animation: none;
+  }
+}

@@ -185,6 +185,26 @@ test('preserves scoped Hermes turn usage and identifies legacy snapshots', () =>
   );
 });
 
+test('Hermes prompt totals include its separate cache buckets exactly once', () => {
+  const usage = normalizeChatTokenUsage({
+    scope: 'turn', model: 'selected-model', calls: 2,
+    input: 40, prompt: 1_060, output: 60, completion: 60, total: 1_120,
+    cache_read: 1_000, cache_write: 20, reasoning: 15,
+  });
+  assert.equal(usage.inputTokens, 1_060);
+  assert.equal(usage.totalTokens, usage.inputTokens + usage.outputTokens);
+  assert.equal(usage.cachedInputTokens, 1_000);
+  assert.deepEqual(normalizeChatTokenUsage(usage), usage);
+  // Hermes falls back to its prompt counter when the uncached bucket is zero.
+  // The explicit prompt count is still inclusive in that case.
+  const cached = normalizeChatTokenUsage({
+    scope: 'turn', input: 1_000, prompt: 1_000, output: 10,
+    total: 1_010, calls: 1, cache_read: 1_000, cache_write: 0,
+  });
+  assert.equal(cached.inputTokens, 1_000);
+  assert.equal(cached.totalTokens, cached.inputTokens + cached.outputTokens);
+});
+
 test('legacy session snapshots are not double-counted as turn usage', () => {
   const legacy = normalizeChatTokenUsage({
     model: 'test', input: 100, output: 10, total: 110, calls: 2,

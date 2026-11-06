@@ -946,6 +946,9 @@ DEFAULT_CONFIG = {
     "max_live_sessions": 16,
     "agent": {
         "max_turns": 90,
+        # Extra model-call windows for one client-managed desktop/TUI turn.
+        # Reuse saved history and the active client turn. 0 disables renewal.
+        "max_auto_continuations": 8,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

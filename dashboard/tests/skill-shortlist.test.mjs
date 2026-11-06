@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   ROUTED_SKILLS,
+  computerUseSkillChoices,
   SKILL_SHORTLIST_LIMIT,
   renderSkillShortlistDirective,
   shortlistExclusions,
@@ -66,6 +67,23 @@ const skills = [
     description: "Guide to Sonner, the React toast library.",
   },
 ];
+
+test("computer-control guidance remains selectable without a phrase match or when another skill is active", () => {
+  const controls = [
+    { slug: "breadboard-use", name: "Breadboard use", description: "Operate the built-in browser." },
+    { slug: "computer-use", name: "Computer use", description: "Operate native applications." },
+  ];
+  const choices = (allowedTools, selectedSkills = []) => computerUseSkillChoices({
+    skills: [...skills, ...controls], allowedTools, selectedSkills,
+  }).map(skill => skill.slug);
+  assert.deepEqual(choices({ breadboard_use: true, computer_use: true }), controls.map(skill => skill.slug));
+  assert.deepEqual(choices({ breadboard_use: true, computer_use: true }, ["watch"]), controls.map(skill => skill.slug));
+  assert.deepEqual(choices({ breadboard_use: true, computer_use: true }, ["computer-use"]), ["breadboard-use"]);
+  assert.deepEqual(choices({ breadboard_use: true, computer_use: false }), ["breadboard-use"]);
+  assert.deepEqual(choices({}), [], "guidance cannot enable tools the broker did not grant");
+  assert.deepEqual(computerUseSkillChoices({ skills, allowedTools: { computer_use: true }, selectedSkills: [] }), [],
+    "do not offer an unavailable skill");
+});
 
 test("routed skills are pinned to the constants their routers export", () => {
   for (const slug of [

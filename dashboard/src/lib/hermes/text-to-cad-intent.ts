@@ -8,6 +8,7 @@
 
 import type { HermesSurface } from "./config.ts";
 import type { TextToCadSkill } from "./text-to-cad.ts";
+import { actionMatches, requestedActions } from "./request-language.ts";
 
 const ANY_URL = /\bhttps?:\/\/\S+/gi;
 const TASK_VERB =
@@ -23,7 +24,7 @@ const SDF_FILE = /\.sdf\b/i;
 const GCODE_FILE = /\.(?:gcode|gco|bgcode)\b/i;
 
 const CAD_DOMAIN =
-  /\b(?:cad\s+(?:part|model|assembly|drawing|file|geometry|design)|step|stp|stl|3mf|build123d|cadquery|solidworks|freecad|openscad|mechanical\s+(?:part|assembly|model)|parametric\s+(?:part|assembly|model)|enclosure|case|housing|chassis|bracket|fixture|jig|mounting\s+plate|gear(?:box|\s+train)?|rack\s+and\s+pinion|linkage|cam|ratchet|lead\s+screw|linear\s+actuator|hinge|pulley|impeller|propeller|manifold|duct|nozzle|knob|handle|wearable|headset|headband|helmet|glasses|goggles|visor|waveguide|combiner|collimator|counterbore|countersink|boss|standoff|fillet|chamfer)\b/i;
+  /\b(?:cad\s+(?:part|model|assembly|drawing|file|geometry|design)|step\s+(?:file|part|model|assembly|geometry)|stp|stl|3mf|build123d|cadquery|solidworks|freecad|openscad|mechanical\s+(?:part|assembly|model)|parametric\s+(?:part|assembly|model)|enclosure|case|housing|chassis|bracket|fixture|jig|mounting\s+plate|gear(?:box|\s+train)?|rack\s+and\s+pinion|linkage|cam|ratchet|lead\s+screw|linear\s+actuator|hinge|pulley|impeller|propeller|manifold|duct|nozzle|knob|handle|wearable|headset|headband|helmet|glasses|goggles|visor|waveguide|combiner|collimator|counterbore|countersink|boss|standoff|fillet|chamfer)\b/i;
 const SOFTWARE_CONTEXT =
   /\b(?:app|application|website|codebase|repository|repo|api|sdk|library|package|plugin|extension|integration|unit\s+tests?|typescript|javascript|react)\b/i;
 const DRAWING_DOMAIN = /\b(?:dxf|laser[-\s]?cut|water[-\s]?jet|sheet[-\s]?metal\s+(?:profile|drawing)|2d\s+technical\s+drawing)\b/i;
@@ -72,39 +73,39 @@ export function textToCadSkillForRequest(
     text.startsWith("/")
   ) return null;
 
-  const prose = text.replace(ANY_URL, " ");
-  const hasTask = TASK_VERB.test(prose);
-  if (DISCUSSION_ONLY.test(prose)) return null;
-  // This suite authors engineering artifacts; it is not a router for work on
-  // CAD software itself. A real artifact path wins because "fix the STEP
-  // exporter in this repo using bad.step" may still explicitly ask to inspect
-  // the file, but a bare library/plugin/codebase request stays with coding.
-  if (
-    SOFTWARE_CONTEXT.test(prose) &&
-    ![CAD_FILE, DXF_FILE, URDF_FILE, SRDF_FILE, SDF_FILE, GCODE_FILE].some((pattern) =>
-      pattern.test(prose)
-    )
-  ) return null;
+  // The requested action and its direct object must name CAD work together.
+  // Scanning a whole lesson for an unrelated "write" and "step" injected the
+  // complete CAD workflow into textbook requests about a step response.
+  for (const action of requestedActions(text)) {
+    if (!actionMatches(action, TASK_VERB)) continue;
+    const prose = action.source.replace(ANY_URL, " ");
+    const object = action.object;
+    const files = [CAD_FILE, DXF_FILE, URDF_FILE, SRDF_FILE, SDF_FILE, GCODE_FILE];
+    const artifactObject = files.some(pattern => pattern.test(action.objectSource)) ||
+      [CAD_DOMAIN, DRAWING_DOMAIN, ROBOT_DOMAIN, MOVEIT_DOMAIN, SIM_DOMAIN,
+        GCODE_DOMAIN, BAMBU_DOMAIN, SENDCUTSEND_DOMAIN, STEP_PARTS_DOMAIN, IMPLICIT_DOMAIN]
+        .some(pattern => pattern.test(object)) ||
+      (DFAM_DOMAIN.test(prose) && /\b(?:mesh|print|part|model)\b/i.test(object));
+    if (!artifactObject || DISCUSSION_ONLY.test(prose)) continue;
+    // Work on CAD software stays with coding. An explicit artifact path can
+    // still identify geometry that the user wants inspected.
+    if (SOFTWARE_CONTEXT.test(prose) && !files.some(pattern => pattern.test(prose))) continue;
 
-  // Most-specific physical handoffs first; all also contain generic printing
-  // words that must not demote them to the broad CAD skill.
-  if (BAMBU_DOMAIN.test(prose) && (hasTask || GCODE_FILE.test(prose))) return "bambu-labs";
-  if (SENDCUTSEND_DOMAIN.test(prose) && hasTask) return "sendcutsend";
-  if (STEP_PARTS_DOMAIN.test(prose) && hasTask) return "step-parts";
-  if (MOVEIT_DOMAIN.test(prose) && (hasTask || SRDF_FILE.test(prose))) return "srdf";
-  if (ROBOT_DOMAIN.test(prose) && (hasTask || URDF_FILE.test(prose))) return "urdf";
-  if (SIM_DOMAIN.test(prose) && (hasTask || SDF_FILE.test(prose))) return "sdf";
-  if (DRAWING_DOMAIN.test(prose) && (hasTask || DXF_FILE.test(prose))) return "dxf";
-  if (IMPLICIT_DOMAIN.test(prose) && hasTask) return "implicit-cad";
-  if (GCODE_DOMAIN.test(prose) && (hasTask || GCODE_FILE.test(prose))) return "gcode";
-  if (DFAM_DOMAIN.test(prose) && hasTask && (CAD_FILE.test(prose) || /\b(?:mesh|print|part|model)\b/i.test(prose))) {
-    return "dfam-check";
+    // Choose a specialist from the same requested clause as the artifact.
+    if (BAMBU_DOMAIN.test(prose)) return "bambu-labs";
+    if (SENDCUTSEND_DOMAIN.test(prose)) return "sendcutsend";
+    if (STEP_PARTS_DOMAIN.test(prose)) return "step-parts";
+    if (MOVEIT_DOMAIN.test(prose)) return "srdf";
+    if (ROBOT_DOMAIN.test(prose)) return "urdf";
+    if (SIM_DOMAIN.test(prose)) return "sdf";
+    if (DRAWING_DOMAIN.test(prose)) return "dxf";
+    if (IMPLICIT_DOMAIN.test(prose)) return "implicit-cad";
+    if (GCODE_DOMAIN.test(prose)) return "gcode";
+    if (DFAM_DOMAIN.test(prose) && (CAD_FILE.test(prose) || /\b(?:mesh|print|part|model)\b/i.test(object))) return "dfam-check";
+    if (CAD_FILE.test(prose) && VIEWER_DOMAIN.test(prose) && !/\b(?:edit|modify|change|revise|fix|convert|export|make|create|build|design|model|generate)\b/i.test(prose)) return "cad-viewer";
+    if (CAD_DOMAIN.test(object) || CAD_FILE.test(action.objectSource)) return "cad";
   }
-  if (CAD_FILE.test(prose) && VIEWER_DOMAIN.test(prose) && !/\b(?:edit|modify|change|revise|fix|convert|export|make|create|build|design|model|generate)\b/i.test(prose)) {
-    return "cad-viewer";
-  }
-  if ((CAD_DOMAIN.test(prose) || CAD_FILE.test(prose)) && hasTask) return "cad";
-  if (REVISION_REQUEST.test(prose) && recentCadWork(input.priorMessages)) return "cad";
+  if (REVISION_REQUEST.test(text.replace(ANY_URL, " ")) && recentCadWork(input.priorMessages)) return "cad";
   return null;
 }
 

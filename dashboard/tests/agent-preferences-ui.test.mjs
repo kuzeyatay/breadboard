@@ -131,10 +131,10 @@ test("agent settings save through the real route and Markdown file, support no p
   await video.getByRole("button", { name: "Choose agents", exact: true }).click();
   const search = video.getByRole("textbox", { name: "Search agents for Producing video" });
   await search.fill("HyperFrames");
-  await video.getByRole("button", { name: /HyperFrames Runtime agents/ }).click();
+  await video.getByRole("button", { name: /HyperFrames Task agents/ }).click();
   assert.equal(await video.getByRole("button", { name: "No preference", exact: true }).getAttribute("aria-pressed"), "false");
   await search.fill("Music Producer");
-  assert.equal(await video.getByRole("button", { name: /Music Producer Runtime agents/ }).count(), 1, "all agents are available even outside the suggested task category");
+  assert.equal(await video.getByRole("button", { name: /Music Producer Task agents/ }).count(), 1, "all agents are available even outside the suggested task category");
   await video.getByRole("button", { name: "Close agent picker", exact: true }).click();
   failWrites = true;
   await page.getByRole("button", { name: "Save changes", exact: true }).click();

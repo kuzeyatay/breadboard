@@ -187,9 +187,10 @@ export async function renewSpotifyPlaybackViewLease(input: {
   const userId = positiveUserId(input.userId);
   const viewId = spotifyPlaybackViewId(input.viewId);
   const operationKey = key(userId, viewId);
-  const now = input.now ?? Date.now();
+  const clock = () => input.now ?? Date.now();
 
   return serialize(operationKey, async () => {
+    const now = clock();
     const leaseState = state();
     let hold = leaseState.holds.get(operationKey);
 
@@ -225,6 +226,11 @@ export async function renewSpotifyPlaybackViewLease(input: {
       };
       leaseState.holds.set(operationKey, hold);
     } else {
+      // Receipt of an authenticated heartbeat renews the hold even if the
+      // Runtime's response is slow or briefly unavailable. Never let an old
+      // expiry tear down audio while that renewal is still in flight.
+      hold.expiresAt = now + SPOTIFY_PLAYBACK_VIEW_HOLD_TTL_MS;
+      scheduleExpiry(operationKey, hold);
       if (
         now - hold.acquiredAt >=
         SPOTIFY_PLAYBACK_VIEW_LEASE_ROTATION_MS
@@ -238,7 +244,7 @@ export async function renewSpotifyPlaybackViewLease(input: {
       await ensureSession({ userId, viewId, ticket: input.ticket });
     }
 
-    hold.expiresAt = now + SPOTIFY_PLAYBACK_VIEW_HOLD_TTL_MS;
+    hold.expiresAt = clock() + SPOTIFY_PLAYBACK_VIEW_HOLD_TTL_MS;
     scheduleExpiry(operationKey, hold);
     return { expiresInMs: SPOTIFY_PLAYBACK_VIEW_HOLD_TTL_MS };
   });

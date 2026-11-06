@@ -1,3 +1,4 @@
+import { runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -18,16 +19,6 @@ const PLATFORM_PACKAGES = new Map([
 
 function fail(message) {
   throw new Error(message);
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return (
-    relative === "" ||
-    (relative !== ".." &&
-      !relative.startsWith(`..${path.sep}`) &&
-      !path.isAbsolute(relative))
-  );
 }
 
 function requireDirectDirectory(directory, label) {

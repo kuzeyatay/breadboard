@@ -790,7 +790,7 @@ export default function SocialsManagerPostStudio({
               Discard changes
             </button>
           )}
-          <button
+          <button data-enter-submit
             type="button"
             className={primaryButtonClass}
             disabled={Boolean(busy) || !dirty}
@@ -830,6 +830,7 @@ function StudioChrome({
   if (variant === "inline") {
     return (
       <section
+        data-enter-submit-scope
         aria-label={`Edit the ${providerName} post`}
         className="flex h-full min-h-[34rem] flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-surface)]"
       >
@@ -850,6 +851,7 @@ function StudioChrome({
       onClick={onRequestClose}
     >
       <div
+        data-enter-submit-scope
         className="bb-modal-panel neu-dialog flex h-[92vh] max-h-[92vh] w-full max-w-[min(80rem,96vw)] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] text-[var(--ink)] shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
-import { getEventsSince, isTerminal } from "@/lib/get-doc/runtime-run-manager.ts";
+import { getRunView } from "@/lib/get-doc/runtime-run-manager.ts";
 import { outerAgentEventsResponse } from "@/lib/runtime-v2/outer-agent-events-route.ts";
 
 export const dynamic = "force-dynamic";
@@ -17,11 +17,7 @@ export async function GET(
       request,
       runId,
       pollMs: 500,
-      readView: async (since) => ({
-        events: await getEventsSince(userId, runId, since),
-        terminal: await isTerminal(userId, runId),
-        status: null,
-      }),
+      readView: (since) => getRunView(userId, runId, since),
     });
   } catch (error) {
     if (error instanceof RouteError) {

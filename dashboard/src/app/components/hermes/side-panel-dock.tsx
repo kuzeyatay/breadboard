@@ -34,7 +34,13 @@ const PANEL_MAX = 720;
 const PANEL_RAIL = 0;
 const PANEL_THRESHOLD = 220;
 
-export default function SidePanelDock({ label, defaultWidth, storageKey, children }: Props) {
+export default function SidePanelDock(props: Props) {
+  // Selecting another panel must expand it even if the previous one was
+  // collapsed. The saved expanded width still carries across panel selections.
+  return <ResizableSidePanelDock key={props.label} {...props} />;
+}
+
+function ResizableSidePanelDock({ label, defaultWidth, storageKey, children }: Props) {
   const rail = useRailResize({
     side: "right",
     defaultWidth,
@@ -43,6 +49,7 @@ export default function SidePanelDock({ label, defaultWidth, storageKey, childre
     railWidth: PANEL_RAIL,
     threshold: PANEL_THRESHOLD,
     storageKey,
+    persistCollapsed: false,
   });
 
   // The width travels from nothing on the first frame *after* mount, so opening

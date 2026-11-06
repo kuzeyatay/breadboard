@@ -12,6 +12,7 @@ export declare global {
   }
   interface Window {
     spaNavigate(url: URL, isBack: boolean = false)
+    prepareCanonicalQuartzDocument?(doc: Document): Promise<void>
     addCleanup(fn: (...args: any[]) => void)
   }
 }

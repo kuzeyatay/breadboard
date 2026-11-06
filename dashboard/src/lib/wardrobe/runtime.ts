@@ -16,7 +16,7 @@ import {
   externalRuntimePathExists,
   externalRuntimeStat,
 } from "../external-runtime-filesystem.ts";
-import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import { dashboardDataDir, repositoryRoot, runtimeV2ConfiguredPayloadRoot } from "../runtime-paths.ts";
 
 /** Files that identify a directory as the Wardrobe clone rather than a namesake. */
 const MARKERS = ["package.json", path.join("scripts", "import-job-api.mjs")];
@@ -46,8 +46,7 @@ export function resolveWardrobeRoot(env: NodeJS.ProcessEnv = process.env): strin
 
 /** The immutable source copied and dependency-installed by managed setup. */
 export function wardrobeRuntimeRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return configured(env.WARDROBE_RUNTIME_ROOT) ??
-    path.join(dashboardDataDir(), "runtime-v2", "toolchains", "wardrobe");
+  return runtimeV2ConfiguredPayloadRoot("runtime-v2/toolchains/wardrobe", env.WARDROBE_RUNTIME_ROOT, env);
 }
 
 /** Runtime-owned library, imported assets, and jobs. */

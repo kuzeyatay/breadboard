@@ -17,7 +17,8 @@
  * own. This makes that recovery happen at the start of the *next* launch
  * instead of after several freezes:
  *
- * - Every GPU-process crash is recorded, with a rolling window.
+ * - Unexpected hardware GPU-process failures are recorded, with a rolling
+ *   window. External termination and Windows logoff are not driver failures.
  * - Once the crashes are a pattern rather than an incident, the next launch
  *   pins ANGLE to SwiftShader, so Chromium stops handing work to the driver
  *   that keeps dying. Measured on this machine, WebGL and WebGL2 both stay
@@ -35,8 +36,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { CommandLine } from "electron";
+import type { ChildProcessGoneDetails } from "./gpu-diagnostics";
 
 const STATE_FILE = "gpu-state.json";
+// Older records counted every non-clean exit, including OS shutdown, and have
+// no reason/exit code with which to distinguish those events from real faults.
+const STATE_VERSION = 2;
 
 /** Crashes older than this stop counting; a fixed driver earns its GPU back. */
 export const GPU_CRASH_WINDOW_MS = 24 * 60 * 60 * 1_000;
@@ -67,6 +72,7 @@ export const EMPTY_GPU_STATE: GpuState = { crashes: [] };
  */
 export function parseGpuState(raw: unknown): GpuState {
   if (typeof raw !== "object" || raw === null) return EMPTY_GPU_STATE;
+  if ((raw as { version?: unknown }).version !== STATE_VERSION) return EMPTY_GPU_STATE;
   const candidate = (raw as { crashes?: unknown }).crashes;
   if (!Array.isArray(candidate)) return EMPTY_GPU_STATE;
   const crashes = candidate
@@ -106,6 +112,16 @@ export function gpuSwitches(state: GpuState, now: number): GpuSwitch[] {
     // and insurance for the day Chromium starts requiring it before handing a
     // software-backed context to a page.
     { name: "enable-unsafe-swiftshader" },
+    // A video promoted to a hardware overlay outlives its tab's view when the
+    // view is detached on a tab switch, and on this NVIDIA/AMD hybrid the stale
+    // overlay plane shows as a zeroed YUV surface — a solid green sheet over the
+    // whole window, tab strip included, that no click can get past.
+    // Chromium 130 accepts this as a driver workaround (underscores), not the
+    // removed gl switch (hyphens). The old spelling is silently ignored and
+    // never reaches the GPU process. Keep this in sync with Chromium's
+    // gpu/config/gpu_workaround_list.txt; the native test checks the active
+    // driverBugWorkarounds, not merely the browser's command line.
+    { name: "disable_direct_composition_video_overlays" },
   ];
   if (prefersSoftwareGl(state, now)) {
     // Stop feeding the driver that keeps taking the GPU process down with it.
@@ -132,7 +148,7 @@ export function writeGpuState(userDataDir: string, state: GpuState): void {
   const tmp = `${file}.${process.pid}.tmp`;
   try {
     fs.mkdirSync(userDataDir, { recursive: true });
-    fs.writeFileSync(tmp, JSON.stringify(state), { encoding: "utf8", mode: 0o600 });
+    fs.writeFileSync(tmp, JSON.stringify({ version: STATE_VERSION, crashes: state.crashes }), { encoding: "utf8", mode: 0o600 });
     fs.renameSync(tmp, file);
   } catch {
     // Losing the record costs a repeat of the fallback decision next launch,
@@ -153,12 +169,25 @@ export function writeGpuState(userDataDir: string, state: GpuState): void {
  * so in the log.
  */
 export function configureGpuPreferences(
-  commandLine: Pick<CommandLine, "appendSwitch">,
+  commandLine: Pick<CommandLine, "appendSwitch" | "getSwitchValue">,
   userDataDir: string,
   now: number = Date.now(),
   state: GpuState = readGpuState(userDataDir),
+  platform: NodeJS.Platform = process.platform,
 ): { softwareGl: boolean; applied: GpuSwitch[] } {
   const applied = gpuSwitches(state, now);
+  if (platform === "win32") {
+    // In Electron 33 an occluded WebContentsView can hide its native child
+    // HWND while backgroundThrottling:false keeps its renderer "visible".
+    // Uncovering it then skips the shown transition that restores the HWND.
+    // Let TabManager own view visibility; other apps covering the top-level
+    // window must not hide the selected tab. Detached tabs still throttle.
+    const disabled = commandLine.getSwitchValue("disable-features").split(",").filter(Boolean);
+    const feature = "CalculateNativeWinOcclusion";
+    if (!disabled.some(entry => entry.trim().split("<")[0] === feature)) {
+      applied.push({ name: "disable-features", value: [...disabled, feature].join(",") });
+    }
+  }
   for (const entry of applied) {
     if (entry.value === undefined) commandLine.appendSwitch(entry.name);
     else commandLine.appendSwitch(entry.name, entry.value);
@@ -175,7 +204,22 @@ export function describeGpuSwitches(applied: readonly GpuSwitch[]): string {
 }
 
 export interface GpuCrashRecorderHost {
-  onGpuProcessCrash(listener: () => void): void;
+  onChildProcessGone(listener: (details: ChildProcessGoneDetails) => void): void;
+  shouldRecordCrashes(): boolean;
+}
+
+/** A terminated process says nothing about the health of the graphics driver. */
+export function isGpuDriverFailure(details: ChildProcessGoneDetails): boolean {
+  if (details.type !== "GPU" || !["crashed", "abnormal-exit"].includes(details.reason)) return false;
+  // Electron can report these NTSTATUS values as crashes, including when
+  // Windows kills the old GPU process and a replacement starts during logoff.
+  // Normalize signed/unsigned Windows exit codes before comparing.
+  const code = details.exitCode >>> 0;
+  return code !== 0 &&
+    code !== 0xc000026b && // STATUS_DLL_INIT_FAILED_LOGOFF
+    code !== 0xc000013a && // STATUS_CONTROL_C_EXIT
+    code !== 0xc000010a && // STATUS_PROCESS_IS_TERMINATING
+    code !== 0xc000012d;   // STATUS_COMMITMENT_LIMIT (system memory pressure)
 }
 
 /**
@@ -190,8 +234,11 @@ export function installGpuCrashRecorder(
   write: (line: string) => void,
   now: () => number = Date.now,
 ): void {
-  host.onGpuProcessCrash(() => {
+  host.onChildProcessGone((details) => {
     try {
+      // Failures while quitting or already using SwiftShader must not renew
+      // the hardware-driver fallback and trap future launches on the CPU.
+      if (!host.shouldRecordCrashes() || !isGpuDriverFailure(details)) return;
       const at = now();
       const next = withGpuCrash(readGpuState(userDataDir), at);
       writeGpuState(userDataDir, next);

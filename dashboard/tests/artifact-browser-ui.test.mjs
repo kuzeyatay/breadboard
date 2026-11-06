@@ -9,7 +9,7 @@ import tailwind from '@tailwindcss/postcss';
 
 const root = path.resolve(import.meta.dirname, '..');
 
-test('artifact browser filters, sorts, keeps chat widgets, selects Learn artifacts, attaches and fits narrow screens', { timeout: 60_000 }, async () => {
+test('artifact browser filters, sorts, keeps chat widgets, attaches and fits narrow screens', { timeout: 60_000 }, async () => {
   const bundle = await build({ stdin: { resolveDir: root, loader: 'tsx', contents: `
     import React,{useState} from 'react';import{createRoot}from'react-dom/client';
     import Archive from './src/app/components/hermes/artifact-panel';
@@ -21,13 +21,13 @@ test('artifact browser filters, sorts, keeps chat widgets, selects Learn artifac
       import React from 'react';
       export default function Viewer(){return null;}
       export const ARTIFACT_BROWSER_EVENT='artifact-browser',ARTIFACT_AI_EDIT_EVENT='artifact-edit',GARDEN_DOCUMENTS_CHANGED_EVENT='garden-changed';
-      export const artifactDescription=item=>item.kind,artifactPdfHref=()=>null,artifactVideoHref=()=>null,artifactUrl=item=>'/thumb/'+item.id;
+      export const artifactDescription=item=>item.kind,artifactPdfHref=item=>item.kind==='pdf'?'/artifacts/'+item.id+'/pdf?conversationId='+item.conversationId+'&version='+item.version:null,artifactVideoHref=()=>null,artifactUrl=item=>'/thumb/'+item.id;
       export const deleteArtifactRequest=async()=>{},highlightArtifactRequest=async()=>{};
       export function ArtifactFileIcon(){return <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z M14 3v5h4 M9 12h6 M9 16h6"/></svg>}
       export const ArtifactArchiveIcon=ArtifactFileIcon;
     ` : 'export default function Studio(){return null;}' }));
   } }] });
-  const utilityCss = await postcss([tailwind()]).process('@import "tailwindcss" source(none); @source "../src/app/components/hermes/artifact-panel.tsx"; @source "../src/app/components/hermes/artifact-card-content.tsx";', { from: path.join(root, 'tests/archive-fixture.css') });
+  const utilityCss = await postcss([tailwind()]).process('@import "tailwindcss" source(none); @source "../src/app/components/hermes/artifact-panel.tsx"; @source "../src/app/components/hermes/artifact-card-content.tsx"; @source "../src/app/components/attachment-preview-dialog.tsx"; @source "../src/app/components/link-context-menu.tsx";', { from: path.join(root, 'tests/archive-fixture.css') });
   const css = utilityCss.css + bundle.outputFiles.find(file => file.path.endsWith('.css')).text;
   const js = bundle.outputFiles.find(file => file.path.endsWith('.js')).text;
   const common = { conversationId:'chat-1',gardenId:'demo',status:'ready',version:1,downloadAvailable:true,previewAvailable:true,metadata:{},updatedAt:'2026-09-12T12:00:00Z',highlight:null };
@@ -43,23 +43,17 @@ test('artifact browser filters, sorts, keeps chat widgets, selects Learn artifac
   try {
     const page = await browser.newPage({viewport:{width:420,height:850}});
     const errors=[];page.on('pageerror',error=>errors.push(error.message));
-    let selectedLearn=[]; let refuseLearn=false;
-    await page.route('http://localhost:53148/**',route=>{
+    let learnRequests=0;
+    await page.context().route('http://localhost:53148/**',route=>{
       const url=new URL(route.request().url());
+      if(url.pathname==='/artifacts/paper/pdf')return route.fulfill({contentType:'text/html',body:'<main>Full PDF viewer</main>'});
       if(url.pathname==='/api/hermes/artifacts'){
         assert.equal(url.searchParams.get('presentation'),'archive');
         return route.fulfill({json:{artifacts:items}});
       }
       if(url.pathname==='/api/gardens/demo/learn/artifacts'){
-        if(route.request().method()==='POST'){
-          if(refuseLearn)return route.fulfill({status:409,json:{error:'Learn is currently running.'}});
-          const body=route.request().postDataJSON();
-          const item=items.find(item=>item.id===body.artifactId);
-          assert.equal(body.version,item.version);
-          selectedLearn=selectedLearn.filter(item=>item.id!==body.artifactId);
-          if(body.included)selectedLearn.push(item);
-        }
-        return route.fulfill({json:{artifacts:selectedLearn}});
+        learnRequests++;
+        return route.fulfill({status:409,json:{error:'Learn is currently running.'}});
       }
       if(url.pathname.startsWith('/thumb/'))return route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="100" height="120"><rect width="100" height="120" fill="#dce9d6"/><path d="M0 95 42 30 70 75 100 40V120H0" fill="#56785a"/><circle cx="75" cy="25" r="14" fill="#eab26f"/></svg>'});
       return route.fulfill({contentType:'text/html',body:`<style>:root{--paper-surface:#fafbf9;--paper-strong:#edf1e9;--paper-raised:#fff;--line:#dde3d8;--line-strong:#bec8b7;--ink:#343c31;--ink-heading:#293824;--ink-muted:#737f6c;--botanical:#48663a}*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif}#root{height:100dvh}${css}</style><div id="root"></div><script>${js}</script>`});
@@ -67,9 +61,32 @@ test('artifact browser filters, sorts, keeps chat widgets, selects Learn artifac
     await page.goto('http://localhost:53148/');
     const cards=page.locator('.bb-neu-artifact-card');
     const card=title=>cards.filter({has:page.getByTitle(title,{exact:true})});
-    await page.getByRole('button',{name:'Add Energy dashboard v1 to Learn',exact:true}).waitFor();
+    await card('Energy dashboard').waitFor();
     assert.equal(await cards.count(),5);
     assert.equal(await cards.locator('.bb-neu-artifact-preview-tilted').count(),5);
+    const pdfTitle='Research notes — thermal systems and energy transfer';
+    const pdfTrigger=page.getByRole('button',{name:'Open '+pdfTitle+' preview',exact:true});
+    const pdfHref='/artifacts/paper/pdf?conversationId=chat-1&version=1';
+    const originalUrl=page.url();
+    await pdfTrigger.click();
+    assert.equal(page.url(),originalUrl,'PDF preview must preserve the artifact archive');
+    await page.getByRole('dialog',{name:pdfTitle,exact:true}).waitFor();
+    assert.equal(await page.getByTitle(pdfTitle+' PDF preview',{exact:true}).getAttribute('src'),pdfHref);
+    await page.getByRole('button',{name:'Close attachment preview',exact:true}).click();
+    await pdfTrigger.click({button:'right'});
+    assert.equal(await page.getByRole('dialog').count(),0,'right click must not open the preview');
+    const newTab=page.getByRole('menuitem',{name:'Open PDF in new tab',exact:true});
+    assert.equal(await newTab.getAttribute('href'),pdfHref);
+    const popupPromise=page.waitForEvent('popup');
+    await newTab.click();
+    const popup=await popupPromise;
+    await popup.waitForURL('**/artifacts/paper/pdf?conversationId=chat-1&version=1');
+    await popup.close();
+    await pdfTrigger.click({button:'right'});
+    await page.evaluate(()=>{window.openCalls=[];window.open=(...args)=>{window.openCalls.push(args);return null;};});
+    await page.getByRole('menuitem',{name:'Open PDF in new window',exact:true}).click();
+    assert.deepEqual(await page.evaluate(()=>window.openCalls),[[new URL(pdfHref,originalUrl).href,'_blank','popup,noopener,noreferrer']]);
+    assert.equal(page.url(),originalUrl);
     await page.getByRole('button',{name:'Web & interactive',exact:true}).click();
     assert.equal(await cards.count(),2);
     await page.getByRole('searchbox').fill('heat html');
@@ -81,18 +98,8 @@ test('artifact browser filters, sorts, keeps chat widgets, selects Learn artifac
     await card('Heat transfer explorer').getByRole('button',{name:'Artifact color; selected for chat',exact:true}).dblclick();
     await color().waitFor();
     assert.equal(await page.evaluate(()=>window.attachCalls),2);
-    await page.getByRole('button',{name:'Add Heat transfer explorer v1 to Learn',exact:true}).click();
-    await page.getByRole('button',{name:'Remove Heat transfer explorer v1 from Learn',exact:true}).waitFor();
-    assert.equal(selectedLearn.length,1);
-    await page.reload();
-    await page.getByRole('button',{name:'Remove Heat transfer explorer v1 from Learn',exact:true}).waitFor();
-    refuseLearn=true;
-    await page.getByRole('button',{name:'Add Energy dashboard v1 to Learn',exact:true}).click();
-    await page.getByRole('alert').filter({hasText:'Learn is currently running.'}).waitFor();
-    assert.equal(selectedLearn.length,1);
-    refuseLearn=false;
-    await page.getByRole('button',{name:'Remove Heat transfer explorer v1 from Learn',exact:true}).click();
-    await page.getByRole('button',{name:'Add Heat transfer explorer v1 to Learn',exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:/ (to|from) Learn$/}).count(),0);
+    assert.equal(learnRequests,0,'the archive must not depend on Learn availability');
     await page.getByRole('searchbox').fill('missing');
     await page.getByRole('button',{name:'Clear filters',exact:true}).click();
     assert.equal(await cards.count(),5);

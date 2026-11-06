@@ -1,11 +1,60 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupTabs, moveGroupedTab, moveTabGroup, normalizeTabGroups } from "../src/main/tab-groups";
+import { groupTabs, moveGroupedTab, moveTabGroup, normalizeTabGroups, positionAiTabGroup } from "../src/main/tab-groups";
 import { isTabsCommand } from "../src/shared/ipc-contract";
-import { type TabGroup, readTabGroups } from "../src/shared/tab-groups";
+import { AI_TAB_GROUP_ID, ensureAiTabGroup, type TabGroup, readTabGroups } from "../src/shared/tab-groups";
 
 const fresh = (id = "g"): TabGroup => ({ id, name: "", color: "blue", collapsed: false });
 const host = () => ({ tabs: [1, 2, 3, 4].map(id => ({ id, groupId: undefined as string | undefined })), groups: [] as TabGroup[] });
+
+test("the default AI group survives its last tab closing and round-trips black", () => {
+  const state = host();
+  const ai = ensureAiTabGroup(state);
+  assert.equal(ensureAiTabGroup(state), ai);
+  assert.deepEqual(ai, { id: AI_TAB_GROUP_ID, name: "AI", color: "black", collapsed: false });
+  state.tabs[0]!.groupId = ai.id;
+  normalizeTabGroups(state);
+  state.tabs.shift();
+  normalizeTabGroups(state);
+  assert.deepEqual(readTabGroups(state.groups), [ai]);
+  ai.collapsed = true;
+  state.groups.push(fresh());
+  state.tabs[0]!.groupId = "g";
+  assert.equal(moveTabGroup(state, ai.id, 0, "g"), false);
+  assert.equal(ensureAiTabGroup(state).collapsed, true);
+  assert.equal(isTabsCommand({ type: "group-update", groupId: ai.id, color: "black" }), true);
+});
+
+test("AI tabs and nested groups stay first when restored or other tabs and groups move", () => {
+  const state = host();
+  ensureAiTabGroup(state);
+  state.groups.push({ ...fresh("child"), parentId: AI_TAB_GROUP_ID }, fresh());
+  state.tabs[1]!.groupId = "child";
+  state.tabs[2]!.groupId = "g";
+  state.tabs[3]!.groupId = AI_TAB_GROUP_ID;
+  normalizeTabGroups(state);
+  assert.deepEqual(state.tabs.map(tab => tab.id), [2, 4, 1, 3]);
+  assert.equal(moveTabGroup(state, AI_TAB_GROUP_ID, 2), false);
+  assert.equal(moveGroupedTab(state, 1, 0, null), true);
+  assert.deepEqual(state.tabs.map(tab => tab.id), [2, 4, 1, 3]);
+  assert.equal(moveTabGroup(state, "g", 0), true);
+  assert.deepEqual(state.tabs.map(tab => tab.id), [2, 4, 3, 1]);
+  // Newly opened pages join the leftmost group, keeping its existing order.
+  state.tabs.push({ id: 5, groupId: AI_TAB_GROUP_ID });
+  normalizeTabGroups(state);
+  assert.deepEqual(state.tabs.map(tab => tab.id), [2, 4, 5, 3, 1]);
+});
+
+test("positioning partially restored AI tabs preserves groups and split metadata still being loaded", () => {
+  const state = host();
+  ensureAiTabGroup(state);
+  state.groups.push({ ...fresh("child"), parentId: AI_TAB_GROUP_ID, split: true }, fresh());
+  state.tabs[1]!.groupId = "child";
+  const groups = structuredClone(state.groups);
+  positionAiTabGroup(state);
+  assert.deepEqual(state.tabs.map(tab => tab.id), [2, 1, 3, 4]);
+  assert.deepEqual(state.groups, groups);
+});
 
 test("dropping onto a tab creates a contiguous group at the target and joining cleans up an empty source group", () => {
   const state = host();
@@ -72,6 +121,8 @@ test("moving a group cannot split or merge another group, and invalid moves do n
 
 test("group IPC rejects invalid names, colors, ids and coordinates", () => {
   assert.equal(isTabsCommand({ type: "group-tabs", id: 1, targetId: 2 }), true);
+  assert.equal(isTabsCommand({ type: "group-action", groupId: "g", action: "neutralize" }), true);
+  assert.equal(isTabsCommand({ type: "group-action", groupId: AI_TAB_GROUP_ID, action: "show-ai-info" }), true);
   assert.equal(isTabsCommand({ type: "move", id: 1, index: 0, groupId: null }), true);
   assert.equal(isTabsCommand({ type: "group-move", groupId: "g", index: 0 }), true);
   assert.equal(isTabsCommand({ type: "group-update", groupId: "g", color: "cyan", collapsed: true }), true);

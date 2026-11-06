@@ -25,7 +25,13 @@ import {
 
 const LOCK_NAME = "breadboard:chatgpt-web-tab-relay";
 const POLL_WAIT_SECONDS = 25;
+// The next long poll starts straight away: in a background tab Chromium runs a
+// timer about once a minute, so even a short pause between polls left a
+// microphone request waiting past its 40 s timeout (measured 2026-10-07: polls
+// 50-85 s apart). A poll that came back early and empty, as a server without
+// long polls would, still pauses so the loop cannot spin.
 const IDLE_PAUSE_MS = 500;
+const SHORT_POLL_MS = 1_000;
 const ERROR_BACKOFF_MS = 10_000;
 const DENIED_BACKOFF_MS = 60_000;
 
@@ -36,6 +42,8 @@ interface TabRequestRow {
   reset?: boolean;
   /** Which of ChatMock's pages: "interactive" (chat) or "batch" (Learn, council). */
   lane?: string;
+  /** ChatGPT voice: lend the page the microphone, or take it back. */
+  microphone?: boolean;
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -56,9 +64,10 @@ async function relayOnce(
   foreground: boolean,
   reset: boolean,
   lane: string | undefined,
+  microphone: boolean | undefined,
   cdpPort: { value: number | null },
 ) {
-  const asked = requestChatgptWebTabInDesktop(foreground, reset, lane);
+  const asked = requestChatgptWebTabInDesktop(foreground, reset, lane, microphone);
   const result = asked ? await asked : { ok: false as const, error: "this page has no desktop bridge" };
   if (result.ok) cdpPort.value = result.cdpPort;
   // The shell's `lane` echo goes back as it came: its presence is how ChatMock
@@ -82,6 +91,7 @@ async function relayLoop(signal: AbortSignal): Promise<void> {
   const cdpPort = { value: null as number | null };
   while (!signal.aborted) {
     let response: Response;
+    const asked = Date.now();
     try {
       const params = new URLSearchParams({ wait: String(POLL_WAIT_SECONDS) });
       if (cdpPort.value) params.set("cdpPort", String(cdpPort.value));
@@ -112,10 +122,11 @@ async function relayLoop(signal: AbortSignal): Promise<void> {
         row.foreground === true,
         row.reset === true,
         typeof row.lane === "string" && row.lane ? row.lane : undefined,
+        typeof row.microphone === "boolean" ? row.microphone : undefined,
         cdpPort,
       );
     }
-    if (rows.length === 0) await sleep(IDLE_PAUSE_MS, signal);
+    if (rows.length === 0 && Date.now() - asked < SHORT_POLL_MS) await sleep(IDLE_PAUSE_MS, signal);
   }
 }
 

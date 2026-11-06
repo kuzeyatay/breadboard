@@ -1,0 +1,85 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const { app, BrowserWindow } = require('electron');
+const { ScreenRecordingManager } = require('../../dist/main/screen-recording.js');
+const [dir] = process.argv.slice(2);
+app.setPath('userData', path.join(dir, 'profile'));
+app.on('window-all-closed', () => {});
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+app.whenReady().then(async () => {
+  const target = new BrowserWindow({ show: false, width: 500, height: 300 });
+  await target.loadURL('data:text/html,<title>Breadboard recording fixture</title><body style="background:tomato"><h1>Recording test</h1><script>let n=0;setInterval(()=>{document.body.style.background=n++%2?"tomato":"royalblue";document.querySelector("h1").textContent="Frame "+n},150)</script>');
+  const recorder = new ScreenRecordingManager(dir, () => [{ contents: target.webContents, prepare: async () => {
+    target.webContents.setBackgroundThrottling(false);
+    return () => {};
+  } }]);
+  const focused = () => BrowserWindow.getFocusedWindow()?.id ?? null;
+  const before = focused();
+  const sources = await recorder.sources();
+  const source = sources.find(source => source.id === `tab:${target.webContents.id}`);
+  assert.ok(source, 'the synthetic page is available for capture');
+  await assert.rejects(recorder.start('owner', { sourceId: source.id, durationSeconds: 121 }), /1 to 120/);
+  await assert.rejects(recorder.start('owner', { sourceId: source.id, fps: 0 }), /1 to 30/);
+  await assert.rejects(recorder.start('owner', { sourceId: 'window:missing', durationSeconds: 1 }));
+  const started = await recorder.start('owner', { sourceId: source.id, durationSeconds: 5 });
+  assert.equal(started.state, 'recording');
+  assert.equal(focused(), before, 'starting capture does not take focus');
+  assert.throws(() => recorder.status('other', started.id), /not found/);
+  await assert.rejects(recorder.stop('other', started.id), /not found/);
+  await assert.rejects(recorder.start('owner', { sourceId: source.id }), /already running/);
+  await delay(2200);
+  const stopped = await recorder.stop('owner', started.id);
+  assert.equal(stopped.state, 'complete', JSON.stringify(stopped));
+  assert.ok(stopped.bytes > 1000);
+  assert.equal(focused(), before, 'stopping capture does not take focus');
+  assert.deepEqual(await recorder.stop('owner', started.id), stopped, 'stop is idempotent');
+  const file = path.join(dir, 'screen-recordings', stopped.filename);
+  const probe = JSON.parse(execFileSync(path.resolve(__dirname, '../../resources/bin/ffprobe.exe'),
+    ['-v', 'error', '-count_frames', '-show_streams', '-show_format', '-of', 'json', file], { encoding: 'utf8', windowsHide: true }));
+  assert.equal(probe.streams.length, 1, 'no audio is captured');
+  assert.equal(probe.streams[0].codec_type, 'video');
+  assert.ok(Number(probe.streams[0].nb_read_frames) >= 5, JSON.stringify(probe));
+  // Decode the actual clip, not merely its container header.
+  const decoded = execFileSync(path.resolve(__dirname, '../../resources/bin/ffmpeg.exe'),
+    ['-v', 'error', '-i', file, '-f', 'framemd5', '-'], { encoding: 'utf8', windowsHide: true });
+  const hashes = decoded.split('\n').filter(line => line && !line.startsWith('#')).map(line => line.split(',').at(-1).trim());
+  assert.ok(new Set(hashes).size > 1, 'the clip contains changing video frames');
+  if (process.env.BB_TEST_NATIVE_CAPTURE === '1') {
+    const monitor = sources.find(source => source.kind === 'screen' && source.primary);
+    assert.ok(monitor, 'the primary monitor is available');
+    const native = await recorder.start('native', { sourceId: monitor.id, durationSeconds: 1 });
+    await delay(1400);
+    const nativeResult = await recorder.stop('native', native.id);
+    assert.equal(nativeResult.state, 'complete', JSON.stringify(nativeResult));
+    assert.ok(nativeResult.bytes > 1000, 'Windows delivered screen video');
+    assert.equal(focused(), before, 'monitor capture preserves focus');
+    await recorder.release('native');
+    assert.equal(fs.existsSync(path.join(dir, 'screen-recordings', nativeResult.filename)), false);
+  }
+  const automatic = await recorder.start('owner', { sourceId: source.id, durationSeconds: 1 });
+  await delay(1600);
+  const autoResult = await recorder.stop('owner', automatic.id);
+  assert.equal(autoResult.state, 'complete', JSON.stringify(autoResult));
+  const cancelled = await recorder.start('cancelled', { sourceId: source.id, durationSeconds: 30 });
+  await delay(300);
+  await recorder.release('cancelled');
+  assert.throws(() => recorder.status('cancelled', cancelled.id), /not found/);
+  assert.equal(fs.existsSync(path.join(dir, 'screen-recordings', cancelled.filename)), false);
+  const crashed = await recorder.start('crash', { sourceId: source.id, durationSeconds: 30 });
+  const hidden = BrowserWindow.getAllWindows().find(window => window !== target);
+  assert.ok(hidden && !hidden.isVisible(), 'the recorder never displays a window');
+  hidden.destroy();
+  assert.equal((await recorder.stop('crash', crashed.id)).state, 'failed');
+  await recorder.start('quit', { sourceId: source.id, durationSeconds: 30 });
+  await recorder.close();
+  assert.deepEqual(recorder.owners(), []);
+  assert.equal(BrowserWindow.getAllWindows().length, 1, 'recorder windows are closed');
+  assert.equal(fs.readdirSync(path.join(dir, 'screen-recordings')).length, 0, 'unclaimed files are removed');
+  await assert.rejects(recorder.start('owner', { sourceId: source.id }), /shutting down/);
+  const report = { passed: true, mimeType: stopped.mimeType, bytes: stopped.bytes, frames: probe.streams[0].nb_read_frames };
+  console.log(JSON.stringify(report));
+  fs.writeFileSync(path.join(dir, 'passed.json'), JSON.stringify(report));
+  target.destroy();
+}).then(() => app.exit(0), error => { console.error(error); app.exit(1); });

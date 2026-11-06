@@ -116,7 +116,7 @@ function MessageRowImpl({
 
         <div data-testid="message-body">
           {editing ? (
-            <div className="mt-1">
+            <div data-enter-submit-scope className="mt-1">
               <textarea
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
@@ -124,7 +124,7 @@ function MessageRowImpl({
                 className="w-full resize-none rounded-lg border border-input/50 bg-buzz-background px-3 py-2 text-message outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
               />
               <div className="mt-1 flex gap-2 text-2xs">
-                <button
+                <button data-enter-submit
                   type="button"
                   className="rounded-md bg-primary px-2 py-1 font-medium text-primary-foreground"
                   onClick={() => {

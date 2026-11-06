@@ -30,6 +30,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.errors import EmptyStreamError
+from agent.retry_utils import is_sse_connection_error
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
@@ -3355,8 +3356,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout)
                     )
                     _is_conn_err = isinstance(
-                        e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError)
+                        e, (_httpx.NetworkError, _httpx.RemoteProtocolError, ConnectionError)
                     )
+                    _is_sse_conn_err = is_sse_connection_error(e)
                     _is_stream_parse_err = agent._is_provider_stream_parse_error(e)
                     _is_empty_stream = isinstance(e, EmptyStreamError)
 
@@ -3376,31 +3378,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         _partial_tool_in_flight = bool(
                             result.get("partial_tool_names")
                         )
-                        _is_sse_conn_err_preview = False
-                        if not _is_timeout and not _is_conn_err:
-                            from openai import APIError as _APIError
-                            if isinstance(e, _APIError) and not getattr(e, "status_code", None):
-                                _err_lower_preview = str(e).lower()
-                                _SSE_PREVIEW_PHRASES = (
-                                    "connection lost",
-                                    "connection reset",
-                                    "connection closed",
-                                    "connection terminated",
-                                    "network error",
-                                    "network connection",
-                                    "terminated",
-                                    "peer closed",
-                                    "broken pipe",
-                                    "upstream connect error",
-                                )
-                                _is_sse_conn_err_preview = any(
-                                    phrase in _err_lower_preview
-                                    for phrase in _SSE_PREVIEW_PHRASES
-                                )
                         _is_transient = (
                             _is_timeout
                             or _is_conn_err
-                            or _is_sse_conn_err_preview
+                            or _is_sse_conn_err
                             or _is_stream_parse_err
                         )
                         _can_silent_retry = (
@@ -3478,28 +3459,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     # a fresh connection.  Distinguish from HTTP errors:
                     # APIError from SSE has no status_code, while
                     # APIStatusError (4xx/5xx) always has one.
-                    _is_sse_conn_err = False
-                    if not _is_timeout and not _is_conn_err:
-                        from openai import APIError as _APIError
-                        if isinstance(e, _APIError) and not getattr(e, "status_code", None):
-                            _err_lower_sse = str(e).lower()
-                            _SSE_CONN_PHRASES = (
-                                "connection lost",
-                                "connection reset",
-                                "connection closed",
-                                "connection terminated",
-                                "network error",
-                                "network connection",
-                                "terminated",
-                                "peer closed",
-                                "broken pipe",
-                                "upstream connect error",
-                            )
-                            _is_sse_conn_err = any(
-                                phrase in _err_lower_sse
-                                for phrase in _SSE_CONN_PHRASES
-                            )
-
                     if (
                         _is_timeout
                         or _is_conn_err

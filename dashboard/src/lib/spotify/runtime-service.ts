@@ -168,7 +168,7 @@ async function readEnvelope(response: Response): Promise<ServiceEnvelope> {
 }
 
 async function request(
-  route: "/v1/ensure" | "/v1/release" | "/v1/status" | "/v1/control",
+  route: "/v1/ensure" | "/v1/release" | "/v1/status" | "/v1/control" | "/v1/reconnect",
   body: Record<string, unknown>,
   env: NodeJS.ProcessEnv,
 ): Promise<unknown> {
@@ -337,6 +337,18 @@ export type SpotifyLocalControlResult = { handled: false } | {
   positionMs: number;
   isPlaying: boolean;
 };
+
+export async function reconnectSpotifyPlaybackRuntime(userId: number, deviceId: string): Promise<string> {
+  const result = await request("/v1/reconnect", {
+    userId: positiveUserId(userId), deviceId,
+  }, process.env);
+  if (result && typeof result === "object" &&
+    (result as { reconnected?: unknown }).reconnected === true) {
+    const replacement = (result as { deviceId?: unknown }).deviceId;
+    if (typeof replacement === "string" && /^[A-Za-z0-9_-]{8,200}$/u.test(replacement)) return replacement;
+  }
+  throw new SpotifyPlaybackRuntimeError("spotify_reconnect_failed", "Breadboard's Spotify player could not reconnect. Try playback again.");
+}
 
 export async function controlSpotifyPlaybackRuntime(input: {
   userId: number;

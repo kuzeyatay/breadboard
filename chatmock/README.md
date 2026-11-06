@@ -205,6 +205,18 @@ All flags go after `chatmock serve`. These can also be set as environment variab
 
 ## Notes
 
+Breadboard's local server runs a temporary-cache cleanup worker at startup and
+hourly. It scans only direct `breadboard-voice-*` and `breadboard-claude-*` session
+homes in Python's temporary directory (the desktop runtime's `TEMP`/`TMP`).
+Only disposable files under `.tmp/plugins` are removed, after seven days with
+no changes anywhere in the session. Live session owners and voice subprocesses
+are excluded, including after a service restart. Session homes, databases and
+journals, transcripts, documents, images, and recordings are retained. Normal
+session shutdown still removes its own ephemeral working directory as before.
+The worker skips links/junctions, uncertain ownership, and sessions exceeding
+100,000 entries. It throttles filesystem work, stops with the server, and logs
+reclaimed bytes or errors to the service log. It does not prune desktop builds.
+
 Use responsibly and at your own risk. This project is not affiliated with OpenAI.
 
 <br>

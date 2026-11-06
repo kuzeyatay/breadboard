@@ -112,6 +112,9 @@ writeFileSync(
     "  presets:",
     "    default:",
     "      enabled: false",
+    // Do not pin ancient user requests ahead of the summary in long Garden chats.
+    "compression:",
+    "  protect_first_n: 0",
     "memory:",
     "  memory_enabled: false",
     "  user_profile_enabled: false",
@@ -127,6 +130,20 @@ writeFileSync(
     "tools:",
     "  tool_search:",
     "    enabled: on",
+    // Ordinary source reads should not require search + describe before each
+    // call. The remaining specialist catalog stays deferred.
+    "    always_visible:",
+    "      - garden_list",
+    "      - garden_search",
+    "      - garden_get_page",
+    "      - garden_get_source_excerpt",
+    "      - document_skill_read",
+    "      - chat_search",
+    "      - garden_get_source_figure",
+    "      - skill_open",
+    "      - terminal_execute_command",
+    // Delivering a generated file must not depend on another discovery hop.
+    "      - artifact_import",
     // Hermes warns after a few identical failing tool calls but keeps going.
     // With delegation on, a child looping on one failing tool would burn its
     // whole iteration budget; the hard stop ends that turn with a message
@@ -136,6 +153,13 @@ writeFileSync(
     "  hard_stop_enabled: true",
     "agent:",
     "  coding_context: off",
+    // Breadboard supplies the task and tool-use contract. Hermes's extra
+    // model-family prompt mandates a terminal call for all math and gives
+    // some models a separate brevity policy, even during a teaching turn.
+    "  tool_use_enforcement: false",
+    // Retry transient provider failures within the current model call, keeping
+    // completed tool work. ChatMock still owns model selection and fallback.
+    "  api_max_retries: 3",
     // An attached image must reach the model as pixels. Hermes' "auto" image
     // routing asks models.dev whether the active model has vision, and every
     // Breadboard model is addressed as provider `custom` — a name models.dev

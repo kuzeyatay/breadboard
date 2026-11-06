@@ -447,8 +447,7 @@ export default function DemonstratedWorkflow(props: {
               </p>
             ))}
             <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
-              A demonstrated workflow runs from what it learned, not from the recording, so it keeps
-              working after the recording is gone.
+              Deleting the recording does not delete the workflow.
             </p>
           </div>
         ) : null}

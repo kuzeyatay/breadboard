@@ -15,7 +15,7 @@ export class BreadboardUseError extends Error {
 
 /** Credentials remain between the dashboard and its Electron owner. They
  * never enter the model context, tool arguments, or a browser renderer. */
-export async function useBreadboard(args: Record<string, unknown>, sessionId: string, userId: number) {
+export async function executeBreadboardAction(args: Record<string, unknown>, sessionId: string, userId: number, runId = sessionId) {
   let access;
   try {
     access = JSON.parse(fs.readFileSync(path.join(dashboardDataDir(), "breadboard-use.json"), "utf8"));
@@ -30,7 +30,7 @@ export async function useBreadboard(args: Record<string, unknown>, sessionId: st
   try {
     response = await fetch(`http://127.0.0.1:${access.port}/breadboard-use`, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${access.token}` },
-      body: JSON.stringify({ args, sessionId, userId }), redirect: "error", signal: AbortSignal.timeout(15_000),
+      body: JSON.stringify({ args, sessionId, userId, runId }), redirect: "error", signal: AbortSignal.timeout(15_000),
     });
   } catch {
     throw new BreadboardUseError(503, "Breadboard's desktop did not respond. Check that it is open; inspect state before retrying an action.");
@@ -43,4 +43,20 @@ export async function useBreadboard(args: Record<string, unknown>, sessionId: st
       ? result.error.slice(0, 200) : "Breadboard could not perform this action.");
   }
   return result;
+}
+
+export { executeBreadboardAction as useBreadboard };
+
+/** Run finalization owns cleanup, including cancelled and failed responses. */
+export async function releaseBreadboardRun(runId: string, sessionId: string, userId: number): Promise<void> {
+  if (!fs.existsSync(path.join(dashboardDataDir(), "breadboard-use.json"))) return;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await executeBreadboardAction({ action: "release_run" }, sessionId, userId, runId);
+      return;
+    } catch (error) {
+      if (attempt === 2) throw error;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+  }
 }

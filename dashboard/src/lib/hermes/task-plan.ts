@@ -425,22 +425,50 @@ function extractResources(text: string): ResourceReference[] {
     push({ kind: "url", value: match[0] });
   }
   // Strip URLs before path scanning so URL segments are not read as paths.
-  const withoutUrls = text.replace(URL_LIKE, " ");
-  for (const match of withoutUrls.matchAll(PATH_LIKE)) {
-    const value = match[0];
+  let remaining = text.replace(URL_LIKE, (url) => " ".repeat(url.length));
+  const addPath = (value: string) => {
     // A bare "a/b" with no extension and no drive is too weak to treat as a
     // path reference; require a drive, UNC, home prefix, separator depth, or
     // a file extension.
     const absolute = /^(?:[A-Za-z]:[\\/]|\\\\|~[\\/])/.test(value);
     const hasExtension = /\.[A-Za-z0-9]{1,8}$/.test(value);
-    if (!absolute && !hasExtension) continue;
+    if (!absolute && !hasExtension) return;
     push({
       kind: "path",
       value,
       absolute,
       ...(hasExtension ? { resourceType: "file" as const } : {}),
     });
+  };
+  // A quoted path is one resource, including spaces in its final filename.
+  // Mask consumed spans before looking for aliases: Downloads inside a path
+  // must never become a second request for the entire Downloads directory.
+  remaining = remaining.replace(/"([^"\r\n]+)"|'([^'\r\n]+)'|`([^`\r\n]+)`|“([^”\r\n]+)”/g,
+    (literal, ...groups) => {
+      const value = groups.slice(0, 4).find((group) => typeof group === "string") ?? "";
+      if (!/^(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|(?:\.{1,2}[\\/])?[\w.-]+[\\/])/.test(value)) return literal;
+      addPath(value);
+      return " ".repeat(literal.length);
+    });
+  // Unquoted Windows paths often arrive from API prompts or pasted Explorer
+  // paths. Keep spaces until a prose delimiter instead of inventing a shorter
+  // folder (for example "5GLab" from "5GLab assignment"). Quote ambiguous
+  // names containing prose conjunctions to preserve them verbatim.
+  for (const match of remaining.matchAll(/[A-Za-z]:[\\/]|\\\\(?=[^\s\\])/g)) {
+    const start = match.index!;
+    if (!remaining.slice(start).startsWith(match[0])) continue;
+    const value = remaining.slice(start)
+      .split(/[\r\n"'`,;<>|!?]|\.(?=\s|$)|\s+(?=[A-Za-z]:[\\/]|\\\\)|\s+(?:and|then|to|from|with|but|before|after|using|while)\b/i, 1)[0]
+      .trim();
+    if (value.length <= match[0].length) continue;
+    addPath(value);
+    remaining = remaining.slice(0, start) + " ".repeat(value.length) + remaining.slice(start + value.length);
   }
+  remaining = remaining.replace(PATH_LIKE, (value) => {
+    addPath(value);
+    return " ".repeat(value.length);
+  });
+  const withoutUrls = remaining;
   for (const match of withoutUrls.matchAll(KNOWN_FOLDER)) {
     // A document or picture is not the user's Documents/Pictures directory.
     // Require a personal/location phrase, an explicit folder noun, or the
@@ -548,6 +576,10 @@ export function requiresCodingOutcome(text: string): boolean {
 
 function isExternalAction(action: RequestedAction): boolean {
   if (action.personalIntent || !action.target) return false;
+  // A direction pair in technical prose is not the command to forward a
+  // message. Keep a real command such as "Forward /inverse to Alex" gated:
+  // the compound below has no space between the adjective and slash.
+  if (action.verb === "forward" && /^forward\/(?:inverse|backward|reverse)\b/i.test(action.source.trimStart())) return false;
   // Ordering information is a presentation request; purchasing is a different
   // sense of the verb and remains subject to confirmation.
   if (action.verb === "order" && /\b(?:alphabetically|chronologically|ascending|descending|by\s+(?:date|name|size|priority|importance|difficulty)|from\s+(?:best|worst|highest|lowest|smallest|largest))\b/i.test(action.target)) return false;
@@ -774,6 +806,13 @@ export function planTask(input: TaskPlanInput): TaskPlan {
   // --- Web --------------------------------------------------------------
   if (signals.web) {
     addStep("Search the web and open the most relevant sources.", ["web_research"]);
+  } else if (signals.download && !isolated) {
+    // Finding a download's source does not require access to a local folder.
+    // Keep it ahead of the write step so requests such as "download every
+    // picture here" can reach the linked page context instead of returning
+    // the targetless filesystem clarification before the runtime starts.
+    // Named destinations are still checked by prepareTurn's path-grant gate.
+    addStep("Inspect the linked page or requested source to identify the resources to download.", ["web_research"]);
   }
 
   // --- Filesystem reads -------------------------------------------------
@@ -798,7 +837,7 @@ export function planTask(input: TaskPlanInput): TaskPlan {
   if (signals.download && !isolated) {
     addStep(
       "Download the requested resource to the authorized destination after the exact command is approved.",
-      ["web_research", "filesystem_write", "command_execution"],
+      ["filesystem_write", "command_execution"],
     );
   }
 

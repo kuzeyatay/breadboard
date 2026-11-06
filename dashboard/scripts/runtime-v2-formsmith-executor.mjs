@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -29,18 +30,6 @@ function fail(code, message, stages = []) {
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" ||
-    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function boundedText(value, maximumBytes) {
@@ -607,7 +596,7 @@ async function probeHealth(launch, signal, env) {
   if (!tools.python) {
     return unavailableHealth(
       tools,
-      "ShapeR is staged, but its Python 3.10 environment is not ready. Follow ShapeR/INSTALL.md or set SHAPER_PYTHON.",
+      "ShapeR is staged, but its managed Python 3.10 CUDA environment is not ready. Prepare runtime-v2/services/formsmith/.venv under Breadboard's active data folder; see docs/SHAPER_INTEGRATION.md. Automatic setup is not available.",
     );
   }
   if (!tools.bridge) {

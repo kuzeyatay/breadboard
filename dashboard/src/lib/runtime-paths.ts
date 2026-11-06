@@ -1,4 +1,6 @@
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
+import { configuredManagedPayloadRoot, managedPayloadRoot, managedVenvRoot, runtimeBulkDataRoot } from "../../scripts/runtime-v2-bulk-paths.mjs";
+import { runtimeProcessPath } from "../../scripts/runtime-v2-paths.mjs";
 
 // Single authority for the dashboard's mutable-data and repo-root locations.
 //
@@ -49,6 +51,26 @@ export function runtimeV2ServiceRoot(serviceId: string): string {
   return path.join(dashboardDataDir(), "runtime-v2", "services", serviceId);
 }
 
+export function dashboardBulkDataDir(): string {
+  return runtimeBulkDataRoot(dashboardDataDir());
+}
+
+export function runtimeV2BulkRoot(): string {
+  return path.join(dashboardBulkDataDir(), "runtime-v2");
+}
+
+export function runtimeV2PayloadRoot(relative: string, env: NodeJS.ProcessEnv = process.env): string {
+  return managedPayloadRoot(dashboardDataDir(), relative, env);
+}
+
+export function runtimeV2ConfiguredPayloadRoot(relative: string, configured: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
+  return configuredManagedPayloadRoot(dashboardDataDir(), relative, configured, env);
+}
+
+export function runtimeV2ToolchainRoot(toolchainId: string, env: NodeJS.ProcessEnv = process.env): string {
+  return runtimeV2PayloadRoot(`runtime-v2/toolchains/${toolchainId}`, env);
+}
+
 export function runtimeV2ServiceVenv(serviceId: string): string {
-  return path.join(runtimeV2ServiceRoot(serviceId), ".venv");
+  return runtimeProcessPath(managedVenvRoot(dashboardDataDir(), serviceId));
 }

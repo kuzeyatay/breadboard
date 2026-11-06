@@ -87,7 +87,9 @@ const SKIPPED_DIRECTORIES = new Set([
 function existingDirectory(candidate: string | null | undefined): string | null {
   if (!candidate) return null;
   try {
-    const resolved = fs.realpathSync(path.resolve(candidate));
+    // Runtime supplies extended Windows paths, which the JS realpath walker
+    // cannot traverse. The native implementation handles both path spellings.
+    const resolved = fs.realpathSync.native(path.resolve(candidate));
     return fs.statSync(resolved).isDirectory() ? resolved : null;
   } catch {
     return null;

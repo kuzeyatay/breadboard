@@ -31,7 +31,14 @@ test('read-aloud and MP3 controls send spoken formulas to every provider', { tim
             window.readings.push({kind:'play', text}); return true;
           }
           export async function playSpeechBlob(blob) { window.readings.push({kind:'play', text:await blob.text()}); }
+          export async function playSpeechResponse(response, signal) {
+            window.readings.push({kind:'play', text:await response.text()});
+            await new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+          }
           export function stopSpeechPlayback() {}`,
+        '@/lib/speech/settings-client': `export async function loadSpeechSettings() {
+          return { settings: { speechProvider: window.provider } };
+        }`,
         '@/lib/speech/request-client': `export async function speechRequest(url, init) {
           const {text} = JSON.parse(init.body);
           if (url.endsWith('/mp3')) window.readings.push({kind:'download', text});
@@ -59,7 +66,7 @@ test('read-aloud and MP3 controls send spoken formulas to every provider', { tim
   let browser;
   try {
     browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
-    for (const provider of ['local', 'chatgpt', 'elevenlabs']) {
+    for (const provider of ['local', 'chatgpt', 'elevenlabs', 'openaiweb']) {
       const page = await browser.newPage();
       page.setDefaultTimeout(5_000);
       const errors = [];

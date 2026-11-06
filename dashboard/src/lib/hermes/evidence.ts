@@ -1,6 +1,7 @@
 import type { ResearchCoverageSummary } from "../research/session.ts";
 import type { CapabilitySummary } from "./capability-usage.ts";
-import type { ExplanationReviewReport } from "./explanation-review.ts";
+import type { ExplanationReviewReport } from "./legacy-explanation-review-report.ts";
+import { geographicClaimsWithoutMapEvidence } from "../map/grounding.ts";
 
 export type {
   CapabilityKind,
@@ -127,6 +128,36 @@ export interface VerificationSummary {
    * gate stopped substituting answers cannot claim a state nobody recorded.
    */
   webGrounding?: WebGroundingReport;
+  /**
+   * Set on a copy made for a browser by {@link trimVerificationForTransport}:
+   * its evidence lacks the raw tool `result` and `args`. Such a copy must never
+   * overwrite the stored summary.
+   */
+  detailsTrimmed?: true;
+}
+
+/** Raw tool payloads the browser never reads. They were 19 of the 23 MB one
+ * Garden chat sent to the page, and most of what the assistant panel cached in
+ * localStorage. Server-side readers (backfill, page history) read the DB. */
+const TRANSPORT_OMITTED_DETAILS = ["result", "args"] as const;
+
+/**
+ * The verification as a browser needs it. The evidence panel's links are read
+ * from the full record first and kept on `websites`, so it lists the same sites.
+ */
+export function trimVerificationForTransport(verification: VerificationSummary): VerificationSummary {
+  if (verification.detailsTrimmed || !Array.isArray(verification.evidence)) return verification;
+  return {
+    ...verification,
+    detailsTrimmed: true,
+    evidence: verification.evidence.map((item) => {
+      if (!item?.details || !TRANSPORT_OMITTED_DETAILS.some((key) => key in item.details)) return item;
+      const websites = extractWebsitesFromEvidence(item);
+      const details = { ...item.details };
+      for (const key of TRANSPORT_OMITTED_DETAILS) delete details[key];
+      return { ...item, details, ...(websites.length ? { websites } : {}) };
+    }),
+  };
 }
 
 export function evidenceKindForTool(toolName: string): EvidenceKind {
@@ -601,10 +632,8 @@ export function assessVerification(
   // verified distance, and neither is a memory of one.
   const mapEvidence = supporting.filter((item) => item.kind === "map");
   if (!mapEvidence.length) {
-    for (const { pattern, claim } of geographicClaimRules()) {
-      if (pattern.test(text) && !unsupportedClaims.includes(claim)) {
-        unsupportedClaims.push(claim);
-      }
+    for (const claim of geographicClaimsWithoutMapEvidence(text, options.geographicGroundingRequired === true)) {
+      if (!unsupportedClaims.includes(claim)) unsupportedClaims.push(claim);
     }
     if (options.geographicGroundingRequired && text.trim() && !unsupportedClaims.length) {
       unsupportedClaims.push(
@@ -643,62 +672,6 @@ export function assessVerification(
       : {}),
     ...(options.capabilities ? { capabilities: options.capabilities } : {}),
   };
-}
-
-/**
- * Sentences that assert a particular real place's geography. Each is a claim
- * whose only honest source is a map-tool result, so matching one with no
- * successful map evidence behind it is reported rather than tolerated.
- *
- * Kept beside the other `requires` rules above, in the same shape, because it
- * is the same idea: the answer may not out-run the evidence.
- */
-function geographicClaimRules(): { pattern: RegExp; claim: string }[] {
-  return [
-    {
-      pattern:
-        /\b\d+(?:[.,]\d+)?\s?(?:km|kilometres?|kilometers?|miles?|metres?|meters?)\b[^.\n]{0,60}\b(?:away|from|to|walk\w*|driv\w*|cycl\w*|apart|on foot|by car|by bike|journey|trip)\b/i,
-      claim: "Distance claim has no successful map-service result.",
-    },
-    {
-      // A bare "m" is only a metre in lowercase and only when it is not a
-      // magnitude suffix on money. Case-insensitively, this alternative used to
-      // read "$403M to $935M" as four hundred and three metres, and flagged a
-      // report about robotics funding for making an unsourced distance claim.
-      pattern:
-        /(?<![$€£¥])\b\d+(?:[.,]\d+)?\s?m\b[^.\n]{0,60}\b(?:away|from|to|walk\w*|driv\w*|cycl\w*|apart|on foot|by car|by bike|journey|trip)\b/,
-      claim: "Distance claim has no successful map-service result.",
-    },
-    {
-      pattern:
-        /\b(?:about|roughly|around|approximately|takes?|it'?s)\b[^.\n]{0,30}\b\d+\s?(?:minutes?|min|hours?|hrs?)\b[^.\n]{0,40}\b(?:walk|on foot|drive|driving|cycle|cycling|away|to get)\b/i,
-      claim: "Travel-time claim has no successful routing result.",
-    },
-    {
-      // "located at" is geometry as often as it is geography: "charge
-      // elements located at equal distances above and below", "every point
-      // located at a distance $r$ from the wire" (an EM1 chat, 2026-09-16,
-      // whose physics answers were badged contradicted for it). It only
-      // counts as an address when what follows looks like one: a house
-      // number and a name, a named street, or a postcode. "the address is"
-      // says what it is and needs no such check.
-      pattern:
-        /\bthe address is\s+\S|\b(?:located|situated) at\s+(?:\d{1,5}[A-Za-z]?\s+(?!(?:m|cm|mm|km|metres?|meters?|units?|points?|nodes?|positions?|degrees?|radians?|seconds?|s|and|or)\b)[A-Za-z][\w'.-]+|[A-Za-z][\w'.-]+(?:\s+[A-Za-z][\w'.-]+){0,3}\s+(?:Street|St\.?|Road|Rd\.?|Avenue|Ave\.?|Lane|Ln\.?|Boulevard|Blvd\.?|Drive|Dr\.?|Way|Square|Plaza|Place|Court|Terrace|Straat|Laan|Weg|Plein|Gracht|Kade)\b|\d{4}\s?[A-Za-z]{2}\b|\d{5}\b)/i,
-      claim: "Address claim has no successful map-service result.",
-    },
-    {
-      pattern: /\b(?:coordinates?|latitude|longitude)\b[^.\n]{0,20}-?\d/i,
-      claim: "Coordinate claim has no successful map-service result.",
-    },
-    {
-      pattern: /\b(?:opens? at|closes? at|open from|opening hours are)\b/i,
-      claim: "Opening-hours claim has no successful place-details result.",
-    },
-    {
-      pattern: /\b(?:the nearest|the closest)\b[^.\n]{0,40}\b(?:is|are)\b/i,
-      claim: "Nearest-place claim has no successful POI result.",
-    },
-  ];
 }
 
 /** Returns true when a candidate string is an absolute http or https URL. */

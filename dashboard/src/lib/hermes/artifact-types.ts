@@ -23,6 +23,7 @@ export type ArtifactRendererId =
   | "pdf"
   | "html"
   | "code"
+  | "spice-netlist"
   | "json"
   | "csv"
   | "presentation-html"

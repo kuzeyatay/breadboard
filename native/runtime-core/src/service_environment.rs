@@ -137,6 +137,9 @@ const OPTIONAL_ELECTRON_GATED_PRODUCT_ENVIRONMENT_NAMES: &[&str] = &[
     "SCRIBERR_POLL_INTERVAL_MS",
     "SCRIBERR_MODEL_FAMILY",
     "SCRIBERR_MODEL",
+    "SCRIBERR_DEVICE",
+    "SCRIBERR_COMPUTE_TYPE",
+    "SCRIBERR_BATCH_SIZE",
     "SCRIBERR_LANGUAGE",
     "SCRIBERR_DIARIZATION",
     "VIDEO_TRANSCRIPTION_DELETE_SCRIBERR_JOBS",
@@ -382,6 +385,17 @@ impl TrustedOsEnvironment {
     pub(crate) fn for_test(system_root: impl Into<OsString>) -> Self {
         Self::from_captured_values(system_root.into(), Vec::new(), Vec::new())
             .expect("test OS environment must satisfy the Electron gate")
+    }
+
+    #[cfg(feature = "environment-contract-tests")]
+    pub fn for_environment_contract_tests() -> Self {
+        Self::from_captured_values(
+            OsString::from(r"C:\Windows"),
+            OPTIONAL_ELECTRON_GATED_OS_ENVIRONMENT_NAMES.into_iter()
+                .map(|name| (name, OsString::from(r"C:\SyntheticTestProfile")))
+                .collect(),
+            Vec::new(),
+        ).expect("synthetic contract-test OS environment must satisfy the Electron gate")
     }
 }
 
@@ -759,12 +773,12 @@ impl TrustedServiceEnvironment {
             .map(|(_, value)| value.as_os_str())
     }
 
-    fn mint_for_launch(&self) -> Self {
+    fn mint_for_launch(&self, paths: &RuntimePaths) -> Self {
         Self {
             mode: self.mode,
             profile: self.profile,
             source: self.source,
-            pairs: self.pairs.clone(),
+            pairs: self.pairs.iter().map(|(name,value)| (name.clone(), paths.refresh_managed_environment_value(name,value))).collect(),
         }
     }
 }
@@ -788,6 +802,7 @@ impl fmt::Debug for TrustedServiceEnvironment {
 /// across idle and failure restarts.
 #[must_use = "trusted service environment sources must be retained for the runtime generation"]
 pub struct TrustedServiceEnvironmentSet {
+    paths: RuntimePaths,
     mode: RuntimeMode,
     _shared_temporary: TrustedDirectoryPin,
     chatmock: TrustedServiceEnvironment,
@@ -1121,6 +1136,7 @@ impl TrustedServiceEnvironmentSet {
 
         Ok(Self {
             mode,
+            paths: paths.clone(),
             _shared_temporary: shared_temporary,
             chatmock,
             acestep,
@@ -1225,7 +1241,7 @@ impl TrustedServiceEnvironmentSet {
             TrustedServiceEnvironmentProfile::StockAnalyst => &self.stock_analyst,
             TrustedServiceEnvironmentProfile::SolidworksMcp => &self.solidworks_mcp,
         };
-        Ok(environment.mint_for_launch())
+        Ok(environment.mint_for_launch(&self.paths))
     }
 
     /// Performs the dynamic installation checks that cannot be represented by
@@ -1338,11 +1354,11 @@ impl TrustedWorkerEnvironment {
             .map(|(name, value)| (name.as_os_str(), value.as_os_str()))
     }
 
-    fn mint_for_launch(&self) -> Self {
+    fn mint_for_launch(&self, paths: &RuntimePaths) -> Self {
         Self {
             mode: self.mode,
             source: self.source,
-            pairs: self.pairs.clone(),
+            pairs: self.pairs.iter().map(|(name,value)| (name.clone(), paths.refresh_managed_environment_value(name,value))).collect(),
         }
     }
 
@@ -1370,6 +1386,7 @@ impl fmt::Debug for TrustedWorkerEnvironment {
 
 #[must_use = "trusted worker environment sources must be retained for the runtime generation"]
 pub struct TrustedWorkerEnvironmentSet {
+    paths: RuntimePaths,
     mode: RuntimeMode,
     minimal: TrustedWorkerEnvironment,
     background: TrustedWorkerEnvironment,
@@ -1450,7 +1467,7 @@ impl TrustedWorkerEnvironmentSet {
         paths: &RuntimePaths,
         os_environment: &TrustedOsEnvironment,
     ) -> Self {
-        let minimal = TrustedWorkerEnvironment {
+        let mut minimal = TrustedWorkerEnvironment {
             mode,
             source: TrustedWorkerEnvironmentSource::Minimal,
             pairs: vec![(
@@ -1458,6 +1475,7 @@ impl TrustedWorkerEnvironmentSet {
                 os_environment.system_root.clone(),
             )],
         };
+        if let Some(root) = paths.bulk_root() { minimal.pairs.push((OsString::from("BREADBOARD_BULK_DATA_DIR"), root.as_os_str().to_os_string())); }
         let excluded = [
             "PORT",
             "HOSTNAME",
@@ -1678,6 +1696,9 @@ impl TrustedWorkerEnvironmentSet {
             "SCRIBERR_POLL_INTERVAL_MS",
             "SCRIBERR_MODEL_FAMILY",
             "SCRIBERR_MODEL",
+    "SCRIBERR_DEVICE",
+    "SCRIBERR_COMPUTE_TYPE",
+    "SCRIBERR_BATCH_SIZE",
             "SCRIBERR_LANGUAGE",
             "SCRIBERR_DIARIZATION",
             "CHATMOCK_BASE_URL",
@@ -1718,6 +1739,9 @@ impl TrustedWorkerEnvironmentSet {
             "SCRIBERR_POLL_INTERVAL_MS",
             "SCRIBERR_MODEL_FAMILY",
             "SCRIBERR_MODEL",
+    "SCRIBERR_DEVICE",
+    "SCRIBERR_COMPUTE_TYPE",
+    "SCRIBERR_BATCH_SIZE",
             "SCRIBERR_LANGUAGE",
             "SCRIBERR_DIARIZATION",
             "VIDEO_TRANSCRIPTION_DELETE_SCRIBERR_JOBS",
@@ -1792,6 +1816,7 @@ impl TrustedWorkerEnvironmentSet {
             pairs: quartz_publish_pairs,
         };
         let tool_names = [
+            "BREADBOARD_BULK_DATA_DIR",
             "SystemRoot",
             "PATH",
             "TEMP",
@@ -1966,11 +1991,7 @@ impl TrustedWorkerEnvironmentSet {
             ("CAREER_OPS_ROOT", paths.app_root().join("career-ops")),
             (
                 "PLAYWRIGHT_BROWSERS_PATH",
-                paths
-                    .data_root()
-                    .join("runtime-v2")
-                    .join("toolchains")
-                    .join("career-ops-browsers"),
+                paths.managed_payload_path("runtime-v2/toolchains/career-ops-browsers"),
             ),
         ] {
             outer_career_ops_pairs.push((OsString::from(name), value.into_os_string()));
@@ -2161,12 +2182,7 @@ impl TrustedWorkerEnvironmentSet {
             ),
             (
                 "SHORTS_PYTHON",
-                paths
-                    .data_root()
-                    .join("runtime-v2")
-                    .join("services")
-                    .join("shorts")
-                    .join(".venv")
+                paths.managed_payload_path("runtime-v2/services/shorts/.venv")
                     .join("Scripts")
                     .join("python.exe"),
             ),
@@ -2652,12 +2668,7 @@ impl TrustedWorkerEnvironmentSet {
             ("DEEP_TUTOR_ROOT", paths.app_root().join("DeepTutor")),
             (
                 "DEEP_TUTOR_PYTHON",
-                paths
-                    .data_root()
-                    .join("runtime-v2")
-                    .join("services")
-                    .join("deep-tutor")
-                    .join(".venv")
+                paths.managed_payload_path("runtime-v2/services/deep-tutor/.venv")
                     .join(if cfg!(windows) {
                         "Scripts/python.exe"
                     } else {
@@ -3245,7 +3256,7 @@ impl TrustedWorkerEnvironmentSet {
             ("HYPERFRAMES_ROOT", paths.app_root().join("hyperframes")),
             (
                 "HYPERFRAMES_CLI_ROOT",
-                paths.data_root().join("hyperframes-cli"),
+                paths.managed_payload_path("hyperframes-cli"),
             ),
             (
                 "HYPERFRAMES_WORKSPACE_ROOT",
@@ -3486,7 +3497,7 @@ impl TrustedWorkerEnvironmentSet {
         let mut music_pairs = tool_pairs.clone();
         music_pairs.push((OsString::from("CHATMOCK_API_KEY"), OsString::from("local")));
         for (name, value) in &services.dashboard.pairs {
-            if ["BREADBOARD_ACESTEP_DIR","BREADBOARD_ACESTEP_URL","BREADBOARD_ACESTEP_PORT","BREADBOARD_LOCAL_MCP_BROKER_URL","BREADBOARD_LOCAL_MCP_BROKER_TOKEN","BREADBOARD_LOCAL_MCP_REGISTRY_ROOT"].iter().any(|allowed| name.eq_ignore_ascii_case(OsStr::new(allowed))) { music_pairs.push((name.clone(), value.clone())); }
+            if ["BREADBOARD_ACESTEP_DIR", "BREADBOARD_ACESTEP_SOURCE_DIR","BREADBOARD_ACESTEP_URL","BREADBOARD_ACESTEP_PORT","BREADBOARD_LOCAL_MCP_BROKER_URL","BREADBOARD_LOCAL_MCP_BROKER_TOKEN","BREADBOARD_LOCAL_MCP_REGISTRY_ROOT"].iter().any(|allowed| name.eq_ignore_ascii_case(OsStr::new(allowed))) { music_pairs.push((name.clone(), value.clone())); }
         }
         let music_producer = TrustedWorkerEnvironment { mode, source: TrustedWorkerEnvironmentSource::MusicProducer, pairs: music_pairs };
         let mut get_doc_pairs = tool_pairs.clone();
@@ -3543,6 +3554,9 @@ impl TrustedWorkerEnvironmentSet {
             "SCRIBERR_POLL_INTERVAL_MS",
             "SCRIBERR_MODEL_FAMILY",
             "SCRIBERR_MODEL",
+    "SCRIBERR_DEVICE",
+    "SCRIBERR_COMPUTE_TYPE",
+    "SCRIBERR_BATCH_SIZE",
             "SCRIBERR_LANGUAGE",
         ] {
             if let Some(value) = product_environment_value(os_environment, name) {
@@ -3909,6 +3923,9 @@ impl TrustedWorkerEnvironmentSet {
             "SCRIBERR_POLL_INTERVAL_MS",
             "SCRIBERR_MODEL_FAMILY",
             "SCRIBERR_MODEL",
+    "SCRIBERR_DEVICE",
+    "SCRIBERR_COMPUTE_TYPE",
+    "SCRIBERR_BATCH_SIZE",
             "SCRIBERR_LANGUAGE",
             "SCRIBERR_DIARIZATION",
         ] {
@@ -4084,6 +4101,10 @@ impl TrustedWorkerEnvironmentSet {
             pairs: speech_media_pairs,
         };
         let mut managed_setup_pairs = tool_pairs;
+        // Minted by the admission owner, never inherited from the OS or request.
+        managed_setup_pairs.push((
+            OsString::from("BREADBOARD_MANAGED_SETUP_EXCLUSION"), OsString::from("3"),
+        ));
         for (name, relative) in [
             ("CARGO_HOME", "runtime-v2/toolchains/cache/cargo-home"),
             ("RUSTUP_HOME", "runtime-v2/toolchains/cache/rustup-home"),
@@ -4093,7 +4114,7 @@ impl TrustedWorkerEnvironmentSet {
         ] {
             managed_setup_pairs.push((
                 OsString::from(name),
-                paths.data_root().join(relative).into_os_string(),
+                paths.managed_cache_path(relative).into_os_string(),
             ));
         }
         for name in [
@@ -4115,6 +4136,7 @@ impl TrustedWorkerEnvironmentSet {
             pairs: managed_setup_pairs,
         };
         Self {
+            paths: paths.clone(),
             mode,
             minimal,
             background,
@@ -4194,126 +4216,126 @@ impl TrustedWorkerEnvironmentSet {
         source: TrustedWorkerEnvironmentSource,
     ) -> TrustedWorkerEnvironment {
         match source {
-            TrustedWorkerEnvironmentSource::Minimal => self.minimal.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::Background => self.background.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::Minimal => self.minimal.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::Background => self.background.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::DocumentIngestion => {
-                self.document_ingestion.mint_for_launch()
+                self.document_ingestion.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::AudioAnalyzer => self.audio_analyzer.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::AudioAnalyzer => self.audio_analyzer.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::ImageSearchGoogle => {
-                self.image_search_google.mint_for_launch()
+                self.image_search_google.mint_for_launch(&self.paths)
             }
             TrustedWorkerEnvironmentSource::InteractiveVisualizer => {
-                self.interactive_visualizer.mint_for_launch()
+                self.interactive_visualizer.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::QuartzPublish => self.quartz_publish.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::ManagedSetup => self.managed_setup.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::Terminal => self.terminal.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::CodeIndex => self.code_index.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::AgentEdits => self.agent_edits.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::OuterOpencode => self.outer_opencode.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::TradingAgent => self.trading_agent.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::QuartzPublish => self.quartz_publish.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::ManagedSetup => self.managed_setup.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::Terminal => self.terminal.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::CodeIndex => self.code_index.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::AgentEdits => self.agent_edits.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::OuterOpencode => self.outer_opencode.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::TradingAgent => self.trading_agent.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::OuterCareerOps => {
-                self.outer_career_ops.mint_for_launch()
+                self.outer_career_ops.mint_for_launch(&self.paths)
             }
             TrustedWorkerEnvironmentSource::OuterOpenExecutive => {
-                self.outer_openexecutive.mint_for_launch()
+                self.outer_openexecutive.mint_for_launch(&self.paths)
             }
             TrustedWorkerEnvironmentSource::SystemLocation => {
-                self.system_location.mint_for_launch()
+                self.system_location.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::Chatmock => self.chatmock.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::Vimax => self.vimax.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::VoxDirector => self.vox_director.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::OuterShorts => self.outer_shorts.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::Chatmock => self.chatmock.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::Vimax => self.vimax.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::VoxDirector => self.vox_director.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::OuterShorts => self.outer_shorts.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::AgentReachSetup => {
-                self.agent_reach_setup.mint_for_launch()
+                self.agent_reach_setup.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::GbrainSync => self.gbrain_sync.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::GbrainSync => self.gbrain_sync.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::OuterAgentReach => {
-                self.outer_agent_reach.mint_for_launch()
+                self.outer_agent_reach.mint_for_launch(&self.paths)
             }
             TrustedWorkerEnvironmentSource::AgentBrowserProfile => {
-                self.agent_browser_profile.mint_for_launch()
+                self.agent_browser_profile.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::AgentTars => self.agent_tars.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::OuterLegal => self.outer_legal.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::Sf3d => self.sf3d.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::OuterCodex => self.outer_codex.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::OuterRuflo => self.outer_ruflo.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::AgentTars => self.agent_tars.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::OuterLegal => self.outer_legal.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::Sf3d => self.sf3d.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::OuterCodex => self.outer_codex.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::OuterRuflo => self.outer_ruflo.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::OuterDeepTutor => {
-                self.outer_deep_tutor.mint_for_launch()
+                self.outer_deep_tutor.mint_for_launch(&self.paths)
             }
             TrustedWorkerEnvironmentSource::DeepTutorMaintenance => {
-                self.deep_tutor_maintenance.mint_for_launch()
+                self.deep_tutor_maintenance.mint_for_launch(&self.paths)
             }
             TrustedWorkerEnvironmentSource::OuterOpenPlanter => {
-                self.outer_openplanter.mint_for_launch()
+                self.outer_openplanter.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::Manim => self.manim.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::Premortem => self.premortem.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::AgentLoop => self.agent_loop.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::Omh => self.omh.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::Factcheck => self.factcheck.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::WatchMedia => self.watch_media.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::Loopx => self.loopx.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::Resource2Skill => self.resource2skill.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::OuterMatraix => self.outer_matraix.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::Formsmith => self.formsmith.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::Hyperframes => self.hyperframes.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::OpenMontage => self.openmontage.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::Manim => self.manim.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::Premortem => self.premortem.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::AgentLoop => self.agent_loop.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::Omh => self.omh.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::Factcheck => self.factcheck.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::WatchMedia => self.watch_media.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::Loopx => self.loopx.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::Resource2Skill => self.resource2skill.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::OuterMatraix => self.outer_matraix.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::Formsmith => self.formsmith.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::Hyperframes => self.hyperframes.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::OpenMontage => self.openmontage.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::OuterBoltSlides => {
-                self.outer_bolt_slides.mint_for_launch()
+                self.outer_bolt_slides.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::Subsai => self.subsai.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::SpeechMedia => self.speech_media.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::Subsai => self.subsai.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::SpeechMedia => self.speech_media.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::GeneratedVisualBrowser => {
-                self.generated_visual_browser.mint_for_launch()
+                self.generated_visual_browser.mint_for_launch(&self.paths)
             }
             TrustedWorkerEnvironmentSource::ScriberrGarden => {
-                self.scriberr_garden.mint_for_launch()
+                self.scriberr_garden.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::Watermark => self.watermark.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::Watermark => self.watermark.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::OuterHardwareBlueprint => {
-                self.outer_hardware_blueprint.mint_for_launch()
+                self.outer_hardware_blueprint.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::MusicProducer => self.music_producer.mint_for_launch(),
-            TrustedWorkerEnvironmentSource::GetDoc => self.get_doc.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::MusicProducer => self.music_producer.mint_for_launch(&self.paths),
+            TrustedWorkerEnvironmentSource::GetDoc => self.get_doc.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::GetDocDownload => {
-                self.get_doc_download.mint_for_launch()
+                self.get_doc_download.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::MeetingNotes => self.meeting_notes.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::MeetingNotes => self.meeting_notes.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::OuterInboxZero => {
-                self.outer_inbox_zero.mint_for_launch()
+                self.outer_inbox_zero.mint_for_launch(&self.paths)
             }
             TrustedWorkerEnvironmentSource::OuterSocialsManager => {
-                self.outer_socials_manager.mint_for_launch()
+                self.outer_socials_manager.mint_for_launch(&self.paths)
             }
             TrustedWorkerEnvironmentSource::OuterMaxResearch => {
-                self.outer_max_research.mint_for_launch()
+                self.outer_max_research.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::OuterWardrobe => self.outer_wardrobe.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::OuterWardrobe => self.outer_wardrobe.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::OuterParametricCad => {
-                self.outer_parametric_cad.mint_for_launch()
+                self.outer_parametric_cad.mint_for_launch(&self.paths)
             }
             TrustedWorkerEnvironmentSource::OuterStockAnalyst => {
-                self.outer_stock_analyst.mint_for_launch()
+                self.outer_stock_analyst.mint_for_launch(&self.paths)
             }
             TrustedWorkerEnvironmentSource::OuterVibeTrading => {
-                self.outer_vibe_trading.mint_for_launch()
+                self.outer_vibe_trading.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::OuterDeerFlow => self.outer_deer_flow.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::OuterDeerFlow => self.outer_deer_flow.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::OuterMoneyPrinter => {
-                self.outer_money_printer.mint_for_launch()
+                self.outer_money_printer.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::OuterVideoUse => self.outer_video_use.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::OuterVideoUse => self.outer_video_use.mint_for_launch(&self.paths),
             TrustedWorkerEnvironmentSource::OuterDeepResearch => {
-                self.outer_deep_research.mint_for_launch()
+                self.outer_deep_research.mint_for_launch(&self.paths)
             }
             TrustedWorkerEnvironmentSource::OuterOpenscience => {
-                self.outer_openscience.mint_for_launch()
+                self.outer_openscience.mint_for_launch(&self.paths)
             }
-            TrustedWorkerEnvironmentSource::OuterOpenwork => self.outer_openwork.mint_for_launch(),
+            TrustedWorkerEnvironmentSource::OuterOpenwork => self.outer_openwork.mint_for_launch(&self.paths),
         }
     }
 
@@ -4792,6 +4814,9 @@ fn validate_captured_product_value(
         "SCRIBERR_POLL_INTERVAL_MS" => bounded_u64(text, 500, 60_000),
         "SCRIBERR_MODEL_FAMILY" | "SCRIBERR_MODEL" => text.len() <= 128,
         "SCRIBERR_LANGUAGE" => text.len() <= 64,
+        "SCRIBERR_DEVICE" => matches!(text, "cpu" | "cuda"),
+        "SCRIBERR_COMPUTE_TYPE" => matches!(text, "default" | "float16" | "float32" | "int8"),
+        "SCRIBERR_BATCH_SIZE" => bounded_u64(text, 1, 64),
         "SCRIBERR_DIARIZATION"
         | "VIDEO_TRANSCRIPTION_DELETE_SCRIBERR_JOBS"
         | "VIDEO_TRANSCRIPTION_KEEP_MEDIA" => matches!(
@@ -4855,6 +4880,7 @@ fn build_common_environment(
     os_environment: &TrustedOsEnvironment,
 ) -> Result<EnvironmentBuilder, TrustedServiceEnvironmentError> {
     let mut builder = EnvironmentBuilder::new(mode, profile);
+    if let Some(root) = paths.bulk_root() { builder.insert("BREADBOARD_BULK_DATA_DIR", root.as_os_str())?; }
     builder.insert("SystemRoot", os_environment.system_root.clone())?;
     for (name, value) in &os_environment.optional {
         builder.insert(name, value.clone())?;
@@ -4891,7 +4917,12 @@ fn build_common_environment(
     builder.insert("ComSpec", system32.join("cmd.exe").into_os_string())?;
     builder.insert("PATHEXT", ".COM;.EXE;.BAT;.CMD")?;
 
-    let temporary = paths.data_root().join("runtime-v2").join("temp");
+    // .NET Framework (including PowerShell Add-Type and Windows print helpers)
+    // rejects verbatim TEMP/TMP paths. Keep the trusted root canonical internally
+    // and expose the same directory in the child-compatible spelling.
+    let temporary = child_argv_path_presentation(
+        &paths.data_root().join("runtime-v2").join("temp"),
+    )?;
     builder.insert("TEMP", temporary.as_os_str())?;
     builder.insert("TMP", temporary.as_os_str())?;
     Ok(builder)
@@ -4948,6 +4979,9 @@ fn service_only_product_environment_name(name: &str) -> bool {
             | "SCRIBERR_POLL_INTERVAL_MS"
             | "SCRIBERR_MODEL_FAMILY"
             | "SCRIBERR_MODEL"
+            | "SCRIBERR_DEVICE"
+            | "SCRIBERR_COMPUTE_TYPE"
+            | "SCRIBERR_BATCH_SIZE"
             | "SCRIBERR_LANGUAGE"
             | "SCRIBERR_DIARIZATION"
             | "VIDEO_TRANSCRIPTION_DELETE_SCRIBERR_JOBS"
@@ -5261,7 +5295,7 @@ fn build_openwork_environment(
         "OPENWORK_SERVER_RUNTIME_ROOT",
         match mode {
             RuntimeMode::Packaged => paths.app_root().join("openwork-runtime"),
-            RuntimeMode::Lean | RuntimeMode::Hot => paths.data_root().join("openwork-runtime"),
+            RuntimeMode::Lean | RuntimeMode::Hot => paths.managed_payload_path("openwork-runtime"),
         }
         .into_os_string(),
     )?;
@@ -5305,7 +5339,7 @@ fn build_openscience_environment(
         "OPENSCIENCE_CLI_ROOT",
         match mode {
             RuntimeMode::Packaged => paths.app_root().join("openscience-cli"),
-            RuntimeMode::Lean | RuntimeMode::Hot => paths.data_root().join("openscience-cli"),
+            RuntimeMode::Lean | RuntimeMode::Hot => paths.managed_payload_path("openscience-cli"),
         }
         .into_os_string(),
     )?;
@@ -5364,12 +5398,7 @@ fn build_money_printer_environment(
     )?;
     builder.insert(
         "MONEY_PRINTER_PYTHON",
-        paths
-            .data_root()
-            .join("runtime-v2")
-            .join("services")
-            .join("money-printer")
-            .join(".venv")
+        paths.managed_payload_path("runtime-v2/services/money-printer/.venv")
             .join("Scripts")
             .join("python.exe")
             .into_os_string(),
@@ -5397,11 +5426,7 @@ fn build_wardrobe_environment(
         RuntimeMode::Packaged => paths.app_root().join("wardrobe-runtime"),
     };
     let runtime_root = match mode {
-        RuntimeMode::Lean | RuntimeMode::Hot => paths
-            .data_root()
-            .join("runtime-v2")
-            .join("toolchains")
-            .join("wardrobe"),
+        RuntimeMode::Lean | RuntimeMode::Hot => paths.managed_payload_path("runtime-v2/toolchains/wardrobe"),
         RuntimeMode::Packaged => paths.app_root().join("wardrobe-runtime"),
     };
     builder.insert("WARDROBE_ROOT", root.as_os_str())?;
@@ -5869,7 +5894,7 @@ fn runtime_v2_service_root(paths: &RuntimePaths, service_id: &str) -> PathBuf {
 }
 
 fn runtime_v2_service_python(paths: &RuntimePaths, service_id: &str) -> PathBuf {
-    let environment = runtime_v2_service_root(paths, service_id).join(".venv");
+    let environment = paths.managed_payload_path(&format!("runtime-v2/services/{service_id}/.venv"));
     if cfg!(windows) {
         environment.join("Scripts").join("python.exe")
     } else {
@@ -6165,13 +6190,13 @@ fn build_scriberr_environment(
     for (name, suffix) in [
         ("DATABASE_PATH", "scriberr.db"),
         ("JWT_SECRET_FILE", "jwt_secret"),
-        ("UPLOAD_DIR", "uploads"),
         ("TRANSCRIPTS_DIR", "transcripts"),
         ("TEMP_DIR", "temp"),
         ("WHISPERX_ENV", "models"),
     ] {
         builder.insert(name, data.join(suffix).into_os_string())?;
     }
+    builder.insert("UPLOAD_DIR", child_argv_path_presentation(&paths.scriberr_uploads_environment_path())?.into_os_string())?;
     builder.insert(
         "FFMPEG_PATH",
         runtime_bin.join("ffmpeg.exe").into_os_string(),
@@ -6208,6 +6233,10 @@ fn build_deep_research_environment(
             .to_string(),
     )?;
     builder.insert("DEEP_RESEARCH_SECRET", token)?;
+    builder.insert(
+        "DEEP_RESEARCH_STATE_DIR",
+        paths.data_root().join("runtime").join("deep-research").into_os_string(),
+    )?;
     builder.insert("OPENAI_BASE_URL", endpoints.chatmock_v1_url())?;
     builder.insert("OPENAI_API_KEY", "local")?;
     // The sidecar's own provider selection reads `CHATMOCK_BASE_URL` and
@@ -6443,8 +6472,7 @@ fn build_solidworks_mcp_environment(
             )?;
             builder.insert(
                 "UV_PROJECT_ENVIRONMENT",
-                runtime_v2_service_root(paths, "solidworks-mcp")
-                    .join(".venv")
+                paths.managed_payload_path("runtime-v2/services/solidworks-mcp/.venv")
                     .into_os_string(),
             )?;
             builder.insert(
@@ -6711,6 +6739,7 @@ fn build_gateway_environment(
                 name_text.as_ref(),
                 "PORT"
                     | "HOSTNAME"
+                    | "BREADBOARD_BULK_DATA_DIR"
                     | "COMPOSIO_API_KEY"
                     | "BREADBOARD_DASHBOARD_BUNDLER"
                     | "BREADBOARD_SUPERVISOR_CONTROL_URL"
@@ -6915,6 +6944,7 @@ fn build_acestep_environment(mode: RuntimeMode, paths: &RuntimePaths, endpoints:
     builder.insert("PYTHONUNBUFFERED", "1")?;
     builder.insert("PYTHONDONTWRITEBYTECODE", "1")?;
     builder.insert("BREADBOARD_ACESTEP_DIR", paths.data_root().join("runtime-v2/services/acestep").into_os_string())?;
+    builder.insert("BREADBOARD_ACESTEP_SOURCE_DIR", paths.managed_payload_path("runtime-v2/services/acestep/source").into_os_string())?;
     builder.insert("BREADBOARD_ACESTEP_URL", endpoints.base_url(TrustedServiceEnvironmentSource::Acestep))?;
     builder.insert("BREADBOARD_ACESTEP_PORT", endpoints.port_for(TrustedServiceEnvironmentSource::Acestep).to_string())?;
     Ok(builder.finish())
@@ -7121,6 +7151,8 @@ fn write_hermes_runtime_config(
             "  presets:\n",
             "    default:\n",
             "      enabled: false\n",
+            "compression:\n",
+            "  protect_first_n: 0\n",
             "memory:\n",
             "  memory_enabled: false\n",
             "  user_profile_enabled: false\n",
@@ -7132,11 +7164,27 @@ fn write_hermes_runtime_config(
             "tools:\n",
             "  tool_search:\n",
             "    enabled: on\n",
+            "    always_visible:\n",
+            "      - garden_list\n",
+            "      - garden_search\n",
+            "      - garden_get_page\n",
+            "      - garden_get_source_excerpt\n",
+            "      - document_skill_read\n",
+            "      - chat_search\n",
+            "      - browser_terminal\n",
+            "      - weather_forecast\n",
+            "      - garden_get_source_figure\n",
+            "      - skill_open\n",
+            "      - terminal_execute_command\n",
+            "      - artifact_import\n",
             "tool_loop_guardrails:\n",
             "  warnings_enabled: true\n",
             "  hard_stop_enabled: true\n",
             "agent:\n",
             "  coding_context: off\n",
+            "  tool_use_enforcement: false\n",
+            // Retry transient provider failures without restarting the turn.
+            "  api_max_retries: 3\n",
             "  image_input_mode: native\n"
         ),
         model, chatmock
@@ -7266,6 +7314,7 @@ fn build_dashboard_environment(
     )?;
     let dashboard_url = endpoints.base_url(TrustedServiceEnvironmentSource::Dashboard);
     builder.insert("BREADBOARD_ACESTEP_DIR", paths.data_root().join("runtime-v2/services/acestep").into_os_string())?;
+    builder.insert("BREADBOARD_ACESTEP_SOURCE_DIR", paths.managed_payload_path("runtime-v2/services/acestep/source").into_os_string())?;
     builder.insert("BREADBOARD_ACESTEP_URL", endpoints.base_url(TrustedServiceEnvironmentSource::Acestep))?;
     builder.insert("BREADBOARD_ACESTEP_PORT", endpoints.port_for(TrustedServiceEnvironmentSource::Acestep).to_string())?;
     let comfyui_url = endpoints.base_url(TrustedServiceEnvironmentSource::Comfyui);
@@ -7596,11 +7645,7 @@ fn build_dashboard_environment(
     builder.insert(
         "WARDROBE_RUNTIME_ROOT",
         match mode {
-            RuntimeMode::Lean | RuntimeMode::Hot => paths
-                .data_root()
-                .join("runtime-v2")
-                .join("toolchains")
-                .join("wardrobe"),
+            RuntimeMode::Lean | RuntimeMode::Hot => paths.managed_payload_path("runtime-v2/toolchains/wardrobe"),
             RuntimeMode::Packaged => paths.app_root().join("wardrobe-runtime"),
         }
         .into_os_string(),
@@ -7916,11 +7961,7 @@ fn build_dashboard_environment(
     )?;
     builder.insert(
         "PLAYWRIGHT_BROWSERS_PATH",
-        paths
-            .data_root()
-            .join("runtime-v2")
-            .join("toolchains")
-            .join("career-ops-browsers")
+        paths.managed_payload_path("runtime-v2/toolchains/career-ops-browsers")
             .into_os_string(),
     )?;
     builder.insert(
@@ -8138,18 +8179,14 @@ fn hermes_computer_use_driver(paths: &RuntimePaths) -> PathBuf {
 
 fn comfyui_toolchain_directory(mode: RuntimeMode, paths: &RuntimePaths) -> PathBuf {
     match mode {
-        RuntimeMode::Lean | RuntimeMode::Hot => paths
-            .data_root()
-            .join("runtime-v2")
-            .join("toolchains")
-            .join("comfyui"),
+        RuntimeMode::Lean | RuntimeMode::Hot => paths.managed_payload_path("runtime-v2/toolchains/comfyui"),
         RuntimeMode::Packaged => paths.app_root().join("comfyui"),
     }
 }
 
 fn comfyui_environment_directory(mode: RuntimeMode, paths: &RuntimePaths) -> PathBuf {
     match mode {
-        RuntimeMode::Lean | RuntimeMode::Hot => comfyui_runtime_directory(paths).join(".venv"),
+        RuntimeMode::Lean | RuntimeMode::Hot => paths.managed_payload_path("runtime-v2/services/comfyui/.venv"),
         RuntimeMode::Packaged => paths.runtime_root().join("runtimes").join("comfyui-python"),
     }
 }
@@ -8345,6 +8382,59 @@ mod tests {
         assert!(config.contains("\nrouting:\n  strategy: \"round-robin\"\n"));
         assert!(!config.contains("\nsecret-key:"));
         assert!(!config.contains("\nstrategy:"));
+    }
+
+    #[test]
+    fn deep_research_snapshots_follow_only_the_active_data_root() {
+        let (_temporary, paths, _config, os_environment) = fixture();
+        for mode in [RuntimeMode::Lean, RuntimeMode::Hot, RuntimeMode::Packaged] {
+            let environment = values(&build_deep_research_environment(
+                mode, &paths, &endpoints(), "research-token-0123456789-abcdef", &os_environment,
+            ).unwrap());
+            assert_eq!(environment["DEEP_RESEARCH_STATE_DIR"],
+                paths.data_root().join("runtime").join("deep-research").to_string_lossy());
+            assert!(!environment.contains_key("DEEP_RESEARCH_LEGACY_STATE_DIR"));
+            assert!(!paths.app_root().join(".runtime").join("deep-research").exists());
+        }
+    }
+
+    #[test]
+    fn disconnected_bulk_keeps_core_environment_and_database_on_c() {
+        let (temporary, paths, config, os_environment) = fixture();
+        let missing = temporary.path().join("disconnected-bulk");
+        let paths = paths.with_bulk_root(Some(missing.clone())).unwrap();
+        let services = TrustedServiceEnvironmentSet::load(RuntimeMode::Lean, &paths, &config, &endpoints(), control(), &os_environment).unwrap();
+        let dashboard = values(&services.dashboard);
+        assert_eq!(dashboard["BREADBOARD_DATA_DIR"], paths.data_root().to_string_lossy());
+        assert_eq!(dashboard["BREADBOARD_BULK_DATA_DIR"], missing.to_string_lossy());
+        let workers = TrustedWorkerEnvironmentSet::from_service_environments(RuntimeMode::Lean, &services, &paths, &os_environment);
+        assert_eq!(worker_values(&workers.managed_setup)["BREADBOARD_BULK_DATA_DIR"], missing.to_string_lossy());
+        assert!(worker_values(&workers.managed_setup)["PIP_CACHE_DIR"].starts_with(missing.to_str().unwrap()));
+        assert_eq!(values(&services.scriberr)["DATABASE_PATH"], child_argv_path_presentation(&paths.data_root().join("runtime/scriberr/scriberr.db")).unwrap().to_string_lossy());
+        assert!(paths.resolve_service_data("runtime-v2/services/deer-flow/.venv/Scripts/python.exe").is_err());
+    }
+
+    #[test]
+    fn completed_bulk_install_refreshes_service_and_worker_without_runtime_restart() {
+        let (temporary, paths, config, os_environment) = fixture();
+        let bulk = temporary.path().join("bulk"); fs::create_dir(&bulk).unwrap();
+        let paths = paths.with_bulk_root(Some(bulk.clone())).unwrap();
+        let services = TrustedServiceEnvironmentSet::load(RuntimeMode::Lean, &paths, &config, &endpoints(), control(), &os_environment).unwrap();
+        let workers = TrustedWorkerEnvironmentSet::from_service_environments(RuntimeMode::Lean, &services, &paths, &os_environment);
+        assert!(values(&services.vibe_trading)["BREADBOARD_MANAGED_PYTHON_EXECUTABLE"].starts_with(paths.data_root().to_str().unwrap()));
+        for service in ["vibe-trading", "shorts"] {
+            let relative = format!("runtime-v2/services/{service}/.venv");
+            let payload = bulk.join(&relative);
+            let executable = payload.join(if cfg!(windows) {"Scripts/python.exe"} else {"bin/python"});
+            fs::create_dir_all(executable.parent().unwrap()).unwrap(); fs::write(executable,b"fixture").unwrap();
+            fs::write(payload.join(".breadboard-bulk-ready.json"), serde_json::json!({"version":1,"relative":relative,"verifiedAt":"2026-11-06T12:00:00.000Z"}).to_string()).unwrap();
+        }
+        let launch = services.prepare_for_launch_profile("vibe-trading", &launch_profile(RuntimeMode::Lean, TrustedServiceEnvironmentSource::VibeTrading)).unwrap();
+        assert!(values(&launch)["BREADBOARD_MANAGED_PYTHON_EXECUTABLE"].starts_with(paths.bulk_root().unwrap().to_str().unwrap()));
+        let worker = workers.prepare_for_source(TrustedWorkerEnvironmentSource::OuterShorts);
+        assert!(worker_values(&worker)["SHORTS_PYTHON"].starts_with(paths.bulk_root().unwrap().to_str().unwrap()));
+        assert!(values(&launch)["BREADBOARD_MANAGED_PYTHON_SERVICE_CONFIG"].starts_with(paths.data_root().to_str().unwrap()));
+        assert!(values(&services.vibe_trading)["BREADBOARD_MANAGED_PYTHON_EXECUTABLE"].starts_with(paths.data_root().to_str().unwrap()), "retained templates remain immutable");
     }
 
     #[test]
@@ -9008,7 +9098,7 @@ mod tests {
         ).unwrap());
         assert_exact_names(&service, &[
             "SystemRoot", "USERPROFILE", "PATH", "TEMP", "TMP", "ComSpec", "PATHEXT",
-            "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE", "BREADBOARD_ACESTEP_DIR",
+            "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE", "BREADBOARD_ACESTEP_DIR", "BREADBOARD_ACESTEP_SOURCE_DIR",
             "BREADBOARD_ACESTEP_URL", "BREADBOARD_ACESTEP_PORT",
         ]);
         assert!(service["BREADBOARD_ACESTEP_DIR"].ends_with(r"data\runtime-v2\services\acestep"));
@@ -9955,7 +10045,7 @@ mod tests {
                 "COMFYUI_RUNTIME_DIR",
                 "COMFYUI_START_TIMEOUT_MS",
                 "COMFYUI_GENERATE_TIMEOUT_MS",
-                "BREADBOARD_ACESTEP_DIR",
+                "BREADBOARD_ACESTEP_DIR", "BREADBOARD_ACESTEP_SOURCE_DIR",
                 "BREADBOARD_ACESTEP_URL",
                 "BREADBOARD_ACESTEP_PORT",
                 "UI_TARS_MODE",
@@ -10325,8 +10415,10 @@ mod tests {
                 )
                 .unwrap();
             let dashboard = values(&dashboard);
-            assert_eq!(dashboard["TEMP"], shared_temporary.to_string_lossy());
-            assert_eq!(dashboard["TMP"], shared_temporary.to_string_lossy());
+            let child_temporary = child_argv_path_presentation(&shared_temporary).unwrap();
+            assert_eq!(dashboard["TEMP"], child_temporary.to_string_lossy());
+            assert_eq!(dashboard["TMP"], child_temporary.to_string_lossy());
+            assert!(!dashboard["TEMP"].starts_with(r"\\?\"));
             let expected_data = if expect_explicit_data {
                 paths.data_root().to_string_lossy().into_owned()
             } else {
@@ -10401,6 +10493,8 @@ mod tests {
                 "  presets:\n",
                 "    default:\n",
                 "      enabled: false\n",
+                "compression:\n",
+                "  protect_first_n: 0\n",
                 "memory:\n",
                 "  memory_enabled: false\n",
                 "  user_profile_enabled: false\n",
@@ -10412,11 +10506,26 @@ mod tests {
                 "tools:\n",
                 "  tool_search:\n",
                 "    enabled: on\n",
+                "    always_visible:\n",
+                "      - garden_list\n",
+                "      - garden_search\n",
+                "      - garden_get_page\n",
+                "      - garden_get_source_excerpt\n",
+                "      - document_skill_read\n",
+                "      - chat_search\n",
+                "      - browser_terminal\n",
+                "      - weather_forecast\n",
+                "      - garden_get_source_figure\n",
+                "      - skill_open\n",
+                "      - terminal_execute_command\n",
+                "      - artifact_import\n",
                 "tool_loop_guardrails:\n",
                 "  warnings_enabled: true\n",
                 "  hard_stop_enabled: true\n",
                 "agent:\n",
                 "  coding_context: off\n",
+                "  tool_use_enforcement: false\n",
+                "  api_max_retries: 3\n",
                 "  image_input_mode: native\n"
             )
         );
@@ -10650,6 +10759,21 @@ mod tests {
         assert_eq!(executive["CHATMOCK_API_KEY"], "local");
         assert!(!executive.contains_key("NEXTAUTH_SECRET"));
         assert!(!executive.contains_key("BREADBOARD_SUPERVISOR_CONTROL_TOKEN"));
+    }
+
+    #[test]
+    fn managed_setup_guard_capability_is_minted_only_for_setup_workers() {
+        let (_temporary, paths, config, os_environment) = fixture();
+        let services = TrustedServiceEnvironmentSet::load(
+            RuntimeMode::Packaged, &paths, &config, &endpoints(), control(), &os_environment,
+        ).unwrap();
+        let workers = TrustedWorkerEnvironmentSet::from_service_environments(
+            RuntimeMode::Packaged, &services, &paths, &os_environment,
+        );
+        let setup = worker_values(&workers.prepare_for_source(TrustedWorkerEnvironmentSource::ManagedSetup));
+        assert_eq!(setup["BREADBOARD_MANAGED_SETUP_EXCLUSION"], "3");
+        let terminal = worker_values(&workers.prepare_for_source(TrustedWorkerEnvironmentSource::Terminal));
+        assert!(!terminal.contains_key("BREADBOARD_MANAGED_SETUP_EXCLUSION"));
     }
 
     #[test]

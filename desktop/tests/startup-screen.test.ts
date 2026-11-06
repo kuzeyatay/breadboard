@@ -54,8 +54,8 @@ test("startup paints in the last dashboard theme before its stylesheet loads", (
   assert.match(themeScript, /document\.documentElement\.dataset\.theme = theme/);
   assert.match(css, /:root\[data-theme="dark"\]\s*\{/);
   assert.match(css, /--app-background:\s*#faf7ef/);
-  assert.match(css, /--background:\s*#171916/);
-  assert.match(css, /--app-background:\s*#0b0c0a/);
+  assert.match(css, /--background:\s*#181d1a/);
+  assert.match(css, /--app-background:\s*#0f1210/);
   assert.doesNotMatch(css, /#e6f0e6/);
   // Keep the wait surface flat: a scene-sized radial light reads as a circular
   // stain behind the moving field, especially in dark mode.
@@ -77,7 +77,7 @@ test("dashboard restarts show a themed recovery scene instead of a blank window"
   // scene is painted in; in dark it is the caption strip's own black, carried
   // down over the whole field so the strip leaves no seam across the top.
   assert.match(recoveryCss, /--background: #faf7ef;\s+--chrome: #faf7ef;/);
-  assert.match(recoveryCss, /--background: #171916;\s+--chrome: #171916;/);
+  assert.match(recoveryCss, /--background: #181d1a;\s+--chrome: #181d1a;/);
   assert.doesNotMatch(recoveryCss, /#e6f0e6/);
   assert.match(recoveryCss, /:root\[data-theme="dark"\]/);
   assert.match(sceneCss, /@media \(prefers-reduced-motion: reduce\)/);
@@ -242,7 +242,7 @@ test("a window opening onto a page waits in the field the app starts in", () => 
   );
   assert.match(
     windowManager,
-    /await window\.loadFile\(this\.loadingHtmlPath\(\), \{[\s\S]{0,120}\}\);[\s\S]{0,240}await window\.loadURL\(targetUrl\)/,
+    /await this\.page\(window\)\.loadFile\(this\.loadingHtmlPath\(\), \{[\s\S]{0,120}\}\);[\s\S]{0,240}await this\.page\(window\)\.loadURL\(targetUrl\)/,
   );
   // The scene is a courtesy, never a gate: a window whose scene will not load
   // still goes on to the page it was opened for.
@@ -266,7 +266,7 @@ test("a window opening onto a page waits in the field the app starts in", () => 
   // It stands on the same ground as the startup screen and the reconnect scene,
   // caption strip included, so the three of them are one continuous surface.
   assert.match(loadingCss, /--background: #faf7ef;\s+--chrome: #faf7ef;/);
-  assert.match(loadingCss, /--background: #171916;\s+--chrome: #171916;/);
+  assert.match(loadingCss, /--background: #181d1a;\s+--chrome: #181d1a;/);
   assert.doesNotMatch(loadingCss, /@keyframes/);
 });
 

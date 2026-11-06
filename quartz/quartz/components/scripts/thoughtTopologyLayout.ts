@@ -521,8 +521,9 @@ export function displayFolderTitle(title: string): string {
 }
 
 /** Numeric-aware ordering so "2) …" sorts before "10) …". */
+const naturalOrder = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" })
 export function naturalCompare(left: string, right: string): number {
-  return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })
+  return naturalOrder.compare(left, right)
 }
 
 /** Ellipsis truncation that keeps a file extension when one is present. */
@@ -691,7 +692,7 @@ export function analysisStatus(payload: TopologyPayload): AnalysisStatus {
       mode: "concept-lexical",
       notice: "",
       detail:
-        "Concept and lexical mode. Semantic bridges will appear after vector analysis runs for this Garden.",
+        "Showing topic and keyword connections. Related concepts will appear after analysis.",
     }
   }
   return {
@@ -873,14 +874,22 @@ export function planThoughtTopology(
   for (const folder of scopedFolders) resolveExclusion(folder.id)
   const folders = scopedFolders.filter((folder) => !exclusionOf.get(folder.id))
   const folderById = new Map(folders.map((folder) => [folder.id, folder]))
+  const scopedChildren = new Map<string, TopologyPayloadFolder[]>()
+  for (const folder of scopedFolders) {
+    if (folder.parentId === null) continue
+    const children = scopedChildren.get(folder.parentId) ?? []
+    children.push(folder)
+    scopedChildren.set(folder.parentId, children)
+  }
+  const ownPageCount = new Map<string, number>()
+  for (const node of payload.nodes) ownPageCount.set(node.folderId, (ownPageCount.get(node.folderId) ?? 0) + 1)
+  const scopedPageCount = new Map<string, number>()
   const subtreePageCount = (folderId: string): number => {
-    const own = payload.nodes.filter((node) => node.folderId === folderId).length
-    return (
-      own +
-      scopedFolders
-        .filter((folder) => folder.parentId === folderId)
-        .reduce((sum, child) => sum + subtreePageCount(child.id), 0)
-    )
+    if (scopedPageCount.has(folderId)) return scopedPageCount.get(folderId)!
+    const count = (ownPageCount.get(folderId) ?? 0) + (scopedChildren.get(folderId) ?? [])
+      .reduce((sum, child) => sum + subtreePageCount(child.id), 0)
+    scopedPageCount.set(folderId, count)
+    return count
   }
   const folderOptions: PlannedFolderOption[] = scopedFolders
     .filter((folder) => folder.depth === 1 || folder.depth === 2)
@@ -910,7 +919,7 @@ export function planThoughtTopology(
   const countSubtree = (folderId: string): number => {
     if (subtreeCount.has(folderId)) return subtreeCount.get(folderId)!
     const own = directPages.get(folderId)?.length ?? 0
-    const children = folders.filter((folder) => folder.parentId === folderId)
+    const children = (scopedChildren.get(folderId) ?? []).filter(folder => folderById.has(folder.id))
     const total = own + children.reduce((sum, child) => sum + countSubtree(child.id), 0)
     subtreeCount.set(folderId, total)
     return total
@@ -1044,14 +1053,21 @@ export function planThoughtTopology(
 
   // Cluster contents for every visible folder: pages in natural order, then
   // meaningful sub-folders as small anchors carrying their own mini clusters.
-  const childFolders = (folderId: string) =>
-    folders
-      .filter((folder) => folder.parentId === folderId && folder.depth > 1)
-      .sort((left, right) => naturalCompare(left.path, right.path))
-  const orderedPages = (folderId: string) =>
-    [...(visiblePagesByFolder.get(folderId) ?? [])].sort(
+  const orderedChildren = new Map<string, TopologyPayloadFolder[]>()
+  const childFolders = (folderId: string) => {
+    if (!orderedChildren.has(folderId)) orderedChildren.set(folderId,
+      (scopedChildren.get(folderId) ?? []).filter(folder => folder.depth > 1 && folderById.has(folder.id))
+        .sort((left, right) => naturalCompare(left.path, right.path)))
+    return orderedChildren.get(folderId)!
+  }
+  const orderedPagesByFolder = new Map<string, TopologyPayloadNode[]>()
+  const orderedPages = (folderId: string) => {
+    if (!orderedPagesByFolder.has(folderId)) orderedPagesByFolder.set(folderId,
+      [...(visiblePagesByFolder.get(folderId) ?? [])].sort(
       (left, right) => naturalCompare(left.title, right.title) || left.id.localeCompare(right.id),
-    )
+      ))
+    return orderedPagesByFolder.get(folderId)!
+  }
 
   const nodes: PlannedNode[] = []
   const sectors: PlannedSector[] = []

@@ -798,9 +798,7 @@ function NoCommunity({ onCreate }: { onCreate: () => void }) {
     <div className="relative z-10 flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
       <p className="text-lg font-semibold">Buzz needs a community</p>
       <p className="max-w-md text-xs leading-relaxed text-muted-foreground">
-        Rooms belong to a community, so that the people in it and their agents
-        share one place to talk. A community is a Breadboard organization — make
-        one here, and its rooms are yours and your agents&rsquo; to work in.
+        Create a community to share rooms with people and their agents.
       </p>
       <button
         type="button"

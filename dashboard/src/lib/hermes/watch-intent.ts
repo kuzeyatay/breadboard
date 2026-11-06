@@ -32,7 +32,7 @@ const HANDLING_ONLY =
  * screen).
  */
 const CONTENT_REQUEST =
-  /(?:\?|\b(?:analy[sz]e|assess|caption|check|compare|critique|describe|diagnose|examine|explain|identify|inspect|list|outline|read|recap|review|summari[sz]e|transcribe|walk\s+me\s+through|watch|what|when|where|which|who|why|how|tell\s+me|show\s+me|find|count|spot|notice|happens?|says?|said|shows?|shown|doing|wearing|wrong|timestamps?|subtitles?|captions?|transcript)\b)/i;
+  /(?:\?|\b(?:analy[sz]e|assess|caption|check|compare|critique|describe|diagnose|examine|explain|identify|inspect|list|outline|read|recap|review|summari[sz]e|transcribe|walk\s+me\s+through|watch|what|when|where|which|who|why|how|tell\s+me|show\s+me|find|count|spot|notice|happens?|says?|said|shows?|shown|doing|wearing|wrong|timestamps?|subtitles?|captions?|transcripts?|transcriptions?)\b)/i;
 
 /**
  * Any link at all, so the tests above can be run on the user's own words. A

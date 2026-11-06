@@ -427,6 +427,22 @@ test("mismatched started receipts are expired before request-hash uniqueness is 
   assert.ok(uniqueness >= 0);
 });
 
+test("redispatchable failed receipts from an ended origin job no longer block a new hash", () => {
+  const omitStart = learnSource.indexOf(
+    "async function omitTerminallySettledMismatchedPlanningReceipts",
+  );
+  const omitEnd = learnSource.indexOf("async function resolveCompletedPlanningReceipt", omitStart);
+  const omit = learnSource.slice(omitStart, omitEnd);
+  const failed = omit.indexOf('lookup.code === "request_failed"');
+  const ended = omit.indexOf('originJobStatus === "failed"', failed);
+  const omitted = omit.indexOf('outcome: "failed"', ended);
+
+  assert.ok(omit.includes("row.job_id === input.checkpoint.jobId ? null"));
+  assert.ok(failed >= 0);
+  assert.ok(ended > failed);
+  assert.ok(omitted > ended);
+});
+
 test("checkpoint schema upgrades the pre-result-origin table without losing rows", () => {
   const database = fixtureDatabase();
   insertJob(database, { id: "job-origin" });
@@ -2369,4 +2385,101 @@ test("every repeatable Source Map and coverage-rebind call includes its reauthor
   assert.match(learnSource, /requestSourceMap\(sourceMapReauthorAttempts\)/);
   assert.match(learnSource, /rebindSyllabusCoverage\(reauthorCycle\)/);
   assert.match(learnSource, /requestSourceMap\(reauthorCycle\)/);
+});
+
+test("a planning rollback republishes only when a Quartz-visible file changed", () => {
+  const rollbackStart = learnSource.indexOf("async function rollbackLearnRun({");
+  const rollback = learnSource.slice(rollbackStart, learnSource.indexOf("function clearSourceMapForRegeneration", rollbackStart));
+  const before = rollback.indexOf("const visibleDigestsBefore = quartzVisibleDigestKey(stagingGardenDir)");
+  const remove = rollback.indexOf("removeClusterPath(stagingGardenDir, relPath, removedPaths)", before);
+  const after = rollback.indexOf("quartzVisibleDigestKey(stagingGardenDir) !==", remove);
+  assert.ok(before >= 0 && remove > before && after > remove);
+  assert.match(rollback, /resolved\.manifest\.visibleDigestKey \?\? visibleDigestsBefore/);
+  assert.match(learnSource, /visibleDigestKey: quartzVisibleDigestKey\(clusterDir\)/);
+  assert.match(rollback, /visibleContentChanged,\r?\n/);
+  const gate = learnSource.indexOf("if (rollback.visibleContentChanged !== false) {");
+  const queue = learnSource.indexOf('"failed Learn planning rollback"', gate);
+  assert.ok(gate >= 0 && queue > gate && queue - gate < 400);
+});
+
+test("Source Map gaps that name only unteachable units do not trigger an unhealable pass", () => {
+  const start = learnSource.indexOf("const healableGapsOf = (gaps: unknown): string[] =>");
+  const block = learnSource.slice(start, start + 1200);
+  assert.ok(start >= 0);
+  assert.ok(block.includes(String.raw`match(/\bSU\d+\b/g)`));
+  assert.match(block, /unitIds\.some\(\(unitId\) => !untaughtUnitIds\.includes\(unitId\)\)/);
+  assert.match(block, /throw new PlanningEvidenceGapError\(compactJson\(healableGaps\)\)/);
+  // Partitioned parts use the same filter and raise their gaps together.
+  assert.match(learnSource, /const gaps = healableGapsOf\(planningRecord\(value\)\.evidenceGaps\);/);
+  assert.match(learnSource, /if \(gaps\.length && !finalHealingPass\) throw new PlanningEvidenceGapError\(compactJson\(gaps\)\);/);
+  assert.ok(!learnSource.includes("\b"), "no raw backspace bytes in learn.ts");
+});
+
+test("a partitioned Source Map reuses unchanged parts and lets every part report its gap", () => {
+  const start = learnSource.indexOf("const callPartitionedSourceMap = async ()");
+  const block = learnSource.slice(start, learnSource.indexOf("let call: CouncilJsonResult;", start));
+  assert.ok(start >= 0);
+  assert.match(learnSource, /const acceptedSourceMapParts = new Map<string, \{ requestHash: string; call: CouncilJsonResult \}>\(\);/);
+  assert.match(block, /if \(accepted\?\.requestHash === requestHash\) return \{ part, call: accepted\.call \};/);
+  assert.match(block, /if \(!gapsByPart\.has\(part\.key\)\) acceptedSourceMapParts\.set/);
+  const recorded = block.indexOf("gapsByPart.set(part.key, [`${part.key}: ${partEvidenceProblems.join(\"; \")}`]);");
+  assert.ok(recorded > 0 && block.indexOf("return null;", recorded) > recorded, "a failed part records its gap and returns");
+  assert.ok(block.indexOf("if (gaps.length && !finalHealingPass) throw new PlanningEvidenceGapError") > recorded);
+  // After the last healing pass, what is still missing is recorded, not fatal.
+  assert.match(block, /const finalHealingPass = evidenceAttempt >= PLANNING_EVIDENCE_HEALING_PASSES;/);
+  assert.match(block, /Not in the supplied sources \(evidence gap left after page healing\)/);
+});
+
+test("abandoned-job recovery republishes only when visible pages changed or a garden was restored", () => {
+  const start = learnSource.indexOf('"abandoned Learn job recovery",');
+  const block = learnSource.slice(learnSource.lastIndexOf("const needsPublication", start), start + 2000);
+  assert.match(block, /const needsPublication = Boolean\(previousGarden\) \|\| rollback\.visibleContentChanged !== false;/);
+  assert.match(block, /const publicationToken = needsPublication/);
+  assert.match(block, /if \(publicationToken\) \{\s*try \{\s*await publishQuartzAfterMutation/);
+});
+
+test("accepted stages are recorded per job and gate replay of a failed run's identical results", async () => {
+  const { recordAcceptedPlanningStage, hasAcceptedPlanningStage } = await import("../src/lib/learn-planning-checkpoints.ts");
+  const database = fixtureDatabase();
+  insertJob(database, { id: "job-accepted" });
+  assert.equal(hasAcceptedPlanningStage(database, { jobId: "job-accepted", stageKey: "source_map:syllabus_reading" }), false);
+  recordAcceptedPlanningStage(database, { jobId: "job-accepted", stageKey: "source_map:syllabus_reading", at: "2026-09-25T00:00:00.000Z" });
+  recordAcceptedPlanningStage(database, { jobId: "job-accepted", stageKey: "source_map:syllabus_reading", at: "2026-09-25T00:00:01.000Z" });
+  assert.equal(hasAcceptedPlanningStage(database, { jobId: "job-accepted", stageKey: "source_map:syllabus_reading" }), true);
+  assert.equal(hasAcceptedPlanningStage(database, { jobId: "job-accepted", stageKey: "source_map:part:practice:x" }), false);
+  database.close();
+
+  const resolver = learnSource.slice(learnSource.indexOf("async function resolvePriorPlanningResult"));
+  const omitted = resolver.indexOf("await omitTerminallySettledMismatchedPlanningReceipts");
+  const gate = resolver.slice(resolver.indexOf("if (unresolvedEligibleRows.length === 0) {"), resolver.indexOf("resolveUniquePlanningCandidate({"));
+  assert.ok(omitted > 0 && resolver.indexOf("if (unresolvedEligibleRows.length === 0) {") > omitted, "replay is offered only after settled receipts are omitted");
+  assert.match(gate, /if \(accepted\) unresolvedEligibleRows\.push\(\{ row: accepted \}\);/);
+  assert.match(gate, /row\.request_hash === requestHash/);
+  // A cancelled run's completed receipt is final too; the default binding
+  // accepts only failed origins, so replay must widen it explicitly.
+  assert.match(gate, /exactStrictReceiptOriginBinding\(row, current, \["failed", "cancelled"\]\)/);
+  assert.match(gate, /hasAcceptedPlanningStage\(db, \{ jobId: row\.job_id, stageKey: row\.stage_key \}\)/);
+  const validated = learnSource.slice(learnSource.indexOf("async function callValidatedPlanningJson"));
+  assert.match(validated.slice(0, 9000), /if \(accept\?\.\(result\.parsed\) \?\? true\) \{\s*try \{\s*recordAcceptedPlanningStage/);
+  assert.match(learnSource, /accept: \(\) => !gapsByPart\.has\(part\.key\),/);
+});
+
+test("usable coverage recovery marks both of its calls accepted for replay", () => {
+  const initial = learnSource.indexOf("syllabusCoverage = recovery.coverage;");
+  const initialBlock = learnSource.slice(initial, initial + 900);
+  assert.match(initialBlock, /\["recovered", "unchanged"\]\.includes\(recovery\.receipt\.outcome\)/);
+  assert.ok(initialBlock.includes("stageKey: `source_map:syllabus_coverage_evidence:${phase}`"));
+  const rebind = learnSource.indexOf("reboundCoverage = recovery.coverage;");
+  assert.ok(learnSource.slice(rebind, rebind + 700).includes("stageKey: `source_map:syllabus_coverage_rebind_evidence:cycle:${reauthorCycle}:${phase}`"));
+});
+
+test("on the final pass a practice part that cannot answer excludes that source's exercises instead of failing", () => {
+  const start = learnSource.indexOf("const callPartitionedSourceMap = async ()");
+  const block = learnSource.slice(start, learnSource.indexOf("let call: CouncilJsonResult;", start));
+  const fallback = block.indexOf("if (evidenceAttempt >= PLANNING_EVIDENCE_HEALING_PASSES && practiceRecord) {");
+  assert.ok(fallback > 0);
+  const body = block.slice(fallback, fallback + 1400);
+  assert.match(body, /practiceRecord\.disposition = "out_of_scope";/);
+  assert.match(body, /practiceRecord\.pageAliases = \[\];/);
+  assert.match(body, /learn_source_map_practice_source_excluded/);
 });

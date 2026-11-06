@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
 
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -9,15 +10,6 @@ import { fileURLToPath } from "node:url";
 function fail(message) {
   process.stderr.write(`[cliproxy] ${message}\n`);
   process.exit(1);
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" || (
-    relative !== ".." &&
-    !relative.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relative)
-  );
 }
 
 function yamlString(value) {

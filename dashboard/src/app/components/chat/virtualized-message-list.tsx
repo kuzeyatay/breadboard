@@ -30,9 +30,9 @@ import {
   type RefObject,
 } from "react";
 import { flushSync } from "react-dom";
-import { elementScroll, useVirtualizer } from "@tanstack/react-virtual";
+import { elementScroll, observeElementOffset, useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 
-import { CHAT_OVERSCAN } from "@/app/components/chat/chat-row-identity";
+import { CHAT_OVERSCAN, chatViewportRange } from "@/app/components/chat/chat-row-identity";
 import type { ChatVirtualBridge } from "@/app/components/use-chat-auto-scroll";
 
 /** Layout effects are the point here, but this file also renders on the server. */
@@ -123,6 +123,25 @@ export default function VirtualizedMessageList<T>({
   const itemKey = useCallback((index: number) => itemKeys[index], [itemKeys]);
 
   const releaseTimerRef = useRef<number | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const virtualizerRef = useRef<Virtualizer<HTMLElement, Element> | null>(null);
+  const renderedRangeRef = useRef<readonly [number | undefined, number | undefined]>([undefined, undefined]);
+  const observeOffsetRef = useRef<((offset: number, isScrolling: boolean) => void) | null>(null);
+  const viewportRange = (range: Parameters<typeof chatViewportRange>[0]) => {
+    const instance = virtualizerRef.current;
+    const first = instance?.measurementsCache[range.startIndex];
+    const last = instance?.measurementsCache[range.endIndex];
+    return chatViewportRange(
+      range,
+      instance?.scrollRect?.height || initialRect?.height || 720,
+      index => (instance?.measurementsCache[index]?.size ?? estimateItemSize(index)) + gap,
+      first && last ? {
+        offset: instance?.scrollOffset ?? 0,
+        firstStart: first.start,
+        lastEnd: last.end,
+      } : undefined,
+    );
+  };
 
   const virtualizer = useVirtualizer({
     count,
@@ -130,6 +149,30 @@ export default function VirtualizedMessageList<T>({
     estimateSize: estimateItemSize,
     getItemKey: itemKey,
     overscan,
+    rangeExtractor: viewportRange,
+    observeElementOffset: (instance, onOffset) => {
+      observeOffsetRef.current = onOffset;
+      const cleanup = observeElementOffset(instance, (offset, isScrolling) => {
+        onOffset(offset, isScrolling);
+        // TanStack notifies React when the *visible row indices* change. Inside
+        // a very tall answer those can stay fixed for minutes, while a neighbor
+        // enters or leaves the pixel buffer. Notify only at that boundary, using
+        // the current options so this observer does not retain an old chat.
+        const range = instance.calculateRange();
+        if (!range) return;
+        const next = instance.options.rangeExtractor({
+          ...range, count: instance.options.count, overscan: instance.options.overscan,
+        });
+        const [first, last] = renderedRangeRef.current;
+        if (next[0] !== first || next.at(-1) !== last) {
+          instance.options.onChange?.(instance, isScrolling);
+        }
+      });
+      return () => {
+        cleanup?.();
+        if (observeOffsetRef.current === onOffset) observeOffsetRef.current = null;
+      };
+    },
     gap,
     // Chat reads from the bottom: a row that grows keeps its foot under the
     // reader's eye instead of pushing the conversation up past them.
@@ -141,6 +184,12 @@ export default function VirtualizedMessageList<T>({
       // exactly like a reader scrolling, so they are flagged for the auto-scroll
       // hook, which would otherwise read one as "stop following the answer".
       if (options.adjustments !== undefined) {
+        // Resize corrections run before React commits the new total height.
+        // Publish it before moving the scrollbar, or the browser clamps a
+        // growing row's correction to the previous, shorter scroll range.
+        if (containerRef.current) {
+          containerRef.current.style.height = `${instance.getTotalSize()}px`;
+        }
         bridge.programmaticRef.current = true;
         if (typeof window !== "undefined") {
           if (releaseTimerRef.current !== null) {
@@ -153,8 +202,16 @@ export default function VirtualizedMessageList<T>({
         }
       }
       elementScroll(offset, options, instance);
+      // An instant jump has already moved the DOM, but its scroll event arrives
+      // later. A pending resize in between would still see the old bottom and
+      // anchor back to it, cancelling the jump. Report the actual position now;
+      // smooth glides continue to report their intermediate native positions.
+      if (options.adjustments === undefined && options.behavior !== "smooth" && instance.scrollElement) {
+        observeOffsetRef.current?.(instance.scrollElement.scrollTop, false);
+      }
     },
   });
+  virtualizerRef.current = virtualizer;
 
   // Keep the visible content in place even while reading upward. Cached rows
   // can reflow when they remount (markdown, tools, fonts); TanStack's default
@@ -448,6 +505,7 @@ export default function VirtualizedMessageList<T>({
   }, [resetKey, scrollRef, virtualizer]);
 
   const virtualItems = virtualizer.getVirtualItems();
+  renderedRangeRef.current = [virtualItems[0]?.index, virtualItems.at(-1)?.index];
 
   useEffect(() => {
     if (process.env.NODE_ENV === "production" || typeof window === "undefined") {
@@ -478,6 +536,7 @@ export default function VirtualizedMessageList<T>({
 
   return (
     <div
+      ref={containerRef}
       className={className}
       style={containerStyle}
       // Read by the long-conversation tests and the QA harness: the two numbers

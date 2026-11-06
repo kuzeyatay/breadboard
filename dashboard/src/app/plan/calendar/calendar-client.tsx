@@ -9,6 +9,7 @@ import { useStartupLoading } from "@/app/components/startup-readiness";
 // so paging through months never pushes forty entries onto the back stack.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import CalendarEventEditor, {
@@ -55,6 +56,7 @@ const VIEW_OPTIONS: { value: CalendarView; label: string; key: string }[] = [
 const DEFAULT_EVENT_MINUTES = 60;
 
 interface Props {
+  initialEventId?: number;
   initialCalendars: CalendarCollection[];
   initialToday: string;
   initialView: CalendarView;
@@ -99,6 +101,7 @@ async function readError(response: Response, fallback: string): Promise<string> 
 }
 
 export default function CalendarClient({
+  initialEventId,
   initialCalendars,
   initialToday,
   initialView,
@@ -331,6 +334,15 @@ export default function CalendarClient({
     [events],
   );
 
+  const openedSearchEvent = useRef<number | null>(null);
+  useEffect(() => {
+    if (!initialEventId || openedSearchEvent.current === initialEventId) return;
+    const occurrence = occurrences.find(item => item.eventId === initialEventId);
+    if (!occurrence) return;
+    openedSearchEvent.current = initialEventId;
+    openOccurrence(occurrence);
+  }, [initialEventId, occurrences, openOccurrence]);
+
   /**
    * Drag-to-reschedule. A "move" carries both ends of the event; a "resize"
    * drags only its end. An occurrence that belongs to a repeating series is
@@ -554,14 +566,14 @@ export default function CalendarClient({
       >
         {!embedded && <NavbarFlowerWind showFlowers={showNavbarFlowers} />}
         {!embedded && (
-          <a
-            href="/dashboard"
+          <Link
+            href="/new-tab"
             className="relative z-10 flex items-center gap-2 text-sm font-medium text-white"
             title="Back to breadboard"
           >
             <CalendarIcon className="h-4 w-4" />
             Calendar
-          </a>
+          </Link>
         )}
 
         <div className="relative z-10 flex items-center gap-1">

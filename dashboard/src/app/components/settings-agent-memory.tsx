@@ -331,9 +331,7 @@ export default function SettingsAgentMemory() {
               Memory
             </h3>
             <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">
-              Breadboard automatically keeps useful details from your chats and uses
-              them to make future conversations more helpful. You can also just tell
-              it what to keep.
+              Breadboard remembers useful details from your chats. You can also tell it what to remember.
             </p>
           </div>
         </div>
@@ -354,7 +352,7 @@ export default function SettingsAgentMemory() {
             maxLength={1000}
             value={instruction}
             disabled={pendingKey === "instruction"}
-            placeholder="Remember that my birthday is 23 June 2006"
+            placeholder="Remember that I prefer short answers"
             onChange={(event) => setInstruction(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -366,8 +364,7 @@ export default function SettingsAgentMemory() {
           />
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-[10px] leading-4 text-[var(--ink-muted)]">
-              Say it the way you would in a chat. Corrections and things to stop
-              keeping work the same way.
+              Describe what to remember, correct, or forget.
             </p>
             <button
               type="submit"
@@ -527,11 +524,10 @@ export default function SettingsAgentMemory() {
         <section className="space-y-2 border-t border-[var(--line)] pt-4">
           <div>
             <h3 className="text-sm font-medium text-[var(--ink-heading)]">
-              Per-chat working memory
+              Chat summaries
             </h3>
             <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
-              Each chat uses its recent messages as context. Longer chats also keep a
-              saved summary of older messages. Clearing a summary keeps the chat history.
+              Long chats use summaries of older messages. Clearing a summary keeps the chat history.
             </p>
             <p className="mt-1 text-[11px] text-[var(--ink-muted)]">
               {conversations.length} {conversations.length === 1 ? "chat" : "chats"} ·{" "}

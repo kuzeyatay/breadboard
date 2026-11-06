@@ -253,7 +253,7 @@ test("the adapter reaches real completion and awaits manager cancellation", asyn
 async function runRealOpenwork(mode) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `breadboard-openwork-${mode}-`));
   const runtimeWorkspacePath = path.toNamespacedPath(path.join(root, "runtime-workspace"));
-  const serviceWorkspacePath = path.join(root, "service-workspace");
+  const serviceWorkspacePath = path.toNamespacedPath(path.join(root, "service-workspace"));
   fs.mkdirSync(runtimeWorkspacePath, { recursive: true });
   fs.mkdirSync(serviceWorkspacePath, { recursive: true });
   const previousFetch = globalThis.fetch;

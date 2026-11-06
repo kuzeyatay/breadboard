@@ -37,6 +37,7 @@ test("Hermes generates verified image artifacts and renders the full image above
   const prompt = source("../../hermes-config/system/main-assistant.md");
   const inline = source("../src/app/components/hermes/inline-artifact-cards.tsx");
   const database = source("../src/lib/db.ts");
+  const preview = source("../src/app/components/hermes/artifact-image-preview.tsx");
 
   assert.match(scopes, /"artifact_image_generate"/);
   assert.match(adapter, /"artifact_image_generate"/);
@@ -51,12 +52,14 @@ test("Hermes generates verified image artifacts and renders the full image above
     pythonTool,
     /tool_name == "artifact_image_generate"[\s\S]*?_DEFAULT_REQUEST_TIMEOUT_SECONDS/,
   );
-  assert.match(route, /generateArtifactImage/);
-  assert.match(route, /generateGoogleImage/);
-  assert.match(route, /readGoogleImageGenerationCredentials/);
-  assert.match(route, /provider: "google_image_generation"/);
+  const fallback = source("../src/lib/hermes/image-generation-fallback.ts");
+  assert.match(route, /generateImageWithProviderFallback/);
+  assert.match(fallback, /generateArtifactImage/);
+  assert.match(fallback, /generateGoogleImage/);
+  assert.doesNotMatch(route + fallback, /readGoogleImageGenerationCredentials/);
+  assert.match(fallback, /provider: "google_image_generation"/);
   assert.doesNotMatch(route, /google_image_search/);
-  assert.match(route, /image_generation_fallback_unavailable/);
+  assert.match(fallback, /image_generation_fallback_unavailable/);
   assert.match(route, /sourceTool: "artifact_image_generate"/);
   assert.match(route, /generationVerified: true/);
   assert.match(route, /verified: artifact\.status === "ready"/);
@@ -69,7 +72,7 @@ test("Hermes generates verified image artifacts and renders the full image above
   assert.match(pythonTool, /google_image_generation/);
   assert.doesNotMatch(pythonTool, /fallback\.display/);
   assert.match(inline, /<InlineImageArtifact/);
-  assert.match(inline, /className="block h-auto w-full object-contain"/);
+  assert.match(preview, /className="block h-auto w-full object-contain"/);
   assert.match(inline, /Artifact details for/);
   const inlineImageArtifact = inline.slice(
     inline.indexOf("function InlineImageArtifact"),
@@ -84,7 +87,7 @@ test("Hermes generates verified image artifacts and renders the full image above
   assert.doesNotMatch(inlineImageArtifact, />\s*Download\s*</);
   assert.doesNotMatch(inlineImageArtifact, /Delete artifact/);
   assert.ok(
-    inline.indexOf("<img") < inline.indexOf("Artifact details for"),
+    inline.indexOf("<ArtifactImagePreview") < inline.indexOf("Artifact details for"),
     "the artifact menu should sit below the complete generated image",
   );
   assert.match(database, /source_\$\{legacyPrefix\}_tool/);

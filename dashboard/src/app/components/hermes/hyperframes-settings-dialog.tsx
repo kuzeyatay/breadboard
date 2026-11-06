@@ -158,8 +158,7 @@ export default function HyperframesSettingsDialog({ onClose }: { onClose: () => 
               Video rendering setup
             </h2>
             <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-              HyperFrames writes a video as an HTML page and records it frame by frame. These
-              are the pieces that do the recording.
+              Create animated videos from a description. Set up the required tools below.
             </p>
           </span>
           <button
@@ -255,13 +254,13 @@ export default function HyperframesSettingsDialog({ onClose }: { onClose: () => 
                 label="Coding runtime"
                 ok={status.codex.found}
                 detail={`Codex · ${status.codex.version}`}
-                optional="Codex was not found. Install it or set CODEX_BIN — it is the agent that writes the composition."
+                optional="Codex is required. Install it or set CODEX_BIN."
               />
               <Row
                 label="Skills"
                 ok={status.clone.found && status.clone.skills > 0}
                 detail={`${status.clone.skills} video skills read from ${status.clone.path}`}
-                optional="The HyperFrames clone was not found next to the dashboard, so the agent has no video know-how to read."
+                optional="HyperFrames skill files are missing from this installation."
               />
             </ul>
           ) : null}
@@ -269,8 +268,7 @@ export default function HyperframesSettingsDialog({ onClose }: { onClose: () => 
 
         <footer className="border-t border-[var(--line)] px-5 py-3">
           <p className="text-xs leading-5 text-[var(--ink-muted)]">
-            The agent runs on the model you picked in chat, through ChatMock — the same account
-            as every other agent. Renders stay on this machine.
+            Uses your selected chat model. Videos are saved on this device.
           </p>
         </footer>
       </section>

@@ -223,13 +223,27 @@ export async function searchOpenAlex(query: SourceQuery): Promise<RawHit[]> {
 
 // ---- arXiv ------------------------------------------------------------------
 
+/** Exact identifiers are catalog keys, not words for the full-text index. */
+export function exactArxivId(value: string): string | null {
+  const candidate = value.trim().replace(/^arxiv:\s*/i, "")
+    .replace(/^https?:\/\/(?:export\.)?arxiv\.org\/(?:abs|pdf)\//i, "")
+    .replace(/\.pdf$/i, "");
+  return /^(?:\d{4}\.\d{4,5}|[a-z][a-z.-]*\/\d{7})(?:v[1-9]\d*)?$/i.test(candidate)
+    ? candidate : null;
+}
+
+function arxivKeywordTerms(value: string): string[] {
+  return value.match(/[\p{L}\p{N}]+(?:[-'][\p{L}\p{N}]+)*/gu) ?? [];
+}
+
 export function arxivUrl(query: SourceQuery): string {
   const url = new URL("https://export.arxiv.org/api/query");
   // arXiv requires an explicit conjunction for multi-term keyword searches.
   // A single all: prefix followed by free text can admit unrelated single-term
   // matches. Treat catalog input as keywords, never raw query-language syntax.
-  const terms = query.query.match(/[\p{L}\p{N}]+(?:[-'][\p{L}\p{N}]+)*/gu) ?? [];
-  url.searchParams.set("search_query", terms.map(term => `all:${term}`).join(" AND "));
+  const identifier = exactArxivId(query.query);
+  if (identifier) url.searchParams.set("id_list", identifier);
+  else url.searchParams.set("search_query", arxivKeywordTerms(query.query).map(term => `all:${term}`).join(" AND "));
   url.searchParams.set("start", "0");
   url.searchParams.set("max_results", String(Math.min(Math.max(query.limit, 5), 50)));
   url.searchParams.set("sortBy", "relevance");
@@ -278,7 +292,19 @@ export function parseArxivFeed(xml: string): RawHit[] {
 }
 
 export async function searchArxiv(query: SourceQuery): Promise<RawHit[]> {
-  return parseArxivFeed(await readText(arxivUrl(query)));
+  const url = new URL(arxivUrl(query));
+  const feed = await readText(url.href);
+  const hits = parseArxivFeed(feed);
+  const terms = arxivKeywordTerms(query.query);
+  if (hits.length || url.searchParams.has("id_list") || terms.length < 2 ||
+      !/<(?:\w+:)?totalResults\b[^>]*>\s*0\s*</i.test(feed)) return hits;
+  // Some title words (for example "is" in Attention Is All You Need) are not
+  // indexed as standalone terms. An exact phrase recovers those titles without
+  // weakening the conjunction into unrelated single-keyword matches.
+  url.searchParams.set("search_query", `all:"${terms.join(" ")}"`);
+  // arXiv asks clients to leave three seconds between consecutive requests.
+  await new Promise(resolve => setTimeout(resolve, 3_000));
+  return parseArxivFeed(await readText(url.href));
 }
 
 // ---- Europe PMC -------------------------------------------------------------

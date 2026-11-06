@@ -227,6 +227,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     // The planner turns this into catalog queries, so a request like "the
     // paper he mentioned" only resolves if the chat comes with it.
     task: promptWithContext(request.query, input.conversationContext),
+    catalogQuery: request.query,
   });
   if (run.aborted) return;
   usage.inputTokens += planned.usage.inputTokens;

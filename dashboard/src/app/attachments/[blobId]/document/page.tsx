@@ -122,7 +122,7 @@ export default async function ChatAttachmentDocumentPage({
     <div className="flex h-screen flex-col overflow-hidden bg-gray-950 text-gray-100">
       <DocumentViewerClient
         fileName={fileName}
-        kicker={descriptor.label}
+        formatLabel={descriptor.label}
         description={describeDocumentSummary(structure.summary)}
         markdown={withResolvedFigureUrls(structure.markdown, sourceUrl)}
         warnings={structure.warnings}

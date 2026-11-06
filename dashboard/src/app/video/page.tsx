@@ -65,7 +65,6 @@ export default async function GenericVideoPage({
     <VideoPlayerClient
       title={displayName(name, sourceUrl)}
       sourceUrl={sourceUrl}
-      kicker="Video"
       showNavbarFlowers={getNavbarFlowers(userId)}
     />
   );

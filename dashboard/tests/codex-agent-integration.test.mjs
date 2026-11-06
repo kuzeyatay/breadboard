@@ -35,7 +35,7 @@ test("Codex appears beside OpenCode in Agents across Terminal and Garden chat", 
   const workspace = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");
   assert.match(hub, /id="codex-entry"/);
   assert.match(hub, /\{CODEX_COMMAND\}/);
-  assert.match(hub, /Uses Codex to read, edit, and test the local project/);
+  assert.match(hub, /Use Codex to build, fix, and test the project linked to this Garden/);
   for (const host of [terminal, garden, workspace]) {
     assert.match(host, /onSelectCodex/);
     assert.match(host, /taskFromCodexCommand/);

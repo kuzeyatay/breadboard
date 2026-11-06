@@ -1177,7 +1177,7 @@ export interface RuntimeMarkdownPdfStaging {
 export async function renderMarkdownPdfDownloadViaRuntime(
   scope: RuntimeV2OfficeScope,
   input: {
-    documents: Array<{ content: string; title: string }>;
+    documents: Array<{ content: string; title: string; slug?: string; folderTitle?: string }>;
     title: string;
     filename: string;
   },
@@ -1193,6 +1193,7 @@ export async function renderMarkdownPdfDownloadViaRuntime(
       !document ||
       typeof document.content !== "string" ||
       typeof document.title !== "string" ||
+      (document.folderTitle !== undefined && typeof document.folderTitle !== "string") ||
       !document.title.trim()) ||
     input.documents.reduce((total, document) => total + document.content.length, 0) > 10_000_000
   ) {
@@ -1216,7 +1217,7 @@ export async function renderMarkdownPdfDownloadViaRuntime(
       documentCount: input.documents.length,
     },
     {
-      idempotencyNamespace: "office-markdown-pdf-v2",
+      idempotencyNamespace: "office-markdown-pdf-v3",
       idempotencySeed: options.idempotencySeed,
       timeoutMs: 12 * 60_000,
       signal: options.signal,

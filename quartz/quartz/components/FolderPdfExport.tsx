@@ -1,4 +1,6 @@
 import { QuartzComponent, QuartzComponentConstructor, QuartzComponentProps } from "./types"
+import { FileTrieNode } from "../util/fileTrie"
+import { compareGardenNodes } from "../util/gardenOrder"
 // @ts-ignore
 import script from "./scripts/folderPdfExport.inline"
 
@@ -16,16 +18,28 @@ const FolderPdfExport: QuartzComponent = ({ fileData, allFiles }: QuartzComponen
   if (!clusterSlug) return null
 
   const prefix = `${folderSlug}/`
-  const documents = allFiles
-    .filter((file) => {
-      const slug = file.slug ?? ""
-      return slug.startsWith(prefix) && !slug.endsWith("/index") && !slug.startsWith("tags/")
+  const entries = allFiles
+    .filter((file) => file.slug?.startsWith(prefix))
+    .map((file) => {
+      const frontmatter = file.frontmatter as Record<string, unknown> | undefined
+      return {
+        slug: file.slug!,
+        title: file.frontmatter?.title || displayNameFromSlug(file.slug!),
+        filePath: String(file.filePath ?? `${file.slug}.md`).replace(/\\/g, "/"),
+        knowledgeType: String(frontmatter?.knowledge_type ?? ""),
+        breadboardType: String(frontmatter?.breadboardType ?? frontmatter?.breadboard_type ?? ""),
+      }
     })
-    .map((file) => ({
-      slug: file.slug!,
-      title: file.frontmatter?.title || displayNameFromSlug(file.slug!),
-    }))
-    .sort((left, right) => left.title.localeCompare(right.title))
+  const trie = new FileTrieNode<(typeof entries)[number]>([])
+  for (const entry of entries) trie.add(entry)
+  // Walk the same naturally sorted folder tree as the garden, keeping each
+  // section together instead of alphabetizing a flat list of note titles.
+  trie.sort(compareGardenNodes)
+  const documents = trie
+    .entries()
+    .flatMap(([, node]) =>
+      !node.isFolder && node.data ? [{ slug: node.data.slug, title: node.data.title }] : [],
+    )
 
   if (documents.length === 0) return null
 
@@ -61,6 +75,17 @@ const FolderPdfExport: QuartzComponent = ({ fileData, allFiles }: QuartzComponen
             <button class="folder-pdf-close" type="button" aria-label="Close folder PDF export">
               Close
             </button>
+          </div>
+
+          <div class="folder-pdf-search-row">
+            <input
+              class="folder-pdf-search-input"
+              type="search"
+              aria-label="Search notes to export"
+              placeholder="Search notes by title or path"
+              autocomplete="off"
+            />
+            <span class="folder-pdf-search-count" aria-live="polite" />
           </div>
 
           <div class="folder-pdf-toolbar">
@@ -161,6 +186,7 @@ FolderPdfExport.css = `
 }
 
 .folder-pdf-header,
+.folder-pdf-search-row,
 .folder-pdf-toolbar,
 .folder-pdf-footer {
   display: flex;
@@ -171,8 +197,31 @@ FolderPdfExport.css = `
 }
 
 .folder-pdf-header,
+.folder-pdf-search-row,
 .folder-pdf-toolbar {
   border-bottom: 1px solid var(--lightgray);
+}
+
+.folder-pdf-search-row {
+  gap: 0.75rem;
+}
+
+.folder-pdf-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: var(--light);
+  color: var(--dark);
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.55rem 0.7rem;
+}
+
+.folder-pdf-search-count {
+  flex: 0 0 auto;
+  color: var(--gray);
+  font-size: 0.8rem;
 }
 
 .folder-pdf-footer {
@@ -227,10 +276,14 @@ FolderPdfExport.css = `
   margin: 0;
   padding: 0.85rem 1rem;
   overflow: auto;
+  overflow-anchor: none;
+  scroll-behavior: auto;
+  box-sizing: border-box;
   list-style: none;
 }
 
 .folder-pdf-item {
+  flex-shrink: 0;
   counter-increment: folder-pdf-order;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -245,6 +298,13 @@ FolderPdfExport.css = `
 
 .folder-pdf-item.dragging {
   opacity: 0.45;
+}
+
+.folder-pdf-empty {
+  color: var(--gray);
+  font-size: 0.85rem;
+  padding: 0.75rem 0;
+  text-align: center;
 }
 
 .folder-pdf-drag {

@@ -1,5 +1,5 @@
-import { prepareExplanationTurn } from "../hermes/explanation-review-context.ts";
-import { explanationTurnPrompt } from "../hermes/explanation-turn.ts";
+import { botsStore } from "../bots/server.ts";
+import { conversationPersonalityPrompt } from "../bots/types.ts";
 import { hermesPromptText } from "../agent-runtime/hermes-prompt.ts";
 import { agentPreferencesContext } from "../agent-preferences/store.ts";
 import {
@@ -12,6 +12,7 @@ import { stageEditableDocumentAttachments } from "../document-attachments-server
 import { prepareTurn, mergeSelectedTools } from "../hermes/dispatch-core.ts";
 import { turnApprovalPolicy } from "../hermes/turn-approval-policy.ts";
 import { adjudicateWebGrounding } from "../hermes/web-grounding-decider.ts";
+import { prepareProductSearchTurn, productSearchTurnContext } from "../product-search/turn.ts";
 import {
   grantFilesystemRoot,
   listFilesystemGrants,
@@ -19,6 +20,7 @@ import {
 } from "../hermes/filesystem-grant-store.ts";
 import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import { hermesMessageId } from "../hermes/message-id.ts";
+import { resolveUnifiedWorkflowContinuation } from "../workflows/unified-continuation.ts";
 import { resolveHermesEngine } from "../hermes/model-selection.ts";
 import { selectedModelForUser } from "../selected-model.ts";
 import {
@@ -26,6 +28,8 @@ import {
   finishRuntimeRun,
   getActiveRuntimeRun,
   getLatestRuntimeRun,
+  getRuntimeRun,
+  parseRuntimeRunDispatch,
   markRuntimeRunSubmitted,
   type RuntimeRunRow,
 } from "../hermes/run-store.ts";
@@ -48,7 +52,6 @@ import {
   decideAutonomy,
   riskClassForPermission,
 } from "../hermes/autonomy.ts";
-import { scheduleCapabilityExpiry } from "../hermes/capability-lifecycle.ts";
 import { composeHermesSystemPrompt } from "../hermes/system-prompts.ts";
 import { suppliedEvidenceText } from "../hermes/evidence-calibration.ts";
 import { ApiError } from "../hermes/route-core.ts";
@@ -88,7 +91,7 @@ import {
 } from "./memory.ts";
 import { parseChatReferenceCommand } from "./chat-reference.ts";
 import { scheduleMemoryProfileSynthesisForConversation } from "./memory-profile.ts";
-import { loadConversationMemoryBundleHybrid } from "../mem0/retrieval.ts";
+import { loadConversationMemoryBundle } from "./memory.ts";
 import {
   findAgencyAgent,
   renderAgencyAgentPersona,
@@ -191,6 +194,7 @@ import {
 } from "../hermes/terminal-garden-grounding.ts";
 import { connectedAppRegistryForTurn } from "../hermes/unified-tool-registry.ts";
 import { connectedRepositoryForTurn } from "../code-index/chat-turn.ts";
+import { voiceCapabilitiesContext } from "../speech/voice-capabilities.ts";
 import {
   loadSuperAgentInventory,
   openableSkills,
@@ -198,6 +202,7 @@ import {
   type SuperAgentInventory,
 } from "../hermes/super-agent.ts";
 import {
+  computerUseSkillChoices,
   renderSkillShortlistDirective,
   shortlistSkillsForTurn,
 } from "../hermes/skill-shortlist.ts";
@@ -234,9 +239,13 @@ import {
   GOAL_MODE_CONNECTION,
   GOAL_MODE_SKILL,
   readGoalModeState,
+  clearGoalContinuationDeferral,
   type GoalModeState,
 } from "../goal-mode.ts";
 import { goalCommandText } from "../hermes/goal-intent.ts";
+import { goalContinuationCurrent } from "../goal-continuation.ts";
+import { taskRecoveryCurrent, taskRecoveryForContinuation, recordTaskRecoveryOutcome, scheduleTaskRecovery } from "../hermes/task-recovery.ts";
+import { cancelConversationSourceRepairs } from "../source-repair/checkpoint.ts";
 
 export interface ConversationSurfaceContext {
   activeGardenSlug?: string;
@@ -271,10 +280,15 @@ export interface StartConversationTurnInput {
   retry?: boolean;
   branchGroupId?: string;
   textSelection?: ChatTextSelectionReference;
+  concurrentInline?: boolean;
   branchHistory?: ConversationMessageRow[];
   branchContextId?: string;
   /** Internal result hand-back from a delegated agent, not a person's message. */
   internalAgentContinuation?: boolean;
+  /** Server-owned idle continuation; never accepted from a browser request. */
+  goalContinuation?: { sourceRunId: string; goalId: string };
+  /** Server-owned recovery, never accepted from a browser request. */
+  taskContinuation?: { sourceRunId: string };
   /** Schedule the app already created for this user-authored turn. */
   scheduledChatReceipt?: ScheduledChatReceipt;
   /** Client-observed beginning of the response, persisted for restored clocks. */
@@ -285,6 +299,8 @@ export interface StartConversationTurnInput {
    * and it is given the catalogue to choose from. Per-message, never stored.
    */
   superAgent?: boolean;
+  /** Spoken conversation: use ordinary agent capabilities with concise speech. */
+  voice?: boolean;
   /**
    * The user had Concise on for this message, so the turn is written in the
    * underlying `i-have-adhd` output style. Shape only: it selects no skill, grants no
@@ -347,6 +363,19 @@ export type StartConversationTurnResult =
 export async function startConversationTurn(
   input: StartConversationTurnInput,
 ): Promise<StartConversationTurnResult> {
+  const assertGoalContinuationCurrent = () => {
+    if (input.taskContinuation && !taskRecoveryCurrent(input.conversation.id,
+      input.taskContinuation.sourceRunId, input.clientMessageId)) {
+      throw new ApiError(409, "task_recovery_superseded", "Task recovery was superseded by new input or Stop.");
+    }
+    if (input.goalContinuation && !goalContinuationCurrent(input.conversation.id,
+      input.goalContinuation.sourceRunId, input.goalContinuation.goalId, input.clientMessageId)) {
+      throw new ApiError(409, "goal_continuation_superseded", "Goal continuation was superseded by user input or a goal change.");
+    }
+  };
+  assertGoalContinuationCurrent();
+  if (!input.internalAgentContinuation) cancelConversationSourceRepairs(input.conversation.id);
+  if (!input.internalAgentContinuation) clearGoalContinuationDeferral(input.conversation.public_id);
   if (input.surface !== input.conversation.surface) {
     throw new ApiError(
       403,
@@ -386,6 +415,7 @@ export async function startConversationTurn(
   const context = normalizeSurfaceContext(input.surfaceContext);
   const approvalPolicy = turnApprovalPolicy({
     surface: input.surface,
+    superAgent: input.superAgent,
     deliveryChannel: context.deliveryChannel,
     yoloMode: input.yoloMode,
     savedYoloMode: context.deliveryChannel
@@ -413,6 +443,7 @@ export async function startConversationTurn(
   }
   let reservation;
   try {
+    assertGoalContinuationCurrent();
     reservation = reserveConversationTurn({
       conversation: input.conversation,
       clientMessageId: input.clientMessageId,
@@ -431,6 +462,7 @@ export async function startConversationTurn(
         ...(input.internalAgentContinuation
           ? { internalAgentContinuation: true }
           : {}),
+        ...(input.goalContinuation ? { goalContinuation: true } : {}),
         ...(context.deliveryChannel
           ? { deliveryChannel: context.deliveryChannel }
           : {}),
@@ -453,7 +485,7 @@ export async function startConversationTurn(
     preDispatchReserved,
     isInlineQuestion: input.textSelection?.mode === "inline",
   })) {
-    const titledConversation = await generateAndApplyConversationTitle({
+    const titleTask = generateAndApplyConversationTitle({
       conversation: reservation.conversation,
       firstPrompt: referenceCommand.userText || (
         referenceCommand.keys.length === 1
@@ -468,6 +500,11 @@ export async function startConversationTurn(
             ? "WhatsApp"
             : undefined,
     });
+    // A sidebar label must never hold up a spoken answer. The title service
+    // applies its result conditionally, so a concurrent manual rename wins.
+    let titledConversation = null;
+    if (input.voice) void titleTask.catch(() => undefined);
+    else titledConversation = await titleTask;
     if (titledConversation) {
       reservation = { ...reservation, conversation: titledConversation };
       input = { ...input, conversation: titledConversation };
@@ -524,7 +561,12 @@ export async function startConversationTurn(
     );
   }
 
-  const hyperframesDelivery = !input.branchHistory ? await deliverCompletedHyperframes({
+  const workflowContinuation = !input.branchHistory ? resolveUnifiedWorkflowContinuation({
+    userId: input.conversation.user_id, conversationId: input.conversation.id,
+    clientMessageId: input.clientMessageId, continuationText: input.text,
+    internalAgentContinuation: input.internalAgentContinuation,
+  }) : null;
+  const hyperframesDelivery = !input.branchHistory && !workflowContinuation ? await deliverCompletedHyperframes({
     userId: input.conversation.user_id, conversationId: input.conversation.id,
     clientMessageId: input.clientMessageId, continuationText: input.text,
     internalAgentContinuation: input.internalAgentContinuation,
@@ -533,7 +575,7 @@ export async function startConversationTurn(
     return { accepted: false, clarified: true,
       session: authorizeConversationRuntime(input.conversation), message: hyperframesDelivery.content };
   }
-  const researchDelivery = !input.branchHistory ? deliverCompletedResearch({
+  const researchDelivery = !input.branchHistory && !workflowContinuation ? deliverCompletedResearch({
     conversationId: input.conversation.id,
     clientMessageId: input.clientMessageId,
     continuationText: input.text,
@@ -548,6 +590,8 @@ export async function startConversationTurn(
     preparedBranchSession ??
     (await resolveConversationRuntime({
       conversation: input.conversation,
+      deferMcpConnections: input.voice === true,
+      inlineTurnId: input.concurrentInline && input.textSelection?.mode === "inline" ? input.clientMessageId : undefined,
       surface: input.surface,
       activeGardenSlug: context.activeGardenSlug ?? null,
       activePageSlug: context.activePageSlug ?? null,
@@ -606,9 +650,9 @@ export async function startConversationTurn(
     };
   }
 
-  // Hybrid: the deterministic lexical ranking, fused with mem0 semantic
-  // recall when that layer is available. Falls back to lexical-only silently.
-  const memory = await loadConversationMemoryBundleHybrid({
+  // Keep turn preparation local. Relevant saved preferences remain available;
+  // normal chat does not wait for a semantic-memory provider.
+  const memory = loadConversationMemoryBundle({
     conversation: reservation.conversation,
     query: input.text,
     activeGardenId: session.row.cluster_id,
@@ -949,6 +993,7 @@ export async function startConversationTurn(
     authenticated: true,
     hasAudioAttachment: hasAnalyzableAttachment(input.attachments),
     activeAgentSlug: reservation.conversation.active_agency_agent_slug,
+    priorMessages: currentConversationMessages,
   });
   // An attached song, unlike an attached picture, is nearly always the subject
   // of the turn — so this reads like Watch rather than like Image to 3D: the
@@ -1030,7 +1075,7 @@ export async function startConversationTurn(
     input.surface === "quartz_ai"
       ? null
       : readGoalModeState(input.conversation.public_id);
-  // Last in the chain, and deliberately so. A turn carries at most one skill,
+  // Last in the chain, and deliberately so. Automatic selection adds one skill,
   // so anything that fires ahead of this has claimed the turn on its own
   // subject — and "keep watching this stream until they announce the price" is
   // Watch's turn with a commitment attached, not a goal with a video in it. A
@@ -1040,13 +1085,14 @@ export async function startConversationTurn(
     surface: input.surface,
     authenticated: true,
     internalContinuation: input.internalAgentContinuation === true,
-    hasActiveGoal: existingGoal !== null,
+    hasActiveGoal: existingGoal !== null && existingGoal.status !== "complete",
   });
   const commandContext = {
     mode: decision.mode,
     surface: input.surface,
     runtimeKind: session.runtimeKind,
     activeAgentSlug: reservation.conversation.active_agency_agent_slug,
+    workflowContinuation,
   };
   // An automatic selection must never cost the user their turn. If an
   // auto-selected capability is unavailable in this mode, resolve the same
@@ -1214,8 +1260,12 @@ export async function startConversationTurn(
   // innate selection and an explicit /cad command; narrower upstream skills
   // continue to use their own validators and authoring workflows.
   const parametricCadSelected = decision.selectedConditionalSkills.includes("cad");
-  if (parametricCadSelected) {
+  if (parametricCadSelected || resolved.workflowSelection) {
     decision.allowedTools = [...new Set([...decision.allowedTools, "agent_launch"])];
+    // The workflow command is the explicit delegation selection. Grant only
+    // its launch tool; the launch endpoint enforces the saved family scope
+    // and each specialist retains its own approval and input contract.
+    prepared.grant.allowedTools = { ...prepared.grant.allowedTools, agent_launch: true };
   }
   decision.selectedConnections = resolved.invocations
     .filter((invocation) => invocation.kind === "mcp")
@@ -1289,6 +1339,13 @@ export async function startConversationTurn(
           ),
         })
       : [];
+  if (!superAgent && input.surface !== "quartz_ai" && input.internalAgentContinuation !== true) {
+    skillShortlist.push(...computerUseSkillChoices({
+      skills: openableSkills(input.surface, listMcpConnections(input.conversation.user_id, true).map(connection => connection.slug)),
+      allowedTools: prepared.grant.allowedTools,
+      selectedSkills: decision.selectedConditionalSkills,
+    }));
+  }
   if (skillShortlist.length > 0) {
     decision.selectedConditionalSkills = [
       ...new Set([
@@ -1297,6 +1354,9 @@ export async function startConversationTurn(
       ]),
     ];
     decision.allowedTools = [...new Set([...decision.allowedTools, "skill_open"])];
+    // Keep the runtime tool map consistent with the decision checked by the
+    // skill route. mergeSelectedTools cannot override a brokered false.
+    prepared.grant.allowedTools = { ...prepared.grant.allowedTools, skill_open: true };
   }
   // A goal reaches a turn one of two ways: the Goal skill was selected for it,
   // in which case the model writes the objective itself with create_goal and
@@ -1307,7 +1367,7 @@ export async function startConversationTurn(
   // server in the request path.
   const goalModeState: GoalModeState | null =
     input.surface === "quartz_ai" ? null : existingGoal;
-  const goalMode = goalModeState !== null || goalSkillSelected;
+  const goalMode = (goalModeState !== null && goalModeState.status !== "complete") || goalSkillSelected;
   if (goalMode) {
     decision.allowedTools = [...new Set([...decision.allowedTools, "mcp_call"])];
     decision.selectedConnections = [
@@ -1332,6 +1392,7 @@ export async function startConversationTurn(
           // The user asked for every connection to be on the table. Writes are
           // unaffected: each one still pauses for their approval at call time.
           allowAllConnectionTools: superAgent,
+          deferMcpConnections: input.voice === true,
         });
   // The repository connected to the active Garden, if there is one: the same
   // description and code-index tools Garden Chat gets, so a Terminal turn
@@ -1352,6 +1413,7 @@ export async function startConversationTurn(
     ]),
   ];
 
+  assertGoalContinuationCurrent();
   await runtime.applyCapabilityDecision({
     externalSessionId: session.externalSessionId,
     liveSessionId: session.liveSessionId,
@@ -1360,7 +1422,6 @@ export async function startConversationTurn(
     decision,
   });
   const storedDecision = persistCapabilityDecision(session.row.id, decision);
-  scheduleCapabilityExpiry(session, decision, storedDecision.id);
   recordAuditEvent({
     eventType: "conversation.capability_decision",
     runtimeSessionId: session.row.id,
@@ -1459,12 +1520,13 @@ export async function startConversationTurn(
     });
   }
   const gardenGrounding: TerminalGardenGrounding =
-    input.surface === "dashboard_terminal"
+    input.surface === "dashboard_terminal" || input.surface === "garden_chat"
       ? await retrieveTerminalGardenGrounding({
           userId: input.conversation.user_id,
           request: resolved.userText || input.text,
           plan: prepared.plan,
           hasAttachments: Boolean(input.attachments?.length),
+          activeGardenSlug: context.activeGardenSlug ?? session.row.garden_id,
         })
       : { attempted: false, sources: [], context: "" };
   if (gardenGrounding.attempted) {
@@ -1545,7 +1607,7 @@ export async function startConversationTurn(
     ...(decision.selectedConditionalSkills.includes(BREADBOARD_USE_SKILL)
       ? { breadboard_use: true }
       : {}),
-    ...(parametricCadSelected ? { agent_launch: true } : {}),
+    ...(parametricCadSelected || resolved.workflowSelection ? { agent_launch: true } : {}),
     ...(goalMode ? { mcp_call: true } : {}),
     ...(skillShortlist.length > 0 ? { skill_open: true } : {}),
   });
@@ -1603,35 +1665,24 @@ export async function startConversationTurn(
             input.textSelection!.sourceMessageId === message.client_message_id),
       )?.content
     : undefined;
-  const explanationContext = input.internalAgentContinuation ? undefined : await prepareExplanationTurn({
-    runtimeSessionId: session.row.id,
-    request: resolved.userText || input.text,
-    messages: currentConversationMessages,
-    selectionContext: input.textSelection
-      ? chatTextSelectionQuestionPrompt(resolved.userText || input.text, input.textSelection, selectionSourceMessage)
-      : context.selectedText,
-    selectedText: input.textSelection?.quote ?? context.selectedText,
-    sourcePassages: gardenGrounding.context,
-    constraints: input.branchHistory === undefined ? JSON.stringify({ knownFacts: memory.workingState.knownFacts, decisions: memory.workingState.decisions,
-      historicalInstructions: memory.workingState.historicalInstructions, openQuestions: memory.workingState.openQuestions }) : "",
-  });
-  const explanationFocus = explanationContext?.repair === true && decision.mode === "knowledge";
   const baseSystem = composeHermesSystemPrompt({
     surface: input.surface,
     decision,
+    requiresWebEvidence: webGroundingVerdict.required,
     userText: resolved.userText || input.text,
-    explanationFocus,
-    // Only the attachments that still travel verbatim: a distilled document
-    // reaches the model as an index, which has no values to check.
+    // Compatibility evidence input; original document text travels in turn context.
     suppliedEvidence: suppliedEvidenceText(documents.inlineAttachments),
     conversationPublicId: input.conversation.public_id,
     adhdMode: input.adhdMode === true,
     goalMode: goalModeState,
+    voice: input.voice === true,
     goalSkillSelected,
     additional: [
       agentPreferencesContext(input.conversation.user_id),
       superAgentInventory
-        ? renderSuperAgentDirective(superAgentInventory, researchPipeline)
+        ? input.voice
+          ? [voiceCapabilitiesContext(superAgentInventory), researchPipeline ? researchPipelineRule(researchPipeline) : ""].filter(Boolean).join("\n\n")
+          : renderSuperAgentDirective(superAgentInventory, researchPipeline)
         : // Without the inventory there is no super-agent directive to carry
           // the protocol, so it ships on its own. The tools are open either
           // way; a turn given them and no contract would use them as three
@@ -1646,11 +1697,9 @@ export async function startConversationTurn(
         {
           recentMessages: currentConversationMessages,
           includeConversationState: input.branchHistory === undefined,
-          explanationFocus,
-          recentContextSupplied: Boolean(explanationContext),
+          includeProfile: false,
         },
       ),
-      explanationContext ? explanationTurnPrompt(explanationContext) : "",
       // Directly after memory, as in Garden Chat: the repository is something
       // the assistant knows about the active Garden, not a late tool notice.
       repository?.systemContext ?? "",
@@ -1706,13 +1755,16 @@ export async function startConversationTurn(
       renderSurfaceContext(input.surface, context),
       renderDeliveryChannel(context.deliveryChannel, approvalPolicy.yoloMode),
     ].filter(Boolean).join("\n\n"),
-    persona: activeAgencyAgent
+    persona: conversationPersonalityPrompt(
+      botsStore().forConversation(input.conversation.user_id, input.conversation.public_id),
+      activeAgencyAgent
       ? activeAgencyAgent.slug === CHIEF_OF_STAFF_SLUG
         ? `${renderAgencyAgentPersona(activeAgencyAgent)}\n\n${renderChiefOfStaffOrchestration(loadAgencyAgentsCatalog())}`
         : activeAgencyAgent.slug === ARIS_AGENT_SLUG
           ? `${renderAgencyAgentPersona(activeAgencyAgent)}\n\n${renderArisTurnGuidance(resolved.userText || input.text)}`
           : renderAgencyAgentPersona(activeAgencyAgent)
       : undefined,
+    ),
   });
   const locationRequest = resolved.userText || input.text;
   const currentLocationContext = input.internalAgentContinuation
@@ -1757,8 +1809,17 @@ export async function startConversationTurn(
   // Coordinates are useful for this one answer, not durable conversation
   // state. Persist only the location-free prompt so recovery, audit, and memory
   // cannot silently replay where the user was.
-  const browserContext = await browserTerminalPrompt(browserAccess);
-  const runtimeSystem = [baseSystem, currentLocationContext, browserContext].filter(Boolean).join("\n\n");
+  const browserContext = await browserTerminalPrompt(browserAccess, true, {
+    onDemand: input.voice === true,
+  });
+  const productSearch = await prepareProductSearchTurn({
+    request: resolved.userText || input.text,
+    enabled: tools.product_search === true && decision.mode === "knowledge" &&
+      !input.internalAgentContinuation && !input.textSelection,
+    country: productSearchMarket?.locale,
+  });
+  const systemWithProducts = [baseSystem, productSearchTurnContext(productSearch)].filter(Boolean).join("\n\n");
+  const runtimeSystem = [systemWithProducts, currentLocationContext, browserContext].filter(Boolean).join("\n\n");
   const defaultRuntimeText =
     resolved.text ||
     "Acknowledge the persona selection briefly and ask how you can help.";
@@ -1782,7 +1843,12 @@ export async function startConversationTurn(
   const requiredOfficeArtifact = officeSkillSelected
     ? officeArtifactRequirement(resolved.userText || input.text)
     : null;
-  const requiredArtifacts = [
+  const continuationSourceId = input.taskContinuation?.sourceRunId ?? input.goalContinuation?.sourceRunId;
+  const continuationSource = continuationSourceId ? getRuntimeRun(continuationSourceId) : null;
+  const continuationDispatch = continuationSource ? parseRuntimeRunDispatch(continuationSource) : null;
+  const requiredArtifacts = continuationDispatch
+    ? continuationDispatch.requiredArtifacts ?? []
+    : [
     ...(requiredVisualizerSkill
       ? [
           {
@@ -1901,19 +1967,34 @@ export async function startConversationTurn(
   ) {
     throw new ApiError(409, "turn_cancelled", "This turn was stopped.");
   }
+  assertGoalContinuationCurrent();
   const run = beginRuntimeRun({
     runtimeSessionId: session.row.id,
     instruction: resolved.userText || input.text,
     dispatch: {
+      ...(resolved.workflowSelection ? { workflowSelection: resolved.workflowSelection } : {}),
+      ...(resolved.workflowCompletedWork ? { workflowCompletedWork: resolved.workflowCompletedWork } : {}),
       conversationPublicId: input.conversation.public_id,
       clientMessageId: input.clientMessageId,
+      ...(input.voice === true ? { voice: true } : {}),
       runtimeText: hermesPromptText(runtimeText, documents.inlineAttachments),
       model: engine.model,
       modelIdentity: { modelID: engine.selectedModelID },
       variant: engine.variant,
       tools,
-      system: baseSystem,
-      explanationContext,
+      system: systemWithProducts,
+      ...(productSearch ? { productSearch } : {}),
+      ...(!goalMode && !input.concurrentInline && !input.branchHistory &&
+        (input.surface === "dashboard_terminal" || input.surface === "garden_chat")
+        ? { taskRecovery: input.taskContinuation
+          ? taskRecoveryForContinuation(input.taskContinuation.sourceRunId)
+          : { request: input.text, rootClientMessageId: input.clientMessageId, turn: 0,
+              context: { activeGardenSlug: context.activeGardenSlug, activePageSlug: context.activePageSlug,
+                selectedDocumentIds: context.selectedDocumentIds, authorizedContext: context.authorizedContext,
+                deliveryChannel: context.deliveryChannel },
+              superAgent: input.superAgent === true, personalize: input.personalize !== false,
+              adhdMode: input.adhdMode === true, yoloMode: approvalPolicy.yoloMode } }
+        : {}),
       // On the turn that starts a goal there is no id yet — the model has not
       // called create_goal — so the run records that a goal governs it and
       // leaves the id null. Accounting resolves the id at the end of the turn,
@@ -1923,6 +2004,14 @@ export async function startConversationTurn(
             goalMode: {
               goalId: goalModeState?.goal_id ?? null,
               enabled: true,
+              automatic: Boolean(input.goalContinuation),
+              ...(input.goalContinuation ? { previousRunIds: [...(continuationDispatch?.goalMode?.previousRunIds ?? []), input.goalContinuation.sourceRunId] } : {}),
+              context: { activeGardenSlug: context.activeGardenSlug, activePageSlug: context.activePageSlug,
+                selectedDocumentIds: context.selectedDocumentIds },
+              superAgent: input.superAgent === true,
+              personalize: input.personalize !== false,
+              adhdMode: input.adhdMode === true,
+              yoloMode: approvalPolicy.yoloMode,
             },
           }
         : {}),
@@ -2015,6 +2104,8 @@ export async function startConversationTurn(
       const previousRuntimeSessionId = session.row.id;
       session = await resolveConversationRuntime({
         conversation: input.conversation,
+        deferMcpConnections: input.voice === true,
+        inlineTurnId: input.concurrentInline && input.textSelection?.mode === "inline" ? input.clientMessageId : undefined,
         surface: input.surface,
         activeGardenSlug: context.activeGardenSlug ?? null,
         activePageSlug: context.activePageSlug ?? null,
@@ -2047,6 +2138,9 @@ export async function startConversationTurn(
         status: "failed",
         error: retryError instanceof Error ? retryError.message : "runtime_dispatch_failed",
       });
+      recordTaskRecoveryOutcome({ runId: run.id, status: "failed", tools: [],
+        failure: { code: "runtime_dispatch_failed", message: retryError instanceof Error ? retryError.message : String(retryError) } });
+      scheduleTaskRecovery(input.conversation.id, run.id);
       throw firstError;
     }
   }

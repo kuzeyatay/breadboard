@@ -173,7 +173,7 @@ test("Vox health is user-scoped and accepts only its fenced result envelope", as
       protocolVersion: 1,
       identity: { jobId: job.jobId, attempt: job.attempt, workerInstanceId: job.workerInstanceId },
       completionSequence: job.lastWorkerSequence,
-      health,
+      result: health,
     }, calls),
   });
   assert.deepEqual(result, health);

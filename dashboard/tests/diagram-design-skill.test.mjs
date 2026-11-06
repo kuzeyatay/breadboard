@@ -171,6 +171,20 @@ test("an interactive request reaches the visualizer, not this skill", () => {
   );
 });
 
+test("lesson source prose does not become a request for a diagram", () => {
+  for (const text of [
+    "Use the attached material to form a full teaching section. It follows this section: In discrete time, any sequence can be written as a sum of shifted unit impulses.",
+    "Explain recursion. A tree can be described as a set of connected nodes.",
+    "Continue the explanation below. The architecture provides a model for communication between components.",
+  ]) {
+    for (const surface of ["garden_chat", "dashboard_terminal"]) {
+      assert.deepEqual(diagramCommandText({ text, surface, authenticated: true }),
+        { text, automatic: false });
+    }
+  }
+  assert.equal(selects("Continue the lesson. A diagram of the circuit, please."), true);
+});
+
 test("a follow-up keeps the guidance the first diagram was drawn with", () => {
   const prior = [
     { role: "user", content: "draw the architecture" },

@@ -288,6 +288,7 @@ fn run_after_bootstrap(
         app_root,
         runtime_root,
         data_root,
+        bulk_root,
         config_root,
         ..
     } = bootstrap;
@@ -295,7 +296,7 @@ fn run_after_bootstrap(
         PathBuf::from(data_root),
         PathBuf::from(app_root),
         PathBuf::from(runtime_root),
-    )?;
+    )?.with_bulk_root(bulk_root.map(PathBuf::from))?;
     let generation_scope = paths.runtime_generation_scope();
     let (generation_guard, prior_generation_drained) = RuntimeGenerationGuard::acquire(
         generation_scope.clone(),

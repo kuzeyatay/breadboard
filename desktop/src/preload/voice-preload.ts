@@ -5,6 +5,13 @@ contextBridge.exposeInMainWorld('voiceCompanion', {
   open: () => ipcRenderer.invoke('breadboard:voice-show'),
   close: () => ipcRenderer.invoke('breadboard:voice-hide'),
   setMinimized: (minimized: boolean) => ipcRenderer.invoke('breadboard:voice-minimize', minimized),
+  fullscreen: () => ipcRenderer.invoke('breadboard:voice-fullscreen-state'),
+  setFullscreen: (fullscreen: boolean) => ipcRenderer.invoke('breadboard:voice-fullscreen', fullscreen),
+  onFullscreen: (callback: (fullscreen: boolean) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, fullscreen: boolean) => callback(fullscreen);
+    ipcRenderer.on('breadboard:voice-fullscreen-changed', listener);
+    return () => ipcRenderer.removeListener('breadboard:voice-fullscreen-changed', listener);
+  },
   onMinimized: (callback: (minimized: boolean) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, minimized: boolean) => callback(minimized);
     ipcRenderer.on('breadboard:voice-minimized', listener);

@@ -45,6 +45,17 @@ const quartzMarkdownActions = read(
 const quartzCustomStyles = read("../quartz/quartz/styles/custom.scss");
 const quartzLayout = read("../quartz/quartz.layout.ts");
 
+test("Quartz question images survive the iframe boundary without becoming prompt text", () => {
+  const image = { type: 'image', name: 'equation.png', dataUrl: 'data:image/png;base64,aGVsbG8=' };
+  const request = quartzAssistantSelectionRequest({
+    type: 'second-brain:assistant-ask-here', requestId: 'image_question', highlightId: 'mark_1',
+    mode: 'inline', text: 'The selected equation', question: 'Explain this screenshot',
+    attachments: [image, { ...image, dataUrl: 'https://untrusted.example/image.png' }, { type: 'file', name: 'ignored.txt' }],
+  });
+  assert.deepEqual(request.attachments, [image]);
+  assert.doesNotMatch(quartzAssistantSelectionQuestionPrompt(request.question, request), /base64|aGVsbG8|untrusted/);
+});
+
 test("Quartz selection requests preserve their page context and answer mode", () => {
   const request = quartzAssistantSelectionRequest({
     type: "second-brain:assistant-ask-here",

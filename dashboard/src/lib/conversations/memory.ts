@@ -10,7 +10,7 @@ import type { ConversationRow, ConversationMessageRow } from "./store.ts";
 import { conversationIsTemporary, listRecentConversationMessages } from "./store.ts";
 import { conversationMessageText, isInlineConversationMessage } from "./message-context.ts";
 import { composeRecentConversationContext } from "./recent-context.ts";
-import { explanationIntent } from "../hermes/explanation-turn.ts";
+import { explanationIntent } from "./explanation-intent.ts";
 import {
   appendHistoricalInstruction,
   hasInstructionToPreserve,
@@ -881,6 +881,8 @@ export function composeMemoryContext(
         Partial<Pick<ConversationMessageRow, "metadata" | "client_message_id" | "status">>
     >;
     includeConversationState?: boolean;
+    /** Normal chat uses relevant memories, without injecting an inferred biography. */
+    includeProfile?: boolean;
     /** Scoped history and constraints are carried by the explanation packet. */
     explanationFocus?: boolean;
     recentContextSupplied?: boolean;
@@ -895,7 +897,7 @@ export function composeMemoryContext(
       : `- [${memory.state}; ${memory.scope}; score=${memory.score.toFixed(3)}] ${redactSecrets(memory.content)}`,
   ).join("\n");
   const hasStanding = bundle.durableMemories.some((memory) => memory.standing);
-  const profile = options?.explanationFocus ? "" : bundle.profileSummary?.trim().slice(0, 6_000) ?? "";
+  const profile = options?.explanationFocus || options?.includeProfile === false ? "" : bundle.profileSummary?.trim().slice(0, 6_000) ?? "";
   const crossConversation = bundle.crossConversation
     ? composeExplicitCrossConversationContext(bundle.crossConversation)
     : "";

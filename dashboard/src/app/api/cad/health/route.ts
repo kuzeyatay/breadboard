@@ -36,9 +36,10 @@ async function backends() {
 }
 
 export async function GET() {
+  let extra: Partial<Awaited<ReturnType<typeof backends>>> = {};
   try {
     await requireUserId();
-    const extra = await backends();
+    extra = await backends();
     if (!cadServiceConfigured()) {
       return NextResponse.json({
         ok: false,
@@ -76,12 +77,11 @@ export async function GET() {
     if (error instanceof CadServiceError) {
       // The CadQuery service being down says nothing about SolidWorks, so the
       // per-backend report is still worth returning.
-      const extra = await backends().catch(() => ({}));
       return NextResponse.json(
         {
           ok: false,
           configured: true,
-          status: "unavailable",
+          status: error.code === "cad_service_stopped" ? "stopped" : "unavailable",
           error: error.code,
           message: error.message,
           engines: { cadquery: { available: false }, ...extra },

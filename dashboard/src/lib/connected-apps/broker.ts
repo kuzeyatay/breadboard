@@ -462,6 +462,7 @@ export async function embeddedProviderRequest(input: {
   userId: number;
   integration: NangoIntegration;
   request: ConnectedAppProxyRequest;
+  signal?: AbortSignal;
 }): Promise<unknown> {
   const metadata = connectedAppOAuthMetadata(input.integration);
   if (!metadata) throw new ApiError(400, "unsupported_app_auth", "This app connection is unsupported.");
@@ -492,18 +493,22 @@ export async function embeddedProviderRequest(input: {
   }
   if (input.request.body !== undefined) headers["Content-Type"] = "application/json";
   let response: Response;
+  let payload: unknown;
   try {
     response = await fetch(url, {
       method: input.request.method,
       headers,
       ...(input.request.body === undefined ? {} : { body: JSON.stringify(input.request.body) }),
       cache: "no-store",
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.any([AbortSignal.timeout(input.integration.slug === "spotify" &&
+        input.request.method === "GET" && endpoint === "/v1/me/player" ? 8_000 : 20_000),
+        ...(input.signal ? [input.signal] : [])]),
     });
-  } catch {
+    payload = await readProviderPayload(response);
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
     throw new ApiError(503, "provider_unavailable", "The connected app could not be reached.");
   }
-  const payload = await readProviderPayload(response);
   if (input.integration.slug === "spotify" && response.status === 429) {
     const retryAfter = response.headers.get("Retry-After");
     const seconds = retryAfter === null ? Number.NaN : Number(retryAfter);

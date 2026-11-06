@@ -11,6 +11,9 @@ export class VoiceCompanion {
   private returnFocus: BrowserWindow | null = null;
   private opening: Promise<void> | null = null;
   private visible = false;
+  // Electron 33's transparent Windows windows resize for fullscreen but report
+  // isFullScreen() as false. Keep the state from native transition events.
+  private fullscreen = false;
   private expandedBounds: Rectangle | null = null;
   private conversationKey: string | null = null;
   private stopping = false;
@@ -25,6 +28,7 @@ export class VoiceCompanion {
     if (this.visible && window !== this.window) this.returnFocus = window;
   };
   constructor(private readonly options: { dashboardUrl: () => string | null; allowed: AllowedOrigins;
+    prepareCapture?: (contents: WebContents) => Promise<() => void>;
     contextTargets?: (window: BrowserWindow) => { page: WebContents; app: WebContents } | null }) {
     ipcMain.handle('breadboard:voice-state', event => this.owns(event) && this.visible);
     ipcMain.handle('breadboard:voice-conversation', event => this.owns(event) && this.visible ? this.conversationKey : null);
@@ -32,6 +36,9 @@ export class VoiceCompanion {
     ipcMain.handle('breadboard:voice-hide', event => { if (this.owns(event)) this.hide(); });
     ipcMain.handle('breadboard:voice-minimize', (event, minimized: unknown) =>
       this.owns(event) && typeof minimized === 'boolean' ? this.setMinimized(minimized) : false);
+    ipcMain.handle('breadboard:voice-fullscreen-state', event => this.owns(event) && this.fullscreen);
+    ipcMain.handle('breadboard:voice-fullscreen', (event, fullscreen: unknown) =>
+      this.owns(event) && typeof fullscreen === 'boolean' ? this.setFullscreen(fullscreen) : false);
     ipcMain.handle('breadboard:voice-screen-context', event => this.owns(event) && this.visible ? this.contextAccess() : null);
     ipcMain.handle('breadboard:voice-ready', event => {
       if (!this.owns(event)) return false;
@@ -56,7 +63,7 @@ export class VoiceCompanion {
     this.revokeContext();
     const generation = this.contextGeneration;
     const access = await this.screenBridge.grant(() => this.contextTargets()?.page ?? null,
-      { source: 'voice', appTarget: () => this.contextTargets()?.app ?? null });
+      { source: 'voice', appTarget: () => this.contextTargets()?.app ?? null, prepareCapture: this.options.prepareCapture });
     if (generation !== this.contextGeneration || !this.contextTargets()) { this.screenBridge.revoke(access); return null; }
     this.screenAccess = { access, expires: Date.now() + 20 * 60_000 };
     return access;
@@ -85,15 +92,17 @@ export class VoiceCompanion {
       x: area.x + Math.max(0, area.width - width - 20), y: area.y + Math.max(0, area.height - height - 20),
       title: 'Voice', show: false, alwaysOnTop: true, autoHideMenuBar: true,
       frame: false, transparent: true, backgroundColor: '#00000000', hasShadow: true,
-      resizable: false, maximizable: false, fullscreenable: false,
+      resizable: false, maximizable: false, fullscreenable: true,
       webPreferences: { ...rendererWebPreferences(path.join(__dirname, '..', 'preload', 'voice-preload.js')),
         backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required' },
     });
-    this.window = window; this.rendererReady = false; this.expandedBounds = null; window.setMenu(null); hardenWindow(window, this.options.allowed);
+    this.window = window; this.rendererReady = false; this.expandedBounds = null; this.fullscreen = false; window.setMenu(null); hardenWindow(window, this.options.allowed);
     const guard = (event: Electron.Event, url: string) => { if (url !== this.target) event.preventDefault(); };
     window.webContents.on('will-navigate', guard); window.webContents.on('will-redirect', guard);
+    window.on('enter-full-screen', () => { this.fullscreen = true; window.webContents.send('breadboard:voice-fullscreen-changed', true); });
+    window.on('leave-full-screen', () => { this.fullscreen = false; window.webContents.send('breadboard:voice-fullscreen-changed', false); });
     window.on('close', event => { if (!this.stopping) { event.preventDefault(); this.hide(); } });
-    window.on('closed', () => { if (this.window === window) { this.window = null; this.rendererReady = false; this.visible = false; this.revokeContext(); } });
+    window.on('closed', () => { if (this.window === window) { this.window = null; this.rendererReady = false; this.visible = false; this.fullscreen = false; this.revokeContext(); } });
     try { await window.loadURL(this.target); }
     catch (error) { window.destroy(); throw error; }
   }
@@ -109,9 +118,30 @@ export class VoiceCompanion {
     if (window.isMinimized()) window.restore();
     window.show(); window.focus(); return true;
   }
+  private setFullscreen(fullscreen: boolean): boolean {
+    const window = this.window;
+    if (!window || window.isDestroyed()) return false;
+    if (this.fullscreen === fullscreen) return fullscreen;
+    if (fullscreen) this.setMinimized(false);
+    this.fullscreen = fullscreen;
+    window.setFullScreen(fullscreen);
+    // Native events also synchronize changes made outside the renderer.
+    return fullscreen;
+  }
   private setMinimized(minimized: boolean): boolean {
     const window = this.window;
     if (!window || window.isDestroyed()) return false;
+    if (minimized && this.fullscreen) {
+      // Wait for the floating bounds to be restored before creating the mini
+      // widget. Fullscreen transitions are asynchronous on macOS.
+      const generation = this.contextGeneration;
+      window.once('leave-full-screen', () => queueMicrotask(() => {
+        // On Windows the event arrives before setFullScreen restores bounds.
+        if (this.window === window && this.visible && generation === this.contextGeneration) this.setMinimized(true);
+      }));
+      this.setFullscreen(false);
+      return true;
+    }
     if (minimized === Boolean(this.expandedBounds)) return minimized;
     const current = window.getBounds();
     const area = screen.getDisplayMatching(current).workArea;
@@ -133,6 +163,7 @@ export class VoiceCompanion {
     this.returnFocus = null;
     if (!window || window.isDestroyed()) return;
     const restoreFocus = window.isFocused();
+    this.setFullscreen(false);
     window.webContents.send('breadboard:voice-open', false); window.hide();
     this.setMinimized(false);
     // Windows does not return focus after hiding this persistent widget. The
@@ -167,6 +198,6 @@ export class VoiceCompanion {
     app.removeListener('browser-window-focus', this.trackFocus);
     void this.screenBridge.close();
     this.stopping = true; this.window?.destroy(); this.window = null; this.rendererReady = false; this.pendingNotifications = []; this.returnFocus = null;
-    for (const channel of ['breadboard:voice-state', 'breadboard:voice-conversation', 'breadboard:voice-show', 'breadboard:voice-hide', 'breadboard:voice-minimize', 'breadboard:voice-screen-context', 'breadboard:voice-ready']) ipcMain.removeHandler(channel);
+    for (const channel of ['breadboard:voice-state', 'breadboard:voice-conversation', 'breadboard:voice-show', 'breadboard:voice-hide', 'breadboard:voice-minimize', 'breadboard:voice-fullscreen-state', 'breadboard:voice-fullscreen', 'breadboard:voice-screen-context', 'breadboard:voice-ready']) ipcMain.removeHandler(channel);
   }
 }

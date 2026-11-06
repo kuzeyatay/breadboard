@@ -49,7 +49,10 @@ const VERB_NOUN = new RegExp(
 );
 
 const NOUN_LED = new RegExp(
-  `\\b${DIAGRAM_NOUN}\\b[^.!?]{0,40}\\b(?:of|for|showing|that\\s+shows|describing|covering)\\b`,
+  // A noun-led request names the drawing directly. Do not scan arbitrary prose
+  // between a noun and "of": "any sequence can be written as a sum of..."
+  // describes mathematics and must not select a diagram authoring workflow.
+  `(?:^|[.!?\\n])\\s*(?:please\\s+)?(?:(?:a|an|the)\\s+)?${DIAGRAM_NOUN}(?:\\s+diagram)?\\s+(?:of|for|showing|that\\s+shows|describing|covering)\\b`,
   "i",
 );
 

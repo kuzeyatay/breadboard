@@ -28,6 +28,9 @@ import { parseCurrentLocationPayload } from "@/lib/hermes/current-location-conte
 import { SupervisorResourceExhaustedError } from "@/lib/supervisor-control.ts";
 import { startSessionEventPump } from "@/lib/hermes/event-stream.ts";
 import { scheduledChatReceiptForUser } from "@/lib/schedules/receipt-server.ts";
+import { describeError } from "@/lib/hermes/route-core.ts";
+import { unexpectedErrorDiagnostic } from "@/lib/hermes/error-diagnostic.ts";
+import { recordAuditEvent } from "@/lib/hermes/runtime-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -77,6 +80,7 @@ export async function POST(
       surface,
       surfaceContext,
       model: body.model,
+      voice: body.voice === true,
       reasoningEffort: body.reasoningEffort,
       // A regenerated turn sends a document's pointer without its words,
       // because the transcript never held them; this reads them back. Then
@@ -104,7 +108,7 @@ export async function POST(
       yoloMode: body.yoloMode === true,
       currentLocation:
         parseCurrentLocationPayload(body.currentLocation) ?? undefined,
-      browserAccess: requestedSurface === "dashboard_terminal" ? parseBrowserTerminalAccess(body.browserAccess) : undefined,
+      browserAccess: surface !== "quartz_ai" ? parseBrowserTerminalAccess(body.browserAccess) : undefined,
       confirmedPermissionIds: Array.isArray(body.confirmedPermissionIds)
         ? body.confirmedPermissionIds.filter((value): value is string =>
             typeof value === "string" && value.length > 0 && value.length <= 500)
@@ -112,6 +116,7 @@ export async function POST(
       retry: body.retry === true,
       branchGroupId: stringValue(body.branchGroupId)?.slice(0, 128),
       textSelection: textSelection ?? undefined,
+      concurrentInline: body.concurrentInline === true,
       branchHistory,
       branchContextId: stringValue(body.branchContextId)?.slice(0, 128),
       internalAgentContinuation: body.internalAgentContinuation === true,
@@ -156,6 +161,23 @@ export async function POST(
       capability: result.capability,
     });
   } catch (error) {
+    // A failed turn used to retain only error.message. That loses the only
+    // evidence identifying a preparation crash once a restart clears it.
+    if (conversation && describeError(error).status >= 500) {
+      try {
+        recordAuditEvent({
+          eventType: "conversation.turn_failed",
+          userId: conversation.user_id,
+          payload: {
+            conversationPublicId: conversation.public_id,
+            clientMessageId,
+            ...unexpectedErrorDiagnostic(error),
+          },
+        });
+      } catch {
+        // Diagnostics must not prevent the normal failure/retry lifecycle.
+      }
+    }
     if (conversation && clientMessageId) {
       try {
         failAssistantMessage({

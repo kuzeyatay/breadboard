@@ -184,8 +184,7 @@ export default function WardrobeSettingsDialog({ onClose }: { onClose: () => voi
               Wardrobe setup
             </h2>
             <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-              Wardrobe reads photos of your clothes, cuts each garment out, and makes a
-              photo of you wearing it — on ChatMock, into a wardrobe held on this machine.
+              Organize photos of your clothes and create images of you wearing them.
             </p>
           </span>
           <button
@@ -245,19 +244,26 @@ export default function WardrobeSettingsDialog({ onClose }: { onClose: () => voi
             <>
               <ul className="divide-y divide-[var(--line)]">
                 <Row
-                  label="Wardrobe clone"
+                  label="Wardrobe files"
                   ok={status.clone.found}
                   detail={status.clone.path}
-                  optional="Not found. Clone tandpfun/wardrobe next to the dashboard."
-                />
+                  optional="Wardrobe setup files are missing."
+                >
+                  {!status.clone.found ? (
+                    <details className="max-w-64 text-xs text-[var(--ink-muted)]">
+                      <summary className="cursor-pointer">Technical setup</summary>
+                      <p className="mt-2">Not found. Clone tandpfun/wardrobe next to the dashboard.</p>
+                    </details>
+                  ) : null}
+                </Row>
                 <Row
                   label="Dependencies"
                   ok={status.dependencies.installed}
                   detail="Installed."
                   optional={
                     status.dependencies.vite
-                      ? "The image toolchain (sharp) is missing, which is what trims and clears the background on every cutout."
-                      : "Not installed. Breadboard runs npm install in the clone; it takes a couple of minutes the first time."
+                      ? "Image tools are missing. Install them to crop images and remove backgrounds."
+                      : "Install the required tools. First-time setup takes a few minutes."
                   }
                 >
                   <button
@@ -327,8 +333,7 @@ export default function WardrobeSettingsDialog({ onClose }: { onClose: () => voi
                   Restart the wardrobe server
                 </button>
                 <p className="mt-1.5 text-xs leading-5 text-[var(--ink-muted)]">
-                  The server reads its settings once at boot. Restart it after changing your
-                  background model or the image quality below.
+                  Restart after changing your background model or image quality.
                 </p>
               </div>
               <AgentRunDefaults agentId={WARDROBE_AGENT_ID} />

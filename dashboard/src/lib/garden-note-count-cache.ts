@@ -42,24 +42,29 @@ export async function cachedGardenNoteCountAsync(
   contentPath: string,
   slug: string,
   count: () => Promise<number>,
-  options: { now?: () => number; freshnessMs?: number } = {},
+  options: { now?: () => number; freshnessMs?: number; staleWhileRevalidate?: boolean } = {},
 ): Promise<number> {
   const now = options.now ?? Date.now;
   const key = cacheKey(contentPath, slug);
   const entry = counts.get(key);
   if (entry && now() - entry.countedAt <= (options.freshnessMs ?? NOTE_COUNT_FRESHNESS_MS)) return entry.count;
   const pending = pendingCounts.get(key);
-  if (pending) return pending;
-  const work = Promise.resolve().then(count);
-  pendingCounts.set(key, work);
-  try {
-    const value = await work;
+  if (pending) return options.staleWhileRevalidate && entry ? entry.count : pending;
+  const work = Promise.resolve().then(count).then(value => {
     // A write or a newer synchronous count can invalidate this walk in flight.
     if (pendingCounts.get(key) === work) storeCount(key, value, now());
     return value;
-  } finally {
+  }).finally(() => {
     if (pendingCounts.get(key) === work) pendingCounts.delete(key);
+  });
+  pendingCounts.set(key, work);
+  if (options.staleWhileRevalidate && entry) {
+    // Keep the last real count on the card while an external writer's changes
+    // are reconciled. A failed refresh retains it and permits the next retry.
+    void work.catch(() => undefined);
+    return entry.count;
   }
+  return work;
 }
 
 function cacheKey(contentPath: string, slug: string): string {

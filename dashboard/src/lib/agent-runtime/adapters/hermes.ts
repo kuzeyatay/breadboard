@@ -8,9 +8,6 @@ import {
 } from "../../ai-models.ts";
 import { BREAD_ASSISTANT_IDENTITY } from "../../assistant-identity.ts";
 import { boundPromptContext, HERMES_SYSTEM_PROMPT_LIMIT } from "../../hermes/prompt-budget.ts";
-import {
-  type ChatAttachment,
-} from "../../chat-attachments.ts";
 import { hermesPromptText } from "../hermes-prompt.ts";
 import { hermesToolAccess } from "../hermes-tool-access.ts";
 import { readHermesConfig } from "../../hermes/config.ts";
@@ -89,6 +86,7 @@ const BREADBOARD_AGENT = "breadboard";
 const CHATMOCK_PROVIDER = "chatmock";
 const TURN_RESULT_POLL_MS = 1_000;
 const RUNNING_HEARTBEAT_MS = 10_000;
+const TURN_RECOVERY_TIMEOUT_MS = 30_000;
 
 const BASE_SYSTEM_PROMPT = [
   BREAD_ASSISTANT_IDENTITY,
@@ -96,10 +94,14 @@ const BASE_SYSTEM_PROMPT = [
   "Use only the tools exposed in this session.",
   "Use computer_use only for a task that genuinely requires operating a graphical desktop application after a direct API, connected service, filesystem operation, terminal command, or purpose-built browser tool is unavailable or has failed. In Super Agent mode computer_use is always a last resort. Keep it in background delivery mode; never raise, front, or visibly focus a window.",
   "On Windows, terminal_execute_command runs Windows PowerShell 5.1, even if Hermes' generic host context mentions Bash; use PowerShell syntax and Windows paths only.",
+  "For code that crosses PowerShell, WSL, Bash or Python, save a UTF-8 script with workspace_write and invoke that file with the target interpreter. Do not nest quoted -c programs. Select the WSL distro explicitly, convert the authorized script path to its /mnt/... path, and run bash -n or python -m py_compile in that environment first. A /root/... path belongs to Linux, not Windows Python. Discover installed tool fields/options before assuming a version-specific API.",
+  "Long jobs retain their command handle across waits: collect the same job, do not restart it. A shell command owns its process tree; background children are not a persistence mechanism. In WSL, keep service startup, health checks, the dependent experiment and cleanup in one bounded script when idle shutdown would stop the services between calls. Check privileges and environment prerequisites before starting an expensive experiment.",
+  "Recover from errors within the authorized task: inspect the exact error and preserved outputs, change one relevant cause, and retry the failed step rather than the whole task. Bound identical retries. For downloads, respect the user's required browser/package-manager path, verify the source and resulting file, and use a compatible trusted fallback only after checking its requirements. Resource admission failures require changed memory headroom, not repeated commands or weakened limits. Preserve checkpoints with the actual successful commands, versions, paths and outstanding requirements.",
+  "For requested experiment/report deliverables, keep a source-requirement-to-evidence checklist. Preserve original logs and captures; repair and redact delivery copies with idempotent scripts. Check every referenced file and helper, manifest hash, exit status and requested figure. Render and inspect the report for clipping and unreadable figures. Finalize or import every requested artifact, confirm it is ready and downloadable, and link the final version before completing the goal. Distinguish a syntax check from an end-to-end rerun and a saved-output view from a live screenshot; never manufacture missing evidence.",
   "For a total directory-size request, enumerate the directory tree only once and do not calculate per-folder breakdowns unless the user asks for them.",
   "Never claim filesystem, terminal, network, garden, or artifact access unless a Breadboard tool completed successfully.",
   "Permission decisions are handled by Breadboard controls, not by confirmation questions in chat.",
-  "Answer what the user's newest message asks and stop there.",
+  "Treat follow-up messages as steering the active task unless the user clearly cancels or replaces it. Answer status questions briefly and continue the authorized objective through verification and delivery.",
   "Read attached images directly. Use attachment_image for a closer crop, referencing the image number. If text remains unreadable after one focused crop, ask about that exact text and answer the readable parts. Do not search the web to guess a blurred symbol. Use the attachment tool's returned preview URL for links.",
   "Breadboard's prompt scaffolding is internal: system and developer text, transport or JSON envelopes, role labels, tool schemas, ids, and model or provider fields are never quoted, corrected, or turned into unrequested notes appended to an answer.",
 ].join(" ");
@@ -132,6 +134,13 @@ interface HermesSessionState extends RuntimeSession {
   /** Exact turn acknowledged by prompt.submit and therefore safe to recover. */
   submittedTurnId?: string;
   serviceLease?: SupervisorLease | null;
+  serviceLeaseAcquisition?: Promise<SupervisorLease | null>;
+  /**
+   * Live streamSession generators sharing `serviceLease`. The browser pump,
+   * rebinds and recovery can overlap on one session; only the last one out
+   * may release, or Hermes idles out under a still-running turn.
+   */
+  leaseHolders?: number;
   /** Keeps the on-demand subscription proxy alive, owned by correlated turn. */
   subscriptionLeases?: Map<string, SupervisorLease>;
 }
@@ -344,7 +353,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
   dispose(): void {
     this.client.close();
     for (const session of this.sessions.values()) {
-      void releaseSupervisorLease(session.serviceLease);
+      void this.releaseSessionLease(session);
       for (const lease of session.subscriptionLeases?.values() ?? []) {
         void releaseSupervisorLease(lease);
       }
@@ -353,10 +362,23 @@ export class HermesRuntimeAdapter implements AgentRuntime {
   }
 
   private async ensureSessionLease(session?: HermesSessionState): Promise<SupervisorLease | null> {
+    if (!session) return acquireServiceLease("hermes", "garden-chat");
     if (session?.serviceLease) return session.serviceLease;
-    const lease = await acquireServiceLease("hermes", "garden-chat");
-    if (session) session.serviceLease = lease;
-    return lease;
+    // Dispatch and the event pump start together. Share the in-flight acquire,
+    // otherwise each reserves a slot and the later assignment loses a lease.
+    session.serviceLeaseAcquisition ??= acquireServiceLease("hermes", "garden-chat")
+      .then((lease) => (session.serviceLease = lease))
+      .finally(() => { session.serviceLeaseAcquisition = undefined; });
+    return session.serviceLeaseAcquisition;
+  }
+
+  private async releaseSessionLease(session: HermesSessionState): Promise<void> {
+    await session.serviceLeaseAcquisition?.catch(() => undefined);
+    const lease = session.serviceLease;
+    // Detach before awaiting so a new holder cannot borrow the released lease,
+    // and this cleanup cannot erase a replacement acquired in the meantime.
+    session.serviceLease = null;
+    await releaseSupervisorLease(lease);
   }
 
   private async ensureModelServiceLease(
@@ -437,6 +459,8 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "attachment_image",
       "terminal_execute_command",
       "browser_terminal",
+      "breadboard_use",
+      "computer_use",
       "garden_list",
       "garden_search",
       "garden_get_page",
@@ -450,6 +474,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "garden_run_proposal_validation",
       "garden_list_files",
       "garden_save_note",
+      "garden_decide_proposals",
       "garden_create_folder",
       "garden_move_page",
       "garden_rename_folder",
@@ -480,6 +505,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "patent_disclosure_guide",
       "watch_run",
       "agent_loop_run",
+      "multisim",
       "messaging_send",
       "save_memory",
       "memory_query",
@@ -556,7 +582,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         // host paths are reached only through Breadboard's validated tools.
         cwd: workspace.runtimeDirectory,
         messages: input.messages ?? [],
-        model: input.model,
+        model: input.model ? modelIdentity.model : undefined,
         provider: input.model ? "custom" : undefined,
         reasoning_effort: input.reasoningEffort,
         // Toolsets are immutable for the life of a Hermes session so the
@@ -575,12 +601,12 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         close_on_disconnect: false,
         },
       );
+      if (!created.session_id || !created.stored_session_id) {
+        throw new Error("Hermes returned an invalid session response.");
+      }
     } catch (error) {
       await releaseSupervisorLease(serviceLease);
       throw error;
-    }
-    if (!created.session_id || !created.stored_session_id) {
-      throw new Error("Hermes returned an invalid session response.");
     }
     const session: HermesSessionState = {
       externalSessionId: created.stored_session_id,
@@ -589,7 +615,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       runtimeDirectory: workspace.runtimeDirectory,
       workspaceKey: workspace.workspaceKey,
       agentName: BREADBOARD_AGENT,
-      model: input.model,
+      model: input.model ? modelIdentity.model : undefined,
       reasoningEffort: input.reasoningEffort,
       modelIdentity,
       serviceLease,
@@ -604,6 +630,12 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     // Hermes persistence is explicitly non-canonical. Reconstruct a fresh live
     // session from Breadboard's authorized transcript after every process or
     // dashboard restart rather than trusting Hermes's state database.
+    // A replacement abandons the previous runtime, not its canonical chat.
+    // Release first: recovery must work even when every lease slot is occupied.
+    const previousSession = this.sessions.get(input.externalSessionId);
+    if (previousSession) {
+      await this.disposeSession(previousSession).catch(() => undefined);
+    }
     return this.createSession(input);
   }
 
@@ -619,7 +651,22 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       });
     }
     const requestedModel = input.model?.modelID?.trim();
-    if (requestedModel && requestedModel !== session.model) {
+    const selectedModel =
+      normalizeAssistantModelId(input.modelIdentity?.modelID) ??
+      (requestedModel && !isModelSentinel(requestedModel)
+        ? normalizeAssistantModelId(requestedModel) : null) ??
+      session.selectedModel ??
+      undefined;
+    const modelIdentity = await this.resolveModelIdentity(
+      requestedModel ?? session.model,
+      selectedModel,
+    );
+    const turnId = input.messageId?.trim();
+    // Hermes can call concrete ChatMock model ids. Leaving `chat` here lets
+    // concurrent picker changes/council routing change the provider mid-turn
+    // and makes Hermes budget context against an unrelated sentinel model.
+    const runtimeModel = modelIdentity.model;
+    if (runtimeModel !== session.model) {
       // The model id alone. Hermes rejects a `--provider custom` suffix here
       // ("Unknown provider 'custom'") because bare `custom` is a billing class,
       // not a routable provider name — so appending it threw before the prompt
@@ -630,9 +677,9 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       await this.client.request("config.set", {
         session_id: session.liveSessionId,
         key: "model",
-        value: requestedModel,
+        value: runtimeModel,
       });
-      session.model = requestedModel;
+      session.model = runtimeModel;
     }
     const requestedReasoning = input.variant?.trim();
     if (
@@ -655,19 +702,10 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       });
     }
     const runtimeText = hermesPromptText(input.text, input.attachments);
+    await this.ensureModelServiceLease(session, modelIdentity, turnId);
     // Carry the *choice* forward across turns, not the model that last served:
     // a resolved identity can be a quota stand-in, and re-asserting that as the
     // background model would overwrite the choice with its own substitute.
-    const selectedModel =
-      normalizeAssistantModelId(input.modelIdentity?.modelID) ??
-      session.selectedModel ??
-      undefined;
-    const modelIdentity = await this.resolveModelIdentity(
-      requestedModel ?? session.model,
-      selectedModel,
-    );
-    const turnId = input.messageId?.trim();
-    await this.ensureModelServiceLease(session, modelIdentity, turnId);
     session.selectedModel = selectedModel;
     session.modelIdentity = modelIdentity;
     session.activeTurnId = turnId;
@@ -685,7 +723,10 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         tool_access: hermesToolAccess(input.tools),
         tool_loop_guardrails: {
           hard_stop_enabled: true,
-          exploration_limit: input.attachments?.some(attachment => attachment.type === "image") ? 8 : 0,
+          // A reference image must not impose a task-wide discovery quota:
+          // successful tool descriptions count too, even during productive work.
+          // Keep repeated-failure/no-progress detection enabled for every turn.
+          exploration_limit: 0,
         },
         ...(turnId ? { client_turn_id: turnId } : {}),
       });
@@ -756,8 +797,10 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     let lastRunningHeartbeatAt = 0;
     // The iterator's own reference is authoritative. Session fields are
     // mutable because the same live Hermes session serves later turns.
-    let streamTurnId = input.messageId ?? session.activeTurnId;
-    let streamTurnText = input.instruction ?? session.activeTurnText;
+    // A pre-dispatch viewer has no run yet. With a durable resolver, cached
+    // session fields can still describe an interrupted *previous* turn.
+    let streamTurnId = input.messageId ?? (input.resolveActiveTurn ? undefined : session.activeTurnId);
+    let streamTurnText = input.instruction ?? (input.resolveActiveTurn ? undefined : session.activeTurnText);
     const completedToolCallIds = new Set<string>();
     const normalizeWithRecoveredTools = (
       raw: RawHermesEvent,
@@ -826,9 +869,9 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         // stream. The next recovery poll gets another chance.
       }
       streamTurnId ??=
-        resolved?.messageId ?? session.activeTurnId ?? input.messageId;
+        resolved?.messageId ?? (input.resolveActiveTurn ? undefined : session.activeTurnId) ?? input.messageId;
       streamTurnText ??=
-        resolved?.instruction ?? session.activeTurnText ?? input.instruction;
+        resolved?.instruction ?? (input.resolveActiveTurn ? undefined : session.activeTurnText) ?? input.instruction;
       const turnId = streamTurnId;
       // The adapter appended document text at submission. Prefer that exact
       // wire prompt while live; after restart use the identical durable copy.
@@ -842,11 +885,12 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         text: streamTurnText ?? "",
         submitted:
           Boolean(turnId && session.submittedTurnId === turnId) ||
-          resolved?.submitted === true ||
-          input.submitted === true,
+          (resolved?.messageId === turnId && resolved?.submitted === true) ||
+          (input.messageId === turnId && input.submitted === true),
       };
     };
 
+    session.leaseHolders = (session.leaseHolders ?? 0) + 1;
     try {
       while (!streamAbort.signal.aborted) {
         let pollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -903,6 +947,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
               ? payload.turn_id
               : undefined;
           const expectedTurnId = activeTurnReference().turnId;
+          if (input.resolveActiveTurn && !expectedTurnId) continue;
           // A detached listener from an earlier Garden request can still be
           // bound to this live Hermes session. Never let a later turn's frames
           // complete that older request (or vice versa): correlated gateway
@@ -969,6 +1014,24 @@ export class HermesRuntimeAdapter implements AgentRuntime {
             },
             streamAbort.signal,
           );
+          if (recovered.state === "unknown") {
+            // session.redirect replaces Hermes's inflight user text without
+            // changing the turn id. After a viewer/process reconnect, the
+            // durable original prompt therefore cannot prove liveness. Ask
+            // for the exact live/cached turn without enabling transcript
+            // fallback (which requires expected_user_text). Never resubmit
+            // the prompt or accept another turn's result here.
+            const correlated = await this.client.request<HermesTurnResult>(
+              "session.turn_result",
+              {
+                session_id: session.liveSessionId,
+                stored_session_id: session.externalSessionId,
+                turn_id: turnId,
+              },
+              streamAbort.signal,
+            );
+            if (correlated.turn_id === turnId) recovered = correlated;
+          }
         } catch (error) {
           // Older Hermes gateways do not expose durable turn recovery. Keep
           // their live stream working and stop probing until the next attach.
@@ -976,9 +1039,20 @@ export class HermesRuntimeAdapter implements AgentRuntime {
             recoverySupported = false;
             if (streamError) throw streamError;
           }
+          // A broken result payload can close every recovery connection too.
+          // Count failed RPCs as unavailable recovery, not just an explicit
+          // `unknown` response, or this loop retries forever after disconnect.
+          if (streamAbort.signal.aborted) return;
+          if (streamError) {
+            recoveryUnknownSince ??= Date.now();
+            if (Date.now() - recoveryUnknownSince >= TURN_RECOVERY_TIMEOUT_MS) {
+              throw new Error("The agent connection was interrupted and its saved result could not be retrieved. Retry this response with its saved attachments.", { cause: error });
+            }
+          }
           continue;
         }
         if (recovered.state === "waiting_for_permission") {
+          recoveryUnknownSince = undefined;
           const approval = isRecord(recovered.approval)
             ? recovered.approval
             : {};
@@ -996,6 +1070,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
           continue;
         }
         if (recovered.state === "waiting_for_clarification") {
+          recoveryUnknownSince = undefined;
           const clarify = isRecord(recovered.clarify) ? recovered.clarify : {};
           const requestId = clarifyRequestId(clarify);
           if (requestId && requestId === activeClarifyRequestId) continue;
@@ -1035,7 +1110,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         ) {
           if (streamError) {
             recoveryUnknownSince ??= Date.now();
-            if (Date.now() - recoveryUnknownSince >= 30_000) {
+            if (Date.now() - recoveryUnknownSince >= TURN_RECOVERY_TIMEOUT_MS) {
               throw new Error("The agent connection was interrupted and no matching saved result could be recovered. Retry this response with its saved attachments.");
             }
           }
@@ -1070,9 +1145,13 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       streamAbort.abort();
       signal?.removeEventListener("abort", abortStream);
       void rawIterator.return?.();
-      await releaseSupervisorLease(session.serviceLease);
-      session.serviceLease = null;
-      await this.releaseModelServiceLease(session, streamTurnId);
+      session.leaseHolders = Math.max(0, (session.leaseHolders ?? 1) - 1);
+      if (session.leaseHolders === 0) {
+        await this.releaseSessionLease(session);
+      }
+      if (session.leaseHolders === 0 || streamTurnId !== session.activeTurnId) {
+        await this.releaseModelServiceLease(session, streamTurnId);
+      }
     }
   }
 
@@ -1159,8 +1238,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         session_id: session.liveSessionId,
       });
     } finally {
-      await releaseSupervisorLease(session.serviceLease);
-      session.serviceLease = null;
+      await this.releaseSessionLease(session);
       for (const lease of session.subscriptionLeases?.values() ?? []) {
         await releaseSupervisorLease(lease);
       }

@@ -333,9 +333,7 @@ export default function AgentReachSettingsDialog({ onClose }: { onClose: () => v
               Agent Reach channels
             </h2>
             <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-              Choose a platform to see what it can do and finish its setup step by step. Breadboard
-              installs supported tools for you; keys and browser sessions stay on this machine and
-              are only used when Agent Reach talks to that service.
+              Choose a platform to set it up. Keys and browser sessions stay on this device and are used only to connect to that service.
             </p>
           </span>
           <button
@@ -411,10 +409,6 @@ export default function AgentReachSettingsDialog({ onClose }: { onClose: () => v
                 <h3 className="text-xs font-semibold uppercase tracking-[0.13em] text-[var(--ink-muted)]">
                   Platforms
                 </h3>
-                <p className="mt-1 text-[11px] leading-4 text-[var(--ink-muted)]">
-                  Open any card for a plain-language checklist. Technical diagnostics are kept
-                  behind “Doctor details” when you need them.
-                </p>
                 <ul className="mt-3 grid grid-cols-1 items-start gap-2 sm:grid-cols-2">
                   {channels.map((channel) => {
                     const guide = guideFor(channel.channel);

@@ -131,7 +131,7 @@ export default function FormsmithRequestForm({
           }}
         />
         <p className={`mt-2 text-[10px] leading-4 ${error ? "text-[var(--danger)]" : "text-[var(--ink-muted)]"}`}>
-          {error || "One JPEG, PNG, or WebP picture. Formsmith reconstructs it locally and returns a rotatable GLB artifact."}
+          {error || "Choose one JPEG, PNG, or WebP image to turn into a 3D model on this device."}
         </p>
         {form.upload ? (
           <button type="button" className="sr-only" disabled={!ready} onClick={onSubmit}>

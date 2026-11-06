@@ -58,6 +58,9 @@ export type CriticIssueType =
   | "template_zettelkasten_handle"
   | "repeated_opening"
   | "explanation_gap"
+  /** Source content, a needed figure, or an explanation the finished module
+   *  lacks; raised by learn-source-completeness.ts, not by the critic model. */
+  | "source_teaching_gap"
   | "visual_grounding_mismatch"
   | "worked_example_misclassified"
   | "repair_provenance_error"
@@ -601,6 +604,8 @@ export type ModelCandidateValidator = (
 function firstProseParagraphs(body: string, count: number): string[] {
   const prose = body
     .replace(/```[\s\S]*?```/g, " ")
+    // The overview block summarizes the lesson; the opening is what follows it.
+    .replace(/^> \*\*(?:Overview|Before you read)\.\*\*.*(?:\n>.*)*$/gm, " ")
     .replace(/^#.*$/gm, " ")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/^\s*\*\*(?:Question|Answer)\.?\*\*.*$/gim, " ");
@@ -845,6 +850,80 @@ Use "blocking" only for genuine semantic errors; "warning"/"cosmetic" for polish
 
 export function buildCriticUserPrompt(packet: CriticReviewPacket): string {
   return `Review this final garden. Report only genuine semantic errors as JSON {"issues":[...]}.\n\n${JSON.stringify(packet, null, 1)}`;
+}
+
+/** Largest critic prompt sent in one request. telecom-1's 2.94M-character
+ * packet was reviewed whole; em1's 6.25M-character packet (59 lessons) failed
+ * every attempt with context_length_exceeded (2026-10-16). */
+export const CRITIC_PACKET_CHAR_BUDGET = 2_500_000;
+
+/** Split an oversized review packet into whole-section parts. Each part keeps
+ * the garden-wide context (scope, orientation, coverage summary) and only the
+ * anchors and visual summaries its own pages reference. */
+export function splitCriticReviewPacket(
+  packet: CriticReviewPacket,
+  budget = CRITIC_PACKET_CHAR_BUDGET,
+): CriticReviewPacket[] {
+  if (buildCriticUserPrompt(packet).length <= budget) return [packet];
+  const partFor = (sections: CriticReviewPacket["sections"]): CriticReviewPacket => {
+    const pagePaths = new Set(sections.flatMap((section) => section.pages.map((page) => page.path)));
+    const ids = new Set<string>();
+    for (const page of sections.flatMap((section) => section.pages)) {
+      const fm = page.frontmatterSummary;
+      for (const id of [...fm.sourceAnchors, ...fm.sourceFormulaAnchors, ...fm.visuals]) ids.add(id);
+      for (const formula of fm.formulas) {
+        if (formula.sourceAnchor) ids.add(formula.sourceAnchor);
+        if (formula.basedOnFormula) ids.add(formula.basedOnFormula);
+      }
+    }
+    const visualSummaries = packet.visualSummaries.filter((visual) => pagePaths.has(visual.pagePath));
+    for (const visual of visualSummaries) for (const id of visual.sourceAnchors) ids.add(id);
+    return {
+      ...packet,
+      sections,
+      sourceAnchors: packet.sourceAnchors.filter((anchor) => ids.has(anchor.id)),
+      visualSummaries,
+      sourceVisualSummaries: packet.sourceVisualSummaries.filter((summary) =>
+        ids.has(summary.anchorId) ||
+        summary.assignedPages.some((page) => pagePaths.has(page)) ||
+        summary.markdownEmbeds.some((embed) => pagePaths.has(embed.pagePath))),
+    };
+  };
+  const parts: CriticReviewPacket[] = [];
+  let current: CriticReviewPacket["sections"] = [];
+  for (const section of packet.sections) {
+    const candidate = [...current, section];
+    if (current.length > 0 && buildCriticUserPrompt(partFor(candidate)).length > budget) {
+      parts.push(partFor(current));
+      current = [section];
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.length > 0) parts.push(partFor(current));
+  return parts;
+}
+
+/** Review a packet in budget-sized parts and merge the findings. Model ids can
+ * repeat across parts, so a repeated id gets a part suffix. */
+async function reviewCriticPacket(
+  critic: CriticFn,
+  packet: CriticReviewPacket,
+): Promise<CriticIssue[] | null | undefined> {
+  const parts = splitCriticReviewPacket(packet);
+  if (parts.length === 1) return critic(parts[0]!);
+  const merged: CriticIssue[] = [];
+  const seenIds = new Set<string>();
+  for (const [index, part] of parts.entries()) {
+    const issues = await Promise.resolve(critic(part));
+    if (!Array.isArray(issues)) return issues;
+    for (const issue of issues) {
+      const id = seenIds.has(issue.id) ? `${issue.id}#part${index + 1}` : issue.id;
+      seenIds.add(id);
+      merged.push(id === issue.id ? issue : { ...issue, id });
+    }
+  }
+  return merged;
 }
 
 const VALID_TYPES = new Set<CriticIssueType>([
@@ -1430,6 +1509,7 @@ export function criticIssuesToRepairRequests(
  *  the deterministic layer only fixes the mechanical classes. */
 const MODEL_FIRST_ISSUE_TYPES = new Set<CriticIssueType>([
   "explanation_gap",
+  "source_teaching_gap",
   "section_index_template_prose",
   "template_zettelkasten_handle",
   "repeated_opening",
@@ -1461,6 +1541,7 @@ Hard requirements:
 - Preserve contract-backed Zettelkasten tags, unless the issue is a template handle — then replace only the flagged handle with a concrete durable claim.
 - Remove exactly the flagged issue; do not introduce generic scaffold prose ("introduces the core idea", "so the pieces connect into one picture", "one step at a time").
 - For explanation_gap, supply the missing meaning or reasoning before the passage that depends on it. Use a brief concrete explanation built from simpler ideas; an acronym expansion, synonym, glossary link, or promise to explain later is insufficient. Preserve correct teaching elsewhere and keep orientation pages concise.
+- For source_teaching_gap, teach the named content where it belongs in the page's argument, using only what the supplied source anchors state: define every symbol, show any figure the issue names with its existing embed or describe it fully in words, and keep every existing explanation, example, figure and Question./Answer. block.
 - Keep the learner-facing voice; never mention "the paper", "the source", or "this document".
 Output the revised file content only.`;
 
@@ -2800,7 +2881,7 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
     // strict parsing exception crosses this boundary by exact identity; reports
     // are emitted only for completed reviews and can never replace that error.
     const criticIssues = requireCriticIssues(
-      await Promise.resolve(args.critic(packet)),
+      await reviewCriticPacket(args.critic, packet),
     ).slice(0, options.maxIssuesPerRound);
     const review = verifiedReview(state, criticIssues, round);
     allInstances.push(...review.instances);
@@ -2935,7 +3016,7 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
     const finalReview = verifiedReview(
       state,
       requireCriticIssues(
-        await Promise.resolve(args.critic(buildCriticReviewPacket(state))),
+        await reviewCriticPacket(args.critic, buildCriticReviewPacket(state)),
       ).slice(0, options.maxIssuesPerRound),
       measurementRound,
     );

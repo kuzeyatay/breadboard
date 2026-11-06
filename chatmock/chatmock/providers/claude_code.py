@@ -25,6 +25,7 @@ from typing import Any, Dict, Iterator, List
 
 import requests
 
+from ..temp_cleanup import SessionLease
 from . import pxpipe
 from .store import ResolvedCredentials
 from .types import ModelCall, ProviderError
@@ -375,7 +376,7 @@ def _run_cli(payload: Dict[str, Any], model: str) -> Dict[str, Any]:
     if not isinstance(messages, list):
         messages = []
 
-    with tempfile.TemporaryDirectory(prefix="breadboard-claude-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="breadboard-claude-") as temp_dir, SessionLease(temp_dir):
         messages, image_count = _extract_image_files(messages, temp_dir)
         prompt_path = Path(temp_dir) / "system-prompt.txt"
         prompt_path.write_text(

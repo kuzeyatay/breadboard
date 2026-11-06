@@ -4,6 +4,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { withCanonicalQuartzReader } from "./quartz-canonical-reader-bridge.mjs";
+import { canonicalQuartzReaderShell } from "./quartz-reader-shell.mjs";
 
 const MAX_URL_BYTES = 8 * 1024;
 const MIME_TYPES = new Map([
@@ -123,6 +124,41 @@ function publishedPageRedirect(root, requestPath) {
   return publicFile(root, `${canonical}.html`) ? canonical : null;
 }
 
+function unpublishedPageShell(root, requestPath) {
+  let decoded;
+  try { decoded = decodeURIComponent(requestPath); } catch { return null; }
+  if (/[\0\\]/u.test(decoded)) return null;
+  const segments = decoded.split("/").filter(Boolean);
+  if (segments.length < 2 || segments.some(segment => segment.startsWith("."))) return null;
+  if (!/^[a-z0-9][a-z0-9-]*$/u.test(segments[0])) return null;
+  const extension = path.extname(segments.at(-1)).toLowerCase();
+  if (extension && extension !== ".md" && extension !== ".html" && !/^\.\d/u.test(extension)) return null;
+  segments[segments.length - 1] = segments.at(-1).replace(/\.(md|html)$/iu, "");
+  const slug = segments.join("/");
+  // Only borrow published chrome from this garden. The host's authenticated
+  // document bridge decides whether the saved note exists and is readable.
+  const directories = [segments[0]];
+  let inspected = 0;
+  while (directories.length && inspected < 128) {
+    const directory = directories.shift();
+    const absolute = path.resolve(root, directory);
+    if (!within(root, absolute) || !fs.existsSync(absolute) || fs.lstatSync(absolute).isSymbolicLink()) continue;
+    for (const entry of fs.readdirSync(absolute, { withFileTypes: true })) {
+      if (++inspected > 128) break;
+      const relative = `${directory}/${entry.name}`;
+      if (entry.isDirectory() && !entry.name.startsWith(".")) directories.push(relative);
+      if (!entry.isFile() || !entry.name.endsWith(".html")) continue;
+      const template = publicFile(root, `/${relative.split("/").map(encodeURIComponent).join("/")}`);
+      if (!template || template.size > 8 * 1024 * 1024) continue;
+      const html = fs.readFileSync(template.path, "utf8");
+      if (!html.includes('class="markdown-actions"')) continue;
+      const shell = canonicalQuartzReaderShell(html, `/${relative}`, slug);
+      if (shell) return shell;
+    }
+  }
+  return null;
+}
+
 function sendJson(response, status, value) {
   const body = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
   response.writeHead(status, {
@@ -176,6 +212,19 @@ const server = http.createServer((request, response) => {
     return;
   }
   if (!file) {
+    let shell;
+    try { shell = unpublishedPageShell(publicRoot, url.pathname); } catch { /* Publication may be rotating. */ }
+    if (shell) {
+      const body = Buffer.from(shell, "utf8");
+      response.writeHead(200, {
+        "cache-control": "no-store",
+        "content-length": String(body.byteLength),
+        "content-type": "text/html; charset=utf-8",
+        "x-content-type-options": "nosniff",
+      });
+      response.end(request.method === "HEAD" ? undefined : body);
+      return;
+    }
     const message = fs.existsSync(path.join(publicRoot, "index.html"))
       ? "This Garden page could not be found."
       : "This Garden has not been published yet.";

@@ -13,6 +13,7 @@ from chatmock.serving import (
     BoundedThreadPoolWSGIServer,
     MemoryEfficientWSGIRequestHandler,
     _BoundedDrainReader,
+    run_memory_efficient_server,
 )
 
 
@@ -35,6 +36,26 @@ class _AllocationGuardReader:
 
 
 class ServingTests(unittest.TestCase):
+    def test_cleanup_initialization_failure_does_not_prevent_serving(self) -> None:
+        with patch("chatmock.serving.BoundedThreadPoolWSGIServer") as server_type, patch(
+            "chatmock.serving.TempCleanupWorker", side_effect=OSError("temp unavailable")
+        ), self.assertLogs("chatmock.serving", level="ERROR"):
+            run_memory_efficient_server(Mock(), host="127.0.0.1", port=0)
+        server_type.return_value.serve_forever.assert_called_once()
+        server_type.return_value.server_close.assert_called_once()
+
+    def test_cleanup_worker_follows_server_lifecycle_even_on_failure(self) -> None:
+        with patch("chatmock.serving.BoundedThreadPoolWSGIServer") as server_type, patch(
+            "chatmock.serving.TempCleanupWorker"
+        ) as worker_type:
+            server = server_type.return_value
+            server.serve_forever.side_effect = RuntimeError("server stopped")
+            with self.assertRaisesRegex(RuntimeError, "server stopped"):
+                run_memory_efficient_server(Mock(), host="127.0.0.1", port=0)
+            worker_type.return_value.start.assert_called_once()
+            worker_type.return_value.stop.assert_called_once()
+            server.server_close.assert_called_once()
+
     def test_bounded_reader_avoids_werkzeug_allocation_and_drains_all_data(self) -> None:
         # Keep this assertion tied to the pinned dependency. If Werkzeug gains a
         # bounded drain upstream, this local compatibility layer can be removed.

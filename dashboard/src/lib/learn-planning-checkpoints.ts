@@ -135,6 +135,9 @@ function exactStringArrayJson(value: string | null): string | null {
 export function exactStrictReceiptOriginBinding(
   origin: PriorPlanningCheckpointRow | PriorRecoveredPlanningJobRow,
   current: CurrentPlanningJobBinding,
+  /** Replaying a completed, accepted receipt may also trust a cancelled run:
+   * a completed receipt is final however its run ended. */
+  terminalStatuses: readonly string[] = ["failed"],
 ): boolean {
   const originSourceIds = exactStringArrayJson(origin.job_source_ids_json);
   const currentSourceIds = exactStringArrayJson(current.source_ids_json);
@@ -142,7 +145,7 @@ export function exactStrictReceiptOriginBinding(
   const originUpdatedAt = Date.parse(origin.job_updated_at);
   const currentCreatedAt = Date.parse(current.created_at);
   return !(
-    origin.job_status !== "failed" ||
+    !terminalStatuses.includes(origin.job_status ?? "") ||
     origin.map_count !== 0 ||
     origin.version_count !== 0 ||
     origin.garden_id !== current.garden_id ||
@@ -1349,4 +1352,43 @@ export function priorRecoveredPlanningJobs(
        AND j.current_step = 'Unresponsive Learn worker recovered; prior Learn state restored'
      ORDER BY j.created_at DESC, j.rowid DESC`,
   ).all(input.currentJobId, input.gardenId) as PriorRecoveredPlanningJobRow[];
+}
+
+/**
+ * Planning stages whose answer passed validation, per job. A later run may
+ * replay an identical completed request from a failed or cancelled job only
+ * when that job accepted the stage: the stage that caused the failure never
+ * has a row here, so it is always asked again. Live 2026-09-25: one practice
+ * part's failure discarded 41 accepted Source Map parts and ~1.5 h of work.
+ */
+function ensureAcceptedPlanningStages(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS learn_planning_accepted_stages (
+      job_id      TEXT NOT NULL REFERENCES learn_jobs(id) ON DELETE CASCADE,
+      stage_key   TEXT NOT NULL,
+      accepted_at TEXT NOT NULL,
+      PRIMARY KEY (job_id, stage_key)
+    );
+  `);
+}
+
+export function recordAcceptedPlanningStage(
+  database: Database.Database,
+  input: { jobId: string; stageKey: string; at: string },
+): void {
+  ensureAcceptedPlanningStages(database);
+  database.prepare(
+    `INSERT OR IGNORE INTO learn_planning_accepted_stages (job_id, stage_key, accepted_at)
+     VALUES (?, ?, ?)`,
+  ).run(input.jobId, input.stageKey, input.at);
+}
+
+export function hasAcceptedPlanningStage(
+  database: Database.Database,
+  input: { jobId: string; stageKey: string },
+): boolean {
+  ensureAcceptedPlanningStages(database);
+  return Boolean(database.prepare(
+    "SELECT 1 FROM learn_planning_accepted_stages WHERE job_id = ? AND stage_key = ?",
+  ).get(input.jobId, input.stageKey));
 }

@@ -1,8 +1,11 @@
 #!/usr/bin/env node
+import { sameRuntimePath as samePath, runtimeProcessPath } from "./runtime-v2-paths.mjs";
+import { managedVenvRoot, managedModelCacheEnvironment } from "./runtime-v2-bulk-paths.mjs";
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const MAX_CONFIG_BYTES = 256 * 1024;
 const MAX_ENVIRONMENT_VALUE_BYTES = 16 * 1024;
@@ -93,20 +96,13 @@ function requiredAbsolutePath(name) {
   return path.resolve(value);
 }
 
-function samePath(left, right) {
-  const normalize = (value) => process.platform === "win32"
-    ? path.resolve(value).toLowerCase()
-    : path.resolve(value);
-  return normalize(left) === normalize(right);
-}
-
 function readConfiguration(serviceId) {
   const dataRoot = requiredAbsolutePath("BREADBOARD_DATA_DIR");
   const configuredPath = requiredAbsolutePath("BREADBOARD_MANAGED_PYTHON_SERVICE_CONFIG");
   const expectedPath = path.join(dataRoot, "runtime", serviceId, "service-config.json");
   if (!samePath(configuredPath, expectedPath)) fail("the launch configuration escaped its fixed data path");
   const stat = fs.lstatSync(configuredPath);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 2 || stat.size > MAX_CONFIG_BYTES) {
+  if (!stat.isFile() || stat.isSymbolicLink() || !samePath(fs.realpathSync.native(configuredPath), configuredPath) || stat.size < 2 || stat.size > MAX_CONFIG_BYTES) {
     fail("the launch configuration is not a bounded direct regular file");
   }
   const value = JSON.parse(fs.readFileSync(configuredPath, "utf8"));
@@ -173,21 +169,39 @@ function writePrivateFile(target, contents) {
   }
 }
 
+export function validateManagedPythonLaunchPaths(serviceId, dataRoot, environment = process.env) {
+  if (!["vibe-trading", "stock-analyst"].includes(serviceId)) throw new Error("the managed Python service id is invalid");
+  const sealed = (name) => {
+    const value = environment[name]?.trim();
+    if (!value || !path.isAbsolute(value) || value.includes("\0")) throw new Error(`${name} is not a sealed absolute path`);
+    return path.resolve(value);
+  };
+  const python = sealed("BREADBOARD_MANAGED_PYTHON_EXECUTABLE");
+  const sourceRoot = sealed("BREADBOARD_MANAGED_PYTHON_SOURCE_ROOT");
+  const venv = managedVenvRoot(dataRoot, serviceId, environment);
+  const expectedPython = process.platform === "win32" ? path.join(venv, "Scripts", "python.exe") : path.join(venv, "bin", "python");
+  if (!samePath(python, expectedPython)) throw new Error("the sealed Python executable does not match the selected managed environment");
+  for (const candidate of [python, sourceRoot]) {
+    const stat = fs.lstatSync(candidate);
+    if ((candidate === python && !stat.isFile()) || (candidate === sourceRoot && !stat.isDirectory()) || stat.isSymbolicLink()
+      || !samePath(fs.realpathSync.native(candidate), candidate)) {
+      throw new Error("a sealed launch path is unavailable or indirect");
+    }
+  }
+  return {python: runtimeProcessPath(python), sourceRoot: runtimeProcessPath(sourceRoot)};
+}
+
 function launchShape(serviceId, port, configuration, dataRoot) {
-  const python = requiredAbsolutePath("BREADBOARD_MANAGED_PYTHON_EXECUTABLE");
-  const sourceRoot = requiredAbsolutePath("BREADBOARD_MANAGED_PYTHON_SOURCE_ROOT");
+  let paths;
+  try { paths = validateManagedPythonLaunchPaths(serviceId, dataRoot); }
+  catch (error) { fail(error instanceof Error ? error.message : "invalid managed launch paths"); }
+  const {python, sourceRoot} = paths;
   const configuredId = process.env.BREADBOARD_MANAGED_PYTHON_SERVICE_ID;
   const configuredPort = process.env.BREADBOARD_MANAGED_PYTHON_SERVICE_PORT;
   if (configuredId !== serviceId || configuredPort !== String(port)) {
     fail("the sealed launch identity does not match the manifest argv");
   }
-  for (const candidate of [python, sourceRoot]) {
-    const stat = fs.lstatSync(candidate);
-    if ((candidate === python && !stat.isFile()) || (candidate === sourceRoot && !stat.isDirectory()) || stat.isSymbolicLink()) {
-      fail("a sealed launch path is unavailable or indirect");
-    }
-  }
-  const common = baseChildEnvironment();
+  const common = {...baseChildEnvironment(), ...managedModelCacheEnvironment(dataRoot)};
   if (serviceId === "vibe-trading") {
     if (!exactKeys(configuration, [
       "schemaVersion",
@@ -276,6 +290,7 @@ function launchShape(serviceId, port, configuration, dataRoot) {
   };
 }
 
+function main() {
 const { serviceId, port } = parseArguments(process.argv.slice(2));
 let loaded;
 try {
@@ -304,3 +319,6 @@ child.once("exit", (code, signal) => {
   if (signal) process.kill(process.pid, signal);
   else process.exit(code ?? 1);
 });
+}
+
+if (process.argv[1] && samePath(process.argv[1], fileURLToPath(import.meta.url))) main();

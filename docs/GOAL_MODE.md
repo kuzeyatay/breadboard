@@ -15,7 +15,7 @@ fires on a commitment to keep working past this turn ("don't stop until…",
 "iterate until it's green"), on an objective named as one ("your goal is to…",
 "Goal: …"), and on an open-ended bound ("however long it takes"). It runs last
 in the selection chain, so a turn another skill already claimed on its own
-subject keeps it — a conversation carries at most one skill, and a video or a
+subject keeps it — automatic selection adds one skill, and a video or a
 diagram is the subject of its turn while a goal is a commitment about it. It
 never fires on a conversation that already holds a goal, or on a message that
 discusses goals rather than setting one.

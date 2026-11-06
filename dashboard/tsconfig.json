@@ -64,6 +64,7 @@
     "src/vendor/genoffice/docs/src/renderer/ai",
     "src/vendor-overrides",
     "openwork-runtime",
+    "runtime-v2",
     "openwork-state",
     "openwork-workspace"
   ]

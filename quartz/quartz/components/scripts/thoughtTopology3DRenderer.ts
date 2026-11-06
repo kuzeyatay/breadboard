@@ -28,6 +28,7 @@ import { FullSlug, SimpleSlug, resolveRelative } from "../../util/path"
 import type { D3Config } from "../Graph"
 import { TOPOLOGY_SOURCE_COLORS } from "./sourceNodeVisual"
 import { RenderSlot } from "./renderSlot"
+import { GraphRenderLoop } from "./graphRenderLoop"
 import {
   affinityLabel,
   boundsOf,
@@ -111,6 +112,7 @@ type EdgeView = {
   restColor: string
   widthBoost: number
   selected: boolean
+  drawn?: { x1: number; y1: number; x2: number; y2: number; k: number; width: number; color: string }
 }
 
 type HierarchyView = EdgeView & { kind: "hierarchy" }
@@ -126,6 +128,11 @@ const EMPTY_LESSON_PAGES_NOTICE = /No lesson pages have been generated yet\.?/gi
 const PAGE_LABEL_WRAP_PX = 128
 const FOLDER_LABEL_WRAP_PX = 180
 const GARDEN_LABEL_WRAP_PX = 230
+// Large maps already have deterministic spherical homes. Re-running hundreds
+// of collision passes on opening is costly and adds no navigation capability.
+const ENTRANCE_SIMULATION_NODE_LIMIT = 300
+const INITIAL_NODE_BATCH = 200
+const INITIAL_EDGE_BATCH = 400
 // v2 intentionally ignores positions saved by the old left-drag behavior.
 const POSITION_STORAGE_PREFIX = "thought-topology-3d-home-positions:v1:"
 
@@ -159,6 +166,8 @@ function withoutEmptyLessonPagesNotice(value: string): string {
 export type ThoughtTopologySettings = {
   /** Folder ids switched off; their subtrees and connections leave the map. */
   excludedFolderIds: string[]
+  /** Repack visible folders into a sphere, or retain the full map's positions. */
+  filteredLayout: "sphere" | "cross-section"
   /** Connections weaker than this strength (0..1) are hidden. */
   minConnectionStrength: number
   /** Whether the Garden -> folder -> page hierarchy lines are drawn. */
@@ -177,6 +186,7 @@ const CONNECTION_CAP_CHOICES: Array<{ value: number; label: string }> = [
 const SETTINGS_STORAGE_PREFIX = "thought-topology-settings:v1:"
 const DEFAULT_SETTINGS: ThoughtTopologySettings = {
   excludedFolderIds: [],
+  filteredLayout: "sphere",
   minConnectionStrength: 0,
   showHierarchy: true,
   // A large Garden draws thousands of links; each page keeping its five
@@ -196,6 +206,7 @@ function readStoredSettings(scope: string): ThoughtTopologySettings {
       excludedFolderIds: Array.isArray(parsed.excludedFolderIds)
         ? parsed.excludedFolderIds.filter((id): id is string => typeof id === "string")
         : [],
+      filteredLayout: parsed.filteredLayout === "cross-section" ? "cross-section" : "sphere",
       minConnectionStrength: Number.isFinite(strength) ? Math.min(1, Math.max(0, strength)) : 0,
       showHierarchy: parsed.showHierarchy !== false,
       maxConnectionsPerNode:
@@ -247,6 +258,7 @@ type MountResult = {
 
 type SpinControl = {
   enabled: boolean
+  invalidate?: () => void
 }
 
 function isPreviewSurface(config: D3Config): boolean {
@@ -300,9 +312,10 @@ export async function renderThoughtTopology3D(
   let renderPanel = () => {}
   let spinButton: HTMLButtonElement | null = null
   // Spin is an explicit toggle, independent of all other map interactions.
-  const spin: SpinControl = { enabled: interactive }
+  const spin: SpinControl = { enabled: false }
   const setSpinning = (enabled: boolean) => {
     spin.enabled = enabled
+    spin.invalidate?.()
     spinButton?.setAttribute("aria-pressed", String(enabled))
     if (spinButton) spinButton.title = enabled ? "Stop spinning" : "Spin clockwise"
   }
@@ -418,6 +431,21 @@ export async function renderThoughtTopology3D(
     foldersTitle.append(showAll)
     const folderList = element("ul", "thought-topology-filter-folders")
     foldersSection.append(foldersTitle, folderList)
+    const layoutSection = element("section", "thought-topology-filter-section")
+    const layoutRow = element("label", "thought-topology-filter-row thought-topology-filter-select")
+    layoutRow.append(element("span", undefined, "Filtered layout"))
+    const layoutSelect = element("select")
+    layoutSelect.setAttribute("aria-label", "Filtered layout")
+    for (const [value, label] of [
+      ["sphere", "Full sphere"],
+      ["cross-section", "Cross-section"],
+    ]) {
+      const option = element("option", undefined, label)
+      option.value = value
+      layoutSelect.append(option)
+    }
+    layoutRow.append(layoutSelect)
+    layoutSection.append(layoutRow)
     const linesSection = element("section", "thought-topology-filter-section")
     const linesTitle = element("div", "thought-topology-filter-title")
     linesTitle.append(element("span", undefined, "Connections"))
@@ -448,7 +476,7 @@ export async function renderThoughtTopology3D(
     }
     capRow.append(capSelect)
     linesSection.append(linesTitle, hierarchyRow, strengthRow, capRow)
-    body.append(summary, foldersSection, linesSection)
+    body.append(summary, foldersSection, layoutSection, linesSection)
     spinButton = element("button", "thought-topology-filter-toggle thought-topology-spin")
     spinButton.type = "button"
     spinButton.innerHTML =
@@ -467,6 +495,7 @@ export async function renderThoughtTopology3D(
       const excluded = new Set(settings.excludedFolderIds)
       const activeCount =
         excluded.size +
+        (settings.filteredLayout === DEFAULT_SETTINGS.filteredLayout ? 0 : 1) +
         (settings.minConnectionStrength > 0 ? 1 : 0) +
         (settings.showHierarchy ? 0 : 1) +
         (settings.maxConnectionsPerNode !== DEFAULT_SETTINGS.maxConnectionsPerNode ? 1 : 0)
@@ -474,6 +503,7 @@ export async function renderThoughtTopology3D(
       badge.hidden = activeCount === 0
       summary.textContent = `${active.visiblePageCount} of ${active.totalPageCount} pages, ${active.connectionCount} connections shown.`
       hierarchyInput.checked = settings.showHierarchy
+      layoutSelect.value = settings.filteredLayout
       strengthInput.value = String(Math.round(settings.minConnectionStrength * 100))
       strengthValue.textContent = describeStrength(settings.minConnectionStrength)
       capSelect.value = String(
@@ -567,6 +597,12 @@ export async function renderThoughtTopology3D(
     })
     showAll.addEventListener("click", () => {
       void applySettings({ ...settings, excludedFolderIds: [] })
+    })
+    layoutSelect.addEventListener("change", () => {
+      void applySettings({
+        ...settings,
+        filteredLayout: layoutSelect.value === "cross-section" ? "cross-section" : "sphere",
+      })
     })
     hierarchyInput.addEventListener("change", () => {
       void applySettings({ ...settings, showHierarchy: hierarchyInput.checked })
@@ -671,6 +707,16 @@ async function mountThoughtTopologyScene(
   // every page and connection of a large garden into 260px drew a hairball.
   const compact = preview || compactSidebar
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false
+  // Return to the browser between bounded batches so loading a large map
+  // cannot monopolize input/painting while creating labels and GPU objects.
+  let batchStarted = performance.now()
+  const yieldIfNeeded = (): Promise<void> | undefined => {
+    if (performance.now() - batchStarted < 6) return
+    return new Promise(resolve => window.setTimeout(() => {
+      batchStarted = performance.now()
+      resolve()
+    }, 0))
+  }
   const gardenSlug = payload.garden.slug
   const positionScope = context.scopeFolderPath
     ? `${gardenSlug}:folder:${context.scopeFolderPath}`
@@ -685,14 +731,19 @@ async function mountThoughtTopologyScene(
     maxConnectionsPerNode: settings.maxConnectionsPerNode,
   }
   const plan = planThoughtTopology(payload, planOptions)
+  const largeMap = plan.nodes.length > ENTRANCE_SIMULATION_NODE_LIMIT
+  const animateEntrance = !compact && !reducedMotion && plan.nodes.length <= ENTRANCE_SIMULATION_NODE_LIMIT
+  await yieldIfNeeded()
   const camera = new TopologyCamera3D()
-  // Scatter the complete scope once so filtering and compact previews retain
-  // the same round layout. Cached worker coordinates belong to the 2D planner.
+  // By default, scatter the visible folders across a full sphere. Cross-section
+  // mode retains the complete scope's homes, as do compact previews.
   const plannedHomes = sphericalTopologyPositions(
-    compact || settings.excludedFolderIds.length > 0
+    compact ||
+      (settings.filteredLayout === "cross-section" && settings.excludedFolderIds.length > 0)
       ? planThoughtTopology(payload, { scopeFolderPath: context.scopeFolderPath }).nodes
       : plan.nodes,
   )
+  await yieldIfNeeded()
   const depthSpread = [...plannedHomes.values()].reduce(
     (extent, point) => Math.max(extent, Math.hypot(point.x, point.y, point.z)),
     180,
@@ -837,7 +888,7 @@ async function mountThoughtTopologyScene(
     // remounted scene. Some Chromium/WebGPU devices leave a live but blank
     // canvas after tab suspension or repeated filter/theme remounts.
     preference: "webgl",
-    resolution: window.devicePixelRatio,
+    resolution: Math.min(window.devicePixelRatio || 1, 2),
     eventMode: "static",
   })
   graph.appendChild(app.canvas)
@@ -877,9 +928,13 @@ async function mountThoughtTopologyScene(
   let inspectedNodeId: string | null = null
   let labelsDirty = true
   let stopAnimation = false
+  let renderLoop: GraphRenderLoop | null = null
+  let stopSimulation = () => {}
+  const invalidate = () => { labelsDirty = true; renderLoop?.invalidate() }
   const cleanups: Array<() => void> = []
   onCleanup(() => {
     stopAnimation = true
+    renderLoop?.dispose()
     for (const cleanup of cleanups.splice(0)) cleanup()
   })
   const inspectorRoot = interactive && outer ? element("aside", "thought-inspector") : null
@@ -900,6 +955,8 @@ async function mountThoughtTopologyScene(
     if (rendererInvalidated || stopAnimation) return
     rendererInvalidated = true
     stopAnimation = true
+    renderLoop?.dispose()
+    stopSimulation()
     onRendererInvalidated?.()
   }
   const handleContextLost = (event: Event) => {
@@ -1015,7 +1072,7 @@ async function mountThoughtTopologyScene(
               : PAGE_LABEL_WRAP_PX,
         lineHeight: size * 1.2,
       },
-      resolution: window.devicePixelRatio * 2,
+      resolution: Math.min((window.devicePixelRatio || 1) * 2, 3),
     })
     return label
   }
@@ -1023,6 +1080,7 @@ async function mountThoughtTopologyScene(
   for (const node of plan.nodes) {
     const gfx = new Graphics({
       interactive: interactive,
+      visible: !largeMap,
       label: node.id,
       eventMode: interactive ? "static" : "none",
       hitArea: new Circle(0, 0, node.radius + 7),
@@ -1045,6 +1103,8 @@ async function mountThoughtTopologyScene(
     labelLayer.addChild(view.label)
     views.push(view)
     viewById.set(node.id, view)
+    const pause = yieldIfNeeded()
+    if (pause) await pause
   }
 
   for (const edge of plan.hierarchyEdges) {
@@ -1053,6 +1113,7 @@ async function mountThoughtTopologyScene(
     if (!source || !target) continue
     const gfx = new Graphics({
       interactive,
+      visible: !largeMap,
       eventMode: interactive ? "static" : "none",
       cursor: "pointer",
       label: edge.id,
@@ -1086,6 +1147,8 @@ async function mountThoughtTopologyScene(
       selected: false,
     })
     hierarchyLayer.addChild(gfx)
+    const pause = yieldIfNeeded()
+    if (pause) await pause
   }
 
   for (const edge of plan.edges) {
@@ -1094,6 +1157,7 @@ async function mountThoughtTopologyScene(
     if (!source || !target) continue
     const gfx = new Graphics({
       interactive: interactive,
+      visible: !largeMap,
       eventMode: interactive ? "static" : "none",
       cursor: "pointer",
       label: edge.id,
@@ -1113,6 +1177,8 @@ async function mountThoughtTopologyScene(
       selected: false,
     })
     linkLayer.addChild(gfx)
+    const pause = yieldIfNeeded()
+    if (pause) await pause
   }
   const connectionViews: EdgeView[] = [...hierarchyViews, ...edgeViews]
   const edgeById = new Map(connectionViews.map((view) => [view.edge.id, view]))
@@ -1126,10 +1192,9 @@ async function mountThoughtTopologyScene(
   // reserve every label's complete footprint; the small preview stays compact
   // because it intentionally displays only a label budget.
   const labelLayoutScale = compact ? 1.8 : isGlobalGraph ? 1 : 1.15
-  const clearanceById = new Map(
-    views.map((view) => [
-      view.node.id,
-      labelClearanceRadius(
+  const clearanceById = new Map<string, number>()
+  for (const view of views) {
+    clearanceById.set(view.node.id, labelClearanceRadius(
         view.node.radius,
         (compactSidebar && view.node.kind !== "folder") || !shouldShowTopologyNodeLabel(view.node)
           ? 0
@@ -1138,9 +1203,10 @@ async function mountThoughtTopologyScene(
           ? 0
           : view.label.height,
         labelLayoutScale,
-      ),
-    ]),
-  )
+    ))
+    const pause = yieldIfNeeded()
+    if (pause) await pause
+  }
   const returnTargets = new Map<string, Point3D & { pin: boolean }>()
   const returningNodeIds = new Set<string>()
   let activeDragNodeId: string | null = null
@@ -1150,7 +1216,7 @@ async function mountThoughtTopologyScene(
       node.fx = home?.x ?? node.x
       node.fy = home?.y ?? node.y
       node.fz = home?.z ?? node.z
-    } else if (!reducedMotion && !compactSidebar) {
+    } else if (animateEntrance) {
       node.x *= 0.12
       node.y *= 0.12
       node.z *= 0.12
@@ -1178,9 +1244,10 @@ async function mountThoughtTopologyScene(
   const homeYForNode = (node: SimNode) => homePositions.get(node.id)?.y ?? node.y ?? 0
   const homeXForce = forceX<SimNode>(homeXForNode).strength(isGlobalGraph ? 0.11 : 0.09)
   const homeYForce = forceY<SimNode>(homeYForNode).strength(isGlobalGraph ? 0.055 : 0.045)
-  let simulationSettled = reducedMotion || compactSidebar
+  let simulationSettled = !animateEntrance
   let draggingNode = false
   const simulation = forceSimulation<SimNode>(simNodes)
+    .stop()
     .force("charge", forceManyBody<SimNode>().strength(-125 * config.repelForce))
     .force("center", forceCenter<SimNode>(0, 0).strength(config.centerForce))
     .force(
@@ -1211,7 +1278,7 @@ async function mountThoughtTopologyScene(
     .velocityDecay(0.5)
     .on("tick", () => {
       simulationSettled = false
-      labelsDirty = true
+      invalidate()
     })
     .on("end", () => {
       for (const [nodeId, target] of returnTargets) {
@@ -1227,22 +1294,23 @@ async function mountThoughtTopologyScene(
       returnTargets.clear()
       returningNodeIds.clear()
       simulationSettled = true
-      labelsDirty = true
+      invalidate()
       // The relaxed layout spreads past the frame fitted around the planned
       // positions, which cut off the outer sectors. Re-frame once the first
       // settle finishes, but never over a view the person has already moved.
       if (viewState === "fit" && !userMovedView && !activeDragNodeId) fitView(true)
     })
   onCleanup(() => simulation.stop())
-  if (compactSidebar) {
-    // Keep the compact map at its stable, authored positions.
-    simulation.stop()
-  } else if (reducedMotion) {
+  stopSimulation = () => { simulation.stop() }
+  if (reducedMotion && !compact && simNodes.length <= ENTRANCE_SIMULATION_NODE_LIMIT) {
     // Reduced motion removes the entrance animation, not the label-aware
-    // layout. Settle synchronously so this accessibility mode gets the same
-    // readable default spacing.
-    simulation.stop()
-    simulation.tick(360)
+    // layout. Settle in short batches so accessibility mode cannot turn
+    // opening the map into one long blocking task.
+    for (let tick = 0; tick < 360; tick++) {
+      simulation.tick()
+      const pause = yieldIfNeeded()
+      if (pause) await pause
+    }
   }
 
   // --- Geometry ------------------------------------------------------------
@@ -1333,6 +1401,14 @@ async function mountThoughtTopologyScene(
     const restWidth = view.edge.width + view.widthBoost
     const strokeWidth = (view.selected ? restWidth + 1.2 : restWidth) / k
     const gfx = view.gfx
+    // Fading a connection does not change its geometry. Keep the GPU path
+    // until an endpoint, zoom, or style changes instead of rebuilding it on
+    // every opacity frame.
+    gfx.alpha = view.alpha
+    const drawn = view.drawn
+    if (drawn && drawn.x1 === g.x1 && drawn.y1 === g.y1 && drawn.x2 === g.x2 &&
+        drawn.y2 === g.y2 && drawn.k === k && drawn.width === strokeWidth && drawn.color === view.color) return
+    view.drawn = { ...g, k, width: strokeWidth, color: view.color }
     gfx.clear()
     const path = () => {
       gfx.moveTo(g.x1, g.y1)
@@ -1343,7 +1419,7 @@ async function mountThoughtTopologyScene(
       gfx.stroke({ alpha: 0.001, width: 14 / k, color: view.color })
     }
     path()
-    gfx.stroke({ alpha: view.alpha, width: strokeWidth, color: view.color })
+    gfx.stroke({ alpha: 1, width: strokeWidth, color: view.color })
   }
 
   // --- View transform ------------------------------------------------------
@@ -1358,7 +1434,7 @@ async function mountThoughtTopologyScene(
         viewState = "user"
         userMovedView = true
       }
-      labelsDirty = true
+      invalidate()
       emitGraphContext()
     })
   // NOTE: the zoom behavior is attached after the drag behavior (below).
@@ -1371,7 +1447,7 @@ async function mountThoughtTopologyScene(
       transform = target
       world.scale.set(target.k, target.k)
       world.position.set(target.x, target.y)
-      labelsDirty = true
+      invalidate()
       return
     }
     if (animate && !reducedMotion) {
@@ -1552,7 +1628,7 @@ async function mountThoughtTopologyScene(
             : view.restColor
       view.widthBoost = selected ? 1.2 : hovered ? 0.8 : active && emphasis ? 0.4 : 0
     }
-    labelsDirty = true
+    invalidate()
   }
 
   // --- Labels --------------------------------------------------------------
@@ -1804,7 +1880,7 @@ async function mountThoughtTopologyScene(
     calloutVisible = true
     calloutRoot.classList.add("visible")
     calloutRoot.setAttribute("aria-hidden", "false")
-    labelsDirty = true
+    invalidate()
   }
 
   function hideCallout() {
@@ -1814,7 +1890,7 @@ async function mountThoughtTopologyScene(
     renderedCalloutKey = null
     calloutRoot.classList.remove("visible")
     calloutRoot.setAttribute("aria-hidden", "true")
-    labelsDirty = true
+    invalidate()
   }
 
   function calloutText(className: string, text: string) {
@@ -2167,7 +2243,7 @@ async function mountThoughtTopologyScene(
     inspectorRoot?.classList.remove("open")
     inspectorRoot?.setAttribute("aria-hidden", "true")
     obscureOverlayClose(false)
-    labelsDirty = true
+    invalidate()
   }
 
   function openNodeInspector(view: NodeView) {
@@ -2182,7 +2258,7 @@ async function mountThoughtTopologyScene(
     refreshStyles()
     syncFloatingCallout()
     emitGraphContext()
-    labelsDirty = true
+    invalidate()
   }
 
   function refreshNodeInspector() {
@@ -2394,7 +2470,7 @@ async function mountThoughtTopologyScene(
     writeStoredPositions(positionScope, positions)
     drawNode(view)
     refreshNodeInspector()
-    labelsDirty = true
+    invalidate()
     emitGraphContext()
   }
 
@@ -2433,7 +2509,7 @@ async function mountThoughtTopologyScene(
     }
     drawNode(view)
     refreshNodeInspector()
-    labelsDirty = true
+    invalidate()
     emitGraphContext()
   }
 
@@ -2597,7 +2673,7 @@ async function mountThoughtTopologyScene(
               member.view.node.fx = x
               member.view.node.fy = y
             }
-            labelsDirty = true
+            invalidate()
           })
           .on("end", (event) => {
             if (!dragState) return
@@ -2650,7 +2726,7 @@ async function mountThoughtTopologyScene(
               writeStoredPositions(positionScope, positions)
               for (const member of state.members) drawNode(member.view)
               refreshNodeInspector()
-              labelsDirty = true
+              invalidate()
               emitGraphContext()
               return
             }
@@ -2683,7 +2759,7 @@ async function mountThoughtTopologyScene(
               homeXForce.x(homeXForNode)
               homeYForce.y(homeYForNode)
             }
-            labelsDirty = true
+            invalidate()
             emitGraphContext()
             void event
           }),
@@ -2753,7 +2829,7 @@ async function mountThoughtTopologyScene(
         orbit.y = event.clientY
         userMovedView = true
         viewState = "user"
-        labelsDirty = true
+        invalidate()
         emitGraphContext()
       }
       const endOrbit = () => {
@@ -2913,7 +2989,7 @@ async function mountThoughtTopologyScene(
               },
               false,
             )
-          labelsDirty = true
+          invalidate()
         })
   resizeObserver?.observe(graph)
   onCleanup(() => resizeObserver?.disconnect())
@@ -2923,26 +2999,40 @@ async function mountThoughtTopologyScene(
     Math.abs(target - current) < 0.01 ? target : current + (target - current) * 0.22
 
   let lastFrameTime: number | null = null
-  function animate(time: number) {
-    if (stopAnimation) return
+  // Pixi triangulates/uploads each shape the first time it is drawn. Creating
+  // objects in batches alone does not prevent that first GPU upload spike.
+  let revealedNodes = largeMap ? 0 : views.length
+  let revealedEdges = largeMap ? 0 : connectionViews.length
+  function animate(time: number): boolean {
+    if (stopAnimation) return false
+    // Large maps may have thousands of paths. Bound active rendering as
+    // well as eliminating idle frames; input still invalidates the scene.
+    if (simNodes.length > ENTRANCE_SIMULATION_NODE_LIMIT && lastFrameTime !== null && time - lastFrameTime < 1000 / 30) return true
     const elapsed = lastFrameTime === null ? 0 : Math.min(50, time - lastFrameTime)
     lastFrameTime = time
     if (interactive && spin.enabled && !document.hidden) {
       // Clockwise from above: the near side moves right. One turn per minute;
       // explicit opt-in remains available at half speed with reduced motion.
       camera.yaw += (elapsed * Math.PI * 2) / (reducedMotion ? 120_000 : 60_000)
-      labelsDirty = true
+      invalidate()
     }
     if (labelsDirty) updateLabels()
+    let fading = false
+    revealedNodes = Math.min(views.length, revealedNodes + INITIAL_NODE_BATCH)
+    revealedEdges = Math.min(connectionViews.length, revealedEdges + INITIAL_EDGE_BATCH)
+    const sceneReady = revealedNodes === views.length && revealedEdges === connectionViews.length
     const inverseScale = 1 / Math.sqrt(transform.k)
-    for (const view of views) {
+    for (let index = 0; index < revealedNodes; index++) {
+      const view = views[index]
       const { node } = view
+      view.gfx.visible = true
       view.gfx.position.set(worldX(node), worldY(node))
       view.gfx.zIndex = projected(node).z
       view.gfx.scale.set(inverseScale, inverseScale)
       view.alpha = lerp(view.alpha, view.alphaTarget)
       view.gfx.alpha = view.alpha
       view.labelAlpha = lerp(view.labelAlpha, view.labelTarget)
+      fading ||= view.alpha !== view.alphaTarget || view.labelAlpha !== view.labelTarget
       const placement = view.placement
       if (placement && view.labelAlpha > 0.02) {
         const position = screenOf(node)
@@ -2958,8 +3048,11 @@ async function mountThoughtTopologyScene(
         view.label.visible = false
       }
     }
-    for (const view of connectionViews) {
+    for (let index = 0; index < revealedEdges; index++) {
+      const view = connectionViews[index]
+      view.gfx.visible = true
       view.alpha = lerp(view.alpha, view.alphaTarget)
+      fading ||= view.alpha !== view.alphaTarget
       drawEdge(view)
     }
     positionFloatingCallout()
@@ -2967,6 +3060,7 @@ async function mountThoughtTopologyScene(
       const debugWindow = window as Window & { __breadboardThoughtTopologyDebug?: unknown }
       debugWindow.__breadboardThoughtTopologyDebug = {
         dimension: "3d",
+        sceneReady,
         spinning: spin.enabled,
         camera: { yaw: camera.yaw, pitch: camera.pitch },
         selectedConnectionId: selectedEdgeId,
@@ -2978,7 +3072,7 @@ async function mountThoughtTopologyScene(
         returningNodeIds: [...returningNodeIds],
         permanentNodeIds: [...permanentHomeIds],
         viewState,
-        viewSettled: !transitioning && (simulationSettled || draggingNode),
+        viewSettled: sceneReady && !transitioning && (simulationSettled || draggingNode),
         simulationSettled,
         calloutVisible,
         compactSidebar,
@@ -3041,15 +3135,49 @@ async function mountThoughtTopologyScene(
       app.renderer.render(stage)
     } catch {
       invalidateRenderer()
-      return
+      return false
     }
-    requestAnimationFrame(animate)
+    return !sceneReady || fading || transitioning || (interactive && spin.enabled)
   }
 
+  renderLoop = new GraphRenderLoop(animate)
+  spin.invalidate = invalidate
+  onCleanup(() => {
+    if (spin.invalidate === invalidate) delete spin.invalidate
+  })
+  let intersecting = false
+  const updateVisibility = () => {
+    const visible = !document.hidden && intersecting && !stopAnimation
+    lastFrameTime = null
+    renderLoop?.setActive(visible)
+    if (visible) {
+      if (!simulationSettled) simulation.restart()
+      invalidate()
+    } else {
+      simulation.stop()
+    }
+  }
+  // A hidden tab or an offscreen preview must not keep its graphics or
+  // layout simulation running. Intersection also handles collapsed overlays.
+  const rect = graph.getBoundingClientRect()
+  intersecting = rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 &&
+    rect.top < window.innerHeight && rect.left < window.innerWidth
+  const intersectionObserver = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver(entries => {
+    intersecting = entries.some(entry => entry.isIntersecting)
+    updateVisibility()
+  })
+  intersectionObserver?.observe(graph)
+  document.addEventListener("visibilitychange", updateVisibility)
+  onCleanup(() => {
+    intersectionObserver?.disconnect()
+    document.removeEventListener("visibilitychange", updateVisibility)
+    canvasSelection.interrupt()
+  })
+  updateVisibility()
   refreshStyles()
   fitView(false, !simulationSettled)
   emitGraphContext()
-  requestAnimationFrame(animate)
+  renderLoop.invalidate()
 
   const cleanup = () => {
     stopAnimation = true

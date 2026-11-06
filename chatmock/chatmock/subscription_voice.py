@@ -21,7 +21,9 @@ import time
 
 from flask import Blueprint, Response, jsonify, request
 from . import usage_ledger
+from .temp_cleanup import SessionLease
 from .providers import chatgpt_web_voice as web_voice
+from .providers import chatgpt_web_live as web_live
 from .accounts import list_accounts, select_account
 from .utils import _read_auth_file_with_path, _read_auth_path, get_effective_chatgpt_auth, load_chatgpt_tokens
 
@@ -109,6 +111,7 @@ class VoiceSession:
         self.owner = owner
         self.id = secrets.token_urlsafe(24)
         self.home = tempfile.mkdtemp(prefix="breadboard-voice-")
+        self.temp_lease = SessionLease(self.home)
         self.pending: dict[int, queue.Queue] = {}
         self.events: list[dict] = []
         self.event_base = 0
@@ -145,8 +148,10 @@ class VoiceSession:
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
         except OSError:
+            self.temp_lease.close()
             shutil.rmtree(self.home)
             raise VoiceError("Codex voice could not start. Install or update the native Codex CLI.") from None
+        self.temp_lease.update(self.proc.pid)
         threading.Thread(target=self.read, daemon=True).start()
         self.timer.start()
 
@@ -378,6 +383,7 @@ class VoiceSession:
             self.proc.wait(timeout=3)
         with _lock:
             _sessions.pop(self.id, None)
+        self.temp_lease.close()
         shutil.rmtree(self.home, ignore_errors=True)
 
 
@@ -515,6 +521,54 @@ def web_synthesize():
     except web_voice.WebSpeechError as error:
         raise VoiceError(str(error), error.status) from None
     return Response(audio, mimetype=content_type, headers={"Cache-Control": "no-store"})
+
+
+@voice_bp.post("/breadboard/voice/web/live")
+def web_live_start():
+    if request.content_length is None or request.content_length > 400_000:
+        raise VoiceError("The conversation context is too large.", 413)
+    data = request.get_json(silent=True) or {}
+    context = data.get("context") if isinstance(data.get("context"), str) else ""
+    try:
+        return jsonify(web_live.start(context, request.headers["X-Breadboard-Voice-Owner"]))
+    except web_voice.WebSpeechError as error:
+        raise VoiceError(str(error), error.status) from None
+
+
+@voice_bp.get("/breadboard/voice/web/live/<session_id>")
+def web_live_poll(session_id):
+    try:
+        return jsonify(web_live.poll(session_id, request.headers["X-Breadboard-Voice-Owner"]))
+    except web_voice.WebSpeechError as error:
+        raise VoiceError(str(error), error.status) from None
+
+
+@voice_bp.get("/breadboard/voice/web/live/<session_id>/presence")
+def web_live_presence(session_id):
+    try:
+        stream = web_live.presence(session_id, request.headers["X-Breadboard-Voice-Owner"])
+    except web_voice.WebSpeechError as error:
+        raise VoiceError(str(error), error.status) from None
+    return Response(stream, mimetype="text/plain", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@voice_bp.post("/breadboard/voice/web/live/<session_id>/microphone")
+def web_live_microphone(session_id):
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data.get("on"), bool):
+        raise VoiceError("Say whether the microphone is on.", 400)
+    try:
+        return jsonify(web_live.listen(session_id, request.headers["X-Breadboard-Voice-Owner"], data["on"]))
+    except web_voice.WebSpeechError as error:
+        raise VoiceError(str(error), error.status) from None
+
+
+@voice_bp.delete("/breadboard/voice/web/live/<session_id>")
+def web_live_stop(session_id):
+    try:
+        return jsonify(web_live.stop(session_id, request.headers["X-Breadboard-Voice-Owner"]))
+    except web_voice.WebSpeechError as error:
+        raise VoiceError(str(error), error.status) from None
 
 
 @voice_bp.post("/breadboard/voice/web/transcribe")

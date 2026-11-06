@@ -3,6 +3,31 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { HermesRuntimeAdapter } from "../src/lib/agent-runtime/adapters/hermes.ts";
 
+test("a reference image keeps the same discovery policy as an ordinary production task", async () => {
+  const requests = [];
+  const adapter = new HermesRuntimeAdapter({ baseUrl: "http://127.0.0.1:9119",
+    sessionToken: "test", requestTimeoutMs: 5_000 });
+  adapter.client = {
+    async request(method, params) {
+      requests.push({ method, params });
+      return method === "session.create"
+        ? { session_id: "live-figures", stored_session_id: "stored-figures" } : {};
+    },
+    clearSession() {},
+  };
+  const session = await adapter.createSession({ surface: "garden_chat", sessionKey: "figures" });
+  for (const attachments of [undefined, [{ type: "image", name: "reference.png",
+    dataUrl: "data:image/png;base64,aGVsbG8=" }]]) {
+    await adapter.startRun({ ...session, agentName: session.agentName,
+      text: "Generate the graphs and export the finished PDF", attachments });
+  }
+  const policies = requests.filter(r => r.method === "prompt.submit").map(r => r.params.tool_loop_guardrails);
+  assert.equal(policies.length, 2);
+  assert.deepEqual(policies[1], policies[0]);
+  assert.equal(policies[1].exploration_limit, 0, "successful discovery must remain available through export");
+  assert.equal(policies[1].hard_stop_enabled, true, "actual repeated failures still stop");
+});
+
 test("every Breadboard Hermes session permanently includes real web lookup", async () => {
   const requests = [];
   const adapter = new HermesRuntimeAdapter({
@@ -35,6 +60,8 @@ test("every Breadboard Hermes session permanently includes real web lookup", asy
   const capabilities = await adapter.listCapabilities();
   assert.ok(capabilities.tools.includes("web_search"));
   assert.ok(capabilities.tools.includes("web_extract"));
+  assert.ok(capabilities.tools.includes("breadboard_use"));
+  assert.ok(capabilities.tools.includes("computer_use"));
 });
 
 test("Hermes YOLO follows the per-turn switch without leaking a lasting grant", async () => {
@@ -203,14 +230,16 @@ test("the picked model becomes what ChatMock's `chat` sentinel resolves to", asy
       messageId: "msg_identity",
     });
 
-    // The choice is written to ChatMock before the prompt goes out, so the
-    // sentinel Hermes was given can only expand to the model that was picked.
+    // Resolve the choice before dispatch, then give Hermes a concrete model.
     assert.deepEqual(
       chatmockCalls.filter((call) => call.method === "PUT"),
       [{ url: "http://127.0.0.1:8765/v1/settings/chat-model", method: "PUT" }],
     );
     assert.equal(storedChatModel, "cliproxy/claude-opus-5");
     assert.equal(storedDefaultModel, "gpt-5.6-sol");
+    const modelSwitch = requests.find(entry => entry.method === "config.set" && entry.params.key === "model");
+    assert.equal(modelSwitch.params.value, "cliproxy/claude-opus-5",
+      "Hermes must not run on a mutable chat sentinel or use its context budget");
 
     const submit = requests.find((entry) => entry.method === "prompt.submit");
     assert.match(submit.params.system_prompt, /Model: cliproxy\/claude-opus-5/);
@@ -936,6 +965,41 @@ test("a correlated running turn emits heartbeats while a long tool is silent", a
   assert.equal(heartbeat.payload.status, "busy");
 });
 
+test("repeated recovery RPC failures after disconnect end the turn instead of retrying forever", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  let recoveryAttempts = 0;
+  const adapter = new HermesRuntimeAdapter({
+    baseUrl: "http://127.0.0.1:9119", sessionToken: "test", requestTimeoutMs: 5_000,
+  });
+  adapter.client = {
+    async request(method) {
+      if (method === "session.turn_result") {
+        recoveryAttempts += 1;
+        t.mock.timers.tick(15_000);
+        throw new Error("Hermes gateway connection closed.");
+      }
+      throw new Error(`Unexpected RPC: ${method}`);
+    },
+    async *events() { throw new Error("Hermes gateway connection closed."); },
+  };
+  const abort = new AbortController();
+  const iterator = adapter.streamSession({
+    externalSessionId: "stored-broken", liveSessionId: "live-broken",
+    directory: process.cwd(), messageId: "msg_broken", instruction: "saved prompt",
+    submitted: true,
+  }, abort.signal);
+  const deadline = setTimeout(() => abort.abort(), 8_000);
+  try {
+    assert.equal((await iterator.next()).value.type, "reasoning.status");
+    await assert.rejects(iterator.next(), /saved result could not be retrieved/);
+    assert.equal(recoveryAttempts, 3);
+  } finally {
+    clearTimeout(deadline);
+    abort.abort();
+    await iterator.return();
+  }
+});
+
 test("Hermes recovers the terminal result after its event WebSocket disconnects", async () => {
   const fakeClient = {
     async request(method, params) {
@@ -1154,5 +1218,176 @@ test("attachment recovery matches the submitted prompt in both live and restarte
     for await (const event of target.streamSession({...session, messageId: "msg_pdf", instruction: restarted ? persistedPrompt : instruction, submitted: true})) events.push(event);
     assert.equal(events.find(event => event.type === "assistant.delta").payload.text, "Recovered notes.");
     assert.equal(events.at(-1).payload.status, "idle");
+  }
+});
+
+test("a restarted viewer recovers a steered turn by identity when its original prompt no longer matches", { timeout: 10_000 }, async () => {
+  const requests = [];
+  let completed = false;
+  const adapter = new HermesRuntimeAdapter({
+    baseUrl: "http://127.0.0.1:9119", sessionToken: "test", requestTimeoutMs: 5_000,
+  });
+  adapter.client = {
+    async request(method, params) {
+      assert.equal(method, "session.turn_result", "recovery must not submit a new turn");
+      requests.push(params);
+      if (params.expected_user_text) return { state: "unknown", turn_id: params.turn_id };
+      return completed
+        ? { state: "completed", turn_id: params.turn_id, payload: { text: "The design follows the lab instructions.", status: "complete" } }
+        : { state: "running", turn_id: params.turn_id };
+    },
+    async *events(_sessionId, signal, onConnected) {
+      onConnected?.();
+      // A fresh socket has no replay from the disconnected original viewer.
+      await new Promise(resolve => {
+        if (signal.aborted) return resolve();
+        signal.addEventListener("abort", resolve, { once: true });
+      });
+    },
+  };
+  const stream = adapter.streamSession({
+    externalSessionId: "stored-steered", liveSessionId: "live-steered",
+    directory: process.cwd(), messageId: "msg_steered", submitted: true,
+    instruction: "Design a 10 kHz oscillator.",
+  });
+  try {
+    const first = await stream.next();
+    assert.equal(first.value.type, "session.status");
+    assert.equal(first.value.payload.status, "busy", "the supervisor must receive proof of ongoing work");
+    completed = true;
+    const recovered = [];
+    for await (const event of stream) recovered.push(event);
+    assert.equal(recovered.find(event => event.type === "assistant.delta").payload.text, "The design follows the lab instructions.");
+    assert.equal(recovered.at(-1).payload.status, "idle");
+    assert.ok(requests.every(params => params.turn_id === "msg_steered"));
+    assert.equal(requests[0].expected_user_text, "Design a 10 kHz oscillator.");
+    assert.equal("expected_user_text" in requests[1], false, "identity-only recovery cannot fall back to an older transcript");
+  } finally {
+    await stream.return();
+  }
+});
+
+test("identity-only recovery rejects a different turn and waits for the matching result", { timeout: 10_000 }, async () => {
+  let probes = 0;
+  const adapter = new HermesRuntimeAdapter({
+    baseUrl: "http://127.0.0.1:9119", sessionToken: "test", requestTimeoutMs: 5_000,
+  });
+  adapter.client = {
+    async request(method, params) {
+      assert.equal(method, "session.turn_result");
+      if (params.expected_user_text) return { state: "unknown", turn_id: params.turn_id };
+      probes += 1;
+      return { state: "completed", turn_id: probes === 1 ? "msg_other" : params.turn_id,
+        payload: { text: probes === 1 ? "Wrong response" : "Matching response", status: "complete" } };
+    },
+    async *events() {},
+  };
+  const events = [];
+  for await (const event of adapter.streamSession({
+    externalSessionId: "stored-identity", liveSessionId: "live-identity",
+    directory: process.cwd(), messageId: "msg_expected", submitted: true,
+    instruction: "Original prompt",
+  })) events.push(event);
+  assert.equal(probes, 2);
+  assert.deepEqual(events.filter(event => event.type === "assistant.delta").map(event => event.payload.text), ["Matching response"]);
+});
+
+test("an overlapping stream keeps the Hermes lease until the last stream closes", async () => {
+  const previousUrl = process.env.BREADBOARD_SUPERVISOR_CONTROL_URL;
+  const previousToken = process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN;
+  const previousTransports = globalThis.__breadboardRuntimeControlTransportsV1;
+  const timeline = [];
+  const json = (value) => new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+  process.env.BREADBOARD_SUPERVISOR_CONTROL_URL = "http://127.0.0.1:49877";
+  process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN = "t".repeat(32);
+  globalThis.__breadboardRuntimeControlTransportsV1 = {
+    async job() {
+      throw new Error("job control is not used by this test");
+    },
+    async service(input, init) {
+      const pathname = new URL(String(input)).pathname;
+      timeline.push(`${init?.method ?? "GET"} ${pathname}`);
+      const contract = /^\/v1\/services\/([^/]+)\/lease-contract$/.exec(pathname);
+      if (contract) {
+        return json({ protocolVersion: 1, serviceId: contract[1], acquireTimeoutMs: 20_000 });
+      }
+      const acquire = /^\/v1\/services\/([^/]+)\/lease$/.exec(pathname);
+      if (acquire) return json({ leaseId: `lease-${acquire[1]}`, serviceId: acquire[1] });
+      if (/^\/v1\/leases\/lease-[^/]+\/release$/.test(pathname)) return json({ released: true });
+      throw new Error(`unexpected supervisor request: ${pathname}`);
+    },
+  };
+
+  let adapter;
+  try {
+    adapter = new HermesRuntimeAdapter({
+      baseUrl: "http://127.0.0.1:9119",
+      sessionToken: "test",
+      requestTimeoutMs: 5_000,
+    });
+    adapter.client = {
+      async request(method) {
+        if (method === "session.create") {
+          return { session_id: "live-overlap", stored_session_id: "stored-overlap" };
+        }
+        return { status: "streaming" };
+      },
+      async *events(_liveSessionId, signal, onConnected) {
+        onConnected?.();
+        yield {
+          type: "message.delta",
+          session_id: "live-overlap",
+          payload: { turn_id: "msg_long", text: "working" },
+        };
+        await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+      },
+      clearSession() {},
+      close() {},
+    };
+    const session = await adapter.createSession({
+      surface: "garden_chat",
+      sessionKey: "overlap-lease-test",
+    });
+    await adapter.startRun({
+      ...session,
+      agentName: session.agentName,
+      text: "a twelve minute answer",
+      messageId: "msg_long",
+    });
+    const open = () => adapter.streamSession({
+      externalSessionId: session.externalSessionId,
+      liveSessionId: session.liveSessionId,
+      workspaceKey: session.workspaceKey,
+      directory: session.directory,
+      messageId: "msg_long",
+      instruction: "a twelve minute answer",
+    })[Symbol.asyncIterator]();
+    const hermesReleases = () =>
+      timeline.filter((entry) => entry === "POST /v1/leases/lease-hermes/release").length;
+
+    const first = open();
+    const second = open();
+    await first.next();
+    await second.next();
+
+    await first.return(undefined);
+    assert.equal(hermesReleases(), 0, "the live second stream still needs Hermes");
+
+    await second.return(undefined);
+    assert.equal(hermesReleases(), 1, "the last stream out releases the lease");
+  } finally {
+    adapter?.dispose();
+    if (previousUrl === undefined) delete process.env.BREADBOARD_SUPERVISOR_CONTROL_URL;
+    else process.env.BREADBOARD_SUPERVISOR_CONTROL_URL = previousUrl;
+    if (previousToken === undefined) delete process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN;
+    else process.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN = previousToken;
+    if (previousTransports === undefined) {
+      delete globalThis.__breadboardRuntimeControlTransportsV1;
+    } else {
+      globalThis.__breadboardRuntimeControlTransportsV1 = previousTransports;
+    }
   }
 });

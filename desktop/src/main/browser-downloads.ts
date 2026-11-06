@@ -63,6 +63,16 @@ export class BrowserDownloads {
     return { items: this.items.map(item => ({ ...item })), error: this.error };
   }
 
+  recordSavedPdf(savePath: string, url: string): void {
+    const size = fs.statSync(savePath).size;
+    this.items.unshift({
+      id: randomUUID(), filename: path.basename(savePath), url, savePath,
+      startedAt: Date.now(), receivedBytes: size, totalBytes: size,
+      state: "completed", active: false,
+    });
+    this.flush();
+  }
+
   flush(): boolean {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
@@ -97,7 +107,7 @@ export class BrowserDownloads {
   private track(item: DownloadItem): void {
     const id = randomUUID();
     const entry: BrowserDownload = {
-      id, filename: item.getFilename(), url: item.getURL(), savePath: item.getSavePath(),
+      id, filename: path.basename(item.getSavePath()) || item.getFilename(), url: item.getURL(), savePath: item.getSavePath(),
       startedAt: Date.now(), receivedBytes: item.getReceivedBytes(), totalBytes: Math.max(0, item.getTotalBytes()),
       state: "progressing", active: true,
     };
@@ -111,7 +121,7 @@ export class BrowserDownloads {
       entry.state = state;
       entry.active = !done;
       entry.savePath = item.getSavePath();
-      entry.filename = item.getFilename();
+      entry.filename = path.basename(entry.savePath) || item.getFilename();
       entry.receivedBytes = item.getReceivedBytes();
       entry.totalBytes = Math.max(0, item.getTotalBytes());
       if (done) {

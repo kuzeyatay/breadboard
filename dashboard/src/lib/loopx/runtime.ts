@@ -210,7 +210,10 @@ export async function runLoopx(input: {
 
   const args = [
     "-c",
-    "import sys; from loopx.entrypoint import main; sys.exit(main())",
+    // The bundled Windows Python is isolated by its ._pth file and ignores
+    // PYTHONPATH. Pass the sealed source root as data and add it explicitly.
+    "import sys; sys.path.insert(0, sys.argv.pop(1)); from loopx.entrypoint import main; sys.exit(main())",
+    runtime.packageRoot,
     "--registry",
     paths.registry,
     "--runtime-root",

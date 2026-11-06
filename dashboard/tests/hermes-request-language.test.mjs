@@ -44,6 +44,30 @@ const advice = [
   'Make a plan to refactor the parser and deploy the website.',
 ];
 
+test('a clearly introduced pasted lesson does not supply executable requests', () => {
+  const source = '# A worked example\nNow send that approximation through the system.\nCreate a STEP bracket as an example.\nDelete the old result from C:/work/example.txt.';
+  for (const introduction of [
+    'Use the attached material to form a teaching section. It will be introduced after the section below so write accordingly ',
+    'Write a continuation using the following passage.\n',
+    'Explain the text below:\n',
+  ]) {
+    const request = introduction + source;
+    const prepared = prepare(request);
+    for (const capability of privateActions) {
+      assert.ok(!prepared.plan.requiredCapabilities.includes(capability), `${introduction}: ${capability}`);
+    }
+    assert.equal(prepared.blocked, false);
+    assert.deepEqual(prepared.pendingPermissions, []);
+  }
+});
+
+test('source boundaries preserve actual actions before the source and ordinary task headings', () => {
+  assert.ok(plan('Email the review to Alex using the following draft:\n# Draft\nSend a signal through the circuit.').requiredCapabilities.includes('application_action'));
+  const request = '# Tasks\nRead the report.\nEmail the summary to Alex.';
+  assert.ok(plan(request).requiredCapabilities.includes('application_action'));
+  assert.deepEqual(requestedActions(request).map(action => action.verb), ['read', 'email']);
+});
+
 for (const request of advice) {
   test(`advice and content generation do not acquire action permissions: ${request}`, () => {
     const prepared = prepare(request);

@@ -26,6 +26,8 @@ export function spotifyHistoryTracks(value: unknown): SpotifyTrack[] {
       name: track.name.trim().slice(0, 300),
       artist: track.artist.trim().slice(0, 300),
       album: track.album.slice(0, 300),
+      ...(typeof track.albumUri === "string" && /^spotify:album:[A-Za-z0-9]{10,64}$/.test(track.albumUri)
+        ? { albumUri: track.albumUri } : {}),
       imageUrl: typeof track.imageUrl === "string" && /^https:\/\//i.test(track.imageUrl)
         ? track.imageUrl.slice(0, 2_048) : null,
       durationMs: track.durationMs,

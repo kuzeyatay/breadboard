@@ -7,3 +7,77 @@ description = "Per-install runtime key file must never be committed"
 path = '''(^|/)(api-key|management-key|cliproxy\.key)$'''
 regex = '''(?m)^[a-fA-F0-9]{48,64}\s*$'''
 entropy = 3.0
+
+# Reviewed false positives. Require both the source path and the specific
+# non-secret text; keep all default rules enabled for other content.
+[[allowlists]]
+description = "ASCII art palette characters"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^dashboard/public/ascii-magic-art/pieces/rainbow-text\.js$''']
+regexTarget = "line"
+regexes = ['''^\s*const KEYSET = "0123456789abcdefgh";\s*$''']
+
+[[allowlists]]
+description = "Accessible keyboard shortcut labels"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^dashboard/src/app/browser/browser-(bookmarks-bar|home-widgets)\.tsx$''']
+regexTarget = "match"
+regexes = ['''keyshortcuts="Alt\+Shift\+ArrowLeft''']
+
+[[allowlists]]
+description = "Multisim test conversation identifier"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^dashboard/tests/multisim-route\.test\.mjs$''']
+regexTarget = "match"
+regexes = ['''workspace_key: "conversation-10"''']
+
+[[allowlists]]
+description = "Recall test key with a repeated hexadecimal sequence"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^dashboard/tests/recall-wiring\.test\.mjs$''']
+regexTarget = "line"
+regexes = ['''^\s*const key = "sp-0123456789abcdef0123456789abcdef";\s*$''']
+
+[[allowlists]]
+description = "Public URL preserved in the pinned upstream filter list"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^desktop/assets/adblocker/ublock-filters-2023\.txt$''']
+regexTarget = "secret"
+regexes = ['''^c0faa76786288bc1ab4bcaf3d0d81186$''']
+
+[[allowlists]]
+description = "Public malware URL signatures in the pinned upstream filter list"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^desktop/assets/adblocker/ublock-badware\.txt$''']
+regexTarget = "secret"
+regexes = ['''^(6922a2c8-d1e9-43be-b201-749543d28fe1|d35e161b-abb4-4949-b523-003165d250bb)$''']
+
+[[allowlists]]
+description = "Pinned upstream source-file SHA-256 checksums"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^multisim-service/vendor/UPSTREAM\.json$''', '''^scripts/google-flow-upstream\.json$''']
+regexTarget = "line"
+regexes = ['''^\s*"(multisim_mcp/(api_contract|workbench_api)\.py|tests/page-access\.test\.ts)": "[a-f0-9]{64}",?\s*$''']
+
+[[allowlists]]
+description = "Supervisor test capability secret with a counting sequence"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^native/runtime-supervisor/src/main\.rs$''']
+regexTarget = "line"
+regexes = ['''^\s*"hermesCapabilitySecret": "hermes-capability-secret-0123456789",\s*$''']
+
+[[allowlists]]
+description = "Public commit references in the pinned EasyList snapshot"
+targetRules = ["sourcegraph-access-token"]
+condition = "AND"
+paths = ['''^desktop/assets/adblocker/easylist\.txt$''']
+regexTarget = "secret"
+regexes = ['''^(0631fcce82fb9b82b29766b550adcb6072954557|934912b3e760e068a91cd6cb502096a55ab1ca16)$''']

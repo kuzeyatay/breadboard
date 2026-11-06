@@ -31,6 +31,11 @@ async function transcribePage(dataUrl: string, page: number, signal?: AbortSigna
 /** Read embedded text first, rasterizing only pages that actually need OCR. */
 export async function readPdfAttachment(buffer: Uint8Array, options: {
   handwriting?: boolean;
+  /** Reader questions OCR only these pages; [] uses the supplied screenshot.
+   * Ordinary uploads omit this option and still read all pages. */
+  ocrPages?: number[];
+  /** Verified OCR from this exact PDF's Garden source note. */
+  pageReadings?: Record<number, string>;
   baseURL?: string;
   signal?: AbortSignal;
   onProgress?: (page: number, total: number) => void;
@@ -40,18 +45,29 @@ export async function readPdfAttachment(buffer: Uint8Array, options: {
   const text: string[] = [];
   const warnings: string[] = [];
   const ocrPages: number[] = [];
+  const skippedPages: number[] = [];
   try {
     options.signal?.throwIfAborted();
     const info = await parser.getInfo();
+    if (options.ocrPages?.some(page => !Number.isInteger(page) || page < 1 || page > info.total)) {
+      throw new Error("The requested PDF page is outside this document.");
+    }
     for (let page = 1; page <= info.total; page++) {
       options.signal?.throwIfAborted();
       options.onProgress?.(page, info.total);
-      let embedded = "";
+      const savedReading = options.pageReadings?.[page]?.trim();
+      let embedded = savedReading ?? "";
       try {
-        const result = await parser.getText({ first: page, last: page });
-        embedded = result.pages.map((entry) => entry.text).join("\n");
+        if (!savedReading) {
+          const result = await parser.getText({ first: page, last: page });
+          embedded = result.pages.map((entry) => entry.text).join("\n");
+        }
       } catch { /* A broken/missing text layer is still readable from the page. */ }
-      if (options.handwriting || !hasReadablePdfText(embedded)) {
+      const needsOcr = !savedReading && (options.handwriting || !hasReadablePdfText(embedded));
+      if (needsOcr && options.ocrPages && !options.ocrPages.includes(page)) {
+        skippedPages.push(page);
+        embedded += "\n[This page has not been transcribed. Read it from the original PDF if needed.]";
+      } else if (needsOcr) {
         try {
           const rendered = await parser.getScreenshot({ first: page, last: page, desiredWidth: 1600, imageBuffer: false, imageDataUrl: true });
           const dataUrl = rendered.pages[0]?.dataUrl;
@@ -59,6 +75,7 @@ export async function readPdfAttachment(buffer: Uint8Array, options: {
           const deadline = AbortSignal.timeout(90_000);
           const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
           const reading = await (options.transcribe ?? transcribePage)(dataUrl, page, signal, options.baseURL);
+          signal.throwIfAborted();
           if (!reading.trim()) throw new Error("OCR returned no readable text.");
           embedded = reading;
           ocrPages.push(page);
@@ -74,6 +91,9 @@ export async function readPdfAttachment(buffer: Uint8Array, options: {
         warnings.push(`Read through page ${page} of ${info.total}; the attachment text limit was reached.`);
         break;
       }
+    }
+    if (skippedPages.length) {
+      warnings.push(`OCR was limited to the requested pages. Pages ${skippedPages.join(", ")} have not been transcribed; do not treat this preview as a complete reading. The original PDF retains every page.`);
     }
     return { text: [...text, ...warnings.map((warning) => `[Document reading incomplete: ${warning}]`)].join("\n\n"), warning: warnings.join(" "), pages: info.total, ocrPages };
   } finally {

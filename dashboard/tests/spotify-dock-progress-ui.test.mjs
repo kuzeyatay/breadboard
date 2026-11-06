@@ -13,9 +13,9 @@ test("the dock seeks with pointer and keyboard and keeps time between provider s
       import {BrowserSpotifyDock,useSpotifyDock} from './src/app/browser/browser-home-widgets';
       function App() {
         const [open,setOpen]=React.useState(true);
-        return <BrowserSpotifyDock {...useSpotifyDock()} openConnections={()=>{}} open={open} setOpen={setOpen}/>;
+        return <BrowserSpotifyDock {...useSpotifyDock(true)} openConnections={()=>{}} open={open} setOpen={setOpen}/>;
       }
-      createRoot(document.getElementById('root')).render(<App/>);
+      createRoot(document.getElementById('root')).render(<React.StrictMode><App/></React.StrictMode>);
     `}, bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
     outfile: "spotify-dock.js", define: {"process.env.NODE_ENV": '"test"'},
     plugins: [{name: "dock-exports", setup(builder) {
@@ -33,7 +33,10 @@ test("the dock seeks with pointer and keyboard and keeps time between provider s
   const engine = {ready: true, deviceId: "breadboard", status: "ready", error: null};
   let playback = {track, isPlaying: true, positionMs: 55000, deviceId: "breadboard", deviceName: "Breadboard"};
   let playbackError;
-  const state = () => ({connected: true, status: "connected", engine, playback, savedTrack: false, history: [track], playbackError});
+  let playbackErrorCode;
+  let connected = true;
+  let statusHttp = 200;
+  const state = () => ({connected, status: connected ? "connected" : "not_connected", engine, playback, savedTrack: false, history: [track], playbackError, playbackErrorCode});
   const requests = [];
   let holdStatus = false;
   let pendingStatus = null;
@@ -83,7 +86,7 @@ test("the dock seeks with pointer and keyboard and keeps time between provider s
         await new Promise(resolve => { pendingStatus = resolve; });
         pendingStatus = null;
       }
-      await route.fulfill({contentType: "application/json", body: snapshot});
+      await route.fulfill({status: body ? 200 : statusHttp, contentType: "application/json", body: snapshot});
     });
     await page.clock.install();
     await page.clock.pauseAt(new Date());
@@ -202,6 +205,9 @@ test("the dock seeks with pointer and keyboard and keeps time between provider s
     await dialog.getByRole("button", {name:"Pause Spotify",exact:true}).click();
     await expect(dialog.getByRole("button", {name:"Play Spotify in Breadboard",exact:true})).toBeDisabled();
     await expect.poll(() => pendingControl !== null).toBe(true);
+    await page.clock.runFor(2600);
+    await page.evaluate(playback => window.spotifyEvents.onmessage({data:JSON.stringify({playback})}), playback);
+    await expect(dialog.getByRole("button", {name:"Play Spotify in Breadboard",exact:true})).toBeDisabled();
     pendingControl();
     await expect(dialog.getByRole("button", {name:"Play Spotify in Breadboard",exact:true})).toBeEnabled();
     assert.equal(requests.filter(request => request.method === "GET").length,beforeLocal);
@@ -221,8 +227,16 @@ test("the dock seeks with pointer and keyboard and keeps time between provider s
     stalePlayback = playback;
     acceptPlayOnly = true;
     holdStatus = true;
+    holdControl = true;
     await dialog.getByRole("button", {name:"Play Snap by manifest",exact:true}).click();
     await expect(dialog.locator(".browser-spotify-now-copy > strong")).toHaveText("Snap");
+    await expect.poll(() => pendingControl !== null).toBe(true);
+    await page.clock.runFor(2600);
+    await page.evaluate(playback => window.spotifyEvents.onmessage({data:JSON.stringify({playback})}), stalePlayback);
+    await expect(dialog.locator(".browser-spotify-now-copy > strong")).toHaveText("Snap");
+    holdControl = false;
+    pendingControl();
+    await page.evaluate(() => window.spotifyEvents.onmessage({data:JSON.stringify({playback:null})}));
     await expect(dialog.getByRole("button", {name:"Pause Spotify",exact:true})).toBeEnabled();
     await expect.poll(() => pendingStatus !== null).toBe(true);
     assert.equal(requests.filter(request => request.body?.action === "play-track").at(-1).body.previewTrack,undefined,"UI preview metadata is never submitted to Spotify");
@@ -231,6 +245,9 @@ test("the dock seeks with pointer and keyboard and keeps time between provider s
     await page.clock.runFor(100);
     await expect(dialog.locator(".browser-spotify-now-copy > strong")).toHaveText("Snap");
     stalePlayback = null;
+    const freshPlaybackResponse = page.waitForResponse(response => response.url().endsWith('/api/browser/spotify') && response.request().method() === 'GET');
+    await refresh();
+    await freshPlaybackResponse;
     await page.clock.runFor(400);
     await expect.poll(() => pendingStatus === null).toBe(true);
     await page.clock.runFor(300);
@@ -272,6 +289,15 @@ test("the dock seeks with pointer and keyboard and keeps time between provider s
     pendingControl();
     await expect(dialog.getByRole('button', {name:'Next track',exact:true})).toBeEnabled();
     await expect(dialog.locator('.browser-spotify-now-copy > strong')).toHaveText('Newest song');
+    // A skip ACK can still name the old song. It must never suppress the
+    // subsequent event with the new URI while waiting for a cloud poll.
+    localReplies = true;
+    await dialog.getByRole('button', {name:'Next track',exact:true}).click();
+    await expect(dialog.getByRole('button', {name:'Next track',exact:true})).toBeEnabled();
+    const afterSkip = {...livePlayback,track:{...liveTrack,id:'after0123456789abcdef',uri:'spotify:track:after0123456789abcdef',name:'After skip'}};
+    await page.evaluate(playback => window.spotifyEvents.onmessage({data:JSON.stringify({playback})}), afterSkip);
+    await expect(dialog.locator('.browser-spotify-now-copy > strong')).toHaveText('After skip', {timeout:500});
+    localReplies = false;
     const readsBeforeEmptySamples = requests.filter(request => request.method === 'GET' && !request.search).length;
     await page.evaluate(() => {
       for (let index = 0; index < 5; index++) window.spotifyEvents.onmessage({data:JSON.stringify({playback:null})});
@@ -280,6 +306,83 @@ test("the dock seeks with pointer and keyboard and keeps time between provider s
     assert.equal(requests.filter(request => request.method === 'GET' && !request.search).length, readsBeforeEmptySamples, 'empty SDK heartbeats must not flood the Spotify API');
     await refresh();
     await expect(dialog.locator('.browser-spotify-now-copy > strong')).toHaveText('Snap');
+
+    // A network blip is not a disconnect or an empty playback sample. Keep
+    // the song, controls and artwork stable, then reconcile normally.
+    const confirmed = playback;
+    const copy = page.locator('.browser-spotify-copy');
+    playback = null;
+    playbackError = 'The connected app could not be reached.';
+    playbackErrorCode = 'provider_unavailable';
+    await refresh();
+    await page.clock.runFor(8500);
+    await expect(copy.locator('strong')).toHaveText('Snap');
+    await expect(dialog.getByRole('alert')).toHaveCount(0);
+    playback = {...confirmed, positionMs: 12000};
+    playbackError = undefined;
+    playbackErrorCode = undefined;
+    await refresh();
+    await expect(times).toHaveText('0:12');
+
+    // A slow cloud request cannot starve the independent local audio lease.
+    holdStatus = true;
+    await refresh();
+    await expect.poll(() => pendingStatus !== null).toBe(true);
+    const leasesBefore = requests.filter(r => r.path.endsWith('/engine') && r.method === 'POST').length;
+    const readsBeforeStall = requests.filter(r => r.method === 'GET').length;
+    for (let index = 0; index < 4; index++) {
+      await page.clock.runFor(20000);
+      await expect.poll(() => requests.filter(r => r.path.endsWith('/engine') && r.method === 'POST').length).toBeGreaterThan(leasesBefore + index);
+    }
+    assert.equal(requests.filter(r => r.method === 'GET').length, readsBeforeStall, 'stalled reads must not overlap');
+    holdStatus = false;
+    pendingStatus();
+    await expect.poll(() => requests.filter(r => r.method === 'GET').length).toBeGreaterThan(readsBeforeStall);
+
+    // Preserve real errors once the bounded recovery window expires, and
+    // recover from fresh SDK state even if the cloud is still unreachable.
+    playback = null;
+    playbackError = 'The connected app could not be reached.';
+    playbackErrorCode = 'provider_unavailable';
+    await page.clock.runFor(32000);
+    await refresh();
+    await expect(dialog.getByRole('alert')).toContainText(playbackError);
+    await page.evaluate(playback => window.spotifyEvents.onmessage({data:JSON.stringify({playback})}), livePlayback);
+    await expect(copy.locator('strong')).toHaveText('Live song');
+    await expect(dialog.getByRole('alert')).toHaveCount(0);
+    await refresh();
+    await page.clock.runFor(200);
+    await expect(copy.locator('strong')).toHaveText('Live song');
+    await expect(dialog.getByRole('alert')).toHaveCount(0);
+
+    // Expired authorization is never disguised as a transient network error.
+    playbackError = 'Spotify must be reconnected.';
+    playbackErrorCode = 'provider_authentication_failed';
+    await refresh();
+    await expect(dialog.getByRole('alert')).toContainText(playbackError);
+    await expect(copy.locator('strong')).toHaveText('Spotify is ready');
+    await page.evaluate(() => window.spotifyEvents.onmessage({data:JSON.stringify({playback:null})}));
+    playbackError = undefined;
+    playbackErrorCode = undefined;
+    playback = confirmed;
+    await refresh();
+    await expect(copy.locator('strong')).toHaveText('Snap');
+    statusHttp = 503;
+    await refresh();
+    await page.clock.runFor(200);
+    await expect(copy.locator('strong')).toHaveText('Snap');
+    await expect(dialog.getByRole('alert')).toHaveCount(0);
+    statusHttp = 200;
+    playback = null;
+    await refresh();
+    await expect(copy.locator('strong')).toHaveText('Spotify is ready');
+    connected = false;
+    await refresh();
+    await expect(copy.locator('strong')).toHaveText('Connect Spotify');
+    connected = true;
+    playback = confirmed;
+    await refresh();
+    await expect(copy.locator('strong')).toHaveText('Snap');
     playbackError = 'Spotify is receiving too many requests. Try again in 2 minutes.';
     await refresh();
     await expect(dialog.getByRole('alert')).toContainText(playbackError);

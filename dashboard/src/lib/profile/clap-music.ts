@@ -52,11 +52,11 @@ export async function executeClapMusic(action: Extract<ClapAction, { kind: 'musi
   } else if (action.query) {
     const tracks = await services.search(action.query);
     track = tracks[action.operation === 'random' ? Math.floor(services.random() * tracks.length) : 0] ?? null;
-    if (!track) throw new Error(`No Spotify song matched “${action.query}”. Change the prompt in Profile.`);
+    if (!track) throw new Error(`No Spotify song matched “${action.query}”. Change the prompt in Settings.`);
   } else {
     const first = await services.api({ method: 'GET', endpoint: '/v1/me/tracks', query: { limit: 1 } });
     const total = Number(record(first).total);
-    if (!Number.isSafeInteger(total) || total <= 0) throw new Error('Your Spotify Liked Songs is empty. Like a song or choose an artist in Profile.');
+    if (!Number.isSafeInteger(total) || total <= 0) throw new Error('Your Spotify Liked Songs is empty. Like a song or choose an artist in Settings.');
     // Sample across the entire library, rather than only the latest page.
     const offset = Math.floor(services.random() * total);
     track = savedTrack(offset === 0 ? first : await services.api({ method: 'GET', endpoint: '/v1/me/tracks', query: { limit: 1, offset } }));

@@ -1,20 +1,31 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { Check, ImageOff, LoaderCircle, Pencil, Search, Trash2, Upload, X } from "lucide-react";
-import { useEffect, useId, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent } from "react";
+import { Check, ImageOff, LoaderCircle, Music2, Palette, Pencil, Search, Shuffle, Trash2, Upload, X } from "lucide-react";
+import { lazy, Suspense, useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { asciiWallpaperSlug } from "@/lib/ascii-wallpapers";
+import { prepareAsciiWallpaper } from "@/lib/ascii-magic-client";
 import { applyAppTheme } from "@/lib/app-theme";
 import { prepareWallpaperUpload, WALLPAPER_UPLOAD_ACCEPT } from "@/lib/wallpaper-upload";
 import {
-  APPEARANCE_PAGES,
   WALLPAPERS,
   NO_WALLPAPER_ID,
+  ambientBackgroundId,
+  ambientBackgroundOptions,
+  resolveWallpaper,
   type AppearancePage,
   type AppearanceTheme,
   type WallpaperCategory,
 } from "@/lib/page-appearance";
 import { usePageAppearance } from "./use-page-appearance";
+import SpotifyAmbientBackground from "./spotify-ambient-background";
+import RainAppearanceChoice from "./rain-appearance-choice";
+import { useSpotifyAmbientSource } from "./spotify-ambient-context";
 import styles from "./page-appearance.module.css";
+import panelStyles from "./utility-panel.module.css";
+
+const AsciiWallpaperGallery = lazy(() => import("./ascii-wallpaper-gallery"));
+type BackgroundSource = "Generated" | "Human" | "ASCII";
 
 interface PixabayWallpaper {
   id: number;
@@ -35,25 +46,41 @@ const PIXABAY_CATEGORY_QUERIES: Record<"All" | WallpaperCategory, string> = {
   Abstract: "abstract background texture",
 };
 
-export default function PageAppearance({ page, ownerKey, initialOpen = false }: { page: AppearancePage; ownerKey: string; initialOpen?: boolean }) {
+const warmPreviews = new Map<string, HTMLImageElement>();
+function warmWallpaperPreviews() {
+  for (const wallpaper of WALLPAPERS) {
+    if (warmPreviews.has(wallpaper.previewSrc)) continue;
+    const image = new Image();
+    image.fetchPriority = "low";
+    image.decoding = "async";
+    image.onerror = () => warmPreviews.delete(wallpaper.previewSrc);
+    image.src = wallpaper.previewSrc;
+    warmPreviews.set(wallpaper.previewSrc, image);
+  }
+}
+// Public photo searches are cached by query, never mixed with user preferences.
+const photoSearchCache = new Map<string, { images: PixabayWallpaper[]; expires: number }>();
+
+export default function PageAppearance({ page, ownerKey, initialOpen = false, triggerIcon = "pencil", placement = "page" }: { page: AppearancePage; ownerKey: string; initialOpen?: boolean; triggerIcon?: "pencil" | "palette"; placement?: "page" | "terminal" }) {
   const [open, setOpen] = useState(initialOpen);
+  const TriggerIcon = triggerIcon === "palette" ? Palette : Pencil;
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
-      <div className={styles.anchor} data-page={page}>
+      <div className={styles.anchor} data-page={page} data-placement={placement}>
         <Dialog.Trigger asChild>
-          <button type="button" className={styles.customizeButton} aria-label="Customize appearance" title="Customize appearance">
-            <Pencil size={22} strokeWidth={1.8} aria-hidden="true" />
+          <button type="button" className={styles.customizeButton} onPointerEnter={warmWallpaperPreviews} onFocus={warmWallpaperPreviews} onPointerDown={warmWallpaperPreviews} aria-label="Customize appearance" title="Customize appearance">
+            <TriggerIcon size={22} strokeWidth={1.8} aria-hidden="true" />
           </button>
         </Dialog.Trigger>
       </div>
       <Dialog.Portal>
-        <Dialog.Overlay className={styles.scrim} />
-        <Dialog.Content className={`browser-wallpaper-drawer ${styles.drawer}`} data-open="true">
-          <header>
-            <Dialog.Title asChild><strong>Appearance</strong></Dialog.Title>
-            <Dialog.Close aria-label="Close appearance"><X aria-hidden="true" /></Dialog.Close>
+        <Dialog.Overlay className={panelStyles.scrim} />
+        <Dialog.Content className={panelStyles.panel} data-appearance-panel>
+          <header className={panelStyles.header}>
+            <Dialog.Title className={panelStyles.heading}>Appearance</Dialog.Title>
+            <Dialog.Close className={panelStyles.iconButton} aria-label="Close appearance"><X size={20} strokeWidth={1.7} aria-hidden="true" /></Dialog.Close>
           </header>
-          <Dialog.Description className={styles.description}>Your theme and backgrounds, saved automatically.</Dialog.Description>
+          <Dialog.Description className={panelStyles.description}>Your theme and backgrounds, saved automatically.</Dialog.Description>
           {open && <AppearanceChoices initialPage={page} ownerKey={ownerKey} />}
         </Dialog.Content>
       </Dialog.Portal>
@@ -62,8 +89,8 @@ export default function PageAppearance({ page, ownerKey, initialOpen = false }: 
 }
 
 function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearancePage; ownerKey: string }) {
-  const [editingPage, setEditingPage] = useState(initialPage);
-  const appearance = usePageAppearance(ownerKey, editingPage);
+  const appearance = usePageAppearance(ownerKey, initialPage);
+  const spotifySource = useSpotifyAmbientSource();
   const [editingTheme, setEditingTheme] = useState<AppearanceTheme>(appearance.theme);
   const [saveError, setSaveError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -74,22 +101,32 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
   const [uploading, setUploading] = useState(false);
   const [draggingImage, setDraggingImage] = useState(false);
   const [category, setCategory] = useState<"All" | WallpaperCategory>("All");
-  const [source, setSource] = useState<"Generated" | "Human">("Generated");
+  const [source, setSource] = useState<BackgroundSource>(() => initialPage === "new-tab" && asciiWallpaperSlug(appearance.preference.backgrounds[appearance.theme]) ? "ASCII" : "Generated");
   const [pixabayQuery, setPixabayQuery] = useState("");
   const [pixabayRequest, setPixabayRequest] = useState("");
   const [pixabayImages, setPixabayImages] = useState<PixabayWallpaper[]>([]);
   const [pixabayLoading, setPixabayLoading] = useState(false);
   const [pixabayError, setPixabayError] = useState("");
+  const [pixabayRetry, setPixabayRetry] = useState(0);
+  const [loadingBackground, setLoadingBackground] = useState<string | null>(null);
 
   useEffect(() => () => { uploadRequest.current += 1; }, []);
 
   function cancelUpload() {
     uploadRequest.current += 1;
     setUploading(false);
+    setLoadingBackground(null);
   }
 
   useEffect(() => {
     if (source !== "Human" || !pixabayRequest) return;
+    const cached = photoSearchCache.get(pixabayRequest);
+    if (cached && cached.expires > Date.now()) {
+      setPixabayImages(cached.images);
+      setPixabayError("");
+      setPixabayLoading(false);
+      return;
+    }
     const controller = new AbortController();
     let live = true;
     void (async () => {
@@ -98,12 +135,15 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
       try {
         const response = await fetch(
           `/api/browser-wallpapers/pixabay?q=${encodeURIComponent(pixabayRequest)}`,
-          { cache: "no-store", signal: controller.signal },
+          { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)]) },
         );
         const payload = await response.json() as PixabaySearchResponse;
         if (!response.ok || !payload.ok || !Array.isArray(payload.images)) {
           throw new Error(payload.error || "pixabay_unavailable");
         }
+        photoSearchCache.delete(pixabayRequest);
+        photoSearchCache.set(pixabayRequest, {images: payload.images, expires: Date.now() + 10 * 60_000});
+        if (photoSearchCache.size > 12) photoSearchCache.delete(photoSearchCache.keys().next().value!);
         if (live) setPixabayImages(payload.images);
       } catch (error) {
         if (live && !(error instanceof DOMException && error.name === "AbortError")) {
@@ -117,13 +157,13 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
       live = false;
       controller.abort();
     };
-  }, [pixabayRequest, source]);
+  }, [pixabayRequest, source, pixabayRetry]);
 
   const visible = category === "All"
     ? WALLPAPERS
     : WALLPAPERS.filter((wallpaper) => wallpaper.category === category);
 
-  const chooseSource = (nextSource: "Generated" | "Human") => {
+  const chooseSource = (nextSource: BackgroundSource) => {
     setSource(nextSource);
     if (nextSource === "Human" && !pixabayRequest) {
       setPixabayRequest(PIXABAY_CATEGORY_QUERIES[category]);
@@ -140,14 +180,9 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
 
   const searchPixabay = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    setPixabayRetry(value => value + 1);
     setPixabayRequest(pixabayQuery.trim() || PIXABAY_CATEGORY_QUERIES[category]);
   };
-
-  function selectPage(page: AppearancePage) {
-    cancelUpload();
-    setEditingPage(page);
-    setSaveError("");
-  }
 
   function selectTheme(theme: AppearanceTheme) {
     cancelUpload();
@@ -160,24 +195,51 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
     }
   }
 
-  function selectBackground(theme: AppearanceTheme, value: string) {
+  async function saveAppearance(patch: Parameters<typeof appearance.save>[0]) {
     cancelUpload();
+    const request = uploadRequest.current;
+    setSaveError("");
     try {
-      appearance.save({ background: { theme, value } });
-      setSaveError("");
-    } catch {
-      setSaveError("Couldn’t save the background. Try a smaller image or free some browser storage.");
+      await appearance.save(patch);
+    } catch (error) {
+      if (request === uploadRequest.current) {
+        setSaveError(error instanceof Error ? error.message : "Couldn’t save the background. Try again.");
+      }
+    }
+  }
+
+  async function selectBackground(theme: AppearanceTheme, value: string) {
+    cancelUpload();
+    const request = uploadRequest.current;
+    setSaveError("");
+    setLoadingBackground(value);
+    try {
+      const ascii = asciiWallpaperSlug(value);
+      if (ascii) await prepareAsciiWallpaper(ascii);
+      const wallpaper = resolveWallpaper(value, theme);
+      if (wallpaper) {
+        // CSS backgrounds fail silently and are fetched at low priority. Decode
+        // the selected image first so a slow/broken request cannot blank home.
+        const image = new Image();
+        image.fetchPriority = "high";
+        image.src = wallpaper.src;
+        await image.decode();
+      }
+      if (request !== uploadRequest.current) return;
+      await appearance.save({ background: { theme, value } });
+    } catch (error) {
+      if (request === uploadRequest.current) {
+        setSaveError(error instanceof DOMException && error.name === "EncodingError"
+          ? "Couldn’t load that image. Select it again to retry. Your current background is unchanged."
+          : error instanceof Error ? error.message : "Couldn’t load the background. Try again.");
+      }
+    } finally {
+      if (request === uploadRequest.current) setLoadingBackground(null);
     }
   }
 
   function toggleRandomBackground() {
-    cancelUpload();
-    try {
-      appearance.save({ random: { theme: editingTheme, enabled: !appearance.preference.random?.[editingTheme] } });
-      setSaveError("");
-    } catch {
-      setSaveError("Couldn’t save your choice. Check that browser storage is available.");
-    }
+    void saveAppearance({ random: { theme: editingTheme, enabled: !appearance.preference.random?.[editingTheme] } });
   }
 
   async function uploadFile(file: File) {
@@ -206,9 +268,13 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
   const uploadedImage = appearance.preference.backgrounds[editingTheme].startsWith("data:image/")
     ? appearance.preference.backgrounds[editingTheme] : null;
   const uploadLabel = uploading ? "Preparing image…" : uploadedImage ? "Replace image" : "Upload your own image";
+  const ambient = ambientBackgroundOptions(appearance.preference.backgrounds[editingTheme]);
+  const toggleAmbient = (option: "spotify" | "random") => {
+    void selectBackground(editingTheme, ambientBackgroundId({ ...ambient, [option]: !ambient[option] }));
+  };
 
   return (
-    <div className={styles.choices}>
+    <div className={`${panelStyles.scrollArea} ${styles.choices}`}>
       <div className={styles.appTheme}>
         <h3 className={styles.label}>Theme</h3>
         <div className={`${styles.pageTabs} ${styles.themeTabs}`} role="group" aria-label="App theme">
@@ -219,11 +285,6 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
         <p className={styles.hint}>Applies everywhere in Breadboard.</p>
       </div>
       <h3 className={styles.label}>Background</h3>
-      <div className={styles.pageTabs} role="group" aria-label="Page to customize">
-        {(Object.entries(APPEARANCE_PAGES) as [AppearancePage, string][]).map(([page, label]) => (
-          <button key={page} type="button" aria-pressed={editingPage === page} onClick={() => selectPage(page)}>{label}</button>
-        ))}
-      </div>
       <div className="browser-wallpaper-theme-tabs" role="group" aria-label="Background for">
         {(["light", "dark"] as const).map((targetTheme) => (
           <button
@@ -237,7 +298,7 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
           </button>
         ))}
       </div>
-      <p className={styles.hint}>Background for {APPEARANCE_PAGES[editingPage]} in {editingTheme} mode.</p>
+      <p className={styles.hint}>Background in {editingTheme} mode.</p>
       <div className={styles.randomRow}>
         <div>
           <label id={randomLabelId} htmlFor={`${randomLabelId}-switch`}>Random</label>
@@ -256,6 +317,47 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
           <span aria-hidden="true" />
         </button>
       </div>
+      {initialPage === "new-tab" && (
+        <>
+        <div className={styles.spotifyChoice}>
+          <button
+            type="button"
+            className={styles.spotifyButton}
+            aria-pressed={ambient.spotify}
+            onClick={() => toggleAmbient("spotify")}
+          >
+            <span className={styles.spotifyPreview} aria-hidden="true">
+              <SpotifyAmbientBackground theme={editingTheme} />
+              <Music2 />
+            </span>
+            <span><strong>Spotify colors</strong><small>Immersive, gently pulsing album colors, even while paused. {ambient.random ? "Random colors return when no track is selected." : "Your default background returns when no track is selected."}</small></span>
+            {ambient.spotify && <Check size={16} aria-hidden="true" />}
+          </button>
+          {ambient.spotify && <p className={styles.hint} role="status">
+            {spotifySource?.imageUrl
+              ? `Following ${spotifySource.name} · ${spotifySource.artist}${spotifySource.playing ? "" : " · Paused"}`
+              : ambient.random ? "Using random colors. Album colors take over when music plays." : "Using your default background. Play a track with album artwork to start the lights."}
+          </p>}
+        </div>
+        <div className={styles.spotifyChoice}>
+          <button
+            type="button"
+            className={styles.spotifyButton}
+            aria-pressed={ambient.random}
+            onClick={() => toggleAmbient("random")}
+          >
+            <span className={styles.spotifyPreview} aria-hidden="true">
+              <SpotifyAmbientBackground theme={editingTheme} spotifyColors={false} randomColors />
+              <Shuffle />
+            </span>
+            <span><strong>Random colors</strong><small>Slowly shifting colors with the same soft glow. Can be combined with Spotify colors.</small></span>
+            {ambient.random && <Check size={16} aria-hidden="true" />}
+          </button>
+        </div>
+        <RainAppearanceChoice mode={appearance.preference.rain?.[editingTheme] ?? "off"}
+          onChange={mode => { void saveAppearance({ rain: { theme: editingTheme, mode } }); }} />
+        </>
+      )}
       <div
         className={styles.uploadCard}
         data-dragging={draggingImage || undefined}
@@ -306,8 +408,8 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
         </span>
         <span><strong>No image</strong><small>Use the Breadboard theme</small></span>
       </button>
-      <div className="browser-wallpaper-source-tabs" role="group" aria-label="Background source">
-        {(["Generated", "Human"] as const).map((value) => (
+      <div className="browser-wallpaper-source-tabs" style={{ gridTemplateColumns: `repeat(${initialPage === "new-tab" ? 3 : 2}, minmax(0, 1fr))` }} role="group" aria-label="Background source">
+        {(["Generated", "Human", ...(initialPage === "new-tab" ? ["ASCII"] : [])] as BackgroundSource[]).map((value) => (
           <button
             key={value}
             type="button"
@@ -318,7 +420,7 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
           </button>
         ))}
       </div>
-      <div className="browser-wallpaper-categories" aria-label="Background categories">
+      <div className="browser-wallpaper-categories" aria-label="Background categories" hidden={source === "ASCII"}>
         {(["All", "Astral", "Places", "Abstract"] as const).map((value) => (
           <button
             key={value}
@@ -343,7 +445,11 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
           <button type="submit">Search</button>
         </form>
       ) : null}
-      <div className="browser-wallpaper-grid">
+      {source === "ASCII" && <Suspense fallback={<p className={styles.hint} role="status">Loading ASCII library…</p>}>
+        <AsciiWallpaperGallery selected={appearance.preference.backgrounds[editingTheme]} loading={loadingBackground}
+          onSelect={value => { void selectBackground(editingTheme, value); }} />
+      </Suspense>}
+      <div className="browser-wallpaper-grid" hidden={source === "ASCII"}>
         {source === "Generated" ? visible.map((wallpaper) => {
           const selected = appearance.preference.backgrounds[editingTheme] === wallpaper.id;
           return (
@@ -355,12 +461,7 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
               aria-label={`${wallpaper.name}, ${wallpaper.category}`}
               onClick={() => selectBackground(editingTheme, wallpaper.id)}
             >
-              <span
-                className="browser-wallpaper-thumbnail"
-                style={{ backgroundImage: `url("${wallpaper.src}")` } as CSSProperties}
-              >
-                {selected ? <span className="browser-wallpaper-check"><Check aria-hidden="true" /></span> : null}
-              </span>
+              <WallpaperThumbnail src={wallpaper.previewSrc} selected={selected} loading={loadingBackground === wallpaper.id} />
               <span><strong>{wallpaper.name}</strong><small>Generated by {wallpaper.model}</small></span>
             </button>
           );
@@ -383,12 +484,7 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
               aria-label={`${image.name}, photo by ${image.creator} on Pixabay`}
               onClick={() => selectBackground(editingTheme, wallpaperId)}
             >
-              <span
-                className="browser-wallpaper-thumbnail"
-                style={{ backgroundImage: `url("${image.previewSrc}")` } as CSSProperties}
-              >
-                {selected ? <span className="browser-wallpaper-check"><Check aria-hidden="true" /></span> : null}
-              </span>
+              <WallpaperThumbnail src={image.previewSrc} lazy selected={selected} loading={loadingBackground === wallpaperId} />
               <span><strong>{image.name}</strong><small>Photo by {image.creator}</small></span>
             </button>
           );
@@ -401,4 +497,23 @@ function AppearanceChoices({ initialPage, ownerKey }: { initialPage: AppearanceP
       ) : null}
     </div>
   );
+}
+
+function WallpaperThumbnail({ src, selected, loading, lazy = false }: { src: string; selected: boolean; loading: boolean; lazy?: boolean }) {
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const imageRef = useRef<HTMLImageElement>(null);
+  useEffect(() => {
+    const image = imageRef.current;
+    if (!image) return;
+    if (image.complete && image.naturalWidth > 0) setStatus("ready");
+    else if (loading) { setStatus("loading"); image.src = src; }
+  }, [loading, src]);
+  return <span className="browser-wallpaper-thumbnail" aria-busy={loading || status === "loading"}>
+    {/* Small bundled previews load together; remote photos follow the scroll viewport. */}
+    {/* eslint-disable-next-line @next/next/no-img-element */}
+    <img ref={imageRef} src={src} alt="" loading={lazy ? "lazy" : "eager"} decoding="async" fetchPriority={lazy ? "auto" : "high"} onLoad={() => setStatus("ready")} onError={() => setStatus("error")} />
+    {loading || status === "loading" ? <span className={styles.imageStatus} role="status"><LoaderCircle className="is-spinning" size={18} aria-hidden="true" /><span className="sr-only">Loading image</span></span> : null}
+    {!loading && status === "error" ? <span className={styles.imageStatus}>Select to retry</span> : null}
+    {selected ? <span className="browser-wallpaper-check"><Check aria-hidden="true" /></span> : null}
+  </span>;
 }

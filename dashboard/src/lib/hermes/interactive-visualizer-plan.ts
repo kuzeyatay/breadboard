@@ -4,6 +4,10 @@ import {
 } from "./interactive-visualizer-types.ts";
 
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{1,79}$/;
+/** Output ids are plan keys, not DOM ids. Planning can name one with a
+ * leading digit ("16_symbol_qam_..."); rejecting it made a required visual
+ * unsatisfiable (telecom-1 lesson 3.3, 2026-10-06). */
+const OUTPUT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,79}$/;
 const MAX_CONTROLS = 16;
 const MAX_OUTPUTS = 20;
 
@@ -133,7 +137,7 @@ export function validateInteractiveVisualizerPlan(
     value.outputs.forEach((output, index) => {
       if (
         !isRecord(output) ||
-        !ID_PATTERN.test(String(output.id ?? "")) ||
+        !OUTPUT_ID_PATTERN.test(String(output.id ?? "")) ||
         typeof output.label !== "string" ||
         !output.label.trim() ||
         typeof output.purpose !== "string" ||

@@ -12,6 +12,8 @@ const stubs = {
   "@/app/components/page-appearance": `export default () => null;`,
   "@/app/components/use-page-appearance": `export const usePageAppearance = () => ({ ready: true, hasWallpaper: false, theme: "light" }); export const useActivePageAppearance = usePageAppearance;`,
   "@/app/components/use-desktop-tabs": `
+    import { createContext } from 'react';
+    export const DesktopTabIdentityContext = createContext(undefined);
     let state = null;
     export const setState = (next) => { state = next; };
     export const useDesktopTabs = () => state;`,
@@ -136,4 +138,47 @@ test("loading a browser page preserves its controls without a loading screen in 
   const html = render(loading, loading);
   assert.match(html, /aria-label="Stop loading"/);
   assert.doesNotMatch(html, /Opening |browser-start-status|Starting Browser/);
+});
+
+test("combined home replaces a normal empty browser without duplicating the old start screen", () => {
+  setState({ enabled: true, activeId: 2, selfId: 2, extensions: [], tabs: [{ id: 2, browser: { address: "", private: false } }] });
+  const html = renderToStaticMarkup(React.createElement(BrowserClient, {
+    showFlowers: true, restoreOwnerKey: "handoff-test",
+    home: React.createElement("main", { "aria-label": "Combined home" }, "Gardens and live terminal"),
+  }));
+  assert.match(html, /aria-label="Combined home"/);
+  assert.doesNotMatch(html, /browser-start-copy|browser-side-rail|aria-label="Search the web or enter a web address"/);
+});
+
+test("combined home leaves native web navigation and private home intact", () => {
+  for (const state of [browserTab, { id: 2, browser: { address: "", private: true } }]) {
+    setState({ enabled: true, activeId: 2, selfId: 2, extensions: [], tabs: [state] });
+    const html = renderToStaticMarkup(React.createElement(BrowserClient, {
+      showFlowers: true, restoreOwnerKey: "handoff-test",
+      home: React.createElement("main", { "aria-label": "Combined home" }, "Gardens and live terminal"),
+    }));
+    assert.doesNotMatch(html, /aria-label="Combined home"/);
+    assert.match(html, /aria-label="Browser navigation"/);
+    if (state.browser.private) {
+      assert.match(html, /data-private-home/);
+      assert.match(html, /Private browsing/);
+      assert.match(html, /aria-label="Private search and shortcuts"/);
+      assert.match(html, /aria-label="Open Terminal"/);
+      assert.doesNotMatch(html, /browser-start-copy|browser-side-rail/);
+    }
+  }
+});
+
+test("combined home keeps a browser panel requested by the desktop shell available", () => {
+  setState({ enabled: true, activeId: 2, selfId: 2, extensions: [], tabs: [{
+    ...browserTab, browser: { ...browserTab.browser, address: "", terminalOpen: true },
+  }] });
+  const html = renderToStaticMarkup(React.createElement(BrowserClient, {
+    showFlowers: true, restoreOwnerKey: "handoff-test",
+    home: React.createElement("main", { "aria-label": "Combined home" }),
+  }));
+  assert.match(html, /aria-label="Combined home"/);
+  assert.match(html, /class="browser-terminal-drawer" data-open="true"/);
+  assert.match(html, /aria-label="Close Terminal"/);
+  assert.doesNotMatch(html, /browser-start-copy/);
 });

@@ -1,10 +1,13 @@
 import { OPENAI_SPEECH_VOICES } from './providers';
+import { loadSpeechSettings } from './settings-client';
 import { splitSpeechPassages } from './passages.ts';
 import { applyPronunciations } from './pronunciation.ts';
 import { createConnectionPreloader } from './connection-preloader';
 import { createVerifiedSpeechOutput, sameSpokenWords, SpeechFidelityError } from './verified-output';
 import { createRemoteAudioActivity } from './remote-audio-activity';
 import { createScriptGuard } from './script-guard';
+import { createSubscriptionInput } from './subscription-input';
+import { startLiveSpeechOutput } from './live-output';
 
 type Event = { type: string; sdp?: string; role?: string; text?: string; message?: string };
 class SubscriptionRequestError extends Error {
@@ -22,23 +25,24 @@ export interface SubscriptionVoice {
   setMicrophone(stream: MediaStream): void;
   setCallbacks(callbacks: Pick<SubscriptionVoiceOptions, 'onTranscript' | 'onDisconnect'>): void;
   setListening(listening: boolean): void;
+  /** Keep the isolated transcription connection open while its reader speaks. */
+  setDuplex?(enabled: boolean): void;
   resetTranscript(): void;
   transcript(): string;
   stopSpeaking(): void;
   /** Open the muted output reader while the host is preparing an answer. */
   prepareSpeaker(): Promise<void>;
-  finishTranscript(): Promise<string>;
+  finishTranscript(options?: { settleFinal?: boolean }): Promise<string>;
   speak(spoken: string, play?: boolean, onProgress?: (progress: number) => void): Promise<void>;
   capture(): Promise<Blob>;
   transcribeFile(file: Blob): Promise<string>;
 }
 
 export async function subscriptionSelected(signal?: AbortSignal): Promise<boolean> {
-  const response = await fetch("/api/speech/settings", { cache: "no-store", signal });
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.error || "Speech settings are unavailable.");
+  const body = await loadSpeechSettings(signal);
   if (body.userId !== undefined) preloader.invalidate(subscriptionPreloadKey(body.userId, body.settings));
   if (!["chatgpt", "local", "openaiweb", "elevenlabs"].includes(body.settings?.speechProvider)) throw new Error('Choose a speech provider in Voice settings before starting voice.');
+  if (!body.settings.enabled) throw new Error('Speech is turned off in Voice settings.');
   return body.settings?.speechProvider === "chatgpt";
 }
 
@@ -47,10 +51,14 @@ export interface SubscriptionVoiceOptions {
   microphone?: MediaStream;
   mode?: 'speak' | 'transcribe' | 'conversation';
   signal?: AbortSignal;
-  onTranscript?: (text: string) => void;
+  onTranscript?: (text: string, final?: boolean) => void;
   onDisconnect?: (error: Error) => void;
+  /** Notify buffered dictation once the microphone transport is ready. */
+  onInputReady?: () => void;
   capture?: boolean;
   listening?: boolean;
+  /** Dictation has no audible output and needs only the incoming-speech path. */
+  inputOnly?: boolean;
 }
 
 type PreloadSettings = { enabled?: boolean; speechProvider?: string; openaiVoice?: string; language?: string; transcriptionLanguage?: string | null; pronunciations?: string };
@@ -64,9 +72,9 @@ const preloader = createConnectionPreloader<SubscriptionVoice>((mode, signal) =>
 const borrowed = new WeakMap<SubscriptionVoice, { voice: SubscriptionVoice; detach(): void }>();
 const released = new WeakSet<SubscriptionVoice>();
 
-/** Called only by the persistent companion. No microphone is opened to warm it. */
-export function preloadSubscriptionVoice(userId: string | number, settings: PreloadSettings, conversation = true, idle = true): Promise<void> {
-  return preloader.configure(subscriptionPreloadKey(userId, settings), conversation ? ['conversation', 'speak'] : ['speak'], idle);
+/** Configure on-demand reuse only. Even a silent realtime session spends quota. */
+export function preloadSubscriptionVoice(userId: string | number, settings: PreloadSettings, conversation = true): Promise<void> {
+  return preloader.configure(subscriptionPreloadKey(userId, settings), conversation ? ['conversation', 'speak'] : ['speak'], false);
 }
 export function clearSubscriptionPreload(): Promise<void> { return preloader.clear(); }
 
@@ -97,6 +105,7 @@ export async function connectSubscriptionVoice(options: SubscriptionVoiceOptions
     prepared.setCallbacks(options);
     prepared.resetTranscript();
     prepared.setListening(options.listening !== false && Boolean(options.microphone));
+    options.onInputReady?.();
   } catch (error) { await preloader.release(prepared); throw error; }
   const close = () => releaseSubscriptionVoice(voice);
   const abort = () => { void close(); };
@@ -120,7 +129,7 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
   silence.connect(context.destination);
   silent.start();
   const inputGain = context.createGain();
-  inputGain.gain.value = options.listening === false ? 0 : 1;
+  inputGain.gain.value = options.listening === false || options.inputOnly ? 0 : 1;
   inputGain.connect(destination);
   let microphone = options.microphone ? context.createMediaStreamSource(options.microphone) : null;
   const conversation = options.mode === 'conversation' || Boolean(options.microphone);
@@ -136,8 +145,13 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
   let error: Error | undefined;
   let polling: Promise<void> | undefined;
   let partial = "";
+  let duplex = false;
   let completed: string[] = [];
   let changedAt = 0;
+  let inputActivityAt = 0, inputEndMs = -1, completedInputEndMs = -1;
+  const inputTurns = new Set<string>(), finishedInputTurns = new Set<string>();
+  let lastInputFinal = '';
+  const directInput = createSubscriptionInput();
   let outputVersion = 0;
   let controlOutputVersion = 0;
   let controlOutputSeen = false;
@@ -153,6 +167,12 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
   let closing: Promise<void> | undefined;
   let sessionClosing: Promise<unknown> | undefined;
   let connected = false;
+  let inputReady = false;
+  const notifyInputReady = () => {
+    if (!inputReady && !closed && !signal.aborted) {
+      inputReady = true; options.onInputReady?.();
+    }
+  };
   let selectedVoice: string | undefined;
   let pronunciations = '';
   let sessionStarted = false;
@@ -172,6 +192,27 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
     let message;
     try { message = JSON.parse(event.data); } catch { return; }
     if (message?.type === 'session.started') sessionStarted = true;
+    const staleInput = directInput.isStale(message?.end_ms ?? message?.turn?.end_ms);
+    if (message?.type === 'input_transcript.added' && !staleInput) {
+      inputActivityAt = Date.now();
+      if (Number.isFinite(message.end_ms)) inputEndMs = Math.max(inputEndMs, message.end_ms);
+    }
+    if ((message?.type === 'turn.created' || message?.type === 'turn.done') && message.turn?.role === 'user' && !staleInput) {
+      inputActivityAt = Date.now();
+      const turn = message.turn;
+      if (message.type === 'turn.created' && turn.id && !finishedInputTurns.has(turn.id)) inputTurns.add(turn.id);
+      if (message.type === 'turn.done') {
+        if (turn.id) { inputTurns.delete(turn.id); finishedInputTurns.add(turn.id); }
+        if (finishedInputTurns.size > 256) finishedInputTurns.delete(finishedInputTurns.values().next().value!);
+        if (Number.isFinite(turn.end_ms)) completedInputEndMs = Math.max(completedInputEndMs, turn.end_ms);
+        if (typeof turn.transcript === 'string') lastInputFinal = turn.transcript.trim();
+      }
+    }
+    const input = directInput.accept(message);
+    if (input) {
+      changedAt = Date.now();
+      callbacks.onTranscript?.(input.text, input.final && inputTurns.size === 0);
+    }
     if (message?.type === 'output_transcript.added' ||
       (message?.type === 'turn.created' && message.turn?.role === 'assistant')) {
       controlOutputSeen = true;
@@ -197,7 +238,7 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
     }
     if (message?.type === 'error') fail(new Error('The subscription service could not apply the selected voice. Try again.'));
   };
-  const text = () => [...completed, partial].filter(Boolean).join(" ").trim();
+  const text = () => directInput.active ? directInput.text() : [...completed, partial].filter(Boolean).join(" ").trim();
   const check = () => {
     signal.throwIfAborted();
     if (error) throw error;
@@ -320,7 +361,8 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
         // silence or an unrelated reply. Request a reading explicitly and let
         // the guard judge the words that come back.
         const readingRequest = `Read aloud exactly this text. Say only these words, with no introduction or commentary: ${part}`;
-        setAudible(true);
+        if (!player) throw new Error('Voice audio output is unavailable. Reopen voice to reconnect.');
+        if (!await startLiveSpeechOutput(context, player, () => epoch === speechEpoch, signal)) return;
         await request(endpoint(), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: readingRequest }) });
         const startDeadline = Date.now() + 5000;
         // A whole paragraph can take minutes to read.
@@ -332,6 +374,9 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
           check();
           const stats = await peer.getStats();
           if (epoch !== speechEpoch) return;
+          if (player.paused || player.muted || player.volume === 0 || context.state !== 'running') {
+            throw new Error('Voice audio playback stopped. Reopen voice to reconnect.');
+          }
           const incoming = meter.receivedAudio(stats);
           const active = meter.speechActive(stats);
           audioObserved ||= active === true ||
@@ -508,11 +553,11 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
         cursor = batch.cursor;
         for (const event of batch.events as Event[]) {
           if (event.type === "sdp") answer = event.sdp;
-          if (event.role === "user") {
+          if (event.role === "user" && !directInput.active) {
             if (event.type === "transcriptDelta") partial += event.text || "";
             if (event.type === "transcript") { completed.push(event.text?.trim() || ""); partial = ""; }
             changedAt = Date.now();
-            callbacks.onTranscript?.(text());
+            callbacks.onTranscript?.(text(), event.type === 'transcript');
           }
           if (event.type === "transcriptDelta" && event.role === "assistant") liveTranscript += event.text || "";
           if (event.type === "transcript" && event.role === "assistant") {
@@ -531,9 +576,11 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
     // Apply the saved voice on the live session and wait for its acknowledgment
     // before any reader can unmute or append text. Creation parameters alone
     // do not establish that the running audio session applied the selection.
-    voiceUpdateSent = true;
-    channel.send(JSON.stringify({ type: 'session.update', session: { audio: { output: { voice: selectedVoice } } } }));
-    await until(() => voiceConfirmed, 10000);
+    if (!options.inputOnly) {
+      voiceUpdateSent = true;
+      channel.send(JSON.stringify({ type: 'session.update', session: { audio: { output: { voice: selectedVoice } } } }));
+      await until(() => voiceConfirmed, 10000);
+    }
     // The control channel and local sender can start before the remote media
     // clock. AVAS can acknowledge an early script but never speak it. Wait for
     // packets in both directions, including silence from the remote reader.
@@ -543,17 +590,28 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
       const stats = await peer.getStats();
       const audio = [...stats.values()].filter(item => item.kind === 'audio');
       if (audio.some(item => item.type === 'outbound-rtp' && item.packetsSent >= 10) &&
-        audio.some(item => item.type === 'inbound-rtp' && item.packetsReceived >= 10)) break;
+        (options.inputOnly || audio.some(item => item.type === 'inbound-rtp' && item.packetsReceived >= 10))) break;
       if (Date.now() >= mediaDeadline) throw new Error("The voice audio connection did not become ready. Try again.");
       await pause(50);
     }
+    // Dictation does not wait for a silent remote speaker or an output-voice
+    // update. The control session and outbound media must still both be ready
+    // before queued microphone input can start.
+    if (options.inputOnly && options.listening !== false) inputGain.gain.value = 1;
+    notifyInputReady();
     connected = true;
   } catch (caught) { await close(); throw caught; }
   // Abort must also stop audio immediately, not just the next event poll.
   signal.addEventListener("abort", () => { void close(); }, { once: true });
   return {
     close,
-    isHealthy() { return !closed && !signal.aborted && !error && !interruptedOutput && peer.connectionState !== "failed"; },
+    isHealthy() {
+      // A cached call can lose media before the disconnect grace timer fires
+      // (or retain a suspended audio context after sleep). Do not hand that
+      // connection to a new hold and silently buffer its entire utterance.
+      return !closed && !signal.aborted && !error && !interruptedOutput
+        && peer.connectionState === 'connected' && channel.readyState === 'open' && context.state === 'running';
+    },
     setMicrophone(stream) {
       check();
       inputGain.gain.value = 0;
@@ -563,7 +621,13 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
     },
     setCallbacks(value) { callbacks = { onTranscript: value.onTranscript, onDisconnect: value.onDisconnect }; },
     setListening(listening: boolean) { inputGain.gain.value = listening ? 1 : 0; },
-    resetTranscript() { partial = ""; completed = []; changedAt = 0; },
+    setDuplex(enabled: boolean) { duplex = enabled; },
+    resetTranscript() {
+      partial = ""; completed = []; changedAt = inputActivityAt = 0;
+      inputEndMs = completedInputEndMs = -1; lastInputFinal = '';
+      inputTurns.clear(); finishedInputTurns.clear();
+      directInput.reset();
+    },
     transcript: text,
     stopSpeaking() {
       const interrupted = activeSpeechEpoch !== undefined;
@@ -586,11 +650,41 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
       if (epoch !== speechEpoch) return;
       await connectReader();
     },
-    async finishTranscript() {
+    async finishTranscript(finishOptions) {
       inputGain.gain.value = 0;
+      const stoppedAt = Date.now();
       // A missed utterance is not a failed connection. Leave the duplex call
       // usable so the next turn can listen again.
       if (!await until(() => Boolean(text()), 15000, true)) return "";
+      // Short gaps between deltas can precede the last words. Prefer the done
+      // event, but some subscription sessions only emit deltas. Those need a
+      // longer quiet period instead of timing out and replaying the recording.
+      if (finishOptions?.settleFinal) {
+        await until(() => {
+          const quiet = Date.now() - Math.max(changedAt, inputActivityAt);
+          const elapsed = Date.now() - stoppedAt;
+          // The ordered media transcript is authoritative. A confirmed final
+          // needs only a short guard for newly arriving speech, not the relay.
+          if (directInput.active && !directInput.pending() && !inputTurns.size && lastInputFinal
+            && text().endsWith(lastInputFinal)) return elapsed >= 100 && quiet > 200;
+          if (elapsed < 600) return false;
+          // Some conversation sessions emit words and activity but no final
+          // event. Give late words time to arrive, then settle stable input
+          // instead of keeping a healthy conversation stuck for 15 seconds.
+          if (conversation && !options.inputOnly && elapsed >= 1500 && quiet > 1500) return true;
+          // A done event for an earlier sentence is not completion of the
+          // current utterance. The data channel exposes input ahead of the
+          // bridge transcript, so wait for its outstanding span/turn and for
+          // that final text to reach the bridge before committing or reusing.
+          if (inputActivityAt) {
+            if (inputTurns.size || (directInput.active ? directInput.pending() : inputEndMs > completedInputEndMs || partial)) return false;
+            if (lastInputFinal && !text().endsWith(lastInputFinal)) return false;
+            return quiet > 500;
+          }
+          return quiet > 1200 && Date.now() - stoppedAt >= 1200;
+        }, 15000);
+        return text();
+      }
       await until(() => Date.now() - changedAt > 500, 10000);
       return text();
     },
@@ -601,7 +695,7 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
       const epoch = ++speechEpoch;
       activeSpeechEpoch = epoch;
       try {
-        inputGain.gain.value = 0;
+        if (!duplex || !conversation) inputGain.gain.value = 0;
         if (conversation) {
           // Realtime may answer microphone input despite transcription-only
           // instructions. Unmuting that same track exposes its queued reply

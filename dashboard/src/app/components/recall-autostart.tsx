@@ -2,18 +2,14 @@
 
 // Capture that resumes because Breadboard opened.
 //
-// The recorder is owned by the dashboard rather than the desktop supervisor
-// precisely because opting into it is per user, and the supervisor starts
-// before anyone has signed in. So the "Breadboard opened" signal has to come
-// from a page that knows who is looking at it: one POST per authenticated user
-// per app load, and answered by a route that declines when this user has not
-// asked for it. Nothing here decides anything — the server does, from settings
-// this component never reads.
+// The native Runtime owns recording. The authenticated page announces its
+// owner, then waits through first-run installation. The server checks saved
+// capture preferences on every attempt, so switching off during setup wins.
 
 import { getSession } from "next-auth/react";
 import { usePathname } from "next/navigation";
 import { useEffect } from "react";
-import { announceRecallAutostart } from "@/app/components/recall-autostart-lifecycle";
+import { announceRecallAutostart, RECALL_SETTINGS_CHANGED_EVENT } from "@/app/components/recall-autostart-lifecycle";
 
 export default function RecallAutoStart() {
   // The root layout survives client navigation. Watching the path lets a tab
@@ -22,15 +18,34 @@ export default function RecallAutoStart() {
 
   useEffect(() => {
     let active = true;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let generation = 0;
+    const deadline = Date.now() + 35 * 60_000;
+    let onSettingsChanged = () => {};
 
     void getSession()
-      .then((session) => {
+      .then(async (session) => {
         if (!active) return;
-        return announceRecallAutostart({
-          session,
-          storage: window.sessionStorage,
-          fetchImpl: (input, init) => fetch(input, init),
-        });
+        if (!session?.user) return;
+        const announce = async (force = false) => {
+          if (!active) return;
+          const attempt = ++generation;
+          const settled = await announceRecallAutostart({
+            session,
+            storage: window.sessionStorage,
+            fetchImpl: (input, init) => fetch(input, init),
+            force,
+          });
+          if (active && attempt === generation && !settled && Date.now() < deadline) {
+            retry = setTimeout(() => void announce(), 3_000);
+          }
+        };
+        onSettingsChanged = () => {
+          if (retry !== undefined) clearTimeout(retry);
+          void announce(true);
+        };
+        window.addEventListener(RECALL_SETTINGS_CHANGED_EVENT, onSettingsChanged);
+        await announce();
       })
       .catch(() => {
         // A missing session is deliberately quiet. Authenticated Recall state
@@ -39,6 +54,8 @@ export default function RecallAutoStart() {
 
     return () => {
       active = false;
+      if (retry !== undefined) clearTimeout(retry);
+      window.removeEventListener(RECALL_SETTINGS_CHANGED_EVENT, onSettingsChanged);
     };
   }, [pathname]);
 

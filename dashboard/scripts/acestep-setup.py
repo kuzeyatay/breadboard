@@ -44,16 +44,19 @@ def direct(root, candidate):
 
 
 def main():
-    if len(sys.argv) != 3:
-        raise RuntimeError("Setup requires Runtime-owned data and uv paths.")
+    if len(sys.argv) != 4:
+        raise RuntimeError("Setup requires Runtime-owned state, uv and bulk paths.")
     data = Path(sys.argv[1]).resolve(strict=True)
-    root = direct(data, data / "runtime-v2" / "services" / "acestep")
+    bulk = Path(sys.argv[3]).resolve(strict=True)
+    root = direct(bulk, bulk / "runtime-v2" / "services" / "acestep")
+    state = direct(data, data / "runtime-v2" / "services" / "acestep")
     root.mkdir(parents=True, exist_ok=True)
+    state.mkdir(parents=True, exist_ok=True)
     check_setup_space(root)
     # An explicit repeat repairs missing files using the same immutable revisions.
-    source = direct(data, root / "source")
+    source = direct(bulk, root / "source")
     source.mkdir(exist_ok=True)
-    archive = direct(data, root / "source.zip.part")
+    archive = direct(bulk, root / "source.zip.part")
     print("Downloading pinned ACE-Step source (MIT).", flush=True)
     with urllib.request.urlopen(f"https://codeload.github.com/ace-step/ACE-Step-1.5/zip/{SOURCE_REVISION}", timeout=60) as response, archive.open("wb") as output:
         size = 0
@@ -83,15 +86,15 @@ def main():
             with bundle.open(member) as incoming, target.open("wb") as outgoing:
                 shutil.copyfileobj(incoming, outgoing, 1024 * 1024)
     archive.unlink()
-    env = dict(os.environ, UV_PROJECT_ENVIRONMENT=str(root / ".venv"), UV_CACHE_DIR=str(root / "uv-cache"), UV_LINK_MODE="copy")
+    env = dict(os.environ, UV_PROJECT_ENVIRONMENT=str(root / ".venv"), UV_CACHE_DIR=str(root / "uv-cache"), UV_LINK_MODE="hardlink" if os.name == "nt" else "copy")
     print("Installing isolated dependencies using the pinned upstream uv.lock.", flush=True)
     subprocess.run([sys.argv[2], "sync", "--frozen", "--no-dev", "--project", str(source), "--python", sys.executable], env=env, check=True, timeout=1800)
     python = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     # The child is a fixed script invocation and remains in the Runtime setup worker's process tree.
-    subprocess.run([str(python), __file__, "--models", str(root)], env=env, check=True, timeout=1800)
+    subprocess.run([str(python), __file__, "--models", str(root), str(state)], env=env, check=True, timeout=1800)
 
 
-def models(root):
+def models(root, state):
     from huggingface_hub import HfApi, snapshot_download
     import torch
     print("Downloading pinned turbo, VAE, and text encoder weights; no music-planning LM is installed.", flush=True)
@@ -122,17 +125,17 @@ def models(root):
     hardware = {"cuda": torch.cuda.is_available(), "mps": bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()),
                 "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
                 "vramBytes": torch.cuda.get_device_properties(0).total_memory if torch.cuda.is_available() else None}
-    token = root / "api-key"
+    token = direct(state, state / "api-key")
     if not token.exists():
         token.write_text(secrets.token_urlsafe(48), encoding="utf8")
-    marker = root / "models-ready.json.part"
+    marker = direct(state, state / "models-ready.json.part")
     marker.write_text(json.dumps({"sourceRevision": SOURCE_REVISION, "modelRevision": MODEL_REVISION, "model": "acestep-v15-turbo", "files": files, "hardware": hardware}), encoding="utf8")
-    marker.replace(root / "models-ready.json")
+    marker.replace(direct(state, state / "models-ready.json"))
     print(json.dumps({"prepared": True, "hardware": hardware, "modelBytes": total}), flush=True)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--models":
-        models(Path(sys.argv[2]).resolve(strict=True))
+    if len(sys.argv) == 4 and sys.argv[1] == "--models":
+        models(Path(sys.argv[2]).resolve(strict=True), Path(sys.argv[3]).resolve(strict=True))
     else:
         main()

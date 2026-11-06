@@ -7,6 +7,46 @@ import { build } from "esbuild";
 import ts from "typescript";
 import { chromium } from "playwright";
 
+test("an existing Garden chat shows Thinking and can stop while its checkpoint is still saving", { timeout: 30_000 }, async () => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const source = fs.readFileSync(new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url), "utf8");
+  const checkpoint = source.indexOf("const checkpoint = await reserveGardenTurnCheckpoint(");
+  const start = source.lastIndexOf('    setInput("");', checkpoint);
+  const end = source.lastIndexOf("    let checkpointSaved = false;", checkpoint);
+  assert.ok(start > 0 && end > start);
+  const bundle = await build({ stdin: { resolveDir: root, loader: "tsx", contents: `
+    import React,{useState,useRef,useEffect} from 'react';import{createRoot}from'react-dom/client';
+    import ActivityPanel from './src/app/components/hermes/activity-panel';
+    import {useLegacyAgentActivity} from './src/app/components/hermes/use-legacy-agent-activity';
+    function App(){
+      const agentActivity=useLegacyAgentActivity();const [rows,setRows]=useState([]),[busy,setBusy]=useState(false);
+      const chatHistoryEpoch=useRef(0),started=useRef(false);
+      const setInput=()=>{},setChatAttachments=()=>{},setChatStreaming=(_id,value)=>setBusy(value),updateChatMessages=(_id,value)=>setRows(value);
+      async function send(){
+        const sessionId=872,session={conversationId:'conv-existing'};
+        const finalMessages=[{role:'user',content:'Visualize this selection'},{role:'assistant',content:''}];let agentSignal;
+        ${source.slice(start, end)}
+        window.turnSignal=agentSignal;
+        await new Promise(resolve=>{window.finishCheckpoint=resolve});
+      }
+      useEffect(()=>{if(!started.current){started.current=true;void send()}},[]);
+      return <>{rows.length>0&&<ActivityPanel activities={agentActivity.activities} connection={agentActivity.connection}
+        pendingPermission={null} onPermissionDecision={()=>{}}/>}<button disabled={!busy} onClick={()=>agentActivity.abort()}>Stop</button></>;
+    }createRoot(document.getElementById('root')).render(<App/>);
+  ` }, bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", alias: { "@": `${root}/src` }, logLevel: "silent" });
+  const edge = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
+  const browser = await chromium.launch({ headless: true, ...(fs.existsSync(edge) ? { executablePath: edge } : {}) });
+  try {
+    const page = await browser.newPage();
+    await page.route("http://localhost:53147/**", route => route.fulfill({ contentType: "text/html", body: '<!doctype html><div id="root"></div>' }));
+    await page.goto("http://localhost:53147/");await page.addScriptTag({ content: bundle.outputFiles[0].text });
+    await page.getByText("Thinking", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(()=>window.turnSignal?.aborted), false);
+    await page.getByRole('button',{name:'Stop',exact:true}).click();
+    await page.waitForFunction(()=>window.turnSignal.aborted);
+  } finally { await browser.close(); }
+});
+
 // Run the real Garden stream consumer, polling callback and busy-state
 // expressions together. Replace only the model request and persistence.
 test("Garden releases completed responses after terminal frames, missed frames and chat switches", { timeout: 30_000 }, async () => {
@@ -19,7 +59,7 @@ test("Garden releases completed responses after terminal frames, missed frames a
     if (ts.isVariableStatement(node)) {
       for (const d of node.declarationList.declarations) {
         declarations.set(d.name.getText(tree), node.getText(tree));
-        if (d.name.getText(tree) === "res" && d.initializer?.getText(tree).startsWith('await fetch("/api/chat",')) request = d.initializer.getText(tree);
+        if (d.name.getText(tree) === "res" && d.initializer?.getText(tree).startsWith('await fetchGardenChat(sessionId, clientMessageId,')) request = d.initializer.getText(tree);
       }
     }
     if (ts.isFunctionDeclaration(node) && node.name) functions.set(node.name.text, node);

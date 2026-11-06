@@ -238,6 +238,22 @@ class TestRetrieval:
 
 
 class TestAssembly:
+    def test_visible_plugin_reads_do_not_widen_the_authorized_catalog(self, monkeypatch):
+        from tools import tool_search
+        # Classification identifies plugin tools; assembly and configuration
+        # are real. The unavailable name must never enter the tool list.
+        monkeypatch.setattr(tool_search, "is_deferrable_tool_name", lambda name: name != "terminal")
+        config = tool_search.ToolSearchConfig.from_raw({"enabled": "on", "always_visible": ["source_reader", "not_authorized", "source_reader"]})
+        assert config.always_visible == ("source_reader", "not_authorized")
+        definitions = [_td("source_reader"), _td("terminal"), _td("specialist")]
+        result = tool_search.assemble_tool_defs(definitions, config=config)
+        names = {td["function"]["name"] for td in result.tool_defs}
+        assert "source_reader" in names
+        assert "terminal" in names
+        assert "specialist" not in names
+        assert "not_authorized" not in names
+        assert result.activated and result.deferred_count == 1
+
     def test_no_deferrable_returns_unchanged(self):
         """Pure-core toolset: pass-through, no bridge tools added."""
         from tools.tool_search import assemble_tool_defs, ToolSearchConfig

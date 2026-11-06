@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { livekitRuntimeTraceIncludes } from "./scripts/livekit-runtime-packages.mjs";
 
 const desktopBuild = process.env.BREADBOARD_DESKTOP_BUILD === "1";
 // Next may evaluate this config after its CLI has moved process.cwd() to the
@@ -184,6 +185,9 @@ const nextConfig: NextConfig = {
   // index.js, which the bundler cannot follow — keep it external so the require
   // happens at runtime against node_modules.
   serverExternalPackages: [
+    '@livekit/agents',
+    '@livekit/rtc-node',
+    '@livekit/local-inference',
     '@firecrawl/anydoc',
     'better-sqlite3',
     'pdf-parse',
@@ -201,6 +205,7 @@ const nextConfig: NextConfig = {
     '/api/markdown-videos': gardenAssetRouteExcludes,
   },
   outputFileTracingIncludes: {
+    '/api/speech/livekit': livekitRuntimeTraceIncludes(bundlerRoot),
     '/api/anydoc/status': [
       'node_modules/@firecrawl/anydoc/**/*',
       'node_modules/@firecrawl/anydoc-win32-x64-msvc/**/*',

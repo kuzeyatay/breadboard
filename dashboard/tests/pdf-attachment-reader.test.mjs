@@ -35,6 +35,31 @@ test("page markers and scanner branding never count as extracted content", () =>
   assert.equal(hasReadablePdfText("Scanned with CamScanner https://camscanner.com"), false);
 });
 
+test("a screenshot-backed 65-page scan needs no OCR and retains honest page coverage", async () => {
+  const pdf = await PDFDocument.create();
+  for (let page = 1; page <= 65; page++) pdf.addPage();
+  const result = await readPdfAttachment(await pdf.save(), {
+    ocrPages: [], transcribe: async () => { assert.fail("A screenshot-backed question must not wait for OCR"); },
+  });
+  assert.equal(result.pages, 65);
+  assert.deepEqual(result.ocrPages, []);
+  assert.match(result.text, /\[\[Page 39\]\][\s\S]*has not been transcribed/);
+  assert.match(result.warning, /do not treat this preview as a complete reading/);
+});
+
+test("page context limits OCR without dropping embedded text elsewhere", async () => {
+  const calls = [];
+  const bytes = await fixture();
+  const result = await readPdfAttachment(bytes, { ocrPages: [2], transcribe: async (_url, page) => {
+    calls.push(page); return "The handwritten page explains current and its direction.";
+  } });
+  assert.deepEqual(calls, [2]);
+  assert.match(result.text, /Electric fields/);
+  assert.match(result.text, /handwritten page/);
+  assert.equal(result.warning, "");
+  await assert.rejects(readPdfAttachment(await fixture(), { ocrPages: [3] }), /outside this document/);
+});
+
 test("OCR failure stops before a tool-search loop or a filename-only prompt", async () => {
   let calls = 0;
   await assert.rejects(readPdfAttachment(await fixture(), { transcribe: async () => {

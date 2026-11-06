@@ -6,6 +6,7 @@ import script from "./scripts/explorer.inline"
 import { classNames } from "../util/lang"
 import { i18n } from "../i18n"
 import { FileTrieNode } from "../util/fileTrie"
+import { compareGardenNodes } from "../util/gardenOrder"
 import OverflowListFactory from "./OverflowList"
 import { concatenateResources } from "../util/resources"
 
@@ -37,54 +38,7 @@ const defaultOptions: Options = {
       node.displayName = "Learning"
     }
   },
-  sortFn: (a, b) => {
-    const rank = (node: FileTrieNode) => {
-      const segment = node.slugSegment.toLowerCase()
-      const slug = String(node.slug ?? "").toLowerCase()
-      const knowledgeType = node.data?.knowledgeType ?? ""
-      const breadboardType = node.data?.breadboardType ?? ""
-      if (segment === "learning" || slug.endsWith("/learning/index")) return 0
-      if (
-        knowledgeType === "topic-overview" ||
-        knowledgeType === "learning-map" ||
-        knowledgeType === "source-map" ||
-        knowledgeType === "scope-contract"
-      ) {
-        return 1
-      }
-      if (/^\d+\b/.test(segment) || knowledgeType === "textbook-section" || knowledgeType === "learning-section")
-        return 2
-      if (
-        knowledgeType === "textbook-page" ||
-        knowledgeType === "learning-page" ||
-        breadboardType === "textbook_page" ||
-        breadboardType === "learning_page"
-      )
-        return 3
-      if (segment === "sources" || knowledgeType === "source-document") return 4
-      if (segment === "legacy") return 8
-      if (knowledgeType === "internal-concept" || breadboardType === "internal_concept") return 9
-      return 5
-    }
-    const rankDiff = rank(a) - rank(b)
-    if (rankDiff !== 0) return rankDiff
-
-    // Sort order: folders first, then files. Sort folders and files alphabetically
-    if ((!a.isFolder && !b.isFolder) || (a.isFolder && b.isFolder)) {
-      // numeric: true: Whether numeric collation should be used, such that "1" < "2" < "10"
-      // sensitivity: "base": Only strings that differ in base letters compare as unequal. Examples: a ≠ b, a = á, a = A
-      return a.displayName.localeCompare(b.displayName, undefined, {
-        numeric: true,
-        sensitivity: "base",
-      })
-    }
-
-    if (!a.isFolder && b.isFolder) {
-      return 1
-    } else {
-      return -1
-    }
-  },
+  sortFn: compareGardenNodes,
   filterFn: (node) => {
     const knowledgeType = node.data?.knowledgeType ?? ""
     const breadboardType = node.data?.breadboardType ?? ""
@@ -122,11 +76,7 @@ export default ((userOpts?: Partial<Options>) => {
 
     return (
       <div
-        class={classNames(
-          displayClass,
-          "explorer",
-          opts.showTitle ? "has-title" : "titleless",
-        )}
+        class={classNames(displayClass, "explorer", opts.showTitle ? "has-title" : "titleless")}
         data-behavior={opts.folderClickBehavior}
         data-collapsed={opts.folderDefaultState}
         data-savestate={opts.useSavedState}

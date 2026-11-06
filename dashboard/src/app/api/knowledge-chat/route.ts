@@ -21,17 +21,15 @@ import {
 } from '@/lib/chat-attachments';
 import { modelAttachmentPromptText } from '@/lib/model-attachments';
 import { buildUrlLinkContext } from '@/lib/url-link-context';
-import { scanClusterKnowledge, type KnowledgeNode } from '@/lib/knowledge';
+import { scanClusterKnowledgeCooperatively, type KnowledgeNode } from '@/lib/knowledge';
 import { retrieveGraphRag, type RetrievalGarden } from '@/lib/semantic-retrieval';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { withCouncil } from '@/lib/council';
 import { requireUserId, routeErrorResponse } from '@/lib/server-auth';
-import { cogniviaSection } from '@/lib/cognivia/index.ts';
 import { directModeSection } from '@/lib/hermes/direct-mode.ts';
-import {
-  readerComprehensionPrompt,
-  responseStylePrompt,
-} from '@/lib/hermes/system-prompts.ts';
+import { chatCorePrompt } from '@/lib/hermes/system-prompts.ts';
+import { parseBrowserTerminalAccess } from '@/lib/browser-terminal.ts';
+import { browserTerminalPrompt } from '@/lib/hermes/browser-terminal-context.ts';
 import { createEmDashFilter } from '@/lib/prose-punctuation.ts';
 import {
   assistantTextFromOutputItem,
@@ -159,7 +157,7 @@ export async function POST(request: Request) {
   try {
     const { baseURL } = resolveChatmockBaseUrl(request);
     const userId = await requireUserId();
-    const { messages, model, thinking, reasoningEffort, attachments, scope, adhdMode } =
+    const { messages, model, thinking, reasoningEffort, attachments, scope, adhdMode, browserAccess } =
       await request.json();
 
     if (!Array.isArray(messages)) {
@@ -210,7 +208,7 @@ export async function POST(request: Request) {
     let totalLinks = 0;
 
     for (const cluster of clusterRows) {
-      const knowledge = scanClusterKnowledge(contentPath, cluster.slug);
+      const knowledge = await scanClusterKnowledgeCooperatively(contentPath, cluster.slug);
       if (knowledge.nodes.length === 0) continue;
       retrievalGardens.push({
         slug: cluster.slug,
@@ -265,29 +263,25 @@ export async function POST(request: Request) {
     let systemPrompt =
       // Same prose-first voice and minimal-background rule the Hermes surfaces
       // get, so an answer does not change shape with the runtime behind it.
-      `${responseStylePrompt()}\n\n` +
+      `${chatCorePrompt()}\n\n` +
+      `${await browserTerminalPrompt(parseBrowserTerminalAccess(browserAccess), false)}\n\n` +
       // The switch shapes an answer wherever it is answered, including here.
       (adhdMode === true ? `${directModeSection()}\n\n` : '') +
       (publicScope
         ? 'You are the assistant for the Breadboard public knowledge hub, which spans every public garden shared on the platform. ' +
           'Answer using the aggregated graph relationships and textbook pages from across all public gardens as grounded context. ' +
           'You can answer questions about any public garden, compare and connect ideas across them, and point to where knowledge lives. ' +
-          'When you use a note, mention which public garden it comes from naturally (e.g. "in the Physics for EE garden"). '
+          'Identify the source Garden in references supporting the explanation. '
         : "You are the assistant for the user's entire second-brain knowledge base, which spans every garden they own. " +
           'Answer using the aggregated graph relationships and textbook pages from across all their gardens as grounded context. ' +
           'You can answer questions about any garden, compare and connect ideas across gardens, and point to where knowledge lives. ' +
-          'When you use a note, mention which garden it comes from naturally (e.g. "in your Physics for EE garden"). ') +
+          'Identify the source Garden in references supporting the explanation. ') +
       'When the user asks where something appears, cite the page title, garden, and the Locations value from the context. ' +
       'Always format mathematical expressions using LaTeX delimiters: ' +
       'use $...$ for inline math (e.g. $|\\Psi|^2$, $e^{i(kx-\\omega t)}$, $E = mc^2$) ' +
       'and $$...$$ on its own line for display/block equations. ' +
       'Never write math in plain text with ^ or bracket notation - always use proper LaTeX.\n\n' +
       `${gardenContext}\n\nGraphRAG-lite retrieved evidence (BM25, aliases, optional embeddings, and bounded one-hop relationships):\n\n${notesContext}`;
-
-    // A mental-health turn is answered as a CBT copilot on every surface,
-    // including the cross-garden knowledge chat.
-    const cognivia = cogniviaSection({ userText: lastUserMessage?.content ?? '' });
-    if (cognivia) systemPrompt += `\n\n${cognivia}`;
 
     const urlLinkContext = await buildUrlLinkContext(chatMessages);
     if (urlLinkContext.context) {
@@ -304,7 +298,6 @@ export async function POST(request: Request) {
         'Use the relevant notes and relationships across gardens to check your answer before responding.';
     }
 
-    systemPrompt += `\n\n${readerComprehensionPrompt()}`;
 
     const client = new OpenAI({
       baseURL,
@@ -357,7 +350,6 @@ export async function POST(request: Request) {
       async start(controller) {
         const encoder = new TextEncoder();
         let usageEmitted = false;
-
         function emit(payload: SsePayload) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
         }

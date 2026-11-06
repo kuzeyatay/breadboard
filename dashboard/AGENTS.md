@@ -6,7 +6,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 # Loading feedback
 
-Use the existing blue progress bar at the top for navigation and browser startup.
+Use the existing green progress bar at the top for navigation and browser startup.
 Keep the normal page and browser controls visible while loading. Do not replace
 them with a loading screen, centered spinner card, or “Starting/Opening” message.
 Show actual failures inline with retry actions.

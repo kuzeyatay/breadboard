@@ -39,8 +39,34 @@ export function parsePageTranslation(content: unknown, input: PageTranslationReq
   });
 }
 
-/** A plain translation request through the configured provider, with no tools or agent context. */
+/** Google's public MT endpoint (the same service Chrome's page translator uses): a batch in well under a second. */
+export async function translateWithGoogle(input: PageTranslationRequest, signal?: AbortSignal, fetcher: typeof fetch = fetch) {
+  const body = new URLSearchParams();
+  for (const segment of input.segments) body.append("q", segment.text);
+  const response = await fetcher(`https://translate.googleapis.com/translate_a/t?client=gtx&sl=auto&tl=${encodeURIComponent(input.language)}&format=text`, {
+    method: "POST", body, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
+  });
+  if (!response.ok) throw new Error(`Google translation returned ${response.status}.`);
+  const rows = await response.json() as unknown;
+  if (!Array.isArray(rows) || rows.length !== input.segments.length) throw new Error("Google translation was incomplete.");
+  return input.segments.map((segment, index) => {
+    const row = rows[index];
+    const text = typeof row === "string" ? row : Array.isArray(row) && typeof row[0] === "string" ? row[0] : undefined;
+    if (!text?.trim()) throw new Error("Google translation was incomplete.");
+    // Google trims fragments; restore boundary whitespace so inline nodes don't run together.
+    return { id: segment.id, text: segment.text.match(/^\s*/)![0] + text.trim() + segment.text.match(/\s*$/)![0] };
+  });
+}
+
+/** Fast machine translation first; the configured model only when Google is unreachable. */
 export async function translatePageText(input: PageTranslationRequest, signal?: AbortSignal, fetcher: typeof fetch = fetch, baseUrl = localChatmockBaseUrl()) {
+  try { return await translateWithGoogle(input, signal, fetcher); }
+  catch (error) { if (signal?.aborted) throw error; }
+  return translateWithModel(input, signal, fetcher, baseUrl);
+}
+
+/** A plain translation request through the configured provider, with no tools or agent context. */
+export async function translateWithModel(input: PageTranslationRequest, signal?: AbortSignal, fetcher: typeof fetch = fetch, baseUrl = localChatmockBaseUrl()) {
   const response = await fetcher(`${baseUrl}/chat/completions`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${chatmockApiKeyValue()}` },
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(90000)]) : AbortSignal.timeout(90000),

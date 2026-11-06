@@ -645,9 +645,7 @@ function RecordingScreen(props: {
           {props.paused ? "Paused" : "Recording your demonstration"}
         </h2>
         <p className="mt-2 text-sm leading-6 text-[var(--ink-muted)]">
-          Switch to the application you want to teach and do the task once, describing the decisions
-          out loud as you go. Say which values change each time, what you check before committing to
-          something, and anything Breadboard should ask you about rather than do on its own.
+          Do the task in the app and explain your decisions aloud. Mention what changes each time and which actions need your approval.
         </p>
         <div className="mt-4">
           <RecordingControls {...props} />
@@ -739,8 +737,7 @@ function ReviewScreen(props: {
       <div className="neu-surface-subtle rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-5">
         <h2 className="text-base font-semibold text-[var(--ink-heading)]">Here&apos;s what I learned</h2>
         <p className="mt-2 text-sm leading-6 text-[var(--ink-muted)]">
-          Nothing is saved yet. Change anything that is wrong, answer the questions below, and this
-          becomes a workflow in your list.
+          Review the steps and answer the questions below before saving.
         </p>
         {props.view?.diff ? (
           <p className="mt-3 rounded-lg border border-[var(--line)] bg-[var(--paper-bg)] p-3 text-xs leading-5 text-[var(--ink-body)]">

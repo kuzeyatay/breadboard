@@ -8,10 +8,31 @@ import {
   contentHashForMarkdown,
   convertUrlToMarkdown,
   normalizeSourceUrl,
+  parseReaderMarkdownResult,
 } from "../src/lib/url-to-markdown.ts";
 import { findExistingUrlSource } from "../src/lib/url-source-store.ts";
 
 describe("URL to Markdown provider", () => {
+  test("rejects HTTP-200 CAPTCHA pages before they can be imported as knowledge", async () => {
+    for (const markdown of [
+      '---\ntitle: "Just a moment..."\nwarning: "This page maybe requiring CAPTCHA, please make sure you are authorized to access this page."\n---\n\n## Performing security verification\n\nThis website verifies you are not a bot.',
+      '---\ntitle: "Access Denied"\n---\n\nYou do not have permission to view this page.',
+      '---\nwarning: "Target URL returned error 403: Forbidden"\n---\n\nForbidden',
+    ]) {
+      await assert.rejects(convertUrlToMarkdown({
+        url: "https://onlinelibrary.wiley.com/doi/10.1155/2011/320367",
+        env: { READER_PROVIDER: "jina-reader-remote" },
+        fetchImpl: async () => new Response(markdown),
+      }), /Reader returned an access or security-check page/);
+    }
+  });
+
+  test("keeps real articles discussing CAPTCHAs and access errors", () => {
+    const markdown = '# Understanding security checks\n\nA CAPTCHA may say "verify you are a human". HTTP 403 means access denied.';
+    assert.equal(parseReaderMarkdownResult({ originalUrl: "https://example.com/article",
+      markdown, provider: "jina-reader-remote", fetchedAt: "2026-09-21T00:00:00Z" }).markdown, markdown);
+  });
+
   test("validates and normalizes HTTP URLs", () => {
     assert.equal(normalizeSourceUrl("example.com/a#section"), "https://example.com/a");
     assert.equal(normalizeSourceUrl("http://example.com/a"), "http://example.com/a");

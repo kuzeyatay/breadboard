@@ -12,6 +12,8 @@ import {
   useState,
 } from "react";
 import ArtifactCardContent from "./artifact-card-content";
+import AttachmentPreviewDialog from "@/app/components/attachment-preview-dialog";
+import { ArtifactLinkContext, artifactLinkTarget } from "./artifact-link-context";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import { shouldRenderInteractiveVisualizerInline } from "@/lib/hermes/interactive-visualizer-skills";
 import ArtifactViewer, {
@@ -25,7 +27,9 @@ import ArtifactViewer, {
 } from "./artifact-viewer";
 import { artifactLocalPath, openInFileExplorer } from "@/lib/desktop-file-explorer";
 import ArtifactImageStudio from "./artifact-image-studio";
+import ArtifactImagePreview from "./artifact-image-preview";
 import ArtifactVideoStudio from "./artifact-video-studio";
+import ArtifactVideoPreview from "./artifact-video-preview";
 import InlineInteractiveVisualizer from "./inline-interactive-visualizer";
 
 interface ArtifactScopeProps {
@@ -166,6 +170,8 @@ interface Props extends ArtifactScopeProps {
    * legacy/unassigned artifacts; omitted preserves the all-artifacts view.
    */
   ownerMessageId?: string | null;
+  /** Keep legacy/unassigned cards inside the newest response's action slot. */
+  includeUnassigned?: boolean;
   /** Keep generated files hidden until their response finishes thinking. */
   thinking?: boolean;
 }
@@ -274,17 +280,11 @@ function InlineImageArtifact({
         aria-label={`${context.openId === artifactViewerKey(artifact) ? "Close" : "Open"} ${artifact.title}`}
         aria-pressed={context.openId === artifactViewerKey(artifact)}
       />
-      <div className="neu-inset block w-full overflow-hidden bg-[var(--paper-bg)]">
-        {/* The intrinsic aspect ratio must remain untouched: generated images
-            are shown as full artwork here, never cropped into a thumbnail. */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={previewUrl}
-          alt={artifact.title}
-          className="block h-auto w-full object-contain"
-          loading="eager"
-        />
-      </div>
+      <ArtifactImagePreview
+        src={previewUrl}
+        title={artifact.title}
+        animate
+      />
       <div
         className="flex flex-wrap items-center gap-3 border-t border-[var(--line)] bg-[var(--paper-surface)] px-3.5 py-3"
         aria-label={`Artifact details for ${artifact.title}`}
@@ -449,6 +449,16 @@ export function InlineArtifactCardsProvider({
     void refresh();
   }, [query, refresh]);
 
+  const openArtifactLink = useCallback((href: string) => {
+    const target = artifactLinkTarget(href, window.location.origin);
+    // Only intercept files already belonging to this transcript. Other links
+    // retain normal browser behavior and their normal server authorization.
+    if (!target || !artifacts.some(item => item.id === target.id &&
+      (target.version === undefined || item.version === target.version))) return false;
+    void openArtifactById(target.id, target.version);
+    return true;
+  }, [artifacts, openArtifactById]);
+
   const handleImageCreated = useCallback((artifact: PresentedArtifact) => {
     registerArtifact(artifact);
     // A caller that took the image itself (a post card attaching artwork to
@@ -496,7 +506,9 @@ export function InlineArtifactCardsProvider({
 
   return (
     <ArtifactCardsContext.Provider value={context}>
-      {children}
+      <ArtifactLinkContext.Provider value={openArtifactLink}>
+        {children}
+      </ArtifactLinkContext.Provider>
       <ArtifactViewer
         artifact={openArtifact}
         onClose={() => setOpenId(null)}
@@ -532,6 +544,28 @@ export function InlineArtifactCardsProvider({
         />
       ) : null}
     </ArtifactCardsContext.Provider>
+  );
+}
+
+function InlineVideoArtifact({ artifact, context }: {
+  artifact: PresentedArtifact;
+  context: ArtifactCardsContextValue;
+}) {
+  const videoHref = artifactVideoHref(artifact);
+  const detailsClass = "flex w-full min-w-0 items-center gap-3 border-t border-[var(--line)] bg-[var(--paper-surface)] px-3.5 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--botanical)]";
+  return (
+    <article className="bb-neu-artifact-card w-full max-w-xl overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] shadow-[0_10px_30px_rgba(28,45,36,0.08)]" aria-label={`Video artifact: ${artifact.title}`}>
+      <ArtifactVideoPreview src={artifactUrl(artifact, "preview")} title={artifact.title} />
+      {videoHref ? (
+        <a href={videoHref} className={detailsClass} aria-label={`Open ${artifact.title} in the video player`}>
+          <ArtifactCardContent artifact={artifact} />
+        </a>
+      ) : (
+        <button type="button" className={detailsClass} onClick={() => void context.openArtifact(artifact.id, artifact.version)} aria-label={`Open ${artifact.title}`}>
+          <ArtifactCardContent artifact={artifact} />
+        </button>
+      )}
+    </article>
   );
 }
 
@@ -571,9 +605,12 @@ function InlineArtifactFileCard({
           {fileContent}
         </button>
       ) : pdfHref ? (
-        <a href={pdfHref} className={openClasses} title={`Open ${artifact.title} in the PDF viewer`}>
+        <AttachmentPreviewDialog
+          source={{ kind: "pdf", name: artifact.title, href: pdfHref }}
+          className={openClasses}
+        >
           {fileContent}
-        </a>
+        </AttachmentPreviewDialog>
       ) : videoHref ? (
         <a href={videoHref} className={openClasses} title={`Play ${artifact.title} in the video player`}>
           {fileContent}
@@ -600,14 +637,16 @@ function InlineArtifactFileCard({
 
 function ArtifactCardList({
   ownerMessageId,
+  includeUnassigned,
   thinking,
-}: Pick<Props, "ownerMessageId" | "thinking">) {
+}: Pick<Props, "ownerMessageId" | "includeUnassigned" | "thinking">) {
   const context = useContext(ArtifactCardsContext);
   if (!context || thinking) return null;
   const artifacts = ownerMessageId === undefined
     ? context.artifacts
     : context.artifacts.filter(
-        (artifact) => artifact.assistantMessageId === ownerMessageId,
+        (artifact) => artifact.assistantMessageId === ownerMessageId ||
+          (includeUnassigned && artifact.assistantMessageId === null),
       );
   // In-progress and failed artifacts are represented by the response activity
   // UI. A file card appears only when there is a generated artifact to open.
@@ -628,6 +667,9 @@ function ArtifactCardList({
       }
     >
       {visibleArtifacts.map((artifact) => {
+        if (artifact.kind === "video" && artifact.previewAvailable) {
+          return <InlineVideoArtifact key={artifactReplyKey(artifact)} artifact={artifact} context={context} />;
+        }
         if (
           shouldRenderInteractiveVisualizerInline(artifact) &&
           artifact.status === "ready" &&
@@ -670,10 +712,11 @@ export default function InlineArtifactCards({
   legacyChatSessionId,
   gardenSlug,
   ownerMessageId,
+  includeUnassigned,
   thinking,
 }: Props) {
   const context = useContext(ArtifactCardsContext);
-  if (context) return <ArtifactCardList ownerMessageId={ownerMessageId} thinking={thinking} />;
+  if (context) return <ArtifactCardList ownerMessageId={ownerMessageId} includeUnassigned={includeUnassigned} thinking={thinking} />;
 
   return (
     <InlineArtifactCardsProvider
@@ -681,7 +724,7 @@ export default function InlineArtifactCards({
       legacyChatSessionId={legacyChatSessionId}
       gardenSlug={gardenSlug}
     >
-      <ArtifactCardList ownerMessageId={ownerMessageId} thinking={thinking} />
+      <ArtifactCardList ownerMessageId={ownerMessageId} includeUnassigned={includeUnassigned} thinking={thinking} />
     </InlineArtifactCardsProvider>
   );
 }

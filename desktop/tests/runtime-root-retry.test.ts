@@ -44,7 +44,7 @@ test("an initial startup failure recovers automatically after the old root exits
     logs: { forService: () => ({ write() {}, readTail: () => [] }) },
     windows: {
       sendToRenderer() {},
-      tabs: { setNewTabUrl() {}, setBrowserUrl() {} },
+      tabs: { setNewTabUrl() {}, setAuthenticationUrl() {}, setBrowserUrl() {} },
     },
     createRuntimeProcess() { events.push("create-replacement"); return replacement; },
     allowDashboardOrigin() {},
@@ -140,6 +140,6 @@ test("quitting cancels pending Runtime recovery timers", () => {
   assert.ok(quitHandler, "the desktop must install its quit handler");
   assert.match(
     quitHandler,
-    /this\.quitting = true;\s*this\.clearScheduledRuntimeRootRetry\(\);\s*this\.clearRuntimeRootStabilityTimer\(\);/,
+    /this\.quitting = true;[\s\S]{0,160}this\.clearScheduledRuntimeRootRetry\(\);\s*this\.clearRuntimeRootStabilityTimer\(\);/,
   );
 });

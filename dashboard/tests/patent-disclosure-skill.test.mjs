@@ -207,6 +207,8 @@ test("clear patent tasks auto-select the skill without stealing adjacent request
     "search for recent AI news",
     "review this repository's disclosure component",
     "draw a system architecture diagram",
+    "Read the circuit design reference and verify the oscillator. Do not claim unmeasured hardware properties.",
+    "Review the scientific evidence and explain which claims hold up.",
     "/office create a report",
   ]) {
     assert.equal(select(text).automatic, false, `should not select: ${text}`);

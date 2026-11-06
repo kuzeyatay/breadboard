@@ -12,6 +12,7 @@ import {
 import type { SetupStatus } from "./setup.ts";
 import type { RuntimeAvailability } from "./runtime.ts";
 import { dashboardDataDir } from "../runtime-paths.ts";
+import { readSupervisedServiceSnapshot } from "../supervisor-control.ts";
 
 export interface OpenworkRuntimeStatus {
   availability: RuntimeAvailability;
@@ -216,12 +217,19 @@ export function prepareOpenworkRunProfile(
   }
 }
 
-export function stopOpenworkRuntime(scope: RuntimeAgentScope): Promise<void> {
+export async function stopOpenworkRuntime(scope: RuntimeAgentScope): Promise<void> {
+  const body = scopedAgentRequest(scope);
+  const snapshot = await readSupervisedServiceSnapshot("openwork");
+  // Setup must be able to prepare a stopped or failed installation without
+  // first launching the very server it is about to repair.
+  if (snapshot && [
+    "failed", "stopped", "available-but-stopped", "resource-blocked", "installation-unavailable",
+  ].includes(snapshot.state)) return;
   return withRuntimeAgentServiceLease("openwork", "user-authorized-stop", async () => {
     await callRuntimeAgentService(
       "openwork",
       "/v1/stop",
-      scopedAgentRequest(scope),
+      body,
     );
   });
 }

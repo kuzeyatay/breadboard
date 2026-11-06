@@ -25,6 +25,7 @@ import { cropPng, resizePngToMaxDimension } from "./png-crop.ts";
 import {
   figureCropReviewCacheKey,
   figureCropReviewReceiptMatches,
+  figureCropRenderBBox,
   isFigureCropVisualType,
   reviewFigureCropsOnPage,
   tightFigureCropBBox,
@@ -107,7 +108,17 @@ const SOURCE_IDENTITY_MAP_RELATIVE_PATH = path.join(
 );
 const CROPPED_ASSETS_FOLDER = path.join("assets", "source-visuals");
 export const MIN_SOURCE_VISUAL_DETECTION_TIMEOUT_MS = 5_000;
-export const MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS = 180_000;
+// Matches the figure-crop review ceiling below, for the same reason and the
+// same provider. Through `openaiweb` a model call is a driven chatgpt.com page
+// (compose, upload the page image, send, scrape), and a page image regularly
+// runs past three minutes there. Live 2026-09-21 (telecom-1): detection on one
+// page timed out at the 180s ceiling and retried for ~20 minutes, holding the
+// run to 0.5 model calls per minute against the ~96 a completed run sustains.
+// The ceiling also bounds the override, so 180s could not be raised from
+// outside. Aborting a call that is about to succeed costs far more than
+// waiting for it; SOURCE_VISUAL_DETECTION_MAX_TRANSIENT_FAILURES still stops a
+// genuinely dead one.
+export const MAX_SOURCE_VISUAL_DETECTION_TIMEOUT_MS = 10 * 60 * 1000;
 // Sol Ultra vision calls regularly need more than 45 seconds even for the
 // detector's low-detail 768px page image. Let one unambiguous request finish
 // instead of aborting it and forcing a whole-job retry with unknown transport
@@ -176,6 +187,7 @@ const SOURCE_FORMULA_ARTIFACT_RECOVERY_PROMPT_VERSION = 1;
 const SOURCE_FORMULA_ARTIFACT_RECOVERY_DETECTOR_VERSION = 4;
 const SOURCE_FORMULA_ARTIFACT_RECOVERY_MAX_SEMANTIC_ATTEMPTS = 3;
 const SOURCE_FORMULA_ARTIFACT_RECOVERY_MAX_PAGE_BATCHES = 3;
+const SOURCE_FORMULA_MAX_DROPPED_PAGES = 3;
 const SOURCE_FORMULA_ARTIFACT_RECOVERY_CACHE_FOLDER = "formula-artifact-recovery-v1";
 // V5 is deliberately separate from the strict same-slot V4 recovery. It is
 // only available when the initial reviewer explicitly says that the page's
@@ -599,7 +611,12 @@ function figureCropReviewIsCurrent(
   if (!entry || !Array.isArray(entry.detections)) return true;
   const candidates = figureCropCandidates(entry.detections);
   if (candidates.length === 0) return true;
-  const cacheKey = figureCropReviewCacheKey({ model, pageFingerprint: fingerprint, candidates });
+  const cacheKey = figureCropReviewCacheKey({
+    model,
+    pageFingerprint: fingerprint,
+    candidates,
+    version: entry.figureCropReview?.version,
+  });
   return figureCropReviewReceiptMatches(entry.figureCropReview, cacheKey, candidates);
 }
 
@@ -1844,6 +1861,8 @@ export interface ReviewRequiredSourceFormulaExactTextOptions {
   requiredFormulaIds: Iterable<string>;
   checkCancelled?: () => void;
   onProgress?: (step: string) => void;
+  /** Leave out (up to a few) pages whose formulas stay rejected after recovery instead of failing. */
+  dropUnverifiablePages?: boolean;
   /** Test seam. Production caches outside Quartz under LOCALAPPDATA/Breadboard. */
   cacheRoot?: string;
   /** Test seam for stable audit assertions. */
@@ -1937,6 +1956,19 @@ const sourceFormulaReviewRejectedDetails = new WeakMap<
   readonly SourceFormulaReviewRejectedPage[]
 >();
 
+/** A page whose formula topology repair spent every model-authored candidate. */
+export class SourceFormulaTopologyRepairExhaustedError extends Error {
+  readonly sourceId: string;
+  readonly pageNumber: number;
+
+  constructor(message: string, sourceId: string, pageNumber: number) {
+    super(message);
+    this.name = "SourceFormulaTopologyRepairExhaustedError";
+    this.sourceId = sourceId;
+    this.pageNumber = pageNumber;
+  }
+}
+
 export class SourceFormulaReviewRejectedError extends Error {
   readonly pageRejections: readonly SourceFormulaReviewPageRejection[];
   readonly modelCalls: number;
@@ -1944,11 +1976,12 @@ export class SourceFormulaReviewRejectedError extends Error {
   constructor(
     pageRejections: readonly SourceFormulaReviewRejectedPage[],
     modelCalls: number,
+    note?: string,
   ) {
     const message = pageRejections.flatMap((page) => page.rejections.map((review) =>
       `${review.sourceVisualId} (${review.identityAssessment}): ${review.reason}`,
     )).join("; ");
-    super(`Source formula review rejected source evidence: ${message}`);
+    super(`Source formula review rejected source evidence: ${message}${note ? ` (${note})` : ""}`);
     this.name = "SourceFormulaReviewRejectedError";
     this.pageRejections = pageRejections.map((page) => ({
       sourceId: page.sourceId,
@@ -2087,11 +2120,74 @@ export function sourceFormulaReviewTimeoutMs(configuredTimeout?: unknown): numbe
   );
 }
 
+/**
+ * Crop verdicts also live outside the garden. The scan cache that holds them is
+ * restored by every Learn rollback, so each rerun re-asked the model to check
+ * the same crops on the same pages (telecom-1, 2026-09-29: ~15 min per run).
+ * Keyed by page bytes and candidate boxes; a hit is still matched with the
+ * same model/version rules as a scan-cache receipt. Tests keep their own
+ * isolated behaviour.
+ */
+function durableFigureCropReviewPath(pageFingerprint: string, candidates: unknown): string | null {
+  if (process.env.NODE_TEST_CONTEXT) return null;
+  const localAppData = process.env.LOCALAPPDATA?.trim();
+  const root = localAppData
+    ? path.join(localAppData, "Breadboard", "cache", "figure-crop-reviews")
+    : path.join(os.tmpdir(), "breadboard-figure-crop-reviews");
+  return path.join(root, `${sha256(JSON.stringify({ pageFingerprint, candidates }))}.json`);
+}
+
+function readDurableFigureCropReview(
+  pageFingerprint: string,
+  candidates: unknown,
+): FigureCropReviewReceipt | undefined {
+  const file = durableFigureCropReviewPath(pageFingerprint, candidates);
+  if (!file) return undefined;
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf-8")) as FigureCropReviewReceipt;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeDurableFigureCropReview(
+  pageFingerprint: string,
+  candidates: unknown,
+  receipt: FigureCropReviewReceipt,
+): void {
+  const file = durableFigureCropReviewPath(pageFingerprint, candidates);
+  if (!file) return;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temporary = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(receipt));
+    fs.renameSync(temporary, file);
+  } catch {
+    // A missing durable copy only costs a repeat review later.
+  }
+}
+
 function defaultSourceFormulaReviewCacheRoot(): string {
   const localAppData = process.env.LOCALAPPDATA?.trim();
   return localAppData
     ? path.join(localAppData, "Breadboard", "cache", "source-formula-reviews")
     : path.join(os.tmpdir(), "breadboard-source-formula-reviews");
+}
+
+// Per-page checks read the same source note (the em1 Feynman note is 4 MB)
+// once per scanned page; strings are immutable, so a few are kept.
+const sourceMarkdownCache = new Map<string, { key: string; text: string }>();
+function readSourceMarkdownCached(filePath: string): string {
+  const stat = fs.statSync(filePath);
+  const key = `${stat.size}|${stat.mtimeMs}`;
+  const cached = sourceMarkdownCache.get(filePath);
+  if (cached?.key === key) return cached.text;
+  const text = fs.readFileSync(filePath, "utf-8");
+  sourceMarkdownCache.delete(filePath);
+  sourceMarkdownCache.set(filePath, { key, text });
+  // ponytail: insertion-order LRU of 4; a scan walks one source at a time.
+  while (sourceMarkdownCache.size > 4) sourceMarkdownCache.delete(sourceMarkdownCache.keys().next().value!);
+  return text;
 }
 
 function canonicalSourcePageMarkdown(
@@ -2124,7 +2220,7 @@ function canonicalSourcePageMarkdownFromGardenDir(
   ) {
     return null;
   }
-  const source = fs.readFileSync(sourcePath, "utf-8");
+  const source = readSourceMarkdownCached(sourcePath);
   const pagePattern = new RegExp(
     `(?:^|\\n)(#{1,6}\\s+Page\\s+${pageNumber}\\s*\\r?\\n[\\s\\S]*?)(?=\\r?\\n#{1,6}\\s+Page\\s+\\d+\\s*(?:\\r?\\n|$)|$)`,
     "i",
@@ -2153,6 +2249,20 @@ function sourceMarkdownPath(
   return candidate;
 }
 
+/** Cheap check that `sourcePdfEvidence` could find this source's preserved PDF. */
+function sourceHasPreservedPdf(contentPath: string, gardenSlug: string, sourceId: string): boolean {
+  const markdownPath = sourceMarkdownPath(contentPath, gardenSlug, sourceId);
+  if (!markdownPath) return false;
+  const markdown = readSourceMarkdownCached(markdownPath);
+  const end = markdown.startsWith("---") ? markdown.indexOf("\n---", 3) : -1;
+  const match = (end >= 0 ? markdown.slice(3, end) : "").match(
+    /^source_pdf\s*:\s*(?:"([^"]+)"|'([^']+)'|([^\r\n#]+))\s*$/im,
+  );
+  const sourcePdfUrl = (match?.[1] ?? match?.[2] ?? match?.[3] ?? "").trim();
+  const sourcePdfPath = sourcePdfUrl ? assetDiskPath(contentPath, gardenSlug, sourcePdfUrl) : null;
+  return Boolean(sourcePdfPath && path.extname(sourcePdfPath).toLowerCase() === ".pdf" && fs.existsSync(sourcePdfPath));
+}
+
 function sourcePdfEvidence(
   contentPath: string,
   gardenSlug: string,
@@ -2162,7 +2272,7 @@ function sourcePdfEvidence(
   if (!markdownPath) {
     throw new Error(`Source formula review cannot find canonical source note ${sourceId}.md.`);
   }
-  const markdown = fs.readFileSync(markdownPath, "utf-8");
+  const markdown = readSourceMarkdownCached(markdownPath);
   const frontmatter = markdown.startsWith("---")
     ? markdown.slice(3, markdown.indexOf("\n---", 3) >= 0 ? markdown.indexOf("\n---", 3) : 3)
     : "";
@@ -2193,11 +2303,67 @@ function sourcePdfEvidence(
   ) {
     throw new Error(`Preserved source PDF for ${sourceId} resolves outside the garden.`);
   }
-  const pdf = fs.readFileSync(sourcePdfRealPath);
-  if (pdf.length === 0) {
+  // Per-page evidence checks call this for every scanned page and read only
+  // the hash. Re-reading and hashing a 20-30 MB textbook PDF each time churned
+  // ~80 MB/s of buffers; the supervisor killed the worker at 9+ GB (em1,
+  // 2026-10-10). Cache the hash; the bytes are read when a caller needs them
+  // (PDF parsing may detach a shared buffer, so never hand one out twice).
+  const stat = fs.statSync(sourcePdfRealPath);
+  if (stat.size === 0) {
     throw new Error(`Preserved source PDF for ${sourceId} is empty.`);
   }
-  return { sourcePdfPath: sourcePdfRealPath, sourcePdfSha256: sha256(pdf), sourcePdf: pdf };
+  const cacheKey = `${sourcePdfRealPath}|${stat.size}|${stat.mtimeMs}`;
+  let sourcePdfSha256 = sourcePdfHashCache.get(cacheKey);
+  if (!sourcePdfSha256) {
+    sourcePdfSha256 = sha256(fs.readFileSync(sourcePdfRealPath));
+    sourcePdfHashCache.set(cacheKey, sourcePdfSha256);
+  }
+  return {
+    sourcePdfPath: sourcePdfRealPath,
+    sourcePdfSha256,
+    get sourcePdf() {
+      return fs.readFileSync(sourcePdfRealPath);
+    },
+  };
+}
+
+const sourcePdfHashCache = new Map<string, string>();
+
+// Page PNG fingerprints by file version, so a scan pass does not re-read every
+// rendered page. Persisted beside the durable crop reviews (outside the garden)
+// so a fresh worker starts warm: a cold pass read ~1000 PNGs in seconds and the
+// supervisor killed the worker at its commit limit (em1, 2026-10-10).
+const pageFingerprintCache = new Map<string, { size: number; mtimeMs: number; sha256: string }>();
+const pageFingerprintCachePath = path.join(os.tmpdir(), "breadboard-page-fingerprints.json");
+let pageFingerprintCacheLoaded = false;
+let pageFingerprintCacheDirty = 0;
+
+function loadPageFingerprintCache(): void {
+  if (pageFingerprintCacheLoaded || process.env.NODE_TEST_CONTEXT) return;
+  pageFingerprintCacheLoaded = true;
+  try {
+    const stored = JSON.parse(fs.readFileSync(pageFingerprintCachePath, "utf-8")) as Record<string, unknown>;
+    for (const [diskPath, raw] of Object.entries(stored)) {
+      const entry = raw as { size?: unknown; mtimeMs?: unknown; sha256?: unknown };
+      if (typeof entry.size === "number" && typeof entry.mtimeMs === "number" && typeof entry.sha256 === "string") {
+        pageFingerprintCache.set(diskPath, { size: entry.size, mtimeMs: entry.mtimeMs, sha256: entry.sha256 });
+      }
+    }
+  } catch {
+    // A missing or damaged cache only costs one cold read pass.
+  }
+}
+
+function savePageFingerprintCache(): void {
+  if (pageFingerprintCacheDirty === 0 || process.env.NODE_TEST_CONTEXT) return;
+  pageFingerprintCacheDirty = 0;
+  try {
+    const temporary = `${pageFingerprintCachePath}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(Object.fromEntries(pageFingerprintCache)));
+    fs.renameSync(temporary, pageFingerprintCachePath);
+  } catch {
+    // Best effort: the cache is an optimization.
+  }
 }
 
 function normalizedReviewInput(visual: SourceVisual, equationCropSha256: string): SourceFormulaReviewInput {
@@ -2222,6 +2388,78 @@ function normalizedReviewInput(visual: SourceVisual, equationCropSha256: string)
     },
     equationCropSha256,
   };
+}
+
+const FORMULA_PAGE_RENDER_WIDTH = 1600;
+
+function formulaPageRenderPath(sourcePdfSha256: string, pageNumber: number): string | null {
+  if (process.env.NODE_TEST_CONTEXT) return null;
+  return path.join(
+    os.tmpdir(),
+    "breadboard-formula-page-renders",
+    `${sourcePdfSha256}-p${pageNumber}-w${FORMULA_PAGE_RENDER_WIDTH}.png`,
+  );
+}
+
+function readFormulaPageRender(sourcePdfSha256: string, pageNumber: number): Buffer | null {
+  const file = formulaPageRenderPath(sourcePdfSha256, pageNumber);
+  if (!file) return null;
+  try {
+    const buffer = fs.readFileSync(file);
+    return buffer.length > 0 ? buffer : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeFormulaPageRender(sourcePdfSha256: string, pageNumber: number, buffer: Buffer): void {
+  const file = formulaPageRenderPath(sourcePdfSha256, pageNumber);
+  if (!file) return;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temporary = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, buffer);
+    fs.renameSync(temporary, file);
+  } catch {
+    // Best effort: the next pass renders again.
+  }
+}
+
+// A crop is a pure function of the page bytes and its box. Decoding the full
+// 1600px render in JS for every formula on every pass was ~68% of the scan
+// burst once renders were cached (em1, 2026-10-10).
+function cachedFormulaCrop(
+  pageImage: Buffer,
+  pageRenderSha256: string,
+  box: ReturnType<typeof expandedCropBBox>,
+): Buffer | null {
+  const file = process.env.NODE_TEST_CONTEXT
+    ? null
+    : path.join(
+      os.tmpdir(),
+      "breadboard-formula-crops",
+      `${sha256(JSON.stringify({ pageRenderSha256, box }))}.png`,
+    );
+  if (file) {
+    try {
+      const cached = fs.readFileSync(file);
+      if (cached.length > 0) return cached;
+    } catch {
+      // Not cached yet.
+    }
+  }
+  const crop = cropPng(pageImage, box);
+  if (file && crop?.length) {
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const temporary = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(temporary, crop);
+      fs.renameSync(temporary, file);
+    } catch {
+      // Best effort.
+    }
+  }
+  return crop;
 }
 
 async function sourceFormulaPageEvidence(
@@ -2272,10 +2510,21 @@ async function sourceFormulaPageEvidence(
       }
       continue;
     }
+    // A render is a pure function of the PDF bytes, page and width, so reuse
+    // it: every scan pass re-rendered every formula page through pdf.js/Skia
+    // just to recompute the same review cache keys (em1, 2026-10-10: half the
+    // CPU of the burst that got the Learn worker killed at its commit cap).
+    const missing: number[] = [];
+    for (const pageNumber of pageNumbers) {
+      const cached = readFormulaPageRender(sourcePdf.sourcePdfSha256, pageNumber);
+      if (cached) renderedPages.set(`${sourceId}\u0000${pageNumber}`, cached);
+      else missing.push(pageNumber);
+    }
+    if (missing.length === 0) continue;
     const parser = new PDFParse({ data: sourcePdf.sourcePdf });
     try {
       const info = await parser.getInfo();
-      for (const pageNumber of pageNumbers) {
+      for (const pageNumber of missing) {
         options.checkCancelled?.();
         if (pageNumber > info.total) {
           throw new Error(
@@ -2284,7 +2533,7 @@ async function sourceFormulaPageEvidence(
         }
         const screenshot = await parser.getScreenshot({
           partial: [pageNumber],
-          desiredWidth: 1600,
+          desiredWidth: FORMULA_PAGE_RENDER_WIDTH,
           imageBuffer: true,
           imageDataUrl: false,
         });
@@ -2292,7 +2541,9 @@ async function sourceFormulaPageEvidence(
         if (!rendered?.length) {
           throw new Error(`Preserved source PDF page ${sourceId} p.${pageNumber} could not be rendered.`);
         }
-        renderedPages.set(`${sourceId}\u0000${pageNumber}`, Buffer.from(rendered));
+        const buffer = Buffer.from(rendered);
+        writeFormulaPageRender(sourcePdf.sourcePdfSha256, pageNumber, buffer);
+        renderedPages.set(`${sourceId}\u0000${pageNumber}`, buffer);
       }
     } finally {
       await parser.destroy();
@@ -2348,6 +2599,7 @@ async function sourceFormulaPageEvidence(
       const sourcePdf = pdfEvidenceBySource.get(first.sourceId);
       if (!sourcePdf) throw new Error(`Preserved source PDF evidence is missing for ${first.sourceId}.`);
       const crops = new Map<string, Buffer>();
+      const pageRenderSha256 = sha256(pageImage);
       const inputs = pageVisuals
         .sort(sourceFormulaInputOrder)
         .map((visual) => {
@@ -2368,7 +2620,7 @@ async function sourceFormulaPageEvidence(
           if (!visual.bbox) {
             throw new Error(`Source formula ${visual.sourceVisualId} has no detector bbox.`);
           }
-          const crop = cropPng(pageImage, expandedCropBBox(visual.bbox, "equation"));
+          const crop = cachedFormulaCrop(pageImage, pageRenderSha256, expandedCropBBox(visual.bbox, "equation"));
           if (!crop?.length) {
             throw new Error(
               `Source formula ${visual.sourceVisualId} could not be cropped from its authoritative page image.`,
@@ -9579,11 +9831,13 @@ async function advanceSourceFormulaArtifactTopologyCandidateRepair(
     }
     if (!finalEntry || finalEntry.topologyReview?.status === "rejected") {
       if (finalEntry && finalEntry.candidate.candidateOrdinal >= SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_MAX_CANDIDATES) {
-        throw new Error(
+        throw new SourceFormulaTopologyRepairExhaustedError(
           "Formula-artifact topology candidate repair exhausted " +
             SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_MAX_CANDIDATES +
             " total model-authored candidates for " + evidence.sourceId + " p." + evidence.pageNumber +
             "; final independent review rejected the last candidate and ledger projection was not attempted.",
+          evidence.sourceId,
+          evidence.pageNumber,
         );
       }
       const priorCandidate: SourceFormulaArtifactTopologyRepairPriorCandidate = finalEntry
@@ -9748,11 +10002,13 @@ async function advanceSourceFormulaArtifactTopologyConsensusRepair(
             ? { kind: "empty_inventory_review", emptyInventoryReview }
           : { kind: "formula_review", formulaReview: triggerFormulaReview };
       if (priorCandidateOrdinal >= SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_MAX_CANDIDATES) {
-        throw new Error(
+        throw new SourceFormulaTopologyRepairExhaustedError(
           "Formula-artifact topology consensus repair exhausted " +
             SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_MAX_CANDIDATES +
             " total model-authored candidates for " + evidence.sourceId + " p." + evidence.pageNumber +
             "; final reviewer disagreement remains durable and ledger projection was not attempted.",
+          evidence.sourceId,
+          evidence.pageNumber,
         );
       }
       const candidateOrdinal = priorCandidateOrdinal + 1;
@@ -10661,6 +10917,8 @@ export async function reviewRequiredSourceFormulaExactText(
       .map(([sourceVisualId, crop]) => ({ sourceVisualId, ...crop }))
       .sort((left, right) => left.sourceVisualId.localeCompare(right.sourceVisualId));
   };
+  const droppedFormulaPages = new Set<string>();
+  const initialFormulaPageCount = pages.length;
   const recoveryRoundsByEvidence = new Map<string, number>();
   let recoveryDispatchRounds = 0;
   const recoveryEvidenceKey = (evidence: SourceFormulaReviewPageEvidence): string => [
@@ -10886,30 +11144,34 @@ export async function reviewRequiredSourceFormulaExactText(
       ...v6Projected.recoveryVisualCrops,
       ...v7Projected.recoveryVisualCrops,
     ]);
-    // V7 is a replacement page projection rooted in a previously confirmed
-    // V5/V6 candidate. Its final row provenance is intentionally mutually
-    // exclusive: discard prior page-local lineage maps before attaching the
-    // new master, never leave a row claiming two recovery protocols.
-    const v7RecoveredPageKeys = new Set(consensusOutcomes.map((outcome) =>
-      outcome.evidence.sourceId + "\u0000" + outcome.evidence.pageNumber,
-    ));
-    const retainsNonV7Page = <T extends { envelope: { sourceId: string; pageNumber: number } }>(
+    // Every recovery in this round replaces its page's rows, so its lineage is
+    // the only one those rows may claim. Discard lineage a prior round attached
+    // to the same page (V7 over V5/V6, and equally V5 over an earlier V4:
+    // telecom-1 S16.P458.E1, 2026-09-29), never leave a row claiming two
+    // recovery protocols.
+    const roundRecoveredPageKeys = new Set([
+      ...recovered.outcomes,
+      ...topologyRecovered.outcomes,
+      ...topologyRecovered.candidateRepairOutcomes,
+      ...consensusOutcomes,
+    ].map((outcome) => outcome.evidence.sourceId + "\u0000" + outcome.evidence.pageNumber));
+    const retainsPriorRoundPage = <T extends { envelope: { sourceId: string; pageNumber: number } }>(
       value: T,
-    ): boolean => !v7RecoveredPageKeys.has(value.envelope.sourceId + "\u0000" + value.envelope.pageNumber);
+    ): boolean => !roundRecoveredPageKeys.has(value.envelope.sourceId + "\u0000" + value.envelope.pageNumber);
     recoveryById = new Map([
-      ...[...recoveryById].filter(([, value]) => retainsNonV7Page(value)),
+      ...[...recoveryById].filter(([, value]) => retainsPriorRoundPage(value)),
       ...v4Projected.recoveryById,
     ]);
     topologyRecoveryById = new Map([
-      ...[...topologyRecoveryById].filter(([, value]) => retainsNonV7Page(value)),
+      ...[...topologyRecoveryById].filter(([, value]) => retainsPriorRoundPage(value)),
       ...v5Projected.topologyById,
     ]);
     topologyCandidateRepairById = new Map([
-      ...[...topologyCandidateRepairById].filter(([, value]) => retainsNonV7Page(value)),
+      ...[...topologyCandidateRepairById].filter(([, value]) => retainsPriorRoundPage(value)),
       ...v6Projected.candidateRepairById,
     ]);
     topologyConsensusRepairById = new Map([
-      ...[...topologyConsensusRepairById].filter(([, value]) => retainsNonV7Page(value)),
+      ...[...topologyConsensusRepairById].filter(([, value]) => retainsPriorRoundPage(value)),
       ...v7Projected.consensusRepairById,
     ]);
     visualById = new Map(ledger.map((visual) => [visual.sourceVisualId, visual]));
@@ -11017,7 +11279,42 @@ export async function reviewRequiredSourceFormulaExactText(
       if (!(error instanceof SourceFormulaReviewRejectedError)) throw error;
       modelCalls += error.modelCalls;
       const rejectedPages = sourceFormulaReviewRejectedPageDetails(error);
-      await dispatchStructuredRecovery(rejectedPages, error);
+      try {
+        await dispatchStructuredRecovery(rejectedPages, error);
+      } catch (recoveryError) {
+        // A page whose slots stay unverifiable after every bounded recovery
+        // leaves this run's evidence rather than failing the whole plan.
+        const failed: { sourceId: string; pageNumber: number }[] | null =
+          recoveryError instanceof SourceFormulaReviewRejectedError
+            ? [...sourceFormulaReviewRejectedPageDetails(recoveryError)]
+            : recoveryError instanceof SourceFormulaTopologyRepairExhaustedError
+              ? [{ sourceId: recoveryError.sourceId, pageNumber: recoveryError.pageNumber }]
+              : null;
+        if (!failed) throw recoveryError;
+        const failedKeys = new Set(failed.map((page) => `${page.sourceId}\u0000${page.pageNumber}`));
+        for (const key of failedKeys) droppedFormulaPages.add(key);
+        if (!options.dropUnverifiablePages || failedKeys.size === 0) throw recoveryError;
+        const dropCap = Math.max(SOURCE_FORMULA_MAX_DROPPED_PAGES, Math.ceil(initialFormulaPageCount * 0.2));
+        if (droppedFormulaPages.size > dropCap) {
+          if (!(recoveryError instanceof SourceFormulaReviewRejectedError)) throw recoveryError;
+          throw new SourceFormulaReviewRejectedError(
+            sourceFormulaReviewRejectedPageDetails(recoveryError),
+            recoveryError.modelCalls,
+            `${droppedFormulaPages.size} of ${initialFormulaPageCount} formula pages were unverifiable (limit ${dropCap}): ${[...droppedFormulaPages].map((key) => key.replace("\u0000", " p.")).join(", ")}`,
+          );
+        }
+        const onDroppedPage = (sourceId: string, pageNumber: number | undefined): boolean =>
+          failedKeys.has(`${sourceId}\u0000${pageNumber}`);
+        const droppedIds = new Set(ledger
+          .filter((visual) => visual.type === "equation" && onDroppedPage(visual.sourceId, visual.pageNumber))
+          .map((visual) => visual.sourceVisualId));
+        ledger = ledger.filter((visual) => !droppedIds.has(visual.sourceVisualId));
+        formulaIds = formulaIds.filter((formulaId) => !droppedIds.has(formulaId));
+        pages = pages.filter((page) => !onDroppedPage(page.sourceId, page.pageNumber));
+        options.onProgress?.(
+          `Left out unverifiable formulas on ${failed.map((page) => `${page.sourceId} p.${page.pageNumber}`).join(", ")}: ${(recoveryError as Error).message.slice(0, 240)}`,
+        );
+      }
     }
   }
 
@@ -11756,6 +12053,7 @@ export function validateSourceFormulaReviewSet(
               topologyEvidence,
             )
           ) {
+            if (!grouped.has(`${cachedSourceId}\u0000${consensusRepair.pageNumber}`)) continue;
             problems.push(`Topology consensus-repair scan/history integrity failed on ${cachedSourceId} p.${consensusRepair.pageNumber}.`);
             continue;
           }
@@ -11881,6 +12179,9 @@ export function validateSourceFormulaReviewSet(
               topologyEvidence,
             )
           ) {
+            // A repair left unfinished on a page with no reviewed formulas (the run
+            // was stopped, or the page was left out as unverifiable) backs nothing.
+            if (!grouped.has(`${cachedSourceId}\u0000${candidateRepair.pageNumber}`)) continue;
             problems.push(`Topology candidate-repair scan/history integrity failed on ${cachedSourceId} p.${candidateRepair.pageNumber}.`);
             continue;
           }
@@ -12001,6 +12302,7 @@ export function validateSourceFormulaReviewSet(
             topologyEvidence,
           )
         ) {
+          if (!grouped.has(`${cachedSourceId}\u0000${recovery.pageNumber}`)) continue;
           problems.push(`Topology recovery scan receipt integrity failed on ${cachedSourceId} p.${recovery.pageNumber}.`);
           continue;
         }
@@ -12535,7 +12837,7 @@ function validateDetectionRecords(parsed: unknown): SourceVisualDetection[] {
   }
 
   const valid = new Set(["figure", "graph", "table", "equation", "diagram"]);
-  return parsed.map((item, index): SourceVisualDetection => {
+  return parsed.map((item, index): SourceVisualDetection | null => {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new SourceVisualDetectionProtocolError(`entry ${index} must be an object`);
     }
@@ -12594,11 +12896,11 @@ function validateDetectionRecords(parsed: unknown): SourceVisualDetection[] {
         `entry ${index} bbox must be a positive rectangle fully inside the page`,
       );
     }
-    if (bbox.width * bbox.height >= 0.9) {
-      throw new SourceVisualDetectionProtocolError(
-        `entry ${index} bbox covers the whole page instead of one visual`,
-      );
-    }
+    // A box covering the whole page is never a usable crop (a frame-filling
+    // diagram in a video still, a full-page photo scan). Drop that entry rather
+    // than fail the page: live 2026-10-08 a YouTube frame got the same answer
+    // on every retry and the whole em1 planning run failed on it.
+    if (bbox.width * bbox.height >= 0.9) return null;
 
     return {
       type,
@@ -12606,7 +12908,7 @@ function validateDetectionRecords(parsed: unknown): SourceVisualDetection[] {
       ...(exactText ? { exactText } : {}),
       bbox,
     };
-  });
+  }).filter((detection): detection is SourceVisualDetection => detection !== null);
 }
 
 function parseDetections(raw: unknown): SourceVisualDetection[] {
@@ -12860,6 +13162,17 @@ export interface ExtractSourceVisualsOptions {
    * its confirmed Learning Map was bound to.
    */
   reviewFigureCrops?: boolean;
+  /**
+   * Accept a saved crop verdict whose author was a different model.
+   *
+   * The cache key binds the verdict to the model that wrote it, so changing
+   * model discards every saved verdict and re-reviews the whole garden - about
+   * five hours for telecom-1 on 2026-09-22, purely because the transport
+   * changed. The verdict is a judgement about crop geometry, and the receipt
+   * records its author either way, so reuse stays auditable. It is opt-in
+   * because a deliberate model upgrade may be exactly an intent to re-judge.
+   */
+  reuseCropVerdictsAcrossModels?: boolean;
   /** Basename slug of the source note (e.g. "2510-27379v1"). */
   sourceId: string;
   /** 1-based index of the source within the garden, for S{n} ids. */
@@ -12958,6 +13271,188 @@ function persistCurrentSourcePdfPageSnapshot(
  * incremental: prior pages remain in the ledger while newly supplied pages are
  * scanned (or restored from the per-page scan cache).
  */
+const SOURCE_VISUAL_PRESCAN_CONCURRENCY = 8;
+
+/**
+ * Detect figures on never-scanned pages concurrently before the sequential
+ * page loop. Results land in the scan cache in exactly the shape the loop
+ * writes for a fresh scan, so the loop then takes its ordinary "reuse saved
+ * scan" path; pages with any other cache state (current v3 entries, formula
+ * topology receipts v4-v7) are left entirely to the loop. A failed prescan is
+ * not cached, so the loop retries that page itself.
+ */
+async function prescanUncachedPages(args: {
+  client: OpenAI;
+  model: string;
+  contentPath: string;
+  gardenSlug: string;
+  scanCache: SourceVisualScanCache;
+  sourceCache: SourceVisualScanCache["sources"][string];
+  pageUrls: string[];
+  reviewFigureCrops?: boolean;
+  reuseCropVerdictsAcrossModels?: boolean;
+  checkpoint?: () => void;
+  onProgress?: (message: string) => void;
+}): Promise<void> {
+  // Keep only the path: holding every pending page's PNG at once pushed a
+  // large-source worker past its commit limit (live 2026-10-09, em1).
+  const pending: Array<{ pageUrl: string; pageNumber: number; diskPath: string; fingerprint: string }> = [];
+  for (const pageUrl of args.pageUrls) {
+    const pageNumber = pageNumberFromAssetUrl(pageUrl) ?? 0;
+    if (pageNumber < 1) continue;
+    const cached = args.sourceCache[pageUrl];
+    if (cached && cached.detectorVersion !== DETECTOR_VERSION) continue;
+    const diskPath = assetDiskPath(args.contentPath, args.gardenSlug, pageUrl);
+    if (!diskPath || !fs.existsSync(diskPath)) continue;
+    let pngBuffer: Buffer;
+    try {
+      pngBuffer = fs.readFileSync(diskPath);
+    } catch {
+      continue;
+    }
+    const fingerprint = crypto.createHash("sha256").update(pngBuffer).digest("hex");
+    if (cached && cached.fingerprint === fingerprint && Array.isArray(cached.detections)) continue;
+    pending.push({ pageUrl, pageNumber, diskPath, fingerprint });
+  }
+  await runPrescanPool(pending, args.checkpoint, async (page, index) => {
+    try {
+      const pngBuffer = fs.readFileSync(page.diskPath);
+      if (crypto.createHash("sha256").update(pngBuffer).digest("hex") !== page.fingerprint) return;
+      const detections = await detectVisualsOnPage(args.client, args.model, pngBuffer, { checkpoint: args.checkpoint }, page.pageNumber);
+      const priorReview = args.sourceCache[page.pageUrl]?.figureCropReview;
+      args.sourceCache[page.pageUrl] = {
+        detectorVersion: DETECTOR_VERSION,
+        fingerprint: page.fingerprint,
+        detections,
+        ...(priorReview ? { figureCropReview: priorReview } : {}),
+      };
+      saveSourceVisualScanCache(args.contentPath, args.gardenSlug, args.scanCache);
+    } catch {
+      // Left uncached: the sequential loop scans this page with its own retries.
+    }
+    args.onProgress?.(`Pre-scanning pages for figures (${index}/${pending.length})...`);
+  });
+  if (args.reviewFigureCrops) await prereviewFigureCrops(args);
+}
+
+/** Runs `task` over `items` with bounded concurrency; a checkpoint throw stops the pool and is rethrown. */
+async function runPrescanPool<T>(
+  items: T[],
+  checkpoint: (() => void) | undefined,
+  task: (item: T, completed: number) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  let next = 0;
+  let done = 0;
+  let cancelled: unknown = null;
+  const worker = async () => {
+    while (next < items.length && !cancelled) {
+      const item = items[next++];
+      try {
+        checkpoint?.();
+      } catch (error) {
+        cancelled = error;
+        return;
+      }
+      await task(item, ++done);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(SOURCE_VISUAL_PRESCAN_CONCURRENCY, items.length) }, worker));
+  if (cancelled) throw cancelled;
+}
+
+/**
+ * Review figure crops concurrently for plain current-detector pages that the
+ * sequential loop would otherwise review one at a time. Uses the loop's exact
+ * key and receipt-matching rules and stores the receipt where the loop looks
+ * first, so the loop then applies it without a model call.
+ */
+async function prereviewFigureCrops(args: {
+  client: OpenAI;
+  model: string;
+  contentPath: string;
+  gardenSlug: string;
+  scanCache: SourceVisualScanCache;
+  sourceCache: SourceVisualScanCache["sources"][string];
+  pageUrls: string[];
+  reuseCropVerdictsAcrossModels?: boolean;
+  checkpoint?: () => void;
+  onProgress?: (message: string) => void;
+}): Promise<void> {
+  const pending: Array<{ pageUrl: string; pageNumber: number; diskPath: string; fingerprint: string; candidates: ReturnType<typeof figureCropCandidates> }> = [];
+  for (const pageUrl of args.pageUrls) {
+    const pageNumber = pageNumberFromAssetUrl(pageUrl) ?? 0;
+    const entry = args.sourceCache[pageUrl];
+    if (pageNumber < 1 || !entry || entry.detectorVersion !== DETECTOR_VERSION || !Array.isArray(entry.detections)) continue;
+    const diskPath = assetDiskPath(args.contentPath, args.gardenSlug, pageUrl);
+    if (!diskPath || !fs.existsSync(diskPath)) continue;
+    let pngBuffer: Buffer;
+    let detections: SourceVisualDetection[];
+    try {
+      pngBuffer = fs.readFileSync(diskPath);
+      detections = validateDetectionRecords(entry.detections);
+    } catch {
+      continue;
+    }
+    const fingerprint = crypto.createHash("sha256").update(pngBuffer).digest("hex");
+    if (entry.fingerprint !== fingerprint) continue;
+    const candidates = figureCropCandidates(detections);
+    if (candidates.length === 0) continue;
+    const cacheKey = figureCropReviewCacheKey({ model: args.model, pageFingerprint: fingerprint, candidates });
+    const priorReview = entry.figureCropReview;
+    const matchKey = args.reuseCropVerdictsAcrossModels && priorReview?.model
+      ? figureCropReviewCacheKey({ model: priorReview.model, pageFingerprint: fingerprint, candidates, version: priorReview.version })
+      : cacheKey;
+    if (figureCropReviewReceiptMatches(priorReview, matchKey, candidates)) continue;
+    const stored = readDurableFigureCropReview(fingerprint, candidates);
+    const storedKey = stored && args.reuseCropVerdictsAcrossModels && stored.model
+      ? figureCropReviewCacheKey({ model: stored.model, pageFingerprint: fingerprint, candidates, version: stored.version })
+      : cacheKey;
+    if (stored && figureCropReviewReceiptMatches(stored, storedKey, candidates)) continue;
+    pending.push({ pageUrl, pageNumber, diskPath, fingerprint, candidates });
+  }
+  if (pending.length < 2) return;
+  await runPrescanPool(pending, args.checkpoint, async (page, index) => {
+    try {
+      const receipt = await reviewFigureCropsOnPage({
+        model: args.model,
+        pageImage: fs.readFileSync(page.diskPath),
+        pageFingerprint: page.fingerprint,
+        pageNumber: page.pageNumber,
+        candidates: page.candidates,
+        checkpoint: args.checkpoint,
+        complete: async ({ system, content, stageLabel }) => {
+          const response = await createSourceModelCompletionWithHttp502Retry({
+            client: args.client,
+            request: {
+              model: args.model,
+              messages: [
+                { role: "system", content: system },
+                { role: "user", content },
+              ],
+            },
+            timeoutMs: FIGURE_CROP_REVIEW_TIMEOUT_MS,
+            checkpoint: args.checkpoint,
+            stageLabel,
+            fallbackAfterFailures: FIGURE_CROP_REVIEW_MAX_TRANSIENT_FAILURES,
+            fallbackContent: "",
+          });
+          return response.choices[0]?.message?.content ?? "";
+        },
+      });
+      const entry = args.sourceCache[page.pageUrl];
+      if (receipt && entry && entry.fingerprint === page.fingerprint) {
+        entry.figureCropReview = receipt;
+        saveSourceVisualScanCache(args.contentPath, args.gardenSlug, args.scanCache);
+        writeDurableFigureCropReview(page.fingerprint, page.candidates, receipt);
+      }
+    } catch {
+      // Left unreviewed: the sequential loop reviews this page itself.
+    }
+    args.onProgress?.(`Pre-checking figure crops (${index}/${pending.length})...`);
+  });
+}
+
 export async function extractSourceVisuals(
   options: ExtractSourceVisualsOptions,
 ): Promise<SourceVisual[]> {
@@ -12971,6 +13466,7 @@ export async function extractSourceVisuals(
     pageImageUrls,
     force = false,
     reviewFigureCrops = false,
+    reuseCropVerdictsAcrossModels = false,
     checkpoint,
     onProgress,
     maxPages,
@@ -12982,6 +13478,7 @@ export async function extractSourceVisuals(
   const scanCache = loadSourceVisualScanCache(contentPath, gardenSlug);
   const sourceCache = scanCache.sources[sourceId] ?? {};
   scanCache.sources[sourceId] = sourceCache;
+  const hasPreservedSourcePdf = sourceHasPreservedPdf(contentPath, gardenSlug, sourceId);
   const cropDir = path.join(contentPath, gardenSlug, CROPPED_ASSETS_FOLDER);
   const found: SourceVisual[] = [];
   const replacedPages = new Set<number>();
@@ -12998,6 +13495,11 @@ export async function extractSourceVisuals(
   const requestedPageUrls = Number.isFinite(maxPages) && (maxPages ?? 0) > 0
     ? pageImageUrls.slice(0, Math.floor(maxPages!))
     : pageImageUrls;
+  await prescanUncachedPages({
+    client, model, contentPath, gardenSlug, scanCache, sourceCache,
+    pageUrls: force ? [] : requestedPageUrls, reviewFigureCrops, reuseCropVerdictsAcrossModels, checkpoint, onProgress,
+  });
+  loadPageFingerprintCache();
   for (const pageUrl of requestedPageUrls) {
     checkpoint?.();
     const pageNumber = pageNumberFromAssetUrl(pageUrl) ?? 0;
@@ -13012,7 +13514,11 @@ export async function extractSourceVisuals(
     const v6CandidateRepair = cachedBeforePageRead?.formulaArtifactTopologyCandidateRepair;
     const v7ConsensusRepair = cachedBeforePageRead?.formulaArtifactTopologyConsensusRepair;
     if (!diskPath) continue;
-    let pngBuffer: Buffer;
+    let pngBuffer: Buffer | undefined;
+    // Read only when a branch needs the bytes: a cached page is skipped by its
+    // fingerprint alone (em1, 2026-10-10: reading ~1000 page PNGs per scan pass
+    // blocked the worker for minutes and grew its commit by GBs).
+    const pageBuffer = (): Buffer => (pngBuffer ??= fs.readFileSync(diskPath));
     let fingerprint = "";
     let renderedMissingTopologySnapshot = false;
     if (!fs.existsSync(diskPath)) {
@@ -13056,12 +13562,25 @@ export async function extractSourceVisuals(
       fingerprint = sha256(pngBuffer);
       renderedMissingTopologySnapshot = true;
     } else {
+      let pageStat: import("node:fs").Stats;
       try {
-        pngBuffer = fs.readFileSync(diskPath);
+        pageStat = fs.statSync(diskPath);
       } catch {
         continue;
       }
-      fingerprint = crypto.createHash("sha256").update(pngBuffer).digest("hex");
+      const known = pageFingerprintCache.get(diskPath);
+      if (known && known.size === pageStat.size && known.mtimeMs === pageStat.mtimeMs) {
+        fingerprint = known.sha256;
+      } else {
+        try {
+          pngBuffer = fs.readFileSync(diskPath);
+        } catch {
+          continue;
+        }
+        fingerprint = crypto.createHash("sha256").update(pngBuffer).digest("hex");
+        pageFingerprintCache.set(diskPath, { size: pageStat.size, mtimeMs: pageStat.mtimeMs, sha256: fingerprint });
+        if (++pageFingerprintCacheDirty >= 100) savePageFingerprintCache();
+      }
     }
     // Never let a malformed *current-evidence* V5/V6 entry fall through to
     // the generic detector and overwrite the only durable cap/history. A
@@ -13148,7 +13667,7 @@ export async function extractSourceVisuals(
         cachedBeforePageRead,
         pageUrl,
         fingerprint,
-        pngBuffer,
+        pageBuffer(),
         existingOnPage,
     );
     // A V5/V6 receipt which does not match all of its current evidence cannot be
@@ -13232,7 +13751,7 @@ export async function extractSourceVisuals(
         cachedBeforePageRead,
         pageUrl,
         fingerprint,
-        pngBuffer,
+        pageBuffer(),
       )
       : null;
     const strictTopologyConsensusRepair = topologyConsensusRepairHasCurrentEvidence
@@ -13242,7 +13761,7 @@ export async function extractSourceVisuals(
         cachedBeforePageRead,
         pageUrl,
         fingerprint,
-        pngBuffer,
+        pageBuffer(),
       )
       : null;
     if (
@@ -13297,7 +13816,7 @@ export async function extractSourceVisuals(
           cachedBeforePageRead,
           pageUrl,
           fingerprint,
-          pngBuffer,
+          pageBuffer(),
           existingOnPage,
         )
       ),
@@ -13313,7 +13832,7 @@ export async function extractSourceVisuals(
           cachedBeforePageRead,
           pageUrl,
           fingerprint,
-          pngBuffer,
+          pageBuffer(),
           existingOnPage,
         )
       ),
@@ -13329,7 +13848,7 @@ export async function extractSourceVisuals(
           cachedBeforePageRead,
           pageUrl,
           fingerprint,
-          pngBuffer,
+          pageBuffer(),
           existingOnPage,
         )
       ),
@@ -13439,7 +13958,7 @@ export async function extractSourceVisuals(
         detections = await detectVisualsOnPage(
           client,
           model,
-          pngBuffer,
+          pageBuffer(),
           { checkpoint, onProgress },
           pageNumber,
         );
@@ -13469,6 +13988,10 @@ export async function extractSourceVisuals(
     // them. A page replaying a signed formula-recovery receipt keeps its exact
     // geometry; its equations are covered by the source-formula review.
     let figureCropOutcomes: Map<number, FigureCropReviewOutcome> | null = null;
+    // Which review protocol produced those outcomes. A v1 corrected bbox was
+    // approved as a padded crop; a v2 one was approved verbatim. The stored
+    // crop has to match whichever was actually shown to the reviewer.
+    let figureCropReviewVersion = 0;
     const pageReplaysSignedFormulaRecovery =
       reusableRecoveryScan ||
       reusableTopologyRecoveryScan ||
@@ -13490,9 +14013,44 @@ export async function extractSourceVisuals(
         candidates: figureCandidates,
       });
       const entry = sourceCache[pageUrl];
-      let receipt = entry && figureCropReviewReceiptMatches(entry.figureCropReview, cacheKey, figureCandidates)
-        ? entry.figureCropReview
+      // With reuse on, a saved verdict is checked against the key its own
+      // author would have produced, so everything except the model still has
+      // to match: same prompt version, same page bytes, same candidate boxes.
+      // A replay pass (no new reviews allowed) takes the saved verdict from
+      // whichever model wrote it: that is the one planning applied. Live
+      // 2026-09-23: planning reused luna/5.6 verdicts, generation on gpt-6-sol
+      // looked only for sol ones, fell back to detector crops, and the
+      // artifact inventory drifted off the confirmed map.
+      const priorReview = entry?.figureCropReview;
+      const matchKey = (reuseCropVerdictsAcrossModels || !reviewFigureCrops) && priorReview?.model
+        ? figureCropReviewCacheKey({
+          model: priorReview.model,
+          pageFingerprint: fingerprint,
+          candidates: figureCandidates,
+          version: priorReview.version,
+        })
+        : cacheKey;
+      let receipt = entry && figureCropReviewReceiptMatches(priorReview, matchKey, figureCandidates)
+        ? priorReview
         : undefined;
+      if (!receipt) {
+        const stored = readDurableFigureCropReview(fingerprint, figureCandidates);
+        const storedKey = stored && (reuseCropVerdictsAcrossModels || !reviewFigureCrops) && stored.model
+          ? figureCropReviewCacheKey({
+            model: stored.model,
+            pageFingerprint: fingerprint,
+            candidates: figureCandidates,
+            version: stored.version,
+          })
+          : cacheKey;
+        if (stored && figureCropReviewReceiptMatches(stored, storedKey, figureCandidates)) {
+          receipt = stored;
+          if (entry) {
+            entry.figureCropReview = stored;
+            saveSourceVisualScanCache(contentPath, gardenSlug, scanCache);
+          }
+        }
+      }
       if (!receipt && !reviewFigureCrops) {
         // No saved review and this run may not request one: keep the plain
         // detector crops, as before the review existed.
@@ -13500,7 +14058,7 @@ export async function extractSourceVisuals(
         onProgress?.(`Checking figure crops on page ${pageNumber || "?"} against the page...`);
         receipt = await reviewFigureCropsOnPage({
           model,
-          pageImage: pngBuffer,
+          pageImage: pageBuffer(),
           pageFingerprint: fingerprint,
           pageNumber,
           candidates: figureCandidates,
@@ -13535,9 +14093,11 @@ export async function extractSourceVisuals(
           entry.figureCropReview = receipt;
           saveSourceVisualScanCache(contentPath, gardenSlug, scanCache);
         }
+        if (receipt) writeDurableFigureCropReview(fingerprint, figureCandidates, receipt);
       }
       if (receipt) {
         figureCropOutcomes = new Map(receipt.outcomes.map((outcome) => [outcome.detectionIndex, outcome]));
+        figureCropReviewVersion = receipt.version;
       }
     }
 
@@ -13586,6 +14146,10 @@ export async function extractSourceVisuals(
       const detection = figureCropOutcome?.status === "corrected" && figureCropOutcome.bbox
         ? { ...detectedVisual, bbox: figureCropOutcome.bbox }
         : detectedVisual;
+      // Formula review re-renders the preserved source PDF page; a video frame
+      // or website screenshot has none, so an equation seen there could never
+      // be reviewed and failed the whole planning run (live 2026-10-08, em1).
+      if (detection.type === "equation" && !hasPreservedSourcePdf) continue;
       const recoverySlot = recoverySlots?.[detectionIndex];
       const topologyRecoverySlot = topologyRecoverySlots?.[detectionIndex];
       const topologyCandidateRepairSlot = topologyCandidateRepairSlots?.[detectionIndex];
@@ -13735,9 +14299,18 @@ export async function extractSourceVisuals(
 
       if (detection.bbox) {
         const cropped = cropPng(
-          pngBuffer,
+          pageBuffer(),
           figureCropOutcome && figureCropOutcome.status !== "unreviewed" && isFigureCropVisualType(detection.type)
-            ? tightFigureCropBBox(detection.bbox, detection.type)
+            // "corrected" means detection.bbox is the reviewer's own bbox. Under
+            // v2 the review loop cropped that verbatim, so padding it here would
+            // stop the stored crop matching the one approved; under v1 it was
+            // approved padded, and cropping verbatim would cut tighter than the
+            // reviewer ever saw.
+            ? figureCropRenderBBox(
+              detection.bbox,
+              detection.type,
+              figureCropOutcome.status === "corrected" && figureCropReviewVersion >= 2,
+            )
             : expandedCropBBox(detection.bbox, detection.type),
         );
         if (cropped) {
@@ -13801,6 +14374,7 @@ export async function extractSourceVisuals(
       found.push(visual);
     }
   }
+  savePageFingerprintCache();
 
   // Pages where detection found nothing meaningful get no entry at all —
   // full-page screenshots are fallback assets, not extracted figures.

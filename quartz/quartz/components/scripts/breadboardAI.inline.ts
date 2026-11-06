@@ -1,3 +1,4 @@
+import { normalizeQuartzChatLink } from "../../../../dashboard/src/lib/quartz-chat-link"
 // Client logic for the Breadboard Quartz page AI panel.
 //
 // Talks ONLY to the Breadboard dashboard API (never Hermes directly). Streams the
@@ -7,6 +8,7 @@
 
 import { createAssistantWidgetHost } from "./assistantWidgets"
 import { formatAssistantModelChangeName } from "../../../../dashboard/src/lib/ai-models"
+import { mountChatLensRail } from "../../../../dashboard/src/lib/chat-lens-rail"
 
 interface SessionState {
   sessionId: string | number | null
@@ -47,6 +49,7 @@ interface QuartzCommandItem {
 }
 
 interface QuartzTextSelection {
+  highlightId?: string
   text: string
 }
 
@@ -216,10 +219,10 @@ function setupPanel(root: HTMLElement) {
   }
 
   const onAskHere = (event: Event) => {
-    const detail = (event as CustomEvent<{ text?: unknown }>).detail
+    const detail = (event as CustomEvent<{ text?: unknown; highlightId?: unknown }>).detail
     const text = typeof detail?.text === "string" ? detail.text.trim().slice(0, 2_000) : ""
     if (!text) return
-    activeTextSelection = { text }
+    activeTextSelection = { text, ...(typeof detail.highlightId === "string" ? { highlightId: detail.highlightId } : {}) }
     if (selectionQuote) selectionQuote.textContent = text
     if (selectionContext) selectionContext.hidden = false
     if (panel!.hidden) openPanel()
@@ -228,6 +231,30 @@ function setupPanel(root: HTMLElement) {
   }
   window.addEventListener("breadboard:assistant-ask-here", onAskHere)
   window.addCleanup(() => window.removeEventListener("breadboard:assistant-ask-here", onAskHere))
+  const onOpenChatQuestion = async (event: Event) => {
+    const link = normalizeQuartzChatLink((event as CustomEvent).detail?.chatLink)
+    if (!link || link.surface !== "page") return
+    openPanel()
+    closeHistory()
+    if (String(state.sessionId) !== link.chatId) {
+      if (stopBtn && !stopBtn.hidden) { showError("Stop the current response before opening another chat."); return }
+      viewGeneration++
+      state.sessionId = link.chatId
+      state.clientToken = null
+      restoreChatIntelligence(state.sessionId)
+      saveState()
+      await restoreTranscript()
+    }
+    const question = messages!.querySelector<HTMLElement>(`.breadboard-ai-user[data-client-message-id="${CSS.escape(link.selectionId)}"]`)
+    if (!question) { showError("This question is no longer available."); return }
+    question.scrollIntoView({ block: "center" })
+    question.tabIndex = -1
+    question.focus({ preventScroll: true })
+    question.setAttribute("data-chat-question-target", "")
+    window.setTimeout(() => question.removeAttribute("data-chat-question-target"), 2500)
+  }
+  window.addEventListener("breadboard:assistant-open-chat", onOpenChatQuestion)
+  window.addCleanup(() => window.removeEventListener("breadboard:assistant-open-chat", onOpenChatQuestion))
   const onTopologyInvestigation = (event: Event) => {
     const detail = (event as CustomEvent<QuartzTopologyInvestigationEvent>).detail
     const prompt = typeof detail?.prompt === "string" ? detail.prompt.trim().slice(0, 1_600) : ""
@@ -651,6 +678,15 @@ function setupPanel(root: HTMLElement) {
     if (railLabel) railLabel.dataset.visible = "false"
   }
 
+  const lensRail = rail && railTrack ? mountChatLensRail({
+    root: rail,
+    track: railTrack,
+    onHover: (index, tick) => {
+      if (index === null || !tick) hideRailLabel()
+      else showRailLabel(tick, railSummary(railPairs[index]?.target.textContent ?? ""))
+    },
+  }) : null
+
   function refreshRail() {
     if (!rail || !railTrack || railSuspended) return
     const sent = Array.from(messages!.querySelectorAll<HTMLElement>(".breadboard-ai-user"))
@@ -661,13 +697,16 @@ function setupPanel(root: HTMLElement) {
     // the commonest shape, and it is the only landmark there is. Only an empty
     // transcript, with nothing to point at, draws no rail.
     rail.hidden = sent.length < 1
-    if (rail.hidden) return
+    if (rail.hidden) { lensRail?.refresh(); return }
 
     sent.forEach((target, index) => {
       const summary = railSummary(target.textContent ?? "")
       const tick = document.createElement("button")
       tick.type = "button"
-      tick.className = "breadboard-ai-rail-tick"
+      tick.className = "breadboard-ai-rail-tick bb-chat-lens-item"
+      const mark = document.createElement("span")
+      mark.className = "bb-chat-lens-mark"
+      tick.appendChild(mark)
       tick.setAttribute("aria-label", `Go to message ${index + 1} of ${sent.length}: ${summary}`)
       tick.addEventListener("click", () => {
         const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
@@ -685,6 +724,7 @@ function setupPanel(root: HTMLElement) {
       railTrack!.appendChild(tick)
       railPairs.push({ target, tick })
     })
+    lensRail?.refresh()
     markActiveTick()
   }
 
@@ -726,16 +766,7 @@ function setupPanel(root: HTMLElement) {
       else tick.removeAttribute("aria-current")
     })
 
-    // A long conversation's rail scrolls inside itself; the tick being read has
-    // to be brought along or the rail stops describing where the reader is.
-    const current = railPairs[active].tick
-    const track = railTrack!
-    if (
-      current.offsetTop < track.scrollTop ||
-      current.offsetTop + current.offsetHeight > track.scrollTop + track.clientHeight
-    ) {
-      track.scrollTop = current.offsetTop - track.clientHeight / 2 + current.offsetHeight / 2
-    }
+    lensRail?.setActive(active)
   }
 
   let railFrame: number | null = null
@@ -954,7 +985,7 @@ function setupPanel(root: HTMLElement) {
     try {
       const sessions = await fetchSessions()
       if (disposed || generation !== viewGeneration) return
-      const current = sessions.find((item) => item.id === state.sessionId)
+      const current = sessions.find((item) => String(item.id) === String(state.sessionId))
       if (!current) {
         // Older builds could persist an unrelated Terminal/Garden id here
         // because the Quartz history endpoint returned every conversation.
@@ -1440,7 +1471,7 @@ function setupPanel(root: HTMLElement) {
         try {
           const sessions = await fetchSessions()
           if (generation === viewGeneration) {
-            const current = sessions.find((item) => item.id === state.sessionId)
+            const current = sessions.find((item) => String(item.id) === String(state.sessionId))
             if (current?.messages.length) renderTranscript(current.messages)
           }
         } catch {
@@ -1460,10 +1491,11 @@ function setupPanel(root: HTMLElement) {
     const trimmed = promptText.trim()
     if (!trimmed) return
     const generation = ++viewGeneration
+    const selectedHighlightId = activeTextSelection?.highlightId
     const selectedText = selectedTextOverride ?? activeTextSelection?.text
     if (activeTextSelection) clearSelectionQuestion()
     clearError()
-    addMessage("user", trimmed)
+    addMessage("user", trimmed).dataset.clientMessageId = clientMessageId
     const assistantEl = addMessage("assistant", "…")
     assistantEl.dataset.clientMessageId = clientMessageId
     assistantEl.dataset.modelChangeAnchor = `turn:${clientMessageId}`
@@ -1528,6 +1560,10 @@ function setupPanel(root: HTMLElement) {
         )
       }
       if (disposed || generation !== viewGeneration) return
+      if (selectedHighlightId && state.sessionId !== null) window.dispatchEvent(new CustomEvent("breadboard:assistant-chat-link", {
+        detail: { highlightId: selectedHighlightId, pageSlug,
+          chatLink: { chatId: String(state.sessionId), selectionId: clientMessageId, surface: "page" } },
+      }))
       await streamEvents(state.sessionId!, assistantEl, undefined, generation)
     } catch (error) {
       if ((error as Error).name === "AbortError") {
@@ -1602,6 +1638,8 @@ function setupPanel(root: HTMLElement) {
   // every visited page retained a stream closure and its detached DOM tree.
   window.addCleanup(() => {
     disposed = true
+    lensRail?.destroy()
+    if (railFrame !== null) window.cancelAnimationFrame(railFrame)
     widgetHost.dispose()
     viewGeneration += 1
     abortController?.abort()

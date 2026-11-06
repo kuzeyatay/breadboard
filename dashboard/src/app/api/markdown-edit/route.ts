@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
-import OpenAI from "openai";
+import { createChatmockClient } from "@/lib/chatmock-client";
 import { DEFAULT_MODEL } from "@/lib/ai-models";
 import { chatTokenUsageFromResponse } from "@/lib/chat-token-usage";
 import { refreshClusterIndex, resolveClusterNoteFile } from "@/lib/knowledge";
@@ -10,6 +11,8 @@ import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
 import { withCouncil } from "@/lib/council";
+import { normalizeDocumentPath } from "@/lib/garden-document-path";
+import { repairMarkdownMathFormatting, wantsMathFormattingOnly } from "@/lib/markdown-math-edit";
 import {
   requireOwnedClusterFromSlug,
   routeErrorResponse,
@@ -24,30 +27,6 @@ function stripMarkdownFence(value: string): string {
   const trimmed = value.trim();
   const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   return match ? match[1].trim() : trimmed;
-}
-
-function normalizeDocumentSlug(
-  clusterSlug: string,
-  slug: string,
-): string | null {
-  const cleaned = slug
-    .replace(/\\/g, "/")
-    .replace(/[?#].*$/, "")
-    .replace(/\.md$/i, "")
-    .trim();
-  let segments = cleaned
-    .split("/")
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-  const clusterIndex = segments.findIndex((segment) => segment === clusterSlug);
-  if (clusterIndex >= 0) segments = segments.slice(clusterIndex + 1);
-  if (segments[0] === "garden" && segments[1] === clusterSlug)
-    segments = segments.slice(2);
-  if (segments.length === 0) return null;
-  const noteSlug = segments.join("/");
-  if (/^(?:index|_index)$/i.test(noteSlug) || noteSlug.includes(".."))
-    return null;
-  return noteSlug;
 }
 
 function documentPath(
@@ -147,18 +126,31 @@ function parseEditResponse(
 ): { content: string; summary: string } | null {
   const stripped = stripMarkdownFence(rawContent);
   try {
-    const parsed = JSON.parse(stripped) as JsonRecord;
+    const parsed: unknown = JSON.parse(stripped);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as JsonRecord;
     const content =
-      typeof parsed.content === "string" ? parsed.content.trim() : "";
+      typeof record.content === "string" ? record.content : "";
     const summary =
-      typeof parsed.summary === "string" ? parsed.summary.trim() : "";
-    if (content) return { content, summary };
+      typeof record.summary === "string" ? record.summary.trim() : "";
+    if (content.trim() && typeof record.summary === "string") return { content, summary };
   } catch {
-    // Fall through and accept raw markdown only when it looks like a complete note.
+    // A malformed response or refusal is never replacement document content.
   }
-  return stripped
-    ? { content: stripped, summary: "Updated the open page." }
-    : null;
+  return null;
+}
+
+function backupBeforeEdit(gardenDir: string, filePath: string, content: string): void {
+  const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+  const relativePath = path.relative(gardenDir, filePath).replace(/\\/g, "/");
+  const directory = path.join(gardenDir, ".breadboard", "markdown-edit-history", hash(relativePath));
+  fs.mkdirSync(directory, { recursive: true });
+  const backup = path.join(directory, `${hash(content)}.md`);
+  if (fs.existsSync(backup)) {
+    if (fs.readFileSync(backup, "utf8") !== content) throw new Error("The note backup could not be verified. The note was not changed.");
+    return;
+  }
+  fs.writeFileSync(backup, content, { encoding: "utf8", flag: "wx" });
 }
 
 function parseChatMessages(value: unknown): ChatMessage[] {
@@ -182,7 +174,6 @@ function parseChatMessages(value: unknown): ChatMessage[] {
 
 export async function POST(request: Request) {
   try {
-    const { baseURL } = resolveChatmockBaseUrl(request);
     const body = await request.json().catch(() => ({}));
     const clusterSlug =
       typeof body.clusterSlug === "string" ? body.clusterSlug.trim() : "";
@@ -211,7 +202,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const slug = normalizeDocumentSlug(cluster.slug, slugInput);
+    const slug = normalizeDocumentPath(cluster.slug, slugInput);
     if (!slug) {
       return NextResponse.json(
         { error: "Document path is not editable" },
@@ -228,66 +219,97 @@ export async function POST(request: Request) {
     }
 
     const currentContent = fs.readFileSync(filePath, "utf-8");
-    const client = new OpenAI({
-      baseURL,
-      apiKey: process.env.OPENAI_API_KEY || "local",
-    });
+    request.signal.throwIfAborted();
 
-    const response = await client.chat.completions.create(
-      withCouncil(
-        {
-          model: selectedModel,
-          messages: [
-            {
-              role: "system",
-              content:
-                'You rewrite an existing Markdown note exactly as requested. Return only JSON with keys "summary" and "content". ' +
-                'The "content" value must be the complete updated Markdown file, including YAML frontmatter if present. ' +
-                "Preserve all useful existing content unless the user explicitly asks to remove or rewrite it. " +
-                'If the user asks to use "this version", "the version above", "your previous version", or similar, use the recent chat context as the replacement source. ' +
-                'When editing tags, suggest only canonical reusable concepts: normalized lower-case kebab-case identities such as "restoring-force", "angular-frequency", or "simple-harmonic-motion". Never use a complete claim, page summary, broad category, source filename, or organizational label as a tag. ' +
-                "When fixing math or LaTeX, use $...$ for inline math and $$...$$ for display math, and avoid corrupting prose.",
-            },
-            {
-              role: "user",
-              content: [
-                `Instruction: ${instruction}`,
-                `Cluster: ${cluster.name}`,
-                `Slug: ${slug}`,
-                chatMessages.length > 0
-                  ? `Recent chat context:\n${chatMessages
-                      .map(
-                        (message) =>
-                          `${message.role.toUpperCase()}:\n${message.content}`,
-                      )
-                      .join("\n\n---\n\n")}`
-                  : "",
-                "Current Markdown:",
-                "```markdown",
-                currentContent,
-                "```",
-              ]
-                .filter(Boolean)
-                .join("\n\n"),
-            },
-          ],
-        },
-        { taskType: "small_revision", gardenId: cluster.slug, pageId: slug },
-      ),
-    );
+    const formatted = wantsMathFormattingOnly(instruction)
+      ? repairMarkdownMathFormatting(currentContent)
+      : currentContent;
+    const formattingOnly = formatted !== currentContent;
+    let parsed = formattingOnly
+      ? { content: formatted, summary: "Fixed the LaTeX delimiters so the note's math renders correctly." }
+      : null;
+    let usage: ReturnType<typeof chatTokenUsageFromResponse> = null;
+    if (!parsed) {
+      const { baseURL } = resolveChatmockBaseUrl(request);
+      const client = createChatmockClient(baseURL);
 
-    const parsed = parseEditResponse(
-      response.choices[0]?.message?.content ?? "",
-    );
+      const response = await client.chat.completions.create(
+        withCouncil(
+          {
+            model: selectedModel,
+            messages: [
+              {
+                role: "system",
+                content:
+                  'You rewrite an existing Markdown note exactly as requested. Return only JSON with keys "summary" and "content". ' +
+                  'The "content" value must be the complete updated Markdown file, including YAML frontmatter if present. ' +
+                  "Preserve all useful existing content unless the user explicitly asks to remove or rewrite it. " +
+                  'If the user asks to use "this version", "the version above", "your previous version", or similar, use the recent chat context as the replacement source. ' +
+                  'When editing tags, suggest only canonical reusable concepts: normalized lower-case kebab-case identities such as "restoring-force", "angular-frequency", or "simple-harmonic-motion". Never use a complete claim, page summary, broad category, source filename, or organizational label as a tag. ' +
+                  "When fixing math or LaTeX, use $...$ for inline math and $$...$$ for display math, and avoid corrupting prose.",
+              },
+              {
+                role: "user",
+                content: [
+                  `Instruction: ${instruction}`,
+                  `Cluster: ${cluster.name}`,
+                  `Slug: ${slug}`,
+                  chatMessages.length > 0
+                    ? `Recent chat context:\n${chatMessages
+                        .map(
+                          (message) =>
+                            `${message.role.toUpperCase()}:\n${message.content}`,
+                        )
+                        .join("\n\n---\n\n")}`
+                    : "",
+                  "Current Markdown:",
+                  "```markdown",
+                  currentContent,
+                  "```",
+                ]
+                  .filter(Boolean)
+                  .join("\n\n"),
+              },
+            ],
+          },
+          {
+            taskType: "small_revision",
+            gardenId: cluster.slug,
+            pageId: slug,
+            // A requested edit to one note does not need a draft/review/rewrite
+            // council. Keep this interactive path to one model invocation.
+            councilModeOverride: "direct_council",
+          },
+        ),
+        { signal: request.signal },
+      );
+
+      const choice = response.choices[0];
+      parsed = !choice?.message?.refusal && (!choice?.finish_reason || choice.finish_reason === "stop")
+        ? parseEditResponse(choice?.message?.content ?? "")
+        : null;
+      usage = chatTokenUsageFromResponse(response);
+    }
     if (!parsed) {
       return NextResponse.json(
-        { error: "Could not parse the rewritten markdown." },
-        { status: 500 },
+        { error: "The assistant did not return a complete Markdown edit. Your note was not changed." },
+        { status: 502 },
+      );
+    }
+    const frontmatter = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/;
+    if (frontmatter.test(currentContent) && (!frontmatter.test(parsed.content) ||
+      (frontmatterTitle(currentContent, "") && !frontmatterTitle(parsed.content, "")))) {
+      return NextResponse.json(
+        { error: "The assistant omitted the note's metadata or title. Your note was not changed." },
+        { status: 502 },
       );
     }
 
+    // Stop must prevent a late model response from changing the document.
+    request.signal.throwIfAborted();
     const gardenDir = path.join(contentPath, cluster.slug);
     const lease = acquireGardenMutationLease(gardenDir, "ai-edit-markdown");
+    let nextContent = parsed.content;
     try {
       if (
         !fs.existsSync(filePath) ||
@@ -301,9 +323,11 @@ export async function POST(request: Request) {
           { status: 409 },
         );
       }
+      // Keep the exact previous bytes before either writer can replace the note.
+      // If the backup cannot be saved, fail without touching the original.
+      backupBeforeEdit(gardenDir, filePath, currentContent);
       const shouldUpdateTags =
-        wantsTagEdit(instruction) || hasFrontmatterTags(parsed.content);
-      let nextContent = parsed.content;
+        !formattingOnly && (wantsTagEdit(instruction) || hasFrontmatterTags(parsed.content));
       if (shouldUpdateTags) {
         const requestedTerms = parseFrontmatterTags(parsed.content);
         const assignment = updateLearnerPageConcepts({
@@ -323,35 +347,31 @@ export async function POST(request: Request) {
         void assignment;
         nextContent = fs.readFileSync(filePath, "utf8");
       } else {
-        fs.writeFileSync(
-          filePath,
-          nextContent.endsWith("\n") ? nextContent : `${nextContent}\n`,
-          "utf-8",
-        );
+        if (!formattingOnly) nextContent = nextContent.endsWith("\n") ? nextContent : `${nextContent}\n`;
+        fs.writeFileSync(filePath, nextContent, "utf-8");
       }
-      const responseTags = parseFrontmatterTags(nextContent);
-      const usage = chatTokenUsageFromResponse(response);
-      refreshClusterIndex(contentPath, cluster.slug);
-      await publishQuartzAfterMutation(
-        `AI edit markdown ${cluster.slug}/${slug}`,
-        {
-          userId,
-          gardenSlug: cluster.slug,
-        },
-      );
-
-      return NextResponse.json({
-        success: true,
-        slug,
-        title: frontmatterTitle(nextContent, slug),
-        summary: parsed.summary || "Updated the open page.",
-        content: nextContent,
-        tags: responseTags,
-        ...(usage ? { usage } : {}),
-      });
+      refreshClusterIndex(contentPath, cluster.slug, { migrateSources: false });
     } finally {
       lease.release();
     }
+
+    // The reader consumes the saved Markdown immediately. The derived site
+    // build can take minutes or queue behind other Gardens; it must neither
+    // delay this response nor keep the Garden locked after the canonical save.
+    void publishQuartzAfterMutation(
+      `AI edit markdown ${cluster.slug}/${slug}`,
+      { userId, gardenSlug: cluster.slug },
+    ).catch(error => console.error("[garden] Markdown edit saved; publication failed:", error));
+
+    return NextResponse.json({
+      success: true,
+      slug,
+      title: frontmatterTitle(nextContent, slug),
+      summary: parsed.summary || "Updated the open page.",
+      content: nextContent,
+      tags: parseFrontmatterTags(nextContent),
+      ...(usage ? { usage } : {}),
+    });
   } catch (error) {
     return routeErrorResponse(error);
   }

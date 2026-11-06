@@ -14,7 +14,7 @@
 
 import path from "node:path";
 import { externalRuntimePathExists } from "../external-runtime-filesystem.ts";
-import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
+import { dashboardDataDir, repositoryRoot, runtimeV2ToolchainRoot } from "../runtime-paths.ts";
 
 /** Files that identify a directory as the bolt-slides clone rather than a namesake. */
 const MARKERS = [
@@ -57,12 +57,8 @@ export function boltSlidesWorkspaceRoot(env: NodeJS.ProcessEnv = process.env): s
 
 /** Runtime-owned dependencies, which every run's workspace links back to. */
 export function boltSlidesModules(env: NodeJS.ProcessEnv = process.env): string {
-  void env;
   return path.join(
-    dashboardDataDir(),
-    "runtime-v2",
-    "toolchains",
-    "bolt-slides",
+    runtimeV2ToolchainRoot("bolt-slides", env),
     "node_modules",
   );
 }

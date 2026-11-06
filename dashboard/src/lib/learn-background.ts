@@ -44,6 +44,8 @@ export type LearnWorkerRequest =
       syllabusSourceId: string | null;
       sourceOnly: boolean;
       includeSourceSnapshots: boolean;
+      /** Reuse a saved figure-crop verdict written by a different model. */
+      reuseCropVerdictsAcrossModels?: boolean;
       autoConfirmTopicMap: boolean;
       userInstruction?: string;
     })
@@ -72,6 +74,8 @@ export type LearnWorkerRequest =
       syllabusSourceId?: string;
       sourceOnly: boolean;
       includeSourceSnapshots: boolean;
+      /** Reuse a saved figure-crop verdict written by a different model. */
+      reuseCropVerdictsAcrossModels?: boolean;
       userInstruction?: string;
     })
   | (LearnWorkerCommonRequest & {

@@ -184,3 +184,34 @@ export function learnRunHasStalled(input: LearnStallInput): boolean {
   if (input.inFlightCalls > 0) return false;
   return input.now - input.lastCallStartedAt >= STALL_WITHOUT_MODEL_CALL_MS;
 }
+
+export interface LearnResumeRequestState {
+  /** The latest Learn row's durable status. */
+  status: string;
+  /** runtimeLearnWorkerIsLive: true running, false gone, null unreadable. */
+  workerLive: boolean | null;
+}
+
+/**
+ * Why a resume request can do nothing, or null when it may proceed.
+ *
+ * resumeLatestLearnJob returns the row unchanged when it claims an active
+ * status, reading that as a worker which raced past the pause gate and is
+ * running again. When the worker is provably gone that reading is wrong, and
+ * the caller is told its run resumed while nothing started. Live 2026-09-20
+ * (telecom-1): a run killed by a model-transport failure sat at "planning"
+ * with a dead Runtime job, and POST /learn/resume answered 200 with the
+ * untouched row - the run only restarted once a person noticed by hand.
+ *
+ * An unreadable worker state leaves the existing rules in force, because "I
+ * could not tell" is not evidence that the run is gone.
+ */
+export function learnResumeRejection(state: LearnResumeRequestState): string | null {
+  if (state.status === "paused") return null;
+  if (state.workerLive !== false) return null;
+  return (
+    `Learn operation is ${state.status}, but its Runtime worker is gone, so ` +
+    `there is nothing to resume. Abandoned-job recovery settles the run and ` +
+    `restores the garden; start a new run once it has.`
+  );
+}

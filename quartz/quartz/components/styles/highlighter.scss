@@ -1,4 +1,13 @@
 @use "../../styles/variables.scss" as *;
+@use "../../../../dashboard/src/lib/chat-note-bubble.css";
+
+.bb-highlight-note-bubble {
+  --paper-raised: var(--neu-q-surface, var(--light));
+  --line: var(--neu-q-border, var(--lightgray));
+  --ink-heading: var(--dark);
+  z-index: 1300;
+  font-family: var(--bodyFont);
+}
 
 /* Painted text. The colours are translucent so the reading surface, the link
  * colour, and code spans all stay legible underneath them. */
@@ -30,10 +39,10 @@
   --bb-hl-dot-purple: #b9a0e6;
 }
 
-mark.bb-hl {
+.bb-hl {
   background-color: var(--bb-hl-yellow);
   color: inherit;
-  padding: 0.06em 0.04em;
+  padding: 0;
   border-radius: 0.16em;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
@@ -52,6 +61,11 @@ mark.bb-hl {
     background-color: var(--bb-hl-purple);
   }
 
+  &[data-hl-chat] {
+    background-color: var(--bb-hl-yellow);
+    box-shadow: inset 0 -2px 0 var(--bb-hl-dot-yellow);
+  }
+
   &[data-hl-answer] {
     box-shadow: inset 0 -2px 0 var(--bb-hl-dot-yellow);
   }
@@ -59,12 +73,32 @@ mark.bb-hl {
   &[data-hl-note] {
     text-decoration: underline dotted color-mix(in srgb, currentColor 58%, transparent);
     text-underline-offset: 0.18em;
+
+    &:focus-visible {
+      outline: 2px solid var(--secondary);
+      outline-offset: 3px;
+    }
+  }
+
+  &[data-hl-note-only="true"] {
+    background-color: transparent;
   }
 
   &[data-hl-answer="pending"],
   &[data-hl-answer="streaming"] {
     animation: bb-highlight-answer-pulse 1.4s ease-in-out infinite;
   }
+}
+
+article.popover-hint .katex,
+article.popover-hint .katex-html {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.bb-hl-math[data-hl-note-only="true"] {
+  border-bottom: 1px dotted currentColor;
 }
 
 @keyframes bb-highlight-answer-pulse {
@@ -464,4 +498,9 @@ mark.bb-hl {
   mark.bb-hl[data-hl-answer="streaming"] {
     animation: none;
   }
+}
+
+.breadboard-ai-message[data-chat-question-target] {
+  outline: 2px solid var(--bb-hl-dot-yellow);
+  outline-offset: 4px;
 }

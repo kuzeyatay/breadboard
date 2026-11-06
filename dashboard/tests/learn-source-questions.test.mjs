@@ -48,6 +48,20 @@ const validationInput = {
 };
 
 describe("Learn source-question evidence", () => {
+  test("hyphenated textbook question numbers retain their exact identity", () => {
+    assert.deepEqual(sourceQuestionReferencesFromCaption("For Problems 5-74 and 5-75."), ["Problem 5-74", "Problem 5-75"]);
+    const evidence = buildSourceQuestionEvidenceCatalog({
+      anchors: ["5-74", "5-75", "5"].map((label, page) => ({ id: label, sourceId, page, title: label, exactText: `${label} Design the receiver.` })),
+      figures: [], syllabusUnits: [{ id: "SU1", questionReferences: ["Problem 5-75"] }],
+    });
+    assert.deepEqual(evidence.map(entry => entry.anchorId), ["5-75"]);
+    const ranged = buildSourceQuestionEvidenceCatalog({
+      anchors: ["6.21", "6.22", "6.23"].map((label, page) => ({ id: label, sourceId, page, title: label, exactText: `${label} Calculate the field.` })),
+      figures: [], syllabusUnits: [{ id: "SU1", questionReferences: ["Problems 6.21-6.23"] }],
+    });
+    assert.deepEqual(ranged.map(entry => entry.anchorId), ["6.21", "6.22", "6.23"]);
+  });
+
   test("recognizes every problem identifier named by one figure", () => {
     assert.deepEqual(
       sourceQuestionReferencesFromCaption("Figure 13.25 See Problems 13.17 and 13.18."),
@@ -178,4 +192,36 @@ test("the Learn pipeline carries required questions into generation and hard val
       learnSource.indexOf('"learn_generation_started"'),
     "a stale question mapping must fail before page generation starts",
   );
+});
+
+test("a sub-question stated as its verbatim stem plus its own part is accepted; a retyped part is not", () => {
+  const body = "## Page 2\n\nFor recovery after an earthquake, a high-speed wireless link is needed.\n\na) What is the null-to-null bandwidth?\n\nc) Briefly explain coherent and non-coherent detection.\n";
+  const input = (prompt) => ({
+    value: { sourceQuestions: [{
+      id: "Q1", sourceId: "exam", label: "Question 1(c)", prompt,
+      sourceAnchorIds: ["exam-p2"], relatedFigureIds: [], syllabusAssignments: [], teachingValue: "practice detection",
+    }], unresolvedSyllabusQuestionReferences: [] },
+    sourceIds: ["exam"],
+    sourceBodies: [{ sourceId: "exam", body }],
+    canonicalAnchors: [{ id: "exam-p2", sourceId: "exam", exactText: body }],
+    registeredFigures: [],
+    syllabusUnits: [],
+  });
+  assert.deepEqual(sourceQuestionPlanProblems(input(
+    "For recovery after an earthquake, a high-speed wireless link is needed.\n\nc) Briefly explain coherent and non-coherent detection.",
+  )), []);
+  assert.match(sourceQuestionPlanProblems(input(
+    "For recovery after an earthquake, a high-speed wireless link is needed.\n\nc) Explain coherent detection.",
+  )).join(";"), /must be copied verbatim/);
+});
+
+test("a question's related figure owned elsewhere names its owner so both units are repaired", () => {
+  // Live 2026-10-02 (gpt-6-sol): U10 could not take S16.P433.G1 from a unit
+  // the targeted repair never saw, and five repairs ended exhausted.
+  const question = { id: "Q56", sourceAnchorIds: [], relatedFigureIds: ["S16.P433.G1"], syllabusAssignments: [] };
+  const problems = sourceQuestionAssignmentProblems([
+    { id: "U10", sourceAnchors: [], sourceFigures: [], sourceQuestions: [{ id: "Q56" }] },
+    { id: "U11", sourceAnchors: [], sourceFigures: [{ id: "S16.P433.G1" }] },
+  ], [question]);
+  assert.match(problems.join("\n"), /Q56 must own its related figure S16\.P433\.G1; it is currently owned by unit "U11"/);
 });

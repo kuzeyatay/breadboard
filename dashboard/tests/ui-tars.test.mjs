@@ -385,7 +385,8 @@ test("Agent TARS thinking matches normal chat metadata without metric tags", () 
   assert.match(metrics, /<AssistantResponseMeta/);
   assert.match(responseMeta, /label = "Thinking"/);
   assert.match(responseMeta, /failed \? "Response interrupted" : "Thought"/);
-  assert.match(responseMeta, /counting tokens/);
+  assert.match(responseMeta, /active\s*\? "↓ usage pending"\s*: null/);
+  assert.match(responseMeta, /sessionSnapshot \|\| noTokenReport \? undefined : reportedTokens/);
   assert.doesNotMatch(responseMeta, /tokens unavailable/);
   assert.match(responseMeta, /className="assistant-response-meta my-1 text-\[var\(--ink\)\]"/);
   assert.doesNotMatch(metrics, /label="(?:Input|Output|Total|Calls)"/);

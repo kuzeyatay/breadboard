@@ -56,6 +56,12 @@ test('long nested answers stay below the navbar and internal scrolling does not 
   const initial=await cards.evaluateAll(cards=>cards.map(card=>{const r=card.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};}));
   await page.evaluate(()=>{
     window.popupLayoutReads=0;
+    window.markScans=0;
+    const query=document.querySelectorAll;
+    document.querySelectorAll=function(selector){
+      if(selector.includes('data-chat-selectable-message') && selector.includes('data-chat-selection-id')) window.markScans++;
+      return query.call(this,selector);
+    };
     const read=Element.prototype.getBoundingClientRect;
     Element.prototype.getBoundingClientRect=function(){
       if(this.matches('.bb-inline-answer, .bb-inline-answer *, .breadboard-flower-navbar, .bb-composer-overlay')) window.popupLayoutReads++;
@@ -75,6 +81,12 @@ test('long nested answers stay below the navbar and internal scrolling does not 
   assert.equal(await page.evaluate(()=>window.popupLayoutReads),0,'scrolling inside answers performs no popup layout measurements');
   assert.deepEqual(await cards.evaluateAll(cards=>cards.map(card=>{const r=card.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};})),initial,'reading an answer does not move or hide its children');
   assert.ok((await cards.evaluateAll(cards=>cards.map(card=>card.scrollTop))).every(top=>top>100));
+  await page.evaluate(()=>new Promise(resolve=>{
+    let step=0;
+    const scroll=()=>{window.dispatchEvent(new Event('scroll'));
+      if(++step<20)requestAnimationFrame(scroll);else resolve();};scroll();
+  }));
+  assert.equal(await page.evaluate(()=>window.markScans),0,'viewport movement reuses connected marks instead of rescanning the whole transcript');
   await page.evaluate(()=>{document.querySelector('header').style.height='100px';});
   await insideBounds();
   await page.evaluate(()=>window.grow());await insideBounds();

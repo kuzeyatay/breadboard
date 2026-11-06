@@ -5,7 +5,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { app, BrowserWindow, webContents } = require("electron");
 const { WindowManager } = require("../../dist/main/window-manager.js");
-const { readTabSession } = require("../../dist/main/tab-session.js");
+const { readTabSession, restoredTabUrl } = require("../../dist/main/tab-session.js");
 const [dir, phase] = process.argv.slice(2);
 app.setPath("userData", path.join(dir, "profile"));
 app.on("window-all-closed", () => {});
@@ -39,14 +39,19 @@ app.whenReady().then(async () => {
   const state = (window) => {
     const contents = webContents.getAllWebContents().find(contents =>
       manager.tabs.windowFor(contents) === window && manager.tabs.stateFor(contents).selfId !== null);
-    return manager.tabs.stateFor(contents ?? window.webContents);
+    return manager.tabs.stateFor(contents ?? manager.page(window));
   };
   const sender = (window) => {
     const id = state(window).activeId;
     return webContents.getAllWebContents().find(contents =>
-      manager.tabs.stateFor(contents).selfId === id && manager.tabs.windowFor(contents) === window);
+      manager.tabs.stateFor(contents).selfId === id && manager.tabs.windowFor(contents) === window && !contents.getURL().startsWith("file:"));
   };
   const command = (window, value) => manager.tabs.handleCommand(sender(window), value);
+  const highlight = (window, id) => {
+    const host = manager.tabs.hosts.get(window.id);
+    manager.tabs.tabContextAction(host, host.tabs.find(tab => tab.id === id), "highlight");
+  };
+  const previousSession = readTabSession(dir);
   // Exercise the normal startup -> hidden dashboard -> visible dashboard handoff.
   await manager.showStartupScreen();
   manager.markStartupContinued();
@@ -55,6 +60,7 @@ app.whenReady().then(async () => {
 
   if (phase === "save") {
     const baseId = state(main).activeId;
+    highlight(main, baseId);
     assert.equal(await command(main, { type: "anchor", id: baseId }), true);
     assert.equal(await command(main, { type: "close", id: baseId }), false);
     assert.equal(await command(main, { type: "open", url: origin + "/garden?chat=hello#message", background: true }), true);
@@ -66,6 +72,7 @@ app.whenReady().then(async () => {
     // to another screen, including replacing New tab with Browser.
     assert.equal(await command(main, { type: "browser", url: origin + "/replacement", replaceCurrent: true }), true);
     const replacementId = state(main).activeId;
+    highlight(main, replacementId);
     await command(main, { type: "anchor", id: replacementId });
     assert.equal(state(main).tabs.find(tab => tab.id === replacementId).anchored, true);
     await command(main, { type: "move", id: replacementId, index: 0 });
@@ -81,6 +88,13 @@ app.whenReady().then(async () => {
     const popup = manager.openPopupWindow(origin + "/popup");
     await until(() => state(popup).tabs[0]?.url.endsWith("/popup"), "popup navigation");
     fs.writeFileSync(path.join(dir, "expected.json"), JSON.stringify({ origin, main: state(main) }));
+    // Temporary AI pages must not reappear after a restart, even if the app
+    // closes before their owning run has sent its cleanup request.
+    const selectedBeforeAutomation = state(main).activeId;
+    assert.equal(manager.tabs.openBreadboardUseApp(sender(main), origin + "/garden/ai-temporary", "session-test-run"), true);
+    assert.equal(manager.tabs.openBreadboardUseBrowser(sender(main), origin + "/ai-temporary", "session-test-run"), true);
+    assert.equal(state(main).activeId, selectedBeforeAutomation);
+    assert.equal(state(main).tabs.length, 8);
     // Native close must save all windows before the app tears any of them down.
     main.close();
     const saved = readTabSession(dir);
@@ -90,18 +104,22 @@ app.whenReady().then(async () => {
     const expected = JSON.parse(fs.readFileSync(path.join(dir, "expected.json"), "utf8"));
     assert.notEqual(origin, expected.origin);
     const actual = state(main);
-    const expectedAnchors = expected.main.tabs.filter(tab => tab.anchored);
-    assert.equal(actual.tabs.length, expectedAnchors.length + 1, "only anchors return beside one fresh New tab");
+    assert.equal(actual.tabs.length, expected.main.tabs.length + 1, "all tabs return beside one fresh New tab");
     assert.equal(actual.tabs.findIndex(tab => tab.id === actual.activeId), actual.tabs.length - 1);
     assert.equal(new URL(actual.tabs.at(-1).url).pathname, "/new-tab");
     assert.equal(actual.tabs.at(-1).anchored, false);
-    for (const [index, previous] of expectedAnchors.entries()) {
+    for (const [index, previous] of expected.main.tabs.entries()) {
       const restored = actual.tabs[index];
       assert.equal(restored.url, previous.browser ? previous.url : previous.url.replace(expected.origin, origin));
-      assert.equal(restored.anchored, true);
+      assert.equal(restored.anchored, previous.anchored);
+      assert.equal(restored.highlighted, previous.highlighted);
       assert.equal(Boolean(restored.browser), Boolean(previous.browser));
     }
-    assert.equal(BrowserWindow.getAllWindows().length, 2, "only a separate window with an anchor returns");
+    assert.equal(BrowserWindow.getAllWindows().length, 3, "open windows return even without anchors or groups");
+    const popup = BrowserWindow.getAllWindows().find(window =>
+      state(window).tabs.some(tab => tab.url === origin + "/popup"));
+    assert.ok(popup, "the ordinary popup tab returns on the new dashboard port");
+    assert.equal(state(popup).tabs.some(tab => tab.anchored || tab.groupId), false);
     const replacement = actual.tabs.find(tab => tab.url.endsWith("/replacement"));
     assert.ok(replacement?.browser);
     assert.equal(await command(main, { type: "activate", id: replacement.id }), true);
@@ -115,14 +133,30 @@ app.whenReady().then(async () => {
     assert.equal(await command(main, { type: "close", id: replacementId }), true);
     // Unanchor another tab without closing it; the toggle itself is durable.
     const anchored = state(main).tabs.find(tab => tab.anchored);
+    assert.equal(anchored.highlighted, true);
+    highlight(main, anchored.id);
     await command(main, { type: "anchor", id: anchored.id });
     manager.tabs.freezeSession();
-    assert.equal(readTabSession(dir).windows[0].tabs.length, 2);
-  } else {
-    assert.equal(state(main).tabs.length, 1);
-    assert.equal(new URL(state(main).tabs[0].url).pathname, "/new-tab");
-    assert.equal(state(main).tabs.some(tab => tab.anchored), false);
-    assert.equal(state(main).tabs.some(tab => tab.url.endsWith("/replacement")), false);
+    assert.equal(readTabSession(dir).windows[0].tabs.length, 6);
+  } else if (phase === "verify-unanchored") {
+    const actual = state(main);
+    const previous = previousSession.windows[0];
+    assert.equal(actual.tabs.length, previous.tabs.length, "restarting reuses a New tab without accumulating extras");
+    for (const [index, saved] of previous.tabs.entries()) {
+      assert.equal(actual.tabs[index].url, restoredTabUrl(saved, origin));
+      assert.equal(actual.tabs[index].anchored, saved.anchored);
+      assert.equal(actual.tabs[index].highlighted, saved.highlighted === true);
+      assert.equal(Boolean(actual.tabs[index].browser), saved.kind === "browser");
+    }
+    assert.equal(actual.tabs.filter(tab => new URL(tab.url, origin).pathname === "/new-tab").length, 2,
+      "intentionally duplicated New tabs are preserved");
+    assert.equal(actual.tabs.some(tab => tab.anchored), false);
+    assert.equal(actual.tabs.some(tab => tab.highlighted), false, "removing a highlight survives another restart");
+    assert.equal(actual.tabs.some(tab => tab.url.endsWith("/replacement")), false);
+    assert.equal(BrowserWindow.getAllWindows().length, previousSession.windows.length);
+    for (const window of BrowserWindow.getAllWindows()) {
+      assert.equal(new URL(state(window).tabs.find(tab => tab.id === state(window).activeId).url).pathname, "/new-tab");
+    }
     // Explicitly closing the last tab must not resurrect it on the next launch.
     const otherWindows = BrowserWindow.getAllWindows().filter(window => window !== main);
     for (const popup of otherWindows) {
@@ -133,6 +167,12 @@ app.whenReady().then(async () => {
     }
     for (const tab of [...state(main).tabs]) await command(main, { type: "close", id: tab.id });
     assert.deepEqual(readTabSession(dir).windows, []);
+  } else {
+    assert.equal(state(main).tabs.length, 1);
+    assert.equal(new URL(state(main).tabs[0].url).pathname, "/new-tab");
+    assert.equal(state(main).tabs.some(tab => tab.anchored), false);
+    assert.equal(state(main).tabs.some(tab => tab.url.endsWith("/replacement")), false);
+    assert.equal(BrowserWindow.getAllWindows().length, 1);
   }
   manager.tabs.freezeSession();
   for (const window of BrowserWindow.getAllWindows()) window.destroy();

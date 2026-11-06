@@ -76,7 +76,7 @@ export function createWindowsInput(_appRoot: string): WindowsInput {
     },
     typeText(text, pressEnter, x, y) {
       if (!text || text.length > MAX_TYPED_TEXT_LENGTH || /[\u0000-\u001f\u007f]/.test(text)) {
-        return Promise.reject(new Error("Clicky can type up to 1,000 characters without control characters."));
+        return Promise.reject(new Error("Desktop input accepts up to 1,000 characters without control characters."));
       }
       if (!Number.isInteger(x) || !Number.isInteger(y)) {
         return Promise.reject(new Error("Invalid desktop coordinates."));

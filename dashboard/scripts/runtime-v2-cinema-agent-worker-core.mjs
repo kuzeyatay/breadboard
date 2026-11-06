@@ -1,3 +1,4 @@
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -38,18 +39,6 @@ function exactRecord(value, keys) {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
-}
-
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
-function pathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" ||
-    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function readBoundedJson(filePath, maximumBytes, label) {
@@ -233,7 +222,7 @@ function startStopInput(onStop, onFault) {
   };
 }
 
-function trustedPath(name, kind) {
+export function trustedPath(name, kind) {
   const raw = process.env[name]?.trim();
   if (!raw) return null;
   if (!path.isAbsolute(raw) || /[\u0000\r\n]/u.test(raw)) fail(`The trusted ${name} path is invalid.`);
@@ -484,7 +473,7 @@ export async function runRuntimeV2CinemaAgentWorker(agentKind) {
         protocolVersion: PROTOCOL_VERSION,
         identity: launch.identity,
         completionSequence,
-        health: outcome.health,
+        result: outcome.health,
       });
     } else {
       finalizeProjection(current, "completed");
