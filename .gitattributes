@@ -19,7 +19,9 @@ agent-loop-engineering-kit/** linguist-vendored=true -whitespace
 agent-reach/** linguist-vendored=true -whitespace
 agent-skills/** linguist-vendored=true -whitespace
 AI-Youtube-Shorts-Generator/** linguist-vendored=true -whitespace
+aircursor/** linguist-vendored=true -whitespace
 anydoc/** linguist-vendored=true -whitespace
+api-anything/** linguist-vendored=true -whitespace text=auto eol=lf
 audio-analyzer-rs/** linguist-vendored=true -whitespace
 auto-claude-code-research-in-sleep/** linguist-vendored=true -whitespace
 bolt-slides/** linguist-vendored=true -whitespace

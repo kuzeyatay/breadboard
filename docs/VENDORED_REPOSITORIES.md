@@ -27,7 +27,8 @@ Breadboard's own repository statistics.
 - Local nested `.git` directories are workstation metadata and are never part
   of the Breadboard repository.
 - The committed files reflect the working trees at import time. Breadboard's
-  local Hermes terminal-permission integration and Vibe Trading lockfile
+  local Hermes terminal-permission integration, aircursor gesture adjustments,
+  and Vibe Trading lockfile
   adjustments are layered on their recorded base revisions.
 - Upstream submodules that were not materialized are omitted:
   `inbox-zero/apps/web/app/(marketing)`, `mem0/evaluation`, and
@@ -35,7 +36,8 @@ Breadboard's own repository statistics.
 - Reproducible bulk corpora and media are omitted to keep clones and GitHub
   operations practical: `harvey-labs/tasks`, HyperFrames producer test
   fixtures, `pxpipe/eval`, and
-  `Resource2Skill/skills_wiki`. Screenpipe's downloadable ONNX Runtime archive
+  `Resource2Skill/skills_wiki`, and the `api-anything/docs/media` demo
+  recordings. Screenpipe's downloadable ONNX Runtime archive
   is omitted as well.
 - Stirling PDF's two test private-key fixtures are intentionally omitted. No
   runtime credentials, generated workspaces, dependency installs, or nested
@@ -66,7 +68,9 @@ compression) after those exclusions.
 | `agent-reach` | https://github.com/Panniantong/agent-reach | `main` | `241b02870892525e009bceaa7823d3f7b6c6f617` |
 | `agent-skills` | https://github.com/addyosmani/agent-skills | `main` | `d2478bf0c73a6357df39a3ed6aff16acaa218843` |
 | `AI-Youtube-Shorts-Generator` | https://github.com/Anil-matcha/AI-Youtube-Shorts-Generator | `main` | `c30376e94326f8674793c960b482eb532ffbf1f6` |
+| `aircursor` | https://github.com/FarzamFattahi/aircursor.git | `main` | `692ebbe71e1c9afa78c640eb9bc79bde385e1a75` |
 | `anydoc` | https://github.com/firecrawl/anydoc | `main` | `4a45addbd607e8b59f0c263bca26aab228e10370` |
+| `api-anything` | https://github.com/goodnight000/api-anything | `main` | `985ae8f65f4c4918f24080bd7dbaf51fe92e6bf6` |
 | `audio-analyzer-rs` | https://github.com/JuzzyDee/audio-analyzer-rs | `main` | `0387fe1630ff0fc7f71bf656be81f3b1f400dda8` |
 | `auto-claude-code-research-in-sleep` | https://github.com/wanshuiyin/auto-claude-code-research-in-sleep | `main` | `a5fcc6970f08d45f6a2100abef4d5d234a1cef25` |
 | `bolt-slides` | https://github.com/stackblitz/bolt-slides | `main` | `53b55bcf365dc2864fac29e7a5594213611142be` |
