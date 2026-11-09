@@ -1,0 +1,81 @@
+AirCursor - external monitor trial
+
+Open the "AirCursor - External Monitor" desktop shortcut.
+It starts PAUSED. Press Ctrl+Alt+M to start/pause from any app.
+Space also starts/pauses while the camera preview has focus.
+Hold a closed fist continuously for 3 seconds to start/resume. The preview counts
+down; opening your hand or losing tracking early restarts the countdown.
+Open your hand after activation to begin controlling the pointer or CAD view.
+A shorter 0.8-second fist hold pauses control. Open your hand before making
+another fist; keeping it closed will never toggle repeatedly.
+
+Move: relax/curl some fingers and move the thumb/index midpoint in the green box.
+An entirely straight hand is reserved for scrolling up.
+Click: briefly pinch thumb and index together, then release.
+Double-click: pinch and release twice.
+Drag: hold the pinch for 650 ms, then move; release to drop.
+Voice: focus a text field in Breadboard, then hold a V sign (index and middle
+extended, ring and little fingers curled). Ctrl+Shift stays held while you hold
+the V and releases when you stop. Voice starts after a short confirmation;
+about 150 ms of tracking flicker is tolerated so it doesn't cut out mid-sentence.
+The pointer and clicks stay frozen during the V. Pausing, closing the app,
+losing the hand or disconnecting the monitor releases the voice keys.
+Scroll DOWN: hold all four fingers bent at the knuckles in the sideways/bent L
+shape, keeping the finger joints mostly straight (not curled into a fist).
+Scroll UP: hold all four fingers straight, as in your straight-hand screenshot.
+Scrolling continues while held and stops when you relax/curl the fingers or
+lower the hand. A 0.2-second confirmation prevents brief transitions scrolling.
+Click the desired external-monitor app before scrolling.
+
+3D ROTATION AND ONE-HAND PINCH ZOOM
+Focus your CAD/3D app and put the pointer over its 3D viewport on the Acer.
+Rotation and pinch zoom activate automatically; no three-finger gesture is needed.
+The preview shows AUTO 3D and the detected application. Each activation starts
+from your current hand position, so switching apps does not jump the view.
+Turn/tilt your hand to orbit the VIEW. Open your thumb/index pinch to zoom in,
+close it to zoom out. Keep the other fingers relaxed, rather than making a
+complete fist or V. In this mode, the pinch does not click or drag objects and
+the straight/bent hand poses do not scroll. Switch away from the CAD app or move
+the physical pointer outside its window to return to normal pointer/click/scroll.
+V still controls voice. A fist pauses the app and exits 3D mode.
+Returning to a recognized CAD app resumes automatically. Changing apps/tabs,
+losing the hand, or camera timeout releases orbit inputs.
+
+Breadboard's internal parametric CAD artifact is supported too. Focus Breadboard
+and move the pointer over the loaded 3D canvas on the Acer. Only the canvas enables
+3D controls; moving over its toolbar, parameters or chat returns normal controls.
+This requires the updated Breadboard viewer. Typing in a field, a covering dialog,
+switching tabs or closing the artifact clears the canvas signal.
+
+Automatic profiles: Blender, SOLIDWORKS, SketchUp, Autodesk Fusion, Inventor,
+FreeCAD (CAD navigation), Onshape, Rhino (perspective), Maya, 3ds Max, AutoCAD
+(3D), Navisworks and Breadboard CAD. Onshape/SketchUp browser tabs are identified by title.
+Use the application's default mouse navigation preset. Rotation is view orbit,
+not editing an object's rotation. Arbitrary apps, custom keymaps, 2D drawing
+views and non-viewport panels cannot all be recognized automatically.
+For custom navigation presets, choose a matching navigation_profile in
+settings.json; see NAVIGATION_PROFILES.txt. If zoom direction is reversed by
+your app preferences, set invert_zoom to true and restart AirCursor.
+
+Stop immediately: Ctrl+Alt+Esc from any app.
+Close normally: Q or the preview window's X.
+
+The pointer maps only to the Acer VG270 G (DISPLAY2). Clicks and scrolling are
+blocked outside that screen. Scrolling also requires the focused app to be on
+the Acer. Your physical mouse remains free to use all monitors.
+If the selected monitor disconnects or its layout changes, AirCursor stops;
+it never switches automatically to the laptop or virtual display.
+
+Pinch detection uses palm length, image aspect and available 3D landmarks,
+with separate close/release thresholds and two-frame confirmation.
+Hand detection filters face regions and duplicate hand detections, and requires
+a short confirmation before a new hand can control anything. It keeps the
+original detection sensitivity so sideways/bent gestures remain recognizable.
+Keep your hand beside your face; if it covers the face, control may stop and
+the preview will say "Face ignored". No camera images are saved or uploaded.
+Keep Mausely closed while using AirCursor so the two apps do not compete for
+the camera, keyboard or mouse.
+
+Configuration: settings.json in this folder.
+Troubleshooting: aircursor.log in this folder.
+Source: https://github.com/FarzamFattahi/aircursor (MIT).

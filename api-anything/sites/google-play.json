@@ -1,0 +1,467 @@
+{
+  "name": "google-play",
+  "displayName": "Google Play app listings",
+  "baseUrl": "https://play.google.com",
+  "description": "Public Android app listing identity and displayed metadata in the response locale.",
+  "operations": [
+    {
+      "name": "getApp",
+      "description": "Read Android app identity, developer, category and paired header display metadata from a public Google Play listing.",
+      "request": {
+        "method": "GET",
+        "url": "https://play.google.com/store/apps/details?id=%7BpackageId%7D",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+          "sec-ch-ua": "\"Google Chrome\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"macOS\""
+        }
+      },
+      "slots": [
+        {
+          "param": "packageId",
+          "at": [
+            "query:id"
+          ]
+        }
+      ],
+      "volatile": [],
+      "trigger": {
+        "url": "https://play.google.com/store/apps/details?id={packageId}"
+      },
+      "match": {
+        "method": "GET",
+        "host": "play.google.com",
+        "path": "/store/apps/details"
+      },
+      "response": {
+        "format": "html",
+        "contentType": "text/html; charset=utf-8",
+        "pick": [
+          "packageId=packageId~[?&]id=([^&]+)",
+          "listingUrl",
+          "name",
+          "developer",
+          "developerUrl",
+          "category",
+          "categoryUrl",
+          "headerRatingDisplay",
+          "headerReviewsDisplay",
+          "contentRating",
+          "updatedOnDisplay",
+          "localeDisplay"
+        ],
+        "html": {
+          "items": "html",
+          "fields": {
+            "packageId": "link[rel=\"canonical\"]@href",
+            "listingUrl": "link[rel=\"canonical\"]@href",
+            "name": "h1",
+            "developer": ".Vbfug a",
+            "developerUrl": ".Vbfug a@href",
+            "category": "[itemprop=\"genre\"] a@aria-label",
+            "categoryUrl": "[itemprop=\"genre\"] a@href",
+            "headerRatingDisplay": "[aria-label=\"Information badges\"] [itemprop=\"starRating\"] [role=\"img\"]@aria-label",
+            "headerReviewsDisplay": "[aria-label=\"Information badges\"] .wVqUob .g1rdde",
+            "contentRating": "[itemprop=\"contentRating\"]",
+            "updatedOnDisplay": ".TKjAsc .xg1aie",
+            "localeDisplay": "footer .yVZQTb"
+          }
+        }
+      },
+      "params": [
+        {
+          "name": "packageId",
+          "type": "string",
+          "required": true,
+          "description": "Android package ID copied from a public Google Play app link.",
+          "example": "org.videolan.vlc",
+          "pattern": "[A-Za-z][A-Za-z0-9_]*\\.[A-Za-z0-9_.]+",
+          "hint": "A dotted Android package ID, without URL or query syntax."
+        }
+      ],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false,
+      "checks": [
+        {
+          "args": {
+            "packageId": "com.microsoft.todos"
+          },
+          "expect": "result",
+          "purpose": "Different developer and category distinguish the second captured app from VLC."
+        },
+        {
+          "args": {
+            "packageId": "org.scratchjr.android"
+          },
+          "expect": "result",
+          "purpose": "Held-out app identity from a real VLC page app link, compared independently."
+        },
+        {
+          "args": {
+            "packageId": "invalid/path"
+          },
+          "expect": "input",
+          "purpose": "Reject URL path syntax locally before sending."
+        }
+      ]
+    },
+    {
+      "name": "listCategoryApps",
+      "description": "Read app cards from the initial public category document, in displayed document order.",
+      "request": {
+        "method": "GET",
+        "url": "https://play.google.com/store/apps/category/%7Bcategory%7D",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+          "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"macOS\""
+        }
+      },
+      "slots": [
+        {
+          "param": "category",
+          "at": [
+            "path:3"
+          ]
+        }
+      ],
+      "volatile": [],
+      "trigger": {
+        "url": "https://play.google.com/store/apps/category/{category}"
+      },
+      "match": {
+        "method": "GET",
+        "host": "play.google.com",
+        "path": "/store/apps/category/*"
+      },
+      "response": {
+        "format": "html",
+        "contentType": "text/html; charset=utf-8",
+        "pick": [
+          "packageId=packageId~[?&]id=([^&]+)",
+          "listingUrl",
+          "name",
+          "ratingDisplay"
+        ],
+        "html": {
+          "items": "a.ZD8Cqc[href*=\"/store/apps/details?\"]",
+          "fields": {
+            "packageId": "@href",
+            "listingUrl": "@href",
+            "name": ".Epkrse",
+            "ratingDisplay": "[role=\"img\"]@aria-label"
+          }
+        }
+      },
+      "params": [
+        {
+          "name": "category",
+          "type": "string",
+          "required": true,
+          "description": "Category code copied from the last path segment of a public Google Play category link.",
+          "example": "VIDEO_PLAYERS",
+          "pattern": "[A-Z_]{3,64}",
+          "hint": "A category code copied from a Play category link, such as VIDEO_PLAYERS."
+        }
+      ],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false,
+      "checks": [
+        {
+          "args": {
+            "category": "PRODUCTIVITY"
+          },
+          "expect": "result",
+          "purpose": "Different category has different app identities than Video Players & Editors."
+        },
+        {
+          "args": {
+            "category": "EDUCATION"
+          },
+          "expect": "result",
+          "purpose": "Unseen category grounded from the retained ScratchJr category link before its source or replay was opened."
+        },
+        {
+          "args": {
+            "category": "invalid/path"
+          },
+          "expect": "input",
+          "purpose": "Reject path syntax locally before sending."
+        }
+      ]
+    },
+    {
+      "name": "listDeveloperApps",
+      "description": "Read app cards from the initial public numeric developer-catalog document, in document order.",
+      "request": {
+        "method": "GET",
+        "url": "https://play.google.com/store/apps/dev?id=%7BdeveloperId%7D",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+          "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"macOS\""
+        }
+      },
+      "slots": [
+        {
+          "param": "developerId",
+          "at": [
+            "query:id"
+          ]
+        }
+      ],
+      "volatile": [],
+      "trigger": {
+        "url": "https://play.google.com/store/apps/dev?id={developerId}"
+      },
+      "match": {
+        "method": "GET",
+        "host": "play.google.com",
+        "path": "/store/apps/dev"
+      },
+      "response": {
+        "format": "html",
+        "contentType": "text/html; charset=utf-8",
+        "pick": [
+          "packageId=packageId~[?&]id=([^&]+)",
+          "listingUrl",
+          "name",
+          "ratingDisplay"
+        ],
+        "html": {
+          "items": "a.ZD8Cqc[href*=\"/store/apps/details?\"]",
+          "fields": {
+            "packageId": "@href",
+            "listingUrl": "@href",
+            "name": ".Epkrse",
+            "ratingDisplay": "[role=\"img\"]@aria-label"
+          }
+        }
+      },
+      "params": [
+        {
+          "name": "developerId",
+          "type": "string",
+          "required": true,
+          "description": "Exact numeric ID copied as a string from a public /store/apps/dev?id= link; never round or convert to Number.",
+          "example": "6364851808230428105",
+          "pattern": "[0-9]{19}",
+          "hint": "The exact 19-digit string from a Play /store/apps/dev?id= link."
+        }
+      ],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false,
+      "checks": [
+        {
+          "args": {
+            "developerId": "6720847872553662727"
+          },
+          "expect": "result",
+          "purpose": "Microsoft catalog differs in app identities from the captured VLC catalog."
+        },
+        {
+          "args": {
+            "developerId": "6957685454452609502"
+          },
+          "expect": "result",
+          "purpose": "Unseen Duolingo catalog grounded from a retained detail-page link before catalog content was opened."
+        },
+        {
+          "args": {
+            "developerId": "invalid/path"
+          },
+          "expect": "input",
+          "purpose": "Reject path syntax locally before sending."
+        }
+      ]
+    },
+    {
+      "name": "search",
+      "description": "Search public Google Play app cards in document order.",
+      "request": {
+        "method": "GET",
+        "url": "https://play.google.com/store/search?q=%7Bq%7D&c=apps",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+          "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"macOS\""
+        }
+      },
+      "slots": [
+        {
+          "param": "q",
+          "at": [
+            "query:q"
+          ]
+        }
+      ],
+      "volatile": [],
+      "trigger": {
+        "url": "https://play.google.com/store/search?q={q}&c=apps"
+      },
+      "match": {
+        "method": "GET",
+        "host": "play.google.com",
+        "path": "/store/search"
+      },
+      "response": {
+        "format": "html",
+        "contentType": "text/html; charset=utf-8",
+        "pick": [
+          "packageId=packageId~[?&]id=([^&]+)",
+          "title",
+          "developer",
+          "ratingDisplay",
+          "priceDisplay",
+          "icon"
+        ],
+        "html": {
+          "items": "div.fUEl2e > div.ULeU3b",
+          "fields": {
+            "packageId": "a.Si6A0c@href",
+            "title": "span.DdYX5",
+            "developer": "span.wMUdtb",
+            "ratingDisplay": "div[role=\"img\"]@aria-label",
+            "priceDisplay": "span.ePXqnb",
+            "icon": "div.j2FCNc img.T75of@src"
+          }
+        }
+      },
+      "params": [
+        {
+          "name": "q",
+          "type": "string",
+          "required": true,
+          "description": "Search words for Android apps.",
+          "example": "weather"
+        }
+      ],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false,
+      "checks": [
+        {
+          "args": {
+            "q": "chess"
+          },
+          "expect": "result",
+          "purpose": "A different query returns a different set of app cards."
+        },
+        {
+          "args": {
+            "q": "notes"
+          },
+          "expect": "result",
+          "purpose": "Held-out search compared against the public search page."
+        }
+      ]
+    },
+    {
+      "name": "getReviews",
+      "description": "Read reviews shown in the initial public app listing document.",
+      "request": {
+        "method": "GET",
+        "url": "https://play.google.com/store/apps/details?id=%7BpackageId%7D",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+          "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
+          "sec-ch-ua-arch": "\"x86\"",
+          "sec-ch-ua-bitness": "\"64\"",
+          "sec-ch-ua-form-factors": "\"Desktop\"",
+          "sec-ch-ua-full-version": "\"156.0.8078.74\"",
+          "sec-ch-ua-full-version-list": "\"Not:A-Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"156.0.8078.74\", \"Google Chrome\";v=\"156.0.8078.74\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-model": "\"\"",
+          "sec-ch-ua-platform": "\"macOS\"",
+          "sec-ch-ua-platform-version": "\"10_15_7\"",
+          "sec-ch-ua-wow64": "?0"
+        }
+      },
+      "slots": [
+        {
+          "param": "packageId",
+          "at": [
+            "query:id"
+          ]
+        }
+      ],
+      "volatile": [],
+      "trigger": {
+        "url": "https://play.google.com/store/apps/details?id={packageId}"
+      },
+      "match": {
+        "method": "GET",
+        "host": "play.google.com",
+        "path": "/store/apps/details"
+      },
+      "response": {
+        "format": "html",
+        "contentType": "text/html; charset=utf-8",
+        "html": {
+          "items": "div.EGFGHd",
+          "fields": {
+            "author": ".X5PpBb",
+            "ratingDisplay": "header [role=\"img\"]@aria-label",
+            "dateDisplay": "header .bp9Aid",
+            "text": ".h3YV2d",
+            "helpfulDisplay": ".AJTPZc"
+          }
+        }
+      },
+      "params": [
+        {
+          "name": "packageId",
+          "type": "string",
+          "required": true,
+          "description": "Android package ID copied from a public Google Play app link.",
+          "example": "com.spotify.music",
+          "pattern": "[A-Za-z][A-Za-z0-9_]*\\.[A-Za-z0-9_.]+",
+          "hint": "A dotted Android package ID, without URL or query syntax."
+        }
+      ],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false,
+      "checks": [
+        {
+          "args": {
+            "packageId": "com.duolingo"
+          },
+          "expect": "result",
+          "purpose": "A second public listing has different reviews."
+        },
+        {
+          "args": {
+            "packageId": "org.mozilla.firefox"
+          },
+          "expect": "result",
+          "purpose": "Held-out reviews compared against the public listing."
+        },
+        {
+          "args": {
+            "packageId": "invalid/path"
+          },
+          "expect": "input",
+          "purpose": "Reject path syntax locally before sending."
+        }
+      ]
+    }
+  ]
+}

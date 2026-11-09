@@ -1,0 +1,21 @@
+US English, signed out, USD. No store, ZIP, destination or membership context. Prices can change; tax, shipping, discounts, stock, size availability, pickup and deliverability are outside scope.
+
+`listProducts(category)` takes the complete segment after `/w/` from a real US Nike link. It returns the initial SSR shelf, 24 cards in checked categories. Card category is its subtitle. No pagination, scrolling or filters.
+
+`searchProducts(query)` fills q and vst together. Their independent meanings are unknown. It returns only the initial shelf; completeness, relevance and requiring every query word are unproved. Empty input is rejected locally. Empty results and other layouts are unqualified. Product URLs are opaque.
+
+`getProduct(slug, style)` needs both segments from one `/t/` URL, kept together. Its URL is the canonical product group and may omit style. Schema.org identity and ONLY the first listed variant's offer are returned. The requested style need not be that first variant. Availability was absent in the unseen checked offer. Other countries, currencies and layouts are unverified.
+
+`listColorways(slug, style)` returns the SSR color-selector links in source order, including repeats. Color is chip alt text. Follow the literal URL; never combine a slug with another row's style. A `/u/` custom-design link lacks slug/style and cannot feed getProduct. No computed visibility, hydration, stock or selected-state promise.
+
+`getSizeGuide(guide)` reads the first embedded chart card, all its tables. Use an official `/size-fit/` link. Rows stay aligned: cell zero is the label; missing value is a blank position. Keys, system and measurements name units; CM/JP box labels differ from Foot Length. No conversion, fit recommendation or toggle interaction is proved. Titles/descriptions can be empty. Other cards, unknown guides and empty results are unqualified. Empty input is local input. Output capped near 20,000 characters is partial and cannot serve as a complete chart.
+
+## Maintainer notes
+
+2026-10-28 UTC. Public US document reads, signed out, no private cookies or login. Exact GET captures use unchanged bench/discovery/capture-document.mjs, 15-second navigation timeout, all other requests aborted. This proves document markup, not hydrated or computed-visible UI. Color links come only from the actual colorway-picker-container, not recommendations, media URLs or JSON-LD offers. Every occurrence and original order remain intact. Some picker links target custom design; their literal URLs remain, without fabricated getProduct arguments.
+
+Colorway A/B are the original catalog-sourced Spizike FQ1759-200 and Air Max Metro IW4935-102 pairs. Reserved D is the catalog-sourced Dunk IM4414-700 pair. Full URLs, native captures, explicit request IDs, complete comparisons, exact hashes, cold-home input/install state, header receipts, case records and limits are in [colorway qualification](../docs/research/discovery/nike-colorways-qualified-r1.md). A returned /t/ link is separately exercised through unchanged getProduct; the canonical group and schema first variant remain distinct from selected navigation style.
+
+Baseline evidence remains [apparel](../docs/research/discovery/apparel-r1.md), [search](../docs/research/discovery/nike-depth-qualified-r2.md), [size guides](../docs/research/discovery/nike-size-guides-qualified-r4.md) and [guide integration](../docs/research/discovery/nike-size-guides-parent-r5.md). These retain exact source URLs, capture identities, historical checks and limits. All four original operation objects and 13 cases are preserved. Later verification can send only guest cookies issued to the isolated cold home; first-call cookie absence is separate evidence. No writes, imported sessions, fallback, healing, pagination, directory, size stock or universal layout claim.
+
+Apparel coverage on 2026-10-28 uses two fresh exact document captures for womens-tops-alpha and mens-bottoms-numeric. Only the unchanged first embedded chart is covered; units and body-measurement labels remain source values, without fit or conversion. Complete A/B comparisons, reserved cold input, hashes and limitations are in [apparel guide coverage](../docs/research/discovery/nike-apparel-guide-coverage-r1.md). Five original reads and sixteen cases remain, with only two appended guide checks.

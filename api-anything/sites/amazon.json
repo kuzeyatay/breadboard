@@ -1,0 +1,109 @@
+{
+  "name": "amazon",
+  "displayName": "Amazon",
+  "baseUrl": "https://www.amazon.com",
+  "description": "Amazon.com product search",
+  "operations": [
+    {
+      "name": "search",
+      "request": {
+        "method": "GET",
+        "url": "https://www.amazon.com/s?k=%7Bk%7D&page=%7Bpage%7D",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "accept-language": "en-US,en;q=0.9",
+          "device-memory": "16",
+          "downlink": "1.55",
+          "dpr": "1",
+          "ect": "4g",
+          "priority": "u=0, i",
+          "rtt": "150",
+          "sec-ch-device-memory": "16",
+          "sec-ch-dpr": "1",
+          "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
+          "sec-ch-ua-full-version-list": "\"Not:A-Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"156.0.8078.74\", \"Google Chrome\";v=\"156.0.8078.74\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"macOS\"",
+          "sec-ch-viewport-height": "720",
+          "sec-ch-viewport-width": "1280",
+          "sec-fetch-dest": "document",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+          "sec-fetch-user": "?1",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+          "viewport-width": "1280"
+        }
+      },
+      "slots": [
+        {
+          "param": "k",
+          "at": [
+            "query:k"
+          ]
+        },
+        {
+          "param": "page",
+          "at": [
+            "query:page"
+          ]
+        }
+      ],
+      "volatile": [],
+      "trigger": {
+        "url": "https://www.amazon.com/s?k={k}&page={page}"
+      },
+      "match": {
+        "method": "GET",
+        "host": "www.amazon.com",
+        "path": "/s"
+      },
+      "response": {
+        "format": "html",
+        "contentType": "text/html;charset=UTF-8",
+        "html": {
+          "items": "div[data-component-type=s-search-result]",
+          "fields": {
+            "asin": "@data-asin",
+            "title": "h2.a-text-normal",
+            "price": ".a-price .a-offscreen"
+          }
+        }
+      },
+      "params": [
+        {
+          "name": "k",
+          "type": "string",
+          "required": true,
+          "example": "kettle",
+          "description": "Search keywords"
+        },
+        {
+          "name": "page",
+          "type": "string",
+          "required": false,
+          "default": "1",
+          "example": "1",
+          "description": "Results page number, starting at 1"
+        }
+      ],
+      "readOnly": true,
+      "minTier": 1,
+      "learnedLoggedIn": false,
+      "checks": [
+        {
+          "args": {
+            "k": "french press",
+            "page": "3"
+          },
+          "expect": "result",
+          "purpose": "Third page of French press search"
+        }
+      ],
+      "paging": {
+        "param": "page"
+      },
+      "description": "Search Amazon.com products"
+    }
+  ]
+}

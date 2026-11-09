@@ -1,0 +1,58 @@
+AirCursor 3D view navigation profiles
+
+These profiles emulate documented default mouse controls. They are not plugins
+inside the CAD apps, and cannot identify every custom keymap or 3D viewport.
+Focus the app and place the pointer over its actual 3D view on the external monitor.
+Navigation activates automatically, with no mode-switch gesture. Breadboard's
+viewer publishes a canvas-only hint so chat, parameter fields and toolbars keep
+normal mouse controls. Other profiles recognize the application, not every panel.
+
+setting       application/preset          orbit input
+breadboard    Breadboard internal CAD      Left drag (only over the ready canvas)
+blender       Blender                     Middle drag
+solidworks    SOLIDWORKS                  Middle drag (parts/assemblies)
+sketchup      SketchUp                    Middle drag
+fusion        Autodesk Fusion             Shift + middle drag
+inventor      Autodesk Inventor           F4 + left drag
+freecad       FreeCAD CAD navigation      Hold middle, then left, then drag
+onshape       Onshape                     Right drag
+rhino         Rhino perspective view      Right drag
+maya          Maya                        Alt + left drag
+3dsmax        3ds Max default mode        Alt + middle drag
+autocad       AutoCAD 3D view              Shift + middle drag
+navisworks    Navisworks 3D                Shift + middle drag
+
+settings.json options:
+navigation_profile: "auto" normally, or one of the setting names above to
+override detection for an app with different bindings.
+orbit_gain: 240 by default; smaller values reduce rotation sensitivity.
+zoom_gain: 8 by default; smaller values reduce pinch zoom sensitivity.
+invert_zoom: false by default; true reverses zoom to match an app's preferences.
+scroll_rate: 480 by default (four mouse-wheel notches/second).
+Restart AirCursor after changing the file.
+
+Reference sources for default bindings:
+Fusion and supported navigation presets:
+https://help.autodesk.com/cloudhelp/ENU/Fusion-GetStarted/files/GUID-878489CD-3A23-4303-8450-C2F4F8E410B1.htm
+SOLIDWORKS:
+https://help.solidworks.com/2025/english/SolidWorks/sldworks/r_Middle_Mouse_Button.htm
+Onshape:
+https://cad.onshape.com/help/Content/View/view_navigation_and_the_view_cube.htm
+Blender:
+https://docs.blender.org/manual/en/latest/editors/3dview/navigate/navigation.html
+SketchUp:
+https://help.sketchup.com/en/sketchup/viewing-model
+Rhino:
+https://docs.mcneel.com/rhino/6/usersguide/en-us/html/ch-04_navigatingviewports.htm
+FreeCAD CAD navigation (official source):
+https://github.com/FreeCAD/FreeCAD/blob/main/src/Gui/Navigation/CADNavigationStyle.cpp
+Inventor:
+https://help.autodesk.com/cloudhelp/2025/ENU/Inventor-Help/files/GUID-575A717E-1123-49B0-A3C4-2A66CEBFCAA7.htm
+Maya:
+https://help.autodesk.com/cloudhelp/2026/ENU/Maya-Basics/files/GUID-941480C1-9BDA-4DB3-8EA8-113A0D6FAF1F.htm
+3ds Max:
+https://help.autodesk.com/cloudhelp/2026/ENU/3DSMax-Basics/files/GUID-D65DE5FD-F859-4F66-9E14-F9A5C1016411.htm
+AutoCAD:
+https://www.autodesk.com/us/lynnallen/ACAD2007_Tips_n_Tricks_FINAL.pdf
+Navisworks:
+https://help.autodesk.com/cloudhelp/2016/ENU/Navisworks-Freedom/files/GUID-6ECFF513-A523-4D1C-8638-C87E2447F469.htm

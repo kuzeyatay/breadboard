@@ -81,3 +81,16 @@ condition = "AND"
 paths = ['''^desktop/assets/adblocker/easylist\.txt$''']
 regexTarget = "secret"
 regexes = ['''^(0631fcce82fb9b82b29766b550adcb6072954557|934912b3e760e068a91cd6cb502096a55ab1ca16)$''']
+
+[[allowlists]]
+description = "api-anything upstream test fixtures: invented tokens, passwords and JWTs in its own test suites"
+targetRules = ["generic-api-key", "jwt"]
+paths = ['''^api-anything/(test|registry/test)/.*\.ts$''']
+
+[[allowlists]]
+description = "api-anything site definitions: Airbnb's public web client key and a Bluesky record key, neither of which is a credential"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^api-anything/sites/(airbnb|bluesky)\.json$''']
+regexTarget = "match"
+regexes = ['''x-airbnb-api-key": "d306zoyjsyarp7ifhu67rjxn52tv0t20"''', '''rkey": "3mxz7goeycc2f"''']

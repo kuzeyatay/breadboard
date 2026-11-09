@@ -1,0 +1,81 @@
+{
+  "name": "api-anything",
+  "version": "0.4.0",
+  "mcpName": "io.github.goodnight000/api-anything",
+  "description": "Learn reusable operations from a website's browser traffic and call them from a CLI, library or MCP server.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "api-anything": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "bun": "./src/host.ts",
+      "default": "./dist/host.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "sites",
+    "skills",
+    "README.md",
+    "LICENSE",
+    "examples",
+    "docs/*.md",
+    "CONTRIBUTING.md"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "tsc -p tsconfig.build.json",
+    "cli": "tsx src/cli.ts",
+    "test": "node --import tsx --test test/*.test.ts test/edge/*.test.ts registry/test/*.test.ts",
+    "check": "tsc -p tsconfig.json",
+    "lint": "biome ci .",
+    "format": "biome check --write .",
+    "demo": "node examples/research.mjs",
+    "smoke:pack": "node --import tsx test/smoke-pack.ts",
+    "ci:local": "npm run lint && npm run check && npm test && npm run smoke:pack",
+    "prepublishOnly": "npm run check && npm run lint"
+  },
+  "keywords": [
+    "api",
+    "reverse-engineering",
+    "mcp",
+    "agents",
+    "scraping",
+    "self-healing",
+    "claude-code"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goodnight000/api-anything.git"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "node-html-parser": "^9.0.4",
+    "playwright-core": "^1.63.0",
+    "tldts": "^7.4.16",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "^26.6.3",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "homepage": "https://api-anything-registry.forth-site.workers.dev",
+  "bugs": {
+    "url": "https://github.com/goodnight000/api-anything/issues"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "api-anything-registry",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  // off: request logs would keep URLs, and a search URL holds what someone looked for
+  "observability": { "enabled": false, "logs": { "enabled": false } },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "api-anything-registry",
+      "database_id": "f47f4475-3e2f-4df2-9f24-32921eef82c6",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // daily: archive what nobody called successfully in 30 days, delete what was archived 30 days ago, recount;
+  // every minute: recount the versions a report found held back (worker.ts EVERY_MINUTE)
+  "triggers": { "crons": ["17 3 * * *", "* * * * *"] },
+  // GET /v1/try (registry/src/try.ts), the one route that sends a request to a site: any value but
+  // "true" switches it off. Its limits are vars too: TRY_PER_MINUTE, TRY_PER_DAY, TRY_PER_DAY_ALL,
+  // TRY_TIMEOUT_MS, TRY_MAX_BYTES, TRY_CACHE_SECONDS.
+  "vars": { "TRY_ENABLED": "true" }
+  // secrets: ADMIN_TOKEN, SALT (wrangler secret put). Thresholds (rules.ts) can be set as vars.
+}
