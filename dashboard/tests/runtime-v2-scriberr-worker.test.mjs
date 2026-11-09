@@ -187,6 +187,11 @@ test("worker request and authority schemas are exact and path-free", () => {
     ...upload,
     operation: "retry",
   })), 0);
+  assert.equal(expectedScriberrGardenInputCount(validateScriberrGardenRequest({
+    ...upload,
+    originMedia: true,
+  })), 0);
+  assert.throws(() => validateScriberrGardenRequest({ ...upload, originMedia: "C:\\secret.mp4" }));
   assert.throws(() => validateScriberrGardenRequest({ ...upload, mediaPath: "C:\\secret.mp4" }));
   assert.throws(() => validateScriberrGardenRequest({
     protocolVersion: 1,

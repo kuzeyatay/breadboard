@@ -121,7 +121,7 @@ export default function InlinePraxistRun({
       setElapsed((current) => asNumber(payload.elapsedSec) ?? current);
       if (!reportedRef.current) {
         reportedRef.current = true;
-        notifyTaskCompleted(`Praxist: ${taskName(task)}`);
+        notifyTaskCompleted(`Praxist: ${taskName(task)}`, { runId });
         onTerminalRef.current?.({ outcome: "completed", content: summary });
       }
     }
@@ -183,7 +183,7 @@ export default function InlinePraxistRun({
         summary={phase}
         agentName="Praxist"
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <header className="bb-agent-run-header">
           <p className="bb-agent-run-title min-w-0 truncate">
             Praxist

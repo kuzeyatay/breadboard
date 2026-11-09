@@ -1,13 +1,10 @@
+import { renderSystemPrompt } from "./system-prompts/service.ts";
 import crypto from "node:crypto";
 
 import type { LearningUnitContract } from "./learning-unit-contract.ts";
 import type { ProposedLearningMap } from "./learn-utils.ts";
 import type { GardenVisualBudget, VisualDecisionOverride } from "./visual-necessity-types.ts";
-import {
-  GENERATED_VISUAL_CONTROL_ID_PATTERN,
-  GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE,
-  GENERATED_VISUAL_RESERVED_CONTROL_IDS,
-} from "./generated-visual-capabilities.ts";
+import { GENERATED_VISUAL_CONTROL_ID_PATTERN, GENERATED_VISUAL_RESERVED_CONTROL_IDS } from "./generated-visual-capabilities.ts";
 import {
   analyzeVisualizationOpportunities,
   buildVisualizationPlan,
@@ -83,17 +80,7 @@ export const VISUALIZATION_CONTRACT_REPAIR_RESPONSE_SCHEMA_HASH = crypto
   .digest("hex");
 
 export function visualizationContractRepairSystemPrompt(): string {
-  return [
-    "Repair the complete interaction contract for each supplied model-approved interactive visual, whether its immutable requirement is required, recommended, or optional. Every repair must be a complete replacement authored by you even when only one field was missing; code will not merge, restore, or infer omitted fields.",
-    `Return STRICT JSON: ${VISUALIZATION_CONTRACT_REPAIR_RESPONSE_SCHEMA}.`,
-    "Use only the evidence entries supplied for that same unit. Every non-empty quote must be an exact substring of the entry with that anchor.",
-    "Author the complete non-empty learnerAction sequence plus every control id, input type, applicable optional protocolRole, domain, and default; code will validate and project them verbatim. Source-semantic slider/number/select controls require exact evidence; numeric controls require finite min, max, step, and an in-range numeric default, while select controls require at least two source-named options and an exact declared default.",
-    `Every learner control id must match ${GENERATED_VISUAL_CONTROL_ID_PATTERN.source}; ${GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(", ")} are runtime expression variables and are forbidden control ids.`,
-    "Pure action controls must use kind protocol_action and type button or toggle, use exactly empty evidence, omit unit/min/max/step/options, and default to 0 for button or false for toggle. Ordinary non-prediction actions may omit protocolRole; reset is allowed independently. Their model-authored UI labels never substantiate subject claims, observables, or insights.",
-    `${GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE} The outcome must not be revealed by default.`,
-    "visualIntent.id must be non-empty, visualIntent.visualType must be a lowercase identifier, visualIntent.learnerManipulates must exactly equal every control label in order, visualIntent.expectedInsight must exactly equal expectedInsight, and visualIntent.sourceAnchors must include every cited subject-evidence anchor and only supplied canonical anchors. The observable label and expected insight must each be directly supported by their cited quotes. Never invent subject variables, cases, claims, or units.",
-    "Do not return or change necessity, requirement, renderer, route, or publication policy; visualIntent.visualType cannot change the already-selected route. Address every failed unit and use previousRejectionReasons to correct a rejected attempt.",
-  ].join(" ");
+  return renderSystemPrompt("learning-visual-contract-repair", undefined, { "context_1": String(VISUALIZATION_CONTRACT_REPAIR_RESPONSE_SCHEMA), "context_2": String(GENERATED_VISUAL_CONTROL_ID_PATTERN.source), "context_3": String(GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(", ")) });
 }
 
 export function buildVisualizationContractRepairPrompt(

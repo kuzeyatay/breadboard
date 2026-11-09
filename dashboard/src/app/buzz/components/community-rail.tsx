@@ -101,12 +101,12 @@ export function CommunityRail({
               type="button"
               onClick={onCreate}
               className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sidebar-accent text-sidebar-accent-foreground transition-all hover:rounded-xl hover:bg-primary/20 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-sidebar-ring"
-              aria-label="New community"
+              aria-label="New organization"
             >
               <Plus className="size-5" />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="right">New community</TooltipContent>
+          <TooltipContent side="right">New organization</TooltipContent>
         </Tooltip>
       </nav>
     </TooltipProvider>

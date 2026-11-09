@@ -77,7 +77,8 @@ export default function BrowserDownloadsPanel({ active, closeButton }: { active:
       </label>
       <div className={`browser-library-list ${styles.list}`}>
         {visible.map(item => {
-          const progress = item.totalBytes > 0 ? Math.min(100, item.receivedBytes / item.totalBytes * 100) : undefined;
+          const progress = item.progress?.total ? Math.min(100, item.progress.completed / item.progress.total * 100)
+            : item.totalBytes > 0 ? Math.min(100, item.receivedBytes / item.totalBytes * 100) : undefined;
           const status = item.active ? (item.state === "interrupted" ? "Connection interrupted" : "Downloading")
             : item.state === "completed" ? "Completed" : item.state === "cancelled" ? "Cancelled" : "Interrupted";
           let source = "";
@@ -90,6 +91,7 @@ export default function BrowserDownloadsPanel({ active, closeButton }: { active:
                 <span className={styles.status}>{status} · {downloadBytes(item.receivedBytes)}{item.active && item.totalBytes > 0 ? ` of ${downloadBytes(item.totalBytes)}` : ""}</span>
                 {item.active ? <progress aria-label={`Download progress for ${item.filename}`} max={100} value={progress} /> : null}
                 <small title={item.savePath || source}>{[source, new Date(item.startedAt).toLocaleDateString()].filter(Boolean).join(" · ")}</small>
+                {item.error ? <small role="alert">{item.error}</small> : null}
                 {!item.active && item.state === "interrupted" ? <small>Start this download again from its page.</small> : null}
                 <div className={styles.actions}>
                   {item.state === "completed" ? <button type="button" disabled={busy} onClick={() => void act({ type: "open", id: item.id })}>Open file</button> : null}

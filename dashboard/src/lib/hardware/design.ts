@@ -124,7 +124,7 @@ function annotateResearchFindings(
         result.componentIds.some((id) => componentIds.has(id)),
     );
     if (!finding) continue;
-    finding.message = `${finding.message} Online component research was attempted: ${record.note}`;
+    finding.message = `${finding.message} ${record.status === "deferred" ? "Component research was deferred" : "Online component research was attempted"}: ${record.note}`;
     if (record.sources.length) {
       finding.remediation =
         "A real product was found, but the evidence or interface was not sufficient for safe automatic wiring. Review its saved sources and choose a compiler-supported module or complete the missing verified facts.";

@@ -551,10 +551,7 @@ test("the dock bar carries the rollup, so a shut terminal still says something l
     /\{unreadCount > 0 \? \(\s*<UnreadChatDot[\s\S]{0,120}label=\{unreadLabel\}/,
   );
   assert.doesNotMatch(terminal, /Agent runtime is available/);
-  assert.match(
-    terminal,
-    /\) : unreadCount > 0 \? \([\s\S]*?bg-\[var\(--signal-live\)\]/,
-  );
+  assert.equal((terminal.match(/<UnreadChatDot/g) ?? []).length, 1);
   assert.match(terminal, /aria-label=\{!drawerPresentation && !isOpen \? `Open terminal\$\{unreadSuffix\}` : undefined\}/);
   assert.match(terminal, /const unreadSuffix = unreadCount > 0 \? ` — \$\{unreadLabel\}` : "";/);
 });

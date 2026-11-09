@@ -244,6 +244,7 @@ const delegatedPhases = [
   {
     role: "assistant",
     content: "Opening a live aircraft view now.",
+    delegatedAgentPreamble: "Opening a live aircraft view now.",
     responseDurationMs: 30_229,
     usage: usage({
       inputTokens: 142_329,
@@ -360,7 +361,7 @@ test("a globe presentation keeps sibling research progress visible until synthes
   for (const workers of [[...research, ...globe], [...globe, ...research]]) {
     const messages = [
       { role: "user", content: "Research this region and show it on the globe" },
-      { role: "assistant", content: "Delegating research and mapping work." },
+      { role: "assistant", content: "Delegating research and mapping work.", delegatedAgentPreamble: "Delegating research and mapping work." },
       ...workers,
     ];
     assert.deepEqual([...supersededDelegationAssistantIndices(messages)], []);

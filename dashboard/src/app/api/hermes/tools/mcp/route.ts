@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { API_ANYTHING_CONNECTION, executeApiAnything } from "@/lib/api-anything/service.ts";
 import { assertGuardedPrinterMcp } from "@/lib/bambu/mcp-guard.ts";
 import {
   addProxyMcpConnection,
@@ -8,8 +9,10 @@ import {
 } from "@/lib/agent-runtime/mcp-proxy.ts";
 import {
   nangoActionFor,
+  nangoActionSummariesForConnections,
 } from "@/lib/nango/actions.ts";
-import { COMPOSIO_RUNTIME_NAME } from "@/lib/composio/service.ts";
+import { COMPOSIO_RUNTIME_NAME, listComposioConnections } from "@/lib/composio/service.ts";
+import { connectedAppUsageInstructions } from "@/lib/hermes/connected-app-context.ts";
 import { executeComposioAction } from "@/lib/composio/executor.ts";
 import {
   verifyCapabilityToken,
@@ -204,7 +207,53 @@ export async function POST(request: Request) {
       );
     }
 
+    if (slug === API_ANYTHING_CONNECTION) {
+      const data = await executeApiAnything({
+        userId: session.user_id, scopeId: `${session.id}:${run.id}`, tool, args,
+        permissionGranted, signal: request.signal,
+      });
+      if (data.approvalRequired) {
+        // Reuse the native connected-action approval flow. The exact plan stays
+        // in trusted host memory and is checked again by api-anything on retry.
+        throw new ApiError(428, "connected_app_permission_required",
+          `Approve this website action: ${JSON.stringify(data.preview)}. This may change data in the website account.`);
+      }
+      recordAuditEvent({
+        eventType: "mcp.tool_completed", runtimeSessionId: session.id,
+        userId: session.user_id, gardenId: session.garden_id,
+        payload: { runId: run.id, provider: API_ANYTHING_CONNECTION, tool, success: data.ok === true,
+          browserFallback: data.fallback?.recommended === true },
+      });
+      return NextResponse.json({ ok: true, data });
+    }
+
     if (slug === COMPOSIO_RUNTIME_NAME) {
+      if (tool === "__breadboard_list_tools") {
+        // Discovery has exactly the same token, user, conversation, active-run
+        // and selected-connection guards as execution. It never invokes an
+        // action or grants write permission; execution below rechecks both.
+        const connections = [...new Set(
+          (await listComposioConnections(session.user_id, request.signal))
+            .map(connection => connection.slug),
+        )];
+        const available = nangoActionSummariesForConnections(connections);
+        recordAuditEvent({
+          eventType: "connected_app.tools_discovered",
+          runtimeSessionId: session.id,
+          userId: session.user_id,
+          gardenId: session.garden_id,
+          payload: { runId: run.id, toolCount: available.length },
+        });
+        return NextResponse.json({
+          ok: true,
+          data: {
+            connections,
+            tools: available,
+            instructions: connectedAppUsageInstructions(connections),
+            writeApprovalRequired: true,
+          },
+        });
+      }
       const action = nangoActionFor(tool);
       if (!action) {
         throw new ApiError(

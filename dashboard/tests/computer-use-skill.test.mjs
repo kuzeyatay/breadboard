@@ -40,7 +40,7 @@ function selects(text, priorMessages) {
   });
 }
 
-test("the first-party /computer-use skill is ready and requires background operation", () => {
+test("the first-party /computer-use skill prefers background and requires scoped consent for foreground", () => {
   const markdown = fs.readFileSync(skillPath, "utf8").replaceAll("\r\n", "\n");
   for (const marker of [
     "name: computer-use",
@@ -48,7 +48,13 @@ test("the first-party /computer-use skill is ready and requires background opera
     "Windows, macOS, and Linux",
     "computer use is a last resort",
     'delivery_mode: "background"',
-    "Never request foreground delivery",
+    "## Foreground escalation and consent",
+    "ask once to bring that app forward",
+    "Wait for the answer",
+    "continue without asking the same conversational question again",
+    "Keep all runtime",
+    "background approval never authorizes foreground",
+    "Never repeat an ambiguous Send/Print/Buy action",
     "hermes computer-use install",
   ]) {
     assert.ok(markdown.includes(marker), `skill lost ${marker}`);
@@ -113,14 +119,18 @@ test("desktop-operation requests select the skill without stealing browser or di
   }
 });
 
-test("Super Agent names computer use as a background-only last resort", () => {
+test("Super Agent names computer use as a background-first last resort with scoped foreground consent", () => {
   const source = fs.readFileSync(
     new URL("../src/lib/hermes/super-agent.ts", import.meta.url),
     "utf8",
   );
   assert.match(source, /Computer use is the last resort/u);
   assert.match(source, /never an opening move/u);
-  assert.match(source, /Never request foreground delivery/u);
+  assert.match(source, /Start with background delivery/u);
+  assert.match(source, /ask once for explicit user consent scoped to that app and task/u);
+  assert.match(source, /If that consent is already present, continue without repeating/u);
+  assert.match(source, /keep normal foreground\/per-action approval gates/u);
+  assert.doesNotMatch(source, /Never request foreground delivery/u);
   assert.match(source, /inventory\.skillSlugs\.includes\("computer-use"\)/u);
 });
 
@@ -132,7 +142,11 @@ test("Hermes sessions expose the computer_use toolset behind the last-resort pro
   assert.match(source, /const COMPUTER_USE_TOOLSET = "computer_use"/u);
   assert.match(source, /COMPUTER_USE_TOOLSET,[\s\S]*system_prompt/u);
   assert.match(source, /In Super Agent mode computer_use is always a last resort/u);
-  assert.match(source, /Keep it in background delivery mode/u);
+  assert.match(source, /Start with background delivery/u);
+  assert.match(source, /wait for the answer/u);
+  assert.match(source, /If that consent is already present, continue without repeating/u);
+  assert.match(source, /never bypass a denial/u);
+  assert.doesNotMatch(source, /never raise, front, or visibly focus/u);
 });
 
 test(

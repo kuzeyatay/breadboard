@@ -1,9 +1,11 @@
+import { withGardenSystemPromptContext, scopedSystemPromptText } from "./system-prompts/service.ts";
+import { renderSystemPrompt } from "./system-prompts/service.ts";
 import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import type OpenAI from "openai";
-import { withCouncil } from "./council.ts";
-import { DESCRIPTION_PROMPT, parseVisualDescription } from "./garden-visual-enrichment.ts";
+import { withCouncil } from "./system-prompts/council.ts";
+import { parseVisualDescription } from "./garden-visual-enrichment.ts";
 import { inventoryGardenSourceFigures } from "./hermes/garden-source-figures.ts";
 import { localGardenImage, saveVisualDescription } from "./hermes/garden-visual-descriptions.ts";
 
@@ -62,17 +64,18 @@ export async function backfillGardenVisualDescriptions(input: {
         const stat = await fs.stat(asset);
         if (stat.size > 25 * 1024 * 1024) throw new Error("Image exceeds decode size limit");
         const sha256 = createHash("sha256").update(await fs.readFile(asset)).digest("hex");
-        const group = groups.get(sha256) ?? [];
+        const imageKey = `${garden}:${sha256}`;
+        const group = groups.get(imageKey) ?? [];
         group.push({ root, garden, imagePath: figure.imagePath, asset, sha256, size: stat.size, mtimeMs: stat.mtimeMs,
           context: `${node.title}\n${figure.caption}\n${figure.context ?? ""}`.slice(0, 1000) });
-        groups.set(sha256, group);
+        groups.set(imageKey, group);
       } catch {
         issues.push({ garden, imagePath: figure.imagePath, reason: "image_unavailable_or_too_large" });
       }
     }
     input.onProgress?.({ event: "inventory", ...row });
   }
-  const pending = [...groups.values()];
+  const pending = [...groups.values()].sort((a, b) => a[0].garden.localeCompare(b[0].garden));
   let cursor = 0;
   let completedBatches = 0;
   let serviceUnavailable = false;
@@ -84,7 +87,11 @@ export async function backfillGardenVisualDescriptions(input: {
   await Promise.all(Array.from({ length: concurrency }, async () => {
     while (cursor < pending.length && !serviceUnavailable) {
       input.signal?.throwIfAborted();
-      const batch = pending.slice(cursor, cursor += batchSize);
+      const garden = pending[cursor][0].garden;
+      let end = cursor + 1;
+      while (end < pending.length && end - cursor < batchSize && pending[end][0].garden === garden) end++;
+      const batch = pending.slice(cursor, end);
+      cursor = end;
       const prepared: { id: string; group: PendingImage[]; dataUrl: string }[] = [];
       for (const group of batch) {
         try {
@@ -105,14 +112,14 @@ export async function backfillGardenVisualDescriptions(input: {
       let raw: string | null | undefined;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const response = await input.client.chat.completions.create(withCouncil({
+          const response = await withGardenSystemPromptContext(garden, () => input.client.chat.completions.create(withCouncil({
             model: input.model,
             ...(/^gpt-[56]/.test(input.model) ? { reasoning_effort: "low" as const } : {}),
             response_format: { type: "json_object" as const },
-            messages: [{ role: "system", content: `${DESCRIPTION_PROMPT}\nThis request contains multiple labeled images. Return {"images":[{"id":"image_1","caption":"...","description":"...","visibleText":"..."}, ...]}. Use each supplied ID exactly once; never mix details between images. A blank page should be described as a blank page. A genuinely unreadable image gets {"id":"...","unreadable":true}. Be concise.` },
+            messages: [{ role: "system", content: renderSystemPrompt("garden-image-batch-description", undefined, { "image_instructions": scopedSystemPromptText("garden-image-description") }) },
               { role: "user", content }],
           }, { taskType: "metadata_generation", councilModeOverride: "direct_council" }),
-          { signal: input.signal, timeout: 180_000, maxRetries: 0 });
+          { signal: input.signal, timeout: 180_000, maxRetries: 0 }));
           raw = response.choices[0]?.message?.content;
           break;
         } catch (error) {

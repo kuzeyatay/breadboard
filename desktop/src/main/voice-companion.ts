@@ -2,7 +2,8 @@ import { app, BrowserWindow, ipcMain, screen, type IpcMainInvokeEvent, type Rect
 import * as path from 'node:path';
 import { hardenWindow, type AllowedOrigins } from './security';
 import { rendererWebPreferences } from './window-options';
-import type { DesktopNotificationToast } from '../shared/ipc-contract';
+import type { DesktopNotificationToast, TabsState } from '../shared/ipc-contract';
+import { notificationVisibleRects, watchNotificationVisibility } from './notification-visible-region';
 import { BrowserTerminalBridge, type BrowserTerminalAccess } from './browser-terminal';
 
 /** Persistent microphone owner, independent of the selected browser tab. */
@@ -31,6 +32,7 @@ export class VoiceCompanion {
     prepareCapture?: (contents: WebContents) => Promise<() => void>;
     contextTargets?: (window: BrowserWindow) => { page: WebContents; app: WebContents } | null }) {
     ipcMain.handle('breadboard:voice-state', event => this.owns(event) && this.visible);
+    ipcMain.handle('breadboard:voice-notification-visibility', event => this.owns(event) ? this.notificationState() : null);
     ipcMain.handle('breadboard:voice-conversation', event => this.owns(event) && this.visible ? this.conversationKey : null);
     ipcMain.handle('breadboard:voice-show', event => this.owns(event) ? this.launch() : false);
     ipcMain.handle('breadboard:voice-hide', event => { if (this.owns(event)) this.hide(); });
@@ -71,6 +73,14 @@ export class VoiceCompanion {
   private owns(event: IpcMainInvokeEvent) {
     return event.sender === this.window?.webContents && event.senderFrame === event.sender.mainFrame && event.sender.getURL() === this.target;
   }
+  private notificationState(): TabsState {
+    const window = this.window;
+    return { enabled: false, activeId: null, selfId: null, tabs: [], extensions: [],
+      notificationPageVisible: this.visible && !!window && !window.isDestroyed() && window.isVisible() && !window.isMinimized(),
+      windowFocused: !!window && !window.isDestroyed() && window.isFocused(),
+      ...(window && !window.isDestroyed() ? { notificationVisibleRects: notificationVisibleRects(window, window.webContents) } : {}),
+    };
+  }
   async start(): Promise<void> {
     if (this.opening) return this.opening;
     const dashboardUrl = this.options.dashboardUrl();
@@ -97,6 +107,21 @@ export class VoiceCompanion {
         backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required' },
     });
     this.window = window; this.rendererReady = false; this.expandedBounds = null; this.fullscreen = false; window.setMenu(null); hardenWindow(window, this.options.allowed);
+    let lastNotificationState = '';
+    const publishVisibility = () => {
+      if (window.isDestroyed() || window.webContents.isDestroyed() || window.webContents.isCrashed()) return;
+      const state = this.notificationState(), signature = JSON.stringify(state);
+      if (signature === lastNotificationState) return;
+      const frame = window.webContents.mainFrame;
+      if (!frame || frame.isDestroyed()) return;
+      lastNotificationState = signature;
+      frame.send('breadboard:voice-notification-visibility', state);
+    };
+    const stopVisibility = watchNotificationVisibility(window, publishVisibility);
+    window.on('show', publishVisibility); window.on('hide', publishVisibility);
+    window.on('focus', publishVisibility); window.on('blur', publishVisibility);
+    window.on('minimize', publishVisibility); window.on('restore', publishVisibility);
+    window.once('closed', stopVisibility);
     const guard = (event: Electron.Event, url: string) => { if (url !== this.target) event.preventDefault(); };
     window.webContents.on('will-navigate', guard); window.webContents.on('will-redirect', guard);
     window.on('enter-full-screen', () => { this.fullscreen = true; window.webContents.send('breadboard:voice-fullscreen-changed', true); });

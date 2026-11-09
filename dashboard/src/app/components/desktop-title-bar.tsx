@@ -1,6 +1,8 @@
 "use client";
 
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { ChartNoAxesColumn, Hand } from "lucide-react";
+import VSCodeIcon from "./vscode-icon";
 import {
   AI_TAB_GROUP_ID,
   TAB_GROUP_COLORS,
@@ -97,6 +99,10 @@ function browserTabFaviconFallback(address: string | undefined): string | undefi
  */
 function TabStrip({ state }: { state: DesktopTabsState }) {
   const stripRef = useRef<HTMLDivElement | null>(null);
+  const previousRef = useRef<HTMLButtonElement | null>(null);
+  const nextRef = useRef<HTMLButtonElement | null>(null);
+  const stripWidthRef = useRef(0);
+  const [overflow, setOverflow] = useState({ present: false, left: false, right: false });
   const dragRef = useRef<DragState | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const groupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -106,6 +112,12 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
   const groups = state.groups ?? [];
   const ariaShortcutModifier = isMacPlatform() ? "Meta" : "Control";
   const visibleTabs = state.tabs.filter(tab => !isTabGroupHidden(groups, tab.groupId));
+  const layoutKey = JSON.stringify([
+    state.tabs.map(tab => [tab.id, tab.groupId]),
+    groups.map(group => [group.id, group.parentId, group.name, group.collapsed]),
+  ]);
+  const activeGroup = tabGroupPath(groups, state.tabs.find(tab => tab.id === state.activeId)?.groupId)
+    .find(group => group.collapsed)?.id;
 
   function updateDrag(next: DragState | null) {
     // Keep gesture state synchronous even before React renders its preview.
@@ -132,10 +144,71 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
     return () => { if (dragRef.current && stateRef.current.persistentShell) void sendDesktopTabsCommand({ type: "tab-drag", active: false }); clearGroupTimer(); window.removeEventListener("keydown", escape); window.removeEventListener("blur", cancelDrag); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  function revealActiveTab() {
+    const strip = stripRef.current;
+    if (!strip || dragRef.current?.dragging) return;
+    const current = stateRef.current;
+    const collapsed = tabGroupPath(current.groups ?? [], current.tabs.find(tab => tab.id === current.activeId)?.groupId)
+      .find(group => group.collapsed)?.id;
+    const active = strip.querySelector<HTMLElement>(`[data-tab-id="${current.activeId}"]`)
+      ?? Array.from(strip.querySelectorAll<HTMLElement>("[data-group-marker]"))
+        .find(marker => marker.dataset.groupMarker === collapsed);
+    active?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+  }
+
+  useLayoutEffect(() => {
+    revealActiveTab();
+  }, [state.activeId, activeGroup]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useLayoutEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    const measure = () => {
+      const maximum = strip.scrollWidth - strip.clientWidth;
+      // Test against the space available WITHOUT the arrows, so removing tabs
+      // can hide them again even when their own width caused the last overflow.
+      const controlsWidth = (previousRef.current?.offsetWidth ?? 0) + (nextRef.current?.offsetWidth ?? 0);
+      const present = maximum > controlsWidth + 1;
+      const next = { present, left: present && strip.scrollLeft > 1, right: present && strip.scrollLeft < maximum - 1 };
+      setOverflow(previous => previous.present === next.present && previous.left === next.left && previous.right === next.right ? previous : next);
+    };
+    const resize = new ResizeObserver(() => {
+      if (strip.clientWidth !== stripWidthRef.current) {
+        stripWidthRef.current = strip.clientWidth;
+        revealActiveTab();
+      }
+      measure();
+    });
+    resize.observe(strip);
+    for (const child of strip.children) resize.observe(child);
+    strip.addEventListener("scroll", measure, { passive: true });
+    measure();
+    return () => { resize.disconnect(); strip.removeEventListener("scroll", measure); };
+  }, [layoutKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
-    stripRef.current?.querySelector<HTMLElement>(`[data-tab-id="${state.activeId}"]`)
-      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [state.activeId]);
+    const strip = stripRef.current;
+    if (!strip) return;
+    const wheel = (event: WheelEvent) => {
+      if (event.ctrlKey || strip.scrollWidth <= strip.clientWidth + 1) return;
+      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 32
+        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? strip.clientWidth : 1;
+      event.preventDefault();
+      strip.scrollLeft += delta * unit;
+    };
+    // React's wheel listener is passive; this one keeps tab scrolling from
+    // also scrolling the document underneath the caption strip.
+    strip.addEventListener("wheel", wheel, { passive: false });
+    return () => strip.removeEventListener("wheel", wheel);
+  }, []);
+
+  function scrollTabs(direction: number) {
+    const strip = stripRef.current;
+    if (!strip) return;
+    strip.scrollBy({ left: direction * Math.max(96, strip.clientWidth - 140),
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+  }
 
   function previewDrop(current: DragState, clientX: number, clientY: number) {
     const strip = stripRef.current;
@@ -347,7 +420,12 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
   }
 
   return (
-    <div ref={stripRef} className="bb-tabstrip" role="tablist" aria-label="Browser tabs">
+    <div className="bb-tabstrip">
+      <button ref={previousRef} type="button" className="bb-tab-scroll" hidden={!overflow.present}
+        disabled={!overflow.left} aria-label="Scroll tabs left" title="Scroll tabs left" onClick={() => scrollTabs(-1)}>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m10 4-4 4 4 4" {...STROKE} /></svg>
+      </button>
+      <div ref={stripRef} className="bb-tabstrip-scroll" role="tablist" aria-label="Browser tabs">
       {groups.filter(group => group.id === AI_TAB_GROUP_ID && !state.tabs.some(tab => isInTabGroup(groups, tab.groupId, group.id))).map(group => renderGroupMarker(group))}
       {state.tabs.map((tab, index) => {
         const group = groups.find(group => group.id === tab.groupId);
@@ -386,9 +464,10 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
               }
               if (event.target !== event.currentTarget) return;
               if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void sendDesktopTabsCommand({ type: "activate", id: tab.id }); }
-              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+              if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
                 event.preventDefault();
-                const next = visibleTabs[(visibleTabs.indexOf(tab) + (event.key === "ArrowRight" ? 1 : -1) + visibleTabs.length) % visibleTabs.length];
+                const next = event.key === "Home" ? visibleTabs[0] : event.key === "End" ? visibleTabs[visibleTabs.length - 1]
+                  : visibleTabs[(visibleTabs.indexOf(tab) + (event.key === "ArrowRight" ? 1 : -1) + visibleTabs.length) % visibleTabs.length];
                 stripRef.current?.querySelector<HTMLElement>(`[data-tab-id="${next.id}"]`)?.focus();
                 void sendDesktopTabsCommand({ type: "activate", id: next.id });
               }
@@ -461,7 +540,6 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
               )}
             </span>
             <span className="bb-tab-title">{label}</span>
-            {aiOpened && <span className="bb-tab-ai-badge" aria-hidden="true">AI</span>}
             <button
               type="button"
               className="bb-tab-anchor"
@@ -498,6 +576,11 @@ function TabStrip({ state }: { state: DesktopTabsState }) {
           </div></Fragment>
         );
       })}
+      </div>
+      <button ref={nextRef} type="button" className="bb-tab-scroll" hidden={!overflow.present}
+        disabled={!overflow.right} aria-label="Scroll tabs right" title="Scroll tabs right" onClick={() => scrollTabs(1)}>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" {...STROKE} /></svg>
+      </button>
       {state.savedGroups?.length ? <button type="button" className="bb-tab-saved" aria-label="Saved tab groups" title="Saved tab groups"
         onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); void sendDesktopTabsCommand({ type: "group-menu", x: Math.max(0, rect.left), y: rect.bottom + 6 }); }}>▣</button> : null}
       {drag?.dragging && drag.splitSide && typeof document !== "undefined" ? createPortal(<div className="bb-tab-split-preview" data-side={drag.splitSide}
@@ -576,6 +659,12 @@ function TabGlyph({ kind, privateBrowsing = false }: { kind: DesktopTabKind; pri
           <path d="M2.5 12.3c.6-2.6 2.2-3.8 4.5-3.8s3.9 1.2 4.5 3.8" {...STROKE} />
         </svg>
       );
+    case "code":
+      return <VSCodeIcon />;
+    case "gestures":
+      return <Hand strokeWidth={2} />;
+    case "screen-time":
+      return <ChartNoAxesColumn strokeWidth={2} />;
     case "calendar":
       return (
         <svg viewBox="0 0 14 14">

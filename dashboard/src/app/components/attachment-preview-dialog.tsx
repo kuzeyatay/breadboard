@@ -13,9 +13,7 @@ import {
   OpenInNewTabItem,
   OpenInNewWindowItem,
 } from "@/app/components/link-context-menu";
-import {
-  ReclaimingVideo,
-} from "@/app/components/reclaiming-media";
+import BreadboardVideoPlayer from "@/app/components/breadboard-video-player";
 import BreadboardAudioPlayer from "@/app/components/breadboard-audio-player";
 
 export interface AttachmentPreviewSource {
@@ -201,15 +199,12 @@ export default function AttachmentPreviewDialog({
               </a>
             </div>
           ) : (
-            <div className="flex items-center justify-center bg-black p-2">
-              <ReclaimingVideo
-                autoPlay
-                controls
-                preload="metadata"
-                src={source.href}
-                className="max-h-[calc(90vh_-_4rem)] max-w-full bg-black"
-              />
-            </div>
+            <BreadboardVideoPlayer
+              autoPlay
+              src={source.href}
+              title={source.name}
+              className="max-h-[calc(90vh_-_4rem)] rounded-none"
+            />
           )}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>

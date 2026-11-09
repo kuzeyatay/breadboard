@@ -1,3 +1,4 @@
+import { applySystemPromptSections } from "../system-prompts/service.ts";
 // Every place a language model touches a ViMax production.
 //
 // Each of ViMax's crew roles is one forced tool call through Breadboard's
@@ -59,6 +60,7 @@ interface ChatMessage {
 }
 
 export interface ModelTarget {
+  userId?: number | null;
   baseUrl: string;
   model: string;
   reasoningEffort?: string;
@@ -141,7 +143,7 @@ async function structuredStage<T>(
   },
 ): Promise<T> {
   const messages: ChatMessage[] = [
-    { role: "system", content: input.system },
+    { role: "system", content: applySystemPromptSections(input.system, target.userId, ["film-story","film-scenes","film-characters","film-storyboard","film-shots"]) },
     { role: "user", content: input.user },
   ];
   const first = await callTool(target, messages, input.tool);
@@ -186,8 +188,8 @@ const STORY_TOOL: ToolDefinition = {
     additionalProperties: false,
     required: ["title", "logline", "story", "style"],
     properties: {
-      title: { type: "string", description: "An engaging, relevant title." },
-      logline: { type: "string", description: "One sentence: who wants what, and what stops them." },
+      title: { type: "string", maxLength: 160, description: "An engaging, relevant title." },
+      logline: { type: "string", maxLength: 600, description: "One sentence: who wants what, and what stops them." },
       story: {
         type: "string",
         description:
@@ -195,6 +197,7 @@ const STORY_TOOL: ToolDefinition = {
       },
       style: {
         type: "string",
+        maxLength: 600,
         description:
           "The visual style the film should be drawn in, e.g. 'Cartoon', 'gritty live-action', 'watercolour'. Honour the requested style if one was given.",
       },
@@ -210,11 +213,12 @@ const SCRIPT_DESCRIPTION_TOOL: ToolDefinition = {
     additionalProperties: false,
     required: ["title", "logline", "style"],
     properties: {
-      title: { type: "string", description: "The screenplay's title, or a fitting one." },
-      logline: { type: "string", description: "One sentence: who wants what, and what stops them." },
+      title: { type: "string", maxLength: 160, description: "The screenplay's title, or a fitting one." },
+      logline: { type: "string", maxLength: 600, description: "One sentence: who wants what, and what stops them." },
       style: {
         type: "string",
-        description: "The visual style this screenplay should be shot in.",
+        maxLength: 600,
+        description: "The visual style this screenplay should be shot in, in at most 600 characters.",
       },
     },
   },

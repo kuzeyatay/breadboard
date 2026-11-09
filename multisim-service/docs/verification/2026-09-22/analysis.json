@@ -1,0 +1,13 @@
+{
+  "kind": "tran",
+  "start": 0.014,
+  "stop": 0.025,
+  "step": 2.5e-07,
+  "points": 100,
+  "scale": "dec",
+  "source": "V1",
+  "output": "vout",
+  "reference": "0",
+  "timeout": 120.0,
+  "max_points": 200000
+}

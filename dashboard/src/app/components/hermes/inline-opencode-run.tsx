@@ -343,7 +343,7 @@ export default function InlineOpenCodeRun({
         if (elapsedSec > 0) setElapsed(elapsedSec);
         if (!reportedRef.current) {
           reportedRef.current = true;
-          notifyTaskCompleted(`${agentName} finished: ${task}`);
+          notifyTaskCompleted(`${agentName} finished: ${task}`, { runId });
           void reportTerminal(
             "completed",
             summary,
@@ -460,7 +460,7 @@ export default function InlineOpenCodeRun({
         responseDurationMs={!terminal || elapsed > 0 ? elapsed * 1_000 : undefined}
         agentName={agentName}
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
       <header className="bb-agent-run-header">
         <p className="bb-agent-run-title truncate">{agentName}</p>
         <div className="flex shrink-0 items-center gap-[8px]">

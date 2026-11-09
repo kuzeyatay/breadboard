@@ -25,9 +25,9 @@ import { isSpiceNetlistArtifact } from "@/lib/netlist-viewer/format";
 import ArtifactNetlistViewer from "./artifact-netlist-viewer";
 import ArtifactPreviewLoading from "./artifact-preview-loading";
 import ArtifactPreviewSurface from "./artifact-preview-surface";
+import BreadboardVideoPlayer from "@/app/components/breadboard-video-player";
 import {
   ReclaimingAudio,
-  ReclaimingVideo,
 } from "@/app/components/reclaiming-media";
 import { parseStoredDesign } from "@/lib/hardware/schemas.ts";
 import { parseStoredCadArtifact } from "@/lib/cad/schemas.ts";
@@ -1338,16 +1338,13 @@ export default function ArtifactViewer({
     if (artifact.kind === "video") {
       return (
         <ArtifactPreviewSurface key={previewUrl}>{(ready, failed) => (
-        <ReclaimingVideo
-          controls
-          preload="metadata"
+        <BreadboardVideoPlayer
           src={previewUrl}
-          onLoadedMetadata={ready}
+          title={artifact.title}
+          onReady={ready}
           onError={failed}
-          className="mx-auto max-h-[70vh] w-full rounded-xl border border-[var(--line)] bg-black"
-        >
-          Your browser cannot preview this video file.
-        </ReclaimingVideo>
+          className="mx-auto max-h-[70vh]"
+        />
         )}</ArtifactPreviewSurface>
       );
     }

@@ -108,9 +108,9 @@
 }
 
 :root {
-  /* Reading-first light theme: warm paper surfaces, dark
+  /* Reading-first light theme: pale green / warm paper surfaces, dark
      charcoal-green text, muted botanical accents. */
-  --paper-bg: #faf7ef; /* app background; matches the native loading surface */
+  --paper-bg: #e6f0e6; /* pale green canvas; keep distinct from warm paper surfaces */
   --paper-surface: #faf7ef; /* main surface / card (warm paper) */
   --paper-raised: #fffefb; /* raised surface */
   --paper-strong: #ece3d2; /* strong surface */
@@ -1420,6 +1420,27 @@ body:has(> .bb-notification-overlay-page) .bb-page-toast-host {
   pointer-events: none;
 }
 
+/* Native input bounds follow the cards. Measure their natural size against
+   the window's available space, so a small toast cannot constrain the next
+   response or cause repeated shrinkage as the native renderer is resized. */
+.bb-desktop-toast-host {
+  flex-shrink: 0;
+  max-height: var(--bb-toast-viewport-height, 100vh);
+}
+
+.bb-notification-overlay-page .bb-toast-card {
+  width: min(20rem, calc(var(--bb-toast-viewport-width, 100vw) - 2rem));
+  max-height: calc(var(--bb-toast-viewport-height, 100vh) - 2rem);
+}
+
+.bb-notification-overlay-page .bb-toast-card[data-response="true"] {
+  width: min(30rem, calc(var(--bb-toast-viewport-width, 100vw) - 2rem));
+}
+
+.bb-notification-overlay-page .bb-toast-message {
+  max-height: min(calc(var(--bb-toast-viewport-height, 100vh) * .42), 24rem);
+}
+
 /* Only the message needs a visible scrollbar. Keep taller notification stacks
    and question forms reachable without adding rails around the whole card.
    Message and reply-input scrollbars retain the shared Breadboard material. */
@@ -1692,9 +1713,49 @@ html[data-breadboard-desktop="true"] .desktop-title-bar {
   height: 100%;
   padding: 0 6px 0 8px;
   box-sizing: border-box;
+  overflow: hidden;
+}
+
+/* Only the tabs scroll. Overflow arrows, saved groups, New tab and the
+   caption drag handle keep their own space beside the viewport. */
+.bb-tabstrip-scroll {
+  display: flex;
+  align-items: flex-end;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 100%;
   overflow-x: auto;
   overflow-y: hidden;
+  overscroll-behavior-x: contain;
   scrollbar-width: none;
+  -webkit-app-region: no-drag;
+}
+
+.bb-tab-scroll {
+  -webkit-app-region: no-drag;
+  display: grid;
+  place-items: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 25px;
+  margin: 0 0 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.bb-tab-scroll[hidden] { display: none; }
+.bb-tab-scroll svg { width: 14px; height: 14px; }
+.bb-tab-scroll:disabled { opacity: .3; }
+.bb-tab-scroll:not(:disabled):hover {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+.bb-tab-scroll:focus-visible {
+  outline: 2px solid var(--botanical);
+  outline-offset: -2px;
 }
 
 .bb-tabstrip::after {
@@ -2065,10 +2126,13 @@ html[data-breadboard-desktop="true"] .desktop-title-bar {
   opacity: 0.6;
 }
 
-/* Let the name use the space of controls that are not being shown. Keep the
-   anchor visible on anchored tabs, and reveal both controls for keyboard use. */
+/* Reserve the control slots even while hidden. Removing them from flex layout
+   changes the strip's intrinsic width and resizes every tab on hover/focus. */
 .bb-tab:not(:hover):not(:focus-within):not([data-active="true"]) .bb-tab-close,
-.bb-tab:not(:hover):not(:focus-within):not([data-active="true"]) .bb-tab-anchor:not([aria-pressed="true"]),
+.bb-tab:not(:hover):not(:focus-within):not([data-active="true"]) .bb-tab-anchor:not([aria-pressed="true"]) {
+  visibility: hidden;
+}
+
 .bb-tab-anchor[hidden] {
   display: none;
 }
@@ -2173,6 +2237,38 @@ html[data-breadboard-desktop="true"] body > .browser-shell {
   box-sizing: border-box;
   background: var(--paper-surface);
   box-shadow: 0 4px 12px rgba(15, 23, 18, 0.07);
+}
+
+.browser-settings-switch {
+  appearance: none;
+  position: relative;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--line-strong);
+  box-shadow: var(--neu-inset-shadow);
+  cursor: pointer;
+  transition: background-color 140ms ease-out;
+}
+.browser-settings-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--paper-raised);
+  box-shadow: 0 1px 3px rgba(15, 23, 18, 0.25);
+  transition: transform 140ms ease-out;
+}
+.browser-settings-switch:checked { background: var(--botanical); }
+.browser-settings-switch:checked::after { transform: translateX(20px); }
+.browser-settings-switch:focus-visible { outline: 2px solid var(--botanical); outline-offset: 3px; }
+.browser-settings-switch:disabled { opacity: 0.45; cursor: default; }
+@media (prefers-reduced-motion: reduce) {
+  .browser-settings-switch, .browser-settings-switch::after { transition: none; }
 }
 
 .browser-navigation-controls,
@@ -5994,7 +6090,7 @@ html[data-theme="dark"] .browser-spotify-cover {
   left: 40px;
   width: calc(var(--browser-terminal-width, 640px) - 40px);
   overflow: visible;
-  container-type: inline-size;
+  container-type: size;
   border-right: 1px solid color-mix(in srgb, var(--botanical) 38%, var(--line));
   background: var(--paper-surface);
   box-shadow: 18px 0 42px rgb(28 40 32 / 15%);
@@ -6354,6 +6450,14 @@ html[data-theme="dark"] .browser-spotify-cover {
   border-bottom-color: color-mix(in srgb, var(--line-strong) 55%, transparent);
   background: color-mix(in srgb, var(--paper-surface) 91%, var(--botanical-3)) !important;
   box-shadow: inset 0 -1px 0 color-mix(in srgb, white 38%, transparent);
+}
+
+/* The website is a native view above this document: menus must open inward
+   and fit below the Terminal header, even when the whole window is tall. */
+.browser-terminal-drawer [role="dialog"][aria-label="Intelligence"] {
+  left: auto;
+  right: 0;
+  max-height: min(40rem, max(0px, calc(100cqh - 10rem)));
 }
 
 .browser-terminal-resizer {
@@ -7470,6 +7574,10 @@ html[data-theme="dark"] .bb-terminal-dock-outline path {
   to {
     opacity: 1;
   }
+}
+
+.bb-card-suggestion-text[data-reduced-motion="true"] {
+  animation: bb-chat-title-fade var(--neu-duration) var(--neu-easing) both;
 }
 
 @keyframes bb-chat-marquee-shift {
@@ -11375,6 +11483,89 @@ html[data-voice-minimized="true"] .voice-companion-drag { display: none; }
   min-height: 0;
   max-height: none;
 }
+/* Keep the ring anchored to the window, independent of transcript height and
+   result cards. Only the smaller conversation area scrolls. */
+.voice-stage.voice-stage-breadboard:not(.voice-stage-minimized) {
+  --voice-ring-size: min(50dvh, 70vw, 32rem);
+}
+.voice-stage.voice-stage-breadboard:not(.voice-stage-minimized) .voice-stage-centre {
+  position: absolute;
+  inset: 0;
+  justify-content: flex-start;
+  gap: 0;
+  padding: calc(50dvh + var(--voice-ring-size) / 2) 24px 12px;
+  overflow: hidden;
+}
+.voice-stage.voice-stage-breadboard:not(.voice-stage-minimized) .voice-ring-button {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--voice-ring-size);
+  height: var(--voice-ring-size);
+  transform: translate(-50%, -50%) scale(calc(1 + var(--voice-level) * 0.05));
+}
+.voice-stage.voice-stage-breadboard:not(.voice-stage-minimized) .voice-stage-header {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 3;
+}
+.voice-stage.voice-stage-breadboard:not(.voice-stage-minimized) .voice-stage-state {
+  flex: 0 0 auto;
+  margin: 0;
+}
+.voice-stage.voice-stage-breadboard:not(.voice-stage-minimized) :is(.voice-widget-transcript, .voice-caption) {
+  width: min(34rem, 100%);
+  max-width: 100%;
+  flex: 1 1 0;
+  min-height: 0;
+  margin: 10px 0 0;
+}
+.voice-stage.voice-stage-breadboard:not(.voice-stage-minimized) .voice-caption {
+  display: flex;
+  flex-direction: column;
+  font-size: clamp(14px, 1.8vw, 17px);
+}
+.voice-stage.voice-stage-breadboard:not(.voice-stage-minimized) .voice-caption-text {
+  flex: 1 1 0;
+  min-height: 0;
+  max-height: none;
+}
+.voice-stage.voice-stage-breadboard:not(.voice-stage-minimized) :is(.voice-note, .voice-blocked) {
+  flex: 0 1 auto;
+  max-height: 18dvh;
+  overflow: auto;
+  margin-top: 8px;
+}
+/* The optional full chat occupies the same lower area; it cannot move the ring. */
+.voice-stage.voice-stage-breadboard:not(.voice-stage-minimized) .voice-transcript {
+  position: absolute;
+  top: calc(50dvh + var(--voice-ring-size) / 2 + 28px);
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(34rem, calc(100% - 48px));
+  max-height: none;
+  background: #b94c35;
+}
+
+/* Short windows still need room to read and operate result cards. Keep the
+   ring centered, and place its status above it instead of using transcript space. */
+@media (max-height: 360px) {
+  .voice-stage.voice-stage-breadboard:not(.voice-stage-minimized) {
+    --voice-ring-size: min(30dvh, 70vw);
+  }
+  .voice-stage.voice-stage-breadboard:not(.voice-stage-minimized) .voice-stage-state {
+    position: absolute;
+    top: calc(50% - var(--voice-ring-size) / 2 - 26px);
+    left: 24px;
+    right: 24px;
+  }
+  .voice-stage.voice-stage-breadboard:not(.voice-stage-minimized) :is(.voice-widget-transcript, .voice-caption) {
+    margin-top: 6px;
+  }
+}
 
 .voice-caption {
   position: relative;
@@ -11416,6 +11607,7 @@ html[data-voice-minimized="true"] .voice-companion-drag { display: none; }
    from the viewBox instead of the left/right offsets, so the width is stated. */
 .voice-caption-rule {
   position: absolute;
+  pointer-events: none;
   left: 8%;
   bottom: 0;
   width: 84%;
@@ -12638,11 +12830,27 @@ html[data-voice-stage='open'] .clap-indicator { display: none; }
 /* Decorative loops settle after a minute without input (lib/user-idle.ts sets
    data-user-idle). Running on an untouched window they kept the GPU process
    near a full core. Only these: one-shot and status animations never pause. */
-html[data-user-idle] .browser-start-page::before,
-html[data-user-idle] .browser-start-page::after,
+/* Visible Terminal rings and ambient colors keep moving while reading or
+   using another monitor. They must not inherit the input-idle pause. */
 html[data-user-idle] .browser-rail-sketch path,
 html[data-user-idle] .browser-sketch-outline path,
 html[data-user-idle] .bb-terminal-suggestion-beam path,
 html[data-user-idle] .bb-terminal-dock-outline path {
   animation-play-state: paused !important;
+}
+
+/* The live drag owns both edges; a cancelled click-glide must not keep
+   translating them while React commits the new resting height. */
+.bb-terminal-dock[data-terminal-resizing="true"],
+[data-terminal-handle-position][data-terminal-resizing="true"] {
+  transform: none !important;
+  transition: none !important;
+}
+
+.bb-terminal-dock[data-terminal-drag-small="true"] > [data-terminal-body] {
+  visibility: hidden;
+}
+
+.bb-terminal-dock[data-terminal-resizing="true"] .bb-terminal-dock-outline path:last-child {
+  animation-play-state: paused;
 }

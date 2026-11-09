@@ -25,6 +25,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { runtimeProcessPath } from "../../../scripts/runtime-v2-paths.mjs";
 import { credentialSettings } from "./credentials.ts";
 import { resolveFfmpeg } from "./runtime.ts";
 export { configuredFootageSources } from "./config-inspect.ts";
@@ -188,7 +189,7 @@ export function ownedSettings(input: ConfigureInput): Record<string, string> {
     oneapi_base_url: tomlString(input.baseUrl),
     oneapi_api_key: tomlString(input.apiKey),
     oneapi_model_name: tomlString(input.model),
-    ...(ffmpeg ? { ffmpeg_path: tomlString(ffmpeg) } : {}),
+    ...(ffmpeg ? { ffmpeg_path: tomlString(runtimeProcessPath(ffmpeg)) } : {}),
     ...Object.fromEntries(
       Object.entries(credentialSettings()).map(([setting, values]) => [
         setting,

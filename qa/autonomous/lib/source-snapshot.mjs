@@ -75,6 +75,18 @@ const SOURCE_EXTENSIONS = new Set([
   ".css", ".scss", ".yaml", ".yml", ".txt", ".csv", ".html", ".sh", ".ps1",
 ]);
 
+// Git for Windows enumerates descendants of directory junctions. Checking
+// only the leaf would capture installed inputs outside the source checkpoint.
+function hasLinkedAncestor(root, relative, cache) {
+  let directory = root;
+  for (const component of relative.split(/[\\/]/).slice(0, -1)) {
+    directory = path.join(directory, component);
+    if (!cache.has(directory)) cache.set(directory, fs.lstatSync(directory).isSymbolicLink());
+    if (cache.get(directory)) return true;
+  }
+  return false;
+}
+
 const MAX_UNTRACKED_FILES = 2_000;
 const MAX_UNTRACKED_BYTES = 64 * 1024 * 1024;
 
@@ -161,6 +173,7 @@ export function captureSourceSnapshot({ repoRoot, roots = SUT_ROOTS, label = nul
 
   const untrackedFiles = [];
   const skipped = [];
+  const linkedAncestors = new Map();
   let totalBytes = 0;
 
   for (const relative of untrackedList) {
@@ -180,6 +193,10 @@ export function captureSourceSnapshot({ repoRoot, roots = SUT_ROOTS, label = nul
     const absolute = path.join(resolved, relative);
     let stat;
     try {
+      if (hasLinkedAncestor(resolved, relative, linkedAncestors)) {
+        skipped.push({ path: relative, reason: "linked source ancestor" });
+        continue;
+      }
       stat = fs.lstatSync(absolute);
     } catch {
       skipped.push({ path: relative, reason: "disappeared during capture" });
@@ -256,12 +273,14 @@ export function sourceManifest({ repoRoot, roots = SUT_ROOTS }) {
     .split(/\r?\n/);
 
   const manifest = {};
+  const linkedAncestors = new Map();
   for (const raw of [...tracked, ...untracked]) {
     const relative = raw.trim();
     if (relative === "" || isExcludedPath(relative)) continue;
     if (!SOURCE_EXTENSIONS.has(path.extname(relative).toLowerCase())) continue;
     const absolute = path.join(resolved, relative);
     try {
+      if (hasLinkedAncestor(resolved, relative, linkedAncestors)) continue;
       const stat = fs.lstatSync(absolute);
       if (stat.isSymbolicLink() || !stat.isFile()) continue;
       manifest[relative.replaceAll("\\", "/")] = sha256(fs.readFileSync(absolute));

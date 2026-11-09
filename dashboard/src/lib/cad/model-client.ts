@@ -1,3 +1,4 @@
+import { renderSystemPrompt } from "../system-prompts/service.ts";
 // The CAD agent's model loop.
 //
 // Breadboard drives the loop itself rather than handing the turn to another
@@ -587,10 +588,7 @@ export async function runCadProjectBuildPhase(input: CadModelTarget & {
   const messages: ChatMessage[] = [
     {
       role: "system",
-      content: [
-        "You are the source-generation phase of Breadboard's Parametric CAD agent.",
-        "The project and its structured design specification already exist. Do not plan it again and do not create another project.",
-        ...(engine === "solidworks"
+      content: renderSystemPrompt("cad-source-generation", input.toolContext.userId, { "engine_instructions": ((engine === "solidworks"
           ? [
               "Call cad_generate_model now with one complete SolidWorks operation program as JSON.",
               `The only operations are ${SUPPORTED_OPERATIONS.join(", ")}; there is no chamfer, Hole Wizard, revolve, sweep, loft or pattern.`,
@@ -600,15 +598,7 @@ export async function runCadProjectBuildPhase(input: CadModelTarget & {
           : [
               "Call cad_generate_model now with one complete, deterministic CadQuery program.",
               "Use DEFAULT_PARAMS plus build_model(params), keep all geometry in millimetres, and return a dict of named solids.",
-            ]),
-        "Implement every non-reference component as the requested number of named printable solids.",
-        "Implement the specification's fit, retention, clearance, alignment and serviceability constraints in actual geometry.",
-        "Read every editable parameter from the parameter map and use it in its named geometry; remove no-op parameters instead of exposing fake controls.",
-        "Returned printable bodies must not overlap by positive volume in assembled coordinates. Model mating clearances and aligned joint features explicitly.",
-        "If a required feature has no constraint carrying its exact id, send that constraint in the same call's `constraints`.",
-        "If the specification has no `assembly` and this design has more than one body or any bought part, send `assembly` too: overview, hardware with real sizes and quantities, and ordered steps naming the component ids each step joins.",
-        "Prefer robust primitives and booleans over fragile decorative fillets. Never return prose instead of the tool call.",
-      ].join("\n"),
+            ])).join("\n") }),
     },
     {
       role: "user",
@@ -681,7 +671,10 @@ export async function runCadProjectBuildPhase(input: CadModelTarget & {
       ...rawArguments,
       projectId: input.project.id,
       parameters,
-      timeoutMs: 120_000,
+      // CadQuery's service permits five-minute builds. Truncating that to two
+      // minutes rejects valid multi-part models before validation/export. Keep
+      // the limit host-owned and retain SolidWorks' shorter bridge ceiling.
+      timeoutMs: engine === "solidworks" ? 120_000 : 300_000,
       note:
         typeof rawArguments.note === "string" && rawArguments.note.trim()
           ? rawArguments.note

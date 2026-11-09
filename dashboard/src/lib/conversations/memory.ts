@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type Database from "better-sqlite3";
 import db from "../db.ts";
+import { boundPromptContext } from '../hermes/prompt-budget.ts';
 import {
   readUserIdentity,
   renderUserIdentityContext,
@@ -883,18 +884,29 @@ export function composeMemoryContext(
     includeConversationState?: boolean;
     /** Normal chat uses relevant memories, without injecting an inferred biography. */
     includeProfile?: boolean;
+    /** Spoken turns load long memories as excerpts; memory_query retains originals. */
+    memoryExcerptCharacters?: number;
     /** Scoped history and constraints are carried by the explanation packet. */
     explanationFocus?: boolean;
     recentContextSupplied?: boolean;
+    /** The Hermes plugin checks copies against the actual post-compression wire history. */
+    deduplicateRuntimeHistory?: boolean;
   },
 ): string {
   const recentMessages = options?.recentMessages ?? bundle.recentMessages;
   const includeConversationState = options?.includeConversationState !== false;
-  const recent = options?.explanationFocus || options?.recentContextSupplied ? "" : composeRecentConversationContext(recentMessages, redactSecrets);
+  const recent = options?.explanationFocus || options?.recentContextSupplied ? "" : composeRecentConversationContext(
+    recentMessages, redactSecrets, undefined, options?.deduplicateRuntimeHistory === true,
+  );
+  const memoryText = (content: string) => options?.memoryExcerptCharacters === undefined
+    ? redactSecrets(content)
+    : boundPromptContext(redactSecrets(content), options.memoryExcerptCharacters);
+  const excerpted = options?.memoryExcerptCharacters !== undefined && bundle.durableMemories.some(memory =>
+    redactSecrets(memory.content).length > options.memoryExcerptCharacters!);
   const durable = bundle.durableMemories.map((memory) =>
     memory.standing
-      ? `- [${memory.state}; ${memory.scope}; standing ${memory.kind === "working_pattern" ? "habit" : "preference"}] ${redactSecrets(memory.content)}`
-      : `- [${memory.state}; ${memory.scope}; score=${memory.score.toFixed(3)}] ${redactSecrets(memory.content)}`,
+      ? `- [${memory.state}; ${memory.scope}; standing ${memory.kind === "working_pattern" ? "habit" : "preference"}] ${memoryText(memory.content)}`
+      : `- [${memory.state}; ${memory.scope}; score=${memory.score.toFixed(3)}] ${memoryText(memory.content)}`,
   ).join("\n");
   const hasStanding = bundle.durableMemories.some((memory) => memory.standing);
   const profile = options?.explanationFocus || options?.includeProfile === false ? "" : bundle.profileSummary?.trim().slice(0, 6_000) ?? "";
@@ -935,6 +947,7 @@ export function composeMemoryContext(
     durable
       ? [
           "# selective_weak_cross_chat_memory",
+          excerpted ? 'Long entries below are excerpts for this spoken turn. Their complete originals remain available through memory_query: retrieve the relevant original before relying on omitted details or applying a detailed preference. Unrelated memories need no lookup. Do not infer omitted content.' : '',
           // Why a memory the question never mentioned is sitting here, said
           // once, so the model neither ignores it nor works it into every
           // answer.

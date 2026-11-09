@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { connectVoiceChat, type VoiceChatSnapshot } from '@/lib/speech/voice-chat-link';
 import VoiceConversationOverlay from './voice-conversation-overlay';
 import type { SpokenExchange } from '@/lib/speech/chatgpt-voice';
-import { currentVoiceScreenContext } from '@/lib/speech/voice-screen-context';
+import { currentVoiceScreenContext, type VoiceScreenContext } from '@/lib/speech/voice-screen-context';
 
 export default function LinkedVoiceConversation({ conversationKey, compact, onClose }: {
   conversationKey: string;
@@ -20,15 +20,15 @@ export default function LinkedVoiceConversation({ conversationKey, compact, onCl
     connection.current = link;
     return () => { connection.current = null; link.close(); };
   }, [conversationKey]);
-  const send = useCallback(async (text: string) => {
+  const send = useCallback(async (text: string, context?: VoiceScreenContext) => {
     setError('');
     const link = connection.current;
     try {
       const screen = await currentVoiceScreenContext();
-      if (connection.current === link) link?.send(text, screen);
+      if (connection.current === link) link?.send(text, { ...context, ...screen });
     } catch {
       // A context failure must not replace this turn with the host's old tab.
-      if (connection.current === link) link?.send(text, { browserAccess: null });
+      if (connection.current === link) link?.send(text, { ...context, browserAccess: null });
     }
   }, []);
   const interrupt = useCallback(() => connection.current?.interrupt(), []);
@@ -42,6 +42,8 @@ export default function LinkedVoiceConversation({ conversationKey, compact, onCl
   </div>;
   if (!snapshot) return null;
   return <VoiceConversationOverlay open compact={compact} closeOnTabChange={false} greetOnOpen
+    personalizedGreeting={snapshot.personalizedGreeting === true}
+    notificationTarget={snapshot.notificationTarget}
     onClose={onClose} onSend={send} onInterrupt={interrupt} onRecord={snapshot.recordable ? record : undefined} messages={snapshot.messages} busy={snapshot.busy} clarification={snapshot.clarification}
     notice={error ? <p className="voice-note" role="alert">{error}</p> : null} />;
 }

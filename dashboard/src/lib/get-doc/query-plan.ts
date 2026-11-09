@@ -1,3 +1,4 @@
+import { systemPromptText } from "../system-prompts/service.ts";
 // Where the model is allowed to help, and where it is not.
 //
 // Get Doc follows the same split as the hardware agent: the model reads intent,
@@ -123,24 +124,10 @@ function boundedYear(value: unknown): number | null {
   return Number.isInteger(parsed) && parsed > 1500 && parsed < 2200 ? parsed : null;
 }
 
-const PLAN_SYSTEM = `You turn a request for academic literature into catalog search strings.
-
-The request may name one specific paper ("the original ResNet paper", a title, a DOI) or describe a body of work ("papers on transformer efficiency in low-resource languages since 2020").
-
-Answer with JSON only, in this shape:
-{"queries": ["...", "..."], "yearFrom": null, "yearTo": null, "intent": "one sentence on what the user is looking for"}
-
-Rules:
-- 1 to 3 queries. The first must be the best single query.
-- For a request with several distinct evidence needs, use complementary queries covering those needs. Keep each query focused; do not concatenate every sub-question into one long keyword string or spend all queries on near-synonyms of the first topic.
-- For topical searches, normally use 3 to 8 precise keywords per query, including the actual subject in each. Search each evidence need separately instead of appending a list of generic study types and all desired outcomes. An exact named paper title can be longer.
-- Queries are keyword strings for a scholarly search engine (OpenAlex, arXiv, Europe PMC). No boolean operators, no field prefixes, no quotes around the whole string.
-- When a specific paper is named, the first query is its exact title, or the closest phrasing you are confident about. Never invent a title you are unsure of — use the user's own words instead.
-- Set yearFrom/yearTo only when the request states or clearly implies a period. Otherwise null.
-- Do not answer the research question. Do not list papers. Only produce the search.`;
 
 /** Read the request the way a librarian would, and hand back the searches. */
 export async function planSearch(input: {
+  userId?: number | null;
   baseUrl: string;
   model: string;
   reasoningEffort: string;
@@ -164,7 +151,7 @@ export async function planSearch(input: {
       model: input.model,
       reasoningEffort: input.reasoningEffort,
       messages: [
-        { role: "system", content: PLAN_SYSTEM },
+        { role: "system", content: systemPromptText("document-search-plan", input.userId) },
         { role: "user", content: input.task },
       ],
     });
@@ -192,19 +179,6 @@ export async function planSearch(input: {
   }
 }
 
-const DESCRIBE_SYSTEM = `You write one-sentence descriptions of academic papers for someone deciding which to download.
-
-You are given what the person is looking for, and a numbered list of papers with their real metadata and abstracts.
-
-Answer with JSON only:
-{"documents": [{"id": "doc_1", "title": "exact supplied title", "description": "...", "bearing": "direct" | "adjacent" | "none"}]}
-
-Rules:
-- One sentence per paper, at most 30 words: what the paper does, and how it relates to what was asked for.
-- Ground every word in the metadata and abstract you were given. If the record contains no abstract, describe it from its title and venue and say the catalog record did not supply an abstract; do not infer that none was published.
-- Never state a finding, a number, or a claim that is not in the text you were given.
-- "bearing" says how the paper bears on what is being looked for: "direct" when it studies that question or population, "adjacent" when it informs it (same mechanism, neighbouring population, a method the question needs), "none" when it merely shares words with it — a catalog keyword match on "winter", "gas" or "competition" that is about something else. Be strict about "none": a paper set aside costs one line; a paper on the wrong subject presented as evidence costs the reader's trust.
-- Copy each id AND its exact title together, and include every paper. Never renumber when omitting or setting aside another paper; each description must refer to that exact title.`;
 
 /**
  * Replace the abstract-derived descriptions with ones written against what the
@@ -212,6 +186,7 @@ Rules:
  * the deterministic description it already had.
  */
 export async function describeDocuments(input: {
+  userId?: number | null;
   baseUrl: string;
   model: string;
   reasoningEffort: string;
@@ -253,7 +228,7 @@ export async function describeDocuments(input: {
       reasoningEffort: input.reasoningEffort,
       timeoutMs: deadline - Date.now(),
       messages: [
-        { role: "system", content: DESCRIBE_SYSTEM },
+        { role: "system", content: systemPromptText("document-descriptions", input.userId) },
         {
           role: "user",
           content: `Looking for: ${input.intent}\n\nPapers:\n\n${catalog}`,

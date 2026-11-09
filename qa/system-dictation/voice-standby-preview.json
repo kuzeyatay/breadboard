@@ -1,0 +1,13 @@
+{
+  "ready": true,
+  "checkedAt": "2026-10-15T08:50:16.200Z",
+  "sourceHash": "8e813237c0539cf4c0ac9b11d1f3dd0a1b2e58a59f652a55a18a83d3b72ec1e6",
+  "targetId": "8F8C3B2BE895EF8679685EA08A3E5FEA",
+  "servicesRestarted": false,
+  "temporaryUntilReload": true,
+  "hash": "8e813237c0539cf4c0ac9b11d1f3dd0a1b2e58a59f652a55a18a83d3b72ec1e6",
+  "microphoneRequests": 0,
+  "voice": true,
+  "status": null,
+  "bridge": false
+}

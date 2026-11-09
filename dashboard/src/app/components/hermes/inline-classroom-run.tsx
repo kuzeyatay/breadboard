@@ -113,7 +113,7 @@ export default function InlineClassroomRun({
     (outcome: "completed" | "failed" | "aborted", content: string) => {
       if (reported.current) return;
       reported.current = true;
-      if (outcome === "completed") notifyTaskCompleted(`Classroom — ${brief.slice(0, 80)}`);
+      if (outcome === "completed") notifyTaskCompleted(`Classroom — ${brief.slice(0, 80)}`, { runId });
       terminalRef.current?.({ outcome, content });
     },
     [brief],
@@ -201,7 +201,7 @@ export default function InlineClassroomRun({
         usage={persistedUsage}
         summary={summaryLine}
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <header className="bb-agent-run-header">
           <p className="bb-agent-run-title">
             Classroom

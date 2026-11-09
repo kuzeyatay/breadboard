@@ -77,6 +77,10 @@ export interface RestoreRuntimeSessionInput
 }
 
 export interface StartRuntimeRunInput {
+  /** Authenticated owner, used to resolve current personal system prompts. */
+  userId?: number | null;
+  /** Local timing only; never forwarded as a provider or tool argument. */
+  onPreparationPhase?: (phase: string) => void;
   externalSessionId: string;
   liveSessionId?: string;
   workspaceKey: string;

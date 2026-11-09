@@ -24,6 +24,7 @@
 
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { randomUUID } from "node:crypto";
+import { apiAnythingPublicMcpConfig } from "../api-anything/agents.ts";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { configRoot } from "./state-paths.ts";
 import { DEFAULT_MODEL_ID, PROVIDER_ID } from "./contract.ts";
@@ -64,6 +65,7 @@ export function buildConfig(shape: ConfigShape): Record<string, unknown> {
     // forever when one is asked. Sessions deny it too; this is the outer guard.
     permission: { question: "deny" },
     autoupdate: false,
+    mcp: apiAnythingPublicMcpConfig(),
     provider: {
       [PROVIDER_ID]: {
         npm: "@ai-sdk/openai",

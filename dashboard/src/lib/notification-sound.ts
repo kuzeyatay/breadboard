@@ -5,6 +5,22 @@ const MAX_RECEIPTS = 256;
 let receipts: string[] = [];
 let lastPlayedAt = 0;
 
+export function notificationDeliveryReceipts(): Set<string> {
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(RECEIPTS_KEY) ?? '[]');
+    if (Array.isArray(stored)) receipts = stored.filter((id): id is string => typeof id === 'string');
+  } catch { /* Keep the local receipts when storage is unavailable. */ }
+  return new Set(receipts);
+}
+
+/** Native OS alerts and in-app chimes share a single delivery receipt. */
+export function recordNotificationDelivery(ids: readonly string[]): void {
+  const known = notificationDeliveryReceipts();
+  receipts = [...new Set([...known, ...ids])].slice(-MAX_RECEIPTS);
+  try { window.localStorage.setItem(RECEIPTS_KEY, JSON.stringify(receipts)); }
+  catch { /* Retain in memory for this renderer. */ }
+}
+
 export function getNotificationSoundEnabled(): boolean {
   try { return window.localStorage.getItem(PREFERENCE_KEY) !== 'false'; }
   catch { return true; }
@@ -82,16 +98,10 @@ export function chimeForNotifications(
   if (!ids.length || typeof window === 'undefined') return cancel;
   const deliver = () => {
     if (cancelled) return;
-    try {
-      const stored: unknown = JSON.parse(window.localStorage.getItem(RECEIPTS_KEY) ?? '[]');
-      if (Array.isArray(stored)) receipts = stored.filter((id): id is string => typeof id === 'string');
-    } catch { /* Retain this renderer's receipts if storage is unavailable. */ }
-    const known = new Set(receipts);
+    const known = notificationDeliveryReceipts();
     const fresh = ids.filter(id => !known.has(id) && isVisible(id));
     if (!fresh.length) return;
-    receipts = [...new Set([...receipts, ...fresh])].slice(-MAX_RECEIPTS);
-    try { window.localStorage.setItem(RECEIPTS_KEY, JSON.stringify(receipts)); }
-    catch { /* Repeated polls still stay silent in this renderer. */ }
+    recordNotificationDelivery(fresh);
     // Muted notices are consumed too, so enabling sound never plays a backlog.
     if (!getNotificationSoundEnabled() || Date.now() - lastPlayedAt < 1_000) return;
     lastPlayedAt = Date.now();

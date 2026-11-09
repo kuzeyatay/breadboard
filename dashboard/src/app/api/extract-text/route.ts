@@ -7,7 +7,7 @@ import { extractZipText } from '@/lib/conversations/stored-file-text';
 import { ApiError } from '@/lib/hermes/route-core';
 import type OpenAI from 'openai';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
-import { withCouncil } from '@/lib/council';
+import { withCouncil } from "@/lib/system-prompts/council.ts";
 import { DEFAULT_MODEL } from '@/lib/ai-models';
 import { createChatmockClient } from '@/lib/chatmock-client';
 import { requireUserId, routeErrorResponse } from '@/lib/server-auth';
@@ -77,6 +77,7 @@ async function transcribeImage(
   client: OpenAI,
   dataUrl: string,
   label: string,
+  userId: number,
 ): Promise<string> {
   const response = await client.chat.completions.create(withCouncil({
     model: DEFAULT_MODEL,
@@ -93,7 +94,7 @@ async function transcribeImage(
         },
       ],
     }],
-  }, { taskType: 'ocr' }));
+  }, { taskType: 'ocr' }, userId));
   return response.choices[0]?.message?.content?.trim() ?? '';
 }
 
@@ -101,7 +102,7 @@ async function transcribeImage(
 export async function POST(request: Request) {
   try {
     const { baseURL } = resolveChatmockBaseUrl(request);
-    await requireUserId();
+    const userId = await requireUserId();
     const formData = await request.formData();
     const file = formData.get('file');
     const isHandwriting = formData.get('isHandwriting') === 'true';
@@ -122,7 +123,7 @@ export async function POST(request: Request) {
       if (isHandwriting) {
         // OCR via vision model
         const client = createChatmockClient(baseURL);
-        const text = await transcribeImage(client, dataUrl, 'Image');
+        const text = await transcribeImage(client, dataUrl, 'Image', userId);
         return NextResponse.json({ type: 'text', text, name: file.name });
       }
 
@@ -134,7 +135,7 @@ export async function POST(request: Request) {
     if (ext === 'pdf') {
       const buffer = Buffer.from(await file.arrayBuffer());
       const result = await readPdfAttachment(buffer, {
-        handwriting: isHandwriting, baseURL, signal: request.signal,
+        handwriting: isHandwriting, baseURL, signal: request.signal, userId,
       }).catch((error) => {
         throw new ApiError(422, 'document_read_failed', error instanceof Error ? error.message : 'The PDF could not be read. Retry the attachment.');
       });

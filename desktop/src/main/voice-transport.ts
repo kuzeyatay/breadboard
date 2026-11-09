@@ -3,14 +3,18 @@ import type { Session } from 'electron';
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const MAX_UPLOAD_BYTES = 26 * 1024 * 1024;
 
-/** Only the app's authenticated speech routes may bypass Chromium's HTTP/1 pool. */
+/** Authenticated speech and the voice model's two preference reads bypass Chromium's HTTP/1 pool. */
 export function voiceRequestUrl(value: string, dashboardUrl: string | null, method: string): URL | null {
   if (!dashboardUrl || !METHODS.has(method)) return null;
   try {
     const base = new URL(dashboardUrl), url = new URL(value);
+    // Resolve the current voice model without queueing behind ordinary app
+    // requests. Keep writes and all other profile routes on their usual path.
+    const voicePreferenceRead = method === 'GET' &&
+      (url.pathname === '/api/profile/voice-assistant' || url.pathname === '/api/assistant-preferences');
     if (base.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname) ||
         base.username || base.password || url.origin !== base.origin || url.username || url.password ||
-        !/^\/api\/speech\/[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(url.pathname)) return null;
+        (!voicePreferenceRead && !/^\/api\/speech\/[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(url.pathname))) return null;
     return url;
   } catch { return null; }
 }

@@ -46,6 +46,10 @@
 .history { margin-top:12px; font-size:10px; color:var(--ink-muted); }
 .srOnly { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .nested { margin-top:14px; }
+.studio { margin:12px 0 20px; }
+.studio h3 { margin-top:0; }
+.manualConnection { margin-top:22px; border-top:1px solid var(--line); padding-top:16px; }
+.manualConnection > summary { cursor:pointer; font-size:12px; font-weight:550; }
 @container (max-width:330px) { .main { grid-template-columns:100px minmax(0,1fr); gap:12px; } .photo { width:100px; height:120px; } .header { gap:8px; } .pill { font-size:9px; padding:4px 7px; } .progressNumber { font-size:34px; } }
 @media (prefers-reduced-motion:reduce) { .fill,.button,.primary { transition:none; transform:none; } .indeterminate,.sheet,.overlay { animation:none; } }
 @keyframes transfer { from { transform:translateX(-100%); } to { transform:translateX(390%); } }

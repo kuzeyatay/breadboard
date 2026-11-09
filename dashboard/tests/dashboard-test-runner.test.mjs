@@ -22,6 +22,11 @@ test("dashboard test discovery partitions the exact real-browser lane", () => {
   assert.ok(discovered.includes("dashboard-test-runner.test.mjs"));
   assert.deepEqual(partition.browser, [...SERIAL_BROWSER_TEST_FILES]);
   assert.deepEqual(partition.browser, [
+    "api-anything-ui.test.mjs",
+    "system-prompts-browser.test.mjs",
+    "desktop-tab-overflow-browser.test.mjs",
+    "chat-notification-visibility-browser.test.mjs",
+    "chat-notification-real-renderer.test.mjs",
     "skills-chat-browser.test.mjs",
     "skills-library-browser.test.mjs",
     "private-browser-home-browser.test.mjs",
@@ -46,12 +51,14 @@ test("dashboard test discovery partitions the exact real-browser lane", () => {
     "chat-markdown-containment-browser.test.mjs",
     "chat-lens-rail-browser.test.mjs",
     "composer-layout-browser.test.mjs",
+    "browser-terminal-layout-browser.test.mjs",
     "chat-prompt-suggestion-browser.test.mjs",
     "recommendations-browser.test.mjs",
     "composer-add-menu-browser.test.mjs",
     "composer-menu-search-browser.test.mjs",
     "graph-idle-browser.test.mjs",
     "garden-folder-creation.test.mjs",
+    "garden-create-browser.test.mjs",
     "garden-upload-refresh-browser.test.mjs",
     "garden-note-creation.test.mjs",
     "garden-new-chat-browser.test.mjs",

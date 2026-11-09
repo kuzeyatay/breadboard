@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useDesktopTabs } from "./use-desktop-tabs";
+import { desktopTabsBridge } from "@/lib/desktop-browser-tabs";
 import styles from "./navbar-flower-wind.module.css";
 
 type PlantVariant = "grassShort" | "grassTall" | "flowerLow" | "flowerTall";
@@ -10,6 +12,10 @@ interface Plant {
   left: string;
   bottom: number;
   scale: number;
+  delay: string;
+  duration: string;
+  sway: string;
+  rotate: string;
   variant: PlantVariant;
   flowerColor?: string;
   flowerCenter?: string;
@@ -35,7 +41,7 @@ interface Comet {
 const PLANT_COUNT = 24;
 const FLOWER_COUNT = 6;
 const STAR_COUNT = 56;
-const COMET_COUNT = 1;
+const COMET_COUNT = 3;
 const FLOWER_COLORS = ["#F2C94C", "#E88CA5", "#7FADE8", "#B99AE8"] as const;
 const STAR_COLORS = ["#d6ddd5", "#9fb5c4", "#b2a6c4", "#a8c4bb"] as const;
 const DEFAULT_CENTER = "#F2C94C";
@@ -91,7 +97,7 @@ function selectFlowerSlots(random: RandomSource): Set<number> {
   return new Set(selected.sort((a, b) => a - b));
 }
 
-function createPlants(random: RandomSource): Plant[] {
+function createPlants(random: RandomSource): Omit<Plant, "delay" | "duration" | "sway" | "rotate">[] {
   const flowerSlots = selectFlowerSlots(random);
 
   return Array.from({ length: PLANT_COUNT }, (_, index) => {
@@ -136,7 +142,17 @@ function createPlants(random: RandomSource): Plant[] {
   });
 }
 
-const INITIAL_PLANTS = createPlants(seededRandom(1224));
+const INITIAL_PLANTS = createPlants(seededRandom(1224)).map((plant, index) => {
+  const random = seededRandom(8501 + index * 7919);
+  const flower = plant.variant === "flowerLow" || plant.variant === "flowerTall";
+  return {
+    ...plant,
+    delay: `-${toFixedNumber(between(random, 0.1, 5.4))}s`,
+    duration: `${toFixedNumber(between(random, 3.1, 5.5))}s`,
+    sway: `${toFixedNumber(between(random, flower ? 5.2 : 4, flower ? 8 : 7.2))}px`,
+    rotate: `${toFixedNumber(between(random, flower ? 2.8 : 2, flower ? 4.8 : 4.2))}deg`,
+  };
+});
 
 function createStars(random: RandomSource): Star[] {
   return Array.from({ length: STAR_COUNT }, (_, index) => ({
@@ -187,11 +203,29 @@ function synchronizedDelay(
 
 function plantStyle(
   plant: Plant,
+  animationClockMs: number | null,
 ): CSSProperties {
+  const sway = Number.parseFloat(plant.sway);
+  const rotate = Number.parseFloat(plant.rotate);
+
   return {
     "--plant-left": plant.left,
     "--plant-bottom": `${plant.bottom}px`,
     "--plant-scale": plant.scale,
+    "--plant-delay": synchronizedDelay(
+      plant.delay,
+      plant.duration,
+      animationClockMs,
+    ),
+    "--plant-duration": plant.duration,
+    "--plant-sway-left": `${-(sway * 0.45).toFixed(1)}px`,
+    "--plant-sway-right": plant.sway,
+    "--plant-sway-soft": `${(sway * 0.8).toFixed(1)}px`,
+    "--plant-sway-rest": `${(sway * 0.25).toFixed(1)}px`,
+    "--plant-rotate-left": `${-(rotate * 0.75).toFixed(1)}deg`,
+    "--plant-rotate-right": plant.rotate,
+    "--plant-rotate-soft": `${(rotate * 0.75).toFixed(1)}deg`,
+    "--plant-rotate-rest": `${(rotate * 0.2).toFixed(1)}deg`,
     "--flower-head": plant.flowerColor ?? "#F2C94C",
     "--flower-center": plant.flowerCenter ?? DEFAULT_CENTER,
   } as CSSProperties;
@@ -321,14 +355,36 @@ function PlantSprite({
   return <GrassShortSprite />;
 }
 
+function subscribeVisibility(changed: () => void) {
+  document.addEventListener("visibilitychange", changed);
+  return () => document.removeEventListener("visibilitychange", changed);
+}
+const pageVisible = () => document.visibilityState !== "hidden";
+const serverVisible = () => false;
+
 export default function NavbarFlowerWind({
   showFlowers = true,
 }: {
   showFlowers?: boolean;
 }) {
+  const tabs = useDesktopTabs();
+  const visible = useSyncExternalStore(subscribeVisibility, pageVisible, serverVisible);
+  const presentedId = tabs?.visibleId ?? tabs?.presentedId ?? tabs?.activeId;
+  const ownGroup = tabs?.tabs.find(tab => tab.id === tabs.selfId)?.groupId;
+  const splitVisible = Boolean(ownGroup && tabs?.groups?.some(group => group.id === ownGroup && group.split)
+    && tabs?.tabs.some(tab => tab.id === presentedId && tab.groupId === ownGroup));
+  // A visible navbar keeps moving while reading or using another monitor.
+  // Retained/background renderers and offscreen prewarmed tabs stay paused.
+  const active = visible && (tabs
+    ? !tabs.preparingNewTab && tabs.selfId != null && (tabs.selfId === presentedId || splitVisible)
+    : !desktopTabsBridge());
   const [animationClockMs, setAnimationClockMs] = useState<number | null>(null);
 
   useEffect(() => {
+    if (!active) {
+      setAnimationClockMs(null);
+      return;
+    }
     // Keep the server and first client render identical, then sample the shared
     // wall clock before starting the paused animations. The plant/star layout
     // itself stays seeded and identical in every document.
@@ -337,9 +393,9 @@ export default function NavbarFlowerWind({
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, []);
+  }, [active]);
 
-  const animationReady = animationClockMs !== null ? "true" : undefined;
+  const animationReady = active && animationClockMs !== null ? "true" : undefined;
 
   return (
     <>
@@ -347,14 +403,13 @@ export default function NavbarFlowerWind({
         <div
           className={styles.wind}
           data-animation-ready={animationReady}
-          style={{ "--wind-delay": synchronizedDelay("0s", "6s", animationClockMs) } as CSSProperties}
         >
           <div className={styles.grassBed} />
           {INITIAL_PLANTS.map((plant, index) => (
             <span
               key={`${plant.variant}-${index}`}
               className={styles.plant}
-              style={plantStyle(plant)}
+              style={plantStyle(plant, animationClockMs)}
             >
               <span className={styles.plantSprite}>
                 <PlantSprite

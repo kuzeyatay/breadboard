@@ -1,5 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { createRequire } from "node:module";
 import type * as Authority from "../../../../desktop/src/shared/source-repair.ts";
 

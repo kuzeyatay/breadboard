@@ -21,7 +21,7 @@ import {
   searchProducts,
   type ProductSearchInput,
 } from "@/lib/product-search/service.ts";
-import { productSearchMarketContext } from "@/lib/product-search/market-context.ts";
+import { resolveProductSearchMarketContext } from "@/lib/product-search/market-context.ts";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
 
 export const dynamic = "force-dynamic";
@@ -88,7 +88,9 @@ export async function POST(request: Request) {
     const args = body.args && typeof body.args === "object" && !Array.isArray(body.args)
       ? (body.args as unknown as ProductSearchInput)
       : ({} as ProductSearchInput);
-    const market = productSearchMarketContext(session.id);
+    if (request.signal.aborted) throw new ProductSearchError("product_search_aborted", "Product search was cancelled.");
+    const market = await resolveProductSearchMarketContext(session.id);
+    if (request.signal.aborted) throw new ProductSearchError("product_search_aborted", "Product search was cancelled.");
     // A model-supplied country is only a fallback for turns without an opted-in
     // current-location market. The signed session's server-owned market wins,
     // so tool arguments cannot silently redirect local purchase links.
@@ -98,6 +100,7 @@ export async function POST(request: Request) {
         ...(market ? { country: market.locale } : {}),
       },
       {
+        userId: session.user_id,
         signal: request.signal,
         baseUrl: resolveChatmockBaseUrl(request).baseURL,
         userRequest: decision?.requestedOutcome,

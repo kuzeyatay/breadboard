@@ -882,7 +882,11 @@ export class VideoTranscriptionRunner {
             : `${mediaKind} upload: ${job.originalFilename ?? "media"}`,
         markdownBody: markdown.body,
         plainText: markdown.plainText,
-        metadata: markdown.metadata,
+        // Only the job id goes in the note: the path stays in the job row, so
+        // editable Markdown can never choose which local file gets served.
+        metadata: job.mediaOriginPath
+          ? { ...markdown.metadata, source_media: `origin:${jobId}` }
+          : markdown.metadata,
         youtubeVideoId: job.youtubeVideoId,
         mediaSha256: job.mediaSha256,
         mediaFilePath:
@@ -955,7 +959,8 @@ export class VideoTranscriptionRunner {
         errorCode: null,
         errorMessage: null,
       });
-      if (pending.scriberrJobId && this.deps.config.deleteScriberrJobs) {
+      // Scriberr keeps an MP3 of every job until the job is deleted.
+      if (pending.scriberrJobId && (this.deps.config.deleteScriberrJobs || !pending.retainMedia)) {
         try {
           await this.deps.createScriberrClient().deleteJob(pending.scriberrJobId);
         } catch {
@@ -974,7 +979,7 @@ export class VideoTranscriptionRunner {
     });
     await this.cleanupTempMedia(jobId);
     const job = this.deps.store.getJob(jobId);
-    if (job?.scriberrJobId && this.deps.config.deleteScriberrJobs) {
+    if (job?.scriberrJobId && (this.deps.config.deleteScriberrJobs || !job.retainMedia)) {
       try {
         await this.deps.createScriberrClient().deleteJob(job.scriberrJobId);
       } catch {

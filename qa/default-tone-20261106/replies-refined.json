@@ -1,0 +1,604 @@
+{
+  "startedAt": "2026-11-06T18:08:54.073Z",
+  "base": "http://127.0.0.1:55504/v1",
+  "models": [
+    "cliproxy/gemini-3.8-flash-high",
+    "gpt-6-luna"
+  ],
+  "profileExists": false,
+  "method": "Live gateway requests with production core/Hermes prompt builders; no style block or custom profile supplied by the harness. Not a full UI test.",
+  "sourceHashes": {
+    "chatmock/chatmock/council/unslop.py": "60847742b9e0fc426cd150e4ce56add40d348b05492fb074c08300e62bcc6649",
+    "chatmock/chatmock/routes_openai.py": "a85cce4c11270b37253929a422628d6495493e0275b74c7ecd637908da342dd6",
+    "hermes-config/system/chat-core.md": "66bcec54e785d76fb1737ff6884947dbcb430385d3567d41b0c1f4ed60140c9e",
+    "unslop/SKILL.md": "d26b475efedda40499e4993d0c38209d8a76fe234eba302d1e54375078a94b38"
+  },
+  "results": [
+    {
+      "id": "terminal",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "Why does coffee cool faster in a wide mug than in a narrow one?",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "Coffee cools mainly through evaporation and convection at its exposed surface, where heat transfers directly into the cooler air above. \n\nA wide mug spreads the same volume of liquid across a broader opening, creating a larger surface-area-to-volume ratio. More hot liquid makes contact with the ambient air at any given moment, letting water molecules evaporate more quickly and carry away thermal energy. In a tall, narrow mug, that same volume of coffee has a smaller opening to lose heat through, and the deeper column of liquid keeps more of its warmth insulated away from the surface.",
+      "jsonContract": null,
+      "words": 96,
+      "score": 4,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 4.81
+    },
+    {
+      "id": "garden",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "Explain what a capacitor does.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "A capacitor stores energy in an electric field between two conductive plates separated by an insulating gap. When you apply a voltage across it, electrons gather on one plate and leave the other, building up opposite charges until the voltage across the plates matches the power source. \n\nBecause the plates are physically separated, steady direct current cannot travel through them. Instead, a capacitor acts like a small, quick-acting reservoir: it absorbs charge when the circuit's voltage rises and releases that charge when the voltage drops, which helps smooth out electrical ripple in power supplies. In alternating current circuits, this continuous charging and discharging allows signals to pass through while blocking constant direct current.",
+      "jsonContract": null,
+      "words": 113,
+      "score": 3,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 5.18
+    },
+    {
+      "id": "quartz",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "Why does sweating cool me down?",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "When sweat reaches your skin, it absorbs body heat and evaporates into the air. \n\nThe cooling comes from how liquid particles behave. Molecules in sweat move at different speeds, and temperature reflects their average kinetic energy. The fastest, most energetic water molecules are the ones capable of breaking away into vapor. Because those high-energy particles leave, the average energy of the liquid staying behind drops, which lowers the temperature of the skin directly beneath it.",
+      "jsonContract": null,
+      "words": 75,
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 4.07
+    },
+    {
+      "id": "voice",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "Why does the bathroom mirror fog up after a shower?",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "Hot water from the shower evaporates into the air, filling the bathroom with warm water vapor and raising the relative humidity. The mirror glass is much cooler than that moist air. \n\nWhen the warm vapor touches the cool glass, it loses heat and condenses back into tiny liquid water droplets. Those thousands of microscopic droplets scatter the light reflecting off the surface, which turns the clear reflection into a foggy blur.",
+      "jsonContract": null,
+      "words": 71,
+      "score": 3,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 3.96
+    },
+    {
+      "id": "agent-off",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "responses",
+      "question": "Write a short project update for my team. The search feature is delayed from Tuesday to Friday because testing found duplicate results. Maya is fixing it. We will test again on Thursday.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "cliproxy/gemini-3.8-flash-high",
+      "finishReason": "completed",
+      "answer": "The search feature is moving back a few days, from Tuesday to Friday. QA turned up duplicate results during testing. Maya is working on the fix, and we plan to run another round of tests on Thursday.",
+      "jsonContract": null,
+      "words": 37,
+      "score": 1,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 3.99
+    },
+    {
+      "id": "legacy-garden",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "responses",
+      "question": "What is the difference between remembering something and understanding it?",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "cliproxy/gemini-3.8-flash-high",
+      "finishReason": "completed",
+      "answer": "Remembering is storing information so you can retrieve it in roughly the form you received it. You know that a statement is true, or you can reproduce a sequence of steps, names, or dates. It depends primarily on recall. If someone changes the phrasing or asks you to apply the same fact in an unfamiliar situation, retrieval often breaks down because the memory is tied to the original context.\n\nUnderstanding means having a working mental model of how the parts connect and why they produce a particular outcome. When you understand a concept, you can restate it in your own words, predict what happens when one variable shifts, and spot the same dynamic under different surface details. You can usually reconstruct a forgotten step by reasoning through the relationship, whereas pure recall gives you no way to rebuild what slipped your mind.",
+      "jsonContract": null,
+      "words": 142,
+      "score": 1,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 6.05
+    },
+    {
+      "id": "knowledge-chat",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "responses",
+      "question": "Explain why taking breaks can help when I am stuck on a problem.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "cliproxy/gemini-3.8-flash-high",
+      "finishReason": "completed",
+      "answer": "When you focus intensely on a problem, your attention narrows. That focus helps you run through obvious approaches, but it can also trap you in a mental rut, repeatedly trying variations of an idea that leads nowhere. \n\nStepping away loosens that grip. While your conscious mind turns to something else, like walking around the block or making tea, your brain continues processing the problem in the background. In neuroscience, this is often linked to the default mode network, an interconnected set of brain regions that becomes active during daydreaming, rest, and passive tasks. This mode is better at drawing broad, loose connections between distant memories and concepts that deliberate concentration tends to filter out.\n\nA break also resets your working memory. The wrong assumptions and dead ends you were clinging to fade slightly, so when you return to the desk, you see the problem more like a newcomer would. That shift in perspective is usually what makes a solution suddenly seem obvious.",
+      "jsonContract": null,
+      "words": 162,
+      "score": 0,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 4.74
+    },
+    {
+      "id": "voice-draft",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "responses",
+      "question": "Spoken request: Draft a reply to Sam saying I can meet on Thursday at 2 pm. No screen context is needed for this request.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "cliproxy/gemini-3.8-flash-high",
+      "finishReason": "completed",
+      "answer": "Thursday at 2 pm works great for me. Where would you like to meet?",
+      "jsonContract": null,
+      "words": 14,
+      "score": 1,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 5.2
+    },
+    {
+      "id": "word-editor",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "User request: What does this paragraph mean? Explain it without editing the document.\nCurrent document: A capacitor stores energy in an electric field. Current changes the charge on its plates.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "{\"message\":\"A capacitor works like a small temporary storage tank for electrical energy. Instead of using a chemical reaction like a battery does, it pulls opposite electrical charges onto two metal plates separated by an insulator. That separation creates an electric field between the plates, which holds the stored energy. When electrical current flows into or out of the component, it adds or removes electrons on those surfaces. The total stored charge Q equals the capacitance C multiplied by the voltage V across the plates.\",\"actions\":[]}",
+      "jsonContract": true,
+      "words": 84,
+      "score": 4,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 6.66
+    },
+    {
+      "id": "concise",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "I keep putting off a ten-minute email. How do I get started?",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "Open a blank draft, type the recipient's name, and write one ugly sentence that states the point. \n\nThe block is usually deciding how to phrase the whole message at once. Treat the first pass as private notes:\n\n1. Write the core fact or ask in plain, blunt words (for example: \"Attached is the report. Let me know if Friday works to review it.\").\n2. Fix the phrasing so it sounds like a normal person wrote it.\n3. Add the recipient's email address and hit send.\n\nSet a timer on your phone for three minutes. You only need to produce the bad draft before the timer ends; editing takes sixty seconds once the words are on the screen.",
+      "jsonContract": null,
+      "words": 117,
+      "score": 45,
+      "findings": [
+        {
+          "id": "chatbot-artifact",
+          "count": 1,
+          "note": "Chatbot correspondence pasted as content."
+        }
+      ],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 4.04
+    },
+    {
+      "id": "follow-up",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "responses",
+      "question": "Use these facts instead: search is moving from Tuesday to Friday because of duplicate results. Maya is fixing it; testing is Thursday. Keep it to a short paragraph.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "cliproxy/gemini-3.8-flash-high",
+      "finishReason": "completed",
+      "answer": "We are moving the search release from Tuesday to Friday to resolve an issue with duplicate results. Maya is handling the fix, and we plan to run tests on Thursday before rolling it out.",
+      "jsonContract": null,
+      "words": 34,
+      "score": 3,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 3.12
+    },
+    {
+      "id": "terminal",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "Why does coffee cool faster in a wide mug than in a narrow one?",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "A wide mug exposes more of the coffee’s surface to the air. That lets heat escape faster through evaporation and convection. The wider, shallower pool can also lose heat by radiation across its larger exposed surface.\n\nA narrow mug has less exposed surface area for the same amount of coffee, so it usually cools more slowly. The mug’s material, room temperature, and airflow also affect how quickly it cools.",
+      "jsonContract": null,
+      "words": 69,
+      "score": 3,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.94
+    },
+    {
+      "id": "markdown-editor",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "Explain what this formula means, without editing my document: Q = C * V.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "cliproxy/gemini-3.8-flash-high",
+      "finishReason": "stop",
+      "answer": "{\n  \"message\": \"The formula Q = C * V describes how much charge sits on a capacitor at a given voltage.\\n\\nIn this equation, Q is the stored electric charge in coulombs. C is capacitance in farads, which measures the component's physical capacity to hold charge based on its plate area, spacing, and dielectric material. V is the electric potential difference across those plates in volts.\\n\\nBecause charge is proportional to both capacitance and voltage, doubling the voltage across a fixed capacitor doubles the charge it holds. If you keep the voltage fixed but swap in a capacitor with twice the capacitance, it stores twice the charge.\",\n  \"content\": null\n}",
+      "jsonContract": true,
+      "words": 105,
+      "score": 4,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 16.32
+    },
+    {
+      "id": "garden",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "Explain what a capacitor does.",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "A capacitor stores energy in an electric field between its plates. When current flows into it, charge builds up on the plates and the voltage across them rises. When the capacitor discharges, that stored energy flows back into the circuit.\n\nIts capacitance tells you how much charge it stores for a given voltage: \\(C = Q/V\\). Capacitors are used, for example, to smooth voltage changes and briefly supply energy to a circuit.",
+      "jsonContract": null,
+      "words": 72,
+      "score": 4,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 3.45
+    },
+    {
+      "id": "quartz",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "Why does sweating cool me down?",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "Sweat cools you as it evaporates. Evaporation takes energy, and the escaping water molecules draw that heat from your skin. The heat leaves with the vapor, so your skin cools.",
+      "jsonContract": null,
+      "words": 30,
+      "score": 1,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.67
+    },
+    {
+      "id": "voice",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "Why does the bathroom mirror fog up after a shower?",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "A shower fills the air with warm water vapor. When that moist air touches the cooler mirror, it cools, and some of the vapor condenses into tiny water droplets on the glass. Those droplets scatter light, making the mirror look foggy.",
+      "jsonContract": null,
+      "words": 41,
+      "score": 0,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.43
+    },
+    {
+      "id": "agent-off",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "responses",
+      "question": "Write a short project update for my team. The search feature is delayed from Tuesday to Friday because testing found duplicate results. Maya is fixing it. We will test again on Thursday.",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "completed",
+      "answer": "The search feature is delayed from Tuesday to Friday after testing found duplicate results. Maya is fixing the issue, and we’ll test again on Thursday.",
+      "jsonContract": null,
+      "words": 25,
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.34
+    },
+    {
+      "id": "legacy-garden",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "responses",
+      "question": "What is the difference between remembering something and understanding it?",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "completed",
+      "answer": "Remembering means you can bring information back to mind: a name, a fact, a formula, or a sequence of steps.\n\nUnderstanding means you can explain how the information fits together and use it in a new situation. You might remember that dividing by a fraction means multiplying by its reciprocal; you understand it when you can explain why that works and recognize when to use it.\n\nThey often grow together, but they’re different: memory gives you something to work with, while understanding lets you reason with it.",
+      "jsonContract": null,
+      "words": 87,
+      "score": 5,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 3.5
+    },
+    {
+      "id": "knowledge-chat",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "responses",
+      "question": "Explain why taking breaks can help when I am stuck on a problem.",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "completed",
+      "answer": "When you’re stuck, your attention can get locked onto the same approach. A short break gives working memory a chance to clear and lets your mind make looser connections, so you may notice a different path when you return.\n\nBreaks help most when they’re long enough to shift your attention. Step away from the problem, then come back and restate what you’re trying to solve.",
+      "jsonContract": null,
+      "words": 65,
+      "score": 1,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.87
+    },
+    {
+      "id": "voice-draft",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "responses",
+      "question": "Spoken request: Draft a reply to Sam saying I can meet on Thursday at 2 pm. No screen context is needed for this request.",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "completed",
+      "answer": "Hi Sam, I can meet on Thursday at 2 pm.",
+      "jsonContract": null,
+      "words": 10,
+      "score": 1,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 1.94
+    },
+    {
+      "id": "word-editor",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "User request: What does this paragraph mean? Explain it without editing the document.\nCurrent document: A capacitor stores energy in an electric field. Current changes the charge on its plates.",
+      "httpStatus": 200,
+      "routing": {},
+      "error": "Unexpected token 'A', \"A capacito\"... is not valid JSON",
+      "elapsedSeconds": 2
+    },
+    {
+      "id": "concise",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "I keep putting off a ten-minute email. How do I get started?",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "Open a blank email and write only the subject line. That’s enough to start.\n\nThen add one rough sentence about what you need. You can clean it up after; you don’t have to finish the whole email in one go.",
+      "jsonContract": null,
+      "words": 40,
+      "score": 0,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.33
+    },
+    {
+      "id": "follow-up",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "responses",
+      "question": "Use these facts instead: search is moving from Tuesday to Friday because of duplicate results. Maya is fixing it; testing is Thursday. Keep it to a short paragraph.",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "completed",
+      "answer": "Search is moving from Tuesday to Friday because of duplicate results. Maya is fixing the issue, and testing is scheduled for Thursday.",
+      "jsonContract": null,
+      "words": 22,
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.59
+    },
+    {
+      "id": "markdown-editor",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "Explain what this formula means, without editing my document: Q = C * V.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-requested-model": "gpt-6-luna",
+        "x-chatmock-resolved-model": "gpt-6-luna"
+      },
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "{\"message\":\"Q = C * V means charge equals capacitance multiplied by voltage. Q is charge in coulombs, C is capacitance in farads, and V is voltage in volts. For example, a 2-farad capacitor at 3 volts has a charge magnitude of 6 coulombs on each plate. Your document hasn't been edited.\",\"content\":null}",
+      "jsonContract": true,
+      "words": 51,
+      "score": 1,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 17.16
+    }
+  ],
+  "finishedAt": "2026-11-06T18:09:56.955Z"
+}

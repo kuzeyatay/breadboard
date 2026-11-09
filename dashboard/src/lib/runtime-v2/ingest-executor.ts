@@ -1,3 +1,6 @@
+import { scopedSystemPromptText } from "../system-prompts/service.ts";
+import { renderSystemPrompt } from "../system-prompts/service.ts";
+import { withGardenSystemPromptContext } from "../system-prompts/service.ts";
 // Disposable document-ingestion executor. Never import this module from Next routes.
 import fs from "fs";
 import path from "path";
@@ -9,7 +12,7 @@ import { setFlagsFromString } from "node:v8";
 import AdmZip from "adm-zip";
 import { PDFParse } from "pdf-parse";
 import type OpenAI from "openai";
-import { withCouncil } from "@/lib/council";
+import { withCouncil } from "@/lib/system-prompts/council.ts";
 import { mlxText } from "@/lib/document-structure/mlx";
 import {
   cleanGeneratedText,
@@ -401,6 +404,8 @@ function knowledgeCheckpointLocation({
 }): KnowledgeCheckpointLocation {
   const profile = JSON.stringify({
     schemaVersion: KNOWLEDGE_CHECKPOINT_SCHEMA_VERSION,
+    prompt: scopedSystemPromptText("knowledge-extraction"),
+    identity: scopedSystemPromptText("council-identity"),
     filename,
     model,
     sourceType,
@@ -1257,11 +1262,7 @@ async function formatPdfPagesAsMarkdown({
               {
                 role: "system",
                 content:
-                  "Convert raw PDF-extracted text into well-structured Markdown. " +
-                  "You are formatting one chunk from a larger PDF, so use the provided full-document outline to keep terminology and heading hierarchy consistent across chunks. " +
-                  "Preserve all content. Keep page labels as Markdown headings so page boundaries stay visible. " +
-                  "If a page is split into parts, keep the part labels. Clean up obvious PDF artifacts, but do not summarize, omit, or merge away content. " +
-                  "Return only Markdown, no commentary.",
+                  renderSystemPrompt("pdf-markdown-formatting", undefined, {  }),
               },
               {
                 role: "user",
@@ -2110,9 +2111,10 @@ async function spotOcrTextLines({
         desiredWidth: config.pageImageWidth,
         signal,
       });
-      for (const page of rendered) {
-        if (!wanted.has(page.pageNumber)) continue;
+      let usageLimited = false;
+      const locatePage = async (page: (typeof rendered)[number]) => {
         throwIfRequestAborted(signal);
+        if (usageLimited) return;
         done += 1;
         emit(`Locating OCR text on pages (${done}/${wanted.size})…`);
         try {
@@ -2129,11 +2131,15 @@ async function spotOcrTextLines({
         } catch (error) {
           if (isAbortError(error)) throw error;
           failedPages += 1;
-          if (isUsageLimitError(error)) {
-            return { lines, failedPages: wanted.size - lines.size };
-          }
+          if (isUsageLimitError(error)) usageLimited = true;
         }
-      }
+      };
+      const pagesToLocate = rendered.filter((page) => wanted.has(page.pageNumber));
+      // A hosted model reads a rendered batch in parallel: one page at a time
+      // took over an hour for a 142-page scan. The local VLM server stays serial.
+      if (locate) await Promise.all(pagesToLocate.map(locatePage));
+      else for (const page of pagesToLocate) await locatePage(page);
+      if (usageLimited) return { lines, failedPages: wanted.size - lines.size };
     } catch (error) {
       if (isAbortError(error)) throw error;
       for (let page = batchFirst; page <= batchLast; page += 1) {
@@ -2442,6 +2448,7 @@ export async function runIngest({
   deferredCheckpointCleanupPaths?: string[];
   emit: (step: string) => void;
 }): Promise<Record<string, unknown>> {
+  return withGardenSystemPromptContext(normalizedClusterSlug, async () => {
   // Multipart bytes are staged to a private file before this worker boundary.
   // Materialize at most one Buffer for parsers that require random access;
   // repeated safety/extraction passes reuse it instead of copying the upload.
@@ -3346,4 +3353,6 @@ export async function runIngest({
     mapGenerated: generateMap && !skipKnowledgeExtraction,
     topics: saved.topics,
   };
+
+  }, undefined);
 }

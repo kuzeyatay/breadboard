@@ -5,11 +5,21 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   cliproxyHome,
+  isSupportedCliproxyVersion,
   migrateLegacyCliproxyState,
   prepareDevelopmentCliproxyRuntime,
   renderCliproxyConfig,
 } from "../src/main/cliproxy";
 import type { ResolvedPaths } from "../src/main/path-resolver";
+
+test("cached proxies must support current Antigravity routing and model eligibility", () => {
+  for (const version of [null, "", "unknown", "7.2.111", "8.0.9", "8.0.57"]) {
+    assert.equal(isSupportedCliproxyVersion(version), false, String(version));
+  }
+  for (const version of ["8.0.58", "v8.0.58", "8.0.100", "8.1.0", "9.0.0"]) {
+    assert.equal(isSupportedCliproxyVersion(version), true, version);
+  }
+});
 
 test("subscription quota refusals return promptly to ChatMock failover", () => {
   const config = renderCliproxyConfig({

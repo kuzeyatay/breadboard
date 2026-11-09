@@ -2,6 +2,24 @@ export interface DisplayUsageLimitWindow {
   used_percent?: number;
   window_minutes?: number;
   resets_in_seconds?: number;
+  /** Absolute Unix seconds reported by the provider. */
+  resets_at?: number;
+}
+
+/** Prefer Code Notch's absolute reset time; anchor older countdowns to capture. */
+export function usageLimitResetAt(
+  capturedAt: string | undefined,
+  window: DisplayUsageLimitWindow,
+): number | null {
+  if (typeof window.resets_at === "number" && window.resets_at > 0) {
+    const absolute = new Date(window.resets_at * 1_000).getTime();
+    if (Number.isFinite(absolute)) return absolute;
+  }
+  const captured = Date.parse(capturedAt ?? "");
+  const seconds = window.resets_in_seconds;
+  if (!Number.isFinite(captured) || typeof seconds !== "number" || !Number.isFinite(seconds)) return null;
+  const reset = new Date(captured + Math.max(0, seconds) * 1_000).getTime();
+  return Number.isFinite(reset) ? reset : null;
 }
 
 export type UsageLimitWindowKey =

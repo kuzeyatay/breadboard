@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { voiceReplyWithOpener } from '@/lib/speech/voice-opener-context';
 import OpenAI from 'openai';
 import path from 'node:path';
 import type {
@@ -24,9 +25,9 @@ import { buildUrlLinkContext } from '@/lib/url-link-context';
 import { scanClusterKnowledgeCooperatively, type KnowledgeNode } from '@/lib/knowledge';
 import { retrieveGraphRag, type RetrievalGarden } from '@/lib/semantic-retrieval';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
-import { withCouncil } from '@/lib/council';
+import { withCouncil } from "@/lib/system-prompts/council.ts";
 import { requireUserId, routeErrorResponse } from '@/lib/server-auth';
-import { directModeSection } from '@/lib/hermes/direct-mode.ts';
+import { systemPromptText } from '@/lib/system-prompts/service.ts';
 import { chatCorePrompt } from '@/lib/hermes/system-prompts.ts';
 import { parseBrowserTerminalAccess } from '@/lib/browser-terminal.ts';
 import { browserTerminalPrompt } from '@/lib/hermes/browser-terminal-context.ts';
@@ -157,7 +158,7 @@ export async function POST(request: Request) {
   try {
     const { baseURL } = resolveChatmockBaseUrl(request);
     const userId = await requireUserId();
-    const { messages, model, thinking, reasoningEffort, attachments, scope, adhdMode, browserAccess } =
+    const { messages, model, thinking, reasoningEffort, attachments, scope, adhdMode, browserAccess, voice, voiceOpener, personalize } =
       await request.json();
 
     if (!Array.isArray(messages)) {
@@ -263,10 +264,10 @@ export async function POST(request: Request) {
     let systemPrompt =
       // Same prose-first voice and minimal-background rule the Hermes surfaces
       // get, so an answer does not change shape with the runtime behind it.
-      `${chatCorePrompt()}\n\n` +
-      `${await browserTerminalPrompt(parseBrowserTerminalAccess(browserAccess), false)}\n\n` +
+      `${chatCorePrompt(userId)}\n\n` +
+      `${await browserTerminalPrompt(parseBrowserTerminalAccess(browserAccess), false, { userId })}\n\n` +
       // The switch shapes an answer wherever it is answered, including here.
-      (adhdMode === true ? `${directModeSection()}\n\n` : '') +
+      (adhdMode === true ? `${systemPromptText("concise-mode", userId)}\n\n` : '') +
       (publicScope
         ? 'You are the assistant for the Breadboard public knowledge hub, which spans every public garden shared on the platform. ' +
           'Answer using the aggregated graph relationships and textbook pages from across all public gardens as grounded context. ' +
@@ -309,7 +310,9 @@ export async function POST(request: Request) {
     const responsesRequest = {
       model: selectedModel,
       instructions: systemPrompt,
-      input: buildResponsesInput(chatMessages, chatAttachments),
+      input: buildResponsesInput(chatMessages.map((message, index) => index === chatMessages.length - 1 && message.role === 'user'
+        ? { ...message, content: voiceReplyWithOpener(message.content, voice === true && personalize !== false && !publicScope ? voiceOpener : undefined) }
+        : message), chatAttachments),
       stream: true,
       store: false,
       ...(thinkingEnabled
@@ -334,7 +337,7 @@ export async function POST(request: Request) {
                   .slice(0, 20),
               }
             : undefined,
-      }),
+      }, userId),
     );
 
     const sourceNames = Array.from(

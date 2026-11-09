@@ -36,6 +36,7 @@ interface ToolEvent {
   key: number;
   kind: "tool";
   tool: string;
+  callId?: string;
   status: string;
   /** Ruflo coordination call (`mcp__ruflo__*`) rather than a file/shell tool. */
   swarm: boolean;
@@ -60,6 +61,7 @@ const STREAMED_EVENT_TYPES = [
   "swarm.started",
   "hive.connected",
   "reasoning.completed",
+  "tool.started",
   "tool.completed",
   "agent.usage",
   "text.completed",
@@ -87,6 +89,10 @@ function appendActivity(
   current: ActivityEvent[],
   event: ActivityEvent,
 ): ActivityEvent[] {
+  if (event.kind === "tool" && event.callId) {
+    const index = current.findIndex((item) => item.kind === "tool" && item.callId === event.callId);
+    if (index >= 0) return current.map((item, position) => position === index ? { ...event, key: item.key } : item);
+  }
   if (current.some((item) => item.key === event.key)) return current;
   return [...current, event]
     .sort((left, right) => left.key - right.key)
@@ -253,11 +259,12 @@ export default function InlineRufloRun({
         );
       }
       if (event.type === "agent.usage") setUsage(normalizeChatTokenUsage(payload));
-      if (event.type === "tool.completed") {
+      if (event.type === "tool.started" || event.type === "tool.completed") {
         setActivity((current) =>
           appendActivity(current, {
             key: event.sequenceNumber,
             kind: "tool",
+            callId: textValue(payload.callId) || undefined,
             tool: typeof payload.tool === "string" ? payload.tool : "tool",
             status:
               typeof payload.status === "string" ? payload.status : "completed",
@@ -283,7 +290,7 @@ export default function InlineRufloRun({
         setElapsed(numberValue(payload.elapsedSec));
         if (!reportedRef.current) {
           reportedRef.current = true;
-          notifyTaskCompleted(`Ruflo swarm finished: ${task}`);
+          notifyTaskCompleted(`Ruflo swarm finished: ${task}`, { runId });
           void reportTerminal("completed", summary);
         }
       }
@@ -371,7 +378,7 @@ export default function InlineRufloRun({
         responseDurationMs={!terminal || elapsed > 0 ? elapsed * 1_000 : undefined}
         agentName="Ruflo"
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <header className="bb-agent-run-header">
           <p className="bb-agent-run-title truncate">Ruflo</p>
           <span className="bb-agent-run-label inline-flex items-center gap-1.5 capitalize">

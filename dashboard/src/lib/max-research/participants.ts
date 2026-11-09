@@ -1,3 +1,4 @@
+import { systemPromptTextOrDefault } from "../system-prompts/service.ts";
 // One surface over research participants with different execution models.
 //
 // Five of them own a run: they take a task, return a run id, emit events, and
@@ -296,7 +297,7 @@ function feynmanRuntime(): ParticipantRuntime {
       try {
         const { researchFeynman, feynmanEvidenceText } = await import("../feynman/service.ts");
         const { planSearch } = await import("../get-doc/query-plan.ts");
-        const { plan } = await planSearch({
+        const { plan } = await planSearch({ userId: context.userId,
           baseUrl: context.baseUrl, model: context.model,
           reasoningEffort: context.reasoningEffort, task: brief.question,
         });
@@ -884,7 +885,7 @@ function arisRuntime(): ParticipantRuntime {
         const output = await completeText({
           baseUrl: context.baseUrl, model: context.model, reasoningEffort: context.reasoningEffort,
           signal: context.signal,
-          prompt: arisEvidenceReviewPrompt({question: brief.question, evidence: context.priorEvidence ?? "", methodology: `${definition.instructions}\n\n${guidance}`}),
+          prompt: arisEvidenceReviewPrompt({question: brief.question, evidence: context.priorEvidence ?? "", methodology: `${systemPromptTextOrDefault("agency-" + definition.slug, context.userId, definition.instructions)}\n\n${guidance}`}),
         });
         return withRealFindings({ participant: "aris", status: "completed", output });
       } catch (error) { return failed("aris", error); }

@@ -61,7 +61,7 @@ import {
 } from "../hermes/runtime-store.ts";
 import { getActiveRuntimeRun } from "../hermes/run-store.ts";
 import { preservesLiteralTeachingText } from "../teaching-plan.ts";
-import { directModeSection } from "../hermes/direct-mode.ts";
+import { systemPromptText } from "../system-prompts/service.ts";
 import {
   chatCorePrompt,
 } from "../hermes/system-prompts.ts";
@@ -215,19 +215,12 @@ function directSystemPrompt(
   suppliedEvidence = "",
   referencedChatContext = "",
   persona = "",
+  userId?: number,
 ): string {
   return [
-    chatCorePrompt(),
-    directMode ? directModeSection() : "",
-    [
-      "# direct_provider_turn",
-      "Agent mode is switched off for this message, so you are answering as the model alone.",
-      "You have no tools in this turn: no filesystem, terminal, web, Garden, artifact, memory, connection, skill, or subagent access, and nothing you say can start one.",
-      "Answer from this conversation and your own knowledge. If the request genuinely needs an action rather than an answer, say plainly that it needs Agent mode switched back on, and give whatever part of the answer you can without it.",
-      "A message beginning with a `/token` is a skill, connection, prompt, or agent the user picked from the palette. Except for a server-resolved `/reference:*` context selector, nothing resolved it for this turn, so read it as the name of what they wanted, say it needs Agent mode on, and answer the rest of the message normally.",
-      "You can read the messages supplied in this conversation. Never claim to have read external files, written, run, saved, sent, or remembered anything through tools.",
-      "Use supplied current-location context when geography affects the answer. If no current area or user-specified destination is available, do not assume a country from the conversation language, device time zone, or an earlier assistant guess; ask for the region only when needed.",
-    ].join("\n"),
+    chatCorePrompt(userId),
+    directMode ? systemPromptText("concise-mode", userId) : "",
+    systemPromptText("direct-provider", userId),
     currentLocationContext,
     referencedChatContext,
     persona,
@@ -652,8 +645,9 @@ export async function startDirectProviderTurn(
           ? composeExplicitCrossConversationContext(explicitChatReference)
           : "",
         botPersonalityPrompt(botsStore().forConversation(input.conversation.user_id, input.conversation.public_id)),
+        input.conversation.user_id,
       )
-        + "\n\n" + await browserTerminalPrompt(input.surface !== "quartz_ai" ? input.browserAccess : undefined, false),
+        + "\n\n" + await browserTerminalPrompt(input.surface !== "quartz_ai" ? input.browserAccess : undefined, false, { userId: input.conversation.user_id }),
       input: [
         ...history,
         currentUserInput(requestText, attachments),

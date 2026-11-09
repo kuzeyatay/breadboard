@@ -36,38 +36,73 @@ logger = logging.getLogger(__name__)
 # lark-oapi SDK availability
 # ---------------------------------------------------------------------------
 
-FEISHU_SDK_AVAILABLE = False
-_lark: Any = None  # type: ignore[assignment]
+# Importing the notification registry must not load the optional SDK's
+# entire generated API tree. Webhook sends do not need this dependency.
+_SDK_LOADED = False
+_SDK_LOCK = threading.Lock()
 FEISHU_DOMAIN = "feishu"
 LARK_DOMAIN = "lark"
-try:
-    import lark_oapi as _lark
-    from lark_oapi.api.im.v1 import (
-        CreateMessageRequest,
-        CreateMessageRequestBody,
-    )
-    from lark_oapi.core.const import FEISHU_DOMAIN as _SDK_FEISHU_DOMAIN
-    from lark_oapi.core.const import LARK_DOMAIN as _SDK_LARK_DOMAIN
+_SDK_EXPORTS = frozenset({
+    "FEISHU_SDK_AVAILABLE", "FEISHU_FILE_SDK_AVAILABLE", "_lark",
+    "CreateMessageRequest", "CreateMessageRequestBody",
+    "_CreateFileRequest", "_CreateFileRequestBody",
+})
 
-    FEISHU_DOMAIN = _SDK_FEISHU_DOMAIN
-    LARK_DOMAIN = _SDK_LARK_DOMAIN
-    FEISHU_SDK_AVAILABLE = True
-except ImportError:
-    pass
 
-# File-upload SDK classes (isolated from the core messaging SDK availability
-# so that an older lark-oapi without file support doesn't break App Bot text).
-FEISHU_FILE_SDK_AVAILABLE = False
-_CreateFileRequest: Any = None
-_CreateFileRequestBody: Any = None
-try:
-    from lark_oapi.api.im.v1 import (
-        CreateFileRequest as _CreateFileRequest,
-        CreateFileRequestBody as _CreateFileRequestBody,
-    )
-    FEISHU_FILE_SDK_AVAILABLE = True
-except ImportError:
-    pass
+def _load_feishu_sdk() -> None:
+    """Load messaging/file support once, only when an SDK operation is needed."""
+    global _SDK_LOADED, FEISHU_SDK_AVAILABLE, FEISHU_FILE_SDK_AVAILABLE
+    global _lark, FEISHU_DOMAIN, LARK_DOMAIN
+    global CreateMessageRequest, CreateMessageRequestBody
+    global _CreateFileRequest, _CreateFileRequestBody
+    if _SDK_LOADED:
+        return
+    with _SDK_LOCK:
+        if _SDK_LOADED:
+            return
+        FEISHU_SDK_AVAILABLE = False
+        _lark = None
+        FEISHU_DOMAIN = "feishu"
+        LARK_DOMAIN = "lark"
+        try:
+            import lark_oapi as _lark
+            from lark_oapi.api.im.v1 import (
+                CreateMessageRequest,
+                CreateMessageRequestBody,
+            )
+            from lark_oapi.core.const import FEISHU_DOMAIN as _SDK_FEISHU_DOMAIN
+            from lark_oapi.core.const import LARK_DOMAIN as _SDK_LARK_DOMAIN
+        
+            FEISHU_DOMAIN = _SDK_FEISHU_DOMAIN
+            LARK_DOMAIN = _SDK_LARK_DOMAIN
+            FEISHU_SDK_AVAILABLE = True
+        except ImportError:
+            pass
+        
+        # File-upload SDK classes (isolated from the core messaging SDK availability
+        # so that an older lark-oapi without file support doesn't break App Bot text).
+        FEISHU_FILE_SDK_AVAILABLE = False
+        _CreateFileRequest = None
+        _CreateFileRequestBody = None
+        try:
+            from lark_oapi.api.im.v1 import (
+                CreateFileRequest as _CreateFileRequest,
+                CreateFileRequestBody as _CreateFileRequestBody,
+            )
+            FEISHU_FILE_SDK_AVAILABLE = True
+        except ImportError:
+            pass
+        _SDK_LOADED = True
+
+
+def __getattr__(name: str) -> Any:
+    # Preserve the existing availability/class exports for SDK integrations.
+    if name in _SDK_EXPORTS:
+        _load_feishu_sdk()
+        if name in globals():
+            return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -124,6 +159,7 @@ class FeishuSender:
                 "无效的 FEISHU_DOMAIN=%s，回退为 feishu", raw_domain
             )
             raw_domain = "feishu"
+        self._feishu_domain_name = raw_domain
         self._feishu_domain = FEISHU_DOMAIN if raw_domain == "feishu" else LARK_DOMAIN
 
         self._app_client: Any = _NO_CLIENT
@@ -188,6 +224,7 @@ class FeishuSender:
         with self._app_client_lock:
             if self._app_client is not _NO_CLIENT:
                 return self._app_client
+            _load_feishu_sdk()
             if not FEISHU_SDK_AVAILABLE:
                 logger.warning(
                     "飞书 App Bot 需要 lark-oapi 库；标准安装请运行: pip install -r requirements.txt"
@@ -203,6 +240,9 @@ class FeishuSender:
                 logger.warning("飞书 App Bot 凭据不全，缺少: %s", ", ".join(missing))
                 self._app_client = None
                 return None
+            self._feishu_domain = (
+                FEISHU_DOMAIN if self._feishu_domain_name == "feishu" else LARK_DOMAIN
+            )
             try:
                 self._app_client = (
                     _lark.Client.builder()
@@ -289,6 +329,7 @@ class FeishuSender:
         if client is None:
             return False
 
+        _load_feishu_sdk()
         send_uuid = str(uuid_mod.uuid4())
         try:
             req = (
@@ -445,6 +486,7 @@ class FeishuSender:
 
     def _send_file_via_app_bot(self, path: Path, *, display_name: Optional[str] = None) -> bool:
         """Upload *path* to Feishu via App Bot SDK and send as file message."""
+        _load_feishu_sdk()
         if not FEISHU_FILE_SDK_AVAILABLE:
             logger.warning("lark-oapi SDK does not support file upload; upgrade lark-oapi")
             return False

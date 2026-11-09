@@ -247,7 +247,7 @@ export async function createPostImageArtifact(
   const provider = findSocialsManagerProvider(input.providerId);
   const networkName = provider?.name ?? input.providerId;
   try {
-    const generated = await generateArtifactImage({
+    const generated = await generateArtifactImage({ userId: context.userId,
       baseURL: input.baseUrl,
       prompt: postImagePrompt({ networkName, caption: input.content }),
     });

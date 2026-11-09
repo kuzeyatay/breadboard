@@ -38,7 +38,7 @@ const PRODUCTION_POOL_COMMAND = [
 export function setupStatus(env: NodeJS.ProcessEnv = process.env): MatraixSetupStatus {
   const availability = matraixAvailability(env);
   const root = availability.root ?? resolveMatraixRoot(env);
-  const catalog = availability.available ? matraixCatalog(MATRAIX_DEV_POOL) : null;
+  const catalog = availability.available ? matraixCatalog(MATRAIX_DEV_POOL, availability) : null;
   const pools: MatraixPoolStatus[] = [
     {
       pool: MATRAIX_DEV_POOL,

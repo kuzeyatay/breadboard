@@ -1,9 +1,11 @@
+import db from "@/lib/db";
 import { NextResponse } from "next/server";
 
 import { apiErrorResponse, readJsonBody, ApiError } from "@/lib/hermes/route-helpers.ts";
 import { listOrganizations, memberRole } from "@/lib/organizations/store.ts";
 import {
   createRoom,
+  ensureSelfMember,
   listMembers,
   listRoomsForUser,
   unreadCounts,
@@ -31,7 +33,7 @@ export async function GET(request: Request) {
       id: organization.id,
       name: organization.name,
       role: organization.role,
-      members: organization.members.map((member) => ({
+      people: organization.members.map((member) => ({
         userId: member.userId,
         username: member.username,
       })),
@@ -69,7 +71,7 @@ export async function GET(request: Request) {
 /** Open a room inside one of the caller's organizations. */
 export async function POST(request: Request) {
   try {
-    const { userId } = await requireBuzzUser();
+    const { userId, displayName } = await requireBuzzUser();
     const body = await readJsonBody(request);
     const name = requireString(body.name, "name", 80);
 
@@ -83,13 +85,17 @@ export async function POST(request: Request) {
       throw new ApiError(404, "organization_not_found", "Community not found.");
     }
 
-    const room = createRoom(organizationId, userId, {
+    const room = db.transaction(() => {
+      const created = createRoom(organizationId, userId, {
       name,
       topic: typeof body.topic === "string" ? body.topic : "",
       purpose: typeof body.purpose === "string" ? body.purpose : "",
       kind: body.kind === "dm" ? "dm" : "channel",
       visibility: body.visibility === "private" ? "private" : "public",
     });
+      ensureSelfMember(created.id, userId, displayName);
+      return created;
+    })();
     return NextResponse.json({ room }, { status: 201 });
   } catch (error) {
     return apiErrorResponse(error);

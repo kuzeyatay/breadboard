@@ -1,11 +1,12 @@
 import db from "../db.ts";
+import { systemPromptText } from "../system-prompts/service.ts";
 import { randomUUID } from "node:crypto";
 import { getConversationById, failAssistantMessage } from "../conversations/store.ts";
 import { normalizeChatMessageAttachments, reusableChatAttachments } from "../chat-attachments.ts";
 import { getRuntimeRun, parseRuntimeRunDispatch } from "./run-store.ts";
 import { recordAuditEvent } from "./runtime-store.ts";
 import { readGoalModeState } from "../goal-mode.ts";
-import { taskRecoveryCheckpoint, TASK_RECOVERY_INSTRUCTIONS,
+import { taskRecoveryCheckpoint, taskFailureCanRecover,
   type RecoveryFailure, type RecoveryToolResult, type TaskRecoveryCheckpoint } from "./task-recovery-policy.ts";
 import type { StartConversationTurnInput, StartConversationTurnResult } from "../conversations/turn-service.ts";
 import { sourceRepairOutcome, cancelConversationSourceRepairs } from "../source-repair/checkpoint.ts";
@@ -44,7 +45,16 @@ export function recordTaskRecoveryOutcome(input: {
   const dispatch = parseRuntimeRunDispatch(run);
   const state = dispatch.taskRecovery;
   if (!state || dispatch.goalMode?.enabled || state.stopped === "cancelled" || state.outcomeRecorded) return null;
-  const decision = taskRecoveryCheckpoint({ ...input, turn: state.turn, previous: state.checkpoint });
+  const completedAnswer = !input.failure &&
+    (input.status === "idle" || input.status === "completed") && Boolean(db.prepare(`
+      SELECT 1 FROM conversation_messages m
+      JOIN hermes_runtime_sessions s ON s.conversation_id=m.conversation_id
+      WHERE s.id=? AND m.client_message_id=? AND m.role='assistant'
+        AND m.status='complete' AND length(trim(m.content))>0
+    `).get(run.runtime_session_id, dispatch.clientMessageId ?? ''));
+  const completedVoiceAnswer = dispatch.voice === true && completedAnswer;
+  const completedTextAnswer = dispatch.voice !== true && completedAnswer;
+  const decision = taskRecoveryCheckpoint({ ...input, completedVoiceAnswer, completedTextAnswer, turn: state.turn, previous: state.checkpoint });
   const next = sourceRepairOutcome(run.id, { ...state, checkpoint: decision.checkpoint ?? state.checkpoint,
     pending: Boolean(decision.checkpoint), stopped: decision.stopped, outcomeRecorded: true },
     !decision.checkpoint && !decision.stopped && (input.status === "idle" || input.status === "completed"));
@@ -65,6 +75,8 @@ export function cancelTaskRecovery(conversationId: number): void {
 }
 
 export function taskRecoveryCurrent(conversationId: number, sourceRunId: string, ownClientMessageId = ""): boolean {
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='swarm_runs'").get() &&
+    db.prepare("SELECT 1 FROM swarm_runs WHERE conversation_id=? AND status NOT IN ('completed','cancelled','failed')").get(conversationId)) return false;
   const conversation = getConversationById(conversationId);
   const run = getRuntimeRun(sourceRunId);
   if (!conversation || conversation.archived_at || !run || run.status === "active" || run.status === "cancelled") return false;
@@ -73,10 +85,12 @@ export function taskRecoveryCurrent(conversationId: number, sourceRunId: string,
   if (owner?.conversation_id !== conversationId) return false;
   const dispatch = parseRuntimeRunDispatch(run);
   if (!dispatch.taskRecovery?.pending || dispatch.taskRecovery.stopped || dispatch.goalMode?.enabled) return false;
+  if (dispatch.taskRecovery.checkpoint && !taskFailureCanRecover(dispatch.taskRecovery.checkpoint)) return false;
   const goal = readGoalModeState(conversation.public_id);
   if (goal && goal.status !== "complete") return false;
   const latest = db.prepare(`SELECT r.id FROM hermes_runs r JOIN hermes_runtime_sessions s ON s.id=r.runtime_session_id
     WHERE s.conversation_id=? AND json_extract(r.dispatch_json, '$.clientMessageId') IS NOT NULL
+    AND (r.status='active' OR json_extract(r.dispatch_json, '$.clientMessageId') NOT LIKE 'chat-message:%')
     ORDER BY r.started_at DESC, r.rowid DESC LIMIT 1`).get(conversationId) as { id: string } | undefined;
   if (latest?.id !== sourceRunId) return false;
   const source = db.prepare(`SELECT order_index FROM conversation_messages
@@ -84,7 +98,8 @@ export function taskRecoveryCurrent(conversationId: number, sourceRunId: string,
   if (!source) return false;
   // A newer human message supersedes recovery even if its own dispatch failed.
   if (db.prepare(`SELECT 1 FROM conversation_messages WHERE conversation_id=? AND role='user'
-    AND order_index>? AND client_message_id<>? AND COALESCE(json_extract(metadata, '$.internalAgentContinuation'),0)<>1 LIMIT 1`)
+    AND order_index>? AND client_message_id<>? AND COALESCE(json_extract(metadata, '$.internalAgentContinuation'),0)<>1
+    AND json_type(metadata, '$.chatCoordination') IS NULL LIMIT 1`)
     .get(conversationId, source.order_index, ownClientMessageId)) return false;
   if (db.prepare(`SELECT 1 FROM conversation_messages WHERE conversation_id=? AND client_message_id<>?
     AND (status='pending' OR json_extract(metadata, '$.externalAgentOutcome')='running') LIMIT 1`)
@@ -97,7 +112,7 @@ export function taskRecoveryForContinuation(sourceRunId: string): TaskRecoverySt
   const run = getRuntimeRun(sourceRunId);
   const previous = run && parseRuntimeRunDispatch(run).taskRecovery;
   if (!previous?.pending || !previous.checkpoint) throw new Error("Task recovery is no longer pending.");
-  return { ...previous, turn: previous.turn + 1, pending: false, stopped: undefined,
+  return { ...previous, turn: previous.turn + (previous.checkpoint.providerWaitStartedAt === undefined ? 1 : 0), pending: false, stopped: undefined,
     outcomeRecorded: false, claim: undefined, previousRunIds: [...(previous.previousRunIds ?? []), sourceRunId] };
 }
 
@@ -115,7 +130,7 @@ export function prepareTaskRecovery(conversationId: number, sourceRunId: string)
   return {
     conversation, clientMessageId, text: state.request, surface: conversation.surface,
     surfaceContext: { ...state.context, authorizedContext: [state.context?.authorizedContext,
-      TASK_RECOVERY_INSTRUCTIONS, JSON.stringify({ error: state.checkpoint, previousRunId: sourceRunId })].filter(Boolean).join("\n\n") },
+      systemPromptText("task-recovery-instructions", conversation.user_id), JSON.stringify({ error: state.checkpoint, previousRunId: sourceRunId })].filter(Boolean).join("\n\n") },
     attachments: reusableChatAttachments(normalizeChatMessageAttachments(metadata.attachments)),
     model: dispatch.modelIdentity?.modelID ?? dispatch.model?.modelID,
     reasoningEffort: dispatch.variant, superAgent: state.superAgent, personalize: state.personalize,

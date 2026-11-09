@@ -1,4 +1,4 @@
-/** Shared pace for the chat-title rename and inline composer suggestions. */
+/** Shared pace for chat-title renaming, suggestion cards and inline suggestions. */
 function duration(text: string, perCharacter: number, min: number, max: number): number {
   return Math.round(Math.min(max, Math.max(min, Math.max(1, text.length) * perCharacter)));
 }

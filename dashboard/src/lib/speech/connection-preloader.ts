@@ -40,7 +40,9 @@ export function createConnectionPreloader<T extends Connection>(
     clearTimeout(entry.idleTimer);
     if (entries.get(entry.mode) === entry) entries.delete(entry.mode);
     entry.controller.abort();
-    retirement = Promise.all([retirement, entry.promise.then(value => value.close(), () => {})]).then(() => {});
+    const closing = entry.promise.then(value => value.close(), () => {});
+    retirement = Promise.all([retirement, closing]).then(() => {});
+    return closing;
   }
 
   function invalidate(nextKey: string) {
@@ -124,8 +126,7 @@ export function createConnectionPreloader<T extends Connection>(
           leases.set(connection, selected);
           return connection;
         } catch (error) {
-          retire(selected);
-          await retirement;
+          await retire(selected);
           signal?.throwIfAborted();
           if (attempt === 1) throw error;
         } finally { signal?.removeEventListener('abort', abort); }
@@ -141,7 +142,11 @@ export function createConnectionPreloader<T extends Connection>(
         entry.idleTimer = setTimeout(() => { if (!entry.leased) retire(entry); }, Math.max(0, entry.expires - now()));
         return;
       }
-      if (entry) { retire(entry); await retirement; }
+      // A conversation can release its reader while it is itself retiring.
+      // Await this lease only: the global barrier may already include the
+      // parent close that is waiting for us. New connections still await that
+      // full barrier in start(), preserving the provider's slot limit.
+      if (entry) await retire(entry);
       else await connection.close();
     },
     clear() {

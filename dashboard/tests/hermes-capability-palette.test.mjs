@@ -62,7 +62,7 @@ test("the palette keeps accessible keyboard behavior and leaves MCP setup to Set
     '<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2">',
   );
   assert.ok(tabContent > palette.indexOf("</header>"));
-  assert.ok(palette.indexOf('"Search agents"') > tabContent);
+  assert.ok(palette.indexOf('"Search Master Agents and specialists"') > tabContent);
   assert.ok(palette.indexOf('"Search prompts"') > tabContent);
   assert.match(palette, /bottom-\[calc\(env\(safe-area-inset-bottom\)/);
   assert.match(palette, /sm:absolute/);
@@ -103,7 +103,7 @@ test("agent search filters built-in and Agency agents with consistent catalog ro
   // feeds the shared empty-state flag.
   assert.match(palette, /agencyDirectoryItems\.length > 0 \|\|\s*matchesAgentSearch/);
   assert.match(palette, /const hasVisibleAgents =[\s\S]*showAgencyDirectory;/);
-  assert.match(palette, /No matching agents/);
+  assert.match(palette, /No matching specialists/);
   assert.match(
     palette,
     /className="truncate text-sm font-medium text-\[var\(--ink-heading\)\]">\{item\.name\}/,

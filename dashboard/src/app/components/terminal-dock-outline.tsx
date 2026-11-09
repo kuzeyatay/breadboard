@@ -1,55 +1,44 @@
 "use client";
 
-import { useEffect, useMemo, useState, type RefObject } from "react";
-import { SKETCH_MARGIN, sketchRectOutlines } from "@/lib/hermes/sketch-outline";
+import { useEffect, useRef, type RefObject } from "react";
+import { terminalDockOutlines } from "@/lib/terminal-dock-outline-path";
 
-export default function TerminalDockOutline({
-  targetRef,
-}: {
-  targetRef: RefObject<HTMLElement | null>;
-}) {
-  const [box, setBox] = useState({ width: 0, height: 0, radius: 0 });
-
+export default function TerminalDockOutline({ targetRef }: { targetRef: RefObject<HTMLElement | null> }) {
+  const svgRef = useRef<SVGSVGElement>(null);
   useEffect(() => {
     const target = targetRef.current;
-    if (!target) return;
-    const measure = () => {
-      const { width, height } = target.getBoundingClientRect();
-      const radius = Number.parseFloat(getComputedStyle(target).borderTopLeftRadius) || 0;
-      setBox((previous) =>
-        previous.width === width && previous.height === height && previous.radius === radius
-          ? previous
-          : { width, height, radius },
-      );
+    const svg = svgRef.current;
+    if (!target || !svg) return;
+    let previous = "";
+    const paint = (width: number, height: number) => {
+      const radius = parseFloat(getComputedStyle(target).borderTopLeftRadius) || 0;
+      const key = `${width}:${height}:${radius}`;
+      if (!width || !height || key === previous) return;
+      previous = key;
+      const outlines = terminalDockOutlines({ width, height, radius });
+      // ResizeObserver runs before paint. Update coordinates and paths together
+      // here instead of stretching the old path while React catches up.
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.children[0].setAttribute("d", outlines.settled);
+      svg.children[1].setAttribute("d", outlines.pass);
     };
-    measure();
-    const observer = new ResizeObserver(measure);
+    const initial = target.getBoundingClientRect();
+    paint(initial.width, initial.height);
+    const observer = new ResizeObserver(([entry]) => {
+      const box = entry.borderBoxSize?.[0];
+      if (box) paint(box.inlineSize, box.blockSize);
+      else {
+        const rect = target.getBoundingClientRect();
+        paint(rect.width, rect.height);
+      }
+    });
     observer.observe(target);
     return () => observer.disconnect();
   }, [targetRef]);
-
-  const outlines = useMemo(() => {
-    if (!box.width || !box.height) return null;
-    // Keep both hand-drawn passes inside the dock's clipped border box, even
-    // when it is collapsed to the slim bar or resized to fill the viewport.
-    return sketchRectOutlines({
-      width: Math.max(1, box.width - SKETCH_MARGIN * 2),
-      height: Math.max(1, box.height - SKETCH_MARGIN * 2),
-      radius: box.radius,
-    }, 17);
-  }, [box]);
-
-  if (!outlines) return null;
-
   return (
-    <svg
-      aria-hidden="true"
-      className="bb-terminal-dock-outline"
-      viewBox={`0 0 ${box.width} ${box.height}`}
-      preserveAspectRatio="none"
-    >
-      <path d={outlines.settled} pathLength={1} />
-      <path d={outlines.pass} pathLength={1} />
+    <svg ref={svgRef} aria-hidden="true" className="bb-terminal-dock-outline" preserveAspectRatio="none">
+      <path pathLength={1} />
+      <path pathLength={1} />
     </svg>
   );
 }

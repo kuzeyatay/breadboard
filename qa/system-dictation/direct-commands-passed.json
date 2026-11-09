@@ -1,0 +1,3717 @@
+{
+  "passed": true,
+  "checkedAt": "2026-10-14T14:29:48.589Z",
+  "scope": "generated speech through the configured provider; native keyboard excluded",
+  "runs": [
+    {
+      "name": "command-held",
+      "notice": {
+        "type": "result",
+        "id": 1,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details Please keep every final word, including purple bicycles beside the river.",
+        "submit": true
+      },
+      "fallbacks": 0,
+      "partials": [
+        "The",
+        "The words",
+        "The words should",
+        "The words should appear",
+        "The words should appear while",
+        "The words should appear while I",
+        "The words should appear while I am",
+        "The words should appear while I am still",
+        "The words should appear while I am still speaking.",
+        "The words should appear while I am still speaking. I",
+        "The words should appear while I am still speaking. I can",
+        "The words should appear while I am still speaking. I can pause",
+        "The words should appear while I am still speaking. I can pause between",
+        "The words should appear while I am still speaking. I can pause between sentences",
+        "The words should appear while I am still speaking. I can pause between sentences and",
+        "The words should appear while I am still speaking. I can pause between sentences and then",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details Please",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details Please keep",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details Please keep every",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details Please keep every final",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details Please keep every final word",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details Please keep every final word, including",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details Please keep every final word, including purple",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details Please keep every final word, including purple bicycles",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details Please keep every final word, including purple bicycles beside the",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details Please keep every final word, including purple bicycles beside the river."
+      ],
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "ms": 1
+        },
+        {
+          "stage": "capture-ready",
+          "ms": 9
+        },
+        {
+          "stage": "provider-opening",
+          "ms": 9
+        },
+        {
+          "stage": "provider-ready",
+          "ms": 3929
+        },
+        {
+          "stage": "first-transcript",
+          "ms": 5703
+        },
+        {
+          "stage": "voice-command",
+          "ms": 22444
+        },
+        {
+          "stage": "keys-released",
+          "ms": 22444
+        }
+      ],
+      "lateTranscript": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details Please keep every final word, including purple bicycles beside the river. Send message.",
+      "events": [
+        {
+          "at": 3784,
+          "type": "session.started",
+          "keys": [
+            "type",
+            "session"
+          ],
+          "turnKeys": []
+        },
+        {
+          "at": 5702,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 1200,
+          "end": 1400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGfPP8Xxbx8dAHevaRj",
+            "type": "input_transcript",
+            "text": " The"
+          }
+        },
+        {
+          "at": 5705,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuGfk8bIlOmdPSj1iIGZ",
+          "start": 1200,
+          "end": 1400,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " The"
+        },
+        {
+          "at": 6081,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 1600,
+          "end": 1800,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGfAYU2Yro7xJL647qX",
+            "type": "input_transcript",
+            "text": " words"
+          }
+        },
+        {
+          "at": 6082,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 1600,
+          "end": 1800,
+          "turnKeys": []
+        },
+        {
+          "at": 6524,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 2000,
+          "end": 2200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGgpXRd2441uV4MrQ35",
+            "type": "input_transcript",
+            "text": " should"
+          }
+        },
+        {
+          "at": 6524,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 2000,
+          "end": 2200,
+          "turnKeys": []
+        },
+        {
+          "at": 6683,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 2200,
+          "end": 2400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGgvKuE8Tho8bkvctzR",
+            "type": "input_transcript",
+            "text": " appear"
+          }
+        },
+        {
+          "at": 6683,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 2200,
+          "end": 2400,
+          "turnKeys": []
+        },
+        {
+          "at": 7128,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 2600,
+          "end": 2800,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGgwuStXynDdK2ZtDoN",
+            "type": "input_transcript",
+            "text": " while"
+          }
+        },
+        {
+          "at": 7128,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 2600,
+          "end": 2800,
+          "turnKeys": []
+        },
+        {
+          "at": 7330,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 2800,
+          "end": 3000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGgWVo6jRC6gbuHsVkO",
+            "type": "input_transcript",
+            "text": " I"
+          }
+        },
+        {
+          "at": 7330,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 2800,
+          "end": 3000,
+          "turnKeys": []
+        },
+        {
+          "at": 7553,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 3000,
+          "end": 3200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGhNeWmlRypkZV7BOad",
+            "type": "input_transcript",
+            "text": " am"
+          }
+        },
+        {
+          "at": 7554,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 3000,
+          "end": 3200,
+          "turnKeys": []
+        },
+        {
+          "at": 7677,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 3200,
+          "end": 3400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGhos0rQ2Np7r7Xz4l0",
+            "type": "input_transcript",
+            "text": " still"
+          }
+        },
+        {
+          "at": 7678,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 3200,
+          "end": 3400,
+          "turnKeys": []
+        },
+        {
+          "at": 8643,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 4000,
+          "end": 4200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGioAmjt6ra9BJoLuR2",
+            "type": "input_transcript",
+            "text": " speaking."
+          }
+        },
+        {
+          "at": 8643,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 4000,
+          "end": 4200,
+          "turnKeys": []
+        },
+        {
+          "at": 8643,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 4000,
+          "end": 4200,
+          "turnKeys": []
+        },
+        {
+          "at": 8832,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 4200,
+          "end": 4400,
+          "turnKeys": []
+        },
+        {
+          "at": 9034,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 4400,
+          "end": 4600,
+          "turnKeys": []
+        },
+        {
+          "at": 9467,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 4800,
+          "end": 5000,
+          "turnKeys": []
+        },
+        {
+          "at": 9467,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuGfk8bIlOmdPSj1iIGZ",
+          "start": 1200,
+          "end": 5000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " The words should appear while I am still speaking."
+        },
+        {
+          "at": 9473,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuGiWVz1CKHgGAvcLQeL",
+          "start": 4800,
+          "end": 5000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " The words should appear"
+        },
+        {
+          "at": 9475,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 4800,
+          "end": 5000,
+          "turnKeys": []
+        },
+        {
+          "at": 9659,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 5000,
+          "end": 5200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGjwK7ZzS2SwqZkDPYF",
+            "type": "input_transcript",
+            "text": " I"
+          }
+        },
+        {
+          "at": 9726,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 5000,
+          "end": 5200,
+          "turnKeys": []
+        },
+        {
+          "at": 9768,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 5000,
+          "end": 5200,
+          "turnKeys": []
+        },
+        {
+          "at": 9935,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuGiWVz1CKHgGAvcLQeL",
+          "start": 4800,
+          "end": 5200,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " The words should appear while I"
+        },
+        {
+          "at": 9947,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuGjc4OxyaDl1oRjo31D",
+          "start": 5000,
+          "end": 5200,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " I"
+        },
+        {
+          "at": 9979,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 5200,
+          "end": 5400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGjPfhVl41w7k9jr9kW",
+            "type": "input_transcript",
+            "text": " can"
+          }
+        },
+        {
+          "at": 9983,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 5200,
+          "end": 5400,
+          "turnKeys": []
+        },
+        {
+          "at": 9997,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 5200,
+          "end": 5400,
+          "turnKeys": []
+        },
+        {
+          "at": 10245,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 5600,
+          "end": 5800,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGjQ8dORDrwYH4EiBWO",
+            "type": "input_transcript",
+            "text": " pause"
+          }
+        },
+        {
+          "at": 10249,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 5600,
+          "end": 5800,
+          "turnKeys": []
+        },
+        {
+          "at": 10249,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 5600,
+          "end": 5800,
+          "turnKeys": []
+        },
+        {
+          "at": 10584,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 6000,
+          "end": 6200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGkwPAzq1UWi1pt1nMN",
+            "type": "input_transcript",
+            "text": " between"
+          }
+        },
+        {
+          "at": 10587,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 6000,
+          "end": 6200,
+          "turnKeys": []
+        },
+        {
+          "at": 11333,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 6800,
+          "end": 7000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGkIhyeHRtj6ja809Pe",
+            "type": "input_transcript",
+            "text": " sentences"
+          }
+        },
+        {
+          "at": 11333,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 6800,
+          "end": 7000,
+          "turnKeys": []
+        },
+        {
+          "at": 11547,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 7000,
+          "end": 7200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGl0GlF6tzZoUMdfVII",
+            "type": "input_transcript",
+            "text": " and"
+          }
+        },
+        {
+          "at": 11549,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 7000,
+          "end": 7200,
+          "turnKeys": []
+        },
+        {
+          "at": 11671,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 7200,
+          "end": 7400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGlXev3n1o5STh40lt8",
+            "type": "input_transcript",
+            "text": " then"
+          }
+        },
+        {
+          "at": 11671,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 7200,
+          "end": 7400,
+          "turnKeys": []
+        },
+        {
+          "at": 12331,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 7800,
+          "end": 8000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGl4g28GfSQrsldb6cs",
+            "type": "input_transcript",
+            "text": " continue"
+          }
+        },
+        {
+          "at": 12331,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 7800,
+          "end": 8000,
+          "turnKeys": []
+        },
+        {
+          "at": 12525,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 8000,
+          "end": 8200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGm12mdLK0mCf3PRpkB",
+            "type": "input_transcript",
+            "text": " with"
+          }
+        },
+        {
+          "at": 12528,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 8000,
+          "end": 8200,
+          "turnKeys": []
+        },
+        {
+          "at": 12847,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 8200,
+          "end": 8400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGmbmoILw6wRUVltbeH",
+            "type": "input_transcript",
+            "text": " more"
+          }
+        },
+        {
+          "at": 12849,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 8200,
+          "end": 8400,
+          "turnKeys": []
+        },
+        {
+          "at": 13077,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 8400,
+          "end": 8600,
+          "turnKeys": []
+        },
+        {
+          "at": 13225,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 8600,
+          "end": 8800,
+          "turnKeys": []
+        },
+        {
+          "at": 13418,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 8800,
+          "end": 9000,
+          "turnKeys": []
+        },
+        {
+          "at": 13674,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 9000,
+          "end": 9200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGnQRbGhVSWaKHqXyk6",
+            "type": "input_transcript",
+            "text": " details"
+          }
+        },
+        {
+          "at": 13674,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 9000,
+          "end": 9200,
+          "turnKeys": []
+        },
+        {
+          "at": 13840,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 9200,
+          "end": 9400,
+          "turnKeys": []
+        },
+        {
+          "at": 14449,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 9800,
+          "end": 10000,
+          "turnKeys": []
+        },
+        {
+          "at": 14449,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuGjc4OxyaDl1oRjo31D",
+          "start": 5000,
+          "end": 10000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " I can pause between sentences and then continue with more details"
+        },
+        {
+          "at": 14450,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuGj2BWNXdNTUbuqooXl",
+          "start": 9800,
+          "end": 10000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " am still speaking. I can pause between sentences"
+        },
+        {
+          "at": 14450,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 9800,
+          "end": 10000,
+          "turnKeys": []
+        },
+        {
+          "at": 14672,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 10000,
+          "end": 10200,
+          "turnKeys": []
+        },
+        {
+          "at": 14697,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 10000,
+          "end": 10200,
+          "turnKeys": []
+        },
+        {
+          "at": 14877,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 10200,
+          "end": 10400,
+          "turnKeys": []
+        },
+        {
+          "at": 14891,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 10200,
+          "end": 10400,
+          "turnKeys": []
+        },
+        {
+          "at": 15066,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 10400,
+          "end": 10600,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGoGLtAPoQY59SffRak",
+            "type": "input_transcript",
+            "text": " Please"
+          }
+        },
+        {
+          "at": 15102,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuGj2BWNXdNTUbuqooXl",
+          "start": 9800,
+          "end": 10600,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " am still speaking. I can pause between sentences and then continue"
+        },
+        {
+          "at": 15127,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuGosFoKgeqM2sTpwIz1",
+          "start": 10400,
+          "end": 10600,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Please"
+        },
+        {
+          "at": 15466,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 10800,
+          "end": 11000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGp7HKqO5hUxeGsl3xV",
+            "type": "input_transcript",
+            "text": " keep"
+          }
+        },
+        {
+          "at": 15470,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 10800,
+          "end": 11000,
+          "turnKeys": []
+        },
+        {
+          "at": 15470,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 10800,
+          "end": 11000,
+          "turnKeys": []
+        },
+        {
+          "at": 15975,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 11000,
+          "end": 11200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGpxnhQLA6TzA39nKgT",
+            "type": "input_transcript",
+            "text": " every"
+          }
+        },
+        {
+          "at": 15975,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 11000,
+          "end": 11200,
+          "turnKeys": []
+        },
+        {
+          "at": 15977,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 11000,
+          "end": 11200,
+          "turnKeys": []
+        },
+        {
+          "at": 16130,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 11200,
+          "end": 11400,
+          "turnKeys": []
+        },
+        {
+          "at": 16499,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 11600,
+          "end": 11800,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGqg3i9qsjsBv4VgPJT",
+            "type": "input_transcript",
+            "text": " final"
+          }
+        },
+        {
+          "at": 16499,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 11600,
+          "end": 11800,
+          "turnKeys": []
+        },
+        {
+          "at": 16774,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 12000,
+          "end": 12200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGqrlRqSXiMdMlvYU73",
+            "type": "input_transcript",
+            "text": " word"
+          }
+        },
+        {
+          "at": 16774,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 12000,
+          "end": 12200,
+          "turnKeys": []
+        },
+        {
+          "at": 17268,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 12800,
+          "end": 13000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGq1Sa3pHVOBqaprgBH",
+            "type": "input_transcript",
+            "text": ", including"
+          }
+        },
+        {
+          "at": 17268,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 12800,
+          "end": 13000,
+          "turnKeys": []
+        },
+        {
+          "at": 17869,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 13400,
+          "end": 13600,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGrWm2wAaFb0ckBi3d3",
+            "type": "input_transcript",
+            "text": " purple"
+          }
+        },
+        {
+          "at": 17869,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 13400,
+          "end": 13600,
+          "turnKeys": []
+        },
+        {
+          "at": 18121,
+          "type": "session.usage.updated",
+          "keys": [
+            "type",
+            "usage",
+            "usage_limit"
+          ],
+          "turnKeys": []
+        },
+        {
+          "at": 18489,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 14000,
+          "end": 14200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGshxMD2eS5px2pMLTH",
+            "type": "input_transcript",
+            "text": " bicycles"
+          }
+        },
+        {
+          "at": 18489,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 14000,
+          "end": 14200,
+          "turnKeys": []
+        },
+        {
+          "at": 19224,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 14600,
+          "end": 14800,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGsO2cgx4mAJUS6mxjb",
+            "type": "input_transcript",
+            "text": " beside the"
+          }
+        },
+        {
+          "at": 19224,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 14600,
+          "end": 14800,
+          "turnKeys": []
+        },
+        {
+          "at": 19376,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 14800,
+          "end": 15000,
+          "turnKeys": []
+        },
+        {
+          "at": 19846,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 15000,
+          "end": 15200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGtvtfMjzrxDcgiYXLb",
+            "type": "input_transcript",
+            "text": " river."
+          }
+        },
+        {
+          "at": 19869,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 15000,
+          "end": 15200,
+          "turnKeys": []
+        },
+        {
+          "at": 19897,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 15200,
+          "end": 15400,
+          "turnKeys": []
+        },
+        {
+          "at": 20168,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 15400,
+          "end": 15600,
+          "turnKeys": []
+        },
+        {
+          "at": 20515,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 15800,
+          "end": 16000,
+          "turnKeys": []
+        },
+        {
+          "at": 20556,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuGosFoKgeqM2sTpwIz1",
+          "start": 10400,
+          "end": 16000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Please keep every final word, including purple bicycles beside the river."
+        },
+        {
+          "at": 20611,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuGpQsi0WXz0hiRIxqTm",
+          "start": 15800,
+          "end": 16000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " with more details. Please keep every final"
+        },
+        {
+          "at": 20628,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 15800,
+          "end": 16000,
+          "turnKeys": []
+        },
+        {
+          "at": 20885,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 16200,
+          "end": 16400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGuHq0oApCW5Vj1m5pf",
+            "type": "input_transcript",
+            "text": " Send"
+          }
+        },
+        {
+          "at": 20940,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuGpQsi0WXz0hiRIxqTm",
+          "start": 15800,
+          "end": 16400,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " with more details. Please keep every final word,"
+        },
+        {
+          "at": 21023,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuGuwr6vHALHUNeZJm0v",
+          "start": 16200,
+          "end": 16400,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Send"
+        },
+        {
+          "at": 21082,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 16400,
+          "end": 16600,
+          "turnKeys": []
+        },
+        {
+          "at": 21800,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 17000,
+          "end": 17200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGvb5A5OkA8DAALviHw",
+            "type": "input_transcript",
+            "text": " message."
+          }
+        },
+        {
+          "at": 21853,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 17000,
+          "end": 17200,
+          "turnKeys": []
+        },
+        {
+          "at": 21874,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 17200,
+          "end": 17400,
+          "turnKeys": []
+        },
+        {
+          "at": 22006,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 17400,
+          "end": 17600,
+          "turnKeys": []
+        },
+        {
+          "at": 22444,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuGuwr6vHALHUNeZJm0v",
+          "start": 16200,
+          "end": 18000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Send message."
+        },
+        {
+          "at": 22445,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuGu018Rc2HDESFCfTes",
+          "start": 17800,
+          "end": 18000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " including purple bicycles"
+        },
+        {
+          "at": 22634,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 18000,
+          "end": 18200,
+          "turnKeys": []
+        },
+        {
+          "at": 22656,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 18000,
+          "end": 18200,
+          "turnKeys": []
+        },
+        {
+          "at": 23037,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 18400,
+          "end": 18600,
+          "turnKeys": []
+        },
+        {
+          "at": 23037,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 18400,
+          "end": 18600,
+          "turnKeys": []
+        }
+      ],
+      "startupMs": 3929,
+      "speechMs": 16090,
+      "firstWordsAfterSpeechMs": 1674,
+      "firstWordsBeforeRelease": true,
+      "releaseToTextMs": 0,
+      "microphoneStopMs": -3,
+      "commandBeforeRelease": true,
+      "resultBeforeRelease": true,
+      "commandConfirmationToResultMs": 3
+    },
+    {
+      "name": "command-released",
+      "notice": {
+        "type": "result",
+        "id": 1,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word including purple bicycles beside the river.",
+        "submit": true
+      },
+      "fallbacks": 0,
+      "partials": [
+        "The",
+        "The words",
+        "The words should",
+        "The words should appear",
+        "The words should appear while I",
+        "The words should appear while I am",
+        "The words should appear while I am still",
+        "The words should appear while I am still speaking.",
+        "The words should appear while I am still speaking. I",
+        "The words should appear while I am still speaking. I can",
+        "The words should appear while I am still speaking. I can pause",
+        "The words should appear while I am still speaking. I can pause between",
+        "The words should appear while I am still speaking. I can pause between sentences",
+        "The words should appear while I am still speaking. I can pause between sentences and",
+        "The words should appear while I am still speaking. I can pause between sentences and then",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word including",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word including purple",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word including purple bicycles",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word including purple bicycles beside",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word including purple bicycles beside the",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word including purple bicycles beside the river."
+      ],
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "ms": 0
+        },
+        {
+          "stage": "capture-ready",
+          "ms": 5
+        },
+        {
+          "stage": "provider-opening",
+          "ms": 5
+        },
+        {
+          "stage": "provider-ready",
+          "ms": 9
+        },
+        {
+          "stage": "first-transcript",
+          "ms": 1675
+        },
+        {
+          "stage": "keys-released",
+          "ms": 16229
+        },
+        {
+          "stage": "audio-drained",
+          "ms": 16304
+        },
+        {
+          "stage": "voice-command",
+          "ms": 18319
+        }
+      ],
+      "lateTranscript": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word including purple bicycles beside the river. Send message.",
+      "events": [
+        {
+          "at": 134,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 18600,
+          "end": 18800,
+          "turnKeys": []
+        },
+        {
+          "at": 134,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 18600,
+          "end": 18800,
+          "turnKeys": []
+        },
+        {
+          "at": 909,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 19400,
+          "end": 19600,
+          "turnKeys": []
+        },
+        {
+          "at": 909,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 19400,
+          "end": 19600,
+          "turnKeys": []
+        },
+        {
+          "at": 1286,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 19800,
+          "end": 20000,
+          "turnKeys": []
+        },
+        {
+          "at": 1286,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 19800,
+          "end": 20000,
+          "turnKeys": []
+        },
+        {
+          "at": 1675,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 20200,
+          "end": 20400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGyri1QImojcYdiuamY",
+            "type": "input_transcript",
+            "text": " The"
+          }
+        },
+        {
+          "at": 1718,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuGu018Rc2HDESFCfTes",
+          "start": 17800,
+          "end": 20400,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " including purple bicycles beside the river. Send message."
+        },
+        {
+          "at": 1732,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuGyP6tCoTs0KCntwuZ9",
+          "start": 20200,
+          "end": 20400,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " The"
+        },
+        {
+          "at": 2075,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 20600,
+          "end": 20800,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGytSVPuyKIJ67HCeGj",
+            "type": "input_transcript",
+            "text": " words"
+          }
+        },
+        {
+          "at": 2075,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 20600,
+          "end": 20800,
+          "turnKeys": []
+        },
+        {
+          "at": 2175,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 20800,
+          "end": 21000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGyRpSnUczZFJMy6cTg",
+            "type": "input_transcript",
+            "text": " should"
+          }
+        },
+        {
+          "at": 2175,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 20800,
+          "end": 21000,
+          "turnKeys": []
+        },
+        {
+          "at": 2594,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 21200,
+          "end": 21400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGzlHRlrxIRti00MlIL",
+            "type": "input_transcript",
+            "text": " appear"
+          }
+        },
+        {
+          "at": 2594,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 21200,
+          "end": 21400,
+          "turnKeys": []
+        },
+        {
+          "at": 3038,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 21600,
+          "end": 21800,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGzva1JNuWFDVbUIlbG",
+            "type": "input_transcript",
+            "text": " while I"
+          }
+        },
+        {
+          "at": 3038,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 21600,
+          "end": 21800,
+          "turnKeys": []
+        },
+        {
+          "at": 3174,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 21800,
+          "end": 22000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuGznZiWbUCOXRTlxqf1",
+            "type": "input_transcript",
+            "text": " am"
+          }
+        },
+        {
+          "at": 3174,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 21800,
+          "end": 22000,
+          "turnKeys": []
+        },
+        {
+          "at": 3577,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 22200,
+          "end": 22400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH05BmBVWQPBV1wxAri",
+            "type": "input_transcript",
+            "text": " still"
+          }
+        },
+        {
+          "at": 3577,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 22200,
+          "end": 22400,
+          "turnKeys": []
+        },
+        {
+          "at": 4395,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 22800,
+          "end": 23000,
+          "turnKeys": []
+        },
+        {
+          "at": 4619,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 23000,
+          "end": 23200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH1mx0GLoHJzy3vySGv",
+            "type": "input_transcript",
+            "text": " speaking."
+          }
+        },
+        {
+          "at": 4619,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 23000,
+          "end": 23200,
+          "turnKeys": []
+        },
+        {
+          "at": 4619,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 23000,
+          "end": 23200,
+          "turnKeys": []
+        },
+        {
+          "at": 4784,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 23200,
+          "end": 23400,
+          "turnKeys": []
+        },
+        {
+          "at": 5197,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 23600,
+          "end": 23800,
+          "turnKeys": []
+        },
+        {
+          "at": 5885,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 23800,
+          "end": 24000,
+          "turnKeys": []
+        },
+        {
+          "at": 5901,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuGyP6tCoTs0KCntwuZ9",
+          "start": 20200,
+          "end": 24000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " The words should appear while I am still speaking."
+        },
+        {
+          "at": 5986,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuH1rh1z8agRT6nGjOj4",
+          "start": 23800,
+          "end": 24000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " The words should appear while"
+        },
+        {
+          "at": 6074,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 23800,
+          "end": 24000,
+          "turnKeys": []
+        },
+        {
+          "at": 6178,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 24000,
+          "end": 24200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH2j6zNXEXIT0vWwF6T",
+            "type": "input_transcript",
+            "text": " I"
+          }
+        },
+        {
+          "at": 6259,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 24000,
+          "end": 24200,
+          "turnKeys": []
+        },
+        {
+          "at": 6319,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 24000,
+          "end": 24200,
+          "turnKeys": []
+        },
+        {
+          "at": 6327,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuH1rh1z8agRT6nGjOj4",
+          "start": 23800,
+          "end": 24200,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " The words should appear while I am"
+        },
+        {
+          "at": 6327,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuH2FSpUHEEw95DxrRoJ",
+          "start": 24000,
+          "end": 24200,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " I"
+        },
+        {
+          "at": 6335,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 24200,
+          "end": 24400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH29vp4Yb8C5ackL18N",
+            "type": "input_transcript",
+            "text": " can"
+          }
+        },
+        {
+          "at": 6341,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 24200,
+          "end": 24400,
+          "turnKeys": []
+        },
+        {
+          "at": 6346,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 24200,
+          "end": 24400,
+          "turnKeys": []
+        },
+        {
+          "at": 6378,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 24400,
+          "end": 24600,
+          "turnKeys": []
+        },
+        {
+          "at": 6622,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 24600,
+          "end": 24800,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH37AHbz20RjdqQd2lq",
+            "type": "input_transcript",
+            "text": " pause"
+          }
+        },
+        {
+          "at": 6641,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 24600,
+          "end": 24800,
+          "turnKeys": []
+        },
+        {
+          "at": 6995,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 25000,
+          "end": 25200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH3qLUn4vruuGckSXwz",
+            "type": "input_transcript",
+            "text": " between"
+          }
+        },
+        {
+          "at": 6996,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 25000,
+          "end": 25200,
+          "turnKeys": []
+        },
+        {
+          "at": 7394,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 25800,
+          "end": 26000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH4QQzerI9Wo3EDMtPR",
+            "type": "input_transcript",
+            "text": " sentences"
+          }
+        },
+        {
+          "at": 7394,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 25800,
+          "end": 26000,
+          "turnKeys": []
+        },
+        {
+          "at": 7526,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 26000,
+          "end": 26200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH4SOUw96edjxd5DUW1",
+            "type": "input_transcript",
+            "text": " and"
+          }
+        },
+        {
+          "at": 7526,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 26000,
+          "end": 26200,
+          "turnKeys": []
+        },
+        {
+          "at": 7608,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 26200,
+          "end": 26400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH4ImiBXhk1oBNgDqYI",
+            "type": "input_transcript",
+            "text": " then"
+          }
+        },
+        {
+          "at": 7608,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 26200,
+          "end": 26400,
+          "turnKeys": []
+        },
+        {
+          "at": 8274,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 26800,
+          "end": 27000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH4SuOYRAicPyxCzWQ9",
+            "type": "input_transcript",
+            "text": " continue"
+          }
+        },
+        {
+          "at": 8277,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 26800,
+          "end": 27000,
+          "turnKeys": []
+        },
+        {
+          "at": 8447,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 27000,
+          "end": 27200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH5d467Jy710gbxbg2O",
+            "type": "input_transcript",
+            "text": " with"
+          }
+        },
+        {
+          "at": 8447,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 27000,
+          "end": 27200,
+          "turnKeys": []
+        },
+        {
+          "at": 8626,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 27200,
+          "end": 27400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH5TQoVPWPDwhyQPvk2",
+            "type": "input_transcript",
+            "text": " more"
+          }
+        },
+        {
+          "at": 8632,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 27200,
+          "end": 27400,
+          "turnKeys": []
+        },
+        {
+          "at": 9324,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 27800,
+          "end": 28000,
+          "turnKeys": []
+        },
+        {
+          "at": 9652,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 28000,
+          "end": 28200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH6F7k8hdiopg5jfOkU",
+            "type": "input_transcript",
+            "text": " details."
+          }
+        },
+        {
+          "at": 9676,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 28000,
+          "end": 28200,
+          "turnKeys": []
+        },
+        {
+          "at": 9686,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 28000,
+          "end": 28200,
+          "turnKeys": []
+        },
+        {
+          "at": 9705,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 28200,
+          "end": 28400,
+          "turnKeys": []
+        },
+        {
+          "at": 10039,
+          "type": "session.usage.updated",
+          "keys": [
+            "type",
+            "usage",
+            "usage_limit"
+          ],
+          "turnKeys": []
+        },
+        {
+          "at": 10088,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 28600,
+          "end": 28800,
+          "turnKeys": []
+        },
+        {
+          "at": 10299,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuH2FSpUHEEw95DxrRoJ",
+          "start": 24000,
+          "end": 29000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " I can pause between sentences and then continue with more details."
+        },
+        {
+          "at": 10301,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuH2gspqttpnZ91UBKC4",
+          "start": 28800,
+          "end": 29000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " still speaking. I can pause between sentences"
+        },
+        {
+          "at": 10862,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 29200,
+          "end": 29400,
+          "turnKeys": []
+        },
+        {
+          "at": 10864,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 29200,
+          "end": 29400,
+          "turnKeys": []
+        },
+        {
+          "at": 11088,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 29400,
+          "end": 29600,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH7Qvq2Li8KSMhSzhDL",
+            "type": "input_transcript",
+            "text": " Please"
+          }
+        },
+        {
+          "at": 11136,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 29400,
+          "end": 29600,
+          "turnKeys": []
+        },
+        {
+          "at": 11153,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 29400,
+          "end": 29600,
+          "turnKeys": []
+        },
+        {
+          "at": 11163,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuH2gspqttpnZ91UBKC4",
+          "start": 28800,
+          "end": 29600,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " still speaking. I can pause between sentences and then"
+        },
+        {
+          "at": 11163,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuH7ZxDszRc7VxkY3nO1",
+          "start": 29400,
+          "end": 29600,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Please"
+        },
+        {
+          "at": 11268,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 29600,
+          "end": 29800,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH7IZbqlRQ9SekfZmxJ",
+            "type": "input_transcript",
+            "text": " keep"
+          }
+        },
+        {
+          "at": 11271,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 29600,
+          "end": 29800,
+          "turnKeys": []
+        },
+        {
+          "at": 11271,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 29600,
+          "end": 29800,
+          "turnKeys": []
+        },
+        {
+          "at": 11726,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 30000,
+          "end": 30200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH8QFa5KU1DIf4hIgiE",
+            "type": "input_transcript",
+            "text": " every"
+          }
+        },
+        {
+          "at": 11736,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 30000,
+          "end": 30200,
+          "turnKeys": []
+        },
+        {
+          "at": 11896,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 30200,
+          "end": 30400,
+          "turnKeys": []
+        },
+        {
+          "at": 12101,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 30400,
+          "end": 30600,
+          "turnKeys": []
+        },
+        {
+          "at": 12272,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 30600,
+          "end": 30800,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH80qbsYke2P7gSKUJm",
+            "type": "input_transcript",
+            "text": " final"
+          }
+        },
+        {
+          "at": 12272,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 30600,
+          "end": 30800,
+          "turnKeys": []
+        },
+        {
+          "at": 12272,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 30600,
+          "end": 30800,
+          "turnKeys": []
+        },
+        {
+          "at": 12592,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 31000,
+          "end": 31200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH9a17p4hgVRBtekMhp",
+            "type": "input_transcript",
+            "text": " word"
+          }
+        },
+        {
+          "at": 12594,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 31000,
+          "end": 31200,
+          "turnKeys": []
+        },
+        {
+          "at": 13181,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 31800,
+          "end": 32000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuH9xAJWE3XTD3EfNqVb",
+            "type": "input_transcript",
+            "text": " including"
+          }
+        },
+        {
+          "at": 13184,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 31800,
+          "end": 32000,
+          "turnKeys": []
+        },
+        {
+          "at": 13574,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 32200,
+          "end": 32400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuHAUA3yPM3Pa0kSvm7Y",
+            "type": "input_transcript",
+            "text": " purple"
+          }
+        },
+        {
+          "at": 13574,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 32200,
+          "end": 32400,
+          "turnKeys": []
+        },
+        {
+          "at": 14380,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 33000,
+          "end": 33200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuHBwvfdaKrjc5zUc0Ev",
+            "type": "input_transcript",
+            "text": " bicycles"
+          }
+        },
+        {
+          "at": 14380,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 33000,
+          "end": 33200,
+          "turnKeys": []
+        },
+        {
+          "at": 14828,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 33400,
+          "end": 33600,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuHBqxiChyAcIUAacoep",
+            "type": "input_transcript",
+            "text": " beside"
+          }
+        },
+        {
+          "at": 14830,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 33400,
+          "end": 33600,
+          "turnKeys": []
+        },
+        {
+          "at": 15164,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 33600,
+          "end": 33800,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuHBXpBir1VmIOFAuAE7",
+            "type": "input_transcript",
+            "text": " the"
+          }
+        },
+        {
+          "at": 15164,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 33600,
+          "end": 33800,
+          "turnKeys": []
+        },
+        {
+          "at": 15346,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 33800,
+          "end": 34000,
+          "turnKeys": []
+        },
+        {
+          "at": 15481,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 34000,
+          "end": 34200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuHC0P1PjC4xIJMAk5ua",
+            "type": "input_transcript",
+            "text": " river."
+          }
+        },
+        {
+          "at": 15481,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 34000,
+          "end": 34200,
+          "turnKeys": []
+        },
+        {
+          "at": 15481,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 34000,
+          "end": 34200,
+          "turnKeys": []
+        },
+        {
+          "at": 15923,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 34400,
+          "end": 34600,
+          "turnKeys": []
+        },
+        {
+          "at": 16651,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 34800,
+          "end": 35000,
+          "turnKeys": []
+        },
+        {
+          "at": 16651,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuH7ZxDszRc7VxkY3nO1",
+          "start": 29400,
+          "end": 35000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Please keep every final word including purple bicycles beside the river."
+        },
+        {
+          "at": 16651,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuH7WggeVNP20VqL0gaE",
+          "start": 34800,
+          "end": 35000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " continue with more details. Please keep every final"
+        },
+        {
+          "at": 16652,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 34800,
+          "end": 35000,
+          "turnKeys": []
+        },
+        {
+          "at": 17048,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 35200,
+          "end": 35400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuHDa4spRDNy9Gi48082",
+            "type": "input_transcript",
+            "text": " Send"
+          }
+        },
+        {
+          "at": 17085,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuH7WggeVNP20VqL0gaE",
+          "start": 34800,
+          "end": 35400,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " continue with more details. Please keep every final word,"
+        },
+        {
+          "at": 17107,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuHD3cxcPOXYFnptMxVs",
+          "start": 35200,
+          "end": 35400,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Send"
+        },
+        {
+          "at": 17213,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 35400,
+          "end": 35600,
+          "turnKeys": []
+        },
+        {
+          "at": 17593,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 35800,
+          "end": 36000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuHEJ3o9TmodFyvbgYP8",
+            "type": "input_transcript",
+            "text": " message."
+          }
+        },
+        {
+          "at": 17593,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 35800,
+          "end": 36000,
+          "turnKeys": []
+        },
+        {
+          "at": 17778,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 36000,
+          "end": 36200,
+          "turnKeys": []
+        },
+        {
+          "at": 18150,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 36400,
+          "end": 36600,
+          "turnKeys": []
+        },
+        {
+          "at": 18319,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuHD3cxcPOXYFnptMxVs",
+          "start": 35200,
+          "end": 36800,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Send message."
+        },
+        {
+          "at": 18320,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuHDafeIkt0kl0uZYbwA",
+          "start": 36600,
+          "end": 36800,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " including purple bicycles"
+        },
+        {
+          "at": 18710,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 37000,
+          "end": 37200,
+          "turnKeys": []
+        },
+        {
+          "at": 18710,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 37000,
+          "end": 37200,
+          "turnKeys": []
+        }
+      ],
+      "startupMs": 9,
+      "speechMs": 16090,
+      "firstWordsAfterSpeechMs": 1566,
+      "firstWordsBeforeRelease": true,
+      "releaseToTextMs": 2091,
+      "microphoneStopMs": 0,
+      "commandBeforeRelease": false,
+      "resultBeforeRelease": false,
+      "commandConfirmationToResultMs": 1
+    }
+  ]
+}

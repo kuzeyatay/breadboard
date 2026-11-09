@@ -119,6 +119,10 @@ export async function POST(request: Request) {
       : "";
     const everyGarden = args.all_gardens === true || gardenQuery.toLowerCase() === "all";
     const kinds = kindsArgument(args.kinds);
+    if (args.active_only !== undefined && typeof args.active_only !== "boolean") {
+      throw new ApiError(400, "process_status_invalid_active_only", "active_only must be a boolean.");
+    }
+    const activeOnly = args.active_only === true;
     const limit = boundedInteger(args.limit, 40, MAX_LIMIT, "process_status_invalid_limit", "limit");
     const lookbackHours = boundedInteger(
       args.lookback_hours,
@@ -143,6 +147,8 @@ export async function POST(request: Request) {
     const report = collectProcessStatus({
       database: db,
       userId: session.user_id,
+      currentConversationId: session.conversation_id,
+      activeOnly,
       gardens,
       kinds,
       limit,
@@ -173,9 +179,11 @@ export async function POST(request: Request) {
         gardens: report.gardens.map((garden) => ({ slug: garden.slug, name: garden.name })),
         allGardens: gardens === null,
         lookbackHours,
+        activeOnly,
         unresolvedGarden,
       },
       counts: report.counts,
+      truncated: report.truncated,
       unavailable: report.unavailable,
       processes: unresolvedGarden ? [] : report.processes,
       generatedAt: report.generatedAt,

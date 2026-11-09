@@ -1,0 +1,808 @@
+{
+  "schema_version": 1,
+  "title": "10 kHz Wien oscillator: isolated four-pole filtering and calibrated output",
+  "components": [
+    {
+      "id": "VCC",
+      "type": "voltage_source",
+      "value": 12.0,
+      "nodes": [
+        "vcc",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "VEE",
+      "type": "voltage_source",
+      "value": -12.0,
+      "nodes": [
+        "vee",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "VSTART",
+      "type": "voltage_source",
+      "value": 0.0,
+      "nodes": [
+        "start",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": "PWL(0 0 1u 12 2u 0)",
+      "tolerance": 0.0
+    },
+    {
+      "id": "RSTART",
+      "type": "resistor",
+      "value": "1meg",
+      "nodes": [
+        "start",
+        "wp"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "CWIEN1",
+      "type": "capacitor",
+      "value": "1n",
+      "nodes": [
+        "osc",
+        "w1"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RWIEN1",
+      "type": "resistor",
+      "value": "15.8k",
+      "nodes": [
+        "w1",
+        "wp"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RWIEN2",
+      "type": "resistor",
+      "value": "15.8k",
+      "nodes": [
+        "wp",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "CWIEN2",
+      "type": "capacitor",
+      "value": "1n",
+      "nodes": [
+        "wp",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "XOSC",
+      "type": "opamp",
+      "value": "0",
+      "nodes": [
+        "wp",
+        "nfb",
+        "vcc",
+        "vee",
+        "osc"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RG",
+      "type": "resistor",
+      "value": "10k",
+      "nodes": [
+        "nfb",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RFIX",
+      "type": "resistor",
+      "value": "15k",
+      "nodes": [
+        "osc",
+        "nfb1"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RVAR",
+      "type": "resistor",
+      "value": "10k",
+      "nodes": [
+        "nfb1",
+        "nfb"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "DAGC1",
+      "type": "diode",
+      "value": "0",
+      "nodes": [
+        "nfb1",
+        "nfb"
+      ],
+      "model": "DAGC",
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "DAGC2",
+      "type": "diode",
+      "value": "0",
+      "nodes": [
+        "nfb",
+        "nfb1"
+      ],
+      "model": "DAGC",
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "XISOLATE",
+      "type": "opamp",
+      "value": "0",
+      "nodes": [
+        "osc",
+        "isolated",
+        "vcc",
+        "vee",
+        "isolated"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "CHP",
+      "type": "capacitor",
+      "value": "10n",
+      "nodes": [
+        "isolated",
+        "hp"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RHP",
+      "type": "resistor",
+      "value": "15.9k",
+      "nodes": [
+        "hp",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "XHP",
+      "type": "opamp",
+      "value": "0",
+      "nodes": [
+        "hp",
+        "hpbuf",
+        "vcc",
+        "vee",
+        "hpbuf"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RLP1",
+      "type": "resistor",
+      "value": "10k",
+      "nodes": [
+        "hpbuf",
+        "lp1"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "CLP1",
+      "type": "capacitor",
+      "value": "1n",
+      "nodes": [
+        "lp1",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "XLP1",
+      "type": "opamp",
+      "value": "0",
+      "nodes": [
+        "lp1",
+        "b1",
+        "vcc",
+        "vee",
+        "b1"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RLP2",
+      "type": "resistor",
+      "value": "10k",
+      "nodes": [
+        "b1",
+        "lp2"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "CLP2",
+      "type": "capacitor",
+      "value": "1n",
+      "nodes": [
+        "lp2",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "XLP2",
+      "type": "opamp",
+      "value": "0",
+      "nodes": [
+        "lp2",
+        "b2",
+        "vcc",
+        "vee",
+        "b2"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RLP3",
+      "type": "resistor",
+      "value": "10k",
+      "nodes": [
+        "b2",
+        "lp3"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "CLP3",
+      "type": "capacitor",
+      "value": "1n",
+      "nodes": [
+        "lp3",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "XLP3",
+      "type": "opamp",
+      "value": "0",
+      "nodes": [
+        "lp3",
+        "b3",
+        "vcc",
+        "vee",
+        "b3"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RLP4",
+      "type": "resistor",
+      "value": "10k",
+      "nodes": [
+        "b3",
+        "lp4"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "CLP4",
+      "type": "capacitor",
+      "value": "1n",
+      "nodes": [
+        "lp4",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "XLP4",
+      "type": "opamp",
+      "value": "0",
+      "nodes": [
+        "lp4",
+        "filtered",
+        "vcc",
+        "vee",
+        "filtered"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "XCAL",
+      "type": "opamp",
+      "value": "0",
+      "nodes": [
+        "filtered",
+        "calfb",
+        "vcc",
+        "vee",
+        "cal"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RCALG",
+      "type": "resistor",
+      "value": "10k",
+      "nodes": [
+        "calfb",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RCALF",
+      "type": "resistor",
+      "value": "1350",
+      "nodes": [
+        "cal",
+        "calfb"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RPT",
+      "type": "resistor",
+      "value": "14k",
+      "nodes": [
+        "vcc",
+        "pref"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RPB",
+      "type": "resistor",
+      "value": "10k",
+      "nodes": [
+        "pref",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RNT",
+      "type": "resistor",
+      "value": "14k",
+      "nodes": [
+        "vee",
+        "nref"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RNB",
+      "type": "resistor",
+      "value": "10k",
+      "nodes": [
+        "nref",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "XPR",
+      "type": "opamp",
+      "value": "0",
+      "nodes": [
+        "pref",
+        "clp",
+        "vcc",
+        "vee",
+        "clp"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "XNR",
+      "type": "opamp",
+      "value": "0",
+      "nodes": [
+        "nref",
+        "cln",
+        "vcc",
+        "vee",
+        "cln"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RIN",
+      "type": "resistor",
+      "value": "1k",
+      "nodes": [
+        "cal",
+        "lim"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "DCLP",
+      "type": "diode",
+      "value": "0",
+      "nodes": [
+        "lim",
+        "clp"
+      ],
+      "model": "DCLAMP",
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "DCLN",
+      "type": "diode",
+      "value": "0",
+      "nodes": [
+        "cln",
+        "lim"
+      ],
+      "model": "DCLAMP",
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "XLIM",
+      "type": "opamp",
+      "value": "0",
+      "nodes": [
+        "lim",
+        "top",
+        "vcc",
+        "vee",
+        "top"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "XOUT",
+      "type": "opamp",
+      "value": "0",
+      "nodes": [
+        "top",
+        "out",
+        "vcc",
+        "vee",
+        "out"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "RLOAD",
+      "type": "resistor",
+      "value": "10k",
+      "nodes": [
+        "out",
+        "0"
+      ],
+      "model": null,
+      "pin_count": null,
+      "parameters": {},
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    },
+    {
+      "id": "XPOT",
+      "type": "ic",
+      "value": "0",
+      "nodes": [
+        "top",
+        "wiper",
+        "0"
+      ],
+      "model": "POT100K",
+      "pin_count": 3,
+      "parameters": {
+        "A": 0.5
+      },
+      "ac": null,
+      "ac_phase": 0.0,
+      "waveform": null,
+      "tolerance": 0.0
+    }
+  ],
+  "connections": [],
+  "models": [
+    {
+      "name": "DAGC",
+      "definition": ".model DAGC D(Is=1e-14 N=1.8 Rs=10 Cjo=1p)",
+      "provenance": "Generic educational diode model preserved from original circuit."
+    },
+    {
+      "name": "DCLAMP",
+      "definition": ".model DCLAMP D(Is=1e-14 N=1.2 Rs=1 Cjo=1p)",
+      "provenance": "Generic educational diode model preserved from original circuit."
+    },
+    {
+      "name": "POT100K",
+      "definition": ".subckt POT100K top wiper bottom params: A=0.5\nRU top wiper {100000*(1-A)}\nRL wiper bottom {100000*A}\n.ends POT100K",
+      "provenance": "Two complementary resistors representing a linear 100 kohm potentiometer, valid only for 0<A<1; endpoints use direct wiring."
+    }
+  ],
+  "temperature": 27.0,
+  "assumptions": [
+    "Educational BB_OPAMP and generic diode models only; no hardware qualification, noise, slew or current-limit claim.",
+    "Working revision 2 feedback and startup path preserved. Original failures retained.",
+    "Four isolated RC low-pass stages plus buffered high-pass. Gain calibration separate from limiter and potentiometer.",
+    "Limiter references derived from +/-12 V through dividers and buffers.",
+    "Full endpoint represented by direct connection to potentiometer top; mute connects output follower input to ground. Intermediate settings use complementary 100k potentiometer segments.",
+    "Budget: at most five normal tuning candidates followed by control, filter and overload verification."
+  ]
+}

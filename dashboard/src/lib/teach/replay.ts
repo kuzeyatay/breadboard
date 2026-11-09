@@ -1,3 +1,4 @@
+import { systemPromptText } from "../system-prompts/service.ts";
 import "server-only";
 
 // Running a learned workflow again.
@@ -783,12 +784,7 @@ async function askModelToChoose(
       messages: [
         {
           role: "system",
-          content: [
-            "You are grounding one step of a workflow against the screen as it is right now.",
-            "Choose which of the listed controls the step means. Choose only from the given refs.",
-            "If none of them is the control the step describes, choose none — a wrong click is worse than a stopped run.",
-            'Answer with JSON only: {"ref":"e12","confidence":"high|medium|low"} or {"ref":null,"reason":"..."}',
-          ].join("\n"),
+          content: systemPromptText("workflow-control", active.userId),
         },
         {
           role: "user",
@@ -832,11 +828,7 @@ async function askModelToVerify(
       messages: [
         {
           role: "system",
-          content: [
-            "You are checking whether a workflow's expected result is true of the screen as described.",
-            "Judge only from the controls listed. If the evidence does not show it, say it is not satisfied.",
-            'Answer with JSON only: {"satisfied":true|false,"reason":"one sentence"}',
-          ].join("\n"),
+          content: systemPromptText("workflow-verification", active.userId),
         },
         {
           role: "user",

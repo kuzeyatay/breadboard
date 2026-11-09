@@ -1,3 +1,4 @@
+import { settleRoomInvites } from "../buzz/invitations.ts";
 import db from "../db.ts";
 import type Database from "better-sqlite3";
 import type {
@@ -364,6 +365,7 @@ export function respondToInvite(
          ON CONFLICT(organization_id, user_id) DO NOTHING`,
       ).run(invite.organization_id, userId, normalizeRole(invite.role));
     }
+    settleRoomInvites(db, inviteId, userId, accept);
   });
 
   respond();

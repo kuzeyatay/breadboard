@@ -16,7 +16,7 @@
 // card appears for exactly the links the runtime would act on.
 
 import { useMemo, useState, type ReactNode } from "react";
-import { ReclaimingVideo } from "@/app/components/reclaiming-media";
+import BreadboardVideoPlayer from "@/app/components/breadboard-video-player";
 import type { ChatMessageAttachment } from "@/lib/chat-attachments";
 import { paletteFromCover, type PlayerPalette } from "@/lib/spotify/player-palette";
 import { videoSourceFor, videoUrlsIn, type VideoSource } from "@/lib/video-sources/identity";
@@ -217,12 +217,10 @@ export default function ChatVideoLinkEmbeds({ text, attachments }: Props) {
             ) : vertical ? (
               <VerticalEmbed source={source} />
             ) : (
-              <ReclaimingVideo
-                controls
-                // The file can be gigabytes; nothing is fetched until played.
-                preload="metadata"
+              <BreadboardVideoPlayer
                 src={source.canonicalUrl}
-                className="block max-h-80 w-full rounded-[18px] bg-black"
+                title={source.label}
+                className="max-h-80 rounded-[18px]"
               />
             )}
           </VideoLinkCard>

@@ -535,6 +535,7 @@ import {
 } from "@/app/components/hermes/use-agent-launch-queue";
 import { originatingAgentLaunchSession } from "@/app/components/hermes/agent-launch-scope";
 import AgentLaunchPrompt from "@/app/components/hermes/agent-launch-prompt";
+import { SwarmActivity } from "@/app/components/hermes/swarm-activity";
 import {
   OPENCODE_AGENT_ID,
   OPENCODE_AGENT_NAME,
@@ -573,6 +574,7 @@ import {
   type ChatNotificationTarget,
 } from "@/lib/chat-notification-inbox";
 import { useChatNotificationView } from "@/lib/use-chat-notification-view";
+import { notificationMessageKeys } from "@/lib/chat-notification-visibility";
 import { isLearnRunningStatus, LEARN_ACTIVE_STAGE_LABELS } from "@/lib/learn-stage-labels";
 import { learnOperationActivity } from "@/lib/learn-operation-activity";
 import {
@@ -2207,6 +2209,7 @@ const ChatTranscript = memo(function ChatTranscript({
             <ChatGreetingEmptyState
               greeting={greeting}
               suggestions={greetingSuggestions}
+              suggestionScopeKey={JSON.stringify([clusterSlug, temporaryChat])}
               onSelectSuggestion={onSelectSuggestion}
               footnote={
                 <>
@@ -2379,7 +2382,9 @@ const ChatTranscript = memo(function ChatTranscript({
                     )),
               );
               return (
-                <div className="flex w-full flex-col gap-3">
+                <div className="flex w-full flex-col gap-3"
+                  data-notification-message={msg.role === "assistant" && !msg.pending && msg.content.trim()
+                    ? JSON.stringify(notificationMessageKeys(msg)) : undefined}>
                   {timeSeparators[i] ? (
                     <ChatTimeSeparator
                       label={timeSeparators[i]}
@@ -3737,7 +3742,7 @@ export default function WorkspaceClient({
 }: Props) {
   const router = useRouter();
   useGardenTitle(clusterSlug, clusterName);
-  const { toasts, addToast, dismissToast, dismissChatToasts, dismissLearnToasts } = useToast();
+  const { toasts, addToast, dismissToast, dismissLearnToasts } = useToast();
   // Every artifact entry point in this workspace—archive rows and inline chat
   // cards alike—opens into one overlay bounded by the workspace body. Keeping
   // the host below the header prevents the viewer from covering Garden nav.
@@ -5297,11 +5302,6 @@ export default function WorkspaceClient({
   const openChatById = useCallback((chatId: string) => {
     const id = Number(chatId);
     if (!Number.isInteger(id)) return;
-    dismissChatToasts({
-      surface: "garden_chat",
-      gardenSlug: clusterSlug,
-      chatId,
-    });
     pendingNewChatRef.current = false;
     chatBeforeTemporary.current = null;
     setTemporaryChat(false);
@@ -5311,7 +5311,7 @@ export default function WorkspaceClient({
     // An existing chat, so nothing typed in the blank composer belongs to it.
     setCreatedChatId(null);
     setDraftMessages(null);
-  }, [clusterSlug, dismissChatToasts, selectChat]);
+  }, [selectChat]);
 
   useEffect(() => {
     const requested = initialChatId?.trim() ?? "";
@@ -5443,6 +5443,7 @@ export default function WorkspaceClient({
   // Agent selection/health checks happen before the concrete launcher's flag
   // rises. Keep the originating assistant turn active across that whole gap.
   const [delegatedAgentLaunching, setDelegatedAgentLaunching] = useState(false);
+  const [swarmActive, setSwarmActive] = useState(false);
   // A drafted turn is already under way even though no session id exists yet
   // to mark as streaming, so the thinking row comes up with the message rather
   // than after the chat has been created.
@@ -6428,6 +6429,7 @@ export default function WorkspaceClient({
   // that asked for it, starting, and finished but not yet handed back. The
   // worker's own run is covered separately, by the transcript.
   const delegationInFlight =
+    swarmActive ||
     agentLaunchQueue.queued ||
     delegatedAgentLaunching ||
     messages.some(
@@ -18374,6 +18376,7 @@ if (careerOpsAgent) {
             <SideChatSurface>
             <main
               ref={transcriptScrollRef}
+              data-notification-chat={`garden_chat:${clusterSlug}:${viewingChatId}`}
               className="bb-chat-scroller bb-chat-scroll-tail flex flex-1 flex-col overflow-y-auto px-4 py-6"
             >
               <InlineProposalCardsProvider
@@ -18546,6 +18549,7 @@ if (careerOpsAgent) {
             className="bb-composer-overlay px-4 pb-3"
           >
             {/* A runtime agent the assistant chose, waiting to be started. */}
+            <SwarmActivity conversationId={activeChat?.isOwn !== false ? activeChatId : null} onActiveChange={setSwarmActive} />
             {agentLaunchQueue.pending ? (
               <div className="mx-auto mb-2 w-full max-w-5xl">
                 <AgentLaunchPrompt
@@ -18631,7 +18635,7 @@ if (careerOpsAgent) {
               history={sentMessages}
               onPaste={handleChatPaste}
               textareaRef={textareaRef}
-              placeholder="Ask about your documents…"
+              placeholder="Ask anything."
               disabled={chatContentLoading}
               isSending={
                 (isStreaming && !respondingToInlineSelection) ||

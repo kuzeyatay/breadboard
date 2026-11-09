@@ -17,6 +17,7 @@ import path from "node:path";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { ChatTokenUsage } from "../chat-token-usage.ts";
 import { resolveCodexLauncher, type CodexLauncher } from "../codex/run-manager.ts";
+import { apiAnythingCodexConfig, API_ANYTHING_POLICY } from "../api-anything/agents.ts";
 import {
   externalRuntimeLstat,
   externalRuntimeRealpath,
@@ -278,6 +279,7 @@ function ingestCodexEvent(run: RunState, value: Record<string, unknown>): void {
 }
 
 function launcherArgs(input: {
+  userId: number;
   projectPath: string;
   model: string;
   reasoningEffort: string;
@@ -320,6 +322,7 @@ function launcherArgs(input: {
     'approval_policy="never"',
     "-c",
     `model_reasoning_effort=${JSON.stringify(effort)}`,
+    ...apiAnythingCodexConfig(input.userId),
     "-",
   ];
 }
@@ -441,6 +444,7 @@ function spawnAgent(
   const child = spawn(
     codex.command,
     launcherArgs({
+      userId: run.userId,
       projectPath: input.projectPath,
       model: input.model,
       reasoningEffort: input.reasoningEffort,
@@ -453,7 +457,7 @@ function spawnAgent(
       env: childEnvironment(run, toolchain, input),
     },
   ) as ChildProcessWithoutNullStreams;
-  child.stdin.end(input.instruction);
+  child.stdin.end(`${input.instruction}\n\n${API_ANYTHING_POLICY}`);
   run.child = child;
   run.status = "running";
   setStage(run, "authoring");
@@ -599,6 +603,7 @@ export function startRuntimeWorkerRun(input: {
       run.child = null;
       const shimDirectory = writeCliShim(path.join(workspaceRoot, "bin"), launcher);
       const promptInput = {
+        userId: input.userId,
         projectDirectory: workspace.projectDirectory,
         outputRelativePath: OUTPUT_RELATIVE_PATH,
       };

@@ -96,7 +96,12 @@ export function videoTranscriptionRouteDeps(): VideoTranscriptionRouteDeps {
   const config = getVideoTranscriptionConfig();
   const store = getVideoTranscriptionStore();
   return {
-    config,
+    config: {
+      ...config,
+      // Only a desktop install has this file: there the server and the user
+      // share a disk, so a path the user picked means the same thing to both.
+      allowOriginPaths: fs.existsSync(path.join(dashboardDataDir(), "config", "desktop-config.json")),
+    },
     store,
     requireOwnedGarden: async (gardenId: string) => {
       const { userId, cluster } = await requireOwnedClusterFromSlug(gardenId);

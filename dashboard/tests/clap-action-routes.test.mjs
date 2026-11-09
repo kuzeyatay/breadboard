@@ -6,6 +6,7 @@ import esbuild from 'esbuild';
 async function route(relative) {
   const root = fileURLToPath(new URL('../', import.meta.url));
   const stubs = {
+    "prompt-service": "export const systemPromptText = () => undefined;",
     'next/server': 'export const NextResponse=Response;',
     '@/lib/db': 'export default {};',
     '@/lib/server-auth': `export class RouteError extends Error{constructor(status,message){super(message);this.status=status;}}export async function requireUserId(){if(!globalThis.clapFixture.userId)throw Object.assign(new Error('Unauthorized'),{status:401});return globalThis.clapFixture.userId;}export function routeErrorResponse(error){return Response.json({error:error.message},{status:error.status||500});}`,
@@ -25,7 +26,7 @@ async function route(relative) {
   const built = await esbuild.build({
     entryPoints: [`${root}/${relative}`], bundle: true, write: false, format: 'esm', platform: 'node',
     plugins: [{ name: 'isolated-services', setup(build) {
-      build.onResolve({ filter: /.*/ }, args => args.path in stubs ? { path: args.path, namespace: 'stub' } : null);
+      build.onResolve({ filter: /.*/ }, args => args.path.includes('/system-prompts/service') ? { path: 'prompt-service', namespace: 'stub' } : args.path in stubs ? { path: args.path, namespace: 'stub' } : null);
       build.onLoad({ filter: /.*/, namespace: 'stub' }, args => ({ contents: stubs[args.path], loader: 'js' }));
     } }],
   });

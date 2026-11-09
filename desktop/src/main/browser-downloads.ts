@@ -19,6 +19,13 @@ function isDownload(value: unknown): value is BrowserDownload {
     typeof item.filename === "string" && typeof item.url === "string" &&
     typeof item.savePath === "string" && (!item.savePath || path.isAbsolute(item.savePath)) &&
     typeof item.active === "boolean" &&
+    (item.error === undefined || (typeof item.error === "string" && item.error.length <= 2_048)) &&
+    (item.autoOpen === undefined || typeof item.autoOpen === "boolean") &&
+    (item.progress === undefined || (typeof item.progress === "object" && item.progress !== null &&
+      Number.isSafeInteger((item.progress as { completed: number }).completed) &&
+      Number.isSafeInteger((item.progress as { total: number }).total) &&
+      (item.progress as { completed: number }).completed >= 0 &&
+      (item.progress as { total: number }).total >= (item.progress as { completed: number }).completed)) &&
     ["progressing", "completed", "cancelled", "interrupted"].includes(String(item.state)) &&
     [item.startedAt, item.receivedBytes, item.totalBytes].every(value =>
       typeof value === "number" && Number.isFinite(value) && value >= 0);
@@ -28,6 +35,7 @@ function isDownload(value: unknown): value is BrowserDownload {
 export class BrowserDownloads {
   private items: BrowserDownload[] = [];
   private readonly live = new Map<string, DownloadItem>();
+  private readonly nativeCancels = new Map<string, () => void>();
   private readonly sessions = new Set<Session>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private writable = true;
@@ -73,6 +81,40 @@ export class BrowserDownloads {
     this.flush();
   }
 
+  /** Native stream downloads share the same history, cancellation and file actions. */
+  startNative(filename: string, url: string, cancel: () => void): {
+    rename: (filename: string) => void;
+    progress: (bytes: number, completed: number, total: number) => void;
+    finish: (state: "completed" | "cancelled" | "interrupted", savePath?: string, error?: string) => void;
+  } {
+    const entry: BrowserDownload = { id: randomUUID(), filename, url, savePath: "", startedAt: Date.now(),
+      receivedBytes: 0, totalBytes: 0, state: "progressing", active: true, autoOpen: false };
+    this.items.unshift(entry);
+    this.nativeCancels.set(entry.id, cancel);
+    this.flush();
+    return {
+      rename: filename => { entry.filename = filename; },
+      progress: (bytes, completed, total) => {
+        if (this.quitting || !entry.active) return;
+        entry.receivedBytes = bytes;
+        entry.progress = { completed, total };
+        if (!this.timer) { this.timer = setTimeout(() => this.flush(), 1_000); this.timer.unref(); }
+      },
+      finish: (state, savePath = "", error) => {
+        this.nativeCancels.delete(entry.id);
+        if (this.quitting) return;
+        entry.active = false;
+        entry.state = state;
+        entry.savePath = savePath;
+        entry.error = error;
+        if (savePath) entry.filename = path.basename(savePath);
+        if (state === "completed") entry.totalBytes = entry.receivedBytes;
+        delete entry.progress;
+        this.flush();
+      },
+    };
+  }
+
   flush(): boolean {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
@@ -96,6 +138,7 @@ export class BrowserDownloads {
 
   prepareForQuit(): void {
     this.quitting = true;
+    for (const cancel of this.nativeCancels.values()) cancel();
     for (const entry of this.items) {
       if (!entry.active) continue;
       entry.active = false;
@@ -151,6 +194,8 @@ export class BrowserDownloads {
       const entry = this.items.find(item => item.id === command.id);
       if (!entry) return { ok: false, error: "This download is no longer in the list." };
       if (command.type === "cancel") {
+        const cancelNative = this.nativeCancels.get(entry.id);
+        if (cancelNative) { cancelNative(); return { ok: true }; }
         const item = this.live.get(entry.id);
         if (!item) return { ok: false, error: "This download has already stopped." };
         item.cancel();

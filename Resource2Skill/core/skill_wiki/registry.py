@@ -22,7 +22,6 @@ boundary (the public API rejects collisions before WAL append).
 from __future__ import annotations
 
 import errno
-import fcntl
 import json
 import os
 import re
@@ -33,6 +32,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 import jsonschema  # type: ignore[import-untyped]
 
@@ -94,13 +98,15 @@ def _validate_meta(payload: dict[str, Any]) -> None:
 
 @contextmanager
 def _file_lock(path: Path) -> Iterator[None]:
-    """Per-domain advisory file lock backed by ``fcntl.flock``.
+    """Per-domain advisory file lock, including native Windows file locking.
 
-    Reentrant within the same process via a thread-local depth counter so
+    Reentrant within the same thread via a thread-local depth counter so
     nested ``with reg.write_lock():`` blocks do not deadlock.
     """
     lock_state = _file_lock._state  # type: ignore[attr-defined]
-    key = str(path)
+    key = os.path.normcase(str(path.resolve()))
+    if not hasattr(lock_state, "depth"):
+        lock_state.depth = {}
     depth = lock_state.depth.get(key, 0)
     if depth > 0:
         lock_state.depth[key] = depth + 1
@@ -113,14 +119,32 @@ def _file_lock(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        if os.name == "nt":
+            # Windows locks a byte range from the current offset, including
+            # beyond EOF. Keep the lock file unchanged and retry contention,
+            # matching flock's blocking semantics rather than LK_LOCK's 10s cap.
+            while True:
+                try:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise
+                    time.sleep(0.05)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_EX)
         lock_state.depth[key] = 1
         try:
             yield
         finally:
             lock_state.depth[key] = 0
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                if os.name == "nt":
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
             except OSError:
                 pass
     finally:
@@ -128,8 +152,6 @@ def _file_lock(path: Path) -> Iterator[None]:
 
 
 _file_lock._state = threading.local()  # type: ignore[attr-defined]
-if not hasattr(_file_lock._state, "depth"):  # type: ignore[attr-defined]
-    _file_lock._state.depth = {}  # type: ignore[attr-defined]
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:

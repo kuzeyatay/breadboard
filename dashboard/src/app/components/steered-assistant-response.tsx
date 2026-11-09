@@ -11,11 +11,38 @@ import {
 } from "./chat-text-selection-ui";
 import CollapsibleUserMessage from "./chat/collapsible-user-message";
 import { UserMessageText } from "./hermes/command-text";
-import { resolveChatTextSelectionAnchor } from "@/lib/chat-text-selection";
+import {
+  resolveChatTextSelectionAnchor,
+  type ChatTextSelectionReference,
+} from "@/lib/chat-text-selection";
 import {
   splitSteeredResponse,
   type CourseCorrectionBoundary,
 } from "@/lib/steered-response";
+
+/** A steer rendered as the user bubble it is, wherever the transcript places it. */
+export function CourseCorrectionBubble({
+  id,
+  content,
+  textSelection,
+}: {
+  id: string;
+  content: string;
+  textSelection?: ChatTextSelectionReference;
+}) {
+  return (
+    <div data-selection-exclude className="group flex justify-end py-1">
+      <div className="w-fit max-w-[75%]">
+        <div className="neu-chat-message neu-chat-message-user rounded-[22px] px-4 py-2.5 text-sm leading-6">
+          {textSelection ? <QuotedChatSelection selection={textSelection} /> : null}
+          <CollapsibleUserMessage messageKey={`steer:${id}`}>
+            <UserMessageText content={content} />
+          </CollapsibleUserMessage>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function SteeredAssistantResponse({
   content,
@@ -96,16 +123,12 @@ export default function SteeredAssistantResponse({
             selectionScopeRef={rootRef}
           />
         ) : (
-          <div key={segment.key} data-selection-exclude className="group flex justify-end py-1">
-            <div className="w-fit max-w-[75%]">
-              <div className="neu-chat-message neu-chat-message-user rounded-[22px] px-4 py-2.5 text-sm leading-6">
-                {segment.textSelection ? <QuotedChatSelection selection={segment.textSelection} /> : null}
-                <CollapsibleUserMessage messageKey={`steer:${segment.key}`}>
-                  <UserMessageText content={segment.content} />
-                </CollapsibleUserMessage>
-              </div>
-            </div>
-          </div>
+          <CourseCorrectionBubble
+            key={segment.key}
+            id={segment.key}
+            content={segment.content}
+            textSelection={segment.textSelection}
+          />
         ),
       )}
     </div>

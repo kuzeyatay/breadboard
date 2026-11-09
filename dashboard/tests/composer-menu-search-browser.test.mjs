@@ -10,7 +10,7 @@ import tailwindcss from '@tailwindcss/postcss';
 const root = path.resolve(import.meta.dirname, '..');
 const ready = (slug, name, kind = 'skill', extra = {}) => ({ id: `${kind}:${slug}`, slug, token: slug, kind, name, description: `Use ${name}`, installed: true, enabled: true, healthy: true, ...extra });
 
-test('plus and slash search from the real composer without changing or sending the draft', { timeout: 120_000 }, async t => {
+test('plus searches additions, slash opens capabilities, and typed commands show suggestions without sending the draft', { timeout: 120_000 }, async t => {
   const bundle = await build({
     bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', outfile: 'app.js',
     alias: { '@': path.join(root, 'src') }, loader: { '.css': 'empty' },
@@ -75,7 +75,8 @@ test('plus and slash search from the real composer without changing or sending t
   const plus = page.getByRole('button',{name:'Add to chat',exact:true});
   const slash = page.getByRole('button',{name:'Open capabilities',exact:true});
   const addSearch = page.getByRole('textbox',{name:'Search add menu',exact:true});
-  const commandSearch = page.getByRole('textbox',{name:'Search capabilities',exact:true});
+  const capabilities = page.getByRole('dialog',{name:'Use a capability',exact:true});
+  const suggestions = page.getByRole('listbox',{name:'Available capabilities',exact:true});
   const draft = page.getByRole('textbox',{name:'Draft',exact:true});
   await draft.waitFor();
   await plus.click();
@@ -117,27 +118,55 @@ test('plus and slash search from the real composer without changing or sending t
   assert.equal(await page.locator('#outside').evaluate(button=>document.activeElement===button),true);
 
   await slash.click();
-  await commandSearch.fill('docx');
+  await capabilities.waitFor();
+  assert.equal(await slash.getAttribute('aria-haspopup'),'dialog');
+  assert.equal(await slash.getAttribute('aria-expanded'),'true');
+  assert.equal(await suggestions.count(),0);
+  assert.equal(await draft.inputValue(),'Keep my draft');
+  assert.equal(await page.evaluate(()=>window.sends||0),0);
+  await capabilities.getByRole('button',{name:'Close capabilities',exact:true}).click();
+  assert.equal(await slash.getAttribute('aria-expanded'),'false');
+
+  await draft.fill('');
+  await slash.click();
+  await capabilities.waitFor();
+  assert.equal(await suggestions.count(),0);
+  assert.equal(await draft.inputValue(),'');
+  await capabilities.getByRole('button',{name:'Close capabilities',exact:true}).click();
+
+  await draft.fill('Keep my draft');
+  assert.equal(await suggestions.count(),0);
+  await draft.press('Home');
+  await draft.press('Space');
+  await draft.press('ArrowLeft');
+  await draft.pressSequentially('/docx');
   await page.getByRole('option').filter({hasText:'/docx'}).waitFor();
+  assert.equal(await capabilities.count(),0);
+  assert.equal(await draft.inputValue(),'/docx Keep my draft');
   assert.equal(await page.getByRole('option').count(),1);
-  await commandSearch.press('Enter');
+  await draft.press('Enter');
   assert.equal(await draft.inputValue(),'/docx Keep my draft');
   assert.equal(await page.evaluate(()=>window.sends||0),0);
-  await slash.click();
   for (const query of ['goal','plan-mode','gmail','github']) {
-    await commandSearch.fill(query);
+    await draft.fill(`/${query}`);
     await page.getByRole('option').filter({hasText:`/${query}`}).waitFor();
   }
-  await commandSearch.fill('no-such-capability');
-  await commandSearch.press('Enter');
+  await draft.fill('/no-such-capability');
+  await draft.press('Enter');
   assert.equal(await page.evaluate(()=>window.sends||0),0);
-  await commandSearch.press('Escape');
-  assert.equal(await draft.inputValue(),'/docx Keep my draft');
+  await draft.press('Escape');
+  assert.equal(await draft.inputValue(),'/no-such-capability');
+  await draft.fill('');
+  assert.equal(await suggestions.count(),0);
+  await draft.fill('/docx Keep my draft');
 
   await plus.click();
   await slash.click();
-  await commandSearch.waitFor();
+  await capabilities.waitFor();
+  assert.equal(await suggestions.count(),0);
   assert.equal(await page.getByRole('menu').count(),0);
+  assert.equal(await draft.inputValue(),'/docx Keep my draft');
+  await capabilities.getByRole('button',{name:'Close capabilities',exact:true}).click();
   await plus.click();
   await addSearch.waitFor();
   assert.equal(await page.getByRole('listbox',{name:'Available capabilities'}).count(),0);
@@ -152,12 +181,26 @@ test('plus and slash search from the real composer without changing or sending t
   await page.getByRole('option').filter({hasText:'/docx'}).waitFor();
   await draft.press('Enter');
   assert.equal(await draft.inputValue(),'/docx ');
+  await draft.fill('/doc');
   await slash.click();
+  await capabilities.waitFor();
+  assert.equal(await suggestions.count(),0);
+  assert.equal(await draft.inputValue(),'/doc');
+  await capabilities.getByRole('button',{name:'Close capabilities',exact:true}).click();
+  await draft.fill('/docx');
   await page.getByRole('button',{name:'Browse all',exact:true}).click();
-  await page.getByRole('dialog',{name:'Use a capability',exact:true}).waitFor();
-  await page.getByRole('button',{name:'Close capabilities',exact:true}).last().click();
+  await capabilities.waitFor();
+  assert.equal(await suggestions.count(),0);
+  await capabilities.getByRole('button',{name:'Close capabilities',exact:true}).click();
+  await draft.fill('/docx ');
 
   await page.setViewportSize({width:390,height:740});
+  await slash.click();
+  await capabilities.waitFor();
+  assert.equal(await suggestions.count(),0);
+  const capabilitiesBox = await capabilities.boundingBox();
+  assert.ok(capabilitiesBox.x>=0 && capabilitiesBox.x+capabilitiesBox.width<=390);
+  await capabilities.getByRole('button',{name:'Close capabilities',exact:true}).click();
   await plus.click();
   await addSearch.fill('slack');
   const menuBox = await page.getByRole('menu',{name:'Add to chat',exact:true}).boundingBox();

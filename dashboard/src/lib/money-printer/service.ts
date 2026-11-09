@@ -23,6 +23,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
+import { runtimeProcessPath } from "../../../scripts/runtime-v2-paths.mjs";
 import { credentialFingerprint } from "./credentials.ts";
 import { ownedSettings, writeMoneyPrinterConfig } from "./config-file.ts";
 import {
@@ -210,8 +211,8 @@ async function start(options: StartOptions): Promise<MoneyPrinterService> {
 
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
-  const child = spawn(python, serveArgv(port), {
-    cwd: runtime.root,
+  const child = spawn(runtimeProcessPath(python), serveArgv(port), {
+    cwd: runtimeProcessPath(runtime.root),
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
     env: moneyPrinterEnv({

@@ -6,11 +6,14 @@ import {
   resolveResponders,
   startMemberReply,
 } from "@/lib/buzz/agent-bridge.ts";
-import { getMessage, postMessage } from "@/lib/buzz/instance.ts";
+import { getMessage, reactionsForRoom } from "@/lib/buzz/instance.ts";
 import {
   requireBuzzUser,
   requireRoomAndSelf,
   requireString,
+  postHumanMessage,
+  roomPermissions,
+  presentRoomMessage,
 } from "@/lib/buzz/route-helpers.ts";
 import { ApiError } from "@/lib/hermes/route-helpers.ts";
 
@@ -23,14 +26,16 @@ export async function GET(
   try {
     const { userId, displayName } = await requireBuzzUser();
     const { roomId, messageId } = await params;
-    const { room } = requireRoomAndSelf(userId, roomId, displayName);
+    const { room, self, members } = requireRoomAndSelf(userId, roomId, displayName);
 
     const parentId = Number(messageId);
     const root = getMessage(parentId);
-    if (!root || root.roomId !== room.id) {
+    if (!root || root.roomId !== room.id || root.parentId !== null) {
       throw new ApiError(404, "message_not_found", "Message not found.");
     }
-    return NextResponse.json({ root, replies: readRoomThread(room.id, parentId) });
+    const reactions = reactionsForRoom(room.id, self.id);
+    const messages = (await readRoomThread(room.id, parentId)).map(message => ({ ...presentRoomMessage(message, userId), reactions: reactions.get(message.id) ?? [] }));
+    return NextResponse.json({ room, members, root: presentRoomMessage(root, userId), replies: messages, messages, selfMemberId: self.id, permissions: roomPermissions(userId, room) });
   } catch (error) {
     return apiErrorResponse(error);
   }
@@ -48,7 +53,7 @@ export async function POST(
 
     const parentId = Number(messageId);
     const root = getMessage(parentId);
-    if (!root || root.roomId !== room.id) {
+    if (!root || root.roomId !== room.id || root.parentId !== null) {
       throw new ApiError(404, "message_not_found", "Message not found.");
     }
 
@@ -56,15 +61,7 @@ export async function POST(
     const text = requireString(body.body, "body", 12000);
     const clientMessageId = requireString(body.clientMessageId, "clientMessageId", 128);
 
-    const message = postMessage(room.id, {
-      clientMessageId,
-      memberId: self.id,
-      authorKind: "human",
-      authorName: self.displayName,
-      authorHandle: self.handle,
-      body: text,
-      parentId,
-    });
+    const message = postHumanMessage(room, self, text, clientMessageId, parentId);
 
     const started = [];
     for (const responder of resolveResponders(members, text)) {
@@ -74,6 +71,7 @@ export async function POST(
         trigger: message,
         clientMessageId: `${clientMessageId}:${responder.handle}`,
         actingUserId: userId,
+        request,
       });
       started.push({
         memberId: responder.id,

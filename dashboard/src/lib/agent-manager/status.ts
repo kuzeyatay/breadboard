@@ -13,6 +13,17 @@ const record = (value: unknown): Record<string, unknown> => value && typeof valu
 const text = (...values: unknown[]) => values.find((value): value is string => typeof value === "string" && value.trim().length > 0)?.slice(0, 1200) ?? "";
 const boolean = (...values: unknown[]) => values.find((value): value is boolean => typeof value === "boolean") ?? null;
 
+/** Match bounded native probes, including cold Python imports on bulk storage. */
+export function agentHealthCheckTimeoutMs(id: string): number {
+  const budgets: Readonly<Record<string, number>> = {
+    matraix: 340_000, "money-printer": 145_000, openmontage: 180_000,
+    shorts: 125_000, legal: 95_000, "video-use": 120_000,
+    // The disposable Vox worker has a 60-second health deadline, plus dispatch.
+    "vox-director": 75_000,
+  };
+  return budgets[id] ?? 25_000;
+}
+
 /** Accept only known public fields, never spread a health response into the UI. */
 export function agentManagerStatus(entry: AgentManagerEntry, value?: unknown, httpOk = true): AgentManagerStatus {
   const data = record(value), nested = record(data.status), setup = record(data.setup), health = record(data.health);
@@ -46,6 +57,11 @@ export function agentManagerStatus(entry: AgentManagerEntry, value?: unknown, ht
       message: base.message || "Inbox Zero's controller is finishing its idle shutdown. Retry the status check shortly.",
     };
   }
+  // A timed-out import establishes no missing dependency. Do not recommend
+  // an installation based only on slow removable-storage access.
+  if (/did not answer in time|readiness check timed out/i.test(base.message)) {
+    return { ...base, state: "unknown", label: "Check timed out", installed: null, message: base.message };
+  }
   // A cached aggregate availability flag must not conceal an explicit missing
   // dependency. External music providers do not require a local environment.
   const externalMusic = entry.id === "music-producer" && record(data.settings).mode === "external";
@@ -65,9 +81,12 @@ export function agentManagerStatus(entry: AgentManagerEntry, value?: unknown, ht
   }
   if (available === true || ["ready", "healthy", "busy", "stopped", "available-but-stopped"].includes(String(data.state))) {
     const onDemand = ["stopped", "available-but-stopped"].includes(String(data.state)) || (["deep-research", "agent-tars"].includes(entry.id) && runtimeAvailable === true && health.status === "unavailable");
+    const limited = data.status === "degraded";
+    const limitations = limited && Array.isArray(data.degraded)
+      ? text(data.degraded.filter((item): item is string => typeof item === "string").join(" ")) : "";
     return { ...base, installed: base.installed ?? true, state: "ready",
-      label: onDemand ? "Installed · starts on demand" : entry.id === "agent-tars" ? "Runtime available" : "Ready",
-      message: base.message || (entry.id === "agent-tars" ? entry.requirements : ""),
+      label: limited ? "Ready · with limits" : onDemand ? "Installed · starts on demand" : entry.id === "agent-tars" ? "Runtime available" : "Ready",
+      message: [base.message, limitations].filter(Boolean).join(" ") || (entry.id === "agent-tars" ? entry.requirements : ""),
     };
   }
   return { ...base, state: "unknown", label: "Status unavailable", message: base.message || (entry.hasSettings ? "Open settings to check this agent's requirements." : entry.requirements) };

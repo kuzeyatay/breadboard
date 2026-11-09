@@ -19,6 +19,7 @@ export const HERMES_MODEL_IDS: readonly string[] = DEFAULT_ASSISTANT_MODELS;
 
 const MAX_REASONING_MODELS = new Set([
   "gpt-6.1-sol",
+  "gpt-6.1-terra",
   "gpt-6-astra",
   "gpt-6-sol",
   "gpt-6-luna",

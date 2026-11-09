@@ -16,7 +16,7 @@ test('browser controls stay separate and long notifications remain readable', { 
     'next/dynamic': 'export default ()=>()=>null;',
     './navigation-progress': 'export const startNavigationProgress=()=>{};',
     './chat-markdown': 'export default ()=>null;',
-    '@/lib/notification-sound': 'export const chimeForNotifications=()=>()=>{};',
+    '@/lib/notification-sound': 'export const chimeForNotifications=()=>()=>{};export const getNotificationSoundEnabled=()=>true;export const notificationDeliveryReceipts=()=>new Set();export const recordNotificationDelivery=()=>{};export const subscribeNotificationSound=()=>()=>{};',
     '@/app/components/use-desktop-tabs': 'export const useDesktopTabs=()=>window.tabState;',
     './use-browser-saved-items': 'const items=[];export const useBrowserSavedItems=()=>({items,ready:true,saving:false,save:async()=>true});',
     './use-browser-recent-searches': 'const items=[];export const useBrowserRecentSearches=()=>({items,remember:async()=>true,remove:async()=>true});',

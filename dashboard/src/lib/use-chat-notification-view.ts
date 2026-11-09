@@ -13,6 +13,6 @@ export function useChatNotificationView(target: ChatNotificationTarget | null): 
   // Depend on identity fields so streaming tokens do not release/recreate it.
   useLayoutEffect(() => {
     if (!surface || !chatId) return;
-    return registerChatNotificationTarget({ surface, chatId, gardenSlug, conversationId });
+    return registerChatNotificationTarget({ surface, chatId, gardenSlug, conversationId, observeMessages: true });
   }, [surface, chatId, gardenSlug, conversationId]);
 }

@@ -122,3 +122,22 @@ test("the settings overview prewarms and visited panels stay mounted", () => {
   // The proxy status is read by the account list now, not a card of its own.
   assert.match(accounts, /fetchCachedSettings\("\/api\/cliproxy\/status"/);
 });
+
+test("a settings request the server never answers fails instead of hanging", async () => {
+  const originalFetch = globalThis.fetch;
+  let signal;
+  globalThis.fetch = (_url, init) => new Promise((_resolve, reject) => {
+    signal = init.signal;
+    signal.addEventListener("abort", () => reject(signal.reason));
+  });
+  try {
+    invalidateSettingsCache();
+    const pending = fetchCachedSettings("/api/hangs");
+    assert.ok(signal, "every settings read carries a deadline");
+    // Fire the deadline now rather than waiting the real 20 s.
+    signal.dispatchEvent(new Event("abort"));
+    await assert.rejects(pending);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

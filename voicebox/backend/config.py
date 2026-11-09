@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 _custom_models_dir = os.environ.get("VOICEBOX_MODELS_DIR")
 if _custom_models_dir:
     os.environ["HF_HUB_CACHE"] = _custom_models_dir
+    # Runtime deliberately supplies a closed environment without login names.
+    # PyTorch otherwise calls getpass.getuser(), whose fallback imports the
+    # Unix-only pwd module on Windows. Keep compiler cache with model data.
+    os.environ.setdefault(
+        "TORCHINDUCTOR_CACHE_DIR", str(Path(_custom_models_dir) / ".torchinductor")
+    )
     logger.info("Model download path set to: %s", _custom_models_dir)
 
 # Default data directory (used in development)

@@ -12,7 +12,7 @@
 // user's objective through a command-line parser.
 
 import { repositoryRoot } from "../runtime-paths.ts";
-import { runtimeProcessPath } from "../../../scripts/runtime-v2-paths.mjs";
+import { runtimeProcessPath, sameRuntimePath } from "../../../scripts/runtime-v2-paths.mjs";
 import {
   externalRuntimeAccess,
   externalRuntimeFilesystem as fs,
@@ -164,6 +164,10 @@ export function resolveRufloLauncher(
       ? (regularFile(path.resolve(configured)) ? path.resolve(configured) : null)
       : findExecutable(configured, env);
     if (resolved) {
+      // The sealed launcher is the checkout's thin wrapper. Its --version
+      // shortcut works without dist, but every real planner command fails.
+      // A separately configured executable remains its own runtime contract.
+      if (sameRuntimePath(resolved, path.join(root, "bin", "cli.js")) && !cloneIsBuilt(root)) return null;
       return {
         command: runtimeProcessPath(isScript ? process.execPath : resolved),
         args: isScript ? [runtimeProcessPath(resolved)] : [],
@@ -256,7 +260,7 @@ export function runtimeAvailability(
       available: false,
       installed: true,
       reason:
-        "Ruflo cannot be launched. Build the clone (npm install && npm run build:ts in ruflo/) or make npm available so Breadboard can run the published @claude-flow/cli package.",
+        "Ruflo's compiled planner is missing. Repair the bundled Ruflo runtime or build the source clone before starting a swarm.",
     };
   }
   const claude = resolveClaudeExecutable(env);

@@ -82,6 +82,8 @@ type PdfViewerLike = {
   cleanup(): void;
   decreaseScale(): void;
   increaseScale(): void;
+  /** Whole-document view rotation in degrees: 0, 90, 180 or 270. */
+  pagesRotation: number;
   nextPage(): boolean;
   previousPage(): boolean;
   setDocument(pdfDocument: PDFDocumentProxy | null): void;
@@ -1145,6 +1147,13 @@ export default function PdfViewerClient({
     pdfViewerRef.current?.increaseScale();
   }, []);
 
+  // View-only: turns every page a quarter clockwise without touching the file.
+  const rotatePages = useCallback(() => {
+    const pdfViewer = pdfViewerRef.current;
+    if (!pdfViewer) return;
+    pdfViewer.pagesRotation = (pdfViewer.pagesRotation + 90) % 360;
+  }, []);
+
   const setEditorMode = useCallback((nextMode: PdfViewerMode) => {
     if (readOnly) return;
     const pdfViewer = pdfViewerRef.current;
@@ -1708,6 +1717,16 @@ export default function PdfViewerClient({
             aria-label="Zoom in"
           >
             +
+          </button>
+          <button
+            type="button"
+            onClick={rotatePages}
+            disabled={loading}
+            className="h-8 w-8 rounded-md border border-gray-700 text-sm text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Turn pages"
+            title="Turn pages a quarter clockwise"
+          >
+            ↻
           </button>
         </div>
 

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
 
-const bundle = await build({ entryPoints: ['src/lib/speech/subscription-input.ts'], bundle: true, write: false, format: 'esm' });
+const bundle = await build({ entryPoints: [fileURLToPath(new URL('../src/lib/speech/subscription-input.ts', import.meta.url))], bundle: true, write: false, format: 'esm' });
 const { createSubscriptionInput } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 const item = (id, start, end, text) => ({ type: 'input_transcript.added', start_ms: start, end_ms: end, item: { id, text } });
 const done = (id, start, end, transcript) => ({ type: 'turn.done', turn: { id, role: 'user', start_ms: start, end_ms: end, transcript } });
@@ -63,4 +64,73 @@ test('empty media placeholders do not disable the relay before usable words arri
   assert.deepEqual(input.accept(item('1', 0, 400, 'First words')), { text: 'First words', final: false });
   assert.equal(input.active, true);
   assert.deepEqual(input.accept(item('1', 0, 400, '')), { text: '', final: false }, 'a real correction may retract an existing preview');
+});
+
+test('a provider turn spanning two submitted utterances finalizes only fresh words', () => {
+  const input = createSubscriptionInput();
+  input.accept(item('old', 2000, 6200, 'Please check the forecast'));
+  input.reset(); // The app submits after its own VAD; the provider turn stays open.
+  input.accept(item('new1', 16400, 16600, 'Tell me'));
+  input.accept(item('new2', 16600, 21200, ' a story'));
+  const final = done('spanning', 2000, 22400, 'Please check the forecast Tell me a story');
+  assert.deepEqual(input.accept(final), { text: 'Tell me a story', final: true });
+  assert.equal(input.pending(), false);
+  assert.equal(input.accept(final), undefined, 'duplicate late finals cannot restore the previous utterance');
+  input.reset();
+  input.accept(item('correction', 31600, 34800, 'Actually stop'));
+  assert.deepEqual(input.accept(done('all', 2000, 35600, 'Please check the forecast Tell me a story Actually stop')),
+    { text: 'Actually stop', final: true });
+});
+
+test('a spanning final cannot swallow words from a newer unfinished phrase', () => {
+  const input = createSubscriptionInput();
+  input.accept(item('old', 0, 200, 'Earlier request'));
+  input.reset();
+  input.accept(item('first', 600, 800, 'New request'));
+  input.accept(item('second', 1200, 1400, ' with more detail'));
+  assert.deepEqual(input.accept(done('spanning', 0, 1000, 'Earlier request New request')),
+    { text: 'New request with more detail', final: false });
+  assert.equal(input.pending(), true);
+  assert.deepEqual(input.accept(done('later', 1200, 1600, 'with more detail.')),
+    { text: 'New request with more detail.', final: true });
+});
+
+test('late extensions to an old item or empty final cannot reintroduce consumed words', () => {
+  const input = createSubscriptionInput();
+  input.accept(item('old', 0, 200, 'Consumed words'));
+  input.reset();
+  assert.equal(input.accept(item('old', 0, 400, 'Consumed words.')), undefined);
+  assert.equal(input.accept(done('old', 0, 600, 'Consumed words.')), undefined);
+  assert.equal(input.text(), '');
+  input.accept(item('new', 800, 1000, 'New request'));
+  assert.equal(input.text(), 'New request');
+});
+
+test('a new acoustic turn discards a delayed old tail and retains early interruption words', t => {
+  let now = 1000;
+  t.mock.method(Date, 'now', () => now);
+  const input = createSubscriptionInput();
+  input.accept(item('request', 0, 1000, 'Explain this briefly'));
+  input.reset();
+  now = 2200;
+  input.accept(item('late-tail', 1100, 1400, ' please'));
+  input.accept(done('old', 0, 1600, 'Explain this briefly please'));
+  now = 5200;
+  input.accept(item('interrupt', 4000, 4200, 'Actually'));
+  input.accept(item('interrupt-more', 4200, 4400, ' stop'));
+  assert.equal(input.discardBefore(4200), true);
+  assert.equal(input.text(), 'Actually stop');
+  assert.equal(input.accept(item('stale-replay', 1100, 1400, ' please')), undefined);
+  assert.deepEqual(input.accept(done('new', 4000, 4800, 'Actually stop.')), {text:'Actually stop.', final:true});
+});
+
+test('short continuations keep every recently recognized word', t => {
+  let now = 1000;
+  t.mock.method(Date, 'now', () => now);
+  const input = createSubscriptionInput();
+  input.accept(item('first', 0, 400, 'Wait'));
+  now = 1200;
+  input.accept(item('second', 400, 800, ' I meant blue'));
+  assert.equal(input.discardBefore(200), false);
+  assert.equal(input.text(), 'Wait I meant blue');
 });

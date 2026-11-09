@@ -31,6 +31,7 @@ export interface WardrobeService {
 }
 
 interface ServiceState extends WardrobeService {
+  userId?: number | null;
   child: ChildProcess;
   /** ChatMock's base URL this server's bridge was pointed at. */
   upstreamUrl: string;
@@ -69,7 +70,7 @@ function sameShape(state: ServiceState, options: StartOptions): boolean {
   return (
     state.upstreamUrl === options.upstreamUrl.replace(/\/$/, "") &&
     state.model === options.model &&
-    state.quality === options.quality
+    state.quality === options.quality && state.userId === options.userId
   );
 }
 
@@ -95,6 +96,7 @@ export function stopService(): void {
 }
 
 export interface StartOptions {
+  userId?: number | null;
   /** ChatMock's OpenAI-compatible base URL, e.g. `http://127.0.0.1:8765/v1`. */
   upstreamUrl: string;
   /** The model id the clone should name on both its calls. */
@@ -134,7 +136,7 @@ async function start(options: StartOptions): Promise<WardrobeService> {
     throw new Error("Wardrobe is not installed yet. Open its settings and install it once.");
   }
 
-  const bridge = await ensureImagesBridge(options.upstreamUrl);
+  const bridge = await ensureImagesBridge(options.upstreamUrl, options.userId);
   const port = await freePort();
   const child = spawn(
     process.execPath,
@@ -179,6 +181,7 @@ async function start(options: StartOptions): Promise<WardrobeService> {
   try {
     await waitForReady(baseUrl, child, () => log);
     const state: ServiceState = {
+      userId: options.userId,
       baseUrl,
       root,
       startedAt: Date.now(),

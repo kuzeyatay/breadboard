@@ -181,7 +181,7 @@ export default function InlineMoneyPrinterRun({
         setElapsed(asNumber(payload.elapsedSec));
         if (!reportedRef.current) {
           reportedRef.current = true;
-          notifyTaskCompleted(`MoneyPrinter — ${brief.slice(0, 80)}`);
+          notifyTaskCompleted(`MoneyPrinter — ${brief.slice(0, 80)}`, { runId });
           onTerminalRef.current?.({ outcome: "completed", content: summary });
         }
       }
@@ -259,7 +259,7 @@ export default function InlineMoneyPrinterRun({
         summary={stage}
         agentName="MoneyPrinter"
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         {/* The subject is the user's own message directly above this card. The
             header carries the agent, the model it writes with, and its state. */}
         <header className="bb-agent-run-header">

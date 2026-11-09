@@ -198,7 +198,7 @@ test("chat completions and failures notify through persistent minimal notices", 
   assert.match(toast, /aria-label="Dismiss message"/);
   assert.match(toast, /<X size=\{13\}/);
   assert.doesNotMatch(toast, />\s*Dismiss\s*</);
-  assert.match(toast, /grid-cols-\[minmax\(0,1fr\)_auto\] items-center/);
+  assert.match(toast, /grid-cols-\[minmax\(0,1fr\)_auto\] items-start/);
   assert.match(toast, /fetch\(notificationCenter \? '\/api\/chat-notifications\?center=1' : '\/api\/chat-notifications', \{\s*cache: 'no-store'/);
   assert.match(toast, /method: 'POST'/);
   assert.match(toast, /keepalive: true/);
@@ -222,7 +222,8 @@ test("chat completions and failures notify through persistent minimal notices", 
   assert.match(garden, /locallyAnnouncedChatResponses/);
   assert.match(garden, /notifyFinishedGardenChat\(chat\.id, chat\.title\)/);
   assert.match(garden, /latestAssistantResponse/);
-  assert.match(garden, /dismissChatToasts\(\{\s*surface: "garden_chat",\s*gardenSlug: clusterSlug,\s*chatId,/);
+  assert.doesNotMatch(garden, /dismissChatToasts\(\{\s*surface: "garden_chat",\s*gardenSlug: clusterSlug,\s*chatId,/);
+  assert.match(garden, /data-notification-message=/);
   assert.match(garden, /openChatById\(target\.chatId\)/);
   assert.match(garden, /onOpenChat=\{openChatFromNotification\}/);
   assert.doesNotMatch(garden, /onReplyToChat=/);
@@ -253,11 +254,11 @@ test("chat completions and failures notify through persistent minimal notices", 
     /agentCompleted &&[\s\S]*!agentReportedError[\s\S]*notifyChatResponseReady\(displayText,\s*\{[\s\S]*chatId: sessionId,[\s\S]*activeChatId: activeChatIdRef\.current[\s\S]*agentFailed \|\| agentReportedError[\s\S]*notifyChatResponseFailed/,
   );
 
-  assert.match(browser, /if \(outcome === "completed"\) notifyTaskCompleted\(task\)/);
-  assert.match(agentBrowser, /if \(outcome === "completed"\) notifyTaskCompleted\(task\)/);
-  assert.match(research, /if \(outcome === "completed"\) notifyTaskCompleted\(query\)/);
+  assert.match(browser, /if \(outcome === "completed"\) notifyTaskCompleted\(task, \{ runId \}\)/);
+  assert.match(agentBrowser, /if \(outcome === "completed"\) notifyTaskCompleted\(task, \{ runId \}\)/);
+  assert.match(research, /if \(outcome === "completed"\) notifyTaskCompleted\(query, \{ runId \}\)/);
   assert.match(
     openPlanter,
-    /event\.type === "run.completed"[\s\S]*notifyTaskCompleted\(task\)[\s\S]*event\.type === "run.failed"/,
+    /event\.type === "run.completed"[\s\S]*notifyTaskCompleted\(task, \{ runId \}\)[\s\S]*event\.type === "run.failed"/,
   );
 });

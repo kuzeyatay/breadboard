@@ -1,0 +1,69 @@
+* 10 kHz Wien oscillator: isolated four-pole filtering and calibrated output
+.temp 27
+VCC vcc 0 DC 12.0
+VEE vee 0 DC -12.0
+VSTART start 0 DC 0.0 PWL(0 0 1u 12 2u 0)
+RSTART start wp 1meg
+CWIEN1 osc w1 1n
+RWIEN1 w1 wp 15.8k
+RWIEN2 wp 0 15.8k
+CWIEN2 wp 0 1n
+XOSC wp nfb vcc vee osc BB_OPAMP
+RG nfb 0 10k
+RFIX osc nfb1 15k
+RVAR nfb1 nfb 10k
+DAGC1 nfb1 nfb DAGC
+DAGC2 nfb nfb1 DAGC
+XISOLATE osc isolated vcc vee isolated BB_OPAMP
+CHP isolated hp 10n
+RHP hp 0 15.9k
+XHP hp hpbuf vcc vee hpbuf BB_OPAMP
+RLP1 hpbuf lp1 10k
+CLP1 lp1 0 1n
+XLP1 lp1 b1 vcc vee b1 BB_OPAMP
+RLP2 b1 lp2 10k
+CLP2 lp2 0 1n
+XLP2 lp2 b2 vcc vee b2 BB_OPAMP
+RLP3 b2 lp3 10k
+CLP3 lp3 0 1n
+XLP3 lp3 b3 vcc vee b3 BB_OPAMP
+RLP4 b3 lp4 10k
+CLP4 lp4 0 1n
+XLP4 lp4 filtered vcc vee filtered BB_OPAMP
+XCAL filtered calfb vcc vee cal BB_OPAMP
+RCALG calfb 0 10k
+RCALF cal calfb 1350
+RPT vcc pref 14k
+RPB pref 0 10k
+RNT vee nref 14k
+RNB nref 0 10k
+XPR pref clp vcc vee clp BB_OPAMP
+XNR nref cln vcc vee cln BB_OPAMP
+RIN cal lim 1k
+DCLP lim clp DCLAMP
+DCLN cln lim DCLAMP
+XLIM lim top vcc vee top BB_OPAMP
+XOUT top out vcc vee out BB_OPAMP
+RLOAD out 0 10k
+XPOT top wiper 0 POT100K A=0.5
+.model DAGC D(Is=1e-14 N=1.8 Rs=10 Cjo=1p)
+.model DCLAMP D(Is=1e-14 N=1.2 Rs=1 Cjo=1p)
+.subckt POT100K top wiper bottom params: A=0.5
+RU top wiper {100000*(1-A)}
+RL wiper bottom {100000*A}
+.ends POT100K
+.subckt BB_OPAMP plus minus vp vn out params: A0=100000 GBW=10000000
+Eopen pole_in 0 plus minus {A0}
+Rdominant pole_in pole 1k
+Cdominant pole 0 {A0/(6.283185307179586*GBW*1000)}
+Blimit out 0 V=min(max(V(pole),V(vn)+0.1),V(vp)-0.1)
+.ends BB_OPAMP
+.control
+set filetype=ascii
+set numdgt=17
+save all @cwien1[i] @cwien2[i] @dagc1[id] @dagc2[id] @chp[i] @clp1[i] @clp2[i] @clp3[i] @clp4[i] @dclp[id] @dcln[id]
+tran 2.5e-07 0.025 0.014 2.5e-07
+write result.raw all
+quit
+.endc
+.end

@@ -1,3 +1,4 @@
+import { renderSystemPrompt } from "../system-prompts/service.ts";
 // What Breadboard tells the coding agent before it starts making a video.
 //
 // The video-making knowledge is NOT reimplemented here. HyperFrames ships 19
@@ -43,6 +44,7 @@ function posix(value: string): string {
 }
 
 export interface PromptInput {
+  userId?: number | null;
   brief: string;
   projectDirectory: string;
   outputRelativePath: string;
@@ -68,33 +70,7 @@ export function operatingRules(input: Omit<PromptInput, "brief">): string {
         "The HyperFrames skills are not on this machine. Work from the project's own AGENTS.md and the CLI's `--help` output.",
       ];
 
-  return [
-    "# How this run works",
-    "",
-    `You are making a video with HyperFrames. The scaffolded project is your working directory (${posix(input.projectDirectory)}) and it already contains index.html, hyperframes.json and the framework's own AGENTS.md.`,
-    "",
-    ...skillLines,
-    "",
-    "## Nobody can answer you",
-    "",
-    "This run is not interactive. The person wrote one brief and left. Skip every interview, confirmation and clarifying question the skills ask you to run — decide instead. When the brief leaves something open, choose the option a professional would choose, and list the choices you made in your final message so the person can correct them in a follow-up.",
-    "",
-    "## Tool rules",
-    "",
-    "- `hyperframes` is already installed and on your PATH. Run it as `hyperframes …` (the project's `npm run lint` / `check` / `render` scripts call the same binary). Never run `npx hyperframes`, `hyperframes@latest`, `hyperframes upgrade`, or `hyperframes init` — the CLI is pinned and the project already exists.",
-    "- Never start anything that does not exit on its own: no `hyperframes preview`, `play`, `present`, `studio`, or any dev server or watcher. A blocked command ends the run with nothing to show.",
-    "- Keep the composition self-contained. No render-time network requests, no remote fonts, images, or scripts, no `Date.now()`, no unseeded `Math.random()` — the renderer seeks frame by frame and anything non-deterministic tears. Generate visuals with CSS, SVG, and canvas rather than reaching for stock media that is not on disk.",
-    "- Use only media files that already exist locally, plus anything the brief points at.",
-    "",
-    "## Definition of done",
-    "",
-    "1. `hyperframes lint` passes.",
-    "2. `hyperframes check` passes (the headless-browser gate: runtime errors, layout, motion, contrast).",
-    `3. \`hyperframes render --output ${input.outputRelativePath}\` produced a real MP4. Verify the file exists and is not empty before you finish.`,
-    "4. Your final message is the answer the person reads in chat: what you made, how long it runs, which file it is, and the assumptions you had to make. No headings, a few sentences.",
-    "",
-    "If the render fails twice for the same reason, simplify the composition until it renders, then say in your final message what you dropped and why.",
-  ].join("\n");
+  return renderSystemPrompt("hyperframes-operating-rules", input.userId, { "context_1": String(posix(input.projectDirectory)), "context_2": skillLines.join("\n"), "context_3": String(input.outputRelativePath) });
 }
 
 /** The full instruction handed to the agent on stdin. */

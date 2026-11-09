@@ -150,6 +150,17 @@ test("explicit blockers take precedence over optimistic lifecycle labels", () =>
   }
 });
 
+test("available Vox Director reports its title-card fallback instead of hiding reduced capability", () => {
+  const warning = "ComfyUI is installed but not running. Posters fall back to the deterministic paper title cards.";
+  const result = agentManagerStatus(entry("vox-director"), {
+    ok: true, available: true, status: "degraded", blocking: [], degraded: [warning],
+  });
+  assert.equal(result.state, "ready");
+  assert.equal(result.installed, true);
+  assert.equal(result.label, "Ready · with limits");
+  assert.equal(result.message, warning);
+});
+
 test("setup claims survive reload, converge racing clicks and stay scoped to user and agent", () => {
   const first = claimManagerSetup(101, "deep-tutor", "install", null, "request-one");
   const race = claimManagerSetup(101, "deep-tutor", "remove", null, "request-two");

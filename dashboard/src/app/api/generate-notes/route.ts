@@ -1,10 +1,11 @@
+import { systemPromptText } from "../../../lib/system-prompts/service.ts";
 import { NextResponse } from "next/server";
 import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import OpenAI from "openai";
 import { DEFAULT_MODEL } from "@/lib/ai-models";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import { withCouncil } from "@/lib/council";
+import { withCouncil } from "@/lib/system-prompts/council.ts";
 import {
   normalizeTopicTags,
   refreshClusterIndex,
@@ -43,38 +44,6 @@ interface ChatMessage {
   content: string;
 }
 
-const EXTRACTION_SYSTEM_PROMPT = `You are a textbook page extraction assistant for a Breadboard learning garden.
-
-Analyze the conversation and extract durable knowledge into concise textbook pages. Each page should read like a useful subsection in a learner-facing textbook, not a disconnected generated topic card.
-
-Return ONLY a valid JSON array, with no markdown fences and no extra text. Format:
-[
-  {
-    "title": "Concept Title",
-    "slug": "concept-title",
-    "tags": ["restoring-force", "angular-frequency", "simple-harmonic-motion"],
-    "related": ["Related Concept Title"],
-    "content": "## Concept Title\\n\\nMarkdown content here..."
-  }
-]
-
-Requirements for each page:
-- title: Clear, specific noun-phrase (e.g. "Retrieval-Augmented Generation", "Spaced Repetition")
-- slug: lowercase, hyphenated, URL-safe version of title
-- content: Well-structured markdown starting with ## Title, then:
-  * Key definitions, facts, and insights from the conversation
-  * **Bold** for important terms
-  * Bullet lists for related points
-  * [[wikilinks]] to connect related concepts mentioned in this conversation
-  * LaTeX for formulas, symbols, or derivations when it improves clarity: inline math with $...$ and display equations with $$...$$
-  * 100-300 words
-- tags: 2-5 concise concept hints used only to place this internal chat note. They are not public Quartz tags. Return normalized lower-case kebab-case concepts, never claims or planner phrases.
-- related: titles of pages/concepts that should be strongly connected to this page
-- Never use generic, document-type, or learning tags like knowledge, generated, note, topic, source, document, chat, answer, response, general, misc, important, learning, study, formula, definition, or example, and never reference a page/slide/figure in a tag
-
-Create 2-6 pages based on depth.
-Return [] if the conversation has no durable, reusable knowledge.
-Do not create pages from greetings, logistics, UI chatter, one-off requests, upload progress, or answers that only say something failed.`;
 
 interface RelatedNote {
   slug: string;
@@ -324,6 +293,7 @@ function chatPlacementCandidates({
 }
 
 async function decideChatNotePlacement({
+  userId,
   client,
   model,
   clusterInventory,
@@ -332,6 +302,7 @@ async function decideChatNotePlacement({
   content,
   tags,
 }: {
+  userId: number;
   client: OpenAI;
   model: string;
   clusterInventory: PlacementCandidate[];
@@ -351,7 +322,7 @@ async function decideChatNotePlacement({
           {
             role: "system",
             content:
-              "You decide whether a newly saved chat page belongs inside an existing textbook page or should become a new page. Return ONLY JSON. Merge only when the new content is the same concept, a direct expansion of the same page, or substantially duplicate material. Create a new page when it is broader, narrower, adjacent, only related, or would make the target page incoherent.",
+              systemPromptText("note-placement", userId),
           },
           {
             role: "user",
@@ -382,7 +353,7 @@ async function decideChatNotePlacement({
           },
         ],
       },
-      { taskType: "classification" },
+      { taskType: "classification" }, userId,
     ),
   );
 
@@ -412,6 +383,7 @@ async function generateChatNoteTags(
   model: string,
   title: string,
   content: string,
+  userId: number,
 ): Promise<string[]> {
   try {
     const response = await client.chat.completions.create(
@@ -422,10 +394,7 @@ async function generateChatNoteTags(
             {
               role: "system",
               content:
-                "Return a JSON array of 2-5 reusable concept hints for the given content. " +
-                "Generate tags as reusable conceptual retrieval handles, not SEO keywords, folder names, title summaries, or broad topic labels. " +
-                'Return only normalized lower-case kebab-case tags, e.g. "restoring-force", "angular-frequency", "simple-harmonic-motion". ' +
-                "Never use broad categories, document types, generic learning words, title slugs, source filenames, or page/slide/figure references.",
+                systemPromptText("note-tags", userId),
             },
             {
               role: "user",
@@ -433,7 +402,7 @@ async function generateChatNoteTags(
             },
           ],
         },
-        { taskType: "tagging" },
+        { taskType: "tagging" }, userId,
       ),
     );
     const raw = stripMarkdownFence(
@@ -466,6 +435,7 @@ function wordOverlap(a: string, b: string): number {
 }
 
 async function harmonizeChatNote({
+  userId,
   client,
   model,
   existingFileContent,
@@ -473,6 +443,7 @@ async function harmonizeChatNote({
   newContent,
   newTags,
 }: {
+  userId: number;
   client: OpenAI;
   model: string;
   existingFileContent: string;
@@ -499,11 +470,7 @@ async function harmonizeChatNote({
             {
               role: "system",
               content:
-                "Merge two textbook pages on the same concept into one coherent page. " +
-                "Integrate the new content naturally into the existing structure, expanding or refining sections with new details. " +
-                "Eliminate redundancy while preserving unique facts from both. " +
-                "Keep a clean heading hierarchy with no duplicate headings. " +
-                "Return ONLY the merged markdown body - no frontmatter, no code fences.",
+                systemPromptText("note-merging", userId),
             },
             {
               role: "user",
@@ -511,7 +478,7 @@ async function harmonizeChatNote({
             },
           ],
         },
-        { taskType: "small_revision" },
+        { taskType: "small_revision" }, userId,
       ),
     );
     mergedBody = response.choices[0]?.message?.content?.trim() ?? "";
@@ -598,8 +565,8 @@ export async function POST(request: Request) {
         tags: preliminaryTags,
       });
       const [llmTags, placementDecision] = await Promise.all([
-        generateChatNoteTags(chatClient, selectedModel, title, sourceContent),
-        decideChatNotePlacement({
+        generateChatNoteTags(chatClient, selectedModel, title, sourceContent, userId),
+        decideChatNotePlacement({ userId,
           client: chatClient,
           model: selectedModel,
           clusterInventory: placementCandidates,
@@ -631,7 +598,7 @@ export async function POST(request: Request) {
             (note) => note.slug === placementDecision.targetSlug,
           );
           const existingFileContent = fs.readFileSync(targetPath, "utf-8");
-          const harmonized = await harmonizeChatNote({
+          const harmonized = await harmonizeChatNote({ userId,
             client: chatClient,
             model: selectedModel,
             existingFileContent,
@@ -748,14 +715,14 @@ export async function POST(request: Request) {
         {
           model: selectedModel,
           messages: [
-            { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
+            { role: "system", content: systemPromptText("note-extraction", userId) },
             {
               role: "user",
               content: `Extract textbook pages from this conversation:\n\n${conversationText}`,
             },
           ],
         },
-        { taskType: "subsection_generation", gardenId: normalizedClusterSlug },
+        { taskType: "subsection_generation", gardenId: normalizedClusterSlug }, userId,
       ),
     );
 
@@ -796,7 +763,7 @@ export async function POST(request: Request) {
         content: note.content,
         tags,
       });
-      const notePlacement = await decideChatNotePlacement({
+      const notePlacement = await decideChatNotePlacement({ userId,
         client,
         model: selectedModel,
         clusterInventory: noteCandidates,
@@ -816,7 +783,7 @@ export async function POST(request: Request) {
           path.join(clusterDir, `${notePlacement.targetSlug}.md`);
         if (fs.existsSync(targetPath)) {
           const existingFileContent = fs.readFileSync(targetPath, "utf-8");
-          const harmonized = await harmonizeChatNote({
+          const harmonized = await harmonizeChatNote({ userId,
             client,
             model: selectedModel,
             existingFileContent,

@@ -75,11 +75,17 @@ export interface ProcessStatusReport {
   /** Families whose store could not be read; named so the answer can say so. */
   unavailable: ProcessKind[];
   generatedAt: string;
+  activeOnly: boolean;
+  /** A reader or the combined listing reached its cap; absence is inconclusive. */
+  truncated: boolean;
 }
 
 export interface CollectProcessStatusOptions {
   database: Database.Database;
   userId: number;
+  /** Identifies the requesting chat without asking the model to infer it from text. */
+  currentConversationId?: number | null;
+  activeOnly?: boolean;
   /** Gardens to include; null means every Garden the person owns plus Garden-less work. */
   gardens?: readonly GardenMatch[] | null;
   kinds?: readonly ProcessKind[];
@@ -242,6 +248,8 @@ function abbreviationScore(abbreviation: string, name: string): number {
 
 type Reader = (
   options: Required<Pick<CollectProcessStatusOptions, "database" | "userId">> & {
+    currentConversationId?: number | null;
+    activeOnly?: boolean;
     gardens: readonly GardenMatch[] | null;
     gardenNames: Map<string, string>;
     sinceIso: string;
@@ -628,7 +636,7 @@ const readAgentRuns: Reader = ({ database, userId, gardens, gardenNames, sinceIs
   });
 };
 
-const readChatTurns: Reader = ({ database, userId, gardens, gardenNames, sinceIso, limit }) => {
+const readChatTurns: Reader = ({ database, userId, currentConversationId, activeOnly, gardens, gardenNames, sinceIso, limit }) => {
   if (!tableExists(database, "hermes_runs") || !tableExists(database, "hermes_runtime_sessions")) {
     return [];
   }
@@ -637,14 +645,18 @@ const readChatTurns: Reader = ({ database, userId, gardens, gardenNames, sinceIs
     : gardens.length === 0
       ? " AND 0"
       : ` AND (s.garden_id IS NULL OR s.garden_id IN (${gardens.map(() => "?").join(", ")}))`;
+  const hasConversations = tableExists(database, "conversations");
   const rows = database.prepare(`
     SELECT r.id, r.status, r.instruction, r.started_at, r.finished_at,
-           s.surface, s.garden_id, s.conversation_id
+           s.surface, s.garden_id, s.conversation_id,
+           ${hasConversations ? "c.title" : "NULL"} AS conversation_title
     FROM hermes_runs r
     JOIN hermes_runtime_sessions s ON s.id = r.runtime_session_id
+    ${hasConversations ? "LEFT JOIN conversations c ON c.id = s.conversation_id AND c.user_id = s.user_id" : ""}
     WHERE s.user_id = ?${scopeSql}
       AND (r.status = 'active' OR (r.status <> 'cancelled' AND r.started_at >= ?))
-    ORDER BY r.started_at DESC
+      ${activeOnly ? "AND r.status = 'active'" : ""}
+    ORDER BY (r.status = 'active') DESC, r.started_at DESC
     LIMIT ?
   `).all(userId, ...(gardens ?? []).map((garden) => garden.slug), sinceIso, limit) as Array<{
     id: string;
@@ -655,13 +667,16 @@ const readChatTurns: Reader = ({ database, userId, gardens, gardenNames, sinceIs
     surface: string;
     garden_id: string | null;
     conversation_id: number | null;
+    conversation_title: string | null;
   }>;
   const stateFor = (status: string): ProcessState =>
     status === "active" ? "running" : status === "completed" ? "succeeded" : "failed";
   return rows.map((row) => ({
     kind: "chat_turn" as const,
     id: row.id,
-    title: row.instruction.replace(/\s+/g, " ").trim().slice(0, 120) || "Chat turn",
+    title: row.conversation_id != null && row.conversation_id === currentConversationId
+      ? "This chat"
+      : (row.conversation_title || row.instruction).replace(/\s+/g, " ").trim().slice(0, 120) || "Untitled chat",
     garden: row.garden_id,
     gardenName: row.garden_id ? gardenNames.get(row.garden_id) ?? null : null,
     state: stateFor(row.status),
@@ -672,7 +687,11 @@ const readChatTurns: Reader = ({ database, userId, gardens, gardenNames, sinceIs
     startedAt: isoFromText(row.started_at),
     updatedAt: isoFromText(row.finished_at ?? row.started_at),
     finishedAt: isoFromText(row.finished_at),
-    detail: { surface: row.surface, conversationId: row.conversation_id },
+    detail: {
+      surface: row.surface,
+      conversationId: row.conversation_id,
+      isCurrentConversation: row.conversation_id != null && row.conversation_id === currentConversationId,
+    },
   }));
 };
 
@@ -937,12 +956,15 @@ export function collectProcessStatus(options: CollectProcessStatusOptions): Proc
 
   const processes: ProcessRecord[] = [];
   const unavailable: ProcessKind[] = [];
+  let readerLimitReached = false;
   // A runtime job that a richer family already described (an agent run, say)
   // must not reappear as a bare runtime job: families run in PROCESS_KINDS
   // order and the first description of an id wins.
   const seenIds = new Set<string>();
   const push = (records: ProcessRecord[]) => {
+    if (records.length >= limit) readerLimitReached = true;
     for (const record of records) {
+      if (options.activeOnly && record.state !== "running" && record.state !== "waiting") continue;
       if (seenIds.has(record.id)) continue;
       seenIds.add(record.id);
       processes.push(record);
@@ -954,6 +976,8 @@ export function collectProcessStatus(options: CollectProcessStatusOptions): Proc
         READERS[kind]({
           database: options.database,
           userId: options.userId,
+          currentConversationId: options.currentConversationId,
+          activeOnly: options.activeOnly,
           gardens,
           gardenNames,
           sinceIso,
@@ -988,6 +1012,8 @@ export function collectProcessStatus(options: CollectProcessStatusOptions): Proc
     total: processes.length,
     unavailable,
     generatedAt: now().toISOString(),
+    activeOnly: options.activeOnly === true,
+    truncated: readerLimitReached || processes.length > limit,
   };
 }
 
@@ -996,14 +1022,20 @@ export function collectProcessStatus(options: CollectProcessStatusOptions): Proc
  * from becoming a wall of JSON in the answer; the rows are still returned.
  */
 export function summarizeProcessStatus(report: ProcessStatusReport): string {
+  const label = (kind: ProcessKind) => kind === "chat_turn" ? "chat" : kind.replace(/_/g, " ");
   const unavailableLine = report.unavailable.length > 0
-    ? `Could not read: ${report.unavailable.map((kind) => kind.replace(/_/g, " ")).join(", ")} (the runtime store is not reachable right now).`
+    ? `Could not read: ${report.unavailable.map(label).join(", ")}. Status is unavailable for this work.`
     : null;
   if (report.processes.length === 0) {
     const scope = report.gardens.length === 1
       ? `for ${report.gardens[0].name}`
       : "for this account";
-    return [`Nothing is running or recently finished ${scope}.`, unavailableLine]
+    return [report.unavailable.length > 0
+      ? `The requested status could not be fully checked ${scope}.`
+      : report.truncated
+        ? `No matching work appears in this partial status result ${scope}; more records may exist.`
+        : report.activeOnly ? `No work is currently running or waiting ${scope}.`
+          : `Nothing is running or recently finished ${scope}.`, unavailableLine]
       .filter((line): line is string => line !== null)
       .join("\n");
   }
@@ -1017,7 +1049,7 @@ export function summarizeProcessStatus(report: ProcessStatusReport): string {
     const stage = record.stage ? ` — ${record.stage}` : "";
     const progress = record.progressPercent !== null ? ` (${record.progressPercent}%)` : "";
     const error = record.error ? ` — ${record.error}` : "";
-    return `${record.kind.replace(/_/g, " ")}: ${record.title}${where}${stage}${progress}${error}`;
+    return `${label(record.kind)}: ${record.title}${where}${stage}${progress}${error}`;
   };
   if (running.length > 0) {
     lines.push(`Running (${running.length}):`, ...running.map((record) => `- ${describe(record)}`));
@@ -1036,6 +1068,8 @@ export function summarizeProcessStatus(report: ProcessStatusReport): string {
     lines.push(
       `Showing ${report.processes.length} of ${report.total} matching processes; narrow by garden or kinds, or raise limit, to see the rest.`,
     );
+  } else if (report.truncated) {
+    lines.push("This is a partial listing: a status source reached its result limit. More matching work may exist.");
   }
   if (unavailableLine) lines.push(unavailableLine);
   return lines.join("\n");

@@ -77,7 +77,8 @@ export async function readMoneyPrinterRuntimeStatus(
       "money-printer",
       "/v1/status",
       scopedAgentRequest(scope, { refresh }),
-      { timeoutMs: 60_000 },
+      // The installed app's bounded cold import can take up to two minutes.
+      { timeoutMs: 135_000 },
     ));
 }
 

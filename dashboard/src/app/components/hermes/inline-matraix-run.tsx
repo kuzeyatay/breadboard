@@ -122,7 +122,7 @@ export default function InlineMatraixRun({
     (outcome: "completed" | "failed" | "aborted", content: string) => {
       if (reported.current) return;
       reported.current = true;
-      if (outcome === "completed") notifyTaskCompleted(`MatrAIx — ${brief.slice(0, 80)}`);
+      if (outcome === "completed") notifyTaskCompleted(`MatrAIx — ${brief.slice(0, 80)}`, { runId });
       terminalRef.current?.({ outcome, content });
     },
     [brief],
@@ -219,7 +219,7 @@ export default function InlineMatraixRun({
         usage={persistedUsage}
         summary={current ? `Asking ${current}` : STAGE_LABEL[stage]}
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <header className="bb-agent-run-header">
           <p className="bb-agent-run-title">
             MatrAIx

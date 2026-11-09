@@ -29,19 +29,23 @@ test('Stop authorizes the conversation and seals pending, direct, runtime and ex
       const runs=listRunningExternalAgentRuns(id);
       for(const run of runs)calls.push(['external',userId,run.runId]);
       return runs.map(run=>({...run,stopped:true}));
-    },abortDirect(id){calls.push(['direct',id]);if(direct?.conversationId!==id)return null;const result=direct;direct=null;return result;},
+    },abortDirect(id,inlineTurnId){if(inlineTurnId)return null;calls.push(['direct',id]);if(direct?.conversationId!==id)return null;const result=direct;direct=null;return result;},
     runtime:{async stopRun(input){calls.push(['runtime',input.externalSessionId]);if(runtimeOffline)throw Error('offline');},async applyCapabilityDecision(){if(runtimeOffline)throw Error('offline');}},
   };
   const stubs={
+    '../conversations/store.ts':`export const {${Object.keys(store).join(',')}}=globalThis.stopFixture.store;`,
+    '../db.ts':'export default globalThis.stopFixture.db;',
+    '../conversations/turn-service.ts':'export const startConversationTurn=async()=>{throw new Error("Stop must not start a turn");};',
+    '../swarm/pump.ts':'export const cancelConversationSwarms=async(userId,id)=>{globalThis.stopFixture.calls.push(["swarm",userId,id]);};',
     'next/server':'export const NextResponse=Response;',
     '@/lib/server-auth':'export const requireUserId=async()=>1;',
     '@/lib/hermes/route-helpers.ts':'export class ApiError extends Error{constructor(status,code,message){super(message);this.status=status;this.code=code;}}export const apiErrorResponse=e=>Response.json({error:e.message},{status:e.status??500});',
     '@/lib/hermes/session-service.ts':'export const authorizeRuntimeReference=(...args)=>globalThis.stopFixture.authorize(...args);',
     './session-service.ts':'export const authorizeRuntimeSession=(...args)=>globalThis.stopFixture.authorize(...args);export const markStatus=(s,status)=>globalThis.stopFixture.runtimeStore.setRuntimeStatus(s.row.id,status);',
     '@/lib/hermes/runtime-store.ts':'export const {getRuntimeSessionById,listRuntimeSessionsForConversation,recordAuditEvent,setRuntimeStatus}=globalThis.stopFixture.runtimeStore;',
-    './runtime-store.ts':'export const {revokeCapabilityDecision}=globalThis.stopFixture.runtimeStore;',
+    './runtime-store.ts':`export const {${Object.keys(runtimeStore).join(',')}}=globalThis.stopFixture.runtimeStore;`,
     '@/lib/hermes/run-store.ts':'export const {getActiveRuntimeRun,getLatestRuntimeRun,parseRuntimeRunDispatch}=globalThis.stopFixture.runStore;',
-    './run-store.ts':'export const {getActiveRuntimeRun,finishRuntimeRun}=globalThis.stopFixture.runStore;',
+    './run-store.ts':`export const {${Object.keys(runStore).join(',')}}=globalThis.stopFixture.runStore;`,
     '@/lib/conversations/store.ts':'export const {getConversationForUser,cancelConversationTurn,cancelLatestConversationTurn,failAssistantMessage}=globalThis.stopFixture.store;',
     '@/lib/conversations/external-agent-turns.ts':'export const {finishExternalAgentTurn}=globalThis.stopFixture.turns;',
     '@/lib/conversations/external-agent-cancel.ts':'export const cancelRunningExternalAgentRuns=(...args)=>globalThis.stopFixture.cancelExternal(...args);',
@@ -121,6 +125,6 @@ test('Stop authorizes the conversation and seals pending, direct, runtime and ex
     await stop(sideRuntime.id);
     assert.equal(runStore.getRuntimeRun(sideRun.id).status,'cancelled');
     assert.equal(store.getConversationMessageById(side.assistantMessage.id).status,'aborted');
-    assert.ok(calls.slice(callCount).every(call=>call[0]!=='direct'&&call[0]!=='external'),'numeric side Stop is also isolated');
+    assert.ok(calls.slice(callCount).every(call=>!['direct','external','swarm'].includes(call[0])),'numeric side Stop is also isolated');
   }finally{delete globalThis.stopFixture;db.close();fs.rmSync(dataRoot,{recursive:true,force:true});}
 });

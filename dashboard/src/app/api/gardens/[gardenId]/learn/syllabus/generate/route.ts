@@ -1,3 +1,4 @@
+import { systemPromptText } from "../../../../../../../lib/system-prompts/service.ts";
 import { NextResponse } from "next/server";
 import {
   InvalidLearnRouteBodyError,
@@ -79,7 +80,7 @@ export async function POST(
     try {
       const response = await client.chat.completions.create({
         model,
-        messages: syllabusDraftMessages(prompt, gardenDocuments),
+        messages: syllabusDraftMessages(prompt, gardenDocuments, systemPromptText("syllabus-authoring", userId)),
       });
       raw = response.choices[0]?.message?.content ?? "";
     } catch {

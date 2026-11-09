@@ -48,12 +48,9 @@
   transform-origin: 50% 100%;
 }
 
-/* The garden moves as one compositor layer. Animating every small SVG plant
-   separately kept inactive Electron tabs busy because retained views still
-   report themselves as visible. */
+/* Plants sway independently again, rooted at the base of their stems.
+   Only the presented page starts these compositor animations. */
 .wind[data-animation-ready="true"] {
-  animation: gardenSway 6s ease-in-out var(--wind-delay) infinite;
-  will-change: transform;
   opacity: 0.82;
 }
 
@@ -87,6 +84,9 @@
   opacity: 0;
   transform: rotate(var(--comet-angle));
   transform-origin: 100% 50%;
+}
+
+.starField[data-animation-ready="true"] .comet {
   animation: cometPass var(--comet-duration) linear var(--comet-delay) infinite;
   will-change: transform, opacity;
 }
@@ -129,16 +129,24 @@
   bottom: var(--plant-bottom);
   width: 24px;
   height: 30px;
+  transform-origin: 50% 100%;
 }
 
 /* The deterministic first frame is paused until the component has converted
    its phase to the shared wall clock. This prevents a newly opened tab from
    visibly starting at the beginning of a gust before snapping into sync. */
-.wind:not([data-animation-ready="true"]),
+.wind:not([data-animation-ready="true"]) .plant,
 .starField:not([data-animation-ready="true"]),
 .starField:not([data-animation-ready="true"]) .comet {
   animation-play-state: paused;
 }
+
+.wind[data-animation-ready="true"] .plant {
+  animation: flowerWind var(--plant-duration) ease-in-out var(--plant-delay) infinite;
+  will-change: transform;
+}
+.wind[data-animation-ready="true"] .plant:nth-of-type(3n) { animation-name: flowerWindSoft; }
+.wind[data-animation-ready="true"] .plant:nth-of-type(4n) { animation-name: flowerWindLift; }
 
 .plantSprite {
   display: block;
@@ -195,14 +203,47 @@
   fill: var(--flower-center);
 }
 
-@keyframes gardenSway {
+@keyframes flowerWind {
   0%,
   100% {
-    transform: translate3d(-1px, 0, 0);
+    transform: translateX(var(--plant-sway-left))
+      rotate(var(--plant-rotate-left));
   }
 
   50% {
-    transform: translate3d(2px, 0, 0);
+    transform: translateX(var(--plant-sway-right))
+      rotate(var(--plant-rotate-right));
+  }
+}
+
+@keyframes flowerWindSoft {
+  0%,
+  100% {
+    transform: translateX(var(--plant-sway-left))
+      rotate(var(--plant-rotate-left));
+  }
+
+  45% {
+    transform: translateX(var(--plant-sway-soft))
+      rotate(var(--plant-rotate-soft));
+  }
+
+  72% {
+    transform: translateX(var(--plant-sway-rest))
+      rotate(var(--plant-rotate-rest));
+  }
+}
+
+@keyframes flowerWindLift {
+  0%,
+  100% {
+    transform: translateX(var(--plant-sway-left))
+      rotate(var(--plant-rotate-left));
+  }
+
+  52% {
+    transform: translateX(var(--plant-sway-right))
+      rotate(var(--plant-rotate-right));
   }
 }
 
@@ -236,12 +277,15 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .wind {
+  .wind[data-animation-ready] .plant:nth-of-type(n),
+  .wind .plant {
     animation: none;
     transform: none;
   }
 
+  .starField[data-animation-ready],
   .starField,
+  .starField[data-animation-ready] .comet,
   .comet {
     animation: none;
   }
@@ -254,11 +298,4 @@
     display: none;
   }
 
-}
-
-/* Settles with the rest of the decorative motion; see lib/user-idle.ts. */
-:global(html[data-user-idle]) .wind,
-:global(html[data-user-idle]) .starField,
-:global(html[data-user-idle]) .comet {
-  animation-play-state: paused !important;
 }

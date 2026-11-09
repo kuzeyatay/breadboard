@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { normalizePromptSuggestion, promptSuggestionContext } from '../src/lib/chat-prompt-suggestion.ts';
-import { generatePromptSuggestion } from '../src/lib/chat-prompt-suggestion-service.ts';
+import { generatePromptSuggestion } from './helpers/recommendation-model-fixture.mjs';
 
 const messages = [
   { role: 'user', content: 'Explain RLC circuits', attachments: ['private.pdf'] },
@@ -54,6 +54,28 @@ test('empty context, no-model and invalid model choices never request a completi
     assert.equal(await generatePromptSuggestion({ messages, model, fetcher }), null);
   }
   assert.equal(await generatePromptSuggestion({ messages: [], model: 'selected', fetcher }), null);
+});
+
+test('garden inline follow-ups require citations in the selected garden, including when personalization has no evidence',async()=>{
+  const context={gardenSlug:'circuits'};
+  const evidence=[{id:'garden:1',source:'garden',title:'Circuits',summary:'RLC notes',gardenSlug:'circuits'},
+    {id:'gmail:1',source:'gmail',title:'Rent',summary:'Please pay the rent'},
+    {id:'garden:2',source:'garden',title:'Neuro',summary:'Lecture notes',gardenSlug:'neuro'}];
+  for(const result of [
+    {prompt:'Explain damping from my Circuits notes.',sourceIds:['garden:1']},
+    {prompt:'Help me pay rent.',sourceIds:['gmail:1']},
+    {prompt:'Compare Circuits with Neuro.',sourceIds:['garden:1','garden:2']},
+  ]) {
+    const actual=await generatePromptSuggestion({messages,model:'selected',context,evidence,fetcher:async(_url,init)=>{
+      const body=JSON.parse(init.body);
+      assert.match(body.messages[1].content,/only a follow-up/);
+      assert.doesNotMatch(JSON.stringify(body),/Please pay the rent|Neuro|gmail:1|garden:2/);
+      return completion(JSON.stringify(result));
+    }});
+    assert.equal(actual,result.sourceIds.length===1&&result.sourceIds[0]==='garden:1'?result.prompt:null);
+  }
+  assert.equal(await generatePromptSuggestion({messages,model:'selected',context,evidence:[],fetcher:async()=>assert.fail('no scoped evidence')}),null);
+  assert.equal(await generatePromptSuggestion({messages,model:'selected',context,evidence,fetcher:async()=>completion('Pay rent')}),null);
 });
 
 test('provider failure, no suggestion, malformed responses and repeated user messages are quiet', async () => {

@@ -40,9 +40,11 @@ import {
   FEYNMAN_TOOLS,
   PRODUCT_SEARCH_TOOLS,
   CHAT_SEARCH_TOOLS,
+  CHAT_COORDINATION_TOOLS,
   BAMBU_TOOLS,
   NOTIFICATION_TOOLS,
   PROCESS_STATUS_TOOLS,
+  USAGE_TOOLS,
   OFFICE_TOOLS,
   DOCUMENT_TOOLS,
   WATERMARK_TOOLS,
@@ -254,9 +256,11 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...FEYNMAN_TOOLS,
       ...PRODUCT_SEARCH_TOOLS,
       ...CHAT_SEARCH_TOOLS,
+      ...CHAT_COORDINATION_TOOLS,
       ...BAMBU_TOOLS,
       ...NOTIFICATION_TOOLS,
       ...PROCESS_STATUS_TOOLS,
+      ...USAGE_TOOLS,
       ...MAP_TOOLS,
       ...SPOTIFY_TOOLS,
       ...CALENDAR_TOOLS,
@@ -862,6 +866,9 @@ function buildToolMap(
   for (const tool of CHAT_SEARCH_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  for (const tool of CHAT_COORDINATION_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   for (const tool of NOTIFICATION_TOOLS) {
     map[tool] = authenticated && surface === "dashboard_terminal";
   }
@@ -870,6 +877,9 @@ function buildToolMap(
   // writes, so it follows the chat-search rule rather than the capability
   // class of the turn.
   for (const tool of PROCESS_STATUS_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
+  for (const tool of USAGE_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
   // "How far is the station" is a plain knowledge turn as well, and it is the
@@ -989,8 +999,10 @@ function buildToolMap(
     for (const tool of PRODUCT_SEARCH_TOOLS) map[tool] = false;
     for (const tool of BAMBU_TOOLS) map[tool] = false;
     for (const tool of CHAT_SEARCH_TOOLS) map[tool] = false;
+    for (const tool of CHAT_COORDINATION_TOOLS) map[tool] = false;
     for (const tool of NOTIFICATION_TOOLS) map[tool] = false;
     for (const tool of PROCESS_STATUS_TOOLS) map[tool] = false;
+    for (const tool of USAGE_TOOLS) map[tool] = false;
     // Geographic state is one signed-in person's map session, and this surface
     // is the anonymous public one.
     for (const tool of MAP_TOOLS) map[tool] = false;

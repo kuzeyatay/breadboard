@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import db from '@/lib/db';
 import { organizationClusterClause } from '@/lib/organizations/store';
 import { SupervisorResourceExhaustedError } from '@/lib/supervisor-control';
+import { currentSwarmInvocation } from './swarm/invocation.ts';
 
 export class RouteError extends Error {
   status: number;
@@ -27,6 +28,8 @@ export interface OwnedCluster {
 }
 
 export async function requireUserId(): Promise<number> {
+  const invocation = currentSwarmInvocation();
+  if (invocation) return invocation.userId;
   const { authOptions } = await import('@/lib/auth-options');
   const session = await getServerSession(authOptions);
   const userId = Number((session?.user as { id?: string } | undefined)?.id);

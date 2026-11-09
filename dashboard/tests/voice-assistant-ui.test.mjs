@@ -19,7 +19,9 @@ test('viewing chats silences current and queued speech without waiting for an in
       window.refresh=()=>{const channel=new BroadcastChannel(VOICE_ASSISTANT_CHANNEL);channel.postMessage({type:'preferences'});channel.close();};
       const fetchOriginal=window.fetch;
       window.fetch=async(...args)=>{const response=await fetchOriginal(...args);if(args[0]==='/api/chat-notifications')window.polls++;return response;};
-      function Surface({id}){useChatNotificationView({surface:'dashboard_terminal',chatId:id});return null;}
+      function Surface({id}){useChatNotificationView({surface:'dashboard_terminal',chatId:id});
+        const message=id==='one'?'current':'queued';
+        return <section data-notification-chat={'dashboard_terminal:'+id}><p data-notification-message={JSON.stringify(['message:'+message])}>{message}</p></section>;}
       function App(){const [ids,setIds]=React.useState([]);window.view=ids=>flushSync(()=>setIds(ids));
         return <><Runtime/>{ids.map(id=><Surface key={id} id={id}/>)}</>;}
       createRoot(document.getElementById('root')).render(<App/>);
@@ -59,7 +61,7 @@ test('viewing chats silences current and queued speech without waiting for an in
   messages=[notice('current','one'),notice('queued','two')];
   await page.evaluate(()=>window.refresh());
   await page.waitForFunction(()=>window.activeText==='Response ready. current');
-  // No visible toaster participates: the voice reader must observe presence itself.
+  // Actual visible answers establish read state without a toaster or inbox poll.
   await page.evaluate(()=>window.view(['one','two']));
   await page.waitForFunction(()=>window.activeText===null,null,{timeout:750});
   await page.waitForTimeout(600);
@@ -133,7 +135,7 @@ test('profile switches drive wake capture and queued notifications through both 
     const context=await browser.newContext({viewport:{width:800,height:480},reducedMotion:'reduce'});
     const page=await context.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
-    const always=page.getByRole('switch',{name:'Always on voice assistant'}), read=page.getByRole('switch',{name:'Read aloud notifications'});
+    const always=page.getByRole('switch',{name:'Listen for “Hey Bread”'}), read=page.getByRole('switch',{name:'Read notifications aloud'});
     await always.waitFor();assert.equal(await always.getAttribute('aria-checked'),'false');
     assert.equal(await page.evaluate(()=>window.streams.length),0);
     await always.click();await page.waitForFunction(()=>window.streams.some(s=>s.getTracks()[0].readyState==='live'));
@@ -252,6 +254,7 @@ test('closing notifications stops only their speech and removes queued readings 
       createRoot(document.getElementById('root')).render(location.pathname==='/reader'?<Runtime/>:location.pathname==='/overlay'?<Overlay/>:<App/>);
     ` },
     bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic',
+    loader: { '.css': 'empty', '.module.css': 'empty' },
     define: { 'process.env.NODE_ENV': '"production"' },
     plugins: [{ name: 'notification-services', setup(build) {
       build.onResolve({filter: /^(next\/navigation|\.\/navigation-progress)$|(?:subscription-live|request-client)$/}, args => ({path: args.path, namespace:'fixture'}));
@@ -385,6 +388,7 @@ test('messages received by voice populate the UI even when its inbox poll is sta
       createRoot(document.getElementById('root')).render(location.pathname==='/reader'?<Runtime/>:location.pathname==='/page'?<Page/>:<Overlay/>);
     ` },
     bundle:true,write:false,format:'iife',platform:'browser',jsx:'automatic',define:{'process.env.NODE_ENV':'"production"'},
+    loader: { '.css': 'empty', '.module.css': 'empty' },
     plugins:[{name:'presentation-services',setup(build){
       build.onResolve({filter:/^(next\/navigation|\.\/navigation-progress)$|(?:notification-speech|wake-listener)$/},args=>({path:args.path,namespace:'fixture'}));
       build.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:args.path.endsWith('notification-speech')?

@@ -172,7 +172,17 @@ export function runManagedSetupCommand(command, args, options) {
   // callers that still name npm.cmd, instead of requiring a user PATH shim.
   const npm = /^(?:npm|npm\.cmd)$/u.test(command) ? managedNpmLauncher() : null;
   const executable = runtimeProcessPath(npm?.command ?? command, platform);
-  const commandArgs = npm ? [...npm.baseArgs, ...args] : args;
+  // Node entrypoints (Vite, package-manager CLIs) also receive canonical
+  // absolute paths as arguments. Its module loader cannot consume \\?\D:\...
+  // there, even after the executable and working directory are normalized.
+  const commandArgs = (npm ? [...npm.baseArgs, ...args] : args)
+    .map(value => runtimeProcessPath(value, platform));
+  // Playwright passes this validated cache path to its Node filesystem helpers.
+  // They reject native extended-drive paths even when the CLI path is ordinary.
+  const commandEnv = { ...env };
+  if (typeof commandEnv.PLAYWRIGHT_BROWSERS_PATH === "string") {
+    commandEnv.PLAYWRIGHT_BROWSERS_PATH = runtimeProcessPath(commandEnv.PLAYWRIGHT_BROWSERS_PATH, platform);
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     let timedOut = false;
@@ -181,7 +191,7 @@ export function runManagedSetupCommand(command, args, options) {
     const shell = platform === "win32" && /\.(?:cmd|bat)$/iu.test(executable);
     const child = spawnImpl(executable, commandArgs, {
       cwd: runtimeProcessPath(cwd, platform),
-      env,
+      env: commandEnv,
       detached: false,
       windowsHide: true,
       windowsVerbatimArguments: false,
@@ -887,10 +897,12 @@ const PYTHON_CLONE_SETUPS = Object.freeze({
     ]),
     pythonVersion: "3.12",
     requireUv: false,
-    requirementArgs: (root) => ["-r", path.join(root, "requirements-local.txt")],
+    // Existing managed clones may predate the source requirements fix.
+    // Keep the actual installer compatible with released faster-whisper too.
+    requirementArgs: (root) => ["-r", path.join(root, "requirements-local.txt"), "av>=11,<19", "opencv-python>=4.8.0,<5"],
     verifyArgs: Object.freeze([
       "-c",
-      "import shorts_generator, yt_dlp, faster_whisper, cv2, openai; print('ok')",
+      "import shorts_generator, yt_dlp, faster_whisper, cv2, openai; assert hasattr(cv2, 'CascadeClassifier'), 'OpenCV 4 face detection is required'; print('ok')",
     ]),
     verifyNeedle: "ok",
     sourceOnPath: true,
@@ -1137,6 +1149,26 @@ async function moneyPrinterSetup(action, context) {
     fail("There is no environment to repair yet. Build it first.", 409, "setup_not_installed");
   }
   const root = ensureMoneyPrinterRuntime(context);
+  // This clone holds user config and generated media, so keep it in place.
+  // Repair must nevertheless pick up the bundled dependency fixes; otherwise
+  // uv --frozen silently reinstalls the obsolete speech protocol forever.
+  const source = moneyPrinterSource(context);
+  const manifests = ["requirements.txt", "pyproject.toml", "uv.lock"].map(name => {
+    const from = directPath(path.join(source, name), "isFile", "The bundled MoneyPrinter manifest");
+    const to = directPath(path.join(root, name), "isFile", "The managed MoneyPrinter manifest");
+    if (fs.statSync(from).size > 4 * 1024 * 1024) fail("The MoneyPrinter dependency manifest is too large.");
+    return { to, before: fs.readFileSync(to), after: fs.readFileSync(from) };
+  }).filter(file => !file.before.equals(file.after));
+  const changed = [];
+  try {
+    for (const file of manifests) {
+      changed.push(file);
+      fs.writeFileSync(file.to, file.after);
+    }
+  } catch (error) {
+    for (const file of changed.reverse()) fs.writeFileSync(file.to, file.before);
+    throw error;
+  }
   let python = pythonInVenv(venv, context.platform);
   const uv = resolveOnPath("uv", context.env, context.platform);
   if (uv) {
@@ -1858,7 +1890,42 @@ function verifyOpenMontageRuntime(root) {
 function ensureOpenMontageRuntime(context) {
   const destination = openMontageRuntimeRoot(context);
   const existing = fs.lstatSync(destination, { throwIfNoEntry: false });
-  if (existing) return verifyOpenMontageRuntime(destination);
+  if (existing) {
+    const root = verifyOpenMontageRuntime(destination);
+    const source = openMontageSource(context);
+    // Refresh only these bundled instructions and command-launch repair during exclusive setup.
+    // User projects, settings and the installed renderer stay in place.
+    const updates = [
+      "pipeline_defs/direct-animation.yaml",
+      "skills/pipelines/direct-animation/idea-director.md",
+      "skills/pipelines/direct-animation/compose-director.md",
+      "tools/base_tool.py",
+    ].map(relative => {
+      const parts = relative.split("/");
+      const from = directPath(path.join(source, ...parts), "isFile", "The bundled direct-animation source");
+      if (fs.statSync(from).size > 128 * 1024) fail("The direct-animation source is too large.");
+      let parent = root;
+      for (const part of parts.slice(0, -1)) {
+        parent = path.join(parent, part);
+        ensureDirectDirectory(parent, "The managed direct-animation directory");
+      }
+      const to = path.join(root, ...parts);
+      const exists = fs.lstatSync(to, { throwIfNoEntry: false });
+      if (exists) directPath(to, "isFile", "The managed direct-animation source");
+      return {to, before: exists ? fs.readFileSync(to) : null, after: fs.readFileSync(from)};
+    }).filter(file => !file.before?.equals(file.after));
+    const changed = [];
+    try {
+      for (const file of updates) { changed.push(file); fs.writeFileSync(file.to, file.after); }
+    } catch (error) {
+      for (const file of changed.reverse()) {
+        if (file.before) fs.writeFileSync(file.to, file.before);
+        else fs.rmSync(file.to, {force: true});
+      }
+      throw error;
+    }
+    return root;
+  }
 
   const source = openMontageSource(context);
   const staging = path.join(

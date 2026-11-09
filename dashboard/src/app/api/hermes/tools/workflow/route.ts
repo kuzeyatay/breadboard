@@ -28,7 +28,7 @@ import {
   recordAuditEvent,
   runtimeExternalSessionId,
 } from "@/lib/hermes/runtime-store.ts";
-import { getActiveRuntimeRun } from "@/lib/hermes/run-store.ts";
+import { getActiveRuntimeRun, parseRuntimeRunDispatch } from "@/lib/hermes/run-store.ts";
 import { runWorkflowById } from "@/lib/workflows/native-execution.ts";
 import { RouteError } from "@/lib/server-auth";
 
@@ -102,6 +102,8 @@ export async function POST(request: Request) {
     }
     const input =
       typeof args.input === "string" ? args.input.slice(0, MAX_INPUT_LENGTH) : "";
+    const assigned = parseRuntimeRunDispatch(run).swarmWorker?.workflowId;
+    if (assigned && assigned !== workflowId) throw new ApiError(403, "workflow_assignment_scope", "This assignment may run only its selected workflow.");
 
     recordAuditEvent({
       eventType: "workflow.run_started",

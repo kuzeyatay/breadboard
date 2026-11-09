@@ -7,23 +7,27 @@ import { DEFAULT_VOICE_ASSISTANT, parseVoiceAssistantPreferences } from '../src/
 test('voice model is an explicit per-turn choice and follows saved changes', async () => {
   const original = globalThis.fetch;
   let model = 'anthropic/claude-sonnet-4-5';
+  let voiceThinking = 'fast';
   const urls = [];
   globalThis.fetch = async url => {
     urls.push(url);
     return Response.json(url === '/api/profile/voice-assistant'
-      ? { preferences: { ...DEFAULT_VOICE_ASSISTANT, voiceModel: model } }
+      ? { preferences: { ...DEFAULT_VOICE_ASSISTANT, voiceModel: model, voiceThinking } }
       : { model: 'gpt-6-astra', fallbackModel: 'gpt-6-sol' });
   };
   try {
-    assert.deepEqual(await voiceRequestOptions(), { model, voice: true });
+    assert.deepEqual(await voiceRequestOptions(), { model, reasoningEffort: 'low', voice: true });
     assert.equal(urls.length, 1);
     const browserAccess = { port: 43210, token: 'a'.repeat(64) };
-    assert.deepEqual(await voiceRequestOptions(undefined, { browserAccess }), { model, voice: true, browserAccess });
-    assert.deepEqual(await voiceRequestOptions(undefined, { browserAccess: null }), { model, voice: true, browserAccess: null });
+    assert.deepEqual(await voiceRequestOptions(undefined, { browserAccess }), { model, reasoningEffort: 'low', voice: true, browserAccess });
+    assert.deepEqual(await voiceRequestOptions(undefined, { browserAccess: null }), { model, reasoningEffort: 'low', voice: true, browserAccess: null });
     assert.deepEqual(await voiceRequestOptions(undefined, { browserAccess: { port: 80, token: 'invalid' }, text: 'never forward' }),
-      { model, voice: true, browserAccess: null });
+      { model, reasoningEffort: 'low', voice: true, browserAccess: null });
+    voiceThinking = 'high';
+    assert.deepEqual(await voiceRequestOptions(), { model, reasoningEffort: 'high', voice: true });
+    voiceThinking = 'fast';
     model = 'default';
-    assert.deepEqual(await voiceRequestOptions(), { model: 'gpt-6-sol', voice: true });
+    assert.deepEqual(await voiceRequestOptions(), { model: 'gpt-6-sol', reasoningEffort: 'low', voice: true });
     globalThis.fetch = async () => Response.json({ error: 'Sign in' }, { status: 401 });
     await assert.rejects(voiceRequestOptions(), /Sign in/);
     for (const voiceModel of ['none', 'chat', '', 'invalid model']) {

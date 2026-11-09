@@ -46,7 +46,7 @@ test('the visible composer padding focuses the draft without stealing control or
         const promptSuggestion={text:null,dismiss:()=>{},handleKeyDown:()=>false};
         const canSubmit=false, isSending=false, disabled=false, submitMessage=()=>{};
         const handlePaste=()=>{}, syncCommandBackdrop=()=>{}, textareaStyle=undefined;
-        const placeholder='Ask about your documents…';
+        const placeholder='Ask anything.';
         window.setCompact=setCompact;
         return <><button id="outside">Outside</button>
           <div className="bb-composer-overlay px-4 pb-3">
@@ -79,7 +79,7 @@ test('the visible composer padding focuses the draft without stealing control or
     if (output.path.endsWith('.css')) await page.addStyleTag({content:output.text});
     else await page.addScriptTag({content:output.text});
   }
-  const textarea = page.getByPlaceholder('Ask about your documents…');
+  const textarea = page.getByPlaceholder('Ask anything.');
   await textarea.waitFor().catch(error=>{console.error({errors});throw error;});
 
   for (const compact of [false,true]) {

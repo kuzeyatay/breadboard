@@ -1,34 +1,38 @@
-type BeamPose = { angle: number; velocity: number; opacity: number };
+const SPEED_PX_PER_SECOND = 90;
+const CORNER_STEPS = 12;
 
-const randomBetween = (low: number, high: number) => low + Math.random() * (high - low);
-const transform = (angle: number) => `translate(-50%, -50%) rotate(${angle}deg)`;
-
-/**
- * Prepare a fresh trajectory, then let the compositor play it. Integrating a
- * smoothly changing velocity keeps both position and speed continuous at the
- * joins, including occasional reversals. Nothing writes styles every frame.
- */
-function nextDrift(from: BeamPose) {
-  const seconds = randomBetween(9, 16);
-  const direction = Math.sign(from.velocity) * (Math.random() < 0.22 ? -1 : 1);
-  const velocity = direction * randomBetween(7, 19);
-  const opacity = randomBetween(0.4, 0.85);
+/** Equal distances take equal time, even on a very wide, shallow composer. */
+function borderTrajectory(width: number, height: number, radius: number) {
+  const horizontal = width - 2 * radius;
+  const vertical = height - 2 * radius;
+  const corner = Math.PI * radius / 2;
+  const perimeter = 2 * (horizontal + vertical) + 4 * corner;
   const keyframes: Keyframe[] = [];
-  for (let step = 0; step <= 48; step++) {
-    const t = step / 48;
-    const blend = t * t * (3 - 2 * t);
-    const distance = seconds * (from.velocity * t + (velocity - from.velocity) * (t ** 3 - t ** 4 / 2));
-    keyframes.push({
-      offset: t,
-      transform: transform(from.angle + distance),
-      opacity: from.opacity + (opacity - from.opacity) * blend,
-    });
+  let distance = 0;
+  const point = (x: number, y: number) => keyframes.push({
+    offset: distance / perimeter,
+    transform: `translate3d(${x}px, ${y}px, 0) translate(-50%, -50%)`,
+  });
+
+  point(radius, 0);
+  // Each straight edge is followed by a sampled quarter circle. The browser
+  // interpolates the transforms between samples; JavaScript never ticks frames.
+  for (let side = 0; side < 4; side++) {
+    distance += side % 2 === 0 ? horizontal : vertical;
+    const cx = side < 2 ? width - radius : radius;
+    const cy = side === 0 || side === 3 ? radius : height - radius;
+    const start = (side - 1) * Math.PI / 2;
+    point(cx + radius * Math.cos(start), cy + radius * Math.sin(start));
+    for (let step = 1; step <= CORNER_STEPS; step++) {
+      distance += corner / CORNER_STEPS;
+      const angle = start + step / CORNER_STEPS * Math.PI / 2;
+      point(cx + radius * Math.cos(angle), cy + radius * Math.sin(angle));
+    }
   }
-  return {
-    keyframes,
-    duration: seconds * 1000,
-    end: { angle: from.angle + seconds * (from.velocity + velocity) / 2, velocity, opacity },
-  };
+  // Use exactly the same endpoint to avoid a seam (and floating-point offsets
+  // slightly over 1) when the compositor repeats the infinite animation.
+  keyframes[keyframes.length - 1] = { ...keyframes[0], offset: 1 };
+  return { keyframes, duration: perimeter / SPEED_PX_PER_SECOND * 1000 };
 }
 
 export function startComposerBeam(surface: HTMLElement) {
@@ -36,53 +40,55 @@ export function startComposerBeam(surface: HTMLElement) {
   let active = false;
   let visible = true;
   let disposed = false;
-  const tracks = Array.from(surface.children, (child, index) => ({
+  let duration = 0;
+  let previousWidth = 0;
+  let previousHeight = 0;
+  const tracks = Array.from(surface.children, child => ({
     element: child as HTMLElement,
-    pose: {
-      angle: randomBetween(0, 360),
-      velocity: randomBetween(7, 19) * (index === 0 ? 1 : -1),
-      opacity: randomBetween(0.4, 0.85),
-    },
     animation: null as Animation | null,
   }));
 
+  // A visible empty composer stays alive even if focus moves to another window.
   const shouldPlay = () => active && visible && !document.hidden && !reducedMotion.matches;
 
-  function playNext(track: typeof tracks[number]) {
-    if (disposed) return;
-    const drift = nextDrift(track.pose);
-    const animation = track.element.animate(drift.keyframes, {
-      duration: drift.duration,
-      easing: "linear",
-      fill: "forwards",
-    });
-    track.animation = animation;
-    if (!shouldPlay()) animation.pause();
-    animation.onfinish = () => {
-      // Persist the exact endpoint before replacing the animation; no reset to
-      // zero degrees and no accumulated finished animations on long chats.
-      track.pose = drift.end;
-      track.element.style.transform = transform(track.pose.angle);
-      track.element.style.opacity = String(track.pose.opacity);
-      animation.cancel();
-      track.animation = null;
-      if (shouldPlay()) playNext(track);
-    };
-  }
-
   function sync() {
+    if (disposed) return;
     const playing = shouldPlay();
-    for (const track of tracks) {
-      if (!playing) track.animation?.pause();
-      else if (track.animation) track.animation.play();
-      else playNext(track);
+    for (const { animation } of tracks) {
+      if (!animation) continue;
+      if (playing && animation.playState !== "running") animation.play();
+      else if (!playing && animation.playState !== "paused") animation.pause();
     }
   }
 
-  for (const track of tracks) {
-    track.element.style.transform = transform(track.pose.angle);
-    track.element.style.opacity = String(track.pose.opacity);
+  function resize(width: number, height: number) {
+    if (disposed || width <= 0 || height <= 0 || (width === previousWidth && height === previousHeight)) return;
+    previousWidth = width;
+    previousHeight = height;
+    const radius = Math.min(parseFloat(getComputedStyle(surface).borderTopLeftRadius) || 0, width / 2, height / 2);
+    const trajectory = borderTrajectory(width, height, radius);
+    tracks.forEach((track, index) => {
+      if (track.animation) {
+        const progress = (Number(track.animation.currentTime) % duration) / duration;
+        const effect = track.animation.effect as KeyframeEffect;
+        effect.setKeyframes(trajectory.keyframes);
+        effect.updateTiming({ duration: trajectory.duration });
+        track.animation.currentTime = progress * trajectory.duration;
+      } else {
+        track.animation = track.element.animate(trajectory.keyframes, {
+          duration: trajectory.duration,
+          iterations: Infinity,
+          easing: "linear",
+        });
+        track.animation.currentTime = trajectory.duration * (0.12 + index / tracks.length);
+      }
+    });
+    duration = trajectory.duration;
+    sync();
   }
+
+  const sizeObserver = new ResizeObserver(([entry]) => resize(entry.contentRect.width, entry.contentRect.height));
+  sizeObserver.observe(surface);
   const observer = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver(([entry]) => {
     visible = entry.isIntersecting;
     sync();
@@ -98,15 +104,11 @@ export function startComposerBeam(surface: HTMLElement) {
     },
     dispose() {
       disposed = true;
+      sizeObserver.disconnect();
       observer?.disconnect();
       document.removeEventListener("visibilitychange", sync);
       reducedMotion.removeEventListener("change", sync);
-      for (const track of tracks) {
-        if (track.animation) {
-          track.animation.onfinish = null;
-          track.animation.cancel();
-        }
-      }
+      for (const track of tracks) track.animation?.cancel();
     },
   };
 }

@@ -81,6 +81,7 @@ export async function POST(
       surfaceContext,
       model: body.model,
       voice: body.voice === true,
+      voiceOpener: body.voice === true ? body.voiceOpener : undefined,
       reasoningEffort: body.reasoningEffort,
       // A regenerated turn sends a document's pointer without its words,
       // because the transcript never held them; this reads them back. Then

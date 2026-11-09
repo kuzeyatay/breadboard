@@ -16,6 +16,7 @@
 
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { runtimeProcessPath } from "../../../scripts/runtime-v2-paths.mjs";
 import { dashboardDataDir, repositoryRoot, runtimeV2ConfiguredPayloadRoot } from "../runtime-paths.ts";
 import {
   externalRuntimePathExists,
@@ -74,7 +75,7 @@ export function careerOpsRuntimeRoot(): string {
 }
 
 export function careerOpsBrowserRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return runtimeV2ConfiguredPayloadRoot("runtime-v2/toolchains/career-ops-browsers", env.PLAYWRIGHT_BROWSERS_PATH, env);
+  return runtimeProcessPath(runtimeV2ConfiguredPayloadRoot("runtime-v2/toolchains/career-ops-browsers", env.PLAYWRIGHT_BROWSERS_PATH, env));
 }
 
 export function resolveCareerOpsRoot(

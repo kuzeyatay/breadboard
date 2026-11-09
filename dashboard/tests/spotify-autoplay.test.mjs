@@ -16,7 +16,7 @@ const errors = `export class ApiError extends Error { constructor(status,code,me
 const stubs = {
   'server-only': 'export {};',
   'fixture': fixture,
-  '@/lib/spotify/service.ts': "export {spotifyBrowserAccessToken} from 'fixture';",
+  '@/lib/spotify/service.ts': "export {spotifyBrowserAccessToken} from 'fixture'; export const spotifyConnectionStatus=()=>({connected:true});",
   'next/server': "import {deferred} from 'fixture'; export const NextResponse=Response; export const after=work=>deferred.push(work);",
   '@/lib/server-auth': "export async function requireUserId() { throw Error('Only authenticated engine registrations should publish playback'); }",
   '../hermes/route-core.ts': errors,

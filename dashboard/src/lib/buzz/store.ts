@@ -630,15 +630,16 @@ export function listSpineMessages(
   database: Database.Database,
   roomId: number,
   limit = 200,
+  beforeId?: number,
 ): BuzzMessage[] {
   const rows = database
     .prepare(
       `${SPINE_SELECT}
-       WHERE m.room_id = ? AND m.parent_id IS NULL
+       WHERE m.room_id = ? AND m.parent_id IS NULL AND (? IS NULL OR m.id < ?)
        ORDER BY m.id DESC
        LIMIT ?`,
     )
-    .all(roomId, limit) as MessageRow[];
+    .all(roomId, beforeId ?? null, beforeId ?? null, limit) as MessageRow[];
   return rows.reverse().map(toMessage);
 }
 
@@ -723,6 +724,12 @@ export function postMessage(
     .prepare("SELECT * FROM buzz_room_messages WHERE id = ?")
     .get(Number(info.lastInsertRowid)) as MessageRow;
   return toMessage(row);
+}
+
+export function getMessageByClientId(database: Database.Database, roomId: number, clientMessageId: string): BuzzMessage | null {
+  const row = database.prepare("SELECT * FROM buzz_room_messages WHERE room_id = ? AND client_message_id = ?")
+    .get(roomId, clientMessageId) as MessageRow | undefined;
+  return row ? toMessage(row) : null;
 }
 
 /** Replace a streaming reply's body as it arrives. */

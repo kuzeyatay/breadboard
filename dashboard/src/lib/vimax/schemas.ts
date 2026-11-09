@@ -49,7 +49,7 @@ export const storySchema = z.object({
   logline: boundedText(600).default(""),
   story: boundedText(24_000).min(1),
   /** The style the director settled on when the brief did not name one. */
-  style: boundedText(120).default(""),
+  style: boundedText(600).default(""),
 });
 export type StoryDraft = z.infer<typeof storySchema>;
 
@@ -57,7 +57,7 @@ export type StoryDraft = z.infer<typeof storySchema>;
 export const scriptDescriptionSchema = z.object({
   title: boundedText(160).min(1),
   logline: boundedText(600).default(""),
-  style: boundedText(120).default(""),
+  style: boundedText(600).default(""),
 });
 export type ScriptDescription = z.infer<typeof scriptDescriptionSchema>;
 

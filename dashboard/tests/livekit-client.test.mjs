@@ -102,3 +102,75 @@ test('a cold detector failure recovers without reopening and close cancels retri
   assert.equal(detector.ready, true);
   detector.close(); t.mock.timers.tick(30_000); assert.equal(attempts, 2);
 });
+
+test('a delayed inference response enables acoustic interruption while preserving ordered audio', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 10000 });
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const batches = [], errors = [], events = [];
+  let deleted = 0;
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (init.method === 'POST') return Response.json({ id: 'lagging' });
+    if (init.method === 'DELETE') { deleted++; return Response.json({}); }
+    const sequence = Number(new URL(url, 'http://localhost').searchParams.get('sequence'));
+    batches.push({ sequence, samples: new Int16Array(init.body).length });
+    if (sequence === 0) await gate;
+    return Response.json({ events: [{ type: 'speech-start', sample: sequence * 1024 }] });
+  });
+  const detector = await connectLiveKitTurnDetector({ sampleRate: 16000, signal: new AbortController().signal,
+    onError: error => errors.push(error), onEvent: event => events.push(event) });
+  t.after(() => { release(); detector.close(); });
+  t.mock.timers.tick(10000);
+  assert.equal(detector.ready, true, 'an idle microphone has no pending inference delay');
+  detector.push(new Float32Array(1024));
+  t.mock.timers.tick(100);
+  assert.equal(detector.ready, true, 'a normal response still uses native detection');
+  t.mock.timers.tick(150);
+  assert.equal(detector.ready, false, 'a lagging native response must not block local interruption');
+  for (let i = 0; i < 12; i++) detector.push(new Float32Array(1024));
+  assert.equal(batches.length, 1, 'the diagnostic fallback does not race PCM requests');
+  assert.deepEqual(errors, []);
+  assert.equal(deleted, 0, 'a temporary delay does not tear down the detector');
+  release();
+  for (let i = 0; i < 20 && !detector.ready; i++) await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(detector.ready, true);
+  assert.deepEqual(batches.map(batch => batch.sequence), [0, 1, 2]);
+  assert.equal(batches.reduce((sum, batch) => sum + batch.samples, 0), 13 * 1024);
+  assert.equal(events.length, 3);
+  assert.deepEqual(errors, []);
+  detector.close();
+  assert.equal(detector.ready, false);
+  assert.equal(deleted, 1);
+});
+
+
+test('recovering a transport response cannot hide the remaining microphone backlog', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 10000 });
+  const gates = [], batches = [], errors = [];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (init.method === 'POST') return Response.json({ id: 'backlog' });
+    if (init.method === 'DELETE') return Response.json({});
+    batches.push(new Int16Array(init.body).length);
+    await new Promise(resolve => gates.push(resolve));
+    return Response.json({ events: [] });
+  });
+  const detector = await connectLiveKitTurnDetector({ sampleRate: 16000, signal: new AbortController().signal,
+    onEvent() {}, onError: error => errors.push(error) });
+  t.after(() => { detector.close(); for (const resolve of gates) resolve(); });
+  detector.push(new Float32Array(1024));
+  t.mock.timers.tick(250);
+  for (let i = 0; i < 12; i++) detector.push(new Float32Array(1024));
+  assert.equal(detector.ready, false);
+  gates.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(detector.ready, false, '768 ms of old audio still needs inference after the first response');
+  gates.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(detector.ready, false, 'the final in-flight 256 ms batch is still behind the live microphone');
+  gates.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(detector.ready, true, 'native detection resumes once it has caught up');
+  assert.deepEqual(batches, [1024, 8192, 4096]);
+  assert.deepEqual(errors, [], 'catch-up preserves the connection and every ordered audio frame');
+});

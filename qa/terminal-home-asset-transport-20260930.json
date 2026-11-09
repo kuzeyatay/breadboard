@@ -1,0 +1,26 @@
+[
+  {
+    "run": 0,
+    "elapsedMs": 12387,
+    "assets": 0,
+    "document": "complete",
+    "fonts": "loaded",
+    "path": "/new-tab",
+    "ready": true,
+    "sketches": 10,
+    "startup": "ready",
+    "failures": []
+  },
+  {
+    "run": 1,
+    "elapsedMs": 3122,
+    "assets": 0,
+    "document": "complete",
+    "fonts": "loaded",
+    "path": "/new-tab",
+    "ready": true,
+    "sketches": 10,
+    "startup": "ready",
+    "failures": []
+  }
+]

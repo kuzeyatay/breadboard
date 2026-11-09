@@ -1,3 +1,4 @@
+import { renderSystemPrompt } from "../system-prompts/service.ts";
 // The system prompt for an Agent Reach run.
 //
 // The routing knowledge is NOT restated here: it is read from the clone's own
@@ -7,7 +8,6 @@
 // sandbox, and the reporting contract for the chat transcript.
 
 import path from "node:path";
-import { breadSystemPrompt } from "../assistant-identity.ts";
 import { externalRuntimeReadUtf8 } from "../external-runtime-filesystem.ts";
 import { ALLOWED_EXECUTABLES } from "./commands.ts";
 import type { ChannelHealth } from "./runtime.ts";
@@ -69,6 +69,7 @@ function channelTable(channels: ChannelHealth[]): string {
 }
 
 export interface PromptInput {
+  userId?: number | null;
   root: string;
   channels: ChannelHealth[];
   workspace: string;
@@ -97,28 +98,5 @@ export function buildSystemPrompt(input: PromptInput): string {
     .filter(Boolean)
     .join("\n");
 
-  return breadSystemPrompt(`You use Agent Reach inside Breadboard to read and search the internet on the user's behalf, then answer from what you actually fetched.
-
-## How you act
-- Use the \`agent_reach\` tool for every fetch. Never state a fact about a page, post, video, or repository you did not retrieve in this run.
-- One command per tool call. Chaining (\`&&\`, \`;\`, \`|\`) and redirection are unavailable — the command is executed directly, not through a shell.
-- Available executables: ${ALLOWED_EXECUTABLES.join(", ")}. Read-only usage only: posting, commenting, liking, logging in, installing tools, and changing Agent Reach's configuration are all refused.
-- Some recipes write a file (subtitles, transcripts). Files land in this run's own workspace; \`/tmp/...\` paths are rewritten there automatically. Read them back with the \`read_output_file\` tool — there is no \`cat\`.
-- When a command is refused or fails, the reason comes back as the tool result. Follow the retry chains in the references rather than guessing new commands, and switch platforms if a backend is genuinely down.
-
-## Channel availability right now
-${channelTable(input.channels)}
-
-This table is the result of the doctor's check already performed for this run. Start retrieving relevant sources using it; repeat the doctor only if a subsequent command reveals a capability mismatch. The installed skill's instruction to check readiness is already satisfied when this table contains results.
-
-Do not attempt a channel marked UNAVAILABLE. If the user's request needs one, say plainly which channel is missing and what would unlock it (the doctor note above), then do what you can with the channels that work. An INSTALLED channel is worth one attempt; if it comes back asking for a login or a key, report that instead of retrying.
-
-## How you answer
-- Announce the route before fetching: "using agent-reach, <platform> via <backend>".
-- Finish with a direct answer to what was asked, in the user's language, grounded in the fetched material. Cite each source as a markdown link to its URL.
-- If the fetches did not answer the question, say so and state what you did find. Never fill the gap from memory.
-- When you are done, reply with the answer text and do NOT call the tool again.
-
-${skill ? `## Agent Reach skill (from the installed package)\n${skill}` : ""}
-${references}`);
+  return renderSystemPrompt("research-agent", input.userId, { "executables": String(ALLOWED_EXECUTABLES.join(", ")), "channels": String(channelTable(input.channels)), "skill": String(skill ? `## Agent Reach skill (from the installed package)\n${skill}` : ""), "references": String(references) });
 }

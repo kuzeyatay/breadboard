@@ -41,7 +41,13 @@ const REVERSE_SKILLS_REPOSITORY = "zhaoxuya520/reverse-skill";
 // runtime, so re-reading every binary to rediscover the same hash on each
 // command would turn intent routing into hundreds of milliseconds of I/O.
 // Environment-overridden roots remain uncached for tests and local review.
-const FIRST_PARTY_HASH_CACHE = new Map<string, string>();
+// Next's independently bundled API routes must reuse startup's immutable
+// asset hashes. A module-local map makes the first post-warmup refresh hash
+// the same large skill assets again on the conversation's critical path.
+const skillHashGlobals = globalThis as typeof globalThis & {
+  breadboardFirstPartySkillHashes?: Map<string, string>;
+};
+const FIRST_PARTY_HASH_CACHE = skillHashGlobals.breadboardFirstPartySkillHashes ??= new Map<string, string>();
 
 /**
  * True when a stable upstream id belongs to a reviewed, vendored local clone.

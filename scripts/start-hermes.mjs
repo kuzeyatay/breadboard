@@ -115,6 +115,11 @@ writeFileSync(
     // Do not pin ancient user requests ahead of the summary in long Garden chats.
     "compression:",
     "  protect_first_n: 0",
+    // Breadboard owns the canonical sidebar title. Hermes receives that title
+    // at session creation; its background titler would pay for a second label.
+    "auxiliary:",
+    "  title_generation:",
+    "    enabled: false",
     "memory:",
     "  memory_enabled: false",
     "  user_profile_enabled: false",
@@ -139,6 +144,9 @@ writeFileSync(
     "      - garden_get_source_excerpt",
     "      - document_skill_read",
     "      - chat_search",
+    "      - chat_list",
+    "      - chat_send_message",
+    "      - chat_wait",
     "      - garden_get_source_figure",
     "      - skill_open",
     "      - terminal_execute_command",

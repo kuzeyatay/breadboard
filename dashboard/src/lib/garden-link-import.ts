@@ -1,3 +1,4 @@
+import { withSystemPromptContext } from "./system-prompts/service.ts";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -74,6 +75,7 @@ export async function importGardenLink(input: {
   /** A previously verified crawl, used by resumable local imports. */
   websiteSnapshot?: WebsiteSnapshot;
 }) {
+  return withSystemPromptContext(input.userId, async () => {
   const { contentPath, cluster, userId, baseURL, signal } = input;
   // The profile default, like every other ingest path. A hardcoded product
   // default here sent imports to a model the user had not chosen.
@@ -268,4 +270,6 @@ export async function importGardenLink(input: {
     pageCount: website?.pages.length ?? 1,
     links: readGardenLinks(contentPath, cluster.slug),
   };
+
+  });
 }

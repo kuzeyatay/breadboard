@@ -17,6 +17,45 @@ import { materializeSnapshot } from "./source-snapshot.mjs";
 
 export const WORKTREE_ROOT_NAME = ".qa-worktrees";
 
+export function canonicalWorktreePath(value) {
+  let ordinary = value;
+  if (process.platform === "win32") {
+    ordinary = ordinary.replaceAll("/", "\\");
+    if (/^\\\\\?\\UNC\\/i.test(ordinary)) ordinary = "\\\\" + ordinary.slice(8);
+    else if (/^\\\\\?\\[a-z]:\\/i.test(ordinary)) ordinary = ordinary.slice(4);
+    else if (/^\\\\[?.]\\/.test(ordinary)) throw new Error("Unsupported repair device namespace.");
+  }
+  return path.resolve(ordinary);
+}
+
+function sameWorktreePath(left, right) {
+  const normalize = value => process.platform === "win32" ? canonicalWorktreePath(value).toLowerCase() : canonicalWorktreePath(value);
+  return normalize(left) === normalize(right);
+}
+function withinWorktreePath(parent, child) {
+  const relative = path.relative(canonicalWorktreePath(parent), canonicalWorktreePath(child));
+  return relative !== "" && relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
+}
+
+/** The trusted controller supplies an external root; a handle cannot grant one. */
+export function resolveRepairWorktreeRoot(repoRoot, candidate) {
+  const repo = canonicalWorktreePath(repoRoot), legacy = path.join(repo, WORKTREE_ROOT_NAME);
+  if (candidate !== undefined && (typeof candidate !== "string" || !path.isAbsolute(candidate))) throw new Error("Repair workspace must be absolute.");
+  const root = candidate === undefined ? legacy : canonicalWorktreePath(candidate);
+  if (sameWorktreePath(root, path.parse(root).root)) throw new Error("Repair workspace cannot be a volume root.");
+  if (!sameWorktreePath(root, legacy) && (sameWorktreePath(root, repo) || withinWorktreePath(root, repo) || withinWorktreePath(repo, root))) {
+    throw new Error("External repair workspace must be separate from the main source tree.");
+  }
+  let current = path.parse(root).root;
+  for (const segment of root.slice(current.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    if (fs.lstatSync(current, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error("Repair workspace traverses a link.");
+  }
+  return root;
+}
+
+
+
 /**
  * Checkout policy for every QA-owned git command that writes working-tree files.
  *
@@ -32,7 +71,7 @@ const FINDING_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
 
 function git(args, cwd) {
   const result = spawnSync("git", args, {
-    cwd,
+    cwd: canonicalWorktreePath(cwd),
     encoding: "utf8",
     shell: false,
     maxBuffer: 64 * 1024 * 1024,
@@ -61,16 +100,16 @@ export function resolveRevision(repoRoot, revision = "HEAD") {
  * Create the isolated worktree. Returns a handle carrying everything a receipt
  * needs to prove the repair happened outside the main tree.
  */
-export function createRepairWorktree({ repoRoot, findingId, revision = "HEAD" }) {
+export function createRepairWorktree({ repoRoot, findingId, revision = "HEAD", worktreeRoot: selectedWorktreeRoot }) {
   if (!FINDING_ID_PATTERN.test(String(findingId))) {
     throw new Error(
       `Invalid finding id ${JSON.stringify(findingId)}; use 3-64 lowercase letters, digits, or dashes`,
     );
   }
-  const resolvedRepo = path.resolve(repoRoot);
-  const worktreeRoot = path.join(resolvedRepo, WORKTREE_ROOT_NAME);
+  const resolvedRepo = canonicalWorktreePath(repoRoot);
+  const worktreeRoot = resolveRepairWorktreeRoot(resolvedRepo, selectedWorktreeRoot);
   const worktreePath = path.join(worktreeRoot, findingId);
-  if (fs.existsSync(worktreePath)) {
+  if (fs.existsSync(canonicalWorktreePath(worktreePath))) {
     throw new Error(`Repair worktree already exists: ${worktreePath}`);
   }
   const sourceRevision = resolveRevision(resolvedRepo, revision);
@@ -95,7 +134,7 @@ export function createRepairWorktree({ repoRoot, findingId, revision = "HEAD" })
 
   const checkedOut = resolveRevision(worktreePath, "HEAD");
   if (checkedOut !== sourceRevision) {
-    removeRepairWorktree({ repoRoot: resolvedRepo, worktreePath });
+    removeRepairWorktree({ repoRoot: resolvedRepo, worktreePath, worktreeRoot });
     throw new Error(
       `Repair worktree checked out ${checkedOut} but ${sourceRevision} was requested`,
     );
@@ -103,7 +142,7 @@ export function createRepairWorktree({ repoRoot, findingId, revision = "HEAD" })
 
   const initialStatus = gitOrThrow(["status", "--porcelain"], worktreePath);
   if (initialStatus.trim() !== "") {
-    removeRepairWorktree({ repoRoot: resolvedRepo, worktreePath });
+    removeRepairWorktree({ repoRoot: resolvedRepo, worktreePath, worktreeRoot });
     throw new Error(`Repair worktree was not clean at creation:\n${initialStatus}`);
   }
 
@@ -111,6 +150,7 @@ export function createRepairWorktree({ repoRoot, findingId, revision = "HEAD" })
     findingId,
     repoRoot: resolvedRepo,
     worktreePath,
+    worktreeRoot,
     sourceRevision,
     createdAt: new Date().toISOString(),
     isolationVerified: true,
@@ -118,24 +158,22 @@ export function createRepairWorktree({ repoRoot, findingId, revision = "HEAD" })
 }
 
 /** Verify the handle still describes an isolated, correctly based worktree. */
-export function verifyRepairWorktree(handle) {
+export function verifyRepairWorktree(handle, { worktreeRoot } = {}) {
   const problems = [];
-  if (!fs.existsSync(handle.worktreePath)) {
-    problems.push(`worktree path is missing: ${handle.worktreePath}`);
-    return { verified: false, problems };
+  if (!fs.existsSync(handle.worktreePath)) return { verified: false, problems: ["worktree path is missing: " + handle.worktreePath] };
+  let expectedRoot;
+  try { expectedRoot = resolveRepairWorktreeRoot(handle.repoRoot, worktreeRoot); }
+  catch (error) { return { verified: false, problems: [error.message] }; }
+  const resolvedWorktree = canonicalWorktreePath(fs.realpathSync.native(canonicalWorktreePath(handle.worktreePath)));
+  if (!sameWorktreePath(resolvedWorktree, handle.worktreePath) || !sameWorktreePath(path.dirname(resolvedWorktree), expectedRoot)) {
+    problems.push("worktree is redirected or outside its authorized workspace: " + resolvedWorktree);
   }
-  const resolvedWorktree = fs.realpathSync(handle.worktreePath);
-  const resolvedRepo = fs.realpathSync(handle.repoRoot);
-  const expectedRoot = path.join(resolvedRepo, WORKTREE_ROOT_NAME);
-  if (!resolvedWorktree.startsWith(expectedRoot + path.sep)) {
-    problems.push(`worktree ${resolvedWorktree} is not below ${expectedRoot}`);
-  }
+  if (handle.worktreeRoot && !sameWorktreePath(handle.worktreeRoot, expectedRoot)) problems.push("worktree handle cannot select a different workspace");
+  if (problems.length) return { verified: false, problems };
+  const common = directory => canonicalWorktreePath(fs.realpathSync.native(path.resolve(canonicalWorktreePath(directory), gitOrThrow(["rev-parse", "--git-common-dir"], directory).trim())));
+  if (!sameWorktreePath(common(handle.repoRoot), common(handle.worktreePath))) problems.push("worktree belongs to another Git repository");
   const head = resolveRevision(handle.worktreePath, "HEAD");
-  // A repair leaves the worktree dirty but never commits, so HEAD must still be
-  // the exact source revision the experiment started from.
-  if (head !== handle.sourceRevision) {
-    problems.push(`worktree HEAD ${head} no longer matches source revision ${handle.sourceRevision}`);
-  }
+  if (head !== handle.sourceRevision) problems.push("worktree HEAD " + head + " no longer matches source revision " + handle.sourceRevision);
   return { verified: problems.length === 0, problems, worktreeHead: head };
 }
 
@@ -191,7 +229,7 @@ export function diffStat(handle) {
 
 /** Assert the main working tree was untouched by comparing status snapshots. */
 export function mainTreeStatus(repoRoot) {
-  return gitOrThrow(["status", "--porcelain", "-uall"], path.resolve(repoRoot));
+  return gitOrThrow(["status", "--porcelain", "-uall"], canonicalWorktreePath(repoRoot));
 }
 
 /**
@@ -220,7 +258,7 @@ export function scopedMainTreeStatus(repoRoot, scopePaths) {
 
 /** Content hash of a file in the main tree, or null when it does not exist. */
 export function mainTreeFileFingerprint(repoRoot, relativePath) {
-  const absolute = path.join(path.resolve(repoRoot), relativePath);
+  const absolute = path.join(canonicalWorktreePath(repoRoot), relativePath);
   if (!fs.existsSync(absolute)) return null;
   return createHash("sha256").update(fs.readFileSync(absolute)).digest("hex");
 }
@@ -262,16 +300,20 @@ function unlinkNestedLinks(root) {
   }
 }
 
-export function removeRepairWorktree({ repoRoot, worktreePath }) {
-  const resolvedRepo = path.resolve(repoRoot);
-  unlinkNestedLinks(worktreePath);
-  const result = git(["worktree", "remove", "--force", worktreePath], resolvedRepo);
+export function removeRepairWorktree({ repoRoot, worktreePath, worktreeRoot }) {
+  const resolvedRepo = canonicalWorktreePath(repoRoot);
+  const authorizedRoot = resolveRepairWorktreeRoot(resolvedRepo, worktreeRoot);
+  const target = canonicalWorktreePath(worktreePath);
+  if (!sameWorktreePath(path.dirname(target), authorizedRoot) || sameWorktreePath(target, resolvedRepo)) throw new Error("Refusing cleanup outside the authorized repair workspace.");
+  if (fs.existsSync(target) && !sameWorktreePath(fs.realpathSync.native(target), target)) throw new Error("Refusing cleanup of a redirected repair worktree.");
+  unlinkNestedLinks(target);
+  const result = git(["worktree", "remove", "--force", target], resolvedRepo);
   git(["worktree", "prune"], resolvedRepo);
-  if (result.status !== 0 && fs.existsSync(worktreePath)) {
-    fs.rmSync(worktreePath, { recursive: true, force: true });
+  if (result.status !== 0 && fs.existsSync(canonicalWorktreePath(worktreePath))) {
+    fs.rmSync(target, { recursive: true, force: true });
     git(["worktree", "prune"], resolvedRepo);
   }
-  return { removed: !fs.existsSync(worktreePath), detail: result.stderr.trim() };
+  return { removed: !fs.existsSync(canonicalWorktreePath(worktreePath)), detail: result.stderr.trim() };
 }
 
 /**
@@ -302,11 +344,12 @@ export function removeRepairWorktree({ repoRoot, worktreePath }) {
  * Writes through these links are denied by `applyGatedMutation`'s realpath
  * check, so a repair still cannot touch a developer clone.
  */
-export function createSnapshotWorktree({ repoRoot, findingId, snapshot, linkExternal = true }) {
+export function createSnapshotWorktree({ repoRoot, findingId, snapshot, linkExternal = true, worktreeRoot }) {
   const handle = createRepairWorktree({
     repoRoot,
     findingId,
     revision: snapshot.baseCommit,
+    worktreeRoot,
   });
   try {
     const materialized = materializeSnapshot({
@@ -345,7 +388,7 @@ export function createSnapshotWorktree({ repoRoot, findingId, snapshot, linkExte
  * and refuses anything that leaves the worktree, which is what keeps this safe.
  */
 export function linkExternalRoots({ repoRoot, worktreePath }) {
-  const resolvedRepo = path.resolve(repoRoot);
+  const resolvedRepo = canonicalWorktreePath(repoRoot);
   const linked = [];
   for (const entry of fs.readdirSync(resolvedRepo, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;

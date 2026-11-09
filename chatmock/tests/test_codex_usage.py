@@ -83,6 +83,7 @@ class NormalizeCodexUsageTests(unittest.TestCase):
         self.assertEqual(usage["primary"]["used_percent"], 100)
         self.assertEqual(usage["primary"]["window_minutes"], 10080)
         self.assertEqual(usage["primary"]["resets_in_seconds"], 442123)
+        self.assertEqual(usage["primary"]["resets_at"], 1789805444)
         self.assertIsNone(usage["secondary"])
 
         reserve = usage["reserve"]
@@ -93,6 +94,28 @@ class NormalizeCodexUsageTests(unittest.TestCase):
         self.assertEqual(usage["banner"]["type"], "luna_reserve")
         self.assertIn("Luna", usage["banner"]["title"])
         self.assertFalse(usage["credits"]["has_credits"])
+
+    def test_absolute_resets_survive_without_countdowns_for_plan_and_reserve(self) -> None:
+        report = _report(spent=True)
+        plan_window = report["rate_limit"]["primary_window"]
+        reserve_window = report["additional_rate_limits"][1]["rate_limit"]["primary_window"]
+        del plan_window["reset_after_seconds"]
+        del reserve_window["reset_after_seconds"]
+        reserve_window["reset_at"] = 1789812644
+        usage = codex_usage.normalize_codex_usage(report)
+        self.assertEqual(usage["primary"]["resets_at"], 1789805444)
+        self.assertEqual(usage["reserve"]["primary"]["resets_at"], 1789812644)
+        self.assertNotIn("resets_in_seconds", usage["primary"])
+        self.assertNotIn("resets_in_seconds", usage["reserve"]["primary"])
+
+    def test_invalid_absolute_resets_do_not_hide_a_reported_countdown(self) -> None:
+        for value in (None, False, 0, -1, "invalid", "nan", "inf", 10**20):
+            with self.subTest(reset_at=value):
+                report = _report(spent=False)
+                report["rate_limit"]["primary_window"]["reset_at"] = value
+                window = codex_usage.normalize_codex_usage(report)["primary"]
+                self.assertNotIn("resets_at", window)
+                self.assertEqual(window["resets_in_seconds"], 442123)
 
     def test_reserve_is_present_but_idle_while_the_plan_has_room(self) -> None:
         usage = codex_usage.normalize_codex_usage(_report(spent=False))

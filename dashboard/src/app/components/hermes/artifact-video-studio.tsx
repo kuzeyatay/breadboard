@@ -19,7 +19,7 @@
 // video already exists and the only question is what changes about it.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ReclaimingVideo } from "@/app/components/reclaiming-media";
+import BreadboardVideoPlayer from "@/app/components/breadboard-video-player";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
 import { artifactUrl } from "./artifact-viewer";
 
@@ -376,18 +376,14 @@ export default function ArtifactVideoStudio({
 
         <div className="flex min-h-0 flex-1 flex-col md:flex-row">
           <div className="flex min-h-[18rem] flex-1 items-center justify-center overflow-auto bg-[var(--neu-surface-pressed)] p-5 sm:p-7">
-            <ReclaimingVideo
+            <BreadboardVideoPlayer
               // Keying on the version forces a fresh element after an edit, so
               // the browser fetches the new file instead of replaying the old
               // one it has already buffered.
               key={playbackVersion}
-              controls
-              preload="metadata"
               src={previewUrl}
-              className="max-h-[74vh] w-full rounded-xl border border-[var(--line)] bg-black shadow-lg"
-            >
-              Your browser cannot play this video.
-            </ReclaimingVideo>
+              className="max-h-[74vh] border border-[var(--line)] shadow-lg"
+            />
           </div>
 
           <aside className="flex w-full shrink-0 flex-col overflow-y-auto border-t border-[var(--line)] bg-[var(--paper-surface)] p-4 md:w-[26rem] md:border-l md:border-t-0">

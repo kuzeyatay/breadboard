@@ -1,0 +1,318 @@
+{
+  "startedAt": "2026-11-06T18:46:43.182Z",
+  "base": "http://127.0.0.1:62475/v1",
+  "models": [
+    "cliproxy/gemini-3.8-flash-high",
+    "gpt-6-luna"
+  ],
+  "profileExists": false,
+  "method": "Live gateway requests with production core/Hermes prompt builders; no style block or custom profile supplied by the harness. Not a full UI test.",
+  "sourceHashes": {
+    "chatmock/chatmock/council/unslop.py": "3130a70bdf72dc0c06ffeb5e7e56b6cc9ed45c24631f706a577ba9bc641ee7b2",
+    "chatmock/chatmock/routes_openai.py": "a85cce4c11270b37253929a422628d6495493e0275b74c7ecd637908da342dd6",
+    "hermes-config/system/chat-core.md": "66bcec54e785d76fb1737ff6884947dbcb430385d3567d41b0c1f4ed60140c9e",
+    "unslop/SKILL.md": "d26b475efedda40499e4993d0c38209d8a76fe234eba302d1e54375078a94b38"
+  },
+  "results": [
+    {
+      "id": "voice",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "Why does the bathroom mirror fog up after a shower?",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "When you take a hot shower, the water heats the bathroom air and adds water vapor to it. Warm air holds more moisture than cool air.\n\nThe mirror's surface stays cooler than the surrounding steamy air. When the warm, moist air touches the cool glass, the air cools down quickly and can no longer hold all that moisture. The vapor condenses into tiny liquid water droplets on the glass, scattering light and making the mirror look foggy.",
+      "jsonContract": null,
+      "words": 77,
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.86
+    },
+    {
+      "id": "garden",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "Explain what a capacitor does.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "A capacitor stores energy in an electric field between two conductive surfaces separated by an insulating gap. \n\nWhen you connect a voltage source across those surfaces, electrons build up on one plate and leave the other. This movement creates an electric field across the gap, which holds the charge in place. Current flows only while the voltage across the plates is changing; once the plates charge to the applied voltage, current stops. When the circuit changes or disconnects, the capacitor releases that stored charge back into the circuit, smoothing out voltage drops or delivering a quick burst of power.",
+      "jsonContract": null,
+      "words": 99,
+      "score": 5,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 5.13
+    },
+    {
+      "id": "legacy-garden",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "responses",
+      "question": "What is the difference between remembering something and understanding it?",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "cliproxy/gemini-3.8-flash-high",
+      "finishReason": "completed",
+      "answer": "Remembering is storing information so you can retrieve it later. You can recall names, formulas, dates, or full definitions word for word because your brain saved the pattern. A student might memorize that plants convert sunlight into chemical energy via photosynthesis, or memorize the formula $E = mc^2$, and repeat them accurately on a test without seeing how the pieces fit together.\n\nUnderstanding is knowing how the parts connect and why they work the way they do. When you understand an idea, you form a working mental model. That model lets you explain the concept in your own words, spot when something is missing, and apply the principle to a situation you have never seen before. If conditions change, understanding helps you reason out what should happen next, whereas pure recall only gives you the exact answer you originally stored.",
+      "jsonContract": null,
+      "words": 140,
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 3.97
+    },
+    {
+      "id": "word-editor",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "User request: What does this paragraph mean? Explain it without editing the document.\nCurrent document: A capacitor stores energy in an electric field. Current changes the charge on its plates.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "{\"message\":\"This paragraph explains how a basic capacitor works. Inside the component, two conductive plates sit near each other with an insulating layer between them. When electric current flows toward the capacitor, electrical charge builds up on these plates. That separation of positive and negative charges creates an electric field, which holds energy until the circuit lets the charge flow back out. Capacitance is measured in farads.\",\"actions\":[]}",
+      "jsonContract": true,
+      "words": 66,
+      "score": 0,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.61
+    },
+    {
+      "id": "detailed-request",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "Explain how a capacitor charges through a resistor in about 250 words. Build the explanation step by step, define voltage and current, and include the equation for the time constant.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "A capacitor stores electrical energy in an electric field between two conductive plates. A resistor limits how fast charge can flow toward those plates.\n\nTo follow the process, two concepts are helpful:\n* **Voltage** is electrical potential difference, which is the push that drives electric charge through a circuit.\n* **Current** is the rate at which electric charge flows past a point, measured in coulombs per second, or amperes.\n\nWhen you connect an uncharged capacitor and a resistor in series to a constant DC voltage source $V_0$, the charging cycle unfolds in stages:\n\n1. **At switch-on ($t = 0$):** The capacitor holds zero charge, so its voltage is zero. The entire source voltage drops across the resistor, creating maximum initial current: $I_0 = V_0 / R$.\n2. **During charging:** Electrons accumulate on the negative plate and leave the positive plate. As this stored charge grows, the capacitor's opposing voltage $V_C$ climbs. That opposing voltage leaves less potential difference across the resistor, which slows the current.\n3. **At steady state:** The capacitor's voltage reaches the source voltage ($V_C = V_0$). Because the voltages match, the current drops to zero and charging stops.\n\nThe rate of charging depends on the circuit's **time constant**, written as:\n\n$$\\tau = R \\times C$$\n\nHere, $R$ is resistance in ohms and $C$ is capacitance in farads. In one time constant $\\tau$, the capacitor charges to about 63.2% of the source voltage. It reaches roughly 99% after five time constants ($5\\tau$).",
+      "jsonContract": null,
+      "words": 244,
+      "score": 3,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true,
+        "requestedDetailRetained": true
+      },
+      "elapsedSeconds": 6.34
+    },
+    {
+      "id": "garden",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "Explain what a capacitor does.",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "A capacitor stores energy in an electric field. When voltage pushes charge onto its plates, the capacitor holds that charge; when the circuit needs energy, it can release it as current. Its capacitance tells you how much charge it stores for a given voltage.",
+      "jsonContract": null,
+      "words": 44,
+      "score": 0,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.86
+    },
+    {
+      "id": "markdown-editor",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "Explain what this formula means, without editing my document: Q = C * V.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "cliproxy/gemini-3.8-flash-high",
+      "finishReason": "stop",
+      "answer": "{\n  \"message\": \"The formula Q = C * V describes how much electric charge a capacitor holds.\\n\\nQ is the stored electric charge, measured in coulombs. C is the capacitance, measured in farads, which reflects how much charge the component can hold for a given voltage. V is the voltage across the plates, measured in volts.\\n\\nIn simple terms, a capacitor with a fixed capacitance holds more charge as you increase the voltage across it. For example, doubling the voltage doubles the stored charge.\",\n  \"content\": null\n}",
+      "jsonContract": true,
+      "words": 82,
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 12.2
+    },
+    {
+      "id": "voice",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "Why does the bathroom mirror fog up after a shower?",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "Hot, moist air from the shower reaches the cooler mirror. The water vapor cools and condenses into tiny droplets on the glass, making it look foggy.",
+      "jsonContract": null,
+      "words": 26,
+      "score": 1,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 4.04
+    },
+    {
+      "id": "legacy-garden",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "responses",
+      "question": "What is the difference between remembering something and understanding it?",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "completed",
+      "answer": "Remembering means you can bring a fact or idea back to mind. Understanding means you can explain how it works, connect it to other ideas, or use it in a new situation.\n\nFor example, you might remember that dividing by a fraction means multiplying by its reciprocal. You understand why when you can show how that rule follows from what division means, or use it to solve a problem you haven’t seen before. They often go together, but you can remember a rule without understanding it.",
+      "jsonContract": null,
+      "words": 86,
+      "score": 3,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 3.55
+    },
+    {
+      "id": "word-editor",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "User request: What does this paragraph mean? Explain it without editing the document.\nCurrent document: A capacitor stores energy in an electric field. Current changes the charge on its plates.",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "{\"message\":\"It means a capacitor holds energy between its plates, and electric current changes how much electric charge is on those plates.\",\"actions\":[]}",
+      "jsonContract": true,
+      "words": 21,
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.5
+    },
+    {
+      "id": "detailed-request",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "Explain how a capacitor charges through a resistor in about 250 words. Build the explanation step by step, define voltage and current, and include the equation for the time constant.",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "Imagine a resistor and an uncharged capacitor connected to a battery. The battery’s voltage is the electrical push that drives charge around the circuit. Current is the rate at which electric charge flows.\n\n**Step 1: Current begins to flow.** At first, the capacitor has no stored charge, so its voltage is zero. The battery drives current through the resistor and onto the capacitor’s plates.\n\n**Step 2: The capacitor’s voltage rises.** As charge builds up on the plates, the capacitor creates its own voltage. This voltage opposes the battery’s push, so less current flows through the resistor.\n\n**Step 3: Charging slows.** The more charge the capacitor stores, the closer its voltage gets to the battery’s voltage. Current falls as the difference between those voltages shrinks.\n\n**Step 4: Charging approaches its end.** When the capacitor’s voltage reaches the battery’s voltage, current stops flowing in this ideal circuit. The capacitor then holds its charge.\n\nThe time constant describes how quickly the charging happens. It is given by\n\n\\[\n\\tau = RC\n\\]\n\nHere, \\(R\\) is resistance, measured in ohms, and \\(C\\) is capacitance, measured in farads. Their product is measured in seconds. After one time constant, the capacitor has reached about 63% of its final voltage. A larger resistor or capacitor makes the charging process slower.",
+      "jsonContract": null,
+      "words": 213,
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true,
+        "requestedDetailRetained": true
+      },
+      "elapsedSeconds": 6.8
+    },
+    {
+      "id": "markdown-editor",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "Explain what this formula means, without editing my document: Q = C * V.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-requested-model": "gpt-6-luna",
+        "x-chatmock-resolved-model": "gpt-6-luna"
+      },
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "{\"message\":\"Q = C * V means the charge on a capacitor equals its capacitance multiplied by the voltage across it. Q is charge in coulombs, C is capacitance in farads, and V is voltage in volts. For example, a 2 F capacitor at 3 V has 6 C of charge.\",\"content\":null}",
+      "jsonContract": true,
+      "words": 50,
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 15.51
+    }
+  ],
+  "finishedAt": "2026-11-06T18:47:21.310Z"
+}

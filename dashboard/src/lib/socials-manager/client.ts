@@ -1,3 +1,4 @@
+import { renderSystemPrompt } from "../system-prompts/service.ts";
 // Drafting through ChatMock.
 //
 // Postiz's own AI features run inside its NestJS app against its Prisma models;
@@ -7,7 +8,6 @@
 // forced tool call is the only shape ChatMock reliably returns as strict JSON.
 
 import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
-import { breadSystemPrompt } from "../assistant-identity.ts";
 import { nowStamp, parseStamp } from "../calendar/wallclock.ts";
 import { findSocialsManagerProvider, type SocialsManagerProvider } from "./providers.ts";
 import { promptWithContext } from "../conversations/agent-context.ts";
@@ -20,6 +20,7 @@ export interface DraftedPost {
 }
 
 export interface DraftRequest {
+  userId?: number | null;
   baseUrl: string;
   model: string;
   brief: string;
@@ -82,7 +83,7 @@ function toolDefinition(providers: readonly SocialsManagerProvider[]) {
 function systemPrompt(
   providers: readonly SocialsManagerProvider[],
   scheduleAt: string | null,
-  now: string,
+  now: string, userId?: number | null
 ): string {
   const lines = providers.map((provider) => {
     const editor =
@@ -95,25 +96,9 @@ function systemPrompt(
     return `- ${provider.name} (${provider.id}): at most ${provider.maxCharacters} characters${note}; ${editor}.`;
   });
 
-  return breadSystemPrompt([
-    "You are a social media copywriter. Write finished posts, not drafts to be edited and not descriptions of posts.",
-    "",
-    "Write for these networks:",
-    ...lines,
-    "",
-    "Rules:",
-    "- Write each network's post natively. Do not paste the same text into every network; match each one's length, tone and conventions.",
-    "- Stay strictly inside each character limit. A post that exceeds its limit is unusable.",
-    "- Use hashtags only where the network's culture expects them, and sparingly.",
-    "- Never invent statistics, quotes, prices, dates or links. If the brief does not supply a fact, write around it.",
-    "- No emoji unless the brief asks for them.",
-    "- Return the post text only — no headings, labels, surrounding quotes or explanations.",
-    "",
-    `The current local time is ${now}.`,
-    scheduleAt
+  return renderSystemPrompt("social-posts", userId, { "networks": lines.join("\n"), "current_time": String(now), "schedule": String(scheduleAt
       ? `The user pinned the publish time: set scheduledAt to exactly "${scheduleAt}" on every post.`
-      : "If the brief implies a publish time, set scheduledAt for each post; otherwise omit it.",
-  ].join("\n"));
+      : "If the brief implies a publish time, set scheduledAt for each post; otherwise omit it.") });
 }
 
 function parseDrafts(
@@ -185,7 +170,7 @@ export async function draftPosts(request: DraftRequest): Promise<DraftedPost[]> 
         messages: [
           {
             role: "system",
-            content: systemPrompt(request.providers, request.scheduleAt, nowStamp()),
+            content: systemPrompt(request.providers, request.scheduleAt, nowStamp(), request.userId),
           },
           {
             role: "user",

@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 
 import { apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
 import { listReceivedInvites } from "@/lib/organizations/store.ts";
-import { listAgentSeats, listUnreadMessages } from "@/lib/buzz/instance.ts";
-import { requireBuzzUser } from "@/lib/buzz/route-helpers.ts";
+import { listAgentSeats, listUnreadMessages, getRoom } from "@/lib/buzz/instance.ts";
+import { requireBuzzUser, roomPermissions } from "@/lib/buzz/route-helpers.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +26,7 @@ export async function GET() {
     const { userId } = await requireBuzzUser();
     return NextResponse.json({
       unread: listUnreadMessages(userId, 60),
-      agents: listAgentSeats(userId),
+      agents: listAgentSeats(userId).map(seat => { const room = getRoom(userId, seat.roomPublicId); return { ...seat, canManage: !!room && roomPermissions(userId, room).canManage }; }),
       invites: listReceivedInvites(userId),
     });
   } catch (error) {

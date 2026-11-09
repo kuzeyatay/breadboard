@@ -534,6 +534,7 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         return m.get("finish_reason") in {
             "verification_required",
             "verify_hook_continue",
+            "narrated_intent_continue",
         }
 
     collapsed: List[Dict] = []

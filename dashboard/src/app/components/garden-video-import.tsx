@@ -41,7 +41,7 @@ import {
   validateMediaFile,
   validateYouTubeInput,
 } from "@/lib/video-transcription-ui";
-import { gardenMediaUploadQueue, emptyMediaUploads } from "@/lib/garden-media-upload-queue";
+import { desktopFilePath, gardenMediaUploadQueue, emptyMediaUploads } from "@/lib/garden-media-upload-queue";
 import type { PublicVideoTranscriptionJob } from "@/lib/scriberr/types";
 
 const CLIENT_MAX_UPLOAD_BYTES = 2048 * 1024 * 1024;
@@ -497,8 +497,8 @@ export default function GardenVideoImport({
   // "Watch" analysis adds sampled frames + a frame-grounded reading of what
   // the video shows (slides, boards, equations) to the transcript source.
   const [analyzeVisuals, setAnalyzeVisuals] = useState(true);
-  // Off: the video file is never kept - uploads are deleted once the source
-  // is written; YouTube media only ever exists inside the analysis runtime.
+  // Off: no copy is kept - the desktop app sends the file's path and plays the
+  // original; YouTube media only ever exists inside the analysis runtime.
   const [keepMedia, setKeepMedia] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState("");
@@ -683,7 +683,8 @@ export default function GardenVideoImport({
     const validFiles: File[] = [];
     const errors: string[] = [];
     for (const file of files) {
-      const validation = validateMediaFile(file, CLIENT_MAX_UPLOAD_BYTES);
+      // A file with a local path can skip the upload, so the cap applies at submit.
+      const validation = validateMediaFile(file, desktopFilePath(file) ? Number.MAX_SAFE_INTEGER : CLIENT_MAX_UPLOAD_BYTES);
       if (validation.ok) validFiles.push(file);
       else errors.push(`${file.name}: ${validation.message}`);
     }
@@ -757,6 +758,10 @@ export default function GardenVideoImport({
 
   const handleSubmit = () => {
     if (!canSubmit) return;
+    if (keepMedia && selectedFiles.some(file => file.size > CLIENT_MAX_UPLOAD_BYTES)) {
+      setFileError("Files over 2 GB can't be kept. Turn off Keep the media files to use the original where it is.");
+      return;
+    }
     const ids = gardenMediaUploadQueue.enqueue({
       clusterSlug, files: selectedFiles, youtubeUrl, analyzeVisuals, keepMedia,
     });
@@ -818,9 +823,6 @@ export default function GardenVideoImport({
   const healthIssues: string[] = [];
   if (health && !health.enabled) {
     healthIssues.push("Media transcription is disabled (VIDEO_TRANSCRIPTION_ENABLED).");
-  }
-  if (health?.enabled && !health.scriberr.ok) {
-    healthIssues.push("Scriberr is not reachable — start Scriberr to transcribe media.");
   }
   if (health?.enabled && !health.ytdlp.ok) {
     healthIssues.push("yt-dlp not found — YouTube previews will be limited.");
@@ -1004,7 +1006,7 @@ export default function GardenVideoImport({
               <span>
                 Keep the media files
                 <span className="block text-[10px] text-gray-600">
-                  Off: the file is deleted once the Markdown is saved (YouTube media is never stored by Breadboard).
+                  Off: Breadboard keeps no copy and plays the original file from where it is, so keep it there (YouTube media is never stored by Breadboard).
                 </span>
               </span>
             </label>

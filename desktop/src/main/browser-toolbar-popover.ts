@@ -1,5 +1,6 @@
 import { WebContentsView, type BrowserWindow, type WebContents } from "electron";
 import { rendererWebPreferences } from "./window-options";
+import { trackTransparentNotificationView } from "./notification-visible-region";
 
 /** A small trusted view above Chromium's website view; CSS z-index cannot
  * cross native views. The website retains its original size and scroll. */
@@ -25,6 +26,7 @@ export class BrowserToolbarPopover {
     this.view = new WebContentsView({ webPreferences: rendererWebPreferences(preloadPath) });
     this.contents = this.view.webContents;
     this.view.setBackgroundColor("#00000000");
+    trackTransparentNotificationView(this.view, '[role="dialog"], .bb-chat-selection-menu, [role="alert"]');
     // Keep one pixel visible so Chromium can run layout/ResizeObserver before
     // the renderer reports the card's height. No blank panel covers the page.
     const [width = 800] = window.getContentSize();

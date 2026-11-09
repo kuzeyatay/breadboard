@@ -6,7 +6,9 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 export const SOURCE_REPAIR_VERSION = 1;
 export const MAX_SOURCE_REPAIRS_PER_DAY = 3;
 export const MAX_SOURCE_REPAIR_ATTEMPTS = 2;
-export const SOURCE_REPAIR_DEADLINE_MS = 2 * 60 * 60_000;
+// Two isolated candidates can each need dependency copying, a full build,
+// activation and task replay. Existing requests retain their persisted deadline.
+export const SOURCE_REPAIR_DEADLINE_MS = 4 * 60 * 60_000;
 export type RepairStage = "queued" | "preparing" | "testing" | "building" | "ready" |
   "activating" | "probation" | "committed" | "rollback_requested" | "rolled_back" |
   "cancelled" | "blocked" | "failed";
@@ -16,7 +18,7 @@ export interface SourceRepairRequest {
   failure: { code: string; message: string; fingerprint: string };
   model: string; baseRoot: string; stage: RepairStage; attempt: number;
   createdAt: number; updatedAt: number; deadline: number;
-  jobId?: string; generation?: number; reason?: string; candidateRoot?: string; sourceFingerprint?: string; parentReleaseId?: string | null;
+  jobId?: string; generation?: number; workerRestarts?: number; reason?: string; candidateRoot?: string; sourceFingerprint?: string; parentReleaseId?: string | null;
   release?: SourceRepairRelease; resumedRunId?: string; resumeAfterRollback?: boolean;
   checks?: Record<string, unknown>;
 }
@@ -31,25 +33,36 @@ export interface SourceRepairJournal {
   active: SourceRepairRelease | null; previous: SourceRepairRelease | null;
   repairId: string | null; updatedAt: number; healthyAt?: number;
 }
-export interface SourceRepairConfig { version: 1; enabled: boolean; baseRoot: string }
+export interface SourceRepairConfig { version: 1; enabled: boolean; baseRoot: string; bulkRoot?: string }
 const ID = /^sr-[a-f0-9]{24}$/;
 const TERMINAL = new Set<RepairStage>(["committed", "rolled_back", "cancelled", "blocked", "failed"]);
 const SERVER = "dashboard/.next-desktop/standalone/server.js";
 const MAX_JSON_BYTES = 64 * 1024 * 1024;
 
+export function canonicalRepairPath(value: string): string {
+  let ordinary = value;
+  if (process.platform === "win32") {
+    ordinary = ordinary.replaceAll("/", "\\");
+    if (/^\\\\\?\\UNC\\/i.test(ordinary)) ordinary = "\\\\" + ordinary.slice(8);
+    else if (/^\\\\\?\\[a-z]:\\/i.test(ordinary)) ordinary = ordinary.slice(4);
+    else if (/^\\\\[?.]\\/.test(ordinary)) throw new Error("Unsupported repair device namespace.");
+  }
+  return path.resolve(ordinary);
+}
+
 export function sameRepairPath(a: string, b: string): boolean {
   const normalize = (value: string) => {
-    const resolved = path.resolve(value).replace(/^\\\\\?\\/, "");
+    const resolved = canonicalRepairPath(value);
     return process.platform === "win32" ? resolved.toLowerCase() : resolved;
   };
   return normalize(a) === normalize(b);
 }
 export function repairPathWithin(root: string, target: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(target));
+  const relative = path.relative(canonicalRepairPath(root), canonicalRepairPath(target));
   return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 export function directRepairPath(target: string): string {
-  const resolved = path.resolve(target);
+  const resolved = canonicalRepairPath(target);
   let current = path.parse(resolved).root;
   for (const segment of resolved.slice(current.length).split(path.sep).filter(Boolean)) {
     current = path.join(current, segment);
@@ -80,16 +93,47 @@ export function writeRepairJson(file: string, value: unknown): void {
   try { fs.renameSync(temporary, file); }
   finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
 }
-export function initializeSourceRepair(dataRoot: string, baseRoot: string, enabled: boolean): SourceRepairConfig {
+
+/** Only the desktop's validated storage preference selects this root. */
+export function validateSourceRepairBulkRoot(dataRoot: string, baseRoot: string, candidate: string): string {
+  if (typeof candidate !== "string" || !path.isAbsolute(candidate)) throw new Error("Repair bulk storage must be an absolute directory.");
+  const root = directRepairPath(candidate);
+  if (sameRepairPath(root, path.parse(root).root) || !fs.statSync(root).isDirectory()) throw new Error("Repair bulk storage must be a direct non-root directory.");
+  for (const protectedRoot of [dataRoot, baseRoot]) {
+    if (sameRepairPath(root, protectedRoot) || repairPathWithin(root, protectedRoot) || repairPathWithin(protectedRoot, root)) {
+      throw new Error("Repair bulk storage must be separate from application source and task data.");
+    }
+  }
+  return root;
+}
+
+export function sourceRepairWorktreeRoot(dataRoot: string, baseRoot: string): string {
+  const config = sourceRepairConfig(dataRoot);
+  if (!config || !sameRepairPath(config.baseRoot, baseRoot)) throw new Error("Repair storage belongs to another installation.");
+  if (!config.bulkRoot) return directRepairPath(path.join(baseRoot, ".qa-worktrees"));
+  const bulkRoot = validateSourceRepairBulkRoot(dataRoot, baseRoot, config.bulkRoot);
+  const canonical = canonicalRepairPath(baseRoot);
+  const identity = createHash("sha256").update(process.platform === "win32" ? canonical.toLowerCase() : canonical).digest("hex").slice(0, 24);
+  return directRepairPath(path.join(bulkRoot, "source-repair", identity));
+}
+
+export function initializeSourceRepair(dataRoot: string, baseRoot: string, enabled: boolean, options: { bulkRoot?: string } = {}): SourceRepairConfig {
+  const selectedBulkRoot = options.bulkRoot === undefined ? undefined : validateSourceRepairBulkRoot(dataRoot, baseRoot, options.bulkRoot);
   const directory = sourceRepairDirectory(dataRoot);
   fs.mkdirSync(path.join(directory, "requests"), { recursive: true });
   const file = path.join(directory, "config.json");
   const existing = readRepairJson<SourceRepairConfig>(file);
   if (existing) {
     if (existing.version !== 1 || !sameRepairPath(existing.baseRoot, baseRoot)) throw new Error("Repair configuration belongs to another installation.");
+    if (selectedBulkRoot && existing.bulkRoot && !sameRepairPath(selectedBulkRoot, existing.bulkRoot)) throw new Error("Changing pinned repair bulk storage requires a verified migration.");
+    if (selectedBulkRoot && !existing.bulkRoot) {
+      const extended = { ...existing, bulkRoot: selectedBulkRoot };
+      writeRepairJson(file, extended);
+      return extended;
+    }
     return existing;
   }
-  const config: SourceRepairConfig = { version: 1, enabled, baseRoot: directRepairPath(baseRoot) };
+  const config: SourceRepairConfig = { version: 1, enabled, baseRoot: directRepairPath(baseRoot), ...(selectedBulkRoot ? { bulkRoot: selectedBulkRoot } : {}) };
   const key = path.join(directory, "release-key");
   try { fs.writeFileSync(key, randomBytes(32), { flag: "wx", mode: 0o600 }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
@@ -202,7 +246,8 @@ export function verifySourceRepairRelease(dataRoot: string, baseRoot: string, re
   const actual = Buffer.from(signature ?? "");
   if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new Error("Release proof is invalid.");
   if (!ID.test(release.id) || !sameRepairPath(release.baseRoot, baseRoot) ||
-      !sameRepairPath(path.dirname(release.root), path.join(baseRoot, ".qa-worktrees"))) throw new Error("Release is outside this installation's isolated copies.");
+      (!sameRepairPath(path.dirname(release.root), path.join(baseRoot, ".qa-worktrees")) &&
+       !sameRepairPath(path.dirname(release.root), sourceRepairWorktreeRoot(dataRoot, baseRoot)))) throw new Error("Release is outside this installation's isolated copies.");
   directRepairPath(release.root);
   if (!release.files.some(file => file.path === SERVER) || release.files.length > 100_000) throw new Error("Release has no verified dashboard build.");
   for (const file of release.files) {

@@ -1,3 +1,4 @@
+import { renderSystemPrompt } from "../system-prompts/service.ts";
 // Sending review questions out over WhatsApp or Telegram, and turning the reply
 // back into an FSRS grade.
 //
@@ -195,6 +196,7 @@ export interface GradeOutcome {
 }
 
 async function modelGrade(input: {
+  userId?: number | null;
   question: string;
   reference: string;
   answer: string;
@@ -207,13 +209,7 @@ async function modelGrade(input: {
       {
         role: "system",
         content:
-          "You grade one spaced-repetition answer. Compare the learner's answer " +
-          "to the reference. Judge substance, not wording: synonyms, different " +
-          "notation, and a terser explanation are all fine. Rate 1 (wrong or " +
-          "absent), 2 (right idea, significant gaps), 3 (substantially correct), " +
-          "4 (correct and complete). Then write ONE short sentence of feedback: " +
-          "if they missed something, say specifically what. Reply as JSON: " +
-          '{"rating": 3, "feedback": "..."}. No prose outside the JSON.',
+          renderSystemPrompt("review-grading", input.userId, {  }),
       },
       {
         role: "user",
@@ -289,7 +285,7 @@ export async function handleInboundReview(options: {
     outcome = { rating: REVIEW_GRADES.again, feedback: "" };
   } else {
     try {
-      outcome = await modelGrade({
+      outcome = await modelGrade({ userId: delivery.user_id,
         question: delivery.question,
         reference: card.answer,
         answer: text,

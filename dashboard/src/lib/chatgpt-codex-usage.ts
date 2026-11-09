@@ -35,8 +35,12 @@ function windowFrom(value: unknown): UsageLimitWindow | undefined {
   const window: UsageLimitWindow = { used_percent: Math.min(100, Math.max(0, used)) };
   const minutes = numberFrom(record.window_minutes);
   const resets = numberFrom(record.resets_in_seconds);
+  const resetsAt = numberFrom(record.resets_at);
   if (minutes !== undefined) window.window_minutes = Math.trunc(minutes);
   if (resets !== undefined) window.resets_in_seconds = Math.trunc(resets);
+  if (resetsAt !== undefined && resetsAt > 0 && Number.isFinite(new Date(resetsAt * 1000).getTime())) {
+    window.resets_at = resetsAt;
+  }
   return window;
 }
 

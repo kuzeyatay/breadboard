@@ -1,36 +1,76 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { setTimeout as sleepFor } from "node:timers/promises";
+import { assertWindowsCommitHeadroom } from "../../desktop/scripts/commit-preflight.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   assertAutomaticRepairPatch, claimSourceRepairEngine, readSourceRepair, updateSourceRepair,
   readRepairJournal, repairFileHash, redactedRepairText, signSourceRepairRelease,
-  MAX_SOURCE_REPAIR_ATTEMPTS,
+  MAX_SOURCE_REPAIR_ATTEMPTS, sourceRepairWorktreeRoot,
 } from "../../desktop/src/shared/source-repair.ts";
 import { captureSourceSnapshot, snapshotStillCurrent, sourceManifest } from "../../qa/autonomous/lib/source-snapshot.mjs";
 import { createSnapshotWorktree } from "../../qa/autonomous/lib/repair-worktree.mjs";
 import { issueRepairCapability, applyGatedMutation, finalizeRepairCapability } from "../../qa/autonomous/lib/repair-capability.mjs";
 import { proposeSourceRepair, reviewSourceRepair } from "./model.mjs";
 import { availableDashboardBuild } from "../../desktop/scripts/dashboard-build-cache.mjs";
+import { sourceRepairToolPath } from "./windows-tools.mjs";
 
 const CONTROLLER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const TERMINAL = new Set(["ready", "activating", "probation", "committed", "rollback_requested", "rolled_back", "cancelled", "blocked", "failed"]);
 const OUTPUT_BOUND = 64 * 1024;
-const SOURCE_ROOTS = ["dashboard", "desktop", "scripts", "qa", "native", "package.json", "package-lock.json", ".gitignore"];
+export const SOURCE_REPAIR_BUILD_TIMEOUT_MS = 60 * 60_000;
+const SOURCE_ROOTS = ["dashboard", "desktop", "scripts", "qa", "native", "shared", "hermes-skills/prebuilt", "hermes-skills/conditional", "package.json", "package-lock.json", ".gitignore"];
 const delayBeat = () => new Promise(resolve => setImmediate(resolve));
 
 /** Commands are fixed by this controller. A model never supplies argv or env. */
 export function runRepairCommand(command, args, { cwd, env, signal, timeoutMs = 120_000 }) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, env, signal, windowsHide: true, shell: false, stdio: ["ignore", "pipe", "pipe"] });
-    let output = "";
+    let output = "", timedOut = false;
     const collect = chunk => { output = (output + chunk.toString()).slice(-OUTPUT_BOUND); };
     child.stdout.on("data", collect); child.stderr.on("data", collect);
-    const timeout = setTimeout(() => child.kill(), timeoutMs);
+    const timeout = setTimeout(() => { timedOut = true; child.kill(); }, timeoutMs);
     child.once("error", error => { clearTimeout(timeout); reject(error); });
-    child.once("close", (code, killedBy) => { clearTimeout(timeout); resolve({ code: code ?? -1, signal: killedBy, output: redactedRepairText(output, OUTPUT_BOUND) }); });
+    child.once("close", (code, killedBy) => { clearTimeout(timeout); resolve({ code: timedOut ? -1 : (code ?? -1), signal: killedBy, timedOut, output: redactedRepairText(output, OUTPUT_BOUND) }); });
   });
 }
+
+/** Temporary resource pressure waits inside the original repair budget. */
+export async function runAdmittedRepairBuild({ root, env, signal, guard, deadline,
+  runCommand = runRepairCommand, sample = () => assertWindowsCommitHeadroom({ operation: "isolated source repair build", estimateMb: 11_264 }),
+  sleep = (ms, signal) => sleepFor(ms, undefined, { signal }), now = Date.now, onWaiting = () => {} }) {
+  const check = () => {
+    signal?.throwIfAborted(); guard();
+    if (now() >= deadline) throw new Error("Source repair deadline exhausted while waiting for build resources.");
+  };
+  const defer = async message => {
+    check(); onWaiting(message);
+    await sleep(Math.min(45_000, deadline - now()), signal);
+  };
+  while (true) {
+    check();
+    try { sample(); }
+    catch (error) {
+      if (error.code !== "BREADBOARD_RESOURCE_EXHAUSTED") throw error;
+      await defer(error.message); continue;
+    }
+    check();
+    const timeoutMs = Math.min(SOURCE_REPAIR_BUILD_TIMEOUT_MS, deadline - now());
+    const build = await runCommand(process.execPath, [path.join(root, "desktop", "scripts", "build-dashboard.mjs")],
+      { cwd: root, env: { ...env, NODE_ENV: "production", BREADBOARD_SOURCE_REPAIR_BUILD: "1" }, signal,
+        timeoutMs });
+    if (build.timedOut) throw new Error(`The isolated production build exceeded its ${Math.ceil(timeoutMs / 1000)}-second time limit; saved task progress is preserved.`);
+    if (build.code === 0) { check(); return; }
+    // The fixed child independently samples again. A competing build can
+    // consume memory between the two checks; retry only its typed denial.
+    if (/code: ['"]BREADBOARD_RESOURCE_EXHAUSTED['"]/.test(build.output)) {
+      await defer("Build admission changed; waiting for Windows commit headroom."); continue;
+    }
+    throw new Error(`The isolated production build failed: ${build.output.slice(-3000)}`);
+  }
+}
+
 function testEnvironment(root, directory) {
   const env = {};
   for (const key of ["SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "PATH", "LANG"]) if (process.env[key]) env[key] = process.env[key];
@@ -83,6 +123,7 @@ export async function copyRepairDashboardDependencies(baseRoot, root, { signal, 
     const copied = await runCommand(path.join(process.env.SystemRoot || "C:\\Windows", "System32", "robocopy.exe"),
       [source, target, "/E", "/COPY:DAT", "/R:0", "/W:0", "/MT:64", "/XJ", "/NFL", "/NDL", "/NJH", "/NJS", "/NP"],
       { cwd: root, env: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, TEMP: process.env.TEMP, TMP: process.env.TMP }, signal, timeoutMs: 45 * 60_000 });
+    if (copied.timedOut) throw new Error("Installed dependency copy exceeded its 45-minute time limit.");
     if (copied.code < 0 || copied.code >= 8) throw new Error(`Installed dependency copy failed: ${copied.output.slice(-1500)}`);
     // Preserve the reviewed per-package links (notably mem0ai), whose pinned
     // source/bundle identities the normal build independently verifies.
@@ -98,15 +139,27 @@ export async function copyRepairDashboardDependencies(baseRoot, root, { signal, 
 }
 async function linkInstalledInputs(baseRoot, root, options) {
   const relatives = ["node_modules", "dashboard/node_modules", "desktop/node_modules"];
+  const externalInputs = new Set();
   // Existing external source dependencies are environment inputs. Never link
   // data/config/temp roots; all model mutations are realpath-fenced by the gate.
   for (const entry of fs.readdirSync(baseRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name.startsWith(".") || ["node_modules", "dashboard", "desktop", "native", "runtime", "runtime-v2", "audits"].includes(entry.name)) continue;
-    if (fs.existsSync(path.join(baseRoot, entry.name, "package.json")) || fs.existsSync(path.join(baseRoot, entry.name, "pyproject.toml"))) relatives.push(entry.name);
+    const directory = entry.isDirectory() || (entry.isSymbolicLink() && fs.statSync(path.join(baseRoot, entry.name), { throwIfNoEntry: false })?.isDirectory());
+    if (!directory || entry.name.startsWith(".") || SOURCE_ROOTS.some(relative => relative.split("/")[0] === entry.name) || ["node_modules", "runtime", "runtime-v2", "audits"].includes(entry.name)) continue;
+    if (fs.existsSync(path.join(baseRoot, entry.name, "package.json")) || fs.existsSync(path.join(baseRoot, entry.name, "pyproject.toml"))) { relatives.push(entry.name); externalInputs.add(entry.name); }
   }
   for (const relative of relatives) {
     const source = path.join(baseRoot, relative), target = path.join(root, relative);
-    if (!fs.existsSync(source) || fs.existsSync(target)) continue;
+    if (!fs.existsSync(source)) continue;
+    if (fs.existsSync(target)) {
+      if (!externalInputs.has(relative)) continue;
+      // Git can check out vendored source while omitting its installed dist
+      // and node_modules. Replace only this disposable vendor directory with
+      // the reviewed installed input. Never remove or mutate the base input.
+      const targetRelative = path.relative(fs.realpathSync.native(root), fs.realpathSync.native(target));
+      if (!targetRelative || path.isAbsolute(targetRelative) || targetRelative === ".." || targetRelative.startsWith(".." + path.sep) || fs.lstatSync(target).isSymbolicLink()) throw new Error("External input replacement escapes its isolated copy.");
+      options.signal?.throwIfAborted();
+      fs.rmSync(target, { recursive: true, force: false });
+    }
     if (relative === "dashboard/node_modules") await copyRepairDashboardDependencies(baseRoot, root, options);
     else {
       fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -134,6 +187,8 @@ async function releaseFiles(root, sources) {
   return [...new Map(files.map(file => [file.path, file])).values()].sort((a, b) => a.path.localeCompare(b.path));
 }
 export async function executeSourceRepair({ dataRoot, repairId, endpoint, apiKey, signal, dependencies = {} }) {
+  const originalPath = process.env.PATH;
+  let changedPath = false;
   const releaseLock = claimSourceRepairEngine(dataRoot);
   if (!releaseLock) return { deferred: true };
   const runCommand = dependencies.runCommand ?? runRepairCommand;
@@ -148,6 +203,8 @@ export async function executeSourceRepair({ dataRoot, repairId, endpoint, apiKey
   };
   try {
     if (!request || TERMINAL.has(request.stage)) return { skipped: true };
+    const toolPath = sourceRepairToolPath();
+    if (toolPath !== undefined) { process.env.PATH = toolPath; changedPath = true; }
     const parent = readRepairJournal(dataRoot);
     if (parent.phase !== "stable") return { deferred: true };
     const sourceRoot = parent.active?.root ?? request.baseRoot;
@@ -158,7 +215,8 @@ export async function executeSourceRepair({ dataRoot, repairId, endpoint, apiKey
     for (let attempt = request.attempt + 1; attempt <= MAX_SOURCE_REPAIR_ATTEMPTS; attempt++) {
       guard();
       request = updateSourceRepair(dataRoot, repairId, { stage: "preparing", attempt, parentReleaseId: parent.active?.id ?? null, sourceFingerprint: snapshot.sourceFingerprint });
-      const worktree = createSnapshotWorktree({ repoRoot: request.baseRoot, findingId: `${repairId}-${attempt}`, snapshot, linkExternal: false });
+      const worktreeRoot = sourceRepairWorktreeRoot(dataRoot, request.baseRoot);
+      const worktree = createSnapshotWorktree({ repoRoot: request.baseRoot, worktreeRoot, findingId: `${repairId}-${attempt}`, snapshot, linkExternal: false });
       const root = worktree.worktreePath;
       updateSourceRepair(dataRoot, repairId, { candidateRoot: root });
       await linkInstalledInputs(request.baseRoot, root, { signal, runCommand });
@@ -211,7 +269,7 @@ export async function executeSourceRepair({ dataRoot, repairId, endpoint, apiKey
       if (baseline.some(result => result.code === 0 || !/ERR_ASSERTION/.test(result.output))) throw new Error("The proposed behavioral regression did not reproduce an assertion failure twice.");
       guard();
       const regressionPath = `dashboard/tests/${repairId}.test.mjs`;
-      const capability = issueRepairCapability({ repoRoot: request.baseRoot, worktree, allowedPaths: sources, regressionTestPaths: [regressionPath], finding: {
+      const capability = issueRepairCapability({ repoRoot: request.baseRoot, worktreeRoot, worktree, allowedPaths: sources, regressionTestPaths: [regressionPath], finding: {
         id: repairId, scenario: "interrupted-user-task", revision: worktree.sourceRevision,
         sourceSnapshotFingerprint: snapshot.sourceFingerprint, status: "failed", classification: "PRODUCT_BUG",
         reproduction: { reproduced: true, attempts: 2 }, diagnosis: { rootCause: proposal.rootCause, responsibleCodePath: sources.join(", ") },
@@ -241,9 +299,8 @@ export async function executeSourceRepair({ dataRoot, repairId, endpoint, apiKey
       else {
         const space = fs.statfsSync(root);
         if (Number(space.bavail) * Number(space.bsize) < 8 * 1024 ** 3) throw new Error("Insufficient disk headroom for an isolated build.");
-        const build = await runCommand(process.execPath, [path.join(root, "desktop", "scripts", "build-dashboard.mjs")],
-          { cwd: root, env: { ...env, NODE_ENV: "production", BREADBOARD_SOURCE_REPAIR_BUILD: "1" }, signal, timeoutMs: 45 * 60_000 });
-        if (build.code !== 0) throw new Error(`The isolated production build failed: ${build.output.slice(-3000)}`);
+        await runAdmittedRepairBuild({ root, env, signal, guard, deadline: request.deadline, runCommand,
+          onWaiting: reason => updateSourceRepair(dataRoot, repairId, { reason: redactedRepairText(reason) }) });
       }
       guard();
       // Build-generated outputs are excluded by the source manifest. Authored
@@ -262,5 +319,8 @@ export async function executeSourceRepair({ dataRoot, repairId, endpoint, apiKey
     if (request) updateSourceRepair(dataRoot, repairId, { stage: signal?.aborted ? "cancelled" : "blocked",
       reason: redactedRepairText(error instanceof Error ? error.message : String(error)) });
     return { blocked: true };
-  } finally { releaseLock(); }
+  } finally {
+    if (changedPath) { if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath; }
+    releaseLock();
+  }
 }

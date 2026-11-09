@@ -1,0 +1,25 @@
+{
+  "problem": "Terminal exposed its server-rendered placeholders before client hydration and initial widget data. Startup JavaScript also queued behind busy local API connections.",
+  "runningBuild": "2026-09-30 09:53:41; included the earlier bundle-splitting change",
+  "observedBefore": {
+    "startupScriptRequestQueueMs": [9432, 25882],
+    "startupScriptResponseAfterRequestMs": [3, 10],
+    "localAppProtocol": "HTTP/1.1",
+    "chromiumAppCache": "disabled to avoid suspended-renderer cache-entry locks"
+  },
+  "changes": [
+    "Transport only the current loopback dashboard's public /_next/static/ assets through an Electron custom protocol, outside the API socket pool.",
+    "Share successful immutable assets in a 32 MiB bounded main-process cache; do not forward cookies or cache mutable/error responses.",
+    "Retain the outgoing page until a new Terminal document reports hydration and initial widget readiness, fonts and eager images settle, and its frame is ready.",
+    "Cancel pending handoffs when selection changes; retain immediate selection for already-ready Terminal documents and ordinary tabs."
+  ],
+  "verification": {
+    "desktopTypeScript": "passed",
+    "targetedTests": { "passed": 15, "failed": 0 },
+    "realElectronSixOccupiedSocketsAssetReadyMs": [65, 72, 108],
+    "isolatedActualTerminalHydrationMs": [988, 783],
+    "isolatedActualTerminalIncludingInitialDataMs": [12387, 3122],
+    "notes": "Full initial-data readiness includes remote/widget latency. Hydration timing is not a promise of complete readiness. The original page remains visible during this wait. Actual-page checks used an isolated Electron session and the existing dashboard build; native reveal behavior was separately tested with controlled pending widgets/images."
+  },
+  "applicationStatus": "User chose to keep Breadboard open and apply later. Source and isolated test output updated; the running desktop is unchanged. Rebuild and restart are still required."
+}

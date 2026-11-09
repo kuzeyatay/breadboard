@@ -51,6 +51,7 @@ import {
   findCapabilityConflict,
   modelLaunchableRuntimeAgents,
   runtimeAgentById,
+  runtimeAgentSupportsDelivery,
   type CapabilitySurface,
 } from "@/lib/hermes/capability-combinations.ts";
 import {
@@ -61,6 +62,8 @@ import {
 } from "@/lib/hermes/agent-launch-store.ts";
 import { MAX_PARALLEL_AGENT_LAUNCHES } from "@/lib/hermes/agent-launch.ts";
 import { unifiedWorkflowSelectionAllows, unifiedWorkflowRepeatsCompletedWork } from "@/lib/workflows/unified-command.ts";
+import { sealSwarmAuthority, swarmToolAction } from "@/lib/swarm/service.ts";
+import { SwarmError } from "@/lib/swarm/types.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -88,6 +91,8 @@ export async function POST(request: Request) {
     if (
       !session ||
       session.user_id === null ||
+      verified.token.userId !== session.user_id ||
+      verified.token.surface !== session.surface ||
       session.conversation_id === null ||
       !["dashboard_terminal", "garden_chat"].includes(session.surface) ||
       runtimeExternalSessionId(session) !== verified.token.hermesSessionId ||
@@ -119,11 +124,14 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = await readJsonBody(request, 32 * 1024);
+    const body = await readJsonBody(request, 128 * 1024);
     const args =
       body.args && typeof body.args === "object" && !Array.isArray(body.args)
         ? (body.args as Record<string, unknown>)
         : {};
+    if (args.team_action !== undefined) {
+      return NextResponse.json(await swarmToolAction(sealSwarmAuthority(session, run, decision), args));
+    }
     const agentId =
       typeof args.agent === "string" ? args.agent.trim().toLowerCase() : "";
     const brief =
@@ -236,6 +244,30 @@ export async function POST(request: Request) {
       );
     }
 
+    // The gateway runs in a different process and has no mounted launcher.
+    // A successful in-memory enqueue here would never start there. Read the
+    // transport from the authenticated parent turn, never from tool arguments.
+    const originMessage = getConversationMessageByClientId(
+      session.conversation_id,
+      originClientMessageId,
+      "assistant",
+    );
+    const originMetadata = originMessage
+      ? presentConversationMessage(originMessage).metadata
+      : {};
+    const deliveryChannel =
+      originMetadata.deliveryChannel === "telegram" ||
+      originMetadata.deliveryChannel === "whatsapp"
+        ? originMetadata.deliveryChannel
+        : undefined;
+    if (!runtimeAgentSupportsDelivery(agent.id, deliveryChannel)) {
+      throw new ApiError(
+        409,
+        "agent_launch_delivery_unavailable",
+        `${agent.name} requires a desktop chat launcher and cannot start from ${deliveryChannel}. Nothing was queued. Continue this request with your available tools and give the person the result or the specific limitation in this turn. Do not promise a later reply or claim that this worker is running.`,
+      );
+    }
+
     // Independent workers get distinct hidden transcript turns, so a Super
     // Agent may staff a small batch in one response. The ceiling prevents a
     // model loop from turning one user message into an unbounded fan-out.
@@ -266,19 +298,6 @@ export async function POST(request: Request) {
           "The conversation for this delegated run could not be found.",
         );
       }
-      const originMessage = getConversationMessageByClientId(
-        conversation.id,
-        originClientMessageId,
-        "assistant",
-      );
-      const originMetadata = originMessage
-        ? presentConversationMessage(originMessage).metadata
-        : {};
-      const deliveryChannel =
-        originMetadata.deliveryChannel === "telegram" ||
-        originMetadata.deliveryChannel === "whatsapp"
-          ? originMetadata.deliveryChannel
-          : undefined;
       const maxRun = await startMaxResearchRun({
         userId: session.user_id,
         requestId: workerClientMessageId,
@@ -376,6 +395,6 @@ export async function POST(request: Request) {
       releaseAgentLaunchRequestSlot(run.id);
     }
   } catch (error) {
-    return apiErrorResponse(error);
+    return apiErrorResponse(error instanceof SwarmError ? new ApiError(error.status, error.code, error.message) : error);
   }
 }

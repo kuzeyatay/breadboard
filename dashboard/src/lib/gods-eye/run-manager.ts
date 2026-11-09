@@ -1,3 +1,4 @@
+import { systemPromptText } from "../system-prompts/service.ts";
 // In-memory run manager for the God's Eye agent.
 //
 // Breadboard does not drive the globe: the clone owns the rendering, the live
@@ -23,8 +24,6 @@ import { ensureService } from "./service.ts";
 import {
   attachGodsEyeView,
   godsEyeOpenPath,
-  GODS_EYE_LAYERS,
-  GODS_EYE_STYLES,
   inferGodsEyeLayers,
   normalizeGodsEyeView,
   type GodsEyeView,
@@ -94,18 +93,6 @@ function finish(run: RunState, status: GodsEyeRunStatus, payload: Record<string,
   scheduleCleanup(run);
 }
 
-const VIEW_PROMPT = `You aim God's Eye View, a photorealistic 3D globe with live aircraft, ships, satellites, earthquakes, fires, and public cameras. Turn the user's request into one camera view.
-
-Answer with ONE JSON object and nothing else:
-{"label": string, "lat": number, "lon": number, "altM": number, "headingDeg": number, "pitchDeg": number, "style": "${GODS_EYE_STYLES.join("|")}", "layers": ("${GODS_EYE_LAYERS.join('"|"')}")[], "summary": string}
-
-- label: what the view is of, in a few words.
-- lat/lon: the place the request names, from your geographic knowledge. If it names none, pick the most relevant place and say so in the summary.
-- altM: camera altitude in meters. 400–2000 sees a few blocks, 2000–15000 a city, 50000–400000 a region, 1000000+ a continent. Watching air or sea traffic needs at least a regional altitude.
-- pitchDeg: -90 is straight down; -30 to -45 is a natural oblique look.
-- style: flir for thermal or heat, nvg for night vision, crt for retro, noir, snow, anime when asked; otherwise normal.
-- layers: only the live feeds needed for the request. Use flights for civilian aircraft, military for military aircraft, ais-live-vessels for ships, satellites, earthquakes, local-firms for active fires, cctv for public cameras, and traffic for roads.
-- summary: one or two present-tense sentences on what this view shows and which live layers (aircraft, vessels, satellites, quakes, fires, cameras) are worth watching there. Do not include links or Markdown.`;
 
 /** The model's answer, holding a view and a sentence about it. */
 export function parseViewAnswer(
@@ -167,7 +154,7 @@ async function resolveView(
       body: JSON.stringify({
         model: input.model,
         messages: [
-          { role: "system", content: VIEW_PROMPT },
+          { role: "system", content: systemPromptText("map-view", run.userId) },
           { role: "user", content: promptWithContext(run.task, input.conversationContext) },
         ],
         reasoning_effort: "low",

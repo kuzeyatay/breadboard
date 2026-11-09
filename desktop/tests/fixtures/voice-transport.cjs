@@ -12,7 +12,7 @@ app.whenReady().then(async () => {
     if (req.url.startsWith('/stream')) {
       res.writeHead(200, {'content-type':'text/event-stream'}); res.write(': open\n\n'); streams.push(res); return;
     }
-    if (req.url.startsWith('/api/speech/')) {
+    if (req.url.startsWith('/api/speech/') || ['/api/profile/voice-assistant', '/api/assistant-preferences'].includes(req.url)) {
       voiceReads++;
       if (req.headers.cookie !== 'fixture-session=private') { res.writeHead(401); res.end(); return; }
       assert.equal(req.headers.origin, origin);
@@ -40,6 +40,16 @@ app.whenReady().then(async () => {
   assert.deepEqual(json, {method:'POST',type:'application/json',body:Buffer.from('{"text":"Hello"}').toString('base64')});
   const voiceReadyMs = Date.now()-started;
   assert.ok(voiceReadyMs < 1500, 'voice must not queue behind the six live streams');
+  const preferenceReadMs = {};
+  for (const route of ['/api/profile/voice-assistant', '/api/assistant-preferences']) {
+    const preferenceStarted = Date.now();
+    const result = await window.webContents.executeJavaScript(`fetch(${JSON.stringify(route)}, {cache:'no-store',signal:AbortSignal.timeout(2000)}).then(async response=>({status:response.status,cache:response.headers.get('cache-control'),body:await response.json()}))`);
+    preferenceReadMs[route] = Date.now()-preferenceStarted;
+    assert.equal(result.status, 200);
+    assert.equal(result.body.method, 'GET');
+    assert.equal(result.cache, 'private, no-store');
+    assert.ok(preferenceReadMs[route] < 1500, route + ' must not queue behind six live streams');
+  }
   const pcm = await window.webContents.executeJavaScript(`fetch('/api/speech/livekit?id=fixture&sequence=0',{method:'PUT',body:new Uint8Array([0,1,128,255])}).then(r=>r.json())`);
   assert.equal(pcm.method, 'PUT'); assert.equal(pcm.body, Buffer.from([0,1,128,255]).toString('base64'));
   const form = await window.webContents.executeJavaScript(`(async()=>{const form=new FormData();form.append('file',new Blob(['spoken fixture'],{type:'audio/wav'}),'test.wav');return (await fetch('/api/speech/transcribe',{method:'POST',body:form})).json()})()`);
@@ -54,8 +64,11 @@ app.whenReady().then(async () => {
   assert.equal(direct.status,404); assert.equal(voiceReads,before,'direct scheme calls cannot borrow app authentication');
   await target.cookies.remove(origin, 'fixture-session');
   assert.equal(await window.webContents.executeJavaScript(`fetch('/api/speech/settings').then(r=>r.status)`),401);
+  for (const route of ['/api/profile/voice-assistant', '/api/assistant-preferences']) {
+    assert.equal(await window.webContents.executeJavaScript(`fetch(${JSON.stringify(route)}).then(r=>r.status)`),401);
+  }
   assert.ok(streams.every(res=>!res.writableEnded));
-  console.log(JSON.stringify({voiceReadyMs,occupiedSockets:streams.length,cancellation,uploads:'JSON, PCM and multipart passed'}));
+  console.log(JSON.stringify({voiceReadyMs,preferenceReadMs,occupiedSockets:streams.length,cancellation,uploads:'JSON, PCM and multipart passed'}));
   require('node:fs').writeFileSync(path.join(process.argv.at(-1),'passed.json'),JSON.stringify({passed:true}));
   for(const res of streams)res.end(); window.destroy();server.closeAllConnections();server.close();app.exit(0);
 }).catch(error=>{console.error(error.stack||error);app.exit(1)});

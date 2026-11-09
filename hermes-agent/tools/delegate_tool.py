@@ -710,6 +710,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    parent_task_id: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -725,13 +726,19 @@ def _build_child_system_prompt(
     # to the plain goal if the roster is unavailable or the slug is unknown.
     persona_block = None
     try:
-        from tools.agency_personas import render_persona_block, split_persona_tag
-
-        persona_slug, goal = split_persona_tag(goal)
-        if persona_slug:
-            persona_block = render_persona_block(persona_slug)
-    except Exception:
-        persona_block = None
+        from tools.agency_personas import BreadboardPersonaError, render_persona_block, split_persona_tag
+    except ImportError:
+        pass
+    else:
+        try:
+            persona_slug, goal = split_persona_tag(goal)
+            if persona_slug:
+                persona_block = render_persona_block(persona_slug, task_id=parent_task_id)
+        except BreadboardPersonaError:
+            # Never replace a saved account instruction with a stale local file.
+            raise
+        except Exception:
+            persona_block = None
 
     parts = []
     if persona_block:
@@ -1257,6 +1264,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        parent_task_id=str(getattr(parent_agent, "session_id", "") or "") or None,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)

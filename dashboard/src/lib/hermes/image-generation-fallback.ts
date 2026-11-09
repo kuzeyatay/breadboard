@@ -2,6 +2,7 @@ import { ArtifactImageServiceError, generateArtifactImage } from "./artifact-ima
 import { generateGoogleImage, generatedImageFilename } from "./google-image-generation-service.ts";
 
 export async function generateImageWithProviderFallback(input: {
+  userId?: number | null;
   baseURL: string;
   prompt: string;
   signal: AbortSignal;
@@ -17,7 +18,7 @@ export async function generateImageWithProviderFallback(input: {
   };
 }> {
   try {
-    const generated = await generateArtifactImage({
+    const generated = await generateArtifactImage({ userId: input.userId,
       baseURL: input.baseURL,
       prompt: input.prompt,
       signal: input.signal,

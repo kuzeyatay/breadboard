@@ -57,6 +57,8 @@ app.whenReady().then(async () => {
     startupHtmlPath: startup, recoveryHtmlPath: startup, loadingHtmlPath: startup,
     preloadPath: path.resolve(__dirname, "../../dist/preload/preload.js"),
     minimumStartupVisibleMs: 0, tabSessionConfigDir: dir,
+    // Restore is lazy by default (2026-10-27); this fixture checks the eager path.
+    restoreAllTabsAtStartup: true,
     allowed: { origins: new Set([origin]), localFiles: new Set([pathToFileURL(startup).href]) },
     log: line => { if (line.includes("synchronize login")) console.log(line); },
   });

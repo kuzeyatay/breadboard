@@ -18,7 +18,8 @@ import net from "node:net";
 import path from "node:path";
 import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import { health } from "./client.ts";
-import { classroomDataDir, classroomRuntimeRoot, nextEntry } from "./runtime.ts";
+import { classroomDataDir, classroomRuntimeRoot, classroomProcessEnvironment, nextEntry } from "./runtime.ts";
+import { runtimeProcessPath } from "../../../scripts/runtime-v2-paths.mjs";
 
 export interface ClassroomService {
   /** The app's origin — the API base and the classroom player both. */
@@ -229,13 +230,13 @@ async function start(options: StartOptions): Promise<ClassroomService> {
   ensureClassroomDataLink();
   const port = await freePort();
   const child = spawn(
-    process.execPath,
-    [entry, "start", "--hostname", "127.0.0.1", "--port", String(port)],
+    runtimeProcessPath(process.execPath),
+    [runtimeProcessPath(entry), "start", "--hostname", "127.0.0.1", "--port", String(port)],
     {
-      cwd: root,
+      cwd: runtimeProcessPath(root),
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
-      env: serviceEnvironment(options, port),
+      env: classroomProcessEnvironment(serviceEnvironment(options, port)),
     },
   );
 

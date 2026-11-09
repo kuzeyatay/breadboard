@@ -5,7 +5,7 @@ import * as path from "node:path";
 import test from "node:test";
 import { runElectronFixture } from "./helpers/run-electron-fixture";
 
-test("notification clips contain the rendered card at every page zoom", async () => {
+test("notification native input stays within the cards at every page zoom", async () => {
   const desktop = path.resolve(__dirname, "../..");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-notification-layout-"));
   const env = { ...process.env };

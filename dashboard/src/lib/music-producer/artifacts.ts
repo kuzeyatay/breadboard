@@ -5,7 +5,14 @@ import { recordRuntimeArtifactRun } from "../hermes/run-store.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { createImportedArtifact, getArtifactForUser, importArtifactVersion, listArtifactsForUser, listArtifactVersions } from "../hermes/artifact-store.ts";
-import { musicLaunch, updateMusicLaunch } from "./store.ts";
+import { musicLaunch, updateMusicLaunch, musicSwarmRequestId, type MusicLaunch } from "./store.ts";
+import db from "../db.ts";
+import { swarmRuntimeArtifactOwner } from "../swarm/artifact-owner.ts";
+function musicTeamOwner(launch: MusicLaunch) {
+  const requestId = musicSwarmRequestId(launch);
+  return requestId ? swarmRuntimeArtifactOwner({ userId: launch.user_id, requestId,
+    conversationPublicId: launch.conversation_public_id, agentId: "music-producer" }, db) : null;
+}
 import type { MusicRequest } from "./request.ts";
 export function musicArtifactContext(userId: number, id: string) {
   const launch = musicLaunch(userId, id);
@@ -14,7 +21,9 @@ export function musicArtifactContext(userId: number, id: string) {
     throw new Error("invalid_music_surface");
   const session = getRuntimeSessionByConversation(conversation.id);
   const hermesSessionId = session && runtimeExternalSessionId(session);
-  const message = findExternalAgentAssistantMessage({ conversationId: conversation.id, runId: id });
+  const team = musicTeamOwner(launch);
+  const message = team ? { id: team.assistantMessageId }
+    : findExternalAgentAssistantMessage({ conversationId: conversation.id, runId: id });
   if (!message)
     throw new Error("Music run is missing its originating assistant message.");
   if (!session || !hermesSessionId)
@@ -33,6 +42,7 @@ export function assertMusicCollectible(userId: number, id: string): void {
   getConversationForUser(launch.conversation_public_id, userId);
   if (["aborted", "cancelling"].includes(launch.collection_state))
     throw new Error("music_collection_cancelled");
+  musicTeamOwner(launch);
 }
 export async function publishMusic(input: {
   userId: number;
@@ -53,7 +63,8 @@ export async function publishMusic(input: {
     instruction: launch.task,
     dispatch: { conversationPublicId: launch.conversation_public_id, runtimeText: launch.task },
   });
-  const metadata = { ...input.metadata, musicProducerRunId: input.id, operation: input.request.operation, source: input.request.source, requested: input.request };
+  const team = musicTeamOwner(launch);
+  const metadata = { ...input.metadata, ...(team ? { swarm: { runId: team.runId, attemptId: team.attemptId } } : {}), musicProducerRunId: input.id, operation: input.request.operation, source: input.request.source, requested: input.request };
   // Lookup includes all versions: a crash after import must not publish the same revision twice.
   const existing = listArtifactsForUser({ userId: input.userId, conversationPublicId: launch.conversation_public_id });
   let prior: {

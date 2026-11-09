@@ -242,7 +242,7 @@ export default function InlineDeepResearchRun({
               : outcome === "aborted"
                 ? failureRef.current ?? "Research was aborted."
                 : failureRef.current ?? "The research run failed.";
-          if (outcome === "completed") notifyTaskCompleted(query);
+          if (outcome === "completed") notifyTaskCompleted(query, { runId });
           onTerminalRef.current?.({
             outcome,
             content,
@@ -422,7 +422,7 @@ export default function InlineDeepResearchRun({
         usage={usage}
         agentName="Deep Research"
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
       {/* The query is the user's own message directly above this card, so the
           header carries the agent and its state and leaves the rest alone. */}
       <div className="bb-agent-run-header">

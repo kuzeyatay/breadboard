@@ -200,15 +200,36 @@ const NEGATED_GENERAL_DESIGN = new RegExp(
   "gi",
 );
 
-function physicalSearchText(brief: string): string {
-  return brief
+function physicalSearchScope(brief: string): { text: string; declined: boolean } {
+  let declined = false;
+  const omitted = (value: string): string => {
+    if (!/\bnot\s+just\b/i.test(value) && /\b(?:enclosure|case|casing|housing|cad|3d[- ]model|solid\s+model|parametric\s+model)\b/i.test(value)) declined = true;
+    return " ";
+  };
+  const physicalItem = new RegExp(`^(?:(?:a|an|any|new|printable)\\s+)?(?:${ENCLOSURE_WORDS.source}|${EXPLICIT_CAD_REQUEST.source})(?!\\s+(?:constraints?|restrictions?|limits?))`, "i");
+  const text = brief
     .replace(NOT_PHYSICAL, " ")
-    .replace(NEGATED_GENERAL_DESIGN, " ")
-    .replace(NEGATED_PHYSICAL, " ")
-    .replace(NEGATED_CAD_REQUEST, " ")
+    // A prohibition list can mix electrical, mechanical and account actions.
+    // Stop at a positive request so "without a case, make a bracket" keeps CAD.
+    .replace(/(^|[.!?;\n])\s*(?:please\s+)?(?:no|without)\s+([^.!?;\n]+)/gi, (whole, boundary: string, body: string) => {
+      const positive = body.search(/\b(?:but|however|instead)\b|(?:,|\band\b)\s*(?:then\s+)?(?:make|build|design|create|include|add|generate|model|print|fabricate|construct|fit|attach|mount)\b/i);
+      const excluded = positive < 0 ? body : body.slice(0, positive);
+      const items = excluded.split(/,|\b(?:and|or)\b/i).map((item) => item.trim());
+      if (!items.some((item) => physicalItem.test(item))) return whole;
+      omitted(excluded);
+      return `${boundary} ${positive < 0 ? "" : body.slice(positive)}`;
+    })
+    .replace(NEGATED_GENERAL_DESIGN, omitted)
+    .replace(NEGATED_PHYSICAL, omitted)
+    .replace(NEGATED_CAD_REQUEST, omitted)
     .replace(NEGATED_PRODUCT_CONTEXT, " ")
     .replace(/\s+/g, " ")
     .trim();
+  return { text, declined };
+}
+
+function physicalSearchText(brief: string): string {
+  return physicalSearchScope(brief).text;
 }
 
 /**
@@ -252,6 +273,8 @@ function directedNonEnclosureRequest(searchable: string): boolean {
  */
 export function enclosureIntent(brief: string): {
   wanted: boolean;
+  /** An explicit opt-out overrides an automatic enclosure preference. */
+  declined?: boolean;
   /** The brief with the enclosure flags stripped out. */
   remaining: string;
 } {
@@ -269,7 +292,7 @@ export function enclosureIntent(brief: string): {
     .trim();
   if (forced !== null) return { wanted: forced, remaining };
 
-  const searchable = physicalSearchText(remaining);
+  const { text: searchable, declined } = physicalSearchScope(remaining);
   if (ENCLOSURE_WORDS.test(searchable)) return { wanted: true, remaining };
   if (
     EXPLICIT_CAD_REQUEST.test(searchable) ||
@@ -282,7 +305,7 @@ export function enclosureIntent(brief: string): {
     const following = searchable.slice(match.index + match[0].length);
     if (!ELECTRICAL_TARGET.test(following)) return { wanted: true, remaining };
   }
-  return { wanted: false, remaining };
+  return { wanted: false, remaining, declined };
 }
 
 export interface EnclosureBriefInput {

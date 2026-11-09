@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+const STRANDED_PROFILE_AGE_MS = 24 * 60 * 60 * 1_000;
+
 function invalidProfile(message) {
   throw Object.assign(new Error(message), {
     status: 500,
@@ -76,6 +78,15 @@ export function createSpotifySessionProfile(root, userId) {
     `user-${userId}`,
     `session-${randomUUID()}`,
   ]);
+  // A failed cleanup (a browser still holding files) strands its profile, about
+  // 75 MB each. A day-old sibling is stranded; a newer one may still be running.
+  const parent = path.dirname(directory);
+  for (const entry of fs.readdirSync(parent)) {
+    if (!/^session-[0-9a-f-]{36}$/u.test(entry)) continue;
+    const sibling = path.join(parent, entry);
+    if (Date.now() - fs.statSync(sibling).mtimeMs < STRANDED_PROFILE_AGE_MS) continue;
+    void fs.promises.rm(sibling, { recursive: true, force: true }).catch(() => undefined);
+  }
   return {
     directory,
     async cleanup() {

@@ -71,5 +71,5 @@ export function useDocumentAssistantHistory({ artifactId, kind, chat, setChat, b
     return () => { cancelled = true; window.clearInterval(timer); refreshRef.current = null; };
   }, [artifactId, kind, hydrated, setChat]);
   useEffect(() => { refreshRef.current?.(); }, [chat, busy]);
-  return { error, unread: conversationId !== null && unreadChats.has(conversationId) };
+  return { error, conversationId, unread: conversationId !== null && unreadChats.has(conversationId) };
 }

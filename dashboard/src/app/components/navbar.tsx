@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import NavigationLink from "./navigation-link";
+import VSCodeIcon from "./vscode-icon";
 import NavbarFlowerWind from "./navbar-flower-wind";
 import WorkTimerShortcut from "./work-timer-shortcut";
 import VoiceShortcut from "./voice-shortcut";
@@ -81,6 +82,11 @@ export default function NavBar({
             Plan
           </NavigationLink>
         )}
+        <NavigationLink newTab label="Code" href="/code"
+          className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors" title="Open Code in a new tab">
+          <VSCodeIcon />
+          Code
+        </NavigationLink>
         {shortcuts.buzz && (
           <NavigationLink newTab label="Organization"
             href="/buzz"

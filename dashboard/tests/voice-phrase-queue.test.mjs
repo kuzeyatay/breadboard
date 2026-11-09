@@ -11,7 +11,7 @@ function harness(t) {
     onIdle: value => idle.push(value), onError: error => { throw error; },
   });
   t.after(() => queue.cancel());
-  const update = (text, busy = true) => queue.update([{ role: 'assistant', content: text, voiceStream: { segment: 0, text } }], busy);
+  const update = (text, busy = true) => queue.update([{ role: 'assistant', content: busy ? '' : text, voiceStream: { segment: 0, text } }], busy);
   return { queue, spoken, idle, done, update };
 }
 const first = 'That makes complete sense. ';
@@ -27,10 +27,10 @@ test('nearby streamed sentences share one speech request without waiting after f
   t.mock.timers.tick(1000); assert.equal(h.spoken.length, 1);
 });
 
-test('a slow continuation cannot keep resetting the first-word deadline', t => {
+test('a stalled continuation starts after the bounded quiet window', t => {
   const h = harness(t);
   h.update(first); t.mock.timers.tick(80); h.update(first + 'Let us');
-  t.mock.timers.tick(VOICE_ANSWER_COALESCE_MS - 81);
+  t.mock.timers.tick(VOICE_ANSWER_COALESCE_MS - 1);
   assert.equal(h.spoken.length, 0); t.mock.timers.tick(1);
   assert.equal(h.spoken[0].text, first.trim());
 });

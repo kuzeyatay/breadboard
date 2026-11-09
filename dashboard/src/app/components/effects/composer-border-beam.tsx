@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 import { useSurfaceTheme } from "./use-surface-theme";
-import { useUserIdle } from "./use-user-idle";
 import { startComposerBeam } from "./composer-beam-motion";
 import styles from "./composer-border-beam.module.css";
 
@@ -31,7 +30,7 @@ export interface ComposerBorderBeamProps {
  * The travelling beam around the bottom chat dialogue.
  *
  * Only the decorative overlay is clipped; menus still escape upward. Two
- * static gradients move behind a static edge mask, so animation changes only
+ * soft lights travel at a steady speed behind a static edge mask, changing only
  * transform and opacity instead of repainting gradient masks every frame.
  */
 export default function ComposerBorderBeam({
@@ -40,7 +39,6 @@ export default function ComposerBorderBeam({
   className,
 }: ComposerBorderBeamProps) {
   const theme = useSurfaceTheme();
-  const idle = useUserIdle();
   const surface = useRef<HTMLDivElement>(null);
   const motion = useRef<ReturnType<typeof startComposerBeam> | null>(null);
 
@@ -55,8 +53,8 @@ export default function ComposerBorderBeam({
   }, []);
 
   useEffect(() => {
-    motion.current?.setActive(active && !idle);
-  }, [active, idle]);
+    motion.current?.setActive(active);
+  }, [active]);
 
   return (
     <div className={`relative${className ? ` ${className}` : ""}`}>
@@ -67,7 +65,7 @@ export default function ComposerBorderBeam({
         ref={surface}
         className={styles.beam}
         data-beam="composer"
-        data-active={active && !idle}
+        data-active={active}
         data-palette={composerBeamPalette(theme)}
         aria-hidden="true"
       >

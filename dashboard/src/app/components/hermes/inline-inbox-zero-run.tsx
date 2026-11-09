@@ -130,7 +130,7 @@ export default function InlineInboxZeroRun({
     (outcome: "completed" | "failed" | "aborted", content: string) => {
       if (reportedRef.current) return;
       reportedRef.current = true;
-      if (outcome === "completed") notifyTaskCompleted(`Inbox Zero — ${task.slice(0, 80)}`);
+      if (outcome === "completed") notifyTaskCompleted(`Inbox Zero — ${task.slice(0, 80)}`, { runId });
       onTerminalRef.current?.({ outcome, content });
     },
     [task],
@@ -261,7 +261,7 @@ export default function InlineInboxZeroRun({
         responseDurationMs={!terminal || elapsed > 0 ? elapsed * 1_000 : undefined}
         summary={STAGES[activeStageIndex]?.label}
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <header className="bb-agent-run-header">
           <p className="bb-agent-run-title min-w-0 truncate">
             Inbox Zero

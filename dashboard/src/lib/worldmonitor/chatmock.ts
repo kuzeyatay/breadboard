@@ -1,3 +1,4 @@
+import { systemPromptText } from "../system-prompts/service.ts";
 // ChatMock is the world monitor's only AI layer.
 //
 // Upstream worldmonitor runs a provider chain (Ollama → OpenRouter → Groq) with
@@ -21,7 +22,6 @@ import { selectedModelForUser } from "@/lib/selected-model";
 import {
   buildAnalystSystemPrompt,
   buildBriefPrompts,
-  CLASSIFY_SYSTEM_PROMPT,
   sanitizeForPrompt,
 } from "./prompts.ts";
 import type {
@@ -32,6 +32,7 @@ import type {
 } from "./types.ts";
 
 export interface ChatMockContext {
+  userId?: number | null;
   client: OpenAI;
   model: string;
   reasoningEffort: AssistantReasoningEffort;
@@ -52,6 +53,7 @@ export function chatmockFor(
   const requested = normalizeAssistantModelId(preference.model);
 
   return {
+    userId,
     client: new OpenAI({ baseURL, apiKey: process.env.OPENAI_API_KEY || "local" }),
     model: requested ?? selectedModelForUser(userId) ?? DEFAULT_MODEL,
     reasoningEffort: normalizeAssistantReasoningEffort(preference.reasoningEffort, true),
@@ -82,7 +84,7 @@ export async function generateBrief(
   const { system, user } = buildBriefPrompts(
     items.slice(0, BRIEF_HEADLINES),
     scopeLabel,
-    measured,
+    measured, ctx.userId
   );
 
   const response = await ctx.client.chat.completions.create({
@@ -125,7 +127,7 @@ export async function streamAnalystAnswer(
     escalation: params.escalation,
     scopeLabel: params.scopeLabel,
     measured: params.measured,
-  });
+  }, ctx.userId);
 
   const stream = await ctx.client.chat.completions.create({
     model: ctx.model,
@@ -227,7 +229,7 @@ export async function refineClassifications(
       // the reader picked their effort for answers, not for bookkeeping.
       reasoning_effort: "low",
       messages: [
-        { role: "system", content: CLASSIFY_SYSTEM_PROMPT },
+        { role: "system", content: systemPromptText("world-classification", ctx.userId) },
         { role: "user", content: numbered },
       ],
     });

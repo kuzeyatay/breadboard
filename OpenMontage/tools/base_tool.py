@@ -417,14 +417,38 @@ class BaseTool(ABC):
     ) -> subprocess.CompletedProcess:
         """Run a subprocess command with standard error handling.
 
-        On Windows, resolves .cmd/.bat wrappers (e.g. npx, npm) via
-        shutil.which() so subprocess.run() can find them without shell=True.
+        On Windows, resolve executable wrappers. Invoke a bundled npm/npx CLI
+        through its adjacent Node binary: cmd.exe cannot execute its .cmd shim
+        through the extended-length paths used by the managed runtime.
         """
         resolved_cmd = list(cmd)
+        child_env = None
         if platform.system() == "Windows" and resolved_cmd:
+            def process_path(value: str) -> str:
+                if value[:8].lower() == "\\\\?\\unc\\":
+                    return "\\\\" + value[8:]
+                if value.startswith("\\\\?\\") and len(value) >= 7 and value[4].isalpha() and value[5:7] == ":\\":
+                    return value[4:]
+                return value
+
+            # Node's module loader and cmd shims reject Windows namespace paths.
+            # Preserve argument values; normalize only executable/environment paths.
+            child_env = dict(os.environ)
+            for key, value in child_env.items():
+                if key.upper() == "PATH":
+                    child_env[key] = os.pathsep.join(process_path(part) for part in value.split(os.pathsep))
+            if cwd is not None:
+                cwd = Path(process_path(str(cwd)))
             exe = shutil.which(resolved_cmd[0])
             if exe:
-                resolved_cmd[0] = exe
+                resolved_cmd[0] = process_path(exe)
+                wrapper = Path(exe)
+                name = wrapper.stem.lower()
+                if wrapper.suffix.lower() in {".cmd", ".bat"} and name in {"npm", "npx"}:
+                    node = wrapper.parent / "node.exe"
+                    cli = wrapper.parent / "node_modules" / "npm" / "bin" / f"{name}-cli.js"
+                    if node.is_file() and cli.is_file():
+                        resolved_cmd = [process_path(str(node)), process_path(str(cli)), *resolved_cmd[1:]]
         try:
             return subprocess.run(
                 resolved_cmd,
@@ -438,6 +462,7 @@ class BaseTool(ABC):
                 errors="replace",
                 timeout=timeout,
                 cwd=cwd,
+                env=child_env,
                 check=True,
             )
         except subprocess.CalledProcessError as exc:

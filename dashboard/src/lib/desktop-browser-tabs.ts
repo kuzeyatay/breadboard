@@ -50,6 +50,7 @@ export interface DesktopTabView {
     annotationTarget?: import("./browser-annotations").BrowserAnnotationTarget;
     downloadsOpen?: boolean;
     extensionsOpen?: boolean;
+    hls?: { streams: import("../../../desktop/src/shared/ipc-contract").BrowserHlsStream[]; available: boolean };
     adBlock?: { enabled: boolean; available: boolean; site: string | null; siteEnabled: boolean; blocked: number };
     terminalWidth: number;
     zoomPercent?: number;
@@ -77,6 +78,14 @@ export interface DesktopTabsState {
   presentedId?: number | null;
   /** Native content currently in front, including an outgoing page during preparation. */
   visibleId?: number | null;
+  /** All physically presented panes, including an unfocused split partner. */
+  visibleIds?: number[];
+  /** Visibility of a native answer surface that does not own a tab. */
+  notificationPageVisible?: boolean;
+  /** Uncovered native pixels in this renderer's CSS viewport, independent of focus. */
+  notificationVisibleRects?: Array<{ x: number; y: number; width: number; height: number }>;
+  /** Available notification layout space in CSS pixels, independent of card bounds. */
+  notificationViewport?: { width: number; height: number };
   presentationRevision?: number;
   presentationStatus?: "pending" | "presented" | "failed";
   persistentShell?: boolean;
@@ -130,6 +139,7 @@ type DesktopTabsAction =
   | { type: "navigation-check"; url: string }
   | { type: "notification-targets"; urls: string[] }
   | { type: "notification-open"; urls: string[] }
+  | { type: "notification-chat-delivery"; cards: import('./desktop-notification-overlay').DesktopChatNotification[] }
   | { type: "learn-activity"; gardenId: string; active: boolean }
   | { type: "voice-overlay"; open: boolean }
   | { type: "voice-open"; conversationKey?: string }
@@ -189,6 +199,7 @@ type DesktopTabsAction =
   | { type: "browser-answer-move"; dx: number; dy: number }
   | { type: "browser-extensions-close" }
   | { type: "browser-extensions-picture-in-picture" }
+  | { type: "browser-hls-download"; id: string }
   | { type: "browser-terminal"; open: boolean; width?: number }
   | { type: "browser-organization"; open: boolean }
   | { type: "browser-organization-selection" }
@@ -686,6 +697,9 @@ export type DesktopTabKind =
   | "plan"
   | "organization"
   | "profile"
+  | "code"
+  | "gestures"
+  | "screen-time"
   | "calendar"
   | "gardens"
   | "lessons"
@@ -705,6 +719,9 @@ const ROUTE_LABELS: Record<string, { label: string; kind: DesktopTabKind }> = {
   buzz: { label: "Organization", kind: "organization" },
   settings: { label: "Settings", kind: "profile" },
   profile: { label: "Settings", kind: "profile" },
+  code: { label: "Code", kind: "code" },
+  gestures: { label: "Gestures", kind: "gestures" },
+  "screen-time": { label: "Screen Time", kind: "screen-time" },
   calendar: { label: "Calendar", kind: "calendar" },
   garden: { label: "Gardens", kind: "gardens" },
   gardens: { label: "Gardens", kind: "gardens" },

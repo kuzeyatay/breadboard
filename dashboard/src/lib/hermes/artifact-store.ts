@@ -3,6 +3,7 @@ import type { Stats } from "node:fs";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import type Database from "better-sqlite3";
 import db from "../db.ts";
+import { swarmArtifactOwner } from "../swarm/artifact-owner.ts";
 import {
   externalRuntimeFilesystem as fs,
   externalRuntimePortableRealpath,
@@ -626,6 +627,7 @@ function sourceExtension(rendererId: string): string {
 
 export function createArtifact(input: CreateArtifactInput): ArtifactRow {
   const database = input.database ?? db;
+  input = swarmArtifactOwner(input, database);
   const conversation = database.prepare(`
     SELECT user_id, surface, default_garden_id FROM conversations WHERE id = ?
   `).get(input.conversationId) as {
@@ -705,6 +707,12 @@ export async function createImportedArtifact(
   input: CreateImportedArtifactInput,
 ): Promise<ArtifactRow> {
   const database = input.database ?? db;
+  const workerOwner = input;
+  input = swarmArtifactOwner(input, database);
+  if (input !== workerOwner) {
+    const originalFence = input.beforePublish;
+    input.beforePublish = () => { originalFence?.(); swarmArtifactOwner(workerOwner, database); };
+  }
   const conversation = database.prepare(`
     SELECT user_id, surface, default_garden_id FROM conversations WHERE id = ?
   `).get(input.conversationId) as {

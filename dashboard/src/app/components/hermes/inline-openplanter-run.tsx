@@ -331,7 +331,7 @@ export default function InlineOpenPlanterRun({
       }
       if (!reportedRef.current) {
         reportedRef.current = true;
-        notifyTaskCompleted(task);
+        notifyTaskCompleted(task, { runId });
         onTerminalRef.current?.({ outcome: "completed", content: summary });
       }
     }
@@ -425,7 +425,7 @@ export default function InlineOpenPlanterRun({
         summary={steps.at(-1)?.observation}
         agentName="OpenPlanter"
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
       {/* The task is the user's own message directly above this card, so the
           header carries the agent, its model, and the state of the run. */}
       <header className="bb-agent-run-header">

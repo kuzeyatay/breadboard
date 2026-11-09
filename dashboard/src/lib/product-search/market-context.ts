@@ -17,6 +17,12 @@ interface StoredProductSearchMarket extends ProductSearchMarket {
   expiresAt: number;
 }
 
+interface DeferredProductSearchMarket {
+  resolve: () => Promise<ProductSearchMarket | null>;
+  expiresAt: number;
+  promise?: Promise<ProductSearchMarket | null>;
+}
+
 type MarketReverse = (
   input: { lat: number; lon: number; signal?: AbortSignal },
 ) => Promise<{ address?: { countryCode?: string } } | null>;
@@ -37,11 +43,17 @@ declare global {
   var __breadboardProductSearchMarkets:
     | Map<number, StoredProductSearchMarket>
     | undefined;
+  var __breadboardDeferredProductSearchMarkets:
+    | Map<number, DeferredProductSearchMarket>
+    | undefined;
 }
 
 const markets =
   globalThis.__breadboardProductSearchMarkets ??=
     new Map<number, StoredProductSearchMarket>();
+const deferredMarkets =
+  globalThis.__breadboardDeferredProductSearchMarkets ??=
+    new Map<number, DeferredProductSearchMarket>();
 
 const LANGUAGE_BY_COUNTRY: Readonly<Record<string, string>> = {
   AT: "de",
@@ -153,12 +165,56 @@ export function setProductSearchMarketContext(
   market: ProductSearchMarket | null,
   now = Date.now(),
 ): void {
+  deferredMarkets.delete(runtimeSessionId);
   markets.delete(runtimeSessionId);
   if (!market) return;
   markets.set(runtimeSessionId, {
     ...market,
     expiresAt: now + MARKET_CONTEXT_TTL_MS,
   });
+}
+
+/** Retain the opted-in turn's lookup without doing network work on a greeting. */
+export function deferProductSearchMarketContext(
+  runtimeSessionId: number,
+  resolve: () => Promise<ProductSearchMarket | null>,
+  now = Date.now(),
+): void {
+  for (const [id, pending] of deferredMarkets) {
+    if (pending.expiresAt <= now) deferredMarkets.delete(id);
+  }
+  setProductSearchMarketContext(runtimeSessionId, null, now);
+  deferredMarkets.set(runtimeSessionId, {
+    resolve,
+    expiresAt: now + MARKET_CONTEXT_TTL_MS,
+  });
+}
+
+/** Only a real shopping request/tool pays for geocoding; callers share one lookup. */
+export async function resolveProductSearchMarketContext(
+  runtimeSessionId: number,
+  now: () => number = Date.now,
+): Promise<ProductSearchMarket | null> {
+  const pending = deferredMarkets.get(runtimeSessionId);
+  if (!pending) return productSearchMarketContext(runtimeSessionId, now());
+  if (pending.expiresAt <= now()) {
+    deferredMarkets.delete(runtimeSessionId);
+    return null;
+  }
+  pending.promise ??= Promise.resolve().then(pending.resolve).catch(() => null);
+  const market = await pending.promise;
+  // An interrupted/replaced turn must not restore its old location context or
+  // use the next turn's market. Clearing context invalidates in-flight lookups.
+  if (deferredMarkets.get(runtimeSessionId) !== pending) return null;
+  if (pending.expiresAt <= now()) {
+    deferredMarkets.delete(runtimeSessionId);
+    return null;
+  }
+  // Keep the resolved promise until this turn is replaced, so all concurrent
+  // callers see the same result without restarting a failed lookup.
+  markets.delete(runtimeSessionId);
+  if (market) markets.set(runtimeSessionId, { ...market, expiresAt: pending.expiresAt });
+  return market;
 }
 
 export function productSearchMarketContext(

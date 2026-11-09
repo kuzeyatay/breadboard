@@ -1,0 +1,17 @@
+{
+  "ready": true,
+  "checkedAt": "2026-10-15T08:32:11.909Z",
+  "sourceHash": "3444d389b86fa87cf36e3166afd6123563deb86282752b9a8b732a803987886e",
+  "targetId": "DF89855DC5155DFFF913290ACB326BFC",
+  "servicesRestarted": false,
+  "temporaryUntilReload": true,
+  "hash": "3444d389b86fa87cf36e3166afd6123563deb86282752b9a8b732a803987886e",
+  "recording": "false",
+  "status": "Hold Ctrl + Win to dictate into the active text field.",
+  "bridge": true,
+  "pill": [
+    96,
+    32
+  ],
+  "dots": 5
+}

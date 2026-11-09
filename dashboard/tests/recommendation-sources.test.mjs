@@ -18,6 +18,7 @@ async function bundle(file,mocks) {
 }
 
 const sources=await bundle('src/lib/recommendations/sources.ts',{
+  '../screen-time/recommendations.ts':'export const screenTimeRecommendationEvidence=()=>[];',
   'server-only':'',
   '../db.ts':'export default {prepare:sql=>globalThis.recFixture.db.prepare(sql)};',
   '../composio/service.ts':'export const listComposioConnections=async(userId)=>globalThis.recFixture.connections(userId);',
@@ -29,7 +30,7 @@ const sources=await bundle('src/lib/recommendations/sources.ts',{
   '../recall/config.ts':'export const getRecallConfig=()=>({enabled:true});',
   '../recall/service.ts':'export const searchRecall=(user,args,options)=>globalThis.recFixture.recall(user,args,options);',
   '../calendar/instance.ts':'export const getCalendarStore=()=>({});',
-  '../calendar/agent-query.ts':'export const agenda=()=>({occurrences:[]});',
+  '../calendar/agent-query.ts':'export const agenda=(store,user,args)=>{globalThis.recFixture.agendaCalls.push({user,args});return globalThis.recFixture.agenda;};',
 });
 
 function fixture(t) {
@@ -48,7 +49,7 @@ function fixture(t) {
     INSERT INTO conversations VALUES(1,1,'My lab notes',1,0,datetime('now')),(2,2,'Other user secret',2,0,datetime('now')),(3,1,'Temporary secret',1,1,datetime('now'));
     INSERT INTO conversation_messages VALUES(1,'Review the transient result','complete',1),(2,'Private body','complete',1),(3,'Off the record','complete',1);`);
   const calls=[];
-  const state={db,calls,settings:{captureEnabled:true,agentAccess:true},
+  const state={db,calls,agendaCalls:[],agenda:{occurrences:[],returned:0,total:0},settings:{captureEnabled:true,agentAccess:true},
     connections:async user=>['gmail','microsoft-outlook','google-calendar'].map(slug=>({slug,enabled:true,connectionId:`${user}:${slug}`})),
     read:async(request,options)=>{
       calls.push(request);assert.equal(request.method,'GET');assert.ok(options.signal);
@@ -71,21 +72,55 @@ test('real adapters read connected mail/calendar and permitted Recall using only
   assert.ok(state.calls.every(call=>!call.endpoint.includes('send')&&!call.endpoint.includes('modify')));
 });
 
+test('built-in Calendar queries expanded upcoming occurrences and targets Recall at their topics',async t=>{
+  const state=fixture(t);
+  state.agenda={total:1,returned:1,occurrences:[{eventId:91,title:'RLC lab meeting',start:'2026-11-07T11:00',end:'2026-11-07T12:00',calendar:'Study'}]};
+  const queries=[];
+  state.recall=async(user,args,options)=>{
+    assert.equal(user,1);assert.equal(options.forAgent,true);queries.push(args.query);
+    return {hits:[{window:'RLC lab measurements',app:'Reader',text:'Damping and transient measurements',timestamp:'2026-11-07T09:00:00Z'}]};
+  };
+  const evidence=await sources.readRecommendationEvidence(1,{localDate:'2026-11-07',localTime:'10:30',pageTitle:'Circuit measurements'});
+  assert.deepEqual(state.agendaCalls,[{user:1,args:{from:'2026-11-07',days:7,limit:120,includeDescriptions:true}}]);
+  assert.deepEqual(queries,[undefined,'Circuit measurements','rlc lab']);
+  const meeting=evidence.find(item=>item.title==='RLC lab meeting');
+  assert.equal(meeting.calendar.status,'upcoming');
+  const recalled=evidence.filter(item=>item.source==='recall');
+  assert.equal(recalled.length,1);
+  assert.deepEqual(recalled[0].relatedIds,[meeting.id]);
+});
+
 test('disabled Recall access is not bypassed and a failed mail service leaves other evidence intact',async t=>{
   const state=fixture(t);state.settings.agentAccess=false;
   state.recall=()=>assert.fail('Recall must not be queried');
   const read=state.read;state.read=(request,options)=>request.connectedAccountId.endsWith(':gmail')?Promise.reject(Error('offline')):read(request,options);
-  const evidence=await sources.readRecommendationEvidence(1,{gardenSlug:'circuits'});
+  const evidence=await sources.readRecommendationEvidence(1,{});
   assert.equal(evidence.some(item=>item.source==='recall'||item.source==='gmail'),false);
   assert.ok(evidence.some(item=>item.source==='outlook'));
   assert.ok(evidence.some(item=>item.gardenSlug==='circuits'));
+});
+
+test('garden reads stay inside the selected owned garden without querying account-wide providers',async t=>{
+  const state=fixture(t);
+  state.db.exec(`INSERT INTO clusters VALUES(3,1,'Neuro','neuro',datetime('now'),datetime('now'));
+    INSERT INTO conversations VALUES(4,1,'Neuro room problem',3,0,datetime('now'));
+    INSERT INTO conversation_messages VALUES(4,'Check the conflicting room numbers','complete',1);`);
+  state.connections=()=>assert.fail('No account-wide connected apps in a garden');
+  state.recall=()=>assert.fail('Unscoped screen captures cannot establish garden membership');
+  const evidence=await sources.readRecommendationEvidence(1,{gardenSlug:'circuits'});
+  assert.equal(state.agendaCalls.length,0);
+  assert.equal(state.calls.length,0);
+  assert.deepEqual(new Set(evidence.map(item=>item.source)),new Set(['chat','garden']));
+  assert.ok(evidence.every(item=>item.gardenSlug==='circuits'));
+  assert.doesNotMatch(JSON.stringify(evidence),/Neuro|room problem|task|secret/);
+  assert.deepEqual(await sources.readRecommendationEvidence(1,{gardenSlug:'secret'}),[]);
 });
 
 const route=await bundle('src/app/api/recommendations/route.ts',{
   '@/lib/server-auth':'export const requireUserId=async()=>{if(globalThis.recRoute.denied)throw Object.assign(Error("Unauthorized"),{status:401});return 7};',
   '@/lib/hermes/route-helpers':'export const readJsonBody=request=>request.json(); export const apiErrorResponse=error=>Response.json({}, {status:error.status||500});',
   '@/lib/chatmock-server':'export const resolveChatmockBaseUrl=()=>({baseURL:"http://model.test/v1"});',
-  '@/lib/recommendations/service':'export const recommendationsForUser=async(...args)=>{globalThis.recRoute.calls.push(args);return []};',
+  '@/lib/recommendations/service':'export const recommendationsForUser=async(...args)=>{globalThis.recRoute.calls.push(args);return []}; export const preparedVoiceOpenersForUser=()=>[];',
   '@/lib/recommendations/types':'export const cleanRecommendationText=(value,max)=>typeof value==="string"?value.trim().slice(0,max):"";',
 });
 

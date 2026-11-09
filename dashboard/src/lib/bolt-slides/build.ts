@@ -14,6 +14,7 @@
 // cause is not always the line that explains it.
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { runtimeProcessPath } from "../../../scripts/runtime-v2-paths.mjs";
 import { viteEntry } from "./runtime.ts";
 import { runDirectory } from "./workspace.ts";
 
@@ -96,8 +97,8 @@ export function buildDeckAt(
   let child: ChildProcess | null = null;
   const promise = new Promise<BuildResult>((resolve) => {
     let log = "";
-    const spawned = spawn(process.execPath, [entry, "build"], {
-      cwd: workspaceRoot,
+    const spawned = spawn(runtimeProcessPath(process.execPath), [runtimeProcessPath(entry), "build"], {
+      cwd: runtimeProcessPath(workspaceRoot),
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
       env: {

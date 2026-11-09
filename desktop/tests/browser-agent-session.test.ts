@@ -9,6 +9,7 @@ import {
   chooseBrowserAgentDebuggingPort,
   configureBrowserAgentDebugging,
   parseExcludedPortRanges,
+  parseOccupiedTcpPorts,
   isBrowserAgentBootstrapUrl,
   writeBrowserAgentSessionReceipt,
 } from "../src/main/browser-agent-session";
@@ -61,9 +62,24 @@ test("the debugging port never lands in a range Windows has reserved", () => {
   const ranges = parseExcludedPortRanges(netsh);
   assert.deepEqual(ranges, [[8_000, 8_000], [50_000, 50_059], [59_549, 59_648]]);
   const picks = [59_618, 50_010, 59_700];
-  assert.equal(chooseBrowserAgentDebuggingPort(ranges, () => picks.shift()!), 59_700);
-  assert.equal(chooseBrowserAgentDebuggingPort([[49_152, 65_534]], () => 60_000), 65_535);
-  assert.equal(chooseBrowserAgentDebuggingPort([], () => 51_234), 51_234);
+  assert.equal(chooseBrowserAgentDebuggingPort(ranges, () => picks.shift()!, new Set()), 59_700);
+  assert.equal(chooseBrowserAgentDebuggingPort([[49_152, 65_534]], () => 60_000, new Set()), 65_535);
+  assert.equal(chooseBrowserAgentDebuggingPort([], () => 51_234, new Set()), 51_234);
+});
+
+test("browser debugging skips occupied loopback, wildcard and IPv6 TCP ports", () => {
+  const occupied = parseOccupiedTcpPorts([
+    "  TCP    127.0.0.1:49865   0.0.0.0:0       LISTENING       6752",
+    "  TCP    0.0.0.0:51234     0.0.0.0:0       LISTENING       22",
+    "  TCP    [::]:51235        [::]:0          LISTENING       23",
+    "  TCP    127.0.0.1:51236   127.0.0.1:443   TIME_WAIT       0",
+    "  UDP    0.0.0.0:51237     *:*                             24",
+  ].join("\n"));
+  assert.deepEqual([...occupied], [49_865, 51_234, 51_235, 51_236]);
+  const picks = [49_865, 51_234, 51_235, 51_236, 51_237];
+  assert.equal(chooseBrowserAgentDebuggingPort([], () => picks.shift()!, occupied), 51_237);
+  assert.equal(chooseBrowserAgentDebuggingPort([], () => 49_865, new Set([49_152,49_865])), 49_153);
+  assert.throws(() => chooseBrowserAgentDebuggingPort([[49_152,65_535]], () => 50_000, new Set()), /No unreserved/);
 });
 
 test("the desktop publishes one bounded receipt beneath its data root", () => {

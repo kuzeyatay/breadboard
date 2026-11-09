@@ -1,3 +1,5 @@
+import { roomRuntime } from "@/lib/buzz/runtime-catalog.ts";
+import db from "@/lib/db";
 import { NextResponse } from "next/server";
 
 import { apiErrorResponse, readJsonBody, ApiError } from "@/lib/hermes/route-helpers.ts";
@@ -10,7 +12,7 @@ import {
 } from "@/lib/organizations/store.ts";
 import { BREAD_NAME, isBreadSlug } from "@/lib/buzz/bread.ts";
 import { addMember, ensureBreadMember, listMembers } from "@/lib/buzz/instance.ts";
-import { requireBuzzUser, requireRoom, requireString } from "@/lib/buzz/route-helpers.ts";
+import { requireBuzzUser, requireRoom, requireRoomManager, requireString } from "@/lib/buzz/route-helpers.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +52,7 @@ export async function POST(
     const { roomId } = await params;
     const room = requireRoom(userId, roomId);
     const body = await readJsonBody(request);
+    requireRoomManager(userId, room);
     const existing = listMembers(room.id);
 
     // ── a colleague ────────────────────────────────────────────────────────
@@ -101,7 +104,13 @@ export async function POST(
             `Only an admin of ${organization?.name ?? "this community"} can invite someone into it.`,
           );
         }
-        inviteAccount(room.organizationId, userId, invitedId);
+        db.transaction(() => {
+          inviteAccount(room.organizationId, userId, invitedId);
+          db.prepare(`INSERT INTO buzz_room_invites (invite_id, room_id, invited_by_user_id)
+            SELECT id, ?, ? FROM organization_invites WHERE organization_id = ? AND invited_user_id = ?
+            ON CONFLICT(invite_id, room_id) DO UPDATE SET invited_by_user_id = excluded.invited_by_user_id`)
+            .run(room.id, userId, room.organizationId, invitedId);
+        })();
         return NextResponse.json(
           {
             invited: {
@@ -136,6 +145,12 @@ export async function POST(
       return NextResponse.json({ member: ensureBreadMember(room.id) }, { status: 201 });
     }
 
+    const native = roomRuntime(slug);
+    if (native) {
+      if (existing.some(member => member.personaSlug === slug)) throw new ApiError(409, "already_a_member", `${native.name} is already here.`);
+      const member = addMember(room.id, { kind: "agent", personaSlug: slug, displayName: native.name, handle: native.id, accent: "#5f826a", respondTo: "mention" });
+      return NextResponse.json({ member }, { status: 201 });
+    }
     const catalog = loadAgencyAgentsCatalog();
     const persona = catalog.agents.find((agent) => agent.slug === slug);
     if (!persona) {

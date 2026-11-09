@@ -280,6 +280,8 @@ function sourceLayout(dataRoot, agentKind) {
   return { sourceRoot };
 }
 
+import { renameRuntimeFileSync } from './runtime-v2-atomic-file.mjs';
+
 function atomicReplace(filePath, bytes, maximumBytes, label) {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > maximumBytes) {
     fail(`${label} exceeded its bounded envelope.`);
@@ -295,7 +297,7 @@ function atomicReplace(filePath, bytes, maximumBytes, label) {
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
     descriptor = undefined;
-    fs.renameSync(temporary, filePath);
+    renameRuntimeFileSync(temporary, filePath);
   } catch (error) {
     if (descriptor !== undefined) fs.closeSync(descriptor);
     fs.rmSync(temporary, { force: true });

@@ -16,6 +16,24 @@ export interface DesktopNotificationToast {
   dismissed?: boolean;
 }
 
+export interface DesktopChatNotification {
+  id: string;
+  title: string;
+  body: string;
+  urls: string[];
+  rect: { x: number; y: number; width: number; height: number } | null;
+  delivered: boolean;
+  soundEnabled: boolean;
+}
+
+export function reportDesktopChatNotifications(cards: DesktopChatNotification[]): void {
+  void sendDesktopTabsCommand({ type: 'notification-chat-delivery', cards });
+}
+
+export function onDesktopChatNotificationDelivered(listener: (ids: string[]) => void): (() => void) | undefined {
+  return bridge()?.onChatNotificationDelivered?.(listener);
+}
+
 export function handleWebsiteNotification(id: string, action: "click" | "close"): void {
   void sendDesktopTabsCommand({ type: "browser-notification-action", id, action });
 }
@@ -25,6 +43,7 @@ export function respondToWebsiteNotificationPermission(id: string, permission: N
 }
 
 interface DesktopNotificationBridge {
+  onChatNotificationDelivered?: (listener: (ids: string[]) => void) => () => void;
   onNotificationOverlayVisibility?: (listener: (visible: boolean) => void) => () => void;
   publishNotificationToast?: (
     notice: DesktopNotificationToast,

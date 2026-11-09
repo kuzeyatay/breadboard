@@ -1,0 +1,234 @@
+{
+  "passed": true,
+  "checkedAt": "2026-10-14T11:49:28.211Z",
+  "scope": "real Web Audio and configured garden/terminal provider; synthetic speech; native keyboard/insertion excluded",
+  "baselineMs": null,
+  "streamingMs": 5900,
+  "improvementPercent": null,
+  "runs": [
+    {
+      "mode": "streaming",
+      "notice": {
+        "type": "result",
+        "id": 1,
+        "text": "Testing breadboard dictation.",
+        "submit": true
+      },
+      "fallbackCount": 0,
+      "partials": [
+        {
+          "ms": 7136,
+          "text": "Testing breadboard"
+        },
+        {
+          "ms": 8001,
+          "text": "Testing breadboard dictation."
+        },
+        {
+          "ms": 8837,
+          "text": "Testing breadboard dictation."
+        },
+        {
+          "ms": 9163,
+          "text": "Testing breadboard dictation.  Send"
+        },
+        {
+          "ms": 10432,
+          "text": "Testing breadboard dictation.  Send message"
+        },
+        {
+          "ms": 10532,
+          "text": "Testing breadboard dictation.  Send message."
+        },
+        {
+          "ms": 10832,
+          "text": "Testing breadboard dictation. Send message."
+        }
+      ],
+      "sampleMs": 5748,
+      "releaseToTextMs": 5900,
+      "connectionMs": 4732,
+      "inputReadyMs": 4732,
+      "drainAfterReleaseMs": 5269,
+      "firstPartialMs": 7136,
+      "firstPreviewMs": 7136,
+      "previewBeforeRelease": false,
+      "microphoneStopMs": 1,
+      "tracksEnded": true
+    }
+  ],
+  "tail": {
+    "mode": "streaming",
+    "notice": {
+      "type": "result",
+      "id": 1,
+      "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river.",
+      "submit": true
+    },
+    "fallbackCount": 0,
+    "partials": [
+      {
+        "ms": 1479,
+        "text": "The"
+      },
+      {
+        "ms": 1885,
+        "text": "The words"
+      },
+      {
+        "ms": 2214,
+        "text": "The words should"
+      },
+      {
+        "ms": 2491,
+        "text": "The words should appear"
+      },
+      {
+        "ms": 2691,
+        "text": "The words should appear while"
+      },
+      {
+        "ms": 2890,
+        "text": "The words should appear while I"
+      },
+      {
+        "ms": 3040,
+        "text": "The words should appear while I am"
+      },
+      {
+        "ms": 3444,
+        "text": "The words should appear while I am still"
+      },
+      {
+        "ms": 4151,
+        "text": "The words should appear while I am still speaking"
+      },
+      {
+        "ms": 4400,
+        "text": "The words should appear while I am still speaking."
+      },
+      {
+        "ms": 5224,
+        "text": "The words should appear while I am still speaking. I"
+      },
+      {
+        "ms": 5366,
+        "text": "The words should appear while I am still speaking. I can"
+      },
+      {
+        "ms": 5807,
+        "text": "The words should appear while I am still speaking. I can pause"
+      },
+      {
+        "ms": 6250,
+        "text": "The words should appear while I am still speaking. I can pause between"
+      },
+      {
+        "ms": 6880,
+        "text": "The words should appear while I am still speaking. I can pause between sentences"
+      },
+      {
+        "ms": 7082,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and"
+      },
+      {
+        "ms": 7239,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then"
+      },
+      {
+        "ms": 8241,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue"
+      },
+      {
+        "ms": 8338,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with"
+      },
+      {
+        "ms": 8626,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more"
+      },
+      {
+        "ms": 9441,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details."
+      },
+      {
+        "ms": 10175,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details."
+      },
+      {
+        "ms": 10601,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please"
+      },
+      {
+        "ms": 11012,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep"
+      },
+      {
+        "ms": 11435,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every"
+      },
+      {
+        "ms": 11766,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final"
+      },
+      {
+        "ms": 12171,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word"
+      },
+      {
+        "ms": 12832,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including"
+      },
+      {
+        "ms": 13474,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple"
+      },
+      {
+        "ms": 14033,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles"
+      },
+      {
+        "ms": 14814,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside"
+      },
+      {
+        "ms": 15022,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside the"
+      },
+      {
+        "ms": 15148,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside the river"
+      },
+      {
+        "ms": 15372,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside the river."
+      },
+      {
+        "ms": 16453,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river."
+      },
+      {
+        "ms": 16610,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river.  Send"
+      },
+      {
+        "ms": 17407,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river.  Send message."
+      },
+      {
+        "ms": 18353,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river. Send message."
+      }
+    ],
+    "sampleMs": 17745,
+    "releaseToTextMs": 1207,
+    "connectionMs": 12,
+    "inputReadyMs": 11,
+    "drainAfterReleaseMs": 594,
+    "firstPartialMs": 1479,
+    "firstPreviewMs": 1479,
+    "previewBeforeRelease": true,
+    "microphoneStopMs": 0,
+    "tracksEnded": true
+  }
+}

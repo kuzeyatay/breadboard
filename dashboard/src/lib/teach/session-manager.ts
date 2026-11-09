@@ -509,6 +509,7 @@ async function processDemonstration(
   const framesDirectory = sessionFramesDirectory(sessionId);
   const framesAvailable = fs.existsSync(framesDirectory);
   const context = {
+    userId,
     sessionId,
     recordedAt: row.started_at,
     durationMs: row.duration_ms,

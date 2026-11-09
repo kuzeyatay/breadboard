@@ -29,12 +29,15 @@ const calendarClient = fs.readFileSync(
   "utf8",
 );
 
-test("the root layout includes minimal desktop-only window chrome", () => {
+test("the root layout includes desktop-only tab chrome without duplicate branding", () => {
   assert.match(layout, /<DesktopTitleBar\s*\/>/);
   assert.match(titleBar, /"breadboardDesktop" in window/);
   assert.match(titleBar, /aria-label="Window controls"/);
-  assert.doesNotMatch(titleBar, /<img/);
-  assert.doesNotMatch(titleBar, />breadboard</i);
+  assert.match(titleBar, /tabs\?\.enabled \? <TabStrip state=\{tabs\} \/> : null/);
+  // Browser tabs carry favicons. The caption must not repeat the application
+  // logo or wordmark already shown in the navbar below it.
+  assert.doesNotMatch(titleBar, /breadboard-logo|src=["']\/logo\.png["']/);
+  assert.doesNotMatch(titleBar, />\s*breadboard\s*</i);
 });
 
 test("the desktop chrome flag is set before the first paint, not after hydration", () => {
@@ -73,8 +76,8 @@ test("Garden flower toolbars match the Electron caption surface", () => {
     globals,
     /\.bb-neu-toolbar\.breadboard-flower-navbar\s*\{\s*background:\s*var\(--paper-surface\)/,
   );
-  assert.match(globals, /--paper-surface:\s*#faf7ef/);
-  assert.match(globals, /--paper-surface:\s*#171916/);
+  assert.match(globals, /:root\s*\{[^}]*--paper-surface:\s*#faf7ef/);
+  assert.match(globals, /:root\[data-theme="dark"\]\s*\{[^}]*--paper-surface:\s*#181d1a/);
   assert.match(
     globals,
     /html\[data-theme="dark"\] \.bb-neu-toolbar\s*\{\s*background:\s*var\(--paper-surface\)/,
@@ -97,14 +100,14 @@ test("every top-level flower navbar keeps the dashboard measure and animation", 
   );
 });
 
-test("the application navbar remains on the compact pre-redesign layout", () => {
+test("the application navbar keeps its compact layout and current destinations", () => {
   assert.match(navbar, /<NavbarFlowerWind showFlowers=\{showFlowers\}\s*\/>/);
-  assert.match(navbar, /<Link[\s\S]*?href="\/dashboard"[\s\S]*?aria-label="Go to Breadboard main page"/);
+  assert.match(navbar, /<nav className="[^"]*flex items-center justify-between px-6 py-2\.5\b/);
+  assert.match(navbar, /<NavigationLink\b[^>]*\bnewTab\b[^>]*label="Terminal"[^>]*href="\/new-tab"[^>]*aria-label="Go to Terminal"/);
   assert.doesNotMatch(navbar, /\{actions\}|actions\?: ReactNode/);
   assert.match(navbar, /\{username \|\| email\}/);
-  // Signing out moved to the profile page the chip now opens; the navbar keeps
-  // the identity, not the account actions.
-  assert.match(navbar, /href="\/profile"/);
+  // The account chip opens Settings; account actions stay off the navbar.
+  assert.match(navbar, /<NavigationLink\b[^>]*\bnewTab\b[^>]*label="Settings"[^>]*href="\/settings"/);
   assert.doesNotMatch(navbar, />\s*Sign out\s*</);
   assert.doesNotMatch(navbar, /knowledge garden/i);
   assert.doesNotMatch(navbar, /workspaceRail|accountTrigger|Local workspace/);

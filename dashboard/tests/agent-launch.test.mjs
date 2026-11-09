@@ -538,7 +538,7 @@ test("delegation continuations collapse to one visible assistant chain", async (
   } = await import("../src/lib/hermes/super-agent-activity.ts");
   const messages = [
     { role: "user", content: "Research this" },
-    { role: "assistant", content: "I’m checking with Max Research." },
+    { role: "assistant", content: "I’m checking with Max Research.", delegatedAgentPreamble: "I’m checking with Max Research." },
     {
       role: "user",
       content: "sealed brief",
@@ -759,7 +759,10 @@ test("a launch states its case and never doubles a job", () => {
   assert.match(route, /queued\.agentId === agent\.id/);
   // The schema is what the model actually sees, so the requirement and the
   // decision test both have to live there, not only on the route.
-  assert.match(plugin, /\["agent", "brief", "reason"\]/);
+  // Durable team actions share this tool without the single-worker fields;
+  // the single launch path still requires all three at its authenticated gate.
+  assert.match(plugin, /Without team_action, the existing single-specialist interface applies/);
+  assert.match(plugin, /"reason": \{/);
   assert.match(plugin, /the agent's topic is not a reason/i);
   // Recovery from a wrong id offers names beside ids, so the retry is a
   // choice rather than another guess.
@@ -767,8 +770,8 @@ test("a launch states its case and never doubles a job", () => {
   // The directive tells the model where the reason goes and that the tool
   // will hold it to that, so schema, route, and prompt state one rule.
   const superAgent = source("../src/lib/hermes/super-agent.ts");
-  assert.match(superAgent, /Write that one line into the launch's `reason` argument/);
-  assert.match(superAgent, /`agent_launch` refuses a call without one/);
+  assert.match(superAgent, /Put the missing capability in the launch's `reason` argument/);
+  assert.match(superAgent, /Launch only for a concrete capability this turn lacks/);
 });
 
 test("Max Research is durable before its private launch event reaches a page", () => {
@@ -880,11 +883,14 @@ test("a human message ends the chain on both surfaces", () => {
     ["garden", garden],
     ["terminal", terminal],
   ]) {
-    assert.match(
-      text,
-      /if \(textOverride === undefined\) \{\s*\n\s*launchHopsRef\.current = 0;/,
-      name,
-    );
+    if (name === "garden") {
+      // Workflow composer sends can carry a text override while still being
+      // a human message. Those sends must also reset the delegation chain.
+      assert.match(text, /const composerSend = textOverride === undefined \|\| turnOptions\?\.fromComposer === true;/);
+      assert.match(text, /if \(composerSend\) \{\s*launchHopsRef\.current = 0;/);
+    } else {
+      assert.match(text, /if \(textOverride === undefined\) \{\s*launchHopsRef\.current = 0;/, name);
+    }
   }
   // The Garden also drops a launch still waiting to be confirmed: the user has
   // moved on, and starting the old one behind their new message is wrong.

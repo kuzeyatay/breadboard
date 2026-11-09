@@ -1384,6 +1384,7 @@ def _forward_compute_host_rpc(message: dict) -> None:
     makes a dropped WebSocket frame recoverable instead of erasing the evidence
     that the turn actually gathered.
     """
+    forward = True
     try:
         params = message.get("params") if message.get("method") == "event" else None
         if isinstance(params, dict):
@@ -1397,6 +1398,14 @@ def _forward_compute_host_rpc(message: dict) -> None:
                 elif event_type == "message.complete":
                     turn_id = str(payload.get("turn_id") or "") or None
                     _remember_turn_result(session, turn_id, payload)
+                elif event_type == "session.maintenance":
+                    if not payload.get("running"):
+                        # The parent still owns the host turn until turn.end.
+                        # Release its maintenance gate/resources at that edge.
+                        forward = False
+                        return
+                    with session["history_lock"]:
+                        session["_post_turn_maintenance"] = bool(payload.get("running"))
                 elif (
                     event_type == "status.update"
                     and payload.get("kind") == "turn.failed"
@@ -1405,7 +1414,8 @@ def _forward_compute_host_rpc(message: dict) -> None:
                         sid, str(payload.get("text") or "")
                     )
     finally:
-        write_json(message)
+        if forward:
+            write_json(message)
 
 
 def _compute_host_turn_frame(
@@ -1494,6 +1504,7 @@ def _on_compute_host_turn_done(
 ) -> None:
     is_error = frame.get("type") == "turn.error"
     with session["history_lock"]:
+        maintained_context = session.get("_post_turn_maintenance", False)
         if frame.get("session_key"):
             session["session_key"] = str(frame.get("session_key"))
         if frame.get("history_version") is not None:
@@ -1505,9 +1516,10 @@ def _on_compute_host_turn_done(
             except Exception:
                 pass
         session["running"] = False
+        session["_post_turn_maintenance"] = False
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
-    if is_error:
+    if is_error and not maintained_context:
         message = str(frame.get("message") or "compute host turn failed")
         payload = {"text": f"Error: {message}", "status": "error"}
         if client_turn_id:
@@ -1521,6 +1533,8 @@ def _on_compute_host_turn_done(
         info = _session_info(session.get("agent"))
     if not frame.get("session_info_emitted"):
         _emit("session.info", sid, info)
+    if maintained_context:
+        _emit("session.maintenance", sid, {"running": False, "turn_id": client_turn_id})
     _drain_queued_prompt(rid, sid, session)
 
 
@@ -1630,6 +1644,9 @@ def _remember_status_terminal_failure(sid: str, body: str) -> None:
 def _status_update(sid: str, kind: str, text: str | None = None):
     body = (text if text is not None else kind).strip()
     if not body:
+        return
+    if _sessions.get(sid, {}).get("_post_turn_maintenance"):
+        logger.debug("Post-turn maintenance (%s): %s", sid, body)
         return
     out_kind = kind if text is not None else "status"
     # Auto-compaction reaches us as a generic "lifecycle" status. Re-tag it so
@@ -1767,6 +1784,23 @@ def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     return _err(rid, 5032, err) if err else None
 
 
+def _prepare_agent_model_client(agent) -> None:
+    """Load lazy SDK resources during background construction, without a request."""
+    if getattr(agent, "api_mode", None) != "chat_completions":
+        return
+    try:
+        from openai import OpenAI
+
+        client = getattr(agent, "client", None)
+        if isinstance(client, OpenAI):
+            # The first access imports the SDK resource/type graph. Fresh
+            # per-request clients then reuse those modules, retaining their
+            # independent sockets and interruption/teardown ownership.
+            client.chat.completions
+    except Exception:
+        logger.debug("Optional model client preparation failed", exc_info=True)
+
+
 def _start_agent_build(sid: str, session: dict) -> None:
     """Start building the real AIAgent for a TUI session, once.
 
@@ -1858,12 +1892,20 @@ def _start_agent_build(sid: str, session: dict) -> None:
                         current.get("ephemeral_system_prompt_override") or ""
                     )
                 agent = _make_agent(sid, key, **kw)
+                _prepare_agent_model_client(agent)
             finally:
                 _clear_session_context(tokens)
 
             # Session DB row deferred to first run_conversation() call.
             # pending_title applied post-first-message (see cli.exec handler).
-            current["agent"] = agent
+            # config.set remains responsive while _make_agent is doing slow
+            # discovery. Publish under the same lock as its setting update so
+            # an acknowledged reasoning choice cannot be lost to the older
+            # constructor snapshot (including an explicit global choice).
+            with lock:
+                if "pending_reasoning_config" in current:
+                    agent.reasoning_config = current.pop("pending_reasoning_config")
+                current["agent"] = agent
             # Baseline for the per-turn config sync; the profile home
             # override is still active here.
             current["config_model_seen"] = _config_model_target()
@@ -6561,6 +6603,34 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     claim-under-lock pattern used by the goal-continuation re-fire.
     """
     with session["history_lock"]:
+        deferred = session.get("_maintenance_prompts")
+        if deferred and not session.get("running"):
+            queued = deferred.pop(0)
+            session["running"] = True
+            session["attached_images"] = queued["images"] + session.get("attached_images", [])
+        else:
+            queued = None
+    if queued is not None:
+        token = bind_transport(queued["transport"])
+        try:
+            try:
+                response = _prompt_submit(queued["rid"], queued["params"], _claimed=True)
+            except Exception as exc:
+                response = _err(queued["rid"], 5000, str(exc))
+            if response.get("error"):
+                payload = {
+                    "text": str(response["error"].get("message") or "Queued prompt failed"),
+                    "status": "error", "turn_id": queued["params"].get("client_turn_id"),
+                }
+                _remember_turn_result(session, payload["turn_id"], payload)
+                _emit("message.complete", sid, payload)
+                with session["history_lock"]:
+                    session["running"] = False
+                _drain_queued_prompt(rid, sid, session)
+        finally:
+            reset_transport(token)
+        return True
+    with session["history_lock"]:
         queued = session.get("queued_prompt")
         if not queued or session.get("running"):
             return False
@@ -6614,6 +6684,9 @@ def _queued_prompt_snapshot(session: dict) -> dict | None:
     window, so the live-session projection must carry the user-visible text;
     otherwise the accepted prompt disappears until it finally drains.
     """
+    deferred = session.get("_maintenance_prompts")
+    if deferred:
+        return {"user": _inflight_text(deferred[0]["params"].get("text"))}
     queued = session.get("queued_prompt")
     if not isinstance(queued, dict):
         return None
@@ -9834,6 +9907,13 @@ def _(rid, params: dict) -> dict:
             running = bool(session.get("running"))
             active_turn_id = str(session.get("active_client_turn_id") or "")
             inflight = dict(session.get("inflight_turn") or {})
+            maintenance_running = bool(session.get("_post_turn_maintenance"))
+            queued_turn = any(
+                item["params"].get("client_turn_id") == turn_id
+                for item in session.get("_maintenance_prompts", [])
+            )
+        if queued_turn:
+            return _ok(rid, {"state": "running", "turn_id": turn_id})
         if isinstance(cached, dict) and cached.get("turn_id") == turn_id:
             payload = dict(cached.get("payload") or {})
             status = str(payload.get("status") or "complete").lower()
@@ -9851,6 +9931,7 @@ def _(rid, params: dict) -> dict:
                     "turn_id": turn_id,
                     "payload": payload,
                     "completed_at": cached.get("completed_at"),
+                    "maintenance_running": maintenance_running,
                 },
             )
         if running and (not active_turn_id or active_turn_id == turn_id):
@@ -10420,6 +10501,11 @@ def _(rid, params: dict) -> dict:
         session["_notifications_cancelled_at"] = time.time()
         session["_turn_cancel_requested"] = True
         session["queued_prompt"] = None
+        deferred = session.pop("_maintenance_prompts", [])
+    for queued in deferred:
+        payload = {"text": "", "status": "interrupted", "turn_id": queued["params"].get("client_turn_id")}
+        _remember_turn_result(session, payload["turn_id"], payload)
+        _emit("message.complete", str(params.get("session_id") or ""), payload)
     from tools.async_delegation import cancel_for_session
     try:
         cancel_for_session(
@@ -10848,7 +10934,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("prompt.submit")
-def _(rid, params: dict) -> dict:
+def _prompt_submit(rid, params: dict, *, _claimed: bool = False) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
 
     sid = params.get("session_id", "")
@@ -10911,6 +10997,19 @@ def _(rid, params: dict) -> dict:
     # or fallback moved the session transport to stdio.
     if (t := current_transport()) is not None:
         session["transport"] = t
+    with session["history_lock"]:
+        if not _claimed and session.get("running") and session.get("_post_turn_maintenance"):
+            # Keep the whole request: turn correlation, scoped tools, prompt
+            # context, edits and images belong to the next turn, not the agent
+            # currently compacting. A second send keeps its own identity.
+            session.setdefault("_maintenance_prompts", []).append({
+                "rid": rid, "params": copy.deepcopy(params),
+                "transport": t or session.get("transport"),
+                "images": list(session.get("attached_images", [])),
+            })
+            session["attached_images"] = []
+            session["last_active"] = time.time()
+            return _ok(rid, {"status": "queued"})
     if _session_source(session) == "breadboard" and "system_prompt" in params:
         system_prompt = str(params.get("system_prompt") or "")
         if len(system_prompt) > 262_144:
@@ -10918,7 +11017,7 @@ def _(rid, params: dict) -> dict:
         session["ephemeral_system_prompt_override"] = system_prompt
         if session.get("agent") is not None:
             session["agent"].ephemeral_system_prompt = system_prompt or None
-    while True:
+    while not _claimed:
         busy_transport = None
         with session["history_lock"]:
             if session.get("running"):
@@ -11948,10 +12047,28 @@ def _run_prompt_submit(
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
+            maintain_context = (
+                _session_source(session) == "breadboard"
+                and status == "complete" and not status_note
+            )
             with session["history_lock"]:
                 _clear_inflight_turn(session)
+                session["_post_turn_maintenance"] = maintain_context
             _remember_turn_result(session, client_turn_id, payload)
+            if maintain_context:
+                _emit("session.maintenance", sid, {"running": True, "turn_id": client_turn_id})
             _emit("message.complete", sid, payload)
+
+            if maintain_context:
+                try:
+                    from tui_gateway.idle_compaction import compact_completed_turn
+
+                    compact_completed_turn(session)
+                    _sync_session_key_after_compress(sid, session, clear_pending_title=False)
+                except Exception:
+                    # The reply is already delivered. Leave preflight recovery
+                    # available without turning maintenance into a failed reply.
+                    logger.warning("Post-turn compaction failed for %s", sid, exc_info=True)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
             # After every TUI turn, if a /goal is active, ask the judge
@@ -12145,10 +12262,13 @@ def _run_prompt_submit(
             # this turn can't fire during a later turn on the same agent.
             agent.interim_assistant_callback = None
             with session["history_lock"]:
+                maintained_context = session.pop("_post_turn_maintenance", False)
                 session["running"] = False
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
             _emit("session.info", sid, _session_info(agent, session))
+            if maintained_context:
+                _emit("session.maintenance", sid, {"running": False, "turn_id": client_turn_id})
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
         # every auto follow-up below — drain it first and skip them this cycle;
@@ -13461,22 +13581,26 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
             if global_scope or session is None:
                 _write_config_key("agent.reasoning_effort", arg)
-                if session is not None:
-                    session.pop("create_reasoning_override", None)
-            else:
-                # Session-scoped, like the messaging gateway's `/reasoning
-                # <level>` (global persistence is `--global` / Settings →
-                # Model territory). Writing config.yaml here let every
-                # desktop model-menu selection rewrite the user's global
-                # agent.reasoning_effort to the preset default.
-                session["create_reasoning_override"] = parsed
-            if session and session.get("agent") is not None:
-                session["agent"].reasoning_config = parsed
+            agent = None
+            if session is not None:
+                with session.setdefault("agent_build_lock", threading.Lock()):
+                    if global_scope:
+                        session.pop("create_reasoning_override", None)
+                    else:
+                        # Session choices must survive deferred construction
+                        # without changing another session's global default.
+                        session["create_reasoning_override"] = parsed
+                    agent = session.get("agent")
+                    if agent is None:
+                        session["pending_reasoning_config"] = parsed
+                    else:
+                        agent.reasoning_config = parsed
+            if agent is not None:
                 _persist_live_session_runtime(session)
                 _emit(
                     "session.info",
                     params.get("session_id", ""),
-                    _session_info(session["agent"], session),
+                    _session_info(agent, session),
                 )
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:

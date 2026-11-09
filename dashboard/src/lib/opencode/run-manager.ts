@@ -1,4 +1,6 @@
+import { systemPromptText } from "../system-prompts/service.ts";
 import { tmpdir } from "node:os";
+import { withApiAnythingMcp } from "../api-anything/agents.ts";
 import {
   spawn,
   type ChildProcess,
@@ -309,6 +311,7 @@ function runConfigPath(
   basePath: string,
   model: string,
   graftServer: GraftServer | null,
+  userId: number,
 ): { path: string; cleanup: () => void } {
   const noCleanup = { path: basePath, cleanup: () => undefined };
   let parsed: Record<string, unknown>;
@@ -323,8 +326,8 @@ function runConfigPath(
 
   const withModel = withRequestedModel(parsed, model);
   const withGraft = withGraftServer(withModel.config, graftServer);
-  const config = withGraft.config;
-  const changed = withModel.changed || withGraft.changed;
+  const config = withApiAnythingMcp(withGraft.config, userId);
+  const changed = withModel.changed || withGraft.changed || config !== withGraft.config;
   if (!changed) return noCleanup;
 
   // Outside the repository: a config file inside it would land in the run's
@@ -598,7 +601,7 @@ export function startRuntimeWorkerRun(
   runs.set(runId, run);
 
   const graft = input.graft ?? null;
-  const runConfig = runConfigPath(configPath, input.model, graft?.server ?? null);
+  const runConfig = runConfigPath(configPath, input.model, graft?.server ?? null, input.userId);
 
   let materialized: ReturnType<typeof materializeImageAttachments>;
   try {
@@ -619,6 +622,7 @@ export function startRuntimeWorkerRun(
     input.instruction ?? input.task,
     attachmentContext,
     graft?.instruction ?? "",
+    systemPromptText("api-anything-policy", input.userId),
   ]
     .filter(Boolean)
     .join("\n\n");

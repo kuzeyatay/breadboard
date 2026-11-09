@@ -38,6 +38,7 @@ export interface ImagesBridge {
 }
 
 interface BridgeState extends ImagesBridge {
+  userId?: number | null;
   server: http.Server;
 }
 
@@ -117,7 +118,7 @@ async function referencesFromForm(
 async function handleImageEdit(
   raw: Buffer,
   contentType: string,
-  upstreamUrl: string,
+  upstreamUrl: string, userId?: number | null
 ): Promise<{ status: number; body: unknown }> {
   // Node's own multipart parser, reached through the Web body mixin. Writing a
   // boundary splitter by hand here would be a second implementation of something
@@ -143,7 +144,7 @@ async function handleImageEdit(
     return { status: 400, body: { error: { message: "An image edit needs at least one image." } } };
   }
 
-  const generated = await generateArtifactImage({
+  const generated = await generateArtifactImage({ userId,
     baseURL: upstreamUrl,
     prompt: prompt.trim(),
     sourceImages: references,
@@ -190,7 +191,7 @@ async function forward(
   response.end(body);
 }
 
-function createServer(apiKey: string, upstreamUrl: string): http.Server {
+function createServer(apiKey: string, upstreamUrl: string, userId?: number | null): http.Server {
   return http.createServer((request, response) => {
     void (async () => {
       try {
@@ -208,7 +209,7 @@ function createServer(apiKey: string, upstreamUrl: string): http.Server {
             sendError(response, 400, "Image requests must be multipart form data.");
             return;
           }
-          const result = await handleImageEdit(raw, contentType, upstreamUrl);
+          const result = await handleImageEdit(raw, contentType, upstreamUrl, userId);
           sendJson(response, result.status, result.body);
           return;
         }
@@ -232,16 +233,16 @@ function createServer(apiKey: string, upstreamUrl: string): http.Server {
  * it was pointed at has changed. Kept on `globalThis` so a dev-server hot reload
  * does not orphan the listener.
  */
-export function ensureImagesBridge(upstreamUrl: string): Promise<ImagesBridge> {
+export function ensureImagesBridge(upstreamUrl: string, userId?: number | null): Promise<ImagesBridge> {
   const normalized = upstreamUrl.replace(/\/$/, "");
   const existing = bridgeGlobal.__breadboardWardrobeBridge;
-  if (existing && existing.upstreamUrl === normalized && existing.server.listening) {
+  if (existing && existing.upstreamUrl === normalized && existing.userId === userId && existing.server.listening) {
     return Promise.resolve(existing);
   }
   if (existing) closeImagesBridge();
 
   const apiKey = `wbr_${randomBytes(24).toString("hex")}`;
-  const server = createServer(apiKey, normalized);
+  const server = createServer(apiKey, normalized, userId);
   server.unref();
 
   return new Promise<ImagesBridge>((resolve, reject) => {
@@ -254,6 +255,7 @@ export function ensureImagesBridge(upstreamUrl: string): Promise<ImagesBridge> {
         return;
       }
       const state: BridgeState = {
+        userId,
         baseUrl: `http://127.0.0.1:${address.port}/v1`,
         apiKey,
         upstreamUrl: normalized,

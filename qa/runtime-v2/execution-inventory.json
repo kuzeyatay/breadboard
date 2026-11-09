@@ -4,13 +4,13 @@
   "status": "SOURCE_AUDITED_NOT_EXECUTED",
   "migration_status": "NOT_CUT_OVER",
   "inventory_counts": {
-    "total_entries": 142,
+    "total_entries": 143,
     "finite_entries": 83,
-    "persistent_entries": 59,
+    "persistent_entries": 60,
     "runtime_agent_jobs": 36,
     "non_agent_finite_jobs": 47,
     "by_classification": {
-      "core": 5,
+      "core": 6,
       "disposable-job": 81,
       "on-demand-service": 29,
       "scheduled-service": 14,
@@ -3873,6 +3873,51 @@
       "target_state": "runtime_v2_disposable_probe_worker",
       "sources": ["desktop/runtime-v2/manifests/workers.json", "native/runtime-core/src/service_environment.rs", "dashboard/src/lib/runtime-v2/subsai-probe-job.ts", "dashboard/src/lib/subsai/runtime.ts", "dashboard/scripts/runtime-v2-subsai-probe-worker.mjs", "dashboard/scripts/runtime-v2-subsai-worker-layout.mjs", "dashboard/scripts/runtime-v2-finite-mcp-worker-core.mjs", "subsai/"],
       "evidence": ["Native profile, closed environment, pinned source and process ownership are source-registered. Final focused Dashboard worker/cancellation evidence and integrated Electron/memory evidence remain NOT RUN."]
+    },
+    {
+      "runtime_id": "core:screen-time",
+      "source_identity": "desktop-screen-time",
+      "display_name": "Screen Time foreground metadata sampler",
+      "capability_ids": [
+        "surface:dashboard-terminal"
+      ],
+      "current_owner": "Electron shell-owned, fixed read-only Windows metadata helper; no agent jobs or service trees",
+      "executable_runtime": "Windows .NET Framework native desktop helper",
+      "root_command": "windows-screen-time.exe <electron-pid>",
+      "startup_policy": "enabled preference after account authentication on Windows",
+      "dependency_chain": [
+        "core:electron-shell"
+      ],
+      "flags": {
+        "spawns_descendants": true,
+        "calls_model": false,
+        "launches_chromium": false,
+        "uses_docker": false,
+        "uses_wsl": false,
+        "handles_large_files": false
+      },
+      "finite": false,
+      "persistent": true,
+      "exits_after_work": false,
+      "idle_behavior": "Stops attributing usage after five minutes without input; samples foreground metadata every two seconds",
+      "cancel_behavior": "Stops on pause, sign-out and app shutdown; native helper exits when its parent exits",
+      "recovery_behavior": "Bounded 30-second retry after helper exit; sampling gaps are not counted as activity",
+      "current_memory_baseline_mb": null,
+      "measured_peak_mb": null,
+      "memory_metric": null,
+      "return_after_completion": "not_applicable_persistent",
+      "classification": "core",
+      "current_state": "desktop_owned_metadata_sampler",
+      "target_state": "desktop_owned_metadata_sampler",
+      "sources": [
+        "desktop/src/main/screen-time.ts",
+        "desktop/src/main/screen-time-policy.ts",
+        "desktop/src/native/windows-screen-time.cs",
+        "docs/SCREEN_TIME.md"
+      ],
+      "evidence": [
+        "Native compilation and metadata-only smoke check passed in isolation; integrated installed lifecycle verification pending coordinated build."
+      ]
     }
   ],
   "unclassified_or_blocked_gaps": [

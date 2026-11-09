@@ -515,7 +515,7 @@ export function startRuntimeWorkerRun(input: {
         dimensions: catalog.dimensionCount,
       });
 
-      const study = await designStudy({
+      const study = await designStudy({ userId: run.userId,
         target: {
           baseUrl: input.baseUrl,
           model: input.model,

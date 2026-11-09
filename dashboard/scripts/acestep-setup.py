@@ -107,6 +107,12 @@ def models(root, state):
         raise RuntimeError("Insufficient disk space for model files and download staging.")
     snapshot_download(repo_id="ACE-Step/Ace-Step1.5", revision=MODEL_REVISION, local_dir=str(checkpoint),
                       allow_patterns=[f"{name}/*" for name in MODEL_DIRS] + ["README.md", "config.json"], max_workers=2)
+    # Upstream synchronizes model-side Python from its pinned program source at
+    # startup. Do that during explicit setup, before recording the file sizes,
+    # so a successful first start does not invalidate its readiness manifest.
+    sys.path.insert(0, str(root / "source"))
+    from acestep.model_downloader import _sync_model_code_files
+    _sync_model_code_files("acestep-v15-turbo", checkpoint)
     files = []
     total = 0
     for name in MODEL_DIRS:

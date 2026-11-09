@@ -1,0 +1,4 @@
+{
+  "passed": false,
+  "error": "input live update: {\"editable\":true,\"focused\":true,\"caret\":[711,327,1,20],\"bounds\":[601,313,687,49],\"selection\":[7,14],\"selected\":null,\"text\":null,\"foreground\":true,\"preview\":null,\"previewState\":{\"start\":7,\"end\":14,\"expected\":\"Testing\",\"observed\":\"before replace AFTER\"},\"error\":\"The editor could not confirm the dictated text. The visible draft has been kept.\"}\n+ actual - expected\n\n+ 'The editor could not confirm the dictated text. The visible draft has been kept.'\n- null"
+}

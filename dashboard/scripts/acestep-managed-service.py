@@ -34,9 +34,17 @@ def main():
                        "HF_HOME": str(source.parent / "cache"), "TMPDIR": str(root / "temp"),
                        "TEMP": str(root / "temp"), "TMP": str(root / "temp")})
     (root / "temp").mkdir(exist_ok=True)
+    # Torch Inductor otherwise asks getpass for a username; the sealed Windows
+    # service intentionally has no login environment and Python has no pwd module.
+    os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(source.parent / "cache" / "torchinductor"))
+    print("ACE-Step: validating prepared models completed; importing the audio runtime.", flush=True)
     # Fail closed even when upstream's download helpers try a ModelScope fallback.
     import acestep.model_downloader as downloader
     import acestep.api.model_download as api_download
+    # The pinned upstream bundle check also requires its optional planning LM.
+    # Managed setup installs only these three components and disables that LM;
+    # retain the upstream weight checks without requiring an unused download.
+    downloader.MAIN_MODEL_COMPONENTS = ["acestep-v15-turbo", "vae", "Qwen3-Embedding-0.6B"]
     def already_prepared(model_name, checkpoint_dir, *args, **kwargs):
         target = Path(checkpoint_dir) / model_name
         if model_name not in ("acestep-v15-turbo", "vae", "Qwen3-Embedding-0.6B") or not target.is_dir():
@@ -54,8 +62,10 @@ def main():
     import huggingface_hub
     huggingface_hub.snapshot_download = deny_download
     huggingface_hub.hf_hub_download = deny_download
+    print("ACE-Step: importing the model server; cold dependency imports may take several minutes.", flush=True)
     from acestep.api_server import app
     import uvicorn
+    print("ACE-Step: starting the server and loading the prepared model.", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=port)
 
 

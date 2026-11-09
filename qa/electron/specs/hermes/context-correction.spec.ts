@@ -167,7 +167,7 @@ async function sendTurn(
   criterion: (text: string) => boolean,
   trace?: ContextTrace,
 ): Promise<boolean> {
-  const composer = page.getByPlaceholder(/Ask about your documents/).last();
+  const composer = page.getByPlaceholder('Ask anything.', { exact: true }).last();
   await expect(composer).toBeEditable({ timeout: 180_000 });
   const beforeCount = await assistantBlockCount(page);
   const baselineUserMessages = await userMessageCount(page);
@@ -366,7 +366,7 @@ function sanitizeRequestBody(raw: string | null): Record<string, unknown> | null
 
 async function uiSnapshot(page: Page): Promise<Record<string, unknown>> {
   return page.evaluate(() => {
-    const textarea = document.querySelector('textarea[placeholder*="Ask about your documents"]') as HTMLTextAreaElement | null;
+    const textarea = document.querySelector('textarea[placeholder="Ask anything."]') as HTMLTextAreaElement | null;
     const assistant = document.querySelectorAll('div[class~="text-gray-200"]').length;
     const send = [...document.querySelectorAll("button")].find((button) => button.getAttribute("aria-label") === "Send") as HTMLButtonElement | undefined;
     return {

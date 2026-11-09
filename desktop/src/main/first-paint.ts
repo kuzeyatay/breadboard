@@ -164,14 +164,22 @@ export function runInDocument(
   contents: DocumentProbeTarget,
   code: string,
   userGesture = false,
-): Promise<unknown> {
+  // Same result type as Electron's executeJavaScript, which this replaces.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any> {
   let frame: DocumentFrame | null | undefined;
   try {
     frame = contents.mainFrame;
   } catch {
     // A page mid-teardown has no frame to offer; the plain path rejects below.
   }
-  return (frame ?? contents).executeJavaScript(code, userGesture);
+  try {
+    return (frame ?? contents).executeJavaScript(code, userGesture);
+  } catch (error) {
+    // A frame disposed mid-navigation throws synchronously. Callers chain
+    // .catch(); a throw here would abort their event handler instead.
+    return Promise.reject(error);
+  }
 }
 
 async function settleWithin(action: Promise<unknown>, maxWaitMs: number): Promise<void> {

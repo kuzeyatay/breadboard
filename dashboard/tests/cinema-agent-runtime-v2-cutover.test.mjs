@@ -23,10 +23,13 @@ async function loadClient() {
       setup(build) {
         build.onResolve({ filter: /^server-only$/ }, () => ({ path: "server-only", namespace: "stub" }));
         build.onResolve({ filter: /supervisor-control\.ts$/ }, () => ({ path: "supervisor", namespace: "stub" }));
+        build.onResolve({ filter: /agent-artifact-runtime\.ts$/ }, () => ({ path: "artifact-runtime", namespace: "stub" }));
         build.onLoad({ filter: /.*/, namespace: "stub" }, (args) => ({
           loader: "js",
           contents: args.path === "server-only"
             ? "export {};"
+            : args.path === "artifact-runtime"
+            ? "export async function ensureAgentArtifactConversation() { throw new Error('use injected preparation'); }"
             : `
               export class RuntimeJobControlError extends Error { constructor(code) { super(code); this.code = code; } }
               const unused = async () => { throw new Error("use injected control"); };
@@ -117,6 +120,7 @@ test("a ViMax run submits one fixed profile and replays its fenced terminal proj
   };
   const replayed = [];
   const outcome = await client.runCinemaAgentJob({
+    prepareConversation: async () => {},
     kind: "vimax",
     userId: 17,
     conversationId: job.conversationId,
@@ -143,6 +147,7 @@ test("worker identity and profile mismatches are rejected before events reach th
   const job = snapshot({ workerKind: "attacker-selected" });
   await assert.rejects(
     client.runCinemaAgentJob({
+      prepareConversation: async () => {},
       kind: "vimax",
       userId: 17,
       conversationId: "conv_vimax_1",
@@ -203,6 +208,7 @@ test("an abort after submission cancels the native-owned job before returning", 
     return submitted;
   };
   const outcome = await client.runCinemaAgentJob({
+    prepareConversation: async () => {},
     kind: "vimax",
     userId: 17,
     conversationId: job.conversationId,
@@ -214,6 +220,42 @@ test("an abort after submission cancels the native-owned job before returning", 
   });
   assert.deepEqual(outcome, { status: "aborted", failureMessage: null });
   assert.equal(calls.filter((entry) => entry.type === "cancel").length, 1);
+});
+
+for (const kind of ["vimax", "vox-director"]) {
+  test(`${kind} prepares the owned conversation before any generation submission`, async () => {
+    const calls = [];
+    const input = {
+      kind, userId: 17, conversationId: "conv_first_film", runId: "first_film_run",
+      requestPayload: { operation: "run" }, onEvents() {},
+      async prepareConversation(value) { calls.push(["prepare", value]); },
+      control: { async submit() { calls.push(["submit"]); throw new Error("owned admission marker"); } },
+    };
+    await assert.rejects(client.runCinemaAgentJob(input), /owned admission marker/);
+    assert.deepEqual(calls, [["prepare", { userId: 17, conversationPublicId: "conv_first_film" }], ["submit"]]);
+  });
+}
+
+test("failed ownership preparation cannot launch a film", async () => {
+  let submissions = 0;
+  await assert.rejects(client.runCinemaAgentJob({
+    kind: "vimax", userId: 17, conversationId: "conv_other_user", runId: "owned_run",
+    requestPayload: { operation: "run" }, onEvents() {},
+    async prepareConversation() { throw new Error("conversation_not_found"); },
+    control: { async submit() { submissions++; throw new Error("must not submit"); } },
+  }), /conversation_not_found/);
+  assert.equal(submissions, 0);
+});
+
+test("cancellation during preparation never starts a generation job", async () => {
+  const controller = new AbortController();
+  const result = await client.runCinemaAgentJob({
+    kind: "vox-director", userId: 17, conversationId: "conv_owned", runId: "owned_run",
+    requestPayload: { operation: "run" }, signal: controller.signal, onEvents() {},
+    async prepareConversation() { controller.abort(); },
+    control: { async submit() { assert.fail("must not submit after abort"); } },
+  });
+  assert.deepEqual(result, { status: "aborted", failureMessage: null });
 });
 
 test("all Next boundaries use Runtime façades and cannot own cinema descendants", () => {

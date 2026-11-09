@@ -148,6 +148,32 @@ _ACTIONABLE_MARKET_RE = re.compile(
     r".{1,40}(?:是否|有没有|已经|已)(?:在.{0,20})?上市)",
     re.IGNORECASE,
 )
+# A scope exclusion such as "no market lookup, recommendation, trade" is
+# not a request to trade. Recognize only explicit lists of non-action nouns;
+# a separate buy/sell/price request and every symbol-consuming tool still need
+# identity. Do not exempt a request merely because it calls itself fictional.
+_NEGATED_SCOPE_ITEM = (
+    r"(?:(?:real|live|external|any)\s+)?(?:"
+    r"market(?:\s+data)?\s+(?:lookups?|research)|recommendations?|trades?|"
+    r"accounts?|files?|installations?|settings(?:\s+changes?)?)"
+)
+_NEGATED_SCOPE_RE = re.compile(
+    r"\b(?:no|without)\s+" + _NEGATED_SCOPE_ITEM
+    + r"(?:\s*(?:,\s*(?:(?:and|or)\s+)?|\s+(?:and|or)\s+)"
+    + _NEGATED_SCOPE_ITEM + r")*\b",
+    re.IGNORECASE,
+)
+
+
+def _requires_market_identity(message: str) -> bool:
+    """Ignore only action words inside a recognized explicit scope exclusion."""
+    excluded = [match.span() for match in _NEGATED_SCOPE_RE.finditer(message)]
+    return any(
+        not any(start <= match.start() and match.end() <= end for start, end in excluded)
+        for match in _ACTIONABLE_MARKET_RE.finditer(message)
+    )
+
+
 _PRIVATE_ASSERTION_RE = re.compile(
     r"(?:\b(?:is|remains|still)\s+(?:an?\s+)?(?:private company|privately held)\b|"
     r"\bnot publicly traded\b|\bunlisted company\b|"
@@ -468,7 +494,7 @@ class GroundingLedger:
         self._evidence: list[EvidenceRecord] = []
         self._tool_failures: list[dict[str, Any]] = []
         self._validations: list[dict[str, Any]] = []
-        self._identity_required = bool(_ACTIONABLE_MARKET_RE.search(user_message))
+        self._identity_required = _requires_market_identity(user_message)
         self._buffer_output = self._identity_required
         # Every instrument this run is entitled to write about: the ones the
         # user named, plus the ones a succeeding tool call passed in or returned.

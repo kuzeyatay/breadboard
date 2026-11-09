@@ -19,6 +19,7 @@ one signed-in account and reduces it to the shape the dashboard already draws
 """
 
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Any, Dict, Optional
 
 import requests
@@ -63,6 +64,11 @@ def _window(value: Any) -> Optional[Dict[str, Any]]:
     resets = _number(value.get("reset_after_seconds"))
     if resets is not None:
         window["resets_in_seconds"] = max(0, int(resets))
+    # Keep the vendor's absolute timestamp, as Code Notch does through Codex's
+    # app server. A countdown may be absent or older than this reset time.
+    reset_at = _number(value.get("reset_at"))
+    if reset_at is not None and isfinite(reset_at) and 0 < reset_at <= 8_640_000_000_000:
+        window["resets_at"] = reset_at
     return window
 
 

@@ -237,6 +237,8 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     # persisted and emitted as an interim message (#65919).
     "_verification_stop_synthetic",
     "_pre_verify_synthetic",
+    # narrated-intent stop-guard: "I'll do X" with nothing done
+    "_narrated_intent_synthetic",
     # kanban worker stop-guard: narrated exit without kanban_complete/block
     "_kanban_stop_synthetic",
 )
@@ -4299,6 +4301,9 @@ class AIAgent:
         """
         try:
             import httpx as _httpx
+            from agent.ssl_verify import prepare_httpx_verify
+
+            verify = prepare_httpx_verify(verify)
 
             # Explicitly read proxy settings so requests route through
             # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.

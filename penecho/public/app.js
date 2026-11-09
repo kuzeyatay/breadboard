@@ -7160,6 +7160,27 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
   function boardRequested() {
     return BOARD_ID_PATTERN.test(new URL(location.href).searchParams.get("board") || "");
   }
+  // The parent must be able to await persistence before moving/removing an iframe.
+  // Merely receiving pagehide is too late to guarantee that an async write finishes.
+  window.addEventListener("message", async event => {
+    if (event.source !== window.parent || window.parent === window || event.data?.type !== "penecho:flush-board" || typeof event.data.requestId !== "string") return;
+    let parentOrigin;
+    try { parentOrigin = new URL(location.ancestorOrigins?.[0] || document.referrer).origin; } catch { return; }
+    if (event.origin !== parentOrigin) return;
+    const reply = result => window.parent.postMessage({ type:"penecho:board-flushed", requestId:event.data.requestId, boardId:board.id, ...result }, parentOrigin);
+    try {
+      const deadline = Date.now() + 18000;
+      while ((!board.bound || board.writing) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 30));
+      if (!board.bound) throw new Error("The whiteboard is still opening.");
+      if (boardViewSignature() !== board.view) board.dirty = true;
+      do {
+        await flushBoard();
+        if (!board.dirty && !board.writing) { reply({ ok:true }); return; }
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } while (Date.now() < deadline);
+      throw new Error("The whiteboard could not finish saving. Try again.");
+    } catch (error) { reply({ ok:false, error:error?.message || String(error) }); }
+  });
   function boardViewSignature() {
     return `${state.scale.toFixed(4)}:${Math.round(state.panX)}:${Math.round(state.panY)}`;
   }

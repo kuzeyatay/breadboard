@@ -595,7 +595,7 @@ async function execute(run: RunState): Promise<void> {
       model: run.model,
       variant: run.variant,
       text: promptWithContext(
-        runInstruction(run.task, run.options, `run-artifacts/${run.runId}`),
+        runInstruction(run.task, run.options, `run-artifacts/${run.runId}`, run.userId),
         run.conversationContext,
       ),
       signal: run.abort.signal,

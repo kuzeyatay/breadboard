@@ -1,0 +1,90 @@
+{
+  "passed": true,
+  "checkedAt": "2026-10-14T11:20:15.556Z",
+  "scope": "real Web Audio and configured garden/terminal provider; synthetic speech; native keyboard/insertion excluded",
+  "baselineMs": 8776,
+  "streamingMs": 3671,
+  "improvementPercent": 58,
+  "runs": [
+    {
+      "mode": "baseline",
+      "notice": {
+        "type": "result",
+        "id": 1,
+        "text": "Testing breadboard dictation.",
+        "submit": true
+      },
+      "fallbackCount": 1,
+      "sampleMs": 4209,
+      "releaseToTextMs": 8825,
+      "connectionMs": null,
+      "inputReadyMs": null,
+      "drainAfterReleaseMs": null,
+      "firstPartialMs": null,
+      "firstPreviewMs": null,
+      "previewBeforeRelease": false,
+      "microphoneStopMs": 1,
+      "tracksEnded": true
+    },
+    {
+      "mode": "streaming",
+      "notice": {
+        "type": "result",
+        "id": 1,
+        "text": "Testing breadboard dictation.",
+        "submit": true
+      },
+      "fallbackCount": 0,
+      "sampleMs": 4209,
+      "releaseToTextMs": 3973,
+      "connectionMs": 3627,
+      "inputReadyMs": 2773,
+      "drainAfterReleaseMs": 3346,
+      "firstPartialMs": 4349,
+      "firstPreviewMs": 4349,
+      "previewBeforeRelease": true,
+      "microphoneStopMs": 1,
+      "tracksEnded": true
+    },
+    {
+      "mode": "streaming",
+      "notice": {
+        "type": "result",
+        "id": 1,
+        "text": "Testing breadboard dictation.",
+        "submit": true
+      },
+      "fallbackCount": 0,
+      "sampleMs": 4209,
+      "releaseToTextMs": 3369,
+      "connectionMs": 3573,
+      "inputReadyMs": 2054,
+      "drainAfterReleaseMs": 2633,
+      "firstPartialMs": 3882,
+      "firstPreviewMs": 3882,
+      "previewBeforeRelease": true,
+      "microphoneStopMs": 1,
+      "tracksEnded": true
+    },
+    {
+      "mode": "baseline",
+      "notice": {
+        "type": "result",
+        "id": 1,
+        "text": "Testing breadboard dictation.",
+        "submit": true
+      },
+      "fallbackCount": 1,
+      "sampleMs": 4209,
+      "releaseToTextMs": 8726,
+      "connectionMs": null,
+      "inputReadyMs": null,
+      "drainAfterReleaseMs": null,
+      "firstPartialMs": null,
+      "firstPreviewMs": null,
+      "previewBeforeRelease": false,
+      "microphoneStopMs": 0,
+      "tracksEnded": true
+    }
+  ]
+}

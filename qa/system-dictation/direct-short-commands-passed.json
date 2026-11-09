@@ -1,0 +1,801 @@
+{
+  "passed": true,
+  "checkedAt": "2026-10-14T15:06:19.759Z",
+  "scope": "generated speech through the configured provider; native keyboard excluded",
+  "runs": [
+    {
+      "name": "command-held",
+      "notice": {
+        "type": "result",
+        "id": 1,
+        "text": "Ready to send.",
+        "submit": true
+      },
+      "fallbacks": 0,
+      "partials": [
+        "Ready to",
+        "Ready to send."
+      ],
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "ms": 1
+        },
+        {
+          "stage": "capture-ready",
+          "ms": 7
+        },
+        {
+          "stage": "provider-opening",
+          "ms": 7
+        },
+        {
+          "stage": "provider-ready",
+          "ms": 25391
+        },
+        {
+          "stage": "first-transcript",
+          "ms": 27113
+        },
+        {
+          "stage": "voice-command",
+          "ms": 30509
+        },
+        {
+          "stage": "keys-released",
+          "ms": 30509
+        }
+      ],
+      "lateTranscript": "Ready to send. Send message.",
+      "events": [
+        {
+          "at": 25248,
+          "type": "session.started",
+          "keys": [
+            "type",
+            "session"
+          ],
+          "turnKeys": []
+        },
+        {
+          "at": 27112,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 1400,
+          "end": 1600,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuqR31pvSsbtPPybnZPL",
+            "type": "input_transcript",
+            "text": " Ready to"
+          }
+        },
+        {
+          "at": 27113,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuqRmRQqQMRAWAfmTbnh",
+          "start": 1400,
+          "end": 1600,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Ready to"
+        },
+        {
+          "at": 27879,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 2000,
+          "end": 2200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuqRY4v7cbiF0XiiJYLb",
+            "type": "input_transcript",
+            "text": " send."
+          }
+        },
+        {
+          "at": 27879,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 2000,
+          "end": 2200,
+          "turnKeys": []
+        },
+        {
+          "at": 28050,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 2200,
+          "end": 2400,
+          "turnKeys": []
+        },
+        {
+          "at": 28217,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 2400,
+          "end": 2600,
+          "turnKeys": []
+        },
+        {
+          "at": 28493,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuqRmRQqQMRAWAfmTbnh",
+          "start": 1400,
+          "end": 3000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Ready to send."
+        },
+        {
+          "at": 28493,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuqSjIFDdQMUgUrZJjmS",
+          "start": 2800,
+          "end": 3000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Ready to send."
+        },
+        {
+          "at": 28905,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 3200,
+          "end": 3400,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuqTraES54SkjJfCYr3l",
+            "type": "input_transcript",
+            "text": " Send"
+          }
+        },
+        {
+          "at": 28960,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuqSjIFDdQMUgUrZJjmS",
+          "start": 2800,
+          "end": 3400,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Ready to send."
+        },
+        {
+          "at": 28981,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuqT3vtPR8wZPBD6mhvV",
+          "start": 3200,
+          "end": 3400,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Send"
+        },
+        {
+          "at": 29647,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 3800,
+          "end": 4000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuqTIrYdEgTTcd3VDw2L",
+            "type": "input_transcript",
+            "text": " message"
+          }
+        },
+        {
+          "at": 29648,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 3800,
+          "end": 4000,
+          "turnKeys": []
+        },
+        {
+          "at": 29648,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 3800,
+          "end": 4000,
+          "turnKeys": []
+        },
+        {
+          "at": 29812,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 4000,
+          "end": 4200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuqT9r9oCrt7hzO4Rac6",
+            "type": "input_transcript",
+            "text": "."
+          }
+        },
+        {
+          "at": 29814,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 4000,
+          "end": 4200,
+          "turnKeys": []
+        },
+        {
+          "at": 29814,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 4000,
+          "end": 4200,
+          "turnKeys": []
+        },
+        {
+          "at": 30508,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuqT3vtPR8wZPBD6mhvV",
+          "start": 3200,
+          "end": 5000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Send message."
+        },
+        {
+          "at": 30509,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuqTXiFTRcltgdOOa7TK",
+          "start": 4800,
+          "end": 5000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Send message."
+        }
+      ],
+      "startupMs": 25391,
+      "speechMs": 3053,
+      "firstWordsAfterSpeechMs": 1621,
+      "firstWordsBeforeRelease": true,
+      "releaseToTextMs": 0,
+      "microphoneStopMs": -5,
+      "commandBeforeRelease": true,
+      "resultBeforeRelease": true,
+      "commandConfirmationToResultMs": 5
+    },
+    {
+      "name": "command-released",
+      "notice": {
+        "type": "result",
+        "id": 1,
+        "text": "Ready to send.",
+        "submit": true
+      },
+      "fallbacks": 0,
+      "partials": [
+        "Ready",
+        "Ready to",
+        "Ready to send."
+      ],
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "ms": 0
+        },
+        {
+          "stage": "capture-ready",
+          "ms": 6
+        },
+        {
+          "stage": "provider-opening",
+          "ms": 6
+        },
+        {
+          "stage": "provider-ready",
+          "ms": 6
+        },
+        {
+          "stage": "first-transcript",
+          "ms": 1376
+        },
+        {
+          "stage": "keys-released",
+          "ms": 3191
+        },
+        {
+          "stage": "audio-drained",
+          "ms": 3267
+        },
+        {
+          "stage": "voice-command",
+          "ms": 4776
+        }
+      ],
+      "lateTranscript": "Ready to send. Send message.",
+      "events": [
+        {
+          "at": 728,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuqTXiFTRcltgdOOa7TK",
+          "start": 4800,
+          "end": 6400,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Send message."
+        },
+        {
+          "at": 1376,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 6800,
+          "end": 7000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuqWrZA8m6xsMyThcRgy",
+            "type": "input_transcript",
+            "text": " Ready"
+          }
+        },
+        {
+          "at": 1376,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuqWKk6wXQeNR9oQOI4N",
+          "start": 6800,
+          "end": 7000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Ready"
+        },
+        {
+          "at": 1528,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 7000,
+          "end": 7200,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuqWeROKZbEEBWZFHEli",
+            "type": "input_transcript",
+            "text": " to"
+          }
+        },
+        {
+          "at": 1528,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 7000,
+          "end": 7200,
+          "turnKeys": []
+        },
+        {
+          "at": 2261,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 7600,
+          "end": 7800,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuqXgZY2DJ6NszSnzP5n",
+            "type": "input_transcript",
+            "text": " send."
+          }
+        },
+        {
+          "at": 2261,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 7600,
+          "end": 7800,
+          "turnKeys": []
+        },
+        {
+          "at": 2261,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 7600,
+          "end": 7800,
+          "turnKeys": []
+        },
+        {
+          "at": 2499,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 7800,
+          "end": 8000,
+          "turnKeys": []
+        },
+        {
+          "at": 2959,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuqWKk6wXQeNR9oQOI4N",
+          "start": 6800,
+          "end": 8600,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Ready to send."
+        },
+        {
+          "at": 2959,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuqXkHY46r7m7Wb4PXyu",
+          "start": 8400,
+          "end": 8600,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Ready to send."
+        },
+        {
+          "at": 3338,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 8800,
+          "end": 9000,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuqYXNqEiLS3QAoMZ9ug",
+            "type": "input_transcript",
+            "text": " Send"
+          }
+        },
+        {
+          "at": 3383,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuqXkHY46r7m7Wb4PXyu",
+          "start": 8400,
+          "end": 9000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Ready to send."
+        },
+        {
+          "at": 3449,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuqYChGixT3RiW5QOiU5",
+          "start": 8800,
+          "end": 9000,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Send"
+        },
+        {
+          "at": 4081,
+          "type": "input_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 9400,
+          "end": 9600,
+          "turnKeys": [],
+          "item": {
+            "id": "item_EYuqZdtJki5A9eNHdAlrh",
+            "type": "input_transcript",
+            "text": " message."
+          }
+        },
+        {
+          "at": 4081,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 9400,
+          "end": 9600,
+          "turnKeys": []
+        },
+        {
+          "at": 4081,
+          "type": "turn.delta",
+          "keys": [
+            "type",
+            "delta",
+            "end_ms",
+            "start_ms",
+            "turn_id"
+          ],
+          "start": 9400,
+          "end": 9600,
+          "turnKeys": []
+        },
+        {
+          "at": 4279,
+          "type": "output_transcript.added",
+          "keys": [
+            "type",
+            "end_ms",
+            "item",
+            "start_ms"
+          ],
+          "start": 9600,
+          "end": 9800,
+          "turnKeys": []
+        },
+        {
+          "at": 4776,
+          "type": "turn.done",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "user",
+          "turn": "turn_EYuqYChGixT3RiW5QOiU5",
+          "start": 8800,
+          "end": 10400,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Send message."
+        },
+        {
+          "at": 4777,
+          "type": "turn.created",
+          "keys": [
+            "type",
+            "turn"
+          ],
+          "role": "assistant",
+          "turn": "turn_EYuqZJdbceMNAda5HewYX",
+          "start": 10200,
+          "end": 10400,
+          "turnKeys": [
+            "id",
+            "end_ms",
+            "role",
+            "start_ms",
+            "transcript"
+          ],
+          "transcript": " Send message."
+        }
+      ],
+      "startupMs": 6,
+      "speechMs": 3053,
+      "firstWordsAfterSpeechMs": 1270,
+      "firstWordsBeforeRelease": true,
+      "releaseToTextMs": 1585,
+      "microphoneStopMs": 0,
+      "commandBeforeRelease": false,
+      "resultBeforeRelease": false,
+      "commandConfirmationToResultMs": 1
+    }
+  ]
+}

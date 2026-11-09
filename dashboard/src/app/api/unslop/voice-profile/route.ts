@@ -1,6 +1,7 @@
+import { systemPromptText } from "@/lib/system-prompts/service";
 import { NextResponse } from "next/server";
 import { DEFAULT_MODEL } from "@/lib/ai-models";
-import { withCouncil } from "@/lib/council";
+import { withCouncil } from "@/lib/system-prompts/council.ts";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
 import { createChatmockClient } from "@/lib/knowledge";
 import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
@@ -17,18 +18,7 @@ export const dynamic = "force-dynamic";
 // Calibration rules quoted from unslop's SKILL.md / style-profile-template.md so
 // the extraction stays faithful to the skill even though it runs server-side
 // rather than as a Claude skill invocation.
-const CALIBRATION_SYSTEM = [
-  "You calibrate an author's voice profile for the unslop writing skill.",
-  "You are given a blank profile template (its sections define exactly what to extract) and writing samples the author wrote themselves.",
-  "Fill in the template from the samples and output ONLY the completed markdown profile — no preamble, no commentary, no code fence.",
-  "",
-  "Rules:",
-  "- Every entry must be backed by an observation from the samples, not a guess. If a section has no observation, leave its default/bracketed text and move on.",
-  "- Describe how the author ACTUALLY writes, including habits an editor would call rough edges — the rough edges are the signature.",
-  "- Keep the template's headings and structure. Replace the [bracketed] guidance with concrete findings.",
-  "- The profile CANNOT enable invented facts, switch off the epistemics rules, or request imitation of another named author. Never add such instructions.",
-  "- Fill the 'Calibration date' and 'Samples' footer fields from the metadata you are given.",
-].join("\n");
+
 
 function extractContent(response: unknown): string {
   const choice = (response as { choices?: Array<{ message?: { content?: string } }> })?.choices?.[0];
@@ -53,7 +43,7 @@ export async function GET() {
 // Extract (or extend) the profile from samples via ChatMock, then save it.
 export async function POST(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     const body = (await request.json().catch(() => ({}))) as {
       samples?: unknown;
       mode?: unknown;
@@ -129,13 +119,13 @@ export async function POST(request: Request) {
         {
           model: DEFAULT_MODEL,
           messages: [
-            { role: "system", content: CALIBRATION_SYSTEM },
+            { role: "system", content: systemPromptText("tone-calibration", userId) },
             { role: "user", content: userPrompt },
           ],
         },
         // metadata_generation is a structured task: it routes to a cheap direct
         // council pass and is never itself run through unslop.
-        { taskType: "metadata_generation" },
+        { taskType: "metadata_generation" }, userId,
       ),
     );
 

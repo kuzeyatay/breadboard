@@ -1,0 +1,20 @@
+{
+  "checkedAt": "2026-11-07T16:29:40.451Z",
+  "mutation": false,
+  "results": [
+    {
+      "id": "CDA533D75BCF7DB4B7DD94C5024DB857",
+      "url": "http://127.0.0.1:61342/new-tab?theme=dark",
+      "result": {
+        "status": 404
+      }
+    },
+    {
+      "id": "958A37D83C546CA70372D3B43E41E887",
+      "url": "http://127.0.0.1:61342/browser",
+      "result": {
+        "status": 404
+      }
+    }
+  ]
+}

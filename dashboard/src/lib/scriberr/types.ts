@@ -157,6 +157,9 @@ export interface VideoTranscriptionJob {
    * Breadboard for transcript-only jobs, and the watch runtime's copy is
    * discarded with its work directory). */
   retainMedia: boolean;
+  /** Server-only absolute path of the user's own file. Breadboard reads it for
+   * playback and never moves or deletes it. Null for ordinary uploads. */
+  mediaOriginPath: string | null;
   scriberrJobId: string | null;
   /** Normalized transcript checkpoint (JSON) so indexing retries never re-transcribe. */
   transcriptJson: string | null;

@@ -1572,5 +1572,76 @@ globalThis.__breadboardChatgptWebEmit = (payload) => emitted.push(JSON.parse(pay
         self.assertEqual(result, ["answer", True])
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to run the page script")
+class TalvtRendererTests(unittest.TestCase):
+    """The 2026-11 chatgpt.com renderer: no article/data-message-author-role,
+    turns are `[data-talvt-turn-state]`, prose is `[data-markdown-text-style]`.
+    A long Pro answer that never reached the socket was reported as "finished
+    without an answer" while it sat fully rendered on this DOM."""
+
+    # A tiny DOM: querySelector(All) dispatch by selector string, plus the node
+    # shape toMarkdown walks (nodeType/childNodes/tagName/matches).
+    DOM_STUB = r"""
+const text = (value) => ({ nodeType: 3, nodeValue: value });
+const el = (tagName, attrs, children) => {
+  const node = { nodeType: 1, tagName, attrs: attrs || {}, childNodes: children || [], parent: null };
+  node.children = node.childNodes.filter(c => c.nodeType === 1);
+  for (const c of node.childNodes) c.parent = node;
+  node.getAttribute = (name) => (name in node.attrs ? node.attrs[name] : null);
+  node.hasAttribute = (name) => name in node.attrs;
+  node.matches = (selector) => selector.split(',').some(part => {
+    part = part.trim();
+    if (part === 'button') return tagName === 'BUTTON';
+    if (part === '.sr-only') return (node.attrs.class || '').split(' ').includes('sr-only');
+    const m = part.match(/^\[([\w-]+)(?:="([^"]*)")?\]$/);
+    return !!m && (m[1] in node.attrs) && (m[2] === undefined || node.attrs[m[1]] === m[2]);
+  });
+  node.closest = (selector) => { let cur = node; while (cur) { if (cur.matches(selector)) return cur; cur = cur.parent; } return null; };
+  node.querySelector = (selector) => node.querySelectorAll(selector)[0] || null;
+  node.querySelectorAll = (selector) => { const out = []; const walk = (n) => { for (const c of n.children) { if (c.matches(selector)) out.push(c); walk(c); } }; walk(node); return out; };
+  node.textContent = node.childNodes.map(c => c.nodeType === 3 ? c.nodeValue : c.textContent).join('');
+  return node;
+};
+const markdown = el('DIV', { 'data-markdown-text-style': 'assistant-message', class: 'MarkdownRoot-x' }, [
+  el('H1', {}, [text('Neuro Comp garden: proposed learning outline')]),
+  el('P', {}, [text('Start with '), el('STRONG', {}, [text('what neural systems compute')]), text('.'),
+    el('SPAN', { 'data-chatgpt-copy-reference': '0' }, [text('Pasted text')])]),
+  el('UL', {}, [el('LI', {}, [text('Neurons')]), el('LI', {}, [text('Synapses')])]),
+]);
+const turn = el('DIV', { class: 'group flex flex-col', 'data-talvt-turn-state': globalThis.__turnState }, [
+  el('H4', { class: 'sr-only', 'data-conversation-role': 'user' }, [text('You said:')]),
+  el('H4', { class: 'sr-only', 'data-conversation-role': 'assistant' }, [text('ChatGPT said:')]),
+  globalThis.__withMarkdown ? markdown : el('DIV', {}, []),
+]);
+const root = el('BODY', {}, [turn]);
+document.querySelector = (selector) => root.querySelector(selector);
+document.querySelectorAll = (selector) => root.querySelectorAll(selector);
+"""
+
+    def snapshot(self, state: str, with_markdown: bool = True) -> Dict[str, Any]:
+        return PageScriptTests.run_node(
+            f"globalThis.__turnState = {json.dumps(state)}; globalThis.__withMarkdown = {json.dumps(with_markdown)};\n"
+            + self.DOM_STUB
+            + "console.log(JSON.stringify(window.__breadboardChatgptWeb.snapshot()));"
+        )
+
+    def test_a_complete_turn_is_read_from_the_markdown_root(self) -> None:
+        result = self.snapshot("complete")
+        self.assertTrue(result["hasAssistant"])
+        self.assertFalse(result["generating"])
+        self.assertIn("# Neuro Comp garden: proposed learning outline", result["text"])
+        self.assertIn("**what neural systems compute**", result["text"])
+        self.assertIn("- Neurons", result["text"])
+        # The hidden role heading and citation chips are not part of the answer.
+        self.assertNotIn("ChatGPT said", result["text"])
+        self.assertNotIn("Pasted text", result["text"])
+
+    def test_an_unfinished_turn_still_counts_as_generating(self) -> None:
+        result = self.snapshot("streaming", with_markdown=False)
+        self.assertTrue(result["hasAssistant"])
+        self.assertTrue(result["generating"])
+        self.assertEqual(result["text"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 import { WebContentsView, type BrowserWindow, type Event as ElectronEvent, type Input, type WebContents } from "electron";
 import * as path from "node:path";
 import { isTabsCommand, type TabsCommand } from "../shared/ipc-contract";
+import { trackTransparentNotificationView } from "./notification-visible-region";
 
 export type FindCommand = Extract<TabsCommand, { type: "browser-find" | "browser-find-close" }>;
 
@@ -28,6 +29,7 @@ export class FindInPage {
     } });
     this.contents = this.view.webContents;
     this.view.setBackgroundColor("#00000000");
+    trackTransparentNotificationView(this.view, 'form');
     this.contents.setWindowOpenHandler(() => ({ action: "deny" }));
     this.contents.on("will-navigate", event => event.preventDefault());
     this.contents.on("before-input-event", onInput);

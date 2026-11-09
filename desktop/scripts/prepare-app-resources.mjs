@@ -35,6 +35,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CODEX_WINDOWS_RUNTIME_FILES } from "./codex-runtime-files.mjs";
+import { stageApiAnything } from "../../dashboard/scripts/build-api-anything.mjs";
 import { stageQuartzHighlightAssets } from "./quartz-highlight-assets.mjs";
 
 import {
@@ -158,21 +159,21 @@ const VOICEBOX_ARTIFACT_RECEIPT = path.join(
 const PINNED_CLIPROXY_RUNTIME = Object.freeze({
   schemaVersion: 1,
   name: "CLIProxyAPI",
-  version: "7.2.111",
-  upstreamCommit: "4a315136",
-  builtAt: "2026-07-30T18:58:06Z",
+  version: "8.0.58",
+  upstreamCommit: "e5e6ad1e",
+  builtAt: "2026-11-06T13:17:25Z",
   platform: "win32",
   architecture: "x64",
   archive: {
-    name: "CLIProxyAPI_7.2.111_windows_amd64.zip",
-    url: "https://github.com/router-for-me/CLIProxyAPI/releases/download/v7.2.111/CLIProxyAPI_7.2.111_windows_amd64.zip",
-    size: 20_845_521,
-    sha256: "F209A15A66DD2D2770723986477FA0F8F3F3E0B244E16028E86CE5A08315BD47",
+    name: "CLIProxyAPI_8.0.58_windows_amd64.zip",
+    url: "https://github.com/router-for-me/CLIProxyAPI/releases/download/v8.0.58/CLIProxyAPI_8.0.58_windows_amd64.zip",
+    size: 25_562_637,
+    sha256: "B53C2C081061999A3C6ABC299C76AB9390D317DA823E99093F7C00977B5655F1",
   },
   executable: {
     name: "cli-proxy-api.exe",
-    size: 64_435_712,
-    sha256: "90797AF3A2F1293B9253E0DB6F35C20295AE4ECA168E9B15252609F1942E5B52",
+    size: 77_382_144,
+    sha256: "28CDC508EBB889E3CE57DC4076856BE7E44AC43AFBB345A07E2DD571A52DA0B3",
   },
   license: {
     name: "LICENSE",
@@ -1109,7 +1110,7 @@ if (process.platform !== "win32") fs.chmodSync(codexTarget, 0o755);
   if (process.platform !== "win32" || process.arch !== "x64") {
     fail("The reviewed packaged CLIProxyAPI runtime currently supports Windows x64 only.");
   }
-  const temporaryRoot = path.join(os.tmpdir(), "breadboard-cliproxy-7.2.111-win32-x64");
+  const temporaryRoot = path.join(os.tmpdir(), "breadboard-cliproxy-8.0.58-win32-x64");
   const archive = path.join(temporaryRoot, PINNED_CLIPROXY_RUNTIME.archive.name);
   const extracted = path.join(temporaryRoot, "extracted");
   freshDir(temporaryRoot);
@@ -2305,7 +2306,13 @@ fs.writeFileSync(
 // detach, or recreate the legacy IPC owner.
 const runtimeV2DashboardScripts = path.join(stagingRoot, "dashboard", "scripts");
 fs.mkdirSync(runtimeV2DashboardScripts, { recursive: true });
+await stageApiAnything(stagingRoot, repoRoot);
 for (const entry of [
+  "api-anything-contract.mjs",
+  "api-anything-client.mjs",
+  "api-anything-dispatch.mjs",
+  "api-anything-worker.mjs",
+  "api-anything-mcp.mjs",
   "runtime-v2-dashboard.mjs",
   "runtime-v2-learn-worker.mjs",
   "runtime-v2-document-ingestion-worker.mjs",
@@ -2365,6 +2372,7 @@ for (const entry of [
   "runtime-v2-vimax-worker.mjs",
   "runtime-v2-vox-director-worker.mjs",
   "runtime-v2-cinema-agent-worker-core.mjs",
+  "runtime-v2-atomic-file.mjs",
   "runtime-v2-cinema-agent-adapters.mjs",
   "runtime-v2-shorts-worker.mjs",
   "runtime-v2-agent-reach-setup-worker.mjs",

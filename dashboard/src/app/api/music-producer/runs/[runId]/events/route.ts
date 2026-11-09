@@ -12,9 +12,15 @@ export async function GET(request: Request, context: {
   try {
     const userId = await requireUserId(), { runId } = await context.params;
     await readRun(userId, runId);
-    return outerAgentEventsResponse({ request, runId, readView: since => readRun(userId, runId, since), pollMs: 1000 });
+    // Await the initial projection as well as admission so a transient Runtime
+    // read failure cannot escape this route's structured error handling.
+    return await outerAgentEventsResponse({ request, runId, readView: since => readRun(userId, runId, since), pollMs: 1000 });
   }
   catch (error) {
+    if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) {
+      return Response.json({ ok: false, error: "Music progress is temporarily unavailable. Please try again.", code: "RUNTIME_UNAVAILABLE" },
+        { status: 503, headers: { "Retry-After": "1" } });
+    }
     return musicRouteError(error);
   }
 }

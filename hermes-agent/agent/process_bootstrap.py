@@ -171,7 +171,9 @@ def build_keepalive_http_client(
     """
     try:
         import httpx
+        from agent.ssl_verify import prepare_httpx_verify
 
+        verify = prepare_httpx_verify(verify)
         proxy = _get_proxy_for_base_url(base_url)
 
         limits = httpx.Limits(

@@ -24,6 +24,7 @@ import CalendarSyncPanel from "./calendar-sync-panel";
 import ClapActionPanel from "./clap-action-panel";
 import VoiceAssistantPanel from "./voice-assistant-panel";
 import UsageLedgerPanel from "./usage-ledger-panel";
+import PlanUsagePanel from "./plan-usage-panel";
 import KeyboardShortcutsPanel from "./keyboard-shortcuts-panel";
 import type { ClapActionSettings } from "@/lib/profile/clap-action";
 import type { Contact } from "@/lib/contacts/types.ts";
@@ -2649,6 +2650,7 @@ export default function ProfileClient({
               </Card>
 
               <ModelPanel cost={stats.cost} />
+              <PlanUsagePanel />
             </div>
           </Packed>
 

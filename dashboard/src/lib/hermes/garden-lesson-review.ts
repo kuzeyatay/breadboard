@@ -1,7 +1,8 @@
+import { withSystemPromptContext } from "../system-prompts/service.ts";
 import { readGardenPage } from "./garden-reader.ts";
 import { getHermesUserSettings } from "./runtime-store.ts";
 import { createChatmockClient } from "../chatmock-client.ts";
-import { withCouncil } from "../council.ts";
+import { withCouncil } from "../system-prompts/council.ts";
 import { reviewAndHealLesson, type TeachingLessonInput } from "../learn-teaching-healing.ts";
 import { noteDepthError } from "./note-depth.ts";
 
@@ -14,6 +15,7 @@ export async function reviewGardenLesson(input: {
   userId: number; gardenId: string; contentPath: string; title: string;
   markdown: string; lesson: unknown; minimumProseWords: unknown;
 }) {
+  return withSystemPromptContext(input.userId, async () => {
   if (!input.lesson || typeof input.lesson !== "object" || Array.isArray(input.lesson)) {
     throw new Error("A full lesson requires lesson context: learningQuestion, newConcepts, assumedBackground, taughtLater, previousLessonSlugs, and sourcePassages. Supply those fields so the teaching review can repair missing explanations before saving.");
   }
@@ -81,5 +83,7 @@ export async function reviewGardenLesson(input: {
       if (!text?.trim()) throw new Error("Lesson teaching review returned no text; nothing was saved.");
       return text;
     },
+  });
+
   });
 }

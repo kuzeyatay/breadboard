@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth.ts";
+import { currentSwarmInvocation } from "@/lib/swarm/invocation.ts";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
 import { resolveConnectedRepository } from "@/lib/opencode/repository.ts";
 import {
@@ -57,6 +58,9 @@ export async function POST(request: Request) {
       typeof body.clientMessageId === "string" ? body.clientMessageId.trim() : "";
     const attachToExistingTurn = body.attachToExistingTurn === true;
     const delegatedAgentRun = body.delegatedAgentRun === true;
+    const delegatedAgentReason = typeof body.delegatedAgentReason === "string"
+      ? body.delegatedAgentReason.trim().replace(/\s+/g, " ").slice(0, 240)
+      : undefined;
     const requestedEffort =
       typeof body.reasoningEffort === "string"
         ? body.reasoningEffort.trim().toLowerCase()
@@ -154,7 +158,7 @@ export async function POST(request: Request) {
       gardenSlug: repository.gardenSlug,
       repository: repository.name,
     };
-    if (conversation) {
+    if (conversation && !currentSwarmInvocation()) {
       const durableConversation = conversation;
       try {
         if (attachToExistingTurn) {
@@ -162,6 +166,7 @@ export async function POST(request: Request) {
             conversation: durableConversation,
             clientMessageId,
             run: externalRun,
+            delegatedAgentReason,
           });
         } else {
           const turn = recordExternalAgentTurn({
@@ -172,6 +177,7 @@ export async function POST(request: Request) {
             run: externalRun,
             attachments,
             delegatedAgentRun,
+            delegatedAgentReason,
             internalAgentContinuation: delegatedAgentRun,
           });
           // Same first-prompt naming the Terminal gets from the external-turns

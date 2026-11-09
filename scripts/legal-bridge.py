@@ -586,9 +586,11 @@ def _assignment(job: dict, documents: list[str]) -> str:
         parts.append(
             "## Documents provided\n\n"
             f"{listing}\n\n"
-            "Read the original for what the document says. Read the `.extracted.md` "
-            "for anything the original's plain-text reading loses — equations, table "
-            "structure, and which passages are struck out rather than operative."
+            "Read each listed document for what it says. If that document has a "
+            "structured reading listed beneath it, also read that named file for "
+            "equations, table structure, and which passages are struck out rather "
+            "than operative. A plain-text attachment may be the only file for its "
+            "document; use it directly without requiring an extracted companion."
         )
     elif documents:
         listing = "\n".join(f"- {name}" for name in documents[:200])

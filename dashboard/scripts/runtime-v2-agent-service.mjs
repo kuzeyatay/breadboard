@@ -238,7 +238,7 @@ async function ensureFor(agent, modules, body) {
   if (agent === "openwork") {
     if (!exactRecord(body, ["scope"])) fail("The OpenWork ensure request is invalid.", 400);
     return serviceProjection(
-      await modules.service.ensureService(readOpenworkProfile(modules.stateRoot, body.scope)),
+      await modules.service.ensureService({ ...readOpenworkProfile(modules.stateRoot, body.scope), userId: body.scope.userId }),
     );
   }
   if (!exactRecord(body, ["scope", "options"])) fail("The ensure request is invalid.", 400);
@@ -254,6 +254,7 @@ async function ensureFor(agent, modules, body) {
   }
   if (!exactRecord(body.options, ["upstreamUrl", "model", "quality"])) fail("The Wardrobe options are invalid.", 400);
   return serviceProjection(await modules.service.ensureService({
+    userId: body.scope.userId,
     upstreamUrl: connectionUrl(body.options.upstreamUrl, "ChatMock URL"),
     model: boundedText(body.options.model, "Model", 256),
     quality: boundedText(body.options.quality, "Image quality", 64),

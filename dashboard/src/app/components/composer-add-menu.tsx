@@ -20,7 +20,7 @@ type Catalog = { groups: DirectCommandGroups; notices?: { connections?: string |
 function ConnectionLogo({ connection }: { connection: ComposerAppConnection }) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const logoUrl = connection.logoUrl?.trim();
-  return <span aria-hidden className="flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-[4px] bg-white">
+  return <span aria-hidden className="flex h-5 w-5 shrink-0 items-center justify-center">
     {logoUrl && failedUrl !== logoUrl ? (
       // Provider logos may be authenticated local SVGs or external catalogue assets.
       // eslint-disable-next-line @next/next/no-img-element

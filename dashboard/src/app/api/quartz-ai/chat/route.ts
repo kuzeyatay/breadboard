@@ -315,6 +315,7 @@ export async function POST(request: Request) {
         },
       });
       await runtime.startRun({
+        userId,
         externalSessionId: session.externalSessionId,
         liveSessionId: session.liveSessionId,
         workspaceKey: session.workspaceKey,
@@ -324,6 +325,7 @@ export async function POST(request: Request) {
         // The brokered map is authoritative; a selector may only narrow it.
         tools: mergeSelectedTools(prepared.grant.allowedTools, resolved.tools),
         system: composeHermesSystemPrompt({
+          userId,
           surface: "quartz_ai",
           decision,
           userText: resolved.userText || text,
@@ -429,6 +431,7 @@ export async function POST(request: Request) {
       },
     });
     await runtime.startRun({
+      userId,
       externalSessionId: created.externalSessionId,
       liveSessionId: created.liveSessionId,
       workspaceKey: created.workspaceKey,
@@ -438,6 +441,7 @@ export async function POST(request: Request) {
       // The brokered map is authoritative; a selector may only narrow it.
       tools: mergeSelectedTools(prepared.grant.allowedTools, resolved.tools),
       system: composeHermesSystemPrompt({
+        userId,
         surface: "quartz_ai",
         decision,
         userText: resolved.userText || text,

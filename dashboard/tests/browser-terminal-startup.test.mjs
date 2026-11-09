@@ -9,7 +9,7 @@ import { chromium } from "playwright-core";
 const root = path.resolve(import.meta.dirname, "..");
 const clientPath = path.join(root, "src/app/browser/browser-client.tsx");
 
-async function browserFixture(t, initialState) {
+async function browserFixture(t, initialState, { storedWidth } = {}) {
   // Exercise the real browser shell; replace unrelated widgets and the chat
   // transport. Splitting stays enabled so a click-time import remains observable.
   const source = fs.readFileSync(clientPath, "utf8");
@@ -38,7 +38,7 @@ async function browserFixture(t, initialState) {
     export const openBrowserInDesktop = async () => true;
     export const refreshDesktopTabsState = async () => {};
     export const sendDesktopTabsCommand = async command => {
-      if (command.type === 'browser-terminal') window.tabs.open(command.open);
+      if (command.type === 'browser-terminal') window.tabs.open(command.open, command.width);
     };
   `);
   mocks.set("@/app/components/hermes/dashboard-agent-terminal", `
@@ -53,7 +53,7 @@ async function browserFixture(t, initialState) {
   mocks.set("./use-browser-recent-searches", "export const useBrowserRecentSearches = () => ({items: []});");
   mocks.set("./browser-recent-searches", "export const searchSuggestions = () => []; export const looksLikeBrowserAddress = () => false;");
   mocks.set("@/app/components/use-page-appearance", "export const usePageAppearance = () => ({ready: true});");
-  mocks.set("@/app/components/hermes/use-chat-greeting", "export const useChatGreeting = () => ({greeting: ''});");
+  mocks.set("@/app/components/hermes/use-chat-greeting", "export const useChatGreeting = () => ({greeting: '', suggestionSources: {}});");
   mocks.set("@/lib/speech/clap/targets", "export const registerClapDock = () => () => {};");
   const bundle = await build({
     absWorkingDir: root, bundle: true, write: false, splitting: true, format: "esm",
@@ -68,8 +68,10 @@ async function browserFixture(t, initialState) {
         snapshot: () => state,
         subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); },
         publish: next => { state = next; listeners.forEach(fn => fn()); },
-        open: open => {
-          state = {...state,tabs:[{...state.tabs[0],browser:{...state.tabs[0].browser,terminalOpen:open}}]};
+        open: (open, width) => {
+          if (!state) return;
+          state = {...state,tabs:state.tabs.map(tab => tab.id === state.activeId
+            ? {...tab,browser:{...tab.browser,terminalOpen:open,...(width === undefined ? {} : {terminalWidth:width})}} : tab)};
           listeners.forEach(fn => fn());
         }
       };
@@ -98,6 +100,9 @@ async function browserFixture(t, initialState) {
       await route.fulfill({ contentType: "text/html", body: '<div id="root"></div><script type="module" src="/stdin.js"></script>' });
     }
   });
+  if (storedWidth !== undefined) await page.addInitScript(width => {
+    localStorage.setItem('breadboard:browser-terminal-width:test', String(width));
+  }, storedWidth);
   await page.goto("http://terminal.test/");
   return { page, errors, lateScripts, markShellReady: () => { shellReady = true; } };
 }
@@ -120,6 +125,25 @@ test("browser Terminal opens without another script request and preserves its dr
   assert.equal(await composer.inputValue(), "Keep this unsent draft");
   assert.equal(await page.evaluate(() => window.terminalMounts), 1);
   assert.deepEqual(lateScripts, [], "opening Terminal must not need another JavaScript download");
+  assert.deepEqual(errors, []);
+});
+
+test("restoring a Terminal width reserves the same space in the native browser", { timeout: 30_000 }, async t => {
+  const { page, errors } = await browserFixture(t, {
+    enabled: true, activeId: 1, selfId: 1,
+    tabs: [{ id: 1, title: "Example", url: "http://terminal.test/browser",
+      browser: { address: "https://example.com", pageReady: true, terminalOpen: true, terminalWidth: 640 } }],
+  }, { storedWidth: 700 });
+  await page.getByRole('textbox', { name: 'Terminal message' }).waitFor();
+  await page.waitForFunction(() => {
+    const width = window.tabs.snapshot().tabs[0].browser.terminalWidth;
+    return width === 700 && document.querySelector('.browser-terminal-drawer').style.getPropertyValue('--browser-terminal-width') === `${width}px`;
+  });
+  await page.setViewportSize({ width: 1000, height: 700 });
+  await page.waitForFunction(() => window.tabs.snapshot().tabs[0].browser.terminalWidth === 500
+    && document.querySelector('.browser-terminal-drawer').style.getPropertyValue('--browser-terminal-width') === '500px');
+  await page.setViewportSize({ width: 640, height: 700 });
+  await page.waitForFunction(() => document.querySelector('.browser-terminal-drawer').style.getPropertyValue('--browser-terminal-width') === '320px');
   assert.deepEqual(errors, []);
 });
 

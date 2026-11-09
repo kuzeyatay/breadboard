@@ -32,10 +32,10 @@ test("desktop tests isolate physical-screen and native-focus fixtures", () => {
   });
   assert.equal(run.status, 0, run.stderr);
   const result = JSON.parse(run.stdout);
-  assert.deepEqual(result.serial, ["tab-manager.test.js", "browser-address-suggestions-integration.test.js", "browser-context-menu-integration.test.js", "browser-downloads-popover-integration.test.js", "browser-fullscreen-integration.test.js", "browser-menu-integration.test.js", "browser-picture-in-picture-integration.test.js", "google-pip-extension-integration.test.js", "voice-screen-context-integration.test.js"]);
+  assert.deepEqual(result.serial, ["tab-manager.test.js", "browser-address-suggestions-integration.test.js", "browser-context-menu-integration.test.js", "browser-downloads-popover-integration.test.js", "browser-fullscreen-integration.test.js", "browser-menu-integration.test.js", "browser-picture-in-picture-integration.test.js", "google-pip-extension-integration.test.js", "voice-screen-context-integration.test.js", "screen-recording-integration.test.js", "notification-visible-region-integration.test.js"]);
   assert.deepEqual(result.partition, {
     parallel: ["alpha.test.js", "zeta.test.js"],
-    screen: ["tab-manager.test.js", "browser-address-suggestions-integration.test.js", "browser-context-menu-integration.test.js", "browser-downloads-popover-integration.test.js", "browser-fullscreen-integration.test.js", "browser-menu-integration.test.js", "browser-picture-in-picture-integration.test.js", "google-pip-extension-integration.test.js", "voice-screen-context-integration.test.js"],
+    screen: ["tab-manager.test.js", "browser-address-suggestions-integration.test.js", "browser-context-menu-integration.test.js", "browser-downloads-popover-integration.test.js", "browser-fullscreen-integration.test.js", "browser-menu-integration.test.js", "browser-picture-in-picture-integration.test.js", "google-pip-extension-integration.test.js", "voice-screen-context-integration.test.js", "screen-recording-integration.test.js", "notification-visible-region-integration.test.js"],
   });
   assert.deepEqual(result.lanes.map((lane: { files: string[] }) => lane.files), [
     ["alpha.test.js", "zeta.test.js"],
@@ -48,6 +48,8 @@ test("desktop tests isolate physical-screen and native-focus fixtures", () => {
     ["browser-picture-in-picture-integration.test.js"],
     ["google-pip-extension-integration.test.js"],
     ["voice-screen-context-integration.test.js"],
+    ["screen-recording-integration.test.js"],
+    ["notification-visible-region-integration.test.js"],
   ]);
   assert.deepEqual(result.args, [
     "--test",
@@ -82,3 +84,4 @@ test("desktop test discovery ignores stale JavaScript whose source was removed",
   assert.equal(run.status, 0, run.stderr);
   assert.deepEqual(JSON.parse(run.stdout), ["current.test.js"]);
 });
+

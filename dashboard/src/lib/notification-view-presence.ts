@@ -1,5 +1,7 @@
 import type { ChatNotificationTarget } from './chat-notification-inbox';
 import type { DesktopTabsState } from './desktop-browser-tabs';
+import { isNotificationElementVisible, visibleNotificationMessageKeys, notificationHostWindows, setNotificationVisibleRects } from './chat-notification-visibility.ts';
+import { acknowledgeVisibleChatMessages } from './chat-notification-receipts.ts';
 
 // Only live viewing state is shared here. Read/dismissed notifications still
 // belong to the account's server-side inbox. Abandoned leases expire quickly.
@@ -8,22 +10,55 @@ const HEARTBEAT_MS = 4_000;
 const LEASE_MS = 15_000;
 type ViewLease = { targets: ChatNotificationTarget[]; inlineSelectionIds?: string[]; expiresAt: number };
 let targets: ChatNotificationTarget[] = [];
-const inlineSelections = new Map<symbol, string>();
+const inlineSelections = new Map<symbol, { id: string; element?: HTMLElement }>();
 let desktopState: DesktopTabsState | undefined;
 let pageHidden = false;
 let storageKey: string | undefined;
 let stop: (() => void) | undefined;
 const listeners = new Set<() => void>();
+let targetSnapshot: ChatNotificationTarget[] | undefined;
 
 export function isNotificationPageActive(): boolean {
   if (typeof document === 'undefined' || pageHidden) return false;
+  if (desktopState?.notificationVisibleRects !== undefined) {
+    const presented = desktopState.notificationPageVisible ?? (desktopState.selfId != null &&
+      (desktopState.visibleIds ?? [desktopState.visibleId !== undefined ? desktopState.visibleId : desktopState.activeId]).includes(desktopState.selfId));
+    // Uncovered pixels prove the answer *can* be seen, not that anyone is
+    // looking. A Breadboard window beside the app that has focus still gets
+    // the OS alert and the chime; focusing it retires the notice.
+    return presented && desktopState.windowFocused !== false && desktopState.notificationVisibleRects.length > 0;
+  }
+  if (desktopState?.notificationPageVisible !== undefined) {
+    return desktopState.notificationPageVisible && desktopState.windowFocused === true;
+  }
   // Focus can be in native browser content, the address bar, or the overlay;
   // document.hasFocus() alone misidentifies all of those desktop cases.
   if (desktopState?.selfId != null) {
-    return desktopState.selfId === desktopState.activeId &&
+    const visible = desktopState.visibleIds ?? [desktopState.visibleId !== undefined
+      ? desktopState.visibleId : desktopState.activeId];
+    return visible.includes(desktopState.selfId) &&
       desktopState.windowFocused !== false;
   }
-  return document.visibilityState === 'visible' && document.hasFocus();
+  return document.visibilityState === 'visible' && (notificationHostWindows().at(-1)?.document ?? document).hasFocus();
+}
+
+function currentTargets(): ChatNotificationTarget[] {
+  if (!isNotificationPageActive()) return [];
+  if (targetSnapshot) return targetSnapshot;
+  // One geometry read per JS turn, shared by toast, voice and unread consumers.
+  queueMicrotask(() => { targetSnapshot = undefined; });
+  return targetSnapshot = targets.map(target => target.observeMessages ? {
+    ...target,
+    visibleMessageKeys: visibleNotificationMessageKeys([
+      target.surface === 'garden_chat' ? `garden_chat:${target.gardenSlug}:${target.chatId}` : `dashboard_terminal:${target.chatId}`,
+      ...(target.conversationId ? [`dashboard_terminal:${target.conversationId}`] : []),
+    ]),
+  } : target);
+}
+
+function currentInlineSelections(): string[] {
+  return isNotificationPageActive() ? [...inlineSelections.values()]
+    .filter(view => !view.element || isNotificationElementVisible(view.element)).map(view => view.id) : [];
 }
 
 function changed(): void {
@@ -32,10 +67,13 @@ function changed(): void {
 
 function publish(): void {
   if (!storageKey) return;
+  targetSnapshot = undefined;
+  const visibleTargets = currentTargets();
+  acknowledgeVisibleChatMessages(visibleTargets);
   try {
     if ((targets.length || inlineSelections.size) && isNotificationPageActive()) {
       window.localStorage.setItem(storageKey, JSON.stringify({
-        targets, inlineSelectionIds: [...inlineSelections.values()], expiresAt: Date.now() + LEASE_MS,
+        targets: visibleTargets, inlineSelectionIds: currentInlineSelections(), expiresAt: Date.now() + LEASE_MS,
       } satisfies ViewLease));
     } else {
       window.localStorage.removeItem(storageKey);
@@ -59,29 +97,71 @@ function start(): void {
   window.addEventListener('pageshow', onShow);
   window.addEventListener('storage', onStorage);
   document.addEventListener('visibilitychange', publish);
+  // Scrolls, virtualization, drawers and modal covers can change what is seen
+  // without changing the selected chat. Coalesce geometry work into one frame.
+  let frame = 0;
+  const schedule = () => { if (!frame) frame = window.requestAnimationFrame(() => { frame = 0; publish(); }); };
+  const observer = new MutationObserver(schedule);
+  observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true,
+    attributeFilter: ['class', 'style', 'hidden', 'inert', 'open', 'data-notification-chat', 'data-notification-message'] });
+  document.addEventListener('scroll', schedule, true);
+  window.addEventListener('resize', schedule);
+  document.addEventListener('transitionend', schedule, true);
+  document.addEventListener('animationend', schedule, true);
   const timer = window.setInterval(publish, HEARTBEAT_MS);
-  const desktop = (window as Window & {
+  const hosts = notificationHostWindows();
+  for (const host of hosts.slice(1)) {
+    host.addEventListener('focus', publish);
+    host.addEventListener('blur', publish);
+    host.addEventListener('scroll', schedule, true);
+    host.addEventListener('resize', schedule);
+    host.document.addEventListener('visibilitychange', publish);
+  }
+  type VisibilityHost = Window & {
+    breadboardNotificationVisibility?: {
+      getState: () => Promise<DesktopTabsState>;
+      onState: (callback: (state: DesktopTabsState) => void) => () => void;
+    };
     breadboardDesktop?: {
       getTabsState?: () => Promise<DesktopTabsState>;
       onTabsState?: (callback: (state: DesktopTabsState) => void) => () => void;
     };
-  }).breadboardDesktop;
+  };
+  const desktopHost = hosts.find(host => (host as VisibilityHost).breadboardNotificationVisibility || (host as VisibilityHost).breadboardDesktop);
+  const standalone = (desktopHost as VisibilityHost | undefined)?.breadboardNotificationVisibility;
+  const desktop = standalone ? { getTabsState: standalone.getState, onTabsState: standalone.onState }
+    : (desktopHost as VisibilityHost | undefined)?.breadboardDesktop;
   let disposed = false;
   let receivedState = false;
   const unsubscribe = desktop?.onTabsState?.((state) => {
     receivedState = true;
     desktopState = state;
+    if (desktopHost) setNotificationVisibleRects(desktopHost, state.notificationVisibleRects);
     publish();
   });
   void desktop?.getTabsState?.().then((state) => {
     if (disposed || receivedState) return;
     desktopState = state;
+    if (desktopHost) setNotificationVisibleRects(desktopHost, state.notificationVisibleRects);
     publish();
   }).catch(() => undefined);
   stop = () => {
     disposed = true;
     unsubscribe?.();
     window.clearInterval(timer);
+    window.cancelAnimationFrame(frame);
+    observer.disconnect();
+    for (const host of hosts.slice(1)) {
+      host.removeEventListener('focus', publish);
+      host.removeEventListener('blur', publish);
+      host.removeEventListener('scroll', schedule, true);
+      host.removeEventListener('resize', schedule);
+      host.document.removeEventListener('visibilitychange', publish);
+    }
+    document.removeEventListener('scroll', schedule, true);
+    window.removeEventListener('resize', schedule);
+    document.removeEventListener('transitionend', schedule, true);
+    document.removeEventListener('animationend', schedule, true);
     window.removeEventListener('focus', publish);
     window.removeEventListener('blur', publish);
     window.removeEventListener('pagehide', onHide);
@@ -90,6 +170,7 @@ function start(): void {
     document.removeEventListener('visibilitychange', publish);
     try { window.localStorage.removeItem(storageKey!); } catch { /* optional storage */ }
     desktopState = undefined;
+    if (desktopHost) setNotificationVisibleRects(desktopHost, undefined);
     storageKey = undefined;
     pageHidden = false;
     stop = undefined;
@@ -102,9 +183,9 @@ function stopIfUnused(): void {
 }
 
 /** A visible Ask Here answer may belong to a conversation outside the main chat. */
-export function registerInlineSelectionNotificationView(selectionId: string): () => void {
+export function registerInlineSelectionNotificationView(selectionId: string, element?: HTMLElement): () => void {
   const owner = Symbol(selectionId);
-  inlineSelections.set(owner, selectionId);
+  inlineSelections.set(owner, { id: selectionId, element });
   start();
   publish();
   return () => { inlineSelections.delete(owner); publish(); stopIfUnused(); };
@@ -126,7 +207,7 @@ export function subscribeNotificationViews(listener: () => void): () => void {
 /** Read synchronously before displaying an inbox response, including in a
  * newly created overlay that missed the page's original opened event. */
 export function readNotificationViewTargets(): unknown[] {
-  const viewed: unknown[] = isNotificationPageActive() ? [...targets] : [];
+  const viewed: unknown[] = currentTargets();
   if (typeof window === 'undefined') return viewed;
   try {
     const storage = window.localStorage;
@@ -146,7 +227,7 @@ export function readNotificationViewTargets(): unknown[] {
 
 /** Includes visible answers in other renderers, such as the native toast overlay. */
 export function isInlineSelectionNotificationViewed(selectionId: string): boolean {
-  if (isNotificationPageActive() && [...inlineSelections.values()].includes(selectionId)) return true;
+  if (currentInlineSelections().includes(selectionId)) return true;
   if (typeof window === 'undefined') return false;
   try {
     const storage = window.localStorage;

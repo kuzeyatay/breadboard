@@ -1,3 +1,4 @@
+use crate::runtime_diagnostics::ShutdownOrigin;
 use crate::shutdown::ShutdownCoordinator;
 use crate::streaming_body::{StreamingBody, StreamingBodyFraming};
 use breadboard_runtime_core::{
@@ -986,7 +987,7 @@ where
             write_control_response(stream, 200, "OK", &body)?;
         }
         ("POST", "/v1/shutdown") => {
-            shutdown.request_shutdown();
+            shutdown.request_shutdown_from(ShutdownOrigin::AuthenticatedLifecycle);
             let acknowledgement = RuntimeCommandAck { ok: true };
             acknowledgement
                 .validate()

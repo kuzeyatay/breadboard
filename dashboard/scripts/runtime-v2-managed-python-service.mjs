@@ -150,6 +150,8 @@ function baseChildEnvironment() {
     if (typeof process.env[name] === "string") result[name] = process.env[name];
   }
   result.PYTHONUNBUFFERED = "1";
+  result.PYTHONUTF8 = "1";
+  result.PYTHONIOENCODING = "utf-8";
   result.PYTHONDONTWRITEBYTECODE = "1";
   return result;
 }
@@ -191,7 +193,7 @@ export function validateManagedPythonLaunchPaths(serviceId, dataRoot, environmen
   return {python: runtimeProcessPath(python), sourceRoot: runtimeProcessPath(sourceRoot)};
 }
 
-function launchShape(serviceId, port, configuration, dataRoot) {
+export function launchShape(serviceId, port, configuration, dataRoot) {
   let paths;
   try { paths = validateManagedPythonLaunchPaths(serviceId, dataRoot); }
   catch (error) { fail(error instanceof Error ? error.message : "invalid managed launch paths"); }
@@ -236,7 +238,7 @@ function launchShape(serviceId, port, configuration, dataRoot) {
         ...common,
         ...validateEnvironment(configuration.environment, VIBE_ENVIRONMENT),
         API_AUTH_KEY: apiKey,
-        VIBE_TRADING_HOME: home,
+        VIBE_TRADING_HOME: runtimeProcessPath(home),
       },
     };
   }
@@ -283,9 +285,9 @@ function launchShape(serviceId, port, configuration, dataRoot) {
     env: {
       ...common,
       ...validateEnvironment(configuration.environment, STOCK_ENVIRONMENT),
-      ENV_FILE: envFile,
-      DATABASE_PATH: path.join(data, "stock_analysis.db"),
-      LOG_DIR: logs,
+      ENV_FILE: runtimeProcessPath(envFile),
+      DATABASE_PATH: runtimeProcessPath(path.join(data, "stock_analysis.db")),
+      LOG_DIR: runtimeProcessPath(logs),
     },
   };
 }

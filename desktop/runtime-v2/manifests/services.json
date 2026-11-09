@@ -4158,7 +4158,7 @@
         "expectedBodyContains": "\"ok\"",
         "requestTimeoutMs": 4000,
         "pollIntervalMs": 1000,
-        "startupTimeoutMs": 300000
+        "startupTimeoutMs": 900000
       },
       "startupPolicy": "on-demand",
       "resourceClass": "local-model",

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { sameRuntimePath, runtimePathWithin } from "./runtime-v2-paths.mjs";
+import { sameRuntimePath, runtimePathWithin, runtimeProcessPath } from "./runtime-v2-paths.mjs";
 
 // Opaque runtime filesystem access prevents Next from tracing mutable installs
 // into the standalone application. Neither a request nor a manifest supplies a
@@ -131,7 +131,12 @@ export function managedModelCacheEnvironment(dataRoot, environment = process.env
   const huggingface = directAncestors(cache, path.join(cache, "huggingface"));
   const hub = directAncestors(cache, path.join(huggingface, "hub"));
   const torch = directAncestors(cache, path.join(cache, "torch"));
-  return {HF_HOME: huggingface, HF_HUB_CACHE: hub, HUGGINGFACE_HUB_CACHE: hub, TORCH_HOME: torch};
+  // Native authority uses extended Windows paths, but CTranslate2 cannot open
+  // model.bin through that spelling. Normalize only after containment and
+  // redirection checks; all consumers still use the same verified D: cache.
+  return Object.fromEntries(Object.entries({
+    HF_HOME: huggingface, HF_HUB_CACHE: hub, HUGGINGFACE_HUB_CACHE: hub, TORCH_HOME: torch,
+  }).map(([key, value]) => [key, runtimeProcessPath(value)]));
 }
 
 /** A native environment records the selected path at process startup. For our

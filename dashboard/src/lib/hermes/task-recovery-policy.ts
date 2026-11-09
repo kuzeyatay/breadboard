@@ -3,9 +3,29 @@
 
 export const MAX_TASK_RECOVERY_TURNS = 12;
 export const MAX_IDENTICAL_TASK_FAILURES = 3;
+export const MAX_PROVIDER_RECOVERY_WAIT_MS = 2 * 60 * 60_000;
 
 export interface RecoveryFailure { code?: string; message?: string; recoverable?: boolean }
 export interface RecoveryToolResult { toolName?: unknown; success?: unknown; summary?: unknown; failure?: RecoveryFailure }
+
+// Only evidence lookups can be superseded by another lookup. Unknown tools,
+// commands, delegated work and artifact writers keep their recovery contract.
+const EVIDENCE_LOOKUPS = new Set([
+  'web_search', 'web_extract', 'websearch', 'webfetch', 'weather_forecast',
+  'map_search', 'map_nearby', 'map_route', 'map_get_selected_place',
+  'garden_search', 'garden_get_page', 'garden_get_page_context',
+  'garden_get_source_excerpt', 'garden_get_source_figure', 'garden_discover_sources',
+  'memory_query', 'gbrain_search', 'gbrain_retrieve', 'image_search',
+  'browser_terminal', 'tool_search', 'tool_describe', 'capability_search',
+]);
+
+function recoveredVoiceLookups(tools: readonly RecoveryToolResult[], unresolved: readonly RecoveryToolResult[]): boolean {
+  // A successful launch is not proof that delegated work or its artifact is
+  // finished. Mixed workflow runs retain the full recovery policy.
+  if (!unresolved.length || tools.some(tool => !EVIDENCE_LOOKUPS.has(String(tool.toolName)))) return false;
+  const lastFailure = Math.max(...unresolved.map(tool => tools.lastIndexOf(tool)));
+  return tools.slice(lastFailure + 1).some(tool => tool.success === true && EVIDENCE_LOOKUPS.has(String(tool.toolName)));
+}
 
 /** Preserve actual tool diagnostics even when the display summary is generic. */
 export function recoveryToolFailure(tool: RecoveryToolResult & { details?: Record<string, unknown> }): RecoveryFailure {
@@ -24,6 +44,10 @@ export function recoveryToolFailure(tool: RecoveryToolResult & { details?: Recor
 /** These failures need a person or changed external conditions, not another run. */
 export function taskFailureCanRecover(failure: RecoveryFailure): boolean {
   if (failure.recoverable === false) return false;
+  // Linking a page requires a new user turn with browser context. Replaying
+  // the old turn cannot acquire that context. Include saved legacy diagnostics.
+  if (failure.code === 'browser_not_linked' ||
+      /Send a message from the Terminal beside the browser page to connect it\./i.test(failure.message ?? '')) return false;
   const text = `${failure.code ?? ""} ${failure.message ?? ""}`;
   return !/(?:cancel(?:led|ed|lation)|abort(?:ed)?|permission[_ -]denied|access[_ -]denied|forbidden|unauthori[sz]ed|approval[_ -](?:denied|required)|requires? (?:user )?approval|quota|usage[_ -]limit|insufficient[_ -](?:quota|credits)|rate[_ -]limit|resource[_ -]exhausted|out of memory|enospc|disk (?:is )?full|authentication|invalid[_ -](?:api[_ -])?key|sign[ -]?in required|budget[_ -](?:limit|exhaust)|HTTP\s*(?:401|403|429))/i.test(text);
 }
@@ -48,6 +72,8 @@ export interface TaskRecoveryCheckpoint {
   progress: string;
   repeated: number;
   notBefore: number;
+  /** One durable outage window; retry wording and process restarts cannot reset it. */
+  providerWaitStartedAt?: number;
 }
 
 export function taskRecoveryCheckpoint(input: {
@@ -56,6 +82,10 @@ export function taskRecoveryCheckpoint(input: {
   tools: readonly RecoveryToolResult[];
   /** Stable artifact ids/versions, not tool call ids or timestamps. */
   artifacts?: unknown[];
+  /** The canonical voice answer has already been delivered successfully. */
+  completedVoiceAnswer?: boolean;
+  /** A nonempty canonical text answer has already finished successfully. */
+  completedTextAnswer?: boolean;
   turn: number;
   previous?: TaskRecoveryCheckpoint;
   now?: number;
@@ -65,16 +95,40 @@ export function taskRecoveryCheckpoint(input: {
   if (unresolved.some(tool => !taskFailureCanRecover(tool.failure ?? { message: String(tool.summary ?? "") }))) {
     return { stopped: "requires_user_or_external_change" };
   }
+  // A completed information answer (including a request for missing context)
+  // is a finished conversational turn. Incidental lookup failures are not an
+  // unfinished job. Real run failures, writes and missing deliverables retain
+  // their recovery checks; the model must resolve lookups before finishing.
+  if (input.completedTextAnswer && !input.failure &&
+      (input.status === "idle" || input.status === "completed") &&
+      unresolved.every(tool => EVIDENCE_LOOKUPS.has(String(tool.toolName)))) return {};
+  // Re-running a delivered spoken answer after a successful alternative lookup
+  // changes the text after it was heard. Scope this to evidence gathering:
+  // failed writes/artifacts/delegates, missing answers and run failures recover.
+  if (input.completedVoiceAnswer && !input.failure &&
+      (input.status === "idle" || input.status === "completed") &&
+      recoveredVoiceLookups(input.tools, unresolved)) return {};
   const failure = input.status === "idle" || input.status === "completed"
     ? unresolved.length ? { code: "task_tool_failed", message: unresolved.map(t => `${t.toolName}: ${t.failure?.message ?? String(t.summary ?? "failed")}`).join("; ") } : undefined
     : input.failure ?? { code: "runtime_interrupted", message: "The runtime ended before completing the task." };
   if (!failure) return {};
   if (!taskFailureCanRecover(failure)) return { stopped: "requires_user_or_external_change" };
-  if (input.turn >= MAX_TASK_RECOVERY_TURNS) return { stopped: "recovery_budget_exhausted" };
   const code = failure.code || "runtime_error";
   const message = (failure.message || code).slice(0, 2_000);
   const fingerprint = recoveryFingerprint([code, message]);
   const progress = recoveryFingerprint(input.artifacts ?? []);
+  // A transport outage cannot be repaired by editing application source.
+  // Limit this to failed model turns; a tool's HTTP error may have another cause.
+  if (["hermes_turn_failed", "recovery_dispatch_failed"].includes(code) &&
+      /\bHTTP\s*(?:502|503|504)\b|\bECONN(?:REFUSED|RESET)\b|\bETIMEDOUT\b/i.test(message)) {
+    const now = input.now ?? Date.now();
+    const started = input.previous?.providerWaitStartedAt ?? now;
+    if (now - started >= MAX_PROVIDER_RECOVERY_WAIT_MS) return { stopped: "provider_recovery_deadline" };
+    return { checkpoint: { code, message, fingerprint, progress,
+      repeated: input.previous?.providerWaitStartedAt !== undefined ? input.previous.repeated + 1 : 1,
+      providerWaitStartedAt: started, notBefore: now + 30_000 } };
+  }
+  if (input.turn >= MAX_TASK_RECOVERY_TURNS) return { stopped: "recovery_budget_exhausted" };
   const repeated = input.previous?.fingerprint === fingerprint && input.previous.progress === progress
     ? input.previous.repeated + 1 : 1;
   if (repeated >= MAX_IDENTICAL_TASK_FAILURES) return { stopped: "repeated_failure_without_progress" };

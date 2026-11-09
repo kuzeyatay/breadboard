@@ -40,6 +40,29 @@ import type { ResolvedPaths } from "./path-resolver";
 
 export const CLIPROXY_REPO = "router-for-me/CLIProxyAPI";
 export const CLIPROXY_DEFAULT_PORT = 8317;
+// Older cached binaries can advertise Argon from the remote catalog without
+// supporting its current Antigravity routing and account eligibility checks.
+export const CLIPROXY_MINIMUM_VERSION = "8.0.58";
+
+export function isSupportedCliproxyVersion(version: string | null): boolean {
+  const parts = version?.match(/^v?(\d+)\.(\d+)\.(\d+)$/)?.slice(1).map(Number);
+  if (!parts) return false;
+  const minimum = CLIPROXY_MINIMUM_VERSION.split(".").map(Number);
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (parts[index] !== minimum[index]) return parts[index]! > minimum[index]!;
+  }
+  return true;
+}
+
+function installedCliproxyVersion(home: string): string | null {
+  // The CLI prints its version before help; it has no --version switch.
+  const result = spawnSync(cliproxyBinaryPath(home), ["--help"], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 5_000,
+  });
+  return /CLIProxyAPI Version:\s*(\d+\.\d+\.\d+)/.exec(result.stdout ?? "")?.[1] ?? null;
+}
 
 /**
  * Where the binary, config, secrets and OAuth credentials live.
@@ -336,12 +359,10 @@ function findFile(directory: string, name: string): string | null {
 }
 
 /**
- * Download the proxy into the home directory when it is not already there.
+ * Download the proxy when absent or too old for the supported model routes.
  *
- * Not bundled into the installer: it is a ~60MB platform-specific Go binary
- * that only users who connect a subscription ever need, and the download is
- * cached across app updates because it lives with the user data rather than in
- * app resources.
+ * Development caches the platform-specific binary with user data. Packaged
+ * builds use the separately pinned, checksum-verified artifact instead.
  *
  * Callers must treat a rejection as non-fatal — subscriptions are an optional
  * capability and the rest of Breadboard is unaffected by their absence.
@@ -352,7 +373,14 @@ export async function provisionCliproxyBinary(
 ): Promise<void> {
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(cliproxyAuthDir(home), { recursive: true });
-  if (isCliproxyInstalled(home)) return;
+  if (isCliproxyInstalled(home)) {
+    // An explicitly supplied binary/version belongs to the operator. The
+    // automatic upgrade applies only to Breadboard's own unpinned cache.
+    if (process.env["CLIPROXY_BINARY"]?.trim() || process.env["CLIPROXY_VERSION"]?.trim()) return;
+    const installed = installedCliproxyVersion(home);
+    if (isSupportedCliproxyVersion(installed)) return;
+    log(`upgrading CLIProxyAPI ${installed ?? "(unknown version)"}; ${CLIPROXY_MINIMUM_VERSION} or later is required`);
+  }
 
   const version = await latestVersion();
   const asset = assetFor(version);

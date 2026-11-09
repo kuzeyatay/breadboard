@@ -10,6 +10,24 @@ import tailwind from '@tailwindcss/postcss';
 import { chromium } from 'playwright';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+// Rich cards can be taller than the deliberately smaller voice transcript.
+// Click their visible area, as a user does, without bypassing hit testing.
+async function clickVisibleControl(control, viewport) {
+  await control.scrollIntoViewIfNeeded();
+  const [button, clip] = await Promise.all([control.boundingBox(), viewport.boundingBox()]);
+  assert.ok(button && clip);
+  const left = Math.max(button.x, clip.x), right = Math.min(button.x + button.width, clip.x + clip.width);
+  const top = Math.max(button.y, clip.y), bottom = Math.min(button.y + button.height, clip.y + clip.height);
+  assert.ok(right > left && bottom > top, 'The control has a visible clickable area');
+  await control.click({ position: { x: (left + right) / 2 - button.x, y: (top + bottom) / 2 - button.y } });
+}
+async function assertCenteredRing(page) {
+  const ring = await page.locator('.voice-ring-button').boundingBox();
+  const viewport = page.viewportSize();
+  assert.ok(ring && viewport);
+  assert.ok(Math.abs(ring.x + ring.width / 2 - viewport.width / 2) <= 1, 'Ring stays horizontally centered');
+  assert.ok(Math.abs(ring.y + ring.height / 2 - viewport.height / 2) <= 1, 'Ring stays vertically centered');
+}
 const weather = '```weather-results\n' + JSON.stringify({ location: 'Eindhoven', country: 'Netherlands', days: [
   { date: '2026-09-07', temperatureC: 20, minC: 15, maxC: 22, code: 0, condition: 'Clear', isDay: true },
 ] }) + '\n```';
@@ -33,7 +51,7 @@ const garden = {
   data: { query: 'Fitness', gardens: [{ slug: 'fitness', name: 'Fitness', results: [{ pageSlug: 'workouts', title: 'Workouts' }] }] },
 };
 
-test('voice shows chat widgets, supports their controls, and keeps display payloads out of speech', { timeout: 60000 }, async () => {
+test('voice shows chat widgets, supports their controls, and keeps display payloads out of speech', { timeout: 60000 }, async t => {
   const bundle = await esbuild.build({
     stdin: { resolveDir: root, loader: 'tsx', contents: `
       import React,{useState} from 'react';import{createRoot}from'react-dom/client';
@@ -77,7 +95,8 @@ test('voice shows chat widgets, supports their controls, and keeps display paylo
     else { res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><html><head><link rel="stylesheet" href="/style.css"></head><body><main id="root"></main><script src="/app.js"></script></body></html>'); }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const executablePath = ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Microsoft/Edge/Application/msedge.exe', '/usr/bin/chromium'].find(fs.existsSync);
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  const executablePath = [process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, chromium.executablePath(), 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Microsoft/Edge/Application/msedge.exe', '/usr/bin/chromium'].filter(Boolean).find(fs.existsSync);
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   const artifacts = path.join(root, '.tmp-voice-widgets-qa'); fs.mkdirSync(artifacts, { recursive: true });
   try {
@@ -89,6 +108,7 @@ test('voice shows chat widgets, supports their controls, and keeps display paylo
       const stage = state => page.locator(`.voice-stage[data-stage="${state}"]`).waitFor();
       const response = () => page.locator(compact ? '.voice-widget-message-assistant' : '.voice-caption-text').last();
       await stage('listening');
+      await assertCenteredRing(page);
       await page.evaluate(() => window.say());
       await stage('thinking');
       // A half-streamed fence must not leak its JSON into the voice UI.
@@ -113,7 +133,8 @@ test('voice shows chat widgets, supports their controls, and keeps display paylo
       assert.equal(await page.evaluate(() => window.played.length), speechCount, 'resource-only answer should not synthesize empty speech');
       for (const renderer of ['chat-search-results', 'garden-navigator', 'product-carousel']) await response().locator(`[data-generative-ui="${renderer}"]`).waitFor();
       assert.match(await response().getByRole('link', { name: /Fitness plan/ }).getAttribute('href'), /terminalChat=fitness/);
-      await response().getByRole('button', { name: 'Open details for Studio headphones', exact: true }).click();
+      await assertCenteredRing(page);
+      await clickVisibleControl(response().getByRole('button', { name: 'Open details for Studio headphones', exact: true }), page.locator(compact ? '.voice-widget-transcript' : '.voice-caption-text'));
       await response().getByText('Comfortable studio headphones.', { exact: true }).waitFor();
       await response().getByRole('button', { name: 'Similar', exact: true }).first().click();
       await stage('thinking');
@@ -123,7 +144,7 @@ test('voice shows chat widgets, supports their controls, and keeps display paylo
       assert.equal(await page.evaluate(() => window.played.at(-1)), 'Here is an image.');
       await page.evaluate(() => window.finishSpeech());
       await stage('listening');
-      await response().locator('.chat-image-results button').first().click();
+      await clickVisibleControl(response().locator('.chat-image-results button').first(), page.locator(compact ? '.voice-widget-transcript' : '.voice-caption-text'));
       await page.getByRole('dialog', { name: 'Fresh bread', exact: true }).waitFor();
       await page.keyboard.press('Escape');
       await page.getByRole('dialog', { name: 'Fresh bread', exact: true }).waitFor({ state: 'detached' });
@@ -131,6 +152,8 @@ test('voice shows chat widgets, supports their controls, and keeps display paylo
       await page.setViewportSize({ width: 400, height: 300 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       const viewport = page.locator(compact ? '.voice-widget-transcript' : '.voice-caption-text');
+      await assertCenteredRing(page);
+      assert.ok((await viewport.boundingBox()).height >= 24, 'The short voice window keeps readable transcript space');
       await response().locator('.chat-image-results').scrollIntoViewIfNeeded();
       const closeBounds = await page.getByRole('button', { name: 'Close voice mode', exact: true }).boundingBox();
       assert.ok(closeBounds.y >= 0 && closeBounds.y + closeBounds.height <= 300, 'widget focus must not scroll the voice controls out of the window');
@@ -147,5 +170,5 @@ test('voice shows chat widgets, supports their controls, and keeps display paylo
       assert.deepEqual(errors, []);
       await page.close();
     }
-  } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
+  } finally { await browser.close(); }
 });

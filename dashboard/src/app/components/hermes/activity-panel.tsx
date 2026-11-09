@@ -325,7 +325,8 @@ function ClarificationCard({
     setDraft("");
   };
   return (
-    <div className="neu-surface-subtle mt-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3.5">
+    <div data-notification-message={JSON.stringify([`question:${prompt.requestId}`])}
+      className="neu-surface-subtle mt-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3.5">
       <p className="text-sm font-medium text-[var(--ink-heading)]">
         The agent has a question
       </p>

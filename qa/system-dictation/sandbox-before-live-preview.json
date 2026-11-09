@@ -1,0 +1,204 @@
+{
+  "openedAt": "2026-10-14T10:59:28.190Z",
+  "status": "ready",
+  "sessions": [
+    {
+      "id": 1,
+      "startedAt": 1791975620239,
+      "anchor": {
+        "x": -1297,
+        "y": 436,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 388,
+        "width": 320,
+        "height": 100
+      },
+      "pillVisible": true,
+      "recordingAt": 1791975621738,
+      "releasedAt": 1791975625238,
+      "hiddenOnRelease": true,
+      "characters": 21,
+      "submitRequested": true,
+      "insertedAt": 1791975630695,
+      "releaseToInsertMs": 5457,
+      "snapshot": {
+        "characters": {
+          "rich": 21,
+          "plain": 0,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 1,
+          "plain": 0,
+          "multiline": 0
+        }
+      }
+    },
+    {
+      "id": 2,
+      "startedAt": 1791975632403,
+      "anchor": {
+        "x": -1136,
+        "y": 435,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1191,
+        "y": 387,
+        "width": 320,
+        "height": 100
+      },
+      "recordingAt": 1791975632593,
+      "pillVisible": true,
+      "releasedAt": 1791975636562,
+      "hiddenOnRelease": true,
+      "characters": 28,
+      "submitRequested": true,
+      "insertedAt": 1791975641410,
+      "releaseToInsertMs": 4848,
+      "snapshot": {
+        "characters": {
+          "rich": 49,
+          "plain": 0,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 2,
+          "plain": 0,
+          "multiline": 0
+        }
+      }
+    },
+    {
+      "id": 3,
+      "startedAt": 1791975647779,
+      "anchor": {
+        "x": -1297,
+        "y": 578,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 530,
+        "width": 320,
+        "height": 100
+      },
+      "recordingAt": 1791975647940,
+      "pillVisible": true,
+      "releasedAt": 1791975651780,
+      "hiddenOnRelease": true,
+      "characters": 28,
+      "submitRequested": false,
+      "insertedAt": 1791975656237,
+      "releaseToInsertMs": 4457,
+      "snapshot": {
+        "characters": {
+          "rich": 49,
+          "plain": 28,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 2,
+          "plain": 0,
+          "multiline": 0
+        }
+      }
+    },
+    {
+      "id": 4,
+      "startedAt": 1791975660231,
+      "anchor": {
+        "x": -1297,
+        "y": 668,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 620,
+        "width": 320,
+        "height": 100
+      },
+      "recordingAt": 1791975660450,
+      "pillVisible": true,
+      "releasedAt": 1791975663703,
+      "hiddenOnRelease": true,
+      "characters": 18,
+      "submitRequested": false,
+      "insertedAt": 1791975669992,
+      "releaseToInsertMs": 6289,
+      "snapshot": {
+        "characters": {
+          "rich": 49,
+          "plain": 28,
+          "multiline": 18
+        },
+        "enterCounts": {
+          "rich": 2,
+          "plain": 0,
+          "multiline": 0
+        }
+      }
+    }
+  ],
+  "services": "existing Breadboard",
+  "scopedToTestWindow": true,
+  "testWindow": {
+    "bounds": {
+      "x": -1360,
+      "y": 136,
+      "width": 800,
+      "height": 760
+    },
+    "displayId": 2151158276,
+    "scaleFactor": 1,
+    "visible": true,
+    "minimized": false,
+    "focused": true,
+    "alwaysOnTop": true,
+    "displays": [
+      {
+        "id": 999882014,
+        "bounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 960
+        },
+        "workArea": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 912
+        },
+        "scaleFactor": 1.25
+      },
+      {
+        "id": 2151158276,
+        "bounds": {
+          "x": -1920,
+          "y": 0,
+          "width": 1920,
+          "height": 1080
+        },
+        "workArea": {
+          "x": -1920,
+          "y": 0,
+          "width": 1920,
+          "height": 1032
+        },
+        "scaleFactor": 1
+      }
+    ]
+  },
+  "nativeReady": true,
+  "provider": "chatgpt",
+  "pid": 34344,
+  "origin": "http://127.0.0.1:55747"
+}

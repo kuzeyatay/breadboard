@@ -1,6 +1,7 @@
 // Runs the dashboard's desktop production build (Next standalone output into
 // .next-desktop) with the right environment on any platform.
 import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -11,7 +12,7 @@ import {
   refreshStandaloneDashboardAssets,
   writeDashboardBuildManifest,
 } from "./dashboard-build-cache.mjs";
-import { assertWindowsCommitHeadroom } from "./commit-preflight.mjs";
+import { assertWindowsCommitHeadroom, dashboardBuildMemoryPlan } from "./commit-preflight.mjs";
 import { isTransientDashboardBuildFailure } from "./dashboard-build-retry.mjs";
 import { assertSafeDashboardTraces } from "./dashboard-trace-safety.mjs";
 import { verifyLiveKitRuntime } from "./verify-livekit-runtime.mjs";
@@ -41,10 +42,18 @@ if (!buildLease.inherited) {
 // This file is also called directly by packaging and Electron QA, outside the
 // lean development launcher. Keep resource admission at the heavy boundary so
 // no caller can accidentally bypass the Windows commit reserve.
+const buildMemory = dashboardBuildMemoryPlan();
+const dashboardBuildHeapMb = buildMemory.heapMb;
 assertWindowsCommitHeadroom({
   operation: "standalone dashboard build",
-  estimateMb: 11_264,
+  estimateMb: buildMemory.estimateMb,
 });
+
+// Page-data collectors import server modules in parallel. Give each worker
+// empty build-only storage rather than opening user data or racing migrations.
+const buildDataParent = path.join(repoRoot, ".runtime", "dashboard-build-data");
+fs.mkdirSync(buildDataParent, { recursive: true });
+const buildDataRoot = fs.mkdtempSync(path.join(buildDataParent, "attempt-"));
 
 // The vendored mem0 engine has to exist before the build, not after: file
 // tracing can only follow `import("mem0ai/oss")` into the package if the clone
@@ -87,7 +96,6 @@ if (quartzReader.status !== 0) process.exit(quartzReader.status ?? 1);
 // whole graph in V8. Keep the existing one-time ceiling for Next's JavaScript
 // orchestration and output tracing; the lean runtime remains independently
 // bounded, and dev-fast's commit monitor still protects the Windows reserve.
-const dashboardBuildHeapMb = 8_192;
 const maxDashboardBuildAttempts = 2;
 const capturedOutputLimit = 256 * 1024;
 
@@ -113,6 +121,7 @@ function runDashboardBuildAttempt() {
       env: {
         ...process.env,
         BREADBOARD_DESKTOP_BUILD: "1",
+        BREADBOARD_BUILD_DATA_ROOT: buildDataRoot,
         BREADBOARD_NEXT_DIST_DIR: ".next-desktop",
       },
     });

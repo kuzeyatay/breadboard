@@ -18,7 +18,7 @@ export function dashboardDataDir(): string {
   const developmentDashboard = process.env.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR?.trim();
   if (developmentDashboard) return path.resolve(developmentDashboard);
   return path.basename(process.cwd()).toLowerCase() === "dashboard"
-    ? process.cwd()
+    ? path.resolve(process.cwd())
     : path.join(process.cwd(), "dashboard");
 }
 
@@ -36,7 +36,7 @@ export function repositoryRoot(): string {
   if (configured) return path.resolve(configured);
   return path.basename(process.cwd()).toLowerCase() === "dashboard"
     ? path.resolve(process.cwd(), "..")
-    : process.cwd();
+    : path.resolve(process.cwd());
 }
 
 /**

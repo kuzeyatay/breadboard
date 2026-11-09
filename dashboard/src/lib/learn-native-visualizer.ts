@@ -1,3 +1,5 @@
+import { withGardenSystemPromptContext } from "./system-prompts/service.ts";
+import { renderSystemPrompt } from "./system-prompts/service.ts";
 import crypto from "node:crypto";
 import {
   externalRuntimeFilesystem as fs,
@@ -5,7 +7,7 @@ import {
 } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { repositoryRoot } from "./runtime-paths.ts";
-import { withCouncil } from "./council.ts";
+import { withCouncil } from "./system-prompts/council.ts";
 import {
   runGeneratedVisualCouncilRequestWithReceipt,
   type RunGeneratedVisualCouncilRequestInput,
@@ -79,18 +81,13 @@ export function loadLearnVisualizerSkill() {
 }
 
 export function learnVisualizerAuthorPrompt(skillText: string): string {
-  return `${skillText}\n\nLEARN ARTIFACT ADAPTER\nThe host invokes this skill for an existing lesson. Return JSON {plan, package}; the host performs the create tool's compilation, browser tests, critique and versioned garden publication. Do not call tools or rewrite the lesson. Use the complete schema-2 native package above, never defineVisualization or a declarative scene catalogue.
-Teach the hard concept through a dominant spatial or animated scene. Show the causal mechanism, then its equation/readout. Every animation must change the explanatory geometry, field, path, wave or solver state; never animate decoration or merely a number. For a static relation animate a clearly labelled explanatory sweep, construction or probe, and distinguish that from physical time. For spatial concepts use a rotatable projected 3D Canvas/SVG or THREE only when useful. Preserve the supplied source claims, units and sign conventions. Label illustrative normalization, time scale and model limits.
-Design for readable geometry before adding detail: place vector quantities at their actual points of evaluation, use shared endpoints for compared angles, distinguish coordinate guides from physical vectors, and encode magnitudes consistently or explicitly label normalized arrows. Keep labels away from geometry, move secondary labels into a semantic HTML legend, and use readable text at 375px. Never draw a sentence or caption with a single-line canvas fillText: explanatory strings (share captions, disclaimers, state descriptions) live in DOM text elements that wrap naturally inside the panel, or, if they must be on the canvas, are wrapped with measureText against the current panel width; check every view and every control value at 375px so nothing is clipped or overlaps. Preserve vertical touch scrolling with pan-y and dedicated keyboard-accessible orbit/zoom controls. Provide a named canvas and a concise nonvisual equivalent that updates on control changes and pause, without announcing every frame. Use semantic subscripts/superscripts for equations and define normalized variables. Never use local identifiers named parent, top, or opener, which are reserved by the offline boundary.
-Include working Play/Pause and Reset with the exact data-action attributes and icon/accessibility contract. Start at a useful representative state; start paused when an exact limiting case should be inspected first, and always start paused for reduced motion. aria-pressed=true means playing. Reset restores a deterministic useful initial state and pauses. All controls must materially affect the primary scene, including every requiredInput with its exact id as a native DOM id, original options/range/default and purpose. Use a required reset control as the top Reset control instead of duplicating it. Preserve requiredOutputs in plan.outputs and show their meaning; add at most two explanatory controls when needed. The first SVG outside buttons or main canvas is the scene the release gate observes. No inert controls or prose-only case switches. Pause when hidden, bound simulation steps and frame delta, and repaint on host theme changes.
-The plan is {schemaVersion:1,title,objective,mode,rationale,concepts:string[],assumptions:string[],controls:[{id,label,type:range|number|select|toggle|button,purpose,initialValue?,minimum?,maximum?,step?,unit?}],outputs:[{id,label,purpose,unit?}],interactions:string[],animation:{enabled:true,canPause:true,canReset:true},dataRequirements:[],assetRequirements:[],accessibilityRequirements:string[],sourceReferences:string[]}.
-Use exactly three package files, no assets or external URLs in any file (including SVG namespace URL literals; use canvas or existing SVG markup). Keep combined source compact, under 45000 characters. Include a visual integrity semantic assertion plus assertions describing the actual equations, limiting cases, and animation mechanism. Before returning, trace the exact reset, animation, each control, and reduced motion behavior in your JavaScript.
-The sandbox scanner matches names, not meaning: never use the identifiers location, open, require, or import, even for local variables, parameters, or helpers (e.g. name a label position labelPos and an assertion helper check), and use Object.hasOwn instead of any X.prototype reference.`;
+  return renderSystemPrompt("learning-native-visual", undefined, { "context_1": String(skillText) });
 }
 
 export async function createLearnNativeVisualizer(
   input: CreateGeneratedVisualizationInput,
 ): Promise<GeneratedVisualResult> {
+  return withGardenSystemPromptContext(input.opportunity.gardenId, async () => {
   let skill = loadLearnVisualizerSkill();
   const opportunity = input.opportunity;
   const owner = input.recoveryOwnerId ?? crypto.randomUUID();
@@ -546,4 +543,6 @@ export async function createLearnNativeVisualizer(
     return { manifest, definition: compiled.definition, errors: [] };
   }
   return { manifest: null, definition: null, errors, failureCategory };
+
+  }, undefined);
 }

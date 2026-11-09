@@ -5587,6 +5587,60 @@ mod tests {
     }
 
     #[test]
+    fn explicit_on_demand_retry_waits_for_a_real_admitted_lease() {
+        let (_directory, store) = store();
+        let registration = registration("search");
+        let profile = admission_profile("search", RuntimeMode::Lean, 64);
+        let _lease = acquire(&store, &registration, "first_lease", 100);
+        let start = acknowledge_next_start(&store, 101, 102);
+        store
+            .finish_durable_service_generation_inner(
+                &start,
+                ServiceLifecycleState::Failed,
+                false,
+                ServiceLeaseReleaseReason::Failure,
+                Some("Service did not become ready before its trusted startup deadline"),
+                ServiceTerminalProofKind::TreeExit {
+                    started_boundary_accepted: true,
+                    accepted_stop: None,
+                },
+                103,
+            )
+            .unwrap();
+
+        let reset = store.reset_durable_service_for_explicit_retry("search", 104).unwrap();
+        assert_eq!(reset.status.state, RuntimeServiceState::AvailableButStopped);
+        assert_eq!(reset.status.last_error, None);
+        assert_eq!(reset.generation, 1);
+        assert_eq!(reset.pending_leases + reset.active_leases, 0);
+        assert_eq!(outbox_count(&store, Some("acked")), 1);
+        assert_eq!(outbox_count(&store, Some("pending")), 0);
+        assert_eq!(active_service_reservations(&store), 0);
+
+        // Clearing a failure is not permission to bypass memory admission.
+        let denied = store.begin_durable_service_acquire(
+            &registration, &profile, "denied_lease", 500, 105,
+            AdmissionPolicy::default(),
+            || Ok(SystemCommit { total_mb: 0, limit_mb: crate::ADMISSION_RESERVE_FLOOR_MB }),
+        ).unwrap();
+        assert!(matches!(denied, DurableServiceAcquireResult::Denied(_)));
+        assert_eq!(outbox_count(&store, Some("pending")), 0);
+        assert_eq!(active_service_reservations(&store), 0);
+
+        let next = acquire(&store, &registration, "next_lease", 106);
+        assert_eq!(next.generation(), 2);
+        assert_eq!(outbox_count(&store, Some("pending")), 1);
+        assert_eq!(active_service_reservations(&store), 1);
+
+        // Repeated lifecycle retries must not disturb the new live generation.
+        let unchanged = store.reset_durable_service_for_explicit_retry("search", 107).unwrap();
+        assert_eq!(unchanged.status.state, RuntimeServiceState::Starting);
+        assert_eq!(unchanged.generation, 2);
+        assert_eq!(unchanged.pending_leases, 1);
+        assert_eq!(outbox_count(&store, Some("pending")), 1);
+    }
+
+    #[test]
     fn stopped_exit_requires_the_matching_acknowledged_stop_authority() {
         let (_unbound_directory, unbound_store) = store();
         let unbound_registration = registration("search");

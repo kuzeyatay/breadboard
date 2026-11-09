@@ -11,7 +11,7 @@
 // failing halfway through sampling on a dimension nobody has.
 
 import { spawnSync } from "node:child_process";
-import { MATRAIX_DEV_POOL, matraixAvailability } from "./runtime.ts";
+import { MATRAIX_DEV_POOL, matraixAvailability, type MatraixAvailability } from "./runtime.ts";
 
 export interface MatraixDimensionValue {
   value: string;
@@ -41,11 +41,13 @@ const cacheGlobal = globalThis as typeof globalThis & {
 const cache = cacheGlobal.__breadboardMatraixCatalog ?? new Map();
 cacheGlobal.__breadboardMatraixCatalog = cache;
 
-export function matraixCatalog(pool = MATRAIX_DEV_POOL): MatraixCatalog | null {
+export function matraixCatalog(pool = MATRAIX_DEV_POOL, checkedRuntime?: MatraixAvailability): MatraixCatalog | null {
   const cached = cache.get(pool);
   if (cached && Date.now() - cached.at < CACHE_MS) return cached.value;
 
-  const runtime = matraixAvailability();
+  // Setup already imports the runtime once. Reuse that result so a cold health
+  // check does not repeat the same expensive dependency import.
+  const runtime = checkedRuntime ?? matraixAvailability();
   if (!runtime.available || !runtime.root || !runtime.python) return null;
   const probe = spawnSync(
     runtime.python,
@@ -56,7 +58,7 @@ export function matraixCatalog(pool = MATRAIX_DEV_POOL): MatraixCatalog | null {
       windowsHide: true,
       timeout: PROBE_TIMEOUT_MS,
       maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, NO_COLOR: "1", PYTHONIOENCODING: "utf-8" },
+      env: { ...process.env, NO_COLOR: "1", PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" },
     },
   );
   const line = (probe.stdout ?? "").trim().split(/\r?\n/).at(-1) ?? "";

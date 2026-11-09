@@ -23,11 +23,37 @@ export function parsePronunciations(value: string): Pronunciation[] {
 }
 
 export function applyPronunciations(text: string, value = ''): string {
+  return preparePronunciations(text, value).text;
+}
+
+/** Keep recovery positions in the caller's original script even when a user
+ * respelling expands, contracts or introduces sentence punctuation. */
+export function preparePronunciations(text: string, value = '') {
+  const replacements: { sourceStart: number; sourceEnd: number; spokenStart: number; spokenEnd: number }[] = [];
+  let difference = 0;
   const rules = parsePronunciations(value).sort((a, b) => b.term.length - a.term.length);
-  if (!rules.length) return text;
+  if (!rules.length) return { text, sourceOffset: (offset: number) => Math.max(0, Math.min(text.length, offset)) };
   const readings = new Map(rules.map(({ term, reading }) => [term, reading]));
   const escaped = rules.map(({ term }) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   const pattern = new RegExp(`(?<![\\p{L}\\p{N}\\p{M}_])(?:${escaped.join('|')})(?![\\p{L}\\p{N}\\p{M}_])`, 'gu');
   // One pass prevents a correction from being rewritten by another correction.
-  return text.replace(pattern, match => readings.get(match)!);
+  const spoken = text.replace(pattern, (match, offset: number) => {
+    const reading = readings.get(match)!;
+    replacements.push({ sourceStart: offset, sourceEnd: offset + match.length,
+      spokenStart: offset + difference, spokenEnd: offset + difference + reading.length });
+    difference += reading.length - match.length;
+    return reading;
+  });
+  return { text: spoken, sourceOffset(offset: number) {
+    const position = Math.max(0, Math.min(spoken.length, offset));
+    let difference = 0;
+    for (const replacement of replacements) {
+      if (position < replacement.spokenStart) break;
+      // A sentence boundary inside a respelling must replay that whole term.
+      if (position < replacement.spokenEnd) return replacement.sourceStart;
+      difference = replacement.spokenEnd - replacement.sourceEnd;
+    }
+    return position - difference;
+  } };
+
 }

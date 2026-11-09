@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, type CSSProperties } from "react";
 import { Toaster, useToast } from "@/app/components/toast";
+import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
 import {
   onDesktopNotificationToast,
   openDesktopNotificationTarget,
@@ -10,6 +11,7 @@ import {
 
 export default function NotificationOverlayClient() {
   const { toasts, addToast, dismissToast } = useToast({ desktopOverlay: true });
+  const viewport = useDesktopTabs()?.notificationViewport;
 
   useEffect(() => {
     return onDesktopNotificationToast((notice) => {
@@ -33,7 +35,10 @@ export default function NotificationOverlayClient() {
   }, []);
 
   return (
-    <main className="bb-notification-overlay-page" aria-label="Notifications">
+    <main className="bb-notification-overlay-page" aria-label="Notifications" style={viewport ? {
+      "--bb-toast-viewport-width": `${viewport.width}px`,
+      "--bb-toast-viewport-height": `${viewport.height}px`,
+    } as CSSProperties : undefined}>
       <Toaster
         mode="desktop-overlay"
         toasts={toasts}

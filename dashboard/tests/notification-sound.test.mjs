@@ -8,18 +8,15 @@ const code = transformSync(fs.readFileSync(new URL('../src/lib/notification-soun
   loader: 'ts', format: 'cjs',
 }).code;
 
-test('a card that fades in still chimes, and an unfocused desktop window is not muted', () => {
+test('a card that fades in announces visibility after its entrance', () => {
   // Cards materialize from opacity 0, so every check made while one mounts
   // reads it as hidden. The end of that entrance must be checked again.
   const toast = fs.readFileSync(new URL('../src/app/components/toast.tsx', import.meta.url), 'utf8');
   assert.match(toast, /host\.addEventListener\('animationend', announce\);/);
   assert.match(toast, /host\.removeEventListener\('animationend', announce\);/);
-  // Answers usually finish while the person is in another app or the voice
-  // companion; focus must not silence the overlay that shows the card.
-  const shell = fs.readFileSync(new URL('../../desktop/src/main/tab-manager.ts', import.meta.url), 'utf8');
-  const audible = shell.match(/const audible = [^;]+;/)?.[0] ?? '';
-  assert.match(audible, /isVisible\(\) && !host\.window\.isMinimized\(\)/);
-  assert.doesNotMatch(audible, /isFocused/);
+  // Host focus and background native delivery are exercised by the desktop
+  // notification visibility, layout and recovery Electron fixtures.
+
 });
 
 function fixture({ deferredLock = false, deferredAudio = false } = {}) {
@@ -46,6 +43,18 @@ function fixture({ deferredLock = false, deferredAudio = false } = {}) {
   } });
   return { ...module.exports, stored, contexts, locks, resumes, notes: () => notes };
 }
+
+test('an OS delivery receipt prevents a delayed in-app chime and survives a receipt reread', async () => {
+  const f = fixture({ deferredLock: true });
+  f.chimeForNotifications(['native-delivered'], () => true);
+  f.recordNotificationDelivery(['native-delivered']);
+  f.locks.shift()();
+  await Promise.resolve();
+  assert.equal(f.contexts.length, 0);
+  assert.equal(f.notificationDeliveryReceipts().has('native-delivered'), true);
+  f.recordNotificationDelivery(['another']);
+  assert.equal(f.notificationDeliveryReceipts().has('native-delivered'), true);
+});
 
 test('only visible notifications claim sound receipts; duplicates and muted backlogs stay silent', async () => {
   const f = fixture();

@@ -98,7 +98,8 @@ test("the resting terminal uses half the home dock extent and keeps its rounded 
 test("the header conceals on close the way it reveals on open", () => {
   // Items stay mounted through the exit animation instead of vanishing.
   assert.match(terminal, /flex h-\[42px\] shrink-0/);
-  assert.match(terminal, /headerMounted \? "" : "justify-center"/);
+  // Unread dots remain left-aligned while only the title conceals.
+  assert.doesNotMatch(terminal, /headerMounted \? "" : "justify-center"/);
   assert.match(terminal, /\{headerMounted \? \(/);
   assert.match(
     terminal,
@@ -125,7 +126,8 @@ test("the header conceals on close the way it reveals on open", () => {
 // used to open with. It slides instead: the box takes its final size up front
 // and only its offset is animated.
 test("the dock slides open rather than growing open", () => {
-  assert.match(terminal, /height: drawerPresentation \? "100%" : glideBox \?\? \(isOpen \? height : "var\(--terminal-collapsed-height\)"\)/);
+  assert.match(terminal, /height: drawerPresentation \? "100%" : `var\(--terminal-drag-height, \$\{dockHeight\}\)`/);
+  assert.match(terminal, /const dockHeight = glideBox !== null \? `\$\{glideBox\}px`/);
   assert.match(terminal, /!drawerPresentation && glide\s*\? `translate3d\(0, \$\{glideShift\}px, 0\)`/);
   assert.match(terminal, /transition: !drawerPresentation && glideMoving[\s\S]*?`transform \$\{DOCK_OPEN_MS\}ms/);
   assert.doesNotMatch(terminal, /`height \$\{DOCK_OPEN_MS\}ms/);
@@ -142,7 +144,7 @@ test("the dock slides open rather than growing open", () => {
   // Reversing mid-flight starts from the edge's real position, which is neither
   // the height in state nor the box's own height while it sits offset.
   assert.match(terminal, /window\.innerHeight - dock\.getBoundingClientRect\(\)\.top/);
-  assert.match(terminal, /startHeight: visualHeight\(\)/);
+  assert.match(terminal, /const startHeight = visualHeight\(\)/);
 });
 
 test("the brown terminal header toggles fully open and fully closed", () => {
@@ -156,7 +158,7 @@ test("the brown terminal header toggles fully open and fully closed", () => {
   );
   assert.match(
     terminal,
-    /if \(!moved && event\.type !== "pointercancel" && clickedHeader\)/,
+    /if \(!result\.dragged && !cancelled && clickedHeader\)/,
   );
   assert.match(
     terminal,
@@ -206,7 +208,7 @@ test("the terminal always starts collapsed without reopening to a stale height",
     /preferredOpenHeightRef\.current = clampHeight\(saved(?:Height)?\)/,
   );
   assert.doesNotMatch(legacyTerminal, /preferredOpenHeightRef|HEIGHT_KEY/);
-  assert.match(terminal, /if \(height < minOpenHeight\(\)\) return/);
+  assert.match(terminal, /if \(isResizing \|\| height < minOpenHeight\(\)\) return/);
 });
 
 test("the original terminal hydrates independently without replacement status copy", () => {

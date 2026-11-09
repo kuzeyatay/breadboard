@@ -17,7 +17,6 @@ import {
 import { createPortal } from "react-dom";
 import { Reply } from "lucide-react";
 import StarMessageButton from "./star-message-button";
-import SkillUsageSummary from "@/app/components/hermes/skill-usage-summary";
 import EvidencePanel from "@/app/components/hermes/evidence-panel";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import { useHumanizerMode } from "@/app/components/use-humanizer-mode";
@@ -647,8 +646,6 @@ export default function AssistantMessageActions({
   }
 
   const actions = (
-    <>
-    <SkillUsageSummary capabilities={verification?.capabilities} onInspect={() => setEvidenceOpen(true)} />
     <div className="mt-2 flex flex-wrap items-center gap-0.5" aria-label="Assistant response actions">
       <button
         type="button"
@@ -848,7 +845,6 @@ export default function AssistantMessageActions({
         </time>
       ) : null}
     </div>
-    </>
   );
 
   if (suppressActions) return null;

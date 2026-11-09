@@ -69,7 +69,7 @@ test("reproduce renderer refresh persistence with authenticated Hermes", async (
     const entry = sessionRequests.at(-1);
     if (entry) entry.status = response.status();
   });
-  const composer = page.getByPlaceholder(/Ask about your documents/).first();
+  const composer = page.getByPlaceholder('Ask anything.', { exact: true }).first();
   await expect(composer).toBeEditable({ timeout: 120_000 });
   await composer.fill(prompt);
   const persistedResponse = page.waitForResponse(

@@ -521,7 +521,7 @@ async function drive(run: RunState, input: StartVideoUseRunInput): Promise<void>
   // --- planning ----------------------------------------------------------
   const program = programForArtifact(artifact, probe.durationSeconds);
   emit(run, "stage.updated", { stage: "plan", status: "running", label: "Planning the cut" });
-  const planned = await planEdit({
+  const planned = await planEdit({ userId: input.userId,
     baseUrl: input.baseUrl,
     model: input.model,
     reasoningEffort: input.reasoningEffort,

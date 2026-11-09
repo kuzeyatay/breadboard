@@ -13,11 +13,30 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import esbuild from "esbuild";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dashboard = path.resolve(here, "..");
 const repositoryRoot = path.resolve(dashboard, "..");
+
+test("missing Wardrobe dependencies can be checked without acquiring a service that blocks setup", async () => {
+  const built = await esbuild.build({ entryPoints: [path.join(dashboard, "src/lib/wardrobe/runtime-service.ts")], bundle: true, platform: "node", format: "esm", write: false,
+    plugins: [{ name: "wardrobe-status-boundaries", setup(build) {
+      build.onResolve({ filter: /^(?:\.\/runtime\.ts|\.\/status\.ts|\.\.\/runtime-agent-service\.ts)$/ }, args => ({ path: args.path, namespace: "fixture" }));
+      build.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ loader: "js", contents: args.path.includes("runtime-agent-service") ? `
+        export const callRuntimeAgentService=()=>{throw Error("Status must not contact the service before install");};
+        export const withRuntimeAgentServiceLease=()=>{throw Error("Status must not block installation with a lease");};
+        export const inspectRuntimeAgentService=()=>null;
+        export const scopedAgentRequest=value=>value;
+      ` : args.path.includes("status") ? 'export const setupStatus=()=>({ready:false,dependencies:{installed:false}});' : 'export const runtimeAvailability=()=>({available:false,cloned:true,installed:false,reason:"Missing dependencies"});' }));
+    }}] });
+  const { readWardrobeRuntimeStatus } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString("base64")}`);
+  const result = await readWardrobeRuntimeStatus({ userId: 1 });
+  assert.equal(result.availability.installed, false);
+  assert.equal(result.setup.dependencies.installed, false);
+  assert.equal(result.service, null);
+});
 
 const {
   WARDROBE_COMMAND,

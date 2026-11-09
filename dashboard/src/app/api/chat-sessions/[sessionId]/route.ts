@@ -48,6 +48,7 @@ import {
 import { isChatHighlight } from "@/lib/conversations/highlights";
 import { cancelRuntimeSessionWork } from "@/lib/hermes/session-cancel";
 import { listRuntimeSessionsForChatSession } from "@/lib/hermes/runtime-store";
+import { conversationHasActiveSwarm } from "@/lib/swarm/activity.ts";
 import { getActiveRuntimeRun } from "@/lib/hermes/run-store";
 import {
   normalizeGenerativeUiResources,
@@ -831,6 +832,9 @@ export async function DELETE(
   }
   for (const runtimeSession of listRuntimeSessionsForChatSession(sessionAccess.id)) {
     await cancelRuntimeSessionWork(userId, runtimeSession);
+  }
+  if (linked?.conversation_id && conversationHasActiveSwarm(db, linked.conversation_id)) {
+    return NextResponse.json({ error: "Team work is stopping. Delete this chat again after its workers have stopped.", code: "swarm_stop_pending" }, { status: 409 });
   }
 
   // The legacy row and the canonical conversation are two halves of one chat.

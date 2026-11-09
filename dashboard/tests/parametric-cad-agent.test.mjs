@@ -1284,7 +1284,7 @@ test("a saved CAD plan is built in a forced, bounded source phase", async () => 
     });
     assert.equal(toolArguments[0].projectId, project.id);
     assert.deepEqual(toolArguments[0].parameters, { width: 20 });
-    assert.equal(toolArguments[0].timeoutMs, 120_000);
+    assert.equal(toolArguments[0].timeoutMs, 300_000);
   } finally {
     globalThis.fetch = realFetch;
   }

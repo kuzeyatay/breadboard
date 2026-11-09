@@ -392,7 +392,7 @@ pub struct WorkerLaunchRequest {
 }
 
 /// Registry-selected service launch material bound to one exact Runtime V2
-/// data-root authority. The Registry supplies every file pin, the working
+/// data-root authority and its configured managed payload root. The Registry supplies every file pin, the working
 /// directory, complete argv, and limits. The durable StartTree authority—not
 /// this request—supplies the numeric service generation at launch time.
 pub struct ServiceLaunchRequest {
@@ -536,18 +536,18 @@ impl ServiceLaunchRequest {
             ));
         }
         if supervisor.authority_kind() != "runtime"
-            || !matches!(executable.authority_kind(), "runtime" | "data")
+            || !matches!(executable.authority_kind(), "runtime" | "data" | "bulk")
         {
             return Err(ProcessOwnerError::InvalidLaunch(
-                "supervisor must be runtime-root and service executable must be runtime-root or data-root authority",
+                "supervisor must be runtime-root and service executable must be runtime-root or managed data authority",
             ));
         }
         if launch_files
             .iter()
-            .any(|pin| !matches!(pin.authority_kind(), "runtime" | "application" | "data"))
+            .any(|pin| !matches!(pin.authority_kind(), "runtime" | "application" | "data" | "bulk"))
         {
             return Err(ProcessOwnerError::InvalidLaunch(
-                "service launch files must come from a closed runtime, application, or data-root authority",
+                "service launch files must come from a closed runtime, application, or managed data authority",
             ));
         }
         if arguments.len() > MAX_TARGET_ARGUMENTS {
@@ -1240,21 +1240,21 @@ pub(crate) fn prepare_claimed_service_launch(
         if request.inner.supervisor.authority_kind() != "runtime"
             || !matches!(
                 request.inner.executable.authority_kind(),
-                "runtime" | "data"
+                "runtime" | "data" | "bulk"
             )
         {
             return Err(ProcessOwnerError::InvalidLaunch(
-                "supervisor must be runtime-root and service executable must be runtime-root or data-root authority",
+                "supervisor must be runtime-root and service executable must be runtime-root or managed data authority",
             ));
         }
         if request
             .inner
             .launch_files
             .iter()
-            .any(|pin| !matches!(pin.authority_kind(), "runtime" | "application" | "data"))
+            .any(|pin| !matches!(pin.authority_kind(), "runtime" | "application" | "data" | "bulk"))
         {
             return Err(ProcessOwnerError::InvalidLaunch(
-                "service launch files must come from a closed runtime, application, or data-root authority",
+                "service launch files must come from a closed runtime, application, or managed data authority",
             ));
         }
         if request.inner.arguments.len() > MAX_TARGET_ARGUMENTS {

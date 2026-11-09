@@ -1,32 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import { ReclaimingVideo } from "../reclaiming-media";
+import BreadboardVideoPlayer from "@/app/components/breadboard-video-player";
 
-function VideoPreview({ src, title }: { src: string; title: string }) {
-  const [failed, setFailed] = useState(false);
+/** Keyed on src so an artifact version change releases the old decoder. */
+export default function ArtifactVideoPreview({ src, title }: { src: string; title: string }) {
   return (
-    <div className="relative overflow-hidden" style={{ background: "#080d0a", colorScheme: "dark" }}>
-      {failed ? (
-        <p className="p-4 text-sm" style={{ color: "#f3f7f4" }} role="status">
-          Video preview unavailable. Open the artifact below to view it.
-        </p>
-      ) : (
-        <ReclaimingVideo
-          src={src}
-          aria-label={`Video preview: ${title}`}
-          controls
-          playsInline
-          preload="metadata"
-          onError={() => setFailed(true)}
-          className="block aspect-video max-h-80 w-full object-contain"
-        />
-      )}
-    </div>
+    <BreadboardVideoPlayer
+      key={src}
+      src={src}
+      title={title}
+      className="aspect-video max-h-80 rounded-none"
+    />
   );
-}
-
-/** Reset errors and release the old decoder when an artifact version changes. */
-export default function ArtifactVideoPreview(props: { src: string; title: string }) {
-  return <VideoPreview key={props.src} {...props} />;
 }

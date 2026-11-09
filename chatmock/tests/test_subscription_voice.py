@@ -11,6 +11,17 @@ from chatmock import subscription_voice as voice
 
 
 class SubscriptionVoiceTests(unittest.TestCase):
+    def test_close_response_reports_only_phase_timings(self):
+        session = Mock(owner='1')
+        session.close.return_value = {'voice_process': 252.4, 'voice_cleanup': 18.1}
+        voice._sessions['owned-session'] = session
+        response = self.client.delete('/breadboard/voice/sessions/owned-session', headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, {'ok': True})
+        self.assertEqual(response.headers['Server-Timing'], 'voice_process;dur=252.4, voice_cleanup;dur=18.1')
+        self.assertNotIn('private-token', response.text)
+        session.close.assert_called_once()
+
     def test_native_session_publishes_owner_and_child_until_close(self):
         proc = Mock(pid=os.getpid())
         with patch.object(voice.subprocess, "Popen", return_value=proc), patch.object(
@@ -235,3 +246,34 @@ class SubscriptionVoiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+import sys
+import time
+import subprocess
+from pathlib import Path
+
+class ShutdownLatencyTests(unittest.TestCase):
+    def test_stopped_reader_releases_slot_without_waiting_for_stubborn_worker(self):
+        with tempfile.TemporaryDirectory(prefix='bb-voice-shutdown-') as root:
+            home=Path(root)/'session';home.mkdir()
+            # This worker deliberately ignores EOF, like the observed idle
+            # speech process. It owns no model call, tools, or user files.
+            proc=subprocess.Popen([sys.executable,'-c','import time; print("ready",flush=True); time.sleep(30)'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            self.assertEqual(proc.stdout.readline().strip(),'ready')
+            session=object.__new__(voice.VoiceSession)
+            session.id='offline-owned-reader';session.closed=False;session.condition=threading.Condition()
+            session.timer=Mock();session.record_usage=Mock();session.thread_id='offline';session.proc=proc
+            session.home=str(home);session.temp_lease=Mock()
+            voice._sessions[session.id]=session
+            try:
+                start=time.monotonic();session.close();elapsed=time.monotonic()-start
+                self.assertIsNotNone(proc.poll(),'the discarded process must actually exit before its slot is reused')
+                self.assertNotIn(session.id,voice._sessions)
+                self.assertFalse(home.exists())
+                self.assertLess(elapsed,1.5,'discarded speech must not hold the next answer behind a multi-second EOF grace period')
+                session.close();session.record_usage.assert_called_once()
+            finally:
+                if proc.poll() is None:proc.kill();proc.wait(timeout=3)
+                proc.stdout.close();voice._sessions.pop(session.id,None)
+

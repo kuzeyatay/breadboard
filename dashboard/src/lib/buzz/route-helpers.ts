@@ -3,14 +3,17 @@ import "server-only";
 import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth-options";
+import { memberRole } from "@/lib/organizations/store.ts";
+import { canManageRoom } from "./permissions.ts";
 import { ApiError } from "@/lib/hermes/route-helpers.ts";
 import {
-  ensureBreadMember,
   ensureSelfMember,
   getRoom,
+  getMessageByClientId,
+  postMessage,
   listMembers,
 } from "./instance.ts";
-import type { BuzzMember, BuzzRoom } from "./store.ts";
+import type { BuzzMember, BuzzMessage, BuzzRoom } from "./store.ts";
 
 /**
  * The signed-in account and the name it posts under.
@@ -50,6 +53,40 @@ export function requireRoom(userId: number, publicId: string): BuzzRoom {
   return room;
 }
 
+export function roomPermissions(userId: number, room: BuzzRoom) {
+  return {
+    canManage: canManageRoom(room, userId, memberRole(room.organizationId, userId)),
+    canPost: room.archivedAt === null,
+  };
+}
+
+export function requireRoomManager(userId: number, room: BuzzRoom): void {
+  if (!roomPermissions(userId, room).canManage) {
+    throw new ApiError(403, "room_manager_required", "Only an organization admin or the room creator can manage this room.");
+  }
+}
+
+export function requireWritableRoom(room: BuzzRoom): void {
+  if (room.archivedAt !== null) {
+    throw new ApiError(409, "room_archived", "This room is archived. Restore it before posting.");
+  }
+}
+
+/** A lost HTTP response may be retried, but an id cannot claim another send. */
+export function postHumanMessage(room: BuzzRoom, self: BuzzMember, body: string, clientMessageId: string, parentId: number | null = null) {
+  requireWritableRoom(room);
+  if (/^buzz_(reply|regen)_/.test(clientMessageId)) throw new ApiError(400, "reserved_message_id", "That message identifier is reserved for agent responses.");
+  const previous = getMessageByClientId(room.id, clientMessageId);
+  if (previous && (previous.memberId !== self.id || previous.authorKind !== "human" ||
+    previous.body !== body || previous.parentId !== parentId || previous.deletedAt !== null)) {
+    throw new ApiError(409, "message_id_conflict", "That message identifier was already used for another message.");
+  }
+  return postMessage(room.id, {
+    clientMessageId, memberId: self.id, authorKind: "human", authorName: self.displayName,
+    authorHandle: self.handle, body, parentId,
+  });
+}
+
 /** The room, plus the caller's own member row in it. */
 export function requireRoomAndSelf(
   userId: number,
@@ -58,10 +95,6 @@ export function requireRoomAndSelf(
 ): { room: BuzzRoom; self: BuzzMember; members: BuzzMember[] } {
   const room = requireRoom(userId, publicId);
   const self = ensureSelfMember(room.id, userId, displayName);
-  // Backfilled here as well as on the page: switching rooms in the client
-  // never re-renders the server page, so this is where an older room picks
-  // Bread up.
-  ensureBreadMember(room.id);
   return { room, self, members: listMembers(room.id) };
 }
 
@@ -73,4 +106,12 @@ export function requireString(value: unknown, field: string, max = 4000): string
     throw new ApiError(400, "invalid_request", `\`${field}\` is too long.`);
   }
   return value;
+}
+
+/** Shared transcripts expose the answer, while account-specific approvals stay private. */
+export function presentRoomMessage(message: BuzzMessage, userId: number): BuzzMessage {
+  if (!message.metadata || message.metadata.actingUserId === userId) return message;
+  const metadata = { ...message.metadata };
+  delete metadata.pendingPermissions; delete metadata.conversationId; delete metadata.conversationPublicId;
+  return { ...message, metadata, body: metadata.needsPermission ? "This response needs permission from the person who requested it." : message.body };
 }

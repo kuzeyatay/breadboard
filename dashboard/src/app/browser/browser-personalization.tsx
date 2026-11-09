@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { browserDailyQuote, BROWSER_DAILY_QUOTES } from "./browser-daily-quotes";
+import { browserDailyQuote, browserQuoteAuthor, BROWSER_DAILY_QUOTES } from "./browser-daily-quotes";
 import { BrowserSketchOutline } from "./browser-home-widgets";
 
 export function BrowserDailyQuote({ ownerKey }: { ownerKey: string }) {
@@ -35,9 +35,9 @@ export function BrowserDailyQuote({ ownerKey }: { ownerKey: string }) {
     <figure ref={quoteRef} className="browser-daily-quote" aria-label="Daily quote">
       <BrowserSketchOutline targetRef={quoteRef} index={2} />
       <blockquote className="browser-daily-quote-full">“{daily.quote}”</blockquote>
-      {daily.author && <figcaption className="browser-daily-quote-full">— {daily.author}</figcaption>}
+      <figcaption className="browser-daily-quote-full">— {browserQuoteAuthor(daily)}</figcaption>
       <blockquote className="browser-daily-quote-compact">“{compactDaily.quote}”</blockquote>
-      {compactDaily.author && <figcaption className="browser-daily-quote-compact">— {compactDaily.author}</figcaption>}
+      <figcaption className="browser-daily-quote-compact">— {browserQuoteAuthor(compactDaily)}</figcaption>
     </figure>
   );
 }

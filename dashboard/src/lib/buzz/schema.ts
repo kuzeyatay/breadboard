@@ -98,6 +98,20 @@ export function ensureBuzzSchema(database: Database.Database): void {
       ON buzz_room_members(room_id, user_id)
       WHERE user_id IS NOT NULL;
 
+    CREATE TABLE IF NOT EXISTS buzz_member_conversations (
+      member_id INTEGER NOT NULL REFERENCES buzz_room_members(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      PRIMARY KEY(member_id, user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS buzz_room_invites (
+      invite_id INTEGER NOT NULL REFERENCES organization_invites(id) ON DELETE CASCADE,
+      room_id INTEGER NOT NULL REFERENCES buzz_rooms(id) ON DELETE CASCADE,
+      invited_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      PRIMARY KEY(invite_id, room_id)
+    );
+
     CREATE TABLE IF NOT EXISTS buzz_room_messages (
       id                INTEGER PRIMARY KEY AUTOINCREMENT,
       room_id           INTEGER NOT NULL REFERENCES buzz_rooms(id) ON DELETE CASCADE,

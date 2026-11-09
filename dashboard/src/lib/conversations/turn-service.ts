@@ -1,4 +1,5 @@
 import { botsStore } from "../bots/server.ts";
+import { voiceReplyWithOpener } from "../speech/voice-opener-context.ts";
 import { conversationPersonalityPrompt } from "../bots/types.ts";
 import { hermesPromptText } from "../agent-runtime/hermes-prompt.ts";
 import { agentPreferencesContext } from "../agent-preferences/store.ts";
@@ -23,6 +24,9 @@ import { hermesMessageId } from "../hermes/message-id.ts";
 import { resolveUnifiedWorkflowContinuation } from "../workflows/unified-continuation.ts";
 import { resolveHermesEngine } from "../hermes/model-selection.ts";
 import { selectedModelForUser } from "../selected-model.ts";
+import db from "../db";
+import { readVoiceAssistantPreferences } from "../speech/assistant-store.ts";
+import { voiceReasoningEffort } from "../speech/assistant-preferences.ts";
 import {
   beginRuntimeRun,
   finishRuntimeRun,
@@ -232,7 +236,9 @@ import {
 import { readGeographicContext, recordCurrentLocation } from "../map/store.ts";
 import { parseCurrentLocationPayload } from "../hermes/current-location-context.ts";
 import {
+  deferProductSearchMarketContext,
   resolveProductSearchMarket,
+  resolveProductSearchMarketContext,
   setProductSearchMarketContext,
 } from "../product-search/market-context.ts";
 import {
@@ -244,6 +250,9 @@ import {
 } from "../goal-mode.ts";
 import { goalCommandText } from "../hermes/goal-intent.ts";
 import { goalContinuationCurrent } from "../goal-continuation.ts";
+import { restrictSwarmWorkerDecision, workerToolAllowed, type SwarmWorkerScope } from "../swarm/worker-policy.ts";
+import { swarmWorkerCurrent } from "../swarm/worker-adapter.ts";
+import { swarmCoordinatorCurrent } from "../swarm/activity.ts";
 import { taskRecoveryCurrent, taskRecoveryForContinuation, recordTaskRecoveryOutcome, scheduleTaskRecovery } from "../hermes/task-recovery.ts";
 import { cancelConversationSourceRepairs } from "../source-repair/checkpoint.ts";
 
@@ -268,6 +277,10 @@ const DELIVERY_CHANNELS = ["whatsapp", "telegram"] as const;
 export type DeliveryChannel = (typeof DELIVERY_CHANNELS)[number];
 
 export interface StartConversationTurnInput {
+  /** Sealed durable assignment, never accepted from an HTTP body. */
+  swarmWorker?: SwarmWorkerScope;
+  swarmCoordinator?: import("../swarm/types.ts").SwarmAuthority;
+  swarmCoordinatorRunId?: string;
   conversation: ConversationRow;
   clientMessageId: string;
   text: string;
@@ -285,6 +298,8 @@ export interface StartConversationTurnInput {
   branchContextId?: string;
   /** Internal result hand-back from a delegated agent, not a person's message. */
   internalAgentContinuation?: boolean;
+  /** Server-owned request from another saved chat, never accepted from a browser. */
+  chatCoordination?: { messageId: string; sourceChatId: string; sourceTitle: string };
   /** Server-owned idle continuation; never accepted from a browser request. */
   goalContinuation?: { sourceRunId: string; goalId: string };
   /** Server-owned recovery, never accepted from a browser request. */
@@ -299,6 +314,8 @@ export interface StartConversationTurnInput {
    * and it is given the catalogue to choose from. Per-message, never stored.
    */
   superAgent?: boolean;
+  /** Optional context for the first reply to a voice opening invitation. */
+  voiceOpener?: unknown;
   /** Spoken conversation: use ordinary agent capabilities with concise speech. */
   voice?: boolean;
   /**
@@ -363,7 +380,16 @@ export type StartConversationTurnResult =
 export async function startConversationTurn(
   input: StartConversationTurnInput,
 ): Promise<StartConversationTurnResult> {
+  // Numeric local diagnostics only: no prompt, location or capability tokens.
+  // Keep phase boundaries so slow voice turns identify their actual blocker.
+  const preparationStarted = performance.now();
+  const voicePreparation: Record<string, number> = {};
+  const voicePhase = (name: string) => {
+    if (input.voice) voicePreparation[name] = Math.round(performance.now() - preparationStarted);
+  };
   const assertGoalContinuationCurrent = () => {
+    if (input.swarmWorker && !swarmWorkerCurrent(input.swarmWorker)) throw new ApiError(409, "swarm_worker_stopped", "This team assignment was stopped.");
+    if (input.swarmCoordinatorRunId && !swarmCoordinatorCurrent(db, input.swarmCoordinatorRunId, input.conversation.id)) throw new ApiError(409, "swarm_coordinator_stopped", "This team's continuation was stopped.");
     if (input.taskContinuation && !taskRecoveryCurrent(input.conversation.id,
       input.taskContinuation.sourceRunId, input.clientMessageId)) {
       throw new ApiError(409, "task_recovery_superseded", "Task recovery was superseded by new input or Stop.");
@@ -374,8 +400,8 @@ export async function startConversationTurn(
     }
   };
   assertGoalContinuationCurrent();
-  if (!input.internalAgentContinuation) cancelConversationSourceRepairs(input.conversation.id);
-  if (!input.internalAgentContinuation) clearGoalContinuationDeferral(input.conversation.public_id);
+  if (!input.internalAgentContinuation && !input.chatCoordination) cancelConversationSourceRepairs(input.conversation.id);
+  if (!input.internalAgentContinuation && !input.chatCoordination) clearGoalContinuationDeferral(input.conversation.public_id);
   if (input.surface !== input.conversation.surface) {
     throw new ApiError(
       403,
@@ -448,7 +474,9 @@ export async function startConversationTurn(
       conversation: input.conversation,
       clientMessageId: input.clientMessageId,
       surface: input.surface,
-      content: input.text,
+      content: input.chatCoordination
+        ? `Message from chat ${JSON.stringify(input.chatCoordination.sourceTitle)} (${input.chatCoordination.sourceChatId}):\n\n${input.text}`
+        : input.text,
       metadata: {
         activeGardenSlug: context.activeGardenSlug ?? null,
         activePageSlug: context.activePageSlug ?? null,
@@ -463,6 +491,7 @@ export async function startConversationTurn(
           ? { internalAgentContinuation: true }
           : {}),
         ...(input.goalContinuation ? { goalContinuation: true } : {}),
+        ...(input.chatCoordination ? { chatCoordination: input.chatCoordination } : {}),
         ...(context.deliveryChannel
           ? { deliveryChannel: context.deliveryChannel }
           : {}),
@@ -478,7 +507,7 @@ export async function startConversationTurn(
   const preDispatchReserved =
     !reservation.isNew &&
     isPreDispatchReservedAssistant(reservation.assistantMessage);
-  if (shouldGenerateConversationTitleForTurn({
+  if (!input.chatCoordination && shouldGenerateConversationTitleForTurn({
     currentTitle: reservation.conversation.title,
     userOrderIndex: reservation.userMessage.order_index,
     reservationIsNew: reservation.isNew,
@@ -586,6 +615,7 @@ export async function startConversationTurn(
       session: authorizeConversationRuntime(input.conversation), message: researchDelivery.content };
   }
 
+  voicePhase("reservation");
   let session =
     preparedBranchSession ??
     (await resolveConversationRuntime({
@@ -596,6 +626,7 @@ export async function startConversationTurn(
       activeGardenSlug: context.activeGardenSlug ?? null,
       activePageSlug: context.activePageSlug ?? null,
     }));
+  voicePhase("runtime");
   annotateConversationTurn({
     conversationId: input.conversation.id,
     clientMessageId: input.clientMessageId,
@@ -665,7 +696,7 @@ export async function startConversationTurn(
       (message) => message.client_message_id !== input.clientMessageId,
     );
   const priorRequests = currentConversationMessages
-    .filter((message) => message.role === "user")
+    .filter((message) => message.role === "user" && !presentConversationMessage(message).metadata.chatCoordination)
     .slice(-8)
     .map((message) => message.content);
   let resolvedResources = resolveVerifiedFilesystemReferences(
@@ -917,8 +948,9 @@ export async function startConversationTurn(
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
-    internalContinuation: input.internalAgentContinuation === true,
+    internalContinuation: input.internalAgentContinuation === true && !input.taskContinuation,
   });
+  // Recovery replays the original user request and must select its skills again.
   // A model-to-model continuation is exempt: the text is the last agent's
   // report handed back for synthesis, and a report that happens to say
   // "simulation" is not the person asking for an interactive one. Left
@@ -929,7 +961,7 @@ export async function startConversationTurn(
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
-    internalContinuation: input.internalAgentContinuation === true,
+    internalContinuation: input.internalAgentContinuation === true && !input.taskContinuation,
   });
   const agentLoopSelection = agentLoopCommandText({
     text: visualizerSelection.text,
@@ -961,7 +993,7 @@ export async function startConversationTurn(
   // part reaches the parametric kernel rather than becoming an uneditable mesh.
   const textToCadSelection = textToCadCommandText({
     text: watchSelection.text,
-    internalContinuation: input.internalAgentContinuation === true,
+    internalContinuation: input.internalAgentContinuation === true && !input.taskContinuation,
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
@@ -1084,7 +1116,7 @@ export async function startConversationTurn(
     text: messagingSelection.text,
     surface: input.surface,
     authenticated: true,
-    internalContinuation: input.internalAgentContinuation === true,
+    internalContinuation: input.internalAgentContinuation === true || Boolean(input.chatCoordination),
     hasActiveGoal: existingGoal !== null && existingGoal.status !== "complete",
   });
   const commandContext = {
@@ -1098,6 +1130,7 @@ export async function startConversationTurn(
   // auto-selected capability is unavailable in this mode, resolve the same
   // message again without it. Patent selection is upstream of agent-loop
   // selection, so its fallback starts from the fact-check selection text.
+  voicePhase("planning");
   const resolved = await resolveCommandMessage(
     input.conversation.user_id,
     goalSelection.text,
@@ -1260,7 +1293,8 @@ export async function startConversationTurn(
   // innate selection and an explicit /cad command; narrower upstream skills
   // continue to use their own validators and authoring workflows.
   const parametricCadSelected = decision.selectedConditionalSkills.includes("cad");
-  if (parametricCadSelected || resolved.workflowSelection) {
+  if (input.swarmCoordinator?.workflowSelection) resolved.workflowSelection = input.swarmCoordinator.workflowSelection;
+  if (parametricCadSelected || resolved.workflowSelection || input.swarmCoordinator) {
     decision.allowedTools = [...new Set([...decision.allowedTools, "agent_launch"])];
     // The workflow command is the explicit delegation selection. Grant only
     // its launch tool; the launch endpoint enforces the saved family scope
@@ -1274,11 +1308,14 @@ export async function startConversationTurn(
   // user named. That is what unlocks the skill-gated first-party tools — each of
   // their routes checks that its own skill is selected for the turn — and what
   // lets the directive below offer those skills at all.
+  voicePhase("commands");
   const superAgent = input.superAgent === true;
   const superAgentInventory: SuperAgentInventory | null = superAgent
     ? await loadSuperAgentInventory({
+        voice: input.voice === true,
         userId: input.conversation.user_id,
         surface: input.surface,
+        deliveryChannel: context.deliveryChannel,
         // The resolved text, so the listing is ordered by what the request
         // says rather than by the slash tokens the selections prepended.
         request: resolved.userText || input.text,
@@ -1366,15 +1403,21 @@ export async function startConversationTurn(
   // state bridge stays local and deterministic, never launching the cloned
   // server in the request path.
   const goalModeState: GoalModeState | null =
-    input.surface === "quartz_ai" ? null : existingGoal;
-  const goalMode = (goalModeState !== null && goalModeState.status !== "complete") || goalSkillSelected;
+    input.surface === "quartz_ai" || input.chatCoordination ? null : existingGoal;
+  const goalMode = !input.chatCoordination && ((goalModeState !== null && goalModeState.status !== "complete") || goalSkillSelected);
   if (goalMode) {
     decision.allowedTools = [...new Set([...decision.allowedTools, "mcp_call"])];
     decision.selectedConnections = [
       ...new Set([...decision.selectedConnections, GOAL_MODE_CONNECTION]),
     ];
   }
-  const engine = resolveHermesEngine(input.model, input.reasoningEffort, selectedModelForUser(input.conversation.user_id));
+  voicePhase("inventory");
+  // Direct voice API callers follow Profile too. Explicit per-turn choices
+  // remain authoritative; typed conversations retain their own effort default.
+  const voicePreferences = input.voice === true && (input.reasoningEffort === undefined || input.reasoningEffort === null || input.reasoningEffort === "")
+    ? readVoiceAssistantPreferences(db, input.conversation.user_id) : null;
+  const reasoningEffort = voicePreferences ? voiceReasoningEffort(voicePreferences) : input.reasoningEffort;
+  const engine = resolveHermesEngine(input.model, reasoningEffort, selectedModelForUser(input.conversation.user_id));
   const runtime = getAgentRuntimeByKind(session.runtimeKind);
   const connectedApps =
     input.surface === "quartz_ai"
@@ -1413,6 +1456,8 @@ export async function startConversationTurn(
     ]),
   ];
 
+  voicePhase("connections");
+  if (input.swarmWorker) restrictSwarmWorkerDecision(decision, input.swarmWorker);
   assertGoalContinuationCurrent();
   await runtime.applyCapabilityDecision({
     externalSessionId: session.externalSessionId,
@@ -1421,6 +1466,7 @@ export async function startConversationTurn(
     directory: session.activeDirectory,
     decision,
   });
+  voicePhase("capability");
   const storedDecision = persistCapabilityDecision(session.row.id, decision);
   recordAuditEvent({
     eventType: "conversation.capability_decision",
@@ -1557,6 +1603,7 @@ export async function startConversationTurn(
     attachments: input.attachments,
     workspace: session.activeDirectory,
   });
+  voicePhase("garden");
   const documents = await prepareDocumentContext({
     userId: input.conversation.user_id,
     conversationId: input.conversation.public_id,
@@ -1607,7 +1654,7 @@ export async function startConversationTurn(
     ...(decision.selectedConditionalSkills.includes(BREADBOARD_USE_SKILL)
       ? { breadboard_use: true }
       : {}),
-    ...(parametricCadSelected || resolved.workflowSelection ? { agent_launch: true } : {}),
+    ...(parametricCadSelected || resolved.workflowSelection || input.swarmCoordinator ? { agent_launch: true } : {}),
     ...(goalMode ? { mcp_call: true } : {}),
     ...(skillShortlist.length > 0 ? { skill_open: true } : {}),
   });
@@ -1615,6 +1662,9 @@ export async function startConversationTurn(
   const browserAccess = input.surface !== "quartz_ai" ? input.browserAccess : undefined;
   setBrowserTerminalContext(session.row.id, browserAccess);
   if (browserAccess) tools.browser_terminal = true;
+  if (input.swarmWorker) {
+    for (const tool of Object.keys(tools)) if (!workerToolAllowed(input.swarmWorker, tool)) tools[tool] = false;
+  }
   // Whether this turn needs verified map data is decided here, before dispatch,
   // from the request and Breadboard's own geographic state — never from what the
   // model later writes. The decision travels on the run, so the finished answer
@@ -1649,14 +1699,20 @@ export async function startConversationTurn(
   // conversation text can never owe live web evidence, and a trusted
   // model-to-model continuation is not a user request at all — neither is worth
   // a decider call.
-  const webGroundingVerdict = await adjudicateWebGrounding({
+  voicePhase("documents");
+  const webGroundingVerdict = await adjudicateWebGrounding({ userId: input.conversation.user_id,
     request: resolved.userText || input.text,
     plannerRequired: prepared.plan.requiresWebEvidence,
+    // Speech must not spend two full provider timeouts on this auxiliary
+    // classifier. Its existing unavailable verdict keeps the core live-source
+    // instructions and full tool permissions intact.
+    ...(input.voice ? { totalTimeoutMs: 1_500 } : {}),
     skip: Boolean(input.internalAgentContinuation) || Boolean(input.textSelection),
     skipReason: input.internalAgentContinuation
       ? "trusted model-to-model continuation, not a user request"
       : "excerpt-scoped selection follow-up, answered from delivered text",
   });
+  voicePhase("grounding");
   const selectionSourceMessage = input.textSelection
     ? currentConversationMessages.find(
         (message) =>
@@ -1666,6 +1722,7 @@ export async function startConversationTurn(
       )?.content
     : undefined;
   const baseSystem = composeHermesSystemPrompt({
+    userId: input.conversation.user_id,
     surface: input.surface,
     decision,
     requiresWebEvidence: webGroundingVerdict.required,
@@ -1697,7 +1754,9 @@ export async function startConversationTurn(
         {
           recentMessages: currentConversationMessages,
           includeConversationState: input.branchHistory === undefined,
+          deduplicateRuntimeHistory: true,
           includeProfile: false,
+          ...(input.voice && tools.memory_query ? { memoryExcerptCharacters: 1_500 } : {}),
         },
       ),
       // Directly after memory, as in Garden Chat: the repository is something
@@ -1759,10 +1818,10 @@ export async function startConversationTurn(
       botsStore().forConversation(input.conversation.user_id, input.conversation.public_id),
       activeAgencyAgent
       ? activeAgencyAgent.slug === CHIEF_OF_STAFF_SLUG
-        ? `${renderAgencyAgentPersona(activeAgencyAgent)}\n\n${renderChiefOfStaffOrchestration(loadAgencyAgentsCatalog())}`
+        ? `${renderAgencyAgentPersona(activeAgencyAgent, input.conversation.user_id)}\n\n${renderChiefOfStaffOrchestration(loadAgencyAgentsCatalog(), input.conversation.user_id)}`
         : activeAgencyAgent.slug === ARIS_AGENT_SLUG
-          ? `${renderAgencyAgentPersona(activeAgencyAgent)}\n\n${renderArisTurnGuidance(resolved.userText || input.text)}`
-          : renderAgencyAgentPersona(activeAgencyAgent)
+          ? `${renderAgencyAgentPersona(activeAgencyAgent, input.conversation.user_id)}\n\n${renderArisTurnGuidance(resolved.userText || input.text)}`
+          : renderAgencyAgentPersona(activeAgencyAgent, input.conversation.user_id)
       : undefined,
     ),
   });
@@ -1776,15 +1835,24 @@ export async function startConversationTurn(
   const currentLocationSnapshot = currentLocationContext
     ? parseCurrentLocationPayload(input.currentLocation)
     : null;
-  const productSearchMarket =
-    currentLocationSnapshot && tools.product_search === true
-      ? await resolveProductSearchMarket(currentLocationSnapshot)
-      : null;
+  const resolveTurnMarket = currentLocationSnapshot && tools.product_search === true
+    ? () => resolveProductSearchMarket(currentLocationSnapshot)
+    : null;
+  const productSearchMarket = !input.voice && resolveTurnMarket
+    ? await resolveTurnMarket()
+    : null;
   // The product tool runs in Hermes after this request returns. Give it only a
   // country-level, short-lived market owned by this server-side runtime
   // session on every turn where the tool is available. The model can decide
   // to shop from any wording; a topic classifier must not drop its market.
-  setProductSearchMarketContext(session.row.id, productSearchMarket);
+  const installTurnMarket = (runtimeSessionId: number) => {
+    if (input.voice && resolveTurnMarket) {
+      deferProductSearchMarketContext(runtimeSessionId, resolveTurnMarket);
+    } else {
+      setProductSearchMarketContext(runtimeSessionId, productSearchMarket);
+    }
+  };
+  installTurnMarket(session.row.id);
   // The same coarse fix, put where the map tools can reach it. Without this,
   // "what's near me" has no anchor unless the /map page happens to be open —
   // and an agent with no anchor and a geographic question is exactly the
@@ -1811,19 +1879,28 @@ export async function startConversationTurn(
   // cannot silently replay where the user was.
   const browserContext = await browserTerminalPrompt(browserAccess, true, {
     onDemand: input.voice === true,
+    userId: input.conversation.user_id,
   });
-  const productSearch = await prepareProductSearchTurn({
+  const productSearch = await prepareProductSearchTurn({ userId: input.conversation.user_id,
     request: resolved.userText || input.text,
     enabled: tools.product_search === true && decision.mode === "knowledge" &&
       !input.internalAgentContinuation && !input.textSelection,
     country: productSearchMarket?.locale,
+    resolveCountry: input.voice
+      ? async () => (await resolveProductSearchMarketContext(session.row.id))?.locale
+      : undefined,
   });
+  voicePhase("context");
   const systemWithProducts = [baseSystem, productSearchTurnContext(productSearch)].filter(Boolean).join("\n\n");
   const runtimeSystem = [systemWithProducts, currentLocationContext, browserContext].filter(Boolean).join("\n\n");
-  const defaultRuntimeText =
-    resolved.text ||
-    "Acknowledge the persona selection briefly and ask how you can help.";
-  const runtimeText = input.textSelection
+  const defaultRuntimeText = voiceReplyWithOpener(
+    resolved.text || "Acknowledge the persona selection briefly and ask how you can help.",
+    input.voice && input.personalize !== false && input.surface !== 'quartz_ai' && !input.conversation.temporary && !input.internalAgentContinuation
+      ? input.voiceOpener : undefined,
+  );
+  const runtimeText = input.chatCoordination
+    ? `Message from chat ${JSON.stringify(input.chatCoordination.sourceTitle)} (${input.chatCoordination.sourceChatId}):\n\n${defaultRuntimeText}`
+    : input.textSelection
     ? chatTextSelectionQuestionPrompt(
         defaultRuntimeText,
         input.textSelection,
@@ -1972,6 +2049,9 @@ export async function startConversationTurn(
     runtimeSessionId: session.row.id,
     instruction: resolved.userText || input.text,
     dispatch: {
+      teamApproval: approvalPolicy.yoloMode,
+      ...(input.swarmWorker ? { swarmWorker: { runId: input.swarmWorker.runId, taskKey: input.swarmWorker.taskKey,
+        workflowId: input.swarmWorker.executor.kind === "workflow" ? input.swarmWorker.executor.id : undefined } } : {}),
       ...(resolved.workflowSelection ? { workflowSelection: resolved.workflowSelection } : {}),
       ...(resolved.workflowCompletedWork ? { workflowCompletedWork: resolved.workflowCompletedWork } : {}),
       conversationPublicId: input.conversation.public_id,
@@ -1984,7 +2064,7 @@ export async function startConversationTurn(
       tools,
       system: systemWithProducts,
       ...(productSearch ? { productSearch } : {}),
-      ...(!goalMode && !input.concurrentInline && !input.branchHistory &&
+      ...(!input.swarmWorker && !input.swarmCoordinator && !input.chatCoordination && !goalMode && !input.concurrentInline && !input.branchHistory &&
         (input.surface === "dashboard_terminal" || input.surface === "garden_chat")
         ? { taskRecovery: input.taskContinuation
           ? taskRecoveryForContinuation(input.taskContinuation.sourceRunId)
@@ -2072,8 +2152,11 @@ export async function startConversationTurn(
   // and navigation or a dashboard restart cannot lose the answer afterwards.
   startSessionEventPump(session);
 
+  voicePhase("persist");
   const dispatch = async (target: AuthorizedRuntimeSession) => {
     await getAgentRuntimeByKind(target.runtimeKind).startRun({
+      userId: input.conversation.user_id,
+      onPreparationPhase: input.voice ? phase => voicePhase(`dispatch_${phase}`) : undefined,
       externalSessionId: target.externalSessionId,
       liveSessionId: target.liveSessionId,
       workspaceKey: target.workspaceKey,
@@ -2116,7 +2199,7 @@ export async function startConversationTurn(
         branchContextId: input.branchContextId,
       });
       setProductSearchMarketContext(previousRuntimeSessionId, null);
-      setProductSearchMarketContext(session.row.id, productSearchMarket);
+      installTurnMarket(session.row.id);
       setBrowserTerminalContext(previousRuntimeSessionId);
       setBrowserTerminalContext(session.row.id, browserAccess);
       await getAgentRuntimeByKind(session.runtimeKind).applyCapabilityDecision({
@@ -2146,6 +2229,7 @@ export async function startConversationTurn(
   }
 
   markRuntimeRunSubmitted(run.id);
+  voicePhase("dispatch");
 
   recordAuditEvent({
     eventType: "conversation.message_submitted",
@@ -2158,6 +2242,7 @@ export async function startConversationTurn(
       surface: input.surface,
       modelId: engine.model.modelID,
       reasoningEffort: engine.variant,
+      ...(input.voice ? { voicePreparationMs: voicePreparation } : {}),
     },
   });
   return {
@@ -2268,6 +2353,7 @@ function renderDeliveryChannel(channel: DeliveryChannel | undefined, yoloMode = 
     "# delivery_channel",
     `This answer is sent to the person as a ${app} message on their phone. It is not shown in the Breadboard window.`,
     "Only your final text is delivered. Your reasoning, tool calls and any status you would normally show alongside the answer are not visible there.",
+    "Complete the request with the available tools before sending your final answer. Do not end with only 'I am checking' or a promise to reply later. Only a worker confirmed as running server-side can supply a later result; desktop-only agent launchers are unavailable on this channel. If a tool or worker is unavailable, try another available tool or state the specific limitation now.",
     formatting,
     "Keep it to what reads well on a phone: a few short paragraphs. Anything past about 4000 characters is cut off mid-sentence.",
     yoloMode

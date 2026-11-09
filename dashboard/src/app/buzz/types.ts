@@ -90,9 +90,14 @@ export interface BuzzMessage {
   replyCount?: number;
   lastReplyAt?: string | null;
   reactions?: BuzzReaction[];
+  delivery?: "sending" | "failed";
+  deliveryError?: string;
 }
 
 export interface RoomDetail {
+  permissions: { canManage: boolean; canPost: boolean };
+  hasOlder?: boolean;
+  nextCursor?: number | null;
   room: {
     publicId: string;
     slug: string;
@@ -123,6 +128,7 @@ export interface BuzzMessageHit {
 
 /** One agent's seat in one room, as the Agents view lists it. */
 export interface BuzzAgentSeat {
+  canManage?: boolean;
   member: BuzzMember;
   roomPublicId: string;
   roomName: string;

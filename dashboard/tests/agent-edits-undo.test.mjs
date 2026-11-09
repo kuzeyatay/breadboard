@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +28,70 @@ write(".gitignore", "ignored/\ntracked-but-ignored.env\n");
 git("add", "-A");
 git("add", "--force", "tracked-but-ignored.env");
 git("commit", "-m", "initial");
+
+test("an interrupted legacy snapshot cannot block new snapshots or change the user's index",()=>{
+  const lock=path.join(repo,".git","breadboard-agent-edits-index.lock");
+  const index=path.join(repo,".git","index");
+  const before=fs.readFileSync(index);
+  fs.writeFileSync(lock,"owned stale-lock fixture");
+  try {
+    const captured=snapshot.captureAgentEditsSnapshot(repo);
+    assert.ok(snapshot.isAgentEditsSnapshotId(captured));
+    assert.deepEqual(fs.readFileSync(index),before);
+    assert.equal(fs.readFileSync(lock,"utf8"),"owned stale-lock fixture");
+    assert.deepEqual(fs.readdirSync(path.join(repo,".git")).filter(name=>/^breadboard-agent-edits-index-[a-f0-9-]{36}(?:\.lock)?$/.test(name)),[]);
+  } finally { fs.unlinkSync(lock); }
+});
+
+test("separate agent processes can capture the same worktree concurrently",async()=>{
+  const moduleUrl=new URL('../scripts/runtime-v2-agent-edits-executor.mjs',import.meta.url).href;
+  const code=`import {captureAgentEditsSnapshot} from ${JSON.stringify(moduleUrl)}; const result=captureAgentEditsSnapshot(${JSON.stringify(repo)}); if(!result)process.exit(2); console.log(result);`;
+  const before=fs.readFileSync(path.join(repo,'.git','index'));
+  const run=()=>new Promise((resolve,reject)=>execFile(process.execPath,['--input-type=module','-e',code],{windowsHide:true,timeout:30000},(error,stdout,stderr)=>error?reject(new Error(stderr||error.message)):resolve(stdout.trim())));
+  const commits=await Promise.all([run(),run()]);
+  assert.ok(commits.every(snapshot.isAgentEditsSnapshotId));
+  assert.deepEqual(fs.readFileSync(path.join(repo,'.git','index')),before);
+  assert.deepEqual(fs.readdirSync(path.join(repo,'.git')).filter(name=>/^breadboard-agent-edits-index-[a-f0-9-]{36}(?:\.lock)?$/.test(name)),[]);
+});
+
+test("snapshots capture unstaged changes hidden by index flags without changing staged contents", () => {
+  const original = fs.readFileSync(path.join(repo, "tracked.ts"), "utf8");
+  write("tracked.ts", "staged contents\n");
+  git("add", "tracked.ts");
+  git("update-index", "--assume-unchanged", "tracked.ts");
+  git("update-index", "--skip-worktree", "deleted-by-agent.ts");
+  const indexBefore = fs.readFileSync(path.join(repo, ".git", "index"));
+  try {
+    write("tracked.ts", "unstaged contents\n");
+    write("deleted-by-agent.ts", "changed despite skip-worktree\n");
+    const captured = snapshot.captureAgentEditsSnapshot(repo);
+    assert.ok(snapshot.isAgentEditsSnapshotId(captured));
+    assert.equal(git("show", `${captured}:tracked.ts`), "unstaged contents\n");
+    assert.equal(git("show", `${captured}:deleted-by-agent.ts`), "changed despite skip-worktree\n");
+    assert.deepEqual(fs.readFileSync(path.join(repo, ".git", "index")), indexBefore);
+    assert.equal(git("show", ":tracked.ts"), "staged contents\n");
+  } finally {
+    git("update-index", "--no-assume-unchanged", "tracked.ts");
+    git("update-index", "--no-skip-worktree", "deleted-by-agent.ts");
+    write("tracked.ts", original);
+    write("deleted-by-agent.ts", "export const gone = 1;\n");
+    git("add", "tracked.ts", "deleted-by-agent.ts");
+  }
+});
+
+test("a new repository without HEAD or an index still captures its working files", () => {
+  const unborn = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-agent-edits-unborn-"));
+  try {
+    execFileSync("git", ["-C", unborn, "init", "--initial-branch=main"], { windowsHide: true });
+    fs.writeFileSync(path.join(unborn, "new.txt"), "uncommitted work\n");
+    const captured = snapshot.captureAgentEditsSnapshot(unborn);
+    assert.ok(snapshot.isAgentEditsSnapshotId(captured));
+    assert.equal(execFileSync("git", ["-C", unborn, "show", `${captured}:new.txt`], { encoding: "utf8", windowsHide: true }), "uncommitted work\n");
+    assert.equal(fs.existsSync(path.join(unborn, ".git", "index")), false);
+  } finally {
+    fs.rmSync(unborn, { recursive: true, force: true });
+  }
+});
 
 test("a coding agent run is bracketed by snapshots of any repository", () => {
   // Work in progress the run must never disturb.

@@ -2032,6 +2032,69 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_service_launch_preserves_bulk_probes_and_executables_through_claim() {
+        // Exercise both native ownership boundaries, not just path resolution.
+        // MoneyPrinter uses a runtime Node executable plus a D: Python probe;
+        // Python services can instead execute directly from that managed root.
+        for bulk_executable in [false, true] {
+            let directory = tempdir().unwrap();
+            for name in ["data", "app", "runtime-root", "bulk"] {
+                fs::create_dir(directory.path().join(name)).unwrap();
+            }
+            let bulk = directory.path().join("bulk");
+            let paths = RuntimePaths::new(
+                directory.path().join("data"),
+                directory.path().join("app"),
+                directory.path().join("runtime-root"),
+            ).unwrap().with_bulk_root(Some(bulk.clone())).unwrap();
+            let namespace = "runtime-v2/services/money-printer/.venv";
+            let python = if cfg!(windows) { "Scripts/python.exe" } else { "bin/python" };
+            let python_relative = format!("{namespace}/{python}");
+            let root = bulk.join(namespace);
+            fs::create_dir_all(root.join(python).parent().unwrap()).unwrap();
+            fs::write(root.join(python), b"fixture interpreter").unwrap();
+            fs::write(root.join(".breadboard-bulk-ready.json"), serde_json::to_vec(&serde_json::json!({
+                "version": 1, "relative": namespace, "verifiedAt": "2026-11-06T12:00:00.000Z"
+            })).unwrap()).unwrap();
+            for (authority, relative) in [
+                (paths.runtime_root(), "bin/runtime-supervisor.exe"),
+                (paths.runtime_root(), "services/search.exe"),
+                (paths.app_root(), "worker.mjs"),
+                (paths.data_root(), "runtime-v2/toolchains/money-printer/app/asgi.py"),
+            ] {
+                let file = authority.join(relative);
+                fs::create_dir_all(file.parent().unwrap()).unwrap();
+                fs::write(file, b"fixture source").unwrap();
+            }
+            let mut service = service_definition("money-printer", &[]);
+            service.launch_profiles = service_launch_profiles("services/search.exe", Some("worker.mjs"));
+            let profile = &mut service.launch_profiles[0];
+            profile.environment_source = TrustedServiceEnvironmentSource::MoneyPrinter;
+            if bulk_executable {
+                profile.executable_authority = ServiceExecutableAuthority::DataRoot;
+                profile.allowed_executable = python_relative.clone();
+            }
+            let ServiceInstallProbe::FilesPresent { files } = &mut profile.install_probe;
+            files.push(ServiceInstallProbeFile { authority: ServiceInstallProbeAuthority::DataRoot, path: python_relative.clone() });
+            files.push(ServiceInstallProbeFile { authority: ServiceInstallProbeAuthority::DataRoot, path: "runtime-v2/toolchains/money-printer/app/asgi.py".into() });
+            let registry = registry_with_services(vec![service]).unwrap();
+            let environments = trusted_environment_source(&directory, &paths, RuntimeMode::Lean);
+            let prepare = || {
+                let profile = registry.service("money-printer").unwrap().launch_profile(RuntimeMode::Lean).unwrap();
+                let environment = environments.prepare_for_launch_profile("money-printer", profile).unwrap();
+                registry.prepare_service_launch(&paths, &scheduler_authority(&paths), "money-printer", 43_123, environment, None)
+            };
+            assert_eq!(paths.pin_service_data_file_for_launch(&python_relative).unwrap().authority_kind(), "bulk");
+            let request = prepare().unwrap();
+            crate::process_owner::prepare_claimed_service_launch("money-printer", 1, request).unwrap();
+            // The new accepted authority still requires a valid ready marker;
+            // an arbitrary file on the bulk drive cannot become an executable.
+            fs::write(root.join(".breadboard-bulk-ready.json"), b"{}").unwrap();
+            assert!(prepare().is_err());
+        }
+    }
+
+    #[test]
     fn request_digest_is_canonical_and_conflicts_are_detected() {
         let directory = tempdir().unwrap();
         let store = JobStore::open(directory.path().join("runtime.sqlite3")).unwrap();

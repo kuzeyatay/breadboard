@@ -1,179 +1,100 @@
 "use client";
 
-// A thread, opened beside the room rather than over it.
-//
-// Threads carry their own poll because they are the one place where a reply
-// arrives that the spine will not show: an agent answering inside a thread
-// writes into the thread, and the room only learns about it as a reply count.
 
-import { useCallback, useEffect, useState } from "react";
+
+import { useEffect, useRef } from "react";
+
 import { X } from "lucide-react";
 
 import { Composer } from "./composer";
+
 import { MessageRow } from "./message-row";
-import { isLive, type BuzzMember, type BuzzMessage } from "../types.ts";
 
-const LIVE_POLL_MS = 900;
-const IDLE_POLL_MS = 8000;
+import { useRoom } from "../use-room";
 
-export function ThreadPanel({
-  roomPublicId,
-  rootId,
-  members,
-  selfMemberId,
-  onClose,
-  onChanged,
-}: {
-  roomPublicId: string;
-  rootId: number;
-  members: BuzzMember[];
-  selfMemberId: number | null;
-  onClose: () => void;
-  /** Lets the room update the reply count under the root message. */
-  onChanged: () => void;
+import type { BuzzMessage } from "../types";
+
+
+
+export function ThreadPanel({ roomPublicId, rootId, userId, onClose, onChanged }: {
+
+  roomPublicId: string; rootId: number; userId: number;
+
+  onClose: () => void; onChanged: () => void;
+
 }) {
-  const [root, setRoot] = useState<BuzzMessage | null>(null);
-  const [replies, setReplies] = useState<BuzzMessage[]>([]);
 
-  const load = useCallback(async () => {
-    const response = await fetch(
-      `/api/buzz/rooms/${roomPublicId}/threads/${rootId}`,
-      { cache: "no-store" },
-    );
-    if (!response.ok) return;
-    const body = (await response.json()) as { root: BuzzMessage; replies: BuzzMessage[] };
-    setRoot(body.root);
-    setReplies(body.replies);
-  }, [roomPublicId, rootId]);
+  const thread = useRoom(roomPublicId, userId, rootId);
 
-  // A reply is a message like any other: it reacts, edits and deletes through
-  // the same endpoints the spine uses. Passing no-ops here is what made every
-  // control inside an open thread inert.
-  const patch = async (messageId: number, body: Record<string, unknown>) => {
-    await fetch(`/api/buzz/rooms/${roomPublicId}/messages/${messageId}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    await load();
-    onChanged();
-  };
+  const scroller = useRef<HTMLDivElement>(null);
 
-  const remove = async (messageId: number) => {
-    await fetch(`/api/buzz/rooms/${roomPublicId}/messages/${messageId}`, {
-      method: "DELETE",
-    });
-    await load();
-    onChanged();
-  };
+  const pinned = useRef(true);
 
-  // The caller mounts one panel per thread (`key={threadRootId}`), so there is
-  // nothing to clear here: a different thread is a different component, with
-  // its own empty state and its own poll.
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const lastCount = useRef(0);
 
   useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const busy = replies.some(isLive);
-    const tick = async () => {
-      if (cancelled) return;
-      await load();
-      if (!cancelled) timer = setTimeout(tick, busy ? LIVE_POLL_MS : IDLE_POLL_MS);
-    };
-    timer = setTimeout(tick, busy ? LIVE_POLL_MS : IDLE_POLL_MS);
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [load, replies]);
 
-  const send = async (body: string) => {
-    await fetch(`/api/buzz/rooms/${roomPublicId}/threads/${rootId}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        body,
-        clientMessageId: `thread_${Date.now().toString(36)}_${Math.random()
-          .toString(36)
-          .slice(2, 8)}`,
-      }),
-    });
-    await load();
-    onChanged();
-  };
+    if (pinned.current && scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
 
-  const memberFor = (message: BuzzMessage) =>
-    members.find((member) => member.id === message.memberId);
+    if (thread.messages.length !== lastCount.current) { lastCount.current = thread.messages.length; onChanged(); }
+
+  }, [thread.messages, onChanged]);
+
+  const row = (message: BuzzMessage, grouped = false) => (
+
+    <MessageRow key={message.clientMessageId} message={message}
+
+      member={thread.members.find(member => member.id === message.memberId)} roomMembers={thread.members}
+
+      grouped={grouped} isSelf={message.memberId === thread.selfMemberId}
+
+      canDelete={message.memberId === thread.selfMemberId || thread.detail?.permissions.canManage}
+
+      onReact={emoji => void thread.react(message.id, emoji)} onOpenThread={() => {}}
+
+      onDelete={() => void thread.remove(message.id)} onEdit={body => thread.edit(message.id, body)}
+
+      onRetry={() => void thread.retry(message)}
+
+      runHref={message.metadata?.requestedByMemberId === thread.selfMemberId && typeof message.metadata.conversationPublicId === "string" && message.metadata.externalAgentRun ? `/dashboard?conversation=${encodeURIComponent(message.metadata.conversationPublicId)}` : undefined}
+      onApprove={message.metadata?.requestedByMemberId === thread.selfMemberId ? () => void thread.approve(message.id) : undefined}
+
+      onStop={message.metadata?.requestedByMemberId === thread.selfMemberId || thread.detail?.permissions.canManage ? () => void thread.stop(message.id) : undefined}
+
+      onRegenerate={message.authorKind === "agent" && (message.metadata?.requestedByMemberId === thread.selfMemberId || thread.detail?.permissions.canManage) ? () => void thread.regenerate(message.id) : undefined}
+
+    />
+
+  );
 
   return (
-    <aside
-      className="flex w-[360px] shrink-0 flex-col border-l border-border/40"
-      aria-label="Thread"
-    >
+
+    <aside className="buzz-aux-panel flex w-[360px] shrink-0 flex-col border-l border-border/40" aria-label="Thread">
+
       <header className="flex h-14 shrink-0 items-center justify-between px-4">
+
         <h2 className="text-sm font-semibold">Thread</h2>
-        <button
-          type="button"
-          onClick={onClose}
-          className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-          aria-label="Close thread"
-        >
-          <X className="size-4" />
-        </button>
+
+        <button type="button" onClick={onClose} className="neu-button flex size-8 items-center justify-center rounded-full" aria-label="Close thread"><X className="size-4" /></button>
+
       </header>
 
-      <div className="buzz-content-scrollbar min-h-0 flex-1 overflow-y-auto pb-2 pt-5">
-        {root ? (
-          <MessageRow
-            message={root}
-            member={memberFor(root)}
-            roomMembers={members}
-            grouped={false}
-            isSelf={root.memberId === selfMemberId}
-            onReact={(emoji) => void patch(root.id, { emoji })}
-            onOpenThread={() => {}}
-            onDelete={() => void remove(root.id)}
-            onEdit={(body) => void patch(root.id, { body })}
-          />
-        ) : null}
+      <div ref={scroller} onScroll={() => { const el = scroller.current; if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100; }} className="buzz-content-scrollbar min-h-0 flex-1 overflow-y-auto pb-2 pt-5">
 
-        {replies.length > 0 ? (
-          <p className="px-4 py-2 text-2xs text-muted-foreground">
-            {replies.length} {replies.length === 1 ? "reply" : "replies"}
-          </p>
-        ) : null}
+        {thread.error ? <p role="alert" className="m-3 text-xs text-destructive">{thread.error} <button onClick={() => void thread.refresh()}>Retry</button></p> : null}
 
-        {replies.map((reply, index) => {
-          const previous = replies[index - 1];
-          const grouped =
-            previous !== undefined &&
-            previous.memberId === reply.memberId &&
-            previous.authorKind === reply.authorKind;
-          return (
-            <MessageRow
-              key={reply.id}
-              message={reply}
-              member={memberFor(reply)}
-              roomMembers={members}
-              grouped={grouped}
-              isSelf={reply.memberId === selfMemberId}
-              onReact={(emoji) => void patch(reply.id, { emoji })}
-              onOpenThread={() => {}}
-              onDelete={() => void remove(reply.id)}
-              onEdit={(body) => void patch(reply.id, { body })}
-            />
-          );
-        })}
+        {thread.detail?.root ? row(thread.detail.root) : null}
+
+        {thread.messages.length ? <p className="px-3 py-3 text-xs text-muted-foreground">{thread.messages.length} {thread.messages.length === 1 ? "reply" : "replies"}</p> : null}
+
+        {thread.messages.map((message, index) => row(message, index > 0 && thread.messages[index - 1].memberId === message.memberId))}
+
       </div>
 
-      <Composer
-        members={members}
-        placeholder="Reply in thread…"
-        onSend={(body) => void send(body)}
-      />
+      <Composer key={thread.scope} draftKey={thread.scope} members={thread.members} placeholder="Reply in thread…" disabled={!thread.detail?.permissions.canPost} onSend={thread.send} />
+
     </aside>
+
   );
+
 }

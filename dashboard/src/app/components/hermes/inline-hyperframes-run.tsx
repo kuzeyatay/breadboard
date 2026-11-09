@@ -14,7 +14,7 @@ import { externalRunStartedAtMs } from "./external-run-clock";
 // the same object as every other external-agent run.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ReclaimingVideo } from "@/app/components/reclaiming-media";
+import BreadboardVideoPlayer from "@/app/components/breadboard-video-player";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
 import ChatMarkdown from "@/app/components/chat-markdown";
@@ -164,7 +164,7 @@ export default function InlineHyperframesRun({
     (outcome: "completed" | "failed" | "aborted", content: string) => {
       if (reportedRef.current) return;
       reportedRef.current = true;
-      if (outcome === "completed") notifyTaskCompleted(`HyperFrames — ${brief.slice(0, 80)}`);
+      if (outcome === "completed") notifyTaskCompleted(`HyperFrames — ${brief.slice(0, 80)}`, { runId });
       onTerminalRef.current?.({
         outcome,
         content,
@@ -339,7 +339,7 @@ export default function InlineHyperframesRun({
         responseDurationMs={!terminal || elapsed > 0 ? elapsed * 1_000 : undefined}
         summary={activity.at(-1)?.detail}
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <header className="bb-agent-run-header">
           <p className="bb-agent-run-title min-w-0 truncate">
             HyperFrames
@@ -412,12 +412,10 @@ export default function InlineHyperframesRun({
 
           {video ? (
             <figure className="overflow-hidden rounded-[10px] border border-[color-mix(in_srgb,var(--line)_55%,transparent)] bg-black">
-              <ReclaimingVideo
-                className="block max-h-[420px] w-full bg-black"
+              <BreadboardVideoPlayer
+                className="max-h-[420px] rounded-none"
                 src={`${base}/artifacts/${encodeURIComponent(video.id)}`}
-                controls
-                preload="metadata"
-                playsInline
+                title={video.relativePath}
               />
               <figcaption className="flex items-center justify-between gap-[13px] bg-[var(--paper-surface)] px-[13px] py-[8px]">
                 <span className="min-w-0 truncate font-mono text-[11px] text-[var(--ink-heading)]">

@@ -220,7 +220,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   const selected = (request.sources ?? ready).filter((source) => ready.includes(source));
 
   emit(run, "plan.started", {});
-  const planned = await planSearch({
+  const planned = await planSearch({ userId: run.userId,
     baseUrl: input.baseUrl,
     model: input.model,
     reasoningEffort: input.reasoningEffort,
@@ -288,7 +288,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
 
   if (documents.length) {
     emit(run, "describe.started", { count: documents.length });
-    const described = await describeDocuments({
+    const described = await describeDocuments({ userId: run.userId,
       baseUrl: input.baseUrl,
       model: input.model,
       reasoningEffort: input.reasoningEffort,

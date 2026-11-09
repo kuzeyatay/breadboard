@@ -5,6 +5,7 @@ import ts from "typescript";
 import { agentLaunchContinuationMessage } from "../src/lib/hermes/agent-launch.ts";
 import * as combinations from "../src/lib/hermes/capability-combinations.ts";
 import { ApiError, describeError, readJsonBody } from "../src/lib/hermes/route-core.ts";
+import { SwarmError } from "../src/lib/swarm/types.ts";
 import { unifiedWorkflowSelectionAllows, unifiedWorkflowRepeatsCompletedWork } from "../src/lib/workflows/unified-command.ts";
 
 // Run the actual POST handler with storage/auth/worker I/O replaced. The launch
@@ -17,18 +18,18 @@ const code = ts.transpileModule(tree.statements
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 
-async function launch({ instruction, agentId = "max-research", delegatedAgents = [], queuedAgents = [], surface = "garden_chat" }) {
+async function launch({ instruction, agentId = "max-research", delegatedAgents = [], queuedAgents = [], surface = "garden_chat", deliveryChannel, extraArgs = {}, brief = "Build a strength program and calorie plan." }) {
   const calls = { reserved: 0, started: [], queued: [], persisted: [] };
   const session = { id: 1, user_id: 7, conversation_id: 9, surface };
   const conversation = { id: 9, user_id: 7 };
   const dispatch = { clientMessageId: "original-turn", model: { modelID: "test-model" }, delegatedAgents };
   const scope = {
-    ...combinations, ApiError, readJsonBody, unifiedWorkflowSelectionAllows, unifiedWorkflowRepeatsCompletedWork,
+    ...combinations, ApiError, SwarmError, readJsonBody, unifiedWorkflowSelectionAllows, unifiedWorkflowRepeatsCompletedWork,
     MAX_PARALLEL_AGENT_LAUNCHES: 4,
     NextResponse: Response,
     requireEnabled: () => {},
     capabilityForInternalToolRequest: () => "test-token",
-    verifyCapabilityToken: () => ({ ok: true, token: { breadboardSessionId: "1", hermesSessionId: "session-test", conversationId: 9 } }),
+    verifyCapabilityToken: () => ({ ok: true, token: { breadboardSessionId: "1", hermesSessionId: "session-test", conversationId: 9, userId: 7, surface } }),
     tokenAllows: () => true,
     getRuntimeSessionById: () => session,
     runtimeExternalSessionId: () => "session-test",
@@ -40,7 +41,8 @@ async function launch({ instruction, agentId = "max-research", delegatedAgents =
     releaseAgentLaunchRequestSlot: () => {},
     randomUUID: () => "worker-id",
     getConversationById: () => conversation,
-    getConversationMessageByClientId: () => null,
+    getConversationMessageByClientId: () => ({ metadata: { deliveryChannel } }),
+    presentConversationMessage: (message) => message,
     resolveChatmockBaseUrl: () => ({ baseURL: "http://test.invalid" }),
     startMaxResearchRun: async (input) => { calls.started.push(input); return { runId: "max-run" }; },
     recordExternalAgentTurn: (input) => calls.persisted.push(input),
@@ -58,7 +60,7 @@ async function launch({ instruction, agentId = "max-research", delegatedAgents =
   // The brief deliberately omits the request's Max Research wording.
   const response = await handler(new Request("http://localhost/api/hermes/tools/agent-launch", {
     method: "POST",
-    body: JSON.stringify({ args: { agent: agentId, brief: "Build a strength program and calorie plan.", reason: "Evidence for the program." } }),
+    body: JSON.stringify({ args: { agent: agentId, brief, reason: "Evidence for the program.", ...extraArgs } }),
     headers: { "content-type": "application/json" },
   }));
   return { status: response.status, body: await response.json(), calls };
@@ -87,6 +89,48 @@ test("Max Research still starts and attaches durably for the fitness request", a
   assert.equal(result.calls.started.length, 1);
   assert.equal(result.calls.persisted[0].run.kind, "max_research");
   assert.equal(result.calls.queued[0].startedRun.runId, "max-run");
+});
+
+test("Telegram cannot queue the Eindhoven lookup to a desktop-only globe worker", async () => {
+  const result = await launch({
+    instruction: "flight coming to eindhoven", surface: "dashboard_terminal",
+    agentId: "gods-eye", deliveryChannel: "telegram",
+    brief: "Show live aircraft activity over Eindhoven and report arriving flights.",
+  });
+  assert.equal(result.status, 409);
+  assert.equal(result.body.code, "agent_launch_delivery_unavailable");
+  assert.match(result.body.error, /continue.*available tools/i);
+  assert.equal(result.calls.reserved, 0);
+  assert.deepEqual(result.calls.queued, []);
+  assert.deepEqual(result.calls.started, []);
+});
+
+test("messaging rejects other surface-owned launches using persisted channel provenance", async () => {
+  for (const deliveryChannel of ["telegram", "whatsapp"]) {
+    for (const agentId of ["deep-research", "inbox-zero", "codex"]) {
+      const result = await launch({
+        instruction: "Help with this task", surface: "dashboard_terminal", agentId, deliveryChannel,
+        extraArgs: { deliveryChannel: "", surfaceContext: { deliveryChannel: "" } },
+      });
+      assert.equal(result.status, 409, `${deliveryChannel}: ${agentId}`);
+      assert.equal(result.body.code, "agent_launch_delivery_unavailable");
+      assert.deepEqual(result.calls.queued, []);
+    }
+  }
+});
+
+test("server-owned research still starts with Telegram provenance for its follow-up", async () => {
+  const result = await launch({ instruction: "Research this", deliveryChannel: "telegram" });
+  assert.equal(result.status, 200);
+  assert.equal(result.calls.started.length, 1);
+  assert.equal(result.calls.persisted[0].deliveryChannel, "telegram");
+  assert.equal(result.calls.persisted[0].delegatedAgentRun, true);
+});
+
+test("desktop chats can still queue their globe worker", async () => {
+  const result = await launch({ instruction: "Show Eindhoven", agentId: "gods-eye", surface: "dashboard_terminal" });
+  assert.equal(result.status, 200);
+  assert.equal(result.calls.queued[0].agentId, "gods-eye");
 });
 
 test("completed Max Research hand-backs preserve recommendations without claiming failed work was reviewed", () => {

@@ -103,7 +103,7 @@ export function delegatedAgentStartedAtForMessage(
   return requestedAt || undefined;
 }
 
-interface DelegationPresentationMessage {
+interface DelegationPresentationMessage extends AssistantHandoffMessage {
   role: "user" | "assistant";
   content: string;
   progressNotes?: string[];
@@ -135,10 +135,9 @@ function visibleAssistantCandidate(
 }
 
 /**
- * Internal hand-backs are separate durable turns, but one delegation is one
- * visible answer. Each continuation therefore supersedes the prior visible
- * assistant in the same uninterrupted chain; a real user message starts a new
- * chain and prevents unrelated answers from being folded together.
+ * Internal hand-backs are separate durable turns. Only a recorded handoff or
+ * an empty progress row may be folded into its continuation. A finished answer
+ * remains visible, including during recovery, Goal and team continuations.
  *
  * A self-presenting worker is the exception. Its animation or globe is an
  * irreplaceable part of the answer, not an interim sentence synthesis can carry
@@ -170,7 +169,8 @@ export function supersededDelegationAssistantIndices(
         // launching row (and progress) until a synthesis replaces that row.
         continue;
       }
-      if (!selfPresentingDelegation(visibleAssistant)) {
+      if (!selfPresentingDelegation(visibleAssistant) && !visibleAssistant.failed && !visibleAssistant.interrupted &&
+          (!visibleAssistant.content.trim() || assistantHandoffContent(visibleAssistant))) {
         superseded.add(visibleAssistantIndex);
       }
     }
@@ -192,12 +192,17 @@ export function delegatedContinuationPreamble(
     return "";
   }
   let preamble = "";
+  const superseded = supersededDelegationAssistantIndices(messages);
   for (let index = assistantIndex - 2; index >= 0; index -= 1) {
     const message = messages[index]!;
     if (message.role === "user" && message.internalAgentContinuation !== true) {
       break;
     }
     if (!visibleAssistantCandidate(message)) continue;
+    if (!superseded.has(index)) {
+      if (message.content.trim()) break;
+      continue;
+    }
     const content =
       message.delegatedAgentPreamble?.trim() || message.content.trim();
     if (content) preamble = content;
@@ -268,6 +273,7 @@ function delegatedContinuationPriorPhases(
   }
 
   const phases: DelegatedContinuationPhaseMessage[] = [];
+  const superseded = supersededDelegationAssistantIndices(messages);
   let containsDelegatedWorker = false;
   for (let index = assistantIndex - 2; index >= 0; index -= 1) {
     const message = messages[index]!;
@@ -275,6 +281,7 @@ function delegatedContinuationPriorPhases(
       if (message.internalAgentContinuation === true) continue;
       break;
     }
+    if (!superseded.has(index) && message.delegatedAgentRun !== true) break;
     phases.push(message);
     if (message.delegatedAgentRun === true) containsDelegatedWorker = true;
   }

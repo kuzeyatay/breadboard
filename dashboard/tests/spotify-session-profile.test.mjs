@@ -96,6 +96,24 @@ test("failed browser launches release their bridge and temporary profile", async
   }
 });
 
+test("a new session clears day-old stranded profiles but keeps recent ones and unrelated folders", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-spotify-stranded-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const stranded = createSpotifySessionProfile(root, 7);
+  const recent = createSpotifySessionProfile(root, 7);
+  const unrelated = path.join(path.dirname(stranded.directory), "Default");
+  fs.mkdirSync(unrelated);
+  const old = new Date(Date.now() - 25 * 60 * 60 * 1_000);
+  fs.utimesSync(stranded.directory, old, old);
+  fs.utimesSync(unrelated, old, old);
+  const current = createSpotifySessionProfile(root, 7);
+  for (let i = 0; i < 100 && fs.existsSync(stranded.directory); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(fs.existsSync(stranded.directory), false);
+  assert.equal(fs.existsSync(recent.directory), true);
+  assert.equal(fs.existsSync(current.directory), true);
+  assert.equal(fs.existsSync(unrelated), true);
+});
+
 test("each audio browser owns a fresh profile even when an earlier browser survives", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-spotify-session-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

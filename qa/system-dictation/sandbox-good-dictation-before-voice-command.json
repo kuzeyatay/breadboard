@@ -1,0 +1,322 @@
+{
+  "openedAt": "2026-10-14T13:47:14.542Z",
+  "status": "ready",
+  "sessions": [
+    {
+      "id": 1,
+      "startedAt": 1791985670242,
+      "anchor": {
+        "x": -1297,
+        "y": 436,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 388,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791985670422
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791985670443
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791985670444
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1791985674051
+        },
+        {
+          "stage": "first-transcript",
+          "at": 1791985681128
+        },
+        {
+          "stage": "keys-released",
+          "at": 1791985703384
+        }
+      ],
+      "pillVisible": true,
+      "recordingAt": 1791985674086,
+      "firstPreviewAt": 1791985681179,
+      "firstPreviewMs": 10937,
+      "previewCount": 11,
+      "previewWhileHeld": true,
+      "previewCharacters": 73,
+      "releasedAt": 1791985703381,
+      "hiddenOnRelease": true,
+      "cancelled": true
+    },
+    {
+      "id": 2,
+      "startedAt": 1791985716851,
+      "anchor": {
+        "x": -1297,
+        "y": 578,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 530,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791985716917
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791985716944
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791985716946
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1791985720361
+        },
+        {
+          "stage": "first-transcript",
+          "at": 1791985727211
+        },
+        {
+          "stage": "keys-released",
+          "at": 1791985734540
+        }
+      ],
+      "pillVisible": true,
+      "recordingAt": 1791985720506,
+      "firstPreviewAt": 1791985727284,
+      "firstPreviewMs": 10433,
+      "previewCount": 11,
+      "previewWhileHeld": true,
+      "previewCharacters": 73,
+      "releasedAt": 1791985734539,
+      "hiddenOnRelease": true,
+      "cancelled": true
+    },
+    {
+      "id": 3,
+      "startedAt": 1791985983254,
+      "anchor": {
+        "x": -1297,
+        "y": 435,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 387,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791985983337
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791985983368
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791985983369
+        },
+        {
+          "stage": "keys-released",
+          "at": 1791985983775
+        }
+      ],
+      "pillVisible": true,
+      "releasedAt": 1791985983774,
+      "hiddenOnRelease": true,
+      "cancelled": true
+    },
+    {
+      "id": 4,
+      "startedAt": 1791985985967,
+      "anchor": {
+        "x": -1297,
+        "y": 435,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 387,
+        "width": 320,
+        "height": 100
+      },
+      "pillVisible": true,
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791985986334
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791985986348
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791985986348
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1791985991113
+        },
+        {
+          "stage": "first-transcript",
+          "at": 1791985999934
+        },
+        {
+          "stage": "keys-released",
+          "at": 1791986011371
+        }
+      ],
+      "recordingAt": 1791985991212,
+      "firstPreviewAt": 1791986000017,
+      "firstPreviewMs": 14050,
+      "previewCount": 9,
+      "previewWhileHeld": true,
+      "previewCharacters": 73,
+      "releasedAt": 1791986011370,
+      "hiddenOnRelease": true,
+      "cancelled": true
+    },
+    {
+      "id": 5,
+      "startedAt": 1791986017253,
+      "anchor": {
+        "x": -768,
+        "y": 435,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -823,
+        "y": 387,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791986017336
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791986017367
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791986017368
+        },
+        {
+          "stage": "recording-ready",
+          "at": 1791986027490
+        },
+        {
+          "stage": "keys-released",
+          "at": 1791986029620
+        },
+        {
+          "stage": "fallback-started",
+          "at": 1791986029631
+        }
+      ],
+      "pillVisible": true,
+      "recordingAt": 1791986027501,
+      "releasedAt": 1791986029619,
+      "hiddenOnRelease": true,
+      "error": "Another voice operation is still running. Stop it and try again.",
+      "cancelled": true,
+      "snapshot": {
+        "characters": {
+          "rich": 73,
+          "plain": 73,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 0,
+          "plain": 0,
+          "multiline": 0
+        },
+        "typingMetrics": {
+          "keyDown": 0,
+          "controlDown": 0,
+          "metaDown": 0,
+          "inputEvents": 0,
+          "insertedCharacters": 0
+        }
+      }
+    }
+  ],
+  "services": "existing Breadboard",
+  "scopedToTestWindow": true,
+  "testWindow": {
+    "bounds": {
+      "x": -1360,
+      "y": 136,
+      "width": 800,
+      "height": 760
+    },
+    "displayId": 2151158276,
+    "scaleFactor": 1,
+    "visible": true,
+    "minimized": false,
+    "focused": true,
+    "alwaysOnTop": true,
+    "displays": [
+      {
+        "id": 999882014,
+        "bounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 960
+        },
+        "workArea": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 912
+        },
+        "scaleFactor": 1.25
+      },
+      {
+        "id": 2151158276,
+        "bounds": {
+          "x": -1920,
+          "y": 0,
+          "width": 1920,
+          "height": 1080
+        },
+        "workArea": {
+          "x": -1920,
+          "y": 0,
+          "width": 1920,
+          "height": 1032
+        },
+        "scaleFactor": 1
+      }
+    ]
+  },
+  "nativeReady": true,
+  "provider": "chatgpt",
+  "pid": 35580,
+  "origin": "http://127.0.0.1:58937",
+  "lastError": "Another voice operation is still running. Stop it and try again."
+}

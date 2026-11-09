@@ -44,10 +44,10 @@ test("the storyboard card clamps its own paragraph and keeps the full text", () 
 
 test("an encoded film is played, and is downloadable", () => {
   assert.match(source, /const film = production\.renderPlan\.video \?\? null/);
-  assert.match(source, /import \{ ReclaimingVideo \} from [^;]+reclaiming-media/);
+  assert.match(source, /import BreadboardVideoPlayer from [^;]+breadboard-video-player/);
   assert.match(
     source,
-    /<ReclaimingVideo[\s\S]*?src=\{frameUrl\(film\.artifactId, conversationId\)\}[\s\S]*?controls[\s\S]*?\/>/,
+    /<BreadboardVideoPlayer[\s\S]*?src=\{frameUrl\(film\.artifactId, conversationId\)\}[\s\S]*?\/>/,
   );
   assert.match(reclaimingMediaSource, /export function ReclaimingVideo\(/);
   assert.match(reclaimingMediaSource, /return <video \{\.\.\.props\} ref=\{ref\} src=\{src\} \/>/);

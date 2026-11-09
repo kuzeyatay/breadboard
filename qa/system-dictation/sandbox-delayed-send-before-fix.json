@@ -1,0 +1,146 @@
+{
+  "openedAt": "2026-10-14T14:14:00.228Z",
+  "status": "ready",
+  "sessions": [
+    {
+      "id": 1,
+      "startedAt": 1791987350002,
+      "anchor": {
+        "x": -1297,
+        "y": 455,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 407,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791987350257
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791987350280
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791987350281
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1791987354594
+        },
+        {
+          "stage": "keys-released",
+          "at": 1791987360514
+        },
+        {
+          "stage": "first-transcript",
+          "at": 1791987361273
+        },
+        {
+          "stage": "audio-drained",
+          "at": 1791987364869
+        },
+        {
+          "stage": "fallback-started",
+          "at": 1791987380781
+        },
+        {
+          "stage": "fallback-finished",
+          "at": 1791987395326
+        }
+      ],
+      "pillVisible": true,
+      "recordingAt": 1791987354689,
+      "releasedAt": 1791987360513,
+      "hiddenOnRelease": true,
+      "firstPreviewAt": 1791987361323,
+      "firstPreviewMs": 11321,
+      "previewCount": 3,
+      "previewWhileHeld": false,
+      "previewCharacters": 14,
+      "characters": 14,
+      "submitRequested": true,
+      "insertedAt": 1791987395332,
+      "releaseToInsertMs": 34819,
+      "snapshot": {
+        "characters": {
+          "rich": 14,
+          "plain": 0,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 1,
+          "plain": 0,
+          "multiline": 0
+        },
+        "typingMetrics": {
+          "keyDown": 15,
+          "controlDown": 0,
+          "metaDown": 0,
+          "inputEvents": 14,
+          "insertedCharacters": 14
+        }
+      }
+    }
+  ],
+  "services": "existing Breadboard",
+  "scopedToTestWindow": true,
+  "testWindow": {
+    "bounds": {
+      "x": -1360,
+      "y": 136,
+      "width": 800,
+      "height": 760
+    },
+    "displayId": 2151158276,
+    "scaleFactor": 1,
+    "visible": true,
+    "minimized": false,
+    "focused": true,
+    "alwaysOnTop": true,
+    "displays": [
+      {
+        "id": 999882014,
+        "bounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 960
+        },
+        "workArea": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 912
+        },
+        "scaleFactor": 1.25
+      },
+      {
+        "id": 2151158276,
+        "bounds": {
+          "x": -1920,
+          "y": 0,
+          "width": 1920,
+          "height": 1080
+        },
+        "workArea": {
+          "x": -1920,
+          "y": 0,
+          "width": 1920,
+          "height": 1032
+        },
+        "scaleFactor": 1
+      }
+    ]
+  },
+  "nativeReady": true,
+  "provider": "chatgpt",
+  "pid": 10692,
+  "origin": "http://127.0.0.1:51274"
+}

@@ -1,12 +1,14 @@
-import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
+import { sameRuntimePath as samePath, runtimePathWithin as pathWithin, runtimeProcessPath } from "./runtime-v2-paths.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { API_ANYTHING_AGENT_TOOL, API_ANYTHING_POLICY } from "./api-anything-contract.mjs";
+import { callApiAnythingAgentTool } from "./api-anything-client.mjs";
 
 const PROTOCOL_VERSION = 1;
 const START_MANIFEST_FILE = "start.json";
-const MAX_START_MANIFEST_BYTES = 32 * 1024;
+const MAX_START_MANIFEST_BYTES = 512 * 1024;
 const MAX_CHECKPOINT_BYTES = 1024 * 1024;
 const MAX_MODEL_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_MODEL_REQUEST_BYTES = 4 * 1024 * 1024;
@@ -166,7 +168,7 @@ const AUTH_DETECTION_SCRIPT = `(() => {
   });
 })()`;
 
-const SYSTEM_PROMPT = `${BREAD_ASSISTANT_IDENTITY}\n\nYou control a web browser through the agent-browser CLI on Bread's behalf.
+const SYSTEM_PROMPT = `${BREAD_ASSISTANT_IDENTITY}\n\n${API_ANYTHING_POLICY}\n\nUse api_anything for supported website operations. You also control a web browser through the agent-browser CLI on Bread's behalf.
 
 RULES:
 - You MUST use the agent_browser tool for every browser action. Never claim you did something without calling the tool.
@@ -337,7 +339,9 @@ export function validateRuntimeV2AgentBrowserRequest(value) {
       "agentBrowserEntry",
       "browserExecutable",
       "profilePath",
+      ...(isRecord(value) && Object.hasOwn(value, "systemPrompt") ? ["systemPrompt"] : []),
     ]) ||
+    (Object.hasOwn(value, "systemPrompt") && (!boundedString(value.systemPrompt, 256_000, { empty: true }) || value.systemPrompt.length > 64_000)) ||
     !boundedString(value.task, 8_000) ||
     !value.task.trim() ||
     !boundedString(value.provider, 64) ||
@@ -363,6 +367,7 @@ export function validateRuntimeV2AgentBrowserRequest(value) {
   }
   return {
     task: value.task.trim(),
+    ...(typeof value.systemPrompt === "string" ? { systemPrompt: value.systemPrompt } : {}),
     provider: value.provider,
     model: value.model,
     modelBaseUrl: value.modelBaseUrl.replace(/\/$/u, ""),
@@ -651,9 +656,28 @@ async function readBoundedResponseJson(response, maximumBytes) {
   }
 }
 
-function childEnvironment(current, timeoutMs) {
-  const isolatedHome = path.join(current.workspacePath, "runtime-home");
-  const temporary = path.join(current.workspacePath, "tmp");
+export function runtimeBrowserScratchPath(current) {
+  // Chrome still uses MAX_PATH-limited profile code on Windows. A native job
+  // workspace plus Chrome's generated profile name already exceeds that limit.
+  // Keep the temporary profile under a short, attempt-specific sealed root.
+  const parent = path.join(current.dataRoot, "agent-browser-scratch");
+  const identity = createHash("sha256").update(JSON.stringify(current.identity)).digest("hex").slice(0, 32);
+  const root = path.join(parent, identity);
+  for (const directory of [parent, root]) {
+    if (!pathWithin(current.dataRoot, directory)) fail("Browser scratch escaped Runtime authority.");
+    fs.mkdirSync(directory, { recursive: true });
+    const metadata = fs.lstatSync(directory);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink() || !samePath(fs.realpathSync.native(directory), directory)) {
+      fail("Browser scratch must be an unredirected Runtime directory.");
+    }
+  }
+  return root;
+}
+
+export function runtimeBrowserChildEnvironment(current) {
+  const scratch = current.browserScratchPath ??= runtimeBrowserScratchPath(current);
+  const isolatedHome = path.join(scratch, "home");
+  const temporary = path.join(scratch, "tmp");
   const applicationData = path.join(isolatedHome, "app-data");
   const localApplicationData = path.join(isolatedHome, "local-app-data");
   const toolScreenshots = path.join(current.workspacePath, "tool-screenshots");
@@ -690,26 +714,28 @@ function childEnvironment(current, timeoutMs) {
     LANG: process.env.LANG ?? "C.UTF-8",
     ELECTRON_RUN_AS_NODE: "1",
     NO_COLOR: "1",
-    HOME: isolatedHome,
-    USERPROFILE: isolatedHome,
-    APPDATA: applicationData,
-    LOCALAPPDATA: localApplicationData,
-    TMP: temporary,
-    TEMP: temporary,
+    HOME: runtimeProcessPath(isolatedHome),
+    USERPROFILE: runtimeProcessPath(isolatedHome),
+    APPDATA: runtimeProcessPath(applicationData),
+    LOCALAPPDATA: runtimeProcessPath(localApplicationData),
+    TMP: runtimeProcessPath(temporary),
+    TEMP: runtimeProcessPath(temporary),
     AGENT_BROWSER_SESSION: current.identity.jobId,
     AGENT_BROWSER_NAMESPACE: current.identity.jobId,
     ...(current.request.browserMode === "desktop"
       ? { AGENT_BROWSER_CDP: String(current.cdpPort) }
       : {
-          AGENT_BROWSER_EXECUTABLE_PATH: current.request.browserExecutable,
+          AGENT_BROWSER_EXECUTABLE_PATH: runtimeProcessPath(current.request.browserExecutable),
           AGENT_BROWSER_ENGINE: current.request.engine,
         }),
-    AGENT_BROWSER_IDLE_TIMEOUT_MS: String(Math.max(30_000, timeoutMs)),
+    // Every command, screenshot, auth probe and close belongs to one daemon.
+    // A per-command timeout changes its configuration and races daemon restart.
+    AGENT_BROWSER_IDLE_TIMEOUT_MS: String(Math.max(30_000, current.request.timeoutMs)),
     AGENT_BROWSER_MAX_OUTPUT: String(MAX_TOOL_RESULT_CHARS),
     AGENT_BROWSER_SCREENSHOT_DIR: toolScreenshots,
     AGENT_BROWSER_DOWNLOAD_PATH: downloads,
     ...(current.request.browserMode === "external" && current.request.profilePath
-      ? { AGENT_BROWSER_PROFILE: current.request.profilePath }
+      ? { AGENT_BROWSER_PROFILE: runtimeProcessPath(current.request.profilePath) }
       : {}),
   };
 }
@@ -842,8 +868,8 @@ function runChild(current, args, timeoutMs) {
       return;
     }
     const child = spawn(process.execPath, args, {
-      env: childEnvironment(current, timeoutMs),
-      cwd: current.workspacePath,
+      env: runtimeBrowserChildEnvironment(current),
+      cwd: runtimeProcessPath(current.workspacePath),
       windowsHide: true,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
@@ -883,12 +909,18 @@ function runChild(current, args, timeoutMs) {
       resolve(text);
     };
     child.once("error", (error) => settle(`Command failed: ${error.message}`));
-    child.once("close", () => {
+    const completedOutput = () => {
       const text = (output.trim() || errorOutput.trim() || "(no output)")
         .replace(/\x1b\[[0-9;]*m/gu, "")
         .slice(0, MAX_TOOL_RESULT_CHARS);
       settle(text);
-    });
+    };
+    child.once("close", completedOutput);
+    // The installed CLI daemon can retain its parent's stdout handle on
+    // Windows after the command exits. Waiting for `close` then waits for the
+    // whole browser session. Allow pending output to drain, but finish the
+    // command on its own exit rather than the daemon's eventual shutdown.
+    child.once("exit", () => setTimeout(completedOutput, 100));
   });
 }
 
@@ -1052,8 +1084,8 @@ function captureScreenshot(current) {
           "--json",
         ],
         {
-          env: childEnvironment(current, current.request.timeoutMs),
-          cwd: current.workspacePath,
+          env: runtimeBrowserChildEnvironment(current),
+          cwd: runtimeProcessPath(current.workspacePath),
           windowsHide: true,
           shell: false,
           stdio: "ignore",
@@ -1118,6 +1150,7 @@ function captureScreenshot(current) {
     };
     child.once("error", finish);
     child.once("close", finish);
+    child.once("exit", () => setTimeout(finish, 100));
   });
   const trackedCapture = pendingCapture.finally(() => {
     if (current.screenshotCapture === trackedCapture) {
@@ -1129,6 +1162,7 @@ function captureScreenshot(current) {
 }
 
 function startScreenshotPoller(current) {
+  if (current.screenshotTimer) return;
   current.screenshotTimer = setInterval(() => {
     void captureScreenshot(current);
   }, 2_500);
@@ -1155,7 +1189,7 @@ async function chatCompletion(current, messages) {
     const body = JSON.stringify({
       model: current.request.model,
       messages,
-      tools: [AGENT_BROWSER_TOOL],
+      tools: [API_ANYTHING_AGENT_TOOL, AGENT_BROWSER_TOOL],
       tool_choice: "auto",
     });
     if (Buffer.byteLength(body, "utf8") > MAX_MODEL_REQUEST_BYTES) {
@@ -1359,16 +1393,10 @@ async function drive(current) {
     task: current.request.task,
     operator: "browser",
   });
-  if (current.request.browserMode === "desktop") {
-    emit(current, "run.status", {
-      message: "Opening a live Breadboard browser tab…",
-    });
-    await waitForDesktopBrowser(current);
-  }
-  startScreenshotPoller(current);
+  let browserStarted = false;
   const deadline = Date.now() + current.request.timeoutMs;
   const messages = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: current.request.systemPrompt ?? SYSTEM_PROMPT },
     { role: "user", content: current.request.task },
   ];
   const usageTotals = {
@@ -1421,6 +1449,10 @@ async function drive(current) {
       ).map((call) => {
         const callId = boundedString(call?.id, 256) ? call.id : randomUUID();
         let command = "";
+        let apiInput;
+        if (call?.function?.name === "api_anything") {
+          try { apiInput = JSON.parse(call.function.arguments || "{}"); } catch { apiInput = {}; }
+        }
         if (call?.function?.name === "agent_browser") {
           try {
             const parsed = JSON.parse(call.function.arguments || "{}");
@@ -1434,12 +1466,13 @@ async function drive(current) {
         return {
           callId,
           command,
+          apiInput,
           messageCall: {
             id: callId,
             type: "function",
             function: {
-              name: "agent_browser",
-              arguments: JSON.stringify({ command }),
+              name: apiInput !== undefined ? "api_anything" : "agent_browser",
+              arguments: JSON.stringify(apiInput !== undefined ? apiInput : { command }),
             },
           },
         };
@@ -1461,6 +1494,25 @@ async function drive(current) {
       for (const call of toolCalls) {
         if (current.signal.aborted) return { status: "aborted", payload: {} };
         const { callId, command } = call;
+        if (call.apiInput !== undefined) {
+          const input = call.apiInput && typeof call.apiInput === "object" && !Array.isArray(call.apiInput) ? call.apiInput : {};
+          emit(current, "action.proposed", { action: "api_anything", target: input.site ?? input.query ?? "Website API" });
+          let result = await callApiAnythingAgentTool({ userId: current.executionScope.userId,
+            dataRoot: current.dataRoot, scopeId: current.identity.jobId, input, signal: current.signal });
+          if (result.approvalRequired) {
+            const decision = await requestApproval(current, { action: "api_anything", target: input.site ?? "Website API",
+              command: `Website action: ${JSON.stringify(result.preview)}` });
+            if (current.signal.aborted) return { status: "aborted", payload: {} };
+            result = decision === "approve"
+              ? await callApiAnythingAgentTool({ userId: current.executionScope.userId, dataRoot: current.dataRoot,
+                  scopeId: current.identity.jobId, input, signal: current.signal, permissionGranted: true })
+              : { ok: false, class: "refused", reason: "The user rejected the action. Do not retry it.", fallback: { recommended: false } };
+          }
+          emit(current, "action.completed", { action: "api_anything", target: input.site ?? "Website API",
+            summary: result.ok ? "Website API completed" : result.fallback?.recommended ? "Continue in browser" : "Website API did not complete" });
+          messages.push({ role: "tool", tool_call_id: callId, content: JSON.stringify(result) });
+          continue;
+        }
         if (!command) {
           messages.push({
             role: "tool",
@@ -1468,6 +1520,13 @@ async function drive(current) {
             content: "No command provided.",
           });
           continue;
+        }
+        if (!browserStarted) {
+          if (current.request.browserMode === "desktop") {
+            await waitForDesktopBrowser(current);
+            startScreenshotPoller(current);
+          }
+          browserStarted = true;
         }
         const sealedWords = sealRuntimeV2AgentBrowserCommand(command);
         const { action, target, sensitive } = classifyCommand(sealedWords.join(" "));
@@ -1505,6 +1564,7 @@ async function drive(current) {
         // run. The interval remains useful during long waits, but it is not a
         // correctness boundary for the user-visible screenshot timeline.
         await captureScreenshot(current);
+        startScreenshotPoller(current);
         const authRequired = await detectSignInRequirement(current, action);
         if (authRequired) {
           emit(current, "auth.required", authRequired);
@@ -1537,7 +1597,16 @@ async function drive(current) {
     };
   } finally {
     stopScreenshotPoller(current);
-    await closeSession(current).catch(() => undefined);
+    if (browserStarted) await closeSession(current).catch(() => undefined);
+    if (!current.signal.aborted && current.browserScratchPath) {
+      // Recheck the exact attempt-owned path before best-effort cleanup. On
+      // interruption the native owner first reaps the browser descendants.
+      try {
+        if (samePath(runtimeBrowserScratchPath(current), current.browserScratchPath)) {
+          fs.rmSync(current.browserScratchPath, { recursive: true, force: true });
+        }
+      } catch { /* Locked scratch remains isolated; never touch a shared profile. */ }
+    }
   }
 }
 

@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { notificationMessageKeys } from '../chat-notification-visibility.ts';
 import type { UnreadChatRecord } from "../conversations/unread.ts";
 import type {
   ChatNotificationRecord,
@@ -21,6 +22,7 @@ export const MAX_PENDING_CHAT_NOTIFICATIONS = 24;
 
 interface NotificationRow {
   message_id: number;
+  client_message_id: string | null;
   content: string;
   status: "complete" | "failed";
   metadata: string | null;
@@ -240,6 +242,13 @@ const UNDISMISSED_EQUIVALENT_SQL = `AND (${inlineSelectionRequestIdSql("m")} IS 
           AND ${inlineSelectionRequestIdSql("seen")} = ${inlineSelectionRequestIdSql("m")}
       ))`;
 
+function messageKeys(row: Pick<NotificationRow, 'message_id' | 'client_message_id' | 'metadata'>): string[] {
+  let entryId: string | undefined;
+  try { entryId = JSON.parse(row.metadata ?? '{}').documentAssistant?.entryId; } catch { /* legacy metadata */ }
+  return notificationMessageKeys({ id: row.message_id, clientMessageId: row.client_message_id,
+    entryId: typeof entryId === 'string' ? entryId : undefined });
+}
+
 function notificationFromRow(row: NotificationRow): ChatNotificationRecord | null {
   const target = row.surface === "garden_chat" && row.legacy_chat_session_id !== null && row.garden_slug
       ? {
@@ -259,6 +268,7 @@ function notificationFromRow(row: NotificationRow): ChatNotificationRecord | nul
   const inlineSelectionId = inlineSelectionRequestId(row.metadata);
   return {
     id: `msg_${row.message_id}`,
+    messageKeys: messageKeys(row),
     ...(inlineSelectionId ? { inlineSelectionId } : {}),
     title: failed ? "Response failed" : "Response ready",
     type: failed ? "error" : "success",
@@ -273,7 +283,7 @@ function notificationFromRow(row: NotificationRow): ChatNotificationRecord | nul
  * already read. Restrict candidates before loading potentially large metadata. */
 export function listRecentChatNotifications(database: Database.Database, userId: number): ChatNotificationRecord[] {
   const rows = database.prepare(`
-    SELECT m.id AS message_id,m.content,m.status,m.metadata,m.updated_at,
+    SELECT m.id AS message_id,m.client_message_id,m.content,m.status,m.metadata,m.updated_at,
       c.public_id AS conversation_public_id,c.title AS conversation_title,c.surface,
       c.legacy_chat_session_id,g.slug AS garden_slug
     ${NOTIFIABLE_MESSAGES_SQL}
@@ -332,7 +342,7 @@ export function listPendingChatNotifications(
 ): ChatNotificationRecord[] {
   const baseline = ensureChatNotificationBaseline(database, userId);
   const rows = database.prepare(`
-    SELECT m.id AS message_id, m.content, m.status, m.metadata, m.updated_at,
+    SELECT m.id AS message_id, m.client_message_id, m.content, m.status, m.metadata, m.updated_at,
            c.public_id AS conversation_public_id,
            c.title AS conversation_title,
            c.surface,
@@ -466,7 +476,7 @@ export function listUnreadChatMessages(database: Database.Database, userId: numb
       .run(userId, baseline.updated_at, baseline.message_id);
   }
   const rows = database.prepare(`
-    SELECT m.id AS message_id, c.public_id, c.legacy_chat_session_id, g.slug AS garden_slug
+    SELECT m.id AS message_id, m.client_message_id, m.metadata, c.public_id, c.legacy_chat_session_id, g.slug AS garden_slug
     ${READABLE_MESSAGES_SQL}${UNDISMISSED_ANSWER_SQL}
       AND (
         m.updated_at > @afterAt OR (m.updated_at = @afterAt AND m.id > @afterId)
@@ -476,14 +486,42 @@ export function listUnreadChatMessages(database: Database.Database, userId: numb
       ${UNDISMISSED_EQUIVALENT_SQL}
   `).all({ userId, afterAt: baseline.updated_at, afterId: baseline.message_id,
     notificationAfterAt: notificationBaseline.updated_at, notificationAfterId: notificationBaseline.message_id }) as Array<{
-    message_id: number; public_id: string; legacy_chat_session_id: number | null; garden_slug: string | null;
+    message_id: number; client_message_id: string | null; metadata: string | null; public_id: string; legacy_chat_session_id: number | null; garden_slug: string | null;
   }>;
   return rows.map(row => ({
     id: `msg_${row.message_id}`,
+    messageKeys: messageKeys(row),
+    ...(inlineSelectionRequestId(row.metadata) ? { inlineSelectionId: inlineSelectionRequestId(row.metadata)! } : {}),
     target: row.legacy_chat_session_id !== null && row.garden_slug
       ? { surface: "garden_chat", chatId: String(row.legacy_chat_session_id), gardenSlug: row.garden_slug, conversationId: row.public_id }
       : { surface: "dashboard_terminal", chatId: row.public_id },
   }));
+}
+
+/** Reading state also covers chat surfaces that deliberately do not send toasts. */
+export function resolveViewedChatMessages(database: Database.Database, userId: number,
+  target: ChatNotificationTarget, keys: readonly string[]): { ids: number[]; acknowledged: string[] } {
+  if (target.surface === 'garden_learn' || !keys.length) return { ids: [], acknowledged: [] };
+  const rows = database.prepare(`
+    SELECT m.id AS message_id, m.client_message_id, m.metadata
+    ${READABLE_MESSAGES_SQL}
+      AND m.conversation_id IN (
+        SELECT tc.id FROM conversations tc LEFT JOIN clusters tg ON tg.id = tc.default_garden_id
+        WHERE (@publicId IS NOT NULL AND tc.public_id = @publicId)
+          OR (@legacyId IS NOT NULL AND tc.legacy_chat_session_id = @legacyId AND tg.slug = @gardenSlug)
+      )
+      AND (m.id IN (SELECT value FROM json_each(@messageIds))
+        OR m.client_message_id IN (SELECT value FROM json_each(@clientIds))
+        OR CASE WHEN json_valid(m.metadata) THEN json_extract(m.metadata, '$.documentAssistant.entryId') END
+          IN (SELECT value FROM json_each(@entryIds)))
+  `).all({ userId, publicId: target.surface === 'dashboard_terminal' ? target.chatId : null,
+    legacyId: target.surface === 'garden_chat' ? Number(target.chatId) : null, gardenSlug: target.gardenSlug ?? null,
+    messageIds: JSON.stringify(keys.filter(key => /^message:\d+$/.test(key)).map(key => Number(key.slice(8)))),
+    clientIds: JSON.stringify(keys.filter(key => key.startsWith('client:')).map(key => key.slice(7))),
+    entryIds: JSON.stringify(keys.filter(key => key.startsWith('entry:')).map(key => key.slice(6))),
+  }) as Pick<NotificationRow, 'message_id' | 'client_message_id' | 'metadata'>[];
+  return { ids: rows.map(row => row.message_id),
+    acknowledged: [...new Set(rows.flatMap(messageKeys))].filter(key => keys.includes(key)) };
 }
 
 /** Reading state also covers chat surfaces that deliberately do not send toasts. */

@@ -363,7 +363,7 @@ async function sendGardenTurn(
   criterion: (text: string) => boolean,
   timeoutMs = 360_000,
 ): Promise<TurnResult> {
-  const composer = page.getByPlaceholder(/Ask about your documents/).last();
+  const composer = page.getByPlaceholder('Ask anything.', { exact: true }).last();
   await expect(composer).toBeEditable({ timeout: 180_000 });
   const beforeCount = await assistantBlockCount(page);
   await composer.fill(prompt);
@@ -413,7 +413,7 @@ async function waitForTurn(
     assistantText = count > beforeCount ? await latestAssistantText(page) : "";
     failureText = await page.getByRole("alert").allTextContents().then((items) => items.join("\n").trim()).catch(() => "");
     const delta = assistantText.trim();
-    const composer = page.getByPlaceholder(/Ask about your documents|Ask anything across your gardens/).last();
+    const composer = page.getByPlaceholder(/^Ask anything\.$|Ask anything across your gardens/).last();
     const composerReady = await composer.isEnabled().catch(() => false);
     const runStillActive = await page.getByRole("button", { name: "Stop active run", exact: true }).last().isVisible().catch(() => false);
     // A marker can stream before the final [DONE] event. Do not submit the

@@ -219,7 +219,7 @@ export default function InlineLegalRun({
         setProblems(readProblems(payload.artifactProblems));
         if (!reportedRef.current) {
           reportedRef.current = true;
-          notifyTaskCompleted(task);
+          notifyTaskCompleted(task, { runId });
           onTerminalRef.current?.({ outcome: "completed", content: summary });
         }
       }
@@ -296,7 +296,7 @@ export default function InlineLegalRun({
         summary={steps.at(-1)?.detail || note}
         agentName="Legal Agent"
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         {/* The assignment is the user's own message directly above this card.
             The header carries the agent, its model, and how far it has got. */}
         <header className="bb-agent-run-header">

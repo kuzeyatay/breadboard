@@ -7,6 +7,7 @@ import {
   audioFormatMimeType,
 } from "@/lib/audio-attachments.ts";
 import { scanClusterKnowledgeCooperatively } from "@/lib/knowledge.ts";
+import { getVideoTranscriptionStore } from "@/lib/scriberr/instance";
 import {
   RouteError,
   requireReadableClusterFromSlug,
@@ -64,7 +65,7 @@ export async function GET(
 ) {
   try {
     const { gardenId, sourceSlug } = await params;
-    const { cluster } = await requireReadableClusterFromSlug(gardenId);
+    const { userId, cluster } = await requireReadableClusterFromSlug(gardenId);
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
       throw new RouteError(500, "QUARTZ_CONTENT_PATH not configured");
@@ -79,25 +80,41 @@ export async function GET(
     }
 
     const normalized = source.sourceMedia.trim().replace(/\\/g, "/");
-    const assetPrefix = `/${cluster.slug}/assets/`;
-    const assetName = normalized.startsWith(assetPrefix)
-      ? normalized.slice(assetPrefix.length)
-      : "";
-    if (!assetName || assetName.includes("/")) {
-      throw new RouteError(404, "Media source not found");
-    }
-
-    const clusterDir = path.resolve(contentPath, cluster.slug);
-    const mediaPath = path.resolve(clusterDir, "assets", assetName);
-    if (!mediaPath.startsWith(`${clusterDir}${path.sep}`)) {
-      throw new RouteError(404, "Media source not found");
+    let mediaPath: string;
+    if (normalized.startsWith("origin:")) {
+      // The note names a job, not a path. The job row holds the path, and only
+      // the person who imported the file can stream it, even in a shared Garden.
+      const job = getVideoTranscriptionStore().getJobForCluster(
+        normalized.slice("origin:".length),
+        cluster.id,
+      );
+      if (!job?.mediaOriginPath || job.userId !== userId || job.sourceSlug !== source.slug) {
+        throw new RouteError(404, "Media source not found");
+      }
+      mediaPath = job.mediaOriginPath;
+      if (!fs.existsSync(mediaPath)) {
+        throw new RouteError(404, `The original file is no longer at ${mediaPath}`);
+      }
+    } else {
+      const assetPrefix = `/${cluster.slug}/assets/`;
+      const assetName = normalized.startsWith(assetPrefix)
+        ? normalized.slice(assetPrefix.length)
+        : "";
+      if (!assetName || assetName.includes("/")) {
+        throw new RouteError(404, "Media source not found");
+      }
+      const clusterDir = path.resolve(contentPath, cluster.slug);
+      mediaPath = path.resolve(clusterDir, "assets", assetName);
+      if (!mediaPath.startsWith(`${clusterDir}${path.sep}`)) {
+        throw new RouteError(404, "Media source not found");
+      }
     }
     const metadata = fs.lstatSync(mediaPath);
     if (!metadata.isFile() || metadata.isSymbolicLink()) {
       throw new RouteError(404, "Media source not found");
     }
 
-    const filename = source.sourceFile || assetName;
+    const filename = source.sourceFile || path.basename(mediaPath);
     const headers: Record<string, string> = {
       "Content-Type": mediaMimeType(filename),
       "Accept-Ranges": "bytes",

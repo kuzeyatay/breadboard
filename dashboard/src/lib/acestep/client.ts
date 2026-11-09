@@ -65,7 +65,7 @@ export function unwrapEnvelope(value: unknown): unknown {
 function headers(connection: AceStepConnection): Record<string, string> {
   return connection.apiKey ? { Authorization: `Bearer ${connection.apiKey}` } : {};
 }
-export async function api(connection: AceStepConnection, endpoint: string, options: RequestInit = {}) {
+async function requestApi(connection: AceStepConnection, endpoint: string, options: RequestInit = {}) {
   const response = await fetch(`${approvedOrigin(connection.baseUrl)}${endpoint}`, {
     ...options, headers: { ...headers(connection), ...options.headers }, redirect: "error",
     signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(5000),
@@ -74,19 +74,39 @@ export async function api(connection: AceStepConnection, endpoint: string, optio
     await response.body?.cancel();
     throw new Error(`provider_http_${response.status}`);
   }
-  return unwrapEnvelope(await boundedJson(response));
+  return boundedJson(response);
+}
+export async function api(connection: AceStepConnection, endpoint: string, options: RequestInit = {}) {
+  return unwrapEnvelope(await requestApi(connection, endpoint, options));
 }
 export async function discoverModels(connection: AceStepConnection): Promise<string[]> {
-  const data = record(await api(connection, "/v1/models"));
+  const response = record(await requestApi(connection, "/v1/models"));
+  // The pinned server mounts its OpenRouter list before the legacy inventory
+  // route. Accept that documented shape only here; task envelopes remain strict.
+  if (response.object === "list" && !("code" in response)) {
+    if (response.error !== null && response.error !== "" && response.error !== undefined)
+      throw new Error("provider_application_error");
+    if (!Array.isArray(response.data) || response.data.length > 32)
+      throw new Error("invalid_model_discovery");
+    return response.data.map(item => {
+      const value = record(item);
+      const match = typeof value.id === "string" ? /^acestep\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/.exec(value.id) : null;
+      if (!match) throw new Error("invalid_model_discovery");
+      return match[1];
+    });
+  }
+  const data = record(unwrapEnvelope(response));
   if (!Array.isArray(data.models) || data.models.length > 32)
     throw new Error("invalid_model_discovery");
-  return data.models.map((item) => {
+  return data.models.flatMap(item => {
     const value = record(item);
-    if (typeof value.name !== "string" || value.name.length > 128)
+    if (typeof value.name !== "string" || !value.name.length || value.name.length > 128
+      || (value.is_loaded !== undefined && typeof value.is_loaded !== "boolean"))
       throw new Error("invalid_model_discovery");
-    return value.name;
+    return value.is_loaded === false ? [] : [value.name];
   });
 }
+
 export async function submitMusic(connection: AceStepConnection, request: MusicRequest, sourceFile: string | null, signal: AbortSignal): Promise<string> {
   const payload = providerPayload(request, connection.model);
   let options: RequestInit;

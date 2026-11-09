@@ -1,19 +1,23 @@
 // Codex's idle continuation boundary, adapted to Breadboard's durable turn API.
 // No second model, grader, or teaching pipeline: just another turn of this chat.
 import db from "./db.ts";
+import { conversationHasActiveSwarm } from "./swarm/activity.ts";
 import { getConversationById, failAssistantMessage } from "./conversations/store.ts";
 import { goalCanContinue, readGoalModeState } from "./goal-mode.ts";
 import { getRuntimeRun, parseRuntimeRunDispatch, type RuntimeRunRow } from "./hermes/run-store.ts";
 import { recordAuditEvent } from "./hermes/runtime-store.ts";
 
 export function goalContinuationCurrent(conversationId: number, sourceRunId: string, goalId: string, ownClientMessageId = ""): boolean {
+  if (conversationHasActiveSwarm(db, conversationId)) return false;
   const conversation = getConversationById(conversationId);
   if (!conversation || conversation.archived_at) return false;
   const goal = readGoalModeState(conversation.public_id);
   if (!goalCanContinue(goal) || goal?.goal_id !== goalId) return false;
   const latest = db.prepare(`SELECT r.id, r.status FROM hermes_runs r
     JOIN hermes_runtime_sessions s ON s.id=r.runtime_session_id
-    WHERE s.conversation_id=? ORDER BY r.started_at DESC, r.rowid DESC LIMIT 1`)
+    WHERE s.conversation_id=?
+    AND (r.status='active' OR COALESCE(json_extract(r.dispatch_json, '$.clientMessageId'),'') NOT LIKE 'chat-message:%')
+    ORDER BY r.started_at DESC, r.rowid DESC LIMIT 1`)
     .get(conversationId) as { id: string; status: string } | undefined;
   if (latest?.id !== sourceRunId || latest.status === "active") return false;
   if (db.prepare(`SELECT 1 FROM conversation_messages WHERE conversation_id=? AND status='pending'
@@ -48,7 +52,9 @@ async function continueGoal(conversationId: number, sourceRunId?: string): Promi
   if (!goalCanContinue(goal) || !goal) return;
   const run = sourceRunId ? getRuntimeRun(sourceRunId) : db.prepare(`SELECT r.* FROM hermes_runs r
     JOIN hermes_runtime_sessions s ON s.id=r.runtime_session_id
-    WHERE s.conversation_id=? ORDER BY r.started_at DESC, r.rowid DESC LIMIT 1`)
+    WHERE s.conversation_id=?
+    AND COALESCE(json_extract(r.dispatch_json, '$.clientMessageId'),'') NOT LIKE 'chat-message:%'
+    ORDER BY r.started_at DESC, r.rowid DESC LIMIT 1`)
     .get(conversationId) as RuntimeRunRow | undefined;
   if (!run || !goalContinuationCurrent(conversationId, run.id, goal.goal_id)) return;
   // A pending user answer, delegated result, or approval owns the next turn.

@@ -1,3 +1,6 @@
+import { withGardenSystemPromptContext } from "./system-prompts/service.ts";
+import { renderSystemPrompt } from "./system-prompts/service.ts";
+import { scopedSystemPromptText } from "./system-prompts/service.ts";
 import type { Stats } from "node:fs";
 import { buildKnowledgeTree } from "./knowledge-tree.ts";
 import { isPptxSource } from "./garden-source-display.ts";
@@ -7,7 +10,7 @@ import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import OpenAI from "openai";
 import { DEFAULT_MODEL } from "./ai-models";
-import { withCouncil } from "./council";
+import { withCouncil } from "./system-prompts/council.ts";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import {
   slugify,
@@ -307,75 +310,7 @@ function rememberClusterKnowledge(
   }
 }
 
-const KNOWLEDGE_SYSTEM_PROMPT = `You are a precise concept extraction engine for Breadboard's living textbook system.
 
-Turn uploaded material into a graph-ready Learning Spine. Extract durable knowledge only: concepts, methods, named entities, formulas, claims, examples, definitions, tasks that teach a reusable procedure, and relationships between them.
-
-Important product rule:
-- Extracted topics/concepts are planning scaffolding, not final pages.
-- Treat every extracted item as an internal ConceptNode / Learning Spine node.
-- The user-facing output must become ordered textbook sections/subsections, not a pile of generated topic cards or disconnected notes.
-- Use source anchors to decide where each concept belongs in the Learning Spine.
-- Assign every source-central formula, figure, graph, table, and question to the concept/page where it belongs.
-- If a source figure is relevant, capture it as sourceEvidence or a visual opportunity so it can become a visual block or source-figure explainer later.
-- Do not over-segment into many tiny generated topic pages, and do not create disconnected pages for every concept.
-- Repeats between major sections are acceptable; excessive repetition between adjacent subsections should be avoided.
-
-Return ONLY valid JSON. Do not wrap the JSON in markdown fences.
-
-Schema:
-{
-  "documentTitle": "Clean title",
-  "summary": "4-8 sentence factual summary of the material",
-  "suggestedTags": ["restoring-force", "angular-frequency", "simple-harmonic-motion"],
-  "topics": [
-    {
-      "title": "ConceptNode Title",
-      "slug": "concept-node-title",
-      "explanation": "A detailed explanation grounded in the uploaded material.",
-      "keyPoints": ["Specific fact or step", "Specific fact or step"],
-      "sourceEvidence": ["Exact source-grounded detail, equation, example, diagram meaning, or procedure step"],
-      "locations": ["Page 2", "Section: Introduction"],
-      "relatedTopics": ["Another ConceptNode title"],
-      "tags": ["angular-frequency"]
-    }
-  ],
-  "relationships": [
-    {
-      "source": "ConceptNode Title",
-      "target": "Another ConceptNode title",
-      "relation": "depends-on | contrasts-with | example-of | part-of | applies-to | related"
-    }
-  ]
-}
-
-Rules:
-- Make 6-18 ConceptNodes depending on the material. Use fewer only if the source is genuinely short.
-- Every ConceptNode must be useful for Learning Spine planning, with enough detail to place it into the correct textbook subsection without reopening the source.
-- For handwritten or scanned material, treat OCR as page-grounded lecture notes. Preserve equations, worked examples, labels, diagrams, definitions, and procedures instead of making a shallow overview.
-- When formulas, symbols, units, or derivations appear, preserve them as LaTeX-ready Markdown: inline math with $...$ and display equations with $$...$$.
-- Do not create one broad document topic and then weak derivative topics. Split the material into durable concepts and procedures that cover the full source.
-- The extracted topics should collectively cover the source. Every page with legible durable knowledge should appear in at least one topic location.
-- Explanations should usually be 120-300 words when the source supports that much detail.
-- keyPoints should contain 4-10 specific bullets when possible.
-- sourceEvidence should contain 3-8 concrete details from the located source, including formulas, examples, page-specific facts, or diagram descriptions.
-- Every location must point to where the topic appears in the source, using the provided page or section markers.
-- Use only facts supported by the source text.
-- Never copy broken encoding artifacts such as "â€¢", "â†’", "Ã—", "Â³", or replacement characters. Convert them into clean readable Markdown such as "-", "->", "x", "^3", "_10", or a natural-language equivalent.
-- If OCR text is messy, infer the intended clean notation from context instead of preserving corrupted characters.
-- Tags are Zettelkasten-style concept handles, not category labels. Notes that share a tag become linked in the graph, so each tag must name a reusable concept that would make two notes worth connecting.
-- Return only normalized lower-case kebab-case tags. Prefer ontology/concept tags, mechanisms, methods, and formulas over broad topic tags.
-- Good tags: "restoring-force", "stable-equilibrium", "angular-frequency", "simple-harmonic-motion", "zero-isi-condition", "jacobian-determinant", "gradient-direction".
-- Bad tags: physics, math, formula, important, learning, document, source, general, overview, understanding-the-basics, wave, calculus, force, frequency, oscillation. These are broad categories, document types, generic learning words, or bare nouns that would connect unrelated notes.
-- Each tag should be reusable across multiple notes, specific enough to be meaningful, and broad enough to appear again. Never reference a page/slide/figure location, source filename, author name, or title slug in a tag.
-- Never use app or navigation tags such as graph, links, quartz-graph, map, index, garden, knowledge, generated, note, topic, source, document, pdf, file, chat, answer, response, general, or misc.
-- Keep tags separate from the knowledge graph itself: relationships and relatedTopics carry structural links; tags are lightweight conceptual connectors.
-- Use 2-5 reusable concept candidates per topic when the source supports them; these are internal planning hints, not public Quartz tags.
-- Link topics aggressively through relatedTopics and relationships whenever the relationship is grounded in the source.
-- Each topic should have at least one relatedTopic when more than one topic is extracted.
-- Create 2-5 strong relationships per topic when possible. Prefer precise relation labels: depends-on, contrasts-with, example-of, part-of, causes, enables, applies-to, derives-from, measured-by, limits, or related.
-- Do not add weak or filler relationships just to increase count; every relationship should explain a real conceptual connection.
-- If the source has no durable knowledge, return topics: [] and an honest summary.`;
 
 // Tag slugifying, normalization, and idea-tag scoring live in ./tags.
 // They are re-exported below so existing "@/lib/knowledge" imports keep working.
@@ -1758,7 +1693,7 @@ async function requestKnowledgeExtraction({
               model,
               response_format: { type: "json_object" },
               messages: [
-                { role: "system", content: KNOWLEDGE_SYSTEM_PROMPT },
+                { role: "system", content: scopedSystemPromptText("knowledge-extraction") },
                 {
                   role: "user",
                   content:
@@ -2448,9 +2383,7 @@ async function decideTopicWritePlans({
             {
               role: "system",
               content:
-                "You decide whether newly extracted concepts should update an existing concept page or become a new concept page. " +
-                "Merge only when the new concept is the same idea, a direct continuation, or a more specific treatment of the existing page. " +
-                "Create a new page when the concept is merely related, adjacent, or only shares broad keywords. Return only valid JSON.",
+                renderSystemPrompt("knowledge-placement", undefined, {  }),
             },
             {
               role: "user",
@@ -2587,11 +2520,7 @@ async function harmonizeTopicNote({
               {
                 role: "system",
                 content:
-                  "Merge two concept pages on the same concept into one coherent page. " +
-                  "Integrate the new content naturally into the existing structure, expanding or refining sections with new details. " +
-                  "Eliminate redundancy while preserving unique facts from both. " +
-                  "Keep a clean heading hierarchy with no duplicate headings. " +
-                  "Return ONLY the merged markdown body — no frontmatter, no code fences.",
+                  renderSystemPrompt("knowledge-merging", undefined, {  }),
               },
               {
                 role: "user",
@@ -3008,6 +2937,7 @@ export async function writeDocumentKnowledge({
   publicationUserId?: number;
   onProgress?: (step: string) => void;
 }): Promise<SavedKnowledge> {
+  return withGardenSystemPromptContext(clusterSlug, async () => {
   const transaction =
     knowledgeWriteTransaction ??
     createKnowledgeWriteTransaction(contentPath, clusterSlug);
@@ -3442,6 +3372,8 @@ export async function writeDocumentKnowledge({
     }
     throw error;
   }
+
+  }, publicationUserId);
 }
 
 function parseYamlArray(value: string): string[] {

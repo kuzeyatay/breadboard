@@ -80,7 +80,8 @@ test("a photo with a caption arrives as media, not as an empty message", () => {
 test("a message goes through the same authenticated turn pipeline as the browser", () => {
   assert.match(inbound, /createConversation\(/);
   assert.match(inbound, /startConversationTurn\(/);
-  assert.match(inbound, /prepareTelegramAttachments\(settings\.ownerUserId, message\)/);
+  assert.match(inbound, /const ownerUserId = settings\.ownerUserId/);
+  assert.match(inbound, /prepareTelegramAttachments\(ownerUserId, message\)/);
   assert.match(inbound, /resolveConversationRuntime\(/);
   // The chat must be a Terminal chat, which is what makes it show up in the
   // desktop app's Recents rather than living only inside Telegram.
@@ -202,7 +203,7 @@ test("replies are split to Telegram's limit rather than truncated", () => {
   assert.ok(chunks.length > 1);
   for (const chunk of chunks) assert.ok(chunk.length <= TELEGRAM_MESSAGE_LIMIT);
   // Nothing is dropped on the way through the splitter.
-  assert.equal(chunks.join("\n"), long);
+  assert.equal(chunks.join(""), long);
 
   // A word longer than the limit still has to go somewhere.
   const unbroken = "x".repeat(TELEGRAM_MESSAGE_LIMIT * 2 + 5);
@@ -384,7 +385,7 @@ test("Telegram sits beside WhatsApp in Settings → Messaging", () => {
   assert.match(panel, /stroke="currentColor"/);
   assert.doesNotMatch(panel, /#2AABEE|#229ED9/);
   // The panel says what the integration actually is and what it cannot see.
-  assert.match(panel, /official Bot API/);
+  assert.match(panel, /Your bot receives messages sent to it/);
   assert.match(panel, /privacy mode/);
   assert.match(panel, /@BotFather/);
   assert.match(panel, /placeholder="@username, 123456789"/);

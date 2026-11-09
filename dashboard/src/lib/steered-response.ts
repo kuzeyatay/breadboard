@@ -22,6 +22,22 @@ export function isClarificationAnswerMessage(message: {
   );
 }
 
+/**
+ * A steer accepted before the assistant had shown any answer text belongs
+ * above the whole response -- including its thinking header -- not inside it.
+ * Everything else interleaves with the answer at its offset.
+ */
+export function partitionCourseCorrections<T extends { offset: number }>(
+  corrections: readonly T[],
+): { leading: T[]; inline: T[] } {
+  const leading: T[] = [];
+  const inline: T[] = [];
+  for (const correction of corrections) {
+    (correction.offset <= 0 ? leading : inline).push(correction);
+  }
+  return { leading, inline };
+}
+
 export type SteeredResponseSegment =
   | { kind: "assistant"; content: string; key: string }
   | { kind: "correction"; content: string; key: string; textSelection?: ChatTextSelectionReference };

@@ -1,0 +1,32 @@
+{
+  "date": "2026-09-30",
+  "problem": "Terminal home remained in its server-rendered initial state while eagerly bundled chat and editor code loaded.",
+  "changes": [
+    "Retain the original server-rendered Terminal in an independent dynamic import and Suspense hydration boundary.",
+    "Replay an early Terminal click or Enter/Space press once its real controls hydrate, without blocking the home controls.",
+    "Keep Terminal initialization on the existing startup progress indicator.",
+    "Load rich notification Markdown and math rendering separately; show the actual response text while it loads."
+  ],
+  "bundleAudit": {
+    "method": "Minified esbuild static dependency graph for dashboard-client, with server actions stubbed and dynamic imports/CSS externalized. These are comparative graph sizes, not production transfer sizes or measured application startup timings.",
+    "beforeBytes": 3872743,
+    "afterBytes": 795347,
+    "reductionPercent": 79.46
+  },
+  "validation": {
+    "terminalHomeHydration": "3/3 passed: hold back chat chunk; real BrowserDock clock and outlines initialize; search accepts input; SSR dock remains visible; early click and Enter replay exactly once; chat deep-link prop survives; static startup graph excludes agent editor and Markdown/math modules.",
+    "browserTerminalStartup": "2/2 passed, including draft preservation.",
+    "notificationViewPresence": "2/2 passed, including real Toaster rendering and notification behavior.",
+    "themeStartup": "Passed.",
+    "lintChangedSourceFiles": "Passed.",
+    "typeCheckChangedSourceFiles": "0 errors in changed files; 49 diagnostics elsewhere in the transitive project.",
+    "broaderExistingFailures": [
+      "dashboard-agent-terminal-ui: header toggle source assertion expects 3 occurrences but existing code has 4.",
+      "dashboard-agent-terminal-ui: conversation-loading source assertion no longer matches existing agent-runtime-panel.",
+      "interaction-hydration-gate: source assertion expects an unconditional onClick assignment; existing Terminal uses drawerPresentation conditional.",
+      "startup-readiness-ui: hidden-widget fixture expects /api/browser/spotify to start; request is absent with current Spotify hooks.",
+      "terminal-highlight-click-ui: existing selection fixture times out finding its saved highlight."
+    ]
+  },
+  "runtime": "Source changes only. Running Breadboard and its build were left untouched as requested. Production rebuild/restart and in-app startup timing remain pending."
+}

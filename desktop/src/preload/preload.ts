@@ -1,4 +1,6 @@
 import type { IpcRenderer } from "electron";
+import type { CodeDockAction, CodeDockState } from "../shared/code-dock";
+import type { GestureControlAction, GestureControlState, GestureSettings } from "../shared/gesture-control";
 import type {
   BrowserBookmark,
   BrowserSignInsState,
@@ -55,6 +57,7 @@ export const PRELOAD_IPC_CHANNELS = {
   browserInlineAnswerState: "breadboard:browser-inline-answer-state",
   browserInlineAnswerAction: "breadboard:browser-inline-answer-action",
   notificationToast: "breadboard:notification-toast",
+  chatNotificationDelivered: "breadboard:chat-notification-delivered",
   notificationOverlayVisibility: "breadboard:notification-overlay-visibility",
   getBrowserNavigation: "breadboard:get-browser-navigation",
   getBrowserSignIns: "breadboard:get-browser-sign-ins",
@@ -78,6 +81,8 @@ export const PRELOAD_IPC_CHANNELS = {
   setDownloadPrompt: "breadboard:set-download-prompt",
   chooseDownloadDirectory: "breadboard:choose-download-directory",
   openLocalPath: "breadboard:open-local-path",
+  gestureControl: "breadboard:gesture-control",
+  codeDock: "breadboard:code-dock",
 } as const;
 
 export interface StartupServiceView {
@@ -128,7 +133,11 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
       const apply = () => {
         document.documentElement.dataset.persistentWindowShell = String(tabs.persistentShell === true);
         const activeGroup = tabs.groups?.find(group => group.split && !group.collapsed && tabs.tabs.find(tab => tab.id === tabs.activeId)?.groupId === group.id);
-        const foreground = tabs.selfId === tabs.activeId || tabs.selfId === tabs.presentedId ||
+        // Only managed tabs can be background tabs. Window-owned renderers
+        // (notifications and shared controls) have no selfId: pausing them
+        // freezes toast entrances at opacity zero while their native view
+        // continues intercepting clicks on the page underneath.
+        const foreground = tabs.selfId === null || tabs.selfId === tabs.activeId || tabs.selfId === tabs.presentedId ||
           Boolean(activeGroup && tabs.tabs.some(tab => tab.id === tabs.selfId && tab.groupId === activeGroup.id));
         document.documentElement.dataset.desktopTabActive = String(foreground);
         if (!document.getElementById("breadboard-window-shell-style")) {
@@ -144,6 +153,11 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
     for (const listener of tabsListeners) listener(tabs);
   });
   const notificationListeners = new Set<(notice: DesktopNotificationToast) => void>();
+  const chatDeliveryListeners = new Set<(ids: string[]) => void>();
+  ipcRenderer.on(PRELOAD_IPC_CHANNELS.chatNotificationDelivered, (_event, ids) => {
+    if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) return;
+    for (const listener of chatDeliveryListeners) listener(ids);
+  });
   let notificationOverlayVisible = false;
   const notificationVisibilityListeners = new Set<(visible: boolean) => void>();
   ipcRenderer.on(PRELOAD_IPC_CHANNELS.notificationOverlayVisibility, (_event, visible) => {
@@ -298,6 +312,10 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
       notificationListeners.add(listener);
       return () => notificationListeners.delete(listener);
     },
+    onChatNotificationDelivered: (listener: (ids: string[]) => void): (() => void) => {
+      chatDeliveryListeners.add(listener);
+      return () => chatDeliveryListeners.delete(listener);
+    },
     /** Replay the shell's current visibility before announcing any cards. */
     onNotificationOverlayVisibility: (listener: (visible: boolean) => void): (() => void) => {
       notificationVisibilityListeners.add(listener);
@@ -366,6 +384,9 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
     chooseDownloadDirectory: (): Promise<DownloadSettingsResult> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.chooseDownloadDirectory) as Promise<DownloadSettingsResult>,
     /** Open a produced folder in the file explorer, or reveal a produced file. */
+    codeDock: (action: CodeDockAction): Promise<CodeDockState> => ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.codeDock, action) as Promise<CodeDockState>,
+    gestureControl: (action: GestureControlAction, settings?: GestureSettings): Promise<GestureControlState> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.gestureControl, action, ...(settings ? [settings] : [])) as Promise<GestureControlState>,
     openLocalPath: (request: OpenLocalPathRequest): Promise<OpenLocalPathResult> =>
       ipcRenderer.invoke(
         PRELOAD_IPC_CHANNELS.openLocalPath,
@@ -462,7 +483,10 @@ if (typeof process !== "undefined" && typeof process.versions.electron === "stri
   const electron = require("electron") as typeof import("electron");
   electron.contextBridge.exposeInMainWorld(
     "breadboardDesktop",
-    createDesktopApi(electron.ipcRenderer as IpcRenderer),
+    {
+      ...createDesktopApi(electron.ipcRenderer as IpcRenderer),
+      getPathForFile: (file: File) => electron.webUtils.getPathForFile(file),
+    },
   );
   void electron.webFrame.executeJavaScript(`(${installBackgroundReadPriority.toString()})()`)
     .catch(() => { /* A document replaced during preload needs no installation. */ });

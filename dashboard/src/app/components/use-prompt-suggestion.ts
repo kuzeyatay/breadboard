@@ -48,10 +48,12 @@ export function usePromptSuggestion({ messages = NO_MESSAGES, conversationKey, m
       try {
         const now = new Date();
         const localDate = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+        const localTime = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
         const response = await fetch(hasConversation ? '/api/chat-prompt-suggestion' : '/api/recommendations', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: JSON.parse(transcript), model, personalize, gardenSlug, localDate }),
+          body: JSON.stringify({ messages: JSON.parse(transcript), model, personalize, gardenSlug, localDate, localTime, timeZone }),
           signal: controller.signal,
         });
         if (!response.ok) return;

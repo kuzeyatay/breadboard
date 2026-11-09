@@ -1,3 +1,6 @@
+import { CodeDockManager } from "./code-dock";
+import { resolveVSCodeStorage } from "./vscode-installation";
+import type { CodeDockAction, CodeDockState } from "../shared/code-dock";
 import {
   BrowserWindow,
   app,
@@ -23,6 +26,8 @@ import { randomUUID } from "node:crypto";
 import { ANCHORED_TAB_NAVIGATION_MESSAGE, isSameTabScreen } from "./tab-navigation-policy";
 import { pathToFileURL } from "node:url";
 import { installWindowSurfaceRecovery } from "./window-surface-recovery";
+import { notificationVisibleRects, watchNotificationVisibility, setNotificationViewVisible, trackTransparentNotificationView } from "./notification-visible-region";
+import { ChatNotificationDelivery, isChatNotificationCardVisible } from "./chat-notification-delivery";
 import { annotationPageUrl, browserOrganizationWidth, normalizeAnnotationTarget, type BrowserAnnotationTarget } from "../shared/browser-annotations";
 import { browserAnnotationCaptureScript, browserAnnotationPaintScript } from "./browser-annotations-dom";
 import { BrowserPreferenceStore } from "./browser-preferences";
@@ -32,6 +37,9 @@ import { BrowserNotificationPages } from "./browser-notification-pages";
 import { browserUserAgent } from "./browser-user-agent";
 import { toggleBrowserPictureInPicture } from "./browser-picture-in-picture";
 import { GooglePipExtension, GOOGLE_PIP_EXTENSION_ID } from "./google-pip-extension";
+import { BrowserHlsDownloads } from "./browser-hls-downloads";
+import type { BrowserDownloads } from "./browser-downloads";
+import type { DownloadSettings } from "./download-settings";
 import { BrowserTranslation, type TranslatePageBatch } from "./browser-translation";
 import { TRANSLATION_LANGUAGES, translationSite, notificationOrigin } from "../shared/browser-preferences";
 import { BrowserWebPush } from "./browser-web-push";
@@ -57,7 +65,7 @@ import {
   tabRendererWebPreferences,
   type BreadboardWindowTheme,
 } from "./window-options";
-import { allowBackgroundFrames, waitForFirstPaint, waitForRevealFrame, waitForDocumentFrame } from "./first-paint";
+import { allowBackgroundFrames, runInDocument, waitForFirstPaint, waitForRevealFrame, waitForDocumentFrame } from "./first-paint";
 import { WindowShell } from "./window-shell";
 import { waitForTabChrome } from "./tab-chrome";
 import { TAB_SURFACE_BUDGET_BYTES, TabSurfaceCache, idleUnloadDelayMs, surfaceReservation, warmBackgroundTabs, type TabMemoryPressure } from "./tab-surface-cache";
@@ -128,6 +136,8 @@ import {
 } from "./browser-extensions";
 
 export interface TabManagerOptions {
+  /** Resolved desktop bulk-storage preference; never infer a drive from the environment. */
+  bulkRoot?: string;
   browserPreferencesConfigDir?: string;
   /** Dependency injection for deterministic page translation integration checks. */
   translatePageBatch?: TranslatePageBatch;
@@ -149,6 +159,8 @@ export interface TabManagerOptions {
   log?: (line: string) => void;
   /** Directory containing the durable list of unpacked browser extensions. */
   browserExtensionsConfigDir?: string;
+  browserDownloads?: BrowserDownloads;
+  downloadSettings?: DownloadSettings;
   browserVisitedLinksConfigDir?: string;
   browserHistoryConfigDir?: string;
   tabSessionConfigDir?: string;
@@ -305,14 +317,14 @@ function liveBrowserPage(browser: BrowserPage | undefined): LiveBrowserPage | nu
  * Its bounds collapse to the cards it contains, leaving the page beneath fully
  * interactive while keeping the cards above even an untrusted browser view. */
 interface NotificationOverlay {
-  view: View;
-  rendererView: WebContentsView;
+  view: WebContentsView;
   contents: WebContents;
   width: number;
   height: number;
   ready: boolean;
   pending: DesktopNotificationToast[];
   audible?: boolean;
+  viewport?: NotificationOverlaySize;
 }
 
 /** The window-level scene shown while the selected tab has no finished page. */
@@ -440,6 +452,8 @@ interface Tab extends PageFindState {
   pageLoading?: boolean;
   /** Initial Terminal controls and widget reads have settled in this document. */
   terminalReady?: boolean;
+  /** After this time a Terminal whose widget reads never settle is shown anyway. */
+  terminalReadinessDeadline?: number;
   /** A response is committed; its parser may still be streaming. */
   documentCommitted?: boolean;
   sharedChrome?: boolean;
@@ -689,7 +703,16 @@ export function browserContentLeft(
   width: number,
   terminalOpen: boolean,
   terminalWidth = BROWSER_TERMINAL_WIDTH,
+  chromeZoom = 1,
 ): number {
+  // Terminal widths and the rail are CSS pixels; native view bounds are DIPs.
+  // Trusted pages share origin zoom, including zoom changed in another tab.
+  if (chromeZoom !== 1) {
+    return Math.min(
+      Math.ceil(browserContentLeft(Math.round(width / chromeZoom), terminalOpen, terminalWidth) * chromeZoom),
+      Math.max(0, width - 1),
+    );
+  }
   if (!terminalOpen) return Math.min(BROWSER_RAIL_WIDTH, Math.max(0, width - 1));
   const preferred = Math.max(
     BROWSER_TERMINAL_MIN_WIDTH,
@@ -780,6 +803,33 @@ function isNavigationShortcut(shortcut: TabShortcut): boolean {
  * to the front already has the strip drawn when it is seen.
  */
 export class TabManager {
+  readonly codeDock: CodeDockManager;
+
+  codeDockRequest(sender: WebContents, action: CodeDockAction): CodeDockState {
+    const host = this.hostByContents.get(sender.id);
+    if (!host || host.window.isDestroyed() || !host.tabs.some(tab => tab.contents === sender)) throw new Error("Code requires an owned Breadboard tab.");
+    this.codeDock.setTheme(this.options.theme());
+    const state = this.codeDock.request(sender, host.window, action);
+    const tab = host.tabs.find(tab => tab.contents === sender)!;
+    const loading = ["checking", "downloading", "extracting", "opening"].includes(state.phase);
+    if (tab.loading !== loading) { this.setTabLoading(tab, loading); this.broadcast(host); }
+    this.syncCodeDocks(host);
+    return state;
+  }
+
+  private syncCodeDocks(host: Host): void {
+    if (host.window.isDestroyed()) return;
+    const members = splitMembers(host);
+    const [width = 1, height = 1] = host.window.getContentSize();
+    for (const tab of host.tabs) {
+      if (!this.codeDock.has(tab.contents.id)) continue;
+      const bounds = tab.view?.getBounds() ?? { x: 0, y: 0, width, height };
+      const top = Math.min(bounds.y + bounds.height - 1, Math.max(BREADBOARD_TITLE_BAR.height,
+        bounds.y + Math.ceil(this.codeDock.contentTop(tab.contents.id) * tab.contents.getZoomFactor())));
+      this.codeDock.sync(tab.contents.id, host.window, { ...bounds, y: top, height: Math.max(1, bounds.height - (top - bounds.y)) },
+        (host.activeId === tab.id || members.includes(tab)) && !host.tabDragPreview && !host.window.isMinimized() && host.window.isVisible(), host.activeId === tab.id);
+    }
+  }
   private readonly browserTerminal = new BrowserTerminalBridge();
   private browserSignInsResetting = false;
 
@@ -861,6 +911,7 @@ export class TabManager {
   private documentFindRequestId = 0;
   private readonly releasedAutomationRuns = new Set<string>();
   private readonly hostByContents = new Map<number, Host>();
+  private readonly chatNotificationDelivery = new ChatNotificationDelivery(line => this.log(`[notifications] ${line}`));
   private readonly inspectionPreparations = new WeakMap<WebContents, { ready: Promise<boolean>; release: () => void; users: number }>();
   /** The pages lent to ChatMock's "OpenAI (web)" provider, by lane; see openChatgptWebTab. */
   private readonly chatgptWeb = new Map<string, ChatgptWebPage>();
@@ -880,6 +931,7 @@ export class TabManager {
   private readonly browserVisitedLinks: BrowserVisitedLinks;
   private readonly browserPreferences: BrowserPreferenceStore;
   private readonly browserAdBlocker: BrowserAdBlocker;
+  private readonly browserHls: BrowserHlsDownloads;
   private readonly browserNotifications: BrowserNotifications;
   private readonly browserNotificationPages: BrowserNotificationPages;
   /** Closed, opted-in sites keep receiving events without occupying a tab. */
@@ -902,10 +954,12 @@ export class TabManager {
   private authenticationCheck: Promise<boolean> | null = null;
   private authenticationDirty = false;
   private authenticationTimer: ReturnType<typeof setTimeout> | null = null;
+  private authenticationRetries = 0;
   private restoreGeneration = 0;
 
   constructor(options: TabManagerOptions) {
     this.options = options;
+    this.codeDock = new CodeDockManager(resolveVSCodeStorage(app.getPath("userData"), options.bulkRoot));
     // JWT rotation is not an account change. Verify once in the shell instead
     // of repeatedly discarding/reloading a spare renderer on every cookie write.
     session.defaultSession.cookies.on("changed", (_event, cookie) => {
@@ -931,6 +985,7 @@ export class TabManager {
         this.scheduleNewTabPreparation(host);
       }
     });
+    this.browserHls = new BrowserHlsDownloads(options.browserDownloads, options.downloadSettings, () => this.broadcastAll());
     this.browserPreferences = new BrowserPreferenceStore(options.browserPreferencesConfigDir ?? options.browserExtensionsConfigDir ?? app.getPath("userData"), message => this.log(message));
     this.browserAdBlocker = new BrowserAdBlocker(options.browserExtensionsConfigDir ?? app.getPath("userData"),
       () => this.broadcastAll(), message => this.log(message));
@@ -1035,8 +1090,21 @@ export class TabManager {
         result = await this.applyAuthentication();
       } while (this.authenticationDirty && !this.sessionFrozen);
       return result;
-    })().catch(error => {
-      this.log(`could not synchronize login: ${error instanceof Error ? error.message : String(error)}`);
+    })().then(result => {
+      this.authenticationRetries = 0;
+      return result;
+    }, error => {
+      // A busy dashboard times this check out. Tabs it bounced to the login
+      // page used to stay there for good; keep asking until it answers.
+      const delay = Math.min(60_000, 2_000 * 2 ** this.authenticationRetries++);
+      this.log(`could not synchronize login: ${error instanceof Error ? error.message : String(error)}; retrying in ${delay / 1000}s`);
+      if (!this.authenticationTimer) {
+        this.authenticationTimer = setTimeout(() => {
+          this.authenticationTimer = null;
+          void this.synchronizeAuthentication();
+        }, delay);
+        this.authenticationTimer.unref();
+      }
       return false;
     }).finally(() => { this.authenticationCheck = null; });
     return this.authenticationCheck;
@@ -1421,11 +1489,11 @@ export class TabManager {
       if (view && attachedForPreparation) {
         const [width = 1, height = 1] = host.window.getContentSize();
         const browser = contents === tab.browser?.contents ? tab.browser : null;
-        const x = browser ? browserContentLeft(width, browser.terminalOpen, browser.terminalWidth) : 0;
+        const x = browser ? browserContentLeft(width, browser.terminalOpen, browser.terminalWidth, tab.contents.getZoomFactor()) : 0;
         const y = browser ? browserContentTop(height) : 0;
         setViewBounds(view, { x, y, width: Math.max(1, width - x), height: Math.max(1, height - y) });
         host.window.contentView.addChildView(view);
-        view.setVisible(true);
+        setNotificationViewVisible(view, true);
       }
       try {
         if (!await this.waitForStartupTabPage(tab, contents, waitMs)) return;
@@ -1482,7 +1550,7 @@ export class TabManager {
       setViewBounds(view, offscreenBounds(width, height, this.preparationTop(host, height)));
       host.window.contentView.addChildView(view);
     }
-    view.setVisible(false);
+    setNotificationViewVisible(view, false);
     if (parked) {
       host.window.contentView.removeChildView(view);
       forgetViewBounds(view);
@@ -1558,6 +1626,7 @@ export class TabManager {
 
   /** Keep browser and tab-loading surfaces in step with the native scheme. */
   synchronizeBrowserTheme(theme: BreadboardWindowTheme): void {
+    this.codeDock.setTheme(theme);
     for (const host of this.hosts.values()) {
       const scene = host.loadingScene;
       if (scene) this.updateLoadingSceneTheme(scene, theme);
@@ -1719,6 +1788,26 @@ export class TabManager {
     this.hosts.set(window.id, host);
     this.distributeSurfaceBudget();
     this.track(host, base);
+    const notificationRegions = new Map<number, string>();
+    const stopNotificationVisibility = watchNotificationVisibility(window, () => {
+      // Native window covers and native view bounds can change without a DOM
+      // event. Send only changed regions; do not persist/rebuild the tab session
+      // on the monitor's heartbeat.
+      const contents = new Set([
+        ...host.tabs.map(tab => tab.contents), ...[...host.retainedTabControls].map(tab => tab.contents),
+        host.preparedNewTab?.contents, host.browserChrome?.contents, host.inlineAnswer?.contents, host.notificationOverlay?.contents,
+      ].filter((item): item is WebContents => !!item && !item.isDestroyed()));
+      for (const item of contents) {
+        const signature = JSON.stringify(notificationVisibleRects(window, item));
+        if (notificationRegions.get(item.id) === signature) continue;
+        notificationRegions.set(item.id, signature);
+        if (item === host.notificationOverlay?.contents) this.layoutNotificationOverlay(host);
+        this.send(item, this.stateFor(item));
+      }
+      for (const id of notificationRegions.keys()) if (id !== host.notificationOverlay?.contents.id && ![...contents].some(item => item.id === id)) notificationRegions.delete(id);
+      this.chatNotificationDelivery.refresh();
+    });
+    window.once("closed", stopNotificationVisibility);
     if (persistentShell) {
       if (process.platform === "win32") {
         installWindowSurfaceRecovery(window, () => this.foregroundSurfaceViews.get(host));
@@ -1755,9 +1844,15 @@ export class TabManager {
       if (host.shell) this.send(host.shell.contents, this.shellState(host));
     };
     window.on("resize", relayout);
+    window.on("show", () => this.syncCodeDocks(host));
+    window.on("hide", () => this.syncCodeDocks(host));
+    window.on("minimize", () => this.syncCodeDocks(host));
+    window.on("restore", relayout);
     window.on("focus", () => {
       this.layout(host);
       this.broadcast(host);
+      const active = host.tabs.find(tab => tab.id === host.activeId);
+      if (active) this.codeDock.focus(active.contents.id);
     });
     window.on("blur", () => {
       const dragging = host.tabDragActive;
@@ -2085,7 +2180,7 @@ export class TabManager {
         for (const owner of this.hosts.values()) {
           for (const tab of owner.tabs) if (tab.browser) {
             if (!command.enabled) { tab.browser.organizationOpen = false; tab.browser.annotationTarget = undefined; tab.browser.annotationMarkers = []; }
-            if (!command.enabled && tab.browser.contents && !tab.browser.contents.isDestroyed()) void tab.browser.contents.executeJavaScript(browserAnnotationPaintScript([])).catch(() => undefined);
+            if (!command.enabled && tab.browser.contents && !tab.browser.contents.isDestroyed()) void runInDocument(tab.browser.contents, browserAnnotationPaintScript([])).catch(() => undefined);
           }
           owner.selectionPopover?.close();
           this.layout(owner); this.broadcast(owner);
@@ -2281,7 +2376,9 @@ export class TabManager {
         return true;
       case "browser-navigate": {
         const tab = senderTab;
-        return tab?.browser ? this.navigateBrowser(host, tab, command.input) : false;
+        if (tab?.browser) return this.navigateBrowser(host, tab, command.input);
+        // A local page with the toolbar (Browser settings) becomes a browser tab.
+        return tab && this.toolbarShellUrl(tab) ? this.openBrowserTab(host, command.input, false, undefined, tab) !== null : false;
       }
       case "browser-stop": {
         const tab = senderTab;
@@ -2431,6 +2528,18 @@ export class TabManager {
         popup.close(true);
         return true;
       }
+      case "browser-hls-download": {
+        const popup = host.extensionsPopover;
+        if (!popup || popup.contents !== sender || host.pending) return false;
+        const tab = tabById(host, popup.ownerId), page = liveBrowserPage(tab?.browser);
+        if (!tab?.browser || tab.id !== host.activeId || !page || tab.browser.showingHome || tab.browser.privatePartition) return false;
+        return popup.keepOpenDuring(() => this.browserHls.start(page.contents, command.id, async defaultPath => {
+          if (popup.isClosed || tab.id !== host.activeId || host.window.isDestroyed()) return null;
+          const result = await dialog.showSaveDialog(host.window, { title: "Save HLS video", defaultPath,
+            filters: [{ name: "Video", extensions: [path.extname(defaultPath).slice(1)] }] });
+          return result.canceled ? null : result.filePath ?? null;
+        }));
+      }
       case "browser-extensions-picture-in-picture": {
         const popup = host.extensionsPopover;
         if (!popup || popup.contents !== sender) return false;
@@ -2504,7 +2613,7 @@ export class TabManager {
           return target?.url === url ? [{ id: item.id, target }] : [];
         });
         tab.browser.annotationMarkers = items;
-        if (tab.browser.contents && !tab.browser.contents.isDestroyed()) void tab.browser.contents.executeJavaScript(browserAnnotationPaintScript(items)).catch(() => undefined);
+        if (tab.browser.contents && !tab.browser.contents.isDestroyed()) void runInDocument(tab.browser.contents, browserAnnotationPaintScript(items)).catch(() => undefined);
         return true;
       }
       case "browser-organization": {
@@ -2525,7 +2634,7 @@ export class TabManager {
           const [hostWidth = BROWSER_TERMINAL_WIDTH] = host.window.getContentSize();
           tab.browser.terminalWidth = Math.max(
             BROWSER_TERMINAL_MIN_WIDTH,
-            Math.min(browserTerminalMaxWidth(hostWidth), command.width),
+            Math.min(browserTerminalMaxWidth(Math.round(hostWidth / tab.contents.getZoomFactor())), command.width),
           );
         }
         if (command.open) tab.browser.addressSuggestionsOpen = false;
@@ -2599,6 +2708,33 @@ export class TabManager {
       }
       case "notification-toast":
         return this.publishNotificationToast(sender, command.notice);
+      case "notification-chat-delivery": {
+        const overlay = host.notificationOverlay;
+        if (!overlay || sender !== overlay.contents || !command.cards.every(card =>
+          card.urls.every(url => isTabPageUrl(this.options.allowed, url)))) return false;
+        this.chatNotificationDelivery.update(sender.id, {
+          cards: command.cards,
+          enabled: () => this.notificationsVisible && overlay.ready &&
+            !host.window.isDestroyed() && !sender.isDestroyed() && !sender.isCrashed(),
+          visible: card => {
+            if (!card.rect || !overlay.audible) return false;
+            const regions = notificationVisibleRects(host.window, sender);
+            return isChatNotificationCardVisible(card.rect, regions);
+          },
+          delivered: ids => {
+            if (sender.isDestroyed() || sender.isCrashed()) return;
+            const frame = sender.mainFrame;
+            if (frame && !frame.isDestroyed()) frame.send(IPC_CHANNELS.chatNotificationDelivered, ids);
+          },
+          open: card => {
+            if (host.window.isDestroyed() || sender.isDestroyed()) return;
+            if (host.window.isMinimized()) host.window.restore();
+            host.window.show(); host.window.focus();
+            void this.handleCommand(sender, { type: 'notification-open', urls: card.urls });
+          },
+        });
+        return true;
+      }
       case "notification-overlay-resize":
         return this.resizeNotificationOverlay(sender, command.size);
       default:
@@ -2699,7 +2835,7 @@ export class TabManager {
     target.find = undefined;
     if (!target.contents.isDestroyed()) {
       target.contents.stopFindInPage("clearSelection");
-      void target.contents.executeJavaScript(`window[Symbol.for('breadboard:document-find')]?.(null)`)
+      void runInDocument(target.contents, `window[Symbol.for('breadboard:document-find')]?.(null)`)
         .catch(() => undefined);
     }
   }
@@ -2714,7 +2850,7 @@ export class TabManager {
     target.find = undefined;
     if (localPage) {
       try {
-        const result = await target.contents.executeJavaScript(`(async () => {
+        const result = await runInDocument(target.contents, `(async () => {
           const find = window[Symbol.for('breadboard:document-find')];
           return typeof find === 'function' ? { result: await find(${JSON.stringify(command)}) } : null;
         })()`);
@@ -2744,7 +2880,7 @@ export class TabManager {
     host.findBar?.close();
     this.exitBrowserFullscreen(host);
     const localPage = !tab.browser || tab.browser.showingHome;
-    if (localPage) void tab.contents.executeJavaScript(`(() => {
+    if (localPage) void runInDocument(tab.contents, `(() => {
       const focused = document.activeElement;
       window[Symbol.for('breadboard:find-return-focus')] = () => {
         if (focused instanceof HTMLElement && focused.isConnected) focused.focus({ preventScroll: true });
@@ -2758,7 +2894,7 @@ export class TabManager {
       () => {
         if (host.findBar === bar) host.findBar = undefined;
         void this.handleCommand(tab.contents, { type: "browser-find-close" });
-        if (localPage && !tab.contents.isDestroyed()) void tab.contents.executeJavaScript(`(() => {
+        if (localPage && !tab.contents.isDestroyed()) void runInDocument(tab.contents, `(() => {
           const key = Symbol.for('breadboard:find-return-focus');
           window[key]?.();
           delete window[key];
@@ -2798,7 +2934,7 @@ export class TabManager {
         case "find": this.requestFind(host, tab); return;
         case "history": case "visited-pages": case "bookmarks": case "downloads":
           tab.contents.focus();
-          await tab.contents.executeJavaScript(`window.dispatchEvent(new CustomEvent('breadboard:browser-menu-action', { detail: ${JSON.stringify(action)} }))`, true);
+          await runInDocument(tab.contents, `window.dispatchEvent(new CustomEvent('breadboard:browser-menu-action', { detail: ${JSON.stringify(action)} }))`, true);
           return;
         case "extensions": {
           const run = (operation: () => Promise<boolean>) => { void operation().catch(error => {
@@ -2882,6 +3018,8 @@ export class TabManager {
     if (tab.browser) { this.zoomBrowserPage(host, contents, direction); return; }
     const level = contents.getZoomLevel();
     contents.setZoomLevel(direction === "reset" ? 0 : level + (direction === "in" ? 0.5 : -0.5));
+    this.layout(host);
+    this.broadcast(host);
   }
 
   private showTranslationMenu(host: Host, tab: Tab): void {
@@ -2910,9 +3048,22 @@ export class TabManager {
   }
 
   stateFor(sender: WebContents): TabsState {
+    return this.notificationState(sender, this.stateWithoutNotificationVisibility(sender));
+  }
+
+  private notificationState(sender: WebContents, state: TabsState): TabsState {
+    const host = this.hostByContents.get(sender.id);
+    if (!host || host.window.isDestroyed()) return state;
+    const notificationVisibleRectsForPage = notificationVisibleRects(host.window, sender);
+    return notificationVisibleRectsForPage === undefined ? state : { ...state, notificationVisibleRects: notificationVisibleRectsForPage };
+  }
+
+  private stateWithoutNotificationVisibility(sender: WebContents): TabsState {
     const candidate = this.hostByContents.get(sender.id);
     const host = candidate && !candidate.window.isDestroyed() ? candidate : undefined;
     if (host?.shell?.contents === sender) return this.shellState(host);
+    if (host?.notificationOverlay?.contents === sender) return { ...this.state(host), notificationViewport: this.notificationOverlayViewport(host) };
+    if (host?.inlineAnswer?.contents === sender) return { ...this.state(host), notificationPageVisible: host.inlineAnswer.isVisible };
     return host
       ? this.stateForTab(host, host.preparedNewTab?.contents.id === sender.id ? host.preparedNewTab
         : [...host.tabs, ...host.retainedTabControls].find((tab) => tab.contents.id === sender.id))
@@ -3094,6 +3245,7 @@ export class TabManager {
   /** Release documents while keeping the logical tabs for load-on-selection. */
   /** Replace a background tab by an unloaded copy; false when it is in front or already unloaded. */
   private neutralizeTab(host: Host, tab: Tab): boolean {
+    if (this.codeDock.has(tab.contents.id)) return false;
     const index = tabIndex(host, tab.id);
     if (index < 0 || host.activeId === tab.id) return false;
     const browser = tab.browser;
@@ -3266,14 +3418,14 @@ export class TabManager {
     return true;
   }
 
-  /** Browser chrome and the app-owned Terminal share the same toolbar tools. */
+  /** Browser chrome, the app-owned Terminal and Browser settings share the same toolbar tools. */
   private toolbarShellUrl(tab: Tab): string | null {
     if (tab.browser) return tab.browser.shellUrl;
-    if (!this.newTabUrl || !this.browserUrl || tab.contents.isDestroyed()) return null;
+    if (!this.browserUrl || tab.contents.isDestroyed()) return null;
     try {
       const current = new URL(tab.contents.getURL());
-      const terminal = new URL(this.newTabUrl);
-      return current.origin === terminal.origin && current.pathname.replace(/\/$/, "") === terminal.pathname.replace(/\/$/, "")
+      const isCurrent = (page: URL) => current.origin === page.origin && current.pathname.replace(/\/$/, "") === page.pathname.replace(/\/$/, "");
+      return (this.newTabUrl && isCurrent(new URL(this.newTabUrl))) || isCurrent(new URL(`${BROWSER_TAB_PATH}/settings`, this.browserUrl))
         ? this.browserUrl : null;
     } catch { return null; }
   }
@@ -3320,13 +3472,13 @@ export class TabManager {
         if (host.inlineAnswer === answer) host.inlineAnswer = undefined;
         if (!tab.contents.isDestroyed()) tab.contents.send(IPC_CHANNELS.browserInlineAnswerAction,
           { requestId: selection.requestId, selectionId: selection.reference!.id, action: "close" });
-        if (!browser.contents.isDestroyed()) void browser.contents.executeJavaScript("window.__breadboardHighlights?.track(null)").catch(() => undefined);
+        if (!browser.contents.isDestroyed()) void runInDocument(browser.contents, "window.__breadboardHighlights?.track(null)").catch(() => undefined);
       }, browser.highlights?.saved(selection.reference.id)?.note);
     host.inlineAnswer = answer;
     this.hostByContents.set(answer.contents.id, host);
     const url = new URL("/browser/inline-answer", browser.shellUrl); url.searchParams.set("theme", this.options.theme());
     void answer.contents.loadURL(url.href).catch(() => answer.close());
-    void browser.contents.executeJavaScript(`window.__breadboardHighlights?.track(${JSON.stringify(selection.reference.id)})`).catch(() => undefined);
+    void runInDocument(browser.contents, `window.__breadboardHighlights?.track(${JSON.stringify(selection.reference.id)})`).catch(() => undefined);
   }
 
   private openSelectionPopover(host: Host, tab: Tab, entry: WebTextHighlight, anchor: { x: number; y: number; height?: number }): void {
@@ -3428,8 +3580,8 @@ export class TabManager {
     host.window.contentView.addChildView(view);
     const throttled = contents.getBackgroundThrottling();
     if (!throttled) contents.setBackgroundThrottling(true);
-    view.setVisible(false);
-    view.setVisible(true);
+    setNotificationViewVisible(view, false);
+    setNotificationViewVisible(view, true);
     if (!throttled) contents.setBackgroundThrottling(false);
     const releaseFrames = allowBackgroundFrames(contents);
     const preparation = { users: 1, ready: waitForRevealFrame(contents, 1500), release: () => {
@@ -3782,6 +3934,23 @@ export class TabManager {
       from?.browser?.privatePartition ?? (host.privateBrowsing ? this.privateBrowserPartition() : null));
   }
 
+  /** Only the foreground, presented tab contributes Screen Time. Never count background/AI tabs. */
+  screenTimeContext(): import("./screen-time-policy").ScreenTimeContext {
+    const userId = this.authenticatedUser ?? null;
+    if (!userId || this.sessionFrozen) return { userId: null };
+    for (const host of this.hosts.values()) {
+      if (host.window.isDestroyed() || !host.window.isFocused() || !host.window.isVisible() || host.window.isMinimized()) continue;
+      const active = tabById(host, host.activeId);
+      const tab = active?.attached && active.painted ? active : this.visibleTab(host);
+      if (!tab) return { userId };
+      return { userId, tab: { id: tab.id, title: tab.title,
+        url: tab.browser?.showingHome ? new URL("/new-tab", this.sessionDashboardUrl!).href : tab.url,
+        browser: Boolean(tab.browser && !tab.browser.showingHome),
+        private: Boolean(host.privateBrowsing || tab.browser?.privatePartition || tab.automationRunId || tab.browser?.automationRunId) } };
+    }
+    return { userId };
+  }
+
   // ------------------------------------------------------------------ state
 
   private state(host: Host): TabsState {
@@ -3806,6 +3975,8 @@ export class TabManager {
             browser: {
               aiOpened: Boolean(tab.browser.automationRunId),
               private: Boolean(tab.browser.privatePartition),
+              hls: tab.browser.privatePartition ? { streams: [], available: false }
+                : this.browserHls.snapshot(tab.browser.showingHome ? undefined : liveBrowserPage(tab.browser)?.contents),
               adBlock: this.browserAdBlocker.snapshot(
                 liveBrowserPage(tab.browser)?.contents,
                 tab.browser.showingHome ? "" : tab.url,
@@ -3846,10 +4017,16 @@ export class TabManager {
     }));
     return {
       enabled: this.enabled && !(this.authenticationUrl && !this.authenticatedUser),
-      windowFocused: host.window.isFocused(),
+      windowFocused: host.window.isFocused() && host.window.isVisible() && !host.window.isMinimized(),
       activeId: host.activeId,
       presentedId: host.presentedId,
       visibleId: this.visibleTab(host)?.id ?? null,
+      visibleIds: [...new Set([
+        this.visibleTab(host)?.id,
+        ...(!host.browserFullscreen && !tabById(host, host.activeId)?.voiceOverlay
+          ? splitMembers(host).filter(tab => tab.attached && tab.painted && !tab.splitPreparation &&
+            !(host.pending && !host.pendingAtFront)).map(tab => tab.id) : []),
+      ].filter((id): id is number => id !== undefined))],
       presentationRevision: host.presentationRevision,
       presentationStatus: host.presentationStatus,
       persistentShell: host.shellEnabled,
@@ -3896,6 +4073,7 @@ export class TabManager {
     this.scheduleNewTabPreparation(host);
     if (host.extensionsPopover) this.send(host.extensionsPopover.contents, state);
     if (host.selectionPopover) this.send(host.selectionPopover.contents, state);
+    if (host.inlineAnswer) this.send(host.inlineAnswer.contents, { ...state, notificationPageVisible: host.inlineAnswer.isVisible });
     if (host.groupPopover) this.send(host.groupPopover.contents, state);
     const findOwner = host.findBar && tabById(host, host.findBar.ownerId);
     if (findOwner) host.findBar?.update(this.findTarget(findOwner)?.find);
@@ -3940,7 +4118,7 @@ export class TabManager {
       if (contents.isCrashed()) return;
       const frame = contents.mainFrame;
       if (!frame || frame.isDestroyed()) return;
-      frame.send(IPC_CHANNELS.tabsState, state);
+      frame.send(IPC_CHANNELS.tabsState, this.notificationState(contents, state));
     } catch (error) {
       // Reading mainFrame can also fail during teardown. DOM readiness and
       // subsequent state changes broadcast the latest state to the new page.
@@ -4053,7 +4231,7 @@ export class TabManager {
     setViewBounds(tab.view!, offscreenBounds(width, height, this.preparationTop(host, height)));
     host.window.contentView.addChildView(tab.view!);
     tab.attached = true;
-    tab.view!.setVisible(true);
+    setNotificationViewVisible(tab.view!, true);
     const preparation = new AbortController();
     let ceiling: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -4490,6 +4668,7 @@ export class TabManager {
     browser.view = view;
     browser.contents = view.webContents;
     this.browserAdBlocker.attachPage(browser.contents, Boolean(browser.privatePartition));
+    if (!browser.privatePartition) this.browserHls.attach(browser.contents);
     // The preload asks before page scripts run, including after redirects or
     // reloads. Once the person interacts, later documents need no restore guard.
     browser.contents.ipc.on("breadboard:restored-media-blocked", event => {
@@ -4934,7 +5113,7 @@ export class TabManager {
           ask: text => this.askAboutBrowserSelection(owner, tab, browser, text),
           comment: async () => {
             const pageUrl = tab.url;
-            const captured = await contents.executeJavaScript(browserAnnotationCaptureScript(params.x, params.y, params.mediaType, params.srcURL));
+            const captured = await runInDocument(contents, browserAnnotationCaptureScript(params.x, params.y, params.mediaType, params.srcURL));
             if (pageUrl !== tab.url || contents.isDestroyed() || revision !== contextRevision || owner.activeId !== tab.id) return;
             const target = normalizeAnnotationTarget({ ...captured, url: pageUrl, title: tab.title,
               ...(params.selectionText && !params.isEditable && !["image", "video"].includes(params.mediaType) && captured?.kind !== "text" ? { kind: "text", quote: params.selectionText.slice(0,4000) } : {}),
@@ -4944,7 +5123,7 @@ export class TabManager {
           bookmark: async value => {
             const bookmark = { ...value, title: value.title.trim().slice(0, 100) || value.url,
               ...(value.url === tab.url && browser.favicon ? { iconUrl: browser.favicon } : {}) };
-            const saved = await tab.contents.executeJavaScript(`new Promise(resolve => {
+            const saved = await runInDocument(tab.contents, `new Promise(resolve => {
               const timeout = setTimeout(() => resolve(false), 5000);
               window.dispatchEvent(new CustomEvent('breadboard:bookmark-browser-page', { detail: {
                 bookmark: ${JSON.stringify(bookmark)}, complete: result => { clearTimeout(timeout); resolve(result === true); }
@@ -4969,7 +5148,7 @@ export class TabManager {
       if (inPlace) return;
       contextRevision++;
       browser.annotationTarget = undefined; browser.annotationMarkers = [];
-      void contents.executeJavaScript(browserAnnotationPaintScript([])).catch(() => undefined);
+      void runInDocument(contents, browserAnnotationPaintScript([])).catch(() => undefined);
       const owner = current();
       if (owner && !owner.window.isDestroyed()) browser.menu?.closePopup(owner.window);
     });
@@ -5161,7 +5340,7 @@ export class TabManager {
       if (tab.url === url) return;
       browser.annotationTarget = undefined;
       browser.annotationMarkers = [];
-      void contents.executeJavaScript(browserAnnotationPaintScript([])).catch(() => undefined);
+      void runInDocument(contents, browserAnnotationPaintScript([])).catch(() => undefined);
       tab.url = url;
       const owner = current();
       if (owner) this.broadcast(owner);
@@ -5393,6 +5572,12 @@ export class TabManager {
   private dropTab(host: Host, index: number): boolean {
     const tab = host.tabs[index];
     if (!tab) return false;
+    if (this.codeDock.has(tab.contents.id)) {
+      void this.codeDock.release(tab.contents.id, true).then(() => {
+        if (!host.window.isDestroyed()) this.dropTab(host, tabIndex(host, tab.id));
+      }, error => dialog.showErrorBox("VS Code is still attached", String(error)));
+      return true;
+    }
     const countBefore = host.tabs.length;
     const activeIndex = tabIndex(host, host.activeId);
     const splitPartner = host.activeId === tab.id ? splitMembers(host).find(member => member !== tab) : undefined;
@@ -5746,6 +5931,7 @@ export class TabManager {
    * window tabs and Garden navbar. */
   private present(host: Host, showLoader = true): void {
     if (host.window.isDestroyed()) return;
+    this.syncCodeDocks(host);
     const active = tabById(host, host.activeId);
     if (active) this.show(host, active, showLoader);
   }
@@ -5803,8 +5989,17 @@ export class TabManager {
       this.settle(host, active);
       return;
     }
+    // A tab selected at the front is already on screen while its first frame is
+    // checked. If the next tab must load out of sight, it stays as the page on
+    // screen; detaching it would expose whichever older tab sits beneath it.
+    const selectsAtFront = host.shellEnabled && !this.needsTerminalReadiness(active);
+    const onScreen = !selectsAtFront && host.pendingAtFront && host.pending !== active ? host.pending : null;
+    if (onScreen) {
+      host.pending = null;
+      host.presentedId = onScreen.id;
+    }
     this.cancelReveal(host);
-    if (host.shellEnabled && !this.needsTerminalReadiness(active)) {
+    if (selectsAtFront) {
       // Selection owns the visible surface immediately. Paint readiness is
       // observed afterwards; it must never keep another tab on screen or
       // require an offscreen renderer to run before the click takes effect.
@@ -5816,7 +6011,7 @@ export class TabManager {
       active.attached = true;
       this.layout(host);
       if (!host.window.contentView.children.includes(view)) host.window.contentView.addChildView(view);
-      view.setVisible(true);
+      setNotificationViewVisible(view, true);
       this.syncBrowser(host);
       void this.reveal(host, active, token);
       return;
@@ -5832,6 +6027,8 @@ export class TabManager {
     // remains visible; a stalled tab selection gets the same feedback below.
     host.pendingNavigation = !showLoader;
     const token = ++host.revealToken;
+    // Now an ordinary outgoing page, released by the surface cache like any other.
+    if (onScreen) this.retainSurface(host, onScreen);
     const [width, height] = host.window.getContentSize();
     if (!this.sharesPresentedView(host, active) && typeof width === "number" && typeof height === "number") {
       // Bounds first, then attach, so no frame of it lands in the window.
@@ -5839,7 +6036,7 @@ export class TabManager {
     }
     host.window.contentView.addChildView(view);
     active.attached = true;
-    view.setVisible(true);
+    setNotificationViewVisible(view, true);
     this.layout(host);
     if (showLoader && !this.needsTerminalReadiness(active) && (active.loading || !active.loaded)) this.showLoadingScene(host, active);
     this.raiseNotificationOverlay(host);
@@ -6050,8 +6247,18 @@ export class TabManager {
     if (this.needsTerminalReadiness(tab)) {
       if (!tab.loaded) await this.waitForDocument(tab.onLoaded, signal ?? new AbortController().signal);
       const release = allowBackgroundFrames(tab.contents);
+      tab.terminalReadinessDeadline ??= Date.now() + REVEAL_MAX_WAIT_MS;
       try {
-        if (!await waitForStartupPageReady(tab.contents, 1500, signal) || signal?.aborted) return false;
+        const settled = await waitForStartupPageReady(tab.contents, 1500, signal);
+        if (signal?.aborted) return false;
+        // One hung widget read (usage, plan, calendar…) used to keep the Terminal
+        // off screen forever, retrying every 250 ms. Past the deadline it comes
+        // forward with that widget still loading; the frame probe below still
+        // refuses a renderer that cannot paint.
+        if (!settled) {
+          if (Date.now() < tab.terminalReadinessDeadline) return false;
+          this.log(`Terminal widgets still loading after ${REVEAL_MAX_WAIT_MS / 1000}s; showing it anyway`);
+        }
         // Prepared Terminals explicitly enroll their widget reads while hidden,
         // so their first selection needs only a new composited frame.
         const owner = this.hostByContents.get(tab.contents.id);
@@ -6093,6 +6300,7 @@ export class TabManager {
       browser.contents.focus();
       return;
     }
+    if (this.codeDock.focus(active.contents.id)) return;
     if (!active.contents.isDestroyed()) active.contents.focus();
   }
 
@@ -6208,7 +6416,7 @@ export class TabManager {
       host.window.contentView.addChildView(scene.view);
       scene.attached = true;
     }
-    scene.view.setVisible(true);
+    setNotificationViewVisible(scene.view, true);
   }
 
   private hideLoadingScene(host: Host): void {
@@ -6336,8 +6544,8 @@ export class TabManager {
       // after the native view is visible. Keep the whole operation synchronous.
       if (!throttled) contents.setBackgroundThrottling(true);
       try {
-        view.setVisible(false);
-        view.setVisible(true);
+        setNotificationViewVisible(view, false);
+        setNotificationViewVisible(view, true);
       } finally {
         if (!throttled && !contents.isDestroyed()) contents.setBackgroundThrottling(false);
       }
@@ -6369,7 +6577,7 @@ export class TabManager {
           host.window.contentView.addChildView(tab.view!);
         }
         tab.attached = true;
-        tab.view!.setVisible(true);
+        setNotificationViewVisible(tab.view!, true);
       }
       this.prepareBrowserDocument(host, tab);
       if (browser && !browser.showingHome && !browser.ready) await this.waitForDocument(browser.onReady, controller.signal);
@@ -6387,7 +6595,7 @@ export class TabManager {
         if (bounds) setViewBounds(browser.view, bounds);
         if (!browser.attached) host.window.contentView.addChildView(browser.view);
         browser.attached = true;
-        browser.view.setVisible(true);
+        setNotificationViewVisible(browser.view, true);
       }
       this.layout(host);
       this.broadcast(host);
@@ -6432,7 +6640,7 @@ export class TabManager {
       const shellHeight = toolbar?.browser ? Math.min(height, Math.max(browserContentTop(height), toolbar.browser.addressSuggestionsOpen ? toolbar.browser.suggestionsBottom ?? 440 : 0)) : inset;
       setViewBounds(host.shell.view, { x: 0, y: 0, width, height: host.tabDragPreview ? height : shellHeight });
       if (!host.window.contentView.children.includes(host.shell.view)) host.window.contentView.addChildView(host.shell.view);
-      host.shell.view.setVisible(!host.browserFullscreen && !active?.voiceOverlay);
+      setNotificationViewVisible(host.shell.view, !host.browserFullscreen && !active?.voiceOverlay);
     }
     if (host.preparedNewTab?.view) setViewBounds(host.preparedNewTab.view, offscreen);
     for (const tab of host.tabs) {
@@ -6453,6 +6661,7 @@ export class TabManager {
           pane?.width ?? width,
           browser.terminalOpen,
           browser.terminalWidth,
+          tab.contents.getZoomFactor(),
         );
         const y = fullscreen ? 0 : browserContentTop(height);
         const pageHeight = Math.max(1, height - y);
@@ -6478,13 +6687,14 @@ export class TabManager {
     this.refreshSelectedSurfaces(host);
     this.layoutNotificationOverlay(host);
     host.findBar?.layout();
+    this.syncCodeDocks(host);
   }
 
   // ---------------------------------------------------------- browser page
 
   private exitPageFullscreen(contents: WebContents): void {
     if (contents.isDestroyed()) return;
-    void contents.executeJavaScript("if (document.fullscreenElement) document.exitFullscreen();").catch(() => undefined);
+    void runInDocument(contents, "if (document.fullscreenElement) document.exitFullscreen();").catch(() => undefined);
   }
 
   private exitBrowserFullscreen(host: Host, exitPage = true, restoreWindow = true): void {
@@ -6531,7 +6741,7 @@ export class TabManager {
         // its exposed pixel again before waiting for its first frame.
         this.raiseViews(host, [browser.view, ...(host.shell ? [host.shell.view] : [])]);
         browser.attached = true;
-        browser.view.setVisible(true);
+        setNotificationViewVisible(browser.view, true);
       }
     }
     // A browser-home navigation can create its native page without another
@@ -6574,7 +6784,7 @@ export class TabManager {
         if (!browser.attached || !host.window.contentView.children.includes(browser.view)) {
           host.window.contentView.addChildView(browser.view);
           browser.attached = true;
-          browser.view.setVisible(true);
+          setNotificationViewVisible(browser.view, true);
         }
       }
     }
@@ -6598,7 +6808,8 @@ export class TabManager {
     const pair = fullscreen ? [] : splitMembers(host);
     const index = pair.findIndex(tab => tab.browser === browser);
     const pane = index < 0 ? null : splitPaneBounds(width, height, browserContentTop(height), index);
-    const x = fullscreen ? 0 : (pane?.x ?? 0) + browserContentLeft(pane?.width ?? width, browser.terminalOpen, browser.terminalWidth);
+    const owner = host.tabs.find(tab => tab.browser === browser);
+    const x = fullscreen ? 0 : (pane?.x ?? 0) + browserContentLeft(pane?.width ?? width, browser.terminalOpen, browser.terminalWidth, owner?.contents.getZoomFactor() ?? 1);
     const y = fullscreen ? 0 : browserContentTop(height);
     return { x, y, width: Math.max(1, (pane ? pane.x + pane.width : width) - x - (!fullscreen && browser.organizationOpen ? browserOrganizationWidth(pane?.width ?? width) : 0)), height: Math.max(1, height - y) };
   }
@@ -6625,7 +6836,7 @@ export class TabManager {
     // otherwise covers their pixels while a crashed interface is recovering.
     this.raiseViews(host, [browser.view, ...(tab.view ? [tab.view] : []), ...(host.shell ? [host.shell.view] : [])]);
     browser.attached = true;
-    browser.view.setVisible(true);
+    setNotificationViewVisible(browser.view, true);
     return waitForRevealFrame(browser.contents, 1500, signal);
   }
 
@@ -6810,7 +7021,7 @@ export class TabManager {
   private createNotificationOverlay(host: Host, url: string): void {
     if (this.authenticationUrl && !this.authenticatedUser) return;
     if (host.window.isDestroyed() || host.notificationOverlay) return;
-    const rendererView = new WebContentsView({
+    const view = new WebContentsView({
       webPreferences: {
         ...rendererWebPreferences(this.options.preloadPath),
         // This trusted overlay receives notifications before it is clicked.
@@ -6819,14 +7030,11 @@ export class TabManager {
     });
     // Alpha is AARRGGBB in Electron. The renderer paints only its cards; the
     // rest of the view must never become a sheet over the active tab.
-    rendererView.setBackgroundColor("#00000000");
-    const view = new View();
     view.setBackgroundColor("#00000000");
-    view.addChildView(rendererView);
+    trackTransparentNotificationView(view, '.bb-toast-card');
     const overlay: NotificationOverlay = {
       view,
-      rendererView,
-      contents: rendererView.webContents,
+      contents: view.webContents,
       width: 0,
       height: 0,
       ready: false,
@@ -6846,9 +7054,11 @@ export class TabManager {
       !host.window.isDestroyed() && !overlay.contents.isDestroyed();
     const cancelRetry = () => { clearTimeout(retry); retry = undefined; };
     const reset = () => {
+      this.chatNotificationDelivery.remove(overlay.contents.id);
       overlay.ready = false;
       overlay.width = 0;
       overlay.height = 0;
+      overlay.viewport = undefined;
       if (current()) this.layoutNotificationOverlay(host);
     };
     const scheduleRetry = () => {
@@ -6886,6 +7096,7 @@ export class TabManager {
   private destroyNotificationOverlay(host: Host): void {
     const overlay = host.notificationOverlay;
     if (!overlay) return;
+    this.chatNotificationDelivery.remove(overlay.contents.id);
     host.notificationOverlay = null;
     this.hostByContents.delete(overlay.contents.id);
     if (!host.window.isDestroyed()) {
@@ -6911,6 +7122,15 @@ export class TabManager {
     this.raiseViews(host, [overlay.view, ...(host.findBar ? [host.findBar.view] : [])]);
   }
 
+  private notificationOverlayViewport(host: Host): NotificationOverlaySize {
+    const [width = 1, height = 1] = host.window.getContentSize();
+    const zoom = host.notificationOverlay?.contents.getZoomFactor() ?? 1;
+    return {
+      width: Math.max(1, Math.min(NOTIFICATION_OVERLAY_MAX_WIDTH, width)) / zoom,
+      height: Math.max(1, height - (host.shellEnabled ? BREADBOARD_TITLE_BAR.height : 0)) / zoom,
+    };
+  }
+
   private layoutNotificationOverlay(host: Host, reportVisibility = false): void {
     const overlay = host.notificationOverlay;
     if (!overlay || host.window.isDestroyed() || overlay.contents.isDestroyed()) return;
@@ -6921,16 +7141,18 @@ export class TabManager {
     // Spoken notifications must remain readable while the voice panel is open.
     // Paint Pomodoro keeps the shared cards hidden until another tab is selected.
     const visible = this.notificationsVisible && !paintPomodoroActive;
-    overlay.view.setVisible(visible);
-    // Focus is deliberately not required. A response usually finishes while
-    // the person is in another app or in the voice companion, which is exactly
-    // when the chime is needed; a shown, unminimized window still shows the
-    // card. Cross-window duplicates are settled by the renderer's receipts.
-    const audible = visible && overlay.width > 0 && overlay.height > 0 &&
-      host.window.isVisible() && !host.window.isMinimized();
-    // Hiding a native View does not stop Web Audio in its renderer. Mute
-    // synchronously as well as telling the cards whether they may announce.
-    overlay.contents.setAudioMuted(!audible);
+    setNotificationViewVisible(overlay.view, visible);
+    // In-app cards belong to the foreground window. Background delivery uses
+    // Windows notifications even when an uncovered Breadboard window remains
+    // on another part of the screen. Message visibility still independently
+    // suppresses notices for an answer the user can already see.
+    const foreground = host.window.isFocused() && host.window.isVisible() && !host.window.isMinimized();
+    const audible = visible && foreground && overlay.width > 0 && overlay.height > 0 &&
+      (notificationVisibleRects(host.window, overlay.contents)?.length ?? 1) > 0;
+    // Hiding a native View does not stop Web Audio in its renderer, so mute it
+    // while the cards are hidden. A background window stays unmuted: its
+    // overlay chimes for the silent OS alert the shell posts on its behalf.
+    overlay.contents.setAudioMuted(!visible);
     if (overlay.audible !== audible || reportVisibility) {
       overlay.audible = audible;
       if (overlay.ready && !overlay.contents.isCrashed()) {
@@ -6940,17 +7162,22 @@ export class TabManager {
     }
     const [windowWidth, windowHeight] = host.window.getContentSize();
     if (typeof windowWidth !== "number" || typeof windowHeight !== "number") return;
+    const viewport = this.notificationOverlayViewport(host);
+    const viewportChanged = overlay.viewport?.width !== viewport.width || overlay.viewport?.height !== viewport.height;
+    overlay.viewport = viewport;
+    if (overlay.ready && (viewportChanged || reportVisibility)) this.send(overlay.contents, this.stateFor(overlay.contents));
     const renderWidth = Math.max(1, Math.min(NOTIFICATION_OVERLAY_MAX_WIDTH, windowWidth));
-    if (overlay.width <= 0 || overlay.height <= 0) {
+    if (!foreground || overlay.width <= 0 || overlay.height <= 0) {
       // Keep one transparent pixel inside the compositor so this renderer's
-      // timers and polling stay live while it has no card to show.
+      // timers and polling stay live for native delivery while Breadboard is
+      // in the background or there is no card to show.
       setViewBounds(overlay.view, {
         x: Math.max(0, windowWidth - 1),
         y: 1 - windowHeight,
         width: renderWidth,
         height: windowHeight,
       });
-      setViewBounds(overlay.rendererView, { x: 0, y: 0, width: renderWidth, height: windowHeight });
+      this.chatNotificationDelivery.refresh();
       return;
     }
     // ResizeObserver reports CSS pixels; native View bounds use DIP. The
@@ -6958,16 +7185,11 @@ export class TabManager {
     // Device scale is already handled by Electron and must not be applied here.
     const zoomFactor = overlay.contents.getZoomFactor();
     const width = Math.max(1, Math.min(Math.ceil(overlay.width * zoomFactor), renderWidth));
-    const height = Math.max(1, Math.min(Math.ceil(overlay.height * zoomFactor), windowHeight));
-    // Size the clickable parent to the cards, but lay out CSS against all of
-    // the available space. Shrinking the renderer itself makes vw/vh limits
-    // trap later response cards inside the size of the previous small toast.
-    setViewBounds(overlay.rendererView, {
-      x: width - renderWidth,
-      y: height - windowHeight,
-      width: renderWidth,
-      height: windowHeight,
-    });
+    const height = Math.max(1, Math.min(Math.ceil(overlay.height * zoomFactor), Math.round(viewport.height * zoomFactor)));
+    // Windows does not clip a nested WebContentsView's native input HWND to
+    // its parent View. An oversized transparent renderer swallowed the tabs
+    // and New tab button at the right edge. Bound the renderer itself to the
+    // cards; explicit viewport dimensions let CSS measure larger future cards.
     setViewBounds(overlay.view, {
       x: Math.max(0, windowWidth - width),
       y: Math.max(0, windowHeight - height),
@@ -6975,6 +7197,7 @@ export class TabManager {
       height,
     });
     this.raiseNotificationOverlay(host);
+    this.chatNotificationDelivery.refresh();
   }
 
   // --------------------------------------------------------------- tracking
@@ -7147,6 +7370,7 @@ export class TabManager {
       tab.pageLoading = false;
       tab.painted = false;
       tab.terminalReady = false;
+      tab.terminalReadinessDeadline = undefined;
       if (!tab.browser) {
         // The previous page may still have a stalled subresource, so Chromium
         // need not emit another did-start-loading for this new document.
@@ -7309,8 +7533,7 @@ export class TabManager {
       event.preventDefault();
       const chrome = host.shellEnabled ? host.shell!.contents : active.contents;
       chrome.focus();
-      void chrome
-        .executeJavaScript(
+      void runInDocument(chrome,
           'window.dispatchEvent(new CustomEvent("breadboard:focus-browser-address"))',
           true,
         )
@@ -7480,6 +7703,7 @@ export class TabManager {
         tab.documentCommitted = false;
         tab.painted = false;
         tab.terminalReady = false;
+        tab.terminalReadinessDeadline = undefined;
         if (await loadRecoveryUrlIfAlive(tab.contents, recoveryUrl)) return;
         if (!current()) return;
         // A real navigation failure still needs the existing offline recovery.

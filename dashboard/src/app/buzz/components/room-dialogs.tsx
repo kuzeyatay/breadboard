@@ -4,7 +4,7 @@
 //
 // These exist because the page originally asked with `window.prompt`, and
 // Electron does not implement it — the call throws `prompt() is and will not
-// be supported`, so in the desktop shell "New room", "New community" and every
+// be supported`, so in the desktop shell "New room", "New organization" and every
 // rename were buttons that did nothing at all. Nothing about the browser is
 // safe to assume here; a room is named in the app's own surface or not at all.
 
@@ -38,7 +38,7 @@ function previewSlug(name: string): string {
 
 function FieldLabel({ children }: { children: ReactNode }) {
   return (
-    <span className="mb-1 block text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
+    <span className="mb-1 block text-xs font-medium text-muted-foreground">
       {children}
     </span>
   );
@@ -60,8 +60,8 @@ function VisibilityChoice({
     {
       value: "public",
       icon: Hash,
-      label: "Open to the community",
-      hint: "Anyone in this community can walk in.",
+      label: "Open to the organization",
+      hint: "Anyone in this organization can walk in.",
     },
     {
       value: "private",
@@ -83,7 +83,7 @@ function VisibilityChoice({
             onClick={() => onChange(option.value)}
             aria-pressed={active}
             className={cn(
-              "flex items-start gap-2.5 rounded-xl border px-3 py-2 text-left transition-colors",
+              "neu-control flex items-start gap-2.5 rounded-xl border px-3 py-2 text-left transition-colors",
               active
                 ? "border-primary/60 bg-primary/10"
                 : "border-border/60 hover:bg-muted/60",
@@ -202,7 +202,7 @@ function NewRoomForm({
           <FieldLabel>Topic (optional)</FieldLabel>
           <Textarea
             className="min-h-16"
-            maxLength={280}
+            maxLength={240}
             onChange={(event) => setTopic(event.target.value)}
             placeholder="What belongs in here."
             value={topic}
@@ -278,9 +278,9 @@ function NewCommunityForm({
   return (
     <>
       <DialogHeader>
-        <DialogTitle>New community</DialogTitle>
+        <DialogTitle>New organization</DialogTitle>
         <DialogDescription>
-          A community brings people, agents, and their rooms together.
+          An organization brings people, agents, and their rooms together.
         </DialogDescription>
       </DialogHeader>
 
@@ -314,7 +314,7 @@ function NewCommunityForm({
             Cancel
           </Button>
           <Button disabled={busy || name.trim() === ""} type="submit">
-            {busy ? "Creating…" : "Create community"}
+            {busy ? "Creating…" : "Create organization"}
           </Button>
         </DialogFooter>
       </form>
@@ -421,7 +421,7 @@ function RoomSettingsForm({
           <FieldLabel>Topic</FieldLabel>
           <Textarea
             className="min-h-16"
-            maxLength={280}
+            maxLength={240}
             onChange={(event) => setTopic(event.target.value)}
             placeholder="What belongs in here."
             value={topic}

@@ -8,6 +8,7 @@ import { isActive, TERMINAL_STATES, type PrintReview, type PrinterConfig, type J
 import { jobUrl, printerRequest, usePrinterJob } from "@/lib/bambu/client.ts";
 import { printerPhoto } from "@/lib/bambu/photos.ts";
 import { BambuConnections } from "../settings-bambu";
+import { BambuStudioConnection } from "../bambu-studio-connection";
 import { ConfirmDialog } from "../confirm-dialog";
 import styles from "./bambu-print-card.module.css";
 
@@ -91,6 +92,7 @@ export default function BambuPrintCard({ resource, legacyChatSessionId }: { reso
     <Dialog.Root open={open} onOpenChange={setOpen}><Dialog.Portal><Dialog.Overlay className={styles.overlay}/><Dialog.Content className={styles.sheet} onCloseAutoFocus={event => {event.preventDefault();article.current?.querySelector<HTMLButtonElement>("footer button")?.focus({preventScroll:true});}}>
       <div className={styles.sheetHeader}><div><Dialog.Title>{setup ? "Connect Bambu Lab" : canEdit ? "Review your print" : "Print details"}</Dialog.Title><Dialog.Description className={styles.muted}>{setup ? "Private printer setup" : "One printer. One plate. Your approval."}</Dialog.Description></div><Dialog.Close className={styles.button} aria-label="Close print details"><X size={16}/></Dialog.Close></div>
       {setup ? <BambuConnections onSaved={() => void refresh()}/> : <>
+        {canEdit && <BambuStudioConnection/>}
         {canEdit && <><button className={styles.button} disabled={busy} onClick={() => fileInput.current?.click()}><Box size={14}/>{job?.file ? "Change sliced file" : "Choose sliced file"}</button>{view?.attachments?.length ? <label>Or choose an attached sliced file<select defaultValue="" disabled={busy} onChange={event => { if (event.target.value) void perform({ action:"attach", revision:job?.revision, uploadId:event.target.value }); }}><option value="">Select attachment</option>{view.attachments.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label> : null}</>}
         <p className={styles.file} style={{marginTop:18}}>{job?.file?.name ?? "Choose an already-sliced .gcode.3mf file to begin."}</p>
         {review && <><label>Target printer<select disabled={!canEdit || busy} value={review.printerId} onChange={event => edit({ ...review, printerId:event.target.value, mapping:[] })}>{view?.printers.filter(p => p.configured).map(printer => <option key={printer.id} value={printer.id}>{printer.name} · {printer.model}</option>)}</select></label>

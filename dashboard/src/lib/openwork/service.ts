@@ -1,3 +1,4 @@
+import { systemPromptRevision } from "../system-prompts/service.ts";
 // The two processes behind the OpenWork agent, supervised as one service.
 //
 // A run needs an OpenCode engine and an OpenWork server pointed at it. Both are
@@ -20,6 +21,7 @@ import net from "node:net";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { workspaceAgentPrompt, type PromptOptions } from "./prompt.ts";
+import { apiAnythingPublicMcpConfig } from "../api-anything/agents.ts";
 import {
   openworkEnv,
   resolveBun,
@@ -43,6 +45,9 @@ export interface OpenworkService {
 }
 
 interface ServiceState extends OpenworkService {
+  userId?: number | null;
+  promptRevision: number;
+  websitePromptRevision: number;
   engine: ChildProcess;
   server: ChildProcess;
   baseUrl: string;
@@ -60,6 +65,7 @@ const SERVER_READY_TIMEOUT_MS = 90_000;
 const HEALTH_TIMEOUT_MS = 8_000;
 
 export interface StartOptions {
+  userId?: number | null;
   /** ChatMock's OpenAI-compatible base URL, e.g. `http://127.0.0.1:8765/v1`. */
   baseUrl: string;
   apiKey: string;
@@ -76,6 +82,9 @@ function sameShape(state: ServiceState, options: StartOptions): boolean {
     state.apiKey === options.apiKey &&
     state.prompt.deliverFiles === options.prompt.deliverFiles &&
     state.prompt.allowCommands === options.prompt.allowCommands &&
+    state.userId === options.userId &&
+    state.promptRevision === systemPromptRevision("openwork-operating-rules", options.userId) &&
+    state.websitePromptRevision === systemPromptRevision("api-anything-policy", options.userId) &&
     state.models.includes(options.model)
   );
 }
@@ -123,7 +132,7 @@ async function declaredModels(options: StartOptions): Promise<string[]> {
 
 const EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
 
-function engineConfig(models: readonly string[], prompt: PromptOptions): string {
+function engineConfig(models: readonly string[], prompt: PromptOptions, userId?: number | null): string {
   const entries = Object.fromEntries(
     models.map((id) => [
       id,
@@ -142,6 +151,7 @@ function engineConfig(models: readonly string[], prompt: PromptOptions): string 
     {
       $schema: "https://opencode.ai/config.json",
       default_agent: "openwork",
+      mcp: apiAnythingPublicMcpConfig(),
       provider: {
         chatmock: {
           npm: "@ai-sdk/openai-compatible",
@@ -157,7 +167,7 @@ function engineConfig(models: readonly string[], prompt: PromptOptions): string 
         openwork: {
           description: "Works inside the Breadboard OpenWork workspace",
           mode: "primary",
-          prompt: workspaceAgentPrompt(prompt),
+          prompt: workspaceAgentPrompt(prompt, userId),
           permission: {
             // The workspace is the agent's own scratch space, so editing inside
             // it is free. Everything that reaches outside it — another
@@ -236,7 +246,7 @@ async function startEngine(
   const stateRoot = serverStateRoot();
   fs.mkdirSync(stateRoot, { recursive: true });
   const configPath = path.join(stateRoot, "opencode.json");
-  fs.writeFileSync(configPath, engineConfig(models, options.prompt), "utf8");
+  fs.writeFileSync(configPath, engineConfig(models, options.prompt, options.userId), "utf8");
 
   const workspace = workspaceRoot();
   fs.mkdirSync(workspace, { recursive: true });
@@ -417,6 +427,9 @@ async function start(options: StartOptions): Promise<OpenworkService> {
     baseUrl: options.baseUrl,
     apiKey: options.apiKey,
     prompt: options.prompt,
+    userId: options.userId,
+    promptRevision: systemPromptRevision("openwork-operating-rules", options.userId),
+    websitePromptRevision: systemPromptRevision("api-anything-policy", options.userId),
     startedAt: Date.now(),
   };
   // A process that dies later must not leave a service record behind that the

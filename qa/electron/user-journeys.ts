@@ -332,7 +332,7 @@ export async function uploadDocuments(
   timeoutMs = DEFAULT_UPLOAD_TIMEOUT_MS,
 ): Promise<readonly UploadedDocument[]> {
   if (filePaths.length === 0) throw new Error("At least one upload file is required");
-  await expect(page.getByPlaceholder(/Ask about your documents/)).toBeVisible({
+  await expect(page.getByPlaceholder('Ask anything.', { exact: true })).toBeVisible({
     timeout: Math.min(timeoutMs, DEFAULT_UI_TIMEOUT_MS),
   });
 
@@ -509,7 +509,7 @@ export async function assertGardenWorkspace(
   await expect(
     page.getByRole("button", { name: "New chat", exact: true }).first(),
   ).toBeVisible();
-  const composer = page.getByPlaceholder(/Ask about your documents/).first();
+  const composer = page.getByPlaceholder('Ask anything.', { exact: true }).first();
   await expect(composer).toBeVisible();
 
   // A cold Next route can paint the server-rendered composer well before
@@ -521,7 +521,7 @@ export async function assertGardenWorkspace(
   await page.waitForFunction(
     () => {
       const node = document.querySelector(
-        'textarea[placeholder*="Ask about your documents"]',
+        'textarea[placeholder="Ask anything."]',
       ) as (HTMLTextAreaElement & Record<string, unknown>) | null;
       if (!node) return false;
       const reactProps = Object.entries(node).find(([key]) =>

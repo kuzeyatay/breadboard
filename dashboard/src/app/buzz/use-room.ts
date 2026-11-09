@@ -1,227 +1,163 @@
 "use client";
 
-// The data half of a Buzz room: what is in it, and how a message gets in.
-//
-// Polling rather than a socket, and deliberately so. The room's own writes are
-// applied optimistically, so the poll is only ever catching up on other
-// people's messages and on agents' answers as they are written. It runs fast
-// while something is live and slowly when the room is quiet, which costs a
-// request every few seconds for a page that is usually one of many tabs — and
-// it needs no connection to survive a laptop sleeping, a server restart, or the
-// agent pipeline finishing a turn nobody is watching.
-
 import { useCallback, useEffect, useRef, useState } from "react";
+import { mergeMessages, readStored, requestJson, transcriptKey, writeStored } from "./lib/message-state";
+import { isLive, type BuzzMessage, type RoomDetail } from "./types.ts";
 
-import { isLive, type BuzzMember, type BuzzMessage, type RoomDetail } from "./types.ts";
+type Detail = RoomDetail & { root?: BuzzMessage };
 
-/** How often to re-read while an agent is mid-answer. */
-const LIVE_POLL_MS = 900;
-/** How often to re-read an idle room, to pick up other people's messages. */
-const IDLE_POLL_MS = 6000;
-
-export interface UseRoomResult {
-  detail: RoomDetail | null;
-  loading: boolean;
-  error: string | null;
-  members: BuzzMember[];
-  messages: BuzzMessage[];
-  selfMemberId: number | null;
-  send: (body: string, parentId?: number | null) => Promise<void>;
-  refresh: () => Promise<void>;
-  react: (messageId: number, emoji: string) => Promise<void>;
-  remove: (messageId: number) => Promise<void>;
-  edit: (messageId: number, body: string) => Promise<void>;
-}
-
-function clientMessageId(): string {
-  return `buzz_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-export function useRoom(roomPublicId: string | null): UseRoomResult {
-  const [detail, setDetail] = useState<RoomDetail | null>(null);
+/** Room and thread share durable delivery, so a failed send behaves identically. */
+export function useRoom(roomPublicId: string | null, userId = 0, parentId: number | null = null) {
+  const scope = transcriptKey(userId, roomPublicId ?? "", parentId);
+  const endpoint = roomPublicId ? `/api/buzz/rooms/${roomPublicId}/${parentId === null ? "messages" : `threads/${parentId}`}` : null;
+  const currentScope = useRef(scope);
+  currentScope.current = scope;
+  const [state, setState] = useState<{ scope: string; detail: Detail | null }>({ scope, detail: null });
+  const [outgoing, setOutgoing] = useState<{ scope: string; messages: BuzzMessage[] }>({ scope, messages: [] });
+  const outbox = useRef(outgoing);
+  const inFlight = useRef(new Set<string>());
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const requestSequence = useRef(0);
+  const detail = state.scope === scope ? state.detail : null;
 
-  // Identifies the room a response belongs to, so a reply that arrives after
-  // the reader has switched rooms is dropped instead of painting the wrong
-  // transcript.
-  const activeRoom = useRef<string | null>(null);
-  activeRoom.current = roomPublicId;
+  const saveOutbox = useCallback((update: (messages: BuzzMessage[]) => BuzzMessage[]) => {
+    const previous = outbox.current.scope === scope ? outbox.current.messages : readStored<BuzzMessage[]>(`${scope}:outbox`, []);
+    const next = { scope, messages: update(previous) };
+    writeStored(`${scope}:outbox`, next.messages);
+    if (currentScope.current === scope) { outbox.current = next; setOutgoing(next); }
+  }, [scope]);
 
-  const load = useCallback(
-    async (roomId: string, showSpinner: boolean) => {
-      if (showSpinner) setLoading(true);
-      try {
-        const response = await fetch(`/api/buzz/rooms/${roomId}/messages`, {
-          cache: "no-store",
-        });
-        if (!response.ok) {
-          const body = (await response.json().catch(() => null)) as
-            | { message?: string }
-            | null;
-          throw new Error(body?.message ?? "This room could not be opened.");
-        }
-        const next = (await response.json()) as RoomDetail;
-        if (activeRoom.current !== roomId) return;
-        setDetail(next);
-        setError(null);
-      } catch (cause) {
-        if (activeRoom.current !== roomId) return;
-        setError(cause instanceof Error ? cause.message : "Something went wrong.");
-      } finally {
-        if (showSpinner && activeRoom.current === roomId) setLoading(false);
-      }
-    },
-    [],
-  );
+  const load = useCallback(async (signal?: AbortSignal): Promise<Detail | null> => {
+    if (!endpoint) return null;
+    const sequence = ++requestSequence.current;
+    try {
+      const next = await requestJson<Detail>(endpoint, { signal });
+      if (currentScope.current !== scope || signal?.aborted || sequence !== requestSequence.current) return null;
+      setState(previous => ({ scope, detail: previous.scope === scope && previous.detail ? {
+        ...next, messages: mergeMessages(previous.detail.messages, next.messages),
+        hasOlder: previous.detail.hasOlder, nextCursor: previous.detail.nextCursor,
+      } : next }));
+      const acknowledged = new Set(next.messages.map(message => message.clientMessageId));
+      saveOutbox(messages => messages.filter(message => !acknowledged.has(message.clientMessageId)));
+      setLoadError(null);
+      return next;
+    } catch (error) {
+      if (currentScope.current === scope && !signal?.aborted) setLoadError(error instanceof Error ? error.message : "Unable to open this room.");
+      return null;
+    } finally { if (currentScope.current === scope && !signal?.aborted) setLoading(false); }
+  }, [endpoint, saveOutbox, scope]);
 
-  // Open a room.
   useEffect(() => {
-    if (!roomPublicId) {
-      setDetail(null);
-      return;
-    }
-    setDetail(null);
-    void load(roomPublicId, true);
-  }, [roomPublicId, load]);
+    setLoadError(null); setActionError(null); setLoadingOlder(false); setLoading(!!endpoint);
+    // Read storage even on the first mount, when the in-memory outbox is empty.
+    const restored = readStored<BuzzMessage[]>(`${scope}:outbox`, []);
+    outbox.current = { scope, messages: Array.isArray(restored) ? restored : [] };
+    saveOutbox(messages => messages.map(message => ({ ...message, delivery: "failed", deliveryError: "Delivery was interrupted. Retry to confirm this message." })));
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [scope, endpoint, load, saveOutbox]);
 
-  // Keep it current. The interval is re-armed after every tick rather than set
-  // once, so the cadence can change the moment an answer starts or finishes.
+  const live = detail?.messages.some(isLive) ?? false;
   useEffect(() => {
-    if (!roomPublicId) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
+    if (!endpoint) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
-      if (cancelled) return;
-      await load(roomPublicId, false);
-      if (cancelled) return;
-      const busy = (detail?.messages ?? []).some(isLive);
-      timer = setTimeout(tick, busy ? LIVE_POLL_MS : IDLE_POLL_MS);
+      if (document.visibilityState === "visible") await load(controller.signal);
+      if (!controller.signal.aborted) timer = setTimeout(tick, live ? 900 : 6000);
     };
+    const resume = () => { if (document.visibilityState === "visible") void load(controller.signal); };
+    timer = setTimeout(tick, live ? 900 : 6000);
+    document.addEventListener("visibilitychange", resume); window.addEventListener("online", resume);
+    return () => { controller.abort(); clearTimeout(timer); document.removeEventListener("visibilitychange", resume); window.removeEventListener("online", resume); };
+  }, [endpoint, live, load]);
 
-    const busy = (detail?.messages ?? []).some(isLive);
-    timer = setTimeout(tick, busy ? LIVE_POLL_MS : IDLE_POLL_MS);
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
+  const deliver = useCallback(async (message: BuzzMessage) => {
+    if (!endpoint || inFlight.current.has(message.clientMessageId)) return;
+    inFlight.current.add(message.clientMessageId);
+    saveOutbox(messages => messages.map(row => row.clientMessageId === message.clientMessageId ? { ...row, delivery: "sending", deliveryError: undefined } : row));
+    try {
+      const result = await requestJson<{ message: BuzzMessage }>(endpoint, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ body: message.body, clientMessageId: message.clientMessageId }),
+      });
+      saveOutbox(messages => messages.filter(row => row.clientMessageId !== message.clientMessageId));
+      if (currentScope.current === scope) {
+        setState(previous => previous.scope === scope && previous.detail ? { scope, detail: { ...previous.detail, messages: mergeMessages(previous.detail.messages, [result.message]) } } : previous);
+        setActionError(null); await load();
+      }
+    } catch (error) {
+      saveOutbox(messages => messages.map(row => row.clientMessageId === message.clientMessageId ? { ...row, delivery: "failed", deliveryError: error instanceof TypeError ? "Not sent. Check your connection and retry." : error instanceof Error ? error.message : "Message not sent. Retry when connected." } : row));
+    } finally { inFlight.current.delete(message.clientMessageId); }
+  }, [endpoint, load, saveOutbox, scope]);
+
+  const send = useCallback((body: string) => {
+    if (!endpoint || !detail || !body.trim() || detail.permissions?.canPost === false) return false;
+    const self = detail?.members.find(member => member.id === detail.selfMemberId);
+    const message: BuzzMessage = {
+      id: -Date.now(), roomId: -1, clientMessageId: `buzz_${crypto.randomUUID()}`,
+      memberId: detail?.selfMemberId ?? null, authorKind: "human", authorName: self?.displayName ?? "you",
+      authorHandle: self?.handle ?? "", personaSlug: null, body: body.trim(), parentId,
+      status: "complete", runId: null, metadata: null, editedAt: null, deletedAt: null,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), delivery: "sending",
     };
-  }, [roomPublicId, load, detail]);
+    saveOutbox(messages => [...messages, message]);
+    void deliver(message);
+    return true;
+  }, [detail, deliver, endpoint, parentId, saveOutbox]);
 
-  const refresh = useCallback(async () => {
-    if (roomPublicId) await load(roomPublicId, false);
-  }, [roomPublicId, load]);
-
-  const send = useCallback(
-    async (body: string, parentId: number | null = null) => {
-      const text = body.trim();
-      if (!roomPublicId || text === "") return;
-
-      const id = clientMessageId();
-      const optimistic: BuzzMessage = {
-        id: -Date.now(),
-        roomId: -1,
-        clientMessageId: id,
-        memberId: detail?.selfMemberId ?? null,
-        authorKind: "human",
-        authorName: "you",
-        authorHandle: "",
-        personaSlug: null,
-        body: text,
-        parentId,
-        // `pending` would start the fast poll for a message that is not
-        // waiting on anything.
-        status: "complete",
-        runId: null,
-        metadata: null,
-        editedAt: null,
-        deletedAt: null,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      // Only the spine is painted optimistically; a thread reply is drawn by
-      // the thread panel from its own fetch.
-      if (parentId === null) {
-        setDetail((current) =>
-          current ? { ...current, messages: [...current.messages, optimistic] } : current,
-        );
+  const mutate = useCallback(async (messageId: number, method: string, body?: unknown) => {
+    if (!roomPublicId) return false;
+    try {
+      const result = await requestJson<{ message?: BuzzMessage }>(`/api/buzz/rooms/${roomPublicId}/messages/${messageId}`, {
+        method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      if (currentScope.current === scope) {
+        if (result.message) setState(previous => previous.detail ? { scope, detail: {
+          ...previous.detail, ...(parentId !== null && result.message!.id === parentId ? { root: result.message } : { messages: mergeMessages(previous.detail.messages, [result.message!]) }),
+        } } : previous);
+        setActionError(null); await load();
       }
+      return true;
+    } catch (error) {
+      if (currentScope.current === scope) setActionError(error instanceof Error ? error.message : "That change could not be saved.");
+      return false;
+    }
+  }, [load, parentId, roomPublicId, scope]);
 
-      try {
-        const endpoint =
-          parentId === null
-            ? `/api/buzz/rooms/${roomPublicId}/messages`
-            : `/api/buzz/rooms/${roomPublicId}/threads/${parentId}`;
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ body: text, clientMessageId: id, parentId }),
-        });
-        if (!response.ok) {
-          const failed = (await response.json().catch(() => null)) as
-            | { message?: string }
-            | null;
-          throw new Error(failed?.message ?? "That message could not be sent.");
-        }
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "That message could not be sent.");
-      } finally {
-        // Reconciles the optimistic row against what the server stored, and
-        // picks up any agent placeholder the send created.
-        await refresh();
-      }
-    },
-    [roomPublicId, detail?.selfMemberId, refresh],
-  );
-
-  const react = useCallback(
-    async (messageId: number, emoji: string) => {
-      if (!roomPublicId) return;
-      await fetch(`/api/buzz/rooms/${roomPublicId}/messages/${messageId}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ emoji }),
-      });
-      await refresh();
-    },
-    [roomPublicId, refresh],
-  );
-
-  const remove = useCallback(
-    async (messageId: number) => {
-      if (!roomPublicId) return;
-      await fetch(`/api/buzz/rooms/${roomPublicId}/messages/${messageId}`, {
-        method: "DELETE",
-      });
-      await refresh();
-    },
-    [roomPublicId, refresh],
-  );
-
-  const edit = useCallback(
-    async (messageId: number, body: string) => {
-      if (!roomPublicId) return;
-      await fetch(`/api/buzz/rooms/${roomPublicId}/messages/${messageId}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ body }),
-      });
-      await refresh();
-    },
-    [roomPublicId, refresh],
-  );
+  const loadOlder = async () => {
+    if (!endpoint || !detail?.nextCursor || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const next = await requestJson<Detail>(`${endpoint}?before=${detail.nextCursor}`);
+      if (currentScope.current === scope) setState(previous => previous.detail ? { scope, detail: { ...previous.detail, messages: mergeMessages(previous.detail.messages, next.messages), hasOlder: next.hasOlder, nextCursor: next.nextCursor } } : previous);
+    } catch (error) {
+      if (currentScope.current === scope) setActionError(error instanceof Error ? error.message : "Older messages could not be loaded.");
+    } finally { if (currentScope.current === scope) setLoadingOlder(false); }
+  };
 
   return {
-    detail,
-    loading,
-    error,
-    members: detail?.members ?? [],
-    messages: detail?.messages ?? [],
-    selfMemberId: detail?.selfMemberId ?? null,
-    send,
-    refresh,
-    react,
-    remove,
-    edit,
+    detail, loading, error: actionError ?? loadError, scope, loadingOlder, loadOlder,
+    members: detail?.members ?? [], selfMemberId: detail?.selfMemberId ?? null,
+    messages: [...(detail?.messages ?? []), ...(outgoing.scope === scope ? outgoing.messages : [])],
+    send, refresh: async () => { await load(); }, retry: deliver,
+    react: (id: number, emoji: string) => mutate(id, "PATCH", { emoji }),
+    remove: (id: number) => mutate(id, "DELETE"), edit: (id: number, body: string) => mutate(id, "PATCH", { body }),
+    regenerate: (id: number) => mutate(id, "POST", { action: "regenerate" }),
+    approve: (id: number) => mutate(id, "POST", { action: "approve" }),
+    stop: (id: number) => mutate(id, "POST", { action: "stop" }),
+    markRead: async (readThrough: number) => {
+      if (!roomPublicId) return false;
+      try {
+        await requestJson(`/api/buzz/rooms/${roomPublicId}/messages`, {
+          method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ readThrough }),
+        });
+        return true;
+      } catch { return false; }
+    },
   };
 }

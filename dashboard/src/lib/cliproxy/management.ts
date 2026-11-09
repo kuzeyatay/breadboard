@@ -308,6 +308,10 @@ export function cliproxyModelIdsFromPayload(payload: unknown): string[] {
         if (!entry || typeof entry !== "object") return [];
         const model = entry as Record<string, unknown>;
         if (String(model.visibility ?? "").toLowerCase() === "hide") return [];
+        // The rich catalog may describe models the account cannot use. Never
+        // persist those as callable subscription routes (e.g. Argon on an
+        // ineligible Google plan).
+        if (model.disabled === true) return [];
         const value =
           typeof model.id === "string"
             ? model.id

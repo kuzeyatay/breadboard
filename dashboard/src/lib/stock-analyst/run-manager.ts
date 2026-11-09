@@ -26,6 +26,7 @@ import { invalidateHealth } from "./runtime.ts";
 import type { StockAnalystSettings } from "./settings.ts";
 import { stockAnalystRunLabel } from "./identity.ts";
 import { promptWithContext } from "../conversations/agent-context.ts";
+import { restrictsExternalResearch } from "../research/scope.ts";
 
 export interface StockAnalystEvent {
   sequenceNumber: number;
@@ -286,6 +287,7 @@ async function streamRequest(
       ),
       session_id: sessionId,
       request_id: requestId,
+      allow_external_data: !restrictsExternalResearch(run.task),
     }),
     // The whole turn is this one response, so it stays open for the run.
     signal: AbortSignal.any([run.streaming.signal, AbortSignal.timeout(RUN_TIMEOUT_MS)]),

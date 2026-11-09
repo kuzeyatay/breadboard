@@ -23,6 +23,9 @@ export interface ChatNotificationTarget {
   gardenSlug?: string;
   /** Canonical identity when a Garden conversation is also open in the hub. */
   conversationId?: string;
+  /** Local presence only. Selected chats must prove which messages are on screen. */
+  observeMessages?: boolean;
+  visibleMessageKeys?: string[];
 }
 
 export const CHAT_RESPONSE_NOTIFICATION_TITLES = [
@@ -64,6 +67,7 @@ export function isNotificationClarification(value: unknown): value is Notificati
 
 export interface ChatNotificationRecord {
   id: string;
+  messageKeys?: string[];
   /** Stable highlight identity across inline answer retries and migrated rows. */
   inlineSelectionId?: string;
   title: ChatNotificationTitle;
@@ -190,11 +194,19 @@ export function isChatNotificationTargetViewed(target: ChatNotificationTarget): 
     viewed.surface === 'garden_learn'
       ? target.surface === 'garden_learn' && viewed.gardenSlug === target.gardenSlug &&
         (viewed.chatId === LEARN_NOTIFICATION_ANY_JOB || viewed.chatId === target.chatId)
-      : sameChatNotificationTarget(viewed, target));
+      : !viewed.observeMessages && sameChatNotificationTarget(viewed, target));
 }
 
-export function isChatNotificationRecordViewed(record: ChatNotificationRecord): boolean {
-  return isChatNotificationTargetViewed(record.target) ||
+export function isChatNotificationRecordViewed(record: Pick<ChatNotificationRecord, 'id' | 'target' | 'messageKeys' | 'inlineSelectionId' | 'clarification'>): boolean {
+  const keys = record.messageKeys ?? (record.clarification
+    ? [`question:${record.clarification.requestId}`]
+    : [`message:${record.id.replace(/^msg_/, '')}`]);
+  return readNotificationViewTargets().filter(isChatNotificationTarget).some(viewed =>
+    viewed.surface === 'garden_learn'
+      ? record.target.surface === 'garden_learn' && viewed.gardenSlug === record.target.gardenSlug &&
+        (viewed.chatId === LEARN_NOTIFICATION_ANY_JOB || viewed.chatId === record.target.chatId)
+      : sameChatNotificationTarget(viewed, record.target) &&
+        (!viewed.observeMessages || viewed.visibleMessageKeys?.some(key => keys.includes(key)))) ||
     Boolean(record.inlineSelectionId && isInlineSelectionNotificationViewed(record.inlineSelectionId));
 }
 
@@ -267,7 +279,7 @@ export function activeChatNotificationTarget(): ChatNotificationTarget | null {
 
 export function activeChatNotificationTargets(): ChatNotificationTarget[] {
   return isNotificationPageActive()
-    ? [...(activelyViewedTarget ? [activelyViewedTarget] : []), ...embeddedChatTargets.values()]
+    ? [...(activelyViewedTarget ? [activelyViewedTarget] : []), ...embeddedChatTargets.values()].filter(target => !target.observeMessages)
     : [];
 }
 
@@ -276,7 +288,7 @@ export function registerChatNotificationTarget(target: ChatNotificationTarget): 
   const owner = Symbol();
   embeddedChatTargets.set(owner, target);
   publishNotificationViews();
-  if (typeof window !== "undefined" && isNotificationPageActive()) {
+  if (!target.observeMessages && typeof window !== "undefined" && isNotificationPageActive()) {
     window.dispatchEvent(new CustomEvent<ChatNotificationTarget>(CHAT_NOTIFICATION_OPENED_EVENT, { detail: target }));
   }
   return () => { embeddedChatTargets.delete(owner); publishNotificationViews(); };

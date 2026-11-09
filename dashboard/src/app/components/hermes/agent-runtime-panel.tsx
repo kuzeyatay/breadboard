@@ -1,6 +1,7 @@
 "use client";
 
 import { chatQuestionSelections } from "@/lib/chat-text-selection";
+import { notificationMessageKeys } from "@/lib/chat-notification-visibility";
 import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
 import { useBrowserInlineAnswer } from "./use-browser-inline-answer";
 
@@ -11,6 +12,7 @@ import { useBrowserInlineAnswer } from "./use-browser-inline-answer";
 // all embed this so the runtime experience stays consistent and the surface
 // wrappers stay thin.
 
+import { voiceHostMessages } from "@/lib/speech/voice-host-messages";
 import { delegatedResponsePresentation } from "@/lib/hermes/delegated-response";
 import {
   useCallback,
@@ -24,7 +26,9 @@ import ChatMarkdown, {
   type ChatTextAnnotation,
 } from "@/app/components/chat-markdown";
 import ChatTimeSeparator from "@/app/components/chat-time-separator";
-import SteeredAssistantResponse from "@/app/components/steered-assistant-response";
+import SteeredAssistantResponse, {
+  CourseCorrectionBubble,
+} from "@/app/components/steered-assistant-response";
 import ChatModelChangeSeparator from "@/app/components/chat-model-change-separator";
 import ChatMessageAttachments from "@/app/components/chat-message-attachments";
 import { reusableChatAttachments } from "@/lib/chat-attachments";
@@ -160,6 +164,7 @@ import {
 import { chatTimeSeparatorLabels } from "@/lib/chat-time-separators";
 import {
   isClarificationAnswerMessage,
+  partitionCourseCorrections,
   type CourseCorrectionBoundary,
 } from "@/lib/steered-response";
 import {
@@ -336,9 +341,11 @@ interface Props {
     message: AgentMessage,
     messageIndex: number,
   ) => void | Promise<unknown>;
-  onAbort: () => void;
+  onAbort: () => void | Promise<void>;
   /** Stop also ends any pending delegated-agent hand-back owned by the surface. */
   onStopRequested?: (externalClientMessageIds: string[]) => void;
+  /** A companion surface invokes the same complete cancellation as Stop. */
+  stopControlRef?: React.RefObject<(() => void | Promise<void>) | null>;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
   onClarificationAnswer?: (answer: string) => void;
   onRetryMessage?: (userMessageIndex: number, branchGroupId: string) => void;
@@ -731,6 +738,7 @@ export default function AgentRuntimePanel({
   onDeleteMessage,
   onAbort,
   onStopRequested,
+  stopControlRef,
   onPermissionDecision,
   onClarificationAnswer,
   onRetryMessage,
@@ -1060,10 +1068,11 @@ export default function AgentRuntimePanel({
    */
   const awaitingStopRef = useRef<Set<string> | null>(null);
 
+  const stopCompletionRef = useRef<Promise<void> | null>(null);
   const stopEverything = useCallback(() => {
     // State updates land on the next render; the ref makes the click lock
     // synchronous so a double-click cannot dispatch a second cancellation.
-    if (stopRequestPendingRef.current && stoppedTurnKeyRef.current === latestUserTurnKey) return;
+    if (stopRequestPendingRef.current && stoppedTurnKeyRef.current === latestUserTurnKey) return stopCompletionRef.current ?? undefined;
     stopRequestPendingRef.current = true;
     stoppedTurnKeyRef.current = latestUserTurnKey;
     setStopRequestPending(true);
@@ -1072,21 +1081,21 @@ export default function AgentRuntimePanel({
         clientMessageId ? [clientMessageId] : [],
       ),
     );
-    onAbort();
+    const parentStopped = onAbort();
     composerTextareaRef?.current?.focus();
     if (!activeRun && externalStops.length === 0) {
       // Still dispatching. Keep the request standing rather than dropping it.
       awaitingStopRef.current = new Set(messages.flatMap((message) =>
         message.clientMessageId ? [message.clientMessageId] : [],
       ));
-      return;
+      return stopCompletionRef.current = Promise.resolve(parentStopped);
     }
     for (const { clientMessageId } of externalStops) {
       if (clientMessageId) onExternalAgentTerminal?.(clientMessageId, {
         outcome: "aborted", content: "Stopped by the user.",
       });
     }
-    void abortExternalRuns(externalStops);
+    return stopCompletionRef.current = Promise.all([parentStopped, abortExternalRuns(externalStops)]).then(() => undefined);
   }, [
     activeRun,
     abortExternalRuns,
@@ -1108,6 +1117,11 @@ export default function AgentRuntimePanel({
     setStopRequestPending(false);
     awaitingStopRef.current = null;
   }, [sessionId]);
+  useEffect(() => {
+    if (!stopControlRef) return;
+    stopControlRef.current = stopEverything;
+    return () => { if (stopControlRef.current === stopEverything) stopControlRef.current = null; };
+  }, [stopControlRef, stopEverything]);
   // Connection startup is cancellable even before a run id reaches this view.
   const canStop = activeRun || streaming || externalStops.length > 0 || externalRunActive;
 
@@ -2303,6 +2317,7 @@ export default function AgentRuntimePanel({
       className="relative flex min-h-0 flex-1 flex-col"
       style={composerInset.style}
       data-temporary-chat={temporaryChat ? "true" : undefined}
+      data-notification-chat={sessionId ? `dashboard_terminal:${sessionId}` : undefined}
     >
       <BotConversationIdentity />
       <TextHighlightSaveStatus error={highlightSaveError || inlineHighlightSaveError || deletedHighlightSaveError} />
@@ -2516,6 +2531,13 @@ export default function AgentRuntimePanel({
                       ? message.failed ? "Response failed." : responseInterrupted ? "Response stopped." : ""
                       : "",
                 ].filter(Boolean).join("\n\n"));
+                // A steer sent before any answer text was visible sits above
+                // the whole response, thinking header included; later steers
+                // split the answer at the point they arrived.
+                const { leading: leadingCorrections, inline: inlineCorrections } =
+                  partitionCourseCorrections(
+                    inlinedCourseCorrections.byAssistantIndex.get(index) ?? [],
+                  );
                 const retryResponse = onRetryMessage && !activeRun && !conversationLocked && !disabled &&
                   (message.interrupted || message.failed || index === lastAssistantIndex)
                     ? () => retryAssistantAsBranch(index)
@@ -2532,10 +2554,24 @@ export default function AgentRuntimePanel({
                   ) : null}
                   <div
                     className={message.role === "user" ? "group flex justify-end" : ""}
+                    data-notification-message={message.role === "assistant" && !message.pending && responseContent.trim()
+                      ? JSON.stringify(notificationMessageKeys(message)) : undefined}
                   >
                     <div className={message.role === "user"
                       ? `flex min-w-0 flex-col items-end gap-1 ${editingMessageId === messageBranchId(message, index) ? "w-full" : "w-fit max-w-[75%]"}`
                       : "w-full"}>
+                    {leadingCorrections.length > 0 ? (
+                      <div className="mb-3">
+                        {leadingCorrections.map((correction) => (
+                          <CourseCorrectionBubble
+                            key={correction.id}
+                            id={correction.id}
+                            content={correction.content}
+                            textSelection={correction.textSelection}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
                     <MessageActionsSlot
                       branch={message.role === "assistant" && !(runInFlight && index === lastAssistantIndex)
                         ? branchNavigationForAssistant(message, index) : undefined}
@@ -3854,14 +3890,11 @@ export default function AgentRuntimePanel({
                               </button>
                             </div>
                           </form>
-                        ) : responseContent ||
-                          inlinedCourseCorrections.byAssistantIndex.has(index) ? (
-                          inlinedCourseCorrections.byAssistantIndex.has(index) ? (
+                        ) : responseContent || inlineCorrections.length > 0 ? (
+                          inlineCorrections.length > 0 ? (
                             <SteeredAssistantResponse
                               content={responseContent}
-                              corrections={
-                                inlinedCourseCorrections.byAssistantIndex.get(index) ?? []
-                              }
+                              corrections={inlineCorrections}
                               sourceMessageId={messageSelectionSourceId(message, index)}
                               annotations={
                                 annotationsByMessage.get(messageSelectionSourceId(message, index)) ?? []
@@ -4221,7 +4254,7 @@ onSelectCareerOps={onSelectCareerOps}
           rufloAgent={rufloAgent}
           onClearRuflo={onClearRuflo}
           onSelectRuflo={onSelectRuflo}
-          voiceMessages={messages}
+          voiceMessages={voiceHostMessages(messages, activities, runInFlight)}
           onVoiceRecord={appendExternalAgentTurn ? (exchange) => appendExternalAgentTurn({
             clientMessageId: exchange.clientMessageId,
             userContent: exchange.user,

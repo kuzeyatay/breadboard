@@ -1,4 +1,5 @@
 import { isNotificationPageActive } from './notification-view-presence.ts';
+import { isNotificationElementVisible } from './chat-notification-visibility.ts';
 
 export const TASK_COMPLETION_NOTIFICATION_EVENT =
   "breadboard:task-completed";
@@ -27,6 +28,8 @@ export interface TaskCompletionNotificationDetail {
 }
 
 export interface TaskCompletionNotificationOptions {
+  /** The exact inline run card; a focused page alone is not viewing evidence. */
+  runId?: string;
   chatId?: number | string | null;
   activeChatId?: number | string | null;
   response?: string | null;
@@ -74,6 +77,8 @@ export function isTaskChatActivelyViewed(
   options: TaskCompletionNotificationOptions = {},
 ): boolean {
   if (!isNotificationPageActive()) return false;
+  if (options.runId) return Array.from(document.querySelectorAll<HTMLElement>('[data-notification-run]'))
+    .some(element => element.dataset.notificationRun === options.runId && isNotificationElementVisible(element));
 
   // A selected conversation in a background tab is not being viewed.
   if (options.chatId !== undefined && options.chatId !== null) {
@@ -88,6 +93,10 @@ export function notifyTaskCompleted(
   options: TaskCompletionNotificationOptions = {},
 ): void {
   if (typeof window === "undefined") return;
+  // Chat-owned runs publish their result through the durable response inbox.
+  // A second process-local toast duplicates that answer and can replay on restore.
+  if (options.runId && Array.from(document.querySelectorAll<HTMLElement>('[data-notification-run]'))
+    .some(element => element.dataset.notificationRun === options.runId && element.closest('[data-notification-chat]'))) return;
   if (isTaskChatActivelyViewed(options)) return;
   window.dispatchEvent(
     new CustomEvent<TaskCompletionNotificationDetail>(

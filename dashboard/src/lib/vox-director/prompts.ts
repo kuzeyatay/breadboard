@@ -81,19 +81,8 @@ function join(parts: Array<string | false | null | undefined>): string {
 // Stage 1 — the beat map
 // ---------------------------------------------------------------------------
 
-export const BEAT_MAP_SYSTEM = [
-  "You are the Vox Director's story editor. You turn one topic into the beat map for a",
-  "short narration-driven editorial explainer, told as a sequence of paper-collage posters",
-  "that come alive.",
-  "",
-  "You are not writing a film with characters, scenes or dialogue. You are writing an",
-  "argument: a narrator carries one idea, and each beat is one poster that makes one",
-  "point. Narration is what a person says out loud, so it is plain spoken English with no",
-  "stage directions, no speaker labels and no markdown.",
-  "",
-  "Two rules override everything else. The headline on beat one has to earn the next three",
-  "seconds on its own. And nothing is set up that is not then paid off.",
-].join("\n");
+import { PROMPT_VIDEO_BEATS as BEAT_MAP_SYSTEM } from "../system-prompts/feature-defaults.ts";
+export { BEAT_MAP_SYSTEM };
 
 export function beatMapUserPrompt(input: {
   request: VoxDirectorRequest;
@@ -149,14 +138,8 @@ export function beatMapUserPrompt(input: {
 // Stage 2 — the look
 // ---------------------------------------------------------------------------
 
-export const STYLE_SYSTEM = [
-  "You are the Vox Director's art director. You choose the visual idiom one film is made",
-  "in, from the skill's own theme library or by composing one out of its dimensions.",
-  "",
-  "Match the topic, not the language. An English film about Chinese history should still",
-  "look Chinese. One house style used for every topic is the failure mode this stage",
-  "exists to prevent.",
-].join("\n");
+import { PROMPT_VIDEO_STYLE as STYLE_SYSTEM } from "../system-prompts/feature-defaults.ts";
+export { STYLE_SYSTEM };
 
 export function styleUserPrompt(input: {
   request: VoxDirectorRequest;
@@ -204,18 +187,8 @@ export function styleUserPrompt(input: {
 // Stage 3 — the element / motion plan
 // ---------------------------------------------------------------------------
 
-export const MOTION_SYSTEM = [
-  "You are the Vox Director's motion designer. You decide which pieces of each finished",
-  "poster get cut out and animated, where they come from, and when they land.",
-  "",
-  "The engine that renders this is local and literal: every piece you name is cut from the",
-  "poster at the box you give, and flown back to the exact place it was cut from, over a",
-  "blurred copy of the poster. So the assembled frame reconstructs the original poster —",
-  "which is the whole trick. A box in the wrong place animates a rectangle of background.",
-  "",
-  "Boxes are on a 0-1000 grid laid over the poster: [x0, y0, x1, y1], left, top, right,",
-  "bottom, with x0 < x1 and y0 < y1. 0,0 is the top-left corner.",
-].join("\n");
+import { PROMPT_VIDEO_MOTION as MOTION_SYSTEM } from "../system-prompts/feature-defaults.ts";
+export { MOTION_SYSTEM };
 
 export function motionUserPrompt(input: {
   cloneRoot: string;

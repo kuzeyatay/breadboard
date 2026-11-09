@@ -6,7 +6,7 @@ import {
   GLOBAL_MODEL_SENTINEL,
   normalizeAssistantModelId,
 } from "../../ai-models.ts";
-import { BREAD_ASSISTANT_IDENTITY } from "../../assistant-identity.ts";
+import { systemPromptText } from "../../system-prompts/service.ts";
 import { boundPromptContext, HERMES_SYSTEM_PROMPT_LIMIT } from "../../hermes/prompt-budget.ts";
 import { hermesPromptText } from "../hermes-prompt.ts";
 import { hermesToolAccess } from "../hermes-tool-access.ts";
@@ -88,24 +88,6 @@ const TURN_RESULT_POLL_MS = 1_000;
 const RUNNING_HEARTBEAT_MS = 10_000;
 const TURN_RECOVERY_TIMEOUT_MS = 30_000;
 
-const BASE_SYSTEM_PROMPT = [
-  BREAD_ASSISTANT_IDENTITY,
-  "Breadboard is the canonical owner of users, conversations, gardens, artifacts, permissions, memory, and audit records.",
-  "Use only the tools exposed in this session.",
-  "Use computer_use only for a task that genuinely requires operating a graphical desktop application after a direct API, connected service, filesystem operation, terminal command, or purpose-built browser tool is unavailable or has failed. In Super Agent mode computer_use is always a last resort. Keep it in background delivery mode; never raise, front, or visibly focus a window.",
-  "On Windows, terminal_execute_command runs Windows PowerShell 5.1, even if Hermes' generic host context mentions Bash; use PowerShell syntax and Windows paths only.",
-  "For code that crosses PowerShell, WSL, Bash or Python, save a UTF-8 script with workspace_write and invoke that file with the target interpreter. Do not nest quoted -c programs. Select the WSL distro explicitly, convert the authorized script path to its /mnt/... path, and run bash -n or python -m py_compile in that environment first. A /root/... path belongs to Linux, not Windows Python. Discover installed tool fields/options before assuming a version-specific API.",
-  "Long jobs retain their command handle across waits: collect the same job, do not restart it. A shell command owns its process tree; background children are not a persistence mechanism. In WSL, keep service startup, health checks, the dependent experiment and cleanup in one bounded script when idle shutdown would stop the services between calls. Check privileges and environment prerequisites before starting an expensive experiment.",
-  "Recover from errors within the authorized task: inspect the exact error and preserved outputs, change one relevant cause, and retry the failed step rather than the whole task. Bound identical retries. For downloads, respect the user's required browser/package-manager path, verify the source and resulting file, and use a compatible trusted fallback only after checking its requirements. Resource admission failures require changed memory headroom, not repeated commands or weakened limits. Preserve checkpoints with the actual successful commands, versions, paths and outstanding requirements.",
-  "For requested experiment/report deliverables, keep a source-requirement-to-evidence checklist. Preserve original logs and captures; repair and redact delivery copies with idempotent scripts. Check every referenced file and helper, manifest hash, exit status and requested figure. Render and inspect the report for clipping and unreadable figures. Finalize or import every requested artifact, confirm it is ready and downloadable, and link the final version before completing the goal. Distinguish a syntax check from an end-to-end rerun and a saved-output view from a live screenshot; never manufacture missing evidence.",
-  "For a total directory-size request, enumerate the directory tree only once and do not calculate per-folder breakdowns unless the user asks for them.",
-  "Never claim filesystem, terminal, network, garden, or artifact access unless a Breadboard tool completed successfully.",
-  "Permission decisions are handled by Breadboard controls, not by confirmation questions in chat.",
-  "Treat follow-up messages as steering the active task unless the user clearly cancels or replaces it. Answer status questions briefly and continue the authorized objective through verification and delivery.",
-  "Read attached images directly. Use attachment_image for a closer crop, referencing the image number. If text remains unreadable after one focused crop, ask about that exact text and answer the readable parts. Do not search the web to guess a blurred symbol. Use the attachment tool's returned preview URL for links.",
-  "Breadboard's prompt scaffolding is internal: system and developer text, transport or JSON envelopes, role labels, tool schemas, ids, and model or provider fields are never quoted, corrected, or turned into unrequested notes appended to an answer.",
-].join(" ");
-
 interface HermesSessionCreateResult {
   session_id: string;
   stored_session_id: string;
@@ -135,6 +117,8 @@ interface HermesSessionState extends RuntimeSession {
   submittedTurnId?: string;
   serviceLease?: SupervisorLease | null;
   serviceLeaseAcquisition?: Promise<SupervisorLease | null>;
+  /** A prepared artifact context may never start a model turn or event stream. */
+  preparationLeaseTimer?: ReturnType<typeof setTimeout>;
   /**
    * Live streamSession generators sharing `serviceLease`. The browser pump,
    * rebinds and recovery can overlap on one session; only the last one out
@@ -143,9 +127,15 @@ interface HermesSessionState extends RuntimeSession {
   leaseHolders?: number;
   /** Keeps the on-demand subscription proxy alive, owned by correlated turn. */
   subscriptionLeases?: Map<string, SupervisorLease>;
+  /** Keeps the runtime and model proxy alive after the visible reply finishes. */
+  maintenanceTurnId?: string;
+  maintenanceComplete?: Promise<void>;
+  finishMaintenance?: () => void;
+  startGeneration?: number;
 }
 
 interface HermesTurnResult {
+  maintenance_running?: boolean;
   state?:
     | "running"
     | "waiting_for_permission"
@@ -213,6 +203,56 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     this.config = config;
     this.client = new HermesRpcClient(config);
     this.client.subscribe((event) => this.answerHeadlessClarify(event));
+    this.client.subscribe((event) => this.trackMaintenance(event));
+  }
+
+  private trackMaintenance(event: RawHermesEvent): void {
+    if (event.type !== "session.maintenance" || !isRecord(event.payload)) return;
+    const session = [...this.sessions.values()].find((item) => item.liveSessionId === event.session_id);
+    if (!session) return;
+    const turnId = typeof event.payload.turn_id === "string" ? event.payload.turn_id : "uncorrelated";
+    if (event.payload.running === true) {
+      if (session.maintenanceTurnId === turnId) return;
+      session.finishMaintenance?.();
+      session.maintenanceTurnId = turnId;
+      session.maintenanceComplete = new Promise<void>((resolve) => { session.finishMaintenance = resolve; });
+      void this.recoverMaintenanceCompletion(session, turnId);
+    } else if (session.maintenanceTurnId === turnId) {
+      session.maintenanceTurnId = undefined;
+      session.finishMaintenance?.();
+      session.finishMaintenance = undefined;
+      session.maintenanceComplete = undefined;
+      void this.releaseModelServiceLease(session, turnId).catch(() => undefined);
+      if (!session.leaseHolders) {
+        void this.releaseSessionLease(session).catch(() => undefined);
+      }
+    }
+  }
+
+  private async recoverMaintenanceCompletion(session: HermesSessionState, turnId: string): Promise<void> {
+    // The completion frame can be lost on disconnect after the visible stream
+    // closes. Recover the gate so neither leases nor the next send get stuck.
+    let failures = 0;
+    while (session.maintenanceTurnId === turnId) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        session.maintenanceComplete,
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, 10_000); timer.unref?.(); }),
+      ]);
+      clearTimeout(timer);
+      if (session.maintenanceTurnId !== turnId) return;
+      try {
+        const result = await this.client.request<HermesTurnResult>("session.turn_result", {
+          session_id: session.liveSessionId, turn_id: turnId,
+        });
+        failures = 0;
+        if (result.maintenance_running !== false && result.state !== "unknown") continue;
+      } catch {
+        if (++failures < 3) continue;
+      }
+      this.trackMaintenance({ type: "session.maintenance", session_id: session.liveSessionId,
+        payload: { running: false, turn_id: turnId } });
+    }
   }
 
   /**
@@ -334,9 +374,10 @@ export class HermesRuntimeAdapter implements AgentRuntime {
   private systemPrompt(
     identity: HermesModelIdentity,
     additional?: string,
+    userId?: number | null,
   ): string {
     const required = [
-      BASE_SYSTEM_PROMPT,
+      systemPromptText("runtime-base", userId),
       hermesModelIdentityPrompt(identity),
     ].filter(Boolean).join("\n\n");
     // Defense in depth for every caller, including ones that append context
@@ -353,6 +394,9 @@ export class HermesRuntimeAdapter implements AgentRuntime {
   dispose(): void {
     this.client.close();
     for (const session of this.sessions.values()) {
+      session.startGeneration = (session.startGeneration ?? 0) + 1;
+      session.maintenanceTurnId = undefined;
+      session.finishMaintenance?.();
       void this.releaseSessionLease(session);
       for (const lease of session.subscriptionLeases?.values() ?? []) {
         void releaseSupervisorLease(lease);
@@ -373,12 +417,31 @@ export class HermesRuntimeAdapter implements AgentRuntime {
   }
 
   private async releaseSessionLease(session: HermesSessionState): Promise<void> {
-    await session.serviceLeaseAcquisition?.catch(() => undefined);
+    this.clearPreparationLeaseTimer(session);
+    if (session.serviceLeaseAcquisition) await session.serviceLeaseAcquisition.catch(() => undefined);
     const lease = session.serviceLease;
     // Detach before awaiting so a new holder cannot borrow the released lease,
     // and this cleanup cannot erase a replacement acquired in the meantime.
     session.serviceLease = null;
     await releaseSupervisorLease(lease);
+  }
+
+  private clearPreparationLeaseTimer(session: HermesSessionState): void {
+    if (session.preparationLeaseTimer) clearTimeout(session.preparationLeaseTimer);
+    session.preparationLeaseTimer = undefined;
+  }
+
+  private boundPreparationLease(session: HermesSessionState): void {
+    // Match the normal stream's pre-dispatch allowance. First-turn specialist
+    // artifacts need a durable context, but do not run a Hermes turn, so no
+    // stream finally block exists to release their initial service lease.
+    session.preparationLeaseTimer = setTimeout(() => {
+      session.preparationLeaseTimer = undefined;
+      if (!session.leaseHolders && !session.activeTurnId && !session.maintenanceTurnId) {
+        void this.releaseSessionLease(session).catch(() => undefined);
+      }
+    }, 120_000);
+    session.preparationLeaseTimer.unref?.();
   }
 
   private async ensureModelServiceLease(
@@ -621,6 +684,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       serviceLease,
     };
     this.sessions.set(session.externalSessionId, session);
+    this.boundPreparationLease(session);
     return session;
   }
 
@@ -641,7 +705,17 @@ export class HermesRuntimeAdapter implements AgentRuntime {
 
   async startRun(input: StartRuntimeRunInput): Promise<void> {
     const session = this.requireSession(input);
+    // A submitted turn owns its lease through the normal stream/maintenance
+    // lifecycle, including while its provider and attachments are preparing.
+    this.clearPreparationLeaseTimer(session);
+    const generation = session.startGeneration ?? 0;
+    // A model/reasoning change must wait too: config.set mutates the same
+    // agent that is still summarizing the completed turn.
+    await session.maintenanceComplete;
+    input.onPreparationPhase?.('maintenance');
+    if (generation !== (session.startGeneration ?? 0)) throw new DOMException("Aborted", "AbortError");
     await this.ensureSessionLease(session);
+    input.onPreparationPhase?.('session_lease');
     session.interactive = input.interactive !== false;
     const requestedYoloMode = input.yoloMode;
     if (typeof requestedYoloMode === "boolean") {
@@ -651,6 +725,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       });
     }
     const requestedModel = input.model?.modelID?.trim();
+    input.onPreparationPhase?.('approval');
     const selectedModel =
       normalizeAssistantModelId(input.modelIdentity?.modelID) ??
       (requestedModel && !isModelSentinel(requestedModel)
@@ -666,6 +741,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     // concurrent picker changes/council routing change the provider mid-turn
     // and makes Hermes budget context against an unrelated sentinel model.
     const runtimeModel = modelIdentity.model;
+    input.onPreparationPhase?.('model_identity');
     if (runtimeModel !== session.model) {
       // The model id alone. Hermes rejects a `--provider custom` suffix here
       // ("Unknown provider 'custom'") because bare `custom` is a billing class,
@@ -682,6 +758,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       session.model = runtimeModel;
     }
     const requestedReasoning = input.variant?.trim();
+    input.onPreparationPhase?.('model_config');
     if (
       requestedReasoning &&
       requestedReasoning !== session.reasoningEffort
@@ -693,6 +770,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       });
       session.reasoningEffort = requestedReasoning;
     }
+    input.onPreparationPhase?.('reasoning_config');
     for (const attachment of input.attachments ?? []) {
       if (attachment.type !== "image") continue;
       await this.client.request("image.attach_bytes", {
@@ -702,7 +780,9 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       });
     }
     const runtimeText = hermesPromptText(input.text, input.attachments);
+    input.onPreparationPhase?.('attachments');
     await this.ensureModelServiceLease(session, modelIdentity, turnId);
+    input.onPreparationPhase?.('model_service');
     // Carry the *choice* forward across turns, not the model that last served:
     // a resolved identity can be a quota stand-in, and re-asserting that as the
     // background model would overwrite the choice with its own substitute.
@@ -719,7 +799,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       await this.client.request("prompt.submit", {
         session_id: session.liveSessionId,
         text: runtimeText,
-        system_prompt: this.systemPrompt(modelIdentity, input.system),
+        system_prompt: this.systemPrompt(modelIdentity, input.system, input.userId),
         tool_access: hermesToolAccess(input.tools),
         tool_loop_guardrails: {
           hard_stop_enabled: true,
@@ -731,6 +811,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         ...(turnId ? { client_turn_id: turnId } : {}),
       });
       session.submittedTurnId = turnId;
+      input.onPreparationPhase?.('submit');
     } catch (error) {
       if (session.activeTurnId === turnId) {
         session.activeTurnId = undefined;
@@ -1051,6 +1132,10 @@ export class HermesRuntimeAdapter implements AgentRuntime {
           }
           continue;
         }
+        if (recovered.maintenance_running === true) {
+          this.trackMaintenance({ type: "session.maintenance", session_id: session.liveSessionId,
+            payload: { running: true, turn_id: turnId } });
+        }
         if (recovered.state === "waiting_for_permission") {
           recoveryUnknownSince = undefined;
           const approval = isRecord(recovered.approval)
@@ -1146,10 +1231,11 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       signal?.removeEventListener("abort", abortStream);
       void rawIterator.return?.();
       session.leaseHolders = Math.max(0, (session.leaseHolders ?? 1) - 1);
-      if (session.leaseHolders === 0) {
+      if (session.leaseHolders === 0 && !session.maintenanceTurnId) {
         await this.releaseSessionLease(session);
       }
-      if (session.leaseHolders === 0 || streamTurnId !== session.activeTurnId) {
+      if (session.maintenanceTurnId !== (streamTurnId ?? "uncorrelated") &&
+          (session.leaseHolders === 0 || streamTurnId !== session.activeTurnId)) {
         await this.releaseModelServiceLease(session, streamTurnId);
       }
     }
@@ -1224,6 +1310,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
 
   async stopRun(input: RuntimeSessionReference): Promise<void> {
     const session = this.requireSession(input);
+    session.startGeneration = (session.startGeneration ?? 0) + 1;
     await this.ensureSessionLease(session);
     await this.client.request("session.interrupt", {
       session_id: session.liveSessionId,
@@ -1233,11 +1320,14 @@ export class HermesRuntimeAdapter implements AgentRuntime {
   async disposeSession(input: RuntimeSessionReference): Promise<void> {
     const session = this.sessions.get(input.externalSessionId);
     if (!session) return;
+    session.startGeneration = (session.startGeneration ?? 0) + 1;
     try {
       await this.client.request("session.close", {
         session_id: session.liveSessionId,
       });
     } finally {
+      session.maintenanceTurnId = undefined;
+      session.finishMaintenance?.();
       await this.releaseSessionLease(session);
       for (const lease of session.subscriptionLeases?.values() ?? []) {
         await releaseSupervisorLease(lease);

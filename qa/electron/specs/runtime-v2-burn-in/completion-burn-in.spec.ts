@@ -314,7 +314,7 @@ async function probeBrowserAgentAvailability(page: Page): Promise<BrowserAgentAv
 async function startBrowserAgentFromUi(page: Page): Promise<void> {
   const cards = page.locator(".bb-agent-run-card").filter({ hasText: "Agent Browser" });
   const previousCount = await cards.count();
-  const composer = page.getByPlaceholder(/Ask about your documents/).last();
+  const composer = page.getByPlaceholder('Ask anything.', { exact: true }).last();
   await expect(composer).toBeEditable({ timeout: 180_000 });
   await composer.fill(
     "/agents:agent-browser Open https://example.com and keep inspecting the page until I press Stop. " +
@@ -465,7 +465,7 @@ async function sendGardenTurn(
   completionMarker: string,
   timeoutMs: number,
 ): Promise<void> {
-  const composer = page.getByPlaceholder(/Ask about your documents/).last();
+  const composer = page.getByPlaceholder('Ask anything.', { exact: true }).last();
   await expect(composer).toBeEditable({ timeout: 180_000 });
   const assistant = page.locator('div[class~="text-gray-200"]');
   const beforeCount = await assistant.count();

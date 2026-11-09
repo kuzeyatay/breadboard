@@ -1,10 +1,11 @@
 "use client";
 
-import { useRef, type CSSProperties, type PointerEvent } from "react";
+import { useRef, type CSSProperties, type PointerEvent, type RefObject } from "react";
 import { useTerminalHeaderClickGuard } from "../terminal-header-click-guard";
 
 interface Props {
   dockStyle: CSSProperties;
+  positionRef?: RefObject<HTMLDivElement | null>;
   resizing: boolean;
   onOpen: () => void;
   onResizeStart: (event: PointerEvent<HTMLElement>) => void;
@@ -15,7 +16,7 @@ interface Props {
 /** Share the dock's height and animation, but stay outside its clipped content
  * so the grip can straddle the top border without exposing the transcript.
  * The 2px offset centers it on the inset outline rather than the dock's box. */
-export default function TerminalDockHandle({ dockStyle, resizing, onOpen, onResizeStart, onResizeMove, onResizeEnd }: Props) {
+export default function TerminalDockHandle({ dockStyle, positionRef, resizing, onOpen, onResizeStart, onResizeMove, onResizeEnd }: Props) {
   const gesture = useRef<{ x: number; y: number; dragged: boolean } | null>(null);
   const clickGuard = useTerminalHeaderClickGuard();
 
@@ -26,8 +27,9 @@ export default function TerminalDockHandle({ dockStyle, resizing, onOpen, onResi
 
   function finish(event: PointerEvent<HTMLElement>) {
     if (!gesture.current) return;
-    track(event);
-    const open = !gesture.current.dragged && event.type !== "pointercancel";
+    const cancelled = event.type === "pointercancel" || event.type === "lostpointercapture";
+    if (!cancelled) track(event);
+    const open = !gesture.current.dragged && !cancelled;
     gesture.current = null;
     onResizeEnd(event);
     clickGuard.endPointerSequence();
@@ -36,6 +38,7 @@ export default function TerminalDockHandle({ dockStyle, resizing, onOpen, onResi
 
   return (
     <div
+      ref={positionRef}
       data-terminal-handle-position
       className="pointer-events-none fixed inset-x-0 z-50 h-0"
       style={{ bottom: dockStyle.height, transform: dockStyle.transform, transition: dockStyle.transition, willChange: dockStyle.willChange }}
@@ -58,6 +61,7 @@ export default function TerminalDockHandle({ dockStyle, resizing, onOpen, onResi
         }}
         onPointerUp={finish}
         onPointerCancel={finish}
+        onLostPointerCapture={finish}
         onClick={() => { if (clickGuard.shouldHandleClick()) onOpen(); }}
       >
         <span

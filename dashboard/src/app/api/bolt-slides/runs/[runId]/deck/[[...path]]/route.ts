@@ -12,6 +12,7 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import { readDeckFile } from "@/lib/bolt-slides/runtime-run-manager.ts";
+import { withBoltDeckBase } from "@/lib/bolt-slides/deck-preview.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -23,7 +24,8 @@ export async function GET(
   try {
     const userId = await requireUserId();
     const { runId, path: segments } = await params;
-    const file = await readDeckFile(userId, runId, (segments ?? []).join("/"));
+    const relativePath = (segments ?? []).join("/");
+    const file = await readDeckFile(userId, runId, relativePath);
     if (!file) {
       return NextResponse.json({ ok: false, error: "deck_not_found" }, { status: 404 });
     }
@@ -35,6 +37,14 @@ export async function GET(
       // rewritten by a repair build, so nothing here is cached across a reload.
       "cache-control": "private, max-age=0, must-revalidate",
     });
+    // Next canonicalizes /deck/ to /deck. Without an explicit document base,
+    // the built relative assets resolve beside /deck and return 404. Keep the
+    // portable build unchanged and bind only the served entry to its owner.
+    if ((!relativePath || relativePath === "index.html") && file.contentType.startsWith("text/html")) {
+      const html = withBoltDeckBase(await new Response(file.stream).text(), runId);
+      headers.set("content-length", String(Buffer.byteLength(html, "utf8")));
+      return new Response(html, { status: 200, headers });
+    }
     return new Response(file.stream, { status: 200, headers });
   } catch (error) {
     if (error instanceof RouteError) {

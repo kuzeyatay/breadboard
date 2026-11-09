@@ -347,6 +347,7 @@ test("real pointer gestures group, reorder, cancel, collapse and edit groups", {
     await page.goto(origin + '/ai-tabs');
     const message = page.locator('main p');
     await message.waitFor();
+    await message.evaluate(node => Promise.all(node.getAnimations().map(animation => animation.finished)));
     assert.equal(await page.locator('main').innerText(), 'Bread can open tabs on your behalf, they appear here.');
     assert.equal(await page.locator('main').locator('*').count(), 1, 'the idle page only contains its message');
     const aiBox = await page.locator('[data-ai-group="true"]').boundingBox();

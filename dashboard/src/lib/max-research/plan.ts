@@ -17,6 +17,9 @@
 // orchestrator means the division of labour is inspectable before an hour of
 // compute is spent on it, and testable without standing up five services.
 
+import { restrictsExternalResearch } from "../research/scope.ts";
+export { restrictsExternalResearch } from "../research/scope.ts";
+
 import { classifyResearch } from "../research/classify.ts";
 import type { ResearchPlan } from "../research/types.ts";
 
@@ -90,6 +93,8 @@ export interface MaxResearchPlan {
   academic: boolean;
   /** True when the question can be settled by running something, not reading. */
   empirical: boolean;
+  /** Automatic retrieval is excluded when the person forbids outside sources. */
+  noExternalResearch?: boolean;
 }
 
 /** Questions the published literature answers better than the open web. */
@@ -161,7 +166,7 @@ function rationaleFor(participant: MaxResearchParticipant): string {
 /**
  * Divide one question among the research participants.
  *
- * Every question gets the full roster. Availability is an execution outcome, not a
+ * Questions allowing outside research get the full roster. Availability is an execution outcome, not a
  * planning filter: a missing service remains visible in the roster and in the
  * final coverage statement instead of making a partial run look complete.
  */
@@ -178,8 +183,10 @@ export function planMaxResearch(input: {
     research.factors.conflictLikelihood >= 0.5;
   const empirical = EMPIRICAL_SUBJECT.test(question);
   const discourse = DISCOURSE_SUBJECT.test(question);
+  const noExternalResearch = restrictsExternalResearch(question);
 
-  // The full roster, every time. Choosing between them was the wrong instinct: this is
+  // Use the full roster when external research is allowed. Explicit user
+  // limits narrow it to analysis and review of the supplied material. This is
   // the agent someone reaches for when they have decided the question is worth
   // an hour, and the only thing narrowing the roster buys is a slightly shorter
   // run in exchange for a hole in the answer nobody can see. The classifier was
@@ -207,23 +214,29 @@ export function planMaxResearch(input: {
     { participant: "aris", wave: 1, required: false },
   ];
 
-  const assignments = wanted.map(({ participant, wave, required }) => {
-      const guidance = guidanceFor(participant);
+  const assignments = wanted
+    .filter(({ participant }) => !noExternalResearch || ["agent_reach", "openscience", "aris"].includes(participant))
+    .map(({ participant, wave, required }) => {
+      const guidance = noExternalResearch
+        ? "Analyze only the supplied material and calculations. Do not browse, query external catalogs, retrieve outside sources, or access unrelated files. Use already installed local tools only if needed. Distinguish separate participant assessments from independent empirical evidence."
+        : guidanceFor(participant);
       return {
       participant,
       question,
       guidance,
       brief: guidance ? `${question}\n\n${guidance}` : question,
       rationale:
-        participant === "agent_reach" && discourse
+        noExternalResearch
+          ? "Analyze or review the supplied material within the requested no-web scope."
+          : participant === "agent_reach" && discourse
           ? "The open internet, which this question points at directly."
           : rationaleFor(participant),
-      wave,
+      wave: noExternalResearch && participant === "openscience" ? 0 : wave,
       required,
       };
     });
 
-  return { question, research, assignments, academic, empirical };
+  return { question, research, assignments, academic, empirical, noExternalResearch };
 }
 
 /** The waves in order, each as the set that runs together. */

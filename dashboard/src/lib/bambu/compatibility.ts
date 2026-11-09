@@ -24,10 +24,12 @@ export function configuredPrinter(value: unknown, id: string, revision: number):
   return { id, revision, name: v.name.trim(), model: v.model as PrinterConfig["model"], nozzle: Number(v.nozzle), buildPlate: v.buildPlate as PrinterConfig["buildPlate"], sources, developerModeConfirmed: v.developerModeConfirmed === true, photo: false, configured: true, reachable: false, authenticated: false, startCapability: "not_tested", lastTestAt: null, message: null };
 }
 export function modelName(value: string): string {
-  return value.replace(/^Bambu Lab\s*/i, "").replace(/^Bambu\s*/i, "").replace(/\s+\d\.\d\s*(?:mm)?\s*(?:nozzle)?.*$/i, "").replace(/[ _-]/g, "").toUpperCase().replace(/^A1M$/, "A1MINI");
+  const normalized = value.replace(/^Bambu Lab\s*/i, "").replace(/^Bambu\s*/i, "").replace(/\s+\d\.\d\s*(?:mm)?\s*(?:nozzle)?.*$/i, "").replace(/[ _-]/g, "").toUpperCase();
+  return ({ X1CARBON: "X1C", A1M: "A1MINI", N7: "P2S" } as Record<string,string>)[normalized] ?? normalized;
 }
 export function validateReview(review: PrintReview, plate: SlicedPlate, printer: PrinterConfig, sources = printer.sources): string[] {
   const reasons = [...plate.blockers];
+  if (printer.model === "P2S") reasons.push("Send this P2S print through Bambu Studio using Open model in Studio. Direct LAN printing has not been validated for P2S.");
   if (!plate.model || modelName(plate.model) !== modelName(printer.model)) reasons.push("The sliced printer profile does not match the selected printer.");
   if (plate.nozzle !== printer.nozzle) reasons.push("The sliced nozzle diameter does not match the configured physical nozzle.");
   if (plate.buildPlate !== printer.buildPlate) reasons.push("The sliced build plate does not match the installed plate configuration.");

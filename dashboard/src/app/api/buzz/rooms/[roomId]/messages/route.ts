@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
+import { ApiError, apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import {
   readRoomSpine,
   resolveResponders,
@@ -9,13 +9,16 @@ import {
 import {
   listMembers,
   markRoomRead,
-  postMessage,
+  getMessage,
   reactionsForRoom,
 } from "@/lib/buzz/instance.ts";
 import {
   requireBuzzUser,
   requireRoomAndSelf,
   requireString,
+  postHumanMessage,
+  roomPermissions,
+  presentRoomMessage,
 } from "@/lib/buzz/route-helpers.ts";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +30,7 @@ export const dynamic = "force-dynamic";
  * deliberately one round trip rather than three.
  */
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ roomId: string }> },
 ) {
   try {
@@ -36,7 +39,14 @@ export async function GET(
     const { room, self } = requireRoomAndSelf(userId, roomId, displayName);
 
     // Reconciles any in-flight agent answer before reading.
-    const messages = readRoomSpine(room.id);
+    const before = new URL(request.url).searchParams.get("before");
+    const beforeId = before === null ? undefined : Number(before);
+    if (beforeId !== undefined && (!Number.isSafeInteger(beforeId) || beforeId < 1)) {
+      throw new ApiError(400, "invalid_cursor", "Invalid message cursor.");
+    }
+    const page = await readRoomSpine(room.id, 51, beforeId);
+    const hasOlder = page.length > 50;
+    const messages = hasOlder ? page.slice(1) : page;
     const reactions = reactionsForRoom(room.id, self.id);
 
     return NextResponse.json({
@@ -50,9 +60,12 @@ export async function GET(
         visibility: room.visibility,
       },
       selfMemberId: self.id,
+      permissions: roomPermissions(userId, room),
+      hasOlder,
+      nextCursor: hasOlder ? messages[0]?.id ?? null : null,
       members: listMembers(room.id),
       messages: messages.map((message) => ({
-        ...message,
+        ...presentRoomMessage(message, userId),
         reactions: reactions.get(message.id) ?? [],
       })),
     });
@@ -79,20 +92,8 @@ export async function POST(
 
     const text = requireString(body.body, "body", 12000);
     const clientMessageId = requireString(body.clientMessageId, "clientMessageId", 128);
-    const parentId =
-      typeof body.parentId === "number" && Number.isInteger(body.parentId)
-        ? body.parentId
-        : null;
-
-    const message = postMessage(room.id, {
-      clientMessageId,
-      memberId: self.id,
-      authorKind: "human",
-      authorName: self.displayName,
-      authorHandle: self.handle,
-      body: text,
-      parentId,
-    });
+    if (body.parentId != null) throw new ApiError(400, "use_thread", "Post replies through their thread.");
+    const message = postHumanMessage(room, self, text, clientMessageId);
     markRoomRead(room.id, userId, message.id);
 
     const responders = resolveResponders(members, text);
@@ -104,6 +105,7 @@ export async function POST(
         trigger: message,
         clientMessageId: `${clientMessageId}:${responder.handle}`,
         actingUserId: userId,
+        request,
       });
       started.push({
         memberId: responder.id,
@@ -115,6 +117,22 @@ export async function POST(
     }
 
     return NextResponse.json({ message, started }, { status: 201 });
+  } catch (error) {
+    return apiErrorResponse(error);
+  }
+}
+
+/** Only the visible room advances its read marker, never a background poll. */
+export async function PATCH(request: Request, { params }: { params: Promise<{ roomId: string }> }) {
+  try {
+    const { userId, displayName } = await requireBuzzUser();
+    const { roomId } = await params;
+    const { room } = requireRoomAndSelf(userId, roomId, displayName);
+    const body = await readJsonBody(request);
+    const message = typeof body.readThrough === "number" ? getMessage(body.readThrough) : null;
+    if (!message || message.roomId !== room.id) throw new ApiError(400, "invalid_read_marker", "Message not found in this room.");
+    markRoomRead(room.id, userId, message.id);
+    return NextResponse.json({ ok: true });
   } catch (error) {
     return apiErrorResponse(error);
   }

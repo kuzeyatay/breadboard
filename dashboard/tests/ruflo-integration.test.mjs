@@ -14,6 +14,57 @@ const identity = await import("../src/lib/ruflo/identity.ts");
 const runManager = await import("../src/lib/ruflo/run-manager.ts");
 const runtime = await import("../src/lib/ruflo/runtime.ts");
 
+function eventState() {
+  return {events:[],sequence:0,output:[],toolCount:0,inputTokens:0,outputTokens:0,cachedInputTokens:0,reasoningTokens:0,
+    pendingTools:new Map(),seenTools:new Set(),completedWorkerCount:0,executorError:null,finalResult:""};
+}
+const toolUse=(id,name)=>({type:"assistant",message:{content:[{type:"tool_use",id,name,input:{task:"synthetic review"}}]}});
+const toolResult=(id,is_error=false)=>({type:"user",message:{content:[{type:"tool_result",tool_use_id:id,is_error,content:is_error?"Permission denied":"Completed synthetic review"}]}});
+
+test("headless Ruflo permits exact coordination and delegation tools without a global permission bypass",()=>{
+  const args=runManager.rufloExecutorPermissionArgs(false);
+  assert.deepEqual(args.slice(0,3),["--permission-mode","acceptEdits","--allowedTools"]);
+  const tools=args[3].split(",");
+  assert.ok(tools.includes("Agent")&&tools.includes("Task")&&tools.includes("mcp__ruflo__agent_spawn"));
+  assert.ok(tools.includes("mcp__ruflo__task_assign")&&tools.includes("mcp__ruflo__hive-mind_consensus"));
+  assert.ok(tools.includes("mcp__api_anything__find_sites")&&tools.includes("mcp__api_anything__call_operation"));
+  assert.ok(tools.every(tool=>!tool.includes("*")&&!/^(?:Bash|Edit|Write)$|terminal_execute|agent_execute/.test(tool)));
+  assert.ok(!args.includes("--dangerously-skip-permissions"));
+  assert.deepEqual(runManager.rufloExecutorPermissionArgs(true),["--dangerously-skip-permissions"]);
+});
+
+test("Ruflo waits for actual tool results and reports denials as failures",()=>{
+  const run=eventState();
+  runManager.ingestClaudeFrame(run,toolUse("denied","mcp__ruflo__agent_spawn"));
+  runManager.ingestClaudeFrame(run,toolUse("denied","mcp__ruflo__agent_spawn"));
+  assert.equal(run.toolCount,1);
+  assert.deepEqual(run.events.map(event=>[event.type,event.payload.status]),[["tool.started","running"]]);
+  runManager.ingestClaudeFrame(run,toolResult("denied",true));
+  assert.equal(run.events.at(-1).payload.status,"failed");
+  assert.equal(run.completedWorkerCount,0);
+  runManager.ingestClaudeFrame(run,toolResult("denied",true));
+  assert.equal(run.events.length,2);
+});
+
+test("Ruflo counts executed workers separately from registration metadata",()=>{
+  const run=eventState();
+  for(const [id,tool] of [["registered","mcp__ruflo__agent_spawn"],["worker-a","Agent"],["worker-b","Task"]]){
+    runManager.ingestClaudeFrame(run,toolUse(id,tool));
+    runManager.ingestClaudeFrame(run,toolResult(id));
+  }
+  assert.equal(run.toolCount,3);assert.equal(run.completedWorkerCount,2);
+  assert.equal(run.pendingTools.size,0);
+});
+
+test("Ruflo preserves result-frame permission denials and executor errors",()=>{
+  const run=eventState();
+  runManager.ingestClaudeFrame(run,toolUse("denied","mcp__ruflo__agent_spawn"));
+  runManager.ingestClaudeFrame(run,{type:"result",is_error:true,result:"Executor unavailable",permission_denials:[{tool_use_id:"denied",tool_name:"mcp__ruflo__agent_spawn"}]});
+  assert.equal(run.events.at(-1).payload.status,"failed");
+  assert.equal(run.executorError,"Executor unavailable");
+  assert.equal(run.completedWorkerCount,0);
+});
+
 test("Ruflo exposes the real child-process error rather than Node's version footer",()=>{
   assert.equal(runManager.rufloProcessError("node:fs:2733\nError: EISDIR: illegal operation on a directory, lstat 'C:'\n    at Object.realpathSync (node:fs:2733:25)\nNode.js v24.14.1\n"),"Error: EISDIR: illegal operation on a directory, lstat 'C:'");
   assert.equal(runManager.rufloProcessError("Error [ERR_MODULE_NOT_FOUND]: Missing fixture\nNode.js v24.14.1"),"Error [ERR_MODULE_NOT_FOUND]: Missing fixture");
@@ -221,7 +272,7 @@ test("Ruflo carries image attachments through the chat, route, and swarm objecti
   assert.match(manager, /materializeRufloImageAttachments/);
   assert.match(manager, /\[baseObjective, attachmentContext\]/);
   assert.match(manager, /part\.replace\(\/\\s\+\/g, " "\)/);
-  assert.match(manager, /\[prompt, attachmentContext[,\]]/);
+  assert.match(manager, /const executorPrompt = \[prompt,[\s\S]*?attachmentContext, graft\?\.instruction/);
   assert.match(manager, /spawnExecutor\(executorPrompt\)/);
   assert.match(manager, /attachmentCount: materialized\.paths\.length/);
 });
@@ -353,6 +404,30 @@ test("sealed Windows planner paths launch through Node without the device namesp
   }
 });
 
+test("a sealed checkout wrapper is unavailable until its actual planner is built", () => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"breadboard-ruflo-unbuilt-"));
+  try {
+    const planner=path.join(dir,"bin","cli.js");
+    const cli=path.join(dir,"v3","@claude-flow","cli");
+    fs.mkdirSync(path.dirname(planner),{recursive:true});
+    fs.mkdirSync(cli,{recursive:true});
+    fs.writeFileSync(path.join(dir,"package.json"),JSON.stringify({version:"3.34.0"}));
+    fs.writeFileSync(path.join(cli,"package.json"),JSON.stringify({name:"@claude-flow/cli",version:"3.34.0"}));
+    fs.writeFileSync(planner,"console.log('ruflo v3.34.0')");
+    const env={RUFLO_ROOT:dir,RUFLO_BIN:path.toNamespacedPath(planner),PATH:""};
+    assert.equal(runtime.resolveRufloLauncher(env),null);
+    const health=runtime.runtimeAvailability(env);
+    assert.equal(health.available,false);
+    assert.match(health.reason,/compiled planner is missing/);
+    fs.mkdirSync(path.join(cli,"dist","src"),{recursive:true});
+    fs.writeFileSync(path.join(cli,"dist","src","index.js"),"// compiled fixture");
+    assert.equal(runtime.resolveRufloLauncher(env)?.source,"configured");
+  } finally {
+    assert.ok(path.resolve(dir).startsWith(path.resolve(os.tmpdir())+path.sep));
+    fs.rmSync(dir,{recursive:true,force:true});
+  }
+});
+
 test("desktop packaging freezes the complete Ruflo runtime closure", () => {
   const prepare = repoSource("desktop/scripts/prepare-app-resources.mjs");
   const verify = repoSource("desktop/scripts/verify-package.mjs");
@@ -407,7 +482,8 @@ test("Ruflo plans with its own CLI and executes through Claude Code", () => {
 
   // Permissions stay bounded unless the operator opts in explicitly.
   assert.match(manager, /RUFLO_DANGEROUSLY_SKIP_PERMISSIONS/);
-  assert.match(manager, /\["--permission-mode", "acceptEdits"\]/);
+  assert.match(manager, /rufloExecutorPermissionArgs\(skipPermissions\)/);
+  assert.match(manager, /"--strict-mcp-config"/);
 
   // The generated MCP config lives outside the user's repository.
   assert.match(manager, /os\.tmpdir\(\), "breadboard-ruflo"/);

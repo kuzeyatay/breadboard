@@ -4,10 +4,17 @@ export const BREAD_ASSISTANT_IDENTITY = [
   "If asked who you are, identify yourself as Bread. If asked which model powers you, report the authoritative resolved model separately.",
 ].join(" ");
 
-export function breadSystemPrompt(taskPrompt: string): string {
-  const trimmed = taskPrompt.trim();
-  if (!trimmed) return BREAD_ASSISTANT_IDENTITY;
-  if (trimmed.includes(BREAD_ASSISTANT_IDENTITY)) return trimmed;
-  return `${BREAD_ASSISTANT_IDENTITY}\n\n${trimmed}`;
+export function breadSystemPrompt(taskPrompt: string, identity = BREAD_ASSISTANT_IDENTITY): string {
+  let trimmed = taskPrompt.trim();
+  const selectedIdentity = identity.trim();
+  // Existing defaults can already contain the built-in prefix. Replace it when
+  // the account customizes this shared instruction, including an empty override.
+  if (selectedIdentity !== BREAD_ASSISTANT_IDENTITY && trimmed.startsWith(BREAD_ASSISTANT_IDENTITY)) {
+    trimmed = trimmed.slice(BREAD_ASSISTANT_IDENTITY.length).trimStart();
+  }
+  if (!selectedIdentity) return trimmed;
+  if (!trimmed) return selectedIdentity;
+  if (trimmed.includes(selectedIdentity)) return trimmed;
+  return `${selectedIdentity}\n\n${trimmed}`;
 }
 

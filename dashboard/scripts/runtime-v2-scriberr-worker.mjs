@@ -18,8 +18,7 @@ void runRuntimeV2FiniteMcpWorker({
   expectedInputCount: expectedScriberrGardenInputCount,
   maximumInputBytes: MAX_VIDEO_BYTES,
   execute: async (launch, signal, io) => {
-    const inputPath = launch.request.operation === "transcribe" &&
-      launch.request.inputKind === "upload"
+    const inputPath = expectedScriberrGardenInputCount(launch.request) === 1
       ? await canonicalRuntimeInputAsync(launch, 0, signal)
       : null;
     return executeScriberrGardenJob(launch, signal, io, inputPath);

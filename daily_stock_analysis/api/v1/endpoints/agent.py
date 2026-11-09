@@ -58,6 +58,7 @@ class ChatRequest(BaseModel):
         validation_alias=AliasChoices("skills", "strategies"),
     )
     context: Optional[Dict[str, Any]] = None  # Previous analysis context for data reuse
+    allow_external_data: bool = Field(default=True, strict=True, description="Allow market-data and research tools for this request")
 
     @property
     def effective_skills(self) -> Optional[List[str]]:
@@ -227,7 +228,8 @@ async def agent_chat(
         )
         skills = skill_selection.effective_skill_ids
         selected_skill_ids = skill_selection.selected_skill_ids_update
-        executor = _build_executor(config, skills or None)
+        scope_options = {} if request.allow_external_data else {"allow_external_data": False}
+        executor = _build_executor(config, skills or None, **scope_options)
 
         ctx = _build_agent_chat_context(request, config, skills)
 
@@ -350,11 +352,11 @@ async def send_chat_to_notification(request: SendChatRequest):
     return {"success": True}
 
 
-def _build_executor(config, skills: Optional[List[str]] = None):
+def _build_executor(config, skills: Optional[List[str]] = None, *, allow_external_data: bool = True):
     """Build and return the backend-neutral Chat executor (sync helper)."""
     from src.agent.factory import build_agent_chat_executor
 
-    return build_agent_chat_executor(config, skills=skills)
+    return build_agent_chat_executor(config, skills=skills, allow_external_data=allow_external_data)
 
 
 def _get_agent_chat_status(config) -> Dict[str, Any]:
@@ -571,7 +573,8 @@ async def agent_chat_stream(
         fut = None
         try:
             try:
-                executor = await asyncio.to_thread(_build_executor, config, skills or None)
+                scope_options = {} if request.allow_external_data else {"allow_external_data": False}
+                executor = await asyncio.to_thread(_build_executor, config, skills or None, **scope_options)
                 turn = await asyncio.to_thread(
                     executor.prepare_turn,
                     message=request.message,

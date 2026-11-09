@@ -1,6 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
+import { ensureAgentArtifactConversation } from "../conversations/agent-artifact-runtime.ts";
 
 import {
   cancelRuntimeJob,
@@ -289,12 +290,21 @@ export async function runCinemaAgentJob(input: {
   readonly signal?: AbortSignal;
   readonly onEvents: (events: readonly CinemaRunEvent[], status: CinemaRunStatus) => void;
   readonly control?: CinemaRuntimeControl;
+  readonly prepareConversation?: typeof ensureAgentArtifactConversation;
 }): Promise<{ status: CinemaRunStatus; failureMessage: string | null }> {
   const adapter = CINEMA_RUNTIME_ADAPTERS[input.kind];
   const control = input.control ?? DEFAULT_CONTROL;
   const authority = runtimeAuthority(input.userId, input.conversationId);
   if (!JOB_ID.test(input.runId)) throw new TypeError("Cinema Runtime run identity is invalid.");
   sealedPayload(input.requestPayload);
+  if (input.signal?.aborted) return { status: "aborted", failureMessage: null };
+  // A first-turn film needs the same durable chat owner as other specialists.
+  // Prepare it before generation; a completed render cannot repair missing
+  // conversation ownership after its worker has already skipped artifact setup.
+  await (input.prepareConversation ?? ensureAgentArtifactConversation)({
+    userId: input.userId,
+    conversationPublicId: input.conversationId,
+  });
   if (input.signal?.aborted) return { status: "aborted", failureMessage: null };
   let job = requireAdapterJob(
     adapter,

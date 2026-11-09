@@ -374,6 +374,18 @@ export function attachmentRuntimeAgents(): readonly RuntimeAgentProfile[] {
   return RUNTIME_AGENT_PROFILES.filter((agent) => agent.acceptsAttachments);
 }
 
+/** Whether a runtime agent can start and publish results on this transport. */
+export function runtimeAgentSupportsDelivery(
+  agentId: string,
+  deliveryChannel?: "telegram" | "whatsapp",
+): boolean {
+  // Other agents are launched and observed by the mounted chat surface. A
+  // messaging gateway has no such surface, even though its conversation uses
+  // dashboard_terminal. Only Max Research currently owns server-side startup,
+  // transcript persistence and a transport-consumable result.
+  return !deliveryChannel || agentId === "max-research";
+}
+
 /** Runtime agents a super-agent turn may start itself, on this surface. */
 export function modelLaunchableRuntimeAgents(
   surface: CapabilitySurface,

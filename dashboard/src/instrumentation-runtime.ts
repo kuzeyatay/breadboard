@@ -6,6 +6,13 @@ import { startRuntimeMemorySampling } from "./lib/runtime-memory.ts";
 // gateways are registered with the native Runtime V2 scheduler/service engine;
 // instrumentation must never create a background process or timer for them.
 startRuntimeMemorySampling();
+// Recover persisted teams and cross-chat deliveries through the authenticated
+// route boundary. Importing their dispatch graph here makes instrumentation
+// trace specialist workspaces and user data into the standalone package.
+// The handoff is finite; Runtime V2 retains process and cancellation ownership.
+void Promise.all([import("./lib/db.ts"), import("./lib/conversations/coordination-recovery.ts")]).then(async ([{ default: db }, { recoverPendingChatMessages }]) => {
+  await recoverPendingChatMessages(db);
+}).catch(() => { /* Durable outboxes are also recovered on the next tool read. */ });
 
 // One pass, no timer: warm the OS file cache for the gardens opened last, then
 // parse the most recent one in slices so its first open after a restart finds

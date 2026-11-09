@@ -286,6 +286,7 @@ async function submitTranscription(input: {
       legacyJobId: input.job.id,
       clusterId: input.job.clusterId,
       inputKind: input.job.inputKind,
+      ...(input.job.mediaOriginPath ? { originMedia: true } : {}),
     },
     inputUploads: input.upload ? [{ uploadId: input.upload.uploadId }] : [],
   };

@@ -100,7 +100,7 @@ export default function InlineMusicProducerRun({ runId, task, persistedContent =
             reported.current = true;
             terminal.current?.({ outcome, content: summary });
             if (outcome === "completed")
-              notifyTaskCompleted(task);
+              notifyTaskCompleted(task, { runId });
           }
         }
       }
@@ -134,7 +134,7 @@ export default function InlineMusicProducerRun({ runId, task, persistedContent =
       agentName="Music Producer"
       showTokenUsage={false}
     />
-    <div className="bb-agent-run-card">
+    <div data-notification-run={runId} className="bb-agent-run-card">
     <div className="bb-agent-run-header"><span className="bb-agent-run-title" style={{ justifySelf: "start" }}>Music Producer</span></div>
     <div className="space-y-4 px-5 py-4">
       <div className="text-sm text-[var(--ink-muted)]">{status === "running" ? stage : status}</div>

@@ -220,7 +220,7 @@ export default function InlineGodsEyeRun({
     ) => {
       if (reported.current) return;
       reported.current = true;
-      if (outcome === "completed") notifyTaskCompleted(`God's Eye — ${task.slice(0, 80)}`);
+      if (outcome === "completed") notifyTaskCompleted(`God's Eye — ${task.slice(0, 80)}`, { runId });
       terminalRef.current?.({
         outcome,
         content,
@@ -317,7 +317,7 @@ export default function InlineGodsEyeRun({
         agentName="God's Eye"
         summary={terminal ? status : phase}
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <header className="bb-agent-run-header">
           <p className="bb-agent-run-title">God&apos;s Eye</p>
           <div className="flex items-center gap-2">

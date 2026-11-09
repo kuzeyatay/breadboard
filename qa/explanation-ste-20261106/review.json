@@ -1,0 +1,29 @@
+{
+  "rule": "70% of the way to ASD-STE100",
+  "interpretation": "A flexible explanation-writing guide alongside default or custom tone: clear ordering, familiar words, active voice, consistent terms, defined technical terms and usually short sentences. Retain requested depth, uncertainty and technical meaning. This is not a measured compliance percentage.",
+  "reference": "https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf",
+  "implementation": "chatmock/chatmock/council/unslop.py: shared full and compact directives, before the optional personal profile. The profile instruction explicitly preserves the explanation rule.",
+  "regressionTests": {
+    "command": "python -m unittest tests.test_unslop_coverage tests.test_council.UnslopIntegrationTests tests.test_providers.ProviderRoutesTests tests.test_council.CouncilResponsesRouteTests",
+    "passed": 54,
+    "coverage": "Provider transport and HTTP routing; full and compact writing blocks; absent, saved and removed profiles; structured editor and machine-output contracts.",
+    "compactDirectiveCharactersWithoutProfile": 3869
+  },
+  "liveReview": {
+    "replies": 12,
+    "models": ["cliproxy/gemini-3.8-flash-high", "gpt-6-luna"],
+    "paths": ["garden", "voice", "legacy-garden", "word-editor", "markdown-editor", "detailed-request"],
+    "personalProfilePresent": false,
+    "transportErrors": 0,
+    "validEditorJsonReplies": 4,
+    "detailedExplanationWords": {"gemini": 244, "gpt": 213},
+    "observations": [
+      "All replies were read. Simple answers generally began with the idea or cause. Both detailed explanations retained the requested terms and time-constant equation.",
+      "GPT gave the more concise answers. Its voice reply was 26 words; Gemini's was 77 words. Gemini added an unnecessary farad detail in the Word explanation.",
+      "Some sentences still exceed 25 words, which is a flexible target in this rule. This evaluation does not establish strict STE compliance or reliable adherence on every future turn.",
+      "Style checks do not establish factual accuracy. The Gemini garden answer overgeneralized capacitor discharge after disconnection; a discharge path is needed. No technical content was edited by the harness."
+    ],
+    "method": "Live local gateway requests with production prompt builders and no client-supplied style directive. This is not a full UI test. Raw replies and model routing are preserved in replies.json."
+  },
+  "activation": "Only the verified source-based ChatMock worker was restarted. Its supervisor replaced it, and /health returned ok. See activation.json for the process and tested source hash."
+}

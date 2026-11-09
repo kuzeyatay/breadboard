@@ -18,19 +18,21 @@ const { connectSubscriptionVoice, splitSpeechText, splitLiveSpeechText, preloadS
 
 function requestedScript(body) {
   const {text} = JSON.parse(body);
-  const prefix = 'Read aloud exactly this text. Say only these words, with no introduction or commentary: ';
-  assert.ok(text.startsWith(prefix), 'every passage explicitly requests a verbatim reading');
-  return text.slice(prefix.length);
+  assert.equal(typeof text, 'string');
+  return text;
 }
 
 function voiceChannel({ confirm = true } = {}) {
+  let contextClock = 1e12;
   const channel = {
     readyState: 'open', sent: [],
     close() { this.onclose?.(); },
     emit(message) { this.onmessage?.({ data: JSON.stringify(message) }); },
     send(data) {
       this.sent.push(JSON.parse(data));
-      if (confirm) queueMicrotask(() => this.emit({ type: 'session.updated' }));
+      if (confirm) queueMicrotask(() => this.emit(JSON.parse(data).type==='session.context.append'
+        ? {type:'session.context.appended',start_ms:contextClock,end_ms:++contextClock}
+        : {type:'session.updated'}));
     },
   };
   queueMicrotask(() => channel.emit({ type: 'session.started' }));
@@ -223,9 +225,10 @@ test("subscription speech selects its mode and reports progress only after audio
 test("all microphone surfaces use a live subscription stream and release it", async () => {
   for (const file of ["components/voice-conversation-overlay.tsx", "components/speech-dictation-button.tsx"]) {
     const source = await fs.readFile(root + "src/app/" + file, "utf8");
-    assert.match(source, /connectSubscriptionVoice\(\{\s*microphone: stream|openDictationProvider\(stream,/);
+    assert.match(source, /connectSubscriptionVoice\(\{[^}]*\bmicrophone:\s*stream|openDictationProvider\(stream,/);
     assert.match(source, /finishTranscript\(/);
     if (file === 'components/voice-conversation-overlay.tsx') {
+      assert.match(source, /connectSubscriptionVoice\(\{[^}]*\bmode:\s*'conversation'/);
       assert.match(source, /const retiring = subscriptionRef\.current;/);
       assert.match(source, /subscriptionRetirement\.current = Promise\.all\(\[subscriptionRetirement\.current, retiring\.close\(\)\]/);
     } else assert.match(source, /subscriptionRef\.current\?\.close\(/);
@@ -404,8 +407,37 @@ test('delta-only transcription settles without a final event or replaying the re
   const voice = await connectSubscriptionVoice({ microphone: {} }); t.after(() => voice.close());
   fixture.push(Response.json({ cursor: 2, events: [{ type: 'transcriptDelta', role: 'user', text: 'The complete final words.' }] }));
   await waitFor(() => voice.transcript() === 'The complete final words.');
+  const started = performance.now();
   assert.equal(await voice.finishTranscript({ settleFinal: true }), 'The complete final words.');
+  assert.ok(performance.now() - started < 1300, 'stable conversation words should not incur the old 1.5 second floor');
   assert.equal(fixture.creates, 1);
+});
+
+test('conversation reuses transcript quiet time observed before the acoustic endpoint', async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} }); t.after(() => voice.close());
+  fixture.push(Response.json({ cursor: 2, events: [{ type: 'transcriptDelta', role: 'user', text: 'These words have already settled.' }] }));
+  await waitFor(() => voice.transcript() === 'These words have already settled.');
+  await new Promise(resolve => setTimeout(resolve, 950));
+  const started = performance.now();
+  assert.equal(await voice.finishTranscript({ settleFinal: true }), 'These words have already settled.');
+  assert.ok(performance.now() - started < 400, 'do not add a second 600ms wait after end-of-speech');
+});
+
+test('new words during the endpoint guard restart transcript settling', async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} }); t.after(() => voice.close());
+  fixture.push(Response.json({ cursor: 2, events: [{ type: 'transcriptDelta', role: 'user', text: 'Include the' }] }));
+  await waitFor(() => voice.transcript() === 'Include the');
+  await new Promise(resolve => setTimeout(resolve, 950));
+  let finished = false;
+  const final = voice.finishTranscript({ settleFinal: true }).then(text => { finished = true; return text; });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  fixture.push(Response.json({ cursor: 3, events: [{ type: 'transcriptDelta', role: 'user', text: ' correction too.' }] }));
+  await waitFor(() => voice.transcript() === 'Include the correction too.');
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(finished, false, 'new activity invalidates the previously stable prefix');
+  assert.equal(await final, 'Include the correction too.');
 });
 
 test('dictation accepts completed media turns without waiting for a missing or delayed relay', async t => {
@@ -582,7 +614,7 @@ test('a slightly different reading is accepted; a truncated one asks to resume t
   const close = voice.speak('Read every word.');
   await waitFor(() => fixture.creates === 2);
   fixture.peer.energy += 0.1;
-  fixture.peer.channel.emit({ type: 'turn.done', turn: { id: 'close', role: 'assistant', transcript: 'Read last.' } });
+  fixture.peer.channel.emit({ type: 'turn.done', turn: { id: 'close', role: 'assistant', transcript: 'Read every last word.' } });
   await close;
   assert.equal(voice.isHealthy(), true);
   const truncated = assert.rejects(voice.speak('Read every single word.'), error => error.resumeAt === 0 && error.safeToRetry === true);
@@ -734,14 +766,15 @@ test('voice confirmation can be cancelled and missing selections never fall back
   assert.equal(missing.deletes, 1);
 });
 
-function conversationFixture(t) {
+function conversationFixture(t, { pronunciations = '' } = {}) {
   const requests = [];
   const players = recordedVoiceFixture(t);
   const previous = Object.fromEntries(['AudioContext', 'RTCPeerConnection', 'Audio', 'MediaStream']
     .map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
   const node = () => ({ gain: { value: 0 }, connect() { return this; }, disconnect() {}, start() {}, stop() {} });
   const sessions = [], posts = [], deleted = [], peers = [], microphones = [];
-  let holdReaderSetup = false;
+  let holdReaderSetup = false, holdInputSetup = false, releaseInputSetup;
+  let holdInputAllocation = false, releaseInputAllocation;
   let postError = false;
   globalThis.AudioContext = class {
     state = 'running'; destination = {};
@@ -775,7 +808,14 @@ function conversationFixture(t) {
     if (url === '/api/speech/subscription') {
       const session = { id: String(sessions.length), initial: true, mode: JSON.parse(options.body).mode };
       sessions.push(session);
-      return Response.json({ id: session.id, voice: 'sol' });
+      if (holdInputAllocation && session.mode === 'conversation') {
+        return new Promise((resolve,reject)=>{
+          const abort=()=>reject(options.signal.reason);
+          options.signal.addEventListener('abort',abort,{once:true});
+          releaseInputAllocation=()=>{options.signal.removeEventListener('abort',abort);resolve(Response.json({id:session.id,voice:'sol',pronunciations}));};
+        });
+      }
+      return Response.json({ id: session.id, voice: 'sol', pronunciations });
     }
     const id = url.split('/').at(-1).split('?')[0], session = sessions[Number(id)];
     if (options.method === 'DELETE') { deleted.push(id); return Response.json({}); }
@@ -787,6 +827,13 @@ function conversationFixture(t) {
     }
     if (session.initial) {
       session.initial = false;
+      if (holdInputSetup && session.mode === 'conversation') {
+        return new Promise((resolve,reject)=>{
+          const abort=()=>reject(options.signal.reason);
+          options.signal.addEventListener('abort',abort,{once:true});
+          releaseInputSetup=()=>{options.signal.removeEventListener('abort',abort);resolve(Response.json({cursor:1,events:[{type:'sdp',sdp:'v=0'}]}));};
+        });
+      }
       if (holdReaderSetup && session.mode === 'speak') {
         return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
       }
@@ -804,6 +851,10 @@ function conversationFixture(t) {
   });
   return { players, sessions, posts, requests, deleted, peers, microphones,
     set holdReaderSetup(value) { holdReaderSetup = value; },
+    set holdInputSetup(value) { holdInputSetup = value; },
+    set holdInputAllocation(value) { holdInputAllocation = value; },
+    releaseAllocation() { releaseInputAllocation(); },
+    releaseInput() { releaseInputSetup(); },
     set postError(value) { postError = value; },
   };
 }
@@ -1260,9 +1311,8 @@ test('read-aloud waits for both retiring cached connections after voice gives up
   t.after(() => clearSubscriptionPreload());
   await preloadSubscriptionVoice('1', { enabled: true, speechProvider: 'chatgpt', openaiVoice: 'sol' });
   const conversation = await connectSubscriptionVoice({ mode: 'conversation', listening: false });
-  const reader = await connectSubscriptionVoice({ mode: 'speak' });
+  await conversation.prepareSpeaker();
   await conversation.release(true);
-  await reader.release(true);
   await waitFor(() => fixture.sessions.length === 2);
   const fetch = globalThis.fetch;
   const finishDeletes = [];
@@ -1342,13 +1392,31 @@ test('conversational wording reaches the separate reader without adding delivery
   const text = "That's the latest result. The date is October 3.";
   const reading = voice.speak(text, true);
   await waitFor(() => posts.length === 1);
-  assert.equal(requests[0], `Read aloud exactly this text. Say only these words, with no introduction or commentary: ${text}`);
+  assert.equal(requests[0], text);
   assert.equal(posts[0].text, text);
   sessions[1].deliver(text); await reading;
   const plain = voice.speak('Read this exact sentence.');
   await waitFor(() => posts.length === 2);
-  assert.equal(requests[1], 'Read aloud exactly this text. Say only these words, with no introduction or commentary: Read this exact sentence.');
+  assert.equal(requests[1], 'Read this exact sentence.');
   sessions[1].deliver('Read this exact sentence.'); await plain;
+});
+
+test('conversation spells explicit temperature units out and still delivers every sentence', { timeout: 10000 }, async t => {
+  const { sessions, posts } = conversationFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} }); t.after(() => voice.close());
+  const reading = voice.speak('The high is 11°C and the low is 5°C. Keep the window closed.');
+  await waitFor(() => posts.length === 1);
+  assert.equal(posts[0].text, 'The high is 11 degrees Celsius and the low is 5 degrees Celsius. Keep the window closed.');
+  sessions[1].deliver('The high is eleven degrees Celsius and the low is five degrees. Keep the window closed.'); await reading;
+});
+
+test('ordinary read-aloud keeps the original temperature script', { timeout: 10000 }, async t => {
+  const { sessions, posts } = conversationFixture(t);
+  const voice = await connectSubscriptionVoice(); t.after(() => voice.close());
+  const reading = voice.speak('The reading is 11°C. Keep the window closed.');
+  await waitFor(() => posts.length === 1);
+  assert.equal(posts[0].text, 'The reading is 11°C. Keep the window closed.');
+  sessions[0].deliver('The reading is eleven degrees Celsius. Keep the window closed.'); await reading;
 });
 
 
@@ -1380,4 +1448,918 @@ test('conversation with activity but no final event settles complete stable word
   fixture.push(Response.json({ cursor: 3, events: [{ type: 'transcriptDelta', role: 'user', text: ' last words.' }] }));
   assert.equal(await final, 'Keep the last words.');
   assert.equal(voice.isHealthy(), true);
+});
+
+test('a late cumulative provider final settles the current utterance without repeating prior requests', async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} }); t.after(() => voice.close());
+  fixture.peer.channel.emit({ type: 'input_transcript.added', start_ms: 0, end_ms: 1000, item: { id: 'old', text: 'Earlier request' } });
+  voice.resetTranscript();
+  fixture.peer.channel.emit({ type: 'input_transcript.added', start_ms: 2000, end_ms: 3000, item: { id: 'new', text: 'New request' } });
+  fixture.peer.channel.emit({ type: 'turn.done', turn: { id: 'combined', role: 'user', start_ms: 0, end_ms: 3200, transcript: 'Earlier request New request' } });
+  const started = performance.now();
+  assert.equal(await voice.finishTranscript({ settleFinal: true }), 'New request');
+  assert.ok(performance.now() - started < 1000, 'fresh confirmed words do not wait for an impossible match to the cumulative final');
+  assert.equal(voice.isHealthy(), true);
+});
+
+test('live conversation recovers its next answer when a reading command never acknowledges', {timeout:9000},async t=>{
+ const {sessions,posts,deleted}=conversationFixture(t);
+ const voice=await connectSubscriptionVoice({microphone:{}});t.after(()=>voice.close());await voice.prepareSpeaker();
+ const fetch=globalThis.fetch;let requests=0,commandSignal;
+ t.mock.method(globalThis,'fetch',(url,options)=>{
+  if(options?.method==='POST'&&JSON.parse(options.body).text&&requests++===0){commandSignal=options.signal;return new Promise((_,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true}));}
+  return fetch(url,options);
+ });
+ const started=Date.now();await assert.rejects(voice.speak('This answer cannot start.'),/voice service did not respond/);
+ assert.ok(Date.now()-started<6500,'no fifty-second silent command wait');assert.equal(commandSignal.aborted,true);
+ assert.equal(requests,1,'ambiguous acknowledgement is not replayed');assert.equal(voice.isHealthy(),true);
+ assert.deepEqual(deleted,['1']);
+ const next=voice.speak('The next answer can speak.');await waitFor(()=>posts.length===1);sessions[2].deliver(posts[0].text);await next;
+ assert.equal(requests,2);assert.equal(voice.isHealthy(),true);
+});
+
+ test('provider quota failure is not misreported as a selected-voice failure', async t=>{
+ const fixture=transportFixture(t);const voice=await connectSubscriptionVoice();t.after(()=>voice.close());
+ fixture.peer.channel.emit({type:'error',error:{code:'rate_limit_exceeded'}});
+ await assert.rejects(voice.speak('This must not be sent.'),/speech provider is temporarily rate limited/);
+ assert.equal(voice.isHealthy(),false);
+ });
+ test('a confirmed session reports later provider failures separately from voice selection', async t=>{
+ const fixture=transportFixture(t);const voice=await connectSubscriptionVoice();t.after(()=>voice.close());
+ fixture.peer.channel.emit({type:'error',error:{code:'server_error'}});
+ await assert.rejects(voice.speak('This must not be sent.'),/speech provider connection failed/);
+ });
+
+test('conversation prepares its muted reader while microphone media is still connecting', async t=>{
+ const fixture=conversationFixture(t);fixture.holdInputSetup=true;
+ const controller=new AbortController();
+ const connecting=connectSubscriptionVoice({mode:'conversation',microphone:{},signal:controller.signal});
+ void connecting.catch(()=>{});
+ t.after(async()=>{controller.abort();await connecting.catch(()=>{});});
+ await waitFor(()=>fixture.sessions.length===2);
+ assert.deepEqual(fixture.sessions.map(s=>s.mode),['conversation','speak']);
+ assert.deepEqual(fixture.posts,[]);
+ assert.ok(fixture.players.every(p=>p.volume===0),'warming must stay silent');
+ fixture.releaseInput();const voice=await connecting;
+ await voice.prepareSpeaker();assert.equal(fixture.sessions.length,2,'first answer reuses the parallel reader');
+ await voice.close();assert.deepEqual(fixture.deleted.sort(),['0','1']);
+});
+test('cancelling parallel conversation startup releases both reserved slots',async t=>{
+ const fixture=conversationFixture(t);fixture.holdInputSetup=true;fixture.holdReaderSetup=true;
+ const controller=new AbortController();
+ const connecting=connectSubscriptionVoice({mode:'conversation',microphone:{},signal:controller.signal});
+ void connecting.catch(()=>{});
+ t.after(async()=>{controller.abort();await connecting.catch(()=>{});});
+ await waitFor(()=>fixture.sessions.length===2);controller.abort();
+ await assert.rejects(connecting,{name:'AbortError'});
+ assert.deepEqual(fixture.deleted.sort(),['0','1']);assert.deepEqual(fixture.posts,[]);
+});
+test('input-only dictation never reserves an unused parallel speaker',async t=>{
+ const fixture=conversationFixture(t);
+ const voice=await connectSubscriptionVoice({mode:'conversation',microphone:{},inputOnly:true});
+ try{assert.equal(fixture.sessions.length,1);assert.deepEqual(fixture.posts,[]);}
+ finally{await voice.close();}
+});
+
+
+test('an accepted reading with no audio or reader activity recovers before a five-second wait', async t => {
+  const fixture = conversationFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} });
+  t.after(() => voice.close());
+  const now = Date.now.bind(Date); let offset = 0;
+  t.mock.method(Date, 'now', () => now() + offset);
+  const reading = voice.speak('The complete response is retained.');
+  void reading.catch(() => {});
+  await waitFor(() => fixture.posts.length === 1);
+  offset += 3200;
+  const recoveryStarted = performance.now();
+  await waitFor(() => fixture.posts.length === 2);
+  assert.ok(performance.now() - recoveryStarted < 1000, 'a confirmed idle reader must recover near three seconds');
+  assert.deepEqual(fixture.deleted, ['1']);
+  assert.equal(fixture.players[1].volume, 0);
+  assert.equal(fixture.posts[1].text, fixture.posts[0].text);
+  fixture.sessions[2].deliver(fixture.posts[1].text);
+  await reading;
+  assert.equal(voice.isHealthy(), true);
+});
+
+test('reader activity retains the audio allowance without duplicating a slow first word', async t => {
+  const fixture = conversationFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} });
+  t.after(() => voice.close());
+  const now = Date.now.bind(Date); let offset = 0;
+  t.mock.method(Date, 'now', () => now() + offset);
+  const reading = voice.speak('These words arrive after generation starts.');
+  await waitFor(() => fixture.posts.length === 1);
+  fixture.peers[1].channel.emit({type:'turn.created',turn:{id:'starting',role:'assistant'}});
+  offset += 3200;
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(fixture.posts.length, 1);
+  assert.deepEqual(fixture.deleted, []);
+  fixture.sessions[1].deliver(fixture.posts[0].text);
+  fixture.peers[1].channel.emit({type:'turn.done',turn:{id:'starting',role:'assistant',transcript:fixture.posts[0].text}});
+  await reading;
+});
+
+test('an unfinalized media span retains a last word arriving after a one-second recognition gap', async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice({microphone:{}});
+  t.after(() => voice.close());
+  let offset = 0; const now = Date.now.bind(Date);
+  t.mock.method(Date, 'now', () => now() + offset);
+  const emit = value => fixture.peer.channel.emit(value);
+  emit({type:'input_transcript.added',start_ms:0,end_ms:200,item:{id:'prefix',text:'Keep the last'}});
+  let finished = false;
+  const result = voice.finishTranscript({settleFinal:true}).then(text => {finished=true;return text;});
+  offset += 1000;
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(finished, false, 'the pending media span must not commit a truncated request');
+  emit({type:'input_transcript.added',start_ms:800,end_ms:1000,item:{id:'tail',text:' word'}});
+  emit({type:'turn.done',turn:{id:'complete',role:'user',start_ms:0,end_ms:1200,transcript:'Keep the last word.'}});
+  offset += 250;
+  assert.equal(await result, 'Keep the last word.');
+  voice.resetTranscript();
+  emit({type:'turn.done',turn:{id:'complete',role:'user',start_ms:0,end_ms:1200,transcript:'Keep the last word.'}});
+  assert.equal(voice.transcript(), '');
+});
+
+test('a new acoustic turn drops old delayed recognition without clipping early interruption words', async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice({microphone:{}});
+  t.after(() => voice.close());
+  let offset = 0; const now = Date.now.bind(Date);
+  t.mock.method(Date, 'now', () => now() + offset);
+  const emit = value => fixture.peer.channel.emit(value);
+  emit({type:'input_transcript.added',start_ms:0,end_ms:400,item:{id:'old',text:'An old request'}});
+  voice.resetTranscript();
+  emit({type:'input_transcript.added',start_ms:400,end_ms:600,item:{id:'late',text:' please'}});
+  offset += 2200;
+  emit({type:'input_transcript.added',start_ms:2000,end_ms:2400,item:{id:'new',text:'Actually stop'}});
+  voice.beginTranscript?.();
+  assert.equal(voice.transcript(), 'Actually stop');
+});
+
+test('the direct media transcript mutes an abandoned reading before a missing relay or final', {timeout:3000}, async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice();t.after(() => voice.close());
+  const script = 'A rainbow appears when sunlight shines through raindrops.';
+  const rejected=assert.rejects(voice.speak(script), error=>error.resumeAt===0);
+  await waitFor(()=>fixture.creates===2);
+  fixture.peer.channel.emit({type:'output_transcript.added',item:{text:'It is something '}});
+  await rejected;
+  assert.equal(fixture.players.find(p=>p.srcObject).volume,0);
+});
+
+test('direct output words remain authoritative when a stale relay arrives', {timeout:3000}, async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice();t.after(() => voice.close());
+  const script='Keep the selected reading intact.';
+  const reading=voice.speak(script);await waitFor(()=>fixture.creates===2);
+  fixture.peer.channel.emit({type:'output_transcript.added',item:{text:'Keep the selected '}});
+  fixture.push(Response.json({cursor:2,events:[{type:'transcriptDelta',role:'assistant',text:'Unrelated previous words entirely '}]}));
+  await new Promise(resolve=>setTimeout(resolve,75));
+  fixture.peer.energy+=0.1;
+  fixture.peer.channel.emit({type:'output_transcript.added',item:{text:'reading intact.'}});
+  fixture.peer.channel.emit({type:'turn.done',turn:{id:'reading',role:'assistant',transcript:script}});
+  await reading;assert.equal(voice.isHealthy(),true);
+});
+
+test('short numeric answers reject added words or the wrong language', {timeout:3000}, async t => {
+  const fixture=transportFixture(t);
+  const voice=await connectSubscriptionVoice();t.after(()=>voice.close());
+  const rejected=assert.rejects(voice.speak('28'),error=>typeof error.resumeAt==='number');
+  await waitFor(()=>fixture.creates===2);
+  fixture.peer.energy+=0.1;
+  fixture.peer.channel.emit({type:'turn.done',turn:{id:'wrong-number',role:'assistant',transcript:'Ventotto ottobre.'}});
+  await rejected;assert.equal(fixture.players.find(p=>p.srcObject).volume,0);
+});
+
+test('a correct numeric reading remains live and is spelled before submission', async t => {
+  const fixture=conversationFixture(t);
+  const voice=await connectSubscriptionVoice({microphone:{}});t.after(()=>voice.close());
+  const reading=voice.speak('28');await waitFor(()=>fixture.posts.length===1);
+  assert.equal(fixture.posts[0].text,'The answer is twenty eight.');
+  fixture.sessions[1].deliver('The answer is twenty-eight.');
+  await reading;assert.equal(voice.isHealthy(),true);
+});
+
+test('natural contraction expansion does not restart an otherwise exact reading', {timeout:3000}, async t => {
+  const fixture=transportFixture(t);
+  const voice=await connectSubscriptionVoice();t.after(()=>voice.close());
+  const reading=voice.speak("It's going well. What's the plan?");
+  const completed=reading.then(()=>({ok:true}),error=>({ok:false,error:String(error)}));
+  await waitFor(()=>fixture.creates===2);
+  fixture.peer.energy+=0.1;
+  fixture.peer.channel.emit({type:'output_transcript.added',item:{text:'It is going well. What is the plan? '}});
+  fixture.peer.channel.emit({type:'turn.done',turn:{id:'expanded-contractions',role:'assistant',transcript:'It is going well. What is the plan?'}});
+  assert.deepEqual(await completed,{ok:true});
+  assert.equal(voice.isHealthy(),true);
+});
+
+
+for(const ending of ['Done.','Stay warm.','Do not.'])test('a missing short ending is read completely: '+ending,{timeout:4000},async t=>{
+ const {sessions,posts,deleted}=conversationFixture(t);
+ const voice=await connectSubscriptionVoice({microphone:{}});t.after(()=>voice.close());
+ const first='This is the complete first sentence. ',text=first+ending;
+ let finished=false;
+ const reading=voice.speak(text).then(()=>{finished=true;});
+ await waitFor(()=>posts.length===1);
+ sessions[1].deliver(first.trim());
+ await waitFor(()=>posts.length===2||finished);
+ assert.equal(posts.length,2,'a short unspoken final sentence must not be discarded');
+ assert.equal(posts[1].text,ending,'completed sentences must not be repeated');
+ assert.deepEqual(deleted,['1']);
+ sessions[2].deliver(ending);
+ await reading;assert.equal(voice.isHealthy(),true);
+});
+
+
+for (const holdReaderSetup of [false, true]) {
+  test(`closing a preloaded conversation with a ${holdReaderSetup ? 'connecting' : 'ready'} reader permits reopening`, { timeout: 4000 }, async t => {
+    const fixture = conversationFixture(t);
+    fixture.holdReaderSetup = holdReaderSetup;
+    await preloadSubscriptionVoice('1', { enabled: true, speechProvider: 'chatgpt', openaiVoice: 'sol' });
+    const controller = new AbortController();
+    const voice = await connectSubscriptionVoice({ microphone: {}, signal: controller.signal });
+    const preparing = voice.prepareSpeaker().catch(() => {});
+    await waitFor(() => fixture.sessions.length === 2 && !fixture.sessions[1].initial);
+    if (!holdReaderSetup) await preparing;
+    assert.deepEqual(fixture.sessions.map(session => session.mode), ['conversation', 'speak']);
+    controller.abort();
+    await voice.close();
+    await preparing;
+    await clearSubscriptionPreload();
+    assert.deepEqual(fixture.deleted.toSorted(), ['0', '1'], 'both old slots close exactly once');
+    fixture.holdReaderSetup = false;
+    await preloadSubscriptionVoice('1', { enabled: true, speechProvider: 'chatgpt', openaiVoice: 'sol' });
+    const reopened = await connectSubscriptionVoice({ microphone: {} });
+    await reopened.prepareSpeaker();
+    assert.deepEqual(fixture.sessions.map(session => session.mode), ['conversation', 'speak', 'conversation', 'speak'],
+      'reopening creates exactly one new input and its prepared output');
+    assert.equal(reopened.isHealthy(), true);
+    assert.ok(fixture.players.every(player => player.volume === 0), 'reopening alone cannot play speech');
+    await reopened.close();
+    await clearSubscriptionPreload();
+    assert.deepEqual(fixture.deleted.toSorted(), ['0', '1', '2', '3'], 'all owned slots close exactly once');
+  });
+}
+
+
+for (const missing of ['Wait.', 'Stay warm.', 'Do not enter.', 'Keep the door closed.']) {
+  test('a missing middle sentence triggers readout recovery: ' + missing, { timeout: 4000 }, async t => {
+    const { sessions, posts, deleted } = conversationFixture(t);
+    const voice = await connectSubscriptionVoice({ microphone: {} });
+    t.after(() => voice.close());
+    const first = 'The first sentence is complete. ';
+    const last = 'Here is the next complete sentence.';
+    const text = first + missing + ' ' + last;
+    let finished = false;
+    const reading = voice.speak(text).then(() => { finished = true; });
+    await waitFor(() => posts.length === 1);
+    sessions[1].deliver(first + last);
+    await waitFor(() => posts.length === 2 || finished);
+    assert.equal(posts.length, 2, 'skipped sentences cannot count as a complete reading');
+    assert.equal(posts[1].text, missing + ' ' + last, 'recovery starts at the first unread sentence');
+    assert.deepEqual(deleted, ['1']);
+    sessions[2].deliver(missing + ' ' + last);
+    await reading;
+    assert.equal(voice.isHealthy(), true);
+  });
+}
+
+
+for (const [first, spokenFirst, pronunciations] of [
+  ['AI is ready. ', 'Artificial intelligence is ready. ', 'AI = Artificial intelligence'],
+  ['International Business Machines is ready. ', 'IBM is ready. ', 'International Business Machines = IBM'],
+  ['SQL is ready. ', 'sequel is ready. ', 'SQL = sequel\nsequel = follow-up'],
+  ['It is 11°C. ', 'It is 11 degrees Celsius. ', ''],
+  ['Water is 11°C. ', 'Liquid is 11 degrees Celsius. ', 'Water = Liquid'],
+]) test('recovery preserves every remaining word after a pronunciation: ' + first, {timeout:4000}, async t=>{
+  const {sessions,posts}=conversationFixture(t,{pronunciations});
+  const voice=await connectSubscriptionVoice({microphone:{}});t.after(()=>voice.close());
+  const rest='Read the remaining sentences. Stay here.';
+  let finished=false;
+  const reading=voice.speak(first+rest).then(()=>{finished=true;});
+  await waitFor(()=>posts.length===1);
+  assert.equal(posts[0].text,spokenFirst+rest);
+  sessions[1].deliver(spokenFirst.trim());
+  await waitFor(()=>posts.length===2||finished);
+  assert.equal(posts.length,2,'an expanded first sentence must not discard the remainder');
+  assert.equal(posts[1].text,rest,'the recovery offset belongs to the original script');
+  sessions[2].deliver(rest);await reading;
+  assert.equal(voice.isHealthy(),true);
+});
+
+test('recovery after a long passage retains the original paragraph spacing', {timeout:4000}, async t=>{
+  const {sessions,posts}=conversationFixture(t);
+  const voice=await connectSubscriptionVoice({microphone:{}});t.after(()=>voice.close());
+  const first='Every sentence is read accurately. '.repeat(107).trim();
+  const next='The second passage begins with several words that are deliberately long enough to start a new transport request. ';
+  const last='Keep all remaining words.';
+  const text=first+'\n\n    '+next+last;
+  assert.deepEqual(splitLiveSpeechText(text),[first,next+last]);
+  const reading=voice.speak(text);
+  await waitFor(()=>posts.length===1);sessions[1].deliver(first);
+  await waitFor(()=>posts.length===2);sessions[1].deliver(next.trim());
+  await waitFor(()=>posts.length===3);
+  assert.equal(posts[2].text,last,'discarded chunk whitespace must not shift recovery into already spoken words');
+  sessions[2].deliver(last);await reading;
+});
+
+test('unfinished recognition retains a tail arriving after the recorded 2.83 second gap', async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice({microphone:{}});t.after(() => voice.close());
+  let offset=0;const now=Date.now.bind(Date);t.mock.method(Date,'now',()=>now()+offset);
+  const emit=message=>fixture.peer.channel.emit(message);
+  emit({type:'input_transcript.added',start_ms:0,end_ms:1000,item:{id:'head',text:'Compare the routes and include'}});
+  emit({type:'turn.created',turn:{id:'unfinished',role:'user',start_ms:0,end_ms:1000}});
+  let finished=false;const result=voice.finishTranscript({settleFinal:true}).then(text=>{finished=true;return text;});
+  offset+=2830;await new Promise(resolve=>setTimeout(resolve,60));
+  assert.equal(finished,false,'a stalled recognizer must not turn the prefix into the request');
+  emit({type:'input_transcript.added',start_ms:1000,end_ms:1400,item:{id:'tail',text:' their travel times'}});
+  emit({type:'turn.done',turn:{id:'unfinished',role:'user',start_ms:0,end_ms:1600,transcript:'Compare the routes and include their travel times.'}});
+  offset+=250;
+  assert.equal(await result,'Compare the routes and include their travel times.');
+  assert.equal(fixture.creates,1,'no second recording or provider session is started');
+});
+
+test('a missing provider final has a bounded settle path that restarts when delayed words arrive', async t => {
+  const fixture=transportFixture(t);const voice=await connectSubscriptionVoice({microphone:{}});t.after(()=>voice.close());
+  let offset=0;const now=Date.now.bind(Date);t.mock.method(Date,'now',()=>now()+offset);
+  const emit=message=>fixture.peer.channel.emit(message);
+  emit({type:'input_transcript.added',start_ms:0,end_ms:1000,item:{id:'head',text:'Set the reminder for'}});
+  let finished=false;const result=voice.finishTranscript({settleFinal:true}).then(text=>{finished=true;return text;});
+  offset+=2830;await new Promise(resolve=>setTimeout(resolve,60));assert.equal(finished,false);
+  emit({type:'input_transcript.added',start_ms:1000,end_ms:1400,item:{id:'tail',text:' next Tuesday'}});
+  offset+=450;await new Promise(resolve=>setTimeout(resolve,60));
+  assert.equal(finished,false,'new words must restart the unfinished recognition window');
+  offset+=2800;assert.equal(await result,'Set the reminder for next Tuesday');
+  assert.equal(voice.isHealthy(),true);
+});
+
+test('confirmed final transcription keeps the short guard even after an earlier unfinished span', async t => {
+  const fixture=transportFixture(t);const voice=await connectSubscriptionVoice({microphone:{}});t.after(()=>voice.close());
+  let offset=0;const now=Date.now.bind(Date);t.mock.method(Date,'now',()=>now()+offset);
+  const emit=message=>fixture.peer.channel.emit(message);
+  emit({type:'input_transcript.added',start_ms:0,end_ms:600,item:{id:'greeting',text:'Hello there'}});
+  emit({type:'turn.done',turn:{id:'greeting-final',role:'user',start_ms:0,end_ms:800,transcript:'Hello there.'}});
+  const started=performance.now();const result=voice.finishTranscript({settleFinal:true});offset+=250;
+  assert.equal(await result,'Hello there.');
+  assert.ok(performance.now()-started<400,'finalized speech does not inherit the unfinished-recognition wait');
+});
+
+test('audio timeline keeps later sentences audible across an early completion and a natural pause', async t => {
+  const fixture=transportFixture(t),voice=await connectSubscriptionVoice();
+  t.after(()=>voice.close());
+  const script='The first sentence has finished. The second sentence arrives after a pause. This is the final sentence.';
+  let finished=false;
+  const reading=voice.speak(script).then(()=>{finished=true;});
+  await waitFor(()=>fixture.creates===2);
+  fixture.peer.energy+=0.1;
+  fixture.peer.channel.emit({type:'turn.done',turn:{id:'long-reading',role:'assistant',start_ms:1000,end_ms:2600,transcript:script}});
+  await new Promise(resolve=>setTimeout(resolve,650));
+  assert.equal(finished,false,'generation completion and a sentence pause do not finish playback');
+  assert.equal(fixture.players.find(player=>player.srcObject)?.volume,1,'later PCM must still reach the speaker');
+  const audible=[];
+  for(let sentence=0;sentence<2;sentence++){
+    fixture.peer.energy+=0.1;
+    audible.push(fixture.players.find(player=>player.srcObject)?.volume===1);
+    await new Promise(resolve=>setTimeout(resolve,150));
+  }
+  assert.deepEqual(audible,[true,true]);
+  await reading;
+  assert.equal(fixture.players.find(player=>player.srcObject)?.volume,0);
+  assert.deepEqual(fixture.scripts,[script],'no repeated request to cover a clipped sentence');
+});
+
+test('audio timeline still needs generation completion and fresh drained samples',async t=>{
+  const fixture=transportFixture(t),voice=await connectSubscriptionVoice();t.after(()=>voice.close());
+  let finished=false;const script='Wait for the actual final word.';
+  const reading=voice.speak(script).then(()=>{finished=true;});
+  await waitFor(()=>fixture.creates===2);fixture.peer.energy+=0.1;
+  fixture.peer.channel.emit({type:'turn.created',turn:{id:'pending',role:'assistant',start_ms:200,end_ms:400,transcript:script}});
+  await new Promise(resolve=>setTimeout(resolve,800));assert.equal(finished,false,'elapsed audio timeline alone is not completion');
+  fixture.peer.channel.emit({type:'turn.done',turn:{id:'pending',role:'assistant',start_ms:200,end_ms:400,transcript:script}});
+  const completedAt=performance.now();await reading;
+  assert.ok(performance.now()-completedAt<650,'a genuinely drained answer returns the floor promptly');
+});
+
+test('audio timeline interruption mutes immediately without waiting for scheduled words',async t=>{
+  const fixture=transportFixture(t),voice=await connectSubscriptionVoice();t.after(()=>voice.close());
+  const script='The answer can be interrupted. These later sentences must not play.';
+  const reading=voice.speak(script);await waitFor(()=>fixture.creates===2);fixture.peer.energy+=0.1;
+  fixture.peer.channel.emit({type:'turn.done',turn:{id:'cancel',role:'assistant',start_ms:100,end_ms:6100,transcript:script}});
+  await new Promise(resolve=>setTimeout(resolve,150));const stoppedAt=performance.now();voice.stopSpeaking();
+  assert.equal(fixture.players.find(player=>player.srcObject)?.volume,0);
+  await reading;assert.ok(performance.now()-stoppedAt<250);
+});
+
+test('audio timeline cannot leave a stalled or frozen receiver speaking forever',async t=>{
+  const fixture=transportFixture(t),voice=await connectSubscriptionVoice();t.after(()=>voice.close());
+  const realNow=Date.now;let offset=0;t.mock.method(Date,'now',()=>realNow()+offset);
+  const script='A stalled receiver must report a failure.';
+  const reading=voice.speak(script);const failure=assert.rejects(reading,/spoken response did not finish/);
+  await waitFor(()=>fixture.creates===2);
+  fixture.peer.energy+=0.1;fixture.peer.incomingStats.totalSamplesDuration=1;
+  fixture.peer.channel.emit({type:'turn.done',turn:{id:'frozen-span',role:'assistant',start_ms:100,end_ms:2100,transcript:script}});
+  await new Promise(resolve=>setTimeout(resolve,150));offset+=34000;await failure;
+  assert.equal(fixture.players.find(player=>player.srcObject)?.volume,0);
+  assert.equal(voice.isHealthy(),false);
+});
+
+test('audio timeline allows a complete long paragraph to drain beyond thirty seconds',async t=>{
+  const fixture=transportFixture(t),voice=await connectSubscriptionVoice();t.after(()=>voice.close());
+  const realNow=Date.now;let offset=0;t.mock.method(Date,'now',()=>realNow()+offset);
+  const script='A long paragraph still owns its complete scheduled audio.';
+  let finished=false;const reading=voice.speak(script).then(()=>{finished=true;});
+  await waitFor(()=>fixture.creates===2);fixture.peer.energy+=0.1;
+  fixture.peer.channel.emit({type:'turn.done',turn:{id:'long-span',role:'assistant',start_ms:100,end_ms:41100,transcript:script}});
+  await new Promise(resolve=>setTimeout(resolve,150));offset+=31000;
+  await new Promise(resolve=>setTimeout(resolve,150));assert.equal(finished,false);
+  fixture.peer.energy+=0.1;offset+=11000;await reading;
+  assert.equal(fixture.players.find(player=>player.srcObject)?.volume,0);
+});
+
+test('measured playout does not finish during fresh concealed comfort noise', async t => {
+  const fixture=transportFixture(t), voice=await connectSubscriptionVoice();t.after(()=>voice.close());
+  const realNow=Date.now;let offset=0;t.mock.method(Date,'now',()=>realNow()+offset);
+  const peer=fixture.peer, getStats=peer.getStats.bind(peer);
+  let samples=0, concealed=0;
+  peer.getStats=async()=>{const stats=await getStats();Object.assign(stats.get('incoming'),{codecId:'codec',totalSamplesReceived:samples,concealedSamples:concealed,totalSamplesDuration:realNow()/1000});stats.set('codec',{clockRate:48000});return stats;};
+  const script='The opening sentence. The delayed ending must still be heard.';
+  let finished=false;const reading=voice.speak(script).then(()=>{finished=true;});
+  await waitFor(()=>fixture.creates===2);
+  // One reader connection is borrowed for this request; instrument that peer.
+  const reader=fixture.peer, readerStats=reader.getStats.bind(reader);
+  reader.getStats=async()=>{const stats=await readerStats();Object.assign(stats.get('incoming'),{codecId:'codec',totalSamplesReceived:samples,concealedSamples:concealed,totalSamplesDuration:realNow()/1000});stats.set('codec',{clockRate:48000});return stats;};
+  await new Promise(resolve=>setTimeout(resolve,80));
+  samples=24000;reader.energy+=0.1;
+  reader.channel.emit({type:'turn.done',turn:{id:'delayed-media',role:'assistant',start_ms:100,end_ms:1700,transcript:script}});
+  await new Promise(resolve=>setTimeout(resolve,150));
+  // A real decoder continues producing fresh comfort-noise samples while
+  // the network cannot deliver the remaining sentence.
+  samples+=96000;concealed+=96000;offset+=2200;
+  await new Promise(resolve=>setTimeout(resolve,350));
+  try { assert.equal(finished,false,'elapsed wall time and fresh concealed samples cannot stand in for later words');
+    assert.equal(fixture.players.find(player=>player.srcObject)?.volume,1);
+  } catch(error){voice.stopSpeaking();await reading;throw error;}
+  samples+=76800;reader.energy+=0.1;
+  await reading;
+  assert.equal(fixture.players.find(player=>player.srcObject)?.volume,0);
+});
+
+test('measured playout times out rather than claiming a concealed tail was spoken',async t=>{
+  const fixture=transportFixture(t),voice=await connectSubscriptionVoice();t.after(()=>voice.close());
+  const realNow=Date.now;let offset=0;t.mock.method(Date,'now',()=>realNow()+offset);
+  const script='This tail is lost in a connection failure.';
+  const reading=voice.speak(script);const failure=assert.rejects(reading,/spoken response did not finish/);
+  await waitFor(()=>fixture.creates===2);
+  const reader=fixture.peer,original=reader.getStats.bind(reader);let samples=0,concealed=0;
+  reader.getStats=async()=>{const stats=await original();Object.assign(stats.get('incoming'),{codecId:'codec',totalSamplesReceived:samples,concealedSamples:concealed,totalSamplesDuration:realNow()/1000});stats.set('codec',{clockRate:48000});return stats;};
+  await new Promise(resolve=>setTimeout(resolve,80));samples=4800;reader.energy+=0.1;
+  reader.channel.emit({type:'turn.done',turn:{id:'lost-media',role:'assistant',start_ms:100,end_ms:2100,transcript:script}});
+  await new Promise(resolve=>setTimeout(resolve,150));samples+=48000*35;concealed+=48000*35;offset+=35000;
+  await failure;assert.equal(fixture.players.find(player=>player.srcObject)?.volume,0);
+});
+
+test('stale completed assistant events cannot extend the following passage',async t=>{
+  const fixture=transportFixture(t),voice=await connectSubscriptionVoice();t.after(()=>voice.close());
+  let reading=voice.speak('First short reading.');await waitFor(()=>fixture.creates===2);fixture.peer.energy+=0.1;
+  fixture.peer.channel.emit({type:'turn.done',turn:{id:'first-timeline',role:'assistant',start_ms:100,end_ms:200,transcript:'First short reading.'}});
+  await reading;
+  let finished=false;reading=voice.speak('Second short reading.').then(()=>{finished=true;});await waitFor(()=>fixture.scripts.length===2);
+  fixture.peer.energy+=0.1;
+  fixture.peer.channel.emit({type:'turn.created',turn:{id:'second-timeline',role:'assistant',start_ms:300,end_ms:400}});
+  // An old final event is duplicated while the next passage owns playback.
+  fixture.peer.channel.emit({type:'turn.done',turn:{id:'first-timeline',role:'assistant',start_ms:100,end_ms:20000,transcript:'First short reading.'}});
+  fixture.peer.channel.emit({type:'turn.done',turn:{id:'second-timeline',role:'assistant',start_ms:300,end_ms:400,transcript:'Second short reading.'}});
+  await new Promise(resolve=>setTimeout(resolve,800));
+  try{assert.equal(finished,true,'an old timeline must not hold the new answer open');}
+  finally{voice.stopSpeaking();await reading;}
+});
+
+test('speaker allocation overlaps a slow microphone allocation response',async t=>{
+  const fixture=conversationFixture(t);fixture.holdInputAllocation=true;
+  const controller=new AbortController();
+  const connecting=connectSubscriptionVoice({mode:'conversation',microphone:{},signal:controller.signal});
+  void connecting.catch(()=>{});
+  t.after(async()=>{controller.abort();await connecting.catch(()=>{});});
+  await waitFor(()=>fixture.sessions.length===2);
+  assert.deepEqual(fixture.sessions.map(session=>session.mode),['conversation','speak']);
+  assert.deepEqual(fixture.posts,[]);
+  assert.ok(fixture.players.every(player=>player.volume===0));
+  fixture.releaseAllocation();const voice=await connecting;
+  await voice.prepareSpeaker();assert.equal(fixture.sessions.length,2);
+  await voice.close();assert.deepEqual(fixture.deleted.sort(),['0','1']);
+});
+
+test('cancelling before microphone allocation returns also retires its parallel speaker',async t=>{
+  const fixture=conversationFixture(t);fixture.holdInputAllocation=true;fixture.holdReaderSetup=true;
+  const controller=new AbortController();
+  const connecting=connectSubscriptionVoice({mode:'conversation',microphone:{},signal:controller.signal});
+  void connecting.catch(()=>{});
+  t.after(async()=>{controller.abort();await connecting.catch(()=>{});});
+  await waitFor(()=>fixture.sessions.length===2);
+  controller.abort();fixture.releaseAllocation();await assert.rejects(connecting,{name:'AbortError'});
+  assert.deepEqual(fixture.deleted.sort(),['0','1'], 'only actual DELETE requests release allocated sessions');
+  assert.deepEqual(fixture.posts,[]);
+});
+
+test('input-only startup allocates no speaker while its allocation is slow',async t=>{
+  const fixture=conversationFixture(t);fixture.holdInputAllocation=true;
+  const controller=new AbortController();
+  const connecting=connectSubscriptionVoice({mode:'conversation',microphone:{},inputOnly:true,signal:controller.signal});
+  void connecting.catch(()=>{});
+  t.after(async()=>{controller.abort();await connecting.catch(()=>{});});
+  await waitFor(()=>fixture.sessions.length===1);
+  await new Promise(resolve=>setTimeout(resolve,30));
+  assert.deepEqual(fixture.sessions.map(session=>session.mode),['conversation']);
+  fixture.releaseAllocation();const voice=await connecting;
+  await voice.close();assert.deepEqual(fixture.deleted,['0']);
+});
+
+
+for (const [number, script, wrong] of [
+  ['28', 'The answer is twenty eight.', 'The answer is twenty eight hundred nine.'],
+  ['3.5', 'The answer is three point five.', 'The answer is three point five six.'],
+]) test('a numeric prefix extended into a different value retries the whole answer: ' + number, async t => {
+  const fixture = conversationFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} });
+  let finished = false;
+  const reading = voice.speak(number).then(() => { finished = true; });
+  void reading.catch(() => {});
+  t.after(async () => { voice.stopSpeaking(); await reading.catch(() => {}); await voice.close(); });
+  await waitFor(() => fixture.posts.length === 1);
+  assert.equal(fixture.posts[0].text, script);
+  fixture.sessions[1].deliver(wrong);
+  await waitFor(() => fixture.posts.length === 2 || finished);
+  assert.equal(fixture.posts.length, 2, 'a correct prefix does not prove the numeric answer finished correctly');
+  assert.equal(finished, false);
+  assert.equal(fixture.posts[1].text, script, 'the whole original number is read on the replacement connection');
+  assert.deepEqual(fixture.deleted, ['1']);
+  fixture.sessions[2].deliver(script);
+  await reading;
+  assert.equal(voice.isHealthy(), true);
+  assert.ok(fixture.players.every(player => player.volume === 0));
+});
+
+test('numeric prefix repair remains bounded and leaves the next answer usable', async t => {
+  const fixture = conversationFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} });
+  let settled = false;
+  const reading = voice.speak('28').then(() => ({ ok: true }), error => ({ ok: false, error }));
+  void reading.then(() => { settled = true; });
+  t.after(async () => { voice.stopSpeaking(); await reading; await voice.close(); });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await waitFor(() => fixture.posts.length === attempt + 1 || settled);
+    assert.equal(fixture.posts.length, attempt + 1, 'each failed numeric reading consumes one bounded retry');
+    fixture.sessions[attempt + 1].deliver('The answer is twenty eight hundred nine.');
+  }
+  const result = await reading;
+  assert.equal(result.ok, false);
+  assert.match(result.error.message, /stopped reading/);
+  assert.equal(fixture.posts.length, 3);
+  assert.deepEqual(fixture.deleted, ['1', '2', '3']);
+  assert.equal(voice.isHealthy(), true, 'speech failure does not poison recognition');
+  const next = voice.speak('29');
+  await waitFor(() => fixture.posts.length === 4);
+  fixture.sessions[4].deliver('The answer is twenty nine.');
+  await next;
+});
+
+test('numeric prefix repair is cancelled while the replacement reader connects', async t => {
+  const fixture = conversationFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} });
+  let finished = false;
+  const reading = voice.speak('28').then(() => { finished = true; });
+  void reading.catch(() => {});
+  t.after(async () => { voice.stopSpeaking(); await reading.catch(() => {}); await voice.close(); });
+  await waitFor(() => fixture.posts.length === 1);
+  fixture.holdReaderSetup = true;
+  fixture.sessions[1].deliver('The answer is twenty eight hundred nine.');
+  await waitFor(() => fixture.sessions.length === 3 || finished);
+  assert.equal(finished, false, 'the failed reading has not been accepted as complete');
+  assert.equal(fixture.sessions.length, 3);
+  voice.stopSpeaking();
+  await reading;
+  assert.equal(fixture.posts.length, 1, 'interruption prevents the replacement from speaking');
+  assert.deepEqual(fixture.deleted, ['1', '2']);
+  assert.equal(voice.isHealthy(), true);
+});
+
+for (const [number, reading] of [
+  ['21', 'Mm-hmm. The answer is twenty one.'], ['3.5', 'Okay. The answer is three point five.'],
+  ['-105.04', 'Okay, The answer is minus one hundred five point zero four.'], ['007', 'Mm-hmm. The answer is zero zero seven.'],
+]) test('conversation numeric acknowledgement retains the full answer without retry: ' + number, async t => {
+  const fixture = conversationFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} });
+  t.after(() => voice.close());
+  let completed = false;
+  const speaking = voice.speak(number).then(() => { completed = true; });
+  void speaking.catch(() => {});
+  await waitFor(() => fixture.posts.length === 1);
+  fixture.sessions[1].deliver(reading);
+  await waitFor(() => completed || fixture.posts.length > 1);
+  assert.equal(completed, true, 'an exact number after one audible acknowledgement is complete');
+  assert.equal(fixture.posts.length, 1);
+  assert.deepEqual(fixture.deleted, []);
+  await speaking;
+});
+
+for (const [number, wrong] of [
+  ['21', 'Okay. The answer is twenty one hundred.'], ['21', 'Okay. The answer is minus twenty one.'],
+  ['3.5', 'Mm-hmm. The answer is three point five six.'], ['3.5', 'Okay. The answer is three five.'],
+  ['21', 'Okay. Okay. The answer is twenty one.'], ['21', 'Mm-hmm. Okay. The answer is twenty one.'],
+  ['21', 'Yes. The answer is twenty one.'], ['21', 'The answer is twenty one. Okay.'],
+  ['21', 'Okay. The answer is twenty one twenty one.'], ['21', 'Mm-hmm.'],
+]) test('conversation numeric acknowledgement preserves strict rejection: ' + wrong, async t => {
+  const fixture = conversationFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} }); t.after(() => voice.close());
+  const failed = assert.rejects(voice.speak(number), /stopped reading/);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await waitFor(() => fixture.posts.length === attempt + 1);
+    fixture.sessions[attempt + 1].deliver(wrong);
+  }
+  await failed;
+  assert.equal(fixture.posts.length, 3, 'retries remain bounded');
+  assert.deepEqual(fixture.deleted, ['1', '2', '3']);
+  const next = voice.speak('29'); await waitFor(() => fixture.posts.length === 4);
+  fixture.sessions[4].deliver('The answer is twenty nine.'); await next;
+  assert.equal(voice.isHealthy(), true);
+});
+
+test('conversation numeric acknowledgement can stream in partial words before its answer', async t => {
+  const fixture = conversationFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} }); t.after(() => voice.close());
+  let completed = false;
+  const speaking = voice.speak('21').then(() => { completed = true; }); void speaking.catch(() => {});
+  await waitFor(() => fixture.posts.length === 1);
+  const peer = fixture.peers[1]; peer.energy += 0.1;
+  for (const text of [' Mm-h', 'mm.', ' The answer is', ' twenty', ' one.']) {
+    peer.channel.emit({ type: 'output_transcript.added', text });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(completed, false);
+    assert.equal(fixture.posts.length, 1);
+  }
+  peer.channel.emit({ type: 'turn.done', turn: { id: 'ack-and-number', role: 'assistant', transcript: ' Mm-hmm. The answer is twenty one.' } });
+  await waitFor(() => completed || fixture.posts.length > 1);
+  assert.equal(completed, true); await speaking;
+});
+
+test('conversation numeric acknowledgement cannot hold the reader indefinitely without number words', async t => {
+  const fixture = conversationFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} }); t.after(() => voice.close());
+  const now = Date.now.bind(Date); let offset = 0;
+  t.mock.method(Date, 'now', () => now() + offset);
+  const speaking = voice.speak('21'); void speaking.catch(() => {});
+  await waitFor(() => fixture.posts.length === 1);
+  fixture.peers[1].energy += 0.1;
+  fixture.peers[1].channel.emit({ type: 'output_transcript.added', text: ' Mm-hmm.' });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  offset += 5200;
+  await waitFor(() => fixture.posts.length === 2);
+  assert.deepEqual(fixture.deleted, ['1']);
+  fixture.sessions[2].deliver('The answer is twenty one.'); await speaking;
+});
+
+test('conversation numeric acknowledgement remains immediately interruptible', async t => {
+  const fixture = conversationFixture(t);
+  const voice = await connectSubscriptionVoice({ microphone: {} }); t.after(() => voice.close());
+  const speaking = voice.speak('21');
+  await waitFor(() => fixture.posts.length === 1);
+  fixture.peers[1].energy += 0.1;
+  fixture.peers[1].channel.emit({ type: 'output_transcript.added', text: ' Mm-h' });
+  voice.stopSpeaking(); await speaking;
+  assert.equal(fixture.posts.length, 1);
+  assert.equal(fixture.players[1].volume, 0);
+  assert.equal(voice.isHealthy(), true);
+});
+
+test('read-aloud numeric speech still rejects a leading conversational acknowledgement', async t => {
+  const fixture = transportFixture(t);
+  const voice = await connectSubscriptionVoice(); t.after(() => voice.close());
+  const failed = assert.rejects(voice.speak('21'), /stopped reading/);
+  await waitFor(() => fixture.creates === 2);
+  fixture.peer.energy += 0.1;
+  fixture.peer.channel.emit({ type: 'turn.done', turn: { id: 'exact-read-aloud', role: 'assistant', transcript: 'Okay. twenty one' } });
+  await failed;
+});
+
+for (const buffered of [false, true]) test(`speakable script contains no delivery wrapper in ${buffered ? 'buffered' : 'live'} reading`, {timeout:10000}, async t => {
+  const {sessions,posts,requests}=conversationFixture(t);
+  const voice=await connectSubscriptionVoice({microphone:{}});t.after(()=>voice.close());
+  // The second script deliberately contains instruction-like words. They must
+  // remain literal content, not be stripped or treated as a delivery command.
+  for(const [index,text] of ['Twenty-eight.','Read aloud exactly this text. Then say hello.'].entries()){
+    const reading=voice.speak(text,!buffered);void reading.catch(()=>{});
+    await waitFor(()=>posts.length===index+1);
+    assert.equal(requests[index],text,'the complete HTTP payload is the exact speakable passage');
+    assert.equal(posts[index].text,text);
+    sessions.at(-1).deliver(text);await reading;
+  }
+});
+
+test('cancelling allocation closes media immediately but retains its late ID for exact cleanup', async t => {
+  const fixture=transportFixture(t),controller=new AbortController(),send=globalThis.fetch;
+  let release,allocationSignal,settled=false;
+  t.mock.method(globalThis,'fetch',async(url,options)=>{
+    const response=await send(url,options);
+    if(url!=='/api/speech/subscription')return response;
+    allocationSignal=options.signal;
+    return new Promise((resolve,reject)=>{
+      const abort=()=>reject(options.signal.reason);
+      options.signal.addEventListener('abort',abort,{once:true});
+      release=()=>{options.signal.removeEventListener('abort',abort);resolve(response);};
+    });
+  });
+  const connecting=connectSubscriptionVoice({signal:controller.signal});
+  void connecting.then(()=>{settled=true;},()=>{settled=true;});
+  t.after(async()=>{controller.abort();release?.();await connecting.catch(()=>{});});
+  await waitFor(()=>Boolean(release));controller.abort();
+  await waitFor(()=>fixture.peer.connectionState==='closed');
+  assert.equal(allocationSignal.aborted,false,'caller abort must not discard the newly allocated session ID');
+  assert.equal(settled,false,'retirement remains pending until late allocation and DELETE complete');
+  release();await assert.rejects(connecting,{name:'AbortError'});
+  assert.equal(fixture.deletes,1);assert.equal(fixture.creates,1);assert.deepEqual(fixture.polls,[]);
+});
+
+test('interrupted pending reader blocks replacement until late allocation and DELETE finish',async t=>{
+  const fixture=conversationFixture(t),voice=await connectSubscriptionVoice({microphone:{}}),send=globalThis.fetch;
+  let releaseAllocation,releaseDelete,allocationSignal;
+  t.mock.method(globalThis,'fetch',async(url,options)=>{
+    const response=await send(url,options);
+    if(url==='/api/speech/subscription'&&fixture.sessions.length===2){
+      allocationSignal=options.signal;
+      return new Promise((resolve,reject)=>{
+        const abort=()=>reject(options.signal.reason);
+        options.signal.addEventListener('abort',abort,{once:true});
+        releaseAllocation=()=>{options.signal.removeEventListener('abort',abort);resolve(response);};
+      });
+    }
+    if(url==='/api/speech/subscription/1'&&options.method==='DELETE')return new Promise(resolve=>{releaseDelete=()=>resolve(response);});
+    return response;
+  });
+  const interrupted=voice.speak('This cancelled reading must never start.');
+  void interrupted.catch(()=>{});
+  let replacement;
+  t.after(async()=>{releaseAllocation?.();releaseDelete?.();await interrupted.catch(()=>{});await replacement?.catch(()=>{});await voice.close();});
+  await waitFor(()=>Boolean(releaseAllocation));voice.stopSpeaking();
+  replacement=voice.prepareSpeaker();void replacement.catch(()=>{});
+  await new Promise(resolve=>setTimeout(resolve,40));
+  assert.equal(allocationSignal.aborted,false);
+  assert.equal(fixture.sessions.length,2,'do not allocate over a cancelled reader still consuming its slot');
+  releaseAllocation();await waitFor(()=>Boolean(releaseDelete));
+  await new Promise(resolve=>setTimeout(resolve,40));
+  assert.equal(fixture.sessions.length,2,'DELETE acknowledgement is part of the retirement barrier');
+  releaseDelete();await replacement;await interrupted;
+  assert.equal(fixture.sessions.length,3);assert.deepEqual(fixture.posts,[]);
+  await voice.close();assert.deepEqual(fixture.deleted.sort(),['0','1','2']);
+});
+
+test('conversational small rewrites read all sentences and keep the same warm reader', {timeout:10000}, async t=>{
+ const {sessions,posts,deleted}=conversationFixture(t);
+ const voice=await connectSubscriptionVoice({microphone:{}});t.after(()=>voice.close());
+ for(const [script,spoken] of [
+   ['Yes. The file is ready. Keep a backup.','Yeah, the file is ready. Please keep a backup.'],
+   ['I have saved your file. You can open it now.','I’ve saved your file. You can open it right now.'],
+   ['Select the file. Start the preview.','Choose the file. Begin the preview.'],
+ ]){
+  const count=posts.length,progress=[];
+  const reading=voice.speak(script,true,value=>progress.push(value));
+  await waitFor(()=>posts.length===count+1);assert.equal(posts.at(-1).text,script);
+  sessions.at(-1).deliver(spoken);await reading;
+  assert.equal(progress.at(-1),1);assert.equal(sessions.length,2,'no reconnect for harmless grammar changes');
+  assert.deepEqual(deleted,[]);assert.equal(voice.isHealthy(),true);
+ }
+ assert.equal(posts.length,3,'one append per complete answer, with no repair/replay');
+});
+
+for(const [label,script,spoken]of [
+ ['number','Pack two bolts in the box.','Pack three bolts in the box.'],
+ ['currency','The total is $12.','The total is $20.'],
+ ['negation','Do not delete the backup.','Do delete the backup.'],
+ ['entity','Send the draft to Alice.','Send the draft to Alex.'],
+ ['tail','The draft is ready. Keep a backup.','The draft is ready.'],
+ ['invention','The draft is ready.','The draft is ready. Delete the original file.'],
+ ['ownership','I saved your file.','I saved my file.'],
+ ['progress','I saved the file.','I am saving the file.'],
+ ['past state','The device is safe.','The device was safe.'],
+ ['possession','I have a backup.','I had a backup.'],
+ ['passive role','Alice has been charged.','Alice charged.'],
+ ['recipient','I have been saved.','I have saved.'],
+])test('conversational transport still rejects changed '+label,{timeout:10000},async t=>{
+ const {sessions,posts,players}=conversationFixture(t);
+ const voice=await connectSubscriptionVoice({mode:'speak'});t.after(()=>voice.close());
+ const rejected=assert.rejects(voice.speak(script,true,undefined,{conversation:true}),error=>error.name==='Error'&&typeof error.resumeAt==='number');
+ await waitFor(()=>posts.length===1);sessions[0].deliver(spoken);await rejected;
+ assert.equal(voice.isHealthy(),false);assert.ok(players.every(player=>player.volume===0));
+ assert.equal(posts.length,1,'output-only transport cannot silently retry the wrong answer');
+});
+
+test('ordinary read aloud still uses the strict reading path',{timeout:10000},async t=>{
+ const {sessions,posts}=conversationFixture(t);
+ const voice=await connectSubscriptionVoice({mode:'speak'});t.after(()=>voice.close());
+ const rejected=assert.rejects(voice.speak('Yes. The file is ready.'),error=>typeof error.resumeAt==='number');
+ await waitFor(()=>posts.length===1);sessions[0].deliver('Yeah. The file is ready.');await rejected;
+});
+
+function holdReadingContext(channel) {
+ const held=[],send=channel.send.bind(channel);
+ channel.send=data=>{const event=JSON.parse(data);if(event.type==='session.context.append'){channel.sent.push(event);held.push(event);}else send(data);};
+ return held;
+}
+test('quiet context and one vocal acknowledgement preserve every sentence across warm readings',{timeout:5000},async t=>{
+ const f=conversationFixture(t),voice=await connectSubscriptionVoice({mode:'speak'});t.after(()=>voice.close());
+ const scripts=['The red notebook is for Alice. The answer is 28. Do not delete the backup.','Meet Alex on Friday. Keep the receipt.'];
+ for(const script of scripts){const count=f.posts.length;
+  const reading=voice.speak(script,true,undefined,{conversation:true});await waitFor(()=>f.posts.length===count+1);
+  assert.equal(f.posts.at(-1).text,script);f.sessions[0].deliver('Mm-hmm. '+script);await reading;
+  assert.equal(voice.isHealthy(),true);assert.equal(f.sessions.length,1);assert.deepEqual(f.deleted,[]);
+ }
+ const contexts=f.peers[0].channel.sent.filter(event=>event.type==='session.context.append');assert.equal(contexts.length,2);
+ for(const event of contexts){assert.deepEqual(Object.keys(event).sort(),['content','type']);assert.equal(event.content[0].type,'input_text');}
+});
+test('conversation remains muted until a fresh bounded quiet-context acknowledgement',{timeout:3000},async t=>{
+ const f=conversationFixture(t),voice=await connectSubscriptionVoice({mode:'speak'});t.after(()=>voice.close());
+ const held=holdReadingContext(f.peers[0].channel),realNow=Date.now.bind(Date);let offset=0;t.mock.method(Date,'now',()=>realNow()+offset);
+ const rejected=assert.rejects(voice.speak('The file is ready.',true,undefined,{conversation:true}),/timed out/);
+ await waitFor(()=>held.length===1);assert.ok(f.players.every(player=>player.volume===0));assert.equal(f.posts.length,0);
+ offset=6000;await rejected;assert.equal(f.posts.length,0);assert.equal(voice.isHealthy(),false);
+});
+for(const action of ['stop','abort'])test(action+' during quiet preparation sends no speech request',{timeout:3000},async t=>{
+ const f=conversationFixture(t),controller=new AbortController(),voice=await connectSubscriptionVoice({mode:'speak',signal:controller.signal});t.after(()=>voice.close());
+ const held=holdReadingContext(f.peers[0].channel);const reading=voice.speak('The file is ready.',true,undefined,{conversation:true}).catch(()=>{});
+ await waitFor(()=>held.length===1);const start=performance.now();if(action==='abort')controller.abort();else voice.stopSpeaking();
+ await reading;assert.ok(performance.now()-start<250);assert.ok(f.players.every(player=>player.volume===0));assert.equal(f.posts.length,0);
+});
+test('a leaked quiet-context reply fails before the requested script is submitted',{timeout:3000},async t=>{
+ const f=conversationFixture(t),voice=await connectSubscriptionVoice({mode:'speak'});t.after(()=>voice.close());
+ const channel=f.peers[0].channel,held=holdReadingContext(channel);
+ const rejected=assert.rejects(voice.speak('The file is ready.',true,undefined,{conversation:true}),/spoke before/);
+ await waitFor(()=>held.length===1);channel.emit({type:'output_transcript.added',text:'Read every sentence.'});
+ channel.emit({type:'session.context.appended',end_ms:50});await rejected;
+ assert.equal(f.posts.length,0);assert.ok(f.players.every(player=>player.volume===0));
+});
+test('a late old acknowledgement cannot release a new warm reading',{timeout:5000},async t=>{
+ const f=conversationFixture(t),voice=await connectSubscriptionVoice({mode:'speak'});t.after(()=>voice.close());
+ const first=voice.speak('The file is ready.',true,undefined,{conversation:true});await waitFor(()=>f.posts.length===1);f.sessions[0].deliver('The file is ready.');await first;
+ const channel=f.peers[0].channel,held=holdReadingContext(channel);
+ const second=voice.speak('Keep the backup.',true,undefined,{conversation:true});await waitFor(()=>held.length===1);
+ channel.emit({type:'session.context.appended',end_ms:1e12+1});await new Promise(resolve=>setTimeout(resolve,90));
+ assert.equal(f.posts.length,1);assert.ok(f.players.every(player=>player.volume===0));
+ channel.emit({type:'session.context.appended',end_ms:1e12+2});await waitFor(()=>f.posts.length===2);f.sessions[0].deliver('Keep the backup.');await second;
+ assert.equal(f.sessions.length,1);
+});
+test('context speech arriving during output activation is rejected before appending',{timeout:3000},async t=>{
+ const f=conversationFixture(t),voice=await connectSubscriptionVoice({mode:'speak'});t.after(()=>voice.close());
+ const player=f.players.find(player=>player.srcObject),play=player.play.bind(player);let release;
+ t.mock.method(player,'play',async()=>{await play();await new Promise(resolve=>{release=resolve;});});
+ const rejected=assert.rejects(voice.speak('The file is ready.',true,undefined,{conversation:true}),/spoke before/);
+ await waitFor(()=>Boolean(release));assert.equal(player.volume,0);
+ f.peers[0].channel.emit({type:'output_transcript.added',text:'Read every sentence.'});assert.equal(player.volume,0);
+ release();await rejected;
+ assert.equal(f.posts.length,0);assert.equal(player.volume,0);
+});
+test('strict ordinary readout never prepares quiet context or permits mm-hmm',{timeout:3000},async t=>{
+ const f=conversationFixture(t),voice=await connectSubscriptionVoice({mode:'speak'});t.after(()=>voice.close());
+ const rejected=assert.rejects(voice.speak('28'),error=>typeof error.resumeAt==='number');
+ await waitFor(()=>f.posts.length===1);f.sessions[0].deliver('Mm-hmm. twenty-eight');await rejected;
+ assert.ok(!f.peers[0].channel.sent.some(event=>event.type==='session.context.append'));
+});
+
+test('complete numeric sentences and prose both prepare their exact script',async t=>{
+ const f=conversationFixture(t),voice=await connectSubscriptionVoice({mode:'speak'});t.after(()=>voice.close());
+ for(const script of ['21','The amber parcel is ready. Do not open it.']){
+  const count=f.posts.length,reading=voice.speak(script,true,undefined,{conversation:true});
+  await waitFor(()=>f.posts.length===count+1);
+  const expected=script==='21'?'The answer is twenty one.':script;
+  const context=f.peers[0].channel.sent.filter(event=>event.type==='session.context.append').at(-1);
+  assert.equal(context.content[0].text.includes(expected),true,'the complete prepared reply is seeded verbatim');
+  assert.equal(f.posts.at(-1).text,expected);
+  f.sessions[0].deliver(expected);await reading;
+  assert.equal(f.sessions.length,1);assert.deepEqual(f.deleted,[]);
+ }
+});
+
+// Recorded provider failure: labels before a bare numeric answer are already
+// incorrect. A completed turn is not required to mute that reading.
+test('a numeric reader rejects the first unsolicited streamed word', {timeout:3000}, async t=>{
+ const f=conversationFixture(t),voice=await connectSubscriptionVoice({mode:'speak'});t.after(()=>voice.close());
+ const rejected=assert.rejects(voice.speak('21',true,undefined,{conversation:true}),/stopped reading/);
+ await waitFor(()=>f.posts.length===1);f.peers[0].energy+=0.1;
+ f.peers[0].channel.emit({type:'output_transcript.added',text:' Unit '});
+ await rejected;
+ assert.equal(f.posts.length,1);assert.ok(f.players.every(player=>player.volume===0));
+ assert.equal(voice.isHealthy(),false,'a failed reader cannot leak more words into another answer');
+});
+for(const [number,acknowledgement]of [['21',''],['1052','Okay. '],['-105.04','Mm-hmm. ']])
+test('a normalized numeric prefix cannot hide extra streamed words: '+acknowledgement+number,{timeout:3000},async t=>{
+ const f=conversationFixture(t),voice=await connectSubscriptionVoice({mode:'speak'});t.after(()=>voice.close());
+ let failed=false;const rejected=assert.rejects(voice.speak(number,true,undefined,{conversation:true}),/stopped reading/).then(()=>{failed=true;});
+ await waitFor(()=>f.posts.length===1);f.peers[0].energy+=0.1;
+ f.peers[0].channel.emit({type:'output_transcript.added',text:acknowledgement+'The answer is '+number+' '});
+ await new Promise(resolve=>setTimeout(resolve,80));assert.equal(failed,false,'the complete original value is still valid');
+ f.peers[0].channel.emit({type:'output_transcript.added',text:'units '});
+ await rejected;assert.equal(f.posts.length,1);assert.ok(f.players.every(player=>player.volume===0));
 });

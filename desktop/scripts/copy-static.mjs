@@ -7,10 +7,18 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 await import("./build-adblocker.mjs");
+await import("./build-code-dock.mjs");
 
 // Reuse the production tab strip and browser navigation components without
 // Next's route loader/hydration or the page's terminal and content bundles.
 const { build } = await import(pathToFileURL(path.join(desktopRoot, "../dashboard/node_modules/esbuild/lib/main.js")).href);
+// Ship the JSONC editor with the desktop module; packaged apps exclude node_modules.
+await build({
+  entryPoints: [path.join(desktopRoot, "src/main/vscode-profile.ts")],
+  outfile: path.join(desktopRoot, "dist/main/vscode-profile.js"),
+  bundle: true, platform: "node", format: "cjs", target: "node20", sourcemap: true, mainFields: ["module", "main"],
+});
+fs.copyFileSync(path.join(desktopRoot, "node_modules/jsonc-parser/LICENSE.md"), path.join(desktopRoot, "dist/main/jsonc-parser.LICENSE.txt"));
 // The desktop package excludes node_modules. Bundle the push transport and its
 // encryption dependencies so installed builds receive the same support as dev.
 await build({
@@ -139,6 +147,14 @@ if (process.platform === "win32") {
     throw new Error(`Could not build the Windows input helper. ${(compile.stdout || compile.stderr || "").trim()}`);
   }
   console.log("[copy-static] Windows input helper built");
+  const screenTimeTarget = path.join(desktopRoot, "dist", "native", "windows-screen-time.exe");
+  const screenTimeStaged = `${screenTimeTarget}.${process.pid}.new.exe`;
+  const screenTimeCompile = spawnSync(compiler, ["/nologo", "/target:exe", "/platform:x64", "/optimize+",
+    `/out:${screenTimeStaged}`, "/reference:System.Web.Extensions.dll",
+    path.join(desktopRoot, "src", "native", "windows-screen-time.cs")], { encoding: "utf8", windowsHide: true });
+  if (screenTimeCompile.status !== 0) throw new Error(`Could not build Screen Time. ${screenTimeCompile.stdout || screenTimeCompile.stderr}`);
+  if (fs.existsSync(screenTimeTarget)) fs.renameSync(screenTimeTarget, `${screenTimeTarget}.${process.pid}.previous.exe`);
+  fs.renameSync(screenTimeStaged, screenTimeTarget);
   const dictationTarget = path.join(desktopRoot, "dist", "native", "windows-dictation.exe");
   for (const name of fs.readdirSync(path.dirname(dictationTarget))) {
     if (/^windows-dictation-\d+\.previous\.exe$/.test(name)) {
@@ -171,4 +187,27 @@ if (process.platform === "win32") {
   }
   try { fs.rmSync(dictationPrevious, { force: true }); } catch { /* The running app still owns this image. */ }
   console.log("[copy-static] Windows dictation helper built");
+  const visibilityTarget = path.join(desktopRoot, "dist/native/windows-visible-region.exe");
+  const visibilityStaged = path.join(path.dirname(visibilityTarget), `windows-visible-region-${process.pid}.new.exe`);
+  const visibilityCompile = spawnSync(compiler, [
+    "/nologo", "/target:exe", "/platform:x64", "/optimize+", `/out:${visibilityStaged}`,
+    path.join(desktopRoot, "src/native/windows-visible-region.cs"),
+  ], { encoding: "utf8", windowsHide: true });
+  if (visibilityCompile.status !== 0) {
+    fs.rmSync(visibilityStaged, { force: true });
+    throw new Error(`Could not build the notification visibility helper. ${visibilityCompile.stdout || visibilityCompile.stderr}`);
+  }
+  const visibilityPrevious = path.join(path.dirname(visibilityTarget), `windows-visible-region-${process.pid}.previous.exe`);
+  if (fs.existsSync(visibilityTarget)) fs.renameSync(visibilityTarget, visibilityPrevious);
+  try { fs.renameSync(visibilityStaged, visibilityTarget); }
+  catch (error) {
+    if (fs.existsSync(visibilityPrevious)) fs.renameSync(visibilityPrevious, visibilityTarget);
+    throw error;
+  }
+  for (const name of fs.readdirSync(path.dirname(visibilityTarget))) {
+    if (/^windows-visible-region-\d+\.previous\.exe$/.test(name)) {
+      try { fs.rmSync(path.join(path.dirname(visibilityTarget), name)); } catch { /* The active build still uses it. */ }
+    }
+  }
+  console.log("[copy-static] Windows notification visibility helper built");
 }

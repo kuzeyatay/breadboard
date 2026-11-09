@@ -4,6 +4,7 @@ import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
   GARDEN_SUMMARY_FRESHNESS_MS,
   scanClusterKnowledge,
+  scanClusterKnowledgeCooperatively,
 } from "@/lib/knowledge";
 import {
   folderLabel,
@@ -33,6 +34,11 @@ interface GardenCluster {
   row: GardenClusterRow;
   stats: ReturnType<typeof scanClusterKnowledge>["stats"];
 }
+
+const EMPTY_CLUSTER_STATS: GardenCluster["stats"] = {
+  documents: 0, topics: 0, textbookPages: 0, conceptPages: 0,
+  conceptNodes: 0, learningPages: 0, generatedNotes: 0, links: 0, words: 0,
+};
 
 export interface QuartzGardenIndexPreparation {
   slug: string;
@@ -99,17 +105,7 @@ function readClusterStats(
   } catch {
     return {
       row,
-      stats: {
-        documents: 0,
-        topics: 0,
-        textbookPages: 0,
-        conceptPages: 0,
-        conceptNodes: 0,
-        learningPages: 0,
-        generatedNotes: 0,
-        links: 0,
-        words: 0,
-      },
+      stats: { ...EMPTY_CLUSTER_STATS },
     };
   }
 }
@@ -319,16 +315,40 @@ export function refreshPrivateQuartzIndex(userId: number): string | null {
   return preparePrivateQuartzIndexes(userId)[0]?.slug ?? null;
 }
 
+/** Background creation work must also leave the server free to open the garden. */
+export async function refreshPrivateQuartzIndexCooperatively(userId: number): Promise<string | null> {
+  const baseContentPath = contentPath();
+  if (!baseContentPath || !Number.isFinite(userId)) return null;
+  const clusters: GardenCluster[] = [];
+  // Sequential slices keep hundreds of simultaneous scans from monopolizing
+  // the event loop after the create response has been sent.
+  for (const row of privateGardenRows(userId)) {
+    try {
+      const { stats } = await scanClusterKnowledgeCooperatively(baseContentPath, row.slug, {
+        maxStaleMs: GARDEN_SUMMARY_FRESHNESS_MS,
+      });
+      clusters.push({ row, stats });
+    } catch {
+      clusters.push({ row, stats: { ...EMPTY_CLUSTER_STATS } });
+    }
+  }
+  // Another request can create, rename, move or delete a garden between
+  // slices. Publish the current rows rather than restoring an older list.
+  const statsBySlug = new Map(clusters.map(({ row, stats }) => [row.slug, stats]));
+  const currentClusters = privateGardenRows(userId).map((row) => ({
+    row,
+    stats: statsBySlug.get(row.slug) ?? { ...EMPTY_CLUSTER_STATS },
+  }));
+  return writePrivateQuartzIndexes(userId, { baseContentPath, clusters: currentClusters })[0]?.slug ?? null;
+}
+
 interface PrivateGardenIndex {
   baseContentPath: string;
   clusters: GardenCluster[];
 }
 
-function readPrivateGardenIndex(userId: number): PrivateGardenIndex | null {
-  const baseContentPath = contentPath();
-  if (!baseContentPath || !Number.isFinite(userId)) return null;
-
-  const rows = db
+function privateGardenRows(userId: number): GardenClusterRow[] {
+  return db
     .prepare(
       `SELECT c.*
        FROM clusters c
@@ -336,10 +356,15 @@ function readPrivateGardenIndex(userId: number): PrivateGardenIndex | null {
        ORDER BY c.created_at DESC`,
     )
     .all(userId) as GardenClusterRow[];
+}
+
+function readPrivateGardenIndex(userId: number): PrivateGardenIndex | null {
+  const baseContentPath = contentPath();
+  if (!baseContentPath || !Number.isFinite(userId)) return null;
 
   return {
     baseContentPath,
-    clusters: rows.map((row) => readClusterStats(baseContentPath, row)),
+    clusters: privateGardenRows(userId).map((row) => readClusterStats(baseContentPath, row)),
   };
 }
 
@@ -375,7 +400,13 @@ export function preparePrivateQuartzIndexes(
 ): QuartzGardenIndexPreparation[] {
   const privateIndex = readPrivateGardenIndex(userId);
   if (!privateIndex) return [];
+  return writePrivateQuartzIndexes(userId, privateIndex);
+}
 
+function writePrivateQuartzIndexes(
+  userId: number,
+  privateIndex: PrivateGardenIndex,
+): QuartzGardenIndexPreparation[] {
   const prepared = [
     writeGardenIndex({
       baseContentPath: privateIndex.baseContentPath,

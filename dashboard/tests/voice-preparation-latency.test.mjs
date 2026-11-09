@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import ts from 'typescript';
+import { connectedAppUsageInstructions } from '../src/lib/hermes/connected-app-context.ts';
 
 // Run production functions with deterministic I/O. An optional server never
 // resolves: the test fails if it becomes a dependency of a spoken turn.
@@ -24,6 +25,7 @@ test('a cold optional MCP server cannot delay voice and remains discoverable on 
     isUnguardedBambuConnection: c => c.slug === 'unsafe-printer',
     runtimeMcpConfig: c => c,
     connectionToolAllowed: name => !name.includes('delete'),
+    composioConfigured: () => false,
     composioConnectedIntegrationSlugs: async () => [],
     nangoActionSummariesForConnections: () => [],
     COMPOSIO_RUNTIME_NAME: 'connected-apps',
@@ -45,6 +47,95 @@ test('a cold optional MCP server cannot delay voice and remains discoverable on 
   assert.match(result.systemContext,/connection="offline-server", tool="__breadboard_list_tools"/);
   assert.doesNotMatch(result.systemContext,/unsafe-printer|spotify/);
   assert.match(result.systemContext,/warm-server.*read_item/);
+});
+
+test('spoken turns never contact the account broker, including when it hangs', async () => {
+  let accountRequests = 0;
+  let configured = true;
+  const registry = declaration('lib/hermes/unified-tool-registry.ts','connectedAppRegistryForTurn', {
+    listMcpConnections: () => [], isUnguardedBambuConnection: () => false,
+    composioConfigured: () => configured,
+    composioConnectedIntegrationSlugs: () => { accountRequests++; return new Promise(()=>{}); },
+    COMPOSIO_RUNTIME_NAME: 'connected-apps',
+    EMPTY_CONNECTED_APP_REGISTRY: {connectionNames:[], tools:{}, systemContext:'', toolCount:0},
+  });
+  const input={runtime:{listCapabilities:async()=>({mcp:{},tools:[]})},directory:'fixture',userId:7,mode:'knowledge',deferMcpConnections:true};
+  let timer;
+  try {
+    const result=await Promise.race([registry(input),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Account broker delayed speech')),200);})]);
+    assert.equal(accountRequests,0);
+    assert.deepEqual(result.connectionNames,['connected-apps']);
+    assert.equal(result.tools.mcp_call,true);
+    assert.match(result.systemContext,/connection="connected-apps", tool="__breadboard_list_tools"/);
+    assert.match(result.systemContext,/does not imply that any particular account is connected/);
+    assert.ok(result.systemContext.length<1500);
+    configured=false;
+    assert.deepEqual((await registry(input)).connectionNames,[]);
+    assert.equal(accountRequests,0);
+  } finally {clearTimeout(timer);}
+});
+
+test('typed turns retain eagerly discovered actions and app-specific usage instructions', async () => {
+  const requested=[];
+  const registry=declaration('lib/hermes/unified-tool-registry.ts','connectedAppRegistryForTurn', {
+    listMcpConnections:()=>[],isUnguardedBambuConnection:()=>false,
+    composioConnectedIntegrationSlugs:async userId=>{requested.push(userId);return ['gmail','google-calendar'];},
+    nangoActionSummariesForConnections:()=>[{name:'gmail_send_message',risk:'write',fixedConnectionSlug:'gmail',description:'Send mail',argumentDescription:'to, body'}],
+    connectedAppUsageInstructions,COMPOSIO_RUNTIME_NAME:'connected-apps',
+  });
+  const result=await registry({runtime:{listCapabilities:async()=>({mcp:{},tools:[]})},directory:'fixture',userId:7,mode:'knowledge'});
+  assert.deepEqual(requested,[7]);
+  assert.match(result.systemContext,/gmail_send_message \[write; gmail\]/);
+  assert.match(result.systemContext,/google_calendar_preview_breadboard_export/);
+  assert.match(result.systemContext,/never silently correct a recipient address/);
+});
+
+test('lazy connected-app discovery validates scope and does not weaken action approval', async () => {
+  const state={authorized:true,userId:7,conversationId:10,run:true,selected:true,decision:true};
+  const discovered=[],executed=[];
+  const schema={type:'object',properties:{query:{type:'string'}}};
+  const actions=[{name:'gmail_list_messages',risk:'read',readOnly:true,inputSchema:schema},{name:'gmail_send_message',title:'Send mail',risk:'write',readOnly:false,inputSchema:schema}];
+  class ApiError extends Error {constructor(status,code,message){super(message);this.status=status;this.code=code;}}
+  const POST=declaration('app/api/hermes/tools/mcp/route.ts','POST', {
+    requireEnabled:()=>{},capabilityForInternalToolRequest:()=>'',
+    verifyCapabilityToken:()=>({ok:true,token:{breadboardSessionId:'1',hermesSessionId:'h',userId:state.userId,conversationId:state.conversationId}}),
+    tokenAllows:()=>state.authorized,getRuntimeSessionById:()=>({id:1,user_id:7,conversation_id:10}),
+    runtimeExternalSessionId:()=> 'h',getActiveRuntimeRun:()=>state.run?{id:'run'}:null,
+    getActiveCapabilityDecision:()=>state.decision?{mode:'knowledge',selectedConnections:state.selected?['connected-apps']:[]}:null,
+    readJsonBody:request=>request.json(),text:value=>value,objectArgs:value=>value,
+    GOAL_MODE_CONNECTION:'goal',COMPOSIO_RUNTIME_NAME:'connected-apps',
+    listComposioConnections:async(userId,signal)=>{discovered.push({userId,signal});return [{slug:'gmail'},{slug:'gmail'}];},
+    nangoActionSummariesForConnections:slugs=>{assert.deepEqual(slugs,['gmail']);return actions;},
+    connectedAppUsageInstructions,nangoActionFor:name=>actions.find(action=>action.name===name),
+    executeComposioAction:async input=>{executed.push(input);return {content:[]};},
+    recordAuditEvent:()=>{},ApiError,NextResponse:Response,
+    apiErrorResponse:error=>Response.json({error:error.message},{status:error.status??500}),
+  });
+  const request=(tool,extra={})=>new Request('http://local/api/hermes/tools/mcp',{method:'POST',body:JSON.stringify({connection:'connected-apps',tool,args:{},...extra})});
+  for(const [field,value,status] of [['authorized',false,403],['userId',8,403],['conversationId',11,403],['run',false,409],['decision',false,403],['selected',false,403]]) {
+    const previous=state[field];state[field]=value;
+    assert.equal((await POST(request('__breadboard_list_tools'))).status,status,field);
+    state[field]=previous;
+  }
+  assert.equal(discovered.length,0,'invalid scope cannot discover account data');
+  const discoveryRequest=request('__breadboard_list_tools');
+  const response=await POST(discoveryRequest);
+  assert.equal(response.status,200,await response.clone().text());
+  const data=(await response.json()).data;
+  assert.deepEqual(data.connections,['gmail']);
+  assert.deepEqual(data.tools,actions);
+  assert.equal(data.writeApprovalRequired,true);
+  assert.match(data.instructions.join('\n'),/gmail_send_message/);
+  assert.equal(discovered[0].userId,7);
+  assert.equal(discovered[0].signal,discoveryRequest.signal);
+  assert.equal(executed.length,0,'discovery must not execute actions');
+  assert.equal((await POST(request('gmail_send_message'))).status,428);
+  assert.equal(executed.length,0,'discovering a write action is not approval');
+  assert.equal((await POST(request('gmail_send_message',{permissionGranted:true}))).status,200);
+  assert.equal(executed.length,1);
+  assert.equal(executed[0].userId,7);
+  assert.equal((await POST(request('gmail_list_messages'))).status,200);
+  assert.equal((await POST(request('unknown_action'))).status,403);
 });
 
 test('on-demand MCP discovery keeps same-user selection and action policy checks', async () => {

@@ -5,7 +5,7 @@ import {
   activeChatNotificationTargets,
   chatNotificationTargetKey,
   isChatNotificationTarget,
-  isChatNotificationTargetViewed,
+  isChatNotificationRecordViewed,
   type ChatNotificationTarget,
 } from "../chat-notification-inbox";
 import { subscribeNotificationViews } from "../notification-view-presence";
@@ -24,7 +24,7 @@ const marking = new Set<string>();
 const listeners = new Set<() => void>();
 
 function publish(): void {
-  const next = records.filter(record => !hidden.has(record.id) && !isChatNotificationTargetViewed(record.target));
+  const next = records.filter(record => !hidden.has(record.id) && !isChatNotificationRecordViewed(record));
   if (JSON.stringify(next) === JSON.stringify(snapshot)) return;
   snapshot = next;
   for (const listener of listeners) listener();
@@ -48,7 +48,7 @@ async function persist(body: { read?: string[]; seen?: ChatNotificationTarget })
 }
 
 function readViewed(): void {
-  const ids = records.filter(record => !hidden.has(record.id) && !marking.has(record.id) && isChatNotificationTargetViewed(record.target))
+  const ids = records.filter(record => !hidden.has(record.id) && !marking.has(record.id) && isChatNotificationRecordViewed(record))
     .map(record => record.id);
   for (let offset = 0; offset < ids.length; offset += 200) {
     const batch = ids.slice(offset, offset + 200);

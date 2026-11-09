@@ -105,8 +105,12 @@ export function setMemberConversation(
   store.setMemberConversation(db, memberId, conversationId);
 }
 
-export function listSpineMessages(roomId: number, limit?: number): BuzzMessage[] {
-  return store.listSpineMessages(db, roomId, limit);
+export function listSpineMessages(roomId: number, limit?: number, beforeId?: number): BuzzMessage[] {
+  return store.listSpineMessages(db, roomId, limit, beforeId);
+}
+
+export function getMessageByClientId(roomId: number, clientMessageId: string): BuzzMessage | null {
+  return store.getMessageByClientId(db, roomId, clientMessageId);
 }
 
 export function listThreadMessages(

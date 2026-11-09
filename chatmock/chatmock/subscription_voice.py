@@ -363,9 +363,18 @@ class VoiceSession:
         )
 
     def close(self):
+        timings = {}
+        checkpoint = time.perf_counter()
+
+        def phase(name):
+            nonlocal checkpoint
+            now = time.perf_counter()
+            timings[name] = round((now - checkpoint) * 1000, 2)
+            checkpoint = now
+
         with self.condition:
             if self.closed:
-                return
+                return timings
             self.closed = True
             self.condition.notify_all()
         self.timer.cancel()
@@ -373,18 +382,24 @@ class VoiceSession:
             self.record_usage("succeeded" if self.thread_id else "failed")
         except Exception:
             pass
-        # The process is ours, with no tools/descendants. Closing stdio lets Codex
-        # tear down the upstream call; terminate is a bounded fallback.
+        phase("voice_usage")
+        # The process is ours, with no tools/descendants. Give EOF a short
+        # grace period, then stop the discarded speech worker. Waiting three
+        # seconds here holds its session slot and delays the next answer.
         try:
             self.proc.stdin.close()
-            self.proc.wait(timeout=3)
+            phase("voice_stdin")
+            self.proc.wait(timeout=0.25)
         except (OSError, ValueError, subprocess.TimeoutExpired):
             self.proc.kill()
             self.proc.wait(timeout=3)
+        phase("voice_process")
         with _lock:
             _sessions.pop(self.id, None)
         self.temp_lease.close()
         shutil.rmtree(self.home, ignore_errors=True)
+        phase("voice_cleanup")
+        return timings
 
 
 def owned(session_id):
@@ -473,9 +488,9 @@ def speak(session_id):
     text = (request.get_json(silent=True) or {}).get("text")
     if not isinstance(text, str) or not text.strip() or len(text) > 4000:
         raise VoiceError("Subscription read-aloud supports up to 4,000 characters at a time.", 400)
-    # V3 routes appendSpeech to the speakable channel. The browser supplies
-    # the explicit reading request and verifies the audio against its original
-    # passage; forward it unchanged here so the request is not framed twice.
+    # V3 routes appendSpeech to the speakable channel. Delivery instructions
+    # are configured separately in the session prompt; this text is only the
+    # exact passage to read, including any instruction-like words it contains.
     session.rpc("thread/realtime/appendSpeech", {
         "threadId": session.thread_id,
         "text": text,
@@ -486,8 +501,10 @@ def speak(session_id):
 
 @voice_bp.delete("/breadboard/voice/sessions/<session_id>")
 def stop(session_id):
-    owned(session_id).close()
-    return jsonify(ok=True)
+    timings = owned(session_id).close()
+    response = jsonify(ok=True)
+    response.headers["Server-Timing"] = ", ".join(f"{name};dur={duration}" for name, duration in timings.items())
+    return response
 
 
 # ---- OpenAI (web): ChatGPT's website voice through the chatgpt.com page ----

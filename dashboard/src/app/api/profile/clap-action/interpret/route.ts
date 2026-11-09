@@ -1,3 +1,4 @@
+import { systemPromptText } from "../../../../../lib/system-prompts/service.ts";
 import { NextResponse } from 'next/server';
 import { requireUserId, routeErrorResponse } from '@/lib/server-auth';
 import { ApiError, readJsonBody, requireString } from '@/lib/hermes/route-core.ts';
@@ -11,7 +12,7 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     const control = requestGestureControl(request);
     requireSameOrigin(request, 'Set gesture instructions from Breadboard.');
     const body = await readJsonBody(request, 8_192);
@@ -21,7 +22,7 @@ export async function POST(request: Request) {
     try {
       const completion = await createChatmockClient().chat.completions.create({
         model: GLOBAL_MODEL_SENTINEL,
-        messages: clapInterpretationMessages(prompt, control),
+        messages: clapInterpretationMessages(prompt, control, systemPromptText("gesture-instructions", userId)),
         response_format: { type: 'json_object' },
       }, { signal: AbortSignal.any([request.signal, AbortSignal.timeout(30_000)]), maxRetries: 0 });
       raw = completion.choices[0]?.message?.content ?? '';

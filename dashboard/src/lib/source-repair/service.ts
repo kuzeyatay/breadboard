@@ -11,7 +11,7 @@ import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 export async function reconcileSourceRepairs(): Promise<number> {
   const data = repairDataRoot(); if (!data) return 0;
   const controller = sourceRepairAuthority(); if (!controller) return 0;
-  const { listSourceRepairs, readSourceRepair, updateSourceRepair, cancelSourceRepair, readRepairJournal } = controller;
+  const { listSourceRepairs, readSourceRepair, updateSourceRepair, cancelSourceRepair, readRepairJournal, MAX_SOURCE_REPAIR_ATTEMPTS } = controller;
   let resumed = 0;
   for (const request of listSourceRepairs(data)) {
     if (["committed", "blocked", "failed"].includes(request.stage)) continue;
@@ -42,13 +42,28 @@ export async function reconcileSourceRepairs(): Promise<number> {
       });
       if (job.jobType !== "source-repair" || job.workerKind !== "source-repair-node" || job.gardenId !== null || job.conversationId !== null) throw new Error("Repair job authority mismatch.");
       if (!request.jobId) updateSourceRepair(data, request.id, { jobId: job.jobId });
+      // A confirmed stopped worker cannot publish a candidate. Resume only
+      // pre-activation work, in a fresh native job and fresh candidate copy.
+      // Keep the original deadline and candidate allowance; Stop still wins.
+      const latest = readSourceRepair(data, request.id);
+      if (job.state === "interrupted" && latest &&
+          ["queued", "preparing", "testing", "building"].includes(latest.stage) &&
+          !latest.release && repairTaskStillCurrent(latest) && Date.now() < latest.deadline &&
+          latest.attempt < MAX_SOURCE_REPAIR_ATTEMPTS && (latest.workerRestarts ?? 0) < 2 &&
+          readRepairJournal(data).phase === "stable") {
+        updateSourceRepair(data, request.id, { stage: "queued", jobId: undefined,
+          generation: (latest.generation ?? 0) + 1, workerRestarts: (latest.workerRestarts ?? 0) + 1,
+          candidateRoot: undefined, checks: undefined,
+          reason: "The isolated repair worker was interrupted; resuming within its original deadline and remaining candidate allowance." });
+        continue;
+      }
       if (["failed", "cancelled", "resource_exhausted", "interrupted", "uncertain", "succeeded"].includes(job.state) &&
           ["queued", "preparing", "testing", "building"].includes(readSourceRepair(data, request.id)?.stage ?? "")) {
         updateSourceRepair(data, request.id, { stage: "blocked", reason: job.failureMessage || "The isolated repair worker ended before verification completed." });
       }
     } catch (error) {
       // Admission may be temporarily unavailable. The same idempotency key and
-      // two-hour durable deadline bound retries without duplicate repair jobs.
+      // persisted repair deadline bound retries without duplicate repair jobs.
       updateSourceRepair(data, request.id, { reason: error instanceof Error ? error.message : String(error) });
     }
   }

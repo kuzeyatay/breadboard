@@ -6429,8 +6429,60 @@ def run_conversation(
                     final_response = None
                     continue
 
+                # ── Narrated-intent stop guard ─────────────────────────
+                # A reply that only announces upcoming work ("I'll review
+                # the material and put together an outline.") with no tool
+                # calls is not a finished answer, yet every surface would
+                # render it as one. Nudge the model to actually do the work,
+                # bounded like the verify-on-stop loop above.
+                try:
+                    from agent.narrated_intent_stop import (
+                        build_narrated_intent_nudge,
+                        max_narrated_intent_nudges,
+                    )
+
+                    _intent_nudge = build_narrated_intent_nudge(
+                        final_response=final_response,
+                        attempts=getattr(agent, "_narrated_intent_nudges", 0),
+                        max_attempts=max_narrated_intent_nudges(),
+                    )
+                except Exception:
+                    logger.debug("narrated-intent stop-loop check failed", exc_info=True)
+                    _intent_nudge = None
+
+                if _intent_nudge:
+                    agent._narrated_intent_nudges = (
+                        getattr(agent, "_narrated_intent_nudges", 0) + 1
+                    )
+                    final_msg["finish_reason"] = "narrated_intent_continue"
+                    # The announcement is real commentary: persist it and show
+                    # it as an interim message, exactly like verify-on-stop, so
+                    # the UI files it as narration rather than the answer.
+                    agent._emit_interim_assistant_message(final_msg)
+                    messages.append(final_msg)
+                    try:
+                        agent._flush_messages_to_session_db(messages, conversation_history)
+                    except Exception:
+                        logger.debug("narrated-intent interim flush failed", exc_info=True)
+                    messages.append({
+                        "role": "user",
+                        "content": _intent_nudge,
+                        "_narrated_intent_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    logger.info(
+                        "narrated-intent stop-loop nudge issued (attempt %d)",
+                        agent._narrated_intent_nudges,
+                    )
+                    _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
+                    final_response = None
+                    continue
+
                 messages.append(final_msg)
-                
+
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")

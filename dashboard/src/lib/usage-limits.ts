@@ -6,6 +6,8 @@ export interface UsageLimitWindow {
   used_percent: number;
   window_minutes?: number;
   resets_in_seconds?: number;
+  /** Provider-reported absolute reset time, Unix seconds (as in Code Notch). */
+  resets_at?: number;
 }
 
 /**
@@ -115,8 +117,12 @@ function windowFrom(value: unknown): UsageLimitWindow | undefined {
   };
   const windowMinutes = optionalIntFrom(record.window_minutes);
   const resetsInSeconds = optionalIntFrom(record.resets_in_seconds);
+  const resetsAt = numberFrom(record.resets_at);
   if (windowMinutes !== undefined) window.window_minutes = windowMinutes;
   if (resetsInSeconds !== undefined) window.resets_in_seconds = resetsInSeconds;
+  if (resetsAt !== null && resetsAt > 0 && Number.isFinite(new Date(resetsAt * 1000).getTime())) {
+    window.resets_at = resetsAt;
+  }
   return window;
 }
 

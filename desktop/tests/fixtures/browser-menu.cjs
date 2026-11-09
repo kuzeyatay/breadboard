@@ -304,6 +304,12 @@ app.whenReady().then(async () => {
   assert.equal(prevented, true);
   await choose("settings");
   await until(() => manager.stateFor(chrome).tabs.some(tab => tab.url === origin + "/browser/settings"), "settings opens in a trusted local tab");
+  // Its in-page toolbar navigates by turning this tab into a browser tab.
+  let settingsPage;
+  await until(() => (settingsPage = webContents.getAllWebContents().find(contents => contents.getURL() === origin + "/browser/settings")), "settings document loads");
+  const settingsTabId = manager.stateFor(chrome).tabs.find(tab => tab.url === origin + "/browser/settings").id;
+  assert.equal(await manager.handleCommand(settingsPage, { type: "browser-navigate", input: web }), true);
+  await until(() => manager.stateFor(chrome).tabs.every(tab => tab.id !== settingsTabId), "settings tab is replaced by the website");
 
   // Exercise native positioning and dismissal above the actual web view too.
   Menu.prototype.popup = nativePopup;

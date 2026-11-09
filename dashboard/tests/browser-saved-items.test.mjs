@@ -63,7 +63,11 @@ test("rejected saves keep the previous cached and durable collection", async () 
   } };
   await assert.rejects(saveBrowserItems(options, []), /Couldn’t save/);
   assert.deepEqual(JSON.parse(storage.getItem()), [item]);
-  await assert.rejects(loadSavedBrowserItems({ ...options, control: { ...options.control, read: async () => { throw new Error("Unavailable"); } } }), /Couldn’t load/);
+  const unavailable = { ...options.control, read: async () => { throw new Error("Unavailable"); } };
+  // A failed re-read keeps the synced list it already has instead of an error banner.
+  assert.deepEqual(await loadSavedBrowserItems({ ...options, control: unavailable }), [item]);
+  // With nothing cached there is nothing to show, so the failure surfaces.
+  await assert.rejects(loadSavedBrowserItems({ ...options, storage: cache(null), control: unavailable }), /Couldn’t load/);
 });
 
 test("an older desktop cannot falsely report an origin-only save as durable", async () => {

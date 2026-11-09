@@ -1,32 +1,11 @@
 import { speechRequest } from './request-client';
 import { playSpeechBlob, stopSpeechPlayback } from './playback';
 import type { SubscriptionVoice } from './subscription-live';
+import { chooseVoiceGreeting } from './voice-greeting-choice';
 
-const VOICE_GREETINGS = [
-  "Hey! What's on your mind?",
-  "I'm here. What can I help with?",
-  "Hi there! What are we working on?",
-  "Ready when you are. What's the plan?",
-  "Hey! What would you like to do?",
-  "I'm listening. Where should we start?",
-  "Hello! What can we figure out together?",
-  "You rang? What can I help with?",
-  "Hey there! What's next?",
-  "All ears. What have you got?",
-];
-const LAST_GREETING_KEY = 'breadboard:voice:last-greeting';
-let lastGreeting: string | null = null;
-
-/** Remember across voice windows, with an in-memory fallback if storage is blocked. */
+/** Non-personal fallback, with recent greetings excluded across voice windows. */
 export function nextVoiceGreeting(): string {
-  try { lastGreeting = window.localStorage.getItem(LAST_GREETING_KEY) ?? lastGreeting; }
-  catch { /* Keep the last greeting in memory when storage is unavailable. */ }
-  const choices = VOICE_GREETINGS.filter(greeting => greeting !== lastGreeting);
-  const greeting = choices[Math.floor(Math.random() * choices.length)];
-  lastGreeting = greeting;
-  try { window.localStorage.setItem(LAST_GREETING_KEY, greeting); }
-  catch { /* Greeting playback does not depend on storage. */ }
-  return greeting;
+  return chooseVoiceGreeting();
 }
 
 /** Use the selected provider: the existing OpenAI call, or Voicebox synthesis. */

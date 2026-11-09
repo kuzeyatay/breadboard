@@ -914,11 +914,21 @@ def _responses_create(payload: Dict[str, Any]) -> Response:
     if strict_value is not None:
         return jsonify({"error": {"message": "Learn strict routing is unsupported on /v1/responses."}}), 409
 
+    # Council consumes taskType even on bypass. Keep it for the prose gate so
+    # machine tasks cannot be mistaken for interactive chat after routing.
+    unslop_task_fields = {
+        key: payload[key] for key in ("taskType", "task_type") if key in payload
+    }
     responses_model = resolve_model(payload.get("model"))
     if not responses_model.is_chatgpt:
         recovery_guard = recoverable_council_passthrough_guard(payload)
         if recovery_guard is not None:
             return recovery_guard
+        unslopped_instructions = maybe_unslop_instructions(
+            payload.get("instructions"), payload
+        )
+        if unslopped_instructions is not payload.get("instructions"):
+            payload = {**payload, "instructions": unslopped_instructions}
         return external_responses_response(responses_model, payload, verbose=verbose)
 
     payload = with_resolved_model_identity(
@@ -939,7 +949,7 @@ def _responses_create(payload: Dict[str, Any]) -> Response:
     # (tools, a server-default web search, a continued session) still writes
     # prose a person reads, so it keeps the writing skill.
     unslopped_instructions = maybe_unslop_instructions(
-        payload.get("instructions"), payload
+        payload.get("instructions"), {**payload, **unslop_task_fields}
     )
     if unslopped_instructions is not payload.get("instructions"):
         payload["instructions"] = unslopped_instructions

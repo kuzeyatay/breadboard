@@ -1,0 +1,379 @@
+{
+  "startedAt": "2026-11-06T18:04:25.087Z",
+  "base": "http://127.0.0.1:55504/v1",
+  "models": [
+    "cliproxy/gemini-3.8-flash-high",
+    "gpt-6-luna"
+  ],
+  "profileExists": false,
+  "method": "Live gateway requests with production core/Hermes prompt builders; no style block or custom profile supplied by the harness. Not a full UI test.",
+  "sourceHashes": {
+    "chatmock/chatmock/council/unslop.py": "9e0594c7126098021fce0926d6e7e6ec9079b3eb6f508d58487ef4d25e134e6c",
+    "chatmock/chatmock/routes_openai.py": "a85cce4c11270b37253929a422628d6495493e0275b74c7ecd637908da342dd6",
+    "hermes-config/system/chat-core.md": "66bcec54e785d76fb1737ff6884947dbcb430385d3567d41b0c1f4ed60140c9e",
+    "unslop/SKILL.md": "d26b475efedda40499e4993d0c38209d8a76fe234eba302d1e54375078a94b38"
+  },
+  "results": [
+    {
+      "id": "terminal",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "Why does coffee cool faster in a wide mug than in a narrow one?",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "Coffee cools mainly through evaporation and thermal radiation from the surface, along with heat conduction to the air and the mug walls. The shape of the mug changes how fast those processes run.\n\nA wide mug exposes more liquid surface area to the air. Evaporation happens at the liquid-gas boundary, where the fastest-moving water molecules break free into the air, carrying latent heat with them. More surface area means more molecules escape per second. Because evaporation does the bulk of the cooling in a hot beverage, doubling the exposed surface causes heat to leave the liquid much faster.\n\nSurface area also sets the rate of radiative cooling and surface conduction. A wider opening lets more infrared radiation beam directly out into the room. It also gives the hot surface water more contact area with room-temperature air, speeding up direct heat transfer.\n\nInternal convection feeds this surface loss. As coffee at the top loses heat, it becomes denser and sinks, pushing warmer coffee from the bottom up to the surface. In a wide, shallow mug, the vertical distance this circulating fluid has to travel is short, so warmer liquid reaches the surface quickly. In a tall, narrow mug, the column of liquid is deeper, which slows this turnover. The narrow mug also leaves a deeper pocket of still, humid air sitting directly above the liquid line, slowing down evaporation compared to a wide brim that air can blow across freely.",
+      "score": 1,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 8.02
+    },
+    {
+      "id": "garden",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "Explain what a capacitor does.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "A capacitor stores electrical energy in an electric field. \n\nIt consists of two electrical conductors separated by an insulating material, called a dielectric. When connected to a voltage source like a battery, electrons cannot jump across the insulator. Instead, negative charge builds up on the plate connected to the negative terminal, while an equal amount of positive charge gathers on the plate connected to the positive terminal. This charge separation sets up an electric field across the gap, which holds the stored energy.\n\nCurrent flows into the capacitor only while the charge on the plates is changing. As the plates charge, the voltage across them rises until it matches the source voltage; at that point, current drops to zero. If the circuit changes to allow a path between the plates, that stored charge flows back out, releasing the energy. \n\nCapacitance ($C$) measures how much charge ($Q$) the device holds for a given voltage ($V$), defined by the relationship:\n\n$$Q = C \\cdot V$$\n\nCapacitance is measured in farads (F), though most practical electronic components use microfarads ($\\mu\\text{F}$), nanofarads ($\\text{nF}$), or picofarads ($\\text{pF}$). The capacitance value depends on physical geometry: larger plate area and a narrower gap both increase capacitance, as does choosing an insulating material with a higher permittivity.\n\nBecause a capacitor passes current during voltage changes and stops conducting once steady-state DC voltage is reached, circuits rely on it for several distinct jobs:\n\n* **Smoothing and filtering:** In power supplies, a capacitor placed across a rectified AC line charges during voltage peaks and discharges during troughs, turning a pulsating voltage into a steadier DC level.\n* **AC coupling and DC blocking:** A capacitor placed in series along a signal path passes changing audio or radio signals while blocking steady DC bias voltages between different amplification stages.\n* **Timing:** When paired with a resistor, a capacitor charges and discharges at a predictable rate determined by the product of resistance and capacitance ($R \\cdot C$). Circuits use this delay to generate clock pulses, set oscillator frequencies, and debounce mechanical switches.\n* **Fast energy discharge:** Unlike batteries, which rely on chemical reactions and discharge relatively slowly, capacitors can dump their stored charge almost instantaneously. Camera flashes and defibrillators use this property to deliver high-current bursts.",
+      "score": 3,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 9.81
+    },
+    {
+      "id": "quartz",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "Why does sweating cool me down?",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "When your body gets warm, sweat glands push water and trace salts onto the surface of your skin. Liquid water contains molecules moving at a wide range of speeds. Some move slowly, while others carry significantly higher kinetic energy.\n\nFor a molecule to leave the liquid and escape into the air as vapor, it has to overcome the attractive forces holding it to neighboring molecules. Only the fastest, most energetic particles manage to break these bonds and fly off. \n\nBecause the high-energy molecules are the ones escaping, the average kinetic energy of the molecules left behind on your skin drops. Temperature is simply the measure of average kinetic energy, so a drop in energy means a drop in temperature. Your skin transfers thermal energy into the remaining sweat to balance the deficit, cooling the tissue and blood circulating near the surface.",
+      "score": 4,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 4.67
+    },
+    {
+      "id": "voice",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "Why does the bathroom mirror fog up after a shower?",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "Warm water from the shower evaporates into the room, raising both the air temperature and its humidity. Because the mirror is attached to the wall, its glass stays cooler than that warm, moisture-laden air. \n\nWhen the humid air contacts the cold mirror surface, it cools down to its dew point. Cooler air cannot hold as much moisture, so the excess water vapor condenses into thousands of microscopic water droplets across the glass. Those tiny droplets scatter light in every direction instead of reflecting it straight back, which makes the mirror look foggy.",
+      "score": 7,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 4.23
+    },
+    {
+      "id": "agent-off",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "responses",
+      "question": "Write a short project update for my team. The search feature is delayed from Tuesday to Friday because testing found duplicate results. Maya is fixing it. We will test again on Thursday.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "cliproxy/gemini-3.8-flash-high",
+      "finishReason": "completed",
+      "answer": "The search feature release is moving from Tuesday to Friday. QA turned up duplicate results in the queries, which Maya is addressing now. We plan to run the test suite again on Thursday once her fix is in place.",
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 4.16
+    },
+    {
+      "id": "legacy-garden",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "responses",
+      "question": "What is the difference between remembering something and understanding it?",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "cliproxy/gemini-3.8-flash-high",
+      "finishReason": "completed",
+      "answer": "Remembering means you can retrieve a piece of information. You can state the formula for standard deviation, recite the date of the Battle of Hastings, or list the symptoms of iron deficiency because the record was stored and retrieved intact. If the question arrives in the form you practiced, the retrieval succeeds. \n\nUnderstanding begins when the situation changes and the stored wording stops working. If you understand standard deviation, you see why outliers inflate it more than they inflate the interquartile range, and you can explain what happens to the spread of a dataset if every value is multiplied by five. You have an internal model of how the parts relate to one another.\n\nA clear sign of the difference is transfer. Someone who only remembers an idea can usually apply it only in the context where they learned it. Change the variable names, switch from a physics problem to an economics problem that runs on the same mathematics, or ask them to explain the mechanism to a child, and the recall breaks down. Someone who understands can reformulate the idea, predict how a system will behave when an input changes, and spot when two seemingly different problems share the same underlying structure. \n\nThe two support each other in practice. Understanding often depends on having key facts readily accessible in memory, because holding basic details in working memory makes it possible to trace connections between them. Still, having the pieces filed away is distinct from seeing how the machine runs.",
+      "score": 0,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 7.44
+    },
+    {
+      "id": "concise",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "I keep putting off a ten-minute email. How do I get started?",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "Open a blank draft right now and write only one sentence to the person. Close the tab immediately after that sentence is down.\n\nThat breaks the barrier: the draft now exists, so finishing it later is just editing instead of starting from zero.\n\nIf even that feels heavy, use this three-step sequence:\n\n1. **Write the core point in two words as the subject line.**\n2. **Draft the body in your notes app first.** Strip out greetings, context, and polishing; just write the raw ask or answer.\n3. **Copy it over, add \"Hi [Name]\" and send.**\n\nAiming for a messy two-sentence email sent in sixty seconds beats a polished one sitting in your head for three days.",
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 7.59
+    },
+    {
+      "id": "terminal",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "Why does coffee cool faster in a wide mug than in a narrow one?",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "A wide mug exposes more of the coffee’s surface to the air. That lets heat escape faster through evaporation and convection. The mug’s wider sides can also lose heat to the room, though the larger exposed surface is usually the main reason.\n\nThe shape alone doesn’t tell the whole story: mug material, thickness, and how full it is also affect how quickly the coffee cools.",
+      "score": 1,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 3.02
+    },
+    {
+      "id": "follow-up",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "responses",
+      "question": "Use these facts instead: search is moving from Tuesday to Friday because of duplicate results. Maya is fixing it; testing is Thursday. Keep it to a short paragraph.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "cliproxy/gemini-3.8-flash-high",
+      "finishReason": "completed",
+      "answer": "Search is moving from Tuesday to Friday because the index is returning duplicate results. Maya is fixing the query logic today, and we have testing scheduled for Thursday before the release.",
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 6.44
+    },
+    {
+      "id": "garden",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "Explain what a capacitor does.",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "A capacitor stores energy in an electric field between two conductors. When voltage is applied, electric charge builds up on its plates. The capacitor can then release that stored energy as the circuit needs it.",
+      "score": 3,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.42
+    },
+    {
+      "id": "quartz",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "Why does sweating cool me down?",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "Sweat cools you as it evaporates. Evaporation takes energy, and the escaping water molecules carry heat away from your skin. Moving air helps the sweat evaporate faster, which can make you feel cooler.",
+      "score": 1,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.77
+    },
+    {
+      "id": "agent-off",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "responses",
+      "question": "Write a short project update for my team. The search feature is delayed from Tuesday to Friday because testing found duplicate results. Maya is fixing it. We will test again on Thursday.",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "completed",
+      "answer": "The search feature is delayed from Tuesday to Friday after testing found duplicate results. Maya is fixing the issue, and we’ll test again on Thursday.",
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.09
+    },
+    {
+      "id": "voice",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "Why does the bathroom mirror fog up after a shower?",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "A hot shower releases water vapor into the air. When that warm, moist air touches the cooler mirror, the vapor condenses into tiny water droplets on its surface, making it look foggy.",
+      "score": 0,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 3.21
+    },
+    {
+      "id": "legacy-garden",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "responses",
+      "question": "What is the difference between remembering something and understanding it?",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "completed",
+      "answer": "Remembering is being able to bring information back to mind. Understanding is knowing how the pieces fit together and why they make sense.\n\nYou might remember a formula without knowing when to use it. If you understand it, you can explain what its parts mean, recognize when it applies, and often work out what to do when the problem changes.\n\nThey overlap: understanding usually helps you remember, and remembering gives you material to think with. But being able to repeat an answer is evidence of recall, not by itself proof of understanding.",
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 3.31
+    },
+    {
+      "id": "concise",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "I keep putting off a ten-minute email. How do I get started?",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "Open a blank email and write only the subject line. That’s the start.\n\nThen:\n1. Set a 2-minute timer.\n2. Write the rough version, even if it’s clumsy.\n3. When the timer ends, send it if it’s ready; otherwise, write the next sentence.",
+      "score": 0,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 3.56
+    },
+    {
+      "id": "follow-up",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "responses",
+      "question": "Use these facts instead: search is moving from Tuesday to Friday because of duplicate results. Maya is fixing it; testing is Thursday. Keep it to a short paragraph.",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "completed",
+      "answer": "Search is moving from Tuesday to Friday because of duplicate results. Maya is fixing the issue, and testing is scheduled for Thursday.",
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 2.79
+    }
+  ],
+  "finishedAt": "2026-11-06T18:05:04.025Z"
+}

@@ -170,9 +170,13 @@ function gitBlob(repositoryPath, snapshot, filePath) {
 
 function snapshotEnvironment(repositoryPath) {
   const base = sealedGitEnvironment();
+  // Independent worker processes can snapshot the same repository at once.
+  // A private index per capture avoids collisions and makes an interrupted
+  // older capture's lock unable to disable every later agent's edit receipts.
+  const privateIndex = `${SNAPSHOT_INDEX}-${crypto.randomUUID()}`;
   const indexFile = git(
     repositoryPath,
-    ["rev-parse", "--git-path", SNAPSHOT_INDEX],
+    ["rev-parse", "--git-path", privateIndex],
     base,
   ).trim();
   return sealedGitEnvironment({
@@ -188,6 +192,25 @@ function snapshotEnvironment(repositoryPath) {
 
 function prepareSnapshotIndex(repositoryPath, env) {
   const indexFile = env.GIT_INDEX_FILE;
+  if (indexFile && !fs.existsSync(indexFile)) {
+    // read-tree recreates every entry with an empty stat cache. On a large
+    // worktree the following add would reread every tracked file before the
+    // coding agent could start. Seed only our private index with Git's cache;
+    // the user's index is never opened for writing.
+    const source = git(repositoryPath, ["rev-parse", "--git-path", "index"]).trim();
+    const sourcePath = path.isAbsolute(source) ? source : path.join(repositoryPath, source);
+    try {
+      const metadata = fs.lstatSync(sourcePath);
+      if (!metadata.isFile() || metadata.isSymbolicLink()) {
+        throw new Error("The repository index is not a regular file.");
+      }
+      fs.copyFileSync(sourcePath, indexFile, fs.constants.COPYFILE_EXCL);
+    } catch (error) {
+      // A repository with no index (including an unborn repository) is valid.
+      // Other copy failures must not continue with a partially copied index.
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
   if (!indexFile || !fs.existsSync(indexFile)) {
     try {
       git(repositoryPath, ["read-tree", "HEAD"], env);
@@ -195,6 +218,19 @@ function prepareSnapshotIndex(repositoryPath, env) {
       git(repositoryPath, ["read-tree", "--empty"], env);
     }
     return;
+  }
+  // These flags are useful to the user's Git workflow, but an undo receipt
+  // must capture the actual files even when Git was told not to inspect them.
+  const unchecked = git(repositoryPath, ["ls-files", "-v", "-z"], env)
+    .split("\0")
+    .filter((entry) => entry && (entry[0] === "S" || /[a-z]/u.test(entry[0])))
+    .map((entry) => entry.slice(2));
+  if (unchecked.length > 0) {
+    // Git applies only one of these bit operations per update-index call.
+    for (const flag of ["--no-assume-unchanged", "--no-skip-worktree"]) {
+      gitWithInput(repositoryPath, ["update-index", flag, "-z", "--stdin"],
+        `${unchecked.join("\0")}\0`, env);
+    }
   }
   const ignored = git(
     repositoryPath,
@@ -254,9 +290,11 @@ function dropLiveDatabaseClusters(repositoryPath, env) {
 
 /** Worker-only snapshot primitive. It never runs in Next.js. */
 export function captureAgentEditsSnapshot(repositoryPath) {
+  let ownedIndex;
   try {
     const repository = canonicalRepository(repositoryPath);
     const env = snapshotEnvironment(repository);
+    ownedIndex = env.GIT_INDEX_FILE;
     prepareSnapshotIndex(repository, env);
     git(repository, ["add", "--all", "--"], env);
     dropLiveDatabaseClusters(repository, env);
@@ -272,6 +310,12 @@ export function captureAgentEditsSnapshot(repositoryPath) {
     return commit;
   } catch {
     return null;
+  } finally {
+    // These exact generated files belong only to this synchronous capture.
+    // The user's index and any previous capture's index/lock are untouched.
+    if (ownedIndex) for (const file of [ownedIndex, `${ownedIndex}.lock`]) {
+      try { fs.unlinkSync(file); } catch { /* absent or still owned by a dying child */ }
+    }
   }
 }
 

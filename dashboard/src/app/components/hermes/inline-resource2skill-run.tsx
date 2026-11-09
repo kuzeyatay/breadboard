@@ -52,7 +52,7 @@ export default function InlineResource2SkillRun({
   const report = useCallback((outcome: "completed" | "failed" | "aborted", content: string) => {
     if (reported.current) return;
     reported.current = true;
-    if (outcome === "completed") notifyTaskCompleted(`Resource2Skill — ${brief.slice(0, 80)}`);
+    if (outcome === "completed") notifyTaskCompleted(`Resource2Skill — ${brief.slice(0, 80)}`, { runId });
     terminalRef.current?.({ outcome, content });
   }, [brief]);
 
@@ -100,7 +100,7 @@ export default function InlineResource2SkillRun({
   return (
     <>
       <AssistantResponseMeta active={!terminal} failed={terminal && status !== "completed"} agentName="Resource2Skill" usage={persistedUsage} summary={activity.at(-1)} />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <header className="bb-agent-run-header">
           <p className="bb-agent-run-title">Resource2Skill {domain ? <span className="ml-2 font-mono text-[11px] font-normal text-[var(--ink-muted)]">{domain}</span> : null}</p>
           <div className="flex items-center gap-2">

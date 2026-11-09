@@ -10,7 +10,7 @@ const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'breadboard-task-recover
 process.env.BREADBOARD_DATA_DIR = directory;
 process.env.BREADBOARD_GOAL_HOME = path.join(directory, 'goals');
 const {default: db} = await import('../src/lib/db.ts');
-const {createConversation, reserveConversationTurn, completeAssistantMessage, failAssistantMessage} = await import('../src/lib/conversations/store.ts');
+const {createConversation, reserveConversationTurn, completeAssistantMessage, failAssistantMessage, retryAssistantMessage} = await import('../src/lib/conversations/store.ts');
 const {createRuntimeSession} = await import('../src/lib/hermes/runtime-store.ts');
 const {beginRuntimeRun, finishRuntimeRun, getRuntimeRun, parseRuntimeRunDispatch} = await import('../src/lib/hermes/run-store.ts');
 const {recordTaskRecoveryOutcome, taskRecoveryCurrent, prepareTaskRecovery, taskRecoveryForContinuation, continueTaskRecovery, cancelTaskRecovery} = await import('../src/lib/hermes/task-recovery.ts');
@@ -37,6 +37,27 @@ function setup(failure = {code:'required_artifact_missing', message:'The PDF has
   return {conversation, session, run, clientMessageId};
 }
 
+test('persisted completed information answers end recovery but unfinished and failed tasks retain it', () => {
+  for (const scenario of ['delivered-voice','pending-voice','failed-voice','delivered-typed']) {
+    const conversation=createConversation({userId:1,surface:'dashboard_terminal'});
+    const session=createRuntimeSession({conversationId:conversation.id,surface:conversation.surface,userId:1,
+      chatSessionId:null,agentName:'breadboard-assistant',clusterId:null,gardenId:null,pageSlug:null,
+      workspaceKey:conversation.public_id,activeDirectory:directory,filesystemMode:'restricted'});
+    const id=`voice-case-${conversation.id}`;
+    reserveConversationTurn({conversation,clientMessageId:id,surface:conversation.surface,content:'Find a verified answer.'});
+    const run=beginRuntimeRun({runtimeSessionId:session.id,instruction:'Find a verified answer.',dispatch:{
+      clientMessageId:id,voice:scenario!=='delivered-typed',
+      taskRecovery:{request:'Find a verified answer.',rootClientMessageId:id,turn:0}}});
+    if(scenario.startsWith('delivered'))completeAssistantMessage({conversationId:conversation.id,clientMessageId:id,content:'Here is the verified answer.'});
+    const failure=scenario==='failed-voice'?{code:'required_artifact_missing',message:'The requested file is still missing.'}:undefined;
+    if(failure)failAssistantMessage({conversationId:conversation.id,clientMessageId:id,status:'failed',error:failure.code});
+    const outcome=recordTaskRecoveryOutcome({runId:run.id,status:failure?'failed':'idle',failure,
+      tools:[{toolName:'weather_forecast',success:false,summary:'No match'},{toolName:'web_search',success:true}]});
+    assert.equal(outcome.pending,!scenario.startsWith('delivered'),scenario);
+    finishRuntimeRun(run.id,failure?'error':'completed');
+  }
+});
+
 test('ordinary failed tasks persist recovery and retain their original request, model, attachments and permissions', () => {
   const s = setup();
   assert.equal(taskRecoveryCurrent(s.conversation.id,s.run.id), true);
@@ -51,6 +72,45 @@ test('ordinary failed tasks persist recovery and retain their original request, 
   assert.equal(input.internalAgentContinuation,true);
   assert.equal(parseRuntimeRunDispatch(getRuntimeRun(s.run.id)).taskRecovery.pending,true);
   assert.equal(recordTaskRecoveryOutcome({runId:s.run.id,status:'failed',tools:[],failure:{code:'duplicate'}}),null);
+});
+
+test('a completed request for missing browser context is retained without a new reasoning turn', () => {
+  const s=setup();
+  retryAssistantMessage(s.conversation.id,s.clientMessageId);
+  completeAssistantMessage({conversationId:s.conversation.id,clientMessageId:s.clientMessageId,
+    content:'Paste the passage here so I can explain it.'});
+  db.prepare("UPDATE hermes_runs SET dispatch_json=json_set(dispatch_json, '$.taskRecovery', json(?)) WHERE id=?")
+    .run(JSON.stringify({request:s.run.instruction,rootClientMessageId:s.clientMessageId,turn:0}),s.run.id);
+  const outcome=recordTaskRecoveryOutcome({runId:s.run.id,status:'idle',tools:[{
+    toolName:'browser_terminal',success:false,failure:{code:'browser_not_linked',message:'Page context unavailable'},
+  }]});
+  assert.equal(outcome.pending,false);
+  assert.equal(outcome.stopped,'requires_user_or_external_change');
+  assert.equal(prepareTaskRecovery(s.conversation.id,s.run.id),null);
+  assert.deepEqual(db.prepare("SELECT status,content FROM conversation_messages WHERE conversation_id=? AND role='assistant'")
+    .get(s.conversation.id),{status:'complete',content:'Paste the passage here so I can explain it.'});
+});
+
+test('an old queued browser-link recovery cannot replay after restart', () => {
+  const s=setup();
+  const checkpoint={code:'task_tool_failed',message:'browser_terminal: Send a message from the Terminal beside the browser page to connect it.',
+    fingerprint:'saved-before-fix',progress:'[]',repeated:1,notBefore:0};
+  db.prepare("UPDATE hermes_runs SET dispatch_json=json_set(dispatch_json, '$.taskRecovery', json(?)) WHERE id=?")
+    .run(JSON.stringify({request:s.run.instruction,rootClientMessageId:s.clientMessageId,turn:0,pending:true,checkpoint}),s.run.id);
+  assert.equal(taskRecoveryCurrent(s.conversation.id,s.run.id),false);
+  assert.equal(prepareTaskRecovery(s.conversation.id,s.run.id),null);
+});
+
+test('a saved provider outage resumes without spending the task reasoning budget', () => {
+  const s=setup({code:'hermes_turn_failed',message:'HTTP 502, Error response'});
+  const state=parseRuntimeRunDispatch(getRuntimeRun(s.run.id)).taskRecovery;
+  assert.equal(state.pending,true);assert.equal(state.sourceRepairId,undefined);
+  assert.ok(state.checkpoint.providerWaitStartedAt);
+  const continuation=taskRecoveryForContinuation(s.run.id);
+  assert.equal(continuation.turn,state.turn);
+  assert.equal(continuation.checkpoint.providerWaitStartedAt,state.checkpoint.providerWaitStartedAt);
+  cancelTaskRecovery(s.conversation.id);
+  assert.equal(prepareTaskRecovery(s.conversation.id,s.run.id),null);
 });
 
 test('recovery dispatch is claimed once, finishes the saved task and stops after verified success', async () => {

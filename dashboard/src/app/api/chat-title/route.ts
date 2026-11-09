@@ -13,11 +13,12 @@ export const dynamic = "force-dynamic";
 /** A tool-free, first-prompt-only title completion for local chat surfaces. */
 export async function POST(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     const body = await readJsonBody(request, 32 * 1024);
     const firstPrompt = requireString(body.firstPrompt, "firstPrompt", 4_000);
     const { baseURL } = resolveChatmockBaseUrl(request);
     const title = await generateConversationTitle({
+      userId,
       firstPrompt,
       model: body.model,
       baseUrl: baseURL,

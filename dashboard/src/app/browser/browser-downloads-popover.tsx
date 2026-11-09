@@ -49,7 +49,8 @@ export default function BrowserDownloadsPopover() {
         const completed = item.state === "completed";
         const status = item.active ? item.state === "interrupted" ? "Connection interrupted" : "Downloading"
           : completed ? "Completed" : item.state === "cancelled" ? "Cancelled" : "Interrupted";
-        const progress = item.totalBytes > 0 ? Math.min(100, item.receivedBytes / item.totalBytes * 100) : undefined;
+        const progress = item.progress?.total ? Math.min(100, item.progress.completed / item.progress.total * 100)
+          : item.totalBytes > 0 ? Math.min(100, item.receivedBytes / item.totalBytes * 100) : undefined;
         return <article key={item.id} className={styles.recentRow}>
           <span className={styles.fileIcon} aria-hidden="true"><Icon size={25} strokeWidth={1.5} /></span>
           <div className={styles.recentDetails}>
@@ -57,6 +58,7 @@ export default function BrowserDownloadsPopover() {
               aria-label={completed ? `Open ${item.filename}` : item.filename} onClick={() => void act({ type: "open", id: item.id })}>{item.filename}</button>
             <span className={styles.recentStatus}>{status} — {downloadBytes(item.receivedBytes)}{item.active && item.totalBytes > 0 ? ` of ${downloadBytes(item.totalBytes)}` : ""}</span>
             {item.active ? <progress className={styles.progress} aria-label={`Download progress for ${item.filename}`} max={100} value={progress} /> : null}
+            {item.error ? <span className={styles.recentStatus} role="alert">{item.error}</span> : null}
           </div>
           {completed && item.savePath ? <button type="button" className={styles.iconAction} disabled={busy} title="Show in folder" aria-label={`Show ${item.filename} in folder`} onClick={() => void act({ type: "show", id: item.id })}><FolderOpen size={18} /></button>
             : item.active ? <button type="button" className={styles.iconAction} disabled={busy} title="Cancel download" aria-label={`Cancel ${item.filename}`} onClick={() => void act({ type: "cancel", id: item.id })}><X size={17} /></button> : null}

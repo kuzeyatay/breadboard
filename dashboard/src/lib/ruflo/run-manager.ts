@@ -1,3 +1,4 @@
+import { systemPromptText } from "../system-prompts/service.ts";
 // Ruflo hive-mind runs.
 //
 // A run has two phases, both owned by Breadboard so the process handling,
@@ -16,6 +17,8 @@
 //                 run cards consume.
 
 import { randomUUID } from "node:crypto";
+import { apiAnythingMcpServer } from "../api-anything/agents.ts";
+import { API_ANYTHING_TOOLS } from "../../../scripts/api-anything-contract.mjs";
 import os from "node:os";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
@@ -63,6 +66,10 @@ interface RunState {
   output: string[];
   /** Claude Code's own final answer, preferred over the streamed text parts. */
   finalResult: string;
+  executorError: string | null;
+  pendingTools: Map<string, { tool: string; summary: string }>;
+  seenTools: Set<string>;
+  completedWorkerCount: number;
   startedAt: number;
   toolCount: number;
   inputTokens: number;
@@ -91,6 +98,23 @@ const cleanupScheduled = new WeakSet<RunState>();
 export const DEFAULT_WORKER_COUNT = 6;
 export const MIN_WORKER_COUNT = 1;
 export const MAX_WORKER_COUNT = 12;
+
+// The queen runs without an interactive permission prompt. Grant only its
+// fixed local coordination tools, native subagent delegation and the embedded
+// website API tools (which refuse unapproved writes). Unrelated permissions
+// retain the normal executor policy.
+export const RUFLO_COORDINATION_TOOLS = Object.freeze([
+  "agent_spawn", "agent_status", "agent_list", "agent_terminate",
+  "task_create", "task_assign", "task_status", "task_list", "task_update", "task_complete", "task_cancel",
+  "hive-mind_init", "hive-mind_status", "hive-mind_join", "hive-mind_leave", "hive-mind_consensus", "hive-mind_broadcast",
+].map((name) => `mcp__ruflo__${name}`));
+
+export function rufloExecutorPermissionArgs(skipPermissions: boolean): string[] {
+  return skipPermissions
+    ? ["--dangerously-skip-permissions"]
+    : ["--permission-mode", "acceptEdits", "--allowedTools", ["Agent", "Task", ...RUFLO_COORDINATION_TOOLS,
+      ...API_ANYTHING_TOOLS.map(tool => `mcp__api_anything__${tool.name}`)].join(",")];
+}
 
 export const QUEEN_TYPES = ["strategic", "tactical", "adaptive"] as const;
 export const CONSENSUS_STRATEGIES = [
@@ -263,6 +287,7 @@ function writeMcpConfig(
   runId: string,
   launcher: RufloLauncher,
   graftServer: GraftServer | null,
+  userId: number,
 ): {
   configPath: string;
   cleanup: () => void;
@@ -270,11 +295,13 @@ function writeMcpConfig(
   const directory = path.join(os.tmpdir(), "breadboard-ruflo", runId);
   fs.mkdirSync(directory, { recursive: true });
   const configPath = path.join(directory, "ruflo.mcp.json");
+  const websiteApis = apiAnythingMcpServer(userId);
   fs.writeFileSync(
     configPath,
     JSON.stringify(
       {
         mcpServers: {
+          ...(websiteApis ? { api_anything: websiteApis } : {}),
           ruflo: {
             command: launcher.command,
             args: [...launcher.args, "mcp", "start"],
@@ -381,7 +408,7 @@ function ingestUsage(run: RunState, value: unknown): boolean {
 }
 
 /** Translate one Claude Code `stream-json` frame into Breadboard run events. */
-function ingestClaudeFrame(run: RunState, frame: Record<string, unknown>): void {
+export function ingestClaudeFrame(run: RunState, frame: Record<string, unknown>): void {
   if (frame.type === "system" && frame.subtype === "init") {
     const servers = Array.isArray(frame.mcp_servers) ? frame.mcp_servers : [];
     emit(run, "hive.connected", {
@@ -414,15 +441,21 @@ function ingestClaudeFrame(run: RunState, frame: Record<string, unknown>): void 
         const text = boundedText(block.thinking, 4_000).trim();
         if (text) emit(run, "reasoning.completed", { text });
       } else if (block.type === "tool_use") {
-        run.toolCount += 1;
+        const callId = boundedText(block.id, 180);
+        if (!callId || run.seenTools.has(callId)) continue;
+        run.seenTools.add(callId);
         const tool = boundedText(block.name, 120) || "tool";
-        emit(run, "tool.completed", {
+        const summary = toolSummary(block.input);
+        run.pendingTools.set(callId, { tool, summary });
+        run.toolCount += 1;
+        emit(run, "tool.started", {
+          callId,
           tool,
-          status: "completed",
+          status: "running",
           // `mcp__ruflo__hive-mind_consensus` is a coordination call, not a
           // file edit; the card renders the two differently.
           swarm: tool.startsWith("mcp__"),
-          summary: toolSummary(block.input),
+          summary,
         });
       }
     }
@@ -430,10 +463,33 @@ function ingestClaudeFrame(run: RunState, frame: Record<string, unknown>): void 
     return;
   }
 
+  if (frame.type === "user" && frame.message && typeof frame.message === "object") {
+    const content = (frame.message as Record<string, unknown>).content;
+    for (const value of Array.isArray(content) ? content : []) {
+      if (!value || typeof value !== "object" || value.type !== "tool_result") continue;
+      const callId = boundedText(value.tool_use_id, 180);
+      const tool = run.pendingTools.get(callId);
+      if (!tool) continue;
+      run.pendingTools.delete(callId);
+      if (value.is_error !== true && ["Agent", "Task", "mcp__ruflo__agent_execute"].includes(tool.tool)) run.completedWorkerCount += 1;
+      emit(run, "tool.completed", { ...tool, callId, status: value.is_error === true ? "failed" : "completed", swarm: tool.tool.startsWith("mcp__"), resultSummary: boundedText(value.content, 2_000) });
+    }
+    return;
+  }
+
   if (frame.type === "result") {
     if (ingestUsage(run, frame.usage)) emitUsage(run);
     const text = boundedText(frame.result, 100_000).trim();
     if (text) run.finalResult = text;
+    if (frame.is_error === true) run.executorError = text || boundedText(frame.errors, 2_000) || "The Ruflo executor reported an error.";
+    for (const value of Array.isArray(frame.permission_denials) ? frame.permission_denials : []) {
+      if (!value || typeof value !== "object") continue;
+      const callId = boundedText(value.tool_use_id, 180);
+      const tool = run.pendingTools.get(callId);
+      if (!tool) continue;
+      run.pendingTools.delete(callId);
+      emit(run, "tool.completed", { ...tool, callId, status: "failed", swarm: tool.tool.startsWith("mcp__"), resultSummary: "Permission was denied for this tool." });
+    }
   }
 }
 
@@ -492,6 +548,10 @@ export function startRuntimeWorkerRun(
     stderr: "",
     output: [],
     finalResult: "",
+    executorError: null,
+    pendingTools: new Map(),
+    seenTools: new Set(),
+    completedWorkerCount: 0,
     startedAt: Date.now(),
     toolCount: 0,
     inputTokens: 0,
@@ -530,7 +590,7 @@ export function startRuntimeWorkerRun(
   const graft = input.graft ?? null;
   let mcp: ReturnType<typeof writeMcpConfig>;
   try {
-    mcp = writeMcpConfig(runId, launcher, graft?.server ?? null);
+    mcp = writeMcpConfig(runId, launcher, graft?.server ?? null, input.userId);
   } catch (error) {
     materialized.cleanup();
     runs.delete(runId);
@@ -749,7 +809,9 @@ export function startRuntimeWorkerRun(
         });
         // The coordination prompt is Ruflo's; the code index is Breadboard's
         // and belongs with the executor, not in the one-line planner objective.
-        const executorPrompt = [prompt, attachmentContext, graft?.instruction ?? ""]
+        const executorPrompt = [prompt,
+          "Ruflo coordination records are not completed work. Use the native Agent/Task tool to execute the requested worker subtasks with inherited permissions, then wait for their results before synthesizing the answer. Do not treat agent_spawn registration as execution. Preserve the user's scope and requested worker count; if a worker cannot run, report that limitation explicitly.",
+          attachmentContext, graft?.instruction ?? "", systemPromptText("api-anything-policy", run.userId)]
           .filter(Boolean)
           .join("\n\n");
         spawnExecutor(executorPrompt);
@@ -769,10 +831,9 @@ export function startRuntimeWorkerRun(
         "stream-json",
         "--verbose",
         `--mcp-config=${mcp.configPath}`,
+        "--strict-mcp-config",
         ...(model ? ["--model", model] : []),
-        ...(skipPermissions
-          ? ["--dangerously-skip-permissions"]
-          : ["--permission-mode", "acceptEdits"]),
+        ...rufloExecutorPermissionArgs(skipPermissions),
       ],
       {
         cwd: run.repositoryPath,
@@ -826,7 +887,7 @@ export function startRuntimeWorkerRun(
       }
       cleanup();
       const elapsedSec = Math.max(0, (Date.now() - run.startedAt) / 1_000);
-      if (code === 0) {
+      if (code === 0 && !run.executorError) {
         run.status = "completed";
         emit(run, "run.completed", {
           summary:
@@ -837,6 +898,7 @@ export function startRuntimeWorkerRun(
           toolCount: run.toolCount,
           swarmId: run.plan?.swarmId ?? "unknown",
           workerCount: run.plan?.workerCount ?? workers,
+          completedWorkerCount: run.completedWorkerCount,
           repository: run.repositoryName,
         });
         return;
@@ -844,7 +906,7 @@ export function startRuntimeWorkerRun(
       run.status = "failed";
       emit(run, "run.failed", {
         error:
-          rufloProcessError(run.stderr) ||
+          run.executorError || rufloProcessError(run.stderr) ||
           `The Ruflo swarm exited with code ${code ?? "unknown"}.`,
         elapsedSec,
         toolCount: run.toolCount,

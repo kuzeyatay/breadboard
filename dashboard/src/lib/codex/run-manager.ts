@@ -1,4 +1,6 @@
+import { systemPromptText } from "../system-prompts/service.ts";
 import { randomUUID } from "node:crypto";
+import { apiAnythingCodexConfig } from "../api-anything/agents.ts";
 import {
   spawn,
   spawnSync,
@@ -530,6 +532,7 @@ export function startRuntimeWorkerRun(
     "-c",
     `model_reasoning_effort=${JSON.stringify(effort)}`,
     ...graftConfigOverrides(graft?.server ?? null),
+    ...apiAnythingCodexConfig(input.userId),
     ...materialized.paths.flatMap((filePath) => ["--image", filePath]),
     "-",
   ];
@@ -547,7 +550,7 @@ export function startRuntimeWorkerRun(
     },
   }) as ChildProcessWithoutNullStreams;
   child.stdin.end(
-    [input.instruction ?? input.task, graft?.instruction ?? ""]
+    [input.instruction ?? input.task, graft?.instruction ?? "", systemPromptText("api-anything-policy", input.userId)]
       .filter(Boolean)
       .join("\n\n"),
   );

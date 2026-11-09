@@ -1,0 +1,60 @@
+[
+  {
+    "theme": "light",
+    "icons": [
+      {
+        "label": "Code",
+        "icon": "lucide lucide-code-xml",
+        "width": 14,
+        "height": 14
+      },
+      {
+        "label": "Gestures",
+        "icon": "lucide lucide-hand",
+        "width": 14,
+        "height": 14
+      },
+      {
+        "label": "Screen Time",
+        "icon": "lucide lucide-chart-no-axes-column",
+        "width": 14,
+        "height": 14
+      },
+      {
+        "label": "Settings",
+        "icon": null,
+        "width": 14,
+        "height": 14
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "icons": [
+      {
+        "label": "Code",
+        "icon": "lucide lucide-code-xml",
+        "width": 14,
+        "height": 14
+      },
+      {
+        "label": "Gestures",
+        "icon": "lucide lucide-hand",
+        "width": 14,
+        "height": 14
+      },
+      {
+        "label": "Screen Time",
+        "icon": "lucide lucide-chart-no-axes-column",
+        "width": 14,
+        "height": 14
+      },
+      {
+        "label": "Settings",
+        "icon": null,
+        "width": 14,
+        "height": 14
+      }
+    ]
+  }
+]

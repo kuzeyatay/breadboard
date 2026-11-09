@@ -8,8 +8,10 @@ const built = await esbuild.build({
   entryPoints: [path.join(root, "src/lib/vox-director/model-client.ts")],
   bundle: true, format: "esm", platform: "node", write: false,
   plugins: [{ name: "local-provider", setup(build) {
-    build.onResolve({ filter: /agent-browser\/provider\.ts$/ }, () => ({ path: "provider", namespace: "fixture" }));
-    build.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({ contents: 'export const chatmockApiKeyValue = () => "local";', loader: "js" }));
+    build.onResolve({ filter: /(?:agent-browser\/provider|system-prompts\/service)\.ts$/ }, args => ({ path: args.path.includes("system-prompts") ? "prompts" : "provider", namespace: "fixture" }));
+    build.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ contents: args.path === "prompts"
+      ? 'export const applySystemPromptSections = text => text;'
+      : 'export const chatmockApiKeyValue = () => "local";', loader: "js" }));
   } }],
 });
 const { chooseStyle } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString("base64")}`);

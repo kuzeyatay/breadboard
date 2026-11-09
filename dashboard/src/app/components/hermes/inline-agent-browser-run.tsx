@@ -206,7 +206,7 @@ export default function InlineAgentBrowserRun({
             ? "Request was aborted."
             : "Agent Browser could not complete the task.");
       setResult(content);
-      if (outcome === "completed") notifyTaskCompleted(task);
+      if (outcome === "completed") notifyTaskCompleted(task, { runId });
       onTerminalRef.current?.({ outcome, content });
     }
   }, [task]);
@@ -444,7 +444,7 @@ export default function InlineAgentBrowserRun({
         }
         agentName="Agent Browser"
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
       {/* The task is the user's own message directly above this card; repeating
           it here would only push the screenshot further down. */}
       <div className="bb-agent-run-header">

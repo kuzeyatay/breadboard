@@ -1,0 +1,303 @@
+{
+  "openedAt": "2026-10-14T12:08:55.308Z",
+  "status": "closed",
+  "sessions": [
+    {
+      "id": 1,
+      "startedAt": 1791979793866,
+      "anchor": {
+        "x": -1297,
+        "y": 436,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 388,
+        "width": 320,
+        "height": 100
+      },
+      "pillVisible": true,
+      "recordingAt": 1791979795677,
+      "firstPreviewAt": 1791979800824,
+      "firstPreviewMs": 6958,
+      "previewCount": 3,
+      "previewWhileHeld": true,
+      "previewCharacters": 28,
+      "releasedAt": 1791979801702,
+      "hiddenOnRelease": true,
+      "cancelled": true
+    },
+    {
+      "id": 2,
+      "startedAt": 1791979804625,
+      "anchor": {
+        "x": -1081,
+        "y": 435,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1136,
+        "y": 387,
+        "width": 320,
+        "height": 100
+      },
+      "recordingAt": 1791979804724,
+      "pillVisible": true,
+      "releasedAt": 1791979806345,
+      "hiddenOnRelease": true,
+      "cancelled": true
+    },
+    {
+      "id": 3,
+      "startedAt": 1791979820203,
+      "anchor": {
+        "x": -1297,
+        "y": 578,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 530,
+        "width": 320,
+        "height": 100
+      },
+      "pillVisible": true,
+      "recordingAt": 1791979820666,
+      "releasedAt": 1791979823725,
+      "hiddenOnRelease": true,
+      "characters": 28,
+      "submitRequested": false,
+      "insertedAt": 1791979844018,
+      "releaseToInsertMs": 20293,
+      "snapshot": {
+        "characters": {
+          "rich": 28,
+          "plain": 28,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 0,
+          "plain": 0,
+          "multiline": 0
+        }
+      }
+    },
+    {
+      "id": 4,
+      "startedAt": 1791979846577,
+      "anchor": {
+        "x": -1081,
+        "y": 578,
+        "width": 1,
+        "height": 22
+      },
+      "pillBounds": {
+        "x": -1136,
+        "y": 530,
+        "width": 320,
+        "height": 100
+      },
+      "recordingAt": 1791979846705,
+      "pillVisible": true,
+      "releasedAt": 1791979849663,
+      "hiddenOnRelease": true,
+      "characters": 0,
+      "submitRequested": true,
+      "insertedAt": 1791979854705,
+      "releaseToInsertMs": 5042,
+      "snapshot": {
+        "characters": {
+          "rich": 28,
+          "plain": 28,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 0,
+          "plain": 1,
+          "multiline": 0
+        }
+      }
+    },
+    {
+      "id": 5,
+      "startedAt": 1791979859147,
+      "anchor": {
+        "x": -1081,
+        "y": 578,
+        "width": 1,
+        "height": 22
+      },
+      "pillBounds": {
+        "x": -1136,
+        "y": 530,
+        "width": 320,
+        "height": 100
+      },
+      "recordingAt": 1791979859399,
+      "pillVisible": true,
+      "firstPreviewAt": 1791979861530,
+      "firstPreviewMs": 2383,
+      "previewCount": 4,
+      "previewWhileHeld": true,
+      "previewCharacters": 34,
+      "releasedAt": 1791979863599,
+      "hiddenOnRelease": true,
+      "characters": 34,
+      "submitRequested": false,
+      "insertedAt": 1791979864836,
+      "releaseToInsertMs": 1237,
+      "snapshot": {
+        "characters": {
+          "rich": 28,
+          "plain": 62,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 0,
+          "plain": 1,
+          "multiline": 0
+        }
+      }
+    },
+    {
+      "id": 6,
+      "startedAt": 1791979869323,
+      "anchor": {
+        "x": -1077,
+        "y": 435,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1132,
+        "y": 387,
+        "width": 320,
+        "height": 100
+      },
+      "recordingAt": 1791979869578,
+      "pillVisible": true,
+      "firstPreviewAt": 1791979871478,
+      "firstPreviewMs": 2155,
+      "previewCount": 1,
+      "previewWhileHeld": true,
+      "previewCharacters": 7,
+      "releasedAt": 1791979872815,
+      "hiddenOnRelease": true,
+      "unconfirmed": {
+        "type": "preview-unconfirmed",
+        "id": 6,
+        "phase": "text",
+        "selection": [
+          42,
+          42
+        ],
+        "expectedStart": 47,
+        "expectedEnd": 47,
+        "expectedCharacters": 18,
+        "observedCharacters": -1,
+        "textMatches": false
+      },
+      "error": "The editor could not confirm the dictated text. The visible draft has been kept."
+    },
+    {
+      "id": 7,
+      "startedAt": 1791979877805,
+      "anchor": {
+        "x": -976,
+        "y": 435,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1031,
+        "y": 387,
+        "width": 320,
+        "height": 100
+      },
+      "recordingAt": 1791979877998,
+      "pillVisible": true,
+      "releasedAt": 1791979881683,
+      "hiddenOnRelease": true,
+      "firstPreviewAt": 1791979882964,
+      "firstPreviewMs": 5159,
+      "previewCount": 4,
+      "previewWhileHeld": false,
+      "previewCharacters": 29,
+      "characters": 29,
+      "submitRequested": false,
+      "insertedAt": 1791979886380,
+      "releaseToInsertMs": 4697,
+      "snapshot": {
+        "characters": {
+          "rich": 71,
+          "plain": 62,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 0,
+          "plain": 1,
+          "multiline": 0
+        }
+      }
+    }
+  ],
+  "services": "existing Breadboard",
+  "scopedToTestWindow": true,
+  "testWindow": {
+    "bounds": {
+      "x": -1360,
+      "y": 136,
+      "width": 800,
+      "height": 760
+    },
+    "displayId": 2151158276,
+    "scaleFactor": 1,
+    "visible": true,
+    "minimized": false,
+    "focused": true,
+    "alwaysOnTop": true,
+    "displays": [
+      {
+        "id": 999882014,
+        "bounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 960
+        },
+        "workArea": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 912
+        },
+        "scaleFactor": 1.25
+      },
+      {
+        "id": 2151158276,
+        "bounds": {
+          "x": -1920,
+          "y": 0,
+          "width": 1920,
+          "height": 1080
+        },
+        "workArea": {
+          "x": -1920,
+          "y": 0,
+          "width": 1920,
+          "height": 1032
+        },
+        "scaleFactor": 1
+      }
+    ]
+  },
+  "nativeReady": true,
+  "provider": "chatgpt",
+  "pid": 40052,
+  "origin": "http://127.0.0.1:51878",
+  "lastError": "The editor could not confirm the dictated text. The visible draft has been kept.",
+  "closedAt": "2026-10-14T12:11:39.898Z"
+}

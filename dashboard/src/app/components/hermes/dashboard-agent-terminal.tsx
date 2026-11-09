@@ -23,6 +23,7 @@ import {
 import KnowledgeTerminal from "@/app/components/knowledge-terminal";
 import { registerClapChat } from "@/lib/speech/clap-wake";
 import TerminalDockOutline from "@/app/components/terminal-dock-outline";
+import { createTerminalDockDrag, type TerminalDockDrag } from "@/lib/terminal-dock-drag";
 import { DEFAULT_TERMINAL_DOCK_HEIGHT, terminalDockCollapsedHeight } from "@/lib/terminal-dock-layout";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
@@ -31,6 +32,8 @@ import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import { isModalDialogOpen, isPrimaryShortcut } from "@/lib/keyboard-shortcuts";
 import AgentRuntimePanel from "./agent-runtime-panel";
+import VoiceTerminalSurface, { type VoiceTerminalSurfaceOptions } from "./voice-terminal-surface";
+import { voiceRequestOptions, type VoiceRequestOptions } from "@/lib/speech/voice-request";
 import StarredMessagesPanel from "./starred-messages-panel";
 import WorkspaceSideChat from "./workspace-side-chat";
 import ArchivedChatsPanel from "./archived-chats-panel";
@@ -337,6 +340,7 @@ import {
   type AgentLaunchRequestPayload,
 } from "./use-agent-launch-queue";
 import AgentLaunchPrompt from "./agent-launch-prompt";
+import { SwarmActivity } from "./swarm-activity";
 import type { ChatTextSelectionReference } from "@/lib/chat-text-selection";
 import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
 import {
@@ -366,7 +370,9 @@ interface Props {
    * the dashboard's bottom dock. It is still the real Terminal — history,
    * drafts and active runs are shared — only its spatial presentation changes.
    */
-  presentation?: "dock" | "drawer";
+  presentation?: "dock" | "drawer" | "voice";
+  /** The voice companion shares the same launch queue, worker observers and hand-backs. */
+  voiceSurface?: VoiceTerminalSurfaceOptions;
   /** The browser drawer has enough horizontal room to show chats beside the transcript. */
   drawerSidebarExpanded?: boolean;
   /** A browser text selection can arrive after mount and seed the composer. */
@@ -694,6 +700,7 @@ export default function DashboardAgentTerminal({
   backdropImage = null,
   initialChatId = null,
   presentation = "dock",
+  voiceSurface,
   drawerSidebarExpanded = false,
   initialDraft = null,
   initialDraftKey,
@@ -787,6 +794,7 @@ export default function DashboardAgentTerminal({
         initialPanel={initialPanel}
         backdropImage={backdropImage}
         presentation={presentation}
+        voiceSurface={voiceSurface}
         drawerSidebarExpanded={drawerSidebarExpanded}
         initialDraft={initialDraft}
         initialDraftKey={initialDraftKey}
@@ -805,7 +813,7 @@ export default function DashboardAgentTerminal({
     health.status === "runtime" ||
     health.status === "checking" ||
     runtimeSurfaceEngaged ||
-    presentation === "drawer"
+    presentation !== "dock"
   ) {
     return (
       <RuntimeTerminal
@@ -815,6 +823,7 @@ export default function DashboardAgentTerminal({
         initialPanel={initialPanel}
         backdropImage={backdropImage}
         presentation={presentation}
+        voiceSurface={voiceSurface}
         drawerSidebarExpanded={drawerSidebarExpanded}
         initialDraft={initialDraft}
         initialDraftKey={initialDraftKey}
@@ -835,6 +844,7 @@ export default function DashboardAgentTerminal({
         initialPanel={initialPanel}
         backdropImage={backdropImage}
         presentation={presentation}
+        voiceSurface={voiceSurface}
         drawerSidebarExpanded={drawerSidebarExpanded}
         initialDraft={initialDraft}
         initialDraftKey={initialDraftKey}
@@ -867,6 +877,7 @@ function RuntimeTerminal({
   backdropImage = null,
   initialChatId = null,
   presentation = "dock",
+  voiceSurface,
   drawerSidebarExpanded = false,
   initialDraft = null,
   initialDraftKey,
@@ -881,17 +892,22 @@ function RuntimeTerminal({
   onConversationEngaged: () => void;
 }) {
   const resizeStartRef = useRef<{
-    startY: number;
-    startHeight: number;
     wasOpen: boolean;
+    drag: TerminalDockDrag;
   } | null>(null);
+  const resizePaintRef = useRef<TerminalDockDrag | null>(null);
   const preferredOpenHeightRef = useRef<number | null>(null);
   const openStatePersistenceReadyRef = useRef(false);
   const activeChatRestoreStartedRef = useRef(false);
   const activeChatPersistenceReadyRef = useRef(false);
   const activeChatSnapshotRef = useRef<ActiveTerminalChatSnapshot | null>(null);
   const openedNotificationChatRef = useRef<string | null>(null);
-  const drawerPresentation = presentation === "drawer";
+  const voicePresentation = presentation === "voice";
+  const drawerPresentation = presentation !== "dock";
+  const voiceStopRef = useRef<(() => void | Promise<void>) | null>(null);
+  // Retain the selected voice pair through the full worker hand-off. Typed-chat
+  // preferences stay independent, including gaps between parent and worker runs.
+  const [voiceTurnOptions, setVoiceTurnOptions] = useState<VoiceRequestOptions | null>(null);
   const [height, setHeight] = useState(() =>
     drawerPresentation ? 720 : DEFAULT_TERMINAL_DOCK_HEIGHT,
   );
@@ -1226,6 +1242,7 @@ function RuntimeTerminal({
   // Covers the hand-off before an individual launcher raises its own flag
   // (health checks and agent selection can take seconds).
   const [delegatedAgentLaunching, setDelegatedAgentLaunching] = useState(false);
+  const [swarmActive, setSwarmActive] = useState(false);
   const deepResearchDispatchingRef = useRef(false);
   const socialsManagerDispatchingRef = useRef(false);
   const hardwareDispatchingRef = useRef(false);
@@ -1251,10 +1268,10 @@ function RuntimeTerminal({
 
   const isOpen = drawerPresentation || height >= minOpenHeight();
 
-  useEffect(() => registerClapChat(() => {
+  useEffect(() => voicePresentation ? undefined : registerClapChat(() => {
     setSidePanel(null);
     setHeight(maxHeight());
-  }), []);
+  }), [voicePresentation]);
 
   // The height is state, so a toggle would otherwise land in a single frame.
   // `glide` holds the direction of a click-driven change for as long as its
@@ -1364,7 +1381,7 @@ function RuntimeTerminal({
   // What a blank chat says, and the four openers under it. Both are drawn from
   // pools that step forward on the hour and narrow to what the reader has been
   // doing, so this is the only thing the empty state needs from up here.
-  const chatGreeting = useChatGreeting({ scope, temporary: temporaryChat, browser: drawerPresentation });
+  const chatGreeting = useChatGreeting({ scope, temporary: temporaryChat, browser: drawerPresentation, enabled: !voicePresentation });
   // The chat to come back to when the reader leaves temporary mode, so the
   // toggle behaves like a detour rather than a reset.
   const chatBeforeTemporary = useRef<string | null>(null);
@@ -1376,12 +1393,13 @@ function RuntimeTerminal({
     () => ({
       title: "New chat",
       temporary: temporaryChat,
-      browser: drawerPresentation,
+      browser: presentation === "drawer",
+      voice: voicePresentation,
       concurrentInline: true,
       workspaceSlug: newChatWorkspace?.slug,
       restoreLastConversation: false,
     }),
-    [temporaryChat, drawerPresentation, newChatWorkspace],
+    [temporaryChat, presentation, voicePresentation, newChatWorkspace],
   );
   const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
   const { begin: beginAttachmentPreparation, busy: extractingAttachments, error: attachmentUploadError } =
@@ -1398,7 +1416,7 @@ function RuntimeTerminal({
     reasoningEffort: selectedReasoningEffort,
     setReasoningEffort,
     intelligenceModes: selectedIntelligenceModes,
-  } = useAssistantIntelligence({ scope: "dashboard_terminal", sessionId: session.sessionId, createdSessionId: session.createdSessionId, persist: !temporaryChat, shared: true });
+  } = useAssistantIntelligence({ scope: "dashboard_terminal", sessionId: session.sessionId, createdSessionId: session.createdSessionId, persist: !temporaryChat && !voicePresentation, shared: !voicePresentation });
   // A model picked while this answer is active is a setting for the next
   // answer. Keep every callback in the current run on the intelligence pair it
   // started with, including delegated/external-agent continuations.
@@ -1407,9 +1425,9 @@ function RuntimeTerminal({
     reasoningEffort: typeof selectedReasoningEffort;
     intelligenceModes: typeof selectedIntelligenceModes;
   } | null>(null);
-  const model = activeAnswerIntelligence?.model ?? selectedModel;
+  const model = voiceTurnOptions?.model ?? activeAnswerIntelligence?.model ?? selectedModel;
   const reasoningEffort =
-    activeAnswerIntelligence?.reasoningEffort ?? selectedReasoningEffort;
+    voiceTurnOptions?.reasoningEffort ?? activeAnswerIntelligence?.reasoningEffort ?? selectedReasoningEffort;
   const intelligenceModes =
     activeAnswerIntelligence?.intelligenceModes ?? selectedIntelligenceModes;
   useEffect(() => {
@@ -1424,7 +1442,7 @@ function RuntimeTerminal({
   // and any live run instead of replacing them with the blank state. New chat
   // clears this pointer below, and closing the window clears it naturally.
   useEffect(() => {
-    if (activeChatRestoreStartedRef.current) return;
+    if (voicePresentation || activeChatRestoreStartedRef.current) return;
     activeChatRestoreStartedRef.current = true;
     const savedSessionId = readActiveTerminalChatId(restoreOwnerKey);
     activeChatPersistenceReadyRef.current = true;
@@ -1434,7 +1452,7 @@ function RuntimeTerminal({
         readActiveTerminalChatSnapshot(restoreOwnerKey, savedSessionId),
       );
     }
-  }, [openTerminalSession, restoreOwnerKey]);
+  }, [openTerminalSession, restoreOwnerKey, voicePresentation]);
 
   useEffect(() => {
     const requested = initialChatId?.trim() ?? "";
@@ -1569,12 +1587,12 @@ function RuntimeTerminal({
   // written in. A temporary chat is excluded: it keeps no record anywhere else,
   // so it may not leave one here either.
   useChatDraft({
-    surface: "dashboard_terminal",
+    surface: voicePresentation ? "voice_companion" : "dashboard_terminal",
     sessionId: session.sessionId,
     createdSessionId: session.createdSessionId,
     value: input || submittedDraft || "",
     onRestore: setInput,
-    enabled: !temporaryChat,
+    enabled: !temporaryChat && !voicePresentation,
   });
   const runWorkflowAutomation = useWorkflowAutomation(session);
   const deepResearch = useDeepResearchAgent(
@@ -1777,14 +1795,14 @@ function RuntimeTerminal({
 
   useEffect(() => {
     if (drawerPresentation) return;
-    if (height < minOpenHeight()) return;
+    if (isResizing || height < minOpenHeight()) return;
     const preferredHeight = clampHeight(height);
     preferredOpenHeightRef.current = preferredHeight;
     window.localStorage.setItem(HEIGHT_KEY, String(preferredHeight));
-  }, [drawerPresentation, height]);
+  }, [drawerPresentation, height, isResizing]);
 
   useEffect(() => {
-    if (drawerPresentation) return;
+    if (drawerPresentation || isResizing) return;
     // The initial collapsed React state is only a hydration-safe placeholder.
     // Do not let that first commit overwrite an open state that the mount
     // effect above is in the process of restoring.
@@ -1796,7 +1814,7 @@ function RuntimeTerminal({
       OPEN_STATE_KEY,
       height >= minOpenHeight() ? "true" : "false",
     );
-  }, [drawerPresentation, height]);
+  }, [drawerPresentation, height, isResizing]);
 
   // At full height the dock covers everything below the nav, so the page behind
   // it must stop scrolling — otherwise the wheel chains through to content
@@ -7698,6 +7716,7 @@ if (careerOpsAgent) {
   // its timer and free the composer — an answer that had visibly stopped
   // mid-sentence while the work it promised was still going on.
   const delegationInFlight =
+    swarmActive ||
     agentLaunchQueue.queued ||
     delegatedAgentLaunching ||
     session.messages.some(
@@ -7844,6 +7863,7 @@ if (careerOpsAgent) {
         model,
         reasoningEffort,
         internalAgentContinuation: true,
+        ...(voicePresentation ? { voice: true, browserAccess: voiceTurnOptions?.browserAccess } : {}),
         // `send` can still refuse a stale callback at its ref-backed guards.
         // Keep the hand-off live until it has actually accepted the optimistic
         // continuation rows; clearing before this callback stranded the exact
@@ -7859,11 +7879,23 @@ if (careerOpsAgent) {
     return () => window.clearTimeout(timer);
   }, [
     pendingLaunchContinuation,
+    voicePresentation,
+    voiceTurnOptions,
     launchReady,
     model,
     reasoningEffort,
     sendAgentContinuation,
   ]);
+
+  const sendVoiceTurn = useCallback(async (text: string, context?: import('@/lib/speech/voice-screen-context').VoiceScreenContext) => {
+    if (runtimeUnavailable) throw new Error(RUNTIME_UNAVAILABLE_MESSAGE);
+    const options = await voiceRequestOptions(undefined, context);
+    setVoiceTurnOptions(options);
+    launchHopsRef.current = 0;
+    launchRoundOriginsRef.current.clear();
+    awaitedLaunchesRef.current.clear();
+    await session.send(text, options);
+  }, [runtimeUnavailable, session.send]);
 
   const boundWebSelection = useRef<string | null>(null);
   useEffect(() => {
@@ -8752,6 +8784,23 @@ if (careerOpsAgent) {
   // exist purely to give the shader something to bend: the dock's own
   // background is invisible to it by design.
   const dockRef = useRef<HTMLElement | null>(null);
+  const handlePositionRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    if (isResizing) return;
+    // Remove the live override only after React has committed the final height.
+    resizePaintRef.current?.dispose();
+    resizePaintRef.current = null;
+  }, [height, isResizing]);
+
+  useEffect(() => () => {
+    resizePaintRef.current?.dispose();
+    if (resizeStartRef.current) {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      resizeStartRef.current = null;
+    }
+  }, []);
   const barRef = useRef<HTMLElement | null>(null);
   const glassWallpaperRef = useRef<HTMLImageElement | null>(null);
   const glassSceneRef = useRef<HTMLCanvasElement | null>(null);
@@ -8906,61 +8955,61 @@ if (careerOpsAgent) {
   }
 
   function handleResizeStart(event: ReactPointerEvent<HTMLElement>) {
+    if (event.button !== 0 || !dockRef.current) return;
     event.preventDefault();
     const isHeader = event.currentTarget.tagName === "HEADER";
     if (isHeader) headerClickGuard.beginPointerSequence();
-    resizeStartRef.current = {
+    const startHeight = visualHeight();
+    const maximum = maxHeight();
+    const minimum = Math.min(MIN_OPEN_HEIGHT, maximum);
+    resizePaintRef.current?.dispose();
+    const drag = createTerminalDockDrag({
+      dock: dockRef.current,
+      handle: handlePositionRef.current,
+      startX: event.clientX,
       startY: event.clientY,
-      // Where the edge actually is, which is not the height in state while a
-      // glide is still running.
-      startHeight: visualHeight(),
-      // Whether it counts as open, though, is the state's call: caught halfway
-      // through closing the dock is still tall, and a click there means "open
-      // it again", not "close it twice".
-      wasOpen: isOpen,
-    };
+      startHeight,
+      collapsedHeight: terminalDockCollapsedHeight(),
+      minOpenHeight: minimum,
+      maxHeight: maximum,
+      onDragStart: () => {
+        cancelGlide();
+        // Mount the transcript once. Its live height is a DOM-only override
+        // until release, so pointer samples never re-render the chat tree.
+        setHeight(Math.max(minimum, startHeight));
+      },
+    });
+    resizeStartRef.current = { wasOpen: isOpen, drag };
+    resizePaintRef.current = drag;
     event.currentTarget.setPointerCapture(event.pointerId);
     setIsResizing(true);
     document.body.style.cursor = "var(--bb-cursor-row-resize, row-resize)";
     document.body.style.userSelect = "none";
-    // The header owns its toggle; the separate border handle owns its click
-    // action and shares these resize callbacks.
     if (isHeader && !isOpen) prewarmOpen();
   }
 
   function handleResizeMove(event: ReactPointerEvent<HTMLElement>) {
-    const start = resizeStartRef.current;
-    if (!start) return;
-    // Past the click threshold the pointer owns the edge, so a glide still
-    // running has to let go of it. Below the threshold this is the jitter of a
-    // click being held, and cancelling there would snap a dock mid-travel.
-    if (glide && Math.abs(start.startY - event.clientY) >= 4) cancelGlide();
-    setHeight(
-      settleHeight(
-        clampHeight(start.startHeight + (start.startY - event.clientY)),
-      ),
-    );
+    resizeStartRef.current?.drag.move(event.clientX, event.clientY);
   }
 
   function handleResizeEnd(event: ReactPointerEvent<HTMLElement>) {
     const start = resizeStartRef.current;
     if (!start) return;
-    const moved = Math.abs(start.startY - event.clientY) >= 4;
-    const clickedHeader = event.currentTarget.tagName === "HEADER";
     resizeStartRef.current = null;
+    const cancelled = event.type === "pointercancel" || event.type === "lostpointercapture";
+    const result = cancelled ? start.drag.finish() : start.drag.finish(event.clientX, event.clientY);
+    const clickedHeader = event.currentTarget.tagName === "HEADER";
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    if (result.dragged) setHeight(result.height);
     setIsResizing(false);
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
     if (clickedHeader) headerClickGuard.endPointerSequence();
-    if (!moved && event.type !== "pointercancel" && clickedHeader) {
+    if (!result.dragged && !cancelled && clickedHeader) {
       toggleDock(!start.wasOpen);
     } else if (prewarmRef.current) {
-      // The press prewarmed an open this release turned out not to want — a
-      // cancelled pointer, or a drag that ended within the click threshold.
-      // Nothing of it was ever visible, so putting it back is invisible too.
       cancelGlide();
     }
   }
@@ -9039,6 +9088,7 @@ if (careerOpsAgent) {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (voicePresentation) return;
       const actions = shortcutActionsRef.current;
       if (isPrimaryShortcut(event, "j")) {
         // A dialog owns the keyboard while it is up; closing the dock under
@@ -9065,13 +9115,15 @@ if (careerOpsAgent) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [voicePresentation]);
 
+  const dockHeight = glideBox !== null ? `${glideBox}px`
+    : isOpen ? `${height}px` : "var(--terminal-collapsed-height)";
   const terminalStyle: CSSProperties = {
     // A glide lends the box its own height and moves it by offset instead, so
     // nothing inside is resized while it travels; dragging owns the height
-    // directly, one frame at a time, exactly as before.
-    height: drawerPresentation ? "100%" : glideBox ?? (isOpen ? height : "var(--terminal-collapsed-height)"),
+    // directly through a shared variable, without rerendering the transcript.
+    height: drawerPresentation ? "100%" : `var(--terminal-drag-height, ${dockHeight})`,
     transform:
       !drawerPresentation && glide
         ? `translate3d(0, ${glideShift}px, 0)`
@@ -9094,7 +9146,7 @@ if (careerOpsAgent) {
     background: glassActive
       ? "transparent"
       : bodyMounted
-        ? "var(--paper-surface)"
+        ? "var(--terminal-body-surface, var(--paper-surface))"
         : "var(--terminal-bar)",
     borderTopColor: glassActive ? "transparent" : "rgba(169, 193, 177, 0.7)",
   };
@@ -9104,6 +9156,17 @@ if (careerOpsAgent) {
 
   return (
     <>
+    {voiceSurface ? <VoiceTerminalSurface {...voiceSurface}
+      personalizedGreeting={scope !== 'public' && !temporaryChat}
+      session={session} messages={messages}
+      busy={currentChatActive || delegationInFlight}
+      onSend={sendVoiceTurn}
+      onInterrupt={() => voiceStopRef.current ? voiceStopRef.current() : session.abort()}
+      notice={agentLaunchQueue.pending ? <AgentLaunchPrompt
+        request={agentLaunchQueue.pending} waiting={agentLaunchQueue.waiting}
+        onConfirm={agentLaunchQueue.confirm} onDismiss={agentLaunchQueue.dismiss}
+      /> : null} /> : null}
+    <div hidden={voicePresentation} style={voicePresentation ? undefined : { display: 'contents' }} inert={voicePresentation || undefined}>
     <WorkspaceSideChat messages={messages}>
     <section
       ref={dockRef}
@@ -9160,6 +9223,7 @@ if (careerOpsAgent) {
         onPointerMove={drawerPresentation ? undefined : handleResizeMove}
         onPointerUp={drawerPresentation ? undefined : handleResizeEnd}
         onPointerCancel={drawerPresentation ? undefined : handleResizeEnd}
+        onLostPointerCapture={drawerPresentation ? undefined : handleResizeEnd}
         onClick={drawerPresentation ? undefined : handleHeaderClick}
         role={!drawerPresentation && !isOpen ? "button" : undefined}
         tabIndex={!drawerPresentation && !isOpen ? 0 : undefined}
@@ -9186,15 +9250,18 @@ if (careerOpsAgent) {
         style={{
           background: glassActive ? "transparent" : "var(--terminal-bar)",
         }}
-        className={`bb-neu-toolbar flex h-[42px] shrink-0 touch-none select-none items-center gap-3 border-b border-[rgba(169,193,177,0.55)] px-4 py-0 ${
-          // The brown bar has one invariant height. The reconnect button is
-          // taller than the title, so content-driven vertical padding made the
-          // whole dock jump whenever that button appeared or disappeared.
-          headerMounted ? "" : "justify-center"
-        } ${drawerPresentation ? "cursor-default" : "cursor-row-resize"} ${
+        className={`bb-neu-toolbar flex h-[42px] shrink-0 touch-none select-none items-center gap-3 border-b border-[rgba(169,193,177,0.55)] px-4 py-0 ${drawerPresentation ? "cursor-default" : "cursor-row-resize"} ${
           glassActive ? "bb-terminal-glass-bar" : ""
         }`}
       >
+        {/* One persistent mark, anchored by the bar's left padding in both
+            states. Only the title/status group runs the reveal animation. */}
+        {unreadCount > 0 ? (
+          <UnreadChatDot
+            multiple={unreadCount > 1}
+            label={unreadLabel}
+          />
+        ) : null}
         {headerMounted ? (
           <>
             {/* No rail toggle here: the rail is opened and closed by its own
@@ -9211,12 +9278,6 @@ if (careerOpsAgent) {
                   aria-label="Agent runtime is unavailable"
                   title="Agent runtime unavailable"
                   className="h-2 w-2 shrink-0 rounded-full bg-[#B65B5B]"
-                />
-              ) : null}
-              {unreadCount > 0 ? (
-                <UnreadChatDot
-                  multiple={unreadCount > 1}
-                  label={unreadLabel}
                 />
               ) : null}
               <p className="truncate text-sm font-semibold text-[var(--terminal-bar-ink)]">
@@ -9266,31 +9327,19 @@ if (careerOpsAgent) {
                 the runtime state alone. Temporary chat sits in the chat itself,
                 below this bar. */}
           </>
-        ) : unreadCount > 0 ? (
-          // Shut, the bar says nothing at all — except that an answer landed
-          // while the terminal was closed. The count is spoken through the
-          // header's own label, so the mark itself stays out of the reading.
-          <span
-            aria-hidden
-            className="inline-flex items-center gap-1.5"
-          >
-            {Array.from({ length: unreadCount > 1 ? 3 : 1 }, (_, dot) => (
-              <span key={dot} className="h-2 w-2 shrink-0 rounded-full bg-[var(--signal-live)] shadow-[0_0_0_1px_var(--signal-live-ring)]" />
-            ))}
-          </span>
         ) : null}
       </header>
 
       {bodyRendered ? (
-        // Carries the surface the dock used to paint itself. Without it the
-        // wallpaper layer behind the glass bar would show through the chat.
+        // The standalone dock keeps its paper floor; the combined home gives
+        // the chat its own wallpaper tint while the rail stays opaque.
         //
         // z-1 is load-bearing, not cosmetic: it stacks the body after the bar,
         // which is what keeps LiquidGlass from treating the chat panel as
         // refraction source. The bar samples 20px past its own box, so an
         // unstacked body would land in that margin and get run through
         // html-to-image on every frame of a dock resize.
-        <div data-terminal-body className="relative z-[1] flex min-h-0 flex-1 bg-[var(--paper-surface)]">
+        <div data-terminal-body className="relative z-[1] flex min-h-0 flex-1 bg-[var(--terminal-body-surface,var(--paper-surface))]">
           {/* Everything in the dock shares one lane for opened artifacts: the
               transcript's own cards and the Artifacts archive both file into
               it, so an artifact never leaves the dock it was made in. */}
@@ -9355,7 +9404,7 @@ if (careerOpsAgent) {
               }
             />
 
-            <div className="relative flex min-w-0 flex-1 flex-col">
+            <div data-terminal-chat className="relative flex min-w-0 flex-1 flex-col">
               <input
                 ref={attachmentInputRef}
                 type="file"
@@ -9446,7 +9495,7 @@ if (careerOpsAgent) {
                 </div>
               ) : null}
               <AgentRuntimePanel
-                personalizedSuggestions={scope !== 'public'}
+                personalizedSuggestions={scope !== 'public' && !temporaryChat}
                 starredMessageTarget={starredMessageTarget}
                 compact={drawerPresentation}
                 sessionId={session.sessionId}
@@ -9481,7 +9530,8 @@ if (careerOpsAgent) {
                 composerTextareaRef={composerTextareaRef}
                 onSubmit={voice => void submit(undefined, voice)}
                 beforeComposer={
-                  agentLaunchQueue.pending || (drawerPresentation && viewingWebsite) ? (
+                  <><SwarmActivity conversationId={scope === "public" ? null : session.sessionId} onActiveChange={setSwarmActive} />
+                  {agentLaunchQueue.pending || (drawerPresentation && viewingWebsite) ? (
                     <>
                       {agentLaunchQueue.pending ? (
                         <AgentLaunchPrompt
@@ -9501,7 +9551,7 @@ if (careerOpsAgent) {
                         </div>
                       ) : null}
                     </>
-                  ) : null
+                  ) : null}</>
                 }
                 onRunWorkflow={runWorkflowAutomation}
                 onAskSelection={askSelection}
@@ -9515,7 +9565,8 @@ if (careerOpsAgent) {
                 onDeleteMessage={session.deleteMessage}
                 onSelectBranch={selectBranch}
                 disabled={runtimeUnavailable}
-                onAbort={() => void session.abort()}
+                onAbort={session.abort}
+                stopControlRef={voicePresentation ? voiceStopRef : undefined}
                 onStopRequested={handleStopRequested}
                 onPermissionDecision={(decision) =>
                   void session.respondToPermission(decision)
@@ -9748,6 +9799,7 @@ onClearCareerOps={() => {
                   <ChatGreetingEmptyState
                     greeting={chatGreeting.greeting}
                     suggestions={chatGreeting.suggestions}
+                    suggestionScopeKey={chatGreeting.suggestionScopeKey}
                     onSelectSuggestion={fillComposerWithPrompt}
                     disabled={runtimeUnavailable}
                   />
@@ -9851,6 +9903,7 @@ onClearCareerOps={() => {
     {!drawerPresentation ? (
       <TerminalDockHandle
         dockStyle={terminalStyle}
+        positionRef={handlePositionRef}
         resizing={isResizing}
         onOpen={() => toggleDock(true)}
         onResizeStart={handleResizeStart}
@@ -9858,6 +9911,7 @@ onClearCareerOps={() => {
         onResizeEnd={handleResizeEnd}
       />
     ) : null}
+    </div>
     </>
   );
 }

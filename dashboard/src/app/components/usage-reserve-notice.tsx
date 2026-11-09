@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  usageLimitResetAt,
   usageReserveModelLabel,
   type DisplayUsageLimitReserve,
   type DisplayUsageLimitWindow,
@@ -32,10 +33,8 @@ function remainingResetSeconds(
   window: DisplayUsageLimitWindow,
   now: number,
 ): number | null {
-  if (window.resets_in_seconds === undefined || !capturedAt) return null;
-  const capturedMs = Date.parse(capturedAt);
-  if (!Number.isFinite(capturedMs)) return Math.max(0, Number(window.resets_in_seconds));
-  return Math.max(0, Math.floor((capturedMs + Number(window.resets_in_seconds) * 1000 - now) / 1000));
+  const resetAt = usageLimitResetAt(capturedAt, window);
+  return resetAt === null ? null : Math.max(0, Math.floor((resetAt - now) / 1000));
 }
 
 /**

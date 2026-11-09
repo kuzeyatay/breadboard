@@ -88,14 +88,8 @@ export function planningEvidenceNavigation(pages: readonly PlanningEvidencePage[
   return { sourceIds, columns: ["alias", "sourceIndex", "page", "headings", "preview", "pageChars"], pages: catalog };
 }
 
-export const PLANNING_EVIDENCE_SELECTION_PROMPT = `Select the complete source pages the Source Map must read before accepting its teaching and practice plan. Return ONLY JSON:
-{"units":[{"unitId":"exact teachable syllabus unit id","pageAliases":["p0"],"reason":"what these pages explain"}],"practiceSources":[{"sourceId":"exact source id","disposition":"selected | out_of_scope | not_practice","pageAliases":["p1"],"reason":"why the practice is relevant or excluded"}]}
-- Return one units record per supplied teachable syllabus unit, and one practiceSources record for EVERY id in requiredPracticeSourceIds (every selected source), including instructions, solutions, exams, textbooks, and introductions. Check the list before returning: a missing id fails the whole selection. A syllabus need not name exercise numbers for an uploaded practice sheet to matter.
-- A syllabus unit is a coverage obligation, not a lesson boundary. Select the explanations, mechanisms, derivations, and worked examples needed for its objectives. A positive earlier coverage verdict is not proof. A heading or contents entry locates material but never substitutes for its explanation. Select the actual section pages and adjacent continuations, not just the introduction or figure caption.
-- Navigation tuples are routing hints, not evidence. Use exact aliases. Recovered pages are available candidates; preserve useful recovered explanations, and fetch the surrounding mechanism when a recovered page is only a caption or question list.
-- For relevant exercise/instruction/exam/solution sheets, select their question pages, continuations, and required figures even if no figure caption names a problem. For general textbooks select only practice relevant to this run; do not harvest whole books. Explain each excluded practice source against the requested scope.
-- Each units record needs at least one page. selected practice sources need at least one page; other dispositions use an empty list. Aim for about ${PLANNING_EVIDENCE_PAGES_PER_UNIT_GUIDE} complete pages per units record, more for a unit that needs several mechanisms. The hard limits are characterBudget.total characters of selected page text in total and, when characterBudget.perRecord is set, that many for any one record; navigation includes pageChars so you can budget complete pages.
-- If a previous attempt failed, repair its exact evidence gaps, replacing irrelevant pages or adding missing continuations. Do not preserve a bad selection to satisfy an old verdict.`;
+import { PROMPT_LEARN_EVIDENCE_SELECTION as PLANNING_EVIDENCE_SELECTION_PROMPT } from "./system-prompts/feature-defaults.ts";
+export { PLANNING_EVIDENCE_SELECTION_PROMPT };
 
 export function planningEvidenceSelectionProblems(input: {
   value: unknown;

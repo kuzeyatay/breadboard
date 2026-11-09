@@ -12,6 +12,7 @@ import {
   listPendingChatNotifications,
   listUnreadChatMessages,
   markUnreadChatMessagesSeen,
+  resolveViewedChatMessages,
 } from "@/lib/chat-notifications/store";
 import {
   dismissLearnNotifications,
@@ -22,6 +23,7 @@ import {
 } from "@/lib/chat-notifications/learn";
 import {
   isChatNotificationTarget,
+  sameChatNotificationTarget,
   type ChatNotificationRecord,
   type ChatNotificationTarget,
 } from "@/lib/chat-notification-inbox";
@@ -74,6 +76,8 @@ export async function GET(request: Request) {
 }
 
 interface DismissRequest {
+  /** Only the rendered answers/questions whose pixels were visible. */
+  viewed?: unknown;
   notice?: unknown;
   clearHistory?: unknown;
   readHistory?: unknown;
@@ -123,12 +127,29 @@ export async function POST(request: Request) {
     const seen: ChatNotificationTarget | null = isChatNotificationTarget(body.seen)
       ? body.seen
       : null;
-    if (messageIds.length === 0 && questionIds.length === 0 && learnIds.length === 0 && readIds.length === 0 && !seen && !clearHistory.length && !readHistory.length) {
+    const view = body.viewed as { target?: unknown; messageKeys?: unknown } | undefined;
+    const viewed = view && isChatNotificationTarget(view.target) && Array.isArray(view.messageKeys)
+      ? { target: view.target, keys: view.messageKeys.slice(0, MAX_DISMISSALS_PER_REQUEST)
+        .filter((key): key is string => typeof key === 'string' && key.length > 0 && key.length <= 512) } : null;
+    if (messageIds.length === 0 && questionIds.length === 0 && learnIds.length === 0 && readIds.length === 0 && !seen && !viewed && !clearHistory.length && !readHistory.length) {
       throw new RouteError(400, "Nothing to dismiss.");
     }
 
     // Capture an answer before a viewing surface consumes its toast receipt.
     const pending = pendingNotifications(userId);
+    const acknowledged: string[] = [];
+    if (viewed) {
+      const resolved = resolveViewedChatMessages(db, userId, viewed.target, viewed.keys);
+      readIds.push(...resolved.ids);
+      acknowledged.push(...resolved.acknowledged);
+      for (const record of pending) {
+        const key = record.clarification ? `question:${record.clarification.requestId}` : '';
+        if (key && viewed.keys.includes(key) && sameChatNotificationTarget(viewed.target, record.target)) {
+          const id = questionNotificationId(record.id);
+          if (id !== null) { questionIds.push(id); requestedIds.push(record.id); acknowledged.push(key); }
+        }
+      }
+    }
     saveNotificationHistory(db, userId, pending.map(record => notificationHistoryItem(record)));
     markNotificationHistoryRead(db, userId, [...requestedIds.map(id => `chat-notification:${id}`),
       ...readIds.map(id => `chat-notification:msg_${id}`), ...readHistory], seen);
@@ -143,7 +164,7 @@ export async function POST(request: Request) {
         ? dismissLearnNotificationsForGarden(db, userId, seen.gardenSlug ?? "")
         : dismissChatNotificationsForTarget(db, userId, seen);
     }
-    return NextResponse.json({ ok: true, dismissed });
+    return NextResponse.json({ ok: true, dismissed, acknowledged });
   } catch (error) {
     return errorResponse(error);
   }

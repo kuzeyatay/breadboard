@@ -1,5 +1,6 @@
 'use client';
 
+import {createVoiceBargeIn} from '@/lib/speech/voice-barge-in';
 import { requestForegroundMicrophone, stopForegroundStream, holdForegroundAudio } from '@/lib/speech/clap/audio-focus';
 import { dictationHasPriority, watchDictationPriority } from '@/lib/speech/dictation-priority';
 
@@ -26,6 +27,11 @@ import { createReadingPosition } from '@/lib/speech/reading-position';
 import { prepareLocalSpeech, speechErrorMessage } from '@/lib/speech/prepare-client';
 import { holdClapWake } from '@/lib/speech/clap-wake';
 import { nextVoiceGreeting, speakVoiceGreeting } from '@/lib/speech/voice-greeting';
+import { prepareVoiceGreeting } from '@/lib/speech/voice-greeting-choice';
+import { usePersonalize } from './use-personalize';
+import type { VoiceScreenContext } from '@/lib/speech/voice-screen-context';
+import type { VoiceOpenerContext } from '@/lib/speech/voice-opener-context';
+import { AUTH_CHANGED_EVENT } from '@/lib/auth-events';
 import { voiceCompanionBridge } from '@/lib/speech/voice-window';
 import VoiceResponse from './voice-response';
 import ChatgptVoiceScreen from './chatgpt-voice-screen';
@@ -56,7 +62,12 @@ import {
   type VoiceTranscriptQuestion,
 } from '@/lib/speech/voice-conversation';
 
+import { useChatNotificationView } from '@/lib/use-chat-notification-view';
+import { chatNotificationTargetKey, type ChatNotificationTarget } from '@/lib/chat-notification-inbox';
+import { notificationMessageKeys } from '@/lib/chat-notification-visibility';
+
 interface Props {
+  notificationTarget?: ChatNotificationTarget | null;
   open: boolean;
   dictationPaused?: boolean;
   compact?: boolean;
@@ -64,10 +75,12 @@ interface Props {
   closeOnTabChange?: boolean;
   notice?: React.ReactNode;
   greetOnOpen?: boolean;
+  /** Opt in only for private, non-temporary chat surfaces. */
+  personalizedGreeting?: boolean;
   onClose: () => void;
   onOpenSettings?: () => void;
   /** Sends one spoken turn through the host's normal chat send. */
-  onSend: (text: string) => void | Promise<void>;
+  onSend: (text: string, context?: VoiceScreenContext) => void | Promise<void>;
   /** Stop the originating chat's current turn when the user takes the floor. */
   onInterrupt?: () => void | Promise<void>;
   /** The host's live chat messages — where the answer to read out comes from. */
@@ -87,6 +100,9 @@ interface Props {
  * two minutes is working, not lost.
  */
 const DISPATCH_WATCHDOG_MS = 20_000;
+// Protect an existing utterance before the provider's 200 ms final guard.
+// New requests and interruptions retain their longer speech confirmation.
+const VOICE_CONTINUATION_SPEECH_MS = 160;
 const RING_VIEWBOX = 200;
 const RING_RADIUS = 62;
 /**
@@ -118,6 +134,7 @@ function BreadboardVoiceConversation({
   closeOnTabChange = true,
   notice,
   greetOnOpen = false,
+  personalizedGreeting = false,
   onClose,
   onOpenSettings,
   onSend,
@@ -125,8 +142,20 @@ function BreadboardVoiceConversation({
   messages,
   busy,
   clarification = null,
+  notificationTarget = null,
 }: Props) {
   const open = visible && !dictationPaused;
+  const [personalize] = usePersonalize();
+  const greetingAllowed = useRef(false);
+  greetingAllowed.current = personalizedGreeting && personalize;
+  const greetingContext = useRef<VoiceOpenerContext | undefined>(undefined);
+  useEffect(() => {
+    const clear = () => { greetingContext.current = undefined; };
+    window.addEventListener(AUTH_CHANGED_EVENT, clear);
+    return () => window.removeEventListener(AUTH_CHANGED_EVENT, clear);
+  }, []);
+  if (!greetingAllowed.current) greetingContext.current = undefined;
+  useChatNotificationView(open ? notificationTarget : null);
   const resumingDictation = useRef(false);
   const keepPausedAfterDictation = useRef(false);
   const focusOnOpen = useRef(true);
@@ -176,6 +205,7 @@ function BreadboardVoiceConversation({
   const recoverSubscriptionRef = useRef<(error: unknown) => Promise<void>>(async () => {});
   const openingSessionRef = useRef<number | null>(null);
   const turnRef = useRef(initialVoiceTurn());
+  const speechOnsetRef = useRef(false);
   const listeningRef = useRef(false);
   const levelRef = useRef(0);
   const smoothedRef = useRef(0);
@@ -187,7 +217,6 @@ function BreadboardVoiceConversation({
   const narrationRef = useRef<ReturnType<typeof createVoiceNarrationQueue> | null>(null);
   const watchdogRef = useRef<number | null>(null);
   const deferredFinishRef = useRef<number | null>(null);
-  const resumeListeningRef = useRef<number | null>(null);
   const requestAbortRef = useRef<Set<AbortController>>(new Set());
   /** The chat has recorded this particular spoken turn. */
   const dispatchedRef = useRef(false);
@@ -217,10 +246,6 @@ function BreadboardVoiceConversation({
     if (deferredFinishRef.current !== null) {
       window.clearTimeout(deferredFinishRef.current);
       deferredFinishRef.current = null;
-    }
-    if (resumeListeningRef.current !== null) {
-      window.clearTimeout(resumeListeningRef.current);
-      resumeListeningRef.current = null;
     }
     for (const controller of requestAbortRef.current) controller.abort();
     requestAbortRef.current.clear();
@@ -268,12 +293,9 @@ function BreadboardVoiceConversation({
     if (stageRef.current === 'opening' || stageRef.current === 'paused') playVoiceCue('enable');
     stopNarration();
     setLiveHeard('');
-    if (resumeListeningRef.current !== null) {
-      window.clearTimeout(resumeListeningRef.current);
-      resumeListeningRef.current = null;
-    }
     chunksRef.current = [];
     turnRef.current = initialVoiceTurn();
+    speechOnsetRef.current = false;
     if (!preserveTranscript) subscriptionRef.current?.resetTranscript();
     subscriptionRef.current?.setListening(true);
     listeningRef.current = true;
@@ -288,7 +310,6 @@ function BreadboardVoiceConversation({
     // Connect silently during model work. A failed warmup is retried by speak;
     // it must not interrupt a healthy microphone or delay sending the turn.
     void subscriptionRef.current?.prepareSpeaker?.().catch(() => {});
-    let readingDelay = 0;
     narrationRef.current = createVoiceNarrationQueue({
       startIndex: sentMessageCountRef.current,
       streamAnswers: true,
@@ -332,31 +353,22 @@ function BreadboardVoiceConversation({
           play: playSpeechResponse,
         });
       },
-      onError(caught, item) {
+      onError(caught) {
         setNote(caught instanceof Error ? caught.message : 'That message could not be spoken.');
-        if (item.kind === 'answer') {
-          readingDelay = Math.min(9_000, 1_500 + item.text.length * 25);
-        }
       },
       onIdle(answered) {
         if (!answered) {
           enterStage('thinking');
           return;
         }
-        if (readingDelay) {
-          resumeListeningRef.current = window.setTimeout(() => {
-            resumeListeningRef.current = null;
-            beginTurn();
-          }, readingDelay);
-        } else {
-          beginTurn();
-        }
+        beginTurn();
       },
     });
   }, [beginTurn, enterStage, stopNarration]);
 
   /** Spoken input and widget follow-ups use the same turn and narration queue. */
   const sendText = useCallback((text: string) => {
+    const opener = greetingAllowed.current ? greetingContext.current : undefined;
     listeningRef.current = false;
     subscriptionRef.current?.resetTranscript();
     subscriptionRef.current?.setListening(true);
@@ -395,7 +407,14 @@ function BreadboardVoiceConversation({
     // Microphone callbacks live for the whole voice session. The host's send
     // handler can change when a question arrives, so always use the latest one.
     try { void interruptedRunRef.current.then(() => {
-      if (session === sessionRef.current && sentTurn === sentTurnRef.current) return onSendRef.current(text);
+      if (session === sessionRef.current && sentTurn === sentTurnRef.current) {
+        // Stopping an earlier tool run can outlive an account/privacy change.
+        // Forward only the offer still owned by this pending reply; never
+        // consume a newer offer that arrived while interruption was settling.
+        const currentOpener = greetingAllowed.current && greetingContext.current === opener ? opener : undefined;
+        if (greetingContext.current === opener) greetingContext.current = undefined;
+        return onSendRef.current(text, currentOpener ? { voiceOpener: currentOpener } : undefined);
+      }
     }).catch(deliveryFailed); }
     catch { deliveryFailed(); }
   }, [beginTurn, clearWatchdog, enterStage, startNarration]);
@@ -485,7 +504,7 @@ function BreadboardVoiceConversation({
 
   const openSubscription = useCallback((stream: MediaStream, signal: AbortSignal, session: number) =>
     connectSubscriptionVoice({
-      microphone: stream, listening: false, signal,
+      mode: 'conversation', microphone: stream, listening: false, signal,
       onTranscript: text => {
         if (!signal.aborted && session === sessionRef.current && listeningRef.current) setLiveHeard(text);
       },
@@ -550,6 +569,7 @@ function BreadboardVoiceConversation({
   const openMicrophone = useCallback(async (greet = greetOnOpen) => {
     if (openingSessionRef.current === sessionRef.current && stageRef.current === 'opening') return;
     const session = ++sessionRef.current;
+    greetingContext.current = undefined;
     openingSessionRef.current = session;
     recoveryAttemptsRef.current = 0;
     subscriptionErrorRef.current = null;
@@ -583,6 +603,9 @@ function BreadboardVoiceConversation({
       setNote('Preparing speech…');
       const cloudController = new AbortController();
       requestAbortRef.current.add(cloudController);
+      const greetingChoice = greet ? prepareVoiceGreeting({
+        personalized: () => greetingAllowed.current, signal: cloudController.signal,
+      }) : null;
       const cloud = await subscriptionSelected(cloudController.signal);
       // The cloud connection validates its own credentials. A separate status
       // request here delays adoption of the already prepared media session.
@@ -594,8 +617,12 @@ function BreadboardVoiceConversation({
       greetingAbortRef.current = greetingController;
       requestAbortRef.current.add(greetingController);
       const welcome = async (voice?: SubscriptionVoice) => {
-        if (!greet || session !== sessionRef.current || greetingController.signal.aborted || turnRef.current.heardSpeech || awaitingRef.current) return;
-        const text = nextVoiceGreeting();
+        if (!greet || session !== sessionRef.current || greetingController.signal.aborted || turnRef.current.heardSpeech || awaitingRef.current) {
+          greetingChoice?.cancel();
+          return;
+        }
+        const text = greetingChoice?.choose() ?? nextVoiceGreeting();
+        greetingContext.current = greetingChoice?.context();
         setGreeting(text);
         try {
           await speakVoiceGreeting(text, greetingController.signal, voice);
@@ -605,6 +632,7 @@ function BreadboardVoiceConversation({
           // it must not tear down a healthy conversation microphone.
           if (voice?.isHealthy() === false) throw caught;
           if (!greetingController.signal.aborted) {
+            greetingContext.current = undefined;
             setNote(`${speechErrorMessage(caught, 'The greeting could not play.')} You can still speak.`);
           }
         } finally {
@@ -636,12 +664,21 @@ function BreadboardVoiceConversation({
       const sink = context.createGain();
       sink.gain.value = 0;
 
-      let fallbackSpeechMs = 0;
+      const fallbackSpeech = createVoiceBargeIn();
       let nativeUtterance = false;
       const speechStarted = () => {
+        // Native detection may confirm speech already handled by the local
+        // fallback. It is still the same utterance: preserve its beginning
+        // and its elapsed/silence timing until transcription or a new turn.
+        if (stageRef.current === 'listening' && speechOnsetRef.current) return;
         // A pause may have started STT while the user is still composing
         // the same thought. Keep both clips and discard the stale result.
         const continuation = stageRef.current === 'transcribing' ? transcribingRef.current : null;
+        // Discard a previous utterance's late recognition, while retaining
+        // words from this speech that reached us before the detector callback.
+        if (!continuation && !(listeningRef.current && turnRef.current.heardSpeech)) {
+          subscriptionRef.current?.beginTranscript?.();
+        }
         const capturedBeforeDetection = listeningRef.current && turnRef.current.heardSpeech ? chunksRef.current : null;
         if (continuation) {
           continuation.controller.abort();
@@ -664,6 +701,7 @@ function BreadboardVoiceConversation({
           }
         }
         if (!listeningRef.current) return;
+        speechOnsetRef.current = true;
         chunksRef.current = cloud ? [] : continuation ? [...continuation.chunks, ...preRollRef.current]
           : capturedBeforeDetection ?? [...preRollRef.current];
         turnRef.current = { ...initialVoiceTurn(), heardSpeech: true, speechMs: VOICE_MIN_SPEECH_MS };
@@ -675,7 +713,7 @@ function BreadboardVoiceConversation({
         const level = frameLevel(input);
         levelRef.current = level;
         if (stageRef.current === 'paused') {
-          fallbackSpeechMs = 0;
+          fallbackSpeech.reset();
           preRollRef.current = [];
           detectorRef.current?.push(new Float32Array(input.length));
           return;
@@ -689,18 +727,20 @@ function BreadboardVoiceConversation({
         const canInterrupt = stageRef.current === 'speaking' || stageRef.current === 'thinking'
           || stageRef.current === 'transcribing' || Boolean(greetingAbortRef.current);
         let resumedThisFrame = false;
-        if (!nativeReady && canInterrupt) {
-          // Consecutive echo-cancelled speech, not a click or our short cue.
-          // This path remains local when native inference or transport stalls.
-          const threshold = Math.max(0.04, speechThreshold(turnRef.current.noiseFloor));
-          fallbackSpeechMs = level >= threshold ? fallbackSpeechMs + input.length / context.sampleRate * 1000 : 0;
-          if (fallbackSpeechMs >= VOICE_MIN_SPEECH_MS) {
-            fallbackSpeechMs = 0;
-            speechStarted();
-            turnRef.current = { ...turnRef.current, speechMs: VOICE_MIN_SPEECH_MS };
-            resumedThisFrame = true;
-          }
-        } else fallbackSpeechMs = 0;
+        const continuingSpeech = stageRef.current === 'transcribing';
+        const fallbackOnset = fallbackSpeech.push(level, input.length / context.sampleRate * 1000, {
+          threshold: Math.max(0.04, speechThreshold(turnRef.current.noiseFloor)),
+          active: canInterrupt,
+          // Keep evidence through readiness changes, but healthy native VAD
+          // remains authoritative for interrupting an answer or greeting.
+          allowed: !nativeReady || continuingSpeech,
+          continuationMs: continuingSpeech ? VOICE_CONTINUATION_SPEECH_MS : undefined,
+        });
+        if (fallbackOnset) {
+          speechStarted();
+          turnRef.current = { ...turnRef.current, speechMs: VOICE_MIN_SPEECH_MS };
+          resumedThisFrame = true;
+        }
         if (!listeningRef.current) return;
 
         // Subscription audio is already streaming over WebRTC. Buffer PCM
@@ -989,10 +1029,6 @@ function BreadboardVoiceConversation({
     }]);
     awaitingRef.current = false;
     clearWatchdog();
-    if (resumeListeningRef.current !== null) {
-      window.clearTimeout(resumeListeningRef.current);
-      resumeListeningRef.current = null;
-    }
     // The run is waiting for input, so its question is a complete spoken turn
     // even though the host still reports the run as active. Interrupt progress
     // narration, read the question once, then the queue resumes the microphone.
@@ -1144,6 +1180,13 @@ function BreadboardVoiceConversation({
   const captionResources = greeting ? undefined : latestResponse?.uiResources;
   const caption = greeting ?? (showingReply ? reply : captionResources?.length ? '' : heard);
   const captionRole = greeting || showingReply || captionResources?.length ? 'reply' : 'heard';
+  const captionNotificationKeys = !greeting && captionRole === 'reply'
+    ? clarification && caption.trim() === clarification.question.trim()
+      ? [`question:${clarification.requestId}`]
+      : latestResponse && !latestResponse.pending &&
+        (caption.trim() === latestResponse.content.trim() || (!caption && captionResources?.length))
+        ? notificationMessageKeys(latestResponse) : []
+    : [];
 
   function handleRingClick() {
     if (dictationPaused) return;
@@ -1192,7 +1235,8 @@ function BreadboardVoiceConversation({
     <div
       ref={stageNodeRef}
       {...miniDrag}
-      className={`voice-stage${compact ? ' voice-stage-compact' : ''}${minimized ? ' voice-stage-minimized' : ''}${fullscreen ? ' voice-stage-fullscreen' : ''}`}
+      className={`voice-stage voice-stage-breadboard${compact ? ' voice-stage-compact' : ''}${minimized ? ' voice-stage-minimized' : ''}${fullscreen ? ' voice-stage-fullscreen' : ''}`}
+      data-notification-chat={notificationTarget ? chatNotificationTargetKey(notificationTarget) : undefined}
       data-stage={stage}
       data-dictation-paused={dictationPaused || undefined}
       role={minimized ? 'region' : 'dialog'}
@@ -1310,7 +1354,8 @@ function BreadboardVoiceConversation({
             followTranscriptRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
           }}
         >
-          {spokenTurns.map((message, index) => <div key={`${message.role}-${index}`} className={`voice-widget-message voice-widget-message-${message.role}`}>
+          {spokenTurns.map((message, index) => <div key={`${message.role}-${index}`} className={`voice-widget-message voice-widget-message-${message.role}`}
+            data-notification-message={message.role === 'assistant' && !message.pending ? JSON.stringify(notificationMessageKeys(message)) : undefined}>
             {message.role === 'assistant' ? <div ref={index === narratedIndex ? narratedTextRef : undefined}
               className={index === narratedIndex ? 'voice-narrated-text' : undefined}>
               <VoiceResponse message={message} onSend={sendText} />
@@ -1319,7 +1364,8 @@ function BreadboardVoiceConversation({
           {narrating && narratedIndex < 0 && <div className="voice-widget-message voice-widget-message-assistant">
             <div ref={narratedTextRef} className="voice-narrated-text"><VoiceResponse message={{ role: 'assistant', content: reply }} onSend={sendText} /></div>
           </div>}
-          {pendingQuestion && !(narrating && pendingQuestion === reply) && <div className="voice-widget-message voice-widget-message-assistant">
+          {pendingQuestion && !(narrating && pendingQuestion === reply) && <div className="voice-widget-message voice-widget-message-assistant"
+            data-notification-message={clarification ? JSON.stringify([`question:${clarification.requestId}`]) : undefined}>
             <p>{pendingQuestion}</p>
           </div>}
           {pendingHeard && <div className="voice-widget-message voice-widget-message-user">
@@ -1334,7 +1380,7 @@ function BreadboardVoiceConversation({
           <div className={`voice-caption voice-caption-${captionRole}`}>
             {/* The text scrolls, the rule does not — otherwise a long answer
                 scrolls underneath it and the rule reads as a strikethrough. */}
-            <div ref={captionRef} className="voice-caption-text">
+            <div ref={captionRef} className="voice-caption-text" data-notification-message={JSON.stringify(captionNotificationKeys)}>
               <div ref={narrating ? narratedTextRef : undefined} className={narrating ? 'voice-narrated-text' : undefined}>
                 {captionRole === 'reply' || captionResources?.length
                   ? <VoiceResponse message={{ role: 'assistant', content: caption, uiResources: captionResources }} onSend={sendText} />
@@ -1383,6 +1429,7 @@ function BreadboardVoiceConversation({
               <div
                 key={`${message.role}-${index}`}
                 className={`voice-transcript-line voice-transcript-${message.role}`}
+                data-notification-message={message.role === 'assistant' && !message.pending ? JSON.stringify(notificationMessageKeys(message)) : undefined}
               >
                 {message.role === 'assistant' ? <VoiceResponse message={message} onSend={sendText} /> : <p>{message.content}</p>}
               </div>

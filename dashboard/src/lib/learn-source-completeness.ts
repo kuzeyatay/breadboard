@@ -1,3 +1,4 @@
+import { scopedSystemPromptText } from "./system-prompts/service.ts";
 import { createHash } from "node:crypto";
 import type { CriticFn, CriticIssue } from "./critic-loop.ts";
 import {
@@ -53,31 +54,14 @@ const PAGE_BODY_LIMIT = 60_000;
 const ANCHOR_TEXT_LIMIT = 6_000;
 const MAX_RAISES_BEFORE_WARNING = 2;
 
-export const SOURCE_COMPLETENESS_REVIEW_PROMPT = `You check one lesson of a study module for what a student needs but cannot find in it. The student studies only from these lessons, so everything the given source pages teach and everything needed to understand the lesson must be in the module.
-You get the lesson (figures appear as image links with captions; "[interactive visual]" marks an interactive diagram) and the full text of the source pages bound to it, each with its anchor id, plus descriptions of the source figures.
-Report only real gaps:
-- "slide": content of these source pages that the lesson does not teach (a definition, statement, formula, table, worked example, exercise, case, or a value the source gives). Not: title, agenda or administrative text, or material that clearly belongs to another lesson's topic.
-- "figure": a source figure a student needs to understand the topic or answer its questions (a topology, waveform, block diagram, table, constellation, frame format) that the lesson neither shows nor fully describes in words.
-- "explanation": something the lesson uses but never explains: a term, symbol, unit or abbreviation used before or without definition; a skipped step in a derivation or calculation; a claim the reader cannot follow; a reference to a figure, table or earlier result that is not there.
-Severity "must": a student could not understand the topic or answer an exam or source question without it; otherwise "minor".
-Never ask for content the source pages do not contain. Do not report style.
-Return ONLY JSON in a \`\`\`json fence: {"gaps":[{"type":"slide"|"figure"|"explanation","severity":"must"|"minor","what":"precise description of what is missing","anchorId":"<anchor id of the source page, or null>","where":"lesson heading or first words, or null"}]}
-Return {"gaps":[]} when nothing is missing.`;
+import { PROMPT_LEARNING_COMPLETENESS as SOURCE_COMPLETENESS_REVIEW_PROMPT } from "./system-prompts/feature-defaults.ts";
+export { SOURCE_COMPLETENESS_REVIEW_PROMPT };
 
-export const SOURCE_COMPLETENESS_VERIFY_PROMPT = `You verify reported gaps in a study module. Each gap claims the module lacks something a student needs. You get the gaps and the full text of every lesson that could hold the content (figures appear as image links with captions).
-For each gap decide:
-- "taught": one of the given lessons actually teaches it (or shows or fully describes the figure, or explains the term); name the lesson path;
-- "missing": no given lesson teaches it;
-- "invalid": the gap is wrong or trivial (no lesson needs it, or it misreads the lesson).
-Be strict: "taught" needs the actual content, not a passing mention.
-Return ONLY JSON in a \`\`\`json fence: {"verdicts":[{"n":<gap number>,"verdict":"taught"|"missing"|"invalid","lesson":"<lesson path or null>"}]}`;
+import { PROMPT_LEARNING_GAP_VERIFICATION as SOURCE_COMPLETENESS_VERIFY_PROMPT } from "./system-prompts/feature-defaults.ts";
+export { SOURCE_COMPLETENESS_VERIFY_PROMPT };
 
-export const SOURCE_COMPLETENESS_UNASSIGNED_PROMPT = `You check whether source pages are taught anywhere in a study module. You get source pages no lesson is bound to, and an outline of every lesson (path, title, learning question, headings, key sentences).
-For each source page decide:
-- "skip": title, agenda, objectives, reading list, schedule, recap of an earlier page, a link, a repeated page, administrative content, or nothing teachable;
-- "covered": a lesson already teaches its content (name it);
-- "missing": it teaches content no lesson teaches; name the ONE lesson where it belongs and say what is missing.
-Return ONLY JSON in a \`\`\`json fence: {"pages":[{"anchorId":"<id>","verdict":"skip"|"covered"|"missing","lesson":"<lesson path or null>","what":"for missing: what the page teaches that is absent"}]}`;
+import { PROMPT_LEARNING_UNASSIGNED_SOURCES as SOURCE_COMPLETENESS_UNASSIGNED_PROMPT } from "./system-prompts/feature-defaults.ts";
+export { SOURCE_COMPLETENESS_UNASSIGNED_PROMPT };
 
 function sha(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -241,7 +225,7 @@ export function createSourceCompletenessCritic(input: {
     const key = sha(user);
     let verdicts = verifyCache.get(key);
     if (!verdicts) {
-      verdicts = parseSourceCompletenessVerdicts(await input.review({ kind: "verify", label: `verify ${gaps.length} gap(s)`, system: SOURCE_COMPLETENESS_VERIFY_PROMPT, user }));
+      verdicts = parseSourceCompletenessVerdicts(await input.review({ kind: "verify", label: `verify ${gaps.length} gap(s)`, system: scopedSystemPromptText("learning-gap-verification"), user }));
       verifyCache.set(key, verdicts);
     }
     return gaps.filter((_, i) => verdicts!.get(i + 1) === "missing");
@@ -261,7 +245,7 @@ export function createSourceCompletenessCritic(input: {
       const key = sha(user);
       let gaps = reviewCache.get(key);
       if (!gaps) {
-        gaps = parseSourceCompletenessGaps(await input.review({ kind: "page_review", label: `source completeness ${page.rel}`, pageId: page.rel, system: SOURCE_COMPLETENESS_REVIEW_PROMPT, user }), new Set(ids));
+        gaps = parseSourceCompletenessGaps(await input.review({ kind: "page_review", label: `source completeness ${page.rel}`, pageId: page.rel, system: scopedSystemPromptText("learning-completeness"), user }), new Set(ids));
         reviewCache.set(key, gaps);
       }
       return gaps.map((g) => ({ ...g, pageRel: page.rel }));
@@ -291,7 +275,7 @@ export function createSourceCompletenessCritic(input: {
       const key = sha(user);
       let parsed = reviewCache.get(key);
       if (!parsed) {
-        const result = parseJsonObject(await input.review({ kind: "unassigned", label: `${unassigned.length} unbound source page(s)`, system: SOURCE_COMPLETENESS_UNASSIGNED_PROMPT, user }));
+        const result = parseJsonObject(await input.review({ kind: "unassigned", label: `${unassigned.length} unbound source page(s)`, system: scopedSystemPromptText("learning-unassigned-sources"), user }));
         if (!result || !Array.isArray(result.pages)) throw new Error("source completeness unbound-page review returned no pages array");
         const ids = new Set(unassigned.map((a) => a.id));
         parsed = result.pages.flatMap((raw): SourceCompletenessGap[] => {

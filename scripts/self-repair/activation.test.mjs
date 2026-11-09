@@ -28,10 +28,11 @@ function setup(overrides = {}) {
     createdAt: Date.now(), files: [{ path: server, sha256: repairFileHash(path.join(root, server)) }] });
   updateSourceRepair(data, request.id, { stage: "ready", parentReleaseId: null, release });
   const events = [];
+  let clock = Date.now();
   const host = { quiesce: async () => ({ workers: 0, leases: 0 }), resumeAdmission: async () => { events.push("resume"); },
     restart: async () => { events.push(readRepairJournal(data).active?.id ?? "baseline"); return true; },
     healthy: async () => true, log: () => {}, ...overrides };
-  return { base, data, request, release, host, events, activator: new SourceRepairActivator(data, base, host) };
+  return { base, data, request, release, host, events, activator: new SourceRepairActivator(data, base, host, { now: () => clock, sleep: async ms => { clock += ms; } }) };
 }
 
 test("activates only at quiet boundary and commits only after resumed task succeeds", async () => {
@@ -78,4 +79,38 @@ test("baseline source changes after verification prevent activation", async () =
   const f = setup(); fs.appendFileSync(path.join(f.base, "source.ts"), "\n// newer developer change\n");
   await f.activator.tick(); assert.equal(readSourceRepair(f.data, f.request.id).stage, "blocked");
   assert.deepEqual(f.events, []);
+});
+
+test('a healthy candidate may still be warming after native restart', async () => {
+  let samples=0;
+  const f=setup({healthy:async id=>id===null||++samples>=3});
+  await f.activator.tick();
+  assert.equal(readRepairJournal(f.data).phase,'probation');
+  assert.deepEqual(f.events,[f.request.id]);assert.equal(samples,5);
+});
+
+test('rollback waits for the previous dashboard instead of restarting it again', async () => {
+  let baselineSamples=0;
+  const f=setup({healthy:async id=>id!==null||++baselineSamples>=3});
+  await f.activator.tick();updateSourceRepair(f.data,f.request.id,{stage:'rollback_requested'});
+  await f.activator.tick();
+  assert.equal(readSourceRepair(f.data,f.request.id).stage,'rolled_back');
+  assert.deepEqual(f.events,[f.request.id,'baseline']);assert.equal(baselineSamples,5);
+});
+
+test('Stop during startup readiness rolls back without waiting out the startup deadline', async () => {
+  let candidateSamples=0;
+  const f=setup({healthy:async id=>{if(id===null)return true;candidateSamples++;cancelSourceRepair(f.data,f.request.id);return false;}});
+  await f.activator.tick();
+  assert.equal(candidateSamples,1);assert.equal(readSourceRepair(f.data,f.request.id).stage,'cancelled');
+  assert.equal(readRepairJournal(f.data).active,null);assert.deepEqual(f.events,[f.request.id,'baseline']);
+});
+
+test('startup readiness remains bounded by the original repair deadline', async () => {
+  let candidateSamples=0;
+  const f=setup({healthy:async id=>{if(id===null)return true;candidateSamples++;return false;}});
+  updateSourceRepair(f.data,f.request.id,{deadline:Date.now()+1500});
+  await f.activator.tick();
+  assert.equal(candidateSamples,2);assert.equal(readSourceRepair(f.data,f.request.id).stage,'rolled_back');
+  assert.deepEqual(f.events,[f.request.id,'baseline']);
 });

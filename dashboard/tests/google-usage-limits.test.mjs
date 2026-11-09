@@ -95,3 +95,16 @@ test("prefers a model's exact quota when Antigravity starts reporting it", () =>
     { used_percent: 50 },
   );
 });
+
+test("3.8 flash reads its live tiered bucket, and an untouched alias cannot hide spent quota", () => {
+  const payload = {
+    models: {
+      "gemini-3.8-flash-high": { quotaInfo: { remainingFraction: 1 } },
+      "gemini-3.8-flash-tiered": { quotaInfo: { remainingFraction: 0.4 } },
+    },
+  };
+  assert.deepEqual(
+    googleLimitWindowFromModels(payload, "gemini-3.8-flash-high", new Date("2026-11-09T09:00:00.000Z")),
+    { used_percent: 60 },
+  );
+});

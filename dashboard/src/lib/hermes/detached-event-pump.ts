@@ -172,6 +172,7 @@ type PumpRegistryGlobal = typeof globalThis & {
   __breadboardSettlingEventPumps?: Set<DetachedEventPump>;
   __breadboardGoalContinuationPromises?: Map<number, Promise<void>>;
   __breadboardTaskRecoveryPromises?: Map<string, Promise<void>>;
+  __breadboardChatCoordinationPromises?: Map<number, Promise<void>>;
 };
 
 function registry(): Map<string, DetachedEventPump> {
@@ -226,13 +227,15 @@ export function acquireDetachedEventPump(
 export async function waitForDetachedEventPumps(): Promise<void> {
   const goals = () => (globalThis as PumpRegistryGlobal).__breadboardGoalContinuationPromises;
   const recoveries = () => (globalThis as PumpRegistryGlobal).__breadboardTaskRecoveryPromises;
-  while (registry().size > 0 || settlingPumps().size > 0 || goals()?.size || recoveries()?.size) {
+  const coordination = () => (globalThis as PumpRegistryGlobal).__breadboardChatCoordinationPromises;
+  while (registry().size > 0 || settlingPumps().size > 0 || goals()?.size || recoveries()?.size || coordination()?.size) {
     await Promise.allSettled([
       // A replaced terminal pump may still schedule a goal or task recovery
       // during cleanup. Finite workers must keep joining that work too.
       ...[...new Set([...registry().values(), ...settlingPumps()])].map((pump) => pump.settled()),
       ...[...(goals()?.values() ?? [])],
       ...[...(recoveries()?.values() ?? [])],
+      ...[...(coordination()?.values() ?? [])],
     ]);
   }
 }

@@ -552,7 +552,7 @@ export function presentGoalModeState(state: GoalModeState): {
 export function goalModeSection(
   state: GoalModeState | null,
   env: NodeJS.ProcessEnv = process.env,
-  options: { skillSelected?: boolean } = {},
+  options: { skillSelected?: boolean; continuationPrompt?: string; budgetPrompt?: string } = {},
 ): string {
   if (!state) {
     if (!options.skillSelected) return "";
@@ -574,7 +574,7 @@ export function goalModeSection(
         : "";
   const template = (statusInstruction
     ? ""
-    : state.status === "budget_limited" ? GOAL_BUDGET_PROMPT : GOAL_CONTINUATION_PROMPT)
+    : state.status === "budget_limited" ? options.budgetPrompt ?? GOAL_BUDGET_PROMPT : options.continuationPrompt ?? GOAL_CONTINUATION_PROMPT)
     .replaceAll("{{ objective }}", state.objective.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"))
     .replaceAll("{{ tokens_used }}", String(state.tokens_used))
     .replaceAll("{{ token_budget }}", state.token_budget === null ? "none" : String(state.token_budget))

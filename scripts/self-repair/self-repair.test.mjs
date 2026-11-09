@@ -122,3 +122,100 @@ test("isolated build dependencies are physical copies and preserve reviewed pack
   await assert.rejects(copyRepairDashboardDependencies(base,path.join(directory,"cancelled"),{signal:cancelled.signal}),/abort/i);
   assert.equal(fs.existsSync(path.join(directory,"cancelled/dashboard/node_modules")),false);
 });
+
+test('linked installed source dependencies survive candidate isolation', async () => {
+  const f=fixture();
+  const vendor=path.join(f.directory,'installed-vendor');fs.mkdirSync(vendor);
+  fs.writeFileSync(path.join(vendor,'package.json'),'{}');
+  fs.writeFileSync(path.join(vendor,'index.js'),'installed bytes');
+  fs.symlinkSync(vendor,path.join(f.root,'external-library'),process.platform==='win32'?'junction':'dir');
+  await execute(f,{build:async root=>{
+    assert.equal(fs.readFileSync(path.join(root,'external-library/index.js'),'utf8'),'installed bytes');
+    const out=path.join(root,'dashboard/.next-desktop/standalone');fs.mkdirSync(out,{recursive:true});
+    fs.writeFileSync(path.join(out,'server.js'),'fixture server');
+  }});
+  assert.equal(readSourceRepair(f.data,f.request.id).stage,'ready',readSourceRepair(f.data,f.request.id).reason);
+  assert.equal(fs.readFileSync(path.join(vendor,'index.js'),'utf8'),'installed bytes');
+  verifySourceRepairRelease(f.data,f.root,readSourceRepair(f.data,f.request.id).release);
+});
+
+
+test('candidate preserves and seals current shared manifests and packaged skills', async () => {
+  const f=fixture();
+  const inputs={'shared/visualization-renderers.json':'{"fixture":true}','hermes-skills/prebuilt/fixture/SKILL.md':'Reviewed application instructions'};
+  for(const [relative,contents]of Object.entries(inputs)){fs.mkdirSync(path.dirname(path.join(f.root,relative)),{recursive:true});fs.writeFileSync(path.join(f.root,relative),contents);}
+  await execute(f,{build:async root=>{
+    for(const [relative,contents]of Object.entries(inputs))assert.equal(fs.readFileSync(path.join(root,relative),'utf8'),contents);
+    const out=path.join(root,'dashboard/.next-desktop/standalone');fs.mkdirSync(out,{recursive:true});fs.writeFileSync(path.join(out,'server.js'),'fixture server');
+  }});
+  const request=readSourceRepair(f.data,f.request.id);
+  assert.equal(request.stage,'ready',request.reason);
+  for(const relative of Object.keys(inputs))assert.ok(request.release.files.some(file=>file.path===relative));
+  verifySourceRepairRelease(f.data,f.root,request.release);
+});
+
+
+test('tracked vendor sources retain their reviewed installed build inputs', async () => {
+  const f=fixture(),vendor=path.join(f.root,'external-library');fs.mkdirSync(vendor);
+  fs.writeFileSync(path.join(vendor,'package.json'),'{}');fs.writeFileSync(path.join(vendor,'index.js'),'reviewed source');
+  fs.appendFileSync(path.join(f.root,'.gitignore'),'external-library/dist/\n');
+  execFileSync('git',['add','external-library','.gitignore'],{cwd:f.root,windowsHide:true});
+  execFileSync('git',['-c','user.name=Fixture','-c','user.email=fixture@localhost','commit','-qm','tracked vendor source'],{cwd:f.root,windowsHide:true});
+  fs.mkdirSync(path.join(vendor,'dist'));fs.writeFileSync(path.join(vendor,'dist/installed.js'),'reviewed installed bytes');
+  await execute(f,{build:async root=>{
+    assert.equal(fs.readFileSync(path.join(root,'external-library/dist/installed.js'),'utf8'),'reviewed installed bytes');
+    const out=path.join(root,'dashboard/.next-desktop/standalone');fs.mkdirSync(out,{recursive:true});fs.writeFileSync(path.join(out,'server.js'),'fixture server');
+  }});
+  const request=readSourceRepair(f.data,f.request.id);assert.equal(request.stage,'ready',request.reason);
+  verifySourceRepairRelease(f.data,f.root,request.release);
+  assert.equal(fs.readFileSync(path.join(vendor,'index.js'),'utf8'),'reviewed source');
+  assert.equal(fs.readFileSync(path.join(vendor,'dist/installed.js'),'utf8'),'reviewed installed bytes');
+});
+
+test('repair build waits for transient memory pressure without spending another candidate', async () => {
+  const {runAdmittedRepairBuild}=await import('./engine.mjs');
+  let clock=0,samples=0,builds=0;const waits=[],messages=[];
+  await runAdmittedRepairBuild({root:process.cwd(),env:{},guard:()=>{},deadline:120000,now:()=>clock,
+    sample:()=>{if(++samples<=2)throw Object.assign(new Error('temporary memory pressure'),{code:'BREADBOARD_RESOURCE_EXHAUSTED'});},
+    sleep:async ms=>{waits.push(ms);clock+=ms;},onWaiting:message=>messages.push(message),
+    runCommand:async(_command,_args,options)=>{builds++;assert.equal(options.timeoutMs,30000);assert.equal(options.env.BREADBOARD_SOURCE_REPAIR_BUILD,'1');return {code:0,output:''};}});
+  assert.equal(builds,1);assert.equal(samples,3);assert.deepEqual(waits,[45000,45000]);assert.equal(messages.length,2);
+});
+
+test('repair build retries a typed child admission race but not a compiler failure', async () => {
+  const {runAdmittedRepairBuild}=await import('./engine.mjs');
+  let builds=0,waits=0;
+  const options={root:process.cwd(),env:{},guard:()=>{},deadline:Date.now()+120000,sample:()=>{},sleep:async()=>{waits++;}};
+  await runAdmittedRepairBuild({...options,runCommand:async()=>++builds===1?{code:1,output:"Error: insufficient commit\n code: 'BREADBOARD_RESOURCE_EXHAUSTED'"}:{code:0,output:''}});
+  assert.equal(builds,2);assert.equal(waits,1);
+  await assert.rejects(runAdmittedRepairBuild({...options,runCommand:async()=>{builds++;return {code:1,output:'TypeScript compilation failed'};}}),/TypeScript compilation failed/);
+  assert.equal(builds,3);assert.equal(waits,1);
+});
+
+test('repair build cancellation interrupts the real pending timer', async () => {
+  const {runAdmittedRepairBuild}=await import('./engine.mjs');
+  const controller=new AbortController();let builds=0;
+  const pending=runAdmittedRepairBuild({root:process.cwd(),env:{},signal:controller.signal,guard:()=>{},deadline:Date.now()+120000,
+    sample:()=>{throw Object.assign(new Error('temporary pressure'),{code:'BREADBOARD_RESOURCE_EXHAUSTED'});},
+    onWaiting:()=>setImmediate(()=>controller.abort()),runCommand:async()=>{builds++;return {code:0,output:''};}});
+  await assert.rejects(pending,{name:'AbortError'});assert.equal(builds,0);
+});
+
+test('repair build keeps the original deadline while waiting for resources', async () => {
+  const {runAdmittedRepairBuild}=await import('./engine.mjs');
+  let clock=100,builds=0,samples=0;
+  await assert.rejects(runAdmittedRepairBuild({root:process.cwd(),env:{},guard:()=>{},deadline:105,now:()=>clock,
+    sample:()=>{samples++;throw Object.assign(new Error('pressure'),{code:'BREADBOARD_RESOURCE_EXHAUSTED'});},
+    sleep:async ms=>{assert.equal(ms,5);clock+=ms;},runCommand:async()=>{builds++;return {code:0,output:''};}}),/deadline exhausted/);
+  assert.equal(samples,1);assert.equal(builds,0);
+});
+
+test('repair build fails closed when resource measurement or durable cancellation fails', async () => {
+  const {runAdmittedRepairBuild}=await import('./engine.mjs');
+  let builds=0,samples=0;
+  const options={root:process.cwd(),env:{},guard:()=>{},deadline:Date.now()+120000,
+    sample:()=>{samples++;throw Error('resource measurement unavailable');},runCommand:async()=>{builds++;return {code:0,output:''};}};
+  await assert.rejects(runAdmittedRepairBuild(options),/measurement unavailable/);
+  await assert.rejects(runAdmittedRepairBuild({...options,guard:()=>{throw Error('Source repair cancelled');}}),/cancelled/);
+  assert.equal(samples,1);assert.equal(builds,0);
+});

@@ -1,4 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { TabsState } from '../shared/ipc-contract';
+// The standalone voice window is a chat surface, but does not own a tab strip.
+contextBridge.exposeInMainWorld('breadboardNotificationVisibility', {
+  getState: () => ipcRenderer.invoke('breadboard:voice-notification-visibility'),
+  onState: (callback: (state: TabsState) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: TabsState) => callback(state);
+    ipcRenderer.on('breadboard:voice-notification-visibility', listener);
+    return () => ipcRenderer.removeListener('breadboard:voice-notification-visibility', listener);
+  },
+});
 contextBridge.exposeInMainWorld('voiceCompanion', {
   state: () => ipcRenderer.invoke('breadboard:voice-state'),
   conversation: () => ipcRenderer.invoke('breadboard:voice-conversation'),

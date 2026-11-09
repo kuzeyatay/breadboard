@@ -217,6 +217,7 @@ async function drive(run: RunState, input: StartVoxRunInput): Promise<void> {
       userId: run.userId,
       request: input.parsed,
       target: {
+        userId: input.userId,
         baseUrl: input.baseUrl,
         model: input.model,
         reasoningEffort: input.reasoningEffort,

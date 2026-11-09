@@ -1251,8 +1251,8 @@ Returns:
     try:
         proc = subprocess.run(
             [_sys.executable, "-c", runner,
-             f"file://{index_path.resolve()}", out_png, str(width), str(height)],
-            capture_output=True, text=True, timeout=60,
+             index_path.resolve().as_uri(), out_png, str(width), str(height)],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
         )
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "(no output)")[:500]
@@ -1331,13 +1331,13 @@ Returns:
         "    b.close()\n"
         "json.dump({'info': info, 'msgs': msgs}, open(out, 'w'))\n"
     )
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, dir="/data/tmp", mode="w") as f:
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, dir=proj["dir"], mode="w") as f:
         out_json = f.name
     try:
         proc = subprocess.run(
             [_sys.executable, "-c", runner,
-             f"file://{index_path.resolve()}", out_json],
-            capture_output=True, text=True, timeout=60,
+             index_path.resolve().as_uri(), out_json],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
         )
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "(no output)")[:500]
@@ -1936,9 +1936,9 @@ img, svg, canvas, video {{ max-width: 100%; height: auto; }}
                 )
                 import subprocess as _sp
                 res = _sp.run(
-                    ["python", "-c", render_script,
-                     f"file://{index_path.resolve()}", str(out_png), "1280", "900"],
-                    capture_output=True, text=True, timeout=60,
+                    [sys.executable, "-c", render_script,
+                     index_path.resolve().as_uri(), str(out_png), "1280", "900"],
+                    stdin=_sp.DEVNULL, capture_output=True, text=True, timeout=60,
                 )
                 if out_png.exists() and out_png.stat().st_size > 1000:
                     png_bytes = out_png.read_bytes()

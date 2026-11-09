@@ -1,3 +1,4 @@
+import { setNotificationViewVisible } from "./notification-visible-region";
 import { webContents, type BrowserWindow, type WebContentsView } from "electron";
 
 /** Reattach a selected surface after the native window itself was hidden or
@@ -26,7 +27,7 @@ export function installWindowSurfaceRecovery(
         // overlays. The WebContents and its document live through the reattach.
         parent.removeChildView(view);
         parent.addChildView(view, index);
-        view.setVisible(true);
+        setNotificationViewVisible(view, true);
       } finally {
         if (!throttled && !contents.isDestroyed()) contents.setBackgroundThrottling(false);
       }

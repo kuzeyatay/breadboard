@@ -411,7 +411,7 @@ test("dark mode uses charcoal paper and Breadboard's pastel utility bridge", () 
   assert.match(login, /bg-gray-900/);
 });
 
-test("navbar gardens share a deterministic animation with a bounded compositor cost", () => {
+test("navbar gardens restore deterministic sway only in presented tabs", () => {
   assert.match(animation, /const STAR_COUNT = 56/);
   assert.match(animation, /styles\.skyAnimation/);
   assert.doesNotMatch(animation, /createPlants\(Math\.random\)/);
@@ -423,9 +423,9 @@ test("navbar gardens share a deterministic animation with a bounded compositor c
   assert.match(animationStyles, /html\[data-theme="dark"\].*\.skyAnimation/);
   assert.match(animationStyles, /@keyframes starFieldBreathe/);
   assert.doesNotMatch(animationStyles, /\.star\s*\{[^}]*animation:/);
-  assert.doesNotMatch(animationStyles, /\.plant\s*\{[^}]*animation:/);
-  assert.match(animationStyles, /\.wind\[data-animation-ready="true"\]\s*\{[^}]*animation:/);
-  assert.match(animation, /const COMET_COUNT = 1/);
+  assert.match(animationStyles, /@keyframes flowerWind/);
+  assert.match(animationStyles, /\.wind\[data-animation-ready="true"\] \.plant\s*\{[^}]*animation:/);
+  assert.match(animation, /const COMET_COUNT = 3/);
   assert.match(animationStyles, /@keyframes cometPass/);
   assert.match(animationStyles, /animation-play-state:\s*paused/);
   assert.match(animationStyles, /prefers-reduced-motion: reduce/);

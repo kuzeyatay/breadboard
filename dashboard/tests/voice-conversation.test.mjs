@@ -497,7 +497,9 @@ test("the voice screen talks to the chat and takes the whole screen", () => {
   assert.match(overlay, /'\/api\/speech\/synthesize'/);
   assert.match(overlay, /prepareLocalSpeech\(cloudController\.signal\)/);
   assert.match(overlay, /playSpeechResponse/);
-  assert.match(overlay, /onSendRef\.current\(text\)/);
+  // The unchanged transcript remains the first argument; opener-context tests
+  // exercise the optional second argument and its privacy/ownership checks.
+  assert.match(overlay, /onSendRef\.current\(text[,)]/);
   // Escape closes, and closing tears the microphone and playback down.
   assert.match(overlay, /event\.key === 'Escape'/);
   assert.match(overlay, /stopSpeechPlayback\(\);\s*\n\s*releaseMicrophone\(\);/);
@@ -626,7 +628,7 @@ test("every chat that hosts the composer can be talked to", () => {
   assert.match(terminal, /voiceMessages=\{messages\}/);
   assert.match(gardenAssistant, /voiceMessages=\{messages\}/);
   assert.match(workspace, /voiceMessages=\{messages\}/);
-  assert.match(hermesPanel, /voiceMessages=\{messages\}/);
+  assert.match(hermesPanel, /voiceMessages=\{voiceHostMessages\(messages, activities, runInFlight\)\}/);
 });
 
 
@@ -650,7 +652,7 @@ test('queued sentences become connected phrases and keep every answer word', asy
   const first = 'This is the first complete sentence. ';
   const rest = 'Here is a second connected sentence. And this is the third complete sentence. The tail.';
   h.queue.update([{ role: 'assistant', content: first + 'Here' }], true);
-  t.mock.timers.tick(240);
+  t.mock.timers.tick(360);
   h.queue.update([{ role: 'assistant', content: first + rest }], true);
   h.queue.update([{ role: 'assistant', content: first + rest }], false);
   assert.deepEqual(h.spoken.map(item => item.text), [first.trim()]);

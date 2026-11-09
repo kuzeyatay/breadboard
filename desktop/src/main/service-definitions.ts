@@ -793,6 +793,14 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       "Fast desktop dashboard build is missing. Run `npm run desktop:dev:fast` from the repository root.",
     );
   }
+  // build-dashboard.mjs writes the manifest only after the static assets are
+  // copied beside server.js. Without it every /_next/static request 404s.
+  const devStandaloneManifest = path.join(devStandaloneBuildRoot, ".next-desktop", "breadboard-build-manifest.json");
+  if (useDevStandalone && !fs.existsSync(devStandaloneManifest)) {
+    throw new Error(
+      "Fast desktop dashboard build is incomplete (a build may still be running). Wait for it to finish or run `npm run desktop:dev:fast` from the repository root.",
+    );
+  }
   const dashboardEntry = paths.mode === "packaged"
     ? [path.join(paths.dashboardServerDir, "server.js")]
     : useDevStandalone

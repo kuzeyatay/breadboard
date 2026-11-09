@@ -1,3 +1,4 @@
+import { renderSystemPrompt } from "../system-prompts/service.ts";
 // Turning a published garden into review cards.
 //
 // Cards are seeded from the *published* learning pages rather than from the Learn
@@ -152,7 +153,7 @@ export function collectCandidates(
  * malformed falls through to the template rather than aborting the seed — a
  * usable card with a plain question beats no card at all.
  */
-async function modelQuestions(batch: SeedCandidate[]): Promise<Map<string, string>> {
+async function modelQuestions(batch: SeedCandidate[], userId?: number | null): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (batch.length === 0) return out;
   const { createChatmockClient } = await import("../knowledge.ts");
@@ -172,12 +173,7 @@ async function modelQuestions(batch: SeedCandidate[]): Promise<Map<string, strin
       {
         role: "system",
         content:
-          "You write recall questions for a spaced-repetition system. For each " +
-          "numbered item, write ONE question that can be answered from the text " +
-          "and that tests understanding rather than recognition. Never ask a " +
-          "yes/no question. Never mention 'the text' or 'the passage' — the " +
-          "reader will not have it in front of them. Reply with a JSON array of " +
-          'objects: [{"n": 1, "question": "..."}]. No prose outside the JSON.',
+          renderSystemPrompt("review-questions", userId, {  }),
       },
       { role: "user", content: numbered },
     ],
@@ -269,7 +265,7 @@ export async function seedGarden(options: {
     for (let index = 0; index < needsQuestion.length; index += batchSize) {
       const batch = needsQuestion.slice(index, index + batchSize);
       try {
-        for (const [slug, question] of await modelQuestions(batch)) {
+        for (const [slug, question] of await modelQuestions(batch, options.userId)) {
           questions.set(slug, question);
         }
       } catch {

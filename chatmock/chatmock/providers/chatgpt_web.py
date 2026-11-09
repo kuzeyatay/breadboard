@@ -641,7 +641,8 @@ PAGE_SCRIPT = r"""
     try { if (typeof window[EMIT] === 'function') window[EMIT](JSON.stringify(payload)); } catch (_) {}
   };
   const STOP = 'button[data-testid="stop-button"], button[data-testid="composer-stop-button"], ' +
-    'button[aria-label="Stop streaming"], button[aria-label="Stop generating"], button[aria-label="Stop answering"]';
+    'button[aria-label="Stop streaming"], button[aria-label="Stop generating"], button[aria-label="Stop answering"], ' +
+    'form button[aria-label^="Stop" i]';
   const SEND = 'button[data-testid="send-button"], form button[aria-label^="Send" i], button[aria-label^="Send" i]';
   const TURN = 'section[data-testid^="conversation-turn"], article[data-testid^="conversation-turn"]';
   // Where the site puts the sentence explaining a refusal: a spent cap for the
@@ -858,7 +859,7 @@ PAGE_SCRIPT = r"""
     const walk = (node) => {
       if (node.nodeType === 3) { out.push(node.nodeValue); return; }
       if (node.nodeType !== 1) return;
-      if (node.matches('button, .sr-only, [aria-hidden="true"]')) return;
+      if (node.matches('button, .sr-only, [aria-hidden="true"], [data-markdown-copy="exclude"], [data-chatgpt-copy-reference]')) return;
       const tag = node.tagName.toLowerCase();
       if (tag === 'pre') {
         const code = node.querySelector('code');
@@ -909,6 +910,29 @@ PAGE_SCRIPT = r"""
   // data-message-role, [data-assistant-markdown], and data-message-complete
   // once an answer has finished.
   const ASSISTANT = '[data-message-author-role="assistant"], [data-message-role="assistant"]';
+  // Third renderer, seen 2026-11-09: no article/data-message-author-role at
+  // all. A turn is `div[data-talvt-turn-state]` ("complete" once finished),
+  // the role sits on a visually hidden heading `[data-conversation-role]`, and
+  // the answer prose is the `[data-markdown-text-style="assistant-message"]`
+  // root. Without this branch a long Pro answer that never reached the socket
+  // was reported as "finished without an answer" while it sat on the page.
+  const TALVT_TURN = '[data-talvt-turn-state]';
+  const TALVT_ASSISTANT_ROLE = '[data-conversation-role="assistant"]';
+  const TALVT_MARKDOWN = '[data-markdown-text-style="assistant-message"]';
+  function talvtSnapshot() {
+    const roots = document.querySelectorAll(TALVT_MARKDOWN);
+    const markdown = roots.length ? roots[roots.length - 1] : null;
+    let turn = markdown ? markdown.closest(TALVT_TURN) : null;
+    if (!turn) {
+      const turns = [...document.querySelectorAll(TALVT_TURN)];
+      for (let at = turns.length - 1; at >= 0 && !turn; at--) {
+        if (turns[at].querySelector(TALVT_ASSISTANT_ROLE)) turn = turns[at];
+      }
+    }
+    if (!turn && !markdown) return null;
+    const state = turn ? turn.getAttribute('data-talvt-turn-state') : null;
+    return { markdown, streaming: state !== null && state !== 'complete' };
+  }
   function snapshot() {
     const turns = [...document.querySelectorAll(TURN)];
     let node = null;
@@ -919,6 +943,17 @@ PAGE_SCRIPT = r"""
     if (!node) {
       const holders = document.querySelectorAll(ASSISTANT);
       node = holders.length ? holders[holders.length - 1] : null;
+    }
+    if (!node) {
+      const talvt = talvtSnapshot();
+      if (talvt) {
+        return {
+          generating: !!stopButton() || talvt.streaming,
+          hasAssistant: true,
+          text: talvt.markdown ? toMarkdown(talvt.markdown) : '',
+          href: location.href,
+        };
+      }
     }
     const markdown = node ? (node.querySelector('.markdown') || node.querySelector('[data-assistant-markdown]') || node) : null;
     const streamingAttrs = !!node && node.hasAttribute('data-assistant-content-started') && !node.hasAttribute('data-message-complete');
@@ -1521,7 +1556,7 @@ class _Page:
   if (!router || typeof router.navigate !== 'function' || !window.__breadboardChatgptWeb) return false;
   if (window.__breadboardChatgptWebVersion !== %s) return false;
   await router.navigate(%s);
-  return location.pathname === '/' && !document.querySelector('section[data-testid^="conversation-turn"], article[data-testid^="conversation-turn"]');
+  return location.pathname === '/' && !document.querySelector('section[data-testid^="conversation-turn"], article[data-testid^="conversation-turn"], [data-talvt-turn-state]');
 })()""" % (json.dumps(PAGE_SCRIPT_VERSION), json.dumps(target))
         try:
             return self.evaluate(expression, await_promise=True, timeout=timeout) is True

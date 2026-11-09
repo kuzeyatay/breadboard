@@ -690,6 +690,7 @@ export function InlineSelectionAnswerPopover({
 }) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const notificationAnswerRef = useRef<HTMLDivElement>(null);
   const scheduleLayoutRef = useRef<() => void>(() => {});
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const actionsRef = useRef<HTMLButtonElement>(null);
@@ -765,6 +766,12 @@ export function InlineSelectionAnswerPopover({
   const sourceMessageId = selection?.sourceMessageId;
 
   useLayoutEffect(() => {
+    const element = notificationAnswerRef.current;
+    if (!element || pending || !answer?.trim() || !notificationSelectionId) return;
+    return registerInlineSelectionNotificationView(notificationSelectionId, element);
+  }, [pending, Boolean(answer?.trim()), notificationSelectionId]);
+
+  useLayoutEffect(() => {
     const popover = popoverRef.current;
     if (!popover) return;
     if (embedded) {
@@ -789,7 +796,6 @@ export function InlineSelectionAnswerPopover({
     }
     let frame = 0;
     let disposed = false;
-    let releaseView: (() => void) | undefined;
     let lastGeometry = "";
     let lastSourceRect = { left: anchor.left, right: anchor.right, top: anchor.top, bottom: anchor.bottom };
     let parentAnchor: { card: HTMLElement; x: number; y: number; width: number; height: number } | undefined;
@@ -881,12 +887,6 @@ export function InlineSelectionAnswerPopover({
         }
       }
       setStyle("visibility", visible ? "visible" : "hidden");
-      if (visible && notificationSelectionId && !releaseView) {
-        releaseView = registerInlineSelectionNotificationView(notificationSelectionId);
-      } else if (!visible && releaseView) {
-        releaseView();
-        releaseView = undefined;
-      }
       if (rect && visible) {
         // Chat-owned cards stay within a visible browser drawer; webpage cards use their native host.
         const drawer = document.querySelector<HTMLElement>(".browser-terminal-drawer[data-open='true']")?.getBoundingClientRect();
@@ -992,7 +992,6 @@ export function InlineSelectionAnswerPopover({
       window.removeEventListener(INLINE_ANSWER_LAYOUT_EVENT, onOtherLayout);
       window.visualViewport?.removeEventListener("resize", schedule);
       window.visualViewport?.removeEventListener("scroll", schedule);
-      releaseView?.();
       window.dispatchEvent(new Event(INLINE_ANSWER_LAYOUT_EVENT));
     };
   }, [anchor, selectionId, sourceMessageId, notificationSelectionId, embedded]);
@@ -1264,7 +1263,7 @@ export function InlineSelectionAnswerPopover({
           />
         ) : null}
         {answer ? (
-          <div className="mt-1">
+          <div ref={notificationAnswerRef} className="mt-1">
             {answerMessageId && onSelection && onOpenAnnotation ? (
               // The answer is a message like any other: selecting text inside
               // it summons the same menu, so an answer can be highlighted and

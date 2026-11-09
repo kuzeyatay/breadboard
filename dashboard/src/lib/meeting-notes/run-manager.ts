@@ -247,6 +247,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   } else {
     emit(run, "notes.started", { characters: transcriptText.length });
     const written = await summarizeMeeting({
+      userId: input.userId,
       transcript: transcriptText,
       baseUrl: input.baseUrl,
       model: input.model,
@@ -301,21 +302,21 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   } else {
     try {
       if (summary) {
-        notesArtifactId = saveNotesArtifact({
+        notesArtifactId = (await saveNotesArtifact({
           context,
           summary,
           markdown,
           transcriptEngine: transcript?.engine ?? "none",
           speakers: transcript?.speakers ?? [],
           sourceLabel,
-        }).id;
+        })).id;
       }
       if (transcript) {
-        transcriptArtifactId = saveTranscriptArtifact({
+        transcriptArtifactId = (await saveTranscriptArtifact({
           context,
           transcript,
           title: summary?.meetingName || resolved.title,
-        }).id;
+        })).id;
       }
       closeMeetingArtifactContext(context, "completed");
     } catch (error) {

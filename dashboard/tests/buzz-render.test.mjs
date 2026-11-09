@@ -330,7 +330,7 @@ test("a pending invitation is answerable from the inbox, above the messages", ()
   // not act on is the state this whole section exists to prevent.
   assert.match(html, /Accept/);
   assert.match(html, /Decline/);
-  assert.match(html, /ada invited you to join this community/);
+  assert.match(html, /ada invited you to join this organization/);
   // It outranks the unread messages — until it is answered, the rooms behind
   // it cannot be opened at all.
   assert.ok(html.indexOf("Invitations:") < html.indexOf("Unread:"));

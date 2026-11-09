@@ -109,6 +109,7 @@ export async function POST(request: Request) {
         throw error;
       }
       const reading = await readPdfAttachment(bytes, {
+        userId,
         signal: request.signal,
         handwriting: request.headers.get("x-document-handwriting") === "true",
         ocrPages,

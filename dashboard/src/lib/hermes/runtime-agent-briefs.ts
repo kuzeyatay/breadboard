@@ -73,13 +73,13 @@ export interface RuntimeAgentBrief {
 export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
   codex: {
     group: "code",
-    does: "Runs the Codex CLI on the repository connected to this Garden: reads the code, edits files, runs commands, and reports what changed as a diff.",
+    does: "Runs the Codex CLI in a connected repository: reads code, edits files, runs commands, and reports changes as a diff. Garden Chat uses its own repository; Terminal can use the single connected repository when that choice is unambiguous.",
     choose:
-      "Choose it for real changes to real files — a feature, a fix, a refactor, a test run. Not for explaining code, and not when no repository is connected, where it has nothing to open.",
+      "Choose it for features, fixes, refactors, test runs, command execution, or when the user explicitly requests Codex. An ordinary code explanation does not need a worker unless the user selects this engine. The launch route validates the repository; missing Garden context in Terminal does not prove that no repository is connected.",
   },
   opencode: {
     group: "code",
-    does: "The same job as Codex on the same connected repository, through a different engine, and it can carry a stacked skill, prompt, or connection into the run.",
+    does: "The same job as Codex in a connected repository, through a different engine, including Terminal when one repository is unambiguous. It can carry a stacked skill, prompt, or connection into the run.",
     choose:
       "Choose it when the user asked for OpenCode by name, or when Codex has already tried this task and failed. Running both on one task duplicates the work rather than checking it.",
   },
@@ -128,7 +128,7 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
   },
   "deep-tutor": {
     group: "research",
-    does: "Teaches the material already in the workspace: it reads the Garden it was called on and explains, works through, and quizzes against those actual notes.",
+    does: "Teaches from the supplied question and material: explains, solves, and quizzes. In Garden Chat it can use that Garden's notes; it also runs in Terminal without a selected Garden.",
     choose:
       "Choose it when the user wants to learn or be tested on their own material. An explanation you can simply give is not a reason to launch it.",
   },

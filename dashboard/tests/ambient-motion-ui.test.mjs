@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
 import {createRequire} from 'node:module';
 import test from 'node:test';
 const root = process.env.BREADBOARD_DASHBOARD_ROOT ?? path.resolve(import.meta.dirname, '..');
@@ -12,13 +13,15 @@ test('Terminal color motion stays smooth in a visible, unfocused window', {timeo
     import React from 'react'; import {createRoot} from 'react-dom/client';
     import Background from './src/app/components/spotify-ambient-background';
     import {UserIdleRuntime} from './src/app/components/effects/use-user-idle';
-    createRoot(document.getElementById('root')).render(<><UserIdleRuntime/><Background theme="dark" spotifyColors={false} randomColors/></>);
+    createRoot(document.getElementById('root')).render(<><UserIdleRuntime/><Background theme="dark" spotifyColors={false} randomColors/><div className="browser-start-page" id="rings"/></>);
   `}, bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', outfile: 'motion.js'});
   const js = bundle.outputFiles.find(file => file.path.endsWith('.js')).text;
-  const css = bundle.outputFiles.find(file => file.path.endsWith('.css')).text;
+  const globals = fs.readFileSync(path.join(root,'src/app/globals.css'),'utf8').replace(/^@import[^;]+;/gm,'');
+  const css = globals + '\n' + bundle.outputFiles.find(file => file.path.endsWith('.css')).text;
   const browser = await chromium.launch({headless: true, channel: 'msedge'});
-  const open = async () => {
+  const open = async (virtualClock = false) => {
     const page = await browser.newPage({viewport: {width: 1440, height: 900}});
+    if (virtualClock) await page.clock.install();
     await page.addInitScript(() => {
       const now = Date.now;
       const offset = 6_000 - now() % 20_000;
@@ -43,6 +46,11 @@ test('Terminal color motion stays smooth in a visible, unfocused window', {timeo
         await page.evaluate(() => window.dispatchEvent(new Event('blur')));
         await expect(page.locator('html')).toHaveAttribute('data-user-idle', '');
         await expect(bg).toHaveAttribute('data-playing', 'true');
+        const rings=page.locator('#rings');
+        const orbit=()=>rings.evaluate(node=>node.getAnimations({subtree:true}).find(a=>a.animationName==='browser-orbit-clockwise').currentTime);
+        assert.equal(await rings.evaluate(node=>getComputedStyle(node,'::before').animationPlayState.split(',').every(state=>state.trim()==='running')),true,'visible rings must not be frozen by global idle CSS');
+        const firstOrbit=await orbit();
+        await expect.poll(orbit).toBeGreaterThan(firstOrbit+100);
         const before = await light.evaluate(node => node.getAnimations({subtree: true})[0].currentTime);
         await expect.poll(() => light.evaluate(node => node.getAnimations({subtree: true})[0].currentTime)).toBeGreaterThan(before + 100);
         await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', {configurable: true, value: 'hidden'}); document.dispatchEvent(new Event('visibilitychange')); });
@@ -54,6 +62,27 @@ test('Terminal color motion stays smooth in a visible, unfocused window', {timeo
         await page.evaluate(() => { delete document.visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
         await expect(bg).toHaveAttribute('data-playing', 'true');
       } finally { await page.close(); }
+    });
+    await t.test('a quiet minute and multiple color cycles keep visible Terminal motion running', async () => {
+      const page=await open(true);
+      try {
+        await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+        const bg=page.locator('[data-spotify-background]'),light=page.locator('[data-ambient-layer="random"] > span').first();
+        const initialCycle=Number(await bg.getAttribute('data-random-cycle'));
+        await page.clock.fastForward(61_000);
+        await expect(page.locator('html')).toHaveAttribute('data-user-idle','');
+        await expect(bg).toHaveAttribute('data-playing','true');
+        assert(Number(await bg.getAttribute('data-random-cycle'))>=initialCycle+3,'palette timer keeps advancing without clicks');
+        assert.equal(await page.locator('#rings').evaluate(node=>getComputedStyle(node,'::after').animationPlayState.split(',').every(state=>state.trim()==='running')),true);
+        const before=await light.evaluate(node=>({color:node.style.backgroundColor,cycle:node.closest('[data-spotify-background]').dataset.randomCycle}));
+        await page.clock.fastForward(20_000);
+        const after=await light.evaluate(node=>({color:node.style.backgroundColor,cycle:node.closest('[data-spotify-background]').dataset.randomCycle}));
+        assert.notEqual(after.cycle,before.cycle);
+        assert.notEqual(after.color,before.color,'new colors still arrive while idle');
+        await page.clock.resume();
+        const time=await light.evaluate(node=>node.getAnimations()[0].currentTime);
+        await expect.poll(()=>light.evaluate(node=>node.getAnimations()[0].currentTime)).toBeGreaterThan(time+100);
+      } finally {await page.close();}
     });
     await t.test('late palette updates hold the last color instead of flashing the previous cycle', async () => {
       const page = await open();

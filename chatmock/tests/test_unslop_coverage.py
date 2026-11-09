@@ -11,8 +11,9 @@ Two separate questions, answered separately:
 
   * Request coverage — the council (and therefore unslop) declines any request
     that carries tools. Hermes sends its Breadboard toolset on every turn, so
-    the Terminal/Garden/Quartz surfaces never reach it. That gap is asserted
-    here so it stays visible rather than being assumed fixed.
+    the Terminal/Garden/Quartz surfaces need the passthrough to attach it.
+    Exercise the current dashboard prompt and both HTTP routes as well as the
+    helpers, so identity edits and provider routing cannot silently bypass it.
 """
 
 import json
@@ -40,6 +41,8 @@ from chatmock.providers.store import ResolvedCredentials
 from chatmock.providers.types import ModelCall
 
 MARKER = "UNSLOP_SKILL_MARKER"
+EXPLANATION_RULE = "70% of the way to ASD-STE100"
+CHAT_CORE = (Path(__file__).resolve().parents[2] / "hermes-config" / "system" / "chat-core.md").read_text(encoding="utf-8")
 
 
 class _CapturingRouter:
@@ -122,6 +125,7 @@ class UnslopModelCoverageTests(unittest.TestCase):
             with self.subTest(model=model):
                 call = self._answer_with(model)
                 self.assertIn(MARKER, call.system or "", f"{model} lost the unslop skill")
+                self.assertIn(EXPLANATION_RULE, call.system or "", f"{model} lost the explanation rule")
 
     def test_claude_subscription_models_are_covered_too(self) -> None:
         call = self._answer_with("cliproxy/claude-opus-5")
@@ -266,6 +270,66 @@ class UnslopRequestCoverageTests(unittest.TestCase):
         twice = maybe_unslop_messages(once, payload)
         self.assertIs(twice, once)
 
+    def test_current_chat_prompt_gets_defaults_without_a_personal_profile(self) -> None:
+        self.assertFalse((Path(self.skill_dir.name) / "references" / "style-profile.md").exists())
+        messages = [{"role": "system", "content": CHAT_CORE}, {"role": "user", "content": "Explain entropy."}]
+        for system in (maybe_unslop_messages(messages, {"tools": [{}]})[0]["content"], maybe_unslop_instructions(CHAT_CORE, {"tools": [{}]})):
+            self.assertIn(MARKER, system)
+            self.assertIn(EXPLANATION_RULE, system)
+
+    def test_saved_profile_and_reverting_to_defaults_reach_the_next_turn(self) -> None:
+        profile = Path(self.skill_dir.name) / "references" / "style-profile.md"
+        profile.write_text("PERSONAL_VOICE: short sentences, dry humor.", encoding="utf-8")
+        styled = maybe_unslop_instructions(CHAT_CORE, {})
+        self.assertIn(MARKER, styled)
+        self.assertIn("PERSONAL_VOICE", styled)
+        self.assertIn(EXPLANATION_RULE, styled)
+        profile.unlink()
+        reverted = maybe_unslop_instructions(CHAT_CORE, {})
+        self.assertIn(MARKER, reverted)
+        self.assertNotIn("PERSONAL_VOICE", reverted)
+        self.assertIn(EXPLANATION_RULE, reverted)
+
+    def test_responses_input_system_messages_are_recognized_without_changing_history(self) -> None:
+        for role in ("system", "developer"):
+            payload = {"input": [{"type": "message", "role": role, "content": [{"type": "input_text", "text": CHAT_CORE}]}]}
+            before = json.dumps(payload)
+            updated = maybe_unslop_instructions(None, payload)
+            self.assertIn(MARKER, updated)
+            self.assertEqual(json.dumps(payload), before)
+            self.assertEqual(maybe_unslop_instructions(updated, payload), updated)
+        for role in ("user", "assistant", "tool"):
+            self.assertIsNone(maybe_unslop_instructions(None, {"input": [{"role": role, "content": CHAT_CORE}]}))
+
+    def test_existing_directive_in_an_earlier_system_message_is_not_duplicated(self) -> None:
+        messages, payload = self._hermes_turn()
+        once = maybe_unslop_messages(messages, payload)
+        with_later_policy = [*once, {"role": "developer", "content": "Use the selected language."}]
+        self.assertIs(maybe_unslop_messages(with_later_policy, payload), with_later_policy)
+
+    def test_plain_text_response_format_still_gets_the_default_style(self) -> None:
+        messages, payload = self._hermes_turn(response_format={"type": "text"})
+        self.assertIn(MARKER, maybe_unslop_messages(messages, payload)[0]["content"])
+
+    def test_editor_prose_keeps_its_json_contract_and_gets_style(self) -> None:
+        messages, payload = self._hermes_turn(taskType="small_revision", response_format={"type": "json_object"})
+        before = json.dumps(payload)
+        updated = maybe_unslop_messages(messages, payload)
+        self.assertIn("=== UNSLOP:", updated[0]["content"])
+        self.assertIn("user-facing prose string values", updated[0]["content"])
+        self.assertIn(EXPLANATION_RULE, updated[0]["content"])
+        self.assertEqual(json.dumps(payload), before)
+        for choice in ("required", {"type": "function", "function": {"name": "emit"}}):
+            self.assertIs(maybe_unslop_messages(messages, {**payload, "tool_choice": choice}), messages)
+        for task in ("metadata_generation", "source_map", None):
+            self.assertIs(maybe_unslop_messages(messages, {**payload, "taskType": task}), messages)
+
+    def test_screen_aware_voice_drafts_receive_the_same_default_style(self) -> None:
+        source = (Path(__file__).resolve().parents[2] / "dashboard" / "src" / "lib" / "speech" / "dictation-reply.ts").read_text(encoding="utf-8")
+        # Use the actual instructions, not a copy of the gateway's marker.
+        instructions = source.split("export const DICTATION_REPLY_INSTRUCTIONS = [", 1)[1].split("].join", 1)[0]
+        self.assertIn(MARKER, maybe_unslop_instructions(instructions, {}))
+
     def test_non_breadboard_callers_are_left_alone(self) -> None:
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
@@ -307,6 +371,73 @@ class UnslopRequestCoverageTests(unittest.TestCase):
         with patch.dict(os.environ, {"ENABLE_UNSLOP": "false"}):
             UnslopModelCoverageTests._reset_cache()
             self.assertIs(maybe_unslop_messages(messages, payload), messages)
+
+    def test_http_routes_deliver_default_and_personal_tone_to_each_provider_path(self) -> None:
+        from chatmock.app import create_app
+        from chatmock.providers import dispatch
+        from flask import jsonify
+
+        # Keep settings and logs isolated; only the final upstream transport is
+        # stubbed. Routing, council bypass and Responses translation are real.
+        with patch.dict(os.environ, {
+            "CHATMOCK_PROVIDERS_FILE": str(Path(self.skill_dir.name) / "providers.json"),
+            "CHATMOCK_MODEL_TELEMETRY_FILE": str(Path(self.skill_dir.name) / "routing.jsonl"),
+            "CHATMOCK_FAILOVER_FILE": str(Path(self.skill_dir.name) / "failover.json"),
+            "CHATMOCK_MODEL_DISCOVERY": "0",
+            "ENABLE_COUNCIL": "true",
+        }):
+            app = create_app()
+            client = app.test_client()
+            profile = Path(self.skill_dir.name) / "references" / "style-profile.md"
+            captured = []
+
+            def external(_resolved, payload, **_kwargs):
+                captured.append(json.dumps(payload))
+                return jsonify({"choices": [{"message": {"role": "assistant", "content": "Answer"}, "finish_reason": "stop"}]})
+
+            def chatgpt(payload, **_kwargs):
+                captured.append(json.dumps(payload))
+                # End at the dispatch boundary without requiring credentials.
+                return None, jsonify({"captured": True})
+
+            with patch.object(dispatch, "chat_completion_response", side_effect=external), patch(
+                "chatmock.routes_openai.start_upstream_raw_request", side_effect=chatgpt
+            ):
+                for personal in (False, True):
+                    if personal:
+                        profile.write_text("PERSONAL_VOICE: short sentences.", encoding="utf-8")
+                    for model in ("gpt-5.6-sol", "anthropic/claude-opus-4-5", "openai/gpt-5.5"):
+                        for location in ("instructions", "input"):
+                            for task_type, expected in ((None, True), ("page_assistant_answer", True), ("metadata_generation", False)):
+                                with self.subTest(personal=personal, model=model, location=location, task_type=task_type):
+                                    body = {"model": model, "input": "Explain entropy.", "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object", "properties": {}}}]}
+                                    if location == "instructions":
+                                        body["instructions"] = CHAT_CORE + "\nModel: {{BREADBOARD_CHATMOCK_RESOLVED_MODEL}}"
+                                    else:
+                                        body["input"] = [{"type": "message", "role": "developer", "content": CHAT_CORE}, {"type": "message", "role": "user", "content": "Explain entropy."}]
+                                    if task_type:
+                                        body["taskType"] = task_type
+                                    captured.clear()
+                                    result = client.post("/v1/responses", json=body)
+                                    self.assertEqual(result.status_code, 200, result.get_data(as_text=True))
+                                    self.assertEqual(len(captured), 1)
+                                    self.assertEqual("=== UNSLOP:" in captured[0], expected)
+                                    self.assertEqual(EXPLANATION_RULE in captured[0], expected)
+                                    self.assertEqual("PERSONAL_VOICE" in captured[0], expected and personal)
+                                    if model == "gpt-5.6-sol" and location == "instructions":
+                                        self.assertIn("Model: gpt-5.6-sol", captured[0])
+                                        self.assertNotIn("{{BREADBOARD_CHATMOCK_RESOLVED_MODEL}}", captured[0])
+                    captured.clear()
+                    result = client.post("/v1/chat/completions", json={
+                        "model": "anthropic/claude-opus-4-5",
+                        "messages": [{"role": "system", "content": CHAT_CORE}, {"role": "user", "content": "Explain entropy."}],
+                        "tools": [{"type": "function", "function": {"name": "lookup"}}],
+                    })
+                    self.assertEqual(result.status_code, 200)
+                    self.assertEqual(len(captured), 1)
+                    self.assertIn(MARKER, captured[0])
+                    self.assertIn(EXPLANATION_RULE, captured[0])
+                    self.assertEqual("PERSONAL_VOICE" in captured[0], personal)
 
 
 if __name__ == "__main__":

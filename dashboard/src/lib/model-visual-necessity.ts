@@ -1,3 +1,4 @@
+import { renderSystemPrompt } from "./system-prompts/service.ts";
 import type { LearningUnitContract } from "./learning-unit-contract.ts";
 import type {
   ContractInteractiveVisualPlan,
@@ -13,11 +14,7 @@ import type {
   VisualNecessityDecision,
 } from "./visual-necessity-types.ts";
 import type { VisualizationInteractionGoal } from "./visualization-registry.ts";
-import {
-  GENERATED_VISUAL_CONTROL_ID_PATTERN,
-  GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE,
-  GENERATED_VISUAL_RESERVED_CONTROL_IDS,
-} from "./generated-visual-capabilities.ts";
+import { GENERATED_VISUAL_CONTROL_ID_PATTERN, GENERATED_VISUAL_RESERVED_CONTROL_IDS } from "./generated-visual-capabilities.ts";
 import {
   parseVisualizationContractRepairResponse,
   VISUALIZATION_CONTRACT_CONTROL_SCHEMA,
@@ -414,22 +411,7 @@ export function buildModelVisualNecessityPacket(input: {
 }
 
 export function modelVisualNecessitySystemPrompt(): string {
-  return [
-    "You are the sole pedagogical decision-maker for interactive-visual necessity across an entire learning garden.",
-    "Return strict JSON and exactly one decision for every supplied unit.",
-    `Use this exact response shape: {"schemaVersion":1,"gardenId":string,"gardenRationale":string,"visualBudget":{"targetMinimum":integer,"targetMaximum":integer,"maximumPerSection":integer,"minimumUnitsBetweenSimilarVisuals":integer,"requiredVisuals":integer,"recommendedVisuals":integer,"optionalVisuals":integer,"reason":string},"decisions":[{"unitId":string,"pageId":string,"necessity":"required"|"recommended"|"optional"|"not_needed"|"harmful_or_distracting","preferredMedium":"interactive_visual"|"source_figure"|"generated_static_diagram"|"formula_derivation"|"worked_example"|"comparison_table"|"timeline"|"prose"|"no_additional_visual","learningGoal":string,"manipulationValue":number,"dynamicBehaviorValue":number,"comparisonValue":number,"spatialValue":number,"parameterSensitivityValue":number,"sourceFigureSufficiency":number,"proseSufficiency":number,"formulaSufficiency":number,"workedExampleSufficiency":number,"cognitiveLoadRisk":number,"duplicationRisk":number,"implementationRisk":number,"confidence":number,"evidence":{"unitRole":string,"learningQuestion":string,"concepts":string[],"sourceAnchorIds":string[],"nearbyVisualIntentIds":string[]},"reason":string,"alternativeCoverage":"covered"|"uncovered"|"unverified","teachingMediumReason":string,"interaction"?:{"interactionGoal":"manipulate_variables"|"observe_change_over_time"|"compare_cases"|"step_through_process"|"explore_structure"|"test_prediction"|"inspect_relationship"|"simulate_system","uniqueConcept":string,"whyStaticSourceFigureIsNotEnough":string,"learnerAction":string,"controls":[${VISUALIZATION_CONTRACT_CONTROL_SCHEMA}],"observable":{"label":string,"representation":"value"|"chart"|"diagram"|"animation"|"timeline"|"table"|"annotation","evidence":[{"anchor":string,"quote":string}]},"expectedInsight":string,"expectedInsightEvidence":[{"anchor":string,"quote":string}],"duplicateSignature":string}}]}.`,
-    "Every score and confidence field is a JSON number from 0 through 1. Copy unitId, pageId, learningGoal, evidence concepts, and evidence sourceAnchorIds only from the request.",
-    "Judge every unit from its supplied learning question, concepts, claims, source artifacts, and garden context; code will not classify or repair your pedagogical choices.",
-    "The request budget contains safety maximums, not quotas. Author visualBudget as your whole-garden plan, keep it within those maximums, and make its required/recommended/optional counts exactly match your decisions. Do not add interaction merely to fill a budget and do not omit a necessary interaction merely to create variety.",
-    "For every required, recommended, or optional interaction, author the interactionGoal, uniqueConcept, whyStaticSourceFigureIsNotEnough, concrete learnerAction, at least one typed learner control, a learner-visible observable and its representation, an expected insight, and a garden-unique duplicateSignature.",
-    "Every source-semantic slider, number, or select control must author its stable id, exact input type, complete domain/default, and exact source evidence. Select controls require at least two unique source-grounded options and an exact declared default. Pure UI action controls use kind protocol_action and type button or toggle, carry empty evidence, and must not declare subject domains. Their protocolRole is conditional: ordinary non-prediction actions may omit it, reset is allowed independently, and prediction roles follow the coupled prediction contract. Button defaults are 0 and toggle defaults are false.",
-    `Every learner control id must match ${GENERATED_VISUAL_CONTROL_ID_PATTERN.source}; ${GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(", ")} are runtime expression variables and are forbidden control ids.`,
-    `${GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE} The result must not be revealed by default. Never invent subject variables, cases, claims, or units; protocol labels are model-authored UI mechanics and never support subject claims.`,
-    "Grounding is literal for source-semantic controls: every meaningful normalized token in each slider/number/select label, each select option, the observable label, and the expected insight must occur in the exact quote text cited for that field. Exact source symbols and formulas are valid with identifier boundaries. Pure protocol_action button/toggle controls instead require exactly empty evidence; their model-authored UI labels express only interaction mechanics and never substantiate a subject claim, observable, or insight. Every non-empty quote must be an exact substring of canonical evidence at its anchor, and evidence.sourceAnchorIds must include every cited anchor.",
-    "Use a non-interactive preferredMedium when a source figure, derivation, worked example, table, timeline, static diagram, or prose teaches the goal adequately.",
-    "Honor every explicit user override exactly. Coordinate the whole batch to avoid redundant interactions.",
-    "Do not emit renderer code or silently downgrade a required interaction because implementation may be difficult; record implementationRisk and keep the pedagogical judgment independent.",
-  ].join(" ");
+  return renderSystemPrompt("learning-visual-necessity", undefined, { "context_1": String(VISUALIZATION_CONTRACT_CONTROL_SCHEMA), "context_2": String(GENERATED_VISUAL_CONTROL_ID_PATTERN.source), "context_3": String(GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(", ")) });
 }
 
 /** Prompt-visible response contract; API structured output may enforce the same shape. */
@@ -1227,12 +1209,7 @@ export function buildModelVisualNecessityRepairPrompt(input: {
     repairAttempt: input.repairAttempt,
   };
   return {
-    system: [
-      modelVisualNecessitySystemPrompt(),
-      "Repair the invalid whole-garden response using the supplied validation problems.",
-      "Return a complete replacement batch, not prose, a partial patch, or a deterministic fallback.",
-      "Preserve valid source-grounded decisions unless a garden-level budget, duplication, or override conflict requires coordinated changes.",
-    ].join(" "),
+    system: renderSystemPrompt("learning-visual-necessity-repair", undefined, { "context_1": String(modelVisualNecessitySystemPrompt()) }),
     user: JSON.stringify(sourceContext),
     sourceContext,
   };
@@ -1401,18 +1378,7 @@ export function buildModelVisualNecessityTargetedRepairPrompt(input: {
     repairAttempt: input.repairAttempt,
   };
   return {
-    system: [
-      "You repair model-authored visual-necessity decisions that failed strict validation.",
-      "Return strict JSON with schemaVersion 1, the supplied gardenId, and exactly one complete replacement decision record for every supplied unit in decisions.",
-      "Each replacement is atomic: author every required decision field in the response contract, even when only one interaction field failed. Omit optional fields when their declared preconditions are not satisfied. The application will replace the entire prior decision and will not merge, restore, infer, normalize, or rewrite any semantic field inside it.",
-      "Do not return decisions for unaffected units. Their previously validated records are immutable and will be preserved exactly by the application.",
-      "Copy unitId, pageId, learningGoal, evidence.unitRole, evidence.learningQuestion, evidence.concepts, and evidence.sourceAnchorIds only from that unit packet. Honor every supplied override and the whole-garden budget. When the reported defects are limited to interaction grounding, preserve the prior necessity and preferredMedium so the accepted whole-garden allocation remains coherent.",
-      "Use only that unit's supplied canonical source evidence. Every non-empty evidence quote must be an exact substring of the text at the same anchor.",
-      "Grounding is literal for source-semantic controls: every meaningful normalized token in each slider/number/select label and option, plus the observable and expected insight, must occur in its exact cited quote. Exact source symbols and formulas are valid with identifier boundaries. Pure protocol_action button/toggle controls require exactly empty evidence; their model-authored UI labels express only mechanics and cannot substantiate subject claims, observables, or insights. evidence.sourceAnchorIds must include every actually cited subject anchor.",
-      `Every learner control id must match ${GENERATED_VISUAL_CONTROL_ID_PATTERN.source}; ${GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(", ")} are runtime expression variables and are forbidden control ids.`,
-      `For every active interaction, author the complete interactionGoal, uniqueConcept, whyStaticSourceFigureIsNotEnough, learnerAction, controls, observable, expectedInsight, expectedInsightEvidence, and a duplicateSignature that does not reuse a reserved signature. Protocol actions must omit unit/min/max/step/options and default to button 0 or toggle false. ${GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE}`,
-      "For a non-interactive decision, use a non-interactive preferredMedium and omit interaction entirely. Never emit a partial patch, prose, renderer code, or a deterministic fallback.",
-    ].join(" "),
+    system: renderSystemPrompt("learning-visual-necessity-targeted", undefined, { "context_1": String(GENERATED_VISUAL_CONTROL_ID_PATTERN.source), "context_2": String(GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(", ")) }),
     user: JSON.stringify(sourceContext),
     sourceContext,
   };

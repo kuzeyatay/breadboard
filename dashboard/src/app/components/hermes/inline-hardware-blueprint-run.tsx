@@ -442,7 +442,7 @@ export default function InlineHardwareBlueprintRun({
     const content = status === "completed" ? result : failure;
     if (!content) return;
     notifyTaskCompleted(
-      `Hardware Blueprint — ${designTitle || brief.slice(0, 80)}`,
+      `Hardware Blueprint — ${designTitle || brief.slice(0, 80)}`, { runId },
     );
     onTerminalRef.current?.({
       outcome: status as ExternalAgentTerminalOutcome,
@@ -513,7 +513,7 @@ export default function InlineHardwareBlueprintRun({
       startedAt={startedAt}
       completedAt={completedAt}
     />
-    <div className="bb-agent-run-card overflow-hidden">
+    <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
       {/* The header names the agent, the way every run card does; the design it
           produced is named on the first line of the body. The brief is not
           repeated anywhere — it is the user's own message just above. */}

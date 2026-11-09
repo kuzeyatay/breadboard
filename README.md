@@ -271,6 +271,7 @@ licenses, deliberate size exclusions, and the refresh procedure.
 | Knowledge map | [docs/BRAIN_MAP.md](docs/BRAIN_MAP.md) |
 | Interactive visualizations | [docs/INTERACTIVE_VISUALIZER.md](docs/INTERACTIVE_VISUALIZER.md) |
 | Adding an agent | [docs/ADDING_AN_AGENT.md](docs/ADDING_AN_AGENT.md) |
+| API Anything and browser fallback | [docs/API_ANYTHING.md](docs/API_ANYTHING.md) |
 | Integrated source snapshots | [docs/VENDORED_REPOSITORIES.md](docs/VENDORED_REPOSITORIES.md) |
 | Ubuntu deployment | [DEPLOYMENT-UBUNTU.md](DEPLOYMENT-UBUNTU.md) |
 

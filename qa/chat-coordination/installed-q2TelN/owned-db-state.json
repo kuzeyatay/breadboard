@@ -1,0 +1,75 @@
+{
+  "checkedAt": "2026-11-07T16:21:02.389Z",
+  "owned": [
+    {
+      "id": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+      "conversation": {
+        "id": 1082,
+        "public_id": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+        "title": "QA chat coordination 02dd9a48-1c05-4922-9f1b-043522b03871 receiver"
+      },
+      "messages": [
+        {
+          "role": "user",
+          "client_message_id": "qa-02dd9a48-1c05-4922-9f1b-043522b03871-receiver",
+          "status": "complete",
+          "content": "Remember this private test fact in this chat: the validation code supplied by the user is answer-b7762128-72c2-436d-9c7e-9f8213abd57d. When a later message asks for the validation code, return that exact code. For this setup turn only, reply READY. Do not use tools."
+        },
+        {
+          "role": "assistant",
+          "client_message_id": "qa-02dd9a48-1c05-4922-9f1b-043522b03871-receiver",
+          "status": "complete",
+          "content": "READY"
+        },
+        {
+          "role": "user",
+          "client_message_id": "chat-message:msg_3942dcad-fb1f-4e59-b940-e3027a34f935",
+          "status": "complete",
+          "content": "Message from chat \"Validation code retrieval from saved QA chat\" (conv_0XowQHWnNWgUPl2qkVPiRCMb):\n\nWhat is the validation code the user provided in this chat's setup message? Reply with the exact code."
+        },
+        {
+          "role": "assistant",
+          "client_message_id": "chat-message:msg_3942dcad-fb1f-4e59-b940-e3027a34f935",
+          "status": "complete",
+          "content": "answer-b7762128-72c2-436d-9c7e-9f8213abd57d"
+        }
+      ],
+      "runtime": [
+        {
+          "id": 2956,
+          "hermes_session_id": "20261107_171653_139e08",
+          "last_runtime_status": "idle"
+        }
+      ]
+    },
+    {
+      "id": "conv_0XowQHWnNWgUPl2qkVPiRCMb",
+      "conversation": {
+        "id": 1083,
+        "public_id": "conv_0XowQHWnNWgUPl2qkVPiRCMb",
+        "title": "Validation code retrieval from saved QA chat"
+      },
+      "messages": [
+        {
+          "role": "user",
+          "client_message_id": "qa-02dd9a48-1c05-4922-9f1b-043522b03871-sender",
+          "status": "complete",
+          "content": "Use chat_list with query \"QA chat coordination 02dd9a48-1c05-4922-9f1b-043522b03871 receiver\" to find that exact saved chat. Use chat_send_message to ask it: \"What is the validation code the user provided in this chat's setup message? Reply with the exact code.\" Use chat_wait to receive its actual answer, then report the code here. If waiting times out, wait again for that same message. You may discover the chat tools and their schemas if needed. Only use the three chat coordination tools and the tool discovery helpers, and only coordinate with this exact chat. This is one bounded exchange; finish after receiving its answer."
+        },
+        {
+          "role": "assistant",
+          "client_message_id": "qa-02dd9a48-1c05-4922-9f1b-043522b03871-sender",
+          "status": "complete",
+          "content": "The validation code is `answer-b7762128-72c2-436d-9c7e-9f8213abd57d`."
+        }
+      ],
+      "runtime": [
+        {
+          "id": 2957,
+          "hermes_session_id": "20261107_171706_800309",
+          "last_runtime_status": "idle"
+        }
+      ]
+    }
+  ]
+}

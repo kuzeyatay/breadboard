@@ -1,3 +1,6 @@
+import { renderSystemPrompt } from "./system-prompts/service.ts";
+import { withGardenSystemPromptContext } from "./system-prompts/service.ts";
+import { scopedSystemPromptText } from "./system-prompts/service.ts";
 // Breadboard end-stage LLM critic loop.
 //
 // Deterministic validation + `FinalGardenState` catch structural drift and the
@@ -14,7 +17,7 @@
 
 import { createHash } from "node:crypto";
 import type { AcceptedCriticResidue, CriticPolicySnapshot } from "./learn-accepted-residues.ts";
-import { LEARN_FOUNDATION_RULES, LEARN_FOUNDATION_REVIEW_RULES } from "./learn-pedagogy.ts";
+
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import {
@@ -807,46 +810,8 @@ export function buildCriticReviewPacket(state: FinalGardenState, deterministicVa
 // Critic prompt + response parsing (ChatMock)
 // ---------------------------------------------------------------------------
 
-export const CRITIC_SYSTEM_PROMPT = `You are Breadboard's final semantic critic. You review the FINAL exported state of a generated learning garden and report only genuine semantic errors that deterministic validators cannot reliably judge.
-
-EVIDENCE TRUTHFULNESS (read first):
-- Formula records are COMPLETE (packetTruncated:false); their "text" is the full LaTeX. Never report a formula as truncated or malformed based on where a formula string appears to end.
-- A field marked packetTruncated:true is only an EXCERPT. Do NOT infer that the underlying garden artifact is truncated or malformed from the excerpt ending. Request or inspect the full FinalGardenState value (via its sourcePath) before issuing any truncation/malformed blocker.
-- A visual source is REPRESENTED if its source crop is embedded and explained in the page — an interactive visual is NOT required. Do not require an interactive visual when the static source figure itself is appropriate. Before reporting a missing/unrepresented figure, check sourceVisualSummaries: representationModes may be markdown_source_embed, source_visual_ledger, or interactive_visual — any of these means the figure IS represented. Check sourceVisualIds, Markdown image embeds, the source-visual ledger usage, and visual JSON; do not assume only .breadboard/visuals/*.json counts.
-
-Deterministic validators already ran; do not re-report anything unless the final state truly contradicts itself or the source. Focus on MEANING, not field agreement:
-- Fields agreeing on a WRONG value is still an error (a page and its contract both citing the wrong source formula anchor is wrong).
-- A formula's math must match the metric family of the source formula anchor it claims (a surrogate-gradient or accuracy formula grounded to the normalized-energy-efficiency anchor is wrong).
-- A numeric worked example labeled as a symbolic source definition is wrong.
-- Source Coverage must match the final pages and visual JSON.
-- Caveats claiming source material is unavailable when anchors/exact text exist are stale.
-- Section index prose that reuses generic templates ("introduces the core idea", "so the pieces connect into one picture") is wrong.
-- Zettelkasten handles that describe a tag's function instead of a durable claim are template-like.
-- Two pages opening with the same paraphrased scenario is a repeated opening.
-- A text anchor with no exact source text when the source clearly explains the concept is too generic.
-- A visual grounded to anchors that do not match its title/purpose is mismatched.
-- Debug repair files shipped in the export must be flagged.
-- A learner page containing the generating model's own voice (first-person notes such as "I'm using the pasted contract..." or "I'll treat the pasted text as the request...") or chat transport syntax such as \`:::writing{...}\` / a closing \`:::\` is a BLOCKING debug_artifact_leak targeting unit_page, never a warning.
-- Repair-log entries attributing a change to the wrong target are provenance errors.
-- Every page must answer its model-authored learningQuestion and actually teach every knowledgeClaims[].text in its learningUnitContract, using the cited canonical source evidence. A claimId or tag in frontmatter is metadata, not proof that the prose fulfilled the claim. Compare against bodyText, which is complete and never truncated. Report an omitted or contradicted model-authored claim as a blocking "other" issue targeting unit_page, and include its evidence anchor ids.
-
-${LEARN_FOUNDATION_RULES}
-${LEARN_FOUNDATION_REVIEW_RULES}
-
-Return ONLY a JSON object: {"issues": CriticIssue[]}. Each issue:
-{
-  "id": "kebab-unique",
-  "severity": "blocking" | "warning" | "cosmetic",
-  "type": one of formula_anchor_mismatch|source_anchor_mismatch|source_coverage_contradiction|stale_caveat|section_index_template_prose|template_zettelkasten_handle|repeated_opening|explanation_gap|visual_grounding_mismatch|worked_example_misclassified|repair_provenance_error|debug_artifact_leak|other,
-  "pagePath"?, "sectionPath"?, "visualId"?, "sourceAnchorIds"?: string[],
-  "problem": one sentence,
-  "evidence": the exact text/field proving it,
-  "expected": what a correct artifact would show,
-  "repairTarget": unit_page|section_index|learning_unit_contract|source_anchor_ledger|source_coverage|planning_doc|visual_spec|repair_log|global,
-  "suggestedRepair": one actionable instruction
-}
-Every fixable content issue must name exactly one concrete pagePath or sectionPath and its matching file-scoped repairTarget. Split a problem spanning multiple files into one issue per file; never aggregate file repairs under repairTarget "global".
-Use "blocking" only for genuine semantic errors; "warning"/"cosmetic" for polish. If the garden is clean, return {"issues": []}. Output JSON only, no prose.`;
+import { PROMPT_LEARNING_CRITIC as CRITIC_SYSTEM_PROMPT } from "./system-prompts/feature-defaults.ts";
+export { CRITIC_SYSTEM_PROMPT };
 
 export function buildCriticUserPrompt(packet: CriticReviewPacket): string {
   return `Review this final garden. Report only genuine semantic errors as JSON {"issues":[...]}.\n\n${JSON.stringify(packet, null, 1)}`;
@@ -1220,7 +1185,7 @@ export function createChatMockCritic(opts: {
       {
         model: opts.model,
         messages: [
-          { role: "system", content: CRITIC_SYSTEM_PROMPT },
+          { role: "system", content: scopedSystemPromptText("learning-critic") },
           { role: "user", content: buildCriticUserPrompt(packet) },
         ],
         response_format: { type: "json_object" },
@@ -1238,29 +1203,8 @@ export function createChatMockCritic(opts: {
 /** Judges one low-confidence anchor packet, returns a structured decision. */
 export type AnchorCriticFn = (packet: AnchorConfirmationPacket) => Promise<AnchorCriticDecision | null> | AnchorCriticDecision | null;
 
-export const ANCHOR_CRITIC_SYSTEM_PROMPT = `You are Breadboard's source-anchor confirmation critic. A deterministic scorer flagged a GENERATED semantic source anchor as weakly grounded (low confidence). Using ONLY the source passages provided, decide whether the anchor is genuinely supported.
-
-Return ONLY a JSON object with this exact shape:
-{
-  "anchorId": string,
-  "decision": "confirm" | "replace" | "create_better_anchor" | "reject",
-  "confidence": "high" | "medium" | "low",
-  "reason": one sentence citing the source,
-  "confirmedExactText": string,           // REQUIRED for confirm; verbatim source sentence that supports the anchor
-  "replacementAnchorId": string,          // REQUIRED for replace; must be one of existingAlternativeAnchors
-  "betterAnchor": {                        // REQUIRED for create_better_anchor
-    "id": string, "kind": "text"|"abstract"|"intro"|"guidance", "sourceId": string, "page": number,
-    "title": string, "exactText": string, "semanticSummary": string, "conceptKeywords": string[]
-  },
-  "requiredRepairs": [ { "targetKind": "unit_page"|"learning_unit_contract"|"source_anchor_ledger"|"source_coverage", "targetPath"?: string, "instructions": string[] } ]
-}
-
-Rules:
-- confirm ONLY if a candidate/nearby passage clearly supports the anchor's title and semantic summary; set confidence high|medium and quote the exact supporting sentence in confirmedExactText. Do not confirm on one weak keyword.
-- replace when an existing alternative anchor covers the concept better; set replacementAnchorId to its id.
-- create_better_anchor when a NEARBY passage supports the concept better than the candidate; provide betterAnchor with a verbatim exactText.
-- reject when no passage supports the anchor; provide requiredRepairs describing how to fix the page/contract grounding.
-Output JSON only, no prose.`;
+import { PROMPT_LEARNING_ANCHOR_CRITIC as ANCHOR_CRITIC_SYSTEM_PROMPT } from "./system-prompts/feature-defaults.ts";
+export { ANCHOR_CRITIC_SYSTEM_PROMPT };
 
 export function buildAnchorCriticPrompt(packet: AnchorConfirmationPacket): string {
   return `Judge this low-confidence source anchor. Return one JSON decision object.\n\n${JSON.stringify(packet, null, 1)}`;
@@ -1328,7 +1272,7 @@ export function createChatMockAnchorCritic(opts: {
       {
         model: opts.model,
         messages: [
-          { role: "system", content: ANCHOR_CRITIC_SYSTEM_PROMPT },
+          { role: "system", content: scopedSystemPromptText("learning-anchor-critic") },
           { role: "user", content: buildAnchorCriticPrompt(packet) },
         ],
         response_format: { type: "json_object" },
@@ -1526,29 +1470,13 @@ function requestIsModelFirst(req: ArtifactRepairRequest, issuesById?: Map<string
   return issues.length === 0 || issues.some((i) => MODEL_FIRST_ISSUE_TYPES.has(i.type));
 }
 
-export const MODEL_REPAIR_SYSTEM_PROMPT = `You repair one file of a Breadboard learning garden to remove a specific semantic issue a critic found. Return ONLY the full revised content of the target file — no commentary, no code fences.
-
-${LEARN_FOUNDATION_RULES}
-
-Hard requirements:
-- Return the ENTIRE target file, not a diff.
-- Preserve the YAML frontmatter block and every required key (title, knowledge_type/breadboardType, learningUnitId, generated_by, tags, sourceAnchors, sourceFormulaAnchors, formulas, visualIds). Change only what the issue requires.
-- Unless the issue explicitly targets metadata, preserve the YAML frontmatter verbatim and change only learner-facing prose or display math in the body.
-- Preserve source anchors and formula anchors UNLESS the issue is a source/formula anchor mismatch, in which case ground to the correct one named in the issue.
-- Never add a source or formula anchor that is absent from the target page's Learning Unit Contract. If a critic asks for excluded material, repair the prose within the existing contract instead of expanding the source scope.
-- Preserve every existing exact source-formula transcription and its metadata. If the source transcription itself contains a typo, convention conflict, or misleading special case, keep the exact source display visibly labeled as the source form and add the corrected relationship as unanchored explanatory math; never silently rewrite the source projection.
-- Preserve every \`\`\`breadboard-visual\`\`\` block verbatim.
-- Preserve contract-backed Zettelkasten tags, unless the issue is a template handle — then replace only the flagged handle with a concrete durable claim.
-- Remove exactly the flagged issue; do not introduce generic scaffold prose ("introduces the core idea", "so the pieces connect into one picture", "one step at a time").
-- For explanation_gap, supply the missing meaning or reasoning before the passage that depends on it. Use a brief concrete explanation built from simpler ideas; an acronym expansion, synonym, glossary link, or promise to explain later is insufficient. Preserve correct teaching elsewhere and keep orientation pages concise.
-- For source_teaching_gap, teach the named content where it belongs in the page's argument, using only what the supplied source anchors state: define every symbol, show any figure the issue names with its existing embed or describe it fully in words, and keep every existing explanation, example, figure and Question./Answer. block.
-- Keep the learner-facing voice; never mention "the paper", "the source", or "this document".
-Output the revised file content only.`;
+import { PROMPT_LEARNING_MODEL_REPAIR as MODEL_REPAIR_SYSTEM_PROMPT } from "./system-prompts/feature-defaults.ts";
+export { MODEL_REPAIR_SYSTEM_PROMPT };
 
 export function buildModelRepairPrompt(input: ModelRepairInput): { system: string; user: string } {
   const { issue, repairRequest } = input;
   if (input.repairStage === "reanchor") return {
-    system: "Repair the evidence bindings of exactly one learning unit. Return JSON only, or null if the offered passages do not support its learning question. Never change the question, title, claims, required artifacts, or any other unit. Never claim that the selected sources lack evidence just because this bounded candidate list lacks it.",
+    system: renderSystemPrompt("learning-evidence-repair", undefined, {  }),
     user: JSON.stringify({
       problem: issue.problem, expected: issue.expected, evidence: issue.evidence,
       unit: input.learningUnitContract,
@@ -1610,7 +1538,7 @@ export function buildModelRepairPrompt(input: ModelRepairInput): { system: strin
     // outside that sandbox can read the file, so the repair had no candidate.
     "Write that content directly in your reply as plain text. Do not create, save or attach a file, do not use a code sandbox, and never answer with a download link or file reference instead of the content.",
   ].filter(Boolean).join("\n");
-  return { system: MODEL_REPAIR_SYSTEM_PROMPT, user };
+  return { system: scopedSystemPromptText("learning-model-repair"), user };
 }
 
 /** Parse a model repair response into structured output for the target file. */
@@ -2381,6 +2309,7 @@ export async function repairDeclinedLearningObjectives(args: {
   gardenDir: string; gardenSlug: string; modelRepair: ModelRepairFn;
   validateModelCandidate?: ModelCandidateValidator;
 }): Promise<CriticRepairOutcome> {
+  return withGardenSystemPromptContext(args.gardenSlug, async () => {
   const state = buildFinalGardenState(args.gardenDir, args.gardenSlug);
   const issues: CriticIssue[] = [];
   for (const page of state.pages) {
@@ -2403,6 +2332,8 @@ export async function repairDeclinedLearningObjectives(args: {
   });
   fs.writeFileSync(path.join(args.gardenDir, ".breadboard/declined-objective-repairs.json"), `${JSON.stringify({ issues, ...result }, null, 2)}\n`);
   return result;
+
+  }, undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -2678,6 +2609,7 @@ export function computeFinalAcceptanceDecision(
 }
 
 export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoopResult> {
+  return withGardenSystemPromptContext(args.gardenSlug, async () => {
   const options: CriticLoopOptions = { ...DEFAULT_CRITIC_LOOP_OPTIONS, ...(args.options ?? {}) };
   const policyRecords: AcceptedCriticResidue[] = args.acceptedResiduePolicy?.records ??
     (args.acceptedResidueIssueIds ?? []).map((issueId) => ({ issueId }));
@@ -3069,6 +3001,8 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
   }
 
   return finish(lastBlocking, lastWarnings, true, false);
+
+  }, undefined);
 }
 
 /** Build a decision packet per unresolved low-confidence anchor, ask the critic,

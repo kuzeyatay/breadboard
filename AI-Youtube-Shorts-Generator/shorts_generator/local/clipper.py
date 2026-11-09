@@ -49,69 +49,81 @@ def _reframe_vertical(in_path: str, out_path: str, aspect_ratio: str) -> str:
 
     target_ratio = _ratio(aspect_ratio)
     cap = cv2.VideoCapture(in_path)
-    if not cap.isOpened():
-        raise RuntimeError(f"could not open {in_path}")
+    writer = None
+    try:
+        if not cap.isOpened():
+            raise RuntimeError(f"could not open {in_path}")
 
-    src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
-    # Compute the largest crop that fits inside the frame at the target ratio.
-    if target_ratio < src_w / src_h:
-        crop_h = src_h
-        crop_w = int(crop_h * target_ratio)
-    else:
-        crop_w = src_w
-        crop_h = int(crop_w / target_ratio)
-    crop_w = max(2, crop_w - (crop_w % 2))
-    crop_h = max(2, crop_h - (crop_h % 2))
+        # Compute the largest crop that fits inside the frame at the target ratio.
+        if target_ratio < src_w / src_h:
+            crop_h = src_h
+            crop_w = int(crop_h * target_ratio)
+        else:
+            crop_w = src_w
+            crop_h = int(crop_w / target_ratio)
+        crop_w = max(2, crop_w - (crop_w % 2))
+        crop_h = max(2, crop_h - (crop_h % 2))
 
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        if not hasattr(cv2, "CascadeClassifier"):
+            raise RuntimeError("Shorts requires OpenCV 4 face detection. Repair it in Agent Manager.")
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        if face_cascade.empty():
+            raise RuntimeError("The installed OpenCV face-detection data is unavailable.")
 
-    silent_path = out_path + ".silent.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(silent_path, fourcc, fps, (crop_w, crop_h))
+        silent_path = out_path + ".silent.mp4"
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(silent_path, fourcc, fps, (crop_w, crop_h))
+        if not writer.isOpened():
+            raise RuntimeError("OpenCV could not open the local video encoder.")
 
-    last_center: Optional[Tuple[int, int]] = None
-    smoothing = 0.15  # how aggressively to chase a new face position
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+        last_center: Optional[Tuple[int, int]] = None
+        smoothing = 0.15  # how aggressively to chase a new face position
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
-        if len(faces) > 0:
-            # Pick the largest face — usually the speaker.
-            x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-            cx = x + w // 2
-            cy = y + h // 2
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
+            if len(faces) > 0:
+                # Pick the largest face — usually the speaker.
+                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                cx = x + w // 2
+                cy = y + h // 2
+                if last_center is None:
+                    last_center = (cx, cy)
+                else:
+                    lx, ly = last_center
+                    last_center = (
+                        int(lx + (cx - lx) * smoothing),
+                        int(ly + (cy - ly) * smoothing),
+                    )
             if last_center is None:
-                last_center = (cx, cy)
-            else:
-                lx, ly = last_center
-                last_center = (
-                    int(lx + (cx - lx) * smoothing),
-                    int(ly + (cy - ly) * smoothing),
-                )
-        if last_center is None:
-            last_center = (src_w // 2, src_h // 2)
+                last_center = (src_w // 2, src_h // 2)
 
-        cx, cy = last_center
-        x0 = max(0, min(src_w - crop_w, cx - crop_w // 2))
-        y0 = max(0, min(src_h - crop_h, cy - crop_h // 2))
-        cropped = frame[y0:y0 + crop_h, x0:x0 + crop_w]
-        writer.write(cropped)
+            cx, cy = last_center
+            x0 = max(0, min(src_w - crop_w, cx - crop_w // 2))
+            y0 = max(0, min(src_h - crop_h, cy - crop_h // 2))
+            cropped = frame[y0:y0 + crop_h, x0:x0 + crop_w]
+            writer.write(cropped)
 
-    cap.release()
-    writer.release()
+    finally:
+        cap.release()
+        if writer is not None:
+            writer.release()
 
-    # Mux audio from the cut clip back onto the silent reframed video.
+    # OpenCV's mp4v intermediate is not decoded by Chromium/Electron. Export
+    # browser-compatible H.264 while restoring the cut clip's audio.
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
         "-i", silent_path,
         "-i", in_path,
-        "-c:v", "copy",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         "-c:a", "aac", "-b:a", "128k",
         "-map", "0:v:0", "-map", "1:a:0?",
         "-shortest",

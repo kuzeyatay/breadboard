@@ -1,3 +1,4 @@
+use crate::runtime_diagnostics::{write_shutdown_origin, FirstShutdownOrigin, ShutdownOrigin};
 use breadboard_runtime_core::JobStore;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::Duration;
@@ -5,6 +6,7 @@ use std::time::Duration;
 #[derive(Default)]
 struct ShutdownState {
     requested: bool,
+    first_origin: FirstShutdownOrigin,
     accepting_work: bool,
     store: Option<Weak<JobStore>>,
 }
@@ -79,8 +81,18 @@ impl ShutdownCoordinator {
 
     /// Idempotently closes admission before any process-drain work begins.
     pub(crate) fn request_shutdown(&self) -> bool {
+        self.request_shutdown_from(ShutdownOrigin::Internal)
+    }
+
+    pub(crate) fn request_shutdown_from(&self, origin: ShutdownOrigin) -> bool {
         let mut state = self.lock();
         let first_request = !state.requested;
+        let first_origin = if first_request {
+            state.first_origin.record(origin);
+            state.first_origin.get()
+        } else {
+            None
+        };
         state.requested = true;
         state.accepting_work = false;
         if let Some(store) = state.store.as_ref().and_then(Weak::upgrade) {
@@ -88,6 +100,9 @@ impl ShutdownCoordinator {
         }
         drop(state);
         self.changed.notify_all();
+        if let Some(origin) = first_origin {
+            write_shutdown_origin(std::io::stderr().lock(), origin);
+        }
         first_request
     }
 
@@ -181,6 +196,25 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn first_shutdown_origin_survives_later_cleanup_requests() {
+        let coordinator = ShutdownCoordinator::default();
+        assert!(coordinator.request_shutdown_from(ShutdownOrigin::AuthenticatedLifecycle));
+        assert!(!coordinator.request_shutdown_from(ShutdownOrigin::ParentChannel));
+        assert!(!coordinator.request_shutdown());
+        assert_eq!(coordinator.lock().first_origin.get(), Some(ShutdownOrigin::AuthenticatedLifecycle));
+        assert!(coordinator.is_requested());
+        assert_eq!(coordinator.open_admission(), Err(AdmissionOpenError::ShutdownRequested));
+    }
+
+    #[test]
+    fn internal_failure_origin_is_not_replaced_by_parent_disconnect() {
+        let coordinator = ShutdownCoordinator::default();
+        assert!(coordinator.request_shutdown());
+        assert!(!coordinator.request_shutdown_from(ShutdownOrigin::ParentChannel));
+        assert_eq!(coordinator.lock().first_origin.get(), Some(ShutdownOrigin::Internal));
+    }
 
     #[test]
     fn shutdown_is_idempotent_and_cannot_be_reopened() {

@@ -4,6 +4,8 @@
 // behavior (auth rejection, both/neither inputs, oversized media, playlist
 // URLs, access control, cancel/retry, sanitized failures) without Next.js.
 
+import fs from "node:fs";
+import path from "node:path";
 import {
   VideoTranscriptionError,
   sanitizeErrorForClient,
@@ -122,6 +124,61 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
     : {};
 }
 
+/** Keep-media-off in the desktop app: no bytes travel, the job points at the user's file. */
+async function createOriginJob(
+  deps: VideoTranscriptionRouteDeps,
+  garden: AuthorizedGarden,
+  body: Record<string, unknown>,
+  rawPath: string,
+  analysis: VideoTranscriptionAnalysis,
+  retranscribe: boolean,
+): Promise<RouteResult> {
+  if (!deps.config.allowOriginPaths) {
+    throw new VideoTranscriptionError("invalid_input", {
+      userMessage: "Using a file in place is only available in the desktop app.",
+      httpStatus: 400,
+    });
+  }
+  if (body.retainMedia !== false || !path.isAbsolute(rawPath)) {
+    throw new VideoTranscriptionError("invalid_input", { httpStatus: 400 });
+  }
+  const originPath = path.normalize(rawPath);
+  const requestedName = typeof body.displayName === "string" && body.displayName.trim()
+    ? body.displayName
+    : path.basename(originPath);
+  const displayFilename = sanitizeDisplayFilename(requestedName);
+  if (!isSupportedMediaExtension(displayFilename) || !isSupportedMediaExtension(originPath)) {
+    throw new VideoTranscriptionError("media_unsupported", { httpStatus: 415 });
+  }
+  const metadata = fs.lstatSync(originPath, { throwIfNoEntry: false });
+  if (!metadata?.isFile() || metadata.isSymbolicLink()) {
+    throw new VideoTranscriptionError("media_missing", { httpStatus: 404 });
+  }
+  if (!retranscribe) {
+    const existingJob = deps.store.findDuplicateJob({
+      clusterId: garden.clusterId,
+      mediaOriginPath: originPath,
+    });
+    if (existingJob) {
+      return { status: 200, body: { success: true, duplicate: true, job: jobResponse(existingJob) } };
+    }
+  }
+  const job = deps.store.createJob({
+    clusterId: garden.clusterId,
+    gardenSlug: garden.clusterSlug,
+    userId: garden.userId,
+    inputKind: "upload",
+    originalFilename: displayFilename,
+    sourceTitle: titleFromFilename(displayFilename),
+    mediaTempPath: null,
+    analysis,
+    retainMedia: false,
+    mediaOriginPath: originPath,
+  });
+  await deps.runnerStart(job.id, null);
+  return { status: 202, body: { success: true, job: jobResponse(job) } };
+}
+
 export async function handleCreateVideoTranscription(
   deps: VideoTranscriptionRouteDeps,
   gardenId: string,
@@ -227,13 +284,16 @@ export async function handleCreateVideoTranscription(
           httpStatus: 400,
         });
       }
+      if (typeof body.originPath === "string" && body.originPath.trim()) {
+        return await createOriginJob(deps, garden, body, body.originPath.trim(), analysis, retranscribe);
+      }
       if (typeof url !== "string" || !url.trim()) {
         throw new VideoTranscriptionError("invalid_input", {
           userMessage: "Attach a video or audio file, or enter a YouTube URL.",
           httpStatus: 400,
         });
       }
-      youtube = { parsed: parseYouTubeUrl(url), metadata: null };
+      youtube ={ parsed: parseYouTubeUrl(url), metadata: null };
       inputKind = "youtube";
     }
 

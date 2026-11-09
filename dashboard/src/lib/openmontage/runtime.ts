@@ -18,6 +18,7 @@
 // install needs no admin rights and no second copy of anything.
 
 import { spawnSync } from "node:child_process";
+import { runtimeProcessPath } from "../../../scripts/runtime-v2-paths.mjs";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import {
   dashboardDataDir,
@@ -38,7 +39,7 @@ export interface ToolchainPiece {
 
 export interface OpenMontageToolchain {
   /** The interpreter that runs the clone's tools, plus whether deps are in it. */
-  python: ToolchainPiece & { version: string; dependencies: boolean };
+  python: ToolchainPiece & { version: string; dependencies: boolean; dependencyError?: string };
   ffmpeg: ToolchainPiece;
   ffprobe: ToolchainPiece;
   /** Node powers the Remotion composer; without it only the ffmpeg path renders. */
@@ -59,6 +60,9 @@ export interface RuntimeAvailability {
 }
 
 const PROBE_TIMEOUT_MS = 20_000;
+// The first import from removable storage is substantially slower than a
+// version check; do not label a complete environment missing after 20 seconds.
+const DEPENDENCY_TIMEOUT_MS = 60_000;
 const TOOL_CACHE_MS = 60_000;
 
 /** Modules from `requirements.txt` that every production path needs. */
@@ -169,18 +173,26 @@ function onPath(binary: string): string | null {
  * whether a production can actually run, and a bare interpreter cannot import
  * a single OpenMontage tool.
  */
-function hasDependencies(python: string): boolean {
+export function pythonDependencyStatus(result: { error?: Error & { code?: string }; status: number | null }): { dependencies: boolean; dependencyError?: string } {
+  if (result.error?.code === "ETIMEDOUT") return {
+    dependencies: false,
+    dependencyError: "The installed Python dependencies took too long to load. Retry the status check after the drive is ready; this does not mean the packages are missing.",
+  };
+  return { dependencies: !result.error && result.status === 0 };
+}
+
+function checkDependencies(python: string): { dependencies: boolean; dependencyError?: string } {
   const result = spawnSync(
     python,
     ["-c", `import ${REQUIRED_MODULES.join(", ")}`],
     {
       encoding: "utf8",
       windowsHide: true,
-      timeout: PROBE_TIMEOUT_MS,
-      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+      timeout: DEPENDENCY_TIMEOUT_MS,
+      env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" },
     },
   );
-  return !result.error && result.status === 0;
+  return pythonDependencyStatus(result);
 }
 
 function resolvePython(env: NodeJS.ProcessEnv): OpenMontageToolchain["python"] {
@@ -190,11 +202,11 @@ function resolvePython(env: NodeJS.ProcessEnv): OpenMontageToolchain["python"] {
   for (const candidate of candidates) {
     const version = probe(candidate.path, ["--version"]);
     if (version === null) continue;
-    const dependencies = hasDependencies(candidate.path);
+    const dependencyStatus = checkDependencies(candidate.path);
     // A venv without dependencies is still the right interpreter to report:
     // it is the one the setup panel installs into.
-    if (dependencies || candidate.source === "venv") {
-      return { found: true, path: candidate.path, source: candidate.source, version, dependencies };
+    if (dependencyStatus.dependencies || candidate.source === "venv") {
+      return { found: true, path: candidate.path, source: candidate.source, version, ...dependencyStatus };
     }
   }
   const fallback = candidates[0];
@@ -309,7 +321,7 @@ export function runtimeAvailability(env: NodeJS.ProcessEnv = process.env): Runti
     missing,
     reason: available
       ? undefined
-      : `OpenMontage needs ${missing.join(", ")}. Open the settings beside the palette entry to install what is missing.`,
+      : toolchain.python.dependencyError ?? `OpenMontage needs ${missing.join(", ")}. Open the settings beside the palette entry to install what is missing.`,
   };
 }
 
@@ -342,21 +354,22 @@ export function openMontageEnv(
     venvBinDirectory(env) ?? "",
     toolchain.ffmpeg.found ? path.dirname(toolchain.ffmpeg.path) : "",
     toolchain.ffprobe.found ? path.dirname(toolchain.ffprobe.path) : "",
-  ].filter((dir, index, all) => dir && all.indexOf(dir) === index);
+  ].map(dir => runtimeProcessPath(dir)).filter((dir, index, all) => dir && all.indexOf(dir) === index);
   const root = resolveOpenMontageRoot(env);
   return {
     ...env,
     [pathKey]: [...prefixes, env[pathKey] ?? ""].filter(Boolean).join(path.delimiter),
-    OPENMONTAGE_PROJECTS_DIR: input.projectsDirectory,
+    OPENMONTAGE_PROJECTS_DIR: runtimeProcessPath(input.projectsDirectory),
     // Tools import as `tools.<name>` and `lib.<name>`; the clone must be
     // importable no matter which directory a command is run from.
-    PYTHONPATH: [root, env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+    PYTHONPATH: [root ? runtimeProcessPath(root) : null, env.PYTHONPATH].filter(Boolean).join(path.delimiter),
     // The tool registry carries its own ASCII scrubber for exactly this: the
     // Windows console defaults to cp1252 and a skill name with an em dash in it
     // crashes the process on print. Ask for UTF-8 instead of working around it.
     PYTHONIOENCODING: "utf-8",
     PYTHONUTF8: "1",
     PYTHONUNBUFFERED: "1",
+    PYTHONDONTWRITEBYTECODE: "1",
     NO_COLOR: "1",
   };
 }
@@ -372,24 +385,24 @@ const toolCacheGlobal = globalThis as typeof globalThis & {
 };
 
 /** Read the upstream registry without putting process ownership in setup code. */
-export function toolAvailability(env: NodeJS.ProcessEnv = process.env): ToolAvailability {
+export function toolAvailability(env: NodeJS.ProcessEnv = process.env, resolved?: Pick<RuntimeAvailability, "root" | "toolchain">): ToolAvailability {
   const cached = toolCacheGlobal.__breadboardOpenMontageTools;
   if (cached && Date.now() - cached.at < TOOL_CACHE_MS) return cached.value;
 
-  const root = resolveOpenMontageRoot(env);
-  const toolchain = resolveToolchain(env);
+  const root = resolved ? resolved.root : resolveOpenMontageRoot(env);
+  const toolchain = resolved ? resolved.toolchain : resolveToolchain(env);
   let value: ToolAvailability;
   if (!root || !toolchain.python.found || !toolchain.python.dependencies) {
     value = { available: 0, total: 0, reason: "Python and the dependencies are not installed yet." };
   } else {
     const result = spawnSync(
-      toolchain.python.path,
+      runtimeProcessPath(toolchain.python.path),
       [
         "-c",
         "from tools.tool_registry import ToolRegistry\nr = ToolRegistry()\nr.discover()\nprint(len(r.get_available()), len(r.list_all()))",
       ],
       {
-        cwd: root,
+        cwd: runtimeProcessPath(root),
         encoding: "utf8",
         windowsHide: true,
         timeout: 90_000,

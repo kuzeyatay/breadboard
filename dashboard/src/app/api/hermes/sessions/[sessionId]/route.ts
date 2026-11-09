@@ -27,6 +27,7 @@ import {
 import { cancelRuntimeSessionWork } from "@/lib/hermes/session-cancel.ts";
 import { cancelRunningExternalAgentRuns } from "@/lib/conversations/external-agent-cancel.ts";
 import { reconcileMaxResearchConversation } from "@/lib/max-research/conversation-persistence.ts";
+import { reconcileVibeTradingConversation } from "@/lib/vibe-trading/conversation-persistence.ts";
 import { requireSameOrigin } from "@/lib/request-origin";
 import { sideChatHasStars } from "@/lib/starred-messages-store.ts";
 
@@ -54,6 +55,7 @@ export async function GET(
       throw new ApiError(404, "session_not_found", "This chat is no longer available.");
     }
     await reconcileMaxResearchConversation(userId, conversation.id);
+    await reconcileVibeTradingConversation(userId, conversation.id);
     return NextResponse.json({ session: presentHermesSessionDetail(conversation) });
   } catch (error) {
     return apiErrorResponse(error);

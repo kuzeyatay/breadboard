@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Bot, Hash, Inbox, MailPlus, MessagesSquare, RefreshCw } from "lucide-react";
 
+import { requestJson } from "../lib/message-state";
 import { cn } from "@/app/buzz/lib/cn";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import type {
@@ -22,13 +23,13 @@ import type {
 const RESPOND_LABELS: Record<BuzzRespondTo, string> = {
   always: "Always",
   mention: "Mentions",
-  never: "Never",
+  never: "Off",
 };
 
 const RESPOND_TITLES: Record<BuzzRespondTo, string> = {
   always: "Answers every message in this room",
   mention: "Answers when someone names it by handle",
-  never: "Stays quiet unless asked directly",
+  never: "Does not respond, including to mentions",
 };
 
 export interface RailViewData {
@@ -49,15 +50,15 @@ export function useRailViews(active: boolean) {
     agents: [],
     invites: [],
   });
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await fetch("/api/buzz/inbox", { cache: "no-store" });
-      if (!response.ok) return;
-      setData((await response.json()) as RailViewData);
-    } finally {
+      setData(await requestJson<RailViewData>("/api/buzz/inbox"));
+      setError(null);
+    } catch (error) { setError(error instanceof Error ? error.message : "Inbox could not be refreshed."); } finally {
       setLoading(false);
     }
   }, []);
@@ -69,7 +70,7 @@ export function useRailViews(active: boolean) {
     return () => clearInterval(timer);
   }, [active, load]);
 
-  return { ...data, loading, refresh: load };
+  return { ...data, loading, error, refresh: load };
 }
 
 function ViewHeader({
@@ -165,7 +166,7 @@ export function InboxView({
         <EmptyState
           icon={Inbox}
           title="Nothing waiting"
-          body="Everything in your rooms has been read. New messages from other people and their agents land here, along with any invitation to join a community."
+          body="Everything in your rooms has been read. New messages from other people and their agents land here, along with any invitation to join an organization."
         />
       ) : (
         <div className="buzz-content-scrollbar min-h-0 flex-1 overflow-y-auto px-2 pb-3">
@@ -228,13 +229,14 @@ function InviteRow({
   invite: BuzzInvite;
   onRespond: (invite: BuzzInvite, accept: boolean) => void | Promise<void>;
 }) {
+  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const respond = async (accept: boolean) => {
-    setBusy(true);
+    setBusy(true); setError(null);
     try {
       await onRespond(invite, accept);
-    } finally {
+    } catch (error) { setError(error instanceof Error ? error.message : "The invitation could not be updated."); } finally {
       setBusy(false);
     }
   };
@@ -243,6 +245,7 @@ function InviteRow({
     <div className="flex w-full items-start gap-2.5 rounded-xl bg-primary/5 px-2 py-2">
       <MailPlus className="mt-0.5 size-3.5 shrink-0 text-primary" />
       <span className="flex min-w-0 flex-1 flex-col gap-1">
+        {error ? <span role="alert" className="text-xs text-destructive">{error}</span> : null}
         <span className="flex items-center gap-1.5">
           <span className="truncate text-xs font-semibold">
             {invite.organizationName}
@@ -253,8 +256,8 @@ function InviteRow({
         </span>
         <span className="text-2xs leading-relaxed text-muted-foreground">
           {invite.invitedBy
-            ? `${invite.invitedBy} invited you to join this community`
-            : "You have been invited to join this community"}
+            ? `${invite.invitedBy} invited you to join this organization`
+            : "You have been invited to join this organization"}
           {invite.role === "admin" ? " as an admin" : ""}. Its rooms open once
           you accept.
         </span>
@@ -338,6 +341,8 @@ export function AgentsView({
   // Grouped by agent rather than by room: the question this view answers is
   // "where does this specialist speak, and how loudly", and one persona seated
   // in five rooms is one line of thinking, not five.
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const byHandle = new Map<string, BuzzAgentSeat[]>();
   for (const seat of agents) {
     const list = byHandle.get(seat.member.handle) ?? [];
@@ -353,6 +358,7 @@ export function AgentsView({
         loading={loading}
         onRefresh={onRefresh}
       />
+      {error ? <p role="alert" className="px-4 py-2 text-xs text-destructive">{error}</p> : null}
       {agents.length === 0 ? (
         <EmptyState
           icon={Bot}
@@ -398,10 +404,12 @@ export function AgentsView({
                           <button
                             key={option}
                             type="button"
-                            onClick={() => void onRespondToChange(seat, option)}
+                            disabled={busy || !seat.canManage}
+                            aria-pressed={seat.member.respondTo === option}
+                            onClick={async () => { setBusy(true); setError(null); try { await onRespondToChange(seat, option); } catch (error) { setError(error instanceof Error ? error.message : "The response setting could not be saved."); } finally { setBusy(false); } }}
                             title={RESPOND_TITLES[option]}
                             className={cn(
-                              "rounded-full border px-1.5 py-0.5 text-3xs transition-colors",
+                              "rounded-full border px-1.5 py-0.5 text-xs transition-colors",
                               seat.member.respondTo === option
                                 ? "border-primary/60 bg-primary/15 text-foreground"
                                 : "border-border/50 text-muted-foreground hover:bg-muted",

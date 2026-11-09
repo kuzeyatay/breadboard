@@ -219,7 +219,7 @@ export default function InlineBrowserRun({
           : event.type === "run.aborted"
             ? "aborted"
             : "failed";
-      if (outcome === "completed") notifyTaskCompleted(task);
+      if (outcome === "completed") notifyTaskCompleted(task, { runId });
       onTerminalRef.current?.({
         outcome,
         content: agentTarsChatResponse([event]),
@@ -365,7 +365,7 @@ export default function InlineBrowserRun({
         }
         agentName="Agent TARS"
       />
-      <div className="bb-agent-run-card overflow-hidden text-[var(--ink)]">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden text-[var(--ink)]">
       {/* The task is the user's own message directly above this card, so the
           header is just the agent, what it is driving, and the state of its run. */}
       <div className="bb-agent-run-header">

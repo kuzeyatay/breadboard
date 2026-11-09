@@ -22,6 +22,7 @@ test(
     const desktopRoot = path.resolve(__dirname, "..", "..");
     const electron = path.join(desktopRoot, "node_modules", "electron", "dist", "electron.exe");
     const windowManager = path.join(desktopRoot, "dist", "main", "window-manager.js");
+    const windowOptions = path.join(desktopRoot, "dist", "main", "window-options.js");
     const ipcContract = path.join(desktopRoot, "dist", "shared", "ipc-contract.js");
     const preload = path.join(desktopRoot, "dist", "preload", "preload.js");
     for (const required of [electron, windowManager, ipcContract, preload]) {
@@ -55,6 +56,7 @@ const { app, BrowserWindow, desktopCapturer, ipcMain, screen } = require("electr
 const created = [];
 app.on("web-contents-created", (_event, contents) => created.push(contents));
 const { WindowManager } = require(${JSON.stringify(windowManager)});
+const { BREADBOARD_TITLE_BAR } = require(${JSON.stringify(windowOptions)});
 const { IPC_CHANNELS, isTabsCommand } = require(${JSON.stringify(ipcContract)});
 const resultFile = ${JSON.stringify(resultFile)};
 const traceFile = ${JSON.stringify(traceFile)};
@@ -125,14 +127,15 @@ app.whenReady().then(async () => {
   manager.tabs.setNewTabUrl(origin + "/fresh");
 
   const window = manager.createMainWindow();
-  await window.loadURL(origin + "/dashboard");
+  // The window's own contents are the persistent shell; its first tab is a view.
+  const base = manager.page(window);
+  await base.loadURL(origin + "/dashboard");
   window.show();
   // The screen captures below must see this window and nothing over it. Other
   // fixtures running alongside open windows of their own, so this one keeps to
   // a corner and stays on top.
   window.setBounds({ x: 24, y: 24, width: 760, height: 540 });
   window.setAlwaysOnTop(true);
-  const base = window.webContents;
   const stateIn = (contents) => contents.executeJavaScript("window.breadboardDesktop.getTabsState()");
   const command = (contents, value) =>
     contents.executeJavaScript("window.breadboardDesktop.tabs(" + JSON.stringify(value) + ")");
@@ -164,20 +167,14 @@ app.whenReady().then(async () => {
     const py = Math.round(((content.y - display.bounds.y + y) * size.height) / display.bounds.height);
     const offset = (py * size.width + px) * 4;
     const hex = (value) => value.toString(16).padStart(2, "0");
+    // A window that is minimized for a moment has no content area to sample.
+    if (size.width < 1 || size.height < 1 || offset < 0 || bitmap.length < offset + 4) return { hasPixels: false, colour: "" };
     return {
-      hasPixels: size.width > 0 && size.height > 0 && bitmap.length >= offset + 4,
+      hasPixels: true,
       colour: "#" + hex(bitmap[offset + 2]) + hex(bitmap[offset + 1]) + hex(bitmap[offset]),
     };
   };
   const screenPixelAtWindowCenter = () => screenPixelInWindow();
-  // A capture takes a while and another fixture's window can pass over this
-  // one; keep looking until the pixel is one of this fixture's own colours.
-  const OWN_COLOURS = new Set([...Object.values(PAGE_COLOURS), ${JSON.stringify(loadingColour)}]);
-  const screenPixelFromOwnPages = (label, maxWaitMs) =>
-    until(async () => {
-      const pixel = await screenPixelAtWindowCenter();
-      return pixel.hasPixels && OWN_COLOURS.has(pixel.colour) ? pixel : null;
-    }, label, maxWaitMs);
   // Tab pages of the window: everything created that is not some window's own page.
   const viewsOf = (win) =>
     created
@@ -186,11 +183,12 @@ app.whenReady().then(async () => {
       .filter((contents) => manager.tabs.windowFor(contents) === win && manager.tabs.stateFor(contents).selfId !== null)
       .filter(isOwnedPage)
       .map((contents) => ({ webContents: contents }));
-  // Only the tab in front has its view attached to the window.
+  // Earlier tabs may stay attached beneath it; only the frontmost page is seen.
   const visibleViews = (win) =>
     win.contentView.children
       .filter((child) => child.webContents && isOwnedPage(child.webContents))
-      .filter((child) => child.getBounds().x === 0 && child.getBounds().y === 0)
+      .filter((child) => child.getBounds().x === 0 && child.getBounds().y === BREADBOARD_TITLE_BAR.height)
+      .slice(-1)
       .map((view) => ({ webContents: view.webContents }));
 
   // The window's own page is its first tab.
@@ -224,8 +222,7 @@ app.whenReady().then(async () => {
   await until(
     () =>
       visibleViews(window)[0]?.webContents === gardenView.webContents &&
-      window.contentView.children.length === 1 &&
-      window.contentView.children[0].getBounds().y === 0,
+      visibleViews(window).length === 1,
     "the garden view to be shown",
   );
   const afterActivate = {
@@ -241,7 +238,10 @@ app.whenReady().then(async () => {
     "window.requestIdleCallback = () => 1; true",
   );
   gardenView.webContents.sendInputEvent({ type: "keyDown", keyCode: "Tab", modifiers: ["control"] });
-  await until(() => visibleViews(window).length === 0, "Ctrl+Tab to return to the first tab");
+  await until(
+    () => visibleViews(window).length === 1 && visibleViews(window)[0].webContents === base,
+    "Ctrl+Tab to return to the first tab",
+  );
   const afterCtrlTab = await stateIn(base);
 
   // Put the second tab back in front. The next cold tab is therefore a real
@@ -252,11 +252,12 @@ app.whenReady().then(async () => {
   await until(
     () =>
       visibleViews(window)[0]?.webContents === gardenView.webContents &&
-      window.contentView.children.length === 1 &&
-      window.contentView.children[0].getBounds().y === 0,
+      visibleViews(window).length === 1,
     "the second tab to be in place before opening the third",
   );
   const warmReactivateMs = Date.now() - warmReactivateStarted;
+  // Deliberately not waiting for it to settle: a tab still in its first-frame
+  // check must stay on screen when the next one has to load out of sight.
 
   // Ctrl+T opens the new-tab page in front; a link tab sits beside its opener,
   // a blank one goes to the end. Changing the URL invalidates the prepared
@@ -267,61 +268,37 @@ app.whenReady().then(async () => {
     const state = await stateIn(base);
     return state.tabs.length === 3 ? state : null;
   }, "Ctrl+T");
-  const handoff = await until(
-    () => {
-      const children = window.contentView.children;
-      const prior = children.find((child) => child.webContents === gardenView.webContents);
-      const arriving = children.find(
-        (child) => child !== prior && child.webContents && isOwnedPage(child.webContents),
-      );
-      const loading = children.find(
-        (child) => child.webContents && child.webContents.getURL().startsWith("file:") &&
-          child.webContents.getURL().includes("loading.html"),
-      );
-      return prior && arriving && loading && children.length === 3
-        ? { prior, arriving, loading }
-        : null;
-    },
-    "the cold tab and its loading field to be attached beneath the live navbar",
+  // A new-tab page has its own readiness: while it is cold the previous tab
+  // stays on screen with the live strip, and no loading screen covers either.
+  const priorHeldDuringColdLoad = visibleViews(window)[0]?.webContents === gardenView.webContents;
+  const loadingFieldAttached = window.contentView.children.some(
+    (child) => child.webContents && child.webContents.getURL().includes("loading.html"),
   );
-  const [contentWidth, contentHeight] = window.getContentSize();
-  const priorBounds = handoff.prior.getBounds();
-  const arrivingBounds = handoff.arriving.getBounds();
-  const loadingBounds = handoff.loading.getBounds();
-  const transitionLayout = {
-    priorFillsWindow:
-      priorBounds.x === 0 &&
-      priorBounds.y === 0 &&
-      priorBounds.width === contentWidth &&
-      priorBounds.height === contentHeight,
-    // One pixel inside the window keeps the arriving renderer live; a view
-    // with none is treated as hidden and never paints.
-    arrivingOutOfSight:
-      arrivingBounds.x === contentWidth - 1 && arrivingBounds.y === 1 - contentHeight,
-    arrivingFullSize:
-      arrivingBounds.width === contentWidth && arrivingBounds.height === contentHeight,
-    loadingStartsBelowNavbar: loadingBounds.x === 0 && loadingBounds.y === 101,
-    loadingFillsBody:
-      loadingBounds.width === contentWidth && loadingBounds.height === contentHeight - 101,
-    stateSeenInPrior: await stateIn(gardenView.webContents),
-  };
-  const screenDuringHandoff = await screenPixelFromOwnPages("a screen capture during the handoff", 4_000);
-  const screenNavbarDuringHandoff = await until(async () => {
-    const pixel = await screenPixelInWindow(64);
-    return pixel.colour === PAGE_NAVBAR_COLOUR ? pixel : null;
-  }, "the Garden navbar to remain visible during the handoff", 4_000);
-  await until(
-    () => visibleViews(window).length === 1 && window.contentView.children.length === 1,
-    "the painted fresh tab to replace the previous page",
+  const stateSeenInPrior = await stateIn(gardenView.webContents);
+  const arriving = await until(
+    () => {
+      const front = visibleViews(window);
+      return front.length === 1 && front[0].webContents !== gardenView.webContents ? front[0] : null;
+    },
+    "the cold tab to take over the tab area",
     15_000,
   );
-  const freshView = visibleViews(window)[0];
-  const freshBounds = window.contentView.children[0].getBounds();
-  const freshFillsWindow =
-    freshBounds.x === 0 &&
-    freshBounds.y === 0 &&
-    freshBounds.width === contentWidth &&
-    freshBounds.height === contentHeight;
+  const [contentWidth, contentHeight] = window.getContentSize();
+  const arrivingView = window.contentView.children.find((child) => child.webContents === arriving.webContents);
+  const fillsTabArea = (bounds) =>
+    bounds.x === 0 &&
+    bounds.y === BREADBOARD_TITLE_BAR.height &&
+    bounds.width === contentWidth &&
+    bounds.height === contentHeight - BREADBOARD_TITLE_BAR.height;
+  const transitionLayout = {
+    priorHeldDuringColdLoad,
+    loadingFieldAttached,
+    stateSeenInPrior,
+    arrivingFillsTabArea: fillsTabArea(arrivingView.getBounds()),
+  };
+  await until(() => !arriving.webContents.isLoading() && arriving.webContents.getURL() !== "", "the cold tab to finish loading", 15_000);
+  const freshView = arriving;
+  const freshFillsWindow = fillsTabArea(arrivingView.getBounds());
   const screenAfterHandoff = await until(async () => {
     const pixel = await screenPixelAtWindowCenter();
     return pixel.colour === PAGE_COLOURS.fresh ? pixel : null;
@@ -357,28 +334,28 @@ app.whenReady().then(async () => {
   await until(
     () =>
       visibleViews(window)[0]?.webContents.getURL().includes("/fresh?cold=1") &&
-      window.contentView.children.length === 1,
+      visibleViews(window).length === 1,
     "the reopened tab to be shown",
     15_000,
   );
 
   // Closing the window's own page while other tabs remain keeps the window:
   // that page is parked blank underneath and the next tab comes forward.
-  await command(viewsOf(window)[0].webContents, { type: "close", id: initial.tabs[0].id });
+  await command(gardenView.webContents, { type: "close", id: initial.tabs[0].id });
   const afterBaseClose = await until(async () => {
-    const state = await stateIn(viewsOf(window)[0].webContents);
+    const state = await stateIn(gardenView.webContents);
     return state.tabs.length === 2 ? state : null;
   }, "closing the window's own page");
   await until(() => base.getURL() === "about:blank", "the window's own page to be parked");
   trace("base retired");
   const windowSurvivedBaseClose = !window.isDestroyed() && BrowserWindow.getAllWindows().length === 1;
 
-  // A local window.open is still a window of its own, not a tab.
-  await viewsOf(window)[0].webContents.executeJavaScript("window.open(" + JSON.stringify(origin + "/popup") + "); true");
+  // A local window.open that asks for a popup is a window of its own, not a tab.
+  await gardenView.webContents.executeJavaScript("window.open(" + JSON.stringify(origin + "/popup") + ", '_blank', 'popup'); true");
   await until(() => BrowserWindow.getAllWindows().length === 2, "the popup window");
   const popup = BrowserWindow.getAllWindows().find((candidate) => candidate !== window);
-  await until(() => popup.webContents.getURL().endsWith("/popup"), "the popup to reach its page");
-  const popupState = await stateIn(popup.webContents);
+  await until(() => manager.page(popup).getURL().endsWith("/popup"), "the popup to reach its page");
+  const popupState = await stateIn(manager.page(popup));
   popup.destroy();
   trace("popup closed");
 
@@ -404,8 +381,6 @@ app.whenReady().then(async () => {
     warmReactivateMs,
     afterCtrlT,
     transitionLayout,
-    screenDuringHandoff,
-    screenNavbarDuringHandoff,
     freshFillsWindow,
     screenAfterHandoff,
     freshTitle,
@@ -420,6 +395,9 @@ app.whenReady().then(async () => {
   server.close();
   app.quit();
 }).catch((error) => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    trace("views " + JSON.stringify(win.contentView.children.map((child) => ({ url: child.webContents?.getURL(), bounds: child.getBounds() }))));
+  }
   fs.writeFileSync(resultFile, JSON.stringify({ error: error.stack || String(error) }));
   server.close();
   app.exit(1);
@@ -457,7 +435,7 @@ app.whenReady().then(async () => {
 
     assert.equal(result.openedInBackground, true);
     assert.equal(result.backgroundStaysBehind.active, result.initial.tabs[0].id);
-    assert.equal(result.backgroundStaysBehind.visibleViews, 0);
+    assert.equal(result.backgroundStaysBehind.visibleViews, 1, "only the first tab is on screen");
     assert.deepEqual(titles(result.backgroundStaysBehind.stateSeenInsideView), ["dashboard", "garden"]);
     assert.ok(result.backgroundStaysBehind.statesPushedToView >= 1);
 
@@ -475,39 +453,14 @@ app.whenReady().then(async () => {
     assert.deepEqual(titles(result.afterCtrlT).slice(0, 2), ["dashboard", "garden"]);
     assert.ok(["", "fresh"].includes(result.afterCtrlT.tabs[2].title));
     assert.equal(result.afterCtrlT.activeId, result.afterCtrlT.tabs[2].id);
-    assert.equal(
-      result.transitionLayout.priorFillsWindow,
-      true,
-      "the previous page must remain beneath the loading body so its navbar stays visible",
-    );
-    assert.equal(
-      result.transitionLayout.arrivingOutOfSight,
-      true,
-      "a cold tab must render out of sight until it has a frame",
-    );
-    assert.equal(result.transitionLayout.arrivingFullSize, true);
-    assert.equal(
-      result.transitionLayout.loadingStartsBelowNavbar,
-      true,
-      "the loading field must begin below the window tabs and Garden navbar",
-    );
-    assert.equal(result.transitionLayout.loadingFillsBody, true);
+    assert.equal(result.transitionLayout.priorHeldDuringColdLoad, true, "the previous tab stays on screen while a new-tab page is cold");
+    assert.equal(result.transitionLayout.loadingFieldAttached, false, "the shell's progress bar replaces a loading screen");
+    assert.equal(result.transitionLayout.arrivingFillsTabArea, true, "the ready tab owns the area below the title bar");
     assert.equal(result.transitionLayout.stateSeenInPrior.tabs.length, 3);
     assert.equal(
       result.transitionLayout.stateSeenInPrior.activeId,
       result.afterCtrlT.tabs[2].id,
       "the live strip on the previous page must carry the third-tab controls",
-    );
-    assert.equal(result.screenDuringHandoff.hasPixels, true, "the screen must be capturable");
-    assert.equal(
-      result.screenDuringHandoff.colour,
-      loadingColour,
-      "the tab body must show Breadboard's loading field while the cold tab loads",
-    );
-    assert.equal(
-      result.screenNavbarDuringHandoff.colour,
-      "#246d58",
-      "the Garden navbar must remain visible above the loading field",
     );
     assert.equal(result.freshFillsWindow, true);
     assert.equal(

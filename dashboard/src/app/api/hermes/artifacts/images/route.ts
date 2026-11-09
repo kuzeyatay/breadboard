@@ -282,7 +282,7 @@ async function handleGeneration(request: Request, userId: number): Promise<NextR
         dataUrl: `data:${file.mimeType};base64,${fs.readFileSync(file.path).toString("base64")}`,
       };
     }
-    const generated = await generateArtifactImage({
+    const generated = await generateArtifactImage({ userId,
       baseURL: resolveChatmockBaseUrl(request).baseURL,
       prompt,
       sourceImage,

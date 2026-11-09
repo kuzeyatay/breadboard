@@ -1,3 +1,6 @@
+import { withSystemPromptContext } from "../system-prompts/service.ts";
+import { renderSystemPrompt } from "../system-prompts/service.ts";
+import { scopedSystemPromptText } from "../system-prompts/service.ts";
 // Distills an extracted document into a book-to-skill skill.
 //
 // This is the clone's generator spec (SKILL.md Steps 3–9) executed as code
@@ -13,7 +16,7 @@
 // Both stay overridable by the caller.
 
 import type OpenAI from "openai";
-import { withCouncil, type CouncilMode } from "../council.ts";
+import { withCouncil, type CouncilMode } from "../system-prompts/council.ts";
 import { createChatmockClient, DEFAULT_MODEL } from "../knowledge.ts";
 import {
   segmentDocumentSkillViaRuntime,
@@ -150,11 +153,7 @@ async function completeIndex(
   };
 }
 
-const ANALYSIS_SYSTEM = [
-  "You identify the structure of a document so it can be turned into an agent skill.",
-  "Extract structure, not a summary. Preserve the author's exact naming for frameworks.",
-  "Answer with a single JSON object and nothing else.",
-].join(" ");
+
 
 async function analyzeDocument(
   client: OpenAI,
@@ -183,7 +182,7 @@ async function analyzeDocument(
     text.slice(0, 8000),
   ].join("\n");
 
-  const raw = await complete(client, model, ANALYSIS_SYSTEM, user, "metadata_generation", "direct_council", signal);
+  const raw = await complete(client, model, scopedSystemPromptText("document-skill-analysis"), user, "metadata_generation", "direct_council", signal);
   const json = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
   try {
     const parsed = JSON.parse(json) as Partial<DocumentAnalysis>;
@@ -272,13 +271,7 @@ function chapterPrompt(
     .join("\n");
 }
 
-const CHAPTER_SYSTEM = [
-  "You convert a section of a document into one file of an agent skill.",
-  "Extract structure, not a summary: named frameworks, decision rules, techniques, anti-patterns.",
-  "Preserve the author's exact terminology — a framework's name is part of its meaning.",
-  "Every claim must come from the supplied text. Never invent frameworks, numbers, or citations.",
-  "Output raw markdown only, with no preamble and no code fence around the whole file.",
-].join(" ");
+
 
 async function mapWithConcurrency<T, R>(
   items: T[],
@@ -310,6 +303,7 @@ function chapterIndexTable(chapters: ChapterPlan[], summaries: string[]): string
 }
 
 export async function buildDocumentSkill(input: BuildSkillInput): Promise<BuildSkillResult> {
+  return withSystemPromptContext(input.userId, async () => {
   const text = input.text;
   const contentHash = documentContentHash(text);
   const existing = findSkillByHash(input.userId, contentHash);
@@ -366,7 +360,7 @@ export async function buildDocumentSkill(input: BuildSkillInput): Promise<BuildS
       const body = await complete(
         client,
         model,
-        CHAPTER_SYSTEM,
+        scopedSystemPromptText("document-skill-chapters"),
         chapterPrompt(chapter, index, analysis, bookType, depth),
         "source_synthesis",
         "direct_council",
@@ -395,7 +389,7 @@ export async function buildDocumentSkill(input: BuildSkillInput): Promise<BuildS
     const glossary = await complete(
       client,
       model,
-      "You compile reference files for an agent skill. Output raw markdown only.",
+      renderSystemPrompt("document-skill-references", undefined, {  }),
       [
         `Write \`glossary.md\` for the skill distilled from "${analysis.title}".`,
         "Every significant term, alphabetically sorted, one per line, formatted exactly:",
@@ -414,7 +408,7 @@ export async function buildDocumentSkill(input: BuildSkillInput): Promise<BuildS
     const patterns = await complete(
       client,
       model,
-      "You compile reference files for an agent skill. Output raw markdown only.",
+      renderSystemPrompt("document-skill-references", undefined),
       [
         `Write \`patterns.md\` for the skill distilled from "${analysis.title}".`,
         "Every concrete technique, pattern, or method, each as:",
@@ -436,7 +430,7 @@ export async function buildDocumentSkill(input: BuildSkillInput): Promise<BuildS
     const cheatsheet = await complete(
       client,
       model,
-      "You compile reference files for an agent skill. Output raw markdown only.",
+      renderSystemPrompt("document-skill-references", undefined),
       [
         `Write \`cheatsheet.md\` for the skill distilled from "${analysis.title}".`,
         "This is a reasoning aid, not a keyword list. It captures the author's judgment.",
@@ -459,7 +453,7 @@ export async function buildDocumentSkill(input: BuildSkillInput): Promise<BuildS
     const index = await completeIndex(
       client,
       model,
-      "You write the master index of an agent skill. Output raw markdown only, no frontmatter.",
+      renderSystemPrompt("document-skill-index", undefined, {  }),
       [
         `Write the body of \`SKILL.md\` for the skill distilled from "${analysis.title}"${
           analysis.author ? ` by ${analysis.author}` : ""
@@ -533,4 +527,6 @@ export async function buildDocumentSkill(input: BuildSkillInput): Promise<BuildS
     markSkillFailed(record.id, message);
     throw error;
   }
+
+  });
 }

@@ -20,7 +20,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { stateRoot } from "./runtime.ts";
+import { runtimeProcessPath } from "../../../scripts/runtime-v2-paths.mjs";
 import type { DeerFlowSettings } from "./settings.ts";
+import { apiAnythingPublicMcpServer, API_ANYTHING_POLICY } from "../api-anything/agents.ts";
 
 export interface ConfigInput {
   /** ChatMock's OpenAI-compatible base URL, e.g. `http://127.0.0.1:8765/v1`. */
@@ -94,6 +96,8 @@ function modelBlock(models: readonly string[], input: ConfigInput): string {
         `    api_key: ${q(input.apiKey)}`,
         // A DeerFlow turn can be a long tool loop behind one model call, and the
         // relay is a local process rather than a rate-limited API.
+        // The local gateway implements the Chat Completions tool contract.
+        "    use_responses_api: false",
         "    request_timeout: 900.0",
         "    max_retries: 2",
         "    context_window: 400000",
@@ -238,7 +242,8 @@ skill_evolution:
 
 database:
   backend: sqlite
-  sqlite_dir: ${q(path.join(home, "data"))}
+  # SQLite URLs interpret the question mark in a Windows namespace as a query.
+  sqlite_dir: ${q(runtimeProcessPath(path.join(home, "data")))}
 
 run_events:
   backend: memory
@@ -247,7 +252,8 @@ run_events:
 
 /**
  * Write the config for this run and report where it landed. Also writes an
- * empty extensions config: `DEER_FLOW_EXTENSIONS_CONFIG_PATH` is an explicit
+ * extensions config with the embedded public website APIs while preserving
+ * other installed extensions. `DEER_FLOW_EXTENSIONS_CONFIG_PATH` is an explicit
  * assertion that one file must be used, and DeerFlow raises rather than falls
  * back when it is missing.
  */
@@ -260,9 +266,15 @@ export async function writeConfig(input: ConfigInput): Promise<GeneratedConfig> 
   const extensionsPath = path.join(root, "extensions_config.json");
   const models = await declaredModels(input);
   fs.writeFileSync(configPath, render(models, input, home), "utf8");
-  if (!fs.existsSync(extensionsPath)) {
-    fs.writeFileSync(extensionsPath, `${JSON.stringify({ mcpServers: {}, skills: {} }, null, 2)}\n`, "utf8");
-  }
+  const extensions = fs.existsSync(extensionsPath)
+    ? JSON.parse(fs.readFileSync(extensionsPath, "utf8")) as Record<string, unknown>
+    : { mcpServers: {}, skills: {} };
+  const servers = extensions.mcpServers && typeof extensions.mcpServers === "object"
+    ? { ...extensions.mcpServers as Record<string, unknown> } : {};
+  const websiteApis = input.settings.web ? apiAnythingPublicMcpServer() : null;
+  if (websiteApis) servers.api_anything = { ...websiteApis, type: "stdio", enabled: true, description: API_ANYTHING_POLICY, tool_call_timeout: 30 };
+  else delete servers.api_anything;
+  fs.writeFileSync(extensionsPath, `${JSON.stringify({ ...extensions, mcpServers: servers }, null, 2)}\n`, "utf8");
 
   return {
     configPath,

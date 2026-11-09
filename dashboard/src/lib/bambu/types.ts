@@ -1,8 +1,15 @@
 /** Shared display types. Credentials and executable commands never enter this contract. */
-export const BAMBU_MODELS = ["P1P", "P1S", "X1C", "X1E", "A1", "A1 mini", "H2S"] as const;
+export const BAMBU_MODELS = ["P1P", "P1S", "P2S", "X1C", "X1E", "A1", "A1 mini", "H2S"] as const;
 export type PrinterModel = typeof BAMBU_MODELS[number];
 export const BUILD_PLATES = ["textured_plate", "hot_plate", "cool_plate", "engineering_plate", "supertack_plate"] as const;
 export type BuildPlate = typeof BUILD_PLATES[number];
+export interface BambuStudioStatus {
+  installed: boolean;
+  version: string | null;
+  profiles: { name: string; nozzles: number[] }[];
+  selected: { printer: string | null; model: PrinterModel | null; nozzle: number | null; process: string | null; filaments: string[] };
+  message: string;
+}
 export type JobState = "needs_file" | "validating" | "review_required" | "blocked" | "awaiting_approval" | "approved" | "uploading" | "start_requested" | "start_unconfirmed" | "preparing" | "printing" | "paused" | "cancel_requested" | "cancelled" | "failed" | "completed";
 export const TERMINAL_STATES: readonly JobState[] = ["completed", "failed", "cancelled"];
 export const ACTIVE_STATES: readonly JobState[] = ["approved", "uploading", "start_requested", "start_unconfirmed", "preparing", "printing", "paused", "cancel_requested"];

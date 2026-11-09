@@ -1,0 +1,305 @@
+{
+  "conversationId": "conv_zj0F5EwODfSGQD3VApMwyZoX",
+  "agentRun": "06647bd1-75b6-433d-a5d4-7af80c5a8df1",
+  "finalReplyRun": "b412e6bd-bb32-4edf-9cd4-5327b99bd6e0",
+  "presentationInterruption": "Desktop restarted after all eight imports and download checks; the final reply was resumed separately. Optional composed shell check was not executed.",
+  "generatedBy": "Breadboard Super Agent, native plot_results and artifact_import",
+  "recoveredPriorRunsAfterDesktopRestart": true,
+  "plots": [
+    {
+      "operation": {
+        "run_id": "7adbc235b147492b8d37bd7ec46aa7e3",
+        "output_node": "out",
+        "start": 0.02,
+        "stop": 0.0205
+      },
+      "files": [
+        {
+          "name": "waveform.svg",
+          "sha256": "f75bb8d700b42db3075abf903d5be6ad13c63cb8adb3163278d837fa4055acf3",
+          "bytes": 36101
+        },
+        {
+          "name": "waveform.png",
+          "sha256": "a11cbf0aecf5fb8f95439d1223aac233529e53ad3d2e9a8710ea8465e01973eb",
+          "bytes": 76460
+        },
+        {
+          "name": "plotted-data.csv",
+          "sha256": "eddf73e6031e522cfb86ae1c4432058625411bc2bfd1574812e0ff7a302c5838",
+          "bytes": 78897,
+          "columns": [
+            "time_s",
+            "v(out)"
+          ],
+          "samples": 2000,
+          "first": 0.02000012500001484,
+          "last": 0.02049987500001534
+        }
+      ]
+    },
+    {
+      "operation": {
+        "output_node": "lim",
+        "input_node": "drive",
+        "run_id": "549eb00c844f46599ee5f859705ee2e7",
+        "start": 0.0115,
+        "stop": 0.024
+      },
+      "files": [
+        {
+          "name": "waveform.svg",
+          "sha256": "a2ad83e1f6d8a9a07f560041217193f62fa7466e575ae61625ea98cd3c39881c",
+          "bytes": 111888
+        },
+        {
+          "name": "waveform.png",
+          "sha256": "d6c5b0f2ca838762dbbd47678ebcd1e8b0976d47758903c101df4acf92532e29",
+          "bytes": 136606
+        },
+        {
+          "name": "plotted-data.csv",
+          "sha256": "e1d32b7ccd7257600756426afcd806fae12496a7c2c6091f595cc1b0e2bbfc6f",
+          "bytes": 1450681,
+          "columns": [
+            "time_s",
+            "v(lim)",
+            "v(drive)"
+          ],
+          "samples": 25043,
+          "first": 0.01150025000000117,
+          "last": 0.024
+        }
+      ]
+    },
+    {
+      "operation": {
+        "input_node": "acinput",
+        "output_node": "filtered",
+        "run_id": "b3196885283c46d9936be6a08bd13ffa"
+      },
+      "files": [
+        {
+          "name": "bode.svg",
+          "sha256": "09acf6402f412e7634d1ebd151f2473df98589c5dac459ca2b20566ec8c3605f",
+          "bytes": 60534
+        },
+        {
+          "name": "bode.png",
+          "sha256": "6d0ca5ee484ffa6c63212fd07afb07a8ddbe330128d0cd3c90d433fa75b9f112",
+          "bytes": 66965
+        },
+        {
+          "name": "plotted-data.csv",
+          "sha256": "57a437918b8b5bb396e831a2ff732c5e57327c938d1950aef94a2b873f5c41a3",
+          "bytes": 33924,
+          "columns": [
+            "frequency_Hz",
+            "v(filtered).real",
+            "v(filtered).imag",
+            "v(acinput).real",
+            "v(acinput).imag"
+          ],
+          "samples": 501,
+          "first": 10.0,
+          "last": 999999.9999999842
+        }
+      ]
+    },
+    {
+      "operation": {
+        "output_node": "osc",
+        "run_id": "7adbc235b147492b8d37bd7ec46aa7e3",
+        "start": 0,
+        "stop": 0.01
+      },
+      "files": [
+        {
+          "name": "waveform.svg",
+          "sha256": "c8c1db5ba932a983ab528bc60a6fb8b0adc473a47dbb8a5384e1a57d3ed33fae",
+          "bytes": 77453
+        },
+        {
+          "name": "waveform.png",
+          "sha256": "a439f970c4e458672d34f30479c378f57e62741f627c4c4b5e2347603ad0b5ed",
+          "bytes": 242406
+        },
+        {
+          "name": "plotted-data.csv",
+          "sha256": "17846abbd9c0f21952830a624b3b455ae1eefc009b81ba521a31e1ce15d10365",
+          "bytes": 1618946,
+          "columns": [
+            "time_s",
+            "v(osc)"
+          ],
+          "samples": 40016,
+          "first": 0.0,
+          "last": 0.009999875000004836
+        }
+      ]
+    }
+  ],
+  "downloads": [
+    {
+      "id": "art_42a9a59d-9833-4c81-b466-21fc1b205826",
+      "title": "Oscillator output, 20\u201320.5 ms",
+      "filename": "oscillator-out-20-20.5ms.png",
+      "status": 200,
+      "type": "image/png",
+      "bytes": 76460,
+      "hashMatches": true,
+      "url": "/api/hermes/artifacts/art_42a9a59d-9833-4c81-b466-21fc1b205826/download?conversationId=conv_zj0F5EwODfSGQD3VApMwyZoX"
+    },
+    {
+      "id": "art_67193415-f489-4628-bd9f-c48e8ee2d617",
+      "title": "Output selected-trace CSV, 20\u201320.5 ms",
+      "filename": "oscillator-out-20-20.5ms.csv",
+      "status": 200,
+      "type": "text/csv; charset=utf-8",
+      "bytes": 78897,
+      "hashMatches": true,
+      "url": "/api/hermes/artifacts/art_67193415-f489-4628-bd9f-c48e8ee2d617/download?conversationId=conv_zj0F5EwODfSGQD3VApMwyZoX"
+    },
+    {
+      "id": "art_7b1878f7-e54f-4651-8d89-bc6f6e19b2b9",
+      "title": "Oscillator startup, 0\u201310 ms",
+      "filename": "oscillator-startup-0-10ms.png",
+      "status": 200,
+      "type": "image/png",
+      "bytes": 242406,
+      "hashMatches": true,
+      "url": "/api/hermes/artifacts/art_7b1878f7-e54f-4651-8d89-bc6f6e19b2b9/download?conversationId=conv_zj0F5EwODfSGQD3VApMwyZoX"
+    },
+    {
+      "id": "art_7c3fc6c8-6ab0-4ff0-9394-33b624d4aa0f",
+      "title": "Startup selected-trace CSV, 0\u201310 ms",
+      "filename": "oscillator-startup-0-10ms.csv",
+      "status": 200,
+      "type": "text/csv; charset=utf-8",
+      "bytes": 1618946,
+      "hashMatches": true,
+      "url": "/api/hermes/artifacts/art_7c3fc6c8-6ab0-4ff0-9394-33b624d4aa0f/download?conversationId=conv_zj0F5EwODfSGQD3VApMwyZoX"
+    },
+    {
+      "id": "art_85d39528-a1b3-4846-aabf-970159818950",
+      "title": "Limiter and drive, overdrive and recovery, 11.5\u201324 ms",
+      "filename": "oscillator-limiter-overdrive-recovery.png",
+      "status": 200,
+      "type": "image/png",
+      "bytes": 136606,
+      "hashMatches": true,
+      "url": "/api/hermes/artifacts/art_85d39528-a1b3-4846-aabf-970159818950/download?conversationId=conv_zj0F5EwODfSGQD3VApMwyZoX"
+    },
+    {
+      "id": "art_3786f64b-4f0d-4e6b-86ad-c6a0665a30f4",
+      "title": "Limiter and drive selected-trace CSV, 11.5\u201324 ms",
+      "filename": "oscillator-limiter-overdrive-recovery.csv",
+      "status": 200,
+      "type": "text/csv; charset=utf-8",
+      "bytes": 1450681,
+      "hashMatches": true,
+      "url": "/api/hermes/artifacts/art_3786f64b-4f0d-4e6b-86ad-c6a0665a30f4/download?conversationId=conv_zj0F5EwODfSGQD3VApMwyZoX"
+    },
+    {
+      "id": "art_b6988eab-9078-4e5b-9020-6dea61bd68bf",
+      "title": "Filter Bode plot, acinput to filtered",
+      "filename": "oscillator-filter-bode.png",
+      "status": 200,
+      "type": "image/png",
+      "bytes": 66965,
+      "hashMatches": true,
+      "url": "/api/hermes/artifacts/art_b6988eab-9078-4e5b-9020-6dea61bd68bf/download?conversationId=conv_zj0F5EwODfSGQD3VApMwyZoX"
+    },
+    {
+      "id": "art_a430725d-94b4-43c8-84ea-5c2cf7422ebd",
+      "title": "Filter Bode selected-trace CSV, acinput to filtered",
+      "filename": "oscillator-filter-bode.csv",
+      "status": 200,
+      "type": "text/csv; charset=utf-8",
+      "bytes": 33924,
+      "hashMatches": true,
+      "url": "/api/hermes/artifacts/art_a430725d-94b4-43c8-84ea-5c2cf7422ebd/download?conversationId=conv_zj0F5EwODfSGQD3VApMwyZoX"
+    }
+  ],
+  "downloadsAfterAdditionalRestart": [
+    {
+      "id": "art_42a9a59d-9833-4c81-b466-21fc1b205826",
+      "status": 200,
+      "hashMatches": true,
+      "bytesMatch": true
+    },
+    {
+      "id": "art_67193415-f489-4628-bd9f-c48e8ee2d617",
+      "status": 200,
+      "hashMatches": true,
+      "bytesMatch": true
+    },
+    {
+      "id": "art_7b1878f7-e54f-4651-8d89-bc6f6e19b2b9",
+      "status": 200,
+      "hashMatches": true,
+      "bytesMatch": true
+    },
+    {
+      "id": "art_7c3fc6c8-6ab0-4ff0-9394-33b624d4aa0f",
+      "status": 200,
+      "hashMatches": true,
+      "bytesMatch": true
+    },
+    {
+      "id": "art_85d39528-a1b3-4846-aabf-970159818950",
+      "status": 200,
+      "hashMatches": true,
+      "bytesMatch": true
+    },
+    {
+      "id": "art_3786f64b-4f0d-4e6b-86ad-c6a0665a30f4",
+      "status": 200,
+      "hashMatches": true,
+      "bytesMatch": true
+    },
+    {
+      "id": "art_b6988eab-9078-4e5b-9020-6dea61bd68bf",
+      "status": 200,
+      "hashMatches": true,
+      "bytesMatch": true
+    },
+    {
+      "id": "art_a430725d-94b4-43c8-84ea-5c2cf7422ebd",
+      "status": 200,
+      "hashMatches": true,
+      "bytesMatch": true
+    }
+  ],
+  "persistedReply": {
+    "status": 200,
+    "title": "10 kHz oscillator simulation",
+    "conversationId": "conv_zj0F5EwODfSGQD3VApMwyZoX",
+    "error": null,
+    "characters": 2364,
+    "measurementsPresent": true,
+    "correctedLabLink": true,
+    "downloadLinks": 9
+  },
+  "labLink": {
+    "path": "/garden/ec-2?note=labs%2F10khz-sine-oscillator%2F10khz-sine-oscillator-1790063466230",
+    "status": 200,
+    "noteReferenced": true,
+    "loginRedirect": false
+  },
+  "originalRunIntegrityAfterExports": {
+    "549eb00c844f46599ee5f859705ee2e7": {
+      "originalFiles": 17,
+      "allHashesMatch": true
+    },
+    "7adbc235b147492b8d37bd7ec46aa7e3": {
+      "originalFiles": 17,
+      "allHashesMatch": true
+    },
+    "b3196885283c46d9936be6a08bd13ffa": {
+      "originalFiles": 17,
+      "allHashesMatch": true
+    }
+  },
+  "separateAgentLaunches": 0
+}

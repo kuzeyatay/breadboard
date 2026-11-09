@@ -236,7 +236,7 @@ export default function BrowserNavigation({ showFlowers, restoreOwnerKey, onPane
             className="browser-toolbar-button"
             aria-label={pageTab?.loading ? "Stop loading" : "Reload"}
             title={pageTab?.loading ? "Stop loading" : "Reload (Ctrl+R)"}
-            disabled={!browser}
+            disabled={!pageTab}
             onClick={() => void sendDesktopTabsCommand(pageTab?.loading ? { type: "browser-stop" } : { type: "reload" })}
           >
             <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -337,12 +337,6 @@ export default function BrowserNavigation({ showFlowers, restoreOwnerKey, onPane
           Private
         </span>}
         <BrowserDownloadsButton active={isActive} open={browser?.downloadsOpen ?? false} />
-        {browser && !privateBrowsing && tabs?.browserPreferences?.organizationSidebarEnabled !== false && <button
-          type="button" className="browser-toolbar-button" title="Organization" aria-label="Toggle Organization panel"
-          aria-pressed={browser.organizationOpen === true}
-          onClick={() => void sendDesktopTabsCommand({ type: "browser-organization", open: !browser.organizationOpen })}>
-          <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3.5" width="14" height="13" rx="3" {...STROKE} /><path d="M12 3.5v13" {...STROKE} /></svg>
-        </button>}
         <BrowserMenuControls profileLabel={restoreOwnerKey} onPanel={onPanel} />
       </div>
 

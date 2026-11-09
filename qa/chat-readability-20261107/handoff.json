@@ -1,0 +1,211 @@
+{
+  "frozenAt": "2026-11-07T15:54:02.485Z",
+  "sourceFiles": [
+    {
+      "file": "hermes-config/system/chat-core.md",
+      "newFile": false,
+      "beforeBasis": "Git HEAD; inspected initial source had no other owned diff.",
+      "beforeSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\before\\hermes-config\\system\\chat-core.md",
+      "beforeSha256": "66bcec54e785d76fb1737ff6884947dbcb430385d3567d41b0c1f4ed60140c9e",
+      "beforeNormalizedSha256": "66bcec54e785d76fb1737ff6884947dbcb430385d3567d41b0c1f4ed60140c9e",
+      "build26ExpectedSha256": "66bcec54e785d76fb1737ff6884947dbcb430385d3567d41b0c1f4ed60140c9e",
+      "reconstructedBeforeMatchesBuild26": true,
+      "currentSha256": "11c19daca586209717e69db168a29ed304637d5a22fdd819dcfeb703671cdb11",
+      "currentNormalizedSha256": "11c19daca586209717e69db168a29ed304637d5a22fdd819dcfeb703671cdb11",
+      "frozenSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\frozen\\hermes-config\\system\\chat-core.md"
+    },
+    {
+      "file": "hermes-config/system/process-status.md",
+      "newFile": false,
+      "beforeBasis": "Git HEAD; inspected initial source had no other owned diff.",
+      "beforeSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\before\\hermes-config\\system\\process-status.md",
+      "beforeSha256": "6385a186f3b4523218be290ccf5d7e3901dcecc89c38d4736b5e17556f24da9b",
+      "beforeNormalizedSha256": "6385a186f3b4523218be290ccf5d7e3901dcecc89c38d4736b5e17556f24da9b",
+      "build26ExpectedSha256": null,
+      "reconstructedBeforeMatchesBuild26": null,
+      "currentSha256": "3484b5d0e72e68956f677c853447b6eebd719af20a202c07a957e180a9542777",
+      "currentNormalizedSha256": "17cd101f77e913a89b422b78364c1fe9d2416aab5e607bc3432e7226a395b5e0",
+      "frozenSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\frozen\\hermes-config\\system\\process-status.md"
+    },
+    {
+      "file": "dashboard/src/lib/hermes/process-status.ts",
+      "newFile": false,
+      "beforeBasis": "Git HEAD; inspected initial source had no other owned diff.",
+      "beforeSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\before\\dashboard\\src\\lib\\hermes\\process-status.ts",
+      "beforeSha256": "442c1070c72658a1122ba49278f4204a149872a4b0f02cde3acbcccc3b227f83",
+      "beforeNormalizedSha256": "442c1070c72658a1122ba49278f4204a149872a4b0f02cde3acbcccc3b227f83",
+      "build26ExpectedSha256": null,
+      "reconstructedBeforeMatchesBuild26": null,
+      "currentSha256": "f69000ec1f8d67e63ccf55160fc84e705e911ec76701df602e656c9f6a884839",
+      "currentNormalizedSha256": "692ab952977b43544a4388ef91cf1b112ff1bc137adf58a5edf0bda6b01652da",
+      "frozenSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\frozen\\dashboard\\src\\lib\\hermes\\process-status.ts"
+    },
+    {
+      "file": "dashboard/src/app/api/hermes/tools/process-status/route.ts",
+      "newFile": false,
+      "beforeBasis": "Git HEAD; inspected initial source had no other owned diff.",
+      "beforeSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\before\\dashboard\\src\\app\\api\\hermes\\tools\\process-status\\route.ts",
+      "beforeSha256": "1b7933bbf992c07fd9ddec76037bb9916b28292f08ef91748d29b21d9fda0449",
+      "beforeNormalizedSha256": "1b7933bbf992c07fd9ddec76037bb9916b28292f08ef91748d29b21d9fda0449",
+      "build26ExpectedSha256": null,
+      "reconstructedBeforeMatchesBuild26": null,
+      "currentSha256": "a4a62db6991aef25ac23451a66ff19fc7a703bfbbd3d07186607b8b8f63fab59",
+      "currentNormalizedSha256": "9f76bd210c714bf15504cf76cefea1008c4ba13b0c10344e5597a3342eaff08a",
+      "frozenSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\frozen\\dashboard\\src\\app\\api\\hermes\\tools\\process-status\\route.ts"
+    },
+    {
+      "file": "dashboard/src/lib/telegram/client.ts",
+      "newFile": false,
+      "beforeBasis": "Git HEAD; inspected initial source had no other owned diff.",
+      "beforeSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\before\\dashboard\\src\\lib\\telegram\\client.ts",
+      "beforeSha256": "d8553efe2e3fa5b156a2acd62d3135d5e4a735bdc9305371857d0784113b96f8",
+      "beforeNormalizedSha256": "d8553efe2e3fa5b156a2acd62d3135d5e4a735bdc9305371857d0784113b96f8",
+      "build26ExpectedSha256": null,
+      "reconstructedBeforeMatchesBuild26": null,
+      "currentSha256": "75d620db04c4409d1fd5ad1608d5abfab7ff1c1cd0bef091237d386b1a29b33f",
+      "currentNormalizedSha256": "75d620db04c4409d1fd5ad1608d5abfab7ff1c1cd0bef091237d386b1a29b33f",
+      "frozenSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\frozen\\dashboard\\src\\lib\\telegram\\client.ts"
+    },
+    {
+      "file": "dashboard/src/lib/telegram/format.ts",
+      "newFile": true,
+      "beforeBasis": "new file",
+      "beforeSnapshot": null,
+      "beforeSha256": null,
+      "beforeNormalizedSha256": null,
+      "build26ExpectedSha256": null,
+      "reconstructedBeforeMatchesBuild26": null,
+      "currentSha256": "44f4dc365c4e41073b895d7197b3263042f0867fbd17acdd1e2ac349d437dda1",
+      "currentNormalizedSha256": "44f4dc365c4e41073b895d7197b3263042f0867fbd17acdd1e2ac349d437dda1",
+      "frozenSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\frozen\\dashboard\\src\\lib\\telegram\\format.ts"
+    },
+    {
+      "file": "dashboard/src/lib/speech/voice-prompt.ts",
+      "newFile": false,
+      "beforeBasis": "Reconstructed pre-change file: restore the exact process-status line read before editing; preserve all other current content.",
+      "beforeSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\before\\dashboard\\src\\lib\\speech\\voice-prompt.ts",
+      "beforeSha256": "0d92e837dc723c9edd3055c419672524ba6c180b7290d2f5f0b13fee5f1d11cf",
+      "beforeNormalizedSha256": "0d92e837dc723c9edd3055c419672524ba6c180b7290d2f5f0b13fee5f1d11cf",
+      "build26ExpectedSha256": "0d92e837dc723c9edd3055c419672524ba6c180b7290d2f5f0b13fee5f1d11cf",
+      "reconstructedBeforeMatchesBuild26": true,
+      "currentSha256": "67a124df266acc7927900e89b30ad24dd891234ee5609c6081ac03598907773d",
+      "currentNormalizedSha256": "67a124df266acc7927900e89b30ad24dd891234ee5609c6081ac03598907773d",
+      "frozenSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\frozen\\dashboard\\src\\lib\\speech\\voice-prompt.ts"
+    },
+    {
+      "file": "hermes-agent/plugins/breadboard/__init__.py",
+      "newFile": false,
+      "beforeBasis": "Reconstructed pre-change file: restore only the status-tool definition (observed unchanged from HEAD before editing); preserve other pre-existing plugin changes.",
+      "beforeSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\before\\hermes-agent\\plugins\\breadboard\\__init__.py",
+      "beforeSha256": "2fca40098a63d43c6c993e37ca0d5fcdb1a30d0ba94e193614b12a9fb9dc533b",
+      "beforeNormalizedSha256": "32b1a11237598234bb9c6b6fc594fdf68a2a38b4eb9b6121f548b26ea257e2f0",
+      "build26ExpectedSha256": "2fca40098a63d43c6c993e37ca0d5fcdb1a30d0ba94e193614b12a9fb9dc533b",
+      "reconstructedBeforeMatchesBuild26": true,
+      "currentSha256": "0dad2822ce37dc9bfc46a66c36884229435f70e53b57c31d6fe17a5d743c4aa2",
+      "currentNormalizedSha256": "43b1611f2f7d4f4d26d066e5035d8a226a59a54ec1f89af4ec9f3e47921aad9a",
+      "frozenSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\frozen\\hermes-agent\\plugins\\breadboard\\__init__.py"
+    }
+  ],
+  "testFiles": [
+    {
+      "file": "dashboard/tests/telegram-gateway-loop.test.mjs",
+      "newFile": false,
+      "beforeBasis": "Git HEAD; inspected initial source had no other owned diff.",
+      "beforeSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\before\\dashboard\\tests\\telegram-gateway-loop.test.mjs",
+      "beforeSha256": "8884543783b9c4fd934f9b03001feeb99424a9b295f22fc3c6f33050933ca8a5",
+      "beforeNormalizedSha256": "8884543783b9c4fd934f9b03001feeb99424a9b295f22fc3c6f33050933ca8a5",
+      "build26ExpectedSha256": null,
+      "reconstructedBeforeMatchesBuild26": null,
+      "currentSha256": "f130068e6e25324f1eb3375de5c3226c86d225a415abec6cfdd869023e0507ce",
+      "currentNormalizedSha256": "f130068e6e25324f1eb3375de5c3226c86d225a415abec6cfdd869023e0507ce",
+      "frozenSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\frozen\\dashboard\\tests\\telegram-gateway-loop.test.mjs"
+    },
+    {
+      "file": "dashboard/tests/telegram-integration.test.mjs",
+      "newFile": false,
+      "beforeBasis": "Git HEAD; inspected initial source had no other owned diff.",
+      "beforeSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\before\\dashboard\\tests\\telegram-integration.test.mjs",
+      "beforeSha256": "ab13c791f6ee649346f3d9ba2288edef088aeb48d82d82ecb84d072760bac2e9",
+      "beforeNormalizedSha256": "ab13c791f6ee649346f3d9ba2288edef088aeb48d82d82ecb84d072760bac2e9",
+      "build26ExpectedSha256": null,
+      "reconstructedBeforeMatchesBuild26": null,
+      "currentSha256": "b01604a74184e59290f031bd36ed0eee51a03f62c62a34ee8461d03270169c58",
+      "currentNormalizedSha256": "b5495d64edc7f931e3e4dadeb279dd99b79f04a9bde3ba1bf3e9984bd19f8269",
+      "frozenSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\frozen\\dashboard\\tests\\telegram-integration.test.mjs"
+    },
+    {
+      "file": "dashboard/tests/telegram-format.test.mjs",
+      "newFile": true,
+      "beforeBasis": "new file",
+      "beforeSnapshot": null,
+      "beforeSha256": null,
+      "beforeNormalizedSha256": null,
+      "build26ExpectedSha256": null,
+      "reconstructedBeforeMatchesBuild26": null,
+      "currentSha256": "1c75b3fd8579bd4f03213a438ed72eaed05e6f54f4056463507c9904c49f4feb",
+      "currentNormalizedSha256": "1c75b3fd8579bd4f03213a438ed72eaed05e6f54f4056463507c9904c49f4feb",
+      "frozenSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\frozen\\dashboard\\tests\\telegram-format.test.mjs"
+    },
+    {
+      "file": "dashboard/tests/chat-status-readability.test.mjs",
+      "newFile": true,
+      "beforeBasis": "new file",
+      "beforeSnapshot": null,
+      "beforeSha256": null,
+      "beforeNormalizedSha256": null,
+      "build26ExpectedSha256": null,
+      "reconstructedBeforeMatchesBuild26": null,
+      "currentSha256": "41f62cf5d42006afa8701c8928cbca9a4be45b9a702673552c24a9125a2ecd9b",
+      "currentNormalizedSha256": "41f62cf5d42006afa8701c8928cbca9a4be45b9a702673552c24a9125a2ecd9b",
+      "frozenSnapshot": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\frozen\\dashboard\\tests\\chat-status-readability.test.mjs"
+    }
+  ],
+  "state": "Shared source frozen for coordinated build27; no build or restart performed by this task.",
+  "ownership": "Only the process-status contract line in voice-prompt.ts and the breadboard_process_status tool definition in plugins/breadboard/__init__.py belong to this task. All other changes in those pre-existing dirty/untracked files are preserved.",
+  "baselineNote": "Initial working-tree bytes were not snapshotted. Clean-file baselines come from Git HEAD; shared-file baselines reconstruct only our edits in reverse. Normalized hashes use LF. The coordinator's build26 hashes are supplied where available; exact reconstructed snapshots are identified when they match those hashes.",
+  "activeResources": {
+    "providerRequests": 0,
+    "appChatsCreated": 0,
+    "telegramMessagesSent": 0,
+    "childProcesses": 0,
+    "cleanupDeadline": "All owned provider/test processes completed before this receipt."
+  },
+  "patch": {
+    "path": "C:\\Users\\20252082\\breadboard\\qa\\chat-readability-20261107\\owned.patch",
+    "sha256": "7e6ef24bb44f4ed5c57f9d47616922b6c4325dc9fa3170225109270b9fd9e8a5",
+    "note": "Owned changes only, normalized LF; do not use the full repository git diff for shared files."
+  },
+  "validation": {
+    "focusedJs": {
+      "passed": 45,
+      "failed": 0,
+      "command": "node --experimental-strip-types --test dashboard/tests/telegram-format.test.mjs dashboard/tests/chat-status-readability.test.mjs dashboard/tests/telegram-gateway-loop.test.mjs dashboard/tests/process-status-tool.test.mjs dashboard/tests/response-style.test.mjs dashboard/tests/voice-turn-latency.test.mjs",
+      "isolatedDataDirectory": true
+    },
+    "formatterTypecheck": {
+      "exitCode": 0,
+      "command": "node dashboard/node_modules/typescript/bin/tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution nodenext --allowImportingTsExtensions --skipLibCheck dashboard/src/lib/telegram/format.ts"
+    },
+    "pluginCallback": {
+      "passed": 1,
+      "failed": 0,
+      "file": "qa/chat-readability-20261107/test_process_status_callback.py",
+      "log": "qa/chat-readability-20261107/plugin-test.log",
+      "method": "Canonical hermes-agent/scripts/run_tests.sh with HERMES_PYTHON pointing to .venv/Scripts/python.exe and a unique --basetemp under this QA folder. Actual registered callback plus a loopback HTTP server.",
+      "initialEnvironmentIssue": "The first run failed before the test because the default pytest temp directory was inaccessible; the unique --basetemp run passed."
+    },
+    "liveModel": {
+      "passed": 10,
+      "total": 10,
+      "path": "qa/chat-readability-20261107/results.json",
+      "sha256": "bcb90f744634d8bea0e6eb72b9de60e35e5f56e40ed8383c114c7a60d4f162a3",
+      "method": "Production prompt builder and SQLite status reader with fixture chats, through the running model gateway. No user chats or Telegram sends.",
+      "limitation": "Exercises the production prompt builder and status reader with fixture chats, not a deployed Telegram end-to-end conversation. Earlier development samples exposed finished-chat noise and unavailable-status overclaiming; final samples passed after filtering and evidence-boundary fixes."
+    },
+    "knownUnrelatedFailures": [
+      "telegram-integration.test.mjs: 'a message goes through the same authenticated turn pipeline as the browser' expects prepareTelegramAttachments(settings.ownerUserId, message), but unchanged inbound.ts uses the ownerUserId local.",
+      "telegram-integration.test.mjs: 'Telegram sits beside WhatsApp in Settings → Messaging' expects the phrase 'official Bot API', absent from unchanged settings-telegram.tsx."
+    ],
+    "deployment": "Not built or restarted. The coordinator owns build27 activation. Telegram gateway and Hermes processes need the new source/schema; the standalone dashboard needs rebuilding for its status route. Shared prompt files are read by the production prompt builder."
+  }
+}

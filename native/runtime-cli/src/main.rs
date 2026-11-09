@@ -2,6 +2,7 @@ mod bootstrap;
 mod control;
 mod durable_job_control;
 mod host;
+mod runtime_diagnostics;
 mod service_engine;
 mod shutdown;
 mod streaming_body;

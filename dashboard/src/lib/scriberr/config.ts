@@ -28,6 +28,7 @@ export interface VideoTranscriptionConfig {
   /** Delete the Scriberr-side job after a successful import (supported API). */
   deleteScriberrJobs: boolean;
 
+  allowOriginPaths: boolean;
   maxUploadBytes: number;
   maxDurationSeconds: number;
   tempDir: string;
@@ -140,6 +141,8 @@ export function loadVideoTranscriptionConfig(
       false,
     ),
 
+    // Decided by the route wiring in instance.ts, which can see the desktop install.
+    allowOriginPaths: false,
     maxUploadBytes:
       intFromEnv(env.VIDEO_TRANSCRIPTION_MAX_UPLOAD_MB, 2048, {
         min: 1,

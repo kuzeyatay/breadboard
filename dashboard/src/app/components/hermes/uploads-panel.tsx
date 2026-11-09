@@ -11,10 +11,8 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ModelCubeIcon from "@/app/components/model-cube-icon";
-import {
-  ReclaimingAudio,
-  ReclaimingVideo,
-} from "@/app/components/reclaiming-media";
+import { ReclaimingAudio } from "@/app/components/reclaiming-media";
+import BreadboardVideoPlayer from "@/app/components/breadboard-video-player";
 import { formatUploadSize, type StoredUpload } from "@/lib/conversations/uploads";
 import { defaultModelUpAxis } from "@/lib/model-attachments";
 
@@ -158,15 +156,12 @@ function UploadViewer({ upload, onClose }: { upload: StoredUpload; onClose: () =
             />
           ) : upload.kind === "video" ? (
             <div className="flex h-full items-center justify-center">
-              <ReclaimingVideo
-                controls
-                preload="metadata"
+              <BreadboardVideoPlayer
                 src={previewHref}
+                title={upload.name}
                 onError={() => setPreviewError("This video could not be opened.")}
-                className="max-h-full w-full rounded-xl bg-black"
-              >
-                Your browser cannot preview this video file.
-              </ReclaimingVideo>
+                className="max-h-full"
+              />
             </div>
           ) : upload.kind === "audio" ? (
             <div className="flex h-full items-center justify-center">

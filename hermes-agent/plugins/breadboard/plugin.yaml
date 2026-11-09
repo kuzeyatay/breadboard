@@ -121,7 +121,11 @@ provides_tools:
   - product_search
   - feynman_research
   - chat_search
+  - chat_list
+  - chat_send_message
+  - chat_wait
   - breadboard_process_status
+  - breadboard_usage
   - artifact_import
   - artifact_search
   - artifact_image_generate

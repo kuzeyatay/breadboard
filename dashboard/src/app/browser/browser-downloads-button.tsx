@@ -24,7 +24,7 @@ export default function BrowserDownloadsButton({ active, open }: { active: boole
     if (!ready || !active) return;
     const previous = seen.current;
     seen.current = new Set(snapshot.items.map(item => item.id));
-    if (!previous || !snapshot.items.some(item => !previous.has(item.id))) return;
+    if (!previous || !snapshot.items.some(item => item.autoOpen !== false && !previous.has(item.id))) return;
     const frame = requestAnimationFrame(() => { void show(); });
     return () => cancelAnimationFrame(frame);
   }, [active, ready, snapshot.items, show]);

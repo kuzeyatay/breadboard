@@ -1,9 +1,11 @@
+import db from "@/lib/db";
+import { stopRoomWork } from "@/lib/buzz/agent-bridge.ts";
 import { NextResponse } from "next/server";
 
 import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import { ApiError } from "@/lib/hermes/route-helpers.ts";
 import { getMember, removeMember, updateMember } from "@/lib/buzz/instance.ts";
-import { requireBuzzUser, requireRoom } from "@/lib/buzz/route-helpers.ts";
+import { requireBuzzUser, requireRoom, requireRoomManager } from "@/lib/buzz/route-helpers.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +25,7 @@ export async function PATCH(
     const { userId } = await requireBuzzUser();
     const { roomId, memberId } = await params;
     const room = requireRoom(userId, roomId);
+    requireRoomManager(userId, room);
     const member = memberInRoom(Number(memberId), room.id);
     const body = await readJsonBody(request);
 
@@ -51,9 +54,14 @@ export async function DELETE(
     const { userId } = await requireBuzzUser();
     const { roomId, memberId } = await params;
     const room = requireRoom(userId, roomId);
+    requireRoomManager(userId, room);
     const member = memberInRoom(Number(memberId), room.id);
-    if (member.kind === "human") {
+    if (member.kind === "human" && member.userId === userId) {
       throw new ApiError(400, "cannot_leave", "You cannot remove yourself from your own room.");
+    }
+    if (member.kind === "agent") {
+      const conversations = db.prepare("SELECT conversation_id FROM buzz_member_conversations WHERE member_id = ?").all(member.id) as Array<{ conversation_id: number }>;
+      for (const conversation of conversations) await stopRoomWork(room.id, conversation.conversation_id);
     }
     removeMember(member.id);
     return NextResponse.json({ ok: true });

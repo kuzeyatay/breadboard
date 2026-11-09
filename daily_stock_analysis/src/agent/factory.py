@@ -26,7 +26,7 @@ Usage::
 
 import copy
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import List, Optional
 
 from src.config import AGENT_MAX_STEPS_DEFAULT
@@ -311,7 +311,38 @@ def resolve_skill_prompt_state(config=None, skills: Optional[List[str]] = None) 
     )
 
 
-def build_agent_executor(config=None, skills: Optional[List[str]] = None):
+_SUPPLIED_DATA_ONLY_POLICY = (
+    "For this request, use only the information supplied in the conversation. "
+    "External data retrieval is disabled. Do not infer stock tickers from example "
+    "amounts, fetch prices or news, or invent missing current-market facts. "
+    "Perform the requested reasoning and calculations directly on the supplied data. "
+    "This request limit takes precedence over the usual market-research workflow."
+)
+
+
+def _request_tool_registry(allow_external_data: bool):
+    if allow_external_data:
+        return get_tool_registry()
+    from src.agent.tools.registry import ToolRegistry
+
+    # Never unregister tools from the cached registry shared by other requests.
+    return ToolRegistry()
+
+
+def _request_prompt_state(config, skills, allow_external_data: bool):
+    state = resolve_skill_prompt_state(config, skills=skills)
+    if allow_external_data:
+        return state
+    return replace(
+        state,
+        skill_instructions="",
+        default_skill_policy=_SUPPLIED_DATA_ONLY_POLICY,
+        technical_skill_policy=_SUPPLIED_DATA_ONLY_POLICY,
+        use_legacy_default_prompt=False,
+    )
+
+
+def build_agent_executor(config=None, skills: Optional[List[str]] = None, *, allow_external_data: bool = True):
     """Build and return a configured AgentExecutor (or future orchestrator).
 
     When ``AGENT_ARCH=multi``, this returns an orchestrator that manages
@@ -336,8 +367,8 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
 
     from src.agent.llm_adapter import LLMToolAdapter
 
-    registry = get_tool_registry()
-    prompt_state = resolve_skill_prompt_state(config, skills=skills)
+    registry = _request_tool_registry(allow_external_data)
+    prompt_state = _request_prompt_state(config, skills, allow_external_data)
     skill_manager = prompt_state.skill_manager
     logger.info(
         "[AgentFactory] Resolved skill prompt state: skills=%s (arch=%s, explicit=%s, legacy_default_prompt=%s)",
@@ -382,7 +413,7 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
     )
 
 
-def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
+def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None, *, allow_external_data: bool = True):
     """Build the backend-neutral executor used only by Agent Chat endpoints."""
     if config is None:
         from src.config import get_config
@@ -404,10 +435,10 @@ def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
             "Codex Agent currently supports single-agent Chat only",
         )
     if backend_id == "litellm" and arch == "multi":
-        return build_agent_executor(config, skills=skills)
+        return build_agent_executor(config, skills=skills, allow_external_data=allow_external_data)
 
-    registry = get_tool_registry()
-    prompt_state = resolve_skill_prompt_state(config, skills=skills)
+    registry = _request_tool_registry(allow_external_data)
+    prompt_state = _request_prompt_state(config, skills, allow_external_data)
     if backend_id == "litellm":
         from src.agent.llm_adapter import LLMToolAdapter
 
@@ -418,7 +449,7 @@ def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
         from src.agent.tool_surface import ToolSurface
 
         context_llm_adapter = None
-        backend = CodexAgentBackend(ToolSurface(registry), config)
+        backend = CodexAgentBackend(ToolSurface(registry), config, allow_tool_free=not allow_external_data)
 
     return AgentChatExecutor(
         backend=backend,

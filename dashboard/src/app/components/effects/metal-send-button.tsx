@@ -35,6 +35,19 @@ function usePrefersReducedMotion(): boolean {
   return reduced;
 }
 
+/** True when every pixel of the ring canvas is fully transparent. */
+function ringIsBlank(canvas: HTMLCanvasElement): boolean {
+  if (canvas.width < 1 || canvas.height < 1) return false;
+  try {
+    const data = canvas.getContext("2d")?.getImageData(0, 0, canvas.width, canvas.height).data;
+    if (!data) return false;
+    for (let i = 3; i < data.length; i += 4) if (data[i] > 0) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface MetalSendButtonProps {
   /** The existing send button, unchanged. */
   children: ReactNode;
@@ -86,7 +99,42 @@ export default function MetalSendButton({
   const reducedMotion = usePrefersReducedMotion();
   const idle = useUserIdle();
   const hydrated = useHydrated();
+  const paused = reducedMotion || disabled || idle;
   const wrapperClass = className ? `bb-metal-send ${className}` : "bb-metal-send";
+
+  // A paused instance is painted exactly once and then left alone. If that one
+  // paint lands on nothing — the ring canvas lost its contents (GPU reset,
+  // evicted context) or the shared frame was blank when the pause snapshot was
+  // taken (tab loaded in the background) — the button shows a bare paper disc
+  // until something unpauses it, which a disabled button never does. A fresh
+  // instance repaints from the live frame, so remount when the canvas is still
+  // transparent a beat after it should have been drawn.
+  // ponytail: reads a 48px canvas on visibility/pause transitions only; drop
+  // once metal-fx repaints paused instances after a context restore.
+  const [epoch, setEpoch] = useState(0);
+  const remounts = useRef(0);
+  useEffect(() => {
+    if (!hydrated) return;
+    let timer: number | undefined;
+    const check = () => {
+      window.clearTimeout(timer);
+      if (document.hidden) return;
+      timer = window.setTimeout(() => {
+        const canvas = root.current?.querySelector<HTMLCanvasElement>(".metal-fx-canvas");
+        if (!canvas || remounts.current >= 3 || !ringIsBlank(canvas)) return;
+        remounts.current += 1;
+        setEpoch((value) => value + 1);
+      }, 400);
+    };
+    check();
+    document.addEventListener("visibilitychange", check);
+    window.addEventListener("focus", check);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", check);
+      window.removeEventListener("focus", check);
+    };
+  }, [hydrated, paused, epoch]);
 
   // Exactly the markup metal-fx renders without WebGL, which is what the
   // server sent; the ring replaces it right after hydration.
@@ -100,6 +148,7 @@ export default function MetalSendButton({
 
   return (
     <MetalFx
+      key={epoch}
       ref={root}
       variant={variant}
       preset="chromatic"
@@ -110,7 +159,7 @@ export default function MetalSendButton({
       innerShadow
       // Still metal, just not moving, when the viewer asked for less motion
       // or the button has nothing to do, or nobody is at the window.
-      paused={reducedMotion || disabled || idle}
+      paused={paused}
       // Deliberately left on. The library strips the button to its glyph and
       // paints the disc itself; `.bb-metal-send` in globals.css makes that
       // disc the composer's raised paper, the glyph solid ink, and carries

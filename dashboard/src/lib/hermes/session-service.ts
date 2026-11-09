@@ -13,6 +13,9 @@
 // the client — they are derived here from the authorized DB record.
 
 import db from "@/lib/db";
+import { GLOBAL_MODEL_SENTINEL } from "../ai-models.ts";
+import { readVoiceAssistantPreferences } from "../speech/assistant-store.ts";
+import { voiceReasoningEffort } from "../speech/assistant-preferences.ts";
 import { isPdfAssistantPageContext } from "../pdf-assistant-scope.ts";
 import {
   organizationClusterClause,
@@ -614,6 +617,20 @@ export function authorizeRuntimeReference(
   return authorizeRuntimeSession(userId, numeric);
 }
 
+function conversationRuntimePreferences(conversation: ConversationRow) {
+  const settings = getHermesUserSettings(conversation.user_id);
+  if (conversation.origin_label !== 'Voice') {
+    return { model: settings.fallbackModel, reasoningEffort: settings.reasoningEffort };
+  }
+  const voice = readVoiceAssistantPreferences(db, conversation.user_id);
+  // Prepare the same agent that the first spoken turn will use. Constructing
+  // it with the typed-chat settings forces a model/effort change on first send.
+  return {
+    model: voice.voiceModel === GLOBAL_MODEL_SENTINEL ? settings.fallbackModel : voice.voiceModel,
+    reasoningEffort: voiceReasoningEffort(voice),
+  };
+}
+
 async function createConversationRuntime(
   conversation: ConversationRow,
   surface: HermesSurface,
@@ -623,7 +640,7 @@ async function createConversationRuntime(
   inlineTurnId?: string,
   deferMcpConnections = conversation.origin_label === "Voice",
 ): Promise<RuntimeSessionRow> {
-  const settings = getHermesUserSettings(conversation.user_id);
+  const preferences = conversationRuntimePreferences(conversation);
   const selected = await createWithConfiguredRuntimeFallback({
     surface,
     ...conversationWorkspaceIdentity(conversation.public_id, inlineTurnId),
@@ -631,8 +648,7 @@ async function createConversationRuntime(
     metadata: { conversationPublicId: conversation.public_id },
     filesystemMode: "restricted",
     authenticated: true,
-    model: settings.fallbackModel,
-    reasoningEffort: settings.reasoningEffort,
+    ...preferences,
   });
   const { runtime, created } = selected;
   const registration = registerConversationRuntime({
@@ -690,7 +706,7 @@ async function recreateConversationRuntime(
   deferMcpConnections = conversation.origin_label === "Voice",
 ): Promise<RuntimeSessionRow> {
   const runtime = getAgentRuntimeByKind(row.runtime_kind);
-  const settings = getHermesUserSettings(conversation.user_id);
+  const preferences = conversationRuntimePreferences(conversation);
   const previousExternalSessionId = runtimeExternalSessionId(row);
   const metadata = row.runtime_metadata ? JSON.parse(row.runtime_metadata) : {};
   const restoreInput = {
@@ -709,8 +725,7 @@ async function recreateConversationRuntime(
     authenticated: true,
     externalSessionId: previousExternalSessionId ?? "",
     messages: historyOverride ?? canonicalRuntimeMessages(conversation.id),
-    model: settings.fallbackModel,
-    reasoningEffort: settings.reasoningEffort,
+    ...preferences,
   };
   const created =
     runtime.kind === "hermes"

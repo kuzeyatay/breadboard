@@ -3,12 +3,37 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import esbuild from "esbuild";
 
 const dashboardRoot = path.resolve(import.meta.dirname, "..");
 const source = (relative) => fs.readFileSync(path.join(dashboardRoot, relative), "utf8");
 
 const identity = await import("../src/lib/openmontage/identity.ts");
 const runtime = await import("../src/lib/openmontage/runtime.ts");
+
+test("a cold dependency timeout is not reported as missing packages",()=>{
+  const error=Object.assign(new Error("spawn timed out"),{code:"ETIMEDOUT"});
+  const result=runtime.pythonDependencyStatus({error,status:null});
+  assert.equal(result.dependencies,false);assert.match(result.dependencyError,/does not mean the packages are missing/);
+  assert.deepEqual(runtime.pythonDependencyStatus({status:0}),{dependencies:true});
+  assert.deepEqual(runtime.pythonDependencyStatus({status:1}),{dependencies:false});
+});
+
+test("one OpenMontage status response uses a single toolchain probe",async()=>{
+  const built=await esbuild.build({entryPoints:[path.join(dashboardRoot,"src/lib/openmontage/setup.ts")],bundle:true,platform:"node",format:"esm",write:false,
+    plugins:[{name:"status-boundaries",setup(build){
+      build.onResolve({filter:/^(?:\.\/runtime\.ts|\.\/prompt\.ts|\.\.\/codex\/run-manager\.ts)$/},args=>({path:args.path,namespace:"fixture"}));
+      build.onLoad({filter:/.*/,namespace:"fixture"},args=>({loader:"js",contents:args.path.includes("codex")?'export const resolveCodexLauncher=()=>({version:"fixture"});':args.path.includes("prompt")?'export const configuredProviders=()=>[];':`
+        const piece={found:true,path:"fixture",source:"fixture"};
+        const value={available:true,root:"fixture",toolchain:{python:{...piece,version:"fixture",dependencies:true},ffmpeg:piece,ffprobe:piece,node:{...piece,version:"fixture"},remotion:piece}};
+        export const runtimeAvailability=()=>value;
+        export const resolveToolchain=()=>{throw Error("A second toolchain probe would contradict the first");};
+        export const toolAvailability=(_env,resolved)=>{if(resolved!==value)throw Error("Registry must reuse the original probe");return {available:34,total:102,reason:""};};
+      `}));
+    }}]});
+  const {toolchainStatus}=await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString("base64")}`);
+  const result=toolchainStatus({});assert.equal(result.ready,true);assert.equal(result.python.dependencies,true);assert.equal(result.tools.available,34);
+});
 const prompt = await import("../src/lib/openmontage/prompt.ts");
 const workspace = await import("../src/lib/openmontage/workspace.ts");
 const { resolveOpenMontageArtifactPath } = await import(
@@ -116,8 +141,11 @@ test("the prompt lifts the approval gates but keeps the decision record", () => 
   // Nothing that fails to exit may be started inside a one-shot run.
   assert.match(rules, /backlot/i);
   assert.match(rules, /remotion studio/i);
-  // The clone is shared: a production must not write into it.
-  assert.match(rules, /do not edit it/i);
+  // Originals and output stay private; only the installed renderer may use
+  // its exact per-project staging cache to resolve bundled dependencies.
+  assert.match(rules, /do not edit them/i);
+  assert.match(rules, /remotion-composer\/projects\/production-1/);
+  assert.match(rules, /do not manually edit the shared composer/i);
   assert.match(rules, /OPENMONTAGE_PROJECTS_DIR/);
   assert.match(rules, /production-1/);
 });

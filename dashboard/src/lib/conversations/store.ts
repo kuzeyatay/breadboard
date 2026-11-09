@@ -7,6 +7,7 @@ import { removeConversationVideoBlobs } from "./video-uploads.ts";
 import { removeConversationAudioBlobs } from "./audio-uploads.ts";
 import { removeConversationStoredFileBlobs } from "./stored-file-uploads.ts";
 import db from "../db.ts";
+import { assertConversationSwarmStopped } from "../swarm/activity.ts";
 import { scrubbed } from "../watermarks/scrub-text.ts";
 import { stripEchoedAskHereWrapper } from "./message-context.ts";
 import type { HermesSurface } from "../hermes/config.ts";
@@ -298,8 +299,10 @@ export function listConversationsForUser(
   userId: number,
   database: Database.Database = db,
 ): ConversationRow[] {
-  // Pinned chats sort first so an old-but-pinned conversation survives the
-  // limit. The sidebar re-groups them; this only guarantees they are present.
+  // This is the complete saved history, not a recent preview. A global cap
+  // hides older chats and lets pinned chats consume Recents slots. Keep pins
+  // first and stable activity ordering; callers load only summary metadata,
+  // then fetch the transcript when a specific conversation is opened.
   //
   // Temporary chats are excluded here rather than at each rail: this is the one
   // query behind history and restore-after-reload, so leaving them out is what
@@ -314,7 +317,6 @@ export function listConversationsForUser(
     SELECT * FROM conversations
     WHERE user_id = ? AND temporary = 0 AND buzz_room_id IS NULL AND archived_at IS NULL
     ORDER BY (pinned_at IS NOT NULL) DESC, updated_at DESC, id DESC
-    LIMIT 100
   `).all(userId) as ConversationRow[];
 }
 
@@ -412,6 +414,11 @@ export function deleteConversation(
   conversation: ConversationRow,
   database: Database.Database = db,
 ): void {
+  assertConversationSwarmStopped(database, conversation.id);
+  const workerConversations = database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='swarm_worker_chats'").get()
+    ? database.prepare(`SELECT w.conversation_id FROM swarm_worker_chats w JOIN swarm_attempts a ON a.id=w.attempt_id
+        JOIN swarm_runs r ON r.id=a.run_id WHERE r.conversation_id=?`).all(conversation.id) as Array<{ conversation_id: number }>
+    : [];
   // The attachment payloads kept outside the message. Their blobs are read out
   // of the messages that reference them, so this has to happen while those rows
   // still exist — a cascade would take the references with it.
@@ -420,6 +427,13 @@ export function deleteConversation(
   removeConversationAudioBlobs(conversation.id, conversation.user_id, database);
   removeConversationStoredFileBlobs(conversation.id, conversation.user_id, database);
   database.prepare("DELETE FROM conversations WHERE id = ?").run(conversation.id);
+  for (const worker of workerConversations) {
+    const child = getConversationById(worker.conversation_id, database);
+    if (child && child.user_id === conversation.user_id && child.origin_label === "swarm-worker") {
+      database.prepare("DELETE FROM hermes_runtime_sessions WHERE conversation_id=?").run(child.id);
+      deleteConversation(child, database);
+    }
+  }
 }
 
 export function listConversationMessages(

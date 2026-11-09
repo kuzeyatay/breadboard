@@ -32,6 +32,7 @@ import {
 import { normalizeChatTokenUsage } from "@/lib/chat-token-usage";
 import { normalizeChatMessageAttachments } from "@/lib/chat-attachments";
 import { generateAndApplyConversationTitle } from "@/lib/conversations/title-service";
+import { observeVibeTradingConversationTurn } from "@/lib/vibe-trading/conversation-persistence.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -136,6 +137,9 @@ export async function POST(
           : { assistantContent: optionalContent(body.assistantContent) }),
         delegatedAgentReason,
       });
+      if (run?.kind === "vibe_trading") {
+        observeVibeTradingConversationTurn({ userId, conversationId: conversation.id, runId: run.runId });
+      }
       return NextResponse.json({
         messages: [presentExternalMessage(assistantMessage)],
       });
@@ -166,6 +170,9 @@ export async function POST(
       internalAgentContinuation: body.delegatedAgentRun === true,
       delegatedAgentReason,
     });
+    if (run?.kind === "vibe_trading") {
+      observeVibeTradingConversationTurn({ userId, conversationId: conversation.id, runId: run.runId });
+    }
     if (turn.userMessage.order_index === 0) {
       await generateAndApplyConversationTitle({
         conversation,

@@ -228,7 +228,7 @@ async function runPipeline(
   conversationContext: string | undefined,
 ): Promise<void> {
   emit(run, "stage.changed", { stage: "planning" });
-  const plan = await planDeck({ target, request: run.request, conversationContext });
+  const plan = await planDeck({ userId: run.userId, target, request: run.request, conversationContext });
   if (isAborted(run)) return;
   run.plan = plan;
   emit(run, "deck.planned", {
@@ -245,7 +245,7 @@ async function runPipeline(
   });
 
   emit(run, "stage.changed", { stage: "authoring" });
-  const authored = await authorDeck({
+  const authored = await authorDeck({ userId: run.userId,
     target,
     request: run.request,
     plan,

@@ -70,6 +70,7 @@ test('ghost suggestions accept, dismiss, preserve keyboard navigation and reject
     startupRequests++;
     const body=route.request().postDataJSON();
     assert.equal(body.personalize,true);assert.match(body.localDate,/^\d{4}-\d{2}-\d{2}$/);
+    assert.match(body.localTime,/^\d{2}:\d{2}$/);assert.ok(body.timeZone);
     await route.fulfill({json:{recommendations:[{prompt:'Pick up my circuit notes using Recall.'}]}});
   });
   await page.route('http://suggest.test/api/chat-prompt-suggestion', async route=>{
@@ -77,6 +78,7 @@ test('ghost suggestions accept, dismiss, preserve keyboard navigation and reject
     const payload=route.request().postDataJSON();
     assert.equal(payload.messages.length,2);
     assert.equal(payload.model,'test-model');
+    assert.match(payload.localTime,/^\d{2}:\d{2}$/);assert.ok(payload.timeZone);
     const wait=deferred;
     if(wait) await new Promise(resolve=>{release=resolve;});
     await route.fulfill({json:{suggestion:wait?'Old conversation suggestion':'Show me a worked example'}}).catch(()=>{});

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Check, Ellipsis, PictureInPicture2, Plus, Puzzle, RotateCw, ShieldCheck, Trash2 } from "lucide-react";
+import { Check, ChevronDown, Download, Ellipsis, PictureInPicture2, Plus, Puzzle, RotateCw, ShieldCheck, Trash2 } from "lucide-react";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
 import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
 import styles from "./browser-extensions-popover.module.css";
@@ -13,6 +13,7 @@ export default function BrowserExtensionsPopover() {
   const browser = tabs?.tabs.find(tab => tab.id === tabs.activeId)?.browser;
   const pageReady = browser?.pageReady;
   const adBlock = browser?.adBlock;
+  const hls = browser?.hls;
   const googlePipReady = !browser?.private && extensions.some(extension => extension.id === "hkgfoiooedgoejojocmhlaklaeopbecg" && extension.action);
   const [extensionAction, setExtensionAction] = useState<string | null>(null);
   const [extensionError, setExtensionError] = useState<string | null>(null);
@@ -84,6 +85,17 @@ export default function BrowserExtensionsPopover() {
     setExtensionAction(null);
   }
 
+  async function downloadHls(id: string) {
+    setExtensionAction(`hls:${id}`);
+    setExtensionError(null);
+    try {
+      if (!await sendDesktopTabsCommand({ type: "browser-hls-download", id })) {
+        setExtensionError("This stream is no longer available. Play the video again and reopen Extensions.");
+      }
+    } catch { setExtensionError("The download could not start. Try again."); }
+    finally { setExtensionAction(null); }
+  }
+
   return <main className={`browser-extensions-menu ${styles.popover}`} role="dialog" aria-label="Browser extensions"
     onKeyDown={event => {
       if (event.key === "Escape") void sendDesktopTabsCommand({ type: "browser-extensions-close" });
@@ -97,6 +109,38 @@ export default function BrowserExtensionsPopover() {
     <div ref={root} className={styles.content}>
       <header className={styles.header}><strong>Extensions</strong></header>
       <div className={styles.list}>
+        <div className={styles.extension}>
+          <div className={styles.row}>
+          <button type="button" className={styles.rowAction} aria-label="HLS Downloader"
+            aria-expanded={openOptions === "hls"} aria-controls="hls-options"
+            onClick={() => setOpenOptions(openOptions === "hls" ? null : "hls")}>
+            <span className={`${styles.icon} ${styles.pipIcon}`} aria-hidden="true"><Download size={28} /></span>
+            <span className={styles.copy}><strong>HLS Downloader</strong>
+              <small>{browser?.private ? "Unavailable in private browsing" : `Built in · ${hls?.streams.length ? `${hls.streams.length} stream${hls.streams.length === 1 ? "" : "s"} found` : "Play a video to detect streams"}`}</small>
+            </span>
+            <ChevronDown size={16} aria-hidden="true" />
+          </button>
+          </div>
+          {openOptions === "hls" ? <div id="hls-options" className={styles.options} role="group" aria-label="HLS streams">
+            {browser?.private ? <p className={styles.version}>Use a regular browser tab to download HLS video.</p>
+              : !hls?.available ? <p className={styles.version}>The native downloader is unavailable. Restart Breadboard after updating.</p>
+              : !hls.streams.length ? <p className={styles.version}>Start playing a video on this page. Detected HLS streams will appear here automatically.</p>
+              : <>
+                <p className={styles.version}>Downloads the best available quality with combined audio and video as TS or MP4. Progress and cancellation are in Downloads.</p>
+                {hls.streams.map(stream => <div key={stream.id} className={styles.stream}>
+                  <button type="button" className={styles.option} aria-label={`Download ${stream.label}`}
+                    disabled={extensionAction !== null || stream.state === "preparing" || stream.state === "downloading"}
+                    onClick={() => void downloadHls(stream.id)}>
+                    <Download size={15} aria-hidden="true" />
+                    <span className={styles.copy}><strong>{stream.label}</strong><small>{stream.host}</small></span>
+                  </button>
+                  {stream.state === "preparing" || stream.state === "downloading" || stream.state === "completed"
+                    ? <p className={styles.version} role="status">{stream.state === "preparing" ? "Reading playlist…" : stream.state === "downloading" ? "Downloading · see Downloads" : "Saved · open from Downloads"}</p> : null}
+                  {stream.error ? <p className={styles.error} role="alert">{stream.error}</p> : null}
+                </div>)}
+              </>}
+          </div> : null}
+        </div>
         {adBlock ? <div className={styles.extension}>
           <div className={styles.row}>
             <button type="button" className={styles.rowAction} role="switch" aria-label="Ad Blocker"

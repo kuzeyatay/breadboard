@@ -75,7 +75,7 @@ const REQUIREMENTS: Readonly<Record<string, string>> = {
   "meeting-notes": "Text notes work without setup. For recordings, configure Scriberr or Voicebox transcription.",
   "hardware-blueprint": "Included. Requires a model connection.",
   "parametric-cad": "Included. Requires the local CAD tools listed in its status check.",
-  "max-research": "Uses the agents in the Research workflow. No separate download is needed.",
+  "max-research": "Uses the specialists in the Research Master Agent. No separate download is needed.",
   openplanter: "Included with the desktop app. Uses your model connection.",
   praxist: "Requires a prepared project, acceptance of Praxist’s terms, and Docker with its Linux image. Check status for missing requirements.",
   "socials-manager": "Connect social accounts and manage publishing permissions in agent settings.",

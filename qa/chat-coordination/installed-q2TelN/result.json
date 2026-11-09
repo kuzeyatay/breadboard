@@ -1,0 +1,151 @@
+{
+  "passed": false,
+  "released": false,
+  "startedAt": "2026-11-07T16:16:48.942Z",
+  "fingerprint": "5d738f9e61746b95029067c22ac5ce7c5d09e3d439a7067ec6ebe1e3ee5b1339",
+  "marker": "02dd9a48-1c05-4922-9f1b-043522b03871",
+  "model": "gpt-6.1-sol",
+  "owned": [
+    {
+      "id": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+      "kind": "receiver",
+      "title": "QA chat coordination 02dd9a48-1c05-4922-9f1b-043522b03871 receiver",
+      "clientMessageId": "qa-02dd9a48-1c05-4922-9f1b-043522b03871-receiver",
+      "runId": "0dfadf2c-04ba-43ed-bb31-3419f211b0b8"
+    },
+    {
+      "id": "conv_0XowQHWnNWgUPl2qkVPiRCMb",
+      "kind": "sender",
+      "title": "QA chat coordination 02dd9a48-1c05-4922-9f1b-043522b03871 sender",
+      "clientMessageId": "qa-02dd9a48-1c05-4922-9f1b-043522b03871-sender"
+    }
+  ],
+  "requests": [
+    {
+      "route": "/api/hermes/sessions",
+      "method": "POST",
+      "status": 200,
+      "elapsedMs": 45
+    },
+    {
+      "route": "/api/hermes/sessions",
+      "method": "POST",
+      "status": 200,
+      "elapsedMs": 52
+    },
+    {
+      "route": "/api/hermes/sessions/conv_zAJpCTsBLfcfm4lQfvKkiyon/messages",
+      "method": "POST",
+      "status": 200,
+      "elapsedMs": 8161
+    },
+    {
+      "route": "/api/hermes/sessions/conv_zAJpCTsBLfcfm4lQfvKkiyon?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 8171
+    },
+    {
+      "route": "/api/hermes/sessions/conv_zAJpCTsBLfcfm4lQfvKkiyon?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 8693
+    },
+    {
+      "route": "/api/hermes/sessions/conv_zAJpCTsBLfcfm4lQfvKkiyon?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 9213
+    },
+    {
+      "route": "/api/hermes/sessions/conv_zAJpCTsBLfcfm4lQfvKkiyon?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 9727
+    },
+    {
+      "route": "/api/hermes/sessions/conv_zAJpCTsBLfcfm4lQfvKkiyon?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 10244
+    },
+    {
+      "route": "/api/hermes/sessions/conv_zAJpCTsBLfcfm4lQfvKkiyon?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 11806
+    },
+    {
+      "route": "/api/hermes/sessions/conv_zAJpCTsBLfcfm4lQfvKkiyon?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 12324
+    },
+    {
+      "route": "/api/hermes/sessions/conv_zAJpCTsBLfcfm4lQfvKkiyon",
+      "method": "PATCH",
+      "status": 200,
+      "elapsedMs": 12334
+    },
+    {
+      "route": "/api/hermes/sessions/conv_0XowQHWnNWgUPl2qkVPiRCMb/messages",
+      "method": "POST",
+      "elapsedMs": 57353,
+      "error": "TimeoutError: signal timed out"
+    },
+    {
+      "route": "/api/hermes/sessions/conv_0XowQHWnNWgUPl2qkVPiRCMb?surface=dashboard_terminal",
+      "method": "GET",
+      "elapsedMs": 67362,
+      "error": "TimeoutError: signal timed out"
+    },
+    {
+      "route": "/api/hermes/sessions/conv_zAJpCTsBLfcfm4lQfvKkiyon?surface=dashboard_terminal",
+      "method": "GET",
+      "elapsedMs": 77371,
+      "error": "TimeoutError: signal timed out"
+    }
+  ],
+  "cleanup": [
+    {
+      "id": "conv_0XowQHWnNWgUPl2qkVPiRCMb",
+      "deleted": false,
+      "error": "TimeoutError: signal timed out"
+    },
+    {
+      "id": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+      "deleted": false,
+      "error": "TimeoutError: signal timed out"
+    }
+  ],
+  "origin": "http://127.0.0.1:58722",
+  "snapshots": {
+    "receiver": {
+      "id": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+      "title": "Validation code recall test",
+      "status": "idle",
+      "activeRun": null,
+      "messages": [
+        {
+          "role": "user",
+          "clientMessageId": "qa-02dd9a48-1c05-4922-9f1b-043522b03871-receiver",
+          "content": "Remember this private test fact in this chat: the validation code supplied by the user is answer-b7762128-72c2-436d-9c7e-9f8213abd57d. When a later message asks for the validation code, return that exact code. For this setup turn only, reply READY. Do not use tools.",
+          "status": "complete",
+          "tools": []
+        },
+        {
+          "role": "assistant",
+          "clientMessageId": "qa-02dd9a48-1c05-4922-9f1b-043522b03871-receiver",
+          "content": "READY",
+          "status": "complete",
+          "tools": []
+        }
+      ]
+    }
+  },
+  "sourcePrompt": "Use chat_list with query \"QA chat coordination 02dd9a48-1c05-4922-9f1b-043522b03871 receiver\" to find that exact saved chat. Use chat_send_message to ask it: \"What is the validation code the user provided in this chat's setup message? Reply with the exact code.\" Use chat_wait to receive its actual answer, then report the code here. If waiting times out, wait again for that same message. You may discover the chat tools and their schemas if needed. Only use the three chat coordination tools and the tool discovery helpers, and only coordinate with this exact chat. This is one bounded exchange; finish after receiving its answer.",
+  "error": "Error: TimeoutError: signal timed out\n    at socket.onmessage (file:///C:/Users/20252082/breadboard/audits/agent-repairs-2026-11-06/voice25-harness/voice-api-audit.mjs:35:73)\n    at [nodejs.internal.kHybridDispatch] (node:internal/event_target:843:20)\n    at WebSocket.dispatchEvent (node:internal/event_target:776:26)\n    at fireEvent (node:internal/deps/undici/undici:14147:14)\n    at #onMessage (node:internal/deps/undici/undici:15425:9)\n    at Object.onMessage (node:internal/deps/undici/undici:15138:76)\n    at websocketMessageReceived (node:internal/deps/undici/undici:14151:15)\n    at node:internal/deps/undici/undici:14857:19\n    at node:internal/deps/undici/undici:14671:11\n    at afterWrite (node:internal/streams/writable:708:5)",
+  "runElapsedMs": 57355,
+  "finishedAt": "2026-11-07T16:18:06.317Z",
+  "totalElapsedMs": 77375
+}

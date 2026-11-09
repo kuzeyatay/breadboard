@@ -117,6 +117,26 @@
   transform-origin: calc(100% - 88px) 0;
 }
 
+/* Let only the home chat floor share the widgets' translucent material.
+   Keep the bar, rail and browser drawer on their existing surfaces. */
+.surface :global([data-terminal-presentation="dock"]) {
+  --terminal-body-surface: transparent;
+}
+.surface :global([data-terminal-presentation="dock"] [data-terminal-body]) > :has(> :global(.bb-neu-sidebar-left)) {
+  background: var(--paper-surface);
+}
+.surface :global([data-terminal-presentation="dock"] [data-terminal-chat]) {
+  background: var(--home-widget-tint);
+  -webkit-backdrop-filter: blur(18px) saturate(125%);
+  backdrop-filter: blur(18px) saturate(125%);
+}
+
+/* The shared dark-mode transcript paints its own floor above the chat.
+   Clear that floor here so it cannot hide the home material underneath. */
+.surface :global([data-terminal-presentation="dock"] [data-terminal-chat] .bb-chat-scroller) {
+  background: transparent;
+}
+
 /* Match the original quote's wallpaper tint on the other two outer surfaces. */
 .surface :global([data-terminal-notepad]),
 .surface .accessories :is(:global(.browser-dock), :global(.browser-home-calendar)),
@@ -189,6 +209,7 @@
   flex: 1;
 }
 .gardenControls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.gardenControls > a { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; }
 .surface .gardens {
   --quartz-dark: var(--browser-wallpaper-foreground);
   --quartz-darkgray: var(--browser-wallpaper-foreground);

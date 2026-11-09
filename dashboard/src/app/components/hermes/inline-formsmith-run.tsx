@@ -122,7 +122,7 @@ export default function InlineFormsmithRun({
     const content = status === "completed" ? result : failure;
     if (!content) return;
     reportedRef.current = true;
-    notifyTaskCompleted(`Formsmith — ${task.slice(0, 80)}`);
+    notifyTaskCompleted(`Formsmith — ${task.slice(0, 80)}`, { runId });
     onTerminalRef.current?.({
       outcome: status as ExternalAgentTerminalOutcome,
       content,
@@ -145,7 +145,7 @@ export default function InlineFormsmithRun({
         startedAt={startedAt}
         completedAt={completedAt}
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <div className="bb-agent-run-header">
           <span className="bb-agent-run-title truncate">Formsmith</span>
           <div className="flex shrink-0 items-center gap-[8px]">

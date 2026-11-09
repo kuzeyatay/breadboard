@@ -78,21 +78,24 @@ The answer you are about to write will be shown directly to a person in the Brea
 These hard limits override anything in the skill:
 - Rewrite natural-language prose ONLY. Never alter, reorder, translate, or reformat: fenced code blocks, inline or display math ($...$, $$...$$), LaTeX, formulas and their term definitions, ```breadboard-visual``` JSON blocks, tables, source-anchor ids such as S1.P12.F1, question/answer numbering, or YAML frontmatter. Humanize only the sentences around such elements.
 - Narrow repair exception: when a lesson-repair request explicitly reports `missing-source-formula` and supplies a `VERBATIM SOURCE FORMULA COPY SHEET`, replace only each named malformed or missing formula with its supplied block byte-for-byte. That required correction overrides preservation of the old math; leave every other mathematical element untouched and humanize only prose around it.
-- If the request demands a specific output format (JSON only, a fixed template, code only, a strict schema), ignore this entire skill and obey that format exactly.
+- Obey required output formats exactly. In an editor's JSON response, apply style only to user-facing prose string values; preserve keys, types, actions, code, formulas and unchanged document content. Code-only output has no prose to restyle. Never add commentary outside the required format.
 - Never invent facts, numbers, examples, thresholds, citations, or specifics for "liveliness". Removing slop must not change the meaning or add any unsupported claim.
-- Operate in careful mode: keep the request's language, its structure, and roughly its length (80-110%). A post stays a post; a learning section stays a learning section.
+- When revising supplied prose, keep its language, genre, structure and roughly its length (80-110%), unless the user requests a change. For a new answer, choose the length the question needs. A full lesson still needs its requested coverage.
 
 The skill follows.
 """
 
 # Prepended above the calibrated author profile so the model treats it as an
 # override of the skill's defaults, within the same hard limits.
-_STYLE_PROFILE_HEADER = """The author has calibrated a personal voice profile below. It OVERRIDES this skill's stylistic defaults (typography, vocabulary, rhythm, personal tics, per-genre registers) — write as this author writes, keeping their pet words and quirks. The profile can NOT enable invented facts or switch off the "what human writing is allowed to do" / epistemics rules. If the profile is empty or absent, use the skill defaults.
+_STYLE_PROFILE_HEADER = """The author has calibrated a personal voice profile below. It OVERRIDES this skill's stylistic defaults (typography, vocabulary, rhythm, personal tics, per-genre registers) — write as this author writes, keeping their pet words and quirks. Apply that voice alongside Breadboard's explanation-writing rule. The profile can NOT enable invented facts or switch off the "what human writing is allowed to do" / epistemics rules. If the profile is empty or absent, use the skill defaults.
 
 --- AUTHOR VOICE PROFILE ---
 """
 
 _UNSLOP_FOOTER = "\n=== end UNSLOP ===\n"
+
+_EDITOR_FORMAT_REMINDER = """Required editor output: return only valid JSON matching the supplied editor contract. Put each user-facing reply or requested new prose inside the string fields specified by that contract. Keep the required keys, types and action structure. The writing defaults never authorize a plain-text answer, Markdown fences, extra fields or edits the user did not request.
+"""
 
 # Compact form, used for generated learning-page prose.
 #
@@ -116,9 +119,23 @@ Write like a person, not a press release. Use "is" and "has", not "serves as", "
 Hard limits, which override the rules above:
 - Rewrite natural-language prose ONLY. Never alter fenced code, inline or display math, LaTeX, formulas and their term definitions, ```breadboard-visual``` JSON blocks, tables, source-anchor ids such as S1.P12.F1, question/answer numbering, or YAML frontmatter.
 - Narrow repair exception: when a lesson-repair request explicitly reports `missing-source-formula` and supplies a `VERBATIM SOURCE FORMULA COPY SHEET`, replace only each named malformed or missing formula with its supplied block byte-for-byte. That required correction overrides preservation of the old math; leave every other mathematical element untouched and humanize only prose around it.
-- If the request demands a specific output format, obey that format and ignore this block.
+- Obey the required output format exactly. In editor JSON, style only user-facing prose string values; preserve keys, types, actions, code, formulas and unchanged document content. Never add commentary outside the required format.
 - Never invent facts, numbers, examples, thresholds or citations. Removing slop must not change the meaning.
 - Keep the request's language, structure and roughly its length.
+"""
+
+_BREADBOARD_REPLY_DEFAULTS = """Breadboard reply defaults (within the hard limits above):
+Answer the particular question first, using ordinary words and connected sentences. For a focused everyday question, one or two short paragraphs will usually do: explain the main cause or distinction, give a useful example if needed, and stop. Expand for a requested lesson, detailed explanation or complex task. Avoid turning a simple question into a survey of every related concept, mechanism or application. Introduce technical terms only when they help answer this question.
+Use a calm, conversational voice; contractions are welcome. Skip canned enthusiasm, praise, repeated offers of help, decorative analogies and a recap of what you just said. Use lists for actual steps or options, rather than bold labels on every thought. A spoken reply follows the supplied voice-conversation length and layout.
+When drafting from supplied facts, carry those facts over faithfully. Never invent a cause, technical component, date, time or progress claim to make the wording more specific. Include only the requested message; extra questions or commitments need a basis in the request. Requested tone, format, verbatim quotations and level of detail take precedence over these defaults. Apply these rules while writing, without announcing them.
+"""
+
+# A flexible clarity target, informed by ASD-STE100 Issue 9, sections 1, 3 and 6:
+# https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf
+# Shared by full chat and compact prose prompts, independently of a voice profile.
+_BREADBOARD_EXPLANATION_RULE = """Breadboard explanation-writing rule: aim for "70% of the way to ASD-STE100".
+When explaining, build from the main idea in a clear order. Use familiar words, concrete verbs and mostly active voice. Keep one main point per sentence and one topic per paragraph. Prefer short sentences, usually 25 words or fewer. Use the same term for the same thing, and explain necessary technical terms on first use.
+This is a flexible clarity guide alongside the selected tone, not strict STE compliance or a vocabulary restriction. Allow natural rhythm, contractions and longer sentences when clearer. Preserve the requested depth, reasoning, uncertainty, technical meaning, formulas and examples. Apply it in the user's language to explanatory prose, including prose in editor JSON, within the hard limits and output contracts above. Apply it silently.
 """
 
 # Directives are cached per form (full / compact), keyed by source-file mtimes.
@@ -242,7 +259,7 @@ def unslop_directive(compact: bool = False) -> Optional[str]:
                 skill = skill + "\n\n" + blacklist
         body = _UNSLOP_HEADER + "\n" + skill
 
-    directive = body
+    directive = body + "\n\n" + _BREADBOARD_REPLY_DEFAULTS + "\n\n" + _BREADBOARD_EXPLANATION_RULE
     profile = _read(base / "references" / "style-profile.md")
     if profile:
         directive += "\n\n" + _STYLE_PROFILE_HEADER + profile + "\n--- END AUTHOR VOICE PROFILE ---\n"
@@ -274,6 +291,13 @@ def maybe_unslop_system(system: str, task_type: Optional[str]) -> str:
 # is Breadboard's own assistant identity: it keeps the skill on Breadboard's
 # UI turns and off other ChatMock callers.
 BREADBOARD_UI_SYSTEM_MARKER = "You are Bread, the Breadboard assistant."
+# Agent turns carry the identity wrapper above; direct chat uses chat-core.md.
+# Retain both so existing sessions and Agent-off turns share the same defaults.
+BREADBOARD_UI_SYSTEM_MARKERS = (
+    BREADBOARD_UI_SYSTEM_MARKER,
+    "You are Bread, the assistant in Breadboard.",
+    "You are Breadboard’s screen-aware voice assistant.",
+)
 
 _SYSTEM_ROLES = {"system", "developer"}
 
@@ -292,7 +316,8 @@ def _message_text(content: object) -> str:
 
 def demands_structured_output(payload: Dict[str, Any]) -> bool:
     """A forced function call or a schema means the answer is machine-read."""
-    if isinstance(payload.get("response_format"), dict):
+    response_format = payload.get("response_format")
+    if isinstance(response_format, dict) and response_format.get("type") != "text":
         return True
     text = payload.get("text")
     output_format = text.get("format") if isinstance(text, dict) else None
@@ -314,11 +339,21 @@ def unslop_passthrough_applies(
     payload: Dict[str, Any],
 ) -> bool:
     """True when a council-bypassed request is a Breadboard UI prose turn."""
-    if not unslop_applies(_payload_task_type(payload)):
+    task_type = _payload_task_type(payload)
+    if not unslop_applies(task_type):
         return False
     if demands_structured_output(payload):
-        return False
-    return BREADBOARD_UI_SYSTEM_MARKER in text_with_system
+        # Editors return conversational prose inside a JSON envelope. Only
+        # explicit prose task types opt into styling those string values.
+        # Forced tool calls and all machine/unknown task types stay untouched.
+        choice = payload.get("tool_choice")
+        if (
+            task_type not in UNSLOP_PROSE_TASK_TYPES
+            or isinstance(choice, dict)
+            or (isinstance(choice, str) and choice.strip().lower() == "required")
+        ):
+            return False
+    return any(marker in text_with_system for marker in BREADBOARD_UI_SYSTEM_MARKERS)
 
 
 def maybe_unslop_messages(
@@ -341,15 +376,17 @@ def maybe_unslop_messages(
     )
     if not unslop_passthrough_applies(joined, payload):
         return messages
+    if _UNSLOP_HEADER.splitlines()[0] in joined:
+        return messages
     directive = unslop_directive(compact=use_compact(_payload_task_type(payload)))
     if not directive:
         return messages
+    if demands_structured_output(payload):
+        directive += "\n" + _EDITOR_FORMAT_REMINDER
 
     target = system_indexes[-1]
     existing = messages[target]
     content = _message_text(existing.get("content"))
-    if _UNSLOP_HEADER.splitlines()[0] in content:
-        return messages
     updated = list(messages)
     updated[target] = {**existing, "content": content + "\n\n" + directive}
     return updated
@@ -359,14 +396,30 @@ def maybe_unslop_instructions(
     instructions: object,
     payload: Dict[str, Any],
 ) -> object:
-    """Responses-API form of {@link maybe_unslop_messages}."""
-    if not isinstance(instructions, str) or not instructions.strip():
+    """Attach prose rules to Responses instructions, recognizing identity in
+    either instructions or system/developer input messages. History is never
+    rewritten and user/tool text cannot opt a request into the writing policy.
+    """
+    if instructions is not None and not isinstance(instructions, str):
         return instructions
-    if not unslop_passthrough_applies(instructions, payload):
+    system_text = [instructions or ""]
+    raw_input = payload.get("input")
+    if isinstance(raw_input, list):
+        system_text.extend(
+            _message_text(item.get("content"))
+            for item in raw_input
+            if isinstance(item, dict)
+            and item.get("type", "message") == "message"
+            and item.get("role") in _SYSTEM_ROLES
+        )
+    joined = "\n".join(system_text)
+    if not unslop_passthrough_applies(joined, payload):
+        return instructions
+    if _UNSLOP_HEADER.splitlines()[0] in joined:
         return instructions
     directive = unslop_directive(compact=use_compact(_payload_task_type(payload)))
     if not directive:
         return instructions
-    if _UNSLOP_HEADER.splitlines()[0] in instructions:
-        return instructions
-    return instructions + "\n\n" + directive
+    if demands_structured_output(payload):
+        directive += "\n" + _EDITOR_FORMAT_REMINDER
+    return ((instructions + "\n\n") if instructions else "") + directive

@@ -1,0 +1,11 @@
+{
+  "startedAt": "2026-11-07T16:25:25.629Z",
+  "originalHarnessPassed": false,
+  "requests": [],
+  "cleanup": [],
+  "snapshots": {},
+  "released": false,
+  "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n+ actual - expected\n\n+ 'http://127.0.0.1:61342'\n- 'http://127.0.0.1:58722'\n                    ^\n\n    at file:///C:/Users/20252082/breadboard/.tmp-chat-coordination-installed-v3/cleanup-q2TelN.mjs:15:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)",
+  "finishedAt": "2026-11-07T16:25:25.673Z",
+  "transport": "Existing authenticated XMLHttpRequest; no browser globals or user state modified"
+}

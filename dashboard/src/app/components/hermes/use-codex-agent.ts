@@ -17,6 +17,11 @@ import {
 } from "@/lib/chat-attachments.ts";
 
 interface SessionLike {
+  externalAgentTurnPersistence: (clientMessageId: string) => {
+    attachToExistingTurn: boolean;
+    delegatedAgentRun: boolean;
+    delegatedAgentReason?: string;
+  };
   ensureConversation: (clientMessageId?: string) => Promise<string>;
   previewExternalAgentTurn: (input: {
     clientMessageId: string;
@@ -97,6 +102,7 @@ export function useCodexAgent(
         userContent,
         attachments: persistedAttachments,
       });
+      const launchPersistence = session.externalAgentTurnPersistence(clientMessageId);
       let runStarted = false;
       try {
         const conversationId = await session.ensureConversation(clientMessageId);
@@ -110,6 +116,7 @@ export function useCodexAgent(
             gardenSlug,
             conversationId,
             clientMessageId,
+            ...launchPersistence,
             attachments: imageAttachments,
           }),
         });

@@ -1,0 +1,25 @@
+{
+  "passed": true,
+  "inference": "live gpt-6.1-sol",
+  "actualRuntime": "Hermes AIAgent",
+  "toolRequests": [
+    "chat_list",
+    "chat_send_message",
+    "chat_wait",
+    "chat_list",
+    "chat_send_message",
+    "chat_wait"
+  ],
+  "modelCalls": [],
+  "senderAnswer": "The Coordination receiver chat returned its saved answer:\n\n`answer-7294874c-f19d-43ce-aa11-de5aca8a75d7`",
+  "restoredAnswer": "The Coordination receiver chat returned its saved answer:\n\n`answer-7294874c-f19d-43ce-aa11-de5aca8a75d7`",
+  "envelopeStatus": "complete",
+  "receiverTurns": 3,
+  "verified": [
+    "agent tool discovery",
+    "authenticated plugin callback",
+    "receiver history",
+    "closed-tab delivery",
+    "receiver runtime restoration"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "checkedAt": "2026-10-15T08:50:57.949Z",
+  "snapshots": [
+    {
+      "pathname": "/dictation",
+      "loadedAt": "2026-10-15T08:50:21.092Z",
+      "microphoneRequests": 0,
+      "reserved": true,
+      "connections": [
+        "connected"
+      ],
+      "foregroundHolds": 0,
+      "otherAudio": 0,
+      "recording": "false"
+    },
+    {
+      "pathname": "/voice",
+      "loadedAt": "2026-10-15T08:50:16.087Z",
+      "microphoneRequests": 0,
+      "reserved": true,
+      "connections": [
+        "closed",
+        "connected"
+      ],
+      "foregroundHolds": 0,
+      "otherAudio": 0
+    }
+  ]
+}

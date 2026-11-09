@@ -5,7 +5,7 @@ import {
   readJsonBody,
   requireEnabled,
 } from "@/lib/hermes/route-helpers.ts";
-import { spotifyBrowserAccessToken } from "@/lib/spotify/service.ts";
+import { spotifyBrowserAccessToken, spotifyConnectionStatus } from "@/lib/spotify/service.ts";
 import {
   issueSpotifyPlaybackEngineTicket,
   registerSpotifyPlaybackEngine,
@@ -120,6 +120,10 @@ export async function POST(request: Request) {
       );
     }
     const userId = await requireUserId();
+    // The desktop's app-wide hold outlives every page; this is what ends it.
+    if (!spotifyConnectionStatus(userId).connected) {
+      throw new ApiError(403, "spotify_not_connected", "Spotify is not connected.");
+    }
     await renewSpotifyPlaybackViewLease({
       userId,
       viewId: viewId(body.viewId),

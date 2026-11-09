@@ -1,4 +1,5 @@
 import { isBareProviderError } from "../provider-error.ts";
+import { voiceReplyWithOpener } from "../speech/voice-opener-context.ts";
 import { parseBrowserTerminalAccess } from "../browser-terminal.ts";
 import { resolveUnifiedWorkflowContinuation } from "../workflows/unified-continuation.ts";
 import { browserTerminalPrompt, setBrowserTerminalContext } from "./browser-terminal-context.ts";
@@ -206,6 +207,7 @@ type GardenChatPayload = {
   reasoningEffort?: unknown;
   browserAccess?: unknown;
   voice?: unknown;
+  voiceOpener?: unknown;
   selectedDocumentSlugs?: unknown;
   activeMarkdown?: unknown;
   selectedText?: unknown;
@@ -836,7 +838,7 @@ export async function openGardenAgentChat(
     // instruction from text the user pasted to be worked on. Fixed here, before
     // dispatch, so the finished answer is judged against a standard it could not
     // lower. See web-grounding-decider.ts.
-    const webGroundingVerdict = await adjudicateWebGrounding({
+    const webGroundingVerdict = await adjudicateWebGrounding({ userId,
       request: resolved.userText || text,
       plannerRequired: prepared.plan.requiresWebEvidence,
     });
@@ -1019,6 +1021,7 @@ export async function openGardenAgentChat(
       activeGardenSlug: clusterSlug, hasAttachments: Boolean(attachments?.length || selectedSlugs.length),
     });
     const runSystem = composeHermesSystemPrompt({
+      userId,
       surface: "garden_chat",
       decision,
       requiresWebEvidence: webGroundingVerdict.required,
@@ -1041,7 +1044,7 @@ export async function openGardenAgentChat(
         // is whether the material is already here.
         gardenSourceInventory,
         gardenGrounding.context,
-        composeMemoryContext(memory, { includeProfile: false }),
+        composeMemoryContext(memory, { includeProfile: false, deduplicateRuntimeHistory: true }),
         // Directly after memory, so the repository reads as something the
         // assistant knows about this Garden rather than a tool it was handed.
         repository?.systemContext ?? "",
@@ -1079,7 +1082,7 @@ export async function openGardenAgentChat(
       persona: conversationPersonalityPrompt(
         botsStore().forConversation(userId, conversation.public_id),
         activeAgencyAgent
-        ? renderAgencyAgentPersona(activeAgencyAgent)
+        ? renderAgencyAgentPersona(activeAgencyAgent, userId)
         : undefined,
       ),
     });
@@ -1169,8 +1172,11 @@ export async function openGardenAgentChat(
     // this user turn so a resumed session cannot rely on stale system context.
     const runtimeText = selectedGardenDocumentQuestionPrompt(
       quartzAssistantSelectionQuestionPrompt(
-        resolved.text ||
-        "Acknowledge the persona selection briefly and ask how you can help.",
+        voiceReplyWithOpener(
+          resolved.text || "Acknowledge the persona selection briefly and ask how you can help.",
+          payload.voice === true && payload.personalize !== false && !conversation.temporary && !payload.internalAgentContinuation
+            ? payload.voiceOpener : undefined,
+        ),
         normalizeQuartzAssistantSelection(payload.selectedTextContext) ?? payload.selectedText,
       ),
       selectedDocumentEvidence,
@@ -1223,7 +1229,7 @@ export async function openGardenAgentChat(
     }
     const runtimeMessageId = hermesMessageId(reservedClientMessageId);
     // Screen contents are ephemeral turn context, not persisted run history.
-    const screenContext = await browserTerminalPrompt(browserAccess);
+    const screenContext = await browserTerminalPrompt(browserAccess, true, { userId });
     const runtimeSystem = [runSystem, screenContext].filter(Boolean).join("\n\n");
     const finalConversation = conversation;
     return legacyGardenEventStream(
@@ -1237,6 +1243,7 @@ export async function openGardenAgentChat(
       (target) => {
         setBrowserTerminalContext(target.row.id, browserAccess);
         return runtime.startRun({
+          userId,
           externalSessionId: target.externalSessionId,
           liveSessionId: target.liveSessionId,
           workspaceKey: target.workspaceKey,

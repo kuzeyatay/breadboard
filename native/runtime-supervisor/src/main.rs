@@ -1965,7 +1965,7 @@ impl EnvironmentProfile {
                 TOOL_WORKER_ENVIRONMENT_NAMES,
                 OUTER_HARDWARE_BLUEPRINT_WORKER_ENVIRONMENT_NAMES,
             ),
-            Self::MusicProducerWorker => (TOOL_WORKER_ENVIRONMENT_NAMES, &["CHATMOCK_API_KEY", "BREADBOARD_ACESTEP_DIR", "BREADBOARD_ACESTEP_SOURCE_DIR","BREADBOARD_ACESTEP_URL","BREADBOARD_ACESTEP_PORT","BREADBOARD_LOCAL_MCP_BROKER_URL","BREADBOARD_LOCAL_MCP_BROKER_TOKEN","BREADBOARD_LOCAL_MCP_REGISTRY_ROOT"][..]),
+            Self::MusicProducerWorker => (TOOL_WORKER_ENVIRONMENT_NAMES, &["CHATMOCK_API_KEY", "BREADBOARD_ACESTEP_DIR", "BREADBOARD_ACESTEP_SOURCE_DIR","BREADBOARD_ACESTEP_URL","BREADBOARD_ACESTEP_PORT","BREADBOARD_LOCAL_MCP_BROKER_URL","BREADBOARD_LOCAL_MCP_BROKER_TOKEN","BREADBOARD_LOCAL_MCP_REGISTRY_ROOT", "BREADBOARD_SUPERVISOR_CONTROL_URL", "BREADBOARD_SUPERVISOR_CONTROL_TOKEN", "BREADBOARD_RUNTIME_V2_ACTIVE"][..]),
             Self::GetDocWorker => (
                 TOOL_WORKER_ENVIRONMENT_NAMES,
                 GET_DOC_WORKER_ENVIRONMENT_NAMES,
@@ -7294,6 +7294,25 @@ mod tests {
             rejected.is_empty(),
             "runtime-core CLIProxy environment names are outside the supervisor profile: {rejected:?}"
         );
+    }
+
+    #[test]
+    fn music_worker_can_acquire_its_managed_provider_without_leaking_control_to_provider() {
+        let names = [
+            "BREADBOARD_SUPERVISOR_CONTROL_URL",
+            "BREADBOARD_SUPERVISOR_CONTROL_TOKEN",
+            "BREADBOARD_RUNTIME_V2_ACTIVE",
+        ];
+        let mut arguments = vec!["--environment-profile".to_string(), "music-producer-worker".to_string()];
+        for name in names {
+            arguments.extend(["--inherit-env".to_string(), name.to_string()]);
+            assert!(EnvironmentProfile::Acestep.canonical_environment_name(name).is_none());
+        }
+        arguments.extend(["--cwd", "C:\\trusted", "--", "node.exe"].map(str::to_string));
+        assert_eq!(parse_options(arguments).unwrap().inherited_environment, names);
+        for name in ["NEXTAUTH_SECRET", "OPENAI_API_KEY"] {
+            assert!(EnvironmentProfile::MusicProducerWorker.canonical_environment_name(name).is_none());
+        }
     }
 
     #[test]

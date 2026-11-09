@@ -10,14 +10,19 @@ const source = fs.readFileSync(
 test("new garden only shows a pending state after its own form is submitted", () => {
   assert.match(
     source,
-    /const \[isCreatingGarden, startCreatingGarden\] = useTransition\(\);/,
+    /const \[isCreatingGarden, setIsCreatingGarden\] = useState\(false\);/,
   );
 
   const createHandler = source.slice(
     source.indexOf("function handleCreate("),
     source.indexOf("function handleUpdateCluster("),
   );
-  assert.match(createHandler, /startCreatingGarden\(async \(\) =>/);
+  assert.match(createHandler, /creatingGardenRef\.current \|\| !name\.trim\(\)/);
+  assert.match(createHandler, /setIsCreatingGarden\(true\)/);
+  assert.match(createHandler, /finally \{[\s\S]*setIsCreatingGarden\(false\)/);
+  assert.match(createHandler, /fetch\("\/api\/clusters"/);
+  assert.match(createHandler, /setMyClusters\(/);
+  assert.doesNotMatch(createHandler, /router\.refresh\(/);
   assert.doesNotMatch(createHandler, /startTransition\(async \(\) =>/);
 
   const createDialog = source.slice(

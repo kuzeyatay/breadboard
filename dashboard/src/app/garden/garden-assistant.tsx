@@ -5,6 +5,7 @@ import { normalizeQuartzChatLink } from '@/lib/quartz-chat-link';
 import { handleGardenSourceImportResult } from '@/lib/hermes/garden-source-import-client';
 import { useUnreadChats } from '@/lib/conversations/unread-client';
 import { useChatNotificationView } from '@/lib/use-chat-notification-view';
+import { notificationMessageKeys } from '@/lib/chat-notification-visibility';
 import { ActiveChatIcon, UnreadChatDot } from '@/app/components/hermes/history-client';
 
 import {
@@ -664,7 +665,9 @@ const TranscriptRow = memo(function TranscriptRow({
   const visibleAssistantContent = gardenAssistantVisibleContent(message);
   const uiResources = uiResourcesForUserRequest(message.uiResources, userRequest);
   return (
-    <div className={separatorLabel ? 'space-y-3' : undefined}>
+    <div className={separatorLabel ? 'space-y-3' : undefined}
+      data-notification-message={!message.pending && message.role === 'assistant' && visibleAssistantContent.trim()
+        ? JSON.stringify(notificationMessageKeys(message)) : undefined}>
       {separatorLabel ? <ChatTimeSeparator label={separatorLabel} dateTime={message.createdAt} /> : null}
       <div className={message.role === 'user' ? 'ml-auto flex w-fit min-w-0 max-w-[75%] flex-col items-end gap-1 has-[[data-editing=true]]:w-full has-[[data-editing=true]]:max-w-none' : 'group/assistant-message w-full'}>
         {message.role === 'user' ? (
@@ -2075,6 +2078,7 @@ export default function GardenAssistant({
           reasoningEffort: voice?.reasoningEffort ?? reasoningEffort,
           browserAccess: voice?.browserAccess,
           voice: voice?.voice,
+          voiceOpener: voice?.voiceOpener,
           attachments: pendingAttachments,
           activeMarkdown: activeMarkdownContext,
           selectedText,
@@ -2755,6 +2759,7 @@ export default function GardenAssistant({
         ) : null}
         <div
           ref={transcriptScrollRef}
+          data-notification-chat={`garden_chat:${activeClusterSlug}:${activeChatId}`}
           className="bb-chat-scroller bb-chat-scroll-tail flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4"
         >
           <InlineArtifactCardsProvider legacyChatSessionId={activeChatId} gardenSlug={activeClusterSlug}>
@@ -2784,6 +2789,7 @@ export default function GardenAssistant({
               </div>
               {recommendations.length ? <ChatSuggestionCards
                 suggestions={recommendations.map(item => item.prompt)}
+                suggestionScopeKey={JSON.stringify([activeClusterSlug,activeMarkdown?.title,temporaryChat])}
                 onSelectSuggestion={prompt => { setInput(prompt); composerTextareaRef.current?.focus(); }}
               /> : <div className="space-y-2">
                 {SUGGESTED_PROMPTS.map((prompt) => (

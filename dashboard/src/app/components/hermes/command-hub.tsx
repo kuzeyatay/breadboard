@@ -1577,7 +1577,7 @@ const showCareerOps =
                 {tab === "agent" && !detail && surface !== "quartz_ai" ? (
                   <div className="mb-3 flex items-center gap-2 px-1">
                     <button type="button" aria-pressed={!agentManagerOpen} onClick={() => setAgentManagerOpen(false)} className="rounded-lg px-3 py-2 text-xs font-medium hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">Choose an agent</button>
-                    <button type="button" aria-pressed={agentManagerOpen} onClick={() => { setAgentManagerOpen(true); setAgentDirectoryOpen(false); }} className="rounded-lg px-3 py-2 text-xs font-medium hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">Manage agents</button>
+                    <button type="button" aria-pressed={agentManagerOpen} onClick={() => { setAgentManagerOpen(true); setAgentDirectoryOpen(false); }} className="rounded-lg px-3 py-2 text-xs font-medium hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">Manage specialists</button>
                     <button ref={agentPreferencesTriggerRef} type="button" onClick={() => setAgentPreferencesOpen(true)} className="ml-auto rounded-lg px-2 py-2 text-xs text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">Selection preferences</button>
                   </div>
                 ) : null}
@@ -1602,14 +1602,14 @@ const showCareerOps =
                         setActiveIndex(0);
                       }}
                       placeholder={
-                        tab === "agent" ? "Search agents" : "Search prompts"
+                        tab === "agent" ? "Search Master Agents and specialists" : "Search prompts"
                       }
                       className="neu-control w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] py-2.5 pl-9 pr-12 text-sm text-[var(--ink)] outline-none focus:border-[var(--botanical)]"
                       aria-label={
-                        tab === "agent" ? "Search agents" : "Search prompts"
+                        tab === "agent" ? "Search Master Agents and specialists" : "Search prompts"
                       }
                     />
-                    {tab === "agent" ? <button type="button" onClick={() => { setAgentManagerOpen(true); setAgentDirectoryOpen(false); }} aria-label="Agent manager settings" title="Manage agent downloads and setup" className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)] active:scale-[0.97]"><Settings2 size={16} strokeWidth={1.6} /></button> : null}
+                    {tab === "agent" ? <button type="button" onClick={() => { setAgentManagerOpen(true); setAgentDirectoryOpen(false); }} aria-label="Agent manager settings" title="Manage specialist downloads and setup" className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)] active:scale-[0.97]"><Settings2 size={16} strokeWidth={1.6} /></button> : null}
                     {tab === "prompt" ? (
                       <button
                         type="button"
@@ -1679,7 +1679,8 @@ const showCareerOps =
                   <>
                     <UnifiedWorkflowsPanel query={query} surface={surface} onSelect={choose} />
                     <h3 className="px-3 py-2 text-sm font-medium text-[var(--ink-heading)]">Specialist agents</h3>
-                    <ul role="listbox" aria-label="Agents" className="divide-y divide-[var(--line)]">
+                    <p className="mb-2 px-3 text-xs text-[var(--ink-muted)]">Choose a specialist directly for a specific task.</p>
+                    <ul role="listbox" aria-label="Specialist agents" className="divide-y divide-[var(--line)]">
                     {[
                     ...(surface === "dashboard_terminal" && matchesAgentSearch("Video Use", VIDEO_USE_COMMAND, "edit video clips subtitles") ? [{ name: "Video Use", node: (
                       <li key="agent-video-use" className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]">
@@ -3113,7 +3114,7 @@ const showCareerOps =
                           <CapabilityIcon kind="agent" />
                         </span>
                         <p className="mt-3 text-sm font-medium text-[var(--ink-heading)]">
-                          No matching agents
+                          No matching specialists
                         </p>
                         <p className="mt-1 text-xs text-[var(--ink-muted)]">
                           Try a different search.

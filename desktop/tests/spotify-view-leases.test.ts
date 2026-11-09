@@ -28,6 +28,19 @@ test("temporary failures retry quickly, but sign-out stops background renewal",a
   await client.dispose();
 });
 
+test("an app-wide hold starts once, renews by itself, and restarts after sign-out or disconnect",async t=>{
+  t.mock.timers.enable({apis:["Date","setTimeout"]});
+  let status=200;const requests:SpotifyRequest[]=[];
+  const client=new SpotifyViewLeases(async request=>{requests.push(request);return {status,body:'{}'};});
+  client.ensureHold(viewId);client.ensureHold(viewId);await settle();
+  assert.equal(requests.length,1,"every page connecting does not add a heartbeat");
+  t.mock.timers.tick(20_000);await settle();assert.equal(requests.length,2,"no page is needed to keep it alive");
+  status=403;t.mock.timers.tick(20_000);await settle();assert.equal(requests.length,3);
+  t.mock.timers.tick(120_000);await settle();assert.equal(requests.length,3,"disconnecting Spotify ends the hold");
+  status=200;client.ensureHold(viewId);await settle();assert.equal(requests.length,4,"reconnecting starts it again");
+  await client.dispose();
+});
+
 test("renewals join an in-flight request and cleanup follows its late acknowledgement",async t=>{
   t.mock.timers.enable({apis:["Date","setTimeout"]});
   const requests:SpotifyRequest[]=[];let resolve!:(response:SpotifyResponse)=>void;

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Breadboard adapter for the cloned Resource2Skill runtime.
 
-The upstream project is kept pristine.  This adapter points its model calls at
+This adapter points the upstream project's model calls at
 ChatMock, gives every run a private output directory, and emits a small JSONL
 protocol that the dashboard can stream.
 """
@@ -46,6 +46,7 @@ def openai_compatible_call(
     max_retries: int = 5,
     retry_delay: float = 2.0,
     tool_choice: str | dict[str, Any] | None = None,
+    emit_model_event: bool = True,
     **_: Any,
 ) -> dict[str, Any]:
     """Resource2Skill's LLM hook, implemented against ChatMock's OpenAI API."""
@@ -66,7 +67,8 @@ def openai_compatible_call(
     if reasoning_effort and reasoning_effort != "none":
         payload["reasoning_effort"] = reasoning_effort
 
-    emit("model.call", model=selected_model, reasoning=reasoning_effort)
+    if emit_model_event:
+        emit("model.call", model=selected_model, reasoning=reasoning_effort)
     last_error = ""
     for attempt in range(1, max_retries + 1):
         try:
@@ -96,9 +98,77 @@ def configure_output(config: dict[str, Any], domain: str, workspace: Path) -> di
     args = [str(value) for value in (mcp.get("args") or [])]
     if domain in {"web", "excel", "blender", "reaper"}:
         args.extend(["--demo-dir", str(workspace)])
-    mcp["args"] = args
+    # MCP deliberately passes only a small default environment. Preserve the
+    # adapter's already isolated provider, browser, temp and certificate paths
+    # explicitly, without forwarding arbitrary host credentials.
+    child_env = dict(mcp.get("env") or {})
+    for key in (
+        "CHATMOCK_BASE_URL", "CHATMOCK_API_KEY", "CHATMOCK_MODEL",
+        "PLAYWRIGHT_BROWSERS_PATH", "TEMP", "TMP", "TMPDIR",
+        "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+        "XDG_CACHE_HOME", "XDG_DATA_HOME", "PATH", "PATHEXT",
+        "SYSTEMROOT", "SystemRoot", "WINDIR", "COMSPEC",
+        "PYTHONIOENCODING", "PYTHONUTF8", "PYTHONUNBUFFERED",
+        "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE", "NO_COLOR",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+    ):
+        if key in os.environ:
+            child_env[key] = os.environ[key]
+    mcp["env"] = child_env
+    # Domain tools perform their own model calls in another process. Bootstrap
+    # that process through the same adapter before it imports core.llm.
+    mcp["args"] = [str(Path(__file__).resolve()), "--mcp-server", *args]
     configured["mcp"] = mcp
     return configured
+
+
+def run_mcp_server(argv: list[str]) -> None:
+    import functools
+    import runpy
+
+    if not argv:
+        raise ValueError("An MCP server entry point is required")
+    entry = Path(argv[0]).resolve(strict=True)
+    sys.path.insert(0, str(Path.cwd()))
+    sys.path.insert(0, str(entry.parent))
+    from core import llm as r2s_llm
+
+    # stdout belongs exclusively to MCP's JSON-RPC transport. Parent tool
+    # events still show progress; child provider calls must not add JSONL events.
+    r2s_llm.call_azure_openai = functools.partial(openai_compatible_call, emit_model_event=False)
+    sys.argv = [str(entry), *argv[1:]]
+    runpy.run_path(str(entry), run_name="__main__")
+
+
+def check_tool_protocol() -> None:
+    try:
+        from mcp import ClientSession, StdioServerParameters  # noqa: F401
+        from mcp.server.fastmcp import FastMCP  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "Resource2Skill requires MCP 1.x (>=1.26,<2). Repair its tools in Agent Manager."
+        ) from exc
+
+
+def publish_result(result: Any, *, domain: str, workspace: Path) -> int:
+    """Keep the durable receipt and terminal event consistent, including failures."""
+    summary = (result.final_message or result.summary()).strip()
+    success = bool(result.success)
+    receipt = {
+        "success": success,
+        "domain": domain,
+        "iterations": result.iterations,
+        "toolCalls": len(result.tool_calls),
+        "summary": summary,
+        "error": result.error if success else result.error or result.note or summary,
+        "note": result.note,
+    }
+    (workspace / ".breadboard-result.json").write_text(
+        json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    emit("run.completed" if success else "run.failed", **receipt)
+    return 0 if success else 2
 
 
 def main() -> int:
@@ -111,9 +181,11 @@ def main() -> int:
     if sys.version_info[:2] != (3, 11):
         emit("run.failed", error=f"Resource2Skill requires Python 3.11; found {sys.version.split()[0]}")
         return 2
+    check_tool_protocol()
     if args.check:
         sys.path.insert(0, str(root))
         import core  # noqa: F401
+        import core.skill_wiki.registry  # noqa: F401
         import mcp  # noqa: F401
         import openpyxl  # noqa: F401
         import playwright  # noqa: F401
@@ -181,25 +253,11 @@ def main() -> int:
         emit("run.failed", error=str(exc))
         return 2
 
-    summary = (result.final_message or result.summary()).strip()
-    receipt = {
-        "success": bool(result.success),
-        "domain": args.domain,
-        "iterations": result.iterations,
-        "toolCalls": len(result.tool_calls),
-        "summary": summary,
-        "error": result.error,
-        "note": result.note,
-    }
-    (workspace / ".breadboard-result.json").write_text(
-        json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    if result.success:
-        emit("run.completed", **receipt)
-        return 0
-    emit("run.failed", error=result.error or result.note or summary, **receipt)
-    return 2
+    return publish_result(result, domain=args.domain, workspace=workspace)
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--mcp-server"]:
+        run_mcp_server(sys.argv[2:])
+        raise SystemExit(0)
     raise SystemExit(main())

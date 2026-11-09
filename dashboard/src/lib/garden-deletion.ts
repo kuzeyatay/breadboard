@@ -13,6 +13,7 @@ import { GBrainClient } from "./gbrain/client.ts";
 import { deleteConversation, getConversationById } from "./conversations/store.ts";
 import { cancelRunningExternalAgentRuns } from "./conversations/external-agent-cancel.ts";
 import { cancelRuntimeSessionWork } from "./hermes/session-cancel.ts";
+import { assertConversationSwarmStopped } from "./swarm/activity.ts";
 import type { RuntimeSessionRow } from "./hermes/runtime-store.ts";
 import {
   refreshOrganizationQuartzIndex,
@@ -366,6 +367,7 @@ export async function deleteOwnedGarden(input: {
       runtimeSessionIds: inventory.runtimeSessionIds,
       contentPath,
     });
+    for (const conversationId of inventory.conversationIds) assertConversationSwarmStopped(database, conversationId);
 
     // GBrain is derived state, but it is a separate database. Remove it before
     // deleting the mapping that proves which source belongs to this Garden.

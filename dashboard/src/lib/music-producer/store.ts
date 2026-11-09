@@ -19,6 +19,11 @@ export interface MusicLaunch {
   created_at: number;
   attempts: number;
 }
+/** Set only by the trusted server invocation, never from route body fields. */
+export function musicSwarmRequestId(launch: Pick<MusicLaunch, "launch_json">): string | null {
+  const value = JSON.parse(launch.launch_json || "{}").swarmRequestId;
+  return typeof value === "string" && value.startsWith("swarm_") ? value : null;
+}
 let ready = false;
 function schema() {
   if (ready)

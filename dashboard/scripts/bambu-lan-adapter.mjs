@@ -12,8 +12,8 @@ import fs from "node:fs/promises";
 import { isIP } from "node:net";
 
 const MAX_STATUS_BYTES = 256 * 1024;
-const MODELS = new Set(["P1P", "P1S", "X1C", "X1E", "A1", "A1 mini", "H2S"]);
-const modelByPrefix = { "01P": "P1S", "01S": "P1P", "00M": "X1C", "03W": "X1E", "030": "A1", "039": "A1 mini", "093": "H2S" };
+const MODELS = new Set(["P1P", "P1S", "P2S", "X1C", "X1E", "A1", "A1 mini", "H2S"]);
+const modelByPrefix = { "01P": "P1S", "01S": "P1P", "22E": "P2S", "00M": "X1C", "03W": "X1E", "030": "A1", "039": "A1 mini", "093": "H2S" };
 const stageNames = { 0: "Printing layers", 1: "Bed levelling", 2: "Preheating bed", 3: "Checking motion", 4: "Changing filament", 7: "Heating nozzle", 8: "Calibrating extrusion", 9: "Scanning bed", 10: "Inspecting first layer", 11: "Identifying build plate", 13: "Homing", 14: "Cleaning nozzle" };
 const timestamp = () => new Date().toISOString();
 function safeError(message = "Printer communication failed.") { return Object.assign(new Error(message), { code: "bambu_transport", status: 502 }); }
@@ -95,6 +95,7 @@ export function normalizeTelemetry(raw, previous, observedAt = timestamp(), delt
 
 export function startCommand(access, input) {
   validateAccess(access); filename(input.remoteFilename);
+  if (access.model === "P2S") throw safeError("Send P2S prints through the installed Bambu Studio. Direct LAN start has not been validated for this model.");
   const { snapshot: s } = input;
   if (!s || s.printerId !== access.id || s.review.printerId !== access.id || !/^\d{1,12}$/.test(input.attemptId) || !/^Metadata\/plate_[1-9][0-9]{0,2}\.gcode$/.test(s.plate.path)) throw safeError("Invalid approved execution snapshot.");
   const mapping = Array(Math.max(access.model === "H2S" ? 1 : 5, s.plate.projectFilamentCount)).fill(-1);

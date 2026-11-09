@@ -235,6 +235,7 @@ export async function designCadPart(
             }
           : {}),
         systemPrompt: (isNewProject ? cadPlanningPrompt : cadSystemPrompt)({
+          userId: input.userId,
           defaults,
           safety,
           engine,

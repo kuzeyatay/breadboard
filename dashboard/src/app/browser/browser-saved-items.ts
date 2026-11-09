@@ -32,9 +32,11 @@ function cacheItems<T>(options: SavedItemsOptions<T>, items: T[]) {
 export async function loadSavedBrowserItems<T>(options: SavedItemsOptions<T>): Promise<T[]> {
   requireDesktopStore(options);
   let local: T[] = [];
+  let hasCache = false;
   try {
     const cached = options.storage.getItem(options.key) ??
       (options.legacyKey ? options.storage.getItem(options.legacyKey) : null);
+    hasCache = cached !== null;
     local = options.normalize(JSON.parse(cached ?? "[]"));
   } catch {
     // Legacy renderer storage can be unavailable without affecting disk reads.
@@ -44,6 +46,10 @@ export async function loadSavedBrowserItems<T>(options: SavedItemsOptions<T>): P
   try {
     stored = await options.control.read();
   } catch {
+    // Every focus re-reads. One slow answer from a busy server used to replace
+    // a good, already-synced list with an error banner. A cached copy came
+    // from an earlier successful read or write, so keep showing it.
+    if (hasCache) return local;
     throw new Error(`Couldn’t load your saved ${options.label ?? "sites"}. Try again.`);
   }
   const items = stored === null ? local : options.normalize(stored);

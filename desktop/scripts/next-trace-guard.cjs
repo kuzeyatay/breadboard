@@ -1,5 +1,7 @@
 "use strict";
 
+require("./dashboard-build-data.cjs");
+
 // Next and @vercel/nft expand dynamic fs expressions before documented
 // outputFileTracingExcludes are applied. A broad expression such as
 // dashboard/**/* can therefore enter live Chromium profiles and fail on their

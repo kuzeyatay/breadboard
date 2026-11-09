@@ -1,4 +1,7 @@
-export type RecommendationSource = 'gmail' | 'outlook' | 'calendar' | 'recall' | 'garden' | 'chat' | 'task';
+import { parseVoiceOpener, type VoiceOpenerAssessment } from './voice-opener.ts';
+import { recommendationCandidates, recommendationPriority, recommendationSubjects, usefulRecommendation } from './quality.ts';
+
+export type RecommendationSource = 'gmail' | 'outlook' | 'calendar' | 'recall' | 'screen-time' | 'garden' | 'chat' | 'task';
 
 export interface RecommendationEvidence {
   id: string;
@@ -7,6 +10,15 @@ export interface RecommendationEvidence {
   summary: string;
   timestamp?: string;
   gardenSlug?: string;
+  calendar?: {
+    kind: 'event' | 'overlap' | 'gap';
+    start: string;
+    end: string;
+    status?: 'upcoming' | 'ongoing' | 'recently-ended';
+    allDay?: boolean;
+  };
+  /** Explicit topical matches, not an assumption that captured work is unfinished. */
+  relatedIds?: string[];
 }
 
 export interface Recommendation {
@@ -14,19 +26,55 @@ export interface Recommendation {
   prompt: string;
   sourceLabel: string;
   sourceIds: string[];
+  voice?: VoiceOpenerAssessment;
 }
 
 export interface RecommendationContext {
   gardenSlug?: string;
   pageTitle?: string;
   localDate?: string;
+  localTime?: string;
+  timeZone?: string;
 }
 
 export const RECOMMENDATION_REFRESH_EVENT = 'breadboard:recommendations:refresh';
-export const RECOMMENDATION_TTL_MS = 5 * 60_000;
+export const RECOMMENDATION_TTL_MS = 3 * 60_000;
+
+export const FALLBACK_RECOMMENDATION_PROMPTS = [
+  'Help me turn a rough idea into a clear plan.',
+  'Explain something I’m stuck on with a worked example.',
+  'Review a draft and point out what I could improve.',
+  'Help me compare options for a decision I’m making.',
+] as const;
+
+export const GARDEN_FALLBACK_RECOMMENDATION_PROMPTS = [
+  'Explain a difficult idea from this garden with a worked example.',
+  'Quiz me on the key ideas in this garden, one question at a time.',
+  'Find connections between the notes in this garden.',
+  'Help me identify gaps in this garden and choose what to study next.',
+] as const;
+
+/** Garden membership is an explicit boundary, never a title/keyword guess. */
+export function scopedRecommendationEvidence(evidence: readonly RecommendationEvidence[], context: RecommendationContext): RecommendationEvidence[] {
+  return evidence.filter(item => !context.gardenSlug || item.gardenSlug === context.gardenSlug);
+}
+
+/** Fill only missing slots, after useful, grounded candidates have been chosen. */
+export function completeRecommendationPrompts(prompts: readonly string[], fallbacks: readonly string[] = [], context: RecommendationContext = {}): string[] {
+  const defaults = context.gardenSlug ? GARDEN_FALLBACK_RECOMMENDATION_PROMPTS : FALLBACK_RECOMMENDATION_PROMPTS;
+  return [...new Map([...prompts,...fallbacks,...defaults]
+    .filter(prompt=>typeof prompt==='string'&&prompt.trim()).map(prompt=>[prompt.trim().toLocaleLowerCase(),prompt.trim()])).values()].slice(0,4);
+}
+
+export function completeRecommendations(cards: readonly Recommendation[], context: RecommendationContext = {}): Recommendation[] {
+  const byPrompt=new Map(cards.map(card=>[card.prompt,card]));
+  return completeRecommendationPrompts(cards.map(card=>card.prompt), [], context).map((prompt,index)=>byPrompt.get(prompt)??{
+    id:`fallback:${index}`,prompt,sourceIds:[],sourceLabel:'Ideas',
+  });
+}
 
 export const SOURCE_LABELS: Record<RecommendationSource, string> = {
-  gmail: 'Gmail', outlook: 'Outlook', calendar: 'Calendar', recall: 'Recall',
+  gmail: 'Gmail', outlook: 'Outlook', calendar: 'Calendar', recall: 'Recall', 'screen-time': 'Screen Time',
   garden: 'Your garden', chat: 'Recent chat', task: 'Plan',
 };
 
@@ -35,7 +83,7 @@ export function cleanRecommendationText(value: unknown, max = 240): string {
 }
 
 /** Suggestions may name only evidence the authenticated read actually found. */
-export function parseRecommendations(value: unknown, evidence: readonly RecommendationEvidence[]): Recommendation[] {
+export function parseRecommendations(value: unknown, evidence: readonly RecommendationEvidence[], limit = 4): Recommendation[] {
   if (!Array.isArray(value)) return [];
   const known = new Map(evidence.map(item => [item.id, item]));
   const seen = new Set<string>();
@@ -48,31 +96,38 @@ export function parseRecommendations(value: unknown, evidence: readonly Recommen
     const text = prompt.trim();
     if (seen.has(text.toLowerCase())) return [];
     seen.add(text.toLowerCase());
-    return [{ id: sourceIds.join('|'), prompt: text, sourceIds,
+    const voice = parseVoiceOpener(item.voice);
+    return [{ id: sourceIds.join('|'), prompt: text, sourceIds, ...(voice ? { voice } : {}),
       sourceLabel: [...new Set(sourceIds.map(id => SOURCE_LABELS[known.get(id)!.source]))].join(' · ') }];
-  }).slice(0, 4);
+  }).slice(0, limit);
 }
 
-/** Still useful when the model is unavailable: every fallback names real work. */
-export function evidenceRecommendations(evidence: readonly RecommendationEvidence[]): Recommendation[] {
-  const used = new Set<string>();
-  const ranked = [...evidence].sort((a, b) => {
-    const priority = { calendar: 0, task: 1, gmail: 2, outlook: 2, recall: 3, chat: 4, garden: 5 };
-    return priority[a.source] - priority[b.source];
-  });
-  const diverse = ranked.filter(item => {
-    const family = item.source === 'outlook' ? 'gmail' : item.source;
-    if (used.has(family)) return false;
-    used.add(family); return true;
-  });
-  return parseRecommendations([...diverse, ...ranked].map(item => {
-    const title = cleanRecommendationText(item.title, 110);
-    const prompt = item.source === 'calendar' ? `Help me prepare for “${title}”.` :
-      item.source === 'gmail' || item.source === 'outlook' ? `Summarize the email “${title}” and help me decide what to do next.` :
-      item.source === 'recall' ? `Use Recall to help me pick up where I left off with “${title}”.` :
-      item.source === 'task' ? `Help me make progress on “${title}”.` :
-      item.source === 'chat' ? `Help me continue my recent chat about “${title}”.` :
-      `Help me review “${title}” in my garden.`;
-    return { prompt, sourceIds: [item.id] };
-  }), evidence);
+/** Prefer fresh actions and different subjects; keep a useful card when there
+ * simply is not enough evidence for four new ones. */
+export function selectRecommendations(candidates: readonly Recommendation[], evidence: readonly RecommendationEvidence[], previousPrompts: readonly string[] = [], context:RecommendationContext={}): Recommendation[] {
+  evidence = scopedRecommendationEvidence(evidence, context);
+  const previous=new Set(previousPrompts.map(prompt=>prompt.toLowerCase()));
+  const known=new Map(evidence.map(item=>[item.id,item]));
+  const picked: Recommendation[]=[];
+  const subjects=new Set<string>(),families=new Map<string,number>();
+  const eligible=candidates.filter(item=>item.sourceIds.every(id=>known.has(id)) && usefulRecommendation(item,evidence));
+  while(picked.length<4) {
+    const ranked=eligible.filter(item=>!recommendationSubjects(item,known).some(id=>subjects.has(id))).map((item,index)=>{
+      const sources=item.sourceIds.map(id=>known.get(id)!).filter(Boolean).sort((a,b)=>recommendationPriority(b,context)-recommendationPriority(a,context));
+      const source=sources[0],family=source.source==='outlook'?'gmail':source.source==='calendar'?(source.calendar?.kind??'event'):source.source;
+      return {item,family,index,score:recommendationPriority(source,context)+(sources.length>1?12:0)
+        +(previous.has(item.prompt.toLowerCase())?0:18)-(families.get(family)??0)*20};
+    }).sort((a,b)=>b.score-a.score||a.index-b.index);
+    if(!ranked.length)break;
+    const {item,family}=ranked[0];picked.push(item);
+    recommendationSubjects(item,known).forEach(id=>subjects.add(id));families.set(family,(families.get(family)??0)+1);
+  }
+  return picked;
+}
+
+/** Model-independent actions grounded in the actual schedule and recent work. */
+export function evidenceRecommendations(evidence: readonly RecommendationEvidence[], previousPrompts: readonly string[] = [], context:RecommendationContext={}): Recommendation[] {
+  evidence = scopedRecommendationEvidence(evidence, context);
+  const candidates=evidence.flatMap(item=>recommendationCandidates(item,evidence,context));
+  return selectRecommendations(parseRecommendations(candidates,evidence,candidates.length),evidence,previousPrompts,context);
 }

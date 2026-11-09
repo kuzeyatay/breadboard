@@ -1,0 +1,19 @@
+{
+  "ready": true,
+  "checkedAt": "2026-10-15T08:52:44.692Z",
+  "sourceHash": "760f85d48e8d22af9f99d5c096dd26a799469e4e60ffff66aaa78b04916cdf34",
+  "targetId": "DF89855DC5155DFFF913290ACB326BFC",
+  "servicesRestarted": false,
+  "temporaryUntilReload": true,
+  "hash": "760f85d48e8d22af9f99d5c096dd26a799469e4e60ffff66aaa78b04916cdf34",
+  "microphoneRequests": 0,
+  "voice": false,
+  "recording": "false",
+  "status": "Hold Ctrl + Win to dictate into the active text field.",
+  "bridge": true,
+  "pill": [
+    96,
+    32
+  ],
+  "dots": 5
+}

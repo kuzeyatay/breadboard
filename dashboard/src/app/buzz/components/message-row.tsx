@@ -10,7 +10,8 @@
 // one block rather than as repeated records.
 
 import { memo, useState } from "react";
-import { MessageSquareText, Pencil, SmilePlus, Trash2 } from "lucide-react";
+import { MessageSquareText, Pencil, RotateCcw, SmilePlus, Trash2 } from "lucide-react";
+import AssistantMessageActions from "@/app/components/assistant-message-actions";
 
 import { cn } from "@/app/buzz/lib/cn";
 import BreadboardLoader from "@/app/components/breadboard-loader";
@@ -43,12 +44,17 @@ export interface MessageRowProps {
   onReact: (emoji: string) => void;
   onOpenThread: () => void;
   onDelete: () => void;
-  onEdit: (body: string) => void;
+  onEdit: (body: string) => void | Promise<boolean>;
+  onRetry?: () => void;
+  onRegenerate?: () => void;
+  onApprove?: () => void;
+  onStop?: () => void;
+  canDelete?: boolean;
+  runHref?: string;
 }
 
 function MessageRowImpl({
   message,
-  member,
   roomMembers,
   grouped,
   isSelf,
@@ -56,9 +62,16 @@ function MessageRowImpl({
   onOpenThread,
   onDelete,
   onEdit,
+  onRetry,
+  onRegenerate,
+  onApprove,
+  onStop,
+  canDelete = isSelf,
+  runHref,
 }: MessageRowProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.body);
+  const [saving, setSaving] = useState(false);
 
   const live = message.status === "pending" || message.status === "streaming";
   const failed = message.status === "failed" || message.status === "aborted";
@@ -114,6 +127,8 @@ function MessageRowImpl({
           </MessageHeaderRow>
         )}
 
+        {message.metadata?.needsPermission && onApprove ? <button type="button" className="neu-button my-2 self-start rounded-xl px-3 py-2 text-xs" onClick={onApprove}>Allow for this response</button> : null}
+        {live && onStop ? <button type="button" aria-label="Stop response" className="neu-button my-1 self-start rounded-xl px-3 py-1 text-xs" onClick={onStop}>Stop</button> : null}
         <div data-testid="message-body">
           {editing ? (
             <div data-enter-submit-scope className="mt-1">
@@ -127,9 +142,11 @@ function MessageRowImpl({
                 <button data-enter-submit
                   type="button"
                   className="rounded-md bg-primary px-2 py-1 font-medium text-primary-foreground"
-                  onClick={() => {
-                    onEdit(draft);
-                    setEditing(false);
+                  disabled={saving || !draft.trim()}
+                  onClick={async () => {
+                    setSaving(true);
+                    try { if (await onEdit(draft) !== false) setEditing(false); }
+                    finally { setSaving(false); }
                   }}
                 >
                   Save
@@ -155,10 +172,20 @@ function MessageRowImpl({
                   <BreadboardLoader className="size-3" />
                   <span className="text-2xs">{message.authorName} is thinking…</span>
                 </span>
-              ) : null}
+              ) : failed ? <p>{message.status === "aborted" ? "This response was stopped." : "This response could not be completed."}</p> : null}
             </div>
           )}
         </div>
+
+        {message.delivery ? (
+          <div role="status" className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+            <span>{message.delivery === "sending" ? "Sending…" : message.deliveryError ?? "Not sent"}</span>
+            {message.delivery === "failed" && onRetry ? <button type="button" onClick={onRetry} aria-label="Retry sending message" className="neu-button-icon flex size-7 items-center justify-center rounded-full"><RotateCcw className="size-3.5" /></button> : null}
+          </div>
+        ) : null}
+        {message.authorKind === "agent" && !live ? (
+          <AssistantMessageActions content={message.body} onRetry={onRegenerate} />
+        ) : null}
 
         {message.reactions && message.reactions.length > 0 ? (
           <div className="mt-1 flex flex-wrap gap-1">
@@ -190,6 +217,7 @@ function MessageRowImpl({
           </div>
         ) : null}
 
+        {runHref ? <a href={runHref} target="_blank" rel="noopener noreferrer" className="mt-2 w-fit text-xs text-primary hover:underline">Open run and files</a> : null}
         {message.replyCount && message.replyCount > 0 ? (
           <button
             type="button"
@@ -205,7 +233,7 @@ function MessageRowImpl({
       {/* Upstream's action bar: floated at the row's top-right, revealed on
           hover. `.buzz-root` carries its own `hover:` variant, so it stays
           hidden until a real pointer is over the row. */}
-      <div className="absolute -top-3 right-4 z-20 flex items-center gap-0.5 rounded-lg border border-border/60 bg-popover p-0.5 opacity-0 shadow-xs transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100">
+      {!message.delivery ? <div className="absolute -top-3 right-4 z-20 flex items-center gap-0.5 rounded-lg border border-border/60 bg-popover p-0.5 opacity-0 shadow-xs transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100">
         {QUICK_REACTIONS.map((emoji) => (
           <button
             key={emoji}
@@ -238,7 +266,6 @@ function MessageRowImpl({
           <MessageSquareText className="size-3.5" />
         </button>
         {isSelf ? (
-          <>
             <button
               type="button"
               onClick={() => setEditing(true)}
@@ -247,6 +274,8 @@ function MessageRowImpl({
             >
               <Pencil className="size-3.5" />
             </button>
+        ) : null}
+        {canDelete ? (
             <button
               type="button"
               onClick={onDelete}
@@ -255,9 +284,8 @@ function MessageRowImpl({
             >
               <Trash2 className="size-3.5" />
             </button>
-          </>
         ) : null}
-      </div>
+      </div> : null}
     </article>
   );
 }

@@ -1,0 +1,351 @@
+{
+  "passed": true,
+  "scope": "native Chromium accessibility, Unicode span selection, rapid live corrections and final Enter",
+  "nativeStreaming": true,
+  "results": [
+    {
+      "field": "input",
+      "editable": true,
+      "focused": true,
+      "caret": [
+        746,
+        327,
+        1,
+        20
+      ],
+      "bounds": [
+        601,
+        313,
+        687,
+        49
+      ],
+      "selection": [
+        19,
+        19
+      ],
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null
+    },
+    {
+      "field": "textarea",
+      "editable": true,
+      "focused": true,
+      "caret": [
+        794,
+        374,
+        1,
+        20
+      ],
+      "bounds": [
+        601,
+        371,
+        687,
+        51
+      ],
+      "selection": [
+        19,
+        19
+      ],
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null
+    },
+    {
+      "field": "editable",
+      "editable": true,
+      "focused": true,
+      "caret": [
+        602,
+        433,
+        1,
+        25
+      ],
+      "bounds": [
+        601,
+        432,
+        682,
+        46
+      ],
+      "selection": [
+        0,
+        0
+      ],
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null
+    },
+    {
+      "field": "rich",
+      "editable": true,
+      "focused": true,
+      "caret": [
+        602,
+        488,
+        1,
+        26
+      ],
+      "bounds": [
+        601,
+        487,
+        682,
+        47
+      ],
+      "selection": [
+        0,
+        0
+      ],
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null
+    },
+    {
+      "field": "password",
+      "editable": false,
+      "focused": false,
+      "caret": null,
+      "bounds": null,
+      "selection": null,
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null
+    },
+    {
+      "field": "readonly",
+      "editable": false,
+      "focused": false,
+      "caret": null,
+      "bounds": null,
+      "selection": null,
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null
+    },
+    {
+      "field": "button",
+      "editable": false,
+      "focused": false,
+      "caret": null,
+      "bounds": null,
+      "selection": null,
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null
+    },
+    {
+      "field": "custom",
+      "editable": false,
+      "focused": false,
+      "caret": null,
+      "bounds": null,
+      "selection": null,
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null
+    },
+    {
+      "field": "input",
+      "expected": "Testing",
+      "accessibilityText": "Testing",
+      "selection": [
+        7,
+        7
+      ]
+    },
+    {
+      "field": "input",
+      "expected": "Testing ",
+      "accessibilityText": "Testing ",
+      "selection": [
+        8,
+        8
+      ]
+    },
+    {
+      "field": "input",
+      "expected": "Testing breadb",
+      "accessibilityText": "Testing breadb",
+      "selection": [
+        14,
+        14
+      ]
+    },
+    {
+      "field": "input",
+      "expected": "Testing breadboard ",
+      "accessibilityText": "Testing breadboard ",
+      "selection": [
+        19,
+        19
+      ]
+    },
+    {
+      "field": "input",
+      "expected": "Testing  breadboard.",
+      "accessibilityText": "Testing  breadboard.",
+      "selection": [
+        20,
+        20
+      ]
+    },
+    {
+      "field": "textarea",
+      "expected": "Testing",
+      "accessibilityText": "Testing",
+      "selection": [
+        7,
+        7
+      ]
+    },
+    {
+      "field": "textarea",
+      "expected": "Testing ",
+      "accessibilityText": "Testing ",
+      "selection": [
+        8,
+        8
+      ]
+    },
+    {
+      "field": "textarea",
+      "expected": "Testing breadb",
+      "accessibilityText": "Testing breadb",
+      "selection": [
+        14,
+        14
+      ]
+    },
+    {
+      "field": "textarea",
+      "expected": "Testing breadboard ",
+      "accessibilityText": "Testing breadboard ",
+      "selection": [
+        19,
+        19
+      ]
+    },
+    {
+      "field": "textarea",
+      "expected": "Testing  breadboard.",
+      "accessibilityText": "Testing  breadboard.",
+      "selection": [
+        20,
+        20
+      ]
+    },
+    {
+      "field": "editable",
+      "expected": "Testing",
+      "accessibilityText": "Testing",
+      "selection": [
+        7,
+        7
+      ]
+    },
+    {
+      "field": "editable",
+      "expected": "Testing ",
+      "accessibilityText": "Testing ",
+      "selection": [
+        8,
+        8
+      ]
+    },
+    {
+      "field": "editable",
+      "expected": "Testing breadb",
+      "accessibilityText": "Testing breadb",
+      "selection": [
+        14,
+        14
+      ]
+    },
+    {
+      "field": "editable",
+      "expected": "Testing breadboard ",
+      "accessibilityText": "Testing breadboard ",
+      "selection": [
+        19,
+        19
+      ]
+    },
+    {
+      "field": "editable",
+      "expected": "Testing  breadboard.",
+      "accessibilityText": "Testing  breadboard.",
+      "selection": [
+        20,
+        20
+      ]
+    },
+    {
+      "field": "rich",
+      "expected": "Testing",
+      "accessibilityText": "Testing",
+      "selection": [
+        7,
+        7
+      ]
+    },
+    {
+      "field": "rich",
+      "expected": "Testing ",
+      "accessibilityText": "Testing ",
+      "selection": [
+        8,
+        8
+      ]
+    },
+    {
+      "field": "rich",
+      "expected": "Testing breadb",
+      "accessibilityText": "Testing breadb",
+      "selection": [
+        14,
+        14
+      ]
+    },
+    {
+      "field": "rich",
+      "expected": "Testing breadboard ",
+      "accessibilityText": "Testing breadboard ",
+      "selection": [
+        19,
+        19
+      ]
+    },
+    {
+      "field": "rich",
+      "expected": "Testing  breadboard.",
+      "accessibilityText": "Testing  breadboard.",
+      "selection": [
+        20,
+        20
+      ]
+    }
+  ]
+}

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   isClarificationAnswerMessage,
+  partitionCourseCorrections,
   splitSteeredResponse,
 } from "../src/lib/steered-response.ts";
 
@@ -79,4 +80,11 @@ test("a boundary beyond an interrupted response is clamped safely", () => {
       ["correction", "continue differently"],
     ],
   );
+});
+
+test("a steer accepted before any answer text renders above the response, later ones inline", () => {
+  const early = { id: "early", content: "you can code the images", offset: 0 };
+  const late = { id: "late", content: "shorter", offset: 12 };
+  assert.deepEqual(partitionCourseCorrections([late, early]), { leading: [early], inline: [late] });
+  assert.deepEqual(partitionCourseCorrections([]), { leading: [], inline: [] });
 });

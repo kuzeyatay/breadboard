@@ -1,3 +1,4 @@
+import { renderSystemPrompt, systemPromptText } from "../system-prompts/service.ts";
 // What the OpenWork agent is told, and why the prompt owns these particular
 // things.
 //
@@ -9,6 +10,7 @@
 // here.
 
 import path from "node:path";
+
 
 /** Where a run leaves anything meant to come back to the chat. */
 export const OUTBOX_RELATIVE_PATH = path.join(".opencode", "openwork", "outbox");
@@ -29,23 +31,14 @@ export interface PromptOptions {
  * doing costs one sentence and saves a run spent discovering the wall.
  */
 export function workspaceAgentPrompt(
-  options: PromptOptions = { deliverFiles: true, allowCommands: true },
+  options: PromptOptions = { deliverFiles: true, allowCommands: true }, userId?: number | null
 ): string {
   const outbox = OUTBOX_RELATIVE_PATH.replaceAll("\\", "/");
-  return [
-    "You are the agent of an OpenWork workspace inside Breadboard.",
-    "The working directory is the workspace: its skills, connected MCP servers and files are what you have, and you stay inside it.",
-    "",
-    "Nobody is watching this run, so you never ask a clarifying question. Decide, do the work, and list the assumptions you made in your answer.",
-    options.allowCommands
+  return renderSystemPrompt("openwork-operating-rules", userId, { "website_api_policy": systemPromptText("api-anything-policy", userId), "command_policy": String(options.allowCommands
       ? "Never start a command that does not exit on its own — a server, a watcher, an interactive session. The run ends when you answer, so anything still running is lost."
-      : "You may not run shell commands on this run. Use file edits and your connected services instead.",
-    options.deliverFiles
+      : "You may not run shell commands on this run. Use file edits and your connected services instead."), "delivery_policy": String(options.deliverFiles
       ? `Anything the person should receive — a document, a spreadsheet, a report, an image — is written into ${outbox} and named for what it is. Files anywhere else stay in the workspace and are not delivered.`
-      : `Answer in the chat rather than in files. Write into ${outbox} only when the task explicitly asks for a file.`,
-    "",
-    "Finish with a short, direct answer: what you did, what you produced, and anything that did not work.",
-  ].join("\n");
+      : `Answer in the chat rather than in files. Write into ${outbox} only when the task explicitly asks for a file.`) });
 }
 
 /**

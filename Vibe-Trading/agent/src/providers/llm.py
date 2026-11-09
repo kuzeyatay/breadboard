@@ -1088,6 +1088,16 @@ def build_llm(*, model_name: Optional[str] = None, callbacks: Any = None) -> Any
         "vibe_provider": provider,
         "vibe_api_key": api_key,
     }
+    # Compatible gateways use Chat Completions even when the model name makes
+    # newer LangChain releases prefer Responses (notably GPT-6 tool calls).
+    base_host = urlsplit(creds["base_url"] or "").hostname or ""
+    native_openai = caps.name == "openai" and (
+        not creds["base_url"]
+        or base_host == "api.openai.com"
+        or base_host.endswith(".openai.com")
+    )
+    if not native_openai:
+        kwargs["use_responses_api"] = False
     if caps.default_headers:
         headers = dict(caps.default_headers)
         if caps.name in {"moonshot", "kimi-coding"}:

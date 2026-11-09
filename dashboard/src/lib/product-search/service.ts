@@ -1035,7 +1035,7 @@ async function projectDiscoveredCandidate(
 
 export async function searchProducts(
   rawInput: ProductSearchInput,
-  options: { signal?: AbortSignal; baseUrl?: string; userRequest?: string } = {},
+  options: { userId?: number | null; signal?: AbortSignal; baseUrl?: string; userRequest?: string } = {},
 ): Promise<ProductSearchResult> {
   const input = normalizeInput(rawInput);
   let candidates: SearchCandidate[];

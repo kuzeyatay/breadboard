@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { isCodeDockAction, isCodeDockPage } from "../shared/code-dock";
 import {
   app,
   BrowserWindow,
@@ -21,6 +23,9 @@ import { registerTerminalDataHandlers } from "./terminal-data-transport";
 import { SpotifyViewLeases } from "./spotify-view-leases";
 import { activeLearnGardens } from "./learn-quit-guard";
 import { isOpenLocalPathRequest, openLocalPath } from "./local-path-opener";
+import { GestureController } from "./gesture-controller";
+import { ScreenTimeTracker } from "./screen-time";
+import { isGestureControlAction, isGestureControlPage } from "../shared/gesture-control";
 import { restoreBrowserSession, flushBrowserSession } from "./browser-session-persistence";
 import {
   ensureMutableDirectories,
@@ -287,6 +292,7 @@ export class AppLifecycle {
   private sourceRepairActivator: SourceRepairActivator | null = null;
   private runtimeDashboardUrl: string | null = null;
   private readonly spotifyViews = new Map<number, { origin: string; client: SpotifyViewLeases }>();
+  private spotifyAppHold: { origin: string; viewId: string; client: SpotifyViewLeases } | null = null;
   private allowedOrigins!: AllowedOrigins;
   private runtimeStatusTimer: NodeJS.Timeout | null = null;
   private runtimeStatusRefreshInFlight = false;
@@ -308,6 +314,8 @@ export class AppLifecycle {
   private computerUseIndicator: ComputerUseIndicator | null = null;
   private voiceCompanion: VoiceCompanion | null = null;
   private systemDictation: SystemDictation | null = null;
+  private gestureController: GestureController | null = null;
+  private screenTime: ScreenTimeTracker | null = null;
   /** Random loopback-only CDP port reserved for visible browser-agent tabs. */
   private browserAgentDebuggingPort: number | null = null;
   /** Decided pre-ready, logged once the log exists. */
@@ -422,7 +430,7 @@ export class AppLifecycle {
     const launchMode = runtimeLaunchMode(this.paths.mode);
     if (!this.paths.qaMode && launchMode === "lean" && fs.existsSync(path.join(this.paths.appRoot, ".git"))) {
       try {
-      initializeSourceRepair(this.paths.dataRoot, this.paths.appRoot, true);
+      initializeSourceRepair(this.paths.dataRoot, this.paths.appRoot, true, { bulkRoot: this.paths.bulkRoot });
       recoverInterruptedRepairActivation(this.paths.dataRoot);
       this.sourceRepairActivator = new SourceRepairActivator(this.paths.dataRoot, this.paths.appRoot, {
         quiesce: async () => {
@@ -578,6 +586,7 @@ export class AppLifecycle {
     app.on("before-quit", () => this.browserDownloads.prepareForQuit());
 
     this.windows = new WindowManager({
+      bulkRoot: this.paths.bulkRoot,
       allowed: this.allowedOrigins,
       startupHtmlPath,
       recoveryHtmlPath,
@@ -602,6 +611,8 @@ export class AppLifecycle {
       },
       devTools: this.paths.mode === "dev",
       browserExtensionsConfigDir: this.paths.configDir,
+      browserDownloads: this.browserDownloads,
+      downloadSettings: this.downloadSettings,
       browserVisitedLinksConfigDir: this.paths.configDir,
       browserHistoryConfigDir: this.paths.configDir,
       tabSessionConfigDir: this.paths.configDir,
@@ -638,6 +649,9 @@ export class AppLifecycle {
       },
     });
     this.windows.tabs.setEnabled(readBrowserNavigationEnabled(this.paths.configDir));
+    this.screenTime = new ScreenTimeTracker({ dataRoot: this.paths.dataRoot, moduleDir: this.moduleDir,
+      context: () => this.windows.tabs.screenTimeContext(), log: line => supervisorLog.write(line) });
+    this.screenTime.start();
     this.breadboardUse = new BreadboardUseBridge({
       tabs: this.windows.tabs, dataRoot: this.paths.dataRoot,
       dashboardUrl: () => this.runtimeDashboardUrl,
@@ -1402,7 +1416,10 @@ export class AppLifecycle {
         sender.on("did-start-navigation",navigated);
         sender.once("destroyed",clear);
       }
-      return entry.client.request(request);
+      const response = await entry.client.request(request);
+      const held = request as { resource?: unknown; method?: unknown };
+      if (held.resource === "engine" && held.method === "POST" && response.status < 300) this.holdSpotifyForApp(origin, sender.session);
+      return response;
     });
     registerTextHighlightHandler(ipcMain, {
       ownsSender: sender => Boolean(this.windowForSender(sender)),
@@ -1581,6 +1598,20 @@ export class AppLifecycle {
       }
       return this.browserDownloads.command(command);
     });
+    ipcMain.handle(IPC_CHANNELS.codeDock, (event, action: unknown) => {
+      if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame ||
+          !isCodeDockPage(event.senderFrame.url, this.runtimeDashboardUrl) || !isCodeDockAction(action)) throw new Error("Invalid Code request.");
+      return this.windows.tabs.codeDockRequest(event.sender, action);
+    });
+    ipcMain.handle(IPC_CHANNELS.gestureControl, (event, action: unknown, settings: unknown) => {
+      if (!this.windowForSender(event.sender) || !event.senderFrame ||
+          event.senderFrame !== event.sender.mainFrame ||
+          !isGestureControlPage(event.senderFrame.url, this.runtimeDashboardUrl) ||
+          !isGestureControlAction(action)) throw new Error("Invalid gesture control request.");
+      this.gestureController ??= new GestureController({ appRoot: this.paths.appRoot,
+        log: line => this.logs.forService("desktop").write(line) });
+      return this.gestureController.request(action, settings);
+    });
     ipcMain.handle(IPC_CHANNELS.openLocalPath, async (event, request: unknown) => {
       if (!this.windowForSender(event.sender) || !event.senderFrame ||
           !isNavigationAllowed(this.allowedOrigins, event.senderFrame.url) ||
@@ -1631,6 +1662,28 @@ export class AppLifecycle {
       // Diagnostics must never turn a refusal into a crash.
     }
     return true;
+  }
+
+  /** Page holds die with their tab. This one keeps the player and its Spotify
+   * device alive for the app session, so closing Terminal never stops audio.
+   * Sign-out, disconnecting Spotify or a Runtime replacement end it; the next
+   * page that connects starts a new one. */
+  private holdSpotifyForApp(origin: string, session: Electron.Session): void {
+    if (this.spotifyAppHold?.origin !== origin) {
+      void this.spotifyAppHold?.client.dispose();
+      this.spotifyAppHold = {
+        origin,
+        viewId: randomUUID(),
+        client: new SpotifyViewLeases(async request => {
+          if (request.method !== "DELETE" && (this.quitting || this.runtimeDashboardUrl === null ||
+              new URL(this.runtimeDashboardUrl).origin !== origin)) {
+            return { status: 401, body: JSON.stringify({ message: "The Spotify player is closed." }) };
+          }
+          return sendSpotifyRequest({ dashboardUrl: origin, request, readCookies: url => session.cookies.get({ url }) });
+        }),
+      };
+    }
+    this.spotifyAppHold.client.ensureHold(this.spotifyAppHold.viewId);
   }
 
   private windowForSender(sender: Electron.WebContents): BrowserWindow | null {
@@ -1816,9 +1869,12 @@ export class AppLifecycle {
       this.logs?.forService("desktop").write(`[desktop] quit requested: ${new Error().stack}`);
       this.clearScheduledRuntimeRootRetry();
       this.clearRuntimeRootStabilityTimer();
-      void Promise.all([this.breadboardUse?.close(), this.shutdownRuntime()]).then(() => {
+      void this.windows.tabs.codeDock.close().then(() => Promise.all([this.breadboardUse?.close(), this.gestureController?.close(), this.screenTime?.close(), this.shutdownRuntime()])).then(() => {
         this.runtimeStopped = true;
         app.quit();
+      }).catch(error => {
+        this.quitting = false;
+        dialog.showErrorBox("Breadboard could not close safely", String(error));
       });
     });
     app.on("window-all-closed", () => {

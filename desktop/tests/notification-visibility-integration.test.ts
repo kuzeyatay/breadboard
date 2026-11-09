@@ -28,7 +28,7 @@ test("response notifications paint in the native overlay, including during voice
         window.deliverInbox = messages => publishNotificationInbox({messages, requestedAt:notificationRequestTime()});
         if (location.pathname === '/notification-overlay') createRoot(document.getElementById('root')).render(<Overlay/>);
       ` },
-      bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
+      bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", outfile: "app.js",
       alias: { "next/navigation": router, "@": path.join(dashboard, "src") },
       define: { "process.env.NODE_ENV": '"production"' },
     });

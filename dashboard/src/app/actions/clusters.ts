@@ -11,6 +11,7 @@ import { gardenCardNoteCount } from "@/lib/garden-card-note-count";
 import {
   refreshOrganizationQuartzIndex,
   refreshPrivateQuartzIndex,
+  refreshPrivateQuartzIndexCooperatively,
   refreshPublicQuartzIndex,
 } from "@/lib/quartz-garden-index";
 import {
@@ -322,7 +323,7 @@ export async function createCluster(
   description: string,
   /** Drop the new garden straight into this cluster instead of the top level. */
   folder?: string | null,
-): Promise<string> {
+): Promise<Cluster> {
   try {
     const userId = await requireUserId();
     const slug = uniqueClusterSlug(name);
@@ -333,14 +334,15 @@ export async function createCluster(
     const lease = clusterDir
       ? acquireGardenMutationLease(clusterDir, "create-garden")
       : null;
+    let created: ClusterRow;
 
     try {
-      db.prepare(
+      created = db.prepare(
         `INSERT INTO clusters (
           user_id, name, slug, description, visibility, border_color, folder,
           thought_topology_enabled, thought_topology_revision
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)`,
-      ).run(
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0) RETURNING *`,
+      ).get(
         userId,
         name,
         slug,
@@ -348,12 +350,12 @@ export async function createCluster(
         "private",
         DEFAULT_BORDER_COLOR,
         cleanFolder || null,
-      );
+      ) as ClusterRow;
 
       if (contentPath && clusterDir) {
         fs.mkdirSync(clusterDir, { recursive: true });
         const date = new Date().toISOString().split("T")[0];
-        const indexContent = `---\ntitle: ${name}\ndate: ${date}\ndescription: ${description || ""}\nknowledge_type: "cluster-index"\n---\n`;
+        const indexContent = `---\ntitle: ${JSON.stringify(name)}\ndate: ${date}\ndescription: ${JSON.stringify(description || "")}\nknowledge_type: "cluster-index"\n---\n`;
         fs.writeFileSync(path.join(clusterDir, "_index.md"), indexContent);
         refreshClusterIndex(contentPath, slug);
       }
@@ -361,12 +363,12 @@ export async function createCluster(
       lease?.release();
     }
 
-    refreshPrivateQuartzIndex(userId);
     // The garden is usable as soon as its database row and source index exist.
-    // A full Quartz publication can take minutes, so keep it in the request's
-    // post-response lifetime instead of holding the create dialog open.
+    // Preparing the library scans every existing garden, so it belongs after
+    // the response too, alongside the potentially long Quartz publication.
     after(async () => {
       try {
+        await refreshPrivateQuartzIndexCooperatively(userId);
         await publishQuartzAfterMutation(`create cluster ${slug}`, {
           userId,
           gardenSlug: slug,
@@ -382,7 +384,7 @@ export async function createCluster(
     revalidatePath("/new-tab");
     revalidatePath("/browser");
     revalidatePath("/garden");
-    return slug;
+    return toCluster(created, 0, userId);
   } catch (err) {
     throw new Error(
       err instanceof Error ? err.message : "Failed to create garden",

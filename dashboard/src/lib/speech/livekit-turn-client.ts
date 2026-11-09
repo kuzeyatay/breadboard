@@ -7,6 +7,8 @@ export interface LiveKitTurnDetector {
   close(): void;
 }
 
+const MAX_REALTIME_INFERENCE_LAG_MS = 200;
+
 /** Bounded same-origin PCM batches reuse Breadboard authentication and desktop routing. */
 export async function connectLiveKitTurnDetector(options: {
   sampleRate: number;
@@ -18,7 +20,7 @@ export async function connectLiveKitTurnDetector(options: {
   let encode = createVoicePcmEncoder(options.sampleRate);
   let frames: Int16Array[] = [], closed = false, retry = 0;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
-  let current: { endpoint: string; controller: AbortController; sequence: number; pending: boolean } | null = null;
+  let current: { endpoint: string; controller: AbortController; sequence: number; pending: boolean; pendingSince: number; pendingSamples: number } | null = null;
   const lifetime = new AbortController();
   const signal = AbortSignal.any([lifetime.signal, options.signal]);
   const retire = () => {
@@ -56,7 +58,7 @@ export async function connectLiveKitTurnDetector(options: {
         void fetch(endpoint, { method: 'DELETE', keepalive: true }).catch(() => {});
         return;
       }
-      current = { endpoint, controller: new AbortController(), sequence: 0, pending: false };
+      current = { endpoint, controller: new AbortController(), sequence: 0, pending: false, pendingSince: 0, pendingSamples: 0 };
       options.onReady?.();
     } catch (error) { fail(error); }
   }
@@ -64,8 +66,10 @@ export async function connectLiveKitTurnDetector(options: {
     const connection = current;
     if (!connection || connection.pending || closed || !frames.length) return;
     connection.pending = true;
+    connection.pendingSince = Date.now();
     const batch = frames.splice(0, LIVEKIT_MAX_BATCH_SAMPLES / LIVEKIT_FRAME_SAMPLES);
     const pcm = new Int16Array(batch.reduce((size, frame) => size + frame.length, 0));
+    connection.pendingSamples = pcm.length;
     let offset = 0;
     for (const frame of batch) { pcm.set(frame, offset); offset += frame.length; }
     try {
@@ -81,13 +85,21 @@ export async function connectLiveKitTurnDetector(options: {
         if ((event.type === 'speech-start' || event.type === 'speech-end') && Number.isSafeInteger(event.sample)) options.onEvent(event);
       }
     } catch (error) { if (current === connection) fail(error); }
-    finally { connection.pending = false; if (current === connection) void drain(); }
+    finally { connection.pending = false; connection.pendingSamples = 0; if (current === connection) void drain(); }
   }
   options.signal.addEventListener('abort', close, { once: true });
   if (options.signal.aborted) { close(); options.signal.throwIfAborted(); }
   await connect();
   return {
-    get ready() { return current !== null && !closed; },
+    get ready() {
+      // A connected detector can still be behind the live microphone. Let the
+      // local acoustic guard stop playback while inference catches up. A new
+      // HTTP batch must not reset readiness while older microphone audio is
+      // still queued or being processed. Preserve every ordered PCM frame.
+      return current !== null && !closed &&
+        (!current.pending || Date.now() - current.pendingSince < MAX_REALTIME_INFERENCE_LAG_MS) &&
+        (frames.length * LIVEKIT_FRAME_SAMPLES + current.pendingSamples) / LIVEKIT_SAMPLE_RATE * 1000 < MAX_REALTIME_INFERENCE_LAG_MS;
+    },
     close,
     push(samples) {
       if (closed || !current) return;

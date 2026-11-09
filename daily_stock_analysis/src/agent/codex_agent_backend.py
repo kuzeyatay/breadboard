@@ -67,10 +67,13 @@ class CodexAgentBackend(AgentBackend):
         tool_surface: ToolSurface,
         config: Any,
         transport_factory: Callable[..., CodexAppServerTransport] = CodexAppServerTransport,
+        *,
+        allow_tool_free: bool = False,
     ) -> None:
         self.tool_surface = tool_surface
         self.config = config
         self.transport_factory = transport_factory
+        self.allow_tool_free = allow_tool_free
 
     def run(self, request: AgentRunRequest) -> AgentRunResult:
         timeout = request.max_wall_clock_seconds
@@ -148,13 +151,13 @@ class CodexAgentBackend(AgentBackend):
                         cancellation_safe_only=True,
                     )
                 ]
-                if not tool_names:
+                if not tool_names and not self.allow_tool_free:
                     raise CodexAppServerError(
                         "capability_unsupported",
                         "No cancellation-safe DSA tools are available to Codex",
                     )
                 developer_instructions = request.system_prompt
-                if request.stock_scope is None:
+                if request.stock_scope is None and tool_names:
                     developer_instructions = (
                         f"{developer_instructions}\n\n{_NO_STOCK_SCOPE_INSTRUCTION}"
                     )

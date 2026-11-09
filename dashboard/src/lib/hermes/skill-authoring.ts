@@ -10,7 +10,7 @@
 // bypass the quarantine -> human review -> promotion boundary; this module
 // only drafts and validates content.
 
-import { breadSystemPrompt } from "../assistant-identity.ts";
+import { DRAFT_SYSTEM_PROMPT } from "../system-prompts/feature-defaults.ts";
 
 export interface SkillReferenceDraft {
   filename: string;
@@ -150,26 +150,14 @@ export function buildSkillFiles(draft: SkillDraft): Record<string, string> {
 
 // --- AI drafting -----------------------------------------------------------
 
-const DRAFT_SYSTEM_PROMPT = breadSystemPrompt(`You draft Agent Skills following Anthropic's skill-creator methodology.
 
-A skill is reusable procedural guidance an assistant loads when a matching task appears. Draft one skill from the user's intent, honoring these rules:
-
-- name: lowercase letters, digits, and hyphens; starts with a letter; at most 64 characters; describes the capability (like "meeting-summarizer").
-- description: one or two sentences covering BOTH what the skill does AND when to use it. Include explicit triggering context ("Use when ...") with the phrases a user would actually say, so the skill triggers reliably. Stay under 1024 characters.
-- instructions: the SKILL.md body in imperative markdown. Give a concrete step-by-step workflow, specify the expected output format exactly (templates or labeled sections), and include a short input -> output example when it clarifies. Explain why a step matters instead of shouting ALL-CAPS rules. Keep it lean: cut anything that does not change behavior, and stay well under 500 lines.
-- references: only when genuinely needed, move deep reference material into separate markdown docs and make the instructions say when to open each one. Most skills need none.
-
-This skill is guidance only: it cannot grant tools, network access, or permissions, so never instruct the assistant to install software or contact external services.
-
-Respond with a single JSON object, no prose and no code fences:
-{"name": "...", "description": "...", "instructions": "...", "references": [{"filename": "advanced.md", "contents": "..."}]}
-Omit "references" (or use []) when none are needed.`);
 
 export function skillDraftMessages(
   intent: string,
+  systemPrompt = DRAFT_SYSTEM_PROMPT,
 ): Array<{ role: "system" | "user"; content: string }> {
   return [
-    { role: "system", content: DRAFT_SYSTEM_PROMPT },
+    { role: "system", content: systemPrompt },
     {
       role: "user",
       content: `Draft a skill for this intent:\n\n${intent.trim()}`,

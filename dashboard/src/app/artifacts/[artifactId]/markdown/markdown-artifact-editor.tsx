@@ -17,6 +17,7 @@ import { useAssistantModels } from "@/app/components/use-assistant-models";
 import { useChatModelChanges } from "@/app/components/use-chat-model-changes";
 import { ChatModelChangeSeparators } from "@/app/components/chat-model-change-separator";
 import { useDocumentAssistantHistory } from "@/app/components/use-document-assistant-history";
+import { notificationMessageKeys } from "@/lib/chat-notification-visibility";
 import type { DocumentAssistantChatEntry as ChatEntry } from "@/lib/document-assistant-history-types";
 import { broadcastArtifactUpdate } from "@/lib/hermes/artifact-update-channel";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
@@ -91,7 +92,7 @@ export default function MarkdownArtifactEditor({
   const sourceRef = useRef<HTMLTextAreaElement | null>(null);
   const documentRef = useRef<HTMLElement | null>(null);
   const chatRef = useRef<HTMLDivElement | null>(null);
-  const { error: historyError } = useDocumentAssistantHistory({ artifactId: initialArtifact.id, kind: "markdown", chat, setChat, busy: assistantBusy, hydrated: chatHydrated });
+  const { error: historyError, conversationId: notificationConversationId } = useDocumentAssistantHistory({ artifactId: initialArtifact.id, kind: "markdown", chat, setChat, busy: assistantBusy, hydrated: chatHydrated });
   const {
     model,
     setModel,
@@ -485,12 +486,14 @@ export default function MarkdownArtifactEditor({
           )}
         </section>
 
-        <aside className={styles.assistant} aria-label="Bread Markdown assistant">
+        <aside className={styles.assistant} aria-label="Bread Markdown assistant"
+          data-notification-chat={notificationConversationId ? `dashboard_terminal:${notificationConversationId}` : undefined}>
           <div ref={chatRef} className="min-h-0 flex-1 space-y-4 overflow-auto px-4 py-5" aria-live="polite">
             {historyError ? <p role="status" className="text-xs text-amber-600">{historyError}</p> : null}
             {chat.map((entry, index) => (
               <div
                 key={entry.id}
+                data-notification-message={entry.role === "assistant" ? JSON.stringify(notificationMessageKeys({ id: entry.id, entryId: entry.id })) : undefined}
                 className={entry.role === "user"
                   ? "ml-7 rounded-2xl rounded-br-md border border-[var(--line)] bg-[var(--paper-strong)] px-3.5 py-3 text-sm"
                   : "text-sm leading-6"}

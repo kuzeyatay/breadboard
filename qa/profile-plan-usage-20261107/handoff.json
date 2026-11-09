@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "preparedAt": "2026-11-07T15:50:11Z",
+  "task": "Add weekly and applicable 5-hour plan usage percentages to Breadboard's profile beside token usage",
+  "status": "Implementation complete; source edits, builds, and restarts held for the coordinating chat",
+  "coordinatingThreadId": "01a13b74-4877-7283-9a92-f9f9acb93b51",
+  "repositoryRoot": "C:/Users/20252082/breadboard",
+  "scope": [
+    "Add a Plan usage group directly beneath Models you use in the existing profile token usage group.",
+    "Reuse the existing provider usage hook and authenticated usage-limit endpoints.",
+    "Show weekly usage first and the real 5-hour window when reported; exclude synthetic windows and reserve pools from plan percentages.",
+    "Show connected Claude and ChatGPT plan windows and Gemini's model quota, with accessible meters, reset information, refresh controls, and timestamps.",
+    "Clearly label account-wide totals, which include activity outside Breadboard; no claim of Breadboard-only attribution.",
+    "Preserve unknown values and last known readings through unavailable-data and refresh-failure states."
+  ],
+  "sourceFiles": [
+    {
+      "path": "dashboard/src/app/profile/profile-client.tsx",
+      "change": "Two added lines: import PlanUsagePanel and render it after ModelPanel.",
+      "baseGitBlob": "0b5ebf17be99a8f0eb69a804e8995ba492f6cadd",
+      "currentGitBlob": "6007b9dfe8ddcb98a00c8e1912079f4ccb06ea46",
+      "currentFileSha256": "A4F587D657A67E73F6F98CDFBACBAB3D0A54B57B6442E9233558E1FA9FD37C5A"
+    },
+    {
+      "path": "dashboard/src/app/profile/plan-usage-panel.tsx",
+      "change": "New client component implementing the Plan usage group.",
+      "baseGitBlob": null,
+      "baseStatus": "File did not exist before this task.",
+      "currentGitBlob": "d3a5ef68828f5a073006e05f5aa04a50ec840399",
+      "currentFileSha256": "FCEBA5A85E1CAA1D478A0E317D07487F4DA821231D22661ED28D0E1F17B56191"
+    }
+  ],
+  "hashNotes": "Git blob hashes identify canonical Git content. currentFileSha256 hashes the exact current on-disk bytes. Source hashes were rechecked while preparing this receipt and are unchanged from the validated implementation.",
+  "notOwnedDriftFiles": [
+    "dashboard-agent-terminal.tsx",
+    "globals.css",
+    "garden-assistant.tsx",
+    "gardens/[clusterSlug]/workspace-client.tsx",
+    "chat-core.md",
+    "voice-prompt.ts"
+  ],
+  "ownershipNotes": "This chat did not edit any of the listed drift files. Existing unrelated changes were preserved. No shared source files beyond the two sourceFiles entries were edited.",
+  "validation": {
+    "tests": {
+      "workingDirectory": "dashboard",
+      "command": "node --experimental-strip-types --test tests/usage-limits.test.mjs tests/usage-notch.test.mjs tests/chatgpt-codex-usage.test.mjs tests/profile-page-wiring.test.mjs",
+      "passed": 43,
+      "failed": 0,
+      "exitCode": 0
+    },
+    "lint": {
+      "workingDirectory": "dashboard",
+      "command": "node node_modules/eslint/bin/eslint.js src/app/profile/plan-usage-panel.tsx src/app/profile/profile-client.tsx",
+      "exitCode": 0,
+      "output": "No diagnostics."
+    },
+    "typecheck": {
+      "method": "TypeScript createProgram rooted at dashboard/src/app/profile/plan-usage-panel.tsx using dashboard/tsconfig.json compiler options with incremental disabled; getPreEmitDiagnostics over the component and its imported dependencies.",
+      "diagnostics": 0,
+      "exitCode": 0,
+      "scope": "Scoped component typecheck, not a full repository typecheck."
+    },
+    "browser": {
+      "method": "Actual component and existing hook bundled with esbuild, actual scoped globals.css compiled with Tailwind/PostCSS, fixture APIs served on localhost, and Playwright headless Edge in React StrictMode.",
+      "passed": true,
+      "checks": [
+        "Weekly and 5-hour percentages render correctly.",
+        "Weekly window appears first.",
+        "A reported zero remains 0% used.",
+        "An unknown percentage is Not reported, never zero.",
+        "Reserve pools do not appear as plan windows.",
+        "Weekly-only plans have no synthetic 5-hour row.",
+        "A failed refresh preserves the previous reading and marks it as last reported usage.",
+        "Provider catalog errors, empty state, and retry recover correctly.",
+        "Mount and normal refresh requests only read fixture reports with GET.",
+        "The 375-pixel mobile layout has no horizontal overflow.",
+        "No browser runtime errors."
+      ],
+      "visualReview": "Desktop light and mobile dark screenshots visually inspected; desktop dark screenshot also saved.",
+      "receipt": "qa/profile-plan-usage-20261107/result.json",
+      "receiptSha256": "65421E71F5BDDDF1D1B616FD5A8D7FFEC215C95ABFABB37199D36E39C2238BA3",
+      "screenshots": [
+        "qa/profile-plan-usage-20261107/desktop-light.png",
+        "qa/profile-plan-usage-20261107/desktop-dark.png",
+        "qa/profile-plan-usage-20261107/mobile-dark.png"
+      ],
+      "executionNotes": "The initial sandboxed Edge launch failed due to Windows sandbox restrictions. The same local fixture verification succeeded outside the sandbox after automatic approval. The temporary QA script was removed after validation."
+    },
+    "diffCheck": {
+      "command": "git diff --check -- dashboard/src/app/profile/profile-client.tsx",
+      "exitCode": 0
+    }
+  },
+  "buildAndRestart": {
+    "productionBuildRunByThisChat": false,
+    "applicationRestartRunByThisChat": false,
+    "commitCreatedByThisChat": false,
+    "currentActivity": "No source edits, builds, or restarts running. Only this local handoff receipt was written after the coordination hold.",
+    "finalBuildInclusion": "Left to the coordinating chat."
+  }
+}

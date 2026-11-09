@@ -1,0 +1,11 @@
+{
+  "activatedAt": "2026-11-06T18:46:27.0512481Z",
+  "processId": 25632,
+  "commandLine": "\\\\?\\C:\\Users\\20252082\\breadboard\\desktop\\build-resources\\runtimes\\python\\python.exe C:\\Users\\20252082\\breadboard\\chatmock\\breadboard_runtime.py serve --port 62475 --reasoning-effort low --reasoning-summary detailed --reasoning-compat legacy --enable-web-search",
+  "health": {
+    "breadboard_subscription_voice": 1,
+    "status": "ok"
+  },
+  "customProfileExists": false,
+  "unslopSha256": "3130a70bdf72dc0c06ffeb5e7e56b6cc9ed45c24631f706a577ba9bc641ee7b2"
+}

@@ -31,7 +31,7 @@ test('long nested answers stay below the navbar and internal scrolling does not 
             answer={answers[i]+extra} answerMessageId={'answer-'+i} pending={false}
             annotations={selections[i+1]?[{...selections[i+1],kind:'answer'}]:[]} onSelection={()=>{}} onOpenAnnotation={()=>{}}
             onClose={()=>{}} onDelete={()=>{}} onAskAgain={()=>{}}/>) }
-          <div className='bb-composer-overlay' style={{position:'fixed',height:70,padding:16,background:'var(--paper-raised)'}}><textarea aria-label='Question' placeholder='Ask about your documents…'/></div>
+          <div className='bb-composer-overlay' style={{position:'fixed',height:70,padding:16,background:'var(--paper-raised)'}}><textarea aria-label='Question' placeholder='Ask anything.'/></div>
         </>;
       }createRoot(document.getElementById('root')).render(<App/>);
     `}});

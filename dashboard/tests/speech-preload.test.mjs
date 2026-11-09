@@ -171,3 +171,29 @@ test('on-demand reuse closes after 20 idle seconds and never reconnects overnigh
   assert.equal(calls.length, 1, 'expiry never opens a replacement without a caller');
   await pool.clear();
 });
+
+const bounded=async promise=>{
+ let timer;
+ try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Nested voice retirement did not finish')),800);})]);}
+ finally{clearTimeout(timer);}
+};
+
+test('closing a conversation releases its leased reader and permits reopening',async()=>{
+ let reader,pool;const connections=[];
+ pool=createConnectionPreloader(async mode=>{
+  const connection={mode,closed:false,isHealthy(){return !this.closed;},async close(){
+   if(this.closed)return;this.closed=true;
+   if(mode==='conversation'&&reader)await pool.release(reader);
+  }};
+  connections.push(connection);return connection;
+ });
+ await pool.configure('account:voice',['conversation','speak'],false);
+ const conversation=await pool.take('conversation');reader=await pool.take('speak');
+ await bounded(pool.release(conversation));
+ await bounded(pool.settled());
+ assert.equal(conversation.closed,true);assert.equal(reader.closed,true);
+ reader=undefined;
+ const reopened=await bounded(pool.take('conversation'));
+ assert.notEqual(reopened,conversation);assert.equal(connections.length,3);
+ await bounded(pool.release(reopened));await bounded(pool.clear());
+});

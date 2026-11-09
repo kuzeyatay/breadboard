@@ -14,7 +14,9 @@ const ANTIGRAVITY_MODELS_URLS = [
 // window returned by fetchAvailableModels under the older internal key.
 const ANTIGRAVITY_QUOTA_MODEL_ALIASES: Readonly<Record<string, readonly string[]>> = {
   "gemini-3.7-flash-high": ["gemini-3.7-flash-tiered"],
-  "gemini-3.8-flash-high": ["gemini-3.7-flash-tiered"],
+  // Live fetchAvailableModels (2026-11-09) lists no "-high" or "-n" entry;
+  // the bucket Google spends for 3.8 flash is "gemini-3.8-flash-tiered".
+  "gemini-3.8-flash-high": ["gemini-3.8-flash-tiered", "gemini-3.7-flash-tiered"],
 };
 
 export interface GoogleUsageLimitWindow {
@@ -97,17 +99,22 @@ export function googleLimitWindowFromModels(
       value,
     ]),
   );
-  const match = candidates
-    .map((candidate) => modelsByName.get(candidate))
-    .find((candidate) => candidate !== undefined);
-  if (!match || typeof match !== "object") return null;
-
-  const quotaInfo = (match as { quotaInfo?: unknown }).quotaInfo;
-  if (!quotaInfo || typeof quotaInfo !== "object") return null;
-  const remaining = finiteNumber(
-    (quotaInfo as { remainingFraction?: unknown }).remainingFraction,
-  );
-  if (remaining === null) return null;
+  // The public name, the name Google serves it as, and the internal quota
+  // key can all be listed. Only the first one used to be read: an untouched
+  // bucket under the public name pinned the ring at 100% while the served
+  // model's quota drained. Report the lowest remaining among them.
+  let quotaInfo: object | null = null;
+  let remaining: number | null = null;
+  for (const candidate of new Set(candidates)) {
+    const entry = modelsByName.get(candidate);
+    const info = entry && typeof entry === "object" ? (entry as { quotaInfo?: unknown }).quotaInfo : null;
+    if (!info || typeof info !== "object") continue;
+    const fraction = finiteNumber((info as { remainingFraction?: unknown }).remainingFraction);
+    if (fraction === null || (remaining !== null && fraction >= remaining)) continue;
+    quotaInfo = info;
+    remaining = fraction;
+  }
+  if (!quotaInfo || remaining === null) return null;
 
   const clampedRemaining = Math.min(1, Math.max(0, remaining));
   const limit: GoogleUsageLimitWindow = {
@@ -180,6 +187,7 @@ async function fetchAccountLimit(
   const projectId = text(auth.project_id);
   const data = JSON.stringify(projectId ? { project: projectId } : {});
 
+  let best: GoogleUsageLimitWindow | null = null;
   for (const url of ANTIGRAVITY_MODELS_URLS) {
     const response = (await managementRequest("/api-call", {
       method: "POST",
@@ -206,9 +214,12 @@ async function fetchAccountLimit(
       }
     })();
     const limit = googleLimitWindowFromModels(upstream, model, capturedAt);
-    if (limit) return { account: accountLabel(auth), limit };
+    // The two endpoints keep separate windows: on 2026-11-09 the prod one said
+    // 100% left (untouched) while daily, which serves the traffic, said 88%.
+    // Stopping at the first answer pinned the ring at 100%; report the most used.
+    if (limit && (!best || limit.used_percent > best.used_percent)) best = limit;
   }
-  return null;
+  return best ? { account: accountLabel(auth), limit: best } : null;
 }
 
 /** Fetch Google-reported model quota for every connected Antigravity account. */

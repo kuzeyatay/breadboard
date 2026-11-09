@@ -1,3 +1,5 @@
+import db from "@/lib/db";
+import { createRoom } from "@/lib/buzz/instance.ts";
 import { NextResponse } from "next/server";
 import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
 import {
@@ -27,9 +29,13 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
-    const body = (await request.json().catch(() => ({}))) as { name?: unknown };
+    const body = (await request.json().catch(() => ({}))) as { name?: unknown; createGeneralRoom?: unknown };
     const name = typeof body.name === "string" ? body.name : "";
-    const id = createOrganization(userId, name);
+    const id = db.transaction(() => {
+      const created = createOrganization(userId, name);
+      if (body.createGeneralRoom === true) createRoom(created, userId, { name: "general", topic: "A place for your team and agents." });
+      return created;
+    })();
     return NextResponse.json({ id }, { status: 201 });
   } catch (error) {
     return routeErrorResponse(error);

@@ -10,7 +10,7 @@ import postcss from "postcss";
 import tailwindcss from "@tailwindcss/postcss";
 import { summarizeCapabilityUse } from "../src/lib/hermes/capability-usage.ts";
 
-test("skills install with explicit access, remain removable in drafts, and show recorded response usage", { timeout: 90_000 }, async t => {
+test("skills install with explicit access, remain removable in drafts, and keep response usage in evidence", { timeout: 90_000 }, async t => {
   const root = fileURLToPath(new URL("..", import.meta.url));
   const capabilities = summarizeCapabilityUse({
     selection: { inventory: { skills: 300, connections: 4, workflows: 2 }, skills: [
@@ -18,7 +18,7 @@ test("skills install with explicit access, remain removable in drafts, and show 
       { slug: "watch", name: "Watch", selection: "automatic", guidanceLoaded: true },
       { slug: "premortem", name: "Premortem", selection: "requested" },
     ] },
-    toolCalls: [{ toolName: "watch_run", success: false }, { toolName: "factcheck_run", success: true }],
+    toolCalls: [{ toolName: "watch_run", success: false }, { toolName: "factcheck_run", success: true }, { toolName: "breadboard_use", success: true }],
     skillOpens: [{ slug: "apple-design" }],
   });
   const verification = { state: "unverified", evidence: [], assumptions: [], unsupportedClaims: [], capabilities };
@@ -163,15 +163,11 @@ test("skills install with explicit access, remain removable in drafts, and show 
   assert.equal(await message.inputValue(), "/agents:codex /watch Explain /writing in prose.");
   await page.reload();
   await page.getByRole("button", { name: "Remove Watch skill", exact: true }).waitFor();
-  const usage = page.getByLabel("Skills for this response", { exact: true });
-  assert.equal(await usage.count(), 1, "unrecorded responses do not claim skill use");
-  await usage.getByText("Skill instructions loaded:", { exact: true }).waitFor();
-  assert.match(await usage.getByRole("button", { name: "Writing helper", exact: true }).getAttribute("title"), /Selected by you.*Instructions supplied/);
-  assert.match(await usage.getByRole("button", { name: "Watch", exact: true }).getAttribute("title"), /Selected automatically.*All recorded calls failed/);
-  assert.match(await usage.getByRole("button", { name: "Apple design", exact: true }).getAttribute("title"), /Chosen by the assistant.*Instructions opened/);
-  assert.equal(await usage.getByText("Selected · use not recorded:", { exact: true }).isVisible(), true);
-  assert.equal(await usage.getByText("Skills used:", { exact: true }).isVisible(), true);
-  await usage.getByRole("button", { name: "Writing helper", exact: true }).click();
+  assert.equal(await page.getByLabel("Skills for this response", { exact: true }).count(), 0, "responses do not display a skill usage footer");
+  const response = page.getByRole("article", { name: "Saved response", exact: true });
+  assert.equal(await response.getByText("Breadboard use", { exact: true }).count(), 0);
+  await response.getByRole("button", { name: "More response actions", exact: true }).click();
+  await response.getByRole("button", { name: "View evidence", exact: true }).click();
   await page.getByRole("dialog", { name: "Response evidence", exact: true }).waitFor();
   await page.getByRole("button", { name: "Close evidence", exact: true }).click();
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "chat fits mobile");

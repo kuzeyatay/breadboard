@@ -5,7 +5,7 @@ import test from 'node:test';
 import Database from 'better-sqlite3';
 import esbuild from 'esbuild';
 import {chromium,expect} from '@playwright/test';
-import {BROWSER_DAILY_QUOTES,browserDailyQuote,browserQuoteId,browserQuoteForChoice,validBrowserQuoteChoice} from '../src/app/browser/browser-daily-quotes.ts';
+import {BROWSER_DAILY_QUOTES,browserDailyQuote,browserQuoteAuthor,browserQuoteId,browserQuoteForChoice,validBrowserQuoteChoice} from '../src/app/browser/browser-daily-quotes.ts';
 import {readBrowserQuoteChoice,writeBrowserQuoteChoice} from '../src/lib/browser-quote-store.ts';
 
 const root=path.resolve(import.meta.dirname,'..');
@@ -75,6 +75,24 @@ test('quote widget shows one daily quote without a picker or preference requests
   const next=new Date('2026-11-07T12:00:00Z');await page.clock.setFixedTime(next);await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
   await expect(quote.locator('blockquote:visible')).toHaveText('“'+browserDailyQuote(next,'reader@test.local',42).quote+'”');
   await page.reload();await expect(quote.locator('blockquote:visible')).toHaveCount(1);
+  // Anonymous credits remain visible in both layouts; named credits still match.
+  for (const [width,height,limit] of [[1920,1080,Infinity],[1280,800,42]]) {
+    await page.setViewportSize({width,height});
+    await page.clock.setFixedTime(date);
+    for (const anonymous of [false,true]) {
+      let owner;
+      for (let i=0;i<1000;i++) {
+        const candidate='attribution-'+i;
+        if ((!browserDailyQuote(date,candidate,limit).author)===anonymous) {owner=candidate;break;}
+      }
+      assert.ok(owner,'find a date/owner exercising the desired attribution');
+      await page.goto('https://quotes.test/?owner='+owner);
+      const expected=browserDailyQuote(date,owner,limit);
+      await expect(quote.locator('blockquote:visible')).toHaveText('“'+expected.quote+'”');
+      await expect(quote.locator('figcaption:visible')).toHaveCount(1);
+      await expect(quote.locator('figcaption:visible')).toHaveText('— '+browserQuoteAuthor(expected));
+    }
+  }
   assert.deepEqual(quoteRequests,[],'daily quotes require no picker API or stored selection');
   assert.deepEqual(errors,[]);
 });

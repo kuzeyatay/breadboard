@@ -1,0 +1,1725 @@
+{
+  "conversation_id": "conv_zj0F5EwODfSGQD3VApMwyZoX",
+  "garden": "ec-2",
+  "legacy_chat_id": 885,
+  "agent_run": "b162314d-6137-4c81-a40d-a5609ae6d194",
+  "model": "gpt-6-astra",
+  "reasoning": "high",
+  "simulation_generated_by": "Breadboard Super Agent native multisim calls",
+  "runs": [
+    {
+      "run_id": "7adbc235b147492b8d37bd7ec46aa7e3",
+      "revision": 16,
+      "analysis": {
+        "kind": "tran",
+        "start": 0.0,
+        "stop": 0.025,
+        "step": 2.5e-07,
+        "points": 100,
+        "scale": "dec",
+        "source": "V1",
+        "output": "vout",
+        "reference": "0",
+        "timeout": 120.0,
+        "max_points": 200000
+      },
+      "verdict": "pass",
+      "measurements": [
+        {
+          "name": "output_rms",
+          "status": "measured",
+          "value": 3.160264771297269,
+          "unit": "V"
+        },
+        {
+          "name": "normal_clamp_current",
+          "status": "measured",
+          "value": 1.240564219661214e-07,
+          "unit": "A"
+        }
+      ],
+      "requirements": [
+        {
+          "constraint": {
+            "measurement": {
+              "name": "frequency",
+              "kind": "frequency",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.015,
+              "stop": 0.025,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 9900.0,
+            "maximum": 10100.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "frequency",
+            "status": "measured",
+            "value": 10012.93513857513,
+            "unit": "Hz",
+            "frequency_hz": 10012.93513857513,
+            "thd_percent": 0.5596745159683569,
+            "fundamental_peak_v": 4.47153200298459,
+            "dc_v": -9.026619869597742e-10,
+            "harmonic_peak_v": [
+              4.47153200298459,
+              2.5181123063867575e-09,
+              0.02499924990985616,
+              9.276188313129059e-10,
+              0.0011549539060848233,
+              5.450702658856135e-10,
+              7.316842653531958e-05,
+              4.2674250146616997e-10,
+              1.2798826401143833e-05,
+              3.532782537951194e-10
+            ],
+            "cycles": 100,
+            "window_s": [
+              0.015009969366447003,
+              0.024997050938038036
+            ],
+            "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "thd20",
+              "kind": "thd",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.015,
+              "stop": 0.025,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 20
+            },
+            "minimum": null,
+            "maximum": 1.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "thd20",
+            "status": "measured",
+            "value": 0.5596745463801043,
+            "unit": "%",
+            "frequency_hz": 10012.93513857513,
+            "thd_percent": 0.5596745463801043,
+            "fundamental_peak_v": 4.471532002984607,
+            "dc_v": -9.029019773208669e-10,
+            "harmonic_peak_v": [
+              4.471532002984607,
+              2.5184964042162728e-09,
+              0.024999249909351966,
+              9.276628612176251e-10,
+              0.0011549539066675412,
+              5.453045703961313e-10,
+              7.316842598776869e-05,
+              4.270146826561133e-10,
+              1.2798827207203957e-05,
+              3.53724871564459e-10,
+              7.705691833995147e-06,
+              2.995668866349127e-10,
+              2.8538637046908388e-06,
+              2.719750066554961e-10,
+              7.055094449732121e-07,
+              2.4523527940739146e-10,
+              1.8139836860596997e-07,
+              2.305378096365379e-10,
+              1.8811525425985492e-07,
+              2.1608646484611367e-10
+            ],
+            "cycles": 100,
+            "window_s": [
+              0.015009969366447003,
+              0.024997050938038036
+            ],
+            "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "power",
+              "kind": "power",
+              "node": "vout",
+              "reference": "0",
+              "component": "RLOAD",
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.015,
+              "stop": 0.025,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 0.00099,
+            "maximum": 0.001,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "power",
+            "status": "measured",
+            "value": 0.000998727342470258,
+            "unit": "W",
+            "convention": "Positive is absorbed; independent sources commonly deliver negative power"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "early_osc",
+              "kind": "voltage",
+              "node": "osc",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "rms",
+              "start": 1e-05,
+              "stop": 0.0001,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 0.001,
+            "maximum": 0.2,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "early_osc",
+            "status": "measured",
+            "value": 0.10887349897812379,
+            "unit": "V"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "settled_osc",
+              "kind": "voltage",
+              "node": "osc",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "rms",
+              "start": 0.015,
+              "stop": 0.025,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 5.4,
+            "maximum": 5.5,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "settled_osc",
+            "status": "measured",
+            "value": 5.467327124447859,
+            "unit": "V"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "startup_ended",
+              "kind": "voltage",
+              "node": "start",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "max",
+              "start": 3e-06,
+              "stop": 0.025,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 0.0,
+            "maximum": 0.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "startup_ended",
+            "status": "measured",
+            "value": 0.0,
+            "unit": "V"
+          }
+        }
+      ],
+      "manifest_integrity_ok": true
+    },
+    {
+      "run_id": "9771c89559fe4d23a541ea78941e3f1c",
+      "revision": 16,
+      "analysis": {
+        "kind": "tran",
+        "start": 0.014,
+        "stop": 0.025,
+        "step": 2.5e-07,
+        "points": 100,
+        "scale": "dec",
+        "source": "V1",
+        "output": "vout",
+        "reference": "0",
+        "timeout": 120.0,
+        "max_points": 200000
+      },
+      "verdict": "pass",
+      "measurements": [],
+      "requirements": [
+        {
+          "constraint": {
+            "measurement": {
+              "name": "frequency",
+              "kind": "frequency",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.015,
+              "stop": 0.0249,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 9900.0,
+            "maximum": 10100.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "frequency",
+            "status": "measured",
+            "value": 10012.935139214387,
+            "unit": "Hz",
+            "frequency_hz": 10012.935139214387,
+            "thd_percent": 0.5596745201202415,
+            "fundamental_peak_v": 4.471532003369999,
+            "dc_v": -8.809388234049786e-10,
+            "harmonic_peak_v": [
+              4.471532003369999,
+              2.2160627659383588e-09,
+              0.02499925009924938,
+              1.1688379472322126e-09,
+              0.001154953878588661,
+              6.474813578796183e-10,
+              7.316840108186427e-05,
+              5.013534459231074e-10,
+              1.2798753431217514e-05,
+              4.0222517084314996e-10
+            ],
+            "cycles": 99,
+            "window_s": [
+              0.015009969284656583,
+              0.024897180039900477
+            ],
+            "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "THD",
+              "kind": "thd",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.015,
+              "stop": 0.0249,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 20
+            },
+            "minimum": null,
+            "maximum": 1.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "THD",
+            "status": "measured",
+            "value": 0.559674550534241,
+            "unit": "%",
+            "frequency_hz": 10012.935139214387,
+            "thd_percent": 0.559674550534241,
+            "fundamental_peak_v": 4.471532003369999,
+            "dc_v": -8.811336361432516e-10,
+            "harmonic_peak_v": [
+              4.471532003369999,
+              2.2163220406385123e-09,
+              0.024999250098839167,
+              1.1688237735014799e-09,
+              0.0011549538790512671,
+              6.475820766325856e-10,
+              7.316840065042296e-05,
+              5.014470286034274e-10,
+              1.2798754090514535e-05,
+              4.0241700736610613e-10,
+              7.705727608649568e-06,
+              3.352609389646614e-10,
+              2.8538869433783722e-06,
+              2.951702751833154e-10,
+              7.054528778289812e-07,
+              2.5879460780490125e-10,
+              1.8142483734911073e-07,
+              2.367077782068696e-10,
+              1.8808186005246975e-07,
+              2.154828424039437e-10
+            ],
+            "cycles": 99,
+            "window_s": [
+              0.015009969284656583,
+              0.024897180039900477
+            ],
+            "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "power",
+              "kind": "power",
+              "node": "vout",
+              "reference": "0",
+              "component": "RLOAD",
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.015,
+              "stop": 0.0249,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 0.00099,
+            "maximum": 0.001,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "power",
+            "status": "measured",
+            "value": 0.0009987409544336538,
+            "unit": "W",
+            "convention": "Positive is absorbed; independent sources commonly deliver negative power"
+          }
+        }
+      ],
+      "manifest_integrity_ok": true
+    },
+    {
+      "run_id": "c7225ee2a05e4d5bb2e829929399b90a",
+      "revision": 7,
+      "analysis": {
+        "kind": "tran",
+        "start": 0.0,
+        "stop": 0.02,
+        "step": 5e-07,
+        "points": 100,
+        "scale": "dec",
+        "source": "V1",
+        "output": "vout",
+        "reference": "0",
+        "timeout": 60.0,
+        "max_points": 200000
+      },
+      "verdict": "pass",
+      "measurements": [],
+      "requirements": [
+        {
+          "constraint": {
+            "measurement": {
+              "name": "mute_power",
+              "kind": "power",
+              "node": "vout",
+              "reference": "0",
+              "component": "RLOAD",
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.01,
+              "stop": 0.02,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 0.0,
+            "maximum": 1e-18,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "mute_power",
+            "status": "measured",
+            "value": 0.0,
+            "unit": "W",
+            "convention": "Positive is absorbed; independent sources commonly deliver negative power"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "mute_rms",
+              "kind": "voltage",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "rms",
+              "start": 0.01,
+              "stop": 0.02,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": null,
+            "maximum": 1e-09,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "mute_rms",
+            "status": "measured",
+            "value": 0.0,
+            "unit": "V"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "osc_alive",
+              "kind": "frequency",
+              "node": "osc",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.01,
+              "stop": 0.02,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 9900.0,
+            "maximum": 10100.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "osc_alive",
+            "status": "measured",
+            "value": 10012.379488497405,
+            "unit": "Hz",
+            "frequency_hz": 10012.379488497405,
+            "thd_percent": 6.158653488354393,
+            "fundamental_peak_v": 7.71477690786114,
+            "dc_v": 7.619642818289587e-09,
+            "harmonic_peak_v": [
+              7.71477690786114,
+              6.041082995022158e-07,
+              0.45856746081234445,
+              3.0358726661609817e-07,
+              0.1207827078576711,
+              2.2293444614659354e-07,
+              0.0268396914417849,
+              1.7039207454571976e-07,
+              0.012333961149732769,
+              1.232994452839239e-07
+            ],
+            "cycles": 99,
+            "window_s": [
+              0.010083448629575336,
+              0.019971208089125874
+            ],
+            "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+          }
+        }
+      ],
+      "manifest_integrity_ok": true
+    },
+    {
+      "run_id": "549eb00c844f46599ee5f859705ee2e7",
+      "revision": 10,
+      "analysis": {
+        "kind": "tran",
+        "start": 0.0,
+        "stop": 0.024,
+        "step": 5e-07,
+        "points": 100,
+        "scale": "dec",
+        "source": "V1",
+        "output": "vout",
+        "reference": "0",
+        "timeout": 60.0,
+        "max_points": 200000
+      },
+      "verdict": "pass",
+      "measurements": [
+        {
+          "name": "positive_current",
+          "status": "measured",
+          "value": 0.010596908269392668,
+          "unit": "A"
+        },
+        {
+          "name": "negative_current",
+          "status": "measured",
+          "value": -0.010596907231197179,
+          "unit": "A"
+        },
+        {
+          "name": "positive_drive",
+          "status": "measured",
+          "value": 16.46686349801298,
+          "unit": "V"
+        },
+        {
+          "name": "negative_drive",
+          "status": "measured",
+          "value": -16.46686247374896,
+          "unit": "V"
+        },
+        {
+          "name": "recovered_power",
+          "status": "measured",
+          "value": 0.000998684856508368,
+          "unit": "W",
+          "convention": "Positive is absorbed; independent sources commonly deliver negative power"
+        }
+      ],
+      "requirements": [
+        {
+          "constraint": {
+            "measurement": {
+              "name": "positive_clamp",
+              "kind": "voltage",
+              "node": "lim",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "max",
+              "start": 0.0121,
+              "stop": 0.0129,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 5.0,
+            "maximum": 6.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "positive_clamp",
+            "status": "measured",
+            "value": 5.869955267760431,
+            "unit": "V"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "negative_clamp",
+              "kind": "voltage",
+              "node": "lim",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "min",
+              "start": 0.0161,
+              "stop": 0.0169,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": -6.0,
+            "maximum": -5.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "negative_clamp",
+            "status": "measured",
+            "value": -5.869955244472355,
+            "unit": "V"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "positive_recovery",
+              "kind": "thd",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.0131,
+              "stop": 0.0159,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": null,
+            "maximum": 1.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "positive_recovery",
+            "status": "measured",
+            "value": 0.558617188390408,
+            "unit": "%",
+            "frequency_hz": 10012.379146263003,
+            "thd_percent": 0.558617188390408,
+            "fundamental_peak_v": 4.471514924614291,
+            "dc_v": -2.71852073397802e-08,
+            "harmonic_peak_v": [
+              4.471514924614291,
+              2.1127359327501423e-07,
+              0.024952139171556285,
+              5.5435439051889256e-08,
+              0.0011482015919475812,
+              3.9752016453725615e-08,
+              7.231510643763942e-05,
+              2.7638447532210424e-08,
+              1.2555523977024468e-05,
+              2.2203532434659332e-08
+            ],
+            "cycles": 27,
+            "window_s": [
+              0.013113147858448677,
+              0.015809809621410122
+            ],
+            "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "negative_recovery",
+              "kind": "thd",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.0171,
+              "stop": 0.024,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": null,
+            "maximum": 1.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "negative_recovery",
+            "status": "measured",
+            "value": 0.558618509303267,
+            "unit": "%",
+            "frequency_hz": 10012.380176114777,
+            "thd_percent": 0.558618509303267,
+            "fundamental_peak_v": 4.471515978574903,
+            "dc_v": -1.8376591732319413e-08,
+            "harmonic_peak_v": [
+              4.471515978574903,
+              9.519062779574233e-09,
+              0.02495220351324817,
+              1.1839941714485117e-08,
+              0.0011482179894081075,
+              5.533406229768925e-09,
+              7.229093005796142e-05,
+              4.761122370113589e-09,
+              1.2548099456487631e-05,
+              3.6384198656514805e-09
+            ],
+            "cycles": 69,
+            "window_s": [
+              0.017108210251877524,
+              0.02399967849282629
+            ],
+            "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+          }
+        }
+      ],
+      "manifest_integrity_ok": true
+    },
+    {
+      "run_id": "7af3f0f3de5d4a2c8992fdc0aa233c8f",
+      "revision": 14,
+      "analysis": {
+        "kind": "op",
+        "start": 1.0,
+        "stop": 1000000.0,
+        "step": 1e-06,
+        "points": 100,
+        "scale": "dec",
+        "source": "V1",
+        "output": "vout",
+        "reference": "0",
+        "timeout": 60.0,
+        "max_points": 200000
+      },
+      "verdict": "pass",
+      "measurements": [],
+      "requirements": [
+        {
+          "constraint": {
+            "measurement": {
+              "name": "dc_output",
+              "kind": "voltage",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": null,
+              "stop": null,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": null,
+            "maximum": null,
+            "target": 0.0,
+            "absolute_tolerance": 0.001,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "dc_output",
+            "status": "measured",
+            "value": 5.427072530585952e-05,
+            "unit": "V"
+          }
+        }
+      ],
+      "manifest_integrity_ok": true
+    },
+    {
+      "run_id": "b3196885283c46d9936be6a08bd13ffa",
+      "revision": 14,
+      "analysis": {
+        "kind": "ac",
+        "start": 10.0,
+        "stop": 1000000.0,
+        "step": 1e-06,
+        "points": 100,
+        "scale": "dec",
+        "source": "V1",
+        "output": "vout",
+        "reference": "0",
+        "timeout": 60.0,
+        "max_points": 200000
+      },
+      "verdict": "pass",
+      "measurements": [
+        {
+          "name": "lp_10kHz",
+          "status": "measured",
+          "value": -5.780645270092666,
+          "unit": "dB",
+          "linear": 0.5140054649731067,
+          "phase_deg": -128.79681129122028
+        },
+        {
+          "name": "lp_cutoff",
+          "status": "measured",
+          "value": 6923.660113242133,
+          "unit": "Hz",
+          "reference_frequency_hz": 100.0,
+          "reference_gain_db": -0.0010332324052920903,
+          "definition": "Upper cutoff relative to declared passband reference; not band-pass width"
+        }
+      ],
+      "requirements": [
+        {
+          "constraint": {
+            "measurement": {
+              "name": "hp_100Hz",
+              "kind": "gain",
+              "node": "hpbuf",
+              "reference": "0",
+              "component": null,
+              "input_node": "isolated",
+              "frequency": 100.0,
+              "statistic": "mean",
+              "start": null,
+              "stop": null,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": null,
+            "maximum": -19.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "hp_100Hz",
+            "status": "measured",
+            "value": -20.051677060053095,
+            "unit": "dB",
+            "linear": 0.09940681220678546,
+            "phase_deg": 84.29435668771912
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "hp_1kHz",
+              "kind": "gain",
+              "node": "hpbuf",
+              "reference": "0",
+              "component": null,
+              "input_node": "isolated",
+              "frequency": 1000.0,
+              "statistic": "mean",
+              "start": null,
+              "stop": null,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": -3.2,
+            "maximum": -2.9,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "hp_1kHz",
+            "status": "measured",
+            "value": -3.014618991812042,
+            "unit": "dB",
+            "linear": 0.7067552616519729,
+            "phase_deg": 45.0221738161529
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "hp_10kHz",
+              "kind": "gain",
+              "node": "hpbuf",
+              "reference": "0",
+              "component": null,
+              "input_node": "isolated",
+              "frequency": 10000.0,
+              "statistic": "mean",
+              "start": null,
+              "stop": null,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": -0.1,
+            "maximum": -0.02,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "hp_10kHz",
+            "status": "measured",
+            "value": -0.043388783800812375,
+            "unit": "dB",
+            "linear": 0.9950171375145611,
+            "phase_deg": 5.658826002561328
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "lp_30kHz",
+              "kind": "gain",
+              "node": "filtered",
+              "reference": "0",
+              "component": null,
+              "input_node": "hpbuf",
+              "frequency": 30000.0,
+              "statistic": "mean",
+              "start": null,
+              "stop": null,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": null,
+            "maximum": -26.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "lp_30kHz",
+            "status": "measured",
+            "value": -26.330013302405227,
+            "unit": "dB",
+            "linear": 0.04825022411088923,
+            "phase_deg": 111.13493838702682
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "lp_100kHz",
+              "kind": "gain",
+              "node": "filtered",
+              "reference": "0",
+              "component": null,
+              "input_node": "hpbuf",
+              "frequency": 100000.0,
+              "statistic": "mean",
+              "start": null,
+              "stop": null,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": null,
+            "maximum": -60.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "lp_100kHz",
+            "status": "measured",
+            "value": -64.29102555340538,
+            "unit": "dB",
+            "linear": 0.0006101670092409139,
+            "phase_deg": 33.88051244120789
+          }
+        }
+      ],
+      "manifest_integrity_ok": true
+    },
+    {
+      "run_id": "982152a9ed504d72ace8fcb40110cc5c",
+      "revision": 6,
+      "analysis": {
+        "kind": "tran",
+        "start": 0.0,
+        "stop": 0.02,
+        "step": 5e-07,
+        "points": 100,
+        "scale": "dec",
+        "source": "V1",
+        "output": "vout",
+        "reference": "0",
+        "timeout": 60.0,
+        "max_points": 200000
+      },
+      "verdict": "pass",
+      "measurements": [
+        {
+          "name": "power",
+          "status": "measured",
+          "value": 6.247057003363625e-05,
+          "unit": "W",
+          "convention": "Positive is absorbed; independent sources commonly deliver negative power"
+        },
+        {
+          "name": "thd",
+          "status": "measured",
+          "value": 0.5586184429324869,
+          "unit": "%",
+          "frequency_hz": 10012.38015196852,
+          "thd_percent": 0.5586184429324869,
+          "fundamental_peak_v": 1.1178790058593064,
+          "dc_v": -9.526755113279741e-12,
+          "harmonic_peak_v": [
+            1.1178790058593064,
+            9.33716135586725e-09,
+            0.006238050165075755,
+            4.3072530318285084e-09,
+            0.0002870552689160289,
+            2.71831187828663e-09,
+            1.8071964758707734e-05,
+            2.0087249159245614e-09,
+            3.1368918413960213e-06,
+            1.5918636032621053e-09
+          ],
+          "cycles": 99,
+          "window_s": [
+            0.010016982092526897,
+            0.01990474089686432
+          ],
+          "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+        }
+      ],
+      "requirements": [
+        {
+          "constraint": {
+            "measurement": {
+              "name": "frequency",
+              "kind": "frequency",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.01,
+              "stop": 0.02,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 9900.0,
+            "maximum": 10100.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "frequency",
+            "status": "measured",
+            "value": 10012.38015196852,
+            "unit": "Hz",
+            "frequency_hz": 10012.38015196852,
+            "thd_percent": 0.5586184429324869,
+            "fundamental_peak_v": 1.1178790058593064,
+            "dc_v": -9.526755113279741e-12,
+            "harmonic_peak_v": [
+              1.1178790058593064,
+              9.33716135586725e-09,
+              0.006238050165075755,
+              4.3072530318285084e-09,
+              0.0002870552689160289,
+              2.71831187828663e-09,
+              1.8071964758707734e-05,
+              2.0087249159245614e-09,
+              3.1368918413960213e-06,
+              1.5918636032621053e-09
+            ],
+            "cycles": 99,
+            "window_s": [
+              0.010016982092526897,
+              0.01990474089686432
+            ],
+            "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "thd",
+              "kind": "thd",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.01,
+              "stop": 0.02,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": null,
+            "maximum": 1.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "thd",
+            "status": "measured",
+            "value": 0.5586184429324869,
+            "unit": "%",
+            "frequency_hz": 10012.38015196852,
+            "thd_percent": 0.5586184429324869,
+            "fundamental_peak_v": 1.1178790058593064,
+            "dc_v": -9.526755113279741e-12,
+            "harmonic_peak_v": [
+              1.1178790058593064,
+              9.33716135586725e-09,
+              0.006238050165075755,
+              4.3072530318285084e-09,
+              0.0002870552689160289,
+              2.71831187828663e-09,
+              1.8071964758707734e-05,
+              2.0087249159245614e-09,
+              3.1368918413960213e-06,
+              1.5918636032621053e-09
+            ],
+            "cycles": 99,
+            "window_s": [
+              0.010016982092526897,
+              0.01990474089686432
+            ],
+            "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "power",
+              "kind": "power",
+              "node": "vout",
+              "reference": "0",
+              "component": "RLOAD",
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.01,
+              "stop": 0.02,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 0.0,
+            "maximum": 0.001,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "power",
+            "status": "measured",
+            "value": 6.247057003363625e-05,
+            "unit": "W",
+            "convention": "Positive is absorbed; independent sources commonly deliver negative power"
+          }
+        }
+      ],
+      "manifest_integrity_ok": true
+    },
+    {
+      "run_id": "b859a1824c404382a96f07f1de53b2fd",
+      "revision": 6,
+      "analysis": {
+        "kind": "tran",
+        "start": 0.0,
+        "stop": 0.02,
+        "step": 5e-07,
+        "points": 100,
+        "scale": "dec",
+        "source": "V1",
+        "output": "vout",
+        "reference": "0",
+        "timeout": 60.0,
+        "max_points": 200000
+      },
+      "verdict": "pass",
+      "measurements": [
+        {
+          "name": "power",
+          "status": "measured",
+          "value": 0.0002498822770110157,
+          "unit": "W",
+          "convention": "Positive is absorbed; independent sources commonly deliver negative power"
+        },
+        {
+          "name": "thd",
+          "status": "measured",
+          "value": 0.558618442932391,
+          "unit": "%",
+          "frequency_hz": 10012.380151968522,
+          "thd_percent": 0.558618442932391,
+          "fundamental_peak_v": 2.235757997745119,
+          "dc_v": -1.9052894663904557e-11,
+          "harmonic_peak_v": [
+            2.235757997745119,
+            1.8674321170995768e-08,
+            0.012476100252173567,
+            8.614506694418565e-09,
+            0.0005741105342466099,
+            5.436624011883404e-09,
+            3.614392929409939e-05,
+            4.017446482198784e-09,
+            6.273783649915361e-06,
+            3.1837306519261504e-09
+          ],
+          "cycles": 99,
+          "window_s": [
+            0.010016982092526902,
+            0.019904740896864323
+          ],
+          "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+        }
+      ],
+      "requirements": [
+        {
+          "constraint": {
+            "measurement": {
+              "name": "frequency",
+              "kind": "frequency",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.01,
+              "stop": 0.02,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 9900.0,
+            "maximum": 10100.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "frequency",
+            "status": "measured",
+            "value": 10012.380151968522,
+            "unit": "Hz",
+            "frequency_hz": 10012.380151968522,
+            "thd_percent": 0.558618442932391,
+            "fundamental_peak_v": 2.235757997745119,
+            "dc_v": -1.9052894663904557e-11,
+            "harmonic_peak_v": [
+              2.235757997745119,
+              1.8674321170995768e-08,
+              0.012476100252173567,
+              8.614506694418565e-09,
+              0.0005741105342466099,
+              5.436624011883404e-09,
+              3.614392929409939e-05,
+              4.017446482198784e-09,
+              6.273783649915361e-06,
+              3.1837306519261504e-09
+            ],
+            "cycles": 99,
+            "window_s": [
+              0.010016982092526902,
+              0.019904740896864323
+            ],
+            "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "thd",
+              "kind": "thd",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.01,
+              "stop": 0.02,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": null,
+            "maximum": 1.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "thd",
+            "status": "measured",
+            "value": 0.558618442932391,
+            "unit": "%",
+            "frequency_hz": 10012.380151968522,
+            "thd_percent": 0.558618442932391,
+            "fundamental_peak_v": 2.235757997745119,
+            "dc_v": -1.9052894663904557e-11,
+            "harmonic_peak_v": [
+              2.235757997745119,
+              1.8674321170995768e-08,
+              0.012476100252173567,
+              8.614506694418565e-09,
+              0.0005741105342466099,
+              5.436624011883404e-09,
+              3.614392929409939e-05,
+              4.017446482198784e-09,
+              6.273783649915361e-06,
+              3.1837306519261504e-09
+            ],
+            "cycles": 99,
+            "window_s": [
+              0.010016982092526902,
+              0.019904740896864323
+            ],
+            "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "power",
+              "kind": "power",
+              "node": "vout",
+              "reference": "0",
+              "component": "RLOAD",
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.01,
+              "stop": 0.02,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 0.0,
+            "maximum": 0.001,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "power",
+            "status": "measured",
+            "value": 0.0002498822770110157,
+            "unit": "W",
+            "convention": "Positive is absorbed; independent sources commonly deliver negative power"
+          }
+        }
+      ],
+      "manifest_integrity_ok": true
+    },
+    {
+      "run_id": "890e2e7e4f6e437b90a081bf51546c8e",
+      "revision": 6,
+      "analysis": {
+        "kind": "tran",
+        "start": 0.0,
+        "stop": 0.02,
+        "step": 5e-07,
+        "points": 100,
+        "scale": "dec",
+        "source": "V1",
+        "output": "vout",
+        "reference": "0",
+        "timeout": 60.0,
+        "max_points": 200000
+      },
+      "verdict": "pass",
+      "measurements": [
+        {
+          "name": "power",
+          "status": "measured",
+          "value": 0.000562235130302916,
+          "unit": "W",
+          "convention": "Positive is absorbed; independent sources commonly deliver negative power"
+        },
+        {
+          "name": "thd",
+          "status": "measured",
+          "value": 0.5586184429322807,
+          "unit": "%",
+          "frequency_hz": 10012.380151968522,
+          "thd_percent": 0.5586184429322807,
+          "fundamental_peak_v": 3.3536370175779386,
+          "dc_v": -2.8582623045232936e-11,
+          "harmonic_peak_v": [
+            3.3536370175779386,
+            2.801147988242858e-08,
+            0.018714150495220173,
+            1.292176093808085e-08,
+            0.0008611658067535444,
+            8.15493780044473e-09,
+            5.421589428357051e-05,
+            6.026165940577575e-09,
+            9.410675533920336e-06,
+            4.775599136254495e-09
+          ],
+          "cycles": 99,
+          "window_s": [
+            0.010016982092529271,
+            0.019904740896866693
+          ],
+          "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+        }
+      ],
+      "requirements": [
+        {
+          "constraint": {
+            "measurement": {
+              "name": "frequency",
+              "kind": "frequency",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.01,
+              "stop": 0.02,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 9900.0,
+            "maximum": 10100.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "frequency",
+            "status": "measured",
+            "value": 10012.380151968522,
+            "unit": "Hz",
+            "frequency_hz": 10012.380151968522,
+            "thd_percent": 0.5586184429322807,
+            "fundamental_peak_v": 3.3536370175779386,
+            "dc_v": -2.8582623045232936e-11,
+            "harmonic_peak_v": [
+              3.3536370175779386,
+              2.801147988242858e-08,
+              0.018714150495220173,
+              1.292176093808085e-08,
+              0.0008611658067535444,
+              8.15493780044473e-09,
+              5.421589428357051e-05,
+              6.026165940577575e-09,
+              9.410675533920336e-06,
+              4.775599136254495e-09
+            ],
+            "cycles": 99,
+            "window_s": [
+              0.010016982092529271,
+              0.019904740896866693
+            ],
+            "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "thd",
+              "kind": "thd",
+              "node": "out",
+              "reference": "0",
+              "component": null,
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.01,
+              "stop": 0.02,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": null,
+            "maximum": 1.0,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "thd",
+            "status": "measured",
+            "value": 0.5586184429322807,
+            "unit": "%",
+            "frequency_hz": 10012.380151968522,
+            "thd_percent": 0.5586184429322807,
+            "fundamental_peak_v": 3.3536370175779386,
+            "dc_v": -2.8582623045232936e-11,
+            "harmonic_peak_v": [
+              3.3536370175779386,
+              2.801147988242858e-08,
+              0.018714150495220173,
+              1.292176093808085e-08,
+              0.0008611658067535444,
+              8.15493780044473e-09,
+              5.421589428357051e-05,
+              6.026165940577575e-09,
+              9.410675533920336e-06,
+              4.775599136254495e-09
+            ],
+            "cycles": 99,
+            "window_s": [
+              0.010016982092529271,
+              0.019904740896866693
+            ],
+            "definition": "Rising crossings and time-weighted harmonic least squares over complete cycles; THD excludes noise"
+          }
+        },
+        {
+          "constraint": {
+            "measurement": {
+              "name": "power",
+              "kind": "power",
+              "node": "vout",
+              "reference": "0",
+              "component": "RLOAD",
+              "input_node": "vin",
+              "frequency": null,
+              "statistic": "mean",
+              "start": 0.01,
+              "stop": 0.02,
+              "reference_frequency": null,
+              "drop_db": 3.01029995664,
+              "loop_gain": false,
+              "loop_sign": 1,
+              "harmonics": 10
+            },
+            "minimum": 0.0,
+            "maximum": 0.001,
+            "target": null,
+            "absolute_tolerance": 0.0,
+            "relative_tolerance": 0.0
+          },
+          "verdict": "pass",
+          "evidence": {
+            "name": "power",
+            "status": "measured",
+            "value": 0.000562235130302916,
+            "unit": "W",
+            "convention": "Positive is absorbed; independent sources commonly deliver negative power"
+          }
+        }
+      ],
+      "manifest_integrity_ok": true
+    }
+  ]
+}

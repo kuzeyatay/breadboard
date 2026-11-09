@@ -185,6 +185,11 @@ async function runBackgroundOperation(request, sourceRoot) {
       return { operation: request.operation, changed: true };
     }
     case "hermes-abandoned-run-recovery": {
+      if (process.env.BREADBOARD_RUNTIME_V2_ACTIVE === "true") {
+        const { requestRecoveryHandoff } = await import(sourceUrl(sourceRoot, "lib/hermes/task-recovery-handoff.ts"));
+        const result = await requestRecoveryHandoff();
+        return { operation: request.operation, resumed: result.resumed, reconciled: result.reconciled };
+      }
       const { resumeAbandonedRuntimeRuns } = await import(
         sourceUrl(sourceRoot, "lib/hermes/run-recovery.ts")
       );

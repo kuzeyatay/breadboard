@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { devElectronBinary } from "./dev-electron-binary.mjs";
 import { launchOutsideTree } from "./launch-outside-tree.mjs";
+import { waitForCompleteStandaloneBuild } from "./standalone-build-ready.mjs";
 import {
   loadDashboardEnv,
   loadRootEnv,
@@ -53,6 +54,14 @@ export async function runDesktopDev({
   const require = createRequire(import.meta.url);
   const electronEnv = desktopDevEnvironment(env, dashboardMode);
   const desktopRoot = path.join(repoRoot, "desktop");
+  if (dashboardMode === "standalone") {
+    // A build still copying static assets beside server.js would be served
+    // with every stylesheet and script answering 404.
+    await waitForCompleteStandaloneBuild(
+      path.join(repoRoot, "dashboard", ".next-desktop", "standalone", "server.js"),
+      { log: (line) => process.stderr.write(`[desktop] ${line}\n`) },
+    );
+  }
   // Windows: show up in Task Manager as its own "Breadboard" app with its icon,
   // not as "Electron" nested inside the terminal that launched it.
   if (process.platform === "win32" && env.BREADBOARD_DEV_PLAIN_ELECTRON !== "1") {

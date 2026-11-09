@@ -1,3 +1,4 @@
+import { systemPromptText } from "../../../lib/system-prompts/service.ts";
 import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { externalRuntimePath as path } from "@/lib/external-runtime-path";
@@ -10,7 +11,7 @@ import { updateLearnerPageConcepts } from "@/lib/garden-semantics";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import { withCouncil } from "@/lib/council";
+import { withCouncil } from "@/lib/system-prompts/council.ts";
 import { normalizeDocumentPath } from "@/lib/garden-document-path";
 import { repairMarkdownMathFormatting, wantsMathFormattingOnly } from "@/lib/markdown-math-edit";
 import {
@@ -241,12 +242,7 @@ export async function POST(request: Request) {
               {
                 role: "system",
                 content:
-                  'You rewrite an existing Markdown note exactly as requested. Return only JSON with keys "summary" and "content". ' +
-                  'The "content" value must be the complete updated Markdown file, including YAML frontmatter if present. ' +
-                  "Preserve all useful existing content unless the user explicitly asks to remove or rewrite it. " +
-                  'If the user asks to use "this version", "the version above", "your previous version", or similar, use the recent chat context as the replacement source. ' +
-                  'When editing tags, suggest only canonical reusable concepts: normalized lower-case kebab-case identities such as "restoring-force", "angular-frequency", or "simple-harmonic-motion". Never use a complete claim, page summary, broad category, source filename, or organizational label as a tag. ' +
-                  "When fixing math or LaTeX, use $...$ for inline math and $$...$$ for display math, and avoid corrupting prose.",
+                  systemPromptText("markdown-rewrite", userId),
               },
               {
                 role: "user",
@@ -279,7 +275,7 @@ export async function POST(request: Request) {
             // A requested edit to one note does not need a draft/review/rewrite
             // council. Keep this interactive path to one model invocation.
             councilModeOverride: "direct_council",
-          },
+          }, userId,
         ),
         { signal: request.signal },
       );

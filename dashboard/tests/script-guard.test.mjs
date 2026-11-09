@@ -51,3 +51,23 @@ test('extra words after the script ends count as divergence, and punctuation clo
   assert.equal(mid.diverged, true);
   assert.equal(mid.resumeAt, 'First sentence here. '.length);
 });
+
+
+for (const missing of ['Wait.', 'Stay warm.', 'Do not enter.', 'Keep the door closed.']) {
+  test('readout cannot skip a whole middle sentence: ' + missing, () => {
+    const first = 'The first sentence is complete. ';
+    const last = 'Here is the next complete sentence.';
+    const guard = createScriptGuard(first + missing + ' ' + last);
+    guard.feed(first + last + ' ');
+    assert.equal(guard.complete, false);
+    assert.ok(guard.remainingWords > 0);
+    assert.equal(guard.resumeAt, first.length, 'recovery begins at the omitted sentence');
+  });
+}
+
+test('normal spoken abbreviations and contractions keep every sentence in order', () => {
+  const guard = createScriptGuard("Dr. Lee is ready. It's going well. Meet at 3.5 p.m. tomorrow. Wait here.");
+  guard.feed('Doctor Lee is ready. It is going well. Meet at three point five P M tomorrow. Wait here. ');
+  assert.equal(guard.diverged, false);
+  assert.equal(guard.complete, true);
+});

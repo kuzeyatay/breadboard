@@ -1,13 +1,16 @@
 import { currentBrowserTerminalAccess, parseBrowserTerminalAccess, type BrowserTerminalAccess } from '../browser-terminal.ts';
+import { parseVoiceOpenerContext, type VoiceOpenerContext } from './voice-opener-context.ts';
 
 /** Per-turn metadata, never part of the spoken text or saved transcript. Null
  * explicitly clears the originating chat's old browser connection. */
-export interface VoiceScreenContext { browserAccess?: BrowserTerminalAccess | null }
+export interface VoiceScreenContext { browserAccess?: BrowserTerminalAccess | null; voiceOpener?: VoiceOpenerContext }
 
 export function parseVoiceScreenContext(value: unknown): VoiceScreenContext {
-  if (!value || typeof value !== 'object' || !('browserAccess' in value)) return {};
+  if (!value || typeof value !== 'object') return {};
   const access = (value as VoiceScreenContext).browserAccess;
-  return { browserAccess: parseBrowserTerminalAccess(access) ?? null };
+  const voiceOpener = parseVoiceOpenerContext((value as VoiceScreenContext).voiceOpener);
+  return { ...('browserAccess' in value ? { browserAccess: parseBrowserTerminalAccess(access) ?? null } : {}),
+    ...(voiceOpener ? { voiceOpener } : {}) };
 }
 
 export async function currentVoiceScreenContext(): Promise<VoiceScreenContext> {

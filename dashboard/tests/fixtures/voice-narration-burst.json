@@ -1,0 +1,193 @@
+{
+  "source": "voice-native-pcm-build35-native2-results.json",
+  "sourceSha256": "6a3530c079ae181806486a6044db83adef7d6d65e74485b104a878895d92abd9",
+  "answer": "Yeast eats sugar in the dough and releases gas, which makes the dough puff up. As it rests, the dough traps the gas and grows bigger. Let it rise in a warm spot until it looks about twice as large.",
+  "stream": [
+    {
+      "atMs": 0,
+      "length": 2
+    },
+    {
+      "atMs": 8,
+      "length": 5
+    },
+    {
+      "atMs": 8,
+      "length": 10
+    },
+    {
+      "atMs": 8,
+      "length": 16
+    },
+    {
+      "atMs": 8,
+      "length": 19
+    },
+    {
+      "atMs": 78,
+      "length": 23
+    },
+    {
+      "atMs": 85,
+      "length": 29
+    },
+    {
+      "atMs": 85,
+      "length": 33
+    },
+    {
+      "atMs": 85,
+      "length": 42
+    },
+    {
+      "atMs": 124,
+      "length": 46
+    },
+    {
+      "atMs": 206,
+      "length": 47
+    },
+    {
+      "atMs": 206,
+      "length": 53
+    },
+    {
+      "atMs": 206,
+      "length": 59
+    },
+    {
+      "atMs": 214,
+      "length": 63
+    },
+    {
+      "atMs": 214,
+      "length": 69
+    },
+    {
+      "atMs": 214,
+      "length": 74
+    },
+    {
+      "atMs": 300,
+      "length": 77
+    },
+    {
+      "atMs": 300,
+      "length": 78
+    },
+    {
+      "atMs": 300,
+      "length": 81
+    },
+    {
+      "atMs": 300,
+      "length": 84
+    },
+    {
+      "atMs": 300,
+      "length": 90
+    },
+    {
+      "atMs": 605,
+      "length": 91
+    },
+    {
+      "atMs": 614,
+      "length": 95
+    },
+    {
+      "atMs": 614,
+      "length": 101
+    },
+    {
+      "atMs": 614,
+      "length": 107
+    },
+    {
+      "atMs": 614,
+      "length": 111
+    },
+    {
+      "atMs": 614,
+      "length": 115
+    },
+    {
+      "atMs": 614,
+      "length": 119
+    },
+    {
+      "atMs": 625,
+      "length": 125
+    },
+    {
+      "atMs": 625,
+      "length": 132
+    },
+    {
+      "atMs": 625,
+      "length": 133
+    },
+    {
+      "atMs": 625,
+      "length": 137
+    },
+    {
+      "atMs": 625,
+      "length": 140
+    },
+    {
+      "atMs": 642,
+      "length": 145
+    },
+    {
+      "atMs": 642,
+      "length": 148
+    },
+    {
+      "atMs": 642,
+      "length": 150
+    },
+    {
+      "atMs": 642,
+      "length": 155
+    },
+    {
+      "atMs": 642,
+      "length": 160
+    },
+    {
+      "atMs": 642,
+      "length": 166
+    },
+    {
+      "atMs": 715,
+      "length": 169
+    },
+    {
+      "atMs": 715,
+      "length": 175
+    },
+    {
+      "atMs": 741,
+      "length": 181
+    },
+    {
+      "atMs": 741,
+      "length": 187
+    },
+    {
+      "atMs": 749,
+      "length": 190
+    },
+    {
+      "atMs": 749,
+      "length": 196
+    },
+    {
+      "atMs": 806,
+      "length": 197
+    }
+  ],
+  "completeMs": 892,
+  "originalGapMs": 3072
+}

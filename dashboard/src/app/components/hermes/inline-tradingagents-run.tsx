@@ -202,7 +202,7 @@ export default function InlineTradingAgentsRun({
         }
         if (!reportedRef.current) {
           reportedRef.current = true;
-          notifyTaskCompleted(task);
+          notifyTaskCompleted(task, { runId });
           onTerminalRef.current?.({ outcome: "completed", content: summary });
         }
       }
@@ -293,7 +293,7 @@ export default function InlineTradingAgentsRun({
         summary={running ? `${running.label} working` : undefined}
         agentName="Trading Agent"
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <header className="bb-agent-run-header">
           <p className="bb-agent-run-title min-w-0 truncate">
             Trading Agent

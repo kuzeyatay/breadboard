@@ -9,7 +9,7 @@
 // into a column nobody can read.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Headphones, Hash, Lock, MessagesSquare, SlidersHorizontal, Users } from "lucide-react";
+import { Menu, Hash, Lock, MessagesSquare, SlidersHorizontal, Users } from "lucide-react";
 
 import { cn } from "@/app/buzz/lib/cn";
 import { hasPrimaryShortcutModifier } from "@/app/buzz/lib/platform";
@@ -30,6 +30,7 @@ import {
 import { RoomRail, type RailView } from "./components/room-rail";
 import { SearchPalette } from "./components/search-palette";
 import { ThreadPanel } from "./components/thread-panel";
+import { requestJson } from "./lib/message-state";
 import { useRoom } from "./use-room";
 import type {
   BuzzCommunity,
@@ -81,6 +82,7 @@ export default function BuzzClient(props: {
 }
 
 function BuzzWorkspace({
+  selfUserId,
   communities: initialCommunities,
   rooms: initialRooms,
   personas,
@@ -121,29 +123,32 @@ function BuzzWorkspace({
   const [newRoomOpen, setNewRoomOpen] = useState(false);
   const [newCommunityOpen, setNewCommunityOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [railError, setRailError] = useState<string | null>(null);
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const [dialogBusy, setDialogBusy] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
 
-  const room = useRoom(view === "room" ? roomId : null);
-  const railViews = useRailViews(view !== "room");
+  const room = useRoom(view === "room" ? roomId : null, selfUserId);
+  const railViews = useRailViews(view !== "room" || communities.length === 0);
 
   const community = communities.find((entry) => entry.id === communityId) ?? null;
   const communityRooms = useMemo(
     () => rooms.filter((entry) => entry.organizationId === communityId),
     [rooms, communityId],
   );
-  const activeRoom = rooms.find((entry) => entry.publicId === roomId) ?? null;
+  const activeRoom: BuzzRoomSummary | null = rooms.find(entry => entry.publicId === roomId) ?? (room.detail && communityId ? {
+    ...room.detail.room, organizationId: communityId, archived: !room.detail.permissions.canPost,
+    unread: 0, memberCount: room.members.length, agentHandles: [], peopleHandles: [],
+  } : null);
 
   /** Re-read the rails — room list, unread badges, community membership. */
   const refreshRails = useCallback(async () => {
-    const response = await fetch("/api/buzz/rooms", { cache: "no-store" });
-    if (!response.ok) return;
-    const body = (await response.json()) as {
-      organizations: BuzzCommunity[];
-      rooms: BuzzRoomSummary[];
-    };
-    setCommunities(body.organizations);
-    setRooms(body.rooms);
+    try {
+      const body = await requestJson<{ organizations: BuzzCommunity[]; rooms: BuzzRoomSummary[] }>("/api/buzz/rooms");
+      setCommunities(body.organizations); setRooms(body.rooms); setRailError(null);
+      return body;
+    } catch (error) { setRailError(error instanceof Error ? error.message : "Rooms could not be refreshed."); }
+
   }, []);
 
   // Badges have to move for rooms the reader is not looking at, so the rails
@@ -191,14 +196,6 @@ function BuzzWorkspace({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // Switching community lands in one of its rooms rather than on nothing.
-  useEffect(() => {
-    if (!communityId) return;
-    if (activeRoom?.organizationId === communityId) return;
-    setRoomId(communityRooms[0]?.publicId ?? null);
-    setThreadRootId(null);
-  }, [communityId, communityRooms, activeRoom?.organizationId]);
-
   /** Open a room by id, following it into its community if need be. */
   const openRoom = useCallback(
     (publicId: string, organizationId?: number) => {
@@ -206,6 +203,7 @@ function BuzzWorkspace({
       setRoomId(publicId);
       setThreadRootId(null);
       setView("room");
+      setNavigationOpen(false);
     },
     [],
   );
@@ -217,14 +215,19 @@ function BuzzWorkspace({
       const response = await fetch("/api/organizations", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, createGeneralRoom: true }),
       });
       if (!response.ok) {
-        setDialogError(await failureMessage(response, "That community could not be created."));
+        setDialogError(await failureMessage(response, "That organization could not be created."));
         return;
       }
-      await refreshRails();
-      setNewCommunityOpen(false);
+      const created = await response.json() as { id: number };
+      const next = await refreshRails();
+      setCommunityId(created.id);
+      setRoomId(next?.rooms.find(item => item.organizationId === created.id)?.publicId ?? null);
+      setView("room"); setNewCommunityOpen(false);
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : "The change could not be saved. Try again.");
     } finally {
       setDialogBusy(false);
     }
@@ -253,6 +256,8 @@ function BuzzWorkspace({
       setNewRoomOpen(false);
       await refreshRails();
       if (body?.room?.publicId) openRoom(body.room.publicId);
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : "The change could not be saved. Try again.");
     } finally {
       setDialogBusy(false);
     }
@@ -274,6 +279,8 @@ function BuzzWorkspace({
       }
       await Promise.all([refreshRails(), room.refresh()]);
       setSettingsOpen(false);
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : "The change could not be saved. Try again.");
     } finally {
       setDialogBusy(false);
     }
@@ -283,7 +290,7 @@ function BuzzWorkspace({
     if (!roomId) return;
     setDialogBusy(true);
     try {
-      await fetch(`/api/buzz/rooms/${roomId}`, {
+      await requestJson(`/api/buzz/rooms/${roomId}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ archived }),
@@ -293,6 +300,8 @@ function BuzzWorkspace({
       // An archived room leaves the rail, so staying in it would leave the
       // reader looking at a transcript nothing selects any more.
       if (archived) setRoomId(null);
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : "The change could not be saved. Try again.");
     } finally {
       setDialogBusy(false);
     }
@@ -302,11 +311,13 @@ function BuzzWorkspace({
     if (!roomId) return;
     setDialogBusy(true);
     try {
-      await fetch(`/api/buzz/rooms/${roomId}`, { method: "DELETE" });
+      await requestJson(`/api/buzz/rooms/${roomId}`, { method: "DELETE" });
       setRoomId(null);
       setThreadRootId(null);
       setSettingsOpen(false);
       await refreshRails();
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : "The change could not be saved. Try again.");
     } finally {
       setDialogBusy(false);
     }
@@ -324,6 +335,7 @@ function BuzzWorkspace({
     payload: Record<string, unknown>,
   ): Promise<AddPersonOutcome> => {
     if (!roomId) return { kind: "failed", message: "No room is open." };
+    try {
     const response = await fetch(`/api/buzz/rooms/${roomId}/members`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -342,12 +354,13 @@ function BuzzWorkspace({
       return {
         kind: "invited",
         username: body.invited.username ?? "them",
-        community: body.invited.community ?? "this community",
+        community: body.invited.community ?? "this organization",
       };
     }
     await room.refresh();
     await refreshRails();
     return { kind: "seated" };
+    } catch (error) { return { kind: "failed", message: error instanceof Error ? error.message : "They could not be added." }; }
   };
 
   const setRespondTo = async (
@@ -355,7 +368,7 @@ function BuzzWorkspace({
     memberId: number,
     respondTo: BuzzRespondTo,
   ) => {
-    await fetch(`/api/buzz/rooms/${targetRoomId}/members/${memberId}`, {
+    await requestJson(`/api/buzz/rooms/${targetRoomId}/members/${memberId}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ respondTo }),
@@ -364,7 +377,7 @@ function BuzzWorkspace({
 
   const removeMember = async (memberId: number) => {
     if (!roomId) return;
-    await fetch(`/api/buzz/rooms/${roomId}/members/${memberId}`, { method: "DELETE" });
+    await requestJson(`/api/buzz/rooms/${roomId}/members/${memberId}`, { method: "DELETE" });
     await room.refresh();
     await refreshRails();
   };
@@ -387,14 +400,23 @@ function BuzzWorkspace({
    * only be a slower way of asking the server the same question.
    */
   const respondToInvite = async (invite: BuzzInvite, accept: boolean) => {
-    const response = await fetch("/api/organizations/invites", {
+    await requestJson("/api/organizations/invites", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ inviteId: invite.id, accept }),
     });
-    if (!response.ok) return;
-    await Promise.all([railViews.refresh(), accept ? refreshRails() : null]);
+    const [, next] = await Promise.all([railViews.refresh(), accept ? refreshRails() : null]);
+    if (accept) { setCommunityId(invite.organizationId); setRoomId(next?.rooms.find(item => item.organizationId === invite.organizationId)?.publicId ?? null); setView("room"); }
   };
+
+  useEffect(() => {
+    const narrow = window.matchMedia("(max-width: 1100px)");
+    const resize = () => { if (narrow.matches) setShowMembers(false); };
+    resize(); narrow.addEventListener("change", resize);
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { setNavigationOpen(false); setShowMembers(false); setThreadRootId(null); } };
+    window.addEventListener("keydown", escape);
+    return () => { narrow.removeEventListener("change", resize); window.removeEventListener("keydown", escape); };
+  }, []);
 
   const unreadTotal = rooms.reduce((total, entry) => total + entry.unread, 0);
 
@@ -432,14 +454,19 @@ function BuzzWorkspace({
       </div>
 
       {communities.length === 0 ? (
-        <NoCommunity onCreate={() => setNewCommunityOpen(true)} />
+        <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
+          <NoCommunity onCreate={() => setNewCommunityOpen(true)} />
+          {railViews.error ? <p role="alert" className="p-4 text-sm">{railViews.error}</p> : null}
+          <InboxView unread={[]} invites={railViews.invites} loading={railViews.loading} onRefresh={() => void railViews.refresh()} onOpen={openHit} onRespondToInvite={respondToInvite} />
+        </div>
       ) : (
         <>
-          <CommunityRail
+          {navigationOpen ? <button type="button" aria-label="Close navigation" className="buzz-navigation-backdrop" onClick={() => setNavigationOpen(false)} /> : null}
+          <div className={cn("buzz-navigation flex shrink-0", navigationOpen && "is-open")}><CommunityRail
             communities={communities}
             rooms={rooms}
             activeId={communityId}
-            onSelect={setCommunityId}
+            onSelect={(id) => { setCommunityId(id); setRoomId(rooms.find(item => item.organizationId === id)?.publicId ?? null); setThreadRootId(null); setView("room"); }}
             onCreate={() => {
               setDialogError(null);
               setNewCommunityOpen(true);
@@ -462,14 +489,16 @@ function BuzzWorkspace({
               setNewRoomOpen(true);
             }}
             onSearch={() => setSearchOpen(true)}
-            onOpenView={setView}
-          />
+            onOpenView={(next) => { setView(next); setNavigationOpen(false); }}
+          /></div>
 
           <div
             data-buzz-content-surface
             className="relative z-10 mb-2 ml-px mr-2 mt-px flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-2xl bg-buzz-background shadow-content-edge"
           >
+            <button type="button" className="buzz-navigation-toggle neu-button" aria-label="Toggle room navigation" aria-expanded={navigationOpen} onClick={() => setNavigationOpen(!navigationOpen)}><Menu className="size-4" /></button>
             <div className="buzz-content-primary flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              {railError || (view !== "room" && railViews.error) ? <p role="alert" className="px-4 py-2 text-xs text-destructive">{railError ?? railViews.error} <button onClick={() => { void refreshRails(); void railViews.refresh(); }}>Retry</button></p> : null}
               {view === "inbox" ? (
                 <InboxView
                   unread={railViews.unread}
@@ -494,6 +523,7 @@ function BuzzWorkspace({
                 <>
                   <RoomHeader
                     room={activeRoom}
+                    canManage={room.detail?.permissions.canManage ?? false}
                     memberCount={room.members.length}
                     membersOpen={showMembers && threadRootId === null}
                     onToggleMembers={() => {
@@ -507,6 +537,8 @@ function BuzzWorkspace({
                   />
 
                   <Transcript
+                    key={room.scope}
+                    controller={room}
                     messages={room.messages}
                     members={room.members}
                     selfMemberId={room.selfMemberId}
@@ -523,10 +555,13 @@ function BuzzWorkspace({
                   />
 
                   <Composer
+                    key={room.scope}
+                    draftKey={room.scope}
+                    disabled={!room.detail?.permissions.canPost}
                     members={room.members}
                     autoFocus
                     placeholder={`Message #${activeRoom.slug}`}
-                    onSend={(body) => void room.send(body)}
+                    onSend={room.send}
                   />
                 </>
               ) : (
@@ -540,29 +575,29 @@ function BuzzWorkspace({
                 the seam that made the page look assembled from two apps. */}
             {view === "room" && threadRootId !== null && roomId ? (
               <ThreadPanel
-                key={threadRootId}
+                key={`${roomId}:${threadRootId}`}
+                userId={selfUserId}
                 roomPublicId={roomId}
                 rootId={threadRootId}
-                members={room.members}
-                selfMemberId={room.selfMemberId}
                 onClose={() => setThreadRootId(null)}
                 onChanged={() => void room.refresh()}
               />
             ) : view === "room" && showMembers && activeRoom ? (
               <MembersPanel
+                selfMemberId={room.selfMemberId}
+                canManage={room.detail?.permissions.canManage ?? false}
                 members={room.members}
                 personas={personas}
                 roomPublicId={roomId}
                 rosterReady={rosterReady}
                 onClose={() => setShowMembers(false)}
-                onAddPersona={(slug) => void addMember({ personaSlug: slug })}
+                onAddPersona={(slug) => addMember({ personaSlug: slug })}
                 onAddPerson={(userId) => addMember({ userId })}
-                onRemove={(memberId) => void removeMember(memberId)}
-                onRespondToChange={(memberId, respondTo) => {
+                onRemove={removeMember}
+                onRespondToChange={async (memberId, respondTo) => {
                   if (!roomId) return;
-                  void setRespondTo(roomId, memberId, respondTo).then(() =>
-                    room.refresh(),
-                  );
+                  await setRespondTo(roomId, memberId, respondTo);
+                  await room.refresh();
                 }}
               />
             ) : null}
@@ -578,7 +613,7 @@ function BuzzWorkspace({
       />
       <NewRoomDialog
         open={newRoomOpen}
-        communityName={community?.name ?? "this community"}
+        communityName={community?.name ?? "this organization"}
         busy={dialogBusy}
         error={dialogError}
         onOpenChange={(open) => {
@@ -617,12 +652,14 @@ function BuzzWorkspace({
 function RoomHeader({
   room,
   memberCount,
+  canManage,
   membersOpen,
   onToggleMembers,
   onOpenSettings,
 }: {
   room: BuzzRoomSummary;
   memberCount: number;
+  canManage: boolean;
   membersOpen: boolean;
   onToggleMembers: () => void;
   onOpenSettings: () => void;
@@ -630,7 +667,7 @@ function RoomHeader({
   const Icon =
     room.kind === "dm" ? MessagesSquare : room.visibility === "private" ? Lock : Hash;
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border/40 px-4">
+    <header className="buzz-room-header flex h-14 shrink-0 items-center gap-3 border-b border-border/40 px-4">
       <Icon className="size-4 shrink-0 text-muted-foreground" />
       <div className="min-w-0">
         <h2 className="truncate text-[15px] font-semibold leading-tight">{room.name}</h2>
@@ -648,24 +685,13 @@ function RoomHeader({
               ? "bg-muted text-foreground"
               : "text-muted-foreground hover:bg-muted hover:text-foreground",
           )}
+          aria-label="Room members"
           aria-pressed={membersOpen}
         >
           <Users className="size-3.5" />
           <span className="tabular-nums">{memberCount}</span>
         </button>
-        {/* Huddles need the relay's voice transport, which this port does not
-            have. The control stays in place, and says so, rather than being
-            removed and quietly changing the room's chrome. */}
-        <button
-          type="button"
-          disabled
-          title="Huddles need Buzz's own voice transport, which this port does not carry"
-          className="flex size-7 items-center justify-center rounded-lg text-muted-foreground opacity-40"
-          aria-label="Huddle (unavailable)"
-        >
-          <Headphones className="size-4" />
-        </button>
-        <button
+        {canManage ? <button
           type="button"
           onClick={onOpenSettings}
           data-testid="room-settings"
@@ -674,13 +700,14 @@ function RoomHeader({
           title="Room settings"
         >
           <SlidersHorizontal className="size-4" />
-        </button>
+        </button> : null}
       </div>
     </header>
   );
 }
 
 function Transcript({
+  controller,
   messages,
   members,
   selfMemberId,
@@ -692,6 +719,7 @@ function Transcript({
   onDelete,
   onEdit,
 }: {
+  controller: ReturnType<typeof useRoom>;
   messages: BuzzMessage[];
   members: ReturnType<typeof useRoom>["members"];
   selfMemberId: number | null;
@@ -699,25 +727,34 @@ function Transcript({
   error: string | null;
   roomName: string;
   onOpenThread: (id: number) => void;
-  onReact: (id: number, emoji: string) => Promise<void>;
-  onDelete: (id: number) => Promise<void>;
-  onEdit: (id: number, body: string) => Promise<void>;
+  onReact: (id: number, emoji: string) => Promise<boolean>;
+  onDelete: (id: number) => Promise<boolean>;
+  onEdit: (id: number, body: string) => Promise<boolean>;
 }) {
   // Pin to the bottom while the reader is already near it, so an arriving
   // answer follows the eye — but never yank someone who has scrolled up to
   // read back.
   const scroller = useRef<HTMLDivElement | null>(null);
+  const pinned = useRef(true);
+  const readThrough = useRef(0);
+  const markVisible = () => {
+    const id = messages.filter(message => !message.delivery).at(-1)?.id ?? 0;
+    if (!pinned.current || document.visibilityState !== "visible" || id <= readThrough.current) return;
+    readThrough.current = id;
+    void controller.markRead(id).then(ok => { if (!ok) readThrough.current = 0; });
+  };
   useEffect(() => {
-    const element = scroller.current;
-    if (!element) return;
-    const distance =
-      element.scrollHeight - element.scrollTop - element.clientHeight;
-    if (distance < 240) element.scrollTop = element.scrollHeight;
-  }, [messages]);
+    if (pinned.current && scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
+    markVisible();
+    const visible = () => markVisible();
+    document.addEventListener("visibilitychange", visible);
+    return () => document.removeEventListener("visibilitychange", visible);
+  });
 
   return (
     <div
       ref={scroller}
+      onScroll={() => { const el = scroller.current; if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100; markVisible(); }}
       /*
        * `pt-5` is for the first row, not for looks. A row's action bar floats
        * at `-top-3`, outside the row's own box; on the very first message that
@@ -728,13 +765,15 @@ function Transcript({
     >
       {error ? (
         <p className="m-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          {error}
+          {error} <button type="button" onClick={() => void controller.refresh()}>Retry</button>
         </p>
       ) : null}
 
-      {loading && messages.length === 0 ? (
-        <p className="px-4 py-6 text-xs text-muted-foreground">Opening the room…</p>
-      ) : null}
+      {controller.detail?.hasOlder ? <button type="button" className="neu-button mx-4 mb-3 rounded-lg px-3 py-1.5 text-xs" disabled={controller.loadingOlder} onClick={async () => {
+        const el = scroller.current; const height = el?.scrollHeight ?? 0; const top = el?.scrollTop ?? 0;
+        pinned.current = false; await controller.loadOlder();
+        requestAnimationFrame(() => { if (el) el.scrollTop = top + el.scrollHeight - height; });
+      }}>Load earlier messages</button> : null}
 
       {!loading && messages.length === 0 && !error ? (
         <div className="px-6 py-10">
@@ -767,7 +806,13 @@ function Transcript({
             onReact={(emoji) => void onReact(message.id, emoji)}
             onOpenThread={() => onOpenThread(message.id)}
             onDelete={() => void onDelete(message.id)}
-            onEdit={(body) => void onEdit(message.id, body)}
+            onEdit={(body) => onEdit(message.id, body)}
+            canDelete={message.memberId === selfMemberId || controller.detail?.permissions.canManage}
+            onRetry={() => void controller.retry(message)}
+            runHref={message.metadata?.requestedByMemberId === selfMemberId && typeof message.metadata.conversationPublicId === "string" && message.metadata.externalAgentRun ? `/dashboard?conversation=${encodeURIComponent(message.metadata.conversationPublicId)}` : undefined}
+            onApprove={message.metadata?.requestedByMemberId === selfMemberId ? () => void controller.approve(message.id) : undefined}
+            onStop={message.metadata?.requestedByMemberId === selfMemberId || controller.detail?.permissions.canManage ? () => void controller.stop(message.id) : undefined}
+            onRegenerate={message.authorKind === "agent" && (message.metadata?.requestedByMemberId === selfMemberId || controller.detail?.permissions.canManage) ? () => void controller.regenerate(message.id) : undefined}
           />
         );
       })}
@@ -780,7 +825,7 @@ function EmptyRoom({ onCreateRoom }: { onCreateRoom: () => void }) {
     <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
       <p className="text-base font-semibold">No room open</p>
       <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
-        Rooms in this community will appear on the left. Open one to start.
+        Rooms in this organization will appear on the left. Open one to start.
       </p>
       <button
         type="button"
@@ -796,16 +841,16 @@ function EmptyRoom({ onCreateRoom }: { onCreateRoom: () => void }) {
 function NoCommunity({ onCreate }: { onCreate: () => void }) {
   return (
     <div className="relative z-10 flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
-      <p className="text-lg font-semibold">Buzz needs a community</p>
+      <p className="text-lg font-semibold">Your team starts here</p>
       <p className="max-w-md text-xs leading-relaxed text-muted-foreground">
-        Create a community to share rooms with people and their agents.
+        Create an organization to share rooms with people and their agents.
       </p>
       <button
         type="button"
         onClick={onCreate}
         className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
       >
-        Create a community
+        Create an organization
       </button>
     </div>
   );

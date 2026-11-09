@@ -1,3 +1,4 @@
+import { systemPromptText } from "../system-prompts/service.ts";
 import "server-only";
 
 // Turning a demonstration into a procedure.
@@ -55,41 +56,6 @@ const ACTIONS: ReadonlySet<string> = new Set([
 ]);
 const INPUT_TYPES: ReadonlySet<string> = new Set(["string", "number", "date", "file", "folder"]);
 
-const SYSTEM_PROMPT = [
-  "You turn a recorded demonstration into a reusable workflow for Breadboard.",
-  "",
-  "You are given one demonstration: the actions the user performed, the application and window each happened in, how the operating system's accessibility layer named the control they acted on, and — joined on the same clock — what the user was saying aloud at that moment.",
-  "",
-  "Your output is a PROCEDURE, not a recording. The difference is the entire task:",
-  "- A recording says 'click at 441,281'. A procedure says 'click the button labeled \"Search\"'.",
-  "- A recording says 'type Alice'. A procedure says 'type the customer name supplied at run time'.",
-  "- A recording replays. A procedure is carried out again, against a screen that has changed.",
-  "",
-  "NEVER emit pixel coordinates, screen sizes, or window positions in any field. They were evidence about which control was meant; they are not instructions.",
-  "NEVER write a rule that only makes sense for the specific application, website, file name, or person in this demonstration unless that thing genuinely is the task. Do not special-case a window title or a button position.",
-  "",
-  "The narration is the user explaining their own intent, and you should weight it heavily for:",
-  "- why an action is being taken",
-  "- which values change between runs (these become inputs)",
-  "- invariants and checks that must hold",
-  "- exceptions and decision rules",
-  "- things the workflow must never do",
-  "- what 'finished' means",
-  "- where the workflow must stop and ask before continuing",
-  "",
-  "If the narration says a value 'changes every time', 'is different each time', 'depends on', or similar, that value is an input — not a constant. Give the input a clear snake_case name, and reference it in later steps as {{input_name}} rather than repeating the demonstrated literal.",
-  "If the narration says to always check, verify, or confirm something before an action, express that as a precondition on the step and, when it gates a consequential action, as an approval.",
-  "If the narration says to ask, confirm, or wait for the user before an action, set approvalRequired on that step.",
-  "",
-  "If the narration contradicts what the actions plainly show, do NOT silently follow either one. Follow the actions, and record the conflict in openQuestions so a person can settle it.",
-  "",
-  "Prefer the safest, most deterministic route that preserves what the demonstration actually did. Use route 'gui' when the work genuinely needs the on-screen application, 'browser' for web pages, 'shell' for file and system operations, 'connector' when a first-party Breadboard operation would do the same thing. But do not replace a demonstrated visual check with a blind call: if the user looked at a value before committing, the procedure still looks at it.",
-  "",
-  "Where the demonstration is genuinely ambiguous, ask instead of guessing. Selecting the first row once does not establish 'always take the first row'; it might mean 'take the row matching the customer'. Put that in openQuestions with concrete options.",
-  "Do not manufacture questions for things the demonstration settled. A question the evidence already answers is noise.",
-  "",
-  "Return strict JSON and nothing else.",
-].join("\n");
 
 const OUTPUT_SCHEMA = [
   "Schema:",
@@ -409,6 +375,7 @@ function normalizeAmbiguities(value: unknown, steps: WorkflowStep[]): WorkflowAm
 }
 
 export interface ParseInductionContext {
+  userId?: number | null;
   sessionId: string;
   recordedAt: string;
   durationMs: number;
@@ -467,7 +434,7 @@ export async function induceProcedure(
   const frames = keyframeParts(request);
 
   const messages: ModelMessage[] = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: systemPromptText("workflow-induction", context.userId) },
     {
       role: "user",
       content: frames.length > 0 ? [{ type: "text", text: prompt }, ...frames] : prompt,
@@ -611,7 +578,7 @@ export async function induceRevision(
 
   const frames = keyframeParts(request);
   const messages: ModelMessage[] = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: systemPromptText("workflow-induction", context.userId) },
     { role: "user", content: frames.length > 0 ? [{ type: "text", text: prompt }, ...frames] : prompt },
   ];
 

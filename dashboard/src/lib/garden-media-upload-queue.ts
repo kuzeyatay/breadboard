@@ -14,6 +14,13 @@ interface MediaUploadInput {
   keepMedia: boolean;
 }
 
+/** The file's real path in the desktop app; "" in a plain browser. */
+export function desktopFilePath(file: File): string {
+  if (typeof window === "undefined") return "";
+  const desktop = (window as Window & { breadboardDesktop?: { getPathForFile?: (file: File) => string } }).breadboardDesktop;
+  return desktop?.getPathForFile?.(file) ?? "";
+}
+
 interface PendingUpload {
   file: File | null;
   retryAt: number;
@@ -64,7 +71,16 @@ export function createGardenMediaUploadQueue({
         });
         try {
           let init: RequestInit;
-          if (input.file) {
+          const originPath = input.file && !job.retainMedia ? desktopFilePath(input.file) : "";
+          if (originPath) {
+            init = {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                originPath, displayName: input.file!.name, analysis: job.analysis, retainMedia: false,
+              }),
+            };
+          } else if (input.file) {
             const form = new FormData();
             form.append("media", input.file, input.file.name);
             form.append("analysis", job.analysis ?? "transcript");

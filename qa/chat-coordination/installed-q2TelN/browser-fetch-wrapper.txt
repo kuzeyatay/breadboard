@@ -1,0 +1,15 @@
+function (input, init) {
+        if (document.documentElement?.dataset.desktopTabActive === "false" && init?.priority === undefined) {
+            try {
+                const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+                const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+                if (url.origin === location.origin && (method === "GET" || method === "HEAD")) {
+                    return nativeFetch.call(this, input, { ...init, priority: "low" });
+                }
+            }
+            catch { /* Let fetch report malformed input with its normal semantics. */ }
+        }
+        // Preserve writes, streaming bodies, signals, credentials, explicit
+        // priorities and external requests. No request is cancelled or deferred.
+        return nativeFetch.call(this, input, init);
+    }

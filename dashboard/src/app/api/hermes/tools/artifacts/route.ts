@@ -212,7 +212,7 @@ export async function POST(request: Request) {
       // Provider selection ends before persistence starts. An artifact-store
       // failure must never be mistaken for a provider failure or spend a
       // second image-generation request on an unrelated Gemini fallback.
-      const generated = await generateImageWithProviderFallback({
+      const generated = await generateImageWithProviderFallback({ userId: session.user_id,
         baseURL: resolveChatmockBaseUrl(request).baseURL,
         prompt,
         signal: request.signal,

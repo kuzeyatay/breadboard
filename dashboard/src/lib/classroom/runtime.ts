@@ -14,7 +14,19 @@ import path from "node:path";
 import { externalRuntimePathExists } from "../external-runtime-filesystem.ts";
 import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
 import { configuredManagedPayloadRoot, managedPayloadTarget } from "../../../scripts/runtime-v2-bulk-paths.mjs";
-import { sameRuntimePath } from "../../../scripts/runtime-v2-paths.mjs";
+import { runtimeProcessPath, sameRuntimePath } from "../../../scripts/runtime-v2-paths.mjs";
+
+/** Present already-resolved tool/cache paths in the spelling Node and pnpm accept. */
+export function classroomProcessEnvironment(source: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  const env = { ...source };
+  const delimiter = platform === "win32" ? ";" : ":";
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (key.toUpperCase() === "PATH") env[key] = value.split(delimiter).map(part => runtimeProcessPath(part, platform)).join(delimiter);
+    else if (["corepack_home", "npm_config_cache"].includes(key.toLowerCase())) env[key] = runtimeProcessPath(value, platform);
+  }
+  return env;
+}
 
 /** Files that identify a directory as the OpenMAIC clone rather than a namesake. */
 const MARKERS = [

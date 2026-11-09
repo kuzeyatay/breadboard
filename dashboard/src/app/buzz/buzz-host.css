@@ -8,25 +8,16 @@
  */
 
 /*
- * Buzz assumes it owns the window. In the desktop shell it does not: the
- * Electron caption strip sits above the page, and a `100vh` workspace is
- * exactly that strip taller than the space it has — which is what put a
- * scrollbar down the side of a chat app that should never scroll as a whole.
- *
- * Breadboard already solves this for pages that are direct children of `body`
- * (`html[data-breadboard-desktop] body > .h-screen`). The Buzz shell sits
- * inside the sidebar provider's wrapper, so it needs the same subtraction
- * addressed to it by name.
+ * The page's viewport-height shell accounts for the desktop caption strip.
+ * Let the workspace fill the space left below Breadboard's navbar so the
+ * transcript and rails keep their own scroll areas and the composer stays
+ * inside the window.
  */
 .buzz-host-shell {
-  height: 100vh;
+  flex: 1;
   min-height: 0;
   width: 100%;
   overflow: hidden;
-}
-
-html[data-breadboard-desktop="true"] .buzz-host-shell {
-  height: calc(100vh - var(--breadboard-titlebar-height));
 }
 
 /*
@@ -38,6 +29,18 @@ html[data-breadboard-desktop="true"] .buzz-host-shell {
 .buzz-host-shell > * {
   min-width: 0;
   min-height: 0;
+}
+
+/* Keep the brand within a narrow organization window. */
+@media (max-width: 540px) {
+  .buzz-page-shell > .breadboard-flower-navbar {
+    gap: 12px;
+    padding-inline: 12px;
+  }
+
+  .buzz-page-shell > .breadboard-flower-navbar > a > span {
+    display: none;
+  }
 }
 
 /*
@@ -83,92 +86,73 @@ html[data-breadboard-desktop="true"] .buzz-host-shell {
 }
 
 /*
- * Buzz's light surface is warm paper, not Catppuccin's blue-grey.
- *
- * Upstream's Latte base (`#eff1f5`) is a cool grey. Inside Breadboard it sits
- * directly against the window chrome — the caption strip and the native button
- * cluster beside it, both painted `--paper-surface` (#faf7ef) — and against
- * Buzz's own cream gradient in the gutters around the card. A cool card in a
- * warm frame reads as two materials in one window.
- *
- * So the three tokens that mean "the page's own paper" take Breadboard's paper
- * instead. Everything layered on top — muted, accent, border, the greys that
- * separate one row from the next — is untouched: those are the contrast
- * Catppuccin tuned against a light base, and they still work against this one.
- *
- * Dark is already warmer than Latte's blue (`--buzz-content-dark`), so it is
- * left alone; the override is scoped to light for that reason.
+ * Keep Buzz's layout and materials, but derive their colors from the active
+ * Breadboard palette. Relative HSL preserves the vendored hsl(var(--token))
+ * and hsl(var(--token) / alpha) consumers without copying palette values.
+ * The host tokens also resolve before hydration, so dark windows never start
+ * with a light Organization canvas while its React theme subscription mounts.
  */
-.buzz-root:not(.dark) {
-  /* `--paper-surface: #faf7ef` in globals.css, as bare HSL for `hsl()`. */
-  --buzz-background: 44 52% 96%;
-  --card: 44 52% 96%;
-  --popover: 44 52% 96%;
+.buzz-root,
+.buzz-root[data-buzz-sidebar],
+.buzz-root[data-buzz-sidebar].dark {
+  --buzz-background: from var(--paper-surface) h s l;
+  --buzz-foreground: from var(--ink) h s l;
+  --buzz-content-dark: var(--buzz-background);
+  --card: from var(--paper-raised) h s l;
+  --card-foreground: var(--buzz-foreground);
+  --popover: from var(--paper-raised) h s l;
+  --popover-foreground: var(--buzz-foreground);
+  --primary: from var(--botanical) h s l;
+  --primary-foreground: from var(--paper-bg) h s l;
+  --secondary: from var(--paper-strong) h s l;
+  --secondary-foreground: var(--buzz-foreground);
+  --muted: var(--secondary);
+  --muted-foreground: from var(--ink-muted) h s l;
+  --accent: var(--secondary);
+  --accent-foreground: var(--buzz-foreground);
+  --destructive: from var(--danger) h s l;
+  --destructive-foreground: var(--primary-foreground);
+  --border: from var(--line) h s l;
+  --input: from var(--line-strong) h s l;
+  --ring: var(--primary);
+  --sidebar: var(--buzz-background);
+  --sidebar-background: var(--buzz-background);
+  --sidebar-foreground: var(--buzz-foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-active: var(--primary);
+  --sidebar-active-foreground: var(--primary-foreground);
+  --sidebar-accent: from var(--paper-raised) h s l;
+  --sidebar-accent-foreground: var(--buzz-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+
+  /* Restore Buzz's cream/olive-to-slate gradient. Both layers follow the
+     host color scheme immediately, before the .dark class catches up. */
+  --buzz-gradient-light-top: light-dark(#e6e6b6, #4a4616);
+  --buzz-gradient-light-bottom: light-dark(#c4d0da, #0a1423);
+  --buzz-gradient-dark-top: var(--buzz-gradient-light-top);
+  --buzz-gradient-dark-bottom: var(--buzz-gradient-light-bottom);
+  --buzz-muted-foreground: var(--ink-muted);
+  --buzz-chrome-foreground: var(--ink-muted);
+  --buzz-search-surface: color-mix(in srgb, var(--ink) 4%, transparent);
+  --buzz-hover-surface: color-mix(in srgb, var(--botanical) 8%, transparent);
+  --buzz-sidebar-scrollbar-thumb: color-mix(in srgb, var(--ink-muted) 28%, transparent);
+  --buzz-active-fill: var(--primary);
+  --buzz-active-foreground: var(--buzz-foreground);
+  --sidebar-row-subtle-active-surface: color-mix(in srgb, var(--botanical) 14%, transparent);
+  --sidebar-row-active-surface: var(--paper-raised);
+  color-scheme: inherit;
 }
 
-/*
- * Where Buzz's page meets the desktop window's own chrome.
- *
- * Two edges have the same problem. Along the top, Electron's caption strip
- * runs the full width but only its left part is ours — Windows paints the
- * minimise/maximise/close cluster through `titleBarOverlay`, whose colour is
- * fixed in the main process and knows nothing about which page is open. Down
- * the right, the 8px gutter beside the content card shows Buzz's own gradient,
- * which meets that same paper-coloured chrome at the corner.
- *
- * Both are resolved the same way: ramp from Buzz's colour to the shell's,
- * arriving exactly where the shell takes over. The two ends come from
- * different themes and that is not a mistake — the start is Buzz's own
- * light/dark, the end is Breadboard's, because the chrome beside it is painted
- * from Breadboard's palette. An account can run one dark and the other light.
- */
-html[data-breadboard-desktop="true"]:has(.buzz-root) {
-  /* Buzz's `--buzz-gradient-light-top`. */
-  --buzz-caption-start: #e6e6b6;
-  /* `BREADBOARD_TITLE_BAR.color` in desktop/src/main/window-options.ts. */
-  --buzz-caption-end: #faf7ef;
+/* Let the full color ramp reach the bottom of the space below the navbar. */
+.buzz-root[data-buzz-sidebar] :is(.buzz-theme-gradient-underlay, .buzz-theme-gradient-layer-light, .buzz-theme-gradient-layer-dark) {
+  background-size: 100% 100%;
 }
 
-html[data-breadboard-desktop="true"]:has(.buzz-root.dark) {
-  --buzz-caption-start: #4a4616;
-}
-
-html[data-breadboard-desktop="true"][data-theme="dark"]:has(.buzz-root) {
-  --buzz-caption-end: #181d1a;
-}
-
-html[data-breadboard-desktop="true"]:has(.buzz-root) {
-  /*
-   * Where the content card starts: the community rail (`w-[68px]`) plus the
-   * room rail (`w-60`). Everything left of this shows the page's own gradient
-   * behind the strip; everything right of it is covered by the card.
-   */
-  --buzz-rail-width: 308px;
-}
-
-/*
- * The top strip, fading rightwards.
- *
- * Chromium publishes where the native cluster begins as
- * `env(titlebar-area-width)` — the width of the draggable region, everything
- * left of the buttons — so the ramp lands on the shell's colour exactly at the
- * seam. The fallback fades across the whole strip, which is what a window with
- * no overlay wants.
- *
- * The ramp is held flat until the content card starts. Above the rails the
- * page's own gradient is at its top stop and unshaded, so a strip that had
- * already begun lightening drew a visible step along its whole left third —
- * the two surfaces meet there and have to agree. Past that point the card is
- * opaque and there is nothing left to disagree with, so the fade has the width
- * of the transcript to travel and lands on the shell's colour by the buttons.
- */
-html[data-breadboard-desktop="true"]:has(.buzz-root) .desktop-title-bar {
-  background: linear-gradient(
-    to right,
-    var(--buzz-caption-start),
-    var(--buzz-caption-start) var(--buzz-rail-width),
-    var(--buzz-caption-end) env(titlebar-area-width, 100%)
-  );
+/* The right gutter meets the same paper as the shared navbar above it. */
+html[data-breadboard-desktop="true"]:has(.buzz-host-shell) {
+  --buzz-caption-end: var(--paper-surface);
 }
 
 /*
@@ -176,7 +160,7 @@ html[data-breadboard-desktop="true"]:has(.buzz-root) .desktop-title-bar {
  *
  * `mr-2` on the content card leaves 8px of Buzz's gradient down the window's
  * right edge, and at the top that gutter used to butt straight into the pale
- * caption strip. Fading it bottom-to-top into the same colour turns that
+ * navbar. Fading it bottom-to-top into the same colour turns that
  * corner into a continuous ramp rather than a step.
  *
  * Drawn by the gradient layer's own `::after` so it needs no extra element:
@@ -218,4 +202,42 @@ html[data-breadboard-desktop="true"] .buzz-theme-gradient-layer::after {
   font-family: var(--font-schibsted), "Inter Variable", Inter, "Segoe UI", sans-serif;
   letter-spacing: 0.01em;
   text-transform: none;
+}
+
+/* Shared Breadboard materials; geometry stays with the existing room layout. */
+.buzz-root .buzz-composer {
+  border: 1px solid var(--neu-border);
+  background: var(--neu-surface);
+  box-shadow: var(--neu-raised-shadow);
+}
+.buzz-root .buzz-composer textarea { color: var(--ink); font-size: 14px; line-height: 1.6; }
+.buzz-root .buzz-composer textarea::placeholder { color: var(--ink-muted); opacity: .85; }
+.buzz-root .buzz-composer > div:last-child { padding: 4px 4px 2px; }
+.buzz-root .buzz-member-card { background: var(--paper-raised); border: 1px solid var(--line); }
+.buzz-root .buzz-response-option { color: var(--ink-muted); transition: background-color 160ms ease, color 160ms ease; }
+.buzz-root .buzz-response-option.is-selected { color: var(--botanical); background: var(--paper-raised); box-shadow: var(--neu-raised-shadow); }
+.buzz-root .buzz-response-option:disabled { cursor: default; opacity: 1; }
+.buzz-root [role="dialog"] { background-color: var(--paper-surface); border-color: var(--line); box-shadow: var(--neu-strong-shadow); }
+.buzz-root [role="dialog"] :is(input:not([type="checkbox"]), textarea) { background: var(--neu-surface-pressed); border-color: var(--neu-border); box-shadow: var(--neu-inset-shadow); }
+.buzz-root :is(button, input, textarea, a):focus-visible { outline: 2px solid var(--botanical); outline-offset: 3px; }
+.buzz-root .buzz-composer textarea:focus-visible { outline: none; }
+.buzz-navigation-toggle, .buzz-navigation-backdrop { display: none; }
+@media (max-width: 1100px) {
+  .buzz-root .buzz-aux-panel { position: absolute; inset: 0 0 0 auto; z-index: 20; max-width: 100%; background: var(--paper-surface); box-shadow: -8px 0 28px rgb(0 0 0 / .12); }
+}
+@media (max-width: 720px) {
+  .buzz-navigation { display: none; }
+  .buzz-navigation.is-open { display: flex; position: absolute; inset: 0 auto 0 0; z-index: 30; max-width: calc(100% - 44px); background: linear-gradient(to bottom, var(--buzz-gradient-top), var(--buzz-gradient-bottom)); box-shadow: var(--neu-strong-shadow); }
+  .buzz-navigation-toggle { position: absolute; top: 12px; left: 12px; z-index: 15; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; }
+  .buzz-navigation-backdrop { display: block; position: absolute; inset: 0; z-index: 25; background: rgb(0 0 0 / .22); }
+  .buzz-root .buzz-room-header { padding-left: 54px; }
+  .buzz-root [data-buzz-content-surface] { margin: 0; border-radius: 0; }
+  .buzz-root .buzz-content-primary > div > header { padding-left: 54px; }
+  .buzz-root .buzz-composer { border-radius: 26px; }
+}
+@media (hover: none) {
+  .buzz-members-panel [aria-label^="Remove "] { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .buzz-root *, .buzz-root *::before, .buzz-root *::after { scroll-behavior: auto; transition-duration: 0s; animation-duration: 0s; }
 }

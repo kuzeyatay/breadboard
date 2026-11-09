@@ -329,6 +329,10 @@ mod windows {
             "$chunk = 'x' * 8192; 1..200 | ForEach-Object {{ [Console]::Out.Write($chunk) }}; [Console]::Out.Flush(); Set-Content -LiteralPath '{marker_literal}' -Value 'ready'; Start-Sleep -Seconds 300"
         );
         let mut child = helper()
+            // This fixture establishes pressure after the service log budget
+            // is exhausted. Worker events are lossless and deliberately have
+            // no lifetime log budget, so use the service contract explicitly.
+            .args(["--environment-profile", "chatmock"])
             .args(target(&script))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

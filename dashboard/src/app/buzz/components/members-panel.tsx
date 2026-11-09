@@ -1,513 +1,223 @@
 "use client";
 
-// The right-hand panel: who is in the room, and how each of them behaves.
-//
-// The one control that matters here is "when does this agent speak". A room
-// with several always-on agents answers every message several times, so the
-// setting is on the member card rather than buried in a dialog — it is the
-// difference between a useful room and an unreadable one.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, Plus, UserMinus, X } from "lucide-react";
+
+import { useEffect, useMemo, useState } from "react";
+
+import { ChevronLeft, ChevronRight, Plus, UserMinus, X } from "lucide-react";
 
 import { cn } from "@/app/buzz/lib/cn";
+
 import { BREAD_PERSONA, BREAD_SLUG } from "@/lib/buzz/bread.ts";
-import type { BuzzMember, BuzzPersona, BuzzRespondTo } from "../types.ts";
 
-/*
- * Short chips, long titles.
- *
- * The panel is 264px wide and these three sit on one row; spelled out ("Only
- * when asked directly") they wrapped to three lines and turned the quietest
- * setting in the room into its loudest element. The sentence is kept as the
- * title, so the meaning is one hover away.
- */
-const RESPOND_LABELS: Record<BuzzRespondTo, string> = {
-  always: "Always",
-  mention: "Mentions",
-  never: "Never",
-};
+import { ROOM_RUNTIME_AGENTS, runtimeSlug } from "@/lib/buzz/runtime-catalog.ts";
 
-const RESPOND_TITLES: Record<BuzzRespondTo, string> = {
-  always: "Answers every message in this room",
-  mention: "Answers when someone names it by handle",
-  never: "Stays quiet unless asked directly",
-};
+import { requestJson } from "../lib/message-state";
 
-/**
- * How much has to be typed before the people search runs.
- *
- * Not a performance guard — the query is one indexed LIKE over a small table.
- * It is about what a one-letter search *means*: "a" matched most of the
- * account table, so the picker's first useful state was a list of strangers
- * with a click target on each, and adding the wrong person is not a mistake
- * the clicker can undo. Three characters is roughly where the list stops being
- * everybody and starts being a search.
- */
-const PEOPLE_SEARCH_MINIMUM = 3;
+import type { BuzzMember, BuzzPersona, BuzzRespondTo } from "../types";
 
-/** What the agents picker is currently showing. */
-type AgentPickerGroup = "top" | "agency";
 
-export function MembersPanel({
-  members,
-  personas,
-  roomPublicId,
-  rosterReady,
-  onClose,
-  onAddPersona,
-  onAddPerson,
-  onRemove,
-  onRespondToChange,
-}: {
-  members: BuzzMember[];
-  personas: BuzzPersona[];
-  /** Scopes the people search, so it never offers someone already seated. */
-  roomPublicId: string | null;
-  rosterReady: boolean;
+
+export type AddPersonOutcome = { kind: "seated" } | { kind: "invited"; username: string; community: string } | { kind: "failed"; message: string };
+
+const RESPONSES: Array<{ value: BuzzRespondTo; label: string; title: string }> = [
+
+  { value: "always", label: "Always", title: "Respond to every message unless another agent is addressed" },
+
+  { value: "mention", label: "Mentions", title: "Respond when mentioned by handle" },
+
+  { value: "never", label: "Off", title: "Do not respond, including to mentions" },
+
+];
+
+
+
+export function MembersPanel({ members, personas, roomPublicId, rosterReady, selfMemberId, canManage = false, onClose, onAddPersona, onAddPerson, onRemove, onRespondToChange }: {
+
+  members: BuzzMember[]; personas: BuzzPersona[]; roomPublicId: string | null; rosterReady: boolean; selfMemberId?: number | null; canManage?: boolean;
+
   onClose: () => void;
-  onAddPersona: (slug: string) => void;
-  /**
-   * Offer someone a place in the room. Answers what happened, because the two
-   * outcomes are different events: a colleague is seated at once, while
-   * somebody outside the community is only *invited* to it and appears here if
-   * and when they accept.
-   */
+
+  onAddPersona: (slug: string) => Promise<AddPersonOutcome> | AddPersonOutcome | void;
+
   onAddPerson: (userId: number) => Promise<AddPersonOutcome> | AddPersonOutcome;
-  onRemove: (memberId: number) => void;
-  onRespondToChange: (memberId: number, respondTo: BuzzRespondTo) => void;
+
+  onRemove: (memberId: number) => Promise<void> | void;
+
+  onRespondToChange: (memberId: number, respondTo: BuzzRespondTo) => Promise<void> | void;
+
 }) {
-  // Two pickers, not one. People are real accounts and are searched on the
-  // server; specialists are the local roster. Mixing them into a single list
-  // meant "add a person" mostly returned agents.
+
   const [picker, setPicker] = useState<"none" | "people" | "agents">("none");
-  const [agentGroup, setAgentGroup] = useState<AgentPickerGroup>("top");
+
+  const [agency, setAgency] = useState(false);
+
   const [query, setQuery] = useState("");
-  const [people_, setPeople] = useState<
-    Array<{ userId: number; username: string }>
-  >([]);
-  const [searching, setSearching] = useState(false);
-  /** What the last add attempt did, in the picker's own words. */
+
+  const [results, setResults] = useState<Array<{ userId: number; username: string }>>([]);
+
   const [notice, setNotice] = useState<string | null>(null);
 
-  const people = members.filter((member) => member.kind === "human");
-  const agents = members.filter((member) => member.kind === "agent");
+  const [busy, setBusy] = useState(false);
 
-  const inRoom = useMemo(
-    () => new Set(members.map((member) => member.personaSlug).filter(Boolean)),
-    [members],
-  );
+  const [searching, setSearching] = useState(false);
 
-  const trimmed = query.trim();
-  const searchable = trimmed.length >= PEOPLE_SEARCH_MINIMUM;
+  const people = members.filter(member => member.kind === "human");
 
-  const availablePersonas = personas
-    .filter((persona) => !inRoom.has(persona.slug))
-    .filter((persona) =>
-      trimmed === ""
-        ? true
-        : `${persona.name} ${persona.division} ${persona.description}`
-            .toLowerCase()
-            .includes(trimmed.toLowerCase()),
-    )
-    .slice(0, 40);
+  const agents = members.filter(member => member.kind === "agent");
 
-  const openPicker = useCallback((next: "people" | "agents") => {
-    setPicker((current) => (current === next ? "none" : next));
-    setAgentGroup("top");
-    setQuery("");
-    setNotice(null);
-  }, []);
+  const seated = useMemo(() => new Set(agents.map(member => member.personaSlug)), [agents]);
 
-  const closePicker = useCallback(() => {
-    setPicker("none");
-    setAgentGroup("top");
-    setQuery("");
-  }, []);
+  const native = [
 
-  /*
-   * People come from the account table, debounced, and every answer is checked
-   * against the query current when it lands — typing fast used to paint the
-   * results of a prefix.
-   *
-   * Below the minimum nothing is requested and the last results are dropped,
-   * so deleting back to two characters cannot leave a stale list on screen
-   * that looks like an answer to what is now in the box.
-   */
+    { slug: BREAD_SLUG, name: BREAD_PERSONA.name, description: BREAD_PERSONA.description },
+
+    ...ROOM_RUNTIME_AGENTS.map(agent => ({ slug: runtimeSlug(agent.id), name: agent.name, description: agent.command })),
+
+  ];
+
+  const choices = (agency ? personas : native).filter(agent => !seated.has(agent.slug) && `${agent.name} ${agent.description}`.toLowerCase().includes(query.toLowerCase()));
+
+  const openPicker = (next: "people" | "agents") => { setPicker(picker === next ? "none" : next); setAgency(false); setQuery(""); setNotice(null); };
+
+
+
   useEffect(() => {
-    if (picker !== "people") return;
-    if (!searchable) {
-      setPeople([]);
-      setSearching(false);
-      return;
-    }
-    let cancelled = false;
-    setSearching(true);
-    const timer = setTimeout(async () => {
-      try {
-        const response = await fetch(
-          `/api/buzz/people?q=${encodeURIComponent(query)}` +
-            (roomPublicId ? `&roomId=${encodeURIComponent(roomPublicId)}` : ""),
-          { cache: "no-store" },
-        );
-        if (!response.ok || cancelled) return;
-        const body = (await response.json()) as {
-          query: string;
-          people: Array<{ userId: number; username: string }>;
-        };
-        if (cancelled || body.query !== trimmed) return;
-        setPeople(body.people);
-      } finally {
-        if (!cancelled) setSearching(false);
-      }
-    }, 160);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [picker, query, trimmed, searchable, roomPublicId, members.length]);
 
-  const invite = async (person: { userId: number; username: string }) => {
-    const outcome = await onAddPerson(person.userId);
-    if (outcome.kind === "invited") {
-      // The picker stays open and the search is cleared rather than closing:
-      // inviting is the kind of thing done to two or three people at once, and
-      // an invitation produces no visible member row, so closing the panel
-      // would read as nothing having happened.
-      setQuery("");
-      setPeople([]);
-      setNotice(
-        `Invited ${outcome.username} to ${outcome.community}. They join when they accept.`,
-      );
-      return;
-    }
-    if (outcome.kind === "failed") {
-      setNotice(outcome.message);
-      return;
-    }
-    closePicker();
-    setNotice(null);
+    if (picker !== "people" || query.trim().length < 3) { setResults([]); return; }
+
+    const controller = new AbortController();
+
+    const timer = setTimeout(async () => {
+
+      setSearching(true);
+
+      try {
+
+        const body = await requestJson<{ people: typeof results }>(`/api/buzz/people?q=${encodeURIComponent(query.trim())}&roomId=${encodeURIComponent(roomPublicId ?? "")}`, { signal: controller.signal });
+
+        if (!controller.signal.aborted) { setResults(body.people); setNotice(null); }
+
+      } catch (error) { if (!controller.signal.aborted) setNotice(error instanceof Error ? error.message : "People could not be found."); }
+
+      finally { if (!controller.signal.aborted) setSearching(false); }
+
+    }, 160);
+
+    return () => { controller.abort(); clearTimeout(timer); };
+
+  }, [picker, query, roomPublicId]);
+
+
+
+  const action = async (work: () => Promise<void> | void) => {
+
+    if (busy) return;
+
+    setBusy(true); setNotice(null);
+
+    try { await work(); } catch (error) { setNotice(error instanceof Error ? error.message : "That change could not be saved."); }
+
+    finally { setBusy(false); }
+
   };
 
+  const add = (work: () => Promise<AddPersonOutcome> | AddPersonOutcome | void) => action(async () => {
+
+    const outcome = await work();
+
+    if (outcome?.kind === "failed") { setNotice(outcome.message); return; }
+
+    if (outcome?.kind === "invited") { setNotice(`Invited ${outcome.username} to ${outcome.community}. They join when they accept.`); setQuery(""); setResults([]); return; }
+
+    setPicker("none"); setQuery("");
+
+  });
+
+
+
   return (
-    <aside
-      className="flex w-[264px] shrink-0 flex-col border-l border-border/40"
-      aria-label="Members"
-    >
+
+    <aside className="buzz-aux-panel buzz-members-panel flex w-[264px] shrink-0 flex-col border-l border-border/40" aria-label="Members">
+
       <header className="flex h-14 shrink-0 items-center justify-between px-4">
-        <h2 className="text-sm font-semibold">
-          Members{" "}
-          <span className="text-muted-foreground tabular-nums">{members.length}</span>
-        </h2>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => openPicker("people")}
-            data-testid="add-person"
-            className={cn(
-              "flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground",
-              picker === "people" && "bg-muted text-foreground",
-            )}
-            aria-label="Add someone"
-            aria-pressed={picker === "people"}
-            title="Add someone"
-          >
-            <Plus className="size-4" />
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-            aria-label="Close members panel"
-          >
-            <X className="size-4" />
-          </button>
+
+        <h2 className="text-sm font-semibold">Members <span className="ml-1 text-muted-foreground tabular-nums">{members.length}</span></h2>
+
+        <div className="flex gap-1">
+
+          {canManage ? <button className="neu-button flex size-8 items-center justify-center rounded-full" aria-label="Add someone" data-testid="add-person" aria-pressed={picker === "people"} onClick={() => openPicker("people")}><Plus className="size-4" /></button> : null}
+
+          <button className="flex size-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted" aria-label="Close members panel" onClick={onClose}><X className="size-4" /></button>
+
         </div>
+
       </header>
 
-      {picker === "people" ? (
-        <div className="border-b border-border/60 px-3 pb-3">
-          <input
-            autoFocus
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
-              setNotice(null);
-            }}
-            placeholder="Search people…"
-            className="mb-2 w-full rounded-lg border border-input/50 bg-muted/40 px-2.5 py-1.5 text-xs outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-          />
-          {notice ? (
-            <p className="px-1 pb-1.5 text-2xs leading-relaxed text-primary">
-              {notice}
-            </p>
-          ) : null}
-          <div className="buzz-content-scrollbar max-h-72 overflow-y-auto">
-            {!searchable ? (
-              <p className="px-1 py-2 text-2xs leading-relaxed text-muted-foreground">
-                Type at least {PEOPLE_SEARCH_MINIMUM} letters of a name or email
-                address to find someone.
-              </p>
-            ) : people_.length === 0 ? (
-              <p className="px-1 py-2 text-2xs text-muted-foreground">
-                {searching ? "Looking…" : `Nobody matching “${trimmed}”.`}
-              </p>
-            ) : (
-              people_.map((person) => (
-                <button
-                  key={person.userId}
-                  type="button"
-                  onClick={() => void invite(person)}
-                  className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-accent"
-                >
-                  <span className="truncate text-xs font-medium">
-                    {person.username}
-                  </span>
-                </button>
-              ))
-            )}
-          </div>
+      {notice ? <p role="status" className="mx-3 mb-3 rounded-lg bg-muted/50 p-3 text-xs leading-relaxed">{notice}</p> : null}
+
+      {picker !== "none" && canManage ? <div className="border-b border-border/40 px-3 pb-3">
+
+        {picker === "agents" && agency ? <button className="mb-2 flex items-center gap-1 text-xs text-muted-foreground" onClick={() => { setAgency(false); setQuery(""); }}><ChevronLeft className="size-3.5" />Breadboard agents</button> : null}
+
+        <input autoFocus aria-label={picker === "people" ? "Search people" : "Search agents"} value={query} onChange={event => setQuery(event.target.value)} placeholder={picker === "people" ? "Search people…" : agency ? "Search Agency Agents…" : "Search Breadboard agents…"} className="neu-control mb-2 w-full rounded-xl px-3 py-2 text-xs outline-hidden" />
+
+        <div className="buzz-content-scrollbar max-h-72 overflow-y-auto">
+
+          {picker === "people" ? query.trim().length < 3 ? <p className="px-1 py-2 text-xs leading-relaxed text-muted-foreground">Type at least 3 letters of a name or email address.</p> : searching ? null : results.length ? results.map(person => <button key={person.userId} disabled={busy} onClick={() => void add(() => onAddPerson(person.userId))} className="w-full rounded-lg px-2 py-2 text-left text-xs hover:bg-muted">{person.username}</button>) : <p className="p-2 text-xs text-muted-foreground">Nobody matching “{query.trim()}”.</p> : <>
+
+            {choices.map(agent => <button key={agent.slug} disabled={busy} onClick={() => void add(() => onAddPersona(agent.slug))} className="block w-full rounded-xl px-2 py-2.5 text-left hover:bg-muted">
+
+              <span className="block text-xs font-medium">{agent.name}</span><span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">{agent.description}</span>
+
+            </button>)}
+
+            {!agency ? <button className="mt-1 flex w-full items-center justify-between rounded-xl border-t border-border/40 px-2 py-3 text-left text-xs" onClick={() => { setAgency(true); setQuery(""); }}><span>Agency Agents<span className="mt-1 block text-[11px] text-muted-foreground">{rosterReady ? `${personas.length} specialists, by division` : "Roster unavailable"}</span></span><ChevronRight className="size-4" /></button> : null}
+
+            {agency && choices.length === 0 ? <p className="p-2 text-xs text-muted-foreground">No matching specialists.</p> : null}
+
+          </>}
+
         </div>
-      ) : null}
 
-      {picker === "agents" ? (
-        <div className="border-b border-border/60 px-3 pb-3">
-          {agentGroup === "top" ? (
-            /*
-             * The top level is Breadboard's own agents. The agency roster is
-             * behind one row rather than poured in beside them: it is a
-             * catalog of a few hundred personas, and mixed into this list it
-             * buried everything else under whichever specialist sorted first.
-             */
-            <div className="buzz-content-scrollbar max-h-72 overflow-y-auto pt-1">
-              {inRoom.has(BREAD_SLUG) ? null : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onAddPersona(BREAD_SLUG);
-                    closePicker();
-                  }}
-                  className="flex w-full items-start gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-accent"
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-xs font-medium">
-                      {BREAD_PERSONA.name}
-                    </span>
-                    <span className="block text-3xs leading-relaxed text-muted-foreground">
-                      {BREAD_PERSONA.description}
-                    </span>
-                  </span>
-                </button>
-              )}
+      </div> : null}
 
-              <button
-                type="button"
-                onClick={() => {
-                  setAgentGroup("agency");
-                  setQuery("");
-                }}
-                className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-accent"
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xs font-medium">
-                    Agency Agents
-                  </span>
-                  <span className="block truncate text-3xs text-muted-foreground">
-                    {rosterReady
-                      ? `${personas.length} specialists, by division`
-                      : "Roster not loaded"}
-                  </span>
-                </span>
-                <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
-              </button>
+      <div className="buzz-content-scrollbar min-h-0 flex-1 overflow-y-auto px-3 py-3">
+
+        <section aria-label="People" className="mb-5">
+
+          <p className="buzz-panel-label mb-2 px-1 text-xs font-semibold text-muted-foreground">People<span className="tabular-nums">: {people.length}</span></p>
+
+          {people.map(member => <div key={member.id} className="group flex min-h-9 items-center justify-between rounded-lg px-1"><span className="truncate text-xs">{member.displayName}</span>{canManage && member.id !== selfMemberId ? <button disabled={busy} onClick={() => void action(() => onRemove(member.id))} className="flex size-7 items-center justify-center rounded-lg text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-muted hover:text-destructive" aria-label={`Remove ${member.displayName}`}><UserMinus className="size-3.5" /></button> : null}</div>)}
+
+        </section>
+
+        <section aria-label="Agents">
+
+          <div className="mb-2 flex items-center justify-between px-1"><p className="buzz-panel-label text-xs font-semibold text-muted-foreground">Agents<span className="tabular-nums">: {agents.length}</span></p>{canManage ? <button className="neu-button flex size-7 items-center justify-center rounded-full" aria-label="Add an agent" aria-pressed={picker === "agents"} onClick={() => openPicker("agents")}><Plus className="size-3.5" /></button> : null}</div>
+
+          {!agents.length ? <p className="px-1 py-2 text-xs leading-relaxed text-muted-foreground">{canManage ? "Add Bread or a specialist to work with your team." : "No agents in this room yet."}</p> : null}
+
+          {agents.map(member => <div key={member.id} className="buzz-member-card mb-3 rounded-2xl p-3">
+
+            <div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="truncate text-xs font-semibold">{member.displayName}</p><p className="mt-0.5 truncate text-[11px] text-muted-foreground">@{member.handle}</p></div>{canManage ? <button disabled={busy} aria-label={`Remove ${member.displayName}`} onClick={() => void action(() => onRemove(member.id))} className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-destructive"><UserMinus className="size-3.5" /></button> : null}</div>
+
+            <p className="mb-1.5 mt-3 text-[11px] text-muted-foreground">Replies</p>
+
+            <div className="neu-segmented flex gap-0.5 rounded-xl p-1" role="group" aria-label={`${member.displayName} replies`}>
+
+              {RESPONSES.map(option => <button key={option.value} disabled={!canManage || busy} aria-pressed={member.respondTo === option.value} title={option.title} onClick={() => void action(() => onRespondToChange(member.id, option.value))} className={cn("buzz-response-option min-h-7 flex-1 rounded-lg px-1 text-[11px] font-medium", member.respondTo === option.value && "is-selected")}>{option.label}</button>)}
+
             </div>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={() => {
-                  setAgentGroup("top");
-                  setQuery("");
-                }}
-                className="mb-1.5 mt-1 flex items-center gap-1 rounded-md px-1 py-0.5 text-3xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <ChevronLeft className="size-3" />
-                Agency Agents
-              </button>
-              <input
-                autoFocus
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search specialists…"
-                className="mb-2 w-full rounded-lg border border-input/50 bg-muted/40 px-2.5 py-1.5 text-xs outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-              />
-              <div className="buzz-content-scrollbar max-h-72 overflow-y-auto">
-                {!rosterReady ? (
-                  <p className="px-1 py-2 text-2xs text-muted-foreground">
-                    The agent roster is not loaded, so there is nobody to bring in
-                    yet.
-                  </p>
-                ) : availablePersonas.length === 0 ? (
-                  <p className="px-1 py-2 text-2xs text-muted-foreground">
-                    Nobody left matching that.
-                  </p>
-                ) : (
-                  availablePersonas.map((persona) => (
-                    <button
-                      key={persona.slug}
-                      type="button"
-                      onClick={() => {
-                        onAddPersona(persona.slug);
-                        closePicker();
-                      }}
-                      className="flex w-full items-start gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-accent"
-                    >
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-xs font-medium">
-                          {persona.name}
-                        </span>
-                        <span className="block truncate text-3xs text-muted-foreground">
-                          {persona.division}
-                        </span>
-                      </span>
-                    </button>
-                  ))
-                )}
-              </div>
-            </>
-          )}
-        </div>
-      ) : null}
 
-      <div className="buzz-content-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-2">
-        <Section label="People" count={people.length}>
-          {people.map((member) => (
-            <div
-              key={member.id}
-              className="flex items-center gap-2 rounded-lg px-1.5 py-1.5"
-            >
-              <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                {member.displayName}
-              </span>
-            </div>
-          ))}
-        </Section>
+          </div>)}
 
-        <Section
-          label="Agents"
-          count={agents.length}
-          action={{
-            label: "Add an agent",
-            active: picker === "agents",
-            onClick: () => openPicker("agents"),
-          }}
-        >
-          {agents.length === 0 ? (
-            <p className="px-1.5 py-2 text-2xs leading-relaxed text-muted-foreground">
-              No agents in this room. Add one and mention it by handle to bring it
-              into the conversation.
-            </p>
-          ) : (
-            agents.map((member) => (
-              <div key={member.id} className="group rounded-lg px-1.5 py-1.5 hover:bg-muted/50">
-                <div className="flex items-center gap-2">
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-xs font-medium">
-                      {member.displayName}
-                    </span>
-                    <span className="block truncate text-3xs text-muted-foreground">
-                      @{member.handle}
-                    </span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => onRemove(member.id)}
-                    className="hidden size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-destructive group-hover:flex"
-                    aria-label={`Remove ${member.displayName}`}
-                  >
-                    <UserMinus className="size-3.5" />
-                  </button>
-                </div>
+        </section>
 
-                <div className="mt-1 flex flex-wrap gap-1 pl-9">
-                  {(Object.keys(RESPOND_LABELS) as BuzzRespondTo[]).map((option) => (
-                    <button
-                      key={option}
-                      type="button"
-                      onClick={() => onRespondToChange(member.id, option)}
-                      title={RESPOND_TITLES[option]}
-                      className={cn(
-                        "flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-3xs transition-colors",
-                        member.respondTo === option
-                          ? "border-primary/60 bg-primary/15 text-foreground"
-                          : "border-border/50 text-muted-foreground hover:bg-muted",
-                      )}
-                    >
-                      {member.respondTo === option ? (
-                        <Check className="size-2.5" />
-                      ) : null}
-                      {RESPOND_LABELS[option]}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))
-          )}
-        </Section>
       </div>
+
     </aside>
-  );
-}
 
-/** What adding a person turned out to mean. */
-export type AddPersonOutcome =
-  | { kind: "seated" }
-  | { kind: "invited"; username: string; community: string }
-  | { kind: "failed"; message: string };
-
-function Section({
-  label,
-  count,
-  action,
-  children,
-}: {
-  label: string;
-  count: number;
-  /** The section's own way of adding to itself, if it has one. */
-  action?: { label: string; active: boolean; onClick: () => void };
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="mb-3">
-      <div className="flex items-center gap-1 px-1.5 pb-1">
-        {/*
-         * `buzz-panel-label` is Breadboard's display face, set in
-         * `buzz-host.css`. These headings used to be tracked-out micro-caps in
-         * Inter, which at this size read as a row of loose letters rather than
-         * a word — and the count hung off an em dash, which is punctuation for
-         * an aside, not for a label and its value.
-         */}
-        <p className="buzz-panel-label text-2xs font-semibold text-muted-foreground">
-          {label}
-          <span className="tabular-nums">: {count}</span>
-        </p>
-        {action ? (
-          <button
-            type="button"
-            onClick={action.onClick}
-            aria-label={action.label}
-            aria-pressed={action.active}
-            title={action.label}
-            className={cn(
-              "ml-auto flex size-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
-              action.active && "bg-muted text-foreground",
-            )}
-          >
-            <Plus className="size-3.5" />
-          </button>
-        ) : null}
-      </div>
-      {children}
-    </div>
   );
+
 }

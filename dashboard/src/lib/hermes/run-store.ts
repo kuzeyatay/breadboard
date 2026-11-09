@@ -31,6 +31,9 @@ export interface RuntimeArtifactRequirement {
 }
 
 export interface RuntimeRunDispatch {
+  /** Server-resolved approval standing for durable assignments. */
+  teamApproval?: boolean;
+  swarmWorker?: { runId: string; taskKey: string; workflowId?: string };
   /** Durable recovery of this request, also available outside explicit Goal mode. */
   taskRecovery?: TaskRecoveryState;
   /** Authenticated workflow selection, retained for specialist launch checks. */

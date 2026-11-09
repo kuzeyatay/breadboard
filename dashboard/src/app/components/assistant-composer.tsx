@@ -28,6 +28,7 @@ import ComposerBorderBeam from '@/app/components/effects/composer-border-beam';
 import MetalSendButton from '@/app/components/effects/metal-send-button';
 import SpeechDictationButton from '@/app/components/speech-dictation-button';
 import VoiceConversationOverlay from '@/app/components/voice-conversation-overlay';
+import type { ChatNotificationTarget } from '@/lib/chat-notification-inbox';
 import type { SpokenExchange } from '@/lib/speech/chatgpt-voice';
 import { useVoiceChatHost } from '@/app/components/use-voice-chat-host';
 import type { VoiceMessage } from '@/lib/speech/voice-conversation';
@@ -1114,9 +1115,16 @@ export default function AssistantComposer({
   // point of view: it wants the draft now, and the send path delivers it as the
   // answer. So neither the queue nor Stop takes over while the question is open.
   const runInFlight = (activeRun || externalRunActive) && !clarificationPending;
+  const voiceNotificationTarget = useMemo<ChatNotificationTarget | null>(() => capabilitySessionId
+    ? { surface: 'dashboard_terminal', chatId: String(capabilitySessionId) }
+    : capabilityGardenSlug && voiceConversationId != null
+      ? { surface: 'garden_chat', gardenSlug: capabilityGardenSlug, chatId: String(voiceConversationId) } : null,
+  [capabilitySessionId, capabilityGardenSlug, voiceConversationId]);
   const voiceSnapshot = useMemo(() => voiceMessages ? {
+    notificationTarget: voiceNotificationTarget,
+    personalizedGreeting: personalizedSuggestions && personalize,
     messages: voiceMessages, busy: isSending || runInFlight, clarification: voiceClarification, recordable: Boolean(onVoiceRecord),
-  } : null, [voiceMessages, isSending, runInFlight, voiceClarification, onVoiceRecord]);
+  } : null, [voiceMessages, isSending, runInFlight, voiceClarification, onVoiceRecord, voiceNotificationTarget, personalizedSuggestions, personalize]);
   const voiceChatKey = useVoiceChatHost({ identity: voiceConversationId,
     createdIdentity: voiceCreatedConversationId, scope: voiceConversationScope, element: internalTextareaRef,
     snapshot: voiceSnapshot, onSend: sendSpokenTurn, onInterrupt: interruptSpokenTurn, onRecord: onVoiceRecord });
@@ -2376,8 +2384,6 @@ export default function AssistantComposer({
           <CommandHub
             ref={commandHubRef}
             open={showCommandHub}
-            searchOpen={menuSearch?.kind === 'commands'}
-            onToggleSearch={() => menuSearch?.kind === 'commands' ? closeMenuSearch() : openMenuSearch('commands')}
             onOpenChange={(nextOpen) => {
               setShowCommandHub(nextOpen);
               if (nextOpen) { setShowSlashCommands(false); setMenuSearch(null); }
@@ -3152,9 +3158,11 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
 
       {voiceMessages ? (
         <VoiceConversationOverlay
+          notificationTarget={voiceNotificationTarget}
           open={voiceOpen}
           onOpenSettings={() => { setVoiceOpen(false); setSettingsInitialTab('speech'); setIntelligencePanel('settings'); }}
           greetOnOpen={greetVoice}
+          personalizedGreeting={personalizedSuggestions && personalize}
           onClose={() => setVoiceOpen(false)}
           onSend={sendSpokenTurn}
           onInterrupt={interruptSpokenTurn}

@@ -1,0 +1,139 @@
+{
+  "verifiedAt": "2026-11-07T16:32:31.930Z",
+  "installedExchangeVerified": true,
+  "originalHarnessPassed": false,
+  "cleanupVerified": true,
+  "build": {
+    "number": 27,
+    "fingerprint": "5d738f9e61746b95029067c22ac5ce7c5d09e3d439a7067ec6ebe1e3ee5b1339",
+    "exchangeOrigin": "http://127.0.0.1:58722",
+    "cleanupOrigin": "http://127.0.0.1:61342"
+  },
+  "model": "gpt-6.1-sol",
+  "ids": {
+    "sender": "conv_0XowQHWnNWgUPl2qkVPiRCMb",
+    "receiver": "conv_zAJpCTsBLfcfm4lQfvKkiyon"
+  },
+  "exchange": {
+    "startedAt": "2026-11-07T16:16:48.942Z",
+    "completedAt": "2026-11-07T16:18:37.871Z",
+    "elapsedMs": 108929,
+    "receiverOnlyCode": "answer-b7762128-72c2-436d-9c7e-9f8213abd57d",
+    "senderInputContainsCode": false,
+    "receiverAnswer": "answer-b7762128-72c2-436d-9c7e-9f8213abd57d",
+    "senderAnswer": "The validation code is `answer-b7762128-72c2-436d-9c7e-9f8213abd57d`.",
+    "senderAttributionVerified": true,
+    "completedEnvelopeCount": 1,
+    "messageId": "msg_3942dcad-fb1f-4e59-b940-e3027a34f935",
+    "tools": [
+      {
+        "toolName": "chat_list",
+        "toolCallId": "call_eb251225e1904d0dac9f27a1c4d18692",
+        "completedAt": "2026-11-07T16:18:24.970Z",
+        "result": {
+          "currentChatId": "conv_0XowQHWnNWgUPl2qkVPiRCMb",
+          "chats": [
+            {
+              "id": 1082,
+              "chatId": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+              "title": "QA chat coordination 02dd9a48-1c05-4922-9f1b-043522b03871 receiver",
+              "surface": "dashboard_terminal",
+              "gardenId": null,
+              "busy": false
+            }
+          ],
+          "nextAfterId": null
+        }
+      },
+      {
+        "toolName": "chat_send_message",
+        "toolCallId": "call_e99e356ed74e49f887e3d169df7c137d",
+        "completedAt": "2026-11-07T16:18:29.906Z",
+        "result": {
+          "messageId": "msg_3942dcad-fb1f-4e59-b940-e3027a34f935",
+          "chatId": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+          "title": "QA chat coordination 02dd9a48-1c05-4922-9f1b-043522b03871 receiver",
+          "status": "dispatching",
+          "answer": null,
+          "answerTruncated": false
+        }
+      },
+      {
+        "toolName": "chat_wait",
+        "toolCallId": "call_e010769e0bf348aba8e78e4950ee8bcc",
+        "completedAt": "2026-11-07T16:18:34.181Z",
+        "result": {
+          "messageId": "msg_3942dcad-fb1f-4e59-b940-e3027a34f935",
+          "chatId": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+          "title": "QA chat coordination 02dd9a48-1c05-4922-9f1b-043522b03871 receiver",
+          "status": "complete",
+          "answer": "answer-b7762128-72c2-436d-9c7e-9f8213abd57d",
+          "answerTruncated": false,
+          "timedOut": false
+        }
+      }
+    ]
+  },
+  "validation": {
+    "targetedNodeTests": 22,
+    "actualPythonPluginCallbackTests": 1,
+    "typescriptDiagnostics": 0,
+    "independentEvidence": [
+      "Canonical SQLite transcripts and outbox",
+      "Authenticated product API transcripts and successful tool statuses"
+    ],
+    "deterministicIntegration": "Queueing, non-cancelling wait timeout, fresh-process recovery and goal continuation are covered in the linked integration artifacts."
+  },
+  "monitoring": {
+    "originalResultUnmodified": true,
+    "issue": "Browser test transport timed out while the actual exchange continued and completed within the 120-second work budget.",
+    "transportCause": "Undetermined; no claim that the normal app fetch priority wrapper caused the POST timeout.",
+    "runtimeRecovery": "The coordinator reconciled automatic recovery after the successful exchange; cleanup verified the unchanged build fingerprint on its new origin."
+  },
+  "cleanup": {
+    "bothApiGet404": true,
+    "bothCanonicalRowCountsZero": true,
+    "firstAttempt": "Stopped before API requests because the origin had changed.",
+    "secondAttempt": "Both ownership GETs succeeded; sender DELETE was submitted, but its acknowledgement timed out. Subsequent API and database reads confirmed it completed.",
+    "finalAttempt": "No sender DELETE replay. Revalidated the still-present receiver, deleted it once, and confirmed both IDs absent.",
+    "scope": "Only the two owned QA chats. No foreground changes, browser-global edits, model runs, voice actions, or app restarts during cleanup."
+  },
+  "evidence": [
+    {
+      "file": "qa/chat-coordination/installed-q2TelN/result.json",
+      "sha256": "1a4f05ccf7d08149a3bc014d515c7578160d068876276f0665a1db26d3371142"
+    },
+    {
+      "file": "qa/chat-coordination/installed-q2TelN/owned-exchange-evidence.json",
+      "sha256": "4da7452af1e1e7034486e889de0d14c2cedc2a9e6c1f283dd0699dbc8bb69578"
+    },
+    {
+      "file": "qa/chat-coordination/installed-q2TelN/reconciled-cleanup.json",
+      "sha256": "372d55ea4580d4dd99be65a38626382ba068668323d0612d215de9f4daa0ab14"
+    },
+    {
+      "file": "qa/chat-coordination/installed-q2TelN/reconciled-cleanup-after-recovery.json",
+      "sha256": "c21cb585d82c13d96e25449c6fa02b299e27e0f35a04fd5aef599c668cef0ae7"
+    },
+    {
+      "file": "qa/chat-coordination/installed-q2TelN/recovered-runtime-reconciliation.json",
+      "sha256": "3e17d73b9d6c41e057b5ac763eb12dad37581b43751b7f9f4843a32f3eb71d16"
+    },
+    {
+      "file": "qa/chat-coordination/installed-q2TelN/final-cleanup.json",
+      "sha256": "fd0cdfd83be6e3e0fe7453e8a69b86881c5de66e1879b11ed37d749e890b071b"
+    },
+    {
+      "file": ".tmp-chat-coordination-receipt-fix/verification.json",
+      "sha256": "7291fc0d3334561cd19d0348b095c43cf5859d0e8c641f915081eb7a2fc624bb"
+    },
+    {
+      "file": "qa/chat-coordination/live-2026-11-07-PX3sMD.json",
+      "sha256": "9ad3698b897aec4fb83aa857c0d2a742f473d9eb8aa89e0a3fbff2d78617f0af"
+    },
+    {
+      "file": "qa/chat-coordination/startup-http-2026-11-07.json",
+      "sha256": "1e6dbf81c1e699cca5bbb144b6dace943fe4be08b0b6636434aa0c532b2cee75"
+    }
+  ]
+}

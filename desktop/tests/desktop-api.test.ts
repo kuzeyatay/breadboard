@@ -7,6 +7,7 @@ import {
   type StartupStateView,
 } from "../src/preload/preload";
 import { IPC_CHANNELS } from "../src/shared/ipc-contract";
+import { DEFAULT_GESTURE_SETTINGS } from "../src/shared/gesture-control";
 
 class FakeIpcRenderer implements IpcRendererLike {
   readonly calls: Array<{ channel: string; args: unknown[] }> = [];
@@ -97,6 +98,17 @@ test("preload API invokes only the declared IPC contract", async () => {
     ipc.calls.find((call) => call.channel === IPC_CHANNELS.setCurrentLocationPreference)?.args,
     [true],
   );
+});
+
+test("gesture control uses the fixed native bridge channel", async () => {
+  const ipc = new FakeIpcRenderer();
+  const api = createDesktopApi(ipc);
+  for (const action of ["state", "start", "pause", "stop"] as const) await api.gestureControl(action);
+  assert.deepEqual(ipc.calls, ["state", "start", "pause", "stop"].map(action => ({
+    channel: IPC_CHANNELS.gestureControl, args: [action],
+  })));
+  await api.gestureControl("save-settings", DEFAULT_GESTURE_SETTINGS);
+  assert.deepEqual(ipc.calls.at(-1), { channel: IPC_CHANNELS.gestureControl, args: ["save-settings", DEFAULT_GESTURE_SETTINGS] });
 });
 
 test("the renderer reads the durable theme and override before publishing its own theme", async () => {

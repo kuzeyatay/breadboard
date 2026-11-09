@@ -1,3 +1,4 @@
+import { renderSystemPrompt } from "../system-prompts/service.ts";
 // Turning a sentence into a deck.
 //
 // Two forced tool calls. The first plans: the title, the theme family, and the
@@ -99,55 +100,10 @@ function authoringSkill(): string {
 }
 
 /** What Breadboard changes about how the skill is carried out. */
-function houseRules(digest: KitDigest): string {
-  return [
-    "## How this deck is delivered (Breadboard, not Bolt)",
-    "",
-    "The app is already installed and a workspace is already prepared, so ignore any",
-    "instruction to install, scaffold, run a dev server, or check the result in a browser.",
-    "You return source through a tool call and Breadboard builds it with Vite.",
-    "",
-    "- `src/App.tsx` is returned whole, as `appTsx`. It default-exports `App`, which takes",
-    "  no props — `main.tsx` renders `<App />`. Every child of `<Deck>` is one slide.",
-    "- The theme is returned as `tokensRoot`: DECLARATIONS from the `:root` block, with no",
-    "  selector and no braces. They are merged over the block below token by token, so send",
-    "  the ones the theme changes and leave the rest — but change values only, never names.",
-    "- A component the kit does not have is returned in `components` and lands at",
-    "  `src/authored/<Name>.tsx`, so `App.tsx` imports it as `./authored/<Name>`.",
-    "- The engine and the kit are already on disk. Import them by relative path exactly as",
-    "  listed below. Do not re-declare, re-implement, or paraphrase anything in `./deck/`.",
-    "- No new dependencies, and no imports beyond `react`, `framer-motion`, and relative",
-    "  paths. The build will reject anything else before it starts.",
-    "- **No remote images.** There is no image generation step and a URL you invent will",
-    "  404 in front of an audience. Build visuals from CSS, SVG, gradients, the `.vframe`",
-    "  mocks, `BrowserFrame`, `Bento` panels, and the charts. An inline `data:` URI or an",
-    "  inline `<svg>` is fine; `https://…` is not.",
-    "- Web fonts are the exception: `fontImport` is prepended to `base.css`, so a Google",
-    "  Fonts `@import` is allowed and is the way to set `--font-head` / `--font-body`.",
-    "- Set `indexTitle` and `faviconEmoji` every time. The deck is shared as a link and the",
-    "  browser tab is part of it.",
-    "",
-    "## The kit, read from the installed source",
-    "",
-    "These are the real signatures. Props not listed here do not exist.",
-    "",
-    renderKitDigest(digest),
-    "",
-    digest.classes.length
+function houseRules(digest: KitDigest, userId?: number | null): string {
+  return renderSystemPrompt("slides-delivery", userId, { "components": String(renderKitDigest(digest)), "classes": String(digest.classes.length
       ? `Atom and utility classes available in base.css: ${digest.classes.map((name) => `.${name}`).join(" ")}`
-      : "",
-    "",
-    "## The theme tokens, as they currently stand",
-    "",
-    "`tokensRoot` is merged over these declarations. Send the ones the theme changes,",
-    "spelled exactly as they are named here.",
-    "",
-    "```css",
-    digest.tokensRoot,
-    "```",
-  ]
-    .filter((line) => line !== "")
-    .join("\n");
+      : ""), "theme_tokens": String(digest.tokensRoot) });
 }
 
 const PLAN_TOOL: ToolDefinition = {
@@ -332,31 +288,12 @@ async function callTool(
   }
 }
 
-function planSystemPrompt(digest: KitDigest, request: BoltSlidesRequest): string {
-  return [
-    "You are planning a presentation built on the Bolt Slides deck engine: a paged React",
-    "deck where every slide is a live, responsive web page, presented with a clicker.",
-    "",
-    "Plan the deck before any of it is written. Name every slide, what it is built on, and",
-    "why it exists. A slide you cannot justify in one sentence does not go in the deck, and",
-    "a specialty layout whose entry condition this topic does not meet does not appear at all.",
-    "",
-    `Aim for about ${request.slides} slides; land where the material actually ends.`,
-    request.theme === "auto"
+function planSystemPrompt(digest: KitDigest, request: BoltSlidesRequest, userId?: number | null): string {
+  return renderSystemPrompt("slides-planning", userId, { "slide_count": String(request.slides), "theme": String(request.theme === "auto"
       ? "Choose the theme family from the topic and the audience."
-      : `The person asked for the ${request.theme.replace(/-/g, " ")} theme family.`,
-    request.brandUrl
+      : `The person asked for the ${request.theme.replace(/-/g, " ")} theme family.`), "brand": String(request.brandUrl
       ? `The deck dresses as the brand at ${request.brandUrl}: take its palette, type, and name.`
-      : "",
-    "",
-    authoringSkill(),
-    "",
-    "## The components you are planning against",
-    "",
-    digest.components.map((component) => component.name).join(", "),
-  ]
-    .filter((line) => line !== "")
-    .join("\n");
+      : ""), "authoring_skill": String(authoringSkill()), "components": String(digest.components.map((component) => component.name).join(", ")) });
 }
 
 function briefPrompt(request: BoltSlidesRequest, conversationContext?: string): string {
@@ -371,6 +308,7 @@ function briefPrompt(request: BoltSlidesRequest, conversationContext?: string): 
 }
 
 export async function planDeck(input: {
+  userId?: number | null;
   target: BoltSlidesTarget;
   request: BoltSlidesRequest;
   conversationContext?: string;
@@ -385,7 +323,7 @@ export async function planDeck(input: {
   const raw = await callTool(
     input.target,
     [
-      { role: "system", content: planSystemPrompt(digest, input.request) },
+      { role: "system", content: planSystemPrompt(digest, input.request, input.userId) },
       { role: "user", content: briefPrompt(input.request, input.conversationContext) },
     ],
     PLAN_TOOL,
@@ -419,26 +357,14 @@ function renderPlan(plan: DeckPlan): string {
   return lines.filter((line) => line !== "").join("\n");
 }
 
-function sourceSystemPrompt(digest: KitDigest, request: BoltSlidesRequest): string {
-  return [
-    "You are writing a presentation on the Bolt Slides deck engine. The plan is settled;",
-    "write the deck it describes. Follow the plan's slide order and purposes — if a slide",
-    "genuinely cannot be built as planned, build the closest thing that serves the same",
-    "purpose rather than substituting a different idea.",
-    "",
-    request.brandUrl
+function sourceSystemPrompt(digest: KitDigest, request: BoltSlidesRequest, userId?: number | null): string {
+  return renderSystemPrompt("slides-authoring", userId, { "brand": String(request.brandUrl
       ? `The deck dresses as the brand at ${request.brandUrl}; theme from its real colours.`
-      : "",
-    "",
-    authoringSkill(),
-    "",
-    houseRules(digest),
-  ]
-    .filter((line) => line !== "")
-    .join("\n");
+      : ""), "authoring_skill": String(authoringSkill()), "house_rules": String(houseRules(digest, userId)) });
 }
 
 export interface AuthorDeckInput {
+  userId?: number | null;
   target: BoltSlidesTarget;
   request: BoltSlidesRequest;
   plan: DeckPlan;
@@ -458,7 +384,7 @@ export async function authorDeck(input: AuthorDeckInput): Promise<{
     );
   }
   const messages: ChatMessage[] = [
-    { role: "system", content: sourceSystemPrompt(digest, input.request) },
+    { role: "system", content: sourceSystemPrompt(digest, input.request, input.userId) },
     {
       role: "user",
       content: [

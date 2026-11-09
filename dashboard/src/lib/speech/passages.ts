@@ -5,6 +5,29 @@ const ABBREVIATIONS = new Set([
   'fig', 'no', 'dept', 'inc', 'ltd', 'e.g', 'i.e', 'a.m', 'p.m', 'u.s', 'u.k',
 ]);
 
+/** Sentence ends shared by chunking and readout verification. Abbreviations,
+ * initials and decimals do not end a sentence; CJK punctuation needs no space. */
+export function speechSentenceEnds(text: string, maxEnd = text.length): number[] {
+  const ends: number[] = [];
+  for (const match of text.matchAll(/\n{2,}|[.!?。！？]+["'”’»）)\]]*/gu)) {
+    const stop = match.index + match[0].length;
+    if (stop > maxEnd) break;
+    if (match[0].startsWith('\n')) { ends.push(stop); continue; }
+    const cjk = /[。！？]/u.test(match[0]);
+    if (!cjk && text[stop] && !/\s/u.test(text[stop])) continue;
+    if (match[0].startsWith('.')) {
+      if (match[0].startsWith('..')) continue;
+      const word = text.slice(0, match.index).match(/[\p{L}.]+$/u)?.[0] ?? '';
+      // The C/F in an explicit temperature is a unit, not a person's initial.
+      const temperatureUnit = /^[cf]$/iu.test(word)
+        && /(?:°|\bdegrees?)\s*[cf]$/iu.test(text.slice(0, match.index));
+      if (ABBREVIATIONS.has(word.toLowerCase()) || (/^\p{L}$/u.test(word) && !temperatureUnit) || /^(?:\p{L}\.)+\p{L}$/u.test(word)) continue;
+    }
+    ends.push(stop);
+  }
+  return ends;
+}
+
 /** Sentence/paragraph first, then clause, then word. Limits never drop content. */
 export function splitSpeechPassages(text: string, { maxCharacters, maxWords = Infinity }: PassageLimits): string[] {
   if (!Number.isInteger(maxCharacters) || maxCharacters < 2 || !(maxWords >= 1)) {
@@ -21,20 +44,9 @@ export function splitSpeechPassages(text: string, { maxCharacters, maxWords = In
     }
     if (end < remaining.length) {
       let sentenceEnd = 0;
-      // Inspect the original following character, not an artificially truncated
-      // prefix: a period at the size limit can still be part of a decimal.
-      for (const match of remaining.slice(0, end + 1).matchAll(/\n{2,}|[.!?。！？]+["'”’»）)\]]*/gu)) {
-        const stop = match.index + match[0].length;
-        if (stop > end) continue;
-        if (match[0].startsWith('\n')) { sentenceEnd = stop; continue; }
-        const cjk = /[。！？]/u.test(match[0]);
-        if (!cjk && remaining[stop] && !/\s/u.test(remaining[stop])) continue;
-        if (match[0].startsWith('.')) {
-          if (match[0].startsWith('..')) continue;
-          const word = remaining.slice(0, match.index).match(/[\p{L}.]+$/u)?.[0] ?? '';
-          if (ABBREVIATIONS.has(word.toLowerCase()) || /^\p{L}$/u.test(word) || /^(?:\p{L}\.)+\p{L}$/u.test(word)) continue;
-        }
-        sentenceEnd = stop;
+      for (const stop of speechSentenceEnds(remaining, end)) {
+        if (stop <= end) sentenceEnd = stop;
+        else break;
       }
       let clauseEnd = 0;
       for (const match of remaining.slice(0, end + 1).matchAll(/[,;:—–，；：、]["'”’»）)\]]*(?=\s|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}])/gu)) {

@@ -1,0 +1,53 @@
+{
+  "completedAt": "2026-11-06T18:14:53.6432854Z",
+  "activation": {
+    "newPid": 39612,
+    "health": {
+      "breadboard_subscription_voice": 1,
+      "status": "ok"
+    },
+    "customProfileExists": false,
+    "started": "2026-11-06T19:12:14.215935+01:00"
+  },
+  "productionSourceFrozen": true,
+  "dashboardRuntimeOrVoiceSourceEdited": false,
+  "changedProductionFiles": [
+    "chatmock/chatmock/council/unslop.py",
+    "chatmock/chatmock/routes_openai.py"
+  ],
+  "regressionTestsPassed": 54,
+  "liveSampleCount": 26,
+  "completedLiveSamples": 26,
+  "validEditorJsonSamples": 4,
+  "customProfileExists": false,
+  "coverage": [
+    "Terminal",
+    "Garden",
+    "Quartz",
+    "Voice conversation",
+    "Agent off",
+    "Legacy Garden",
+    "Knowledge chat",
+    "Voice drafting",
+    "Word editor",
+    "Markdown editor",
+    "Requested detail",
+    "Concise",
+    "Follow-up with earlier formal wording"
+  ],
+  "scope": "Live model-gateway calls using production core and Hermes prompt builders. UI clicks and every installed provider account were not exercised.",
+  "manualReview": [
+    "Default instructions reach the inspected routes without a custom profile.",
+    "Simple Gemini explanations shortened substantially after the added reply defaults. Full explanations remained available when requested.",
+    "The final Gemini Agent-off project update invented today and tomorrow and a follow-up commitment. This is an unresolved model-adherence issue, despite explicit factuality instructions.",
+    "Gemini voice replies can still be longer and more technical than the requested spoken default.",
+    "Both detailed answers retained the requested explanation and time-constant equation. The original regex falsely rejected Gemini LaTeX times notation; the evaluation script now leaves equation meaning to human review.",
+    "Heuristic prose scores are diagnostics only. A high score on the short GPT Concise answer came from curly quotation marks."
+  ],
+  "artifacts": [
+    "replies.json",
+    "replies-refined.json",
+    "editor-recheck.json",
+    "replies-final.json"
+  ]
+}

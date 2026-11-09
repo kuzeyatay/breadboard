@@ -1,13 +1,17 @@
 import type { VoiceMessage } from './voice-conversation';
 import type { SpokenExchange } from './chatgpt-voice';
+import type { ChatNotificationTarget } from '../chat-notification-inbox';
 import { parseVoiceScreenContext, type VoiceScreenContext } from './voice-screen-context.ts';
 
 export interface VoiceChatSnapshot {
+  notificationTarget?: ChatNotificationTarget | null;
   messages: readonly VoiceMessage[];
   busy: boolean;
   clarification?: { requestId: string; question: string } | null;
   /** The chat can save ChatGPT voice exchanges handed to it. */
   recordable?: boolean;
+  /** The originating composer permits personal greeting suggestions. */
+  personalizedGreeting?: boolean;
 }
 
 function spokenExchange(value: unknown): value is SpokenExchange {

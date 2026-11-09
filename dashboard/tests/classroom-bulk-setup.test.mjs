@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import {classroomRuntimeRoot,classroomInstallationRoot,classroomToolsDir,classroomDataDir,classroomStagingRoot} from '../src/lib/classroom/runtime.ts';
-import {prepareClassroomPackageManager,writePnpmShims,ensureClassroomDataLink} from '../src/lib/classroom/setup.ts';
+import {classroomRuntimeRoot,classroomInstallationRoot,classroomToolsDir,classroomDataDir,classroomStagingRoot,classroomProcessEnvironment} from '../src/lib/classroom/runtime.ts';
+import {prepareClassroomPackageManager,writePnpmShims,ensureClassroomDataLink,runClassroomStep} from '../src/lib/classroom/setup.ts';
 import {markManagedPayloadReady} from '../scripts/runtime-v2-bulk-paths.mjs';
 
 function fixture(t){
@@ -17,6 +17,28 @@ function fixture(t){
   return {base,data,bulk};
 }
 function write(file,value='fixture'){fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,value);}
+
+test('Windows package-manager launch accepts native namespaced paths without changing the source environment',async t=>{
+  if(process.platform!=='win32'){t.skip('Windows native path regression');return;}
+  const {base}=fixture(t),entry=path.join(base,'package manager.cjs');
+  write(entry,"require('node:fs').writeFileSync('launch-result.json',JSON.stringify({cwd:process.cwd(),argument:process.argv[2],cache:process.env.npm_config_cache,corepack:process.env.COREPACK_HOME,path:process.env.Path}));");
+  const env={...process.env,Path:'\\\\?\\C:\\Node;\\\\?\\D:\\Tools',npm_config_cache:'\\\\?\\D:\\Cache\\npm',COREPACK_HOME:'\\\\?\\D:\\Cache\\corepack'};
+  const original={...env};
+  await runClassroomStep('Fixture package manager',path.toNamespacedPath(process.execPath),[path.toNamespacedPath(entry),'\\\\?\\D:\\Toolchains\\openmaic'],{cwd:path.toNamespacedPath(base),env,timeoutMs:10000});
+  const result=JSON.parse(fs.readFileSync(path.join(base,'launch-result.json'),'utf8'));
+  assert.equal(result.cwd,base);assert.equal(result.argument,'D:\\Toolchains\\openmaic');
+  assert.equal(result.cache,'D:\\Cache\\npm');assert.equal(result.corepack,'D:\\Cache\\corepack');
+  assert.equal(result.path,'C:\\Node;D:\\Tools');assert.deepEqual(env,original);
+  const tools=path.join(base,'shims');
+  writePnpmShims(tools,'\\\\?\\D:\\Tools\\pnpm.cjs','\\\\?\\C:\\Node\\node.exe',false);
+  assert.match(fs.readFileSync(path.join(tools,'pnpm.cmd'),'utf8'),/"C:\\Node\\node.exe" "D:\\Tools\\pnpm.cjs" %\*/);
+});
+
+test('Classroom process path presentation preserves provider values and non-Windows paths',()=>{
+  const source={Path:'\\\\?\\C:\\Node;\\\\?\\UNC\\server\\tools',COREPACK_HOME:'\\\\?\\D:\\cache',OPENAI_BASE_URL:'http://127.0.0.1:1234/v1',OPENAI_API_KEY:'fixture'};
+  assert.deepEqual(classroomProcessEnvironment(source,'linux'),source);
+  assert.deepEqual(classroomProcessEnvironment(source,'win32'),{...source,Path:'C:\\Node;\\\\server\\tools',COREPACK_HOME:'D:\\cache'});
+});
 
 test('Classroom stages and builds on D, selects only a completed build, and keeps classroom data on C',t=>{
   const {data,bulk}=fixture(t);

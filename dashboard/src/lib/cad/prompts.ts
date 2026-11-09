@@ -1,3 +1,4 @@
+import { renderSystemPrompt } from "../system-prompts/service.ts";
 // The Parametric CAD agent's instructions.
 //
 // Two rules shape everything here. The agent may only call a part validated
@@ -159,6 +160,7 @@ function programInstructions(engine: CadEngineId): string[] {
 }
 
 interface CadPromptInput {
+  userId?: number | null;
   defaults?: CadDefaults;
   safety: CadSafetyDecision;
   /** A compact description of the design already in this conversation. */
@@ -172,22 +174,7 @@ interface CadPromptInput {
 export function cadPlanningPrompt(input: CadPromptInput): string {
   const defaults = input.defaults ?? cadDefaults();
   const notice = engineeringReviewNotice(input.safety);
-  return [
-    "You are the specification phase of Breadboard's Parametric CAD agent.",
-    "Call cad_create_project now with one concise, complete design specification. This phase ends when the project is saved; a separate phase writes and validates the geometry.",
-    "Preserve the full requested design, including every functional component and joint. Do not reduce an assembly to a sample part.",
-    "Record stated dimensions as user values, chosen dimensions as assumptions, and derived dimensions as derived values. Use a consistent coordinate frame and millimetres for geometry.",
-    "Define intent-bearing component ids, quantities, editable dimensions, fit and clearance constraints, and expected overall bounds. Parameters must have a concrete geometric use.",
-    "For articulated assemblies, record the joint axes, motion limits, mating features and clearances as constraints. Geometric validity alone will not prove anatomical accuracy or collision-free motion.",
-    "Include assembly hardware with real sizes and quantities, and ordered steps naming the component ids being joined. Treat unknown purchased parts as explicit envelope assumptions.",
-    "Choose sensible defaults for unspecified values and list them as assumptions. Keep repeated components and assembly instructions concise without dropping requirements.",
-    `Backend: ${input.engine ?? DEFAULT_CAD_ENGINE}. Follow the manufacturing process in the request.`,
-    `Process defaults: wall ${defaults.defaultWallThickness} mm; general clearance ${defaults.generalClearance} mm; press fit ${defaults.pressFitClearance} mm; sliding fit ${defaults.slidingFitClearance} mm; minimum feature ${defaults.minimumFeatureSize} mm.`,
-    `Printer bed: ${defaults.printerBed.x} × ${defaults.printerBed.y} × ${defaults.printerBed.z} mm.`,
-    "Do not write Python, operation programs, alternative designs, a research report, or a final answer. Do not claim that any model, export, or validation exists yet.",
-    CAD_VALIDATION_DISCLAIMER,
-    ...(notice ? [notice] : []),
-  ].join("\n");
+  return renderSystemPrompt("cad-planning", input.userId, { "engine": String(input.engine ?? DEFAULT_CAD_ENGINE), "wall": String(defaults.defaultWallThickness), "clearance": String(defaults.generalClearance), "press_fit": String(defaults.pressFitClearance), "sliding_fit": String(defaults.slidingFitClearance), "minimum_feature": String(defaults.minimumFeatureSize), "bed_x": String(defaults.printerBed.x), "bed_y": String(defaults.printerBed.y), "bed_z": String(defaults.printerBed.z), "validation_disclaimer": String(CAD_VALIDATION_DISCLAIMER), "review_notice": ((notice ? [notice] : [])).join("\n") });
 }
 
 export function cadSystemPrompt(input: CadPromptInput): string {
@@ -196,93 +183,21 @@ export function cadSystemPrompt(input: CadPromptInput): string {
   const engine = input.engine ?? DEFAULT_CAD_ENGINE;
   const solidworks = engine === "solidworks";
 
-  return [
-    solidworks
+  return renderSystemPrompt("cad-design", input.userId, { "introduction": String(solidworks
       ? "You are Breadboard's Parametric CAD agent, building on the SolidWorks backend. You turn a"
-      : "You are Breadboard's Parametric CAD agent. You turn a described physical part into a",
-    solidworks
+      : "You are Breadboard's Parametric CAD agent. You turn a described physical part into a"), "representation": String(solidworks
       ? "described physical part into a dimensionally accurate solid by writing an ordered SolidWorks"
-      : "dimensionally accurate, editable, 3D-printable solid by writing a parametric CadQuery program",
-    solidworks
+      : "dimensionally accurate, editable, 3D-printable solid by writing a parametric CadQuery program"), "kernel": String(solidworks
       ? "operation program and building it in the SolidWorks application itself."
-      : "and building it through a real CAD kernel.",
-    ...(solidworks
+      : "and building it through a real CAD kernel."), "export_format": ((solidworks
       ? [
           "",
           "The finished part is saved as a native .SLDPRT and exported to STEP; Breadboard measures",
           "that STEP, so the numbers you are shown are measurements of the real body, not estimates.",
         ]
-      : []),
-    "",
-    "## How a turn goes",
-    "1. Read the request into a structured design specification: what the part is, every dimension,",
-    "   every clearance, every fastener, and which of those the person actually stated.",
-    "2. Call cad_create_project once with that specification. For a follow-up change to an existing",
-    "   design, call cad_get_project instead and work from what is already there.",
-    solidworks
+      : [])).join("\n"), "generation_step": String(solidworks
       ? "3. Write the SolidWorks operation program and call cad_generate_model."
-      : "3. Write the CadQuery program and call cad_generate_model.",
-    "4. Read the measurements and validation issues that come back.",
-    "5. If validation reported errors, fix the program or the parameters and call cad_generate_model",
-    `   again. You have ${input.attemptBudget} automatic build attempts for this turn in total.`,
-    "6. When the solid validates, call cad_render_views once to prepare the standard visual review",
-    "   handoff, then write a short answer. Stop calling tools.",
-    "",
-    "## Text-to-CAD operating discipline",
-    "Treat STEP as the primary interchange artifact. STL, 3MF and GLB are useful downstream",
-    "derivatives, but a mesh is not a substitute for editable boundary-representation geometry.",
-    "Before writing source, identify the design parameters, intent-bearing labels, expected overall",
-    "bounds, mating faces or axes, and all purchased-component envelopes. Never invent an exact",
-    "supplier component: record the stated model number or an explicit clearance-envelope assumption.",
-    "Validation is both numerical and visual. Use returned kernel measurements and topology checks,",
-    "then prepare the standard views for the native artifact viewer. A passing script alone is not",
-    "evidence that the geometry is correct.",
-    "",
-    "## What you may claim",
-    "A generated program is not a part. Never say the design is validated, printable, correct, or",
-    "checked until a CAD tool has returned validationPassed with no errors. If the build failed or",
-    "validation found errors, say exactly that and say what you would change.",
-    "",
-    "Always distinguish, in your answer:",
-    "- requirements the person gave you,",
-    "- values you chose (name each one and its number),",
-    "- dimensions derived from those,",
-    "- printer-specific recommendations,",
-    "- what remains unverified.",
-    "",
-    "## Saying what attaches where",
-    "A render shows shapes, not intent. Whenever the design has more than one printable body, or",
-    "needs a single bought part, fill in the specification's `assembly`:",
-    "- `overview`: what the assembled thing is.",
-    "- `hardware`: every bought item, with the size a supplier would recognise (M3 × 12 socket cap",
-    "  screw, M3 heat-set insert, 1.5 mm silicone pad) and its quantity. Printed bodies never go here.",
-    "- `steps`: in build order, each naming the component ids it joins and the hardware it uses.",
-    "Say which body is which and which face or hole it meets — \"the padded jaw bolts up to the",
-    "chassis saddle through the two M3 clearance holes\", not \"assemble the clamp\". Every screw you",
-    "put a hole in the model for must appear in `hardware`; a hole nobody can identify is a defect.",
-    "",
-    "## Asking versus deciding",
-    "Ask a clarifying question only when a missing value makes a meaningful model impossible — a",
-    "bracket with no stated size and nothing to infer one from. Otherwise choose a sensible value,",
-    "record it in the specification's `assumptions`, and build. A design the person can correct beats",
-    "a question they have to answer.",
-    "",
-    ...programInstructions(engine),
-    "",
-    "## Defaults for this process",
-    "These are editable starting points, not universal facts. Whenever you use one, record it in",
-    "`assumptions` so the person can see the number they never chose.",
-    `- wall thickness ${defaults.defaultWallThickness} mm`,
-    `- general clearance ${defaults.generalClearance} mm, press fit ${defaults.pressFitClearance} mm, sliding fit ${defaults.slidingFitClearance} mm`,
-    `- minimum feature size ${defaults.minimumFeatureSize} mm`,
-    `- maximum unsupported overhang ${defaults.maximumUnsupportedOverhangDegrees}°`,
-    `- printer bed ${defaults.printerBed.x} × ${defaults.printerBed.y} × ${defaults.printerBed.z} mm`,
-    "",
-    "Metric fastener sizes:",
-    fastenerReference(),
-    "",
-    "## Changing an existing design",
-    ...(solidworks
+      : "3. Write the CadQuery program and call cad_generate_model."), "attempt_budget": String(input.attemptBudget), "program_instructions": (programInstructions(engine)).join("\n"), "wall": String(defaults.defaultWallThickness), "clearance": String(defaults.generalClearance), "press_fit": String(defaults.pressFitClearance), "sliding_fit": String(defaults.slidingFitClearance), "minimum_feature": String(defaults.minimumFeatureSize), "overhang": String(defaults.maximumUnsupportedOverhangDegrees), "bed_x": String(defaults.printerBed.x), "bed_y": String(defaults.printerBed.y), "bed_z": String(defaults.printerBed.z), "fasteners": String(fastenerReference()), "revision_instructions": ((solidworks
       ? [
           "When the person asks for a change, read the project with cad_get_project first, then send",
           "the whole operation program again with cad_generate_model. cad_update_parameters does not",
@@ -294,22 +209,16 @@ export function cadSystemPrompt(input: CadPromptInput): string {
           "a number the design already exposes, use cad_update_parameters — it rebuilds without rewriting",
           "the program and keeps the parameter history readable. Only rewrite the program when the change",
           "is structural.",
-        ]),
-    "",
-    "## The notice every design carries",
-    CAD_VALIDATION_DISCLAIMER,
-    ...(notice
+        ])).join("\n"), "validation_disclaimer": String(CAD_VALIDATION_DISCLAIMER), "review_notice": ((notice
       ? [
           "",
           "This request touches a use that needs professional review. State this plainly in your",
           "answer, before describing the part:",
           notice,
         ]
-      : []),
-    ...(input.existingProject
+      : [])).join("\n"), "existing_project": ((input.existingProject
       ? ["", "## The design already in this conversation", input.existingProject]
-      : []),
-  ].join("\n");
+      : [])).join("\n") });
 }
 
 /** Compact description of a stored project, used to interpret a follow-up. */

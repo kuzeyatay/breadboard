@@ -1,0 +1,39 @@
+[
+  {
+    "id": "20261107_164433_6bfcdb",
+    "messages": [
+      {
+        "id": 123070,
+        "role": "user",
+        "content": "Context for this chat: the saved answer is answer-ca7426e6-d8d4-4062-9aa1-19937ce058c6. No tools needed. Just acknowledge. This is a disposable cross-chat acceptance check.",
+        "tool_calls": null,
+        "tool_name": null,
+        "display_metadata": null
+      },
+      {
+        "id": 123071,
+        "role": "assistant",
+        "content": "Acknowledged.",
+        "tool_calls": null,
+        "tool_name": null,
+        "display_metadata": null
+      },
+      {
+        "id": 123083,
+        "role": "user",
+        "content": "Message from chat \"QA chat coordination saved answer retrieval\" (conv_5kQNFT1ZqBMZnh8cv6etIg0t):\n\nPlease return your saved answer for this bounded QA chat coordination test exchange.",
+        "tool_calls": null,
+        "tool_name": null,
+        "display_metadata": null
+      },
+      {
+        "id": 123087,
+        "role": "assistant",
+        "content": "Acknowledged.",
+        "tool_calls": null,
+        "tool_name": null,
+        "display_metadata": null
+      }
+    ]
+  }
+]

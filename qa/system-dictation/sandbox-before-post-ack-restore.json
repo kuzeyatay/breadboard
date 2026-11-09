@@ -1,0 +1,374 @@
+{
+  "openedAt": "2026-10-14T12:51:52.575Z",
+  "status": "ready",
+  "sessions": [
+    {
+      "id": 1,
+      "startedAt": 1791982328689,
+      "anchor": {
+        "x": -1297,
+        "y": 436,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 388,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791982328889
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791982328912
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791982328914
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1791982333230
+        },
+        {
+          "stage": "first-transcript",
+          "at": 1791982337745
+        }
+      ],
+      "pillVisible": true,
+      "recordingAt": 1791982330263,
+      "firstPreviewAt": 1791982337802,
+      "firstPreviewMs": 9113,
+      "previewCount": 1,
+      "previewWhileHeld": true,
+      "previewCharacters": 7,
+      "unconfirmed": {
+        "type": "preview-unconfirmed",
+        "id": 1,
+        "phase": "text",
+        "selection": [
+          17,
+          17
+        ],
+        "expectedStart": 18,
+        "expectedEnd": 18,
+        "expectedCharacters": 18,
+        "observedCharacters": -1,
+        "textMatches": false
+      },
+      "error": "The editor could not confirm the dictated text. The visible draft has been kept.",
+      "snapshot": {
+        "characters": {
+          "rich": 17,
+          "plain": 0,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 0,
+          "plain": 0,
+          "multiline": 0
+        },
+        "typingMetrics": {
+          "keyDown": 18,
+          "controlDown": 1,
+          "metaDown": 0,
+          "inputEvents": 17,
+          "insertedCharacters": 17
+        }
+      }
+    },
+    {
+      "id": 2,
+      "startedAt": 1791982354673,
+      "anchor": {
+        "x": -1162,
+        "y": 435,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1217,
+        "y": 387,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791982354794
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791982354825
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791982354826
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1791982358741
+        },
+        {
+          "stage": "keys-released",
+          "at": 1791982359303
+        },
+        {
+          "stage": "first-transcript",
+          "at": 1791982361346
+        },
+        {
+          "stage": "audio-drained",
+          "at": 1791982363840
+        },
+        {
+          "stage": "provider-final",
+          "at": 1791982365355
+        }
+      ],
+      "recordingAt": 1791982354857,
+      "pillVisible": true,
+      "releasedAt": 1791982359302,
+      "hiddenOnRelease": true,
+      "firstPreviewAt": 1791982361388,
+      "firstPreviewMs": 6715,
+      "previewCount": 4,
+      "previewWhileHeld": false,
+      "previewCharacters": 29,
+      "characters": 29,
+      "submitRequested": false,
+      "insertedAt": 1791982365359,
+      "releaseToInsertMs": 6057,
+      "snapshot": {
+        "characters": {
+          "rich": 46,
+          "plain": 0,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 0,
+          "plain": 0,
+          "multiline": 0
+        },
+        "typingMetrics": {
+          "keyDown": 29,
+          "controlDown": 0,
+          "metaDown": 0,
+          "inputEvents": 29,
+          "insertedCharacters": 29
+        }
+      }
+    },
+    {
+      "id": 3,
+      "startedAt": 1791982365866,
+      "anchor": {
+        "x": -942,
+        "y": 435,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -997,
+        "y": 387,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791982365924
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791982365946
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791982365948
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1791982365949
+        },
+        {
+          "stage": "keys-released",
+          "at": 1791982368483
+        },
+        {
+          "stage": "audio-drained",
+          "at": 1791982369080
+        },
+        {
+          "stage": "provider-final",
+          "at": 1791982370416
+        }
+      ],
+      "recordingAt": 1791982366044,
+      "pillVisible": true,
+      "releasedAt": 1791982368482,
+      "hiddenOnRelease": true,
+      "characters": 0,
+      "submitRequested": true,
+      "insertedAt": 1791982370420,
+      "releaseToInsertMs": 1938,
+      "snapshot": {
+        "characters": {
+          "rich": 46,
+          "plain": 0,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 1,
+          "plain": 0,
+          "multiline": 0
+        },
+        "typingMetrics": {
+          "keyDown": 1,
+          "controlDown": 0,
+          "metaDown": 0,
+          "inputEvents": 0,
+          "insertedCharacters": 0
+        }
+      }
+    },
+    {
+      "id": 4,
+      "startedAt": 1791982378223,
+      "anchor": {
+        "x": -1297,
+        "y": 578,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 530,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791982378284
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791982378313
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791982378314
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1791982378316
+        },
+        {
+          "stage": "first-transcript",
+          "at": 1791982381175
+        }
+      ],
+      "recordingAt": 1791982378349,
+      "pillVisible": true,
+      "firstPreviewAt": 1791982381248,
+      "firstPreviewMs": 3025,
+      "previewCount": 1,
+      "previewWhileHeld": true,
+      "previewCharacters": 7,
+      "unconfirmed": {
+        "type": "preview-unconfirmed",
+        "id": 4,
+        "phase": "text",
+        "selection": [
+          11,
+          11
+        ],
+        "expectedStart": 18,
+        "expectedEnd": 18,
+        "expectedCharacters": 18,
+        "observedCharacters": -1,
+        "textMatches": false
+      },
+      "error": "The editor could not confirm the dictated text. The visible draft has been kept.",
+      "snapshot": {
+        "characters": {
+          "rich": 46,
+          "plain": 11,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 1,
+          "plain": 0,
+          "multiline": 0
+        },
+        "typingMetrics": {
+          "keyDown": 18,
+          "controlDown": 7,
+          "metaDown": 0,
+          "inputEvents": 11,
+          "insertedCharacters": 11
+        }
+      }
+    }
+  ],
+  "services": "existing Breadboard",
+  "scopedToTestWindow": true,
+  "testWindow": {
+    "bounds": {
+      "x": -1360,
+      "y": 136,
+      "width": 800,
+      "height": 760
+    },
+    "displayId": 2151158276,
+    "scaleFactor": 1,
+    "visible": true,
+    "minimized": false,
+    "focused": true,
+    "alwaysOnTop": true,
+    "displays": [
+      {
+        "id": 999882014,
+        "bounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 960
+        },
+        "workArea": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 912
+        },
+        "scaleFactor": 1.25
+      },
+      {
+        "id": 2151158276,
+        "bounds": {
+          "x": -1920,
+          "y": 0,
+          "width": 1920,
+          "height": 1080
+        },
+        "workArea": {
+          "x": -1920,
+          "y": 0,
+          "width": 1920,
+          "height": 1032
+        },
+        "scaleFactor": 1
+      }
+    ]
+  },
+  "nativeReady": true,
+  "provider": "chatgpt",
+  "pid": 40784,
+  "origin": "http://127.0.0.1:49390",
+  "lastError": "The editor could not confirm the dictated text. The visible draft has been kept."
+}

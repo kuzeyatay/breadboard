@@ -52,6 +52,16 @@ export default function VoiceAssistantPanel() {
         </select>
         <span className="mt-1 block text-xs leading-relaxed text-gray-500">Choose the model for voice conversations. Your chat model and speaking voice stay the same.</span>
       </label>
+      <label className="block text-sm text-white">
+        Voice thinking
+        <select aria-label="Voice thinking" value={preferences.voiceThinking} disabled={!loaded || saving}
+          onChange={event => void save('voiceThinking', event.target.value)}
+          className="neu-button mt-2 w-full rounded-xl border border-gray-800 bg-transparent px-3 py-2 text-sm text-gray-200 disabled:opacity-40">
+          <option value="fast">Fast conversation</option>
+          <option value="high">High thinking</option>
+        </select>
+        <span className="mt-1 block text-xs leading-relaxed text-gray-500">Fast uses brief reasoning before replying. High gives complex questions more thinking time. Both use your voice model and tools.</span>
+      </label>
       {([
         ['startVoiceOnStartup', "Prepare voice on startup", "Keep voice ready when Breadboard opens. The microphone stays off."],
         ['readAloudNotifications', "Read notifications aloud", "Read new notifications using your selected voice."],

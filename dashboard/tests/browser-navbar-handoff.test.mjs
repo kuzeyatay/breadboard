@@ -17,7 +17,13 @@ const stubs = {
     let state = null;
     export const setState = (next) => { state = next; };
     export const useDesktopTabs = () => state;`,
-  "@/app/components/hermes/use-chat-greeting": `export const useChatGreeting = () => ({ greeting: {} });`,
+  "@/app/components/hermes/use-chat-greeting": `export const useChatGreeting = () => ({
+    ready: false,
+    greeting: null,
+    suggestions: [],
+    suggestionSources: {},
+    suggestionScopeKey: "",
+  });`,
   "next/dynamic": `export default () => () => null;`,
   "@/app/components/hermes/dashboard-agent-terminal": `export default () => null;`,
   "@/app/components/settings-dialog": `export default () => null;`,

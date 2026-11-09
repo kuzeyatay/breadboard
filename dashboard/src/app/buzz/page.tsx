@@ -1,12 +1,13 @@
 import { getServerSession } from "next-auth/next";
 import { redirect } from "next/navigation";
 
+import NavBar from "@/app/components/navbar";
 import { authOptions } from "@/lib/auth-options";
 import { loadAgencyAgentsCatalog } from "@/lib/hermes/agency-agents.ts";
 import { listOrganizations } from "@/lib/organizations/store.ts";
+import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
 import {
   createRoom,
-  ensureBreadMember,
   ensureSelfMember,
   listMembers,
   listRooms,
@@ -112,9 +113,7 @@ export default async function BuzzPage({
     readableRooms.find((room) => room.publicId === requestedRoom) ?? readableRooms[0];
   if (opening) {
     ensureSelfMember(opening.id, userId, displayName);
-    // Rooms that existed before Bread did gain it on the read that would
-    // otherwise render their Agents section empty.
-    ensureBreadMember(opening.id);
+
   }
   const initialThreadRootId =
     opening && requestedThread
@@ -136,14 +135,22 @@ export default async function BuzzPage({
   }));
 
   return (
-    <BuzzClient
-      selfUserId={userId}
-      communities={communities}
-      rooms={rooms}
-      personas={personas}
-      rosterReady={catalog.status === "ready"}
-      initialRoomId={opening?.publicId ?? null}
-      initialThreadRootId={initialThreadRootId}
-    />
+    <div className="buzz-page-shell h-screen flex flex-col overflow-hidden">
+      <NavBar
+        email={user.email ?? ""}
+        username={user.name}
+        showFlowers={getNavbarFlowers(userId)}
+        showActions={false}
+      />
+      <BuzzClient
+        selfUserId={userId}
+        communities={communities}
+        rooms={rooms}
+        personas={personas}
+        rosterReady={catalog.status === "ready"}
+        initialRoomId={opening?.publicId ?? null}
+        initialThreadRootId={initialThreadRootId}
+      />
+    </div>
   );
 }

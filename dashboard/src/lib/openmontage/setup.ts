@@ -10,7 +10,6 @@
 import { resolveCodexLauncher } from "../codex/run-manager.ts";
 import { configuredProviders } from "./prompt.ts";
 import {
-  resolveToolchain,
   runtimeAvailability,
   toolAvailability,
   type ToolAvailability,
@@ -40,7 +39,9 @@ export interface ToolchainStatus {
 
 export function toolchainStatus(env: NodeJS.ProcessEnv = process.env): ToolchainStatus {
   const availability = runtimeAvailability(env);
-  const toolchain = resolveToolchain(env);
+  // One probe owns the verdict and all displayed fields. Repeating cold
+  // Python imports can both triple the cost and contradict the first result.
+  const toolchain = availability.toolchain;
   const codex = resolveCodexLauncher(env);
   return {
     ready: availability.available && Boolean(codex),
@@ -68,8 +69,8 @@ export function toolchainStatus(env: NodeJS.ProcessEnv = process.env): Toolchain
     },
     codex: { found: Boolean(codex), version: codex?.version ?? "" },
     tools: availability.available
-      ? toolAvailability(env)
-      : { available: 0, total: 0, reason: "Install the dependencies to read the tool registry." },
+      ? toolAvailability(env, availability)
+      : { available: 0, total: 0, reason: toolchain.python.dependencyError ?? "Install the dependencies to read the tool registry." },
     providers: configuredProviders(env),
   };
 }

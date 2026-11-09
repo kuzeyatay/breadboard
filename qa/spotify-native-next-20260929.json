@@ -1,0 +1,74 @@
+{
+  "testedAt": "2026-09-29T14:22:30.510Z",
+  "environment": "isolated UI + current Breadboard routes/bridge + LIVE Spotify SDK/API",
+  "steps": [
+    {
+      "step": "Started a single search result with Spotify context",
+      "state": {
+        "track": "Ocean Drive",
+        "uri": "spotify:track:0b6wdul3A5sQNpIOv03OxP",
+        "paused": false,
+        "position": 2606,
+        "next": [
+          {
+            "name": "Hymn for the Weekend",
+            "uri": "spotify:track:3RiPr603aXAoi4GHyXx0uy"
+          }
+        ]
+      }
+    },
+    {
+      "step": "Clicked Next",
+      "control": {
+        "action": "next",
+        "status": 200,
+        "handled": true
+      }
+    },
+    {
+      "step": "After Next",
+      "state": {
+        "track": "Hymn for the Weekend",
+        "uri": "spotify:track:3RiPr603aXAoi4GHyXx0uy",
+        "paused": false,
+        "position": 5856,
+        "next": [
+          {
+            "name": "Disparate Youth",
+            "uri": "spotify:track:7d23MhPFE9eB3U8DPRirnL"
+          }
+        ]
+      }
+    },
+    {
+      "step": "Second Next",
+      "state": {
+        "track": "Disparate Youth",
+        "uri": "spotify:track:7d23MhPFE9eB3U8DPRirnL",
+        "paused": false,
+        "position": 5713,
+        "next": [
+          {
+            "name": "Think",
+            "uri": "spotify:track:3HFoyo49A7aEDwvCVJN9Vm"
+          }
+        ]
+      }
+    }
+  ],
+  "sdkErrors": [],
+  "spotifyWrites": [
+    {
+      "method": "PUT",
+      "endpoint": "/v1/me/player/play",
+      "status": 204,
+      "body": {
+        "context_uri": "spotify:album:5APvbPGki6FOQO6rNEuXCv",
+        "offset": {
+          "uri": "spotify:track:0b6wdul3A5sQNpIOv03OxP"
+        }
+      }
+    }
+  ],
+  "audibleOutput": "Muted isolated device; verified SDK playback state and advancing position, not a listening test."
+}

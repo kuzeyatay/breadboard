@@ -14,6 +14,7 @@
 // Watch runtime's work directory, and an upload's temp file is removed here.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { NormalizedTranscript, VideoTranscriptionJob } from "./types.ts";
@@ -99,6 +100,36 @@ function convertToPng(ffmpegPath: string, input: string, output: string): Promis
       else reject(new Error(`ffmpeg could not convert a frame (${code}): ${stderr.slice(0, 300)}`));
     });
   });
+}
+
+/**
+ * Watch seals local videos as a Runtime input, capped at 2 GB and stored on the
+ * data drive. A file used in place gets a small silent temporary copy instead,
+ * with the same timeline so frame timestamps still match the transcript.
+ */
+async function makeFrameProxy(ffmpegPath: string, origin: string): Promise<string> {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bb-watch-frames-"));
+  const output = path.join(directory, "video.mp4");
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(ffmpegPath, [
+        "-nostdin", "-y", "-loglevel", "error", "-i", origin, "-an", "-sn", "-dn",
+        "-vf", "fps=2,scale=-2:720", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-g", "20",
+        "-movflags", "+faststart", output,
+      ], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+      let stderr = "";
+      child.stderr?.on("data", (chunk) => { stderr = (stderr + String(chunk)).slice(-2000); });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`ffmpeg could not read the original video (${code}): ${stderr.slice(-300)}`));
+      });
+    });
+    return output;
+  } catch (error) {
+    fs.rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /** Save sampled frames as the source's page snapshots. Returns their public URLs in time order. */
@@ -200,18 +231,32 @@ async function runVisualAnalysisForJob(deps: VisualAnalysisDeps, job: VideoTrans
     await deps.publish(`video visual analysis for ${sourceSlug}`, job.gardenId, job.userId);
     return;
   }
-  const source = job.inputKind === "youtube"
-    ? (job.canonicalUrl ?? job.originalUrl ?? "")
-    : (job.mediaTempPath ?? "");
-  if (!source) throw new Error("The video is no longer available for analysis.");
   deps.store.transition(job.id, "analyzing_visuals", {
-    currentStage: "Watching the video (frames + captions)",
+    currentStage: job.mediaOriginPath ? "Preparing frames from the original" : "Watching the video (frames + captions)",
     progressPercent: 96,
   });
+  const frameProxy = job.mediaOriginPath
+    ? await makeFrameProxy(deps.ffmpegPath, job.mediaOriginPath)
+    : null;
+  const source = frameProxy ?? (job.inputKind === "youtube"
+    ? (job.canonicalUrl ?? job.originalUrl ?? "")
+    : (job.mediaTempPath ?? ""));
+  if (!source) throw new Error("The video is no longer available for analysis.");
   const workspaceRoot = job.inputKind === "youtube"
     ? path.join(deps.contentPath, job.gardenId)
     : path.dirname(source);
-  const watched = await deps.runWatch({ userId: job.userId, jobId: job.id, source, workspaceRoot });
+  let watched: WatchRunLike;
+  try {
+    if (frameProxy) {
+      deps.store.transition(job.id, "analyzing_visuals", {
+        currentStage: "Watching the video (frames + captions)",
+        progressPercent: 96,
+      });
+    }
+    watched = await deps.runWatch({ userId: job.userId, jobId: job.id, source, workspaceRoot });
+  } finally {
+    if (frameProxy) fs.rmSync(path.dirname(frameProxy), { recursive: true, force: true });
+  }
   deps.store.transition(job.id, "analyzing_visuals", {
     currentStage: "Saving frames and analysis",
     progressPercent: 98,

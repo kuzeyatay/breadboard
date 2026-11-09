@@ -1,0 +1,267 @@
+{
+  "method": "Production prompt builder and SQLite status reader with fixture chats, through the running model gateway. No user chats or Telegram sends.",
+  "results": [
+    {
+      "model": "gpt-6-luna",
+      "case": "current-only",
+      "calls": [
+        {
+          "name": "breadboard_process_status",
+          "args": {
+            "kinds": [
+              "chat_turn"
+            ],
+            "active_only": true
+          }
+        }
+      ],
+      "answer": "Only this chat is active right now.",
+      "checks": {
+        "readStatus": true,
+        "chatScope": true,
+        "activeFilter": true,
+        "noInternalLabels": true,
+        "noEchoedQuestion": true,
+        "activeScope": true,
+        "unavailableHonesty": true,
+        "concise": true
+      }
+    },
+    {
+      "model": "gpt-6-luna",
+      "case": "correction",
+      "calls": [
+        {
+          "name": "breadboard_process_status",
+          "args": {
+            "kinds": [
+              "chat_turn"
+            ],
+            "active_only": true
+          }
+        }
+      ],
+      "answer": "This chat is the only one currently active; it’s working on your reply.",
+      "checks": {
+        "readStatus": true,
+        "chatScope": true,
+        "activeFilter": true,
+        "noInternalLabels": true,
+        "noEchoedQuestion": true,
+        "activeScope": true,
+        "unavailableHonesty": true,
+        "concise": true
+      }
+    },
+    {
+      "model": "gpt-6-luna",
+      "case": "unavailable",
+      "calls": [
+        {
+          "name": "breadboard_process_status",
+          "args": {
+            "kinds": [
+              "chat_turn"
+            ],
+            "active_only": true
+          }
+        }
+      ],
+      "answer": "I can’t check whether other chats are active right now; chat status is unavailable.",
+      "checks": {
+        "readStatus": true,
+        "chatScope": true,
+        "activeFilter": true,
+        "noInternalLabels": true,
+        "noEchoedQuestion": true,
+        "activeScope": true,
+        "unavailableHonesty": true,
+        "concise": true
+      }
+    },
+    {
+      "model": "gpt-6-luna",
+      "case": "other-chats",
+      "calls": [
+        {
+          "name": "breadboard_process_status",
+          "args": {
+            "kinds": [
+              "chat_turn"
+            ],
+            "active_only": true
+          }
+        }
+      ],
+      "answer": "This chat is working on a reply, and **Holiday planning** is also working on a reply.",
+      "checks": {
+        "readStatus": true,
+        "chatScope": true,
+        "activeFilter": true,
+        "noInternalLabels": true,
+        "noEchoedQuestion": true,
+        "activeScope": true,
+        "unavailableHonesty": true,
+        "concise": true
+      }
+    },
+    {
+      "model": "gpt-6-luna",
+      "case": "voice-correction",
+      "calls": [
+        {
+          "name": "breadboard_process_status",
+          "args": {
+            "kinds": [
+              "chat_turn"
+            ],
+            "active_only": true
+          }
+        }
+      ],
+      "answer": "Only this chat is active in Breadboard right now.",
+      "checks": {
+        "readStatus": true,
+        "chatScope": true,
+        "activeFilter": true,
+        "noInternalLabels": true,
+        "noEchoedQuestion": true,
+        "activeScope": true,
+        "unavailableHonesty": true,
+        "concise": true
+      }
+    },
+    {
+      "model": "cliproxy/gemini-3.8-flash-high",
+      "case": "correction",
+      "calls": [
+        {
+          "name": "breadboard_process_status",
+          "args": {
+            "all_gardens": true,
+            "kinds": [
+              "chat_turn"
+            ],
+            "active_only": true
+          }
+        }
+      ],
+      "answer": "This chat is the only active conversation right now.",
+      "checks": {
+        "readStatus": true,
+        "chatScope": true,
+        "activeFilter": true,
+        "noInternalLabels": true,
+        "noEchoedQuestion": true,
+        "activeScope": true,
+        "unavailableHonesty": true,
+        "concise": true
+      }
+    },
+    {
+      "model": "cliproxy/gemini-3.8-flash-high",
+      "case": "current-only",
+      "calls": [
+        {
+          "name": "breadboard_process_status",
+          "args": {
+            "all_gardens": true,
+            "active_only": true,
+            "kinds": [
+              "chat_turn"
+            ]
+          }
+        }
+      ],
+      "answer": "Only this chat is currently replying.",
+      "checks": {
+        "readStatus": true,
+        "chatScope": true,
+        "activeFilter": true,
+        "noInternalLabels": true,
+        "noEchoedQuestion": true,
+        "activeScope": true,
+        "unavailableHonesty": true,
+        "concise": true
+      }
+    },
+    {
+      "model": "cliproxy/gemini-3.8-flash-high",
+      "case": "unavailable",
+      "calls": [
+        {
+          "name": "breadboard_process_status",
+          "args": {
+            "active_only": true,
+            "kinds": [
+              "chat_turn"
+            ]
+          }
+        }
+      ],
+      "answer": "I cannot check which chats are active right now.",
+      "checks": {
+        "readStatus": true,
+        "chatScope": true,
+        "activeFilter": true,
+        "noInternalLabels": true,
+        "noEchoedQuestion": true,
+        "activeScope": true,
+        "unavailableHonesty": true,
+        "concise": true
+      }
+    },
+    {
+      "model": "cliproxy/gemini-3.8-flash-high",
+      "case": "other-chats",
+      "calls": [
+        {
+          "name": "breadboard_process_status",
+          "args": {
+            "kinds": [
+              "chat_turn"
+            ],
+            "active_only": true
+          }
+        }
+      ],
+      "answer": "Holiday planning is currently working on a reply, alongside this chat.",
+      "checks": {
+        "readStatus": true,
+        "chatScope": true,
+        "activeFilter": true,
+        "noInternalLabels": true,
+        "noEchoedQuestion": true,
+        "activeScope": true,
+        "unavailableHonesty": true,
+        "concise": true
+      }
+    },
+    {
+      "model": "cliproxy/gemini-3.8-flash-high",
+      "case": "voice-correction",
+      "calls": [
+        {
+          "name": "breadboard_process_status",
+          "args": {
+            "kinds": [
+              "chat_turn"
+            ],
+            "active_only": true
+          }
+        }
+      ],
+      "answer": "Only this chat is active right now.",
+      "checks": {
+        "readStatus": true,
+        "chatScope": true,
+        "activeFilter": true,
+        "noInternalLabels": true,
+        "noEchoedQuestion": true,
+        "activeScope": true,
+        "unavailableHonesty": true,
+        "concise": true
+      }
+    }
+  ]
+}

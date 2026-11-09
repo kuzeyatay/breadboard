@@ -72,18 +72,42 @@ function windowsExcludedPortRanges(): PortRange[] {
   }
 }
 
-/** A random unprivileged high port outside every reserved range. */
+/** Every local TCP endpoint can prevent Chromium from binding the same port. */
+export function parseOccupiedTcpPorts(output: string): Set<number> {
+  const ports = new Set<number>();
+  for (const line of output.split(/\r?\n/u)) {
+    const match = /^\s*TCP\s+\S+:(\d{1,5})\s+/iu.exec(line);
+    if (!match) continue;
+    const port = Number(match[1]);
+    if (port >= 1 && port <= 65_535) ports.add(port);
+  }
+  return ports;
+}
+
+function windowsOccupiedTcpPorts(): Set<number> {
+  if (process.platform !== "win32") return new Set();
+  try {
+    return parseOccupiedTcpPorts(execFileSync("netstat", ["-ano"], {
+      encoding: "utf8", timeout: 3_000, windowsHide: true,
+    }));
+  } catch {
+    return new Set();
+  }
+}
+
+/** A random unprivileged high port outside reserved ranges and existing TCP endpoints. */
 export function chooseBrowserAgentDebuggingPort(
   excluded: readonly PortRange[] = windowsExcludedPortRanges(),
   pick: () => number = () => randomInt(49_152, 65_536),
+  occupied: ReadonlySet<number> = windowsOccupiedTcpPorts(),
 ): number {
-  const reserved = (port: number) => excluded.some(([start, end]) => port >= start && port <= end);
+  const reserved = (port: number) => occupied.has(port) || excluded.some(([start, end]) => port >= start && port <= end);
   for (let attempt = 0; attempt < 64; attempt++) {
     const port = pick();
     if (!reserved(port)) return port;
   }
   for (let port = 49_152; port <= 65_535; port++) if (!reserved(port)) return port;
-  return pick();
+  throw new Error("No unreserved browser-agent debugging port is available.");
 }
 
 /**

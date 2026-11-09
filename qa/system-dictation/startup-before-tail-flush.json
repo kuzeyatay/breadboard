@@ -1,0 +1,340 @@
+{
+  "passed": true,
+  "checkedAt": "2026-10-14T13:31:07.282Z",
+  "scope": "generated speech through the configured provider; native keyboard excluded",
+  "runs": [
+    {
+      "name": "full-voice-startup",
+      "notice": {
+        "type": "result",
+        "id": 1,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river.",
+        "submit": true
+      },
+      "fallbacks": 0,
+      "partials": [
+        "The",
+        "The words",
+        "The words should",
+        "The words should appear",
+        "The words should appear while I",
+        "The words should appear while I am",
+        "The words should appear while I am still",
+        "The words should appear while I am still speaking",
+        "The words should appear while I am still speaking.",
+        "The words should appear while I am still speaking. I",
+        "The words should appear while I am still speaking. I can",
+        "The words should appear while I am still speaking. I can pause",
+        "The words should appear while I am still speaking. I can pause between",
+        "The words should appear while I am still speaking. I can pause between sentences",
+        "The words should appear while I am still speaking. I can pause between sentences and",
+        "The words should appear while I am still speaking. I can pause between sentences and then",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside the",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside the river.",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river."
+      ],
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "ms": 1
+        },
+        {
+          "stage": "capture-ready",
+          "ms": 7
+        },
+        {
+          "stage": "provider-opening",
+          "ms": 7
+        },
+        {
+          "stage": "provider-ready",
+          "ms": 4208
+        },
+        {
+          "stage": "first-transcript",
+          "ms": 5934
+        },
+        {
+          "stage": "keys-released",
+          "ms": 22104
+        },
+        {
+          "stage": "audio-drained",
+          "ms": 22904
+        },
+        {
+          "stage": "provider-final",
+          "ms": 23525
+        }
+      ],
+      "startupMs": 4208,
+      "speechMs": 17745,
+      "firstWordsAfterSpeechMs": 1626,
+      "firstWordsBeforeRelease": true,
+      "releaseToTextMs": 1429,
+      "microphoneStopMs": 1
+    },
+    {
+      "name": "dictation-cold",
+      "notice": {
+        "type": "result",
+        "id": 1,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river.",
+        "submit": true
+      },
+      "fallbacks": 0,
+      "partials": [
+        "The words",
+        "The words should",
+        "The words should appear",
+        "The words should appear while I",
+        "The words should appear while I am",
+        "The words should appear while I am still",
+        "The words should appear while I am still speaking.",
+        "The words should appear while I am still speaking. I",
+        "The words should appear while I am still speaking. I can",
+        "The words should appear while I am still speaking. I can pause",
+        "The words should appear while I am still speaking. I can pause between",
+        "The words should appear while I am still speaking. I can pause between sentences",
+        "The words should appear while I am still speaking. I can pause between sentences and",
+        "The words should appear while I am still speaking. I can pause between sentences and then",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside the",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside the river.",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river."
+      ],
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "ms": 0
+        },
+        {
+          "stage": "capture-ready",
+          "ms": 6
+        },
+        {
+          "stage": "provider-opening",
+          "ms": 6
+        },
+        {
+          "stage": "provider-ready",
+          "ms": 2302
+        },
+        {
+          "stage": "first-transcript",
+          "ms": 4292
+        },
+        {
+          "stage": "keys-released",
+          "ms": 20198
+        },
+        {
+          "stage": "audio-drained",
+          "ms": 20996
+        },
+        {
+          "stage": "provider-final",
+          "ms": 21625
+        }
+      ],
+      "startupMs": 2302,
+      "speechMs": 17745,
+      "firstWordsAfterSpeechMs": 1890,
+      "firstWordsBeforeRelease": true,
+      "releaseToTextMs": 1428,
+      "microphoneStopMs": 0
+    },
+    {
+      "name": "dictation-warm",
+      "notice": {
+        "type": "result",
+        "id": 1,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river.",
+        "submit": true
+      },
+      "fallbacks": 0,
+      "partials": [
+        "The",
+        "The words",
+        "The words should",
+        "The words should appear",
+        "The words should appear while I",
+        "The words should appear while I am",
+        "The words should appear while I am still",
+        "The words should appear while I am still speaking",
+        "The words should appear while I am still speaking.",
+        "The words should appear while I am still speaking. I",
+        "The words should appear while I am still speaking. I can",
+        "The words should appear while I am still speaking. I can pause",
+        "The words should appear while I am still speaking. I can pause between",
+        "The words should appear while I am still speaking. I can pause between sentences",
+        "The words should appear while I am still speaking. I can pause between sentences and",
+        "The words should appear while I am still speaking. I can pause between sentences and then",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside the",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside the river.",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river."
+      ],
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "ms": 0
+        },
+        {
+          "stage": "capture-ready",
+          "ms": 4
+        },
+        {
+          "stage": "provider-opening",
+          "ms": 4
+        },
+        {
+          "stage": "provider-ready",
+          "ms": 9
+        },
+        {
+          "stage": "first-transcript",
+          "ms": 2116
+        },
+        {
+          "stage": "keys-released",
+          "ms": 17905
+        },
+        {
+          "stage": "audio-drained",
+          "ms": 18500
+        },
+        {
+          "stage": "provider-final",
+          "ms": 19124
+        }
+      ],
+      "startupMs": 9,
+      "speechMs": 17745,
+      "firstWordsAfterSpeechMs": 2007,
+      "firstWordsBeforeRelease": true,
+      "releaseToTextMs": 1220,
+      "microphoneStopMs": 0
+    },
+    {
+      "name": "dictation-early-speech",
+      "notice": {
+        "type": "result",
+        "id": 1,
+        "text": "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river.",
+        "submit": true
+      },
+      "fallbacks": 0,
+      "partials": [
+        "The",
+        "The words",
+        "The words should",
+        "The words should appear",
+        "The words should appear while I",
+        "The words should appear while I am",
+        "The words should appear while I am still",
+        "The words should appear while I am still speaking",
+        "The words should appear while I am still speaking.",
+        "The words should appear while I am still speaking. I",
+        "The words should appear while I am still speaking. I can",
+        "The words should appear while I am still speaking. I can pause",
+        "The words should appear while I am still speaking. I can pause between",
+        "The words should appear while I am still speaking. I can pause between sentences",
+        "The words should appear while I am still speaking. I can pause between sentences and",
+        "The words should appear while I am still speaking. I can pause between sentences and then",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside the",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details.  Please keep every final word, including purple bicycles beside the river.",
+        "The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river."
+      ],
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "ms": 0
+        },
+        {
+          "stage": "capture-ready",
+          "ms": 4
+        },
+        {
+          "stage": "provider-opening",
+          "ms": 4
+        },
+        {
+          "stage": "provider-ready",
+          "ms": 2225
+        },
+        {
+          "stage": "first-transcript",
+          "ms": 4039
+        },
+        {
+          "stage": "keys-released",
+          "ms": 17902
+        },
+        {
+          "stage": "audio-drained",
+          "ms": 20694
+        },
+        {
+          "stage": "provider-final",
+          "ms": 21341
+        }
+      ],
+      "startupMs": 2225,
+      "speechMs": 17745,
+      "firstWordsAfterSpeechMs": 3935,
+      "firstWordsBeforeRelease": true,
+      "releaseToTextMs": 3439,
+      "microphoneStopMs": 0
+    }
+  ]
+}

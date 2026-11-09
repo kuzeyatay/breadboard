@@ -2,6 +2,7 @@ import { WebContentsView, type IpcMainInvokeEvent } from "electron";
 import * as path from "node:path";
 import type { TabsState } from "../shared/ipc-contract";
 import { installRendererRecovery } from "./renderer-recovery";
+import { trackTransparentNotificationView } from "./notification-visible-region";
 
 /** One bundled renderer per window; it does not load or hydrate a Next route. */
 export class WindowShell {
@@ -15,6 +16,7 @@ export class WindowShell {
 
   constructor(getState: () => TabsState | null, command: (value: unknown) => boolean | Promise<boolean>, ready: () => void) {
     this.view.setBackgroundColor("#00000000");
+    trackTransparentNotificationView(this.view, '.desktop-title-bar, .browser-toolbar, .browser-bookmarks-bar, .browser-address-suggestions, .bb-tab-drop-hint, .bb-tab-drop-line, .bb-tab-split-preview > span, .shell-error, [role="menu"], [role="dialog"]');
     const mainFrame = (event: IpcMainInvokeEvent) => event.senderFrame === this.contents.mainFrame;
     this.contents.ipc.handle("breadboard:shell-state", event => mainFrame(event) ? getState() : null);
     this.contents.ipc.handle("breadboard:shell-command", (event, value: unknown) => mainFrame(event) ? command(value) : false);

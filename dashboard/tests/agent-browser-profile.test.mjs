@@ -10,6 +10,28 @@ const identity = await import("../src/lib/agent-browser/identity.ts");
 const source = (relativePath) =>
   fs.readFileSync(fileURLToPath(new URL(`../${relativePath}`, import.meta.url)), "utf8");
 
+test("isolated runs reuse verified automation Chromium without replacing a saved browser profile", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-isolated-browser-"));
+  const cache = path.join(root, "runtime-v2", "toolchains", "career-ops-browsers");
+  const browser = path.join(cache, "chromium-1234", "chrome-win64", "chrome.exe");
+  const explicit = path.join(root, "explicit-browser.exe");
+  const env = { BREADBOARD_BULK_DATA_DIR: root, AGENT_BROWSER_PROFILE: path.join(root, "profile") };
+  try {
+    fs.mkdirSync(path.dirname(browser), { recursive: true });
+    fs.writeFileSync(browser, "fixture");
+    fs.writeFileSync(explicit, "fixture");
+    fs.writeFileSync(path.join(cache, ".breadboard-bulk-ready.json"), JSON.stringify({
+      version: 1, relative: "runtime-v2/toolchains/career-ops-browsers", verifiedAt: new Date().toISOString(),
+    }));
+    assert.equal(profile.resolveIsolatedBrowserExecutable(env), browser);
+    assert.equal(profile.resolveIsolatedBrowserExecutable({ ...env, AGENT_BROWSER_EXECUTABLE_PATH: explicit }), explicit);
+    fs.mkdirSync(env.AGENT_BROWSER_PROFILE);
+    assert.equal(profile.resolveIsolatedBrowserExecutable(env), profile.resolveBrowserExecutable(env));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the shared profile lives beside the account's data, never inside the checkout", () => {
   const explicit = path.join(os.tmpdir(), "breadboard-explicit-profile");
   assert.equal(
@@ -44,7 +66,7 @@ test("the run manager hands that profile to the CLI, and only when there is one"
   assert.match(manager, /browserMode === "external" \? activeProfileDir\(\) : null/);
   const executor = source("scripts/runtime-v2-agent-browser-executor.mjs");
   assert.match(executor, /current\.request\.profilePath/);
-  assert.match(executor, /AGENT_BROWSER_PROFILE: current\.request\.profilePath/);
+  assert.match(executor, /AGENT_BROWSER_PROFILE: runtimeProcessPath\(current\.request\.profilePath\)/);
 });
 
 test("the sign-in window is open only while its own process is alive", () => {

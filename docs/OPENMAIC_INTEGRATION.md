@@ -74,6 +74,14 @@ Two things about that took reading the clone and the machine to establish:
    drive letter does **not** work around it: pnpm's junctions resolve back to
    the real path.
 
+The Windows renderer/editor one-shot bundles also run through a small local
+wrapper. An observed completed Rollup process retained 498 TypeScript file
+watchers and prevented postinstall from advancing. The wrapper makes file
+watchers non-persistent for these two build commands, allowing normal process
+exit after output has been written. It does not force an exit or change error
+codes, and leaves the upstream development/watch scripts untouched. The
+following declaration compilation and application build still have to pass.
+
 OpenMAIC keeps its state — classrooms, jobs, usage — under `process.cwd()/data`,
 and the server runs with the runtime copy as its cwd. The copy is replaced
 wholesale by a rebuild, so `data` inside it is a **junction** to

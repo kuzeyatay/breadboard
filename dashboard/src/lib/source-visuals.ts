@@ -1,3 +1,5 @@
+import { withGardenSystemPromptContext } from "./system-prompts/service.ts";
+import { scopedSystemPromptText } from "./system-prompts/service.ts";
 // Stage 2 of the Breadboard pipeline: source visual extraction.
 //
 // Before any learning page is written, every meaningful visual in an uploaded
@@ -20,7 +22,7 @@ import crypto from "crypto";
 import type OpenAI from "openai";
 import { PDFParse } from "pdf-parse";
 import { modelTransportFailureEvidence } from "./http-502-retry.ts";
-import { breadSystemPrompt } from "./assistant-identity.ts";
+
 import { cropPng, resizePngToMaxDimension } from "./png-crop.ts";
 import {
   figureCropReviewCacheKey,
@@ -439,6 +441,7 @@ interface SourceVisualDetection {
 }
 
 interface SourceVisualScanEntry {
+  promptHash?: string;
   detectorVersion: number;
   fingerprint: string;
   detections: SourceVisualDetection[];
@@ -643,22 +646,7 @@ function expandedCropBBox(
   };
 }
 
-const DETECTION_SYSTEM_PROMPT = breadSystemPrompt(`You identify the meaningful visuals on one page of an academic or educational document.
-Return ONLY a JSON array (no fence, no commentary). Each element:
-{
-  "type": "figure" | "graph" | "table" | "equation" | "diagram",
-  "caption": "short specific description of what the visual shows, e.g. 'LIF neuron membrane potential model'",
-  "exactText": "for an equation, transcribe its complete displayed mathematical expression verbatim in LaTeX; omit for every other type",
-  "bbox": { "x": 0.1, "y": 0.2, "width": 0.8, "height": 0.3 }
-}
-Rules:
-- bbox values are fractions of the page (0..1), measured from the top-left corner, and must tightly enclose the visual including its printed caption.
-- Report real figures, plots/graphs, tables, numbered display equations, and diagrams only.
-- Do NOT report running body text, headers, footers, page numbers, author blocks, references, or logos.
-- Do NOT report the whole page as one visual.
-- captions must describe content ("Latency comparison across models"), never position ("image at top").
-- Every equation record must include a non-empty exactText transcription. If the expression cannot be read reliably, do not report it as an equation.
-- If the page has no meaningful visuals, return [].`);
+import { PROMPT_SOURCE_VISUAL_DETECTION as DETECTION_SYSTEM_PROMPT } from "./system-prompts/feature-defaults.ts";
 
 export function sourceVisualsLedgerPath(contentPath: string, gardenSlug: string): string {
   return path.join(contentPath, gardenSlug, LEDGER_RELATIVE_PATH);
@@ -1202,7 +1190,7 @@ export function sourceVisualCachedPageImageUrls(
     // match is immediately reusable; an intact receipt with changed bytes is
     // retained only as an extraction candidate so the live-hash guard below
     // can invalidate it and run normal detection instead.
-    const reusableNormalScan = cached.detectorVersion === DETECTOR_VERSION;
+    const reusableNormalScan = cached.detectorVersion === DETECTOR_VERSION && (cached.promptHash ?? sha256(DETECTION_SYSTEM_PROMPT)) === sha256(scopedSystemPromptText("source-visual-detection"));
     const reusableRecoveryScan =
       cached.detectorVersion === SOURCE_FORMULA_ARTIFACT_RECOVERY_DETECTOR_VERSION &&
       sourceFormulaArtifactRecoveryScanEntryMatches(cached, pageUrl, snapshotFingerprint);
@@ -1999,110 +1987,19 @@ function sourceFormulaReviewRejectedPageDetails(
   return sourceFormulaReviewRejectedDetails.get(error) ?? [];
 }
 
-const SOURCE_FORMULA_REVIEW_SYSTEM_PROMPT = breadSystemPrompt(`You independently review display-equation transcriptions from an educational source page.
 
-The full-resolution PAGE IMAGE is the primary source evidence. The canonical page Markdown is corroborating searchable context and may itself contain OCR mistakes. The current exactText is an UNTRUSTED candidate produced by an earlier detector and may be wrong. Never preserve it merely for consistency, and never mechanically prefer either text record over what you can verify in the page image.
 
-For every supplied sourceVisualId, inspect its normalized bbox and its labeled crop against the full page. Review the complete semantic record: both the equation transcription and its concise descriptive caption. Decide whether the ID/crop still identifies one complete displayed equation. Return ONLY one JSON object:
-{"reviews":[{"sourceVisualId":"exact supplied id","action":"approve|replace|reject","acceptedExactText":"complete verbatim LaTeX for approve/replace","acceptedCaption":"accurate concise caption for approve/replace","identityAssessment":"preserved|identity_mismatch|ambiguous|unreadable","topologyAssessment":"same_slot|topology_change for identity_mismatch only","reason":"specific evidence-based reason"}]}
 
-Rules:
-- Return exactly one review for every supplied id, with no invented ids and no extra keys.
-- approve means acceptedExactText and acceptedCaption exactly equal both supplied current fields.
-- replace means you independently author the complete corrected record and at least one accepted field differs from its current value.
-- acceptedExactText must preserve every visible sign, limit direction, prime, vector mark, subscript, superscript, equality, integral, differential, delimiter, and displayed equation number/tag.
-- JSON-escape every literal LaTeX backslash in acceptedExactText: in the raw response, a LaTeX \\mathbf command must be encoded as \\\\mathbf. Do not emit a single backslash before any LaTeX command.
-- acceptedCaption must accurately identify what this displayed equation states; do not inherit a misleading detector caption.
-- identityAssessment=preserved is required for approve or replace: the bbox/crop must still denote that one equation even if its old transcription was wrong.
-- Use reject with identity_mismatch when the bbox/id points at a different equation, merges/splits equations, or cannot safely retain the same identity.
-- For identity_mismatch only, include topologyAssessment=topology_change when the full page proves that one or more supplied formula slots must be merged, split, retired, or replaced by a newly discovered formula slot. Otherwise include topologyAssessment=same_slot. Do not infer this from prose alone.
-- Omit topologyAssessment for approve, replace, ambiguous, and unreadable.
-- Use reject with ambiguous or unreadable whenever the complete equation cannot be established from the page image. Never guess.
-- The reason must say what image evidence and corroborating Markdown evidence support the decision.`);
 
-const SOURCE_FORMULA_ARTIFACT_RECOVERY_SYSTEM_PROMPT = breadSystemPrompt(`You are performing a one-time recovery of stale display-equation source artifacts after an independent reviewer rejected one or more crops with identity_mismatch.
 
-Use the supplied fresh high-resolution PDF PAGE IMAGE as the primary authority. The source Markdown is corroborating context only. The prior detector fields are stale candidates, not facts. The failed reviewer response and each rejected reason are supplied verbatim; address them, but do not copy a stale crop or invent an equation.
 
-Re-detect the WHOLE PAGE. Return ONLY one JSON object with exactly these keys:
-{"detections":[{"type":"figure|graph|table|equation|diagram","caption":"...","exactText":"required only for equation","bbox":{"x":0,"y":0,"width":0,"height":0}}],"formulaReplacements":[{"sourceVisualId":"exact supplied id","caption":"...","exactText":"complete visible LaTex","bbox":{"x":0,"y":0,"width":0,"height":0}}]}
 
-Rules:
-- detections must list every meaningful visual on the page, never body prose/header/footer/page number/logo, in top-to-bottom reading order. Use the same strict detection schema described in the request.
-- formulaReplacements must contain exactly one replacement for EVERY supplied formula slot, in exactly the supplied slot order. The IDs are opaque slots; preserve them verbatim and do not add, drop, remap, or merge slots.
-- Every formulaReplacement must correspond exactly to the equation detection in the same formula-slot position. The number of equation detections must exactly equal the number of supplied formula slots.
-- Each replacement bbox must tightly enclose one complete displayed equation. It must not be a text heading, prose paragraph, partial equation, merged equations, or the whole page.
-- For slots marked identity_mismatch, choose a genuinely new bbox/crop; do not repeat the stale one.
-- exactText must preserve every visible sign, limit direction, prime, vector mark, subscript, superscript, equality, integral, differential, delimiter, and displayed equation number/tag.
-- If the full page cannot establish all supplied equation slots safely, do not guess: return a response that fails this contract rather than fabricating a replacement.`);
 
-const SOURCE_FORMULA_ARTIFACT_TOPOLOGY_RECOVERY_SYSTEM_PROMPT = breadSystemPrompt(`You are performing one bounded, model-authored formula-topology recovery after an independent reviewer proved that a source page's old equation slots no longer describe the page topology.
 
-Use the supplied fresh high-resolution PDF PAGE IMAGE as primary authority. Re-detect the WHOLE PAGE; do not patch one bbox, infer a relation from Markdown alone, or use a stale crop. The failed reviewer response is supplied verbatim.
 
-Return ONLY one JSON object with exactly these keys:
-{"detections":[{"type":"figure|graph|table|equation|diagram","caption":"...","exactText":"required only for equation","bbox":{"x":0,"y":0,"width":0,"height":0}}],"activeFormulaSlots":[{"sourceVisualId":"model-authored active S#.P#.E# id","caption":"...","exactText":"complete visible LaTex","bbox":{"x":0,"y":0,"width":0,"height":0},"priorSourceVisualIds":["old supplied id", "..."]}],"priorSlotResolutions":[{"sourceVisualId":"every old supplied id in supplied order","disposition":"retain|merge|split|retire","activeSourceVisualIds":["active id", "..."],"reason":"specific full-page evidence"}]}
 
-Rules:
-- detections must contain every meaningful visual in top-to-bottom reading order; never include prose, headings, headers, footers, logos, or a whole-page box.
-- equation detections and activeFormulaSlots must have identical count and order, with exactly matching caption, exactText, and bbox.
-- activeFormulaSlots are the complete active formula inventory for this page. Their ids are model-authored opaque ids, must stay on this source/page, and may differ from old ids. [] priorSourceVisualIds is allowed only for a genuinely newly discovered equation.
-- priorSlotResolutions must contain every supplied old formula id exactly once in supplied order. retain maps exactly that id to itself; merge maps one old id to one active id shared by multiple old ids; split maps one old id to two or more active ids; retire maps to no active id because the old slot is continuation/prose/not an equation.
-- activeFormulaSlots.priorSourceVisualIds must be the exact inverse graph of priorSlotResolutions. Never invent an old id or omit one.
-- Every active bbox must tightly enclose one complete displayed equation. If the page cannot establish all topology relations safely, return a response that fails this contract rather than guessing.`);
 
-const SOURCE_FORMULA_ARTIFACT_TOPOLOGY_REVIEW_SYSTEM_PROMPT = breadSystemPrompt(`You independently verify a proposed model-authored formula-slot topology against a fresh high-resolution PDF page. The full PAGE IMAGE is primary evidence; the supplied candidate crops and old-slot graph are diagnostic only.
 
-Return ONLY one JSON object. If and only if every proposed active formula and every old-slot relation is visibly correct, return:
-{"status":"confirmed","reason":"specific evidence","priorSlotResolutions":[{"sourceVisualId":"old id","disposition":"retain|merge|split|retire","activeSourceVisualIds":["active id", "..."],"reason":"same exact proposed reason"}]}
-Otherwise return:
-{"status":"rejected","reason":"specific image-based reason"}
-
-Rules:
-- Do not repair, rename, add, remove, or reinterpret a graph. Confirm the exact supplied graph or reject it.
-- A continuation line may be merged only when the full page visibly proves it belongs to the same complete displayed equation.
-- Reject ambiguity, unreadability, guessed relationships, wrong page/source ids, stale crops, or a graph that does not describe every old slot.
-- Never approve based only on Markdown or prior model text.`);
-
-const SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_SYSTEM_PROMPT = breadSystemPrompt(`You are authoring one bounded successor candidate after an independent reviewer rejected a prior whole-page formula-topology candidate.
-
-Use the supplied fresh high-resolution PDF PAGE IMAGE as primary authority. The prior candidate and the reviewer rejection are diagnostic evidence and are supplied verbatim. Do not patch a single equation, bbox, sign, or graph edge mechanically. Re-detect the WHOLE PAGE and author a complete replacement inventory and complete old-slot-to-active-slot graph.
-
-Return ONLY one JSON object with exactly these keys:
-{"detections":[{"type":"figure|graph|table|equation|diagram","caption":"...","exactText":"required only for equation","bbox":{"x":0,"y":0,"width":0,"height":0}}],"activeFormulaSlots":[{"sourceVisualId":"model-authored active S#.P#.E# id","caption":"...","exactText":"complete visible LaTex","bbox":{"x":0,"y":0,"width":0,"height":0},"priorSourceVisualIds":["old supplied id", "..."]}],"priorSlotResolutions":[{"sourceVisualId":"every old supplied id in supplied order","disposition":"retain|merge|split|retire","activeSourceVisualIds":["active id", "..."],"reason":"specific full-page evidence"}]}
-
-Rules:
-- The raw reviewer rejection is feedback, not a requested text substitution. Inspect the page yourself and return a new complete candidate only.
-- detections must contain every meaningful visual in top-to-bottom reading order; never include prose, headings, headers, footers, logos, or a whole-page box.
-- equation detections and activeFormulaSlots must have identical count and order, with exactly matching caption, exactText, and bbox.
-- activeFormulaSlots are the complete active formula inventory for this page. Their ids are opaque model-authored slots on this source/page; [] priorSourceVisualIds is allowed only for a genuinely newly discovered equation.
-- priorSlotResolutions must contain every supplied old formula id exactly once in supplied order. retain maps exactly that id to itself; merge maps one old id to one active id shared by multiple old ids; split maps one old id to two or more active ids; retire maps to no active id.
-- activeFormulaSlots.priorSourceVisualIds must be the exact inverse graph of priorSlotResolutions. Never invent an old id or omit one.
-- Every active bbox must tightly enclose one complete displayed equation. If the page cannot establish all topology relations safely, return a response that fails this contract rather than guessing.`);
-
-const SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_SYSTEM_PROMPT = breadSystemPrompt(`You are authoring one bounded successor after two independent checks disagreed about a previously confirmed formula-topology candidate.
-
-The supplied fresh high-resolution PDF PAGE IMAGE is primary authority. A prior whole-page candidate and its independent topology confirmation are supplied only as diagnostic history. A later ordinary formula reviewer rejected one or more of that candidate's active slots with identity_mismatch; that raw rejection is feedback, not a requested local edit. Do not patch a single bbox, equation, caption, identifier, or graph edge. Re-detect the WHOLE PAGE and author a complete replacement inventory and complete old-slot-to-active-slot graph.
-
-Return ONLY one JSON object with exactly these keys:
-{"detections":[{"type":"figure|graph|table|equation|diagram","caption":"...","exactText":"required only for equation","bbox":{"x":0,"y":0,"width":0,"height":0}}],"activeFormulaSlots":[{"sourceVisualId":"model-authored active S#.P#.E# id","caption":"...","exactText":"complete visible LaTex","bbox":{"x":0,"y":0,"width":0,"height":0},"priorSourceVisualIds":["old supplied id", "..."]}],"priorSlotResolutions":[{"sourceVisualId":"every original old supplied id in supplied order","disposition":"retain|merge|split|retire","activeSourceVisualIds":["active id", "..."],"reason":"specific full-page evidence"}]}
-
-Rules:
-- Return a fresh complete whole-page inventory in top-to-bottom reading order. Never preserve or mechanically transform the prior candidate merely because it was previously confirmed.
-- Every equation detection and activeFormulaSlot must have identical order, caption, exactText, and bbox. Every active bbox must tightly enclose exactly one complete displayed equation.
-- Account for every original old source slot exactly once in priorSlotResolutions and every active slot through the exact inverse graph. Active ids are model-authored opaque slots on this source/page; do not deterministically migrate ids from the prior candidate.
-- Treat the raw ordinary-review rejection and any prior candidate/reviewer history as evidence to inspect, not instructions to substitute text or split/merge a specific slot. If the full page cannot establish the complete inventory and graph safely, return a response that fails this contract rather than guessing.`);
-
-const SOURCE_FORMULA_ARTIFACT_TOPOLOGY_EMPTY_INVENTORY_REVIEW_SYSTEM_PROMPT = breadSystemPrompt(`You independently review a model-authored whole-page formula inventory that proposes zero active formulas. The fresh high-resolution PDF PAGE IMAGE is primary evidence. The supplied candidate is diagnostic only.
-
-Return ONLY one JSON object:
-{"status":"confirmed|rejected","reason":"specific image-based evidence"}
-
-Rules:
-- Return confirmed only if the page visibly contains no active displayed formula that the candidate omitted.
-- Return rejected if any displayed formula, numbered equation, or mathematical display remains active on the page, or if the empty inventory cannot be established safely.
-- Do not author a replacement inventory, bbox, caption, equation text, or topology graph. Your rejection is feedback for a separate bounded whole-page authoring pass.
-- Never approve from Markdown or prior model text alone.`);
 
 function sha256(value: string | Buffer): string {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -2661,7 +2558,7 @@ function sourceFormulaReviewProtocolMetadata(
   }
   return {
     promptVersion: SOURCE_FORMULA_REVIEW_PROMPT_VERSION,
-    systemPromptSha256: sha256(SOURCE_FORMULA_REVIEW_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-review")),
   };
 }
 
@@ -3177,7 +3074,7 @@ function cacheEnvelopeMatches(
       envelope.pageImageSha256 !== evidence.pageImageSha256 ||
       envelope.canonicalPageTextSha256 !== evidence.canonicalPageTextSha256 ||
       envelope.sourcePdfSha256 !== evidence.sourcePdfSha256 ||
-      envelope.systemPromptSha256 !== sha256(SOURCE_FORMULA_REVIEW_SYSTEM_PROMPT) ||
+      envelope.systemPromptSha256 !== sha256(scopedSystemPromptText("source-formula-review")) ||
       envelope.requestPayload !== expectedRequestPayload ||
       envelope.requestSha256 !== sha256(expectedRequestPayload) ||
       envelope.responseSha256 !== sha256(envelope.rawResponse) ||
@@ -3576,7 +3473,7 @@ async function requestSourceFormulaPageReview(
         request: {
           model: options.model,
           messages: [
-            { role: "system", content: SOURCE_FORMULA_REVIEW_SYSTEM_PROMPT },
+            { role: "system", content: scopedSystemPromptText("source-formula-review") },
             { role: "user", content: content as never },
           ],
         },
@@ -3638,7 +3535,7 @@ async function requestSourceFormulaPageReview(
       pageImageSha256: evidence.pageImageSha256,
       canonicalPageTextSha256: evidence.canonicalPageTextSha256,
       sourcePdfSha256: evidence.sourcePdfSha256,
-      systemPromptSha256: sha256(SOURCE_FORMULA_REVIEW_SYSTEM_PROMPT),
+      systemPromptSha256: sha256(scopedSystemPromptText("source-formula-review")),
       requestPayload,
       requestSha256: sha256(requestPayload),
       repairHistory,
@@ -3709,7 +3606,7 @@ function sourceFormulaArtifactRecoveryKeyMaterial(
   return {
     schemaVersion: SOURCE_FORMULA_ARTIFACT_RECOVERY_SCHEMA_VERSION,
     promptVersion: SOURCE_FORMULA_ARTIFACT_RECOVERY_PROMPT_VERSION,
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_RECOVERY_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-recovery")),
     model,
     sourceId: evidence.sourceId,
     pageNumber: evidence.pageNumber,
@@ -3741,7 +3638,7 @@ function sourceFormulaArtifactRecoveryRequestPayload(
 ): string {
   return JSON.stringify({
     task: "Use the fresh high-resolution PDF page image to re-detect every meaningful page visual and re-author every supplied formula slot. Return the exact JSON response shape from the system prompt.",
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_RECOVERY_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-recovery")),
     ...sourceFormulaArtifactRecoveryKeyMaterial(evidence, model, failedReview, inputs),
     canonicalPageText: evidence.canonicalPageText,
     // The raw rejected review is intentionally passed without a code-written
@@ -3918,7 +3815,7 @@ function sourceFormulaArtifactTopologyRecoveryKeyMaterial(
   return {
     schemaVersion: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_RECOVERY_SCHEMA_VERSION,
     promptVersion: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_RECOVERY_PROMPT_VERSION,
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_RECOVERY_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-topology-recovery")),
     model,
     sourceId: evidence.sourceId,
     pageNumber: evidence.pageNumber,
@@ -3950,7 +3847,7 @@ function sourceFormulaArtifactTopologyRecoveryRequestPayload(
 ): string {
   return JSON.stringify({
     task: "Use the fresh high-resolution PDF page image to author a complete whole-page visual inventory and an exact old-slot to active-formula topology graph. Return the exact JSON response shape from the system prompt.",
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_RECOVERY_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-topology-recovery")),
     ...sourceFormulaArtifactTopologyRecoveryKeyMaterial(evidence, model, failedReview, inputs),
     canonicalPageText: evidence.canonicalPageText,
     failedReviewerResponseVerbatim: failedReview.rawResponse,
@@ -4234,7 +4131,7 @@ function sourceFormulaArtifactTopologyRecoveryEnvelopeMatches(
       envelope.pageImageSha256 !== evidence.pageImageSha256 ||
       envelope.canonicalPageTextSha256 !== evidence.canonicalPageTextSha256 ||
       envelope.sourcePdfSha256 !== evidence.sourcePdfSha256 ||
-      envelope.systemPromptSha256 !== sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_RECOVERY_SYSTEM_PROMPT) ||
+      envelope.systemPromptSha256 !== sha256(scopedSystemPromptText("source-formula-topology-recovery")) ||
       JSON.stringify(envelope.failedReview) !== JSON.stringify(failedReview) ||
       JSON.stringify(envelope.inputVisuals) !== JSON.stringify(expectedInputs) ||
       !Array.isArray(envelope.repairHistory) ||
@@ -4297,7 +4194,7 @@ function sourceFormulaArtifactTopologyReviewKeyMaterial(
   return {
     schemaVersion: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_REVIEW_SCHEMA_VERSION,
     promptVersion: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_REVIEW_PROMPT_VERSION,
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_REVIEW_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-topology-review")),
     model,
     sourceId: evidence.sourceId,
     pageNumber: evidence.pageNumber,
@@ -4333,7 +4230,7 @@ function sourceFormulaArtifactTopologyReviewRequestPayload(
   const failedReviewerResponseVerbatim = failedReview?.rawResponse;
   return JSON.stringify({
     task: "Independently confirm or reject this exact proposed old-slot to active-formula topology graph against the fresh high-resolution PDF page image. Do not repair the graph.",
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_REVIEW_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-topology-review")),
     ...sourceFormulaArtifactTopologyReviewKeyMaterial(evidence, recovery, model),
     canonicalPageText: evidence.canonicalPageText,
     ...(failedReviewerResponseVerbatim !== undefined ? { failedReviewerResponseVerbatim } : {}),
@@ -4445,7 +4342,7 @@ function sourceFormulaArtifactTopologyReviewEnvelopeMatches(
       envelope.pageImageSha256 !== evidence.pageImageSha256 ||
       envelope.canonicalPageTextSha256 !== evidence.canonicalPageTextSha256 ||
       envelope.sourcePdfSha256 !== evidence.sourcePdfSha256 ||
-      envelope.systemPromptSha256 !== sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_REVIEW_SYSTEM_PROMPT) ||
+      envelope.systemPromptSha256 !== sha256(scopedSystemPromptText("source-formula-topology-review")) ||
       envelope.recoveryCacheKey !== recovery.cacheKey ||
       envelope.recoveryCacheIntegritySha256 !== recovery.integritySha256 ||
       !Array.isArray(envelope.repairHistory) ||
@@ -4606,7 +4503,7 @@ function sourceFormulaArtifactRecoveryEnvelopeMatches(
       envelope.pageImageSha256 !== evidence.pageImageSha256 ||
       envelope.canonicalPageTextSha256 !== evidence.canonicalPageTextSha256 ||
       envelope.sourcePdfSha256 !== evidence.sourcePdfSha256 ||
-      envelope.systemPromptSha256 !== sha256(SOURCE_FORMULA_ARTIFACT_RECOVERY_SYSTEM_PROMPT) ||
+      envelope.systemPromptSha256 !== sha256(scopedSystemPromptText("source-formula-recovery")) ||
       JSON.stringify(envelope.failedReview) !== JSON.stringify(failedReview) ||
       JSON.stringify(envelope.inputVisuals) !== JSON.stringify(expectedInputs) ||
       !Array.isArray(envelope.repairHistory) ||
@@ -4771,7 +4668,7 @@ async function requestSourceFormulaArtifactRecovery(
         request: {
           model: options.model,
           messages: [
-            { role: "system", content: SOURCE_FORMULA_ARTIFACT_RECOVERY_SYSTEM_PROMPT },
+            { role: "system", content: scopedSystemPromptText("source-formula-recovery") },
             {
               role: "user",
               content: [
@@ -4824,7 +4721,7 @@ async function requestSourceFormulaArtifactRecovery(
       pageImageSha256: evidence.pageImageSha256,
       canonicalPageTextSha256: evidence.canonicalPageTextSha256,
       sourcePdfSha256: evidence.sourcePdfSha256,
-      systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_RECOVERY_SYSTEM_PROMPT),
+      systemPromptSha256: sha256(scopedSystemPromptText("source-formula-recovery")),
       failedReview,
       requestPayload,
       requestSha256: sha256(requestPayload),
@@ -4876,7 +4773,7 @@ async function requestSourceFormulaArtifactTopologyRecovery(
         request: {
           model: options.model,
           messages: [
-            { role: "system", content: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_RECOVERY_SYSTEM_PROMPT },
+            { role: "system", content: scopedSystemPromptText("source-formula-topology-recovery") },
             {
               role: "user",
               content: [
@@ -4926,7 +4823,7 @@ async function requestSourceFormulaArtifactTopologyRecovery(
       pageImageSha256: evidence.pageImageSha256,
       canonicalPageTextSha256: evidence.canonicalPageTextSha256,
       sourcePdfSha256: evidence.sourcePdfSha256,
-      systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_RECOVERY_SYSTEM_PROMPT),
+      systemPromptSha256: sha256(scopedSystemPromptText("source-formula-topology-recovery")),
       failedReview,
       requestPayload,
       requestSha256: sha256(requestPayload),
@@ -4963,7 +4860,7 @@ function sourceFormulaArtifactTopologyCandidateRepairCycleKeyMaterial(
     promptVersion: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_PROMPT_VERSION,
     detectorVersion: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_DETECTOR_VERSION,
     maxCandidates: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_MAX_CANDIDATES,
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-candidate-repair")),
     model,
     sourceId: evidence.sourceId,
     pageNumber: evidence.pageNumber,
@@ -5055,7 +4952,7 @@ function sourceFormulaArtifactTopologyCandidateRepairCandidateRequestPayload(
 ): string {
   return JSON.stringify({
     task: "Author a fresh complete whole-page visual inventory and old-slot to active-formula topology graph after an independent reviewer rejected the prior candidate. Return the exact JSON response shape from the system prompt.",
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-candidate-repair")),
     ...sourceFormulaArtifactTopologyCandidateRepairCandidateKeyMaterial(
       evidence,
       initialRecovery,
@@ -5139,7 +5036,7 @@ async function requestSourceFormulaArtifactTopologyCandidateRepairCandidate(
         request: {
           model: options.model,
           messages: [
-            { role: "system", content: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_SYSTEM_PROMPT },
+            { role: "system", content: scopedSystemPromptText("source-formula-candidate-repair") },
             {
               role: "user",
               content: [
@@ -5198,7 +5095,7 @@ async function requestSourceFormulaArtifactTopologyCandidateRepairCandidate(
       pageImageSha256: evidence.pageImageSha256,
       canonicalPageTextSha256: evidence.canonicalPageTextSha256,
       sourcePdfSha256: evidence.sourcePdfSha256,
-      systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_SYSTEM_PROMPT),
+      systemPromptSha256: sha256(scopedSystemPromptText("source-formula-candidate-repair")),
       initialRecoveryCacheKey: initialRecovery.cacheKey,
       initialRecoveryCacheIntegritySha256: initialRecovery.integritySha256,
       initialTopologyReviewCacheKey: initialTopologyReview.cacheKey,
@@ -5259,7 +5156,7 @@ function sourceFormulaArtifactTopologyCandidateRepairEnvelope(
     pageImageSha256: evidence.pageImageSha256,
     canonicalPageTextSha256: evidence.canonicalPageTextSha256,
     sourcePdfSha256: evidence.sourcePdfSha256,
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-candidate-repair")),
     initialRecovery,
     initialTopologyReview,
     candidates: candidates.map((entry) => ({
@@ -5326,7 +5223,7 @@ async function requestSourceFormulaArtifactTopologyReview(
         request: {
           model: options.model,
           messages: [
-            { role: "system", content: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_REVIEW_SYSTEM_PROMPT },
+            { role: "system", content: scopedSystemPromptText("source-formula-topology-review") },
             { role: "user", content: content as never },
           ],
         },
@@ -5358,7 +5255,7 @@ async function requestSourceFormulaArtifactTopologyReview(
       pageImageSha256: evidence.pageImageSha256,
       canonicalPageTextSha256: evidence.canonicalPageTextSha256,
       sourcePdfSha256: evidence.sourcePdfSha256,
-      systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_REVIEW_SYSTEM_PROMPT),
+      systemPromptSha256: sha256(scopedSystemPromptText("source-formula-topology-review")),
       recoveryCacheKey: recovery.cacheKey,
       recoveryCacheIntegritySha256: recovery.integritySha256,
       requestPayload,
@@ -5435,7 +5332,7 @@ function sourceFormulaArtifactTopologyCandidateRepairCandidateMatches(
       candidate.pageImageSha256 !== evidence.pageImageSha256 ||
       candidate.canonicalPageTextSha256 !== evidence.canonicalPageTextSha256 ||
       candidate.sourcePdfSha256 !== evidence.sourcePdfSha256 ||
-      candidate.systemPromptSha256 !== sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_SYSTEM_PROMPT) ||
+      candidate.systemPromptSha256 !== sha256(scopedSystemPromptText("source-formula-candidate-repair")) ||
       candidate.initialRecoveryCacheKey !== initialRecovery.cacheKey ||
       candidate.initialRecoveryCacheIntegritySha256 !== initialRecovery.integritySha256 ||
       candidate.initialTopologyReviewCacheKey !== initialTopologyReview.cacheKey ||
@@ -5527,7 +5424,7 @@ function sourceFormulaArtifactTopologyCandidateRepairEnvelopeMatches(
       envelope.pageImageSha256 !== evidence.pageImageSha256 ||
       envelope.canonicalPageTextSha256 !== evidence.canonicalPageTextSha256 ||
       envelope.sourcePdfSha256 !== evidence.sourcePdfSha256 ||
-      envelope.systemPromptSha256 !== sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CANDIDATE_REPAIR_SYSTEM_PROMPT) ||
+      envelope.systemPromptSha256 !== sha256(scopedSystemPromptText("source-formula-candidate-repair")) ||
       !envelope.startedAt ||
       !envelope.updatedAt ||
       !Array.isArray(envelope.candidates) ||
@@ -5822,7 +5719,7 @@ function sourceFormulaArtifactTopologyEmptyInventoryReviewKeyMaterial(
   return {
     schemaVersion: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_EMPTY_INVENTORY_REVIEW_SCHEMA_VERSION,
     promptVersion: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_EMPTY_INVENTORY_REVIEW_PROMPT_VERSION,
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_EMPTY_INVENTORY_REVIEW_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-empty-review")),
     model,
     sourceId: evidence.sourceId,
     pageNumber: evidence.pageNumber,
@@ -5855,7 +5752,7 @@ function sourceFormulaArtifactTopologyEmptyInventoryReviewRequestPayload(
 ): string {
   return JSON.stringify({
     task: "Independently decide whether this exact model-authored whole-page candidate has a genuinely empty active formula inventory. Do not repair the inventory; confirm it or reject it with image-based evidence.",
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_EMPTY_INVENTORY_REVIEW_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-empty-review")),
     ...sourceFormulaArtifactTopologyEmptyInventoryReviewKeyMaterial(evidence, candidate, model),
     canonicalPageText: evidence.canonicalPageText,
     candidateResponseVerbatim: candidate.rawResponse,
@@ -5935,7 +5832,7 @@ function sourceFormulaArtifactTopologyEmptyInventoryReviewEnvelopeMatches(
       review.pageImageSha256 !== evidence.pageImageSha256 ||
       review.canonicalPageTextSha256 !== evidence.canonicalPageTextSha256 ||
       review.sourcePdfSha256 !== evidence.sourcePdfSha256 ||
-      review.systemPromptSha256 !== sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_EMPTY_INVENTORY_REVIEW_SYSTEM_PROMPT) ||
+      review.systemPromptSha256 !== sha256(scopedSystemPromptText("source-formula-empty-review")) ||
       review.consensusRepairCacheKey !== candidate.consensusRepairCacheKey ||
       review.candidateCacheKey !== candidate.cacheKey ||
       review.candidateCacheIntegritySha256 !== candidate.integritySha256 ||
@@ -6009,7 +5906,7 @@ async function requestSourceFormulaArtifactTopologyEmptyInventoryReview(
         request: {
           model: options.model,
           messages: [
-            { role: "system", content: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_EMPTY_INVENTORY_REVIEW_SYSTEM_PROMPT },
+            { role: "system", content: scopedSystemPromptText("source-formula-empty-review") },
             {
               role: "user",
               content: [
@@ -6055,7 +5952,7 @@ async function requestSourceFormulaArtifactTopologyEmptyInventoryReview(
       pageImageSha256: evidence.pageImageSha256,
       canonicalPageTextSha256: evidence.canonicalPageTextSha256,
       sourcePdfSha256: evidence.sourcePdfSha256,
-      systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_EMPTY_INVENTORY_REVIEW_SYSTEM_PROMPT),
+      systemPromptSha256: sha256(scopedSystemPromptText("source-formula-empty-review")),
       consensusRepairCacheKey: candidate.consensusRepairCacheKey,
       candidateCacheKey: candidate.cacheKey,
       candidateCacheIntegritySha256: candidate.integritySha256,
@@ -6111,7 +6008,7 @@ function sourceFormulaArtifactTopologyConsensusRepairCycleKeyMaterial(
     promptVersion: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_PROMPT_VERSION,
     detectorVersion: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_DETECTOR_VERSION,
     maxCandidates: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_MAX_CANDIDATES,
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-consensus-repair")),
     model,
     sourceId: evidence.sourceId,
     pageNumber: evidence.pageNumber,
@@ -6205,7 +6102,7 @@ function sourceFormulaArtifactTopologyConsensusRepairCandidateRequestPayload(
   const baseTopologyReview = sourceFormulaArtifactTopologyConsensusBaseTopologyReview(base);
   return JSON.stringify({
     task: "A confirmed formula-topology candidate disagreed with a later ordinary formula reviewer. Author a fresh complete whole-page visual inventory and complete old-slot plus prior-active-slot to active-formula topology graph. Do not patch a crop, equation, or graph locally; return the exact JSON response shape from the system prompt.",
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-consensus-repair")),
     ...sourceFormulaArtifactTopologyConsensusRepairCandidateKeyMaterial(
       evidence,
       base,
@@ -6295,7 +6192,7 @@ async function requestSourceFormulaArtifactTopologyConsensusRepairCandidate(
         request: {
           model: options.model,
           messages: [
-            { role: "system", content: SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_SYSTEM_PROMPT },
+            { role: "system", content: scopedSystemPromptText("source-formula-consensus-repair") },
             {
               role: "user",
               content: [
@@ -6356,7 +6253,7 @@ async function requestSourceFormulaArtifactTopologyConsensusRepairCandidate(
       pageImageSha256: evidence.pageImageSha256,
       canonicalPageTextSha256: evidence.canonicalPageTextSha256,
       sourcePdfSha256: evidence.sourcePdfSha256,
-      systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_SYSTEM_PROMPT),
+      systemPromptSha256: sha256(scopedSystemPromptText("source-formula-consensus-repair")),
       consensusRepairCacheKey: cycleCacheKey,
       priorCandidateCacheKey: priorCandidate.cacheKey,
       priorCandidateIntegritySha256: priorCandidate.integritySha256,
@@ -6442,7 +6339,7 @@ function sourceFormulaArtifactTopologyConsensusRepairCandidateMatches(
       candidate.pageImageSha256 !== evidence.pageImageSha256 ||
       candidate.canonicalPageTextSha256 !== evidence.canonicalPageTextSha256 ||
       candidate.sourcePdfSha256 !== evidence.sourcePdfSha256 ||
-      candidate.systemPromptSha256 !== sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_SYSTEM_PROMPT) ||
+      candidate.systemPromptSha256 !== sha256(scopedSystemPromptText("source-formula-consensus-repair")) ||
       candidate.consensusRepairCacheKey !== sourceFormulaArtifactTopologyConsensusRepairCycleCacheKey(
         evidence,
         base,
@@ -6529,7 +6426,7 @@ function sourceFormulaArtifactTopologyConsensusRepairEnvelope(
     pageImageSha256: evidence.pageImageSha256,
     canonicalPageTextSha256: evidence.canonicalPageTextSha256,
     sourcePdfSha256: evidence.sourcePdfSha256,
-    systemPromptSha256: sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_SYSTEM_PROMPT),
+    systemPromptSha256: sha256(scopedSystemPromptText("source-formula-consensus-repair")),
     base,
     triggerFormulaReview,
     candidates: candidates.map((entry) => ({
@@ -6577,7 +6474,7 @@ function sourceFormulaArtifactTopologyConsensusRepairEnvelopeMatches(
       envelope.pageImageSha256 !== evidence.pageImageSha256 ||
       envelope.canonicalPageTextSha256 !== evidence.canonicalPageTextSha256 ||
       envelope.sourcePdfSha256 !== evidence.sourcePdfSha256 ||
-      envelope.systemPromptSha256 !== sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_CONSENSUS_REPAIR_SYSTEM_PROMPT) ||
+      envelope.systemPromptSha256 !== sha256(scopedSystemPromptText("source-formula-consensus-repair")) ||
       !envelope.startedAt ||
       !envelope.updatedAt ||
       !Array.isArray(envelope.candidates) ||
@@ -7002,7 +6899,7 @@ function sourceFormulaArtifactTopologyCandidateRepairScanEntryIsConfirmed(
       review.pageImageSha256 !== fingerprint ||
       review.canonicalPageTextSha256 !== envelope.canonicalPageTextSha256 ||
       review.sourcePdfSha256 !== envelope.sourcePdfSha256 ||
-      review.systemPromptSha256 !== sha256(SOURCE_FORMULA_ARTIFACT_TOPOLOGY_REVIEW_SYSTEM_PROMPT) ||
+      review.systemPromptSha256 !== sha256(scopedSystemPromptText("source-formula-topology-review")) ||
       review.requestSha256 !== sha256(review.requestPayload) ||
       review.responseSha256 !== sha256(review.rawResponse)
     ) return false;
@@ -10742,6 +10639,7 @@ export function saveSourceFormulaReviewSetManifest(
 export async function reviewRequiredSourceFormulaExactText(
   options: ReviewRequiredSourceFormulaExactTextOptions,
 ): Promise<SourceFormulaReviewResult> {
+  return withGardenSystemPromptContext(options.gardenSlug, async () => {
   options.checkCancelled?.();
   const selectedSourceIds = options.selectedSourceIds.map((sourceId) => sourceId.trim());
   if (
@@ -11568,6 +11466,8 @@ export async function reviewRequiredSourceFormulaExactText(
     modelCalls,
     topologyReviewPageReceipts,
   };
+
+  }, undefined);
 }
 
 function validationGardenDir(options: SourceFormulaReviewValidationOptions): string {
@@ -11843,6 +11743,7 @@ interface ValidatedTopologyConsensusRepairPageReceipt {
 export function validateSourceFormulaReviewSet(
   options: SourceFormulaReviewValidationOptions,
 ): SourceFormulaReviewValidationResult {
+  return withGardenSystemPromptContext(options.gardenSlug, () => {
   const problems: string[] = [];
   const formulaIds = [...new Set([...options.requiredFormulaIds].map((id) => id.trim()).filter(Boolean))]
     .sort();
@@ -12816,6 +12717,8 @@ export function validateSourceFormulaReviewSet(
     );
   }
   return { formulaIds, reviewSetHash, problems };
+
+  }, undefined);
 }
 
 export function sourceFormulaReviewProvenanceProblems(
@@ -13068,7 +12971,7 @@ async function detectVisualsOnPage(
       request: {
         model,
         messages: [
-          { role: "system", content: DETECTION_SYSTEM_PROMPT },
+          { role: "system", content: scopedSystemPromptText("source-visual-detection") },
           {
             role: "user",
             content: [
@@ -13322,6 +13225,7 @@ async function prescanUncachedPages(args: {
       const priorReview = args.sourceCache[page.pageUrl]?.figureCropReview;
       args.sourceCache[page.pageUrl] = {
         detectorVersion: DETECTOR_VERSION,
+          promptHash: sha256(scopedSystemPromptText("source-visual-detection")),
         fingerprint: page.fingerprint,
         detections,
         ...(priorReview ? { figureCropReview: priorReview } : {}),
@@ -13456,6 +13360,7 @@ async function prereviewFigureCrops(args: {
 export async function extractSourceVisuals(
   options: ExtractSourceVisualsOptions,
 ): Promise<SourceVisual[]> {
+  return withGardenSystemPromptContext(options.gardenSlug, async () => {
   const {
     client,
     model,
@@ -13938,7 +13843,7 @@ export async function extractSourceVisuals(
       reusableTopologyConsensusRepairScan ||
       (
         !force &&
-        cached?.detectorVersion === DETECTOR_VERSION &&
+        cached?.detectorVersion === DETECTOR_VERSION && (cached.promptHash ?? sha256(DETECTION_SYSTEM_PROMPT)) === sha256(scopedSystemPromptText("source-visual-detection")) &&
         cached.fingerprint === fingerprint &&
         Array.isArray(cached.detections)
       )
@@ -13968,6 +13873,7 @@ export async function extractSourceVisuals(
         const priorReview = sourceCache[pageUrl]?.figureCropReview;
         sourceCache[pageUrl] = {
           detectorVersion: DETECTOR_VERSION,
+          promptHash: sha256(scopedSystemPromptText("source-visual-detection")),
           fingerprint,
           detections,
           ...(priorReview ? { figureCropReview: priorReview } : {}),
@@ -14387,6 +14293,8 @@ export async function extractSourceVisuals(
   const merged = [...ledger.filter((visual) => visual.sourceId !== sourceId), ...mergedSourceVisuals];
   saveSourceVisuals(contentPath, gardenSlug, merged);
   return mergedSourceVisuals;
+
+  }, undefined);
 }
 
 /** The image URL a page should embed for a visual: the crop when available,

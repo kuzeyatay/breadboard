@@ -57,6 +57,7 @@ app.whenReady().then(async () => {
   await until(() => host.shellEnabled, "persistent shell");
   await manager.restoreSession(window, origin, createWindow);
   const checkPair = (left, right) => {
+    assert.deepEqual([...state().visibleIds].sort((a,b)=>a-b), [left.id,right.id].sort((a,b)=>a-b), 'notification presence includes both presented panes');
     const l = left.browser?.view ?? left.view, r = right.browser?.view ?? right.view;
     assert.ok(window.contentView.children.includes(l) && window.contentView.children.includes(r), "both views are attached");
     const a = l.getBounds(), b = r.getBounds();

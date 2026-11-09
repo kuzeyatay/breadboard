@@ -29,7 +29,9 @@ import {
   externalRuntimePathExists,
   externalRuntimeReadUtf8,
   externalRuntimeStat,
+  externalRuntimeFilesystem,
 } from "../external-runtime-filesystem.ts";
+import { runtimeV2ToolchainRoot } from "../runtime-paths.ts";
 
 export class BrowserProfileError extends Error {
   readonly status: number;
@@ -66,6 +68,24 @@ export function resolveBrowserExecutable(env: NodeJS.ProcessEnv = process.env): 
           ]
         : ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/microsoft-edge"];
   return candidates.find((candidate) => externalRuntimePathExists(candidate)) ?? null;
+}
+
+/** Reuse an installed automation browser only for a run with no saved profile. */
+export function resolveIsolatedBrowserExecutable(env: NodeJS.ProcessEnv = process.env): string | null {
+  if (env.AGENT_BROWSER_EXECUTABLE_PATH?.trim() || activeProfileDir(env)) return resolveBrowserExecutable(env);
+  const cache = runtimeV2ToolchainRoot("career-ops-browsers", env);
+  try {
+    const versions = externalRuntimeFilesystem.readdirSync(cache, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && /^chromium-[0-9]+$/u.test(entry.name))
+      .sort((left, right) => Number(right.name.slice(9)) - Number(left.name.slice(9)));
+    for (const entry of versions) {
+      for (const relative of ["chrome-win64/chrome.exe", "chrome-win/chrome.exe", "chrome-linux64/chrome", "chrome-linux/chrome", "chrome-mac/Chromium.app/Contents/MacOS/Chromium"]) {
+        const candidate = path.join(cache, entry.name, relative);
+        if (externalRuntimePathExists(candidate)) return candidate;
+      }
+    }
+  } catch { /* An optional cache is not a requirement for an installed browser. */ }
+  return resolveBrowserExecutable(env);
 }
 
 /** What to call that binary in a sentence a person reads. */

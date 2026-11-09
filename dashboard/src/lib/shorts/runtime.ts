@@ -349,7 +349,7 @@ async function probe(signal?: AbortSignal): Promise<ShortsHealth> {
   const script = REQUIRED_MODULES.map((item) => item.module)
     .map(
       (module) =>
-        `try:\n import ${module}\nexcept Exception:\n missing.append(${JSON.stringify(module)})\n`,
+        `try:\n import ${module}\n${module === "cv2" ? " assert hasattr(cv2, 'CascadeClassifier')\n" : ""}except Exception:\n missing.append(${JSON.stringify(module)})\n`,
     )
     .join("");
   const probeResult = await runCommand(

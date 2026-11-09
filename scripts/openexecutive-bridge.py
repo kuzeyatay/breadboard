@@ -42,6 +42,7 @@ def configure(request: dict[str, Any]) -> tuple[Path, Path]:
         "ENABLE_CACHING": "false",
         "ENABLE_WEB_SEARCH": "false",
         "MCP_ENABLED": "false",
+        "EXEC_LOCAL_ONLY": "true",
         "SCHEDULER_ENABLED": "false",
         "HONCHO_ENABLED": "false",
         "OPENROUTER_ENABLED": "false",

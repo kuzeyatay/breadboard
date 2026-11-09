@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "physical": false,
+  "stimulus": "production hook callback and known WAV capture",
+  "inserted": "Testing breadboard dictation.",
+  "submits": 1,
+  "focusCancellation": true,
+  "provider": "existing configured garden/terminal provider",
+  "pipeline": "native chord → Electron IPC → shared dictation provider → native SendInput → Enter"
+}

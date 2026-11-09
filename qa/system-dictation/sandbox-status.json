@@ -1,0 +1,1025 @@
+{
+  "openedAt": "2026-10-14T15:05:01.706Z",
+  "status": "closed",
+  "sessions": [
+    {
+      "id": 1,
+      "startedAt": 1791990326128,
+      "anchor": {
+        "x": -1297,
+        "y": 455,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 407,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791990326268
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791990326286
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791990326287
+        },
+        {
+          "stage": "keys-released",
+          "at": 1791990358252
+        }
+      ],
+      "pillVisible": true,
+      "releasedAt": 1791990358251,
+      "hiddenOnRelease": true,
+      "cancelled": true,
+      "cancelledAt": 1791990358651,
+      "cancelReason": "input"
+    },
+    {
+      "id": 2,
+      "startedAt": 1791990358821,
+      "anchor": {
+        "x": -1297,
+        "y": 455,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 407,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791990358855
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791990358872
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791990358873
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1791990367740
+        },
+        {
+          "stage": "first-transcript",
+          "at": 1791990371868
+        },
+        {
+          "stage": "keys-released",
+          "at": 1791990422892
+        }
+      ],
+      "pillVisible": true,
+      "recordingAt": 1791990367775,
+      "firstPreviewAt": 1791990371914,
+      "firstPreviewMs": 13093,
+      "previewCount": 9,
+      "previewWhileHeld": true,
+      "previewCharacters": 79,
+      "releasedAt": 1791990422891,
+      "hiddenOnRelease": true,
+      "cancelled": true,
+      "cancelledAt": 1791990424250,
+      "cancelReason": "input"
+    },
+    {
+      "id": 3,
+      "startedAt": 1791990446315,
+      "anchor": {
+        "x": -1297,
+        "y": 455,
+        "width": 1,
+        "height": 22
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 407,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791990446358
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791990446385
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791990446386
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1791990449657
+        },
+        {
+          "stage": "keys-released",
+          "at": 1791990453825
+        },
+        {
+          "stage": "first-transcript",
+          "at": 1791990455609
+        },
+        {
+          "stage": "audio-drained",
+          "at": 1791990457183
+        },
+        {
+          "stage": "fallback-started",
+          "at": 1791990473070
+        }
+      ],
+      "pillVisible": true,
+      "recordingAt": 1791990449730,
+      "releasedAt": 1791990453824,
+      "hiddenOnRelease": true,
+      "firstPreviewAt": 1791990455652,
+      "firstPreviewMs": 9337,
+      "previewCount": 4,
+      "previewWhileHeld": false,
+      "previewCharacters": 29,
+      "cancelled": true,
+      "cancelledAt": 1791990480142,
+      "cancelReason": "input"
+    },
+    {
+      "id": 4,
+      "startedAt": 1791990485530,
+      "anchor": {
+        "x": -1078,
+        "y": 455,
+        "width": 1,
+        "height": 22
+      },
+      "pillBounds": {
+        "x": -1133,
+        "y": 407,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791990485569
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791990485594
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791990485594
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1791990488303
+        },
+        {
+          "stage": "keys-released",
+          "at": 1791990490546
+        },
+        {
+          "stage": "audio-drained",
+          "at": 1791990493332
+        },
+        {
+          "stage": "first-transcript",
+          "at": 1791990493392
+        }
+      ],
+      "pillVisible": true,
+      "recordingAt": 1791990488472,
+      "releasedAt": 1791990490545,
+      "hiddenOnRelease": true,
+      "firstPreviewAt": 1791990493428,
+      "firstPreviewMs": 7898,
+      "previewCount": 1,
+      "previewWhileHeld": false,
+      "previewCharacters": 7,
+      "cancelled": true,
+      "cancelledAt": 1791990496811,
+      "cancelReason": "input"
+    },
+    {
+      "id": 5,
+      "startedAt": 1791990496978,
+      "anchor": {
+        "x": -1012,
+        "y": 455,
+        "width": 1,
+        "height": 22
+      },
+      "pillBounds": {
+        "x": -1067,
+        "y": 407,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1791990497011
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1791990497027
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1791990497700
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1791990499813
+        },
+        {
+          "stage": "first-transcript",
+          "at": 1791990501053
+        },
+        {
+          "stage": "keys-released",
+          "at": 1791990502885
+        },
+        {
+          "stage": "audio-drained",
+          "at": 1791990505772
+        },
+        {
+          "stage": "fallback-started",
+          "at": 1791990521811
+        },
+        {
+          "stage": "fallback-finished",
+          "at": 1791990531438
+        }
+      ],
+      "pillVisible": true,
+      "recordingAt": 1791990500005,
+      "firstPreviewAt": 1791990501097,
+      "firstPreviewMs": 4119,
+      "previewCount": 3,
+      "previewWhileHeld": true,
+      "previewCharacters": 0,
+      "releasedAt": 1791990502884,
+      "hiddenOnRelease": true,
+      "characters": 0,
+      "submitRequested": true,
+      "insertedAt": 1791990531479,
+      "releaseToInsertMs": 28595,
+      "snapshot": {
+        "characters": {
+          "rich": 36,
+          "plain": 0,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 1,
+          "plain": 0,
+          "multiline": 0
+        },
+        "typingMetrics": {
+          "keyDown": 15,
+          "controlDown": 0,
+          "metaDown": 0,
+          "inputEvents": 14,
+          "insertedCharacters": 13
+        }
+      },
+      "transport": [
+        {
+          "at": 1791990501054,
+          "type": "input_transcript.added",
+          "start": 800,
+          "end": 1000,
+          "characters": 8,
+          "command": false
+        },
+        {
+          "at": 1791990501054,
+          "type": "turn.created",
+          "start": 800,
+          "end": 1000,
+          "characters": 8,
+          "command": false
+        },
+        {
+          "at": 1791990501178,
+          "type": "input_transcript.added",
+          "start": 1000,
+          "end": 1200,
+          "characters": 6,
+          "command": false
+        },
+        {
+          "at": 1791990504390,
+          "type": "input_transcript.added",
+          "start": 4200,
+          "end": 4400,
+          "characters": 1,
+          "command": false
+        },
+        {
+          "at": 1791990505001,
+          "type": "input_transcript.added",
+          "start": 4800,
+          "end": 5000,
+          "characters": 4,
+          "command": false
+        },
+        {
+          "at": 1791990505596,
+          "type": "input_transcript.added",
+          "start": 5400,
+          "end": 5600,
+          "characters": 8,
+          "command": false
+        },
+        {
+          "at": 1791990529918,
+          "type": "input_transcript.added",
+          "start": 5400,
+          "end": 5600,
+          "characters": 5,
+          "command": false
+        },
+        {
+          "at": 1791990529918,
+          "type": "turn.created",
+          "start": 5400,
+          "end": 5600,
+          "characters": 5,
+          "command": false
+        },
+        {
+          "at": 1791990530506,
+          "type": "input_transcript.added",
+          "start": 6000,
+          "end": 6200,
+          "characters": 8,
+          "command": false
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "startedAt": 1792001550522,
+      "anchor": {
+        "x": -1297,
+        "y": 598,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1352,
+        "y": 550,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1792001550649
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1792001550686
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1792001550687
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1792001552889
+        },
+        {
+          "stage": "first-transcript",
+          "at": 1792001560720
+        },
+        {
+          "stage": "keys-released",
+          "at": 1792001561843
+        },
+        {
+          "stage": "audio-drained",
+          "at": 1792001564112
+        },
+        {
+          "stage": "fallback-started",
+          "at": 1792001579998
+        },
+        {
+          "stage": "fallback-finished",
+          "at": 1792001595509
+        }
+      ],
+      "pillVisible": true,
+      "recordingAt": 1792001553054,
+      "firstPreviewAt": 1792001560795,
+      "firstPreviewMs": 10273,
+      "previewCount": 5,
+      "previewWhileHeld": true,
+      "previewCharacters": 28,
+      "releasedAt": 1792001561841,
+      "hiddenOnRelease": true,
+      "characters": 28,
+      "submitRequested": true,
+      "insertedAt": 1792001595545,
+      "releaseToInsertMs": 33704,
+      "snapshot": {
+        "characters": {
+          "rich": 36,
+          "plain": 28,
+          "multiline": 0
+        },
+        "enterCounts": {
+          "rich": 1,
+          "plain": 1,
+          "multiline": 0
+        },
+        "typingMetrics": {
+          "keyDown": 31,
+          "controlDown": 0,
+          "metaDown": 0,
+          "inputEvents": 30,
+          "insertedCharacters": 29
+        }
+      },
+      "transport": [
+        {
+          "at": 1792001560719,
+          "type": "input_transcript.added",
+          "start": 7400,
+          "end": 7600,
+          "characters": 8,
+          "command": false
+        },
+        {
+          "at": 1792001560720,
+          "type": "turn.created",
+          "start": 7400,
+          "end": 7600,
+          "characters": 8,
+          "command": false
+        },
+        {
+          "at": 1792001561303,
+          "type": "input_transcript.added",
+          "start": 8000,
+          "end": 8200,
+          "characters": 11,
+          "command": false
+        },
+        {
+          "at": 1792001561941,
+          "type": "input_transcript.added",
+          "start": 8600,
+          "end": 8800,
+          "characters": 10,
+          "command": false
+        },
+        {
+          "at": 1792001562495,
+          "type": "input_transcript.added",
+          "start": 9200,
+          "end": 9400,
+          "characters": 6,
+          "command": false
+        },
+        {
+          "at": 1792001562894,
+          "type": "input_transcript.added",
+          "start": 9600,
+          "end": 9800,
+          "characters": 8,
+          "command": false
+        },
+        {
+          "at": 1792001590649,
+          "type": "input_transcript.added",
+          "start": 8000,
+          "end": 8200,
+          "characters": 8,
+          "command": false
+        },
+        {
+          "at": 1792001590649,
+          "type": "turn.created",
+          "start": 8000,
+          "end": 8200,
+          "characters": 8,
+          "command": false
+        },
+        {
+          "at": 1792001591030,
+          "type": "input_transcript.added",
+          "start": 8400,
+          "end": 8600,
+          "characters": 11,
+          "command": false
+        },
+        {
+          "at": 1792001591817,
+          "type": "input_transcript.added",
+          "start": 9200,
+          "end": 9400,
+          "characters": 10,
+          "command": false
+        },
+        {
+          "at": 1792001592435,
+          "type": "input_transcript.added",
+          "start": 9800,
+          "end": 10000,
+          "characters": 5,
+          "command": false
+        },
+        {
+          "at": 1792001592905,
+          "type": "input_transcript.added",
+          "start": 10200,
+          "end": 10400,
+          "characters": 8,
+          "command": false
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "startedAt": 1792001610963,
+      "anchor": {
+        "x": -1562,
+        "y": 712,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1617,
+        "y": 664,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1792001611041
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1792001611072
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1792001611074
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1792001613306
+        },
+        {
+          "stage": "first-transcript",
+          "at": 1792001619433
+        },
+        {
+          "stage": "keys-released",
+          "at": 1792001628183
+        },
+        {
+          "stage": "audio-drained",
+          "at": 1792001630562
+        },
+        {
+          "stage": "provider-final",
+          "at": 1792001632851
+        }
+      ],
+      "pillVisible": true,
+      "recordingAt": 1792001613506,
+      "firstPreviewAt": 1792001619516,
+      "firstPreviewMs": 8553,
+      "previewCount": 31,
+      "previewWhileHeld": true,
+      "previewCharacters": 198,
+      "releasedAt": 1792001628181,
+      "hiddenOnRelease": true,
+      "characters": 198,
+      "submitRequested": false,
+      "insertedAt": 1792001632860,
+      "releaseToInsertMs": 4679,
+      "snapshot": {
+        "characters": {
+          "rich": 36,
+          "plain": 28,
+          "multiline": 198
+        },
+        "enterCounts": {
+          "rich": 1,
+          "plain": 1,
+          "multiline": 0
+        },
+        "typingMetrics": {
+          "keyDown": 198,
+          "controlDown": 0,
+          "metaDown": 0,
+          "inputEvents": 198,
+          "insertedCharacters": 198
+        }
+      },
+      "transport": [
+        {
+          "at": 1792001619432,
+          "type": "input_transcript.added",
+          "start": 5600,
+          "end": 5800,
+          "characters": 13,
+          "command": false
+        },
+        {
+          "at": 1792001619435,
+          "type": "turn.created",
+          "start": 5600,
+          "end": 5800,
+          "characters": 13,
+          "command": false
+        },
+        {
+          "at": 1792001619595,
+          "type": "input_transcript.added",
+          "start": 5800,
+          "end": 6000,
+          "characters": 4,
+          "command": false
+        },
+        {
+          "at": 1792001620182,
+          "type": "input_transcript.added",
+          "start": 6400,
+          "end": 6600,
+          "characters": 3,
+          "command": false
+        },
+        {
+          "at": 1792001620605,
+          "type": "input_transcript.added",
+          "start": 6800,
+          "end": 7000,
+          "characters": 3,
+          "command": false
+        },
+        {
+          "at": 1792001621118,
+          "type": "input_transcript.added",
+          "start": 7200,
+          "end": 7400,
+          "characters": 5,
+          "command": false
+        },
+        {
+          "at": 1792001621272,
+          "type": "input_transcript.added",
+          "start": 7400,
+          "end": 7600,
+          "characters": 3,
+          "command": false
+        },
+        {
+          "at": 1792001621497,
+          "type": "input_transcript.added",
+          "start": 7600,
+          "end": 7800,
+          "characters": 4,
+          "command": false
+        },
+        {
+          "at": 1792001622093,
+          "type": "input_transcript.added",
+          "start": 8200,
+          "end": 8400,
+          "characters": 10,
+          "command": false
+        },
+        {
+          "at": 1792001622192,
+          "type": "input_transcript.added",
+          "start": 8400,
+          "end": 8600,
+          "characters": 7,
+          "command": false
+        },
+        {
+          "at": 1792001622982,
+          "type": "input_transcript.added",
+          "start": 9200,
+          "end": 9400,
+          "characters": 10,
+          "command": false
+        },
+        {
+          "at": 1792001623677,
+          "type": "input_transcript.added",
+          "start": 9800,
+          "end": 10000,
+          "characters": 5,
+          "command": false
+        },
+        {
+          "at": 1792001623811,
+          "type": "input_transcript.added",
+          "start": 10000,
+          "end": 10200,
+          "characters": 4,
+          "command": false
+        },
+        {
+          "at": 1792001624180,
+          "type": "input_transcript.added",
+          "start": 10400,
+          "end": 10600,
+          "characters": 9,
+          "command": false
+        },
+        {
+          "at": 1792001624618,
+          "type": "input_transcript.added",
+          "start": 10800,
+          "end": 11000,
+          "characters": 7,
+          "command": false
+        },
+        {
+          "at": 1792001625026,
+          "type": "input_transcript.added",
+          "start": 11200,
+          "end": 11400,
+          "characters": 9,
+          "command": false
+        },
+        {
+          "at": 1792001625172,
+          "type": "input_transcript.added",
+          "start": 11400,
+          "end": 11600,
+          "characters": 5,
+          "command": false
+        },
+        {
+          "at": 1792001625982,
+          "type": "input_transcript.added",
+          "start": 12200,
+          "end": 12400,
+          "characters": 10,
+          "command": false
+        },
+        {
+          "at": 1792001626773,
+          "type": "input_transcript.added",
+          "start": 13000,
+          "end": 13200,
+          "characters": 4,
+          "command": false
+        },
+        {
+          "at": 1792001627187,
+          "type": "input_transcript.added",
+          "start": 13400,
+          "end": 13600,
+          "characters": 9,
+          "command": false
+        },
+        {
+          "at": 1792001627649,
+          "type": "input_transcript.added",
+          "start": 13800,
+          "end": 14000,
+          "characters": 8,
+          "command": false
+        },
+        {
+          "at": 1792001627841,
+          "type": "input_transcript.added",
+          "start": 14000,
+          "end": 14200,
+          "characters": 5,
+          "command": false
+        },
+        {
+          "at": 1792001628042,
+          "type": "input_transcript.added",
+          "start": 14200,
+          "end": 14400,
+          "characters": 5,
+          "command": false
+        },
+        {
+          "at": 1792001628244,
+          "type": "input_transcript.added",
+          "start": 14400,
+          "end": 14600,
+          "characters": 4,
+          "command": false
+        },
+        {
+          "at": 1792001628382,
+          "type": "input_transcript.added",
+          "start": 14600,
+          "end": 14800,
+          "characters": 5,
+          "command": false
+        },
+        {
+          "at": 1792001628785,
+          "type": "input_transcript.added",
+          "start": 15000,
+          "end": 15200,
+          "characters": 8,
+          "command": false
+        },
+        {
+          "at": 1792001629167,
+          "type": "input_transcript.added",
+          "start": 15400,
+          "end": 15600,
+          "characters": 8,
+          "command": false
+        },
+        {
+          "at": 1792001629862,
+          "type": "input_transcript.added",
+          "start": 16000,
+          "end": 16200,
+          "characters": 13,
+          "command": false
+        },
+        {
+          "at": 1792001630034,
+          "type": "input_transcript.added",
+          "start": 16200,
+          "end": 16400,
+          "characters": 5,
+          "command": false
+        },
+        {
+          "at": 1792001630409,
+          "type": "input_transcript.added",
+          "start": 16600,
+          "end": 16800,
+          "characters": 7,
+          "command": false
+        },
+        {
+          "at": 1792001630812,
+          "type": "input_transcript.added",
+          "start": 17000,
+          "end": 17200,
+          "characters": 6,
+          "command": false
+        },
+        {
+          "at": 1792001631392,
+          "type": "input_transcript.added",
+          "start": 17600,
+          "end": 17800,
+          "characters": 1,
+          "command": false
+        },
+        {
+          "at": 1792001632335,
+          "type": "turn.done",
+          "start": 5600,
+          "end": 18600,
+          "characters": 199,
+          "command": false
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "startedAt": 1792001633222,
+      "anchor": {
+        "x": -1276,
+        "y": 761,
+        "width": 1,
+        "height": 23
+      },
+      "pillBounds": {
+        "x": -1331,
+        "y": 713,
+        "width": 320,
+        "height": 100
+      },
+      "stages": [
+        {
+          "stage": "microphone-ready",
+          "at": 1792001633299
+        },
+        {
+          "stage": "capture-ready",
+          "at": 1792001633327
+        },
+        {
+          "stage": "provider-opening",
+          "at": 1792001633966
+        },
+        {
+          "stage": "provider-ready",
+          "at": 1792001637478
+        },
+        {
+          "stage": "keys-released",
+          "at": 1792001639569
+        },
+        {
+          "stage": "audio-drained",
+          "at": 1792001643831
+        },
+        {
+          "stage": "provider-empty",
+          "at": 1792001658833
+        },
+        {
+          "stage": "fallback-started",
+          "at": 1792001660676
+        }
+      ],
+      "pillVisible": true,
+      "recordingAt": 1792001637619,
+      "releasedAt": 1792001639568,
+      "hiddenOnRelease": true,
+      "cancelled": true,
+      "cancelledAt": 1792001664882,
+      "cancelReason": "input"
+    }
+  ],
+  "services": "existing Breadboard",
+  "scopedToTestWindow": true,
+  "testWindow": {
+    "bounds": {
+      "x": -1360,
+      "y": 136,
+      "width": 800,
+      "height": 760
+    },
+    "displayId": 2151158276,
+    "scaleFactor": 1,
+    "visible": true,
+    "minimized": false,
+    "focused": true,
+    "alwaysOnTop": true,
+    "displays": [
+      {
+        "id": 999882014,
+        "bounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 960
+        },
+        "workArea": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 912
+        },
+        "scaleFactor": 1.25
+      },
+      {
+        "id": 2151158276,
+        "bounds": {
+          "x": -1920,
+          "y": 0,
+          "width": 1920,
+          "height": 1080
+        },
+        "workArea": {
+          "x": -1920,
+          "y": 0,
+          "width": 1920,
+          "height": 1032
+        },
+        "scaleFactor": 1
+      }
+    ]
+  },
+  "nativeReady": true,
+  "provider": "chatgpt",
+  "resumesOpenVoice": true,
+  "pid": 25516,
+  "origin": "http://127.0.0.1:49837",
+  "closedAt": "2026-10-15T04:33:00.041Z"
+}

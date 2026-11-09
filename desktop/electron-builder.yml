@@ -16,13 +16,17 @@ files:
   - dist/**/*
   - "!dist/native/windows-dictation-*.previous.exe"
   - "!dist/native/windows-dictation-*.new.exe"
+  - "!dist/native/windows-visible-region-*.previous.exe"
+  - "!dist/native/windows-visible-region-*.new.exe"
   - package.json
   - "!node_modules/**/*"
 
 asar: true
 asarUnpack:
+  - dist/native/vscode-dock.exe
   - dist/native/windows-input.exe
   - dist/native/windows-dictation.exe
+  - dist/native/windows-visible-region.exe
 compression: normal
 
 # All services, runtimes and read-only assets ship as plain resources (not

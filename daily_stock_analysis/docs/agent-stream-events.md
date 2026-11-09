@@ -10,6 +10,17 @@ This document records the progress-event contract used by:
 The endpoint still streams Server-Sent Events (`text/event-stream`) where each
 SSE payload is a JSON object with a top-level `type` field.
 
+## Request data scope
+
+Both `POST /api/v1/agent/chat` and `POST /api/v1/agent/chat/stream` accept
+the optional boolean `allow_external_data` (default `true`). Set it to
+`false` when a request must reason only from supplied figures or documents.
+The request receives an empty, private tool registry and explicit supplied-data
+instructions. The shared tool catalogue is unchanged, so other and later requests
+retain normal market-data retrieval. This applies to single-agent and multi-agent
+Chat factories and does not change event or response formats. Breadboard passes
+`false` for an explicit instruction not to browse or retrieve outside evidence.
+
 ## Compatibility Boundary
 
 The event changes are additive. Existing clients can keep consuming the legacy

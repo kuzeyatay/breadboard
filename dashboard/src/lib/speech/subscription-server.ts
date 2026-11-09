@@ -53,11 +53,13 @@ export async function voiceBridgeFetch(
 }
 
 export async function subscriptionBridge(userId: number, suffix: string, init: RequestInit = {}): Promise<Response> {
+  const started = performance.now();
   const response = await voiceBridgeFetch(userId, suffix, init);
   if (response.status === 404) throw new RouteError(503, "Restart Breadboard to load the subscription voice service.");
   const body = await response.json().catch(() => null);
   if (!response.ok) throw new RouteError(response.status, body?.error || "Subscription voice could not connect.");
-  return Response.json(body, { headers: { "Cache-Control": "no-store" } });
+  const timings = [response.headers.get('Server-Timing'), `voice_proxy;dur=${(performance.now() - started).toFixed(2)}`].filter(Boolean).join(', ');
+  return Response.json(body, { headers: { "Cache-Control": "no-store", 'Server-Timing': timings } });
 }
 
 export async function subscriptionStatus(userId: number): Promise<SpeechCredentialStatus> {

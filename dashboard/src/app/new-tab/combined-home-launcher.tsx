@@ -2,11 +2,14 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ListTodo, Settings, Timer, UsersRound } from "lucide-react";
+import VSCodeIcon from "@/app/components/vscode-icon";
 import BrowserHomeAccessories from "@/app/browser/browser-home-accessories";
 import SavedBrowserBookmarksBar from "@/app/browser/browser-bookmarks-bar";
 import { BrowserQuickLinks } from "@/app/browser/browser-home-widgets";
 import NavigationLink from "@/app/components/navigation-link";
 import VoiceShortcut from "@/app/components/voice-shortcut";
+import GestureShortcut from "@/app/components/gesture-shortcut";
+import ScreenTimeShortcut from "@/app/components/screen-time-shortcut";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
 import { useStartupLoading } from "@/app/components/startup-readiness";
 import { cancelNavigationProgress, startNavigationProgress } from "@/app/components/navigation-progress";
@@ -31,8 +34,9 @@ export interface CombinedHomeData {
 
 const PLACES = [
   { href: "/plan", label: "Plan", icon: ListTodo },
+  { href: "/code", label: "Code", icon: VSCodeIcon },
   { href: "/buzz", label: "Organization", icon: UsersRound },
-  { href: "/pomodoro", label: "Work Timer", icon: Timer },
+  { href: "/pomodoro", label: "Timer", icon: Timer },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -118,11 +122,13 @@ export default function CombinedHomeLauncher({ data, navigation }: { data: Combi
           <NewTabSearch ownerKey={data.greetingOwnerKey} browserOwnerKey={data.widgetOwnerKey} gardens={gardens} initialHistory={data.initialSearchHistory} active={active} onSearchingChange={setSearching}>
             <nav id="new-tab-places" aria-label="Places" className={controls.places}>
               {PLACES.map(({ href, label, icon: Icon }) => (
-                <NavigationLink key={href} href={href} label={label} prefetch={false} className={controls.destinationButton}>
+                <NavigationLink key={href} href={href} label={label} newTab={href === "/code"} prefetch={false} className={controls.destinationButton}>
                   <Icon size={15} aria-hidden="true" />{label}
                 </NavigationLink>
               ))}
               <VoiceShortcut className={controls.destinationButton} errorClassName={controls.browserError} />
+              <GestureShortcut className={controls.destinationButton} />
+              <ScreenTimeShortcut className={controls.destinationButton} />
             </nav>
             <BrowserQuickLinks navigate={url => void navigate(url)} ownerKey={data.widgetOwnerKey} active={active} />
             {navigationError && <p role="alert" className={controls.browserError}>Couldn’t open this website. <button type="button" onClick={() => void navigate(navigationError)}>Try again</button></p>}

@@ -111,6 +111,7 @@ export function matraixEnv(
     NO_COLOR: "1",
     PYTHONUNBUFFERED: "1",
     PYTHONIOENCODING: "utf-8",
+    PYTHONDONTWRITEBYTECODE: "1",
   };
 }
 
@@ -160,7 +161,7 @@ export function matraixAvailability(env: NodeJS.ProcessEnv = process.env): Matra
     encoding: "utf8",
     windowsHide: true,
     timeout: PROBE_TIMEOUT_MS,
-    env: { ...env, NO_COLOR: "1", PYTHONIOENCODING: "utf-8" },
+    env: { ...env, NO_COLOR: "1", PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" },
   });
   const line = (probe.stdout ?? "").trim().split(/\r?\n/).at(-1) ?? "";
   let parsed: { event?: string; python?: string } = {};
@@ -178,7 +179,9 @@ export function matraixAvailability(env: NodeJS.ProcessEnv = process.env): Matra
       python,
       pythonVersion: "",
       bridge,
-      reason: `The MatrAIx environment is incomplete. ${detail}`.trim(),
+      reason: (probe.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
+        ? "The MatrAIx readiness check timed out. Retry status before reinstalling."
+        : `The MatrAIx environment is incomplete. ${detail || probe.error?.message || ""}`.trim(),
     };
   }
   return {

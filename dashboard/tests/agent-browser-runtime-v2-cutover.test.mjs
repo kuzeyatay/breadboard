@@ -53,6 +53,7 @@ async function loadCutoverModule() {
       name: "agent-browser-runtime-v2-stubs",
       setup(build) {
         const stub = (name) => ({ path: name, namespace: "agent-browser-runtime-v2-stub" });
+        build.onResolve({ filter: /system-prompts\/service\.ts$/ }, () => stub("system-prompts"));
         build.onResolve({ filter: /runtime-paths\.ts$/ }, () => stub("runtime-paths"));
         build.onResolve({ filter: /ui-tars\/model-provider\.ts$/ }, () => stub("model-provider"));
         build.onResolve({ filter: /supervisor-control\.ts$/ }, () => stub("supervisor-control"));
@@ -61,6 +62,7 @@ async function loadCutoverModule() {
         build.onResolve({ filter: /store\.ts$/ }, () => stub("store"));
         build.onLoad({ filter: /.*/, namespace: "agent-browser-runtime-v2-stub" }, (args) => {
           const head = `const state = () => globalThis[${JSON.stringify(stateKey)}];`;
+          if (args.path === "system-prompts") return { loader: "js", contents: `${head} export const systemPromptText = (_id, userId) => state().systemPrompt ?? "PROMPT_USER_" + userId; export const renderSystemPrompt = systemPromptText;` };
           if (args.path === "runtime-paths") {
             return { loader: "js", contents: `${head} export const dashboardDataDir = () => state().dataRoot;` };
           }
@@ -76,6 +78,7 @@ async function loadCutoverModule() {
               contents: `${head}
                 export const activeProfileDir = () => state().profile;
                 export const resolveBrowserExecutable = () => state().browser;
+                export const resolveIsolatedBrowserExecutable = () => state().browser;
               `,
             };
           }
@@ -288,6 +291,7 @@ test("Next submits exact scope-free Runtime authority with stable client idempot
       state.submissions[0].submission.idempotencyKey,
     );
     assert.equal(state.submissions[0].submission.requestPayload.task, "Open example.com");
+    assert.equal(state.submissions[0].submission.requestPayload.systemPrompt, "PROMPT_USER_7");
     assert.equal(state.submissions[0].submission.requestPayload.modelBaseUrl, "http://127.0.0.1:43120");
     for (const field of ["userId", "gardenId", "conversationId", "jobId", "requestId"]) {
       assert.equal(Object.hasOwn(state.submissions[0].submission.requestPayload, field), false);

@@ -1,3 +1,4 @@
+import { withSystemPromptContext } from "../system-prompts/service.ts";
 // Bridge from the transcription pipeline into Breadboard's existing source
 // ingestion: the same writeDocumentKnowledge flow used by uploads and URL
 // imports registers the transcript Markdown under sources/, creates concept
@@ -80,6 +81,7 @@ export function resolveCollisionFreeTitle(input: {
 export async function ingestTranscriptSource(
   input: TranscriptIngestInput,
 ): Promise<TranscriptIngestResult> {
+  return withSystemPromptContext(input.userId, async () => {
   const client = createChatmockClient();
   // Bind the whole ingest to the user's configured model. Sending ChatMock's
   // `default` sentinel would let its availability failover choose a different
@@ -138,6 +140,8 @@ export async function ingestTranscriptSource(
     sourceTitle: saved.sourceTitle,
     wordCount: saved.wordCount,
   };
+
+  });
 }
 
 /**

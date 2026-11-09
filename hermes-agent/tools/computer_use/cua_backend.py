@@ -1531,6 +1531,17 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # The backend itself
 # ---------------------------------------------------------------------------
 
+class _EndedDriverSession(RuntimeError):
+    """An owned logical session ended while its MCP transport remained usable."""
+
+
+def _is_ended_driver_session(out: Dict[str, Any]) -> bool:
+    message = out.get("data")
+    return (out.get("isError") is True and isinstance(message, str)
+            and message.strip().removeprefix("Error: ").lower() ==
+            "this session has ended; call start_session explicitly to reuse its label")
+
+
 class CuaDriverBackend(ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
@@ -1538,6 +1549,7 @@ class CuaDriverBackend(ComputerUseBackend):
         self._bridge = _AsyncBridge()
         self._session = _CuaDriverSession(self._bridge)
         # Sticky context — updated by capture(), used by action tools.
+        self._target_generation = 0
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
         self._last_app: Optional[str] = None  # last app name targeted via capture/focus_app
@@ -1650,8 +1662,16 @@ class CuaDriverBackend(ComputerUseBackend):
             return False
         return cua_driver_binary_available()
 
+    def current_input_target(self) -> Optional[Dict[str, int]]:
+        """Report the exact cached native identity used by input actions."""
+        if self._active_pid is None or self._active_window_id is None:
+            return None
+        return {"pid": self._active_pid, "window_id": self._active_window_id,
+                "generation": self._target_generation}
+
     def _clear_active_target(self) -> None:
         """Forget a capture/focus target so a failed lookup cannot misroute input."""
+        self._target_generation += 1
         self._active_pid = None
         self._active_window_id = None
         self._last_app = None
@@ -1672,6 +1692,22 @@ class CuaDriverBackend(ComputerUseBackend):
             png_bytes_len=0,
         )
 
+    def _read_with_session_recovery(self, read):
+        """Restore only our logical session, then repeat one fresh observation.
+
+        Transport reconnection is a separate concern. Never use this wrapper
+        for input: a click or Print with an uncertain result must not replay.
+        """
+        try:
+            return read()
+        except _EndedDriverSession:
+            self._clear_active_target()
+            started = self._session.call_tool("start_session", {"session": self._session_id})
+            if started.get("isError") is not False:
+                raise RuntimeError(f"cua-driver start_session failed: {started.get('data')}")
+            # Deliberately outside the try: another ended result is terminal.
+            return read()
+
     def _call_capture_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Call a capture-stage tool and disarm state on transport or logical failure."""
         try:
@@ -1682,6 +1718,10 @@ class CuaDriverBackend(ComputerUseBackend):
         if out.get("isError") is True:
             message = out.get("data")
             self._clear_active_target()
+            if (name in {"list_windows", "list_apps", "get_window_state", "screenshot"}
+                    and args.get("session") == self._session_id
+                    and _is_ended_driver_session(out)):
+                raise _EndedDriverSession(str(message))
             raise RuntimeError(
                 f"cua-driver {name} failed"
                 + (f": {message}" if isinstance(message, str) and message else "")
@@ -1752,7 +1792,9 @@ class CuaDriverBackend(ComputerUseBackend):
             return direct_exact
 
         try:
-            running_apps = self.list_apps()
+            running_apps = self._list_apps_once()
+        except _EndedDriverSession:
+            raise
         except Exception as exc:
             # A title can still be the only usable identity on X11 when app
             # enumeration is unavailable, so retain the constrained title
@@ -1811,6 +1853,17 @@ class CuaDriverBackend(ComputerUseBackend):
 
     # ── Capture ────────────────────────────────────────────────────
     def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult:
+        return self._read_with_session_recovery(
+            lambda: self._capture_once(mode, app, pid, window_id),
+        )
+
+    def _capture_once(
         self,
         mode: str = "som",
         app: Optional[str] = None,
@@ -1924,6 +1977,7 @@ class CuaDriverBackend(ComputerUseBackend):
             app_requested=bool(app),
             exact_target=pid is not None or window_id is not None,
         )
+        self._target_generation += 1
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         # Tokens belong to the prior window snapshot. Disarm them before any
@@ -2394,7 +2448,10 @@ class CuaDriverBackend(ComputerUseBackend):
 
     # ── Introspection ──────────────────────────────────────────────
     def list_apps(self) -> List[Dict[str, Any]]:
-        out = self._session.call_tool("list_apps", {"session": self._session_id})
+        return self._read_with_session_recovery(self._list_apps_once)
+
+    def _list_apps_once(self) -> List[Dict[str, Any]]:
+        out = self._call_capture_tool("list_apps", {"session": self._session_id})
         structured = out.get("structuredContent")
         if isinstance(structured, dict) and isinstance(structured.get("apps"), list):
             return structured["apps"]
@@ -2416,9 +2473,12 @@ class CuaDriverBackend(ComputerUseBackend):
         return []
 
     def list_windows(self) -> List[Dict[str, Any]]:
-        return self._load_windows()
+        return self._read_with_session_recovery(self._load_windows)
 
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
+        return self._read_with_session_recovery(lambda: self._focus_app_once(app))
+
+    def _focus_app_once(self, app: str) -> ActionResult:
         """Target an app for subsequent actions without stealing system focus.
 
         cua-driver background-automation never needs to bring a window to the
@@ -2444,6 +2504,7 @@ class CuaDriverBackend(ComputerUseBackend):
         # list_windows returns "計算機").
         target = matched[0] if matched else None
         if target:
+            self._target_generation += 1
             self._active_pid = target["pid"]
             self._active_window_id = target["window_id"]
             self._snapshot_tokens = {}
@@ -2777,6 +2838,10 @@ class CuaDriverBackend(ComputerUseBackend):
         except Exception as e:
             logger.exception("cua-driver %s call failed", name)
             return ActionResult(ok=False, action=name, message=f"cua-driver error: {e}")
+        if _is_ended_driver_session(out):
+            # The action is NOT replayed. A later fresh capture may restore
+            # the logical session and must establish a new approval target.
+            self._clear_active_target()
         ok = not out["isError"]
         data = out["data"]
         structured = out.get("structuredContent") or {}

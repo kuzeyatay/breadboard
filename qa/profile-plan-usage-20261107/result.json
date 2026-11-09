@@ -1,0 +1,17 @@
+{
+  "passed": true,
+  "checks": [
+    "weekly and five-hour percentages",
+    "weekly first",
+    "zero retained",
+    "unknown never zero",
+    "reserve excluded",
+    "weekly-only hides five-hour",
+    "refresh preserves last reading",
+    "catalog retry and empty state",
+    "read-only refresh",
+    "mobile no overflow",
+    "no browser errors"
+  ],
+  "screenshots": "C:\\Users\\20252082\\breadboard\\qa\\profile-plan-usage-20261107"
+}

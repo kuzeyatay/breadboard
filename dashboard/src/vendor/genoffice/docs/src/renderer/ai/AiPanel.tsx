@@ -5,6 +5,7 @@ import { AiComposer, AiTypingIndicator, Markdown } from '@genoffice/ui'
 import type { AiSettings } from '../../shared/ipc'
 import { executeTool } from './tools'
 import { useDocumentAssistantHistory } from '@/app/components/use-document-assistant-history'
+import { notificationMessageKeys } from '@/lib/chat-notification-visibility'
 import { UnreadChatDot } from '@/app/components/hermes/history-client'
 import type { DocumentAssistantChatEntry as ChatEntry } from '@/lib/document-assistant-history-types'
 
@@ -283,7 +284,7 @@ export function AiPanel({
   const [input, setInput] = useState('')
   const [chat, setChat] = useState<ChatEntry[]>(readStoredChat)
   const [busy, setBusy] = useState(false)
-  const { error: historyError, unread } = useDocumentAssistantHistory({ artifactId: artifactIdFromLocation(), kind: 'word', chat, setChat, busy, viewing: open })
+  const { error: historyError, unread, conversationId: notificationConversationId } = useDocumentAssistantHistory({ artifactId: artifactIdFromLocation(), kind: 'word', chat, setChat, busy, viewing: open })
   const [selectionPreview, setSelectionPreview] = useState(() => selectedText(editor))
   const controllerRef = useRef<AbortController | null>(null)
   const logRef = useRef<HTMLDivElement | null>(null)
@@ -425,7 +426,8 @@ export function AiPanel({
   }
 
   return (
-    <aside className="ai-panel" style={{ width: '100%' }} aria-label="Bread document chat">
+    <aside className="ai-panel" style={{ width: '100%' }} aria-label="Bread document chat"
+      data-notification-chat={notificationConversationId ? `dashboard_terminal:${notificationConversationId}` : undefined}>
       <div ref={logRef} className="ai-chat" aria-live="polite">
         {historyError ? <div role="status" className="ai-msg-error">{historyError}</div> : null}
         {chat.length === 0 ? (
@@ -439,7 +441,8 @@ export function AiPanel({
           </div>
         ) : null}
         {chat.map((entry) => (
-          <div key={entry.id} className={`ai-msg ai-msg-${entry.role}`}>
+          <div key={entry.id} className={`ai-msg ai-msg-${entry.role}`}
+            data-notification-message={entry.role === 'assistant' ? JSON.stringify(notificationMessageKeys({ id: entry.id, entryId: entry.id })) : undefined}>
             {entry.role === 'assistant' ? <Markdown text={entry.text} /> : entry.text}
             {entry.activities && entry.activities.length > 0
               ? <ActivityReceipt activities={entry.activities} />

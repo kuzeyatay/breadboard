@@ -256,6 +256,42 @@ test("valid upload submission is sealed by Runtime without a Next temp path", as
   deps.cleanup();
 });
 
+test("keep-media-off points the job at the original file without sending bytes", async () => {
+  const deps = makeDeps();
+  deps.config.allowOriginPaths = true;
+  const originPath = path.join(deps.config.tempDir, "Lecture.mp4");
+  fs.writeFileSync(originPath, "not read by the route");
+  const post = (body) => handleCreateVideoTranscription(deps, "physics", new Request("http://x/", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+  const body = { originPath, displayName: "Week 1.mp4", retainMedia: false };
+
+  const created = await post(body);
+  assert.equal(created.status, 202);
+  const job = deps.store.getJob(created.body.job.id);
+  assert.equal(job.mediaOriginPath, originPath);
+  assert.equal(job.originalFilename, "Week 1.mp4");
+  assert.equal(job.retainMedia, false);
+  assert.equal(deps.started.upload, null);
+  assert.equal(JSON.stringify(created.body).includes(originPath), false);
+
+  const again = await post(body);
+  assert.equal(again.body.duplicate, true);
+  assert.equal(again.body.job.id, job.id);
+
+  assert.equal((await post({ ...body, retainMedia: true })).status, 400);
+  assert.equal((await post({ ...body, originPath: "Lecture.mp4" })).status, 400);
+  assert.equal((await post({ ...body, originPath: path.join(deps.config.tempDir, "gone.mp4") })).status, 404);
+  assert.equal((await post({ ...body, originPath: path.join(deps.config.tempDir, "notes.txt") })).status, 415);
+
+  deps.config.allowOriginPaths = false;
+  assert.equal((await post({ ...body, originPath: path.join(deps.config.tempDir, "other.mp4") })).status, 400);
+  assert.equal(fs.existsSync(originPath), true);
+  deps.cleanup();
+});
+
 test("MP3 audio uploads are accepted and queued for transcription", async () => {
   const deps = makeDeps();
   const result = await handleCreateVideoTranscription(

@@ -8,6 +8,7 @@
 // spoke last, throws away the only advantage of having asked five.
 
 import fs from "node:fs";
+import { restrictsExternalResearch } from "../research/scope.ts";
 import path from "node:path";
 import { repositoryRoot } from "../runtime-paths.ts";
 import type { ParticipantResult } from "./participants.ts";
@@ -129,7 +130,7 @@ export function unreachedSources(
   return [...closed];
 }
 
-function participantBlock(result: ParticipantResult): string {
+function participantBlock(result: ParticipantResult, noExternalResearch = false): string {
   const attributes = [
     `participant="${result.participant}"`,
     `status="${result.status}"`,
@@ -141,7 +142,7 @@ function participantBlock(result: ParticipantResult): string {
       : `(produced nothing: ${result.reason ?? "no reason given"})`;
   return [
     `<finding ${attributes.join(" ")}>`,
-    `<standing>${STANDING[result.participant]}</standing>`,
+    `<standing>${noExternalResearch ? "Analysis of the supplied material and local calculations only; this is not an independent source or an external research pass." : STANDING[result.participant]}</standing>`,
     body,
     "</finding>",
   ].join("\n");
@@ -162,6 +163,7 @@ export function maxResearchSynthesisPrompt(input: {
   results: readonly ParticipantResult[];
 }): string {
   const standard = answerContractStandard();
+  const noExternalResearch = input.plan.noExternalResearch ?? restrictsExternalResearch(input.plan.question);
   const completed = input.results.filter((r) => r.status === "completed");
   const absent = input.results.filter((r) => r.status !== "completed");
   const guidance = completed.find((r) => r.participant === "aris")?.output ?? "";
@@ -170,7 +172,7 @@ export function maxResearchSynthesisPrompt(input: {
   return [
     `Write one answer to <question>${input.plan.question}</question> from the findings below.`,
     "",
-    "Several research agents worked on this question in parallel, each reaching a different part of the record. Each block says which one produced it and what that kind of evidence is good for. Your job is not to concatenate them, and not to pick a favourite — it is to produce the single answer their combined evidence supports.",
+    noExternalResearch ? "The person excluded external research. Reconcile only the supplied material and local calculations. Do not introduce outside sources or imply that separate analyses independently verified the supplied claims." : "Several research agents worked on this question in parallel, each reaching a different part of the record. Each block says which one produced it and what that kind of evidence is good for. Your job is not to concatenate them, and not to pick a favourite — it is to produce the single answer their combined evidence supports.",
     "",
     "Where two participants disagree, that disagreement is a finding and belongs in the answer: say who reported what, and what would settle it. Do not average conflicting figures, do not quietly prefer the one that sounds more authoritative, and do not present a contested number as settled. Where they agree, say so once rather than three times — agreement between the indexed web and a practitioner thread is worth stating precisely because they are different kinds of source, and agreement between two participants who both read the same page is not agreement at all.",
     "",
@@ -208,7 +210,7 @@ export function maxResearchSynthesisPrompt(input: {
     "",
     absent.length
       ? `These parts of the record went unread this time: ${absent
-          .map((r) => RECORD_PART[r.participant])
+          .map((r) => noExternalResearch ? "a planned analysis of the supplied material" : RECORD_PART[r.participant])
           .join("; ")}. Say so in the answer in one plain sentence near the end, naming the part of the record in those words. Not implying coverage is not enough: a reader deciding how far to trust this needs to know that a third of it was never reached, and an answer that simply omits the gap reads as though everything was searched. Do not explain why — an uninstalled tool, a licence, a login — because that is about this machine, not about the evidence; "I could not run anything in a workspace for this question" is the whole of what the reader needs.`
       : "Every participant that was planned produced something.",
     "",
@@ -220,7 +222,7 @@ export function maxResearchSynthesisPrompt(input: {
         ].join("\n")
       : "",
     (() => {
-      const closed = unreachedSources(input.results);
+      const closed = noExternalResearch ? [] : unreachedSources(input.results);
       return closed.length
         ? `Some platforms were closed while this ran and nothing from them reached these findings: ${closed.join(", ")}. Mention this in one short sentence at the end, so the reader can tell a subject nobody discusses from a source that was simply shut — but name only the platforms a reader would expect to matter for this question (a nutrition question does not need to hear that a Chinese stock forum was closed), and fold the rest into "and some other platforms". No reasons, no apology, no paragraph.`
         : "";
@@ -237,7 +239,7 @@ export function maxResearchSynthesisPrompt(input: {
     standard,
     "",
     "<findings>",
-    findings.map(participantBlock).join("\n\n"),
+    findings.map(result => participantBlock(result, noExternalResearch)).join("\n\n"),
     "</findings>",
   ]
     .filter((section) => section !== "")

@@ -6,16 +6,12 @@ import { assistantModelVendor, formatAssistantModelName } from "@/lib/ai-models"
 import { providerUsageLink } from "@/lib/provider-usage";
 import {
   usageLimitRowsWithFiveHour,
+  usageLimitResetAt,
   usageReserveRows,
   type DisplayUsageLimitReserve,
+  type DisplayUsageLimitWindow as UsageLimitWindow,
 } from "@/lib/usage-limit-display";
 import { ReserveNotice, planLabel } from "@/app/components/usage-reserve-notice";
-
-interface UsageLimitWindow {
-  used_percent?: number;
-  window_minutes?: number;
-  resets_in_seconds?: number;
-}
 
 interface UsageLimitsPayload {
   provider?: "chatgpt" | "google" | "anthropic";
@@ -159,22 +155,16 @@ function remainingResetSeconds(
   window: UsageLimitWindow,
   now: number,
 ): number | null {
-  if (window.resets_in_seconds === undefined || !capturedAt) return null;
-  const capturedMs = Date.parse(capturedAt);
-  if (!Number.isFinite(capturedMs)) return Math.max(0, Number(window.resets_in_seconds));
-  const resetAt = capturedMs + Number(window.resets_in_seconds) * 1000;
-  return Math.max(0, Math.floor((resetAt - now) / 1000));
+  const resetAt = usageLimitResetAt(capturedAt, window);
+  return resetAt === null ? null : Math.max(0, Math.floor((resetAt - now) / 1000));
 }
 
 function resetAtDate(
   capturedAt: string | undefined,
   window: UsageLimitWindow,
-  now: number,
 ): Date | null {
-  if (window.resets_in_seconds === undefined) return null;
-  const capturedMs = capturedAt ? Date.parse(capturedAt) : Number.NaN;
-  const base = Number.isFinite(capturedMs) ? capturedMs : now;
-  return new Date(base + Number(window.resets_in_seconds) * 1000);
+  const resetAt = usageLimitResetAt(capturedAt, window);
+  return resetAt === null ? null : new Date(resetAt);
 }
 
 function formatResetAt(date: Date): string {
@@ -205,7 +195,7 @@ function UsageLimitMeter({
   const used = clampPercent(windowData.used_percent);
   const left = Math.max(0, 100 - used);
   const resetSeconds = remainingResetSeconds(capturedAt, windowData, now);
-  const resetAt = resetAtDate(capturedAt, windowData, now);
+  const resetAt = resetAtDate(capturedAt, windowData);
   const color =
     used >= 90 ? "bg-red-500" : used >= 60 ? "bg-yellow-500" : "bg-green-500";
 

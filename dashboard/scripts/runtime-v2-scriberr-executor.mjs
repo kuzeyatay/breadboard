@@ -1,15 +1,18 @@
 import { sameRuntimePath as samePath, runtimePathWithin as pathWithin } from "./runtime-v2-paths.mjs";
+import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 import { createSealedRuntimeV2QuartzPublishExecutor } from "./runtime-v2-quartz-publish-executor.mjs";
 
+const execFileAsync = promisify(execFile);
 const PROTOCOL_VERSION = 1;
-const JOB_ID = /^vtj-[a-z0-9-]{8,80}$/u;
+const JOB_ID =/^vtj-[a-z0-9-]{8,80}$/u;
 const MEDIA_EXTENSIONS = new Set([
   ".mp4", ".mov", ".mkv", ".webm", ".m4v",
   ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg",
@@ -135,7 +138,9 @@ export function validateScriberrGardenRequest(value) {
     !["transcribe", "retry", "recover"].includes(value.operation) ||
     !exactRecord(value, [
       "protocolVersion", "operation", "legacyJobId", "clusterId", "inputKind",
+      ...("originMedia" in value ? ["originMedia"] : []),
     ]) ||
+    ("originMedia" in value && value.originMedia !== true) ||
     !JOB_ID.test(value.legacyJobId) ||
     !Number.isSafeInteger(value.clusterId) || value.clusterId < 1 ||
     !["upload", "youtube"].includes(value.inputKind)
@@ -147,7 +152,7 @@ export function validateScriberrGardenRequest(value) {
 }
 
 export function expectedScriberrGardenInputCount(request) {
-  return request.operation === "transcribe" && request.inputKind === "upload" ? 1 : 0;
+  return request.operation === "transcribe" && request.inputKind === "upload" && !request.originMedia ? 1 : 0;
 }
 
 function sourceLayout(launch) {
@@ -338,6 +343,42 @@ async function sealDurableUpload(layout, launch, store, inputPath, signal) {
   store.updateJob(job.id, { mediaTempPath: destination });
 }
 
+/**
+ * An origin job has no sealed input: transcribe a temporary audio copy of the
+ * user's file, which is only ever read. Returns an error code, or null when
+ * the job is ready to run.
+ */
+async function prepareOriginAudio(layout, launch, store, job, ffmpegPath, signal) {
+  if (job.scriberrJobId || job.transcriptJson) return null;
+  if (job.mediaTempPath && fs.existsSync(job.mediaTempPath)) return null;
+  const origin = job.mediaOriginPath;
+  const metadata = fs.lstatSync(origin, { throwIfNoEntry: false });
+  if (!metadata?.isFile() || metadata.isSymbolicLink() ||
+      !MEDIA_EXTENSIONS.has(path.extname(origin).toLowerCase())) return "media_missing";
+  const jobRoot = path.join(layout.mediaRoot, job.id);
+  if (!pathWithin(layout.mediaRoot, jobRoot) || samePath(layout.mediaRoot, jobRoot)) fail("Invalid Scriberr media root.");
+  ensureDirectContainedDirectory(layout.mediaRoot, jobRoot, "Scriberr job media root");
+  const destination = path.join(jobRoot, "media.mp4");
+  const pending = path.join(jobRoot, `.media.${launch.identity.workerInstanceId}.pending`);
+  store.updateJob(job.id, { currentStage: "Extracting audio" });
+  try {
+    await execFileAsync(ffmpegPath, [
+      "-nostdin", "-v", "error", "-y", "-i", origin, "-vn", "-sn", "-dn",
+      "-ac", "1", "-c:a", "aac", "-b:a", "96k", "-f", "mp4", pending,
+    ], { signal, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+    fs.renameSync(pending, destination);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return /does not contain any stream|matches no streams/iu.test(String(error?.stderr))
+      ? "media_no_audio"
+      : "media_unsupported";
+  } finally {
+    fs.rmSync(pending, { force: true });
+  }
+  store.updateJob(job.id, { mediaTempPath: destination });
+  return null;
+}
+
 function publicCheckpoint(job) {
   return {
     operation: "transcription",
@@ -413,7 +454,18 @@ async function executeTranscription(layout, launch, signal, io, inputPath) {
       }
     }, 1_000);
     checkpointTimer.unref?.();
-    await runner.runExact(job.id, launch.request.operation === "transcribe" ? "start" : launch.request.operation);
+    const originFailure = job.mediaOriginPath
+      ? await prepareOriginAudio(layout, launch, store, job, config.ffmpegPath, signal)
+      : null;
+    if (originFailure) {
+      const { VideoTranscriptionError } = await importSource(layout, "lib/scriberr/errors.ts");
+      store.transition(job.id, "failed", {
+        errorCode: originFailure,
+        errorMessage: new VideoTranscriptionError(originFailure).userMessage,
+      });
+    } else {
+      await runner.runExact(job.id, launch.request.operation === "transcribe" ? "start" : launch.request.operation);
+    }
     if (checkpointFault) throw checkpointFault;
     publish();
     job = store.getJob(job.id);

@@ -435,6 +435,7 @@ test("Google reconnect sync uses the fresh rich model catalog", () => {
         { id: "gemini-3.7-flash-low" },
         { slug: "gemini-3.7-flash-low" },
         { slug: "internal-hidden-model", visibility: "hide" },
+        { slug: "gemini-4-argon-disabled", disabled: true, visibility: "list" },
       ],
     }),
     ["gemini-3.7-flash-high", "gemini-3.7-flash-low"],

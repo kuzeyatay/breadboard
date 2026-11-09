@@ -56,8 +56,18 @@ export default function SpotifyAmbientBackground({ theme, spotifyColors = true, 
           if (cancelled) return;
           const now = Date.now();
           const paletteAnimation = /palette/i.test((animation as CSSAnimation).animationName);
-          animation.currentTime = !paletteAnimation ? now % (duration * 2)
+          const elapsed = !paletteAnimation ? now % (duration * 2)
             : randomLayer ? now % RANDOM_AMBIENT_PERIOD_MS : Math.max(0, now - (album?.paletteAt ?? now));
+          if (animation.playState === "paused") {
+            // Retain the inactive layer without starting invisible animation work.
+            animation.currentTime = elapsed;
+          } else {
+            // Anchor running CSS animations to the shared wall clock. Seeking
+            // currentTime while a tab's first frame is pending leaves a hold
+            // time that can start late; an explicit startTime catches up on
+            // the next compositor frame, including after a hidden tab returns.
+            animation.startTime = performance.now() - elapsed;
+          }
         };
         align();
         // A newly created CSS animation may still be waiting for its first

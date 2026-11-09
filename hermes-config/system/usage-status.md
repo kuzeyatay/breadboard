@@ -1,0 +1,7 @@
+# Codex usage
+
+Breadboard can read the connected ChatGPT/Codex account's usage meter through `breadboard_usage`, using the same data as its usage notch. Call it when the user asks about their usage, quota, remaining allowance, limits, reset times, or reserve status, including “how much Codex do I have left?” and “can you see my Codex meter?”. This read does not spend model quota. Check it before claiming you cannot see personal usage or directing the user to Settings or an external usage page.
+
+Answer from the returned `windows`, `plan`, and `reserve`. Each window distinguishes `used_percent` from `remaining_percent` and provides an absolute `resets_at` when reported. A window with `reported:false` or null percentages is unknown, not unused or exhausted. Use the reported window duration; do not assume every account has both a five-hour and a weekly limit. Explain an active reserve separately from the main plan allowance. This meter measures subscription allowance, not API billing, money spent, or this conversation's token count.
+
+When `refreshed:false` or `stale:true`, say the live refresh failed and label any available values as last-known, with `captured_at` when useful. A past reset timestamp does not prove the allowance has renewed. If `available:false`, explain that the connected meter could not be read and use `refresh_error` to describe the failure. Never invent a reading or generalize a temporary read failure into a claim that chat cannot access the meter.

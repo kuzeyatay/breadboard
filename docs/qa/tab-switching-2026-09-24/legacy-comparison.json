@@ -1,0 +1,1049 @@
+{
+  "mode": "baseline",
+  "electron": "33.4.11",
+  "chromium": "130.0.6723.191",
+  "scale": 1.25,
+  "rows": [
+    {
+      "tabs": 5,
+      "samples": [
+        {
+          "controlsMs": 102.297,
+          "visibleMs": 135.256,
+          "usableMs": 203.974,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 132.874,
+          "visibleMs": 166.889,
+          "usableMs": 232.231,
+          "unexpectedSamples": 0,
+          "samples": 8,
+          "resident": false
+        },
+        {
+          "controlsMs": 69.43,
+          "visibleMs": 101.25,
+          "usableMs": 185.081,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.365,
+          "visibleMs": 135.376,
+          "usableMs": 202.597,
+          "unexpectedSamples": 0,
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 68.107,
+          "visibleMs": 100.591,
+          "usableMs": 167.754,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.814,
+          "visibleMs": 100.712,
+          "usableMs": 169.244,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 68.695,
+          "visibleMs": 100.977,
+          "usableMs": 185.405,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.475,
+          "visibleMs": 98.539,
+          "usableMs": 149.023,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.635,
+          "visibleMs": 116.952,
+          "usableMs": 216.101,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.407,
+          "visibleMs": 100.909,
+          "usableMs": 183.848,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 68.504,
+          "visibleMs": 100.78,
+          "usableMs": 183.723,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 68.67,
+          "visibleMs": 101.422,
+          "usableMs": 169.943,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.949,
+          "visibleMs": 98.302,
+          "usableMs": 166.539,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.27,
+          "visibleMs": 100.037,
+          "usableMs": 170.339,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.861,
+          "visibleMs": 100.44,
+          "usableMs": 150.798,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.636,
+          "visibleMs": 116.805,
+          "usableMs": 201.374,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.694,
+          "visibleMs": 100.945,
+          "usableMs": 182.934,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.107,
+          "visibleMs": 99.376,
+          "usableMs": 151.153,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.238,
+          "visibleMs": 116.893,
+          "usableMs": 182.664,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.46,
+          "visibleMs": 116.731,
+          "usableMs": 184.766,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.652,
+          "visibleMs": 134.107,
+          "usableMs": 182.62,
+          "unexpectedSamples": 0,
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 49.755,
+          "visibleMs": 99.089,
+          "usableMs": 183.133,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.49,
+          "visibleMs": 98.637,
+          "usableMs": 149.1,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.084,
+          "visibleMs": 99.427,
+          "usableMs": 168.065,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.603,
+          "visibleMs": 99.516,
+          "usableMs": 167.075,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.006,
+          "visibleMs": 99.367,
+          "usableMs": 149.344,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.21,
+          "visibleMs": 100.563,
+          "usableMs": 150.159,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.824,
+          "visibleMs": 99.769,
+          "usableMs": 169.05,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 49.857,
+          "visibleMs": 99.997,
+          "usableMs": 200.237,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.25,
+          "visibleMs": 116.109,
+          "usableMs": 168.676,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.647,
+          "visibleMs": 99.916,
+          "usableMs": 166.28,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.796,
+          "visibleMs": 100.836,
+          "usableMs": 169.256,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.595,
+          "visibleMs": 82.331,
+          "usableMs": 165.808,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.794,
+          "visibleMs": 117.389,
+          "usableMs": 201.443,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 50.709,
+          "visibleMs": 83.556,
+          "usableMs": 167.023,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.295,
+          "visibleMs": 99.764,
+          "usableMs": 149.928,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.501,
+          "visibleMs": 99.725,
+          "usableMs": 166.214,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.413,
+          "visibleMs": 100.585,
+          "usableMs": 150.852,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.637,
+          "visibleMs": 98.382,
+          "usableMs": 150.057,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.859,
+          "visibleMs": 100.768,
+          "usableMs": 169.049,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        }
+      ],
+      "summary": {
+        "controls": {
+          "p50": 67.27,
+          "p95": 84.635,
+          "p99": 132.874
+        },
+        "visible": {
+          "p50": 100.585,
+          "p95": 135.256,
+          "p99": 166.889
+        },
+        "usable": {
+          "p50": 169.05,
+          "p95": 203.974,
+          "p99": 232.231
+        }
+      },
+      "unexpectedPixelSamples": 0,
+      "workingSetKiB": 1933284,
+      "idleCpuPercent": 1.0709512851345893,
+      "processes": 12,
+      "cacheBudgetBytes": 0
+    },
+    {
+      "tabs": 15,
+      "samples": [
+        {
+          "controlsMs": 66.74,
+          "visibleMs": 100.625,
+          "usableMs": 183.056,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.48,
+          "visibleMs": 116.579,
+          "usableMs": 186.036,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.096,
+          "visibleMs": 115.989,
+          "usableMs": 183.022,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.277,
+          "visibleMs": 99.726,
+          "usableMs": 169.182,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 81.853,
+          "visibleMs": 114.924,
+          "usableMs": 198.548,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.987,
+          "visibleMs": 116.042,
+          "usableMs": 184.946,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.553,
+          "visibleMs": 99.405,
+          "usableMs": 183.88,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 68.157,
+          "visibleMs": 100.556,
+          "usableMs": 173.442,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.44,
+          "visibleMs": 100.186,
+          "usableMs": 169.049,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 47.818,
+          "visibleMs": 80.114,
+          "usableMs": 165.441,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 64.563,
+          "visibleMs": 98.358,
+          "usableMs": 165.534,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.289,
+          "visibleMs": 117.033,
+          "usableMs": 200.251,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 51.284,
+          "visibleMs": 83.442,
+          "usableMs": 167.845,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.873,
+          "visibleMs": 115.805,
+          "usableMs": 200.237,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 50.832,
+          "visibleMs": 83.75,
+          "usableMs": 183.704,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.052,
+          "visibleMs": 100.363,
+          "usableMs": 171.058,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 50.452,
+          "visibleMs": 83.667,
+          "usableMs": 166.845,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.88,
+          "visibleMs": 99.318,
+          "usableMs": 170.605,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.838,
+          "visibleMs": 99.002,
+          "usableMs": 167.25,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 85.305,
+          "visibleMs": 116.954,
+          "usableMs": 186.699,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.238,
+          "visibleMs": 133.93,
+          "usableMs": 183.962,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 99.6,
+          "visibleMs": 132.915,
+          "usableMs": 202.488,
+          "unexpectedSamples": 0,
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.294,
+          "visibleMs": 99.542,
+          "usableMs": 166.849,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.094,
+          "visibleMs": 100.183,
+          "usableMs": 169.125,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 50.192,
+          "visibleMs": 82.348,
+          "usableMs": 166.445,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 98.158,
+          "visibleMs": 115.053,
+          "usableMs": 184.132,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 51.464,
+          "visibleMs": 84.419,
+          "usableMs": 168.142,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 102.351,
+          "visibleMs": 170.419,
+          "usableMs": 219.787,
+          "unexpectedSamples": 0,
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.408,
+          "visibleMs": 116.707,
+          "usableMs": 183.653,
+          "unexpectedSamples": 0,
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.923,
+          "visibleMs": 152.786,
+          "usableMs": 217.438,
+          "unexpectedSamples": 0,
+          "samples": 8,
+          "resident": false
+        },
+        {
+          "controlsMs": 50.99,
+          "visibleMs": 84.183,
+          "usableMs": 150.726,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.835,
+          "visibleMs": 134.001,
+          "usableMs": 203.336,
+          "unexpectedSamples": 0,
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 51.234,
+          "visibleMs": 84.546,
+          "usableMs": 167.592,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 91.105,
+          "visibleMs": 123.527,
+          "usableMs": 195.611,
+          "unexpectedSamples": 0,
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.876,
+          "visibleMs": 99.289,
+          "usableMs": 168.502,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.073,
+          "visibleMs": 133.087,
+          "usableMs": 201.935,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 50.133,
+          "visibleMs": 83.774,
+          "usableMs": 167.254,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.513,
+          "visibleMs": 99.127,
+          "usableMs": 171.804,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 50.181,
+          "visibleMs": 83.973,
+          "usableMs": 183.132,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.891,
+          "visibleMs": 132.877,
+          "usableMs": 203.409,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        }
+      ],
+      "summary": {
+        "controls": {
+          "p50": 66.74,
+          "p95": 100.835,
+          "p99": 102.351
+        },
+        "visible": {
+          "p50": 100.186,
+          "p95": 134.001,
+          "p99": 170.419
+        },
+        "usable": {
+          "p50": 183.022,
+          "p95": 203.409,
+          "p99": 219.787
+        }
+      },
+      "unexpectedPixelSamples": 0,
+      "workingSetKiB": 4195600,
+      "idleCpuPercent": 1.282796222392862,
+      "processes": 27,
+      "cacheBudgetBytes": 0
+    },
+    {
+      "tabs": 30,
+      "samples": [
+        {
+          "controlsMs": 68.362,
+          "visibleMs": 100.648,
+          "usableMs": 171.128,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.847,
+          "visibleMs": 100.871,
+          "usableMs": 166.616,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.82,
+          "visibleMs": 116.379,
+          "usableMs": 201.973,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 50.153,
+          "visibleMs": 82.737,
+          "usableMs": 183.275,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.045,
+          "visibleMs": 134.317,
+          "usableMs": 202.671,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 49.851,
+          "visibleMs": 81.755,
+          "usableMs": 151.934,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.554,
+          "visibleMs": 99.64,
+          "usableMs": 188.081,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.79,
+          "visibleMs": 83.452,
+          "usableMs": 183.854,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.834,
+          "visibleMs": 117.884,
+          "usableMs": 204.352,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.879,
+          "visibleMs": 116.838,
+          "usableMs": 184.988,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.882,
+          "visibleMs": 101.194,
+          "usableMs": 169.537,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 50.492,
+          "visibleMs": 84.058,
+          "usableMs": 183.376,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 68.119,
+          "visibleMs": 100.487,
+          "usableMs": 172.711,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.499,
+          "visibleMs": 100.183,
+          "usableMs": 168.251,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 99.832,
+          "visibleMs": 118.969,
+          "usableMs": 204.092,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 50.63,
+          "visibleMs": 83.886,
+          "usableMs": 166.452,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.66,
+          "visibleMs": 133.951,
+          "usableMs": 219.165,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 51.301,
+          "visibleMs": 84.066,
+          "usableMs": 150.577,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 85.066,
+          "visibleMs": 133.677,
+          "usableMs": 202.887,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.994,
+          "visibleMs": 83.411,
+          "usableMs": 183.241,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 98.967,
+          "visibleMs": 98.968,
+          "usableMs": 168.479,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 49.969,
+          "visibleMs": 83.798,
+          "usableMs": 153.537,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 102.031,
+          "visibleMs": 118.604,
+          "usableMs": 186.606,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.933,
+          "visibleMs": 117.465,
+          "usableMs": 186.335,
+          "unexpectedSamples": 0,
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.771,
+          "visibleMs": 99.293,
+          "usableMs": 170.296,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.065,
+          "visibleMs": 98.574,
+          "usableMs": 169.019,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.084,
+          "visibleMs": 116.902,
+          "usableMs": 185.635,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 99.374,
+          "visibleMs": 115.484,
+          "usableMs": 200.107,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 101.933,
+          "visibleMs": 151.28,
+          "usableMs": 222.574,
+          "unexpectedSamples": 0,
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 49.485,
+          "visibleMs": 82.702,
+          "usableMs": 150.63,
+          "unexpectedSamples": 0,
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.553,
+          "visibleMs": 117.715,
+          "usableMs": 201.979,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 64.183,
+          "visibleMs": 97.398,
+          "usableMs": 164.195,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.239,
+          "visibleMs": 116.453,
+          "usableMs": 202.588,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.498,
+          "visibleMs": 83.499,
+          "usableMs": 167.243,
+          "unexpectedSamples": 0,
+          "samples": 3,
+          "resident": false
+        },
+        {
+          "controlsMs": 85.93,
+          "visibleMs": 135.571,
+          "usableMs": 186.743,
+          "unexpectedSamples": 0,
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 50.408,
+          "visibleMs": 83.134,
+          "usableMs": 153.157,
+          "unexpectedSamples": 0,
+          "samples": 3,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.533,
+          "visibleMs": 135.231,
+          "usableMs": 203.664,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.084,
+          "visibleMs": 101.786,
+          "usableMs": 185.296,
+          "unexpectedSamples": 0,
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.694,
+          "visibleMs": 118.133,
+          "usableMs": 204.398,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 49.549,
+          "visibleMs": 115.974,
+          "usableMs": 182.493,
+          "unexpectedSamples": 0,
+          "samples": 6,
+          "resident": false
+        }
+      ],
+      "summary": {
+        "controls": {
+          "p50": 67.834,
+          "p95": 100.82,
+          "p99": 102.031
+        },
+        "visible": {
+          "p50": 100.871,
+          "p95": 135.231,
+          "p99": 151.28
+        },
+        "usable": {
+          "p50": 183.376,
+          "p95": 204.398,
+          "p99": 222.574
+        }
+      },
+      "unexpectedPixelSamples": 0,
+      "workingSetKiB": 7651860,
+      "idleCpuPercent": 0.46947542446233786,
+      "processes": 49,
+      "cacheBudgetBytes": 0
+    }
+  ]
+}

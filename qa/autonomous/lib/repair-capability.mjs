@@ -39,7 +39,7 @@ import {
   normalizeRepoPath,
   PATH_KIND,
 } from "./repair-gate.mjs";
-import { captureDiff, changedFiles, verifyRepairWorktree } from "./repair-worktree.mjs";
+import { captureDiff, changedFiles, verifyRepairWorktree, resolveRepairWorktreeRoot, canonicalWorktreePath } from "./repair-worktree.mjs";
 import { manifestDelta, sourceManifest } from "./source-snapshot.mjs";
 
 export const CAPABILITY_VERSION = 1;
@@ -91,13 +91,13 @@ function verifySignature(capability) {
 }
 
 function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
+  const a = canonicalWorktreePath(left);
+  const b = canonicalWorktreePath(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function isInside(parent, candidate) {
-  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  const relative = path.relative(canonicalWorktreePath(parent), canonicalWorktreePath(candidate));
   return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
@@ -116,6 +116,7 @@ export function issueRepairCapability({
   repoRoot,
   finding,
   worktree,
+  worktreeRoot,
   allowedPaths = [],
   regressionTestPaths = [],
   ttlMs = DEFAULT_CAPABILITY_TTL_MS,
@@ -145,15 +146,16 @@ export function issueRepairCapability({
   if (!worktree || typeof worktree.worktreePath !== "string") {
     fail("no-worktree", "an isolated repair worktree is required");
   }
-  const resolvedRepo = path.resolve(repoRoot ?? worktree.repoRoot);
-  const resolvedWorktree = path.resolve(worktree.worktreePath);
+  const resolvedRepo = canonicalWorktreePath(repoRoot ?? worktree.repoRoot);
+  const resolvedWorktree = canonicalWorktreePath(worktree.worktreePath);
   if (samePath(resolvedWorktree, resolvedRepo)) {
     fail("main-tree", "the main working tree can never receive a repair capability");
   }
-  if (!isInside(path.join(resolvedRepo, ".qa-worktrees"), resolvedWorktree)) {
+  const authorizedRoot = resolveRepairWorktreeRoot(resolvedRepo, worktreeRoot);
+  if (!isInside(authorizedRoot, resolvedWorktree)) {
     fail("foreign-worktree", `worktree ${resolvedWorktree} is not a disposable QA worktree`);
   }
-  const verification = verifyRepairWorktree(worktree);
+  const verification = verifyRepairWorktree(worktree, { worktreeRoot: authorizedRoot });
   if (!verification.verified) {
     fail("worktree-unverified", `worktree isolation failed: ${verification.problems.join("; ")}`);
   }
@@ -295,13 +297,14 @@ export function applyGatedMutation({ capability, targetPath, edit, now = Date.no
   // user's tree so the product can run. Writing through one of those links would
   // edit the user's files while looking like a worktree-local path, so resolve
   // real paths before believing the containment check above.
-  const realWorktree = fs.realpathSync(capability.worktreePath);
+  const realWorktree = canonicalWorktreePath(fs.realpathSync.native(canonicalWorktreePath(capability.worktreePath)));
+  if (!samePath(realWorktree, capability.worktreePath)) fail("redirected-worktree", "repair worktree was redirected after authorization");
   let realParent = path.dirname(absolute);
   while (!fs.existsSync(realParent) && realParent !== path.dirname(realParent)) {
     realParent = path.dirname(realParent);
   }
-  const resolvedParent = fs.realpathSync(realParent);
-  if (resolvedParent !== realWorktree && !isInside(realWorktree, resolvedParent)) {
+  const resolvedParent = canonicalWorktreePath(fs.realpathSync.native(canonicalWorktreePath(realParent)));
+  if (!samePath(resolvedParent, realWorktree) && !isInside(realWorktree, resolvedParent)) {
     fail(
       "escapes-worktree",
       `${normalized} resolves through a link to ${resolvedParent}, outside the repair worktree`,

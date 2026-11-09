@@ -35,12 +35,21 @@ function responseFromSnapshot(snapshot: CachedResponseSnapshot): Response {
   });
 }
 
+const SETTINGS_REQUEST_TIMEOUT_MS = 20_000;
+
 async function readSettingsResponse(
   url: string,
   maxAgeMs: number,
   requestGeneration: number,
 ): Promise<CachedResponseSnapshot> {
-  const response = await fetch(url, { cache: "no-store" });
+  // Every Settings panel reads through here. A request the server never
+  // answers left panels on "Reading…" for good; fail it so the panel can show
+  // its error and retry instead.
+  const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(SETTINGS_REQUEST_TIMEOUT_MS) })
+    .catch((error: unknown) => {
+      if (error instanceof Error && error.name === "TimeoutError") throw new Error("This took too long to load. Try again.");
+      throw error;
+    });
   const headers: Array<[string, string]> = [];
   response.headers.forEach((value, key) => headers.push([key, value]));
   const snapshot: CachedResponseSnapshot = {

@@ -21,6 +21,7 @@ import { useChatGreeting } from "@/app/components/hermes/use-chat-greeting";
 import { ChatSuggestionCards } from '@/app/components/hermes/chat-greeting-empty-state';
 import type { ChatGreetingSignals } from "@/lib/hermes/chat-greeting";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
+import { publishDesktopNotificationToast } from "@/lib/desktop-notification-overlay";
 import BrowserTabPanes from "./browser-tab-panes";
 import { usePageLoading } from "@/app/components/use-page-loading";
 import {
@@ -83,17 +84,16 @@ function bookmarksKey(ownerKey: string): string {
 }
 
 function terminalMaxWidth(viewportWidth: number): number {
-  return Math.max(
-    TERMINAL_MIN_WIDTH,
-    Math.floor(viewportWidth * TERMINAL_MAX_VIEWPORT_SHARE),
+  return Math.min(
+    Math.max(TERMINAL_MIN_WIDTH, Math.floor(viewportWidth * TERMINAL_MAX_VIEWPORT_SHARE)),
+    Math.max(40, viewportWidth - BROWSER_MIN_CONTENT_WIDTH),
   );
 }
 
 function clampTerminalWidth(value: number, viewportWidth: number): number {
-  const available = Math.max(TERMINAL_MIN_WIDTH, viewportWidth - BROWSER_MIN_CONTENT_WIDTH);
-  return Math.round(Math.max(
-    TERMINAL_MIN_WIDTH,
-    Math.min(terminalMaxWidth(viewportWidth), available, value),
+  return Math.round(Math.min(
+    terminalMaxWidth(viewportWidth),
+    Math.max(TERMINAL_MIN_WIDTH, value),
   ));
 }
 
@@ -241,6 +241,7 @@ function BrowserContent({
     tabs.selfId === undefined ? tabs.activeId : tabs.selfId
   ));
   const browser = pageTab?.browser;
+  const browserAvailable = Boolean(browser);
   // Bind commands to the page and document that received the input. A late
   // toolbar command must not navigate a different tab that became active.
   const sendDesktopTabsCommand = useCallback((command: DesktopTabsCommand) => {
@@ -275,7 +276,7 @@ function BrowserContent({
   const searchRef = useRef<HTMLInputElement | null>(null);
   const searchFrameRef = useRef<HTMLFormElement | null>(null);
   const terminalWidthRef = useRef(TERMINAL_DEFAULT_WIDTH);
-  const terminalPreferenceLoadedRef = useRef(false);
+  const terminalPreferenceLoadedRef = useRef<string | null>(null);
   const terminalResizeRef = useRef<{
     pointerId: number;
     previousCursor: string;
@@ -334,40 +335,48 @@ function BrowserContent({
   }
 
   useEffect(() => {
-    const syncViewportWidth = () => {
+    if (!browserAvailable) return;
+    const syncViewportWidth = (event?: UIEvent) => {
       const nextViewportWidth = window.innerWidth;
       setViewportWidth(nextViewportWidth);
       const current = terminalWidthRef.current;
       const next = clampTerminalWidth(current, nextViewportWidth);
-      if (next === current) return;
+      if (next === current && !event) return;
       terminalWidthRef.current = next;
       setTerminalWidthState(next);
+      // A zoom resize can leave the CSS width unchanged while its native
+      // footprint changes. Relayout the website in that case as well.
       void sendDesktopTabsCommand({ type: "browser-terminal", open: terminalOpen, width: next });
     };
     syncViewportWidth();
     window.addEventListener("resize", syncViewportWidth);
     return () => window.removeEventListener("resize", syncViewportWidth);
-  }, [terminalOpen, sendDesktopTabsCommand]);
+  }, [browserAvailable, terminalOpen, sendDesktopTabsCommand]);
 
   useEffect(() => {
+    if (!browserAvailable || terminalPreferenceLoadedRef.current === restoreOwnerKey) return;
     const frame = window.requestAnimationFrame(() => {
       const storedWidthValue = window.localStorage.getItem(
         `breadboard:browser-terminal-width:${restoreOwnerKey}`,
       );
       const storedWidth = storedWidthValue === null ? null : Number(storedWidthValue);
-      if (storedWidth !== null && Number.isFinite(storedWidth)) setTerminalWidth(storedWidth);
-      terminalPreferenceLoadedRef.current = true;
+      if (storedWidth !== null && Number.isFinite(storedWidth)) {
+        const next = setTerminalWidth(storedWidth);
+        // Restoring only the CSS drawer lets the website cover its right edge.
+        void sendDesktopTabsCommand({ type: "browser-terminal", open: terminalOpen, width: next });
+      }
+      terminalPreferenceLoadedRef.current = restoreOwnerKey;
     });
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [restoreOwnerKey]);
+  }, [browserAvailable, restoreOwnerKey, sendDesktopTabsCommand, terminalOpen]);
 
   useEffect(() => {
-    if (!terminalPreferenceLoadedRef.current || terminalResizeRef.current || !browser?.terminalWidth) return;
+    if (terminalPreferenceLoadedRef.current !== restoreOwnerKey || terminalResizeRef.current || !browser?.terminalWidth) return;
     const frame = window.requestAnimationFrame(() => setTerminalWidth(browser.terminalWidth));
     return () => window.cancelAnimationFrame(frame);
-  }, [browser?.terminalWidth]);
+  }, [browser?.terminalWidth, terminalOpen, restoreOwnerKey]);
 
   useEffect(() => () => {
     const session = terminalResizeRef.current;
@@ -693,6 +702,15 @@ function BrowserContent({
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.6 2.5 5.05 5.57.81-4.03 3.93.95 5.55L12 16.32l-4.99 2.62.95-5.55L3.93 9.46l5.57-.81L12 3.6Z" {...STROKE} /></svg>
           {privateHome && "Starred"}
         </button>
+        {browser && !privateBrowsing && tabs?.browserPreferences?.organizationSidebarEnabled !== false && <button
+          type="button"
+          className="browser-terminal-launcher"
+          aria-label="Organization"
+          title="Organization — Coming soon"
+          onClick={() => publishDesktopNotificationToast({ message: "Coming soon", type: "success" })}
+        >
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="3" y="3.5" width="14" height="13" rx="3" {...STROKE} /><path d="M12 3.5v13" {...STROKE} /></svg>
+        </button>}
         <button
           type="button"
           className={privateHome ? homeControls.destinationButton : "browser-terminal-launcher"}
@@ -753,6 +771,7 @@ function BrowserContent({
             {!privateBrowsing && Object.keys(chatGreeting.suggestionSources).length > 0 ? (
               <div className="mx-auto mt-4 w-full max-w-xl">
                 <ChatSuggestionCards suggestions={chatGreeting.suggestions}
+                  suggestionScopeKey={chatGreeting.suggestionScopeKey}
                   onSelectSuggestion={prompt => {
                     setRecommendationDraft(previous => ({ text: prompt, selectionKey, key: (previous?.key ?? 0) + 1 }));
                     setTerminalLoaded(true);
@@ -820,7 +839,7 @@ function BrowserContent({
           role="separator"
           aria-label="Resize browser panel"
           aria-orientation="vertical"
-          aria-valuemin={TERMINAL_MIN_WIDTH}
+          aria-valuemin={Math.min(TERMINAL_MIN_WIDTH, terminalMaxWidth(viewportWidth))}
           aria-valuemax={terminalMaxWidth(viewportWidth)}
           aria-valuenow={terminalWidth}
           tabIndex={terminalOpen ? 0 : -1}

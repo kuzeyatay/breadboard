@@ -901,7 +901,7 @@ async function probeEmptyChatSubmission({
   const garden = state.primaryGarden;
   if (!garden) return blocked("The garden chat prerequisite was not established.");
   await openGardenWorkspace(qa.page, garden);
-  const composer = qa.page.getByPlaceholder(/Ask about your documents/);
+  const composer = qa.page.getByPlaceholder('Ask anything.', { exact: true });
   const send = qa.page.getByRole("button", { name: "Send", exact: true });
   await expect(composer).toBeVisible();
   await composer.fill("");
@@ -1026,7 +1026,7 @@ async function probeSkillsCatalog({
   await expect(
     qa.page.getByRole("dialog", { name: "Use a capability", exact: true }),
   ).toBeHidden();
-  await expect(qa.page.getByPlaceholder(/Ask about your documents/)).toBeVisible();
+  await expect(qa.page.getByPlaceholder('Ask anything.', { exact: true })).toBeVisible();
   return passed(
     "The local Prebuilt skills catalog opened, filtered and searched to a stable plan skill, exposed its Breadboard provenance, and closed back to an intact chat.",
     [qa.diagnostics.eventLogPath],
@@ -1160,7 +1160,7 @@ async function probeVideoUnavailable({
   expect(panelText).not.toContain(qa.run.bootstrap.auth.password.toLowerCase());
   await videos.click();
   await expect(panel).toBeHidden();
-  await expect(qa.page.getByPlaceholder(/Ask about your documents/)).toBeEnabled();
+  await expect(qa.page.getByPlaceholder('Ask anything.', { exact: true })).toBeEnabled();
   return passed(
     "The garden reported disabled or unreachable local transcription dependencies, exposed no secret configuration, started no false job, and remained usable after the panel closed.",
     [qa.diagnostics.eventLogPath],

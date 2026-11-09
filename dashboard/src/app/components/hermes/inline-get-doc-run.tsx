@@ -249,7 +249,7 @@ export default function InlineGetDocRun({
               : outcome === "aborted"
                 ? "The document search was stopped."
                 : failureRef.current ?? "The document search failed.";
-          if (outcome === "completed") notifyTaskCompleted(query);
+          if (outcome === "completed") notifyTaskCompleted(query, { runId });
           onTerminalRef.current?.({
             outcome,
             content,
@@ -431,7 +431,7 @@ export default function InlineGetDocRun({
         usage={usage}
         agentName="Get Doc"
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <div className="bb-agent-run-header">
           <span className="bb-agent-run-title truncate">Get Doc</span>
           <div className="flex shrink-0 items-center gap-[8px]">

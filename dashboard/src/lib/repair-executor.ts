@@ -1,3 +1,4 @@
+import { renderSystemPrompt } from "./system-prompts/service.ts";
 // Model-backed single-page repair executor.
 //
 // This module turns a `UnitRepairRequest` (produced by the deterministic repair
@@ -12,7 +13,6 @@
 
 import type OpenAI from "openai";
 import { LEARN_FOUNDATION_RULES } from "./learn-pedagogy.ts";
-import { breadSystemPrompt } from "./assistant-identity.ts";
 import { zettelHandlesForUnit, type LearningUnitContract } from "./learning-unit-contract.ts";
 import type { ModelRepairExecutor, RepairCandidate, UnitRepairRequest } from "./garden-finalize.ts";
 
@@ -20,21 +20,7 @@ import type { ModelRepairExecutor, RepairCandidate, UnitRepairRequest } from "./
 // Prompt
 // ---------------------------------------------------------------------------
 
-const RESPONSE_CONTRACT = `Return the corrected page and nothing else, using these exact delimiters:
 
-===PAGE===
-<the full revised Markdown page, including the --- YAML frontmatter --- block and the body>
-===END PAGE===
-
-Only if you changed an embedded interactive visual, also append:
-===VISUAL_SPECS===
-[{ "id": "<existing visual id>", "spec": { ...the full revised visual spec JSON... } }]
-===END VISUAL_SPECS===
-
-Only if the failure requires changing the Zettelkasten notes for THIS unit, also append the COMPLETE replacement records (never handles alone):
-===CONTRACT_ZETTEL_PATCH===
-{ "unitId": "<this unit id>", "zettelNotes": [{ "handle": "kebab-case-handle", "claim": "Complete learner-facing claim authored by you.", "connectedTo": ["exact-related-handle"] }] }
-===END CONTRACT_ZETTEL_PATCH===`;
 
 function formatContract(contract: LearningUnitContract): string {
   const lines: string[] = [
@@ -107,21 +93,7 @@ export function buildModelRepairPrompt(
   const contract = request.learningUnitContract;
   const requiredHandles = zettelHandlesForUnit(contract);
 
-  const system = breadSystemPrompt([
-    "You are Breadboard's single-page repair model.",
-    "You revise exactly ONE failed learning page so it satisfies its Learning Unit Contract and passes semantic validation.",
-    LEARN_FOUNDATION_RULES,
-    "Hard constraints:",
-    "- Preserve the canonical file path and the frontmatter schema; keep every existing frontmatter key that is still valid.",
-    "- Keep the same learningUnitId. Do not invent unrelated source assignments.",
-    "- Keep all required source figures/tables embedded and all required source formulas grounded to their exact source anchor ids.",
-    "- Keep required embedded interactive visual blocks (```breadboard-visual fenced JSON) and their minimal, correctly-roled source anchors.",
-    "- Page tags must equal the contract's Zettelkasten handles exactly; do not add generic fallback tags.",
-    "- Use Quartz-flavored Markdown. Math must be valid KaTeX: inline `$...$`, display `$$...$$`. Do not escape KaTeX into prose.",
-    "- Only change what the validation errors require; preserve correct existing content and flow from the previous/next unit.",
-    "",
-    RESPONSE_CONTRACT,
-  ].join("\n"));
+  const system = renderSystemPrompt("learning-page-repair", undefined, { "foundation_rules": String(LEARN_FOUNDATION_RULES) });
 
   const user = [
     `# Repair request for unit ${request.unitId} — ${request.pagePath}`,

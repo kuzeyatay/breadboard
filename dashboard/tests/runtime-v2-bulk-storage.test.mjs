@@ -83,6 +83,11 @@ test("bulk authority accepts ordinary and extended paths but rejects redirected 
     const native = {...env, BREADBOARD_BULK_DATA_DIR: path.toNamespacedPath(bulk)};
     assert.equal(fs.realpathSync.native(runtimeBulkDataRoot(data, native)), fs.realpathSync.native(bulk));
     assert.equal(fs.realpathSync.native(path.dirname(managedPayloadTarget(data, "hyperframes-cli", native))), fs.realpathSync.native(bulk));
+    assert.deepEqual(managedModelCacheEnvironment(path.toNamespacedPath(data), native),
+      managedModelCacheEnvironment(data, env), "native and ordinary roots must produce the same third-party model paths");
+    for (const value of Object.values(managedModelCacheEnvironment(data, native))) {
+      assert.equal(value.startsWith('\\\\?\\'), false, "CTranslate2 cannot open an extended-path model");
+    }
   }
   for (const relative of ["../outside", "runtime-v2/services/legal/config.json", "runtime-v2/services/arbitrary/.venv", "runtime-v2/toolchains/arbitrary", "openwork-state"]) {
     assert.throws(() => managedPayloadTarget(data, relative, env), /namespace/u);

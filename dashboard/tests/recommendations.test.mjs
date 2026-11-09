@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { collectRecommendationEvidence } from '../src/lib/recommendations/collect.ts';
-import { evidenceRecommendations, parseRecommendations } from '../src/lib/recommendations/types.ts';
-import { generateRecommendations } from '../src/lib/recommendations/generate.ts';
+import { completeRecommendations, evidenceRecommendations, parseRecommendations, selectRecommendations, GARDEN_FALLBACK_RECOMMENDATION_PROMPTS } from '../src/lib/recommendations/types.ts';
+import { generateRecommendations } from './helpers/recommendation-model-fixture.mjs';
 
 const evidence = [
   {id:'gmail:1',source:'gmail',title:'Lab report feedback',summary:'Please revise the measurements section.'},
@@ -53,13 +53,15 @@ test('model failure still offers diverse next steps grounded in actual evidence'
 
 test('garden fallback stays with the selected garden instead of unrelated mail', async () => {
   const suggestions = await generateRecommendations({evidence,context:{gardenSlug:'circuits'},model:'none'});
-  assert.equal(suggestions.length,1);
+  assert.equal(suggestions.length,4);
   assert.deepEqual(suggestions[0].sourceIds,['garden:4']);
+  assert.ok(suggestions.slice(1).every(item=>item.sourceIds.length===0));
+  assert.ok(suggestions.slice(1).every(item=>GARDEN_FALLBACK_RECOMMENDATION_PROMPTS.includes(item.prompt)));
 });
 
 test('generation sends bounded evidence as untrusted data and never enables tools', async () => {
   let body;
-  const suggestions = await generateRecommendations({evidence,context:{gardenSlug:'circuits'},model:'chosen/provider',baseUrl:'http://example.test/v1',
+  const suggestions = await generateRecommendations({evidence,context:{},model:'chosen/provider',baseUrl:'http://example.test/v1',
     fetcher:async(url,init)=>{
       assert.equal(url,'http://example.test/v1/chat/completions');body=JSON.parse(init.body);
       return Response.json({choices:[{message:{content:JSON.stringify([{prompt:'Use my transient notes to prepare for the lab.',sourceIds:['recall:3','calendar:2']}])}}]});
@@ -70,8 +72,45 @@ test('generation sends bounded evidence as untrusted data and never enables tool
   assert.equal(suggestions[0].sourceLabel,'Recall · Calendar');
 });
 
-test('a model may decline to invent suggestions, and invalid citations fall back safely', async () => {
+test('garden generation sends only explicit garden evidence and rejects outside and mixed citations', async () => {
+  const context={gardenSlug:'circuits'};
+  const mixed=[...evidence,{id:'garden:other',source:'garden',title:'Neuro computation',summary:'Another garden',gardenSlug:'neuro'},
+    {id:'recall:scoped',source:'recall',title:'Damping derivation',summary:'RLC circuit damping notes',gardenSlug:'circuits'}];
+  const proposals=[
+    {prompt:'Resolve my calendar overlap with the gym.',sourceIds:['calendar:2']},
+    {prompt:'Reply to the lab feedback using Circuits.',sourceIds:['garden:4','gmail:1']},
+    {prompt:'Quiz me on Neuro computation.',sourceIds:['garden:other']},
+    {prompt:'Explain damping using the passage I read in this garden.',sourceIds:['recall:scoped']},
+  ];
+  let request;
+  const cards=await generateRecommendations({evidence:mixed,context,model:'selected',fetcher:async(_url,init)=>{
+    request=JSON.parse(init.body);
+    return Response.json({choices:[{message:{content:JSON.stringify(proposals)}}]});
+  }});
+  const supplied=JSON.parse(request.messages.at(-1).content);
+  assert.deepEqual(supplied.evidence.map(item=>item.id),['garden:4','recall:scoped']);
+  assert.doesNotMatch(JSON.stringify(supplied),/Lab report feedback|RLC lab meeting|Transient response|Neuro computation/);
+  assert.match(request.messages[1].content,/Garden scope is mandatory/);
+  assert.equal(cards.length,4);
+  assert.ok(cards.some(card=>card.sourceIds.includes('recall:scoped')),'explicitly garden-linked Recall remains usable');
+  assert.ok(cards.every(card=>card.sourceIds.every(id=>['garden:4','recall:scoped'].includes(id))));
+  assert.doesNotMatch(JSON.stringify(cards),/gym|feedback|Neuro/);
+  const selected=selectRecommendations(parseRecommendations(proposals,mixed,8),mixed,[],context);
+  assert.deepEqual(selected.map(card=>card.sourceIds),[['recall:scoped']]);
+  assert.ok(evidenceRecommendations(mixed,[],context).every(card=>card.sourceIds.every(id=>['garden:4','recall:scoped'].includes(id))));
+});
+
+test('a garden with no matching evidence always has four garden fallbacks and never calls the model', async () => {
+  for (const model of ['none','selected']) {
+    const cards=await generateRecommendations({evidence,context:{gardenSlug:'empty-garden'},model,
+      fetcher:async()=>assert.fail('unrelated evidence must not start a completion')});
+    assert.deepEqual(cards.map(card=>card.prompt),GARDEN_FALLBACK_RECOMMENDATION_PROMPTS);
+    assert.ok(cards.every(card=>card.sourceIds.length===0));
+  }
+});
+
+test('a model may decline to invent suggestions; grounded alternatives and then generic cards fill four slots', async () => {
   const run = content => generateRecommendations({evidence,context:{},model:'selected',fetcher:async()=>Response.json({choices:[{message:{content}}]})});
-  assert.deepEqual(await run('[]'),[]);
-  assert.deepEqual(await run('[{"prompt":"Guess something","sourceIds":["fake"]}]'),evidenceRecommendations(evidence));
+  assert.deepEqual(await run('[]'),completeRecommendations(evidenceRecommendations(evidence)));
+  assert.deepEqual(await run('[{"prompt":"Guess something","sourceIds":["fake"]}]'),completeRecommendations(evidenceRecommendations(evidence)));
 });

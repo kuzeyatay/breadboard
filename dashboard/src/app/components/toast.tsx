@@ -18,6 +18,7 @@ import {
   LEARN_NOTIFICATION_OPENED_EVENT,
   activeChatNotificationTargets,
   chatNotificationHref,
+  chatNotificationUrls,
   chatNotificationKind,
   isChatNotificationRecord,
   isChatNotificationRecordViewed,
@@ -27,12 +28,12 @@ import {
   type ChatNotificationTarget,
   type NotificationClarification,
 } from '@/lib/chat-notification-inbox';
-import { publishDesktopNotificationToast, handleWebsiteNotification, respondToWebsiteNotificationPermission, openDesktopNotificationTarget, onDesktopNotificationOverlayVisibility } from '@/lib/desktop-notification-overlay';
+import { publishDesktopNotificationToast, handleWebsiteNotification, respondToWebsiteNotificationPermission, openDesktopNotificationTarget, onDesktopNotificationOverlayVisibility, reportDesktopChatNotifications, onDesktopChatNotificationDelivered, type DesktopChatNotification } from '@/lib/desktop-notification-overlay';
 import { desktopTabsBridge } from '@/lib/desktop-browser-tabs';
 import { VOICE_ASSISTANT_CHANNEL } from '@/lib/speech/assistant-preferences';
 import { dismissNotificationSpeech, notificationRequestTime, publishNotificationSpeech, type NotificationInboxSnapshot, type NotificationSpeechNotice } from '@/lib/speech/notification-events';
 import { isNotificationPageActive, subscribeNotificationViews } from '@/lib/notification-view-presence';
-import { chimeForNotifications } from '@/lib/notification-sound';
+import { chimeForNotifications, getNotificationSoundEnabled, notificationDeliveryReceipts, subscribeNotificationSound } from '@/lib/notification-sound';
 import { isNotificationHistoryItem, type NotificationHistoryItem } from '@/lib/notification-history';
 import { updateNotificationHistory } from '@/lib/notification-history-client';
 import { publishNotificationDelivery } from '@/lib/speech/notification-events';
@@ -123,6 +124,7 @@ function sameNotificationList(
       record.kind === other.kind &&
       JSON.stringify(record.clarification) === JSON.stringify(other.clarification) &&
       record.inlineSelectionId === other.inlineSelectionId &&
+      JSON.stringify(record.messageKeys) === JSON.stringify(other.messageKeys) &&
       JSON.stringify(record.target) === JSON.stringify(other.target) &&
       record.response === other.response &&
       record.chatTitle === other.chatTitle &&
@@ -617,6 +619,7 @@ function ToastCard({
           : 'w-[min(20rem,calc(100vw-2rem))] px-3 py-2.5'
       }`}
       role={toast.type === 'error' ? 'alert' : 'status'}
+      data-response={hasAssistantResponse ? 'true' : undefined}
     >
       <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
         <div className="min-w-0">
@@ -679,7 +682,7 @@ function ToastCard({
 
       {!hasAssistantResponse && toast.title && !isChatNotice ? (
         <div
-          className="mt-0.5 min-h-0 min-w-0 max-h-[min(42vh,24rem)] overflow-x-hidden overflow-y-auto overscroll-contain whitespace-pre-wrap break-words text-xs leading-5 text-[var(--ink-muted)] [overflow-wrap:anywhere]"
+          className="bb-toast-message mt-0.5 min-h-0 min-w-0 max-h-[min(42vh,24rem)] overflow-x-hidden overflow-y-auto overscroll-contain whitespace-pre-wrap break-words text-xs leading-5 text-[var(--ink-muted)] [overflow-wrap:anywhere]"
           tabIndex={0}
           aria-label="Notification message"
         >
@@ -690,7 +693,7 @@ function ToastCard({
       {hasAssistantResponse ? (
         <div className="bb-toast-scroll-shell -ml-2 mt-1 flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain pl-2">
           <div
-            className="min-h-0 min-w-0 max-h-[min(42vh,24rem)] overflow-x-hidden overflow-y-auto overscroll-contain pr-2 text-sm leading-6 text-[var(--ink)]"
+            className="bb-toast-message min-h-0 min-w-0 max-h-[min(42vh,24rem)] overflow-x-hidden overflow-y-auto overscroll-contain pr-2 text-sm leading-6 text-[var(--ink)]"
             tabIndex={0}
             aria-label={toast.question ? 'Question from Breadboard' : 'AI response'}
           >
@@ -827,6 +830,7 @@ export function Toaster({
     const host = hostRef.current;
     if (!host || !visibleToasts.length) return;
     let nativeVisible = mode !== 'desktop-overlay';
+    let nativeRects: Array<{ x: number; y: number; width: number; height: number }> | undefined = mode === 'desktop-overlay' ? [] : undefined;
     const cards = new Map(visibleToasts.map((toast, index) => [toast.id, host.children[index]]));
     const isVisible = (id: string) => {
       const card = cards.get(id);
@@ -843,12 +847,24 @@ export function Toaster({
       if (!visible) return false;
       const bounds = card.getBoundingClientRect();
       const clip = host.getBoundingClientRect();
+      if (nativeRects && !nativeRects.some(rect => Math.min(bounds.right, clip.right, rect.x + rect.width) - Math.max(bounds.left, clip.left, rect.x) >= Math.min(24, bounds.width) &&
+        Math.min(bounds.bottom, clip.bottom, rect.y + rect.height) - Math.max(bounds.top, clip.top, rect.y) >= Math.min(16, bounds.height))) return false;
       return Math.min(bounds.right, clip.right, innerWidth) > Math.max(bounds.left, clip.left, 0) &&
         Math.min(bounds.bottom, clip.bottom, innerHeight) > Math.max(bounds.top, clip.top, 0);
     };
     const ids = visibleToasts.filter(toast => !toast.notificationPermission).map(toast => toast.id);
     const pending = new Set<() => void>();
     const announce = () => { pending.add(chimeForNotifications(ids, isVisible)); };
+    const desktop = mode === 'desktop-overlay' ? desktopTabsBridge() : undefined;
+    let disposed = false;
+    const updateRegions = (state: Awaited<ReturnType<NonNullable<typeof desktop>['getTabsState']>>) => {
+      if (disposed) return;
+      nativeRects = state.notificationVisibleRects;
+      announce();
+    };
+    let receivedState = false;
+    const unsubscribeRegions = desktop?.onTabsState(state => { receivedState = true; updateRegions(state); });
+    if (desktop) void desktop.getTabsState().then(state => { if (!receivedState) updateRegions(state); }).catch(() => undefined);
     const unsubscribe = mode === 'desktop-overlay' ? onDesktopNotificationOverlayVisibility(visible => {
       nativeVisible = visible;
       if (visible) announce();
@@ -863,13 +879,70 @@ export function Toaster({
     host.addEventListener('animationend', announce);
     announce();
     return () => {
+      disposed = true;
       for (const cancel of pending) cancel();
       unsubscribe?.();
+      unsubscribeRegions?.();
       observer.disconnect();
       document.removeEventListener('visibilitychange', announce);
       host.removeEventListener('animationend', announce);
     };
   }, [mode, visibleToasts]);
+
+  useEffect(() => {
+    if (mode !== 'desktop-overlay') return;
+    // The shell's OS alert is silent. The app owns the sound: one chime per
+    // delivery, shared receipt with the in-app chime, honouring the toggle.
+    return onDesktopChatNotificationDelivered(ids => { chimeForNotifications(ids, () => true); });
+  }, [mode]);
+
+  useEffect(() => {
+    if (mode !== 'desktop-overlay') return;
+    const host = hostRef.current;
+    let last = '';
+    const report = () => {
+      const receipts = notificationDeliveryReceipts();
+      const clip = host?.getBoundingClientRect();
+      const cards: DesktopChatNotification[] = [];
+      for (const [index, toast] of visibleToasts.entries()) {
+        const target = toast.target ?? (toast.chatId ? { surface: 'dashboard_terminal' as const, chatId: toast.chatId } : undefined);
+        if (!target || target.surface === 'garden_learn') continue;
+        const node = host?.children[index];
+        const bounds = node?.getBoundingClientRect();
+        const style = node && getComputedStyle(node);
+        let rect: DesktopChatNotification['rect'] = null;
+        if (bounds && clip && style?.visibility !== 'hidden' && style?.display !== 'none' && Number(style?.opacity) > 0) {
+          const x = Math.max(0, clip.left, bounds.left), y = Math.max(0, clip.top, bounds.top);
+          const width = Math.min(innerWidth, clip.right, bounds.right) - x;
+          const height = Math.min(innerHeight, clip.bottom, bounds.bottom) - y;
+          if (width >= Math.min(24,bounds.width) && height >= Math.min(16,bounds.height)) rect = { x, y, width, height };
+        }
+        cards.push({ id: toast.id, title: (toast.message || 'Breadboard').slice(0,256),
+          body: (toast.response || toast.title || 'Response ready').slice(0,8192),
+          urls: chatNotificationUrls(target), rect, delivered: receipts.has(toast.id), soundEnabled: getNotificationSoundEnabled() });
+      }
+      const signature = JSON.stringify(cards);
+      if (signature !== last) { last = signature; reportDesktopChatNotifications(cards); }
+    };
+    report();
+    const observer = new ResizeObserver(report);
+    if (host) observer.observe(host);
+    for (const card of host?.children ?? []) observer.observe(card);
+    host?.addEventListener('animationend', report);
+    host?.addEventListener('scroll', report);
+    window.addEventListener('resize', report);
+    const unsubscribe = subscribeNotificationSound(report);
+    return () => {
+      observer.disconnect(); unsubscribe();
+      host?.removeEventListener('animationend', report);
+      host?.removeEventListener('scroll', report);
+      window.removeEventListener('resize', report);
+    };
+  }, [mode, visibleToasts]);
+
+  useEffect(() => {
+    if (mode === 'desktop-overlay') return () => reportDesktopChatNotifications([]);
+  }, [mode]);
 
   useEffect(() => {
     if (!onSizeChange) return;
@@ -898,7 +971,7 @@ export function Toaster({
       ref={hostRef}
       className={
         mode === 'desktop-overlay'
-          ? 'bb-desktop-toast-host bb-toast-scroll-shell pointer-events-none inline-flex max-h-screen flex-col items-end gap-2 overflow-y-auto p-4'
+          ? 'bb-desktop-toast-host bb-toast-scroll-shell pointer-events-none inline-flex flex-col items-end gap-2 overflow-y-auto p-4'
           : 'bb-page-toast-host bb-toast-scroll-shell pointer-events-none fixed bottom-4 right-4 z-[10000] flex max-h-[calc(100vh-2rem)] flex-col items-end gap-2 overflow-y-auto'
       }
       aria-live="polite"

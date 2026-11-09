@@ -1,3 +1,4 @@
+import { systemPromptText, renderSystemPrompt } from "../system-prompts/service.ts";
 // Runtime V2 compatibility adapter for Agent Browser. Next.js authenticates
 // and projects the existing UI contract, but never owns the browser process,
 // Chromium descendants, event heap, or cancellation lifecycle.
@@ -25,7 +26,7 @@ import {
   type RuntimeJobSnapshot,
 } from "../supervisor-control.ts";
 import { chatmockGatewayBase, type AgentBrowserConfiguration } from "./config.ts";
-import { activeProfileDir, resolveBrowserExecutable } from "./browser-profile.ts";
+import { activeProfileDir, resolveBrowserExecutable, resolveIsolatedBrowserExecutable } from "./browser-profile.ts";
 import * as store from "./store.ts";
 
 export { resolveBrowserExecutable };
@@ -408,10 +409,10 @@ export function resolveAgentBrowserEntry(env: NodeJS.ProcessEnv = process.env): 
 
 export function runtimeAvailability(
   env: NodeJS.ProcessEnv = process.env,
-  options: { browserRequired?: boolean } = {},
+  options: { browserRequired?: boolean; isolated?: boolean } = {},
 ): RuntimeAvailability {
   const entry = resolveAgentBrowserEntry(env);
-  const browser = resolveBrowserExecutable(env);
+  const browser = options.isolated ? resolveIsolatedBrowserExecutable(env) : resolveBrowserExecutable(env);
   if (!entry) return { available: false, entry: null, browser, reason: "agent-browser is not installed" };
   if (options.browserRequired !== false && !browser) {
     return { available: false, entry, browser: null, reason: "no Chrome/Edge executable found" };
@@ -478,6 +479,7 @@ export async function startRun(input: {
   const browserMode = input.browserMode ?? "external";
   const availability = runtimeAvailability(process.env, {
     browserRequired: browserMode === "external",
+    isolated: browserMode === "external" && !activeProfileDir(),
   });
   if (
     !availability.available ||
@@ -496,6 +498,7 @@ export async function startRun(input: {
       jobType: JOB_TYPE,
       idempotencyKey,
       requestPayload: {
+        systemPrompt: renderSystemPrompt("agent-browser-operating-rules", input.userId, { website_api_policy: systemPromptText("api-anything-policy", input.userId) }),
         task: input.task,
         provider: input.config.provider,
         model: input.config.model,

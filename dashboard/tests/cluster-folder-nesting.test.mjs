@@ -537,7 +537,7 @@ describe("dashboard renders the tree", () => {
   test("each header can create a garden directly inside its cluster", () => {
     assert.match(client, /openModal\(folder\)/);
     assert.match(client, /title="New garden in this cluster"/);
-    assert.match(client, /createCluster\(name\.trim\(\), description\.trim\(\), folder\)/);
+    assert.match(client, /body: JSON\.stringify\(\{ name: name\.trim\(\), description: description\.trim\(\), folder \}\)/);
   });
 
   // A header is a thin strip. Aiming a dragged cluster at one is far fiddlier
@@ -620,9 +620,6 @@ describe("creating a garden inside a cluster", () => {
       createCluster,
       /after\(async \(\) => \{[\s\S]*await publishQuartzAfterMutation/,
     );
-    assert.doesNotMatch(
-      createCluster,
-      /refreshPrivateQuartzIndex\(userId\);\s*await publishQuartzAfterMutation/,
-    );
+    assert.doesNotMatch(createCluster.slice(0, createCluster.indexOf("after(")), /refreshPrivateQuartzIndex/);
   });
 });

@@ -85,8 +85,11 @@ const PATTERNS: Pattern[] = [
 ];
 
 export function assessSafety(text: string): SafetyDecision {
+  // Ignore explicit exclusions, but retain qualifying phrases such as "no
+  // mains isolation" and every separate positive mention of a hazardous supply.
+  const requested = text.replace(/\b(?:no|without|exclude|excluding|avoid|do not use)\s+(?:any\s+)?(?:mains(?:\s+(?:power|voltage|wiring|electricity))?|line voltage|high[- ]voltage)(?=\s*(?:[,.;!?\n]|$|(?:or|and)\b))/giu, "");
   for (const pattern of PATTERNS) {
-    if (pattern.expressions.some((expression) => expression.test(text))) {
+    if (pattern.expressions.some((expression) => expression.test(requested))) {
       return pattern.level === "refused"
         ? { level: "refused", category: pattern.category, reason: pattern.reason }
         : { level: "concept-only", category: pattern.category, reason: pattern.reason };

@@ -32,6 +32,7 @@ import { installRendererRecovery } from "./renderer-recovery";
 export { FIRST_PAINT_MAX_WAIT_MS, FIRST_PAINT_PROBE_MAX_WAIT_MS, isFullScreenShortcut };
 
 export interface WindowManagerOptions {
+  bulkRoot?: string;
   allowed: AllowedOrigins;
   startupHtmlPath: string;
   recoveryHtmlPath?: string;
@@ -55,6 +56,8 @@ export interface WindowManagerOptions {
   devTools?: boolean;
   /** Durable record of unpacked extensions loaded into the isolated browser profile. */
   browserExtensionsConfigDir?: string;
+  browserDownloads?: import("./browser-downloads").BrowserDownloads;
+  downloadSettings?: import("./download-settings").DownloadSettings;
   browserVisitedLinksConfigDir?: string;
   browserHistoryConfigDir?: string;
   tabSessionConfigDir?: string;
@@ -217,6 +220,7 @@ export class WindowManager {
     this.currentTheme = options.initialTheme ?? "light";
     synchronizeNativeTheme(this.currentTheme);
     this.tabs = new TabManager({
+      bulkRoot: options.bulkRoot,
       allowed: options.allowed,
       preloadPath: options.preloadPath,
       loadingHtmlPath: () => this.loadingHtmlPath(),
@@ -240,6 +244,8 @@ export class WindowManager {
       },
       devTools: options.devTools,
       browserExtensionsConfigDir: options.browserExtensionsConfigDir,
+      browserDownloads: options.browserDownloads,
+      downloadSettings: options.downloadSettings,
       browserVisitedLinksConfigDir: options.browserVisitedLinksConfigDir,
       browserHistoryConfigDir: options.browserHistoryConfigDir,
       tabSessionConfigDir: options.tabSessionConfigDir,

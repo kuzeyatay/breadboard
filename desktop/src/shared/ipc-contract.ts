@@ -44,6 +44,7 @@ export const IPC_CHANNELS = {
   browserInlineAnswerState: "breadboard:browser-inline-answer-state",
   browserInlineAnswerAction: "breadboard:browser-inline-answer-action",
   notificationToast: "breadboard:notification-toast",
+  chatNotificationDelivered: "breadboard:chat-notification-delivered",
   notificationOverlayVisibility: "breadboard:notification-overlay-visibility",
   getBrowserNavigation: "breadboard:get-browser-navigation",
   getBrowserSignIns: "breadboard:get-browser-sign-ins",
@@ -69,6 +70,8 @@ export const IPC_CHANNELS = {
   setDownloadPrompt: "breadboard:set-download-prompt",
   chooseDownloadDirectory: "breadboard:choose-download-directory",
   openLocalPath: "breadboard:open-local-path",
+  gestureControl: "breadboard:gesture-control",
+  codeDock: "breadboard:code-dock",
 } as const;
 
 /** Open a produced folder in the file explorer, or reveal a produced file. */
@@ -152,6 +155,7 @@ export interface TabView {
     annotationTarget?: import("./browser-annotations").BrowserAnnotationTarget;
     downloadsOpen?: boolean;
     extensionsOpen?: boolean;
+    hls?: { streams: BrowserHlsStream[]; available: boolean };
     adBlock?: { enabled: boolean; available: boolean; site: string | null; siteEnabled: boolean; blocked: number };
     terminalWidth: number;
     zoomPercent?: number;
@@ -175,6 +179,13 @@ export interface TabsState {
   presentedId?: number | null;
   /** Native content currently in front, including an outgoing page during preparation. */
   visibleId?: number | null;
+  /** Presented panes that can be read, including the inactive split partner. */
+  visibleIds?: number[];
+  notificationPageVisible?: boolean;
+  /** Uncovered native pixels in the receiving renderer's CSS viewport; [] means unseen. */
+  notificationVisibleRects?: Array<{ x: number; y: number; width: number; height: number }>;
+  /** Available notification layout space in CSS pixels, independent of card bounds. */
+  notificationViewport?: NotificationOverlaySize;
   presentationRevision?: number;
   presentationStatus?: "pending" | "presented" | "failed";
   persistentShell?: boolean;
@@ -271,6 +282,19 @@ export interface BrowserDownload {
   totalBytes: number;
   state: "progressing" | "completed" | "cancelled" | "interrupted";
   active: boolean;
+  error?: string;
+  progress?: { completed: number; total: number };
+  /** Native flows with their own UI keep it open instead of stealing focus. */
+  autoOpen?: boolean;
+}
+
+/** Detected URLs and request credentials stay in main; commands carry an opaque ID. */
+export interface BrowserHlsStream {
+  id: string;
+  label: string;
+  host: string;
+  state: "detected" | "preparing" | "downloading" | "completed" | "error";
+  error?: string;
 }
 
 export interface BrowserDownloadsSnapshot {
@@ -393,6 +417,29 @@ export interface NotificationOverlaySize {
   height: number;
 }
 
+/** Only the trusted notification overlay may publish these pending chat cards. */
+export interface DesktopChatNotification {
+  id: string;
+  title: string;
+  body: string;
+  urls: string[];
+  rect: { x: number; y: number; width: number; height: number } | null;
+  delivered: boolean;
+  soundEnabled: boolean;
+}
+
+export function isDesktopChatNotifications(value: unknown): value is DesktopChatNotification[] {
+  return Array.isArray(value) && value.length <= 100 && value.every(card => {
+    if (!card || typeof card !== 'object') return false;
+    const text = (value: unknown, limit: number) => typeof value === 'string' && value.length > 0 && value.length <= limit;
+    const rect = card.rect;
+    return text(card.id, 256) && text(card.title, 256) && text(card.body, 8192) &&
+      Array.isArray(card.urls) && card.urls.length > 0 && card.urls.length <= 8 && card.urls.every((url: unknown) => text(url, 2048)) &&
+      typeof card.delivered === 'boolean' && typeof card.soundEnabled === 'boolean' &&
+      (rect === null || (rect && ['x','y','width','height'].every(key => typeof rect[key] === 'number' && Number.isFinite(rect[key]) && Math.abs(rect[key]) <= 100_000) && rect.width > 0 && rect.height > 0));
+  });
+}
+
 export function isDesktopNotificationToast(value: unknown): value is DesktopNotificationToast {
   if (!value || typeof value !== "object") return false;
   const notice = value as Record<string, unknown>;
@@ -507,6 +554,7 @@ type TabsAction =
   | { type: "browser-answer-move"; dx: number; dy: number }
   | { type: "browser-extensions-close" }
   | { type: "browser-extensions-picture-in-picture" }
+  | { type: "browser-hls-download"; id: string }
   | { type: "browser-terminal"; open: boolean; width?: number }
   | { type: "browser-organization"; open: boolean }
   | { type: "browser-organization-selection" }
@@ -519,6 +567,7 @@ type TabsAction =
   | { type: "browser-extension-remove"; id: string }
   /** A page-local notice for the native layer shared by this window's tabs. */
   | { type: "notification-toast"; notice: DesktopNotificationToast }
+  | { type: "notification-chat-delivery"; cards: DesktopChatNotification[] }
   /** The overlay renderer's current interactive rectangle. */
   | { type: "notification-overlay-resize"; size: NotificationOverlaySize };
 
@@ -678,11 +727,15 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
     case "voice-open":
       return command.conversationKey === undefined ||
         (typeof command.conversationKey === 'string' && /^[a-zA-Z0-9-]{1,100}$/.test(command.conversationKey));
+    case "browser-hls-download":
+      return typeof command.id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(command.id);
     case "browser-extension-reload":
     case "browser-extension-remove":
       return isExtensionId(command.id);
     case "notification-toast":
       return isDesktopNotificationToast(command.notice);
+    case "notification-chat-delivery":
+      return isDesktopChatNotifications(command.cards);
     case "notification-overlay-resize":
       return isNotificationOverlaySize(command.size);
     case "new":

@@ -131,13 +131,14 @@ test("guidance keeps manual media, document and task-project requirements", () =
   assert.doesNotMatch(media, /undefined/);
 });
 
-test("server registry exposes workflow selectors separately from individual agents", () => {
+test("server registry labels Master Agents while preserving their workflow selectors", () => {
   const registry = registryItemsForUser(null, { mode: "knowledge", surface: "dashboard_terminal" });
-  const workflows = registry.filter((item) => item.source === "Unified workflows");
+  const workflows = registry.filter((item) => item.source === "Master Agents");
   assert.equal(workflows.length, 8);
   assert.deepEqual(workflows.map((item) => item.token), UNIFIED_WORKFLOWS.map((item) => item.command.slice(1)));
   assert.ok(workflows.every((item) => item.kind === "agent" && item.id.startsWith("unified-workflow:")));
-  assert.equal(registryItemsForUser(null, { mode: "knowledge", surface: "quartz_ai" }).some((item) => item.source === "Unified workflows"), false);
+  assert.equal(registryItemsForUser(null, { mode: "knowledge", surface: "quartz_ai" }).some((item) => item.source === "Master Agents"), false);
+  assert.equal(assignCommandTokens([{ kind: "agent", slug: "code", source: "Master Agents" }])[0].token, "workflows:code");
   assert.equal(assignCommandTokens([{ kind: "agent", slug: "code", source: "Unified workflows" }])[0].token, "workflows:code");
 });
 

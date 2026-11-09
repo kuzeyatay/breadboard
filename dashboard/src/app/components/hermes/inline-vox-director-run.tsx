@@ -366,7 +366,7 @@ export default function InlineVoxDirectorRun({
     reportedRef.current = true;
     const content = status === "completed" ? result : failure;
     if (!content) return;
-    notifyTaskCompleted(`Vox Director — ${title || brief.slice(0, 80)}`);
+    notifyTaskCompleted(`Vox Director — ${title || brief.slice(0, 80)}`, { runId });
     onTerminalRef.current?.({
       outcome: status as ExternalAgentTerminalOutcome,
       content,
@@ -413,7 +413,7 @@ export default function InlineVoxDirectorRun({
         startedAt={startedAt}
         completedAt={completedAt}
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <div className="bb-agent-run-header">
           <span className="bb-agent-run-title truncate">Vox Director</span>
           <div className="flex shrink-0 items-center gap-[8px]">

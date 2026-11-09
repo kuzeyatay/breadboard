@@ -18,7 +18,10 @@ export class SourceRepairActivator {
   private working = false;
   private retryAfter = 0;
   constructor(private readonly dataRoot: string, private readonly baseRoot: string,
-    private readonly host: SourceRepairActivationHost) {}
+    private readonly host: SourceRepairActivationHost,
+    private readonly clock: { now(): number; sleep(ms: number): Promise<void> } = {
+      now: Date.now, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+    }) {}
 
   async tick(): Promise<void> {
     if (this.working || Date.now() < this.retryAfter) return;
@@ -81,6 +84,23 @@ export class SourceRepairActivator {
     return false;
   }
 
+
+  private async waitHealthy(releaseId: string | null, request?: SourceRepairRequest): Promise<boolean> {
+    const deadline = Math.min(this.clock.now() + 180_000, request?.deadline ?? Number.POSITIVE_INFINITY);
+    let consecutive = 0;
+    while (this.clock.now() < deadline) {
+      if (request && readSourceRepair(this.dataRoot, request.id)?.stage === "cancelled") return false;
+      let healthy = false;
+      try { healthy = await this.host.healthy(releaseId); } catch { /* startup can still be in progress */ }
+      if (this.clock.now() >= deadline || (request && readSourceRepair(this.dataRoot, request.id)?.stage === "cancelled")) return false;
+      consecutive = healthy ? consecutive + 1 : 0;
+      if (consecutive >= 3) return true;
+      if (this.clock.now() >= deadline) break;
+      await this.clock.sleep(Math.min(1000, deadline - this.clock.now()));
+    }
+    return false;
+  }
+
   private async activate(journal: SourceRepairJournal, request: SourceRepairRequest): Promise<void> {
     const provisional: SourceRepairJournal = { version: 1, phase: "activating",
       active: request.release!, previous: journal.active, repairId: request.id, updatedAt: Date.now() };
@@ -91,11 +111,7 @@ export class SourceRepairActivator {
     this.host.log("Activating the tested source repair at a quiet boundary.");
     let healthy = false;
     try {
-      healthy = await this.host.restart();
-      for (let index = 0; healthy && index < 3; index++) {
-        if (index > 0) await new Promise(resolve => setTimeout(resolve, 1000));
-        healthy = readSourceRepair(this.dataRoot, request.id)?.stage !== "cancelled" && await this.host.healthy(request.id);
-      }
+      healthy = await this.host.restart() && await this.waitHealthy(request.id, request);
     } catch { healthy = false; }
     if (!healthy) {
       writeRepairJournal(this.dataRoot, { ...provisional, phase: "rolling_back" });
@@ -113,7 +129,7 @@ export class SourceRepairActivator {
   private async rollback(journal: SourceRepairJournal, reason: string): Promise<void> {
     if (!(await this.quiet())) return;
     writeRepairJournal(this.dataRoot, { ...journal, phase: "rolling_back", active: journal.previous });
-    if (!(await this.host.restart()) || !(await this.host.healthy(journal.previous?.id ?? null))) {
+    if (!(await this.host.restart()) || !(await this.waitHealthy(journal.previous?.id ?? null))) {
       throw new Error("Rollback is retained in the journal; the previous release could not be confirmed healthy.");
     }
     writeRepairJournal(this.dataRoot, { version: 1, phase: "stable", active: journal.previous,

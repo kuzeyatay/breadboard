@@ -4,6 +4,7 @@ import path from "node:path";
 import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import { localChatmockBaseUrl } from "../chatmock-server.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
+import { MAINTENANCE_PROMPT_FILES } from "../system-prompts/maintenance-defaults.ts";
 
 export type IfixAiMaintenanceMode = "off" | "audit" | "repair";
 
@@ -31,6 +32,8 @@ export interface IfixAiMaintenanceConfig {
   contractPath: string;
   outputRoot: string;
   promptFiles: string[];
+  /** Catalog ids aligned with the configured baseline files. */
+  promptIds?: string[];
 }
 
 const HOUR_MS = 60 * 60 * 1_000;
@@ -153,12 +156,7 @@ export function readIfixAiMaintenanceConfig(
     }
   }
 
-  const promptFiles = [
-    "assistant.md",
-    "response-style.md",
-    "main-assistant.md",
-    "meta-prompting.md",
-  ].map((name) => path.join(root, "hermes-config", "system", name));
+  const promptFiles = MAINTENANCE_PROMPT_FILES.map(([, , name]) => path.join(root, "hermes-config", "system", name));
 
   return {
     mode,
@@ -196,5 +194,6 @@ export function readIfixAiMaintenanceConfig(
     // product's runtime-data root, never into prompts or another live tree.
     outputRoot: path.resolve(defaultOutputRoot(root, env)),
     promptFiles,
+    promptIds: MAINTENANCE_PROMPT_FILES.map(([id]) => id),
   };
 }

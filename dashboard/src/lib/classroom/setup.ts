@@ -21,7 +21,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { managedPayloadTarget, markManagedPayloadReady } from "../../../scripts/runtime-v2-bulk-paths.mjs";
-import { sameRuntimePath } from "../../../scripts/runtime-v2-paths.mjs";
+import { runtimeProcessPath, sameRuntimePath } from "../../../scripts/runtime-v2-paths.mjs";
 import { dashboardDataDir } from "../runtime-paths.ts";
 import { currentService, FRAME_ANCESTORS, stopService } from "./service.ts";
 import {
@@ -31,6 +31,7 @@ import {
   classroomInstallationRoot,
   classroomStagingRoot,
   classroomToolsDir,
+  classroomProcessEnvironment,
   corepackEntry,
   resolveClassroomSourceRoot,
 } from "./runtime.ts";
@@ -92,7 +93,7 @@ const EXCLUDED_DIRECTORIES = new Set([
   "eval",
 ]);
 
-const INSTALL_TIMEOUT_MS = 30 * 60_000;
+const INSTALL_TIMEOUT_MS = 90 * 60_000;
 const BUILD_TIMEOUT_MS = 30 * 60_000;
 
 export function setupStatus(env: NodeJS.ProcessEnv = process.env): ClassroomSetupStatus {
@@ -123,9 +124,9 @@ export function setupStatus(env: NodeJS.ProcessEnv = process.env): ClassroomSetu
   };
 }
 
-function copySource(source: string, staging: string): void {
+async function copySource(source: string, staging: string): Promise<void> {
   fs.mkdirSync(path.dirname(staging), { recursive: true });
-  fs.cpSync(source, staging, {
+  await fs.promises.cp(source, staging, {
     recursive: true,
     dereference: false,
     errorOnExist: false,
@@ -166,16 +167,80 @@ export function applyImporterBuildFix(root: string, platform: NodeJS.Platform = 
  * in every workspace package by bare name, and corepack is how pnpm is meant to
  * be reached here, so the shim just forwards to corepack through this Node.
  */
+/** Use Node for the fixed dist cleanup in the owned Windows runtime copy. */
+export function applyPortablePackageBuildScripts(root: string, platform: NodeJS.Platform = process.platform): number {
+  if (platform !== "win32") return 0;
+  let changed = 0;
+  for (const name of ["dsl", "generation", "storage", "importer", "renderer", "editor"]) {
+    const directory = path.join(root, "packages", "@openmaic", name);
+    const file = path.join(directory, "package.json");
+    if (!fs.existsSync(file)) continue;
+    const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+    let patched = false;
+    for (const key of ["build", "clean"]) {
+      const script = manifest.scripts?.[key];
+      if (typeof script !== "string") continue;
+      const parts = script.split("&&").map((part: string) => part.trim());
+      if (!parts.includes("rm -rf dist")) continue;
+      manifest.scripts[key] = parts.map((part: string) => part === "rm -rf dist" ? "node .breadboard-clean-dist.cjs" : part).join(" && ");
+      patched = true;
+    }
+    if (!patched) continue;
+    // The helper is inside this package; its absolute target can only be dist.
+    fs.writeFileSync(path.join(directory, ".breadboard-clean-dist.cjs"),
+      "const fs=require('node:fs'),path=require('node:path');\n" +
+      "const target=path.resolve(__dirname,'dist');\n" +
+      "if(path.dirname(target)!==path.resolve(__dirname))throw Error('Invalid build output');\n" +
+      "const entry=fs.lstatSync(target,{throwIfNoEntry:false});\n" +
+      "if(entry)fs.rmSync(target,{recursive:!entry.isSymbolicLink(),force:true});\n", "utf8");
+    fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+    changed++;
+  }
+  return changed;
+}
+
+/** A one-shot Windows bundle must not stay alive for leaked TypeScript watchers.
+ * Keep the real Rollup CLI, outputs and exit code; only its file watchers become
+ * non-persistent. The upstream development/watch commands are left alone. */
+export function applyNonWatchingRollupBuildScripts(root: string, platform: NodeJS.Platform = process.platform): number {
+  if (platform !== "win32") return 0;
+  let changed = 0;
+  for (const name of ["renderer", "editor"]) {
+    const directory = path.join(root, "packages", "@openmaic", name);
+    const file = path.join(directory, "package.json");
+    if (!fs.existsSync(file)) continue;
+    const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (typeof manifest.scripts?.build !== "string") continue;
+    const parts = manifest.scripts.build.split("&&").map((part: string) => part.trim());
+    if (!parts.includes("rollup -c")) continue;
+    const helper = ".breadboard-rollup-build.cjs";
+    fs.writeFileSync(path.join(directory, helper),
+      "const fs=require('node:fs'),path=require('node:path');\n" +
+      "if(process.argv.length!==3||process.argv[2]!=='-c')throw Error('Expected a one-shot Rollup build');\n" +
+      "for(const name of ['watch','watchFile']){const original=fs[name];fs[name]=function(...args){const watcher=original.apply(this,args);watcher?.unref?.();return watcher;};}\n" +
+      "require('node:module').syncBuiltinESMExports();\n" +
+      "const cli=path.join(path.dirname(require.resolve('rollup/package.json')),'dist','bin','rollup');\n" +
+      "process.argv=[process.execPath,cli,'-c'];\n" +
+      "require(cli);\n", "utf8");
+    manifest.scripts.build = parts.map((part: string) => part === "rollup -c" ? `node ${helper} -c` : part).join(" && ");
+    fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+    changed++;
+  }
+  return changed;
+}
+
 export function writePnpmShims(toolsDir: string, corepack: string, execPath: string = process.execPath, throughCorepack = true): void {
+  const executable = runtimeProcessPath(execPath);
+  const entry = runtimeProcessPath(corepack);
   fs.mkdirSync(toolsDir, { recursive: true });
   fs.writeFileSync(
     path.join(toolsDir, "pnpm.cmd"),
-    `@echo off\r\n"${execPath}" "${corepack}" ${throughCorepack ? "pnpm " : ""}%*\r\n`,
+    `@echo off\r\n"${executable}" "${entry}" ${throughCorepack ? "pnpm " : ""}%*\r\n`,
     "utf8",
   );
   fs.writeFileSync(
     path.join(toolsDir, "pnpm"),
-    `#!/bin/sh\nexec "${execPath}" "${corepack}" ${throughCorepack ? "pnpm " : ""}"$@"\n`,
+    `#!/bin/sh\nexec "${executable}" "${entry}" ${throughCorepack ? "pnpm " : ""}"$@"\n`,
     { encoding: "utf8", mode: 0o755 },
   );
 }
@@ -188,10 +253,17 @@ export function writePnpmShims(toolsDir: string, corepack: string, execPath: str
  * run card's frame stays blank. Found by framing one.
  */
 export function installEnvironment(toolsDir: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const pathKey = Object.keys(source).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
+  const env = { ...source };
+  // This is another Next app. The dashboard's serialized standalone config
+  // bypasses its config loader and has no generateBuildId function; inherited
+  // worker and dotenv sentinels likewise belong only to the parent process.
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("__NEXT_PRIVATE_") || key === "__NEXT_PROCESSED_ENV") delete env[key];
+  }
+  const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
   return {
-    ...source,
-    [pathKey]: `${toolsDir}${path.delimiter}${source[pathKey] ?? ""}`,
+    ...env,
+    [pathKey]: `${toolsDir}${path.delimiter}${env[pathKey] ?? ""}`,
     COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
     COREPACK_ENABLE_STRICT: "0",
     NEXT_TELEMETRY_DISABLED: "1",
@@ -201,7 +273,7 @@ export function installEnvironment(toolsDir: string, source: NodeJS.ProcessEnv =
   };
 }
 
-function runStep(
+export function runClassroomStep(
   label: string,
   command: string,
   args: string[],
@@ -210,9 +282,9 @@ function runStep(
   state.step = label;
   state.log = "";
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: options.env,
+    const child = spawn(runtimeProcessPath(command), args.map(arg => runtimeProcessPath(arg)), {
+      cwd: runtimeProcessPath(options.cwd),
+      env: classroomProcessEnvironment(options.env),
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -224,23 +296,33 @@ function runStep(
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", collect);
     child.stderr?.on("data", collect);
+    let timedOut = false;
+    let stopWatch: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => {
+      timedOut = true;
       try {
         child.kill();
       } catch {
         // Already gone.
       }
-      reject(new Error(`${label} ran past its time limit and was stopped.`));
+      // Wait for process/pipe closure before any rollback touches its cwd.
+      stopWatch = setTimeout(() => reject(Object.assign(
+        new Error(`${label} exceeded its time limit; process exit is unconfirmed. The installation was preserved.`),
+        { preserveInstallation: true },
+      )), 30_000);
+      stopWatch.unref?.();
     }, options.timeoutMs);
     timer.unref?.();
     child.on("error", (error) => {
       clearTimeout(timer);
       reject(new Error(`${label} could not start: ${error.message}`));
     });
-    child.on("exit", (code) => {
+    child.on("close", (code) => {
       clearTimeout(timer);
+      clearTimeout(stopWatch);
       state.child = null;
-      if (code === 0) resolve();
+      if (timedOut) reject(new Error(`${label} ran past its time limit and was stopped.`));
+      else if (code === 0) resolve();
       else reject(new Error(`${label} failed (exit ${code ?? "unknown"}).`));
     });
   });
@@ -250,7 +332,7 @@ function runStep(
  * version and tarball integrity pinned by the trusted OpenMAIC source. */
 export async function prepareClassroomPackageManager(
   source: string, toolsDir: string, env: NodeJS.ProcessEnv,
-  run: typeof runStep = runStep,
+  run: typeof runClassroomStep = runClassroomStep,
   corepack: string | null = corepackEntry(),
 ): Promise<{ entry: string; prefix: string[] }> {
   if (corepack) return {entry: corepack, prefix: ["pnpm"]};
@@ -336,8 +418,10 @@ async function perform(): Promise<void> {
   const manager = await prepareClassroomPackageManager(source, toolsDir, env);
 
   state.step = "Copying the source";
-  copySource(source, staging);
+  await copySource(source, staging);
   applyImporterBuildFix(staging);
+  applyPortablePackageBuildScripts(staging);
+  applyNonWatchingRollupBuildScripts(staging);
   writePnpmShims(toolsDir, manager.entry, process.execPath, manager.prefix.length > 0);
 
   // The running server holds files open on Windows; it restarts on the next run.
@@ -346,19 +430,19 @@ async function perform(): Promise<void> {
   try {
     fs.renameSync(staging, destination);
   } catch (error) {
-    fs.rmSync(staging, { recursive: true, force: true });
+    await fs.promises.rm(staging, { recursive: true, force: true });
     if (fs.existsSync(previous)) fs.renameSync(previous, destination);
     throw error;
   }
 
   try {
-    await runStep(
+    await runClassroomStep(
       "Installing dependencies",
       process.execPath,
       [manager.entry, ...manager.prefix, "install", "--frozen-lockfile", "--store-dir", path.join(cache, "pnpm")],
       { cwd: destination, env, timeoutMs: INSTALL_TIMEOUT_MS },
     );
-    await runStep(
+    await runClassroomStep(
       "Building the app",
       process.execPath,
       [manager.entry, ...manager.prefix, "run", "build"],
@@ -370,8 +454,16 @@ async function perform(): Promise<void> {
     ensureClassroomDataLink(path.join(destination, "data"));
   } catch (error) {
     state.step = "Restoring the previous runtime";
-    fs.rmSync(destination, { recursive: true, force: true });
-    if (fs.existsSync(previous)) fs.renameSync(previous, destination);
+    state.error = error instanceof Error ? error.message : "Setup failed.";
+    if (error && typeof error === "object" && "preserveInstallation" in error) throw error;
+    try {
+      await fs.promises.rm(destination, { recursive: true, force: true });
+      if (fs.existsSync(previous)) fs.renameSync(previous, destination);
+    } catch (rollback) {
+      throw new Error(
+        `${error instanceof Error ? error.message : "Setup failed."} The previous installation was preserved at ${previous}; cleanup could not finish: ${rollback instanceof Error ? rollback.message : String(rollback)}`,
+      );
+    }
     throw error;
   }
   // A previous runtime from before the data junction existed may still hold
@@ -380,7 +472,7 @@ async function perform(): Promise<void> {
   if (fs.lstatSync(previousData, { throwIfNoEntry: false })?.isDirectory()) {
     ensureClassroomDataLink(previousData);
   }
-  fs.rmSync(previous, { recursive: true, force: true });
+  await fs.promises.rm(previous, { recursive: true, force: true });
   if (sameRuntimePath(destination, managedPayloadTarget(dashboardDataDir(), "runtime-v2/toolchains/openmaic"))) {
     markManagedPayloadReady(dashboardDataDir(), "runtime-v2/toolchains/openmaic");
   }

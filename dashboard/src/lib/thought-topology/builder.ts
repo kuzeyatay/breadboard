@@ -1,3 +1,5 @@
+import { scopedSystemPromptText } from "../system-prompts/service.ts";
+import { withGardenSystemPromptContext } from "../system-prompts/service.ts";
 import fs from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
@@ -374,8 +376,13 @@ export async function buildThoughtTopologyFromProjection(input: {
   saveNode?: (node: ThoughtTopologyCacheNode) => void;
   saveEdge?: (edge: ThoughtTopologyCacheEdge) => void;
 }): Promise<{ topology: ThoughtTopology; cache: ThoughtTopologyCache }> {
+  return withGardenSystemPromptContext(input.gardenId, async () => {
   const dependencies = input.dependencies ?? {};
-  const versions = dependencies.cacheVersions ?? DEFAULT_TOPOLOGY_CACHE_VERSIONS;
+  const configuredVersions = dependencies.cacheVersions ?? DEFAULT_TOPOLOGY_CACHE_VERSIONS;
+  const versions = { ...configuredVersions,
+    nodePromptVersion: stableHashText(configuredVersions.nodePromptVersion, scopedSystemPromptText("topology-node-summary")),
+    edgePromptVersion: stableHashText(configuredVersions.edgePromptVersion, scopedSystemPromptText("topology-edge-explanation")),
+  };
   const generator = dependencies.generator === undefined
     ? createDefaultTopologyGenerator(versions.summaryModel, input.signal)
     : dependencies.generator ?? undefined;
@@ -670,6 +677,8 @@ export async function buildThoughtTopologyFromProjection(input: {
     edges: nextEdgeCache,
   };
   return { topology, cache };
+
+  }, undefined);
 }
 
 export async function buildThoughtTopologyInRuntimeWorker(input: {

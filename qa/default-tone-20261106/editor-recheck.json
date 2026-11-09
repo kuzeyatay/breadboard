@@ -1,0 +1,68 @@
+{
+  "startedAt": "2026-11-06T18:10:43.654Z",
+  "base": "http://127.0.0.1:55504/v1",
+  "models": [
+    "cliproxy/gemini-3.8-flash-high",
+    "gpt-6-luna"
+  ],
+  "profileExists": false,
+  "method": "Live gateway requests with production core/Hermes prompt builders; no style block or custom profile supplied by the harness. Not a full UI test.",
+  "sourceHashes": {
+    "chatmock/chatmock/council/unslop.py": "40994118e1e343e211117b28f4dc96c6a53a08520a01698b631bec810b75f3d4",
+    "chatmock/chatmock/routes_openai.py": "a85cce4c11270b37253929a422628d6495493e0275b74c7ecd637908da342dd6",
+    "hermes-config/system/chat-core.md": "66bcec54e785d76fb1737ff6884947dbcb430385d3567d41b0c1f4ed60140c9e",
+    "unslop/SKILL.md": "d26b475efedda40499e4993d0c38209d8a76fe234eba302d1e54375078a94b38"
+  },
+  "results": [
+    {
+      "id": "word-editor",
+      "requestedModel": "gpt-6-luna",
+      "endpoint": "chat/completions",
+      "question": "User request: What does this paragraph mean? Explain it without editing the document.\nCurrent document: A capacitor stores energy in an electric field. Current changes the charge on its plates.",
+      "httpStatus": 200,
+      "routing": {},
+      "resolvedModel": "gpt-6-luna",
+      "finishReason": "stop",
+      "answer": "{\"message\":\"It means a capacitor holds energy between its plates in an electric field. When current flows, the amount of charge on the plates changes.\",\"actions\":[]}",
+      "jsonContract": true,
+      "words": 24,
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 1.86
+    },
+    {
+      "id": "word-editor",
+      "requestedModel": "cliproxy/gemini-3.8-flash-high",
+      "endpoint": "chat/completions",
+      "question": "User request: What does this paragraph mean? Explain it without editing the document.\nCurrent document: A capacitor stores energy in an electric field. Current changes the charge on its plates.",
+      "httpStatus": 200,
+      "routing": {
+        "x-chatmock-failover": "false",
+        "x-chatmock-provider": "cliproxy",
+        "x-chatmock-requested-model": "cliproxy/gemini-3.8-flash-high",
+        "x-chatmock-resolved-model": "cliproxy/gemini-3.8-flash-high"
+      },
+      "resolvedModel": "gemini-3.8-flash-n",
+      "finishReason": "stop",
+      "answer": "{\"message\":\"This paragraph describes how a basic capacitor works in an electrical circuit.\\n\\nA capacitor consists of conductive plates separated by an insulating material. Instead of storing energy through a chemical reaction like a battery does, it holds energy directly in an electric field between those plates. When electric current flows toward or away from the plates, electric charge builds up or drains off, changing the voltage across the component. The amount of stored charge is directly proportional to that voltage.\",\"actions\":[]}",
+      "jsonContract": true,
+      "words": 80,
+      "score": 2,
+      "findings": [],
+      "checks": {
+        "noEmDashes": true,
+        "noCannedOpening": true,
+        "noStyleDisclosure": true,
+        "noUnrequestedRecap": true
+      },
+      "elapsedSeconds": 3.81
+    }
+  ],
+  "finishedAt": "2026-11-06T18:10:47.481Z"
+}

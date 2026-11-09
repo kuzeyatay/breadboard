@@ -1,9 +1,11 @@
 /**
  * Whether anyone is using this window. Decorative motion (composer beam, metal
- * send button, ambient background) settles once input stops: left running on a
+ * send button) settles once input stops: left running on a
  * visible but untouched window it kept the GPU process near a full core all
  * night. Progress indicators (spinners, thinking orbs) keep moving; the one
  * exception is the Terminal usage notch, whose glass made each frame costly.
+ * Visible Terminal backgrounds, rings and navbar motion are deliberately
+ * independent of input-idle state so they continue on a second monitor.
  */
 export const USER_IDLE_MS = 60_000;
 

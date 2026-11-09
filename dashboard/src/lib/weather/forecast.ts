@@ -48,7 +48,11 @@ export interface WeatherForecastResult {
 interface GeocodingResult {
   name?: unknown;
   admin1?: unknown;
+  admin2?: unknown;
+  admin3?: unknown;
+  admin4?: unknown;
   country?: unknown;
+  country_code?: unknown;
   latitude?: unknown;
   longitude?: unknown;
   timezone?: unknown;
@@ -172,6 +176,51 @@ function resolvedPlace(result: GeocodingResult): string {
   return stringValue(result.name);
 }
 
+function placeKey(value: unknown): string {
+  return stringValue(value).normalize('NFKD').replace(/\p{M}/gu, '')
+    .toLocaleLowerCase('en').replace(/^the\s+/, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+function matchesQualifiers(result: GeocodingResult, qualifiers: string[]): boolean {
+  const aliases = [result.country, result.country_code, result.admin1, result.admin2, result.admin3, result.admin4];
+  const code = stringValue(result.country_code).toUpperCase();
+  if (/^[A-Z]{2}$/.test(code)) {
+    for (const style of ['long', 'short'] as const) {
+      aliases.push(new Intl.DisplayNames(['en'], {type:'region', style}).of(code));
+    }
+  }
+  const names = new Set(aliases.map(placeKey).filter(Boolean));
+  return qualifiers.every(qualifier => names.has(placeKey(qualifier)));
+}
+
+async function resolveWeatherLocation(location: string, fetchImpl: typeof fetch, signal?: AbortSignal): Promise<GeocodingResult | undefined> {
+  const parts = location.split(',').map(part => part.trim()).filter(Boolean);
+  const qualifiers = parts.slice(1);
+  const search = async (name: string, count: number) => {
+    const url = new URL(GEOCODING_ENDPOINT);
+    url.searchParams.set('name', name);
+    url.searchParams.set('count', String(count));
+    url.searchParams.set('language', 'en');
+    url.searchParams.set('format', 'json');
+    const payload = await fetchJson(fetchImpl, url, signal) as {results?: unknown};
+    return Array.isArray(payload?.results) ? payload.results.filter((result): result is GeocodingResult =>
+      Boolean(result) && typeof result === 'object' && !Array.isArray(result)) : [];
+  };
+  const direct = (await search(location, 1))[0];
+  // The geocoder applies the first qualifier itself, including region
+  // abbreviations. It ignores qualifiers after the second comma, so verify
+  // those extra constraints here without rejecting its supported aliases.
+  if (direct && matchesQualifiers(direct, qualifiers.slice(1))) return direct;
+  if (!qualifiers.length || signal?.aborted) return undefined;
+  // A compound place can fail an upstream alias match. Retry the city once,
+  // then validate every country/region the user supplied locally. Never strip
+  // the qualifiers and accept the first same-named city in another country.
+  const matches = (await search(parts[0], 50)).filter(result =>
+    placeKey(result.name) === placeKey(parts[0]) && matchesQualifiers(result, qualifiers));
+  const unique = new Map(matches.map(result => [`${result.latitude},${result.longitude}`, result]));
+  return unique.size === 1 ? unique.values().next().value : undefined;
+}
+
 export async function fetchWeatherForecast(
   rawInput: WeatherForecastInput,
   options: {
@@ -183,17 +232,7 @@ export async function fetchWeatherForecast(
   const input = validateInput(rawInput);
   const fetchImpl = options.fetchImpl ?? fetch;
 
-  const geocodingUrl = new URL(GEOCODING_ENDPOINT);
-  geocodingUrl.searchParams.set("name", input.location);
-  geocodingUrl.searchParams.set("count", "1");
-  geocodingUrl.searchParams.set("language", "en");
-  geocodingUrl.searchParams.set("format", "json");
-  const geocoding = await fetchJson(fetchImpl, geocodingUrl, options.signal) as {
-    results?: unknown;
-  };
-  const result = Array.isArray(geocoding?.results)
-    ? geocoding.results[0] as GeocodingResult | undefined
-    : undefined;
+  const result = await resolveWeatherLocation(input.location, fetchImpl, options.signal);
   const latitude = numberValue(result?.latitude);
   const longitude = numberValue(result?.longitude);
   if (!result || latitude === null || longitude === null || !stringValue(result.name)) {

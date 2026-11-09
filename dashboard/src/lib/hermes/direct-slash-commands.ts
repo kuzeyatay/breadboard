@@ -95,7 +95,7 @@ export function directSlashCommandItems({
   const unifiedWorkflows: CommandHubItem[] = surface === "quartz_ai" ? [] : UNIFIED_WORKFLOWS.map(workflow => ({
     id: `unified-workflow:${workflow.id}`, kind: "agent", slug: workflow.command.slice(1),
     token: workflow.command.slice(1), name: workflow.name, description: workflow.description,
-    category: "Workflow", source: "Unified workflows", installed: true, enabled: true, healthy: true,
+    category: "Master Agents", source: "Master Agents", installed: true, enabled: true, healthy: true,
     searchTerms: workflow.modes.map(mode => mode.name).join(" "),
   }));
   const candidates = [

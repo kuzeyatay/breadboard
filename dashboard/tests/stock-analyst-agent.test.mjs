@@ -427,7 +427,7 @@ test("the run card separates the pipeline from the evidence, and is honest about
   // The backend's first start is most of a cold run's wait; saying so is the
   // difference between "slow" and "broken".
   assert.match(card, /service\.starting/);
-  assert.match(card, /Starting the Stock Analyst backend/);
+  assert.match(card, /Starting Stock Analyst and connecting to market data\./);
   // Stages are the shape of the answer; tools are the evidence under it.
   assert.match(card, /Stages · \{stages\.length\}/);
   assert.match(card, /Analysis output, not financial advice/);

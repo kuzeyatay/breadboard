@@ -1,3 +1,4 @@
+import { systemPromptText } from "@/lib/system-prompts/service";
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
 import {
@@ -35,7 +36,7 @@ export async function POST(request: Request) {
     const userId = await requireUserId();
     requireEnabled();
     const body = await readJsonBody(request);
-    if (body.action === "draft") return await draftWithModel(body);
+    if (body.action === "draft") return await draftWithModel(body, userId);
 
     const draft = draftFromBody(body);
     const validation = validateSkillDraft(draft);
@@ -109,14 +110,14 @@ function draftFromBody(body: Record<string, unknown>): SkillDraft {
   };
 }
 
-async function draftWithModel(body: Record<string, unknown>): Promise<NextResponse> {
+async function draftWithModel(body: Record<string, unknown>, userId: number): Promise<NextResponse> {
   const intent = requireString(body.intent, "intent", 4000);
   const client = createChatmockClient();
   let raw = "";
   try {
     const response = await client.chat.completions.create({
       model: DEFAULT_MODEL,
-      messages: skillDraftMessages(intent),
+      messages: skillDraftMessages(intent, systemPromptText("skill-authoring", userId)),
     });
     raw = response.choices[0]?.message?.content ?? "";
   } catch {

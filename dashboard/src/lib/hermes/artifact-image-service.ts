@@ -1,3 +1,4 @@
+import { renderSystemPrompt } from "../system-prompts/service.ts";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import OpenAI from "openai";
 import type { EasyInputMessage } from "openai/resources/responses/responses";
@@ -162,6 +163,7 @@ function decodeGeneratedImage(value: string): Buffer {
  * the item events; this does the same rather than trusting the aggregate.
  */
 interface GenerateArtifactImageInput {
+  userId?: number | null;
   baseURL: string;
   prompt: string;
   sourceImage?: { dataUrl: string } | null;
@@ -230,7 +232,7 @@ async function generateArtifactImageAttempt(input: GenerateArtifactImageInput): 
     stream = await client.responses.create({
       model: DEFAULT_MODEL,
       instructions:
-        "Create the requested image. If a reference image is provided, edit that image while preserving details the prompt does not ask to change.",
+        renderSystemPrompt("image-generation-instructions", input.userId, {  }),
       input: messages,
       stream: true,
       store: false,

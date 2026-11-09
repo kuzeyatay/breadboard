@@ -1,4 +1,5 @@
 use crate::control::{RuntimeServiceControl, RuntimeServiceControlError};
+use crate::runtime_diagnostics::{controller_error, ControllerOperation};
 use crate::shutdown::{AdmissionOpenError, ShutdownCoordinator};
 use breadboard_runtime_core::{
     AdmissionGovernor, AuthenticatedJobContext, CurrentGenerationMembership,
@@ -1174,14 +1175,14 @@ impl ServiceController {
     fn run(&mut self, commands: Receiver<ControllerCommand>) -> Result<(), String> {
         loop {
             if self.shutdown.is_requested() {
-                return self.shutdown_bounded().map_err(|error| error.to_string());
+                return self.shutdown_bounded().map_err(|error| controller_error(&error, ControllerOperation::ShutdownDrain));
             }
             match commands.recv_timeout(CONTROLLER_TICK) {
                 Ok(ControllerCommand::Acquire { service_id, reply }) => {
                     if let Err(error) = self.handle_acquire(service_id, reply) {
                         self.shutdown.request_shutdown();
                         let cleanup = self.shutdown_bounded().err();
-                        return Err(join_controller_errors(error, cleanup));
+                        return Err(join_controller_errors(error, cleanup, ControllerOperation::Acquire));
                     }
                 }
                 Ok(ControllerCommand::AcquireWorkerDependency {
@@ -1194,28 +1195,28 @@ impl ServiceController {
                     {
                         self.shutdown.request_shutdown();
                         let cleanup = self.shutdown_bounded().err();
-                        return Err(join_controller_errors(error, cleanup));
+                        return Err(join_controller_errors(error, cleanup, ControllerOperation::WorkerDependencyAcquire));
                     }
                 }
                 Ok(ControllerCommand::Release { lease_id, reply }) => {
                     if let Err(error) = self.handle_release(lease_id, reply) {
                         self.shutdown.request_shutdown();
                         let cleanup = self.shutdown_bounded().err();
-                        return Err(join_controller_errors(error, cleanup));
+                        return Err(join_controller_errors(error, cleanup, ControllerOperation::Release));
                     }
                 }
                 Ok(ControllerCommand::ReleaseWorkerDependency { lease_id, reply }) => {
                     if let Err(error) = self.handle_release(lease_id, reply) {
                         self.shutdown.request_shutdown();
                         let cleanup = self.shutdown_bounded().err();
-                        return Err(join_controller_errors(error, cleanup));
+                        return Err(join_controller_errors(error, cleanup, ControllerOperation::WorkerDependencyRelease));
                     }
                 }
                 Ok(ControllerCommand::Retry { service_id, reply }) => {
                     if let Err(error) = self.handle_retry(service_id, reply) {
                         self.shutdown.request_shutdown();
                         let cleanup = self.shutdown_bounded().err();
-                        return Err(join_controller_errors(error, cleanup));
+                        return Err(join_controller_errors(error, cleanup, ControllerOperation::Retry));
                     }
                 }
                 Ok(ControllerCommand::ReconcileGateway {
@@ -1253,18 +1254,18 @@ impl ServiceController {
                 }
                 Ok(ControllerCommand::Shutdown) => {
                     self.shutdown.request_shutdown();
-                    return self.shutdown_bounded().map_err(|error| error.to_string());
+                    return self.shutdown_bounded().map_err(|error| controller_error(&error, ControllerOperation::ShutdownDrain));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     self.shutdown.request_shutdown();
-                    return self.shutdown_bounded().map_err(|error| error.to_string());
+                    return self.shutdown_bounded().map_err(|error| controller_error(&error, ControllerOperation::ShutdownDrain));
                 }
             }
             if let Err(error) = self.drive_once(false) {
                 self.shutdown.request_shutdown();
                 let cleanup = self.shutdown_bounded().err();
-                return Err(join_controller_errors(error, cleanup));
+                return Err(join_controller_errors(error, cleanup, ControllerOperation::Drive));
             }
         }
     }
@@ -1727,7 +1728,8 @@ impl ServiceController {
             }
             Err(error) => return Err(error.into()),
         };
-        if definition.startup_policy != ServiceStartupPolicy::Eager {
+        let startup_policy = definition.startup_policy;
+        if !matches!(startup_policy, ServiceStartupPolicy::Eager | ServiceStartupPolicy::OnDemand) {
             let _ = reply.send(Err(RuntimeServiceControlError::Conflict));
             return Ok(());
         }
@@ -1742,7 +1744,12 @@ impl ServiceController {
         if retryable {
             self.store
                 .reset_durable_service_for_explicit_retry(&service_id, self.clock.now_ms())?;
-            if self.require_dependencies_ready(&service_id).is_ok() {
+            // An on-demand retry clears the terminal failure only. Its next
+            // real lease must still pass the ordinary dependency, installation,
+            // and resource admission checks before creating a new process.
+            if startup_policy == ServiceStartupPolicy::Eager
+                && self.require_dependencies_ready(&service_id).is_ok()
+            {
                 self.begin_eager_start(&service_id, false)?;
                 self.drive_once(false)?;
             }
@@ -4290,7 +4297,7 @@ fn finish_controller_thread(
 ) -> Result<(), String> {
     let cleanup_error = match cleanup {
         Ok(Ok(())) => None,
-        Ok(Err(error)) => Some(error.to_string()),
+        Ok(Err(error)) => Some(controller_error(&error, ControllerOperation::ThreadCleanup)),
         Err(_) => Some("service-controller cleanup panicked".to_owned()),
     };
     match run {
@@ -4328,10 +4335,13 @@ where
 fn join_controller_errors(
     error: ServiceEngineError,
     cleanup: Option<ServiceEngineError>,
+    operation: ControllerOperation,
 ) -> String {
+    let message = controller_error(&error, operation);
     match cleanup {
-        Some(cleanup) => format!("{error}; cleanup also failed: {cleanup}"),
-        None => error.to_string(),
+        Some(cleanup) => format!("{message}; cleanup also failed: {}",
+            controller_error(&cleanup, ControllerOperation::ShutdownDrain)),
+        None => message,
     }
 }
 
@@ -5052,6 +5062,27 @@ mod tests {
 
         reservations.reserve(source, &endpoints).unwrap();
         assert!(reservations.is_reserved(source));
+    }
+
+    #[test]
+    fn controller_join_retains_bounded_io_details_and_non_io_cleanup() {
+        let error = ServiceEngineError::Path(PathError::Io(io::Error::from_raw_os_error(5)));
+        let run_error = join_controller_errors(error, None, ControllerOperation::Drive);
+        let joined = finish_controller_thread(
+            Ok(Err(run_error)),
+            Ok(Err(ServiceEngineError::Invariant("cleanup failed"))),
+        ).unwrap_err();
+        assert!(joined.contains("operation=drive"));
+        assert!(joined.contains("os_code=5"));
+        assert!(joined.contains("cleanup also failed: the service controller violated a lifecycle invariant: cleanup failed"));
+    }
+
+    #[test]
+    fn controller_join_preserves_non_io_error_exactly() {
+        let error = ServiceEngineError::Invariant("unchanged failure");
+        let original = error.to_string();
+        let run_error = join_controller_errors(error, None, ControllerOperation::Acquire);
+        assert_eq!(finish_controller_thread(Ok(Err(run_error)), Ok(Ok(()))), Err(original));
     }
 
     #[test]

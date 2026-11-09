@@ -16,6 +16,8 @@ import {
 import type { CapabilityMode } from "../hermes/capability-policy.ts";
 import { loopxEnabled } from "./state.ts";
 import { scheduleLoopxTick } from "./tick.ts";
+import db from "../db.ts";
+import { conversationHasActiveSwarm } from "../swarm/activity.ts";
 
 const ARTIFACT_TOOL = /artifact|document|render|image|video/i;
 
@@ -32,6 +34,9 @@ export function scheduleLoopxTickForConversation(
 ): void {
   if (!loopxEnabled()) return;
   if (input.conversationId === null || input.conversationId === undefined) return;
+  // A coordinator hand-off is not delivery. Let the verified final synthesis
+  // drive LoopX instead of claiming success while assignments still run.
+  if (conversationHasActiveSwarm(db, input.conversationId)) return;
   let conversation: ReturnType<typeof getConversationById>;
   try {
     conversation = getConversationById(input.conversationId);

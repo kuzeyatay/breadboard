@@ -58,7 +58,7 @@ export interface CouncilFields {
  * The extra fields ride along in the JSON body (ChatMock reads and strips
  * them); the return type stays `T` so SDK typing is unaffected.
  */
-export function withCouncil<T extends object>(params: T, council: CouncilFields): T {
+export function withCouncil<T extends object>(params: T, council: CouncilFields, identity?: string): T {
   const extras: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(council)) {
     if (value !== undefined && value !== null) extras[key] = value;
@@ -66,7 +66,7 @@ export function withCouncil<T extends object>(params: T, council: CouncilFields)
 
   const identified = { ...params } as Record<string, unknown>;
   if (typeof identified.instructions === 'string') {
-    identified.instructions = breadSystemPrompt(identified.instructions);
+    identified.instructions = breadSystemPrompt(identified.instructions, identity);
   }
 
   if (Array.isArray(identified.messages)) {
@@ -86,11 +86,11 @@ export function withCouncil<T extends object>(params: T, council: CouncilFields)
       if (typeof systemMessage.content === 'string') {
         messages[systemIndex] = {
           ...systemMessage,
-          content: breadSystemPrompt(systemMessage.content),
+          content: breadSystemPrompt(systemMessage.content, identity),
         };
       }
     } else {
-      messages.unshift({ role: 'system', content: breadSystemPrompt('') });
+      messages.unshift({ role: 'system', content: breadSystemPrompt('', identity) });
     }
     identified.messages = messages;
   }

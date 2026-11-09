@@ -1,3 +1,4 @@
+import { scopedSystemPromptText } from "./system-prompts/service.ts";
 // Independent review of source figure crops against their full page.
 //
 // The page detector returns one bbox per figure, graph, diagram, or table.
@@ -9,7 +10,7 @@
 // Equations are reviewed by the source-formula review and are never handled here.
 
 import crypto from "crypto";
-import { breadSystemPrompt } from "./assistant-identity.ts";
+
 import { cropPng, decodePng, resizePngToMaxDimension } from "./png-crop.ts";
 
 export type FigureCropVisualType = "figure" | "diagram" | "graph" | "table";
@@ -77,24 +78,8 @@ export const FIGURE_CROP_REVIEW_MAX_CROPS_PER_REQUEST = 8;
 const REVIEW_PAGE_IMAGE_MAX_DIMENSION = 1400;
 const REVIEW_MAX_PROTOCOL_ATTEMPTS = 2;
 
-export const FIGURE_CROP_REVIEW_SYSTEM_PROMPT = breadSystemPrompt(`You verify source figure crops for an educational garden.
-
-You receive the full PAGE IMAGE and one labeled CROP for each detected figure, graph, diagram, or table. Each crop comes with the detector's caption, its bbox (fractions of the page, 0..1, from the top-left corner), and the sides where printed content touches the crop edge ("contentTouchesEdge"), measured from the pixels.
-
-For every crop, compare it with the page and decide:
-- "complete": the crop shows the entire visual the caption describes (every node, arrow, axis, label, legend, and its printed caption when it has one), and no side slices through printed content. A little whitespace or a whole neighbouring element is acceptable; half a word or half a shape is not.
-- "clipped": the crop shows the right visual but cuts part of it off, or slices through neighbouring printed text or graphics. Return a corrected bbox that includes the whole visual and either fully includes or fully excludes anything it would otherwise cut.
-- "wrong_region": the crop shows a different part of the page than the caption describes, and that visual IS on the page. Return the bbox of the described visual.
-- "not_on_page": the described visual cannot be found on this page.
-
-Return ONLY one JSON object:
-{"reviews":[{"crop":"exact supplied crop label","verdict":"complete|clipped|wrong_region|not_on_page","bbox":{"x":0.1,"y":0.2,"width":0.5,"height":0.3},"reason":"specific visual evidence"}]}
-
-Rules:
-- Return exactly one review for every supplied crop label and no others.
-- bbox is required for clipped and wrong_region, and must be omitted otherwise.
-- Measure bbox on the PAGE IMAGE, as fractions of its full width (x, width) and full height (y, height). It must lie inside the page and tightly enclose the visual including its printed caption.
-- Judge only geometry. Do not rewrite captions.`);
+import { PROMPT_SOURCE_CROP_REVIEW as FIGURE_CROP_REVIEW_SYSTEM_PROMPT } from "./system-prompts/feature-defaults.ts";
+export { FIGURE_CROP_REVIEW_SYSTEM_PROMPT };
 
 /** Small, uniform padding around a reviewed bbox. Unlike the detector's
  * expansion there is no minimum crop size, so a small diagram is never widened
@@ -208,7 +193,7 @@ export function figureCropReviewCacheKey(input: {
 }): string {
   return crypto.createHash("sha256").update(JSON.stringify({
     version: input.version === 1 ? 1 : FIGURE_CROP_REVIEW_VERSION,
-    systemPromptSha256: crypto.createHash("sha256").update(FIGURE_CROP_REVIEW_SYSTEM_PROMPT).digest("hex"),
+    systemPromptSha256: crypto.createHash("sha256").update(scopedSystemPromptText("source-crop-review")).digest("hex"),
     model: input.model,
     pageFingerprint: input.pageFingerprint,
     candidates: input.candidates.map((candidate) => ({
@@ -391,7 +376,7 @@ export async function reviewFigureCropsOnPage(input: {
           : [...content, { type: "text" as const, text: `The previous response was rejected: ${diagnostic}. Return a complete corrected JSON object for every crop label.` }];
         modelCalls += 1;
         const raw = await input.complete({
-          system: FIGURE_CROP_REVIEW_SYSTEM_PROMPT,
+          system: scopedSystemPromptText("source-crop-review"),
           content: attemptContent,
           stageLabel: `figure crop review for page ${input.pageNumber} (round ${round})`,
         });

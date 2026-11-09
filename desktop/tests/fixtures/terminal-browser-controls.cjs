@@ -48,7 +48,7 @@ app.whenReady().then(async () => {
   Menu.prototype.popup = function(options) { menu=this;anchor=options;options.callback?.(); };
   const command = type => ({type,x:1000,y:60,profileLabel:'Fixture profile'});
   assert.equal(await manager.tabs.handleCommand(base,command('browser-menu')),true);
-  assert.equal(menu.getMenuItemById('profile').label,'Fixture profile');
+  assert.equal(menu.getMenuItemById('profile').label,'Settings');
   assert.equal(menu.getMenuItemById('save').enabled,false,'page-only actions retain browser-home rules');
   assert.equal(anchor.y,60+(tab.view?.getBounds().y??0),'native popup accounts for the Terminal view offset');
   for (const action of ['history','visited-pages','bookmarks','downloads']) {

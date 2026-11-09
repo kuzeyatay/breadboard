@@ -25,6 +25,7 @@ import {
   MAX_PENDING_CHAT_NOTIFICATIONS,
   listUnreadChatMessages,
   markUnreadChatMessagesSeen,
+  resolveViewedChatMessages,
 } from "../src/lib/chat-notifications/store.ts";
 
 const source = (relative) =>
@@ -293,7 +294,7 @@ test("unread dots share canonical and Garden identities, survive reloads, and re
     addAnswer(db, 10, "Old history", "2026-08-30 08:00:00");
     assert.deepEqual(listUnreadChatMessages(db, 1), []);
     const garden = addAnswer(db, 11, "Garden answer", "2026-08-30 09:00:00");
-    assert.deepEqual(listUnreadChatMessages(db, 1), [{ id: `msg_${garden}`, target: { ...gardenTarget, conversationId: "conv_garden" } }]);
+    assert.deepEqual(listUnreadChatMessages(db, 1), [{ id: `msg_${garden}`, messageKeys: [`message:${garden}`], target: { ...gardenTarget, conversationId: "conv_garden" } }]);
     assert.equal(markUnreadChatMessagesSeen(db, 2, [garden]), 0);
     assert.equal(markUnreadChatMessagesSeen(db, 1, [], { surface: "dashboard_terminal", chatId: "conv_garden" }), 1);
     assert.deepEqual(listUnreadChatMessages(db, 1), []);
@@ -322,6 +323,29 @@ test("unread dots cover every durable assistant surface beyond the corner-notice
     assert.ok(unread.some(row => row.id === `msg_${voice}`));
     assert.equal(markUnreadChatMessagesSeen(db, 1, [quartz, voice]), 2);
     assert.equal(listUnreadChatMessages(db, 1).length, MAX_PENDING_CHAT_NOTIFICATIONS + 5);
+  } finally { db.close(); }
+});
+
+test('visible message receipts resolve exact owned answers, never the rest of a selected chat', () => {
+  const db = notificationDatabase();
+  try {
+    listUnreadChatMessages(db, 1);
+    const visible = addAnswer(db, 11, 'Visible answer', '2026-08-30 10:00:00', 'complete',
+      JSON.stringify({ documentAssistant: { entryId: 'editor-answer' } }));
+    db.prepare('UPDATE conversation_messages SET client_message_id = ? WHERE id = ?').run('turn-visible', visible);
+    const offscreen = addAnswer(db, 11, 'Offscreen answer', '2026-08-30 10:00:01');
+    const pending = addAnswer(db, 11, 'Still generating', '2026-08-30 10:00:02', 'pending');
+    const keys = ['client:turn-visible', 'entry:editor-answer', `message:${pending}`];
+    const result = resolveViewedChatMessages(db, 1, gardenTarget, keys);
+    assert.deepEqual(result, { ids: [visible], acknowledged: keys.slice(0, 2) });
+    assert.deepEqual(resolveViewedChatMessages(db, 2, gardenTarget, keys).ids, []);
+    assert.deepEqual(resolveViewedChatMessages(db, 1, otherGardenTarget, keys).ids, []);
+    assert.deepEqual(resolveViewedChatMessages(db, 1, { surface: 'dashboard_terminal', chatId: 'conv_garden' }, keys).ids, [visible]);
+    assert.ok(listPendingChatNotifications(db, 1).find(row => row.id === `msg_${visible}`).messageKeys.includes('client:turn-visible'));
+    markUnreadChatMessagesSeen(db, 1, result.ids);
+    assert.deepEqual(listPendingChatNotifications(db, 1).map(row => row.id), [`msg_${offscreen}`]);
+    db.prepare("UPDATE conversation_messages SET status = 'complete' WHERE id = ?").run(pending);
+    assert.deepEqual(resolveViewedChatMessages(db, 1, gardenTarget, [`message:${pending}`]).ids, [pending]);
   } finally { db.close(); }
 });
 

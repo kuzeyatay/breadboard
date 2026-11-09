@@ -175,7 +175,7 @@ export function assignCommandTokens<T extends {
   return items.map((item) => ({
     ...item,
     token:
-      item.source === "Unified workflows"
+      item.source === "Master Agents" || item.source === "Unified workflows"
         ? `workflows:${item.slug}`
         : item.kind === "agent"
         ? item.source === "Agency Agents"
@@ -339,12 +339,12 @@ export function registryItemsForUser(
       slug: workflow.id,
       name: workflow.name,
       description: workflow.description,
-      category: "Workflows",
-      source: "Unified workflows",
+      category: "Master Agents",
+      source: "Master Agents",
       installed: true,
       enabled: true,
       healthy: true,
-      trustLabel: "Shared workflow",
+      trustLabel: "Master Agent",
       searchTerms: workflow.modes.map((mode) => `${mode.name} ${mode.description}`).join(" "),
     }));
   return assignCommandTokens([
@@ -610,7 +610,11 @@ export async function resolveCommandMessage(
     activeRuntimeAgentId: effectiveContext.executionTarget ?? null,
   });
   if (conflict) throw new ApiError(400, conflict.code, conflict.message);
-  const registry = registryItemsForUser(userId, effectiveContext);
+  // Only leading slash selectors consult this catalog. Building it for plain
+  // conversation needlessly hashes every installed skill before each reply.
+  // Keep the exact resolver and live availability checks for actual selectors.
+  const registry = commandText.trimStart().startsWith("/")
+    ? registryItemsForUser(userId, effectiveContext) : [];
   const parsed = requestedSelectors(commandText, registry, context.activeAgentSlug);
   const requested = parsed.requested;
   const remaining = parsed.remaining;

@@ -1,4 +1,4 @@
-// Workflow entry points group the existing specialists. They do not create new
+// Master Agent entry points group the existing specialists. They do not create new
 // runtimes, replace run kinds, or hide the individual /agents:* commands.
 import {
   runtimeAgentById,
@@ -42,12 +42,12 @@ function workflow(
 }
 
 export const UNIFIED_WORKFLOWS: readonly UnifiedWorkflow[] = [
-  workflow("code", "Code", "Build, fix and test software in a connected repository.", [
+  workflow("code", "Code", "Build, fix, and test software in your connected repository.", [
     mode("build", "Build and fix", "Build or fix something in your connected project.", ["codex", "opencode"]),
     mode("team", "Coordinated coding", "Use a team of coding agents for larger changes.", ["ruflo"]),
     mode("skills", "Create a skill", "Turn source resources into a reusable skill.", ["resource2skill"]),
   ]),
-  workflow("research", "Research", "Find evidence, investigate a question or run a scientific project.", [
+  workflow("research", "Research", "Find sources, investigate questions, and carry out research projects.", [
     mode("web", "Web research", "Gather and compare public sources for a cited answer.", ["deep-research", "agent-reach"]),
     mode("papers", "Find papers", "Find academic papers and available full texts.", ["get-doc"]),
     mode("investigate", "Investigate", "Investigate public records and map relationships with sources.", ["openplanter"]),
@@ -57,11 +57,11 @@ export const UNIFIED_WORKFLOWS: readonly UnifiedWorkflow[] = [
     mode("audience", "Simulated audience", "Compare simulated opinions. Results are not responses from real people.", ["matraix"]),
     mode("map", "Map and world activity", "Open the globe and inspect a place or available live feeds.", ["gods-eye"]),
   ]),
-  workflow("browse", "Browse", "Work with browser pages or visual interfaces.", [
+  workflow("browse", "Browse", "Navigate websites and work with apps through their visual interfaces.", [
     mode("browser", "Browser task", "Visit websites, fill forms, and gather information.", ["agent-browser"]),
     mode("visual", "Visual interaction", "Work with apps and websites by reading the screen and clicking.", ["agent-tars"]),
   ]),
-  workflow("work", "Work", "Complete workspace tasks, documents, meetings and connected-account work.", [
+  workflow("work", "Work", "Handle files, documents, meetings, and tasks in connected apps.", [
     mode("workspace", "Workspace task", "Complete tasks using your workspace’s files, skills, and connected apps.", ["openwork", "deer-flow"]),
     mode("advisory", "Business advisory", "Get advice on business decisions, with optional review by other specialists.", ["openexecutive"]),
     mode("career", "Career", "Score roles, tailor applications and track a job search.", ["career-ops"]),
@@ -75,11 +75,11 @@ export const UNIFIED_WORKFLOWS: readonly UnifiedWorkflow[] = [
     mode("equities", "Stock analysis", "Analyze stocks using prices, charts, and news.", ["stock-analyst"]),
     mode("strategy", "Markets and strategies", "Research markets and test strategies on historical data. Does not place trades.", ["vibe-trading"]),
   ]),
-  workflow("learn", "Learn", "Understand your material, practice and build interactive lessons.", [
+  workflow("learn", "Learn", "Study your material, practice skills, and create interactive lessons.", [
     mode("tutor", "Ask and practice", "Get explanations, solve problems, or practice with quizzes.", ["deep-tutor"]),
     mode("classroom", "Interactive classroom", "Teach through lessons, slides, quizzes and simulations.", ["classroom"]),
   ]),
-  workflow("create", "Create", "Make videos, music, presentations and images, or edit existing media.", [
+  workflow("create", "Create", "Create and edit videos, music, presentations, and images.", [
     mode("video", "Produce a video", "Create a film from your brief.", ["openmontage", "vimax"]),
     mode("motion", "Motion graphics", "Create motion graphics and animated scenes.", ["hyperframes"]),
     mode("collage", "Paper-collage explainer", "Render a narrated paper-collage explainer.", ["vox-director"]),
@@ -90,7 +90,7 @@ export const UNIFIED_WORKFLOWS: readonly UnifiedWorkflow[] = [
     mode("slides", "Slides", "Build an interactive presentation with slide and presenter controls.", ["bolt-slides"]),
     mode("wardrobe", "Wardrobe", "Organize your clothes and create images of you wearing them.", ["wardrobe"]),
   ]),
-  workflow("design", "Design", "Design circuits, dimensioned parts, or 3D models from images.", [
+  workflow("design", "Design", "Design circuits and dimensioned parts, or turn images into 3D models.", [
     mode("electronics", "Electronics", "Produce a checked circuit, component list and wiring blueprint.", ["hardware-blueprint"]),
     mode("cad", "Parametric CAD", "Design dimensioned 3D parts you can revise and download.", ["parametric-cad"]),
     mode("image-to-3d", "Image to 3D", "Turn an image into a 3D model.", ["formsmith"]),
@@ -124,8 +124,8 @@ export function unifiedWorkflowAgents(
 /** Requirements are separate from ordinary chat attachments. A workflow must
  * never describe a populated composer tray as a populated native file picker. */
 export const UNIFIED_AGENT_INPUT_REQUIREMENTS: Readonly<Record<string, string>> = {
-  codex: "A repository connected to this Garden.",
-  opencode: "A repository connected to this Garden.",
+  codex: "A connected repository: the current Garden repository, or the single unambiguous repository in Terminal.",
+  opencode: "A connected repository: the current Garden repository, or the single unambiguous repository in Terminal.",
   ruflo: "A connected repository and the configured coding executor.",
   praxist: "An existing configured task-project directory, supplied as the task path.",
   "trading-agent": "Choose a symbol and optional date in the form.",
@@ -136,5 +136,5 @@ export const UNIFIED_AGENT_INPUT_REQUIREMENTS: Readonly<Record<string, string>> 
   legal: "The documents attached to this request.",
   wardrobe: "Clothing photos attached to this request and a configured identity photo.",
   "inbox-zero": "A configured mailbox connection; permission for each requested account action.",
-  "socials-manager": "Configured social accounts; permission for each requested publishing action.",
+  "socials-manager": "A brief for a local draft. Publishing requires connected social accounts and permission for the requested account action.",
 };

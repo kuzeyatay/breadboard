@@ -90,7 +90,7 @@ test("Hermes real UI conversational path and supported surface inventory", async
     chatResponses.push({ status: response.status(), body: redactText(body).slice(0, 4_000) });
   };
   page.on("response", captureChatResponse);
-  const composer = page.getByPlaceholder(/Ask about your documents/).first();
+  const composer = page.getByPlaceholder('Ask anything.', { exact: true }).first();
   await expect(composer).toBeVisible({ timeout: 30_000 });
   await expect(composer).toBeEditable({ timeout: 120_000 });
   const beforeAssistantCount = await page.locator('div[class~="text-gray-200"]').count();
@@ -186,7 +186,7 @@ async function observeTurn(
       .count()
       .then((count) => count > 0)
       .catch(() => false);
-    const composer = page.getByPlaceholder(/Ask about your documents/).first();
+    const composer = page.getByPlaceholder('Ask anything.', { exact: true }).first();
     const composerUsable = await composer
       .isEnabled()
       .catch(() => false);
@@ -200,7 +200,7 @@ async function observeTurn(
     failureText,
     userMessageVisible,
     composerUsable: await page
-      .getByPlaceholder(/Ask about your documents/)
+      .getByPlaceholder('Ask anything.', { exact: true })
       .first()
       .isEnabled()
       .catch(() => false),

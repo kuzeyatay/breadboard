@@ -1,0 +1,616 @@
+{
+  "passed": true,
+  "scope": "Windows streaming and post-dictation H/E typing in placeholder and plain editors; Unicode corrections, Enter once while held, and released modifier states; microphone excluded",
+  "nativeStreaming": true,
+  "nativeFields": [
+    "placeholder",
+    "input"
+  ],
+  "results": [
+    {
+      "phase": "placeholder-removed",
+      "streamable": true,
+      "rebased": true
+    },
+    {
+      "field": "input",
+      "editable": true,
+      "streamable": true,
+      "focused": true,
+      "caret": [
+        604,
+        327,
+        1,
+        21
+      ],
+      "bounds": [
+        601,
+        313,
+        687,
+        49
+      ],
+      "selection": [
+        0,
+        0
+      ],
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null,
+      "editMilliseconds": 0
+    },
+    {
+      "field": "textarea",
+      "editable": true,
+      "streamable": true,
+      "focused": true,
+      "caret": [
+        604,
+        374,
+        1,
+        20
+      ],
+      "bounds": [
+        601,
+        371,
+        687,
+        51
+      ],
+      "selection": [
+        0,
+        0
+      ],
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null,
+      "editMilliseconds": 0
+    },
+    {
+      "field": "editable",
+      "editable": true,
+      "streamable": true,
+      "focused": true,
+      "caret": [
+        601,
+        432,
+        1,
+        46
+      ],
+      "bounds": [
+        601,
+        432,
+        682,
+        46
+      ],
+      "selection": [
+        0,
+        0
+      ],
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null,
+      "editMilliseconds": 0
+    },
+    {
+      "field": "rich",
+      "editable": true,
+      "streamable": true,
+      "focused": true,
+      "caret": null,
+      "bounds": [
+        602,
+        511,
+        680,
+        27
+      ],
+      "selection": [
+        0,
+        0
+      ],
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null,
+      "editMilliseconds": 0
+    },
+    {
+      "field": "managed",
+      "editable": true,
+      "streamable": true,
+      "focused": true,
+      "caret": null,
+      "bounds": [
+        602,
+        594,
+        680,
+        27
+      ],
+      "selection": [
+        0,
+        0
+      ],
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null,
+      "editMilliseconds": 0
+    },
+    {
+      "field": "password",
+      "editable": false,
+      "streamable": false,
+      "focused": false,
+      "caret": null,
+      "bounds": null,
+      "selection": null,
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null,
+      "editMilliseconds": 0
+    },
+    {
+      "field": "readonly",
+      "editable": false,
+      "streamable": false,
+      "focused": false,
+      "caret": null,
+      "bounds": null,
+      "selection": null,
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null,
+      "editMilliseconds": 0
+    },
+    {
+      "field": "button",
+      "editable": false,
+      "streamable": false,
+      "focused": false,
+      "caret": null,
+      "bounds": null,
+      "selection": null,
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null,
+      "editMilliseconds": 0
+    },
+    {
+      "field": "custom",
+      "editable": false,
+      "streamable": false,
+      "focused": false,
+      "caret": null,
+      "bounds": null,
+      "selection": null,
+      "selected": null,
+      "text": null,
+      "foreground": true,
+      "preview": null,
+      "previewState": null,
+      "error": null,
+      "editMilliseconds": 0
+    },
+    {
+      "field": "input",
+      "expected": "Testing",
+      "accessibilityText": "Testing",
+      "selection": [
+        7,
+        7
+      ]
+    },
+    {
+      "field": "input",
+      "expected": "Testing ",
+      "accessibilityText": "Testing ",
+      "selection": [
+        8,
+        8
+      ]
+    },
+    {
+      "field": "input",
+      "expected": "Testing breadb",
+      "accessibilityText": "Testing breadb",
+      "selection": [
+        14,
+        14
+      ]
+    },
+    {
+      "field": "input",
+      "expected": "Testing breadboard ",
+      "accessibilityText": "Testing breadboard ",
+      "selection": [
+        19,
+        19
+      ]
+    },
+    {
+      "field": "input",
+      "expected": "Testing  breadboard.",
+      "accessibilityText": "Testing  breadboard.",
+      "selection": [
+        20,
+        20
+      ]
+    },
+    {
+      "field": "textarea",
+      "expected": "Testing",
+      "accessibilityText": "Testing",
+      "selection": [
+        7,
+        7
+      ]
+    },
+    {
+      "field": "textarea",
+      "expected": "Testing ",
+      "accessibilityText": "Testing ",
+      "selection": [
+        8,
+        8
+      ]
+    },
+    {
+      "field": "textarea",
+      "expected": "Testing breadb",
+      "accessibilityText": "Testing breadb",
+      "selection": [
+        14,
+        14
+      ]
+    },
+    {
+      "field": "textarea",
+      "expected": "Testing breadboard ",
+      "accessibilityText": "Testing breadboard ",
+      "selection": [
+        19,
+        19
+      ]
+    },
+    {
+      "field": "textarea",
+      "expected": "Testing  breadboard.",
+      "accessibilityText": "Testing  breadboard.",
+      "selection": [
+        20,
+        20
+      ]
+    },
+    {
+      "field": "editable",
+      "expected": "Testing",
+      "accessibilityText": "Testing",
+      "selection": [
+        7,
+        7
+      ]
+    },
+    {
+      "field": "editable",
+      "expected": "Testing ",
+      "accessibilityText": "Testing ",
+      "selection": [
+        8,
+        8
+      ]
+    },
+    {
+      "field": "editable",
+      "expected": "Testing breadb",
+      "accessibilityText": "Testing breadb",
+      "selection": [
+        14,
+        14
+      ]
+    },
+    {
+      "field": "editable",
+      "expected": "Testing breadboard ",
+      "accessibilityText": "Testing breadboard ",
+      "selection": [
+        19,
+        19
+      ]
+    },
+    {
+      "field": "editable",
+      "expected": "Testing  breadboard.",
+      "accessibilityText": "Testing  breadboard.",
+      "selection": [
+        20,
+        20
+      ]
+    },
+    {
+      "field": "rich",
+      "expected": "Testing",
+      "accessibilityText": "Testing",
+      "selection": [
+        7,
+        7
+      ]
+    },
+    {
+      "field": "rich",
+      "expected": "Testing ",
+      "accessibilityText": "Testing ",
+      "selection": [
+        8,
+        8
+      ]
+    },
+    {
+      "field": "rich",
+      "expected": "Testing breadb",
+      "accessibilityText": "Testing breadb",
+      "selection": [
+        14,
+        14
+      ]
+    },
+    {
+      "field": "rich",
+      "expected": "Testing breadboard ",
+      "accessibilityText": "Testing breadboard ",
+      "selection": [
+        19,
+        19
+      ]
+    },
+    {
+      "field": "rich",
+      "expected": "Testing  breadboard.",
+      "accessibilityText": "Testing  breadboard.",
+      "selection": [
+        20,
+        20
+      ]
+    },
+    {
+      "field": "managed",
+      "expected": "Testing",
+      "accessibilityText": "Testing",
+      "selection": [
+        7,
+        7
+      ]
+    },
+    {
+      "field": "managed",
+      "expected": "Testing ",
+      "accessibilityText": "Testing ",
+      "selection": [
+        8,
+        8
+      ]
+    },
+    {
+      "field": "managed",
+      "expected": "Testing breadb",
+      "accessibilityText": "Testing breadb",
+      "selection": [
+        14,
+        14
+      ]
+    },
+    {
+      "field": "managed",
+      "expected": "Testing breadboard ",
+      "accessibilityText": "Testing breadboard ",
+      "selection": [
+        19,
+        19
+      ]
+    },
+    {
+      "field": "managed",
+      "expected": "Testing  breadboard.",
+      "accessibilityText": "Testing  breadboard.",
+      "selection": [
+        20,
+        20
+      ]
+    },
+    {
+      "phase": "native-preview",
+      "field": "placeholder",
+      "characters": 14,
+      "editMilliseconds": 478
+    },
+    {
+      "phase": "native-preview",
+      "field": "placeholder",
+      "characters": 18,
+      "editMilliseconds": 143
+    },
+    {
+      "phase": "native-preview",
+      "field": "placeholder",
+      "characters": 49,
+      "editMilliseconds": 1327
+    },
+    {
+      "phase": "post-dictation-typing",
+      "field": "placeholder",
+      "modifiersReleased": true,
+      "keys": "h e"
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "left",
+      "characters": 7,
+      "editMilliseconds": 246
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "left",
+      "characters": 14,
+      "editMilliseconds": 248
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "left",
+      "characters": 18,
+      "editMilliseconds": 153
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "left",
+      "characters": 29,
+      "editMilliseconds": 373
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "left",
+      "characters": 5,
+      "editMilliseconds": 202
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "left",
+      "characters": 6,
+      "editMilliseconds": 60
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "left",
+      "characters": 8,
+      "editMilliseconds": 90
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "left",
+      "characters": 8,
+      "editMilliseconds": 273
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "left",
+      "characters": 0,
+      "editMilliseconds": 91
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "left",
+      "characters": 7,
+      "editMilliseconds": 247
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "right",
+      "characters": 7,
+      "editMilliseconds": 246
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "right",
+      "characters": 14,
+      "editMilliseconds": 247
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "right",
+      "characters": 18,
+      "editMilliseconds": 153
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "right",
+      "characters": 29,
+      "editMilliseconds": 369
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "right",
+      "characters": 5,
+      "editMilliseconds": 202
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "right",
+      "characters": 6,
+      "editMilliseconds": 60
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "right",
+      "characters": 8,
+      "editMilliseconds": 92
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "right",
+      "characters": 8,
+      "editMilliseconds": 278
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "right",
+      "characters": 0,
+      "editMilliseconds": 73
+    },
+    {
+      "phase": "native-preview",
+      "field": "input",
+      "side": "right",
+      "characters": 7,
+      "editMilliseconds": 245
+    },
+    {
+      "phase": "post-dictation-typing",
+      "field": "input",
+      "modifiersReleased": true,
+      "keys": "h e"
+    }
+  ],
+  "checkedAt": "2026-10-16T10:19:54.354Z",
+  "liveHelper": {
+    "processId": 47532,
+    "parentProcessId": 44924,
+    "mainRestarted": false
+  }
+}

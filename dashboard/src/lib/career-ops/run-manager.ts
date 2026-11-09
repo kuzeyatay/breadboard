@@ -1,3 +1,4 @@
+import { systemPromptText } from "../system-prompts/service.ts";
 // Worker-local run manager for the Career Ops agent. Breadboard drives the loop
 // itself inside one fresh Runtime V2 process: it calls ChatMock
 // (OpenAI-compatible) with five tools — run one of the clone's scripts, read a
@@ -14,6 +15,7 @@
 // Only startRuntimeWorkerRun and its worker-local controls reach this loop.
 
 import { randomUUID } from "node:crypto";
+import { API_ANYTHING_AGENT_TOOL, executeApiAnythingAgentTool } from "../api-anything/agents.ts";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -82,6 +84,7 @@ const MODEL_TIMEOUT_MS = 300_000;
 const RETENTION_MS = 30 * 60 * 1000;
 
 const TOOLS = [
+  API_ANYTHING_AGENT_TOOL,
   {
     type: "function" as const,
     function: {
@@ -477,7 +480,7 @@ async function drive(run: RunState, input: CareerOpsRuntimeWorkerRunInput): Prom
   });
 
   const scripts = availableScripts(run.root);
-  const { prompt, preloadedMode } = buildSystemPrompt({
+  const { prompt, preloadedMode } = buildSystemPrompt({ userId: run.userId,
     root: run.root,
     health: snapshot,
     mode: request.mode,
@@ -486,7 +489,7 @@ async function drive(run: RunState, input: CareerOpsRuntimeWorkerRunInput): Prom
   emit(run, "mode.resolved", { mode: request.mode, preloaded: Boolean(preloadedMode) });
 
   const messages: ChatMessage[] = [
-    { role: "system", content: prompt },
+    { role: "system", content: systemPromptText("api-anything-policy", run.userId) + "\n\n" + prompt },
     {
       role: "user",
       content: promptWithContext(request.task || run.task, input.conversationContext),
@@ -554,7 +557,9 @@ async function drive(run: RunState, input: CareerOpsRuntimeWorkerRunInput): Prom
       }
       const text = (key: string): string =>
         typeof parsed[key] === "string" ? (parsed[key] as string) : "";
-      const result = await runTool(run, call.function.name, text);
+      const result = call.function.name === "api_anything"
+        ? JSON.stringify(await executeApiAnythingAgentTool(run.userId, parsed, run.abortController.signal))
+        : await runTool(run, call.function.name, text);
       messages.push({ role: "tool", tool_call_id: call.id, content: result });
     }
   }

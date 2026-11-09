@@ -116,6 +116,7 @@ test("the config Breadboard writes is the config DeerFlow reads", async () => {
   process.env.DEER_FLOW_STATE_DIR = fs.mkdtempSync(
     path.join(process.env.TEMP ?? "/tmp", "deer-flow-config-"),
   );
+  if (process.platform === "win32") process.env.DEER_FLOW_STATE_DIR = path.toNamespacedPath(process.env.DEER_FLOW_STATE_DIR);
   const { writeConfig } = await import("../src/lib/deer-flow/config.ts");
   const generated = await writeConfig({
     // Unreachable on purpose: a model list that failed to load must not be the
@@ -134,8 +135,17 @@ test("the config Breadboard writes is the config DeerFlow reads", async () => {
   // send `reasoning_effort: minimal` on every non-thinking turn.
   assert.doesNotMatch(config, /supports_thinking/);
   assert.match(config, /supports_reasoning_effort: true/);
+  assert.match(config, /use_responses_api: false/);
   assert.match(config, /allow_host_bash: false/);
+  const sqliteDir = JSON.parse(/^  sqlite_dir: (.+)$/m.exec(config)[1]);
+  assert.equal(fs.realpathSync.native(sqliteDir), fs.realpathSync.native(path.join(generated.home, "data")));
+  assert.ok(!sqliteDir.startsWith("\\\\?\\"), "SQLite URL must not contain a Windows namespace query marker");
   assert.match(config, /use: deerflow\.community\.ddg_search\.tools:web_search_tool/);
+  const extensions = JSON.parse(fs.readFileSync(generated.extensionsPath, "utf8"));
+  assert.equal(extensions.mcpServers.api_anything.args[1], "public");
+  assert.equal(extensions.mcpServers.api_anything.env.ELECTRON_RUN_AS_NODE, "1");
+  extensions.mcpServers.existing = { command: "preserve-existing-connector" };
+  fs.writeFileSync(generated.extensionsPath, JSON.stringify(extensions));
 
   // The web group is a setting, and the harness itself drops the bash tool when
   // host bash is not allowed — so bash stays declared and `allow_host_bash`
@@ -150,6 +160,9 @@ test("the config Breadboard writes is the config DeerFlow reads", async () => {
   assert.doesNotMatch(second, /ddg_search/);
   assert.match(second, /use: deerflow\.sandbox\.tools:bash_tool/);
   assert.match(second, /allow_host_bash: true/);
+  const withoutWebExtensions = JSON.parse(fs.readFileSync(withoutWeb.extensionsPath, "utf8"));
+  assert.equal(withoutWebExtensions.mcpServers.api_anything, undefined);
+  assert.deepEqual(withoutWebExtensions.mcpServers.existing, extensions.mcpServers.existing);
 
   // Only the startup-only part of the config forces a restart; everything else
   // is re-read per request.

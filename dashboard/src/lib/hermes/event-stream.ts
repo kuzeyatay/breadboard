@@ -1,3 +1,4 @@
+import { appendWeatherToolDisplays } from "../weather/tool-display.ts";
 import { isBareProviderError } from "../provider-error.ts";
 // Shared SSE relay: turns an authorized runtime session's Hermes event
 // subscription into a browser SSE stream of normalized events, and persists the
@@ -1373,6 +1374,7 @@ function driveSessionEventPump(
               // Last chance: after this the stream closes, and an unemitted
               // launch would be a run the agent believes it started.
               emitAgentLaunchRequests();
+              assistantText = appendWeatherToolDisplays(assistantText, evidence);
               emitStableAnswer();
               emit(event);
               // The answer is never rewritten here any more. An unmet web

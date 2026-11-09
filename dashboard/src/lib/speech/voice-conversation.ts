@@ -121,6 +121,8 @@ export function frameLevel(samples: Float32Array | number[]): number {
    --------------------------------------------------------------------------- */
 
 export interface VoiceMessage {
+  readonly id?: string;
+  readonly pending?: boolean;
   readonly role: 'user' | 'assistant';
   readonly content: string;
   readonly clientMessageId?: string;
@@ -162,9 +164,11 @@ export function voiceTranscriptMessages(
   questions: readonly VoiceTranscriptQuestion[],
 ): VoiceMessage[] {
   const transcript: VoiceMessage[] = [];
-  const append = (role: VoiceMessage['role'], content: string, uiResources?: GenerativeUiResource[]) => {
+  const append = (role: VoiceMessage['role'], content: string, uiResources?: GenerativeUiResource[], source?: VoiceMessage) => {
     if (content.trim() || uiResources?.length) {
-      transcript.push({ role, content: content.trim(), ...(uiResources?.length ? { uiResources } : {}) });
+      transcript.push({ role, content: content.trim(), ...(uiResources?.length ? { uiResources } : {}),
+        ...(source?.id ? { id: source.id } : {}), ...(source?.clientMessageId ? { clientMessageId: source.clientMessageId } : {}),
+        ...(source?.pending !== undefined ? { pending: source.pending } : {}) });
     }
   };
   const appendQuestion = (question: VoiceTranscriptQuestion) => {
@@ -186,7 +190,7 @@ export function voiceTranscriptMessages(
     }
     // A resumed answer may be split around several questions. Its widgets
     // belong to the final fragment, including a resource-only response.
-    append(message.role, message.content.slice(offset), message.role === 'assistant' ? message.uiResources : undefined);
+    append(message.role, message.content.slice(offset), message.role === 'assistant' ? message.uiResources : undefined, message);
   });
   for (const question of questions.filter(question => question.messageIndex < 0)) appendQuestion(question);
   return transcript;
@@ -217,16 +221,75 @@ export function voiceSentenceBoundary(text: string): number {
 export const VOICE_PROGRESS_DELAY_MS = 1_500;
 export const VOICE_PROGRESS_INTERVAL_MS = 12_000;
 const VOICE_ANSWER_PHRASE_CHARACTERS = 480;
-export const VOICE_ANSWER_COALESCE_MS = 240;
+export const VOICE_ANSWER_COALESCE_MS = 360;
+const VOICE_ANSWER_MAX_COALESCE_MS = 600;
 
 /** A brief public status, never raw reasoning, tool arguments or a log dump. */
 function spokenProgress(note: string): string {
   const text = note.replace(/\s+/g, ' ').trim();
-  if (!text || /^(?:thinking|working|processing|loading|please wait)[.\s…!]*$/i.test(text)
+  // Generic execution labels convey no useful work detail. Reading them can
+  // take longer than the tool itself and hold an already ready answer behind
+  // status audio. They remain visible; speak substantive public updates only.
+  if (!text || /^(?:(?:thinking|working|processing|loading|please wait)|(?:running|executing|calling|using)\s+(?:(?:a|an|the)\s+)?(?:commands?|tools?|operations?))[.\s…!]*$/i.test(text)
     || /```|^\s*[\[{]|https?:\/\//.test(text)) return '';
-  if (text.length <= 220) return text;
+  // Speak a useful glimpse of public progress, not a whole planning paragraph.
+  // Long status audio would hold up an answer that becomes ready meanwhile.
   const boundary = voiceSentenceBoundary(text);
-  return boundary && boundary <= 220 ? text.slice(0, boundary).trim() : '';
+  const sentence = boundary ? text.slice(0, boundary).trim() : text;
+  return sentence.length <= 140 ? sentence : '';
+}
+
+/** Match already queued words to canonical text without treating whitespace or
+ * cosmetic emphasis as a rewrite. Keep source offsets so the unread tail still
+ * goes through the ordinary Markdown/math speech conversion. Words, numbers,
+ * punctuation and their order must match exactly; never use fuzzy overlap. */
+function narrationContinuationOffset(content: string, prefix: string): number | null {
+  if (content.startsWith(prefix)) return prefix.length;
+  const project = (source: string, cosmetic = false) => {
+    const hidden = new Uint8Array(source.length);
+    // Code, escaped syntax and formulas have meaningful punctuation. Only
+    // normalize balanced emphasis in plain prose, not arbitrary asterisks or
+    // underscores inside identifiers/expressions.
+    if (cosmetic) {
+      const emphasis = /(?<![\p{L}\p{N}])(\*\*|__|~~|\*|_)(?=\S)([\s\S]*?\S)\1(?![\p{L}\p{N}])/gu;
+      for (const match of source.matchAll(emphasis)) {
+        const start = match.index;
+        const width = match[1].length;
+        hidden.fill(1, start, start + width);
+        hidden.fill(1, start + match[0].length - width, start + match[0].length);
+      }
+    }
+    const characters: string[] = [];
+    const ends: number[] = [];
+    for (let index = 0; index < source.length; index++) {
+      if (hidden[index]) {
+        if (ends.length) ends[ends.length - 1] = index + 1;
+        continue;
+      }
+      const character = /\s/u.test(source[index]) ? ' ' : source[index];
+      if (character === ' ' && (!characters.length || characters.at(-1) === ' ')) {
+        if (ends.length) ends[ends.length - 1] = index + 1;
+        continue;
+      }
+      characters.push(character);
+      ends.push(index + 1);
+    }
+    if (characters.at(-1) === ' ') { characters.pop(); ends.pop(); }
+    return { text: characters.join(''), ends };
+  };
+  const match = (cosmetic = false) => {
+    const expected = project(prefix, cosmetic).text;
+    if (!expected) return 0;
+    const actual = project(content, cosmetic);
+    if (!actual.text.startsWith(expected)) return null;
+    // A partial word is not an already spoken word ("six" is not "sixteen").
+    if (/[\p{L}\p{N}]/u.test(expected.at(-1) ?? '') &&
+        /[\p{L}\p{N}]/u.test(actual.text[expected.length] ?? '')) return null;
+    return actual.ends[expected.length - 1];
+  };
+  const whitespaceMatch = match();
+  if (whitespaceMatch !== null) return whitespaceMatch;
+  return /[`$\\]/u.test(prefix + content) ? null : match(true);
 }
 
 /** One spoken turn: occasional current progress and uninterrupted answer phrases. */
@@ -254,6 +317,8 @@ export function createVoiceNarrationQueue(options: {
   let progressCandidate = '';
   let progressTimer: ReturnType<typeof setTimeout> | undefined;
   let phraseTimer: ReturnType<typeof setTimeout> | undefined;
+  let phraseDeadline = 0;
+  let latestDraft = '';
   let nextProgressAt = Date.now() + VOICE_PROGRESS_DELAY_MS;
   const spokenPrefixes = new Map<string, string>();
   const latestSegments = new Map<number, number>();
@@ -300,7 +365,7 @@ export function createVoiceNarrationQueue(options: {
     } else pending.push(item);
   }
 
-  function scheduleAnswer() {
+  function scheduleAnswer(draftChanged: boolean) {
     if (running || controller.signal.aborted || !pending.length) return;
     // A stream often delivers adjacent sentences in separate token batches.
     // Give a short opening phrase one bounded window to collect its neighbor,
@@ -311,8 +376,14 @@ export function createVoiceNarrationQueue(options: {
       clearTimeout(phraseTimer);
       phraseTimer = undefined;
       void drain();
-    } else if (phraseTimer === undefined) {
-      phraseTimer = setTimeout(() => { phraseTimer = undefined; void drain(); }, VOICE_ANSWER_COALESCE_MS);
+    } else if (phraseTimer === undefined || draftChanged) {
+      // Keep a short answer connected while its next sentence is actively
+      // arriving. A stalled stream still starts after the usual quiet window;
+      // continuous generation cannot move the opening deadline indefinitely.
+      if (phraseTimer === undefined) phraseDeadline = Date.now() + VOICE_ANSWER_MAX_COALESCE_MS;
+      clearTimeout(phraseTimer);
+      phraseTimer = setTimeout(() => { phraseTimer = undefined; void drain(); },
+        Math.max(0, Math.min(VOICE_ANSWER_COALESCE_MS, phraseDeadline - Date.now())));
     }
   }
 
@@ -350,6 +421,23 @@ export function createVoiceNarrationQueue(options: {
       for (let index = options.startIndex; index < messages.length; index += 1) {
         const message = messages[index];
         if (message.role !== 'assistant') continue;
+        // A worker hand-back creates a new public assistant row while the same
+        // spoken turn is still busy. Finish the earlier row's unspoken tail
+        // before following the new one; a final sentence has no following
+        // token to trigger the streaming sentence boundary.
+        if (options.streamAnswers && latest && !latest.pending) {
+          const previousKey = streamKey(latestIndex, latest);
+          const previousPrefix = spokenPrefixes.get(previousKey) ?? '';
+          const offset = narrationContinuationOffset(latest.content, previousPrefix);
+          if (offset !== null) {
+            const tail = latest.content.slice(offset).trim();
+            if (tail) queueAnswer({ text: tail, kind: 'answer', final: false });
+            spokenPrefixes.set(previousKey, latest.content);
+          } else if (latest.content.trim()) {
+            queueAnswer({ text: `Correction: ${latest.content.trim()}`, kind: 'answer', final: false });
+            spokenPrefixes.set(previousKey, latest.content);
+          }
+        }
         latestIndex = index;
         const previous = index === options.startIndex ? options.initialMessage?.content : undefined;
         latest = previous && message.content.startsWith(previous)
@@ -363,18 +451,32 @@ export function createVoiceNarrationQueue(options: {
           if (busy && !answerStarted) progressCandidate = text;
         }
       }
+      // The separate voice channel streams provisional public words. Content
+      // is filled by the server's stable-answer event before the host finishes
+      // its run cleanup. Read that whole answer now, including its short tail,
+      // instead of waiting for busy=false and opening another speech request.
+      const stableAnswerReady = Boolean(options.streamAnswers && latest?.voiceStream && latest.content.trim());
+      const draft = latest?.voiceStream?.text ?? latest?.content ?? '';
+      const draftChanged = draft !== latestDraft;
+      latestDraft = draft;
       if (options.streamAnswers && latest) {
         const key = streamKey(latestIndex, latest);
-        let prefix = spokenPrefixes.get(key) ?? '';
-        const content = latest.voiceStream?.text ?? latest.content;
+        const prefix = spokenPrefixes.get(key) ?? '';
+        const content = stableAnswerReady ? latest.content : latest.voiceStream?.text ?? latest.content;
         // A rewritten prefix cannot be unspoken. Wait for finalization instead
         // of replaying content or guessing which revision the user heard.
-        if (content.startsWith(prefix)) {
-          let remaining = content.slice(prefix.length);
-          for (let boundary = voiceSentenceBoundary(remaining); busy && boundary; boundary = voiceSentenceBoundary(remaining)) {
+        const offset = narrationContinuationOffset(content, prefix);
+        if (offset !== null) {
+          let consumed = offset;
+          let remaining = content.slice(consumed);
+          if (busy && stableAnswerReady && remaining.trim()) {
+            queueAnswer({ text: remaining.trim(), kind: 'answer', final: false });
+            spokenPrefixes.set(key, content);
+          }
+          for (let boundary = voiceSentenceBoundary(remaining); busy && !stableAnswerReady && boundary; boundary = voiceSentenceBoundary(remaining)) {
             queueAnswer({ text: remaining.slice(0, boundary).trim(), kind: 'answer', final: false });
-            prefix += remaining.slice(0, boundary);
-            spokenPrefixes.set(key, prefix);
+            consumed += boundary;
+            spokenPrefixes.set(key, content.slice(0, consumed));
             remaining = remaining.slice(boundary);
           }
         }
@@ -382,7 +484,12 @@ export function createVoiceNarrationQueue(options: {
       if (!busy && latest && (latest.content.trim() || latest.uiResources?.length)) {
         answerQueued = true;
         const prefix = spokenPrefixes.get(streamKey(latestIndex, latest)) ?? '';
-        const text = latest.content.startsWith(prefix) ? latest.content.slice(prefix.length).trim() : '';
+        const offset = narrationContinuationOffset(latest.content, prefix);
+        // A genuine revision cannot be unspoken. Explicitly correct it with
+        // the authoritative answer instead of silently discarding every word
+        // after the first streamed sentence.
+        const text = offset !== null ? latest.content.slice(offset).trim()
+          : latest.content.trim() ? `Correction: ${latest.content.trim()}` : '';
         queueAnswer({ text, kind: 'answer' });
       } else if (!busy && latest && hasWorked && !options.initialMessage) {
         // A finished run with no answer must not strand the microphone on
@@ -392,7 +499,11 @@ export function createVoiceNarrationQueue(options: {
         options.onError(new Error('Breadboard finished without an answer. You can try again.'), item);
         queueAnswer(item);
       }
-      scheduleAnswer();
+      if (stableAnswerReady) {
+        clearTimeout(phraseTimer);
+        phraseTimer = undefined;
+        void drain();
+      } else scheduleAnswer(draftChanged);
       scheduleProgress();
       return answerQueued;
     },

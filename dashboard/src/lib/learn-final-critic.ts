@@ -1,17 +1,6 @@
+import { scopedSystemPromptText } from "./system-prompts/service.ts";
 import { createHash } from "node:crypto";
-import {
-  ANCHOR_CRITIC_SYSTEM_PROMPT,
-  CRITIC_SYSTEM_PROMPT,
-  buildAnchorCriticPrompt,
-  buildCriticUserPrompt,
-  buildModelRepairPrompt,
-  parseAnchorCriticDecisionStrict,
-  parseCriticIssues,
-  parseModelRepairOutput,
-  type AnchorCriticFn,
-  type CriticFn,
-  type ModelRepairFn,
-} from "./critic-loop.ts";
+import { buildAnchorCriticPrompt, buildCriticUserPrompt, buildModelRepairPrompt, parseAnchorCriticDecisionStrict, parseCriticIssues, parseModelRepairOutput, type AnchorCriticFn, type CriticFn, type ModelRepairFn } from "./critic-loop.ts";
 import {
   runBoundedLearnCouncilSemanticAttempts,
   type LearnCouncilTerminalReceiptProof,
@@ -153,7 +142,7 @@ export function createLearnFinalCriticProviders(input: {
       payload: packet,
       stageLabel: "final semantic critic",
       taskType: "critique",
-      system: CRITIC_SYSTEM_PROMPT,
+      system: scopedSystemPromptText("learning-critic"),
       user: buildCriticUserPrompt(packet),
       sourceContext: {
         taskType: "final_semantic_critic",
@@ -173,7 +162,7 @@ export function createLearnFinalCriticProviders(input: {
       stageLabel: `final anchor critic ${packet.anchor.id}`,
       taskType: "critique",
       pageId: packet.anchor.id,
-      system: ANCHOR_CRITIC_SYSTEM_PROMPT,
+      system: scopedSystemPromptText("learning-anchor-critic"),
       user: buildAnchorCriticPrompt(packet),
       sourceContext: {
         taskType: "final_anchor_critic",

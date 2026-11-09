@@ -49,9 +49,11 @@ test('detached voice uses its originating chat and never creates a session of it
       createRoot(document.getElementById('root')).render(location.pathname==='/voice'?<VoicePage/>:<Host/>);
     ` },
     bundle: true, write: false, format: 'iife', platform: 'browser',
+    loader: { '.css': 'empty', '.module.css': 'empty' },
     define: { 'process.env.NODE_ENV': '"production"' },
     plugins: [{ name: 'linked-voice-fixture', setup(build) {
       const stubs = {
+        'dashboard-agent-terminal': `export default function(){window.newSessions++;throw Error('Linked voice must not render an independent terminal');}`,
         'voice-conversation-overlay': `import React from 'react';export default function Voice(props){return props.open?<section>
           <div data-transcript>{props.messages.map(m=>m.content).join('|')}</div><div data-busy>{String(props.busy)}</div>
           <div data-question>{props.clarification?.question}</div>

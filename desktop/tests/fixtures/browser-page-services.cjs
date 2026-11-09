@@ -41,7 +41,7 @@ app.whenReady().then(async () => {
     createRoot(document.getElementById('root')).render(<App/>);
   `;
   const bundle = await requireDashboard("esbuild").build({
-    stdin: { contents: jsx, resolveDir: dashboard, loader: "tsx" }, bundle: true, write: false, format: "iife", platform: "browser",
+    stdin: { contents: jsx, resolveDir: dashboard, loader: "tsx" }, bundle: true, write: false, outfile: "fixture.js", format: "iife", platform: "browser",
     define: { "process.env.NODE_ENV": '"production"' },
     plugins: [{ name: "fixture-navigation", setup(build) {
       build.onResolve({ filter: /^next\/navigation$/ }, () => ({ path: "navigation", namespace: "fixture" }));
@@ -93,8 +93,8 @@ app.whenReady().then(async () => {
   const parallelReplies = [];
   let failure = false, hold = false, heldResponse;
   const server = http.createServer(async (req, res) => {
-    if (req.url === "/app.js") { res.setHeader("Content-Type", "text/javascript"); return res.end(bundle.outputFiles[0].text); }
-    if (req.url === "/app.css") { res.setHeader("Content-Type", "text/css"); return res.end(css); }
+    if (req.url === "/app.js") { res.setHeader("Content-Type", "text/javascript"); return res.end(bundle.outputFiles.find(file => file.path.endsWith(".js")).text); }
+    if (req.url === "/app.css") { res.setHeader("Content-Type", "text/css"); return res.end(css + (bundle.outputFiles.find(file => file.path.endsWith(".css"))?.text ?? "")); }
     if (req.url === "/api/chat-notifications") { res.setHeader("Content-Type", "application/json"); return res.end('{"messages":[]}'); }
     if (req.url === "/api/browser/translate") {
       assert.match(req.headers.cookie || "", /fixture-session=1/, "translation uses the authenticated shell session");
@@ -334,8 +334,8 @@ app.whenReady().then(async () => {
     return settings && !settings.isLoading();
   }, "browser settings loads");
   await until(() => settings.executeJavaScript("Boolean(document.querySelector('input[role=switch]'))"), "notification settings render");
-  await until(() => settings.executeJavaScript(`document.querySelector('select[aria-label="Microphone for ${web}"]')?.value === 'granted'`), "saved microphone choice appears in settings");
-  await settings.executeJavaScript(`(() => { const select=document.querySelector('select[aria-label="Microphone for ${web}"]'); select.value='default'; select.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+  await until(() => settings.executeJavaScript(`document.querySelector('[role=group][aria-label="Microphone for ${web}"] [aria-pressed=true]')?.textContent === 'Allow'`), "saved microphone choice appears in settings");
+  await settings.executeJavaScript(`[...document.querySelectorAll('[role=group][aria-label="Microphone for ${web}"] button')].find(button => button.textContent === 'Ask again').click()`);
   await until(() => !manager.stateFor(settings).browserPreferences.mediaSites[web], "settings resets the microphone permission");
   await capture(settings, "notification-settings.png");
   await settings.executeJavaScript("document.querySelector('input[role=switch]').click()");

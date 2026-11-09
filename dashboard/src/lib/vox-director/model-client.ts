@@ -1,3 +1,4 @@
+import { applySystemPromptSections } from "../system-prompts/service.ts";
 // Every place a language model touches a Vox Director production.
 //
 // Three forced tool calls through Breadboard's configured provider (ChatMock),
@@ -62,6 +63,7 @@ interface ChatMessage {
 }
 
 export interface ModelTarget {
+  userId?: number | null;
   baseUrl: string;
   model: string;
   reasoningEffort?: string;
@@ -159,7 +161,7 @@ async function structuredStage<T>(
   },
 ): Promise<T> {
   const messages: ChatMessage[] = [
-    { role: "system", content: input.system },
+    { role: "system", content: applySystemPromptSections(input.system, target.userId, ["video-beats","video-style","video-motion"]) },
     { role: "user", content: input.user },
   ];
   const first = await callTool(target, messages, input.tool);

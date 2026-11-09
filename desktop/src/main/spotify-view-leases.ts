@@ -25,6 +25,11 @@ export class SpotifyViewLeases {
     return this.renew(hold);
   }
 
+  /** Start renewing a hold unless one is already running; its timer keeps it alive. */
+  ensureHold(viewId: string): void {
+    if (!this.holds.has(viewId)) void this.request({resource:"engine",method:"POST",body:{viewId}});
+  }
+
   private renew(hold: Hold): Promise<SpotifyResponse> {
     if (hold.stopped || this.closed) return Promise.resolve(unavailable());
     if (hold.pending) return hold.pending;

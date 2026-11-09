@@ -78,8 +78,8 @@ function packagedDataReferences(profile) {
   return references;
 }
 
-test("all 32 process services have one audited packaged closure row", () => {
-  assert.equal(manifest.services.length, 32);
+test("all 34 process services have one audited packaged closure row", () => {
+  assert.equal(manifest.services.length, 34);
   const rows = closureRows();
   assert.deepEqual([...rows.keys()].sort(), manifest.services.map(({ id }) => id).sort());
   for (const service of manifest.services) {
@@ -201,7 +201,7 @@ test("semantic-memory source, build, and packaged dependency boundaries are exac
   assert.deepEqual(development.modes, ["lean", "hot"]);
   assert.deepEqual(packaged.modes, ["packaged"]);
   assert.ok(development.installProbe.files.some(({ path: value }) =>
-    value === "dashboard/node_modules/mem0ai/dist/index.mjs"));
+    value === "mem0/mem0-ts/dist/index.mjs"));
   assert.ok(packaged.installProbe.files.some(({ path: value }) =>
     value === "dashboard/node_modules/mem0ai/dist/oss/index.mjs"));
   assert.match(mem0Setup, /assertPinnedCleanCheckout/u);

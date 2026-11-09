@@ -264,10 +264,24 @@ export function parseScheduleRequest(
   };
 }
 
-const RECURRING_SCHEDULE_CUE =
-  /\b(?:every|each|hourly|daily|weekly|monthly|weekdays?|weekends?|work ?days?)\b/i;
 const SCHEDULE_ACTION_CUE =
-  /\b(?:schedule|start|begin|run|launch|execute|do|remind|send|check|write|create|make|prepare|draft|research|review|summarize|analyse|analyze|build|update|fetch|find|look up)\b/i;
+  /^(?:please\s+)?(?:(?:can|could|would) you\s+|i (?:want|would like) you to\s+|i'd like you to\s+)?(?:please\s+)?(?:schedule|start|begin|run|launch|execute|do|remind|send|check|write|create|make|prepare|draft|research|review|summarize|analyse|analyze|build|update|fetch|find|look up|tell|brief|notify|ping)\b/i;
+const EXPLICIT_SCHEDULING_ACTION =
+  /^(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:please\s+)?(?:schedule|remind me|set up (?:a |an )?(?:reminder|schedule|recurring task))\b/i;
+const RECURRING_PERIOD =
+  /\b(?:every|each)\s+(?:hour|day|week|month|morning|evening|weekday|weekend|work ?day|business day|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/i;
+const CADENCE_WORD = /\b(?:hourly|daily|weekly|monthly|weekdays?|weekends?|work ?days?)\b/i;
+const CADENCE_AT_START = /^(?:hourly|daily|weekly|monthly|(?:on )?(?:weekdays?|weekends?|work ?days?))\b/i;
+const CADENCE_AT_END_OR_TIME =
+  /\b(?:hourly|daily|weekly|monthly|weekdays?|weekends?|work ?days?)(?=\s*(?:[.!?]?\s*$|at\s+(?:\d|noon\b|midnight\b)))/i;
+
+function scheduleIntentText(input: string): string {
+  return input
+    .replace(/```[\s\S]*?```|`[^`\n]*`|"[^"\n]*"|“[^”\n]*”/g, " ")
+    .trim()
+    .replace(/^(?:\/[a-z0-9][a-z0-9_.:-]*\s+)+/i, "")
+    .trim();
+}
 
 /**
  * Conservative intent gate for the ordinary chat composer.
@@ -283,7 +297,16 @@ export function parseExplicitScheduleRequest(
 ): ParsedScheduleRequest | null {
   const parsed = parseScheduleRequest(input, now);
   if (!parsed.recognized) return null;
-  if (RECURRING_SCHEDULE_CUE.test(input)) return parsed;
-  if (parsed.oneShot && SCHEDULE_ACTION_CUE.test(input)) return parsed;
+  const intent = scheduleIntentText(input);
+  const task = scheduleIntentText(parsed.prompt);
+  if (/^(?:please\s+)?(?:do not|don't|never)\b/i.test(intent)) return null;
+  // Timing words in an analysis topic are not permission to schedule it.
+  // Require a requested action and a cadence used as timing, not an adjective
+  // such as “daily percentages”, “monthly costs” or “weekly report”.
+  if (!SCHEDULE_ACTION_CUE.test(intent) && !SCHEDULE_ACTION_CUE.test(task)) return null;
+  if (parsed.oneShot) return parsed;
+  if (RECURRING_PERIOD.test(intent) ||
+      CADENCE_AT_START.test(intent) || CADENCE_AT_END_OR_TIME.test(intent) ||
+      (EXPLICIT_SCHEDULING_ACTION.test(intent) && CADENCE_WORD.test(intent))) return parsed;
   return null;
 }

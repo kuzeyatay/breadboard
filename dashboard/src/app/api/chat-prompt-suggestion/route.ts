@@ -21,12 +21,15 @@ export async function POST(request: Request) {
       return { role: message.role, content: requireString(message.content, 'content', SUGGESTION_MAX_MESSAGE_CHARS) };
     });
     const { baseURL } = resolveChatmockBaseUrl(request);
+    const context = {
+      gardenSlug: typeof body.gardenSlug === 'string' ? body.gardenSlug.trim().slice(0, 180) || undefined : undefined,
+      localDate: typeof body.localDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.localDate) ? body.localDate : undefined,
+      localTime: typeof body.localTime === 'string' ? body.localTime.slice(0, 5) : undefined,
+      timeZone: typeof body.timeZone === 'string' ? body.timeZone.slice(0, 100) : undefined,
+    };
     const evidence = body.personalize === true && body.temporary !== true && body.scope !== 'public'
-      ? await (await import('@/lib/recommendations/service')).recommendationEvidence(userId, {
-          gardenSlug: typeof body.gardenSlug === 'string' ? body.gardenSlug.slice(0, 180) : undefined,
-          localDate: typeof body.localDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.localDate) ? body.localDate : undefined,
-        }).catch(() => []) : [];
-    const suggestion = await generatePromptSuggestion({ messages, model, baseUrl: baseURL, signal: request.signal, evidence });
+      ? await (await import('@/lib/recommendations/service')).recommendationEvidence(userId, context).catch(() => []) : [];
+    const suggestion = await generatePromptSuggestion({ userId, messages, model, baseUrl: baseURL, signal: request.signal, evidence, context });
     return NextResponse.json({ suggestion }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     return apiErrorResponse(error);

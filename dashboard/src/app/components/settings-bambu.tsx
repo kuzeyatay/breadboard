@@ -2,8 +2,9 @@
 import { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Printer, Plus, X } from "lucide-react";
-import { BAMBU_MODELS, BUILD_PLATES, type PrinterConfig, type FilamentSource } from "@/lib/bambu/types.ts";
+import { BAMBU_MODELS, BUILD_PLATES, type PrinterConfig, type FilamentSource, type BambuStudioStatus } from "@/lib/bambu/types.ts";
 import { printerRequest } from "@/lib/bambu/client.ts";
+import { BambuStudioConnection } from "./bambu-studio-connection";
 import styles from "./hermes/bambu-print-card.module.css";
 const url = "/api/hermes/connections/bambu";
 export function BambuConnections({ onSaved }: { onSaved?: () => void }) {
@@ -11,6 +12,7 @@ export function BambuConnections({ onSaved }: { onSaved?: () => void }) {
   const [activeJobs, setActiveJobs] = useState<{id:string;revision:number;printerId:string;name:string;state:string;mayHaveStarted:boolean}[]>([]), [inspected, setInspected] = useState(false);
   const [sources, setSources] = useState<FilamentSource[]>([]), [message, setMessage] = useState<string | null>(null), [busy, setBusy] = useState(false);
   const form = useRef<HTMLFormElement>(null), secret = useRef<HTMLInputElement>(null);
+  const [studio, setStudio] = useState<BambuStudioStatus | null>(null);
   const load = async () => { const result = await printerRequest(url); setPrinters(result.printers); setActiveJobs(result.activeJobs ?? []); };
   useEffect(() => { void load().catch(error => setMessage(error.message)); }, []);
   const select = (printer: PrinterConfig | null) => { setSelected(printer); setSources(printer?.sources ?? []); setInspected(false); setMessage(null); if (secret.current) secret.current.value = ""; };
@@ -29,13 +31,17 @@ export function BambuConnections({ onSaved }: { onSaved?: () => void }) {
     finally { setBusy(false); }
   }
   return <div>
-    <p className={styles.notice}>Use the printer’s LAN address, serial number and LAN access code. On firmware that requires it, enable LAN Only and Developer Mode on the printer. Breadboard cannot switch these modes for you.</p>
-    <p className={styles.notice}>LAN Only disconnects Bambu cloud features, including Handy cloud access. Availability and wording vary by model and firmware. No camera, slicer installation or extracted certificates are needed here.</p>
+    <BambuStudioConnection onDetected={setStudio}/>
+    <details className={styles.manualConnection} open={printers.length > 0 || undefined}>
+    <summary>Advanced: direct LAN connection</summary>
+    <p className={styles.notice}>Use this option for direct status and supported print commands in Breadboard. Bambu Studio does not need these details copied here.</p>
+    <p className={styles.notice}>Direct LAN control needs the printer’s address, serial and access code, plus Developer Mode where required. LAN Only mode can disconnect cloud features. Keep your existing mode when using Bambu Studio.</p>
+    <p className={styles.muted}>For P2S, use Bambu Studio above to send prints. Direct LAN setup can read status, but P2S print commands are not yet validated.</p>
     <div className={styles.footer}>{printers.map(printer => <button className={styles.button} key={printer.id} onClick={() => select(printer)}>{printer.name}</button>)}<button className={styles.button} onClick={() => select(null)}><Plus size={13}/> Add printer</button></div>
-    <form ref={form} key={selected?.id ?? "new"} onSubmit={save}>
+    <form ref={form} key={selected?.id ?? `new-${studio?.selected.printer ?? ""}`} onSubmit={save}>
       <label>Friendly name<input name="name" autoComplete="off" required maxLength={80} defaultValue={selected?.name ?? ""} placeholder="Workshop printer" /></label>
-      <div className={styles.row}><label>Printer model<select name="model" required defaultValue={selected?.model ?? ""}><option value="" disabled>Select model</option>{BAMBU_MODELS.map(model => <option key={model}>{model}</option>)}</select></label>
-      <label>Nozzle diameter<select name="nozzle" required defaultValue={selected?.nozzle ?? ""}><option value="" disabled>Select nozzle</option>{[0.2,0.4,0.6,0.8].map(n => <option value={n} key={n}>{n} mm</option>)}</select></label></div>
+      <div className={styles.row}><label>Printer model<select name="model" required defaultValue={selected?.model ?? studio?.selected.model ?? ""}><option value="" disabled>Select model</option>{BAMBU_MODELS.map(model => <option key={model}>{model}</option>)}</select></label>
+      <label>Nozzle diameter<select name="nozzle" required defaultValue={selected?.nozzle ?? studio?.selected.nozzle ?? ""}><option value="" disabled>Select nozzle</option>{[0.2,0.4,0.6,0.8].map(n => <option value={n} key={n}>{n} mm</option>)}</select></label></div>
       <label>Installed build plate<select name="buildPlate" required defaultValue={selected?.buildPlate ?? ""}><option value="" disabled>Select build plate</option>{BUILD_PLATES.map(p => <option value={p} key={p}>{p.replaceAll("_", " ")}</option>)}</select></label>
       <label>LAN IPv4 address<input name="host" required={!selected} placeholder={selected ? "Leave blank to retain saved address" : "Address shown in printer network settings"} autoComplete="off" /></label>
       <label>Serial number<input name="serial" required={!selected} placeholder={selected ? "Leave blank to retain saved serial" : "From the printer’s display or label"} autoComplete="off" maxLength={32}/></label>
@@ -55,6 +61,7 @@ export function BambuConnections({ onSaved }: { onSaved?: () => void }) {
     {activeJobs.filter(j => j.printerId === selected?.id).map(job => <details className={styles.history} key={job.id}><summary>{job.name} · {job.state.replaceAll("_"," ")}</summary><p className={styles.notice}>This retained job may continue even if its task was deleted. Inspect the physical printer before resolving it. This does not resend or stop a print.</p>{job.mayHaveStarted && <><label><input type="checkbox" checked={inspected} onChange={e => setInspected(e.target.checked)}/>I inspected the printer and confirmed no print is running.</label><button type="button" className={styles.button} disabled={!inspected || busy} onClick={async () => {setBusy(true);try {await printerRequest(url,{action:"resolve_inspected",jobId:job.id,revision:job.revision,inspected});await load();setMessage("Record closed after inspection and a fresh idle report. The earlier print outcome remains unknown.");onSaved?.();}catch(error){setMessage(error instanceof Error ? error.message : "Could not resolve this job.");}finally{setBusy(false);}}}>Verify idle and close record</button></>}</details>)}
     {message && <p role="status" className={styles.notice}>{message}</p>}
     <p className={styles.notice}>Test connection only reads status. It cannot upload, heat, move or start the printer. The printer may continue independently when Breadboard is closed.</p>
+    </details>
   </div>;
 }
 export default function BambuConnectionEntry() {
@@ -72,7 +79,7 @@ export default function BambuConnectionEntry() {
             Bambu Lab
           </span>
           <span className="mt-0.5 block truncate text-[10px] text-[var(--ink-muted)]">
-            Secure LAN connection
+            Bambu Studio · local printer connection
           </span>
         </span>
         <Dialog.Trigger
@@ -89,7 +96,7 @@ export default function BambuConnectionEntry() {
             <div>
               <Dialog.Title>Bambu Lab</Dialog.Title>
               <Dialog.Description className={styles.muted}>
-                Private LAN printer connections
+                Use your installed Bambu Studio or a direct LAN connection
               </Dialog.Description>
             </div>
             <Dialog.Close className={styles.button} aria-label="Close printer setup">

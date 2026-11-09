@@ -397,7 +397,7 @@ export default function InlineVideoUseRun({
     reportedRef.current = true;
     const content = status === "completed" ? result : failure;
     if (!content) return;
-    notifyTaskCompleted(`Video Use — ${task.slice(0, 80)}`);
+    notifyTaskCompleted(`Video Use — ${task.slice(0, 80)}`, { runId });
     onTerminalRef.current?.({
       outcome: status as ExternalAgentTerminalOutcome,
       content,
@@ -456,7 +456,7 @@ export default function InlineVideoUseRun({
         startedAt={startedAt}
         completedAt={completedAt}
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <div className="bb-agent-run-header">
           <span className="bb-agent-run-title truncate">Video Use</span>
           <div className="flex shrink-0 items-center gap-[8px]">

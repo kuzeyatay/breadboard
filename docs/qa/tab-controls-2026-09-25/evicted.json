@@ -1,0 +1,1170 @@
+{
+  "mode": "candidate",
+  "evicted": true,
+  "electron": "33.4.11",
+  "chromium": "130.0.6723.191",
+  "scale": 1.25,
+  "rows": [
+    {
+      "tabs": 5,
+      "samples": [
+        {
+          "controlsMs": 80.979,
+          "visibleMs": 166.367,
+          "usableMs": 232.104,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 9,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.925,
+          "visibleMs": 132.678,
+          "usableMs": 233.482,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.287,
+          "visibleMs": 116.584,
+          "usableMs": 184.056,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.363,
+          "visibleMs": 133.435,
+          "usableMs": 200.304,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.057,
+          "visibleMs": 115.726,
+          "usableMs": 182.656,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.366,
+          "visibleMs": 116.843,
+          "usableMs": 200.346,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.836,
+          "visibleMs": 132.469,
+          "usableMs": 199.481,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.147,
+          "visibleMs": 167.136,
+          "usableMs": 233.731,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 9,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.84,
+          "visibleMs": 132.846,
+          "usableMs": 199.723,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.473,
+          "visibleMs": 133.855,
+          "usableMs": 183.815,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.319,
+          "visibleMs": 133.123,
+          "usableMs": 201.045,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.748,
+          "visibleMs": 150.131,
+          "usableMs": 216.86,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 8,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.474,
+          "visibleMs": 133.734,
+          "usableMs": 200.477,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.559,
+          "visibleMs": 116.863,
+          "usableMs": 200.635,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 81.565,
+          "visibleMs": 132.727,
+          "usableMs": 199.112,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.158,
+          "visibleMs": 132.967,
+          "usableMs": 183.139,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.884,
+          "visibleMs": 132.794,
+          "usableMs": 200.463,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.822,
+          "visibleMs": 116.707,
+          "usableMs": 183.508,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.424,
+          "visibleMs": 116.862,
+          "usableMs": 183.702,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.381,
+          "visibleMs": 133.755,
+          "usableMs": 217.531,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.532,
+          "visibleMs": 101.074,
+          "usableMs": 150.703,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.232,
+          "visibleMs": 133.586,
+          "usableMs": 183.681,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.618,
+          "visibleMs": 116.884,
+          "usableMs": 183.504,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.082,
+          "visibleMs": 150.2,
+          "usableMs": 200.631,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.044,
+          "visibleMs": 116.927,
+          "usableMs": 200.855,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.279,
+          "visibleMs": 133.385,
+          "usableMs": 199.775,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.698,
+          "visibleMs": 116.325,
+          "usableMs": 166.538,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.522,
+          "visibleMs": 133.588,
+          "usableMs": 200.266,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.165,
+          "visibleMs": 133.121,
+          "usableMs": 200.366,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.318,
+          "visibleMs": 116.717,
+          "usableMs": 183.594,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.731,
+          "visibleMs": 116.72,
+          "usableMs": 183.818,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.853,
+          "visibleMs": 133.317,
+          "usableMs": 199.961,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.15,
+          "visibleMs": 116.412,
+          "usableMs": 183.39,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.326,
+          "visibleMs": 133.186,
+          "usableMs": 200.153,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.768,
+          "visibleMs": 117.168,
+          "usableMs": 183.804,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.635,
+          "visibleMs": 151.973,
+          "usableMs": 200.558,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.464,
+          "visibleMs": 133.58,
+          "usableMs": 200.148,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.182,
+          "visibleMs": 133.433,
+          "usableMs": 200.41,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.391,
+          "visibleMs": 116.588,
+          "usableMs": 183.517,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.582,
+          "visibleMs": 116.365,
+          "usableMs": 167.502,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        }
+      ],
+      "summary": {
+        "controls": {
+          "p50": 83.165,
+          "p95": 100.182,
+          "p99": 100.381
+        },
+        "visible": {
+          "p50": 132.794,
+          "p95": 151.973,
+          "p99": 167.136
+        },
+        "usable": {
+          "p50": 199.775,
+          "p95": 232.104,
+          "p99": 233.731
+        }
+      },
+      "unexpectedPixelSamples": 0,
+      "workingSetKiB": 1656392,
+      "idleCpuPercent": 0.6427608581040297,
+      "processes": 12,
+      "cacheBudgetBytes": 0
+    },
+    {
+      "tabs": 15,
+      "samples": [
+        {
+          "controlsMs": 82.781,
+          "visibleMs": 132.755,
+          "usableMs": 199.769,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 116.366,
+          "visibleMs": 133.165,
+          "usableMs": 200.18,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.706,
+          "visibleMs": 117.131,
+          "usableMs": 185.031,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.059,
+          "visibleMs": 99.846,
+          "usableMs": 149.939,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.71,
+          "visibleMs": 116.805,
+          "usableMs": 183.63,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.156,
+          "visibleMs": 133.324,
+          "usableMs": 200.089,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 84.136,
+          "visibleMs": 133.596,
+          "usableMs": 167.031,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.568,
+          "visibleMs": 133.294,
+          "usableMs": 200.133,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.019,
+          "visibleMs": 115.994,
+          "usableMs": 166.327,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.704,
+          "visibleMs": 167.613,
+          "usableMs": 234.256,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 9,
+          "resident": false
+        },
+        {
+          "controlsMs": 99.816,
+          "visibleMs": 133.163,
+          "usableMs": 200.638,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.448,
+          "visibleMs": 116.808,
+          "usableMs": 200.136,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.757,
+          "visibleMs": 117.087,
+          "usableMs": 200.446,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.843,
+          "visibleMs": 166.999,
+          "usableMs": 234.173,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.884,
+          "visibleMs": 133.587,
+          "usableMs": 200.407,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 116.519,
+          "visibleMs": 133.742,
+          "usableMs": 200.047,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.673,
+          "visibleMs": 116.829,
+          "usableMs": 183.315,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.81,
+          "visibleMs": 116.136,
+          "usableMs": 182.943,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.432,
+          "visibleMs": 133.634,
+          "usableMs": 200.489,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.163,
+          "visibleMs": 132.872,
+          "usableMs": 200.033,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.769,
+          "visibleMs": 133.998,
+          "usableMs": 200.577,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.231,
+          "visibleMs": 166.9,
+          "usableMs": 217.026,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 9,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.644,
+          "visibleMs": 117.001,
+          "usableMs": 183.562,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.885,
+          "visibleMs": 133.093,
+          "usableMs": 200.109,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.683,
+          "visibleMs": 133.319,
+          "usableMs": 200.383,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.347,
+          "visibleMs": 133.274,
+          "usableMs": 183.746,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.352,
+          "visibleMs": 184.128,
+          "usableMs": 234.104,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 9,
+          "resident": false
+        },
+        {
+          "controlsMs": 99.859,
+          "visibleMs": 149.249,
+          "usableMs": 216.276,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 8,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.279,
+          "visibleMs": 100.279,
+          "usableMs": 166.76,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.441,
+          "visibleMs": 150.512,
+          "usableMs": 217.241,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.598,
+          "visibleMs": 133.534,
+          "usableMs": 200.528,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 117.274,
+          "visibleMs": 150.866,
+          "usableMs": 217.278,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 8,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.98,
+          "visibleMs": 117.401,
+          "usableMs": 184.542,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.247,
+          "visibleMs": 132.684,
+          "usableMs": 183.247,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.082,
+          "visibleMs": 116.518,
+          "usableMs": 182.738,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 71.488,
+          "visibleMs": 121.646,
+          "usableMs": 188.441,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.326,
+          "visibleMs": 150.052,
+          "usableMs": 217.083,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 8,
+          "resident": false
+        },
+        {
+          "controlsMs": 101.81,
+          "visibleMs": 133.5,
+          "usableMs": 200.179,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.322,
+          "visibleMs": 116.593,
+          "usableMs": 183.538,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.958,
+          "visibleMs": 116.756,
+          "usableMs": 183.714,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        }
+      ],
+      "summary": {
+        "controls": {
+          "p50": 83.441,
+          "p95": 116.366,
+          "p99": 117.274
+        },
+        "visible": {
+          "p50": 133.163,
+          "p95": 166.999,
+          "p99": 184.128
+        },
+        "usable": {
+          "p50": 200.089,
+          "p95": 234.104,
+          "p99": 234.256
+        }
+      },
+      "unexpectedPixelSamples": 0,
+      "workingSetKiB": 2885680,
+      "idleCpuPercent": 1.0885746882312013,
+      "processes": 22,
+      "cacheBudgetBytes": 0
+    },
+    {
+      "tabs": 30,
+      "samples": [
+        {
+          "controlsMs": 83.833,
+          "visibleMs": 115.846,
+          "usableMs": 165.984,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.407,
+          "visibleMs": 116.796,
+          "usableMs": 183.1,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.647,
+          "visibleMs": 133.62,
+          "usableMs": 201.061,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 116.16,
+          "visibleMs": 116.161,
+          "usableMs": 183.051,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.035,
+          "visibleMs": 166.982,
+          "usableMs": 233.426,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 9,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.001,
+          "visibleMs": 100.001,
+          "usableMs": 166.955,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.03,
+          "visibleMs": 167.22,
+          "usableMs": 233.697,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 9,
+          "resident": false
+        },
+        {
+          "controlsMs": 116.978,
+          "visibleMs": 166.473,
+          "usableMs": 233.821,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 8,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.979,
+          "visibleMs": 116.39,
+          "usableMs": 183.212,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.633,
+          "visibleMs": 133.659,
+          "usableMs": 200.612,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.486,
+          "visibleMs": 184.154,
+          "usableMs": 250.406,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 9,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.245,
+          "visibleMs": 133.081,
+          "usableMs": 199.852,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.709,
+          "visibleMs": 99.941,
+          "usableMs": 150.659,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 99.981,
+          "visibleMs": 133.779,
+          "usableMs": 200.61,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.072,
+          "visibleMs": 133.893,
+          "usableMs": 217.096,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.403,
+          "visibleMs": 116.808,
+          "usableMs": 183.989,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.074,
+          "visibleMs": 116.601,
+          "usableMs": 183.242,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 117.355,
+          "visibleMs": 117.357,
+          "usableMs": 183.657,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.012,
+          "visibleMs": 166.42,
+          "usableMs": 233.306,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 9,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.556,
+          "visibleMs": 150.011,
+          "usableMs": 200.526,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.237,
+          "visibleMs": 133.605,
+          "usableMs": 199.942,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.005,
+          "visibleMs": 151.039,
+          "usableMs": 217.256,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 8,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.295,
+          "visibleMs": 116.244,
+          "usableMs": 183.091,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.955,
+          "visibleMs": 117.442,
+          "usableMs": 183.543,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.96,
+          "visibleMs": 134.224,
+          "usableMs": 200.4,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.624,
+          "visibleMs": 115.76,
+          "usableMs": 182.473,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.495,
+          "visibleMs": 116.402,
+          "usableMs": 167.335,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 65.799,
+          "visibleMs": 116.342,
+          "usableMs": 182.735,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.075,
+          "visibleMs": 133.077,
+          "usableMs": 200.058,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 82.927,
+          "visibleMs": 99.418,
+          "usableMs": 166.188,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 133.362,
+          "visibleMs": 133.363,
+          "usableMs": 200.562,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.728,
+          "visibleMs": 133.421,
+          "usableMs": 200.385,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.253,
+          "visibleMs": 133.672,
+          "usableMs": 183.693,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.439,
+          "visibleMs": 116.727,
+          "usableMs": 183.525,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.4,
+          "visibleMs": 166.677,
+          "usableMs": 234.005,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 7,
+          "resident": false
+        },
+        {
+          "controlsMs": 67.429,
+          "visibleMs": 117.09,
+          "usableMs": 183.846,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 100.297,
+          "visibleMs": 116.233,
+          "usableMs": 183.141,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 4,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.24,
+          "visibleMs": 116.361,
+          "usableMs": 183.114,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        },
+        {
+          "controlsMs": 83.464,
+          "visibleMs": 150.196,
+          "usableMs": 200.444,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 5,
+          "resident": false
+        },
+        {
+          "controlsMs": 66.698,
+          "visibleMs": 116.827,
+          "usableMs": 167.299,
+          "unexpectedSamples": 0,
+          "unexpectedColors": [],
+          "samples": 6,
+          "resident": false
+        }
+      ],
+      "summary": {
+        "controls": {
+          "p50": 83.495,
+          "p95": 116.978,
+          "p99": 133.362
+        },
+        "visible": {
+          "p50": 117.442,
+          "p95": 166.982,
+          "p99": 184.154
+        },
+        "usable": {
+          "p50": 183.846,
+          "p95": 233.821,
+          "p99": 250.406
+        }
+      },
+      "unexpectedPixelSamples": 0,
+      "workingSetKiB": 4733576,
+      "idleCpuPercent": 0.1588174966749914,
+      "processes": 37,
+      "cacheBudgetBytes": 0
+    }
+  ]
+}

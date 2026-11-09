@@ -1,0 +1,433 @@
+{
+  "passed": false,
+  "released": true,
+  "startedAt": "2026-11-07T15:44:29.441Z",
+  "fingerprint": "c2f7c20d6a024a27fe7ed01cbbbad0b0898732e026ef245d4f4f2ee6d3fb840e",
+  "marker": "423de9b4-c440-4d4e-9b58-7f2298a2d64d",
+  "model": "gpt-6.1-sol",
+  "owned": [
+    {
+      "id": "conv_p3fd1-Sq202ThhQCXJ-cWTW0",
+      "kind": "receiver",
+      "title": "QA chat coordination 423de9b4-c440-4d4e-9b58-7f2298a2d64d receiver",
+      "clientMessageId": "qa-423de9b4-c440-4d4e-9b58-7f2298a2d64d-receiver"
+    },
+    {
+      "id": "conv_5kQNFT1ZqBMZnh8cv6etIg0t",
+      "kind": "sender",
+      "title": "QA chat coordination 423de9b4-c440-4d4e-9b58-7f2298a2d64d sender",
+      "clientMessageId": "qa-423de9b4-c440-4d4e-9b58-7f2298a2d64d-sender"
+    }
+  ],
+  "requests": [
+    {
+      "route": "/api/hermes/sessions",
+      "method": "POST",
+      "status": 200,
+      "elapsedMs": 94
+    },
+    {
+      "route": "/api/hermes/sessions",
+      "method": "POST",
+      "status": 200,
+      "elapsedMs": 106
+    },
+    {
+      "route": "/api/hermes/sessions/conv_p3fd1-Sq202ThhQCXJ-cWTW0/messages",
+      "method": "POST",
+      "status": 200,
+      "elapsedMs": 8373
+    },
+    {
+      "route": "/api/hermes/sessions/conv_p3fd1-Sq202ThhQCXJ-cWTW0?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 8414
+    },
+    {
+      "route": "/api/hermes/sessions/conv_p3fd1-Sq202ThhQCXJ-cWTW0?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 8992
+    },
+    {
+      "route": "/api/hermes/sessions/conv_p3fd1-Sq202ThhQCXJ-cWTW0?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 9510
+    },
+    {
+      "route": "/api/hermes/sessions/conv_p3fd1-Sq202ThhQCXJ-cWTW0?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 10187
+    },
+    {
+      "route": "/api/hermes/sessions/conv_p3fd1-Sq202ThhQCXJ-cWTW0?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 10936
+    },
+    {
+      "route": "/api/hermes/sessions/conv_p3fd1-Sq202ThhQCXJ-cWTW0?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 11545
+    },
+    {
+      "route": "/api/hermes/sessions/conv_p3fd1-Sq202ThhQCXJ-cWTW0",
+      "method": "PATCH",
+      "status": 200,
+      "elapsedMs": 11836
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t/messages",
+      "method": "POST",
+      "status": 200,
+      "elapsedMs": 34126
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 34139
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 34669
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 35192
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 35904
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 36474
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 37136
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 37703
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 38243
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 38770
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 39289
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 39853
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 40379
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 40975
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 41496
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 42099
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 42842
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 43698
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 44265
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 44934
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 45446
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 46098
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 46677
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 47378
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 48146
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 48831
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 49358
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 50060
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 50613
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 51275
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 52491
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 53865
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 54654
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 55179
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 55740
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 56528
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 57316
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 58111
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 59013
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 59857
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 60428
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 60950
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 61478
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 62291
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 63104
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 63973
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 64843
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 65402
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 65622
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t",
+      "method": "DELETE",
+      "status": 200,
+      "elapsedMs": 65701
+    },
+    {
+      "route": "/api/hermes/sessions/conv_5kQNFT1ZqBMZnh8cv6etIg0t?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 404,
+      "elapsedMs": 65729
+    },
+    {
+      "route": "/api/hermes/sessions/conv_p3fd1-Sq202ThhQCXJ-cWTW0?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 65755
+    },
+    {
+      "route": "/api/hermes/sessions/conv_p3fd1-Sq202ThhQCXJ-cWTW0",
+      "method": "DELETE",
+      "status": 200,
+      "elapsedMs": 65807
+    },
+    {
+      "route": "/api/hermes/sessions/conv_p3fd1-Sq202ThhQCXJ-cWTW0?surface=dashboard_terminal",
+      "method": "GET",
+      "status": 404,
+      "elapsedMs": 65826
+    }
+  ],
+  "cleanup": [
+    {
+      "id": "conv_5kQNFT1ZqBMZnh8cv6etIg0t",
+      "deleted": true,
+      "verifiedAbsent": true,
+      "cancelled": {
+        "runs": 0,
+        "agentRuns": 0
+      }
+    },
+    {
+      "id": "conv_p3fd1-Sq202ThhQCXJ-cWTW0",
+      "deleted": true,
+      "verifiedAbsent": true,
+      "cancelled": {
+        "runs": 0,
+        "agentRuns": 0
+      }
+    }
+  ],
+  "origin": "http://127.0.0.1:52354",
+  "error": "AssertionError [ERR_ASSERTION]: Sender did not receive the receiver-only answer\n    at file:///C:/Users/20252082/breadboard/.tmp-chat-coordination-installed-v2/acceptance.mjs:127:10",
+  "runElapsedMs": 65403,
+  "finishedAt": "2026-11-07T15:45:35.273Z",
+  "totalElapsedMs": 65832
+}

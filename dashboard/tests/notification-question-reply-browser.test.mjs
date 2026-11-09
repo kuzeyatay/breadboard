@@ -38,7 +38,7 @@ test('notification replies respond immediately, recover failed drafts and answer
       build.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ resolveDir: root, contents: args.path === 'next/dynamic'
         // Like next/dynamic: load the real component, render nothing until it arrives.
         ? "import{lazy,createElement,Suspense}from'react';export default load=>{const L=lazy(()=>load().then(m=>({default:m.default??m})));return props=>createElement(Suspense,{fallback:null},createElement(L,props));};"
-        : 'export const useRouter=()=>({push:href=>window.routes.push(href)});export const startNavigationProgress=()=>{};export const chimeForNotifications=()=>()=>{};export const getNotificationSoundEnabled=()=>false;export const setNotificationSoundEnabled=()=>{};export const subscribeNotificationSound=()=>()=>{};' }));
+        : 'export const useRouter=()=>({push:href=>window.routes.push(href)});export const startNavigationProgress=()=>{};export const chimeForNotifications=()=>()=>{};export const getNotificationSoundEnabled=()=>false;export const setNotificationSoundEnabled=()=>{};export const subscribeNotificationSound=()=>()=>{};export const notificationDeliveryReceipts=()=>new Set();export const recordNotificationDelivery=()=>{};' }));
     } }],
   });
   const cssInput = fs.readFileSync(path.join(root, 'src/app/globals.css'), 'utf8')

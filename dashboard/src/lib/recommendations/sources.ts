@@ -1,3 +1,4 @@
+import { screenTimeRecommendationEvidence } from "../screen-time/recommendations.ts";
 import 'server-only';
 import db from '../db.ts';
 import { listComposioConnections } from '../composio/service.ts';
@@ -11,8 +12,11 @@ import { searchRecall } from '../recall/service.ts';
 import { getCalendarStore } from '../calendar/instance.ts';
 import { agenda } from '../calendar/agent-query.ts';
 import { collectRecommendationEvidence } from './collect.ts';
-import { cleanRecommendationText as text, type RecommendationContext, type RecommendationEvidence } from './types.ts';
+import { cleanRecommendationText as text, scopedRecommendationEvidence, type RecommendationContext, type RecommendationEvidence } from './types.ts';
 import type { ConnectedAppProxyRequest } from '../connected-apps/types.ts';
+import { calendarRecommendationEvidence } from './calendar-context.ts';
+import { recallRecommendationEvidence, recallTopicQuery } from './recall-context.ts';
+import { recommendationClock } from './clock.ts';
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -102,7 +106,7 @@ function localEvidence(userId: number, context: RecommendationContext): Recommen
       AND (? IS NULL OR g.slug=?) ORDER BY c.updated_at DESC LIMIT 4`).all(userId, context.gardenSlug ?? null, context.gardenSlug ?? null) as Array<{id:number;title:string;updated_at:string;slug:string;excerpt:string}>;
     return rows.map(row => ({ id:`chat:${row.id}`,source:'chat',title:row.title,summary:row.excerpt,timestamp:row.updated_at,gardenSlug:row.slug }));
   });
-  safeRead(() => {
+  if (!context.gardenSlug) safeRead(() => {
     const rows = db.prepare(`SELECT t.id,t.title,t.description,t.due_date,p.name FROM plan_tasks t JOIN plan_projects p ON p.id=t.project_id
       WHERE t.user_id=? AND p.user_id=? AND p.archived=0 AND t.completed_at IS NULL
       ORDER BY CASE WHEN t.due_date IS NULL THEN 1 ELSE 0 END,t.due_date,t.updated_at DESC LIMIT 4`).all(userId,userId) as Array<{id:number;title:string;description:string;due_date:string;name:string}>;
@@ -113,24 +117,36 @@ function localEvidence(userId: number, context: RecommendationContext): Recommen
       .all(userId,context.gardenSlug ?? null,context.gardenSlug ?? null) as Array<{id:number;name:string;slug:string}>;
     return rows.map(row => ({ id:`garden:${row.id}`,source:'garden',title:row.name,summary:'A recently opened garden.',gardenSlug:row.slug }));
   });
-  safeRead(() => agenda(getCalendarStore(), userId, { from: context.localDate, days: 3, limit: 4, includeDescriptions:true }).occurrences
-    .map(event => ({ id:`calendar:${event.eventId}:${event.start}`,source:'calendar',title:event.title,summary:`Starts ${event.start}. ${event.description ?? ''}`,timestamp:event.start })));
   return result;
 }
 
 export async function readRecommendationEvidence(userId: number, context: RecommendationContext): Promise<RecommendationEvidence[]> {
+  context = recommendationClock(context);
+  // These account-wide providers have no explicit garden membership. Do not
+  // query them in a garden, including unscoped OCR captures and calendar gaps.
+  if (context.gardenSlug) return collectRecommendationEvidence([
+    async () => scopedRecommendationEvidence(localEvidence(userId, context), context),
+  ]);
+  let calendar: RecommendationEvidence[] = [];
+  try {
+    const schedule = agenda(getCalendarStore(), userId, { from: context.localDate, days: 7, limit: 120, includeDescriptions:true });
+    calendar = calendarRecommendationEvidence(schedule.occurrences, context, schedule.returned === schedule.total);
+  } catch { /* Calendar setup or sync must not prevent other suggestions. */ }
   const signal = AbortSignal.timeout(8_000);
   return collectRecommendationEvidence([
-    async () => localEvidence(userId, context),
+    async () => [...calendar, ...localEvidence(userId, context)],
+    async () => screenTimeRecommendationEvidence(userId),
     async () => {
       const settings = getRecallSettings(userId);
       const config = getRecallConfig();
       if (!config.enabled || !settings.captureEnabled || !settings.agentAccess) return [];
-      const result = await searchRecall(userId, { limit: 5, contentType:'screen',
-        ...(context.pageTitle ? { query: context.pageTitle } : {}),
-      }, { forAgent: true, config: { ...config, requestTimeoutMs: 3_000 } });
-      return result.hits.map((hit, index) => ({ id:`recall:${hit.frameId ?? index}:${hit.timestamp}`,source:'recall' as const,
-        title:hit.window || hit.app || 'recent activity',summary:hit.text,timestamp:hit.timestamp ?? undefined }));
+      const topics = [...new Set([context.pageTitle,
+        ...calendar.filter(item => item.calendar?.kind==='event' && item.calendar.status==='upcoming').map(item=>recallTopicQuery(item.title)),
+      ].filter((query): query is string => Boolean(query)))].slice(0,2);
+      const reads = await Promise.allSettled([undefined, ...topics].map(query => searchRecall(userId,
+        { limit: query ? 4 : 15, contentType:'screen', ...(query ? {query} : {}) },
+        { forAgent:true, config:{...config,requestTimeoutMs:3_000} })));
+      return recallRecommendationEvidence(reads.flatMap(read=>read.status==='fulfilled'?read.value.hits:[]),calendar);
     },
     async () => {
       const { slugs, read } = await connectionReader(userId, signal);

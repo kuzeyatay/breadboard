@@ -16,7 +16,7 @@ import { browserBookmarksControl, navigateBrowserFromHome } from "@/lib/desktop-
 import { webDestinationUrl } from "@/lib/new-tab-search-suggestions";
 import styles from "./terminal-browser-controls.module.css";
 
-type Panel = "history" | "visited-pages" | "starred" | "downloads";
+export type Panel = "history" | "visited-pages" | "starred" | "downloads";
 
 export default function TerminalBrowserControls({ ownerKey }: { ownerKey: string }) {
   const tabs = useDesktopTabs();
@@ -34,7 +34,7 @@ export default function TerminalBrowserControls({ ownerKey }: { ownerKey: string
   </>;
 }
 
-function TerminalLibrary({ panel, ownerKey, close }: { panel: Panel; ownerKey: string; close: () => void }) {
+export function TerminalLibrary({ panel, ownerKey, close }: { panel: Panel; ownerKey: string; close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const tabs = useDesktopTabs();
   const searches = useBrowserRecentSearches(ownerKey);

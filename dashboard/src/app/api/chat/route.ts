@@ -25,13 +25,13 @@ import { scanClusterKnowledgeCooperatively, type KnowledgeNode } from '@/lib/kno
 import { gardenMediaKind } from '@/lib/garden-media-kind.ts';
 import { retrieveGraphRag } from '@/lib/semantic-retrieval';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
-import { withCouncil } from '@/lib/council';
+import { withCouncil } from "@/lib/system-prompts/council.ts";
 import { requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 import { readHermesConfig } from '@/lib/hermes/config.ts';
 import { openGardenAgentChat } from '@/lib/hermes/garden-chat-adapter.ts';
 import { apiErrorResponse } from '@/lib/hermes/route-helpers.ts';
 import { recordAuditEvent } from '@/lib/hermes/runtime-store.ts';
-import { directModeSection } from '@/lib/hermes/direct-mode.ts';
+import { systemPromptText } from '@/lib/system-prompts/service.ts';
 import { chatCorePrompt } from '@/lib/hermes/system-prompts.ts';
 import { parseBrowserTerminalAccess } from '@/lib/browser-terminal.ts';
 import { browserTerminalPrompt } from '@/lib/hermes/browser-terminal-context.ts';
@@ -319,7 +319,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'At least one valid chat message is required' }, { status: 400 });
     }
 
-    const { cluster } = await requireReadableClusterFromSlug(clusterSlug);
+    const { cluster, userId } = await requireReadableClusterFromSlug(clusterSlug);
     const chatAttachments: Attachment[] = Array.isArray(attachments) ? attachments : [];
     const selectedSourceSlugs = parseSelectedDocumentSlugs(selectedDocumentSlugs);
     const activeMarkdownContext = parseActiveMarkdownContext(activeMarkdown);
@@ -443,11 +443,11 @@ export async function POST(request: Request) {
     let systemPrompt =
       // Same prose-first voice and minimal-background rule the Hermes surfaces
       // get, so an answer does not change shape with the runtime behind it.
-      `${chatCorePrompt()}\n\n` +
-      `${await browserTerminalPrompt(parseBrowserTerminalAccess(payload.browserAccess), false)}\n\n` +
+      `${chatCorePrompt(userId)}\n\n` +
+      `${await browserTerminalPrompt(parseBrowserTerminalAccess(payload.browserAccess), false, { userId })}\n\n` +
       // Concise shapes an answer wherever it is answered, so the
       // legacy fallback carries it too rather than silently reverting the voice.
-      (payload.adhdMode === true ? `${directModeSection()}\n\n` : '') +
+      (payload.adhdMode === true ? `${systemPromptText("concise-mode", userId)}\n\n` : '') +
       `You are a helpful assistant for the user's second brain garden '${cluster.name}'. ` +
       'Use the learning relationships and markdown pages as grounded context. ' +
       'You can answer questions about the Learning Map itself, including source documents, textbook pages, locations, page references, tags, and relationships. ' +
@@ -538,7 +538,7 @@ export async function POST(request: Request) {
         gardenId: clusterSlug,
         ...(activeMarkdownContext?.slug ? { pageId: activeMarkdownContext.slug } : {}),
         sourceContext: councilSourceContext,
-      }),
+      }, userId),
     );
 
     const sourceNames = Array.from(

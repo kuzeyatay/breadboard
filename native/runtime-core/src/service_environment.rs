@@ -3497,7 +3497,7 @@ impl TrustedWorkerEnvironmentSet {
         let mut music_pairs = tool_pairs.clone();
         music_pairs.push((OsString::from("CHATMOCK_API_KEY"), OsString::from("local")));
         for (name, value) in &services.dashboard.pairs {
-            if ["BREADBOARD_ACESTEP_DIR", "BREADBOARD_ACESTEP_SOURCE_DIR","BREADBOARD_ACESTEP_URL","BREADBOARD_ACESTEP_PORT","BREADBOARD_LOCAL_MCP_BROKER_URL","BREADBOARD_LOCAL_MCP_BROKER_TOKEN","BREADBOARD_LOCAL_MCP_REGISTRY_ROOT"].iter().any(|allowed| name.eq_ignore_ascii_case(OsStr::new(allowed))) { music_pairs.push((name.clone(), value.clone())); }
+            if ["BREADBOARD_ACESTEP_DIR", "BREADBOARD_ACESTEP_SOURCE_DIR","BREADBOARD_ACESTEP_URL","BREADBOARD_ACESTEP_PORT","BREADBOARD_LOCAL_MCP_BROKER_URL","BREADBOARD_LOCAL_MCP_BROKER_TOKEN","BREADBOARD_LOCAL_MCP_REGISTRY_ROOT", "BREADBOARD_SUPERVISOR_CONTROL_URL", "BREADBOARD_SUPERVISOR_CONTROL_TOKEN", "BREADBOARD_RUNTIME_V2_ACTIVE"].iter().any(|allowed| name.eq_ignore_ascii_case(OsStr::new(allowed))) { music_pairs.push((name.clone(), value.clone())); }
         }
         let music_producer = TrustedWorkerEnvironment { mode, source: TrustedWorkerEnvironmentSource::MusicProducer, pairs: music_pairs };
         let mut get_doc_pairs = tool_pairs.clone();
@@ -7153,6 +7153,10 @@ fn write_hermes_runtime_config(
             "      enabled: false\n",
             "compression:\n",
             "  protect_first_n: 0\n",
+            // The canonical Breadboard title is supplied at session creation.
+            "auxiliary:\n",
+            "  title_generation:\n",
+            "    enabled: false\n",
             "memory:\n",
             "  memory_enabled: false\n",
             "  user_profile_enabled: false\n",
@@ -7177,6 +7181,7 @@ fn write_hermes_runtime_config(
             "      - skill_open\n",
             "      - terminal_execute_command\n",
             "      - artifact_import\n",
+            "      - mcp_call\n",
             "tool_loop_guardrails:\n",
             "  warnings_enabled: true\n",
             "  hard_stop_enabled: true\n",
@@ -9109,10 +9114,14 @@ mod tests {
         let worker = worker_values(&workers.prepare_for_source(TrustedWorkerEnvironmentSource::MusicProducer));
         assert_eq!(worker["BREADBOARD_ACESTEP_DIR"], service["BREADBOARD_ACESTEP_DIR"]);
         assert_eq!(worker["CHATMOCK_API_KEY"], "local");
+        assert_eq!(worker["BREADBOARD_SUPERVISOR_CONTROL_URL"], control().url);
+        assert_eq!(worker["BREADBOARD_SUPERVISOR_CONTROL_TOKEN"], CONTROL_TOKEN);
+        assert_eq!(worker["BREADBOARD_RUNTIME_V2_ACTIVE"], "true");
         assert!(worker.contains_key("BREADBOARD_LOCAL_MCP_BROKER_TOKEN"));
         assert!(!worker.contains_key("NEXTAUTH_SECRET"));
         assert!(!worker.contains_key("OPENAI_API_KEY"));
         assert!(!service.contains_key("BREADBOARD_LOCAL_MCP_BROKER_TOKEN"));
+        assert!(!service.contains_key("BREADBOARD_SUPERVISOR_CONTROL_TOKEN"));
     }
 
     #[test]
@@ -10495,6 +10504,9 @@ mod tests {
                 "      enabled: false\n",
                 "compression:\n",
                 "  protect_first_n: 0\n",
+                "auxiliary:\n",
+                "  title_generation:\n",
+                "    enabled: false\n",
                 "memory:\n",
                 "  memory_enabled: false\n",
                 "  user_profile_enabled: false\n",
@@ -10519,6 +10531,7 @@ mod tests {
                 "      - skill_open\n",
                 "      - terminal_execute_command\n",
                 "      - artifact_import\n",
+                "      - mcp_call\n",
                 "tool_loop_guardrails:\n",
                 "  warnings_enabled: true\n",
                 "  hard_stop_enabled: true\n",

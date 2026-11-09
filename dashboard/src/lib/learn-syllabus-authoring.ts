@@ -1,4 +1,3 @@
-import { breadSystemPrompt } from "./assistant-identity.ts";
 
 /**
  * Authoring a syllabus from a learner's prompt ("I want to learn everything
@@ -46,34 +45,11 @@ const MAX_LINE_CHARS = 400;
 const MAX_OVERVIEW_CHARS = 1200;
 const MAX_CONTEXT_DOCUMENTS = 40;
 
-const AUTHORING_SYSTEM_PROMPT = breadSystemPrompt(`You write a course syllabus from a learner's description of what they want to learn.
-
-The syllabus is a planning document: it states what the course covers and to what depth, with a suggested sequence. Breadboard writes the actual lessons from the learner's own uploaded material and chooses their teaching order from conceptual dependencies, placing prerequisites near their first substantive use.
-
-Write the syllabus like a real course outline:
-- courseTitle: the course's name, as a course would state it ("Introduction to Electronics"). No marketing language.
-- overview: two to four sentences on what the course covers and where it ends up.
-- audience: one sentence naming who it is for and what it assumes they already know.
-- units: the course in teaching order. Each unit is one coherent stretch of the subject.
-  - label: the unit's own numbering ("Unit 1", "Unit 2", ...).
-  - title: what that unit teaches.
-  - objectives: what the learner can do after the unit, each starting with a verb ("Calculate the equivalent resistance of series and parallel networks").
-  - topics: the specific subjects the unit covers, as short noun phrases ("Ohm's law", "Kirchhoff's voltage law").
-
-Scope rules:
-- Follow the learner's stated level. "Introductory" means foundations and first principles, not a survey that reaches graduate material.
-- Order units so each one only relies on what earlier units established.
-- Size the course to the subject: a narrow request earns few units, a broad one earns more. Never pad to reach a count, and never split one idea across two units to look thorough.
-- When a list of the learner's existing material is provided, plan the course so that material can actually teach it. Cover what the material supports, and leave out subject areas nothing on the list touches — an unteachable unit produces no lessons.
-
-Never assign readings. Do not name a textbook, paper, author, chapter, page range, video, or any other work anywhere in the syllabus, and do not add a bibliography or reading list. The learner's uploaded documents are the readings; naming anything else makes the course cite works it does not have.
-
-Respond with a single JSON object, no prose and no code fences:
-{"courseTitle": "...", "overview": "...", "audience": "...", "units": [{"label": "Unit 1", "title": "...", "objectives": ["..."], "topics": ["..."]}]}`);
+import { PROMPT_SYLLABUS_AUTHORING as AUTHORING_SYSTEM_PROMPT } from "./system-prompts/feature-defaults.ts";
 
 export function syllabusDraftMessages(
   intent: string,
-  gardenDocuments: SyllabusGardenContextDocument[] = [],
+  gardenDocuments: SyllabusGardenContextDocument[] = [], systemPrompt = AUTHORING_SYSTEM_PROMPT
 ): Array<{ role: "system" | "user"; content: string }> {
   const sections = [`The learner wants to learn:\n\n${intent.trim()}`];
   const listed = gardenDocuments
@@ -98,7 +74,7 @@ export function syllabusDraftMessages(
     );
   }
   return [
-    { role: "system", content: AUTHORING_SYSTEM_PROMPT },
+    { role: "system", content: systemPrompt },
     { role: "user", content: sections.join("\n\n") },
   ];
 }

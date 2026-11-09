@@ -617,6 +617,7 @@ export interface AgentSendOptions {
   model?: string;
   /** Spoken requests use the agent runtime even when typed chat has tools off. */
   voice?: boolean;
+  voiceOpener?: import('@/lib/speech/voice-opener-context').VoiceOpenerContext;
   /** Fresh view access from a detached voice window; null clears stale context. */
   browserAccess?: BrowserTerminalAccess | null;
   reasoningEffort?: AssistantReasoningEffort;
@@ -2304,6 +2305,39 @@ export function useAgentSession(
         }
         transition("connecting");
         await waitForAgentStreamReconnect(delayMs, controller.signal);
+        // The detached producer may have persisted completion while this
+        // viewer lost its terminal frame. Rejoining an idle session then waits
+        // forever for output that already exists. Reconcile only this exact
+        // turn before opening another stream; never adopt a neighbouring reply.
+        if (assistant.clientMessageId) {
+          const restored = await loadHermesSessionDetail(surface, activeSessionId, {
+            revalidateAfterPending: true,
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3_000)]),
+          }).catch(() => null);
+          controller.signal.throwIfAborted();
+          if (stopRequestedRef.current) throw new DOMException("Stopped", "AbortError");
+          const saved = restored?.id === activeSessionId && Array.isArray(restored.messages)
+            ? restored.messages.find((message: unknown): message is Record<string, unknown> => {
+                if (!message || typeof message !== "object") return false;
+                const row = message as Record<string, unknown>;
+                return row.role === "assistant" && row.clientMessageId === assistant.clientMessageId && row.pending !== true &&
+                  typeof row.content === "string" && ["complete", "failed", "aborted"].includes(String(row.status));
+              }) : undefined;
+          if (saved) {
+            const [terminal] = normalizeRestoredMessages([saved]);
+            const outcome = saved.status === "complete" ? "completed"
+              : saved.status === "aborted" ? "cancelled" : "failed";
+            assistant = { ...terminal, id: assistant.id, pending: false };
+            commit(assistant);
+            setActiveTools(assistant.tools ?? []);
+            setError(outcome === "failed" ? assistant.runtimeError ?? "The agent turn failed." : null);
+            setActivities((current) => current.map((item) =>
+              item.status === "running" || item.status === "permission_required"
+                ? { ...item, status: outcome, completedAt: new Date().toISOString() } : item));
+            if (surface !== "quartz_ai") notifyHermesSessionsChanged(surface);
+            return outcome;
+          }
+        }
         return streamEvents(
           activeSessionId,
           assistant,
@@ -4343,6 +4377,7 @@ export function useAgentSession(
               reasoningEffort: options?.reasoningEffort,
               continuation: options?.continuation,
               voice: voiceTurn,
+              voiceOpener: voiceTurn ? options?.voiceOpener : undefined,
               internalAgentContinuation:
                 options?.internalAgentContinuation === true,
               scheduleReceiptId: options?.scheduledChatReceipt?.id,

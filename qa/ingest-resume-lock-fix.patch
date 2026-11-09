@@ -1,0 +1,209 @@
+--- a/dashboard/scripts/runtime-v2-document-ingestion-worker.mjs
++++ b/dashboard/scripts/runtime-v2-document-ingestion-worker.mjs
+@@ -1467,6 +1467,19 @@
+         contentPath,
+         launch.executionScope.gardenId,
+       );
++    const recoverCommittedTransaction = () => retryGardenMutationBusy(
++      () => knowledgeModule.recoverCommittedKnowledgeWriteTransaction(
++        contentPath,
++        launch.executionScope.gardenId,
++        transactionRegistryRoot,
++        launch.identity.jobId,
++        launch.resultPath,
++      ),
++      {
++        signal: abortController.signal,
++        onBusy: () => progress.note("Waiting for another Garden update to finish…"),
++      },
++    );
+     const recoveries = await retryGardenMutationBusy(
+       () =>
+         knowledgeModule.recoverKnowledgeWriteTransactions(
+@@ -1484,14 +1497,7 @@
+     const journalRecovery = recoveries.find(
+       (recovery) => recovery.transactionId === launch.identity.jobId,
+     );
+-    const committedRecovery =
+-      knowledgeModule.recoverCommittedKnowledgeWriteTransaction(
+-        contentPath,
+-        launch.executionScope.gardenId,
+-        transactionRegistryRoot,
+-        launch.identity.jobId,
+-        launch.resultPath,
+-      );
++    const committedRecovery = await recoverCommittedTransaction();
+     const currentRecovery = committedRecovery ?? journalRecovery;
+     if (currentRecovery?.outcome === "committed") {
+       if (!currentRecovery.transaction) {
+@@ -1509,6 +1515,15 @@
+       // must leave the committed pair available for another fenced recovery.
+       knowledgeWriteTransaction.seal();
+       await publishCommittedIngestion();
++      // Wait with heartbeats active: publication released the garden lease.
++      const replacementRecovery = await recoverCommittedTransaction();
++      if (
++        replacementRecovery?.outcome !== "committed" ||
++        !replacementRecovery.transaction
++      ) {
++        fail("The committed ingestion result cannot be fenced for completion.");
++      }
++      knowledgeWriteTransaction = replacementRecovery.transaction;
+       await heartbeat.stop();
+       if (stop.requested()) return;
+       if (protocolFault) throw protocolFault;
+@@ -1518,21 +1533,6 @@
+         completionSequence,
+         value: recoveredValue,
+       });
+-      const replacementRecovery =
+-        knowledgeModule.recoverCommittedKnowledgeWriteTransaction(
+-          contentPath,
+-          launch.executionScope.gardenId,
+-          transactionRegistryRoot,
+-          launch.identity.jobId,
+-          launch.resultPath,
+-        );
+-      if (
+-        replacementRecovery?.outcome !== "committed" ||
+-        !replacementRecovery.transaction
+-      ) {
+-        fail("The committed ingestion result cannot be fenced for completion.");
+-      }
+-      knowledgeWriteTransaction = replacementRecovery.transaction;
+       knowledgeWriteTransaction.prepareResultReplacement(
+         createHash("sha256").update(result).digest("hex"),
+       );
+@@ -1656,6 +1656,15 @@
+     }
+     triggerTestIngestionFault("after-garden-commit");
+     await publishCommittedIngestion();
++    // Wait with heartbeats active: publication released the garden lease.
++    const replacementRecovery = await recoverCommittedTransaction();
++    if (
++      replacementRecovery?.outcome !== "committed" ||
++      !replacementRecovery.transaction
++    ) {
++      fail("The committed ingestion result cannot be fenced for completion.");
++    }
++    knowledgeWriteTransaction = replacementRecovery.transaction;
+     await heartbeat.stop();
+     // Joining the heartbeat thread yields to stdin once more. A stop record
+     // received during that join still owns the outcome; after this check the
+@@ -1668,21 +1677,6 @@
+       completionSequence,
+       value: resultValue,
+     });
+-    const replacementRecovery =
+-      knowledgeModule.recoverCommittedKnowledgeWriteTransaction(
+-        contentPath,
+-        launch.executionScope.gardenId,
+-        transactionRegistryRoot,
+-        launch.identity.jobId,
+-        launch.resultPath,
+-      );
+-    if (
+-      replacementRecovery?.outcome !== "committed" ||
+-      !replacementRecovery.transaction
+-    ) {
+-      fail("The committed ingestion result cannot be fenced for completion.");
+-    }
+-    knowledgeWriteTransaction = replacementRecovery.transaction;
+     knowledgeWriteTransaction.prepareResultReplacement(
+       createHash("sha256").update(result).digest("hex"),
+     );
+--- a/dashboard/tests/runtime-v2-document-ingestion-worker.test.mjs
++++ b/dashboard/tests/runtime-v2-document-ingestion-worker.test.mjs
+@@ -6,6 +6,7 @@
+ import { spawn } from "node:child_process";
+ import test from "node:test";
+ import { fileURLToPath, pathToFileURL } from "node:url";
++import { acquireGardenMutationLease } from "../src/lib/garden-mutation-lease-core.ts";
+ 
+ import {
+   MAX_PROGRESS_CHECKPOINTS,
+@@ -259,6 +260,13 @@
+       'if (!output) throw new Error("missing bounded Quartz output");',
+       'fs.mkdirSync(output, { recursive: true });',
+       'fs.writeFileSync(path.join(output, "index.html"), "published", "utf8");',
++      `const barrier = ${JSON.stringify(path.join(quartzRoot, ".test-publication-barrier"))};`,
++      'if (fs.existsSync(barrier)) {',
++      '  fs.writeFileSync(`${barrier}.ready`, "ready");',
++      '  const deadline = Date.now() + 10000;',
++      '  while (fs.existsSync(barrier) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);',
++      '  if (fs.existsSync(barrier)) throw new Error("publication barrier timed out");',
++      '}',
+     ].join("\n"),
+     "utf8",
+   );
+@@ -360,10 +368,10 @@
+       child.kill();
+       reject(
+         new Error(
+-          "The fault-injected ingestion worker did not exit within 10 seconds.",
++          "The fault-injected ingestion worker did not exit within 20 seconds.",
+         ),
+       );
+-    }, 10_000);
++    }, 20_000);
+     child.once("error", (error) => {
+       clearTimeout(timeout);
+       reject(error);
+@@ -848,6 +856,57 @@
+     fs.rmSync(current.dataRoot, { recursive: true, force: true });
+   }
+ });
++
++for (const recoverCommitted of [false, true]) {
++  test(`ingestion waits for a writer after publication (${recoverCommitted ? "recovered commit" : "fresh commit"})`, async () => {
++    const first = fixture();
++    const clusterDir = path.join(first.dataRoot, "quartz", "content", "garden-1");
++    const barrier = path.join(first.dataRoot, "quartz", ".test-publication-barrier");
++    const checkpointPath = path.join(first.dataRoot, "runtime", "jobs", first.identity.jobId, "checkpoint.json");
++    let lease;
++    let running;
++    const waitUntil = async predicate => {
++      const deadline = Date.now() + 10_000;
++      while (!predicate()) {
++        assert.ok(Date.now() < deadline, "worker did not reach the expected phase");
++        await new Promise(resolve => setTimeout(resolve, 20));
++      }
++    };
++    try {
++      fs.mkdirSync(clusterDir, { recursive: true });
++      let current = first;
++      if (recoverCommitted) {
++        fs.writeFileSync(path.join(first.dataRoot, "quartz", ".test-fail-next"), "fail once");
++        assert.equal((await runWorkerProcess(first)).code, 1);
++        current = nextAttempt(first);
++      }
++      fs.writeFileSync(barrier, "wait for competing writer");
++      running = runWorkerProcess(current);
++      await waitUntil(() => fs.existsSync(`${barrier}.ready`));
++      lease = acquireGardenMutationLease(clusterDir, "learn-update-test");
++      fs.unlinkSync(barrier);
++      await waitUntil(() => JSON.parse(fs.readFileSync(checkpointPath, "utf8")).step === "Waiting for another Garden update to finish…");
++      // Longer than the heartbeat interval: completion cannot stop the worker
++      // heartbeat before it has reacquired the lease.
++      await new Promise(resolve => setTimeout(resolve, 5_200));
++      lease.release();
++      lease = null;
++      const result = await running;
++      assert.equal(result.code, 0, result.stderr);
++      assert.equal(result.events.at(-1)?.type, "complete");
++      const waitCheckpoint = result.events.findLastIndex(event => event.type === "checkpoint");
++      assert.ok(result.events.slice(waitCheckpoint + 1).some(event => event.type === "heartbeat"));
++      const durable = JSON.parse(fs.readFileSync(path.join(path.dirname(checkpointPath), "result.json"), "utf8"));
++      assert.equal(durable.completionSequence, result.events.at(-1).sequence);
++      assert.equal(durable.result.success, true);
++    } finally {
++      lease?.release();
++      if (fs.existsSync(barrier)) fs.unlinkSync(barrier);
++      await running;
++      fs.rmSync(first.dataRoot, { recursive: true, force: true });
++    }
++  });
++}
+ 
+ test("a committed ingestion republishes on a fresh worker after Quartz fails", async () => {
+   const first = fixture();

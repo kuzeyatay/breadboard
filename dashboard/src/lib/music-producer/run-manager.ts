@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { musicLaunchIdentity } from "./launch-identity.ts";
+import { currentSwarmInvocation } from "../swarm/invocation.ts";
 import { getConversationForUser } from "../conversations/store.ts";
 import { attachExternalAgentRun, recordExternalAgentTurn, finishExternalAgentTurn } from "../conversations/external-agent-turns.ts";
 import { getRuntimeSessionByConversation, runtimeExternalSessionId } from "../hermes/runtime-store.ts";
@@ -8,7 +9,7 @@ import { musicArtifactContext } from "./artifacts.ts";
 import { musicError } from "./errors.ts";
 import { getOuterAgentRuntimeRunByRequest } from "../runtime-v2/outer-agent-run-store.ts";
 import { startOuterAgentRun, readOuterAgentRunView, abortOuterAgentRun, type OuterAgentRunView } from "../runtime-v2/outer-agent-run.ts";
-import { createMusicLaunch, musicLaunch, updateMusicLaunch, recoverMusicArtifactRuns } from "./store.ts";
+import { createMusicLaunch, musicLaunch, updateMusicLaunch, recoverMusicArtifactRuns, musicSwarmRequestId } from "./store.ts";
 import { musicProducerUserMessage } from "./identity.ts";
 import type { MusicWorkerRequest } from "./worker.ts";
 export async function startRun(input: Omit<MusicWorkerRequest, "launchId"> & {
@@ -22,8 +23,12 @@ export async function startRun(input: Omit<MusicWorkerRequest, "launchId"> & {
   const conversation = getConversationForUser(input.conversationPublicId, input.userId);
   if (conversation.surface !== "dashboard_terminal" && conversation.surface !== "garden_chat")
     throw new Error("invalid_music_surface");
-  const id = `music_${createHash("sha256").update(`${input.userId}:${conversation.public_id}:${input.clientMessageId}`).digest("hex").slice(0, 32)}`;
-  const launchJson = JSON.stringify({ ...input, conversationContext: undefined });
+  const invocation = currentSwarmInvocation();
+  if (invocation && (invocation.userId !== input.userId || invocation.agentId !== "music-producer" ||
+    invocation.conversationPublicId !== conversation.public_id)) throw new Error("invalid_music_team_scope");
+  const id = musicLaunchIdentity(input.userId, conversation.public_id, input.clientMessageId);
+  const launchJson = JSON.stringify({ ...input, conversationContext: undefined,
+    ...(invocation ? { swarmRequestId: invocation.requestId } : {}) });
   const fresh = createMusicLaunch({ id, userId: input.userId, conversationPublicId: conversation.public_id, clientMessageId: input.clientMessageId, task: input.task, launchJson });
   const existing = musicLaunch(input.userId, id);
   if (existing.task !== input.task || (!fresh && existing.launch_json !== '{}' && existing.launch_json !== launchJson))
@@ -34,9 +39,9 @@ export async function startRun(input: Omit<MusicWorkerRequest, "launchId"> & {
   try {
     updateMusicLaunch(input.userId, id, { launch_json: launchJson, created_at: Date.now() });
     const run = { kind: "music_producer" as const, runId: id, task: input.task };
-    if (input.attachToExistingTurn)
+    if (!invocation && input.attachToExistingTurn)
       attachExternalAgentRun({ conversation, clientMessageId: input.clientMessageId, run });
-    else
+    else if (!invocation)
       recordExternalAgentTurn({
         conversation, clientMessageId: input.clientMessageId, surface: conversation.surface,
         userContent: input.delegatedAgentRun ? input.task : musicProducerUserMessage(input.task), run, outcome: "running",
@@ -87,7 +92,7 @@ export async function startRun(input: Omit<MusicWorkerRequest, "launchId"> & {
     const summary = musicError(error).message;
     updateMusicLaunch(input.userId, id, { collection_state: "failed", summary });
     try {
-      finishExternalAgentTurn({ conversationId: conversation.id, clientMessageId: input.clientMessageId, outcome: "failed", content: summary });
+      if (!invocation) finishExternalAgentTurn({ conversationId: conversation.id, clientMessageId: input.clientMessageId, outcome: "failed", content: summary });
     }
     catch { /* Launch-message validation may have failed. */ }
     throw error;
@@ -98,7 +103,7 @@ export async function readRun(userId: number, id: string, since = 0): Promise<Ou
   getConversationForUser(launch.conversation_public_id, userId);
   // Recover a crash between native admission and saving the facade's native job id.
   if (!launch.runtime_job_id) {
-    const admitted = getOuterAgentRuntimeRunByRequest(userId, "music-producer", id);
+    const admitted = getOuterAgentRuntimeRunByRequest(userId, "music-producer", musicSwarmRequestId(launch) ?? id);
     if (admitted) {
       launch.runtime_job_id = admitted.job_id;
       updateMusicLaunch(userId, id, { runtime_job_id: admitted.job_id });
@@ -117,7 +122,7 @@ export async function readRun(userId: number, id: string, since = 0): Promise<Ou
       const summary = String(event?.payload.summary ?? event?.payload.error ?? "Music worker stopped before saving its result.");
       updateMusicLaunch(userId, id, { collection_state: outcome, summary });
       const conversation = getConversationForUser(launch.conversation_public_id, userId);
-      finishExternalAgentTurn({ conversationId: conversation.id, clientMessageId: launch.client_message_id, outcome, content: summary });
+      if (!musicSwarmRequestId(launch)) finishExternalAgentTurn({ conversationId: conversation.id, clientMessageId: launch.client_message_id, outcome, content: summary });
       recoverMusicArtifactRuns();
     }
     return view;
@@ -126,7 +131,12 @@ export async function readRun(userId: number, id: string, since = 0): Promise<Ou
   return { terminal, status: terminal ? "failed" : "queued", events: terminal && since < 1 ? [{ sequenceNumber: 1, at: new Date(0).toISOString(), type: "run.failed", payload: { summary: launch.summary || "Submission is uncertain. Explicitly retry after checking Runtime status." } }] : [] };
 }
 export async function abortRun(userId: number, id: string): Promise<boolean> {
-  const launch = musicLaunch(userId, id);
+  let launch = musicLaunch(userId, id);
+  // Reconcile a team admission that stopped before saving the facade's job ID.
+  if (musicSwarmRequestId(launch) && !launch.runtime_job_id) {
+    await readRun(userId, id);
+    launch = musicLaunch(userId, id);
+  }
   if (["completed", "failed", "aborted"].includes(launch.collection_state))
     return false;
   updateMusicLaunch(userId, id, { collection_state: "cancelling" });

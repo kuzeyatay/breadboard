@@ -22,6 +22,9 @@ import {
 } from "./source.ts";
 import { transcriptionAvailability } from "./transcribe.ts";
 import { removeMeetingUpload } from "./uploads.ts";
+import { getConversationForUser } from "../conversations/store.ts";
+import { conversationOrigin } from "../hermes/session-surface.ts";
+import { getRuntimeSessionByConversation, runtimeExternalSessionId } from "../hermes/runtime-store.ts";
 
 export type MeetingNotesEvent = OuterAgentEvent;
 
@@ -111,6 +114,25 @@ export async function startRun(
     inputBlob = bufferInput(buffer);
   } else {
     inputBlob = fileInput(resolved.path, resolved.filename);
+  }
+
+  // A new conversation has no Hermes runtime until its first ordinary turn.
+  // Meeting Notes can be that first turn and still needs durable artifacts.
+  if (resolved) {
+    const conversation = getConversationForUser(input.conversationPublicId, input.userId);
+    if (conversation.surface !== "dashboard_terminal" && conversation.surface !== "garden_chat") {
+      throw new Error("Meeting Notes requires a supported conversation surface.");
+    }
+    const session = getRuntimeSessionByConversation(conversation.id);
+    if (!session || !runtimeExternalSessionId(session)) {
+      const { resolveConversationRuntime } = await import("../hermes/session-service.ts");
+      await resolveConversationRuntime({
+        conversation,
+        surface: conversation.surface,
+        activeGardenSlug: session?.garden_id ?? conversationOrigin(conversation).gardenSlug,
+        activePageSlug: session?.page_slug ?? null,
+      });
+    }
   }
 
   const launched = await startOuterAgentRun({

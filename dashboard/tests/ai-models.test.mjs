@@ -19,13 +19,15 @@ test('GPT-5.6 Sol is the default for every assistant surface', () => {
 test('assistant model lists put GPT-6.1 first and remove duplicates', () => {
   assert.deepEqual(
     mergeAssistantModels(['gpt-5.4', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-5.6-sol', 'gpt-5.6-luna', ' custom-model ', '', null]),
-    ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-luna-reserve', 'gpt-5.5', 'gpt-5.4', 'custom-model'],
+    ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-luna-reserve', 'gpt-5.5', 'gpt-5.4', 'custom-model'],
   );
 });
 
 test('assistant model names use a readable label in the composer', () => {
   assert.equal(formatAssistantModelName('gpt-6.1-sol'), 'GPT-6.1 Sol');
   assert.equal(formatAssistantModelName('chatgpt/gpt-6.1-sol'), 'GPT-6.1 Sol');
+  assert.equal(formatAssistantModelName('gpt-6.1-terra'), 'GPT-6.1 Terra');
+  assert.equal(formatAssistantModelName('chatgpt/gpt-6.1-terra'), 'GPT-6.1 Terra');
   assert.equal(formatAssistantModelName('gpt-6-astra'), 'GPT-6 Astra');
   assert.equal(formatAssistantModelName('chatgpt/gpt-6-astra'), 'GPT-6 Astra');
   assert.equal(formatAssistantModelName('gpt-6-sol'), 'GPT-6 Sol');

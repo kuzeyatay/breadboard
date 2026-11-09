@@ -265,6 +265,7 @@ export const PRODUCT_SEARCH_TOOLS = ["product_search"] as const;
 // applies the active surface (and active Garden on Garden Chat), excludes
 // temporary conversations, and returns navigation-only UI resources.
 export const CHAT_SEARCH_TOOLS = ["chat_search"] as const;
+export const CHAT_COORDINATION_TOOLS = ["chat_list", "chat_send_message", "chat_wait"] as const;
 
 // A printer tool can prepare a review, never authorize physical execution.
 export const BAMBU_TOOLS = ["bambu_print_prepare"] as const;
@@ -277,6 +278,10 @@ export const NOTIFICATION_TOOLS = ["notifications_read"] as const;
 // A read over the same job tables the product's own panels poll, scoped to
 // the user (and the active Garden on Garden Chat); it changes nothing.
 export const PROCESS_STATUS_TOOLS = ["breadboard_process_status"] as const;
+
+// The connected ChatGPT/Codex meter already shown by the usage notch.
+// Read-only, authenticated conversations only; credentials stay in ChatMock.
+export const USAGE_TOOLS = ["breadboard_usage"] as const;
 
 // The map at /map, and the geographic state behind it. Every one of these is a
 // read of an external open-data service (Photon, Nominatim, Valhalla, Overpass)
@@ -500,8 +505,10 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...FEYNMAN_TOOLS,
       ...PRODUCT_SEARCH_TOOLS,
       ...CHAT_SEARCH_TOOLS,
+      ...CHAT_COORDINATION_TOOLS,
       ...BAMBU_TOOLS,
       ...PROCESS_STATUS_TOOLS,
+      ...USAGE_TOOLS,
       ...MAP_TOOLS,
       ...SPOTIFY_TOOLS,
       ...CALENDAR_TOOLS,
@@ -550,8 +557,10 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...FEYNMAN_TOOLS,
     ...PRODUCT_SEARCH_TOOLS,
     ...CHAT_SEARCH_TOOLS,
+    ...CHAT_COORDINATION_TOOLS,
       ...BAMBU_TOOLS,
     ...PROCESS_STATUS_TOOLS,
+    ...USAGE_TOOLS,
     ...NOTIFICATION_TOOLS,
     ...MAP_TOOLS,
     ...SPOTIFY_TOOLS,

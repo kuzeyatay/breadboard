@@ -14,11 +14,17 @@
 // finished message and copies it across.
 
 import "server-only";
+import { randomUUID } from "node:crypto";
+import { roomRuntime } from "./runtime-catalog.ts";
+import { startRoomRuntime, roomRuntimeEvents, runtimeOutput } from "./runtime-agents.ts";
+import { recordExternalAgentTurn, finishExternalAgentTurn } from "../conversations/external-agent-turns.ts";
+import { listRuntimeSessionsForConversation } from "../hermes/runtime-store.ts";
+import { cancelRuntimeSessionWork } from "../hermes/session-cancel.ts";
+import { cancelRunningExternalAgentRuns, cancelExternalAgentRun } from "../conversations/external-agent-cancel.ts";
 
 import db from "@/lib/db";
 import {
   createConversation,
-  listConversationMessages,
   type ConversationRow,
 } from "@/lib/conversations/store.ts";
 import { startConversationTurn } from "@/lib/conversations/turn-service.ts";
@@ -26,11 +32,12 @@ import { loadAgencyAgentsCatalog } from "@/lib/hermes/agency-agents.ts";
 import { BREAD_INSTRUCTIONS, isBreadSlug } from "./bread.ts";
 import {
   getMember,
+  getMessage,
+  getMessageByClientId,
   listMembers,
   listSpineMessages,
   listThreadMessages,
   postMessage,
-  setMemberConversation,
   updateMessageBody,
 } from "./instance.ts";
 import type { BuzzMember, BuzzMessage, BuzzRoom } from "./store.ts";
@@ -44,40 +51,24 @@ export { mentionedHandles, resolveResponders } from "./mentions.ts";
 const TRANSCRIPT_DEPTH = 40;
 
 /**
- * The private conversation an agent member thinks in for one room, created on
- * first need and reused afterwards so the persona keeps continuity here.
+ * Runtime state belongs to the account requesting the work. The shared room
+ * supplies context; colleagues never share another account's tools or permissions.
  */
 export function ensureMemberConversation(
   room: BuzzRoom,
   member: BuzzMember,
-  fallbackUserId: number,
+  actingUserId: number,
 ): ConversationRow {
-  if (member.conversationId) {
-    const existing = db
-      .prepare("SELECT * FROM conversations WHERE id = ?")
-      .get(member.conversationId) as ConversationRow | undefined;
-    if (existing) return existing;
-  }
-
-  // The room's creator owns the agent's private conversation, not whoever
-  // happened to speak: the member is the room's, and several people share it.
-  // Were it owned by the asker, the same agent would keep one memory per
-  // colleague and answer each of them from a different history.
-  const conversation = createConversation({
-    userId: room.createdByUserId ?? fallbackUserId,
-    title: `${member.displayName} in #${room.slug}`,
-    surface: "dashboard_terminal",
-    scopeKind: "global",
-  });
-  // The marker that keeps this out of the account's chat sidebar. Set here
-  // rather than in `createConversation` so the canonical store stays unaware
-  // of Buzz.
-  db.prepare("UPDATE conversations SET buzz_room_id = ? WHERE id = ?").run(
-    room.id,
-    conversation.id,
-  );
-  setMemberConversation(member.id, conversation.id);
-  return { ...conversation, buzz_room_id: room.id } as ConversationRow;
+  const existing = db.prepare(`SELECT c.* FROM buzz_member_conversations b
+    JOIN conversations c ON c.id = b.conversation_id
+    WHERE b.member_id = ? AND b.user_id = ? AND c.user_id = ?`).get(member.id, actingUserId, actingUserId) as ConversationRow | undefined;
+  if (existing) return existing;
+  return db.transaction(() => {
+    const conversation = createConversation({ userId: actingUserId, title: `${member.displayName} in #${room.slug}`, surface: "dashboard_terminal", scopeKind: "global" });
+    db.prepare("UPDATE conversations SET buzz_room_id = ? WHERE id = ?").run(room.id, conversation.id);
+    db.prepare("INSERT INTO buzz_member_conversations(member_id, user_id, conversation_id) VALUES (?, ?, ?)").run(member.id, actingUserId, conversation.id);
+    return conversation;
+  })();
 }
 
 function personaInstructions(slug: string | null): string {
@@ -133,7 +124,7 @@ export function buildRoomPrompt(input: {
   const instructions = personaInstructions(member.personaSlug);
 
   return [
-    `You are ${member.displayName}, a member of the Buzz room #${room.slug}.`,
+    `You are ${member.displayName}, a member of the shared Organization room #${room.slug}.`,
     "This room can hold several people as well as several agents.",
     room.topic ? `The room's topic is: ${room.topic}` : "",
     instructions ? `\nYour brief:\n${instructions}` : "",
@@ -144,7 +135,7 @@ export function buildRoomPrompt(input: {
     "- Everything you write is posted into the shared transcript. Every member reads it — the other people as well as the other agents.",
     "- More than one person may be talking. Answer the message you were given, and address people by name when it is not obvious who you mean.",
     "- Write one message, as yourself, in your own voice. Do not narrate other members or write their lines.",
-    `- To bring in another member, mention them by handle — writing @handle notifies them and they will answer next.`,
+    `- To bring in another member, mention them by handle — writing @handle addresses them. Only a person can start another agent; do not promise an automatic hand-off.`,
     "- Keep it to what a person would actually post in a chat room. No sign-off, no restating the question.",
     inThread
       ? "- You are replying inside a thread, so you can assume the root message as context."
@@ -175,10 +166,16 @@ export async function startMemberReply(input: {
   memberId: number;
   trigger: BuzzMessage;
   clientMessageId: string;
-  /** Used only if the room has outlived the account that created it. */
   actingUserId: number;
+  request?: Request;
+  replaceMessageId?: number;
+  confirmedPermissionIds?: string[];
 }): Promise<StartMemberReplyResult> {
-  const { room, trigger, clientMessageId } = input;
+  const { room, trigger } = input;
+  const approvingMessage = input.confirmedPermissionIds?.length && input.replaceMessageId ? getMessage(input.replaceMessageId) : null;
+  const clientMessageId = approvingMessage ? String(approvingMessage.metadata?.turnClientMessageId) : input.replaceMessageId ? `buzz_regen_${randomUUID()}` : `buzz_reply_${trigger.id}_${input.memberId}`;
+  const previous = input.replaceMessageId ? null : getMessageByClientId(room.id, clientMessageId);
+  if (previous) return { message: previous, accepted: false, reason: "replayed" };
   const member = getMember(input.memberId);
   if (!member || member.roomId !== room.id || member.kind !== "agent") {
     throw new Error("member_not_in_room");
@@ -187,11 +184,11 @@ export async function startMemberReply(input: {
   const members = listMembers(room.id);
   const inThread = trigger.parentId !== null;
   const transcript = inThread
-    ? listThreadMessages(room.id, trigger.parentId as number)
+    ? [getMessage(trigger.parentId as number), ...listThreadMessages(room.id, trigger.parentId as number)].filter((message): message is BuzzMessage => message !== null)
     : listSpineMessages(room.id, TRANSCRIPT_DEPTH);
 
   const conversation = ensureMemberConversation(room, member, input.actingUserId);
-  const prompt = buildRoomPrompt({
+  const builtPrompt = buildRoomPrompt({
     room,
     member,
     members,
@@ -202,7 +199,17 @@ export async function startMemberReply(input: {
     inThread,
   });
 
-  const placeholder = postMessage(room.id, {
+  const originalPrompt = approvingMessage ? db.prepare("SELECT content FROM conversation_messages WHERE conversation_id = ? AND client_message_id = ? AND role = 'user'").get(conversation.id, clientMessageId) as { content: string } | undefined : undefined;
+  const prompt = originalPrompt?.content ?? builtPrompt;
+  const claimId = randomUUID();
+  const metadata = {
+    conversationId: conversation.id, conversationPublicId: conversation.public_id,
+    turnClientMessageId: clientMessageId, respondingTo: trigger.id,
+    actingUserId: input.actingUserId,
+    requestedByMemberId: members.find(candidate => candidate.userId === input.actingUserId)?.id,
+    claimId,
+  };
+  const placeholder = input.replaceMessageId ? getMessage(input.replaceMessageId)! : postMessage(room.id, {
     clientMessageId,
     memberId: member.id,
     authorKind: "agent",
@@ -212,14 +219,29 @@ export async function startMemberReply(input: {
     body: "",
     parentId: trigger.parentId ?? null,
     status: "pending",
-    metadata: {
-      conversationId: conversation.id,
-      turnClientMessageId: clientMessageId,
-      respondingTo: trigger.id,
-    },
+    metadata,
   });
+  if (!input.replaceMessageId && placeholder.metadata?.claimId !== claimId) return { message: placeholder, accepted: false, reason: "replayed" };
+  updateMessageBody(placeholder.id, "", "pending", metadata);
 
   try {
+    const native = roomRuntime(member.personaSlug);
+    if (native) {
+      if (!input.request) throw new Error("The agent needs an authenticated launch request.");
+      const task = trigger.body.replace(new RegExp(`(^|\\s)@${member.handle}\\b`, "gi"), "$1").trim();
+      if (!task) throw new Error(`Tell ${member.displayName} what you want it to do.`);
+      const run = await startRoomRuntime({ agentId: native.id, request: input.request, userId: input.actingUserId, conversation, clientMessageId, task, model: member.model });
+      const current = getMessage(placeholder.id);
+      if (!current || current.deletedAt || current.status === "aborted" || current.metadata?.claimId !== claimId || !getMember(member.id)) {
+        await cancelExternalAgentRun(input.actingUserId, run.kind, run.runId);
+        return { message: current ?? placeholder, accepted: false, reason: "cancelled" };
+      }
+      updateMessageBody(placeholder.id, "", "streaming", { ...metadata, runtimeAgentId: native.id, externalAgentRun: run });
+      const saved = db.prepare("SELECT 1 FROM conversation_messages WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'").get(conversation.id, clientMessageId);
+      if (!saved) recordExternalAgentTurn({ conversation, clientMessageId, surface: "dashboard_terminal", userContent: prompt, run, outcome: "running" });
+      watchRoom(room.id);
+      return { message: getMessage(placeholder.id)!, accepted: true };
+    }
     const result = await startConversationTurn({
       conversation,
       clientMessageId,
@@ -227,33 +249,32 @@ export async function startMemberReply(input: {
       surface: "dashboard_terminal",
       // A room member answers with the tools and memory it would have anywhere
       // else; nothing about Buzz narrows that.
-      yoloMode: true,
+      yoloMode: false,
+      personalize: false,
+      confirmedPermissionIds: input.confirmedPermissionIds,
+      retry: !!input.confirmedPermissionIds?.length,
       ...(member.model ? { model: member.model } : {}),
     });
 
-    if (!result.accepted) {
-      const reason =
-        "blocked" in result
-          ? "awaiting_permission"
-          : "clarified" in result
-            ? "clarified"
-            : "replayed";
-      updateMessageBody(placeholder.id, "", "pending", {
-        conversationId: conversation.id,
-        turnClientMessageId: clientMessageId,
-        respondingTo: trigger.id,
-        turnReason: reason,
-      });
-      return { message: placeholder, accepted: false, reason };
+    const current = getMessage(placeholder.id);
+    if (!current || current.deletedAt || current.status === "aborted" || current.metadata?.claimId !== claimId || !getMember(member.id)) {
+      await stopRoomWork(room.id, conversation.id);
+      return { message: current ?? placeholder, accepted: false, reason: "cancelled" };
     }
-
-    updateMessageBody(placeholder.id, "", "streaming", {
-      conversationId: conversation.id,
-      turnClientMessageId: clientMessageId,
-      respondingTo: trigger.id,
-      runId: result.run.id,
-    });
-    return { message: placeholder, accepted: true };
+    if (!result.accepted) {
+      if ("blocked" in result) {
+        const pendingPermissions = result.pendingPermissions.filter((item): item is Record<string, unknown> => !!item && typeof item === "object");
+        updateMessageBody(placeholder.id, result.request || "This response needs permission from the person who requested it.", "failed", { ...metadata, needsPermission: true, pendingPermissions });
+      } else if ("clarified" in result) {
+        updateMessageBody(placeholder.id, result.message, "complete", metadata);
+      } else {
+        updateMessageBody(placeholder.id, "", result.status === "complete" ? "streaming" : "pending", metadata);
+      }
+      return { message: getMessage(placeholder.id)!, accepted: false };
+    }
+    updateMessageBody(placeholder.id, "", "streaming", { ...metadata, runId: result.run.id });
+    watchRoom(room.id);
+    return { message: getMessage(placeholder.id)!, accepted: true };
   } catch (error) {
     updateMessageBody(
       placeholder.id,
@@ -261,7 +282,7 @@ export async function startMemberReply(input: {
       "failed",
     );
     return {
-      message: placeholder,
+      message: getMessage(placeholder.id) ?? placeholder,
       accepted: false,
       reason: error instanceof Error ? error.message : "turn_failed",
     };
@@ -275,17 +296,43 @@ export async function startMemberReply(input: {
  * text so far; one that finished gets its final text and status. Nothing here
  * writes back into the conversation store — the room is downstream of it.
  */
-export function reconcileLiveMessages(roomId: number): void {
+const watchers = new Map<number, ReturnType<typeof setTimeout>>();
+const reconciliations = new Map<number, Promise<void>>();
+
+function watchRoom(roomId: number) {
+  if (watchers.has(roomId)) return;
+  const timer = setTimeout(async () => {
+    try { if (db.open) await reconcileLiveMessages(roomId); }
+    catch { /* The next read/watch retries transient storage or runtime failures. */ }
+    finally {
+      watchers.delete(roomId);
+      if (db.open && db.prepare("SELECT 1 FROM buzz_room_messages WHERE room_id = ? AND status IN ('pending','streaming') LIMIT 1").get(roomId)) watchRoom(roomId);
+    }
+  }, 1200);
+  timer.unref(); watchers.set(roomId, timer);
+}
+
+export async function reconcileLiveMessages(roomId: number): Promise<void> {
+  const previous = reconciliations.get(roomId);
+  if (previous) return previous;
+  const work = reconcileRoom(roomId).finally(() => reconciliations.delete(roomId));
+  reconciliations.set(roomId, work);
+  await work;
+}
+
+async function reconcileRoom(roomId: number): Promise<void> {
   const live = db
     .prepare(
-      `SELECT id, metadata FROM buzz_room_messages
+      `SELECT id, metadata, body, updated_at FROM buzz_room_messages
        WHERE room_id = ? AND status IN ('pending','streaming')`,
     )
-    .all(roomId) as Array<{ id: number; metadata: string | null }>;
+    .all(roomId) as Array<{ id: number; metadata: string | null; body: string; updated_at: string }>;
 
   for (const row of live) {
     if (!row.metadata) continue;
-    let meta: { conversationId?: number; turnClientMessageId?: string };
+    const current = getMessage(row.id);
+    if (!current || current.deletedAt || !["pending", "streaming"].includes(current.status)) continue;
+    let meta: { conversationId?: number; turnClientMessageId?: string; runtimeAgentId?: string; actingUserId?: number; externalAgentRun?: { runId: string }; lastSequence?: number };
     try {
       meta = JSON.parse(row.metadata) as typeof meta;
     } catch {
@@ -293,6 +340,19 @@ export function reconcileLiveMessages(roomId: number): void {
     }
     if (!meta.conversationId || !meta.turnClientMessageId) continue;
 
+    if (meta.runtimeAgentId && meta.actingUserId && meta.externalAgentRun) {
+      try {
+        const events = await roomRuntimeEvents(meta.runtimeAgentId, meta.actingUserId, meta.externalAgentRun.runId, meta.lastSequence ?? 0);
+        const latest = getMessage(row.id);
+        if (!latest || latest.deletedAt || !["pending", "streaming"].includes(latest.status) || latest.metadata?.turnClientMessageId !== meta.turnClientMessageId) continue;
+        const output = runtimeOutput(events, row.body);
+        updateMessageBody(row.id, output.body, output.status, { ...meta, lastSequence: events.at(-1)?.sequenceNumber ?? meta.lastSequence ?? 0 });
+        if (output.status !== "streaming") finishExternalAgentTurn({ conversationId: meta.conversationId, clientMessageId: meta.turnClientMessageId, content: output.body, outcome: output.status === "complete" ? "completed" : output.status });
+      } catch (error) {
+        if (error instanceof Error && /run_not_found|not found|expired/i.test(error.message)) updateMessageBody(row.id, "This agent run is no longer available. Regenerate the response to start again.", "failed");
+      }
+      continue;
+    }
     const answer = db
       .prepare(
         `SELECT content, status FROM conversation_messages
@@ -301,7 +361,10 @@ export function reconcileLiveMessages(roomId: number): void {
       .get(meta.conversationId, meta.turnClientMessageId) as
       | { content: string; status: string }
       | undefined;
-    if (!answer) continue;
+    if (!answer) {
+      if (Date.now() - Date.parse(row.updated_at.replace(" ", "T") + "Z") > 300_000) updateMessageBody(row.id, "The response was interrupted before the agent started. Regenerate to try again.", "failed");
+      continue;
+    }
 
     const status =
       answer.status === "complete"
@@ -326,12 +389,24 @@ export function reconcileLiveMessages(roomId: number): void {
  * Messages listed with their live state already reconciled. The single entry
  * point the API uses, so no route can forget to reconcile first.
  */
-export function readRoomSpine(roomId: number, limit?: number): BuzzMessage[] {
-  reconcileLiveMessages(roomId);
-  return listSpineMessages(roomId, limit);
+export async function readRoomSpine(roomId: number, limit?: number, beforeId?: number): Promise<BuzzMessage[]> {
+  await reconcileLiveMessages(roomId);
+  return listSpineMessages(roomId, limit, beforeId);
 }
 
-export function readRoomThread(roomId: number, parentId: number): BuzzMessage[] {
-  reconcileLiveMessages(roomId);
+export async function readRoomThread(roomId: number, parentId: number): Promise<BuzzMessage[]> {
+  await reconcileLiveMessages(roomId);
   return listThreadMessages(roomId, parentId);
+}
+
+/** Cancel before cascade deletion, while run ownership is still available. */
+export async function stopRoomWork(roomId: number, conversationId?: number): Promise<void> {
+  if (!conversationId) { clearTimeout(watchers.get(roomId)); watchers.delete(roomId); }
+  const conversations = db.prepare("SELECT id, user_id FROM conversations WHERE buzz_room_id = ? AND (? IS NULL OR id = ?)").all(roomId, conversationId ?? null, conversationId ?? null) as Array<{ id: number; user_id: number }>;
+  for (const conversation of conversations) {
+    await cancelRunningExternalAgentRuns(conversation.user_id, conversation.id);
+    for (const session of listRuntimeSessionsForConversation(conversation.id)) await cancelRuntimeSessionWork(conversation.user_id, session);
+    db.prepare(`UPDATE buzz_room_messages SET status = 'aborted', body = CASE WHEN body = '' THEN 'The agent was stopped.' ELSE body END
+      WHERE room_id = ? AND status IN ('pending','streaming') AND json_valid(metadata) AND json_extract(metadata, '$.conversationId') = ?`).run(roomId, conversation.id);
+  }
 }

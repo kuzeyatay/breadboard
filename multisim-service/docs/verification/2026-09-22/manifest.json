@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "run_id": "9771c89559fe4d23a541ea78941e3f1c",
+  "circuit_sha256": "e185558ea1cc5600c7fff61aec1e5d6622f4f74606bf29b265f4f7cc8f73b2d8",
+  "backend": {
+    "available": true,
+    "executable": "C:\\Users\\20252082\\breadboard\\.runtime\\ngspice\\Spice64\\bin\\ngspice_con.exe",
+    "version": "******\n** ngspice-42 : Circuit level simulation program\n** Compiled with Sparse Direct Linear Solver\n** The U. C. Berkeley CAD Group\n** Copyright 1985-1994, Regents of the University of California.\n** Copyright 2001-2023, The ngspice team.\n** Please get your ngspice manual from https://ngspice.sourceforge.io/docs.html\n** Please file your bug-reports at http://ngspice.sourceforge.net/bugrep.html\n** Creation Date: Wed Jan 24 08:24:41 UTC 2024\n******",
+    "returncode": 0,
+    "backend": "ngspice",
+    "analyses": [
+      "op",
+      "dc",
+      "ac",
+      "tran",
+      "noise"
+    ]
+  },
+  "analysis": {
+    "kind": "tran",
+    "start": 0.014,
+    "stop": 0.025,
+    "step": 2.5e-07,
+    "points": 100,
+    "scale": "dec",
+    "source": "V1",
+    "output": "vout",
+    "reference": "0",
+    "timeout": 120.0,
+    "max_points": 200000
+  },
+  "upstream_commit": "33ec7f42bf2885084a459a702a83ea3d87f95f9d",
+  "files": {
+    "analysis.json": {
+      "sha256": "11affa15b5e78de5183ce04b39027ec581157cb8666f75372430d0d666daad88",
+      "bytes": 225
+    },
+    "circuit.cir": {
+      "sha256": "762f227eb4c2e61a2b5d97839cfeb7210e583d8ebc6952482dbe89aadab7de8b",
+      "bytes": 1888
+    },
+    "circuit.json": {
+      "sha256": "28ed32a47cc6ece1ac44f751c7da5b95628e3fc58810b859c254e195f144edd4",
+      "bytes": 16532
+    },
+    "data.csv": {
+      "sha256": "910ed6f6a6e27b06d391e2b070d8fbbee82ae362048e9ac28d9879c35d4fd738",
+      "bytes": 78552423
+    },
+    "data.json": {
+      "sha256": "eacbf2a7cb245340fcb35a70c1a064b167152e5a92584080922d2ed3f5efc5e5",
+      "bytes": 111521387
+    },
+    "process.log": {
+      "sha256": "6fcbc9c5a8259e46a398ce85ec8cf07c1c6edcba929cd88f96423aba4f8ee0ef",
+      "bytes": 527
+    },
+    "report.md": {
+      "sha256": "5341deaa728cba3210e50af23593facaeaf88bc8d782b63e4445911d246abb11",
+      "bytes": 1575
+    },
+    "result.json": {
+      "sha256": "7c042439dfce5605ee9408868c7fd48ce3f50347ae69fbba6a30eae62c0c001b",
+      "bytes": 7798
+    },
+    "result.raw": {
+      "sha256": "8ace39b07f37c639c7765c9768d8e51f4c4595bfdb171c471336758583e57716",
+      "bytes": 99435738
+    },
+    "run.log": {
+      "sha256": "4291d1257df7e78ad18438412796b5b351a3a977cca42f9130475355a1153a06",
+      "bytes": 4548
+    },
+    "run.txt": {
+      "sha256": "5955cfae5836fc1e7e539977aa0c41be6e75e5893cd433d670b017d6f3e583dd",
+      "bytes": 34
+    },
+    "schematic-2.png": {
+      "sha256": "26db922e5470f59d5af21c25fda4aaf8ebdc7850d81d5ead99381d852e00e443",
+      "bytes": 165515
+    },
+    "schematic-2.svg": {
+      "sha256": "b839c3483217a7fee48b753292559058182746650cad0d59f511003276b2398f",
+      "bytes": 122924
+    },
+    "schematic.png": {
+      "sha256": "53d58e2203982bc66053e8cf7501cc623a6d896035cb90516773a6ab248d5dbd",
+      "bytes": 175516
+    },
+    "schematic.svg": {
+      "sha256": "67d63d6f3fe870bd9c4c73aa17c44f512f64a9000dd00283d738aeb1cfcf6fcd",
+      "bytes": 128977
+    },
+    "waveform.png": {
+      "sha256": "3cb0f434f813db44bc08ea519ccd26df87730eaf3e88d6ed4044ffd82a036a97",
+      "bytes": 359833
+    },
+    "waveform.svg": {
+      "sha256": "184f74a8f7b73dc8a91946c941cb74356cf5c97ce97ccd14d21b9fbf04a595c7",
+      "bytes": 502191
+    }
+  }
+}

@@ -1,28 +1,22 @@
-import fs from "node:fs";
-import path from "node:path";
+import { voiceToolContract } from '../speech/voice-prompt.ts';
+import { systemPromptText } from "../system-prompts/service.ts";
 import type { HermesSurface } from "./config.ts";
 import type { CapabilityDecision } from "./capability-policy.ts";
-import { directModeSection } from "./direct-mode.ts";
 import { loopStateSection } from "../loopx/governance.ts";
 import { goalModeSection, type GoalModeState } from "../goal-mode.ts";
-import { repositoryRoot } from "../runtime-paths.ts";
-import { CONVERSATION_REFERENCE_POLICY } from "../conversations/message-context.ts";
-import { boundPromptContext, COMPOSED_SYSTEM_PROMPT_LIMIT } from "./prompt-budget.ts";
+import { boundPromptContext, COMPOSED_SYSTEM_PROMPT_LIMIT, HERMES_SYSTEM_PROMPT_LIMIT } from "./prompt-budget.ts";
 
-function readSystemPrompt(name: string): string {
-  return fs.readFileSync(path.join(repositoryRoot(), "hermes-config", "system", `${name}.md`), "utf8").trim();
-}
-
-export function chatCorePrompt(): string {
-  return [readSystemPrompt("chat-core"), CONVERSATION_REFERENCE_POLICY].join("\n\n");
+export function chatCorePrompt(userId?: number | null): string {
+  return [systemPromptText("chat-core", userId), systemPromptText("conversation-references", userId)].filter(Boolean).join("\n\n");
 }
 
 /** Shared legacy style for routes outside the normal assistant loop. */
-export function responseStylePrompt(): string {
-  return [readSystemPrompt("response-style"), CONVERSATION_REFERENCE_POLICY].join("\n\n");
+export function responseStylePrompt(userId?: number | null): string {
+  return [systemPromptText("response-style", userId), systemPromptText("conversation-references", userId)].filter(Boolean).join("\n\n");
 }
 
 export function composeHermesSystemPrompt(input: {
+  userId?: number | null;
   surface: HermesSurface;
   decision: CapabilityDecision;
   additional?: string;
@@ -58,24 +52,15 @@ export function composeHermesSystemPrompt(input: {
   requiresWebEvidence?: boolean;
 }): string {
   const decision = input.decision;
-  const sections = [chatCorePrompt()];
-  if (input.adhdMode) sections.push(directModeSection());
-  const voiceSection = input.voice ? [
-    '# voice_conversation',
-    'The user is speaking with Breadboard. Answer simple questions promptly and keep spoken replies concise and natural.',
-    'Talk with the user rather than writing an essay to read aloud. Use everyday language, contractions and connected sentences. For an ordinary question, start with the useful answer in one to three short sentences, then leave room for a follow-up. Give more detail when asked or when needed for accuracy. Avoid headings, bullet lists, canned acknowledgments and repeated offers of more help in conversational replies.',
-    'Answer from the conversation or a still-current verified result when that is enough. Greetings, clarifications and simple explanations do not need a tool call. Keep track of the latest correction and respond to it instead of restarting an earlier answer.',
-    'Respond to the social or practical intent of what was said. A casual check-in is conversation, not a request for a status report about the app. Screen access and saved context are available to help when relevant; do not volunteer a screen description, unrelated memories, or a list of capabilities. Do not invent personal experiences or feelings to sound human.',
-    'When an answer needs facts you do not have, current information, private context, or an action, use the supplied Breadboard tools and available skills before answering. Investigate instead of guessing or saying you cannot help while a relevant tool is available.',
-    'Use tool results to finish the request. Give a brief spoken progress update when work takes time, then continue working. An acknowledgment is not completion. Claim an action succeeded only after its result confirms it; if a tool fails, explain the actual failure.',
-    'Progress updates should be short, useful descriptions of actual work or new findings, suitable to say aloud. Do not narrate private reasoning, raw tool arguments, logs or every small step. Avoid repeating that you are still working. Put detailed results and artifacts in the chat and speak the useful conclusion first.',
-    'Spoken input can contain recognition errors, fragments and corrections. Interpret a correction against the immediately preceding question and keep its intent; do not treat each fragment as a fresh unrelated task. Resolve references from the current conversation first. Read screen context only when the user refers to the view or it is needed for the request. If the meaning is still ambiguous, ask one short clarifying question before searching. Choose tools for the actual question: an unclear name alone is not a request to search past chats. Never invent what the user meant.',
-    'Before researching an unclear referent, ask which person, product, project or organization the user means. A broad search is not a substitute for resolving that ambiguity. Once their intent is clear, proceed with the relevant tools without unnecessary questions.',
-    'Ask a focused question when required information is missing. Existing permissions and tool boundaries still apply.',
-  ].join('\n') : '';
-  sections.push(input.surface === "quartz_ai"
-    ? "You are answering on a Garden reader surface. Use its current page and highlighted passage as context. Private tools and host commands require explicit server authorization."
-    : "You are in the user's signed-in Breadboard chat. Garden readers, source tools and authorized host actions are available through the supplied tools. Use them to finish requested work; let the native tool controls handle permissions.");
+  const readSystemPrompt = (id: string) => systemPromptText(id, input.userId);
+  const sections = [chatCorePrompt(input.userId)];
+  const turnPolicies: string[] = [];
+  // Voice keeps the unchanged capability catalog ahead of policies that vary
+  // each turn. All policies still accompany every applicable submission.
+  const appendTurnPolicy = (policy: string) => (input.voice ? turnPolicies : sections).push(policy);
+  if (input.adhdMode) sections.push(readSystemPrompt("concise-mode"));
+  const voiceSection = input.voice ? readSystemPrompt("voice-conversation") : '';
+  sections.push(readSystemPrompt(input.surface === "quartz_ai" ? "quartz-surface" : "chat-surface"));
   if (decision.mode === "scoped_implementation") sections.push(readSystemPrompt("scoped-implementation"));
 
   // These sections describe native output formats and tool protocols. They do
@@ -89,14 +74,16 @@ export function composeHermesSystemPrompt(input: {
     ["weather_forecast", "weather-results"],
     ["product_search", "product-search"],
     ["chat_search", "chat-search"],
+    ["chat_send_message", "chat-coordination"],
     ["notifications_read", "notifications"],
     ["breadboard_process_status", "process-status"],
+    ["breadboard_usage", "usage-status"],
   ];
   for (const [tool, contract] of toolContracts) {
-    if (decision.allowedTools.includes(tool)) sections.push(readSystemPrompt(contract));
+    if (decision.allowedTools.includes(tool)) sections.push(readSystemPrompt(input.voice && voiceToolContract(contract) !== undefined ? `voice-${contract}` : contract));
   }
   if (input.requiresWebEvidence && decision.allowedTools.includes("websearch")) {
-    sections.push(readSystemPrompt("web-grounding"));
+    appendTurnPolicy(readSystemPrompt("web-grounding"));
   }
   const capabilityContext = [
     "# server_capability_decision",
@@ -112,16 +99,23 @@ export function composeHermesSystemPrompt(input: {
   ].join("\n");
   if (!input.voice) sections.push(capabilityContext);
   const loopState = loopStateSection(input.conversationPublicId, input.surface);
-  if (loopState) sections.push(loopState);
-  const goal = goalModeSection(input.goalMode ?? null, process.env, { skillSelected: input.goalSkillSelected === true });
-  if (goal) sections.push(goal);
-  const ending = [boundPromptContext(input.persona?.trim() ?? "", 8_000), readSystemPrompt("artifact-delivery")].filter(Boolean).join("\n\n");
+  if (loopState) appendTurnPolicy(loopState);
+  const goal = goalModeSection(input.goalMode ?? null, process.env, {
+    skillSelected: input.goalSkillSelected === true,
+    continuationPrompt: readSystemPrompt("goal-continuation"),
+    budgetPrompt: readSystemPrompt("goal-budget"),
+  });
+  if (goal) appendTurnPolicy(goal);
+  const ending = [input.persona?.trim() ?? "", readSystemPrompt(input.voice ? "voice-artifacts" : "artifact-delivery")].filter(Boolean).join("\n\n");
   const policy = sections.filter(Boolean).join("\n\n");
   const voiceAuthority = input.voice ? capabilityContext : '';
-  const context = boundPromptContext(input.additional?.trim() ?? "", COMPOSED_SYSTEM_PROMPT_LIMIT - policy.length - ending.length - voiceSection.length - voiceAuthority.length - 8);
+  const turnPolicy = turnPolicies.filter(Boolean).join("\n\n");
+  const composedLimit = Math.min(COMPOSED_SYSTEM_PROMPT_LIMIT,
+    HERMES_SYSTEM_PROMPT_LIMIT - readSystemPrompt("runtime-base").length - 8_000);
+  const context = boundPromptContext(input.additional?.trim() ?? "", composedLimit - policy.length - ending.length - voiceSection.length - voiceAuthority.length - turnPolicy.length - (turnPolicy ? 10 : 8));
   // Keep the spoken-turn contract after the large optional capability catalog.
   // Available tools must not turn a conversation into unsolicited investigation.
   // Changing grant expiry must not invalidate the stable capability catalog on
   // every spoken turn. Authority remains explicit and enforced at tool calls.
-  return [policy, context, ending, voiceAuthority, voiceSection].filter(Boolean).join("\n\n");
+  return [policy, context, turnPolicy, ending, voiceAuthority, voiceSection].filter(Boolean).join("\n\n");
 }

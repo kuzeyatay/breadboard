@@ -111,8 +111,15 @@ export function refreshCurrentLocationIfDue(now = Date.now()): Promise<boolean> 
   }
 }
 
+let preferenceHydration: Promise<void> | null = null;
+
+function hydratePreferenceOnce(): Promise<void> {
+  preferenceHydration ??= hydrateCurrentLocationPreference();
+  return preferenceHydration;
+}
+
 function initializeCurrentLocation(): Promise<boolean> {
-  initializationRefresh ??= hydrateCurrentLocationPreference().then(() =>
+  initializationRefresh ??= hydratePreferenceOnce().then(() =>
     refreshCurrentLocationAtInitialization(),
   );
   return initializationRefresh;
@@ -148,7 +155,11 @@ export default function CurrentLocationAutoRefresh() {
     // Durable hydration must win before the first read. On desktop restart the
     // new loopback origin begins empty, so reading first would incorrectly see
     // the switch as off and skip the fresh device fix.
-    void initializeCurrentLocation().then(finishStartup, finishStartup);
+    // Only the preference read gates startup. The fix itself is a Runtime job
+    // that can queue behind other work; waiting on it kept new Terminals
+    // "loading" indefinitely (2026-11-09).
+    void hydratePreferenceOnce().then(finishStartup, finishStartup);
+    void initializeCurrentLocation();
 
     const refreshIfDue = () => {
       void refreshCurrentLocationIfDue();

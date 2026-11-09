@@ -19,7 +19,6 @@ import {
   Italic,
   Link2,
   List,
-  Paperclip,
   Quote,
   Smile,
   Strikethrough,
@@ -28,6 +27,8 @@ import {
 import { cn } from "@/app/buzz/lib/cn";
 import { useTheme } from "@/app/buzz/lib/theme";
 import MetalSendButton from "@/app/components/effects/metal-send-button";
+import ComposerBorderBeam from "@/app/components/effects/composer-border-beam";
+import { readStored, writeStored } from "../lib/message-state";
 import { Button } from "@/app/buzz/ui/button";
 import { EmojiPicker } from "./emoji-picker";
 import {
@@ -44,12 +45,14 @@ export function Composer({
   disabled = false,
   autoFocus = false,
   onSend,
+  draftKey,
 }: {
   members: BuzzMember[];
   placeholder: string;
   disabled?: boolean;
   autoFocus?: boolean;
-  onSend: (body: string) => void;
+  onSend: (body: string) => boolean | void;
+  draftKey?: string;
 }) {
   const { isDark } = useTheme();
   const [value, setValue] = useState("");
@@ -57,6 +60,18 @@ export function Composer({
   const [highlighted, setHighlighted] = useState(0);
   const [showFormatting, setShowFormatting] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const draftReady = useRef(false);
+
+  useEffect(() => {
+    const draft = draftKey ? readStored<unknown>(`${draftKey}:draft`, "") : "";
+    setValue(typeof draft === "string" ? draft : "");
+    draftReady.current = true;
+  }, [draftKey]);
+
+  const changeValue = (next: string) => {
+    setValue(next);
+    if (draftKey && draftReady.current) writeStored(`${draftKey}:draft`, next);
+  };
 
   const matches = useMemo(() => {
     if (mentionQuery === null) return [];
@@ -92,7 +107,7 @@ export function Composer({
       .replace(/(?:^|\s)@([a-z0-9-]*)$/i, (whole) =>
         whole.startsWith("@") ? `@${handle} ` : ` @${handle} `,
       );
-    setValue(before + value.slice(caret));
+    changeValue(before + value.slice(caret));
     setMentionQuery(null);
     requestAnimationFrame(() => {
       element?.focus();
@@ -101,7 +116,7 @@ export function Composer({
   };
 
   const insertAt = () => {
-    setValue((current) => `${current}${current.endsWith(" ") || current === "" ? "" : " "}@`);
+    changeValue(`${value}${value.endsWith(" ") || value === "" ? "" : " "}@`);
     requestAnimationFrame(() => {
       inputRef.current?.focus();
       setMentionQuery("");
@@ -121,7 +136,7 @@ export function Composer({
     const start = element?.selectionStart ?? value.length;
     const end = element?.selectionEnd ?? start;
     const next = value.slice(0, start) + text + value.slice(end);
-    setValue(next);
+    changeValue(next);
     requestAnimationFrame(() => {
       element?.focus();
       element?.setSelectionRange(start + caretOffset, start + caretOffset);
@@ -139,7 +154,7 @@ export function Composer({
     const selected = value.slice(start, end);
     const next =
       value.slice(0, start) + before + selected + after + value.slice(end);
-    setValue(next);
+    changeValue(next);
     requestAnimationFrame(() => {
       element?.focus();
       element?.setSelectionRange(
@@ -166,7 +181,7 @@ export function Composer({
       .split("\n")
       .map((line) => (allMarked ? line.slice(marker.length) : marker + line))
       .join("\n");
-    setValue(value.slice(0, lineStart) + next + value.slice(lineEnd));
+    changeValue(value.slice(0, lineStart) + next + value.slice(lineEnd));
     requestAnimationFrame(() => {
       element?.focus();
       element?.setSelectionRange(lineStart, lineStart + next.length);
@@ -176,8 +191,8 @@ export function Composer({
   const submit = () => {
     const text = value.trim();
     if (text === "" || disabled) return;
-    onSend(text);
-    setValue("");
+    if (onSend(text) === false) return;
+    changeValue("");
     setMentionQuery(null);
   };
 
@@ -219,9 +234,11 @@ export function Composer({
           </ul>
         ) : null}
 
+        <ComposerBorderBeam active={value.trim() === "" && !disabled}>
         <div
           data-buzz-composer
-          className="rounded-2xl border border-input/50 bg-buzz-background px-3 pb-1.5 pt-2 transition-colors focus-within:border-ring/60"
+          className="neu-composer buzz-composer relative rounded-[30px] p-2"
+          onPointerDown={(event) => { if (event.target === event.currentTarget) inputRef.current?.focus(); }}
         >
           <textarea
             ref={inputRef}
@@ -230,11 +247,14 @@ export function Composer({
             disabled={disabled}
             autoFocus={autoFocus}
             placeholder={placeholder}
+            aria-label={placeholder}
+            maxLength={12000}
             onChange={(event) => {
-              setValue(event.target.value);
+              changeValue(event.target.value);
               readMentionQuery(event.target.value, event.target.selectionStart ?? 0);
             }}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
               if (matches.length > 0) {
                 if (event.key === "ArrowDown") {
                   event.preventDefault();
@@ -283,7 +303,7 @@ export function Composer({
                 submit();
               }
             }}
-            className="max-h-[220px] min-h-[26px] w-full resize-none bg-transparent px-1 text-message leading-6 outline-hidden placeholder:text-muted-foreground/60 disabled:opacity-50"
+            className="max-h-[220px] min-h-[40px] w-full resize-none bg-transparent px-3 py-2 text-message leading-6 outline-hidden placeholder:text-muted-foreground disabled:opacity-50"
           />
 
           {showFormatting ? (
@@ -336,20 +356,6 @@ export function Composer({
                 </TooltipTrigger>
                 <TooltipContent>Mention someone</TooltipContent>
               </Tooltip>
-              <Tooltip disableHoverableContent>
-                <TooltipTrigger asChild>
-                  <Button
-                    aria-label="Attach file"
-                    disabled
-                    size="icon"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <Paperclip />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Attachments are not wired up yet</TooltipContent>
-              </Tooltip>
               <EmojiPicker
                 onPick={(emoji) => insertAtCaret(emoji)}
                 side="top"
@@ -394,8 +400,7 @@ export function Composer({
             <MetalSendButton
               variant="circle"
               disabled={disabled || value.trim() === ""}
-              // Buzz keeps its own light/dark preference, independent of the
-              // app theme the effect would otherwise resolve.
+              // Match the surrounding Organization surface and app chrome.
               theme={isDark ? "dark" : "light"}
             >
             <Button
@@ -412,6 +417,7 @@ export function Composer({
             </MetalSendButton>
           </div>
         </div>
+        </ComposerBorderBeam>
       </div>
     </TooltipProvider>
   );

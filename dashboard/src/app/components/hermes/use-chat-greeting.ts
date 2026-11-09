@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRecommendations } from '@/app/components/use-recommendations';
 import { usePersonalize } from '@/app/components/use-personalize';
 import { AUTH_CHANGED_EVENT } from '@/lib/auth-events';
+import { completeRecommendationPrompts } from '@/lib/recommendations/types';
 
 import {
   CHAT_GREETING_ROTATION_MS,
@@ -18,6 +19,8 @@ import {
 } from "@/lib/hermes/chat-greeting";
 
 interface Options {
+  /** Hidden voice terminals consume prepared cards without regenerating them. */
+  enabled?: boolean;
   scope: ChatGreetingScope;
   /** Off-the-record chats greet differently and open with different questions. */
   temporary: boolean;
@@ -35,9 +38,10 @@ export interface ChatGreetingState {
   greeting: ChatGreeting | null;
   suggestions: string[];
   suggestionSources: Record<string, string>;
+  suggestionScopeKey: string;
 }
 
-const NOT_READY: ChatGreetingState = { ready: false, greeting: null, suggestions: [], suggestionSources: {} };
+const NOT_READY: ChatGreetingState = { ready: false, greeting: null, suggestions: completeRecommendationPrompts([]), suggestionSources: {}, suggestionScopeKey:'' };
 
 // One fetch per hour serves every terminal in the tab. Opening the dock, closing
 // it and opening it again should not cost a round trip, and the answer would be
@@ -99,10 +103,10 @@ function normalizeSignals(value: unknown): ChatGreetingSignals {
  * what hour it is. A timer sleeping to the top of the hour then steps the
  * pools forward and re-reads the activity signals behind them.
  */
-export function useChatGreeting({ scope, temporary, garden, browser = false, initialSignals = null }: Options): ChatGreetingState {
+export function useChatGreeting({ scope, temporary, garden, browser = false, initialSignals = null, enabled = true }: Options): ChatGreetingState {
   const [personalize] = usePersonalize();
-  const allowPersonalContext = personalize && scope !== 'public' && !temporary;
-  const recommendations = useRecommendations({ scope, temporary, gardenSlug: garden?.slug });
+  const allowPersonalContext = enabled && personalize && scope !== 'public' && !temporary;
+  const recommendations = useRecommendations({ scope, temporary, gardenSlug: garden?.slug, enabled });
   const initialSignalsRef = useRef(initialSignals);
   const [now, setNow] = useState<Date | null>(null);
   const [signals, setSignals] = useState<ChatGreetingSignals | null>(initialSignals);
@@ -178,7 +182,9 @@ export function useChatGreeting({ scope, temporary, garden, browser = false, ini
   const gardenName = garden?.name ?? null;
   const gardenSlug = garden?.slug ?? null;
   return useMemo(() => {
-    if (now === null || (allowPersonalContext && signals === null)) return NOT_READY;
+    const suggestionScopeKey=JSON.stringify([scope,temporary,gardenSlug,browser,allowPersonalContext]);
+    const context = { gardenSlug: gardenSlug ?? undefined };
+    if (now === null || (allowPersonalContext && signals === null)) return {...NOT_READY,suggestions:completeRecommendationPrompts([], [], context),suggestionScopeKey};
     const input = {
       signals: allowPersonalContext && signals ? signals : EMPTY_CHAT_GREETING_SIGNALS,
       scope,
@@ -190,8 +196,9 @@ export function useChatGreeting({ scope, temporary, garden, browser = false, ini
     return {
       ready: true,
       greeting: resolveChatGreeting(input),
-      suggestions: recommendations.length ? recommendations.map(item => item.prompt) : resolveChatSuggestions(input),
+      suggestions: completeRecommendationPrompts(recommendations.map(item => item.prompt),resolveChatSuggestions(input),context),
       suggestionSources: Object.fromEntries(recommendations.map(item => [item.prompt, item.sourceLabel])),
+      suggestionScopeKey,
     };
   }, [now, scope, signals, temporary, gardenName, gardenSlug, browser, recommendations, allowPersonalContext]);
 }

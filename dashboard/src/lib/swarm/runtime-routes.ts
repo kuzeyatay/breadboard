@@ -1,0 +1,36 @@
+import type { OuterAgentKind } from "../runtime-v2/outer-agent-run-store.ts";
+// Literal imports keep routing compiled and reviewable. Tool arguments never select a URL.
+export interface SwarmRuntimeRoute { field: "task" | "brief" | "query" | "question" | "request"; inputContract?: string; load: () => Promise<{ POST: (request: Request) => Promise<Response> }> }
+export const SWARM_RUNTIME_ROUTES: Partial<Record<OuterAgentKind, SwarmRuntimeRoute>> = {
+  "codex": { field: "task", load: () => import("../../app/api/codex/runs/route.ts") },
+  "opencode": { field: "task", load: () => import("../../app/api/opencode/runs/route.ts") },
+  "ruflo": { field: "task", load: () => import("../../app/api/ruflo/runs/route.ts") },
+  "deep-research": { field: "query", load: () => import("../../app/api/deep-research/runs/route.ts") },
+  "max-research": { field: "question", load: () => import("../../app/api/max-research/runs/route.ts") },
+  "get-doc": { field: "task", load: () => import("../../app/api/get-doc/runs/route.ts") },
+  "agent-reach": { field: "task", load: () => import("../../app/api/agent-reach/runs/route.ts") },
+  "openplanter": { field: "task", load: () => import("../../app/api/openplanter/runs/route.ts") },
+  "openscience": { field: "task", load: () => import("../../app/api/openscience/runs/route.ts") },
+  "praxist": { field: "task", inputContract: "Use only an absolute prepared task-project directory containing task.yaml, optionally --task-path followed by that directory. Put research instructions and prerequisite files in the prepared project; this field is not prose.", load: () => import("../../app/api/praxist/runs/route.ts") },
+  "career-ops": { field: "task", load: () => import("../../app/api/career-ops/runs/route.ts") },
+  "openexecutive": { field: "task", load: () => import("../../app/api/openexecutive/runs/route.ts") },
+  "openwork": { field: "task", load: () => import("../../app/api/openwork/runs/route.ts") },
+  "deer-flow": { field: "task", load: () => import("../../app/api/deer-flow/runs/route.ts") },
+  "deep-tutor": { field: "task", load: () => import("../../app/api/deep-tutor/runs/route.ts") },
+  "meeting-notes": { field: "task", load: () => import("../../app/api/meeting-notes/runs/route.ts") },
+  "stock-analyst": { field: "task", load: () => import("../../app/api/stock-analyst/runs/route.ts") },
+  "vibe-trading": { field: "task", load: () => import("../../app/api/vibe-trading/runs/route.ts") },
+  "trading-agent": { field: "request", inputContract: "Use a ticker and analysis date, for example NVDA 2026-01-02. The existing parser constructs and validates the typed analysis request; this engine does not accept a free-form research prompt.", load: () => import("../../app/api/tradingagents/runs/route.ts") },
+  "music-producer": { field: "task", load: () => import("../../app/api/music-producer/runs/route.ts") },
+  "inbox-zero": { field: "task", load: () => import("../../app/api/inbox-zero/runs/route.ts") },
+  "socials-manager": { field: "brief", load: () => import("../../app/api/socials-manager/runs/route.ts") },
+  "hardware-blueprint": { field: "brief", load: () => import("../../app/api/hardware-blueprint/runs/route.ts") },
+  "parametric-cad": { field: "brief", load: () => import("../../app/api/cad/runs/route.ts") },
+  "hyperframes": { field: "brief", load: () => import("../../app/api/hyperframes/runs/route.ts") },
+  "openmontage": { field: "brief", load: () => import("../../app/api/openmontage/runs/route.ts") },
+  "resource2skill": { field: "brief", load: () => import("../../app/api/resource2skill/runs/route.ts") },
+  "matraix": { field: "brief", load: () => import("../../app/api/matraix/runs/route.ts") },
+  "bolt-slides": { field: "brief", load: () => import("../../app/api/bolt-slides/runs/route.ts") },
+  "money-printer": { field: "brief", load: () => import("../../app/api/money-printer/runs/route.ts") },
+};
+

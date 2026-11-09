@@ -124,6 +124,14 @@ class ComputerUseBackend(ABC):
         Used by check_fn gating and by the post-setup wizard.
         """
 
+    def current_input_target(self) -> Optional[Dict[str, int]]:
+        """Return the already-selected input target without starting or focusing.
+
+        Backends without a stable native identity do not support reusable
+        target-scoped approval and return None.
+        """
+        return None
+
     # ── Capture ─────────────────────────────────────────────────────
     @abstractmethod
     def capture(

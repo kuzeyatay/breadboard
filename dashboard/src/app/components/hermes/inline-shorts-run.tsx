@@ -261,7 +261,7 @@ export default function InlineShortsRun({
     reportedRef.current = true;
     const content = status === "completed" ? result : failure;
     if (!content) return;
-    notifyTaskCompleted(`Shorts — ${task.slice(0, 80)}`);
+    notifyTaskCompleted(`Shorts — ${task.slice(0, 80)}`, { runId });
     onTerminalRef.current?.({
       outcome: status as ExternalAgentTerminalOutcome,
       content,
@@ -289,7 +289,7 @@ export default function InlineShortsRun({
         startedAt={startedAt}
         completedAt={completedAt}
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <div className="bb-agent-run-header">
           <span className="bb-agent-run-title truncate">Shorts</span>
           <div className="flex shrink-0 items-center gap-[8px]">

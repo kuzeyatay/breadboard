@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { scopedSystemPromptText, systemPromptRevision, withSystemPromptContext } from "../system-prompts/service.ts";
 
 import {
   readIfixAiMaintenanceConfig,
@@ -18,6 +19,8 @@ const IFIXAI_UPSTREAM_COMMIT = "4ac9cc1c8765427300d98dc30855c18349610cf1";
 interface PromptInput {
   file: string;
   sha256: string;
+  promptId?: string;
+  revision?: number;
 }
 
 interface CandidateReceipt {
@@ -59,6 +62,7 @@ export interface IfixAiMaintenanceReceipt {
   immutableInputs: {
     promptSha256: string | null;
     promptFiles: PromptInput[];
+    repairPrompt?: { promptId: string; revision: number; sha256: string };
   };
   baseline: {
     score: number | null;
@@ -148,10 +152,11 @@ async function composeEvaluationPrompt(config: IfixAiMaintenanceConfig): Promise
 }> {
   const sections: string[] = [];
   const inputs: PromptInput[] = [];
-  for (const file of config.promptFiles) {
-    const text = (await fs.readFile(file, "utf8")).trim();
+  for (const [index, file] of config.promptFiles.entries()) {
+    const promptId = config.promptIds?.[index];
+    const text = promptId ? scopedSystemPromptText(promptId) : (await fs.readFile(file, "utf8")).trim();
     sections.push(text);
-    inputs.push({ file, sha256: sha256(text) });
+    inputs.push({ file, sha256: sha256(text), ...(promptId ? { promptId, revision: systemPromptRevision(promptId) } : {}) });
   }
   sections.push(
     [
@@ -249,7 +254,7 @@ async function persistReceipt(
   );
 }
 
-export async function runIfixAiMaintenanceOnce(input?: {
+async function runIfixAiMaintenanceRun(input?: {
   config?: IfixAiMaintenanceConfig;
   dependencies?: Partial<MaintenanceDependencies>;
   trigger?: "background_interval" | "manual_test";
@@ -312,6 +317,8 @@ export async function runIfixAiMaintenanceOnce(input?: {
     receipt.immutableInputs = {
       promptSha256: sha256(prompt.text),
       promptFiles: prompt.inputs,
+      repairPrompt: { promptId: "maintenance-repair", revision: systemPromptRevision("maintenance-repair"),
+        sha256: sha256(scopedSystemPromptText("maintenance-repair")) },
     };
     const baseline = await dependencies.evaluate({
       python: config.python,
@@ -395,4 +402,11 @@ export async function runIfixAiMaintenanceOnce(input?: {
     await persistReceipt(config, runDir, receipt).catch(() => undefined);
     await releaseLock();
   }
+}
+
+/** Each background run reads the latest installation settings once. */
+export async function runIfixAiMaintenanceOnce(input?: Parameters<typeof runIfixAiMaintenanceRun>[0]): Promise<IfixAiMaintenanceReceipt | null> {
+  const config = input?.config ?? readIfixAiMaintenanceConfig();
+  if (!config.enabled) return null;
+  return withSystemPromptContext(null, () => runIfixAiMaintenanceRun({ ...input, config }));
 }

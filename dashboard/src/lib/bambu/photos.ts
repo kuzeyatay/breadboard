@@ -4,6 +4,7 @@ import type { PrinterConfig, PrinterModel } from "./types.ts";
  * Add licensed bundled photography here only with a matching provenance entry. */
 export const PRINTER_PHOTOS: Record<PrinterModel, { src: string | null; provenance: string }> = {
   P1P: { src: null, provenance: "User-provided photo" }, P1S: { src: null, provenance: "User-provided photo" },
+  P2S: { src: null, provenance: "User-provided photo" },
   X1C: { src: null, provenance: "User-provided photo" }, X1E: { src: null, provenance: "User-provided photo" },
   A1: { src: null, provenance: "User-provided photo" }, "A1 mini": { src: null, provenance: "User-provided photo" },
   H2S: { src: null, provenance: "User-provided photo" },

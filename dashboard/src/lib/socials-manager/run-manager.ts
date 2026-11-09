@@ -274,7 +274,7 @@ async function execute(
   let drafts: DraftedPost[];
   try {
     emit(run, "drafting.started", { count: providers.length });
-    drafts = await draftPosts({
+    drafts = await draftPosts({ userId: run.userId,
       baseUrl: input.baseUrl,
       model: input.model,
       brief: request.brief,

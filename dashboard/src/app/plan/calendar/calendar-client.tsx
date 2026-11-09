@@ -1,4 +1,5 @@
 "use client";
+import { notifyCalendarChanged } from '@/lib/calendar/client-sync';
 import { useStartupLoading } from "@/app/components/startup-readiness";
 
 // The calendar shell: toolbar, sidebar and the grid, plus the data loading and
@@ -381,6 +382,7 @@ export default function CalendarClient({
         if (!response.ok) {
           throw new Error(await readError(response, "Could not move event"));
         }
+        notifyCalendarChanged();
         await loadOccurrences();
       } catch (error) {
         setSaveError(error instanceof Error ? error.message : "Could not move event");
@@ -413,6 +415,7 @@ export default function CalendarClient({
         },
       );
       if (!response.ok) throw new Error(await readError(response, "Could not save event"));
+      notifyCalendarChanged();
 
       setDraft(null);
       await loadOccurrences();
@@ -433,6 +436,7 @@ export default function CalendarClient({
       if (!response.ok) {
         throw new Error(await readError(response, "Could not delete event"));
       }
+      notifyCalendarChanged();
       setDraft(null);
       await loadOccurrences();
     } catch (error) {
@@ -484,6 +488,7 @@ export default function CalendarClient({
       body: JSON.stringify(patch),
     });
     if (!response.ok) await refreshCalendars();
+    else if (patch.name) notifyCalendarChanged();
   }
 
   async function refreshCalendars() {
@@ -510,6 +515,7 @@ export default function CalendarClient({
   async function deleteCalendar(id: number) {
     const response = await fetch(`/api/calendar/calendars/${id}`, { method: "DELETE" });
     if (response.ok) {
+      notifyCalendarChanged();
       setEditingCalendarId(null);
       await refreshCalendars();
       await loadOccurrences();

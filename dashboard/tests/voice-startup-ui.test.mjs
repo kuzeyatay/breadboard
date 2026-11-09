@@ -96,8 +96,8 @@ test('Profile saves the voice answer model; startup never opens a mic; dictation
   await page.getByRole('combobox', { name: 'Default voice model' }).selectOption('anthropic/claude-sonnet-4-5');
   await page.waitForFunction(() => !document.querySelector('[aria-label="Default voice model"]').disabled);
   assert.equal(preferences.voiceModel, 'anthropic/claude-sonnet-4-5');
-  assert.deepEqual(await page.evaluate(() => window.voiceRequestOptions()), { model: preferences.voiceModel, voice: true },
-    'the voice default selects the answering model without overriding its reasoning effort');
+  assert.deepEqual(await page.evaluate(() => window.voiceRequestOptions()), { model: preferences.voiceModel, reasoningEffort: 'low', voice: true },
+    'the voice default selects the answering model and brief Fast reasoning independently of typed chat');
   await page.getByRole('button', { name: 'Voice options', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Dictate live', exact: false }).click();
   await page.waitForFunction(() => window.recorder?.state === 'recording');

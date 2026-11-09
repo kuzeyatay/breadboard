@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { ChevronDown, Compass, Globe2, LayoutGrid, ListTodo, PanelsTopLeft, Settings, Timer, UsersRound, type LucideIcon } from "lucide-react";
+import { useEffect, useState, type AriaAttributes, type ComponentType } from "react";
+import { ChevronDown, Compass, Globe2, LayoutGrid, ListTodo, PanelsTopLeft, Settings, Timer, UsersRound } from "lucide-react";
+import VSCodeIcon from "@/app/components/vscode-icon";
 import BrowserHomeAccessories from "@/app/browser/browser-home-accessories";
 import LinkContextMenu from "@/app/components/link-context-menu";
 import NavigationLink from "@/app/components/navigation-link";
@@ -21,6 +22,8 @@ import AsciiArtwork from "@/app/components/ascii-artwork";
 import RainBackground from "@/app/components/rain-background";
 import { SpotifyAmbientProvider } from "@/app/components/spotify-ambient-context";
 import VoiceShortcut from "@/app/components/voice-shortcut";
+import GestureShortcut from "@/app/components/gesture-shortcut";
+import ScreenTimeShortcut from "@/app/components/screen-time-shortcut";
 import NewTabSearch from "./new-tab-search";
 import type { NewTabGarden } from "@/lib/new-tab-gardens";
 import type { SearchHistoryEntry } from "@/lib/new-tab-search-suggestions";
@@ -29,12 +32,13 @@ export type { NewTabGarden } from "@/lib/new-tab-gardens";
 interface Place {
   href: string;
   label: string;
-  icon: LucideIcon;
+  icon: ComponentType<{ size?: number; className?: string; "aria-hidden"?: AriaAttributes["aria-hidden"] }>;
 }
 
 const PLACES: Place[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutGrid },
   { href: "/plan", label: "Plan", icon: ListTodo },
+  { href: "/code", label: "Code", icon: VSCodeIcon },
   { href: "/buzz", label: "Organization", icon: UsersRound },
   { href: "/pomodoro", label: "Work Timer", icon: Timer },
   { href: "/settings", label: "Settings", icon: Settings },
@@ -145,13 +149,15 @@ export default function NewTabClient({
         <NewTabSearch key={greetingOwnerKey} ownerKey={greetingOwnerKey} gardens={gardens} initialHistory={initialSearchHistory} active={active} onSearchingChange={setSearching}>
         <nav id="new-tab-places" aria-label="Places" className={styles.places}>
           {PLACES.map(({ href, label, icon: Icon }) => (
-            <NavigationLink key={href} href={href} label={label} className={styles.destinationButton}>
+            <NavigationLink key={href} href={href} label={label} newTab={href === "/code"} className={styles.destinationButton}>
               <Icon size={15} aria-hidden="true" />
               {label}
             </NavigationLink>
           ))}
           <BrowserShortcut query="" />
           <VoiceShortcut className={styles.destinationButton} errorClassName={styles.browserError} />
+          <GestureShortcut className={styles.destinationButton} />
+              <ScreenTimeShortcut className={styles.destinationButton} />
         </nav>
 
         <section aria-labelledby="new-tab-gardens" className={styles.gardens}>

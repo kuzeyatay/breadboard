@@ -52,6 +52,7 @@ export function SearchPalette({
   const [query, setQuery] = useState("");
   const [rooms, setRooms] = useState<BuzzSearchRoom[]>([]);
   const [messages, setMessages] = useState<BuzzMessageHit[]>([]);
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -68,14 +69,15 @@ export function SearchPalette({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    setLoading(true);
+    setLoading(true); setError(null); setRooms([]); setMessages([]);
     const timer = setTimeout(async () => {
       try {
         const response = await fetch(
           `/api/buzz/search?q=${encodeURIComponent(query)}`,
           { cache: "no-store" },
         );
-        if (!response.ok || cancelled) return;
+        if (cancelled) return;
+        if (!response.ok) throw new Error("Search could not be completed. Try again.");
         const body = (await response.json()) as {
           query: string;
           rooms: BuzzSearchRoom[];
@@ -85,7 +87,7 @@ export function SearchPalette({
         setRooms(body.rooms);
         setMessages(body.messages);
         setHighlighted(0);
-      } finally {
+      } catch (error) { if (!cancelled) setError(error instanceof Error ? error.message : "Search could not be completed."); } finally {
         if (!cancelled) setLoading(false);
       }
     }, query === "" ? 0 : 160);
@@ -130,6 +132,7 @@ export function SearchPalette({
         }}
       >
         <DialogTitle className="sr-only">Search everything</DialogTitle>
+        {error ? <p role="alert" className="px-4 py-2 text-xs text-destructive">{error}</p> : null}
 
         <div className="flex items-center gap-2 border-b border-border/60 px-3.5 py-3">
           <Search className="size-4 shrink-0 text-muted-foreground" />

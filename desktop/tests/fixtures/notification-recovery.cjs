@@ -49,6 +49,8 @@ app.whenReady().then(async () => {
   const window = new BrowserWindow({show:false,width:1000,height:750});
   manager.attach(window, true);
   window.setOpacity(0);
+  // This recovery/layout fixture models a foreground host without stealing focus.
+  window.isFocused = () => true;
   window.showInactive();
   manager.setNotificationsVisible(true);
   manager.setNotificationOverlayUrl(origin+'/notification-overlay');

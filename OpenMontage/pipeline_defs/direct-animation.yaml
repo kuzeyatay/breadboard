@@ -1,0 +1,39 @@
+name: direct-animation
+version: "1.0"
+description: >
+  Render a fully supplied visual brief using local shapes, typography, diagrams,
+  or explicitly supplied assets. Use when no factual research, source-video
+  analysis, generated imagery, character rig, or new narration is needed.
+  The ordinary animation pipeline remains the route for researched explainers.
+category: animation
+stability: beta
+default_checkpoint_policy: guided
+required_skills:
+  - pipelines/direct-animation/idea-director
+  - pipelines/direct-animation/compose-director
+  - meta/reviewer
+  - meta/checkpoint-protocol
+  - meta/animation-runtime-selector
+stages:
+  - name: idea
+    skill: pipelines/direct-animation/idea-director
+    produces: [brief, decision_log]
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: false
+    success_criteria:
+      - The brief records supplied content, duration, dimensions, motion, and audio intent
+      - Preflight confirms a local renderer and the decision log records its alternatives
+      - No invented research, sources, audience claims, or generation calls
+  - name: compose
+    skill: pipelines/direct-animation/compose-director
+    required_artifacts_in: [brief, decision_log]
+    produces: [render_report, final_review]
+    required_tools: [video_compose]
+    tools_available: [video_compose]
+    checkpoint_required: true
+    human_approval_default: false
+    success_criteria:
+      - A playable video exists in the owned renders directory
+      - Probe and sampled frames verify the supplied motion and output dimensions
+      - Final review honestly records audio and subtitle presence or requested absence

@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     // Only trusted browser chrome can ask the authenticated service to translate.
     const origin = request.headers.get("origin");
     if (origin && origin !== new URL(request.url).origin) return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
@@ -28,7 +28,7 @@ export async function POST(request: Request) {
     catch { return NextResponse.json({ error: "Invalid page text." }, { status: 400 }); }
     if (!isPageTranslationRequest(input)) return NextResponse.json({ error: "Invalid page text or language." }, { status: 400 });
     try {
-      return NextResponse.json({ segments: await translatePageText(input, request.signal, fetch, resolveChatmockBaseUrl(request).baseURL) }, { headers: { "Cache-Control": "no-store" } });
+      return NextResponse.json({ segments: await translatePageText(input, request.signal, fetch, resolveChatmockBaseUrl(request).baseURL, userId) }, { headers: { "Cache-Control": "no-store" } });
     } catch (error) {
       return NextResponse.json({ error: error instanceof Error && error.name !== "AbortError" && error.name !== "TimeoutError"
         ? error.message : "Translation timed out. Try again." }, { status: 502 });

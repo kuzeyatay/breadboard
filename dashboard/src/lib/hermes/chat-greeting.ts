@@ -1214,8 +1214,7 @@ const TEMPORARY_PUBLIC_SUGGESTIONS: SuggestionCandidate[] = [
 
 /**
  * Openers for a chat standing inside one garden. Everything here is about this
- * garden — no opener offers to compare gardens the chat cannot see, and the
- * one that does reach outward names the reaching. The "page" family exists
+ * garden — no opener offers to compare gardens the chat cannot see. The "page" family exists
  * because a garden chat has an outcome the hub does not: an answer worth
  * keeping can be saved into the garden as a page.
  */
@@ -1302,7 +1301,7 @@ const GARDEN_SUGGESTIONS: SuggestionCandidate[] = [
     id: "garden-relate",
     family: "connect",
     when: (c) => c.signals.gardenCount >= 2,
-    text: (c) => `How does ${c.garden!.name} relate to my other gardens?`,
+    text: (c) => `How do the topics within ${c.garden!.name} connect to each other?`,
   },
   {
     id: "garden-today",
@@ -1320,7 +1319,7 @@ const GARDEN_SUGGESTIONS: SuggestionCandidate[] = [
     id: "garden-late",
     family: "day",
     when: (c) => c.partOfDay === "late-night" || c.partOfDay === "night",
-    text: () => "Give me the short version of one idea, it is late.",
+    text: () => "Give me the short version of one idea from this garden, it is late.",
   },
   {
     id: "garden-page",
@@ -1356,11 +1355,11 @@ const BROWSER_SUGGESTIONS: SuggestionCandidate[] = [
 ];
 
 function suggestionPool(context: GreetingContext): SuggestionCandidate[] {
+  if (context.garden) return GARDEN_SUGGESTIONS;
   if (context.browser) return BROWSER_SUGGESTIONS;
   if (context.temporary) {
     return context.scope === "public" ? TEMPORARY_PUBLIC_SUGGESTIONS : TEMPORARY_OWN_SUGGESTIONS;
   }
-  if (context.garden) return GARDEN_SUGGESTIONS;
   return context.scope === "public" ? PUBLIC_SUGGESTIONS : OWN_SUGGESTIONS;
 }
 

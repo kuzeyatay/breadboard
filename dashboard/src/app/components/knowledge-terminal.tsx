@@ -582,6 +582,8 @@ export default function KnowledgeTerminal({ scope }: Props) {
           model: voice?.model ?? model,
           reasoningEffort: voice?.reasoningEffort ?? reasoningEffort,
           browserAccess: voice?.browserAccess,
+          voice: voice?.voice,
+          voiceOpener: voice?.voiceOpener,
           attachments: pendingAttachments,
           scope,
           adhdMode: isDirectModeEnabled(),
@@ -1021,6 +1023,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
                 <ChatGreetingEmptyState
                   greeting={chatGreeting.greeting}
                   suggestions={chatGreeting.suggestions}
+                  suggestionScopeKey={chatGreeting.suggestionScopeKey}
                   onSelectSuggestion={fillComposerWithPrompt}
                 />
               ) : (

@@ -1,5 +1,6 @@
 import {
   usageLimitRowsWithFiveHour,
+  usageLimitResetAt,
   usageReserveModelLabel,
   usageReserveRows,
   type DisplayUsageLimitReserve,
@@ -150,9 +151,8 @@ export function notchColor(used: number | null): string {
 }
 
 export function notchResetCopy(capturedAt: string | undefined, limit: DisplayUsageLimitWindow, now: number): string {
-  const captured = Date.parse(capturedAt ?? "");
-  if (!Number.isFinite(captured) || typeof limit.resets_in_seconds !== "number" || !Number.isFinite(limit.resets_in_seconds)) return "Reset not reported";
-  const reset = captured + Math.max(0, limit.resets_in_seconds) * 1000;
+  const reset = usageLimitResetAt(capturedAt, limit);
+  if (reset === null) return "Reset not reported";
   const minutes = Math.ceil((reset - now) / 60000);
   if (minutes <= 0) return "Reset due";
   if (minutes < 60) return `Resets in ${minutes} min`;

@@ -557,9 +557,9 @@ test("inside a garden the chat is about that garden", () => {
   for (const prompt of openers) {
     assert.doesNotMatch(prompt, /Thermodynamics|Control Theory|Entropy and the second law/);
   }
-  // Reaching outward is allowed only when it says so.
+  // Garden suggestions never reach into other gardens.
   const outward = [...openers].filter((prompt) => prompt.includes("other gardens"));
-  assert.deepEqual(outward, ["How does breadboard-dev relate to my other gardens?"]);
+  assert.deepEqual(outward, []);
 
   // Four slots, always filled, even for an account with one garden and no history.
   for (let index = 0; index < 24 * 3; index += 1) {
@@ -587,6 +587,22 @@ test("inside a garden the chat is about that garden", () => {
     now,
   });
   assert.notEqual(`${here.leadId}/${here.questionId}`, `${there.leadId}/${there.questionId}`);
+});
+
+test('temporary, public and browser-adjacent garden chats keep the garden suggestion pool', () => {
+  const garden={name:'Circuits',slug:'circuits'};
+  const gardenPool=new Set(Array.from({length:24*7},(_,index)=>resolveChatSuggestions({signals:SIGNALS,scope:'mine',temporary:false,garden,now:new Date(2026,7,19,index)})).flat());
+  for (let hour=0;hour<24*7;hour++) {
+    const now=new Date(2026,7,19,hour);
+    const expected=resolveChatSuggestions({signals:SIGNALS,scope:'mine',temporary:false,garden,now});
+    // Each mode can rotate differently, but may only select garden actions.
+    assert.equal(expected.length,4);
+    for (const scope of ['mine','public']) for (const temporary of [false,true]) for (const browser of [false,true]) {
+      const actual=resolveChatSuggestions({signals:SIGNALS,scope,temporary,browser,garden,now});
+      assert.equal(actual.length,4);
+      assert.ok(actual.every(prompt=>gardenPool.has(prompt)),JSON.stringify(actual));
+    }
+  }
 });
 
 test("two people do not step through the pools in lockstep", () => {

@@ -9,6 +9,8 @@ import { telegramApiBase, telegramTimings } from "./config.ts";
 import { applyOutboundGuardrails } from "../guardrails/service.ts";
 import { openAsBlob } from "node:fs";
 import path from "node:path";
+import { formatTelegramText, splitTelegramText } from "./format.ts";
+export { splitForTelegram, TELEGRAM_MESSAGE_LIMIT } from "./format.ts";
 
 export class TelegramApiError extends Error {
   /** HTTP status, or 0 when the request never got an answer. */
@@ -213,20 +215,27 @@ export async function sendChatAction(
 
 /**
  * Send one reply, split across messages when it exceeds Telegram's limit.
- * Deliberately plain text: the agent writes Markdown that Telegram's own parser
- * rejects on the first unbalanced `*`, and a rejected reply is worse than an
- * unstyled one.
+ * Render Markdown locally and send explicit formatting entities, so Telegram
+ * never has to parse an agent's Markdown (including incomplete delimiters).
  */
 export async function sendMessage(token: string, chatId: string, text: string): Promise<void> {
   // Masked BEFORE splitting: a token like <EMAIL_ADDRESS> must never straddle
   // a chunk boundary, and detection needs the full message for context anyway.
-  for (const chunk of splitForTelegram(applyOutboundGuardrails(text))) {
-    await callTelegram<unknown>(
-      token,
-      "sendMessage",
-      { chat_id: chatId, text: chunk, disable_web_page_preview: true },
-      telegramTimings().requestTimeoutMs,
-    );
+  const message = formatTelegramText(applyOutboundGuardrails(text));
+  for (const chunk of splitTelegramText(message)) {
+    const payload = { chat_id: chatId, text: chunk.text, disable_web_page_preview: true };
+    try {
+      await callTelegram<unknown>(token, "sendMessage", {
+        ...payload,
+        ...(chunk.entities.length ? { entities: chunk.entities } : {}),
+      }, telegramTimings().requestTimeoutMs);
+    } catch (error) {
+      // Only an explicit formatting rejection is safe to retry. Timeouts may
+      // already have delivered the message, so retrying those would duplicate it.
+      if (!(error instanceof TelegramApiError) || error.status !== 400 || !chunk.entities.length ||
+          !/can't parse entities|entity (?:bounds|offset|length)|entities.*invalid/i.test(error.message)) throw error;
+      await callTelegram<unknown>(token, "sendMessage", payload, telegramTimings().requestTimeoutMs);
+    }
   }
 }
 
@@ -284,45 +293,4 @@ export async function sendDocument(
       typeof envelope?.error_code === "number" ? envelope.error_code : null,
     );
   }
-}
-
-/** Telegram's hard ceiling is 4096 characters; leave room rather than court it. */
-export const TELEGRAM_MESSAGE_LIMIT = 3_800;
-
-/** Split on paragraph, then line, then character boundaries — in that order. */
-export function splitForTelegram(text: string, limit = TELEGRAM_MESSAGE_LIMIT): string[] {
-  const body = text.trim();
-  if (!body) return [];
-  if (body.length <= limit) return [body];
-
-  const chunks: string[] = [];
-  let current = "";
-  const flush = () => {
-    if (current.trim()) chunks.push(current.trim());
-    current = "";
-  };
-
-  for (const paragraph of body.split(/\n{2,}/)) {
-    const piece = paragraph.trim();
-    if (!piece) continue;
-    if (current && current.length + piece.length + 2 > limit) flush();
-    if (piece.length <= limit) {
-      current = current ? `${current}\n\n${piece}` : piece;
-      continue;
-    }
-    flush();
-    for (const line of piece.split("\n")) {
-      if (current && current.length + line.length + 1 > limit) flush();
-      if (line.length <= limit) {
-        current = current ? `${current}\n${line}` : line;
-        continue;
-      }
-      flush();
-      for (let index = 0; index < line.length; index += limit) {
-        chunks.push(line.slice(index, index + limit));
-      }
-    }
-  }
-  flush();
-  return chunks;
 }

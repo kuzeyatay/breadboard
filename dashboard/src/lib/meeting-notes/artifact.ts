@@ -16,6 +16,7 @@ import "server-only";
 
 import {
   createArtifact,
+  renderArtifact,
   type ArtifactRow,
 } from "../hermes/artifact-store.ts";
 import { beginRuntimeRun, finishRuntimeRun } from "../hermes/run-store.ts";
@@ -122,7 +123,7 @@ function safeFilename(title: string, extension: string): string {
 }
 
 /** Store the notes as a markdown artifact bound to the chat that made them. */
-export function saveNotesArtifact(input: {
+export async function saveNotesArtifact(input: {
   context: MeetingArtifactContext;
   summary: MeetingSummary;
   markdown: string;
@@ -130,9 +131,9 @@ export function saveNotesArtifact(input: {
   speakers: string[];
   sourceLabel: string;
   runtimeJobId?: string;
-}): ArtifactRow {
+}): Promise<ArtifactRow> {
   const title = input.summary.meetingName || "Meeting notes";
-  return createArtifact({
+  const artifact = createArtifact({
     userId: input.context.userId,
     runtimeSessionId: input.context.runtimeSessionId,
     hermesSessionId: input.context.hermesSessionId,
@@ -163,15 +164,16 @@ export function saveNotesArtifact(input: {
     },
     sourceHermesTool: MEETING_NOTES_TOOL,
   });
+  return renderMeetingArtifact(artifact, input.context);
 }
 
 /** Store the transcript itself, so the notes can be rewritten without the audio. */
-export function saveTranscriptArtifact(input: {
+export async function saveTranscriptArtifact(input: {
   context: MeetingArtifactContext;
   transcript: MeetingTranscript;
   title: string;
   runtimeJobId?: string;
-}): ArtifactRow {
+}): Promise<ArtifactRow> {
   const title = `${input.title} — transcript`;
   const header = [
     `# ${input.title} — transcript`,
@@ -182,7 +184,7 @@ export function saveTranscriptArtifact(input: {
       : "No speaker separation.",
     "",
   ].join("\n");
-  return createArtifact({
+  const artifact = createArtifact({
     userId: input.context.userId,
     runtimeSessionId: input.context.runtimeSessionId,
     hermesSessionId: input.context.hermesSessionId,
@@ -209,4 +211,20 @@ export function saveTranscriptArtifact(input: {
     },
     sourceHermesTool: MEETING_NOTES_TOOL,
   });
+  return renderMeetingArtifact(artifact, input.context);
+}
+
+async function renderMeetingArtifact(
+  artifact: ArtifactRow,
+  context: MeetingArtifactContext,
+): Promise<ArtifactRow> {
+  const rendered = await renderArtifact({
+    artifact,
+    runId: context.runId,
+    assistantMessageId: context.assistantMessageId,
+  });
+  if (rendered.status !== "ready") {
+    throw new Error("The saved meeting artifact could not be prepared for opening or download.");
+  }
+  return rendered;
 }

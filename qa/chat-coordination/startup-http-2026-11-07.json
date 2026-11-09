@@ -1,0 +1,130 @@
+{
+  "passed": true,
+  "inference": "deterministic fixture",
+  "actualRuntime": "Hermes AIAgent",
+  "toolRequests": [
+    "chat_list",
+    "chat_send_message",
+    "chat_wait",
+    "chat_list",
+    "chat_send_message",
+    "chat_wait",
+    "chat_wait",
+    "chat_list",
+    "chat_send_message",
+    "chat_wait"
+  ],
+  "modelCalls": [
+    {
+      "kind": "seed",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_list"
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_send_message"
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_wait"
+    },
+    {
+      "kind": "receiver",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_list"
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_send_message"
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_wait"
+    },
+    {
+      "kind": "seed",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_wait"
+    },
+    {
+      "kind": "receiver",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_list"
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_send_message"
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_wait"
+    },
+    {
+      "kind": "receiver",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": null
+    },
+    {
+      "kind": "receiver",
+      "tool": null
+    },
+    {
+      "kind": "seed",
+      "tool": null
+    },
+    {
+      "kind": "receiver",
+      "tool": null
+    },
+    {
+      "kind": "seed",
+      "tool": null
+    }
+  ],
+  "senderAnswer": "Chat two answered: The saved answer is answer-6ce0276e-1a58-439a-8547-10c085ab9951.",
+  "busyAnswer": "Chat two answered: The saved answer is answer-6ce0276e-1a58-439a-8547-10c085ab9951.",
+  "restoredAnswer": "Chat two answered: The saved answer is answer-6ce0276e-1a58-439a-8547-10c085ab9951.",
+  "recoveredAnswer": "The saved answer is answer-6ce0276e-1a58-439a-8547-10c085ab9951.",
+  "envelopeStatus": "complete",
+  "receiverTurns": 6,
+  "verified": [
+    "agent tool discovery",
+    "authenticated plugin callback",
+    "receiver history",
+    "closed-tab delivery",
+    "busy-chat queue",
+    "non-cancelling timeout",
+    "fresh-process queue recovery",
+    "receiving goal resumes after peer answer",
+    "receiver runtime restoration"
+  ],
+  "verifiedAt": "2026-11-07T15:17:54.153Z",
+  "implementationManifest": ".tmp-chat-coordination-content-length-fix/implementation-manifest.json",
+  "implementationManifestSha256": "76fc43890c6dde6754194f7c1b545a1dc563a233c14a3db0a9dd4d4347c21634",
+  "exitCode": 0,
+  "transport": "real loopback HTTP from a fresh Node process",
+  "focusedStartupTestsPassed": 4
+}

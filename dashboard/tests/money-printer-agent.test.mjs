@@ -48,6 +48,21 @@ const { resolveFootageSource, availableFootageSources } = await import(
 const { resolveTaskVideos, stageForProgress } = await import(
   "../src/lib/money-printer/run-manager.ts"
 );
+const { runCommand } = await import("../src/lib/money-printer/runtime.ts");
+
+test("Windows command probes expose ordinary paths to third-party code", { skip: process.platform !== "win32" }, async (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "money-printer-process-path-"));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(fixture, "config.toml"), "owned fixture");
+  const result = await runCommand(path.toNamespacedPath(process.execPath), ["-e", "const fs=require('node:fs'); const cwd=process.cwd(); process.stdout.write(JSON.stringify({cwd,text:fs.readFileSync(cwd+'/config.toml','utf8'),bytecode:process.env.PYTHONDONTWRITEBYTECODE}));"], {
+    cwd: path.toNamespacedPath(fixture), timeoutMs: 10_000,
+  });
+  assert.equal(result.code, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.cwd.toLowerCase(), fixture.toLowerCase());
+  assert.equal(output.text, "owned fixture");
+  assert.equal(output.bytecode, "1");
+});
 
 // ---- the command ------------------------------------------------------------
 

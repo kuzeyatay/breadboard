@@ -1,3 +1,4 @@
+use crate::runtime_diagnostics::ShutdownOrigin;
 use crate::shutdown::ShutdownCoordinator;
 use breadboard_runtime_protocol::{
     parse_runtime_bootstrap_message, ProtocolError, RuntimeBootstrapMessage,
@@ -84,7 +85,7 @@ pub(crate) fn start_parent_stdin_reader(
             }
             let mut unexpected = [0_u8; 1];
             let _ = input.read(&mut unexpected);
-            shutdown.request_shutdown();
+            shutdown.request_shutdown_from(ShutdownOrigin::ParentChannel);
         })
         .map_err(BootstrapError::Watcher)?;
     Ok((bootstrap_receiver, handle))

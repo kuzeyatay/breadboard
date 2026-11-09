@@ -13,7 +13,6 @@ import LinkContextMenu from "@/app/components/link-context-menu";
 import { useRouter } from "next/navigation";
 import { announceGardenNameChange } from "@/lib/garden-name-events";
 import {
-  createCluster,
   updateClusterDetails,
   setClusterBorderColor,
   setClusterVisibility,
@@ -34,6 +33,7 @@ import {
   expandFolderPaths,
   folderLabel,
   folderParent,
+  folderPathChain,
   folderRankFromOrder,
   isInSubtree,
   visibleFolderRows,
@@ -93,6 +93,7 @@ import RainBackground from "@/app/components/rain-background";
 import { SpotifyAmbientProvider } from "@/app/components/spotify-ambient-context";
 import styles from "./dashboard-appearance.module.css";
 import GardenCardSettingsMenu from "./garden-card-settings-menu";
+import GardenCodeLink from "./garden-code-link";
 import CombinedHomeLauncher, { type CombinedHomeData } from "@/app/new-tab/combined-home-launcher";
 import TerminalBrowserControls from "@/app/new-tab/terminal-browser-controls";
 import homeStyles from "@/app/new-tab/combined-home.module.css";
@@ -242,7 +243,8 @@ export default function DashboardClient({
   const [editDescription, setEditDescription] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-  const [isCreatingGarden, startCreatingGarden] = useTransition();
+  const [isCreatingGarden, setIsCreatingGarden] = useState(false);
+  const creatingGardenRef = useRef(false);
   const [clusterView, setClusterView] = useState<ClusterView>("mine");
   const [searchQuery, setSearchQuery] = useState("");
   const [myClusters, setMyClusters] = useState(initialClusters);
@@ -1380,29 +1382,42 @@ export default function DashboardClient({
     );
   }
 
-  function handleCreate(e: React.FormEvent) {
+  async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (creatingGardenRef.current || !name.trim()) return;
+    creatingGardenRef.current = true;
+    setIsCreatingGarden(true);
     setError(null);
     const folder = newGardenFolder;
-    startCreatingGarden(async () => {
-      try {
-        await createCluster(name.trim(), description.trim(), folder);
-        // Reveal the cluster it landed in, so the new card is not created
-        // behind a collapsed header.
-        if (folder) {
-          setExpandedClusterFolders((prev) =>
-            new Set(prev).add(`folder:${folder}`),
-          );
-        }
-        closeModal();
-        router.refresh();
-      } catch (err: unknown) {
-        setError(
-          err instanceof Error ? err.message : "Failed to create garden",
+    try {
+      // A route response contains only the saved card. Server actions also
+      // wait for the whole dashboard to re-render when they revalidate it.
+      const response = await fetch("/api/clusters", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), description: description.trim(), folder }),
+      });
+      const data = await response.json() as { cluster?: Cluster; error?: string };
+      if (!response.ok || !data.cluster) {
+        throw new Error(data.error || "Failed to create garden");
+      }
+      const created = data.cluster;
+      setMyClusters((previous) => [created, ...previous.filter((cluster) => cluster.id !== created.id)]);
+      // Reveal every ancestor of the saved folder without another page load.
+      if (created.folder) {
+        const ancestors = folderPathChain(created.folder);
+        setClusterFolders((previous) => [...new Set([...previous, ...ancestors])]);
+        setExpandedClusterFolders((previous) =>
+          new Set([...previous, ...ancestors.map((ancestor) => `folder:${ancestor}`)]),
         );
       }
-    });
+      closeModal();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to create garden");
+    } finally {
+      creatingGardenRef.current = false;
+      setIsCreatingGarden(false);
+    }
   }
 
   function handleUpdateCluster(e: React.FormEvent) {
@@ -2926,6 +2941,8 @@ export default function DashboardClient({
                                 </LinkContextMenu>
                               )}
 
+                              {canManage && cluster.repo_connected && <GardenCodeLink slug={cluster.slug} name={cluster.name} />}
+
                               {/* Who put this garden in front of you. */}
                               {clusterView !== "mine" &&
                                 (cluster.ownerUsername ||
@@ -3129,7 +3146,7 @@ export default function DashboardClient({
         <div
           className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
           onClick={(e) => {
-            if (e.target === e.currentTarget) closeModal();
+            if (e.target === e.currentTarget && !isCreatingGarden) closeModal();
           }}
         >
           <div className="bb-modal-panel neu-dialog w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-2xl border p-6">
@@ -3147,6 +3164,8 @@ export default function DashboardClient({
                 <input
                   type="text"
                   value={name}
+                  maxLength={120}
+                  disabled={isCreatingGarden}
                   onChange={(e) => setName(e.target.value)}
                   required
                   autoFocus
@@ -3160,6 +3179,8 @@ export default function DashboardClient({
                 </label>
                 <textarea
                   value={description}
+                  maxLength={2000}
+                  disabled={isCreatingGarden}
                   onChange={(e) => setDescription(e.target.value)}
                   rows={3}
                   placeholder="What's this garden about?"
@@ -3171,6 +3192,7 @@ export default function DashboardClient({
                 <button
                   type="button"
                   onClick={closeModal}
+                  disabled={isCreatingGarden}
                   className="neu-button flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
                 >
                   Cancel

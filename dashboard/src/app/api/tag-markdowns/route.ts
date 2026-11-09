@@ -1,3 +1,4 @@
+import { systemPromptText } from "../../../lib/system-prompts/service.ts";
 import { NextResponse } from "next/server";
 import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
@@ -8,7 +9,7 @@ import { updateLearnerPageConcepts } from "@/lib/garden-semantics";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { acquireGardenMutationLease } from "@/lib/garden-mutation-lease";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import { withCouncil } from "@/lib/council";
+import { withCouncil } from "@/lib/system-prompts/council.ts";
 import {
   requireOwnedClusterFromSlug,
   routeErrorResponse,
@@ -33,32 +34,6 @@ interface TaggingPlan {
   updates?: TaggingPlanUpdate[];
 }
 
-const TAG_MARKDOWNS_SYSTEM_PROMPT = `You update tags for existing textbook pages in a second-brain cluster.
-
-Return ONLY valid JSON with this shape:
-{
-  "mode": "merge" | "replace",
-  "summary": "Short summary",
-  "updates": [
-    {
-      "slug": "existing-page-slug",
-      "tags": ["restoring-force", "angular-frequency", "simple-harmonic-motion"],
-      "reason": "Why this note should get these tags"
-    }
-  ]
-}
-
-Rules:
-- Only use note slugs that already exist in the provided inventory.
-- Only update notes that clearly match the user's request.
-- Tags are canonical reusable concepts: notes that share a concept become linked in the graph. Never submit a claim sentence, page summary, source name, or organizational label as a concept.
-- Return only normalized lower-case kebab-case tags. Good: "restoring-force", "stable-equilibrium", "angular-frequency", "simple-harmonic-motion". Bad: physics, math, formula, important, wave, calculus, force, understanding-the-basics, title slugs, source filenames.
-- If the user explicitly asks for organizational tags (schedule, week, unit, module, or course tags), you may use those exact tags even though they are not idea tags.
-- Avoid generic, document-type, or learning tags like note, markdown, chat, garden, document, source, topic, misc, general, important, learning, study, formula, or example unless the user explicitly wants them, and never reference a page/slide/figure in a tag.
-- Return 1-5 genuinely central concepts per learner page and use "merge" unless the user explicitly asks to replace, overwrite, reset, or clear existing tags.
-- Only learner pages are editable. Never update sources, planning pages, indexes, or internal notes.
-- If no notes should change, return {"mode":"merge","summary":"No clear matches","updates":[]}.
-- Never invent notes that are not in the inventory.`;
 
 function tokenize(value: string): Set<string> {
   return new Set(
@@ -271,11 +246,11 @@ export async function POST(request: Request) {
         {
           model: selectedModel,
           messages: [
-            { role: "system", content: TAG_MARKDOWNS_SYSTEM_PROMPT },
+            { role: "system", content: systemPromptText("markdown-tags", userId) },
             { role: "user", content: promptSections.join("\n\n") },
           ],
         },
-        { taskType: "tagging", gardenId: cluster.slug },
+        { taskType: "tagging", gardenId: cluster.slug }, userId,
       ),
     );
 

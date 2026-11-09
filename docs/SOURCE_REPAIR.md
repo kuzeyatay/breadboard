@@ -6,7 +6,7 @@ The controller diagnoses the failure through the configured local model gateway.
 
 ## Verification and activation
 
-1. Require a running build that matches its source. Capture the developer checkpoint, including uncommitted application changes, into a detached Git worktree. The original checkout is unchanged by a repair.
+1. Require a running build that matches its source. Capture the developer checkpoint, including uncommitted application changes, into a detached Git worktree. When the desktop has a validated large-file storage setting, repair copies use an installation-specific directory under that pinned root. Otherwise they use `.qa-worktrees` under the source checkout. The original checkout is unchanged by a repair.
 2. Run relevant existing tests on the baseline. Reproduce the proposed assertion failure twice. All test subprocesses receive scrubbed environment variables and disposable data/temp paths. Model-written regressions additionally run under Node filesystem/process permission restrictions. Existing repository suites retain native-addon/compiler support, and their hashes must remain unchanged between baseline and repaired runs.
 3. Issue the existing QA repair capability, apply only the declared edits and create a new test. Existing tests cannot be rewritten. Run the regression and related suites.
 4. Put the original defect back and require the same test to fail. Reapply the fix and pass it in a fresh process. Finalize the capability's source and assertion checks.
@@ -21,9 +21,10 @@ The native lifecycle bearer alone can quiesce or resume admission. A dashboard/t
 
 - This first implementation supports source checkouts running in lean desktop mode. Packaged installations do not receive automatic source-patching authority. Explicit Goal-mode continuations keep their existing recovery behavior; this source-repair escalation belongs to ordinary task recovery.
 - Authentication, permissions, migrations, dependency metadata, native/runtime code, completion validators and the repair controller are outside automatic edit scope. Repairs that cannot prove a behavioral fix remain blocked with diagnostics.
-- Limits: two candidates per repair, three requests per day, two hours per request, and a 45-minute isolated build. Build resource admission and disk headroom still apply. Limits and Stop are never bypassed.
+- Limits: two candidates per repair, three requests per day, four hours for each newly accepted repair, and a 60-minute isolated build. Existing requests keep their saved deadline; waiting for resources and retries consume that same budget. Dependency copying retains its 45-minute cap, and the native worker retains its separate process, memory and execution limits. Build resource admission, disk headroom and Stop still apply. Timed-out commands are failures even if a platform exit code would otherwise indicate success.
 - A worktree is source isolation, not a hostile-code operating-system sandbox. Node test restrictions and scrubbed credentials reduce test authority; the trusted build pipeline still executes application/build code. Independent review and protected edit scope remain necessary.
 - Rollback switches code. It does not reverse already completed publications, messages or other external actions. Resumption instructions require inspecting existing artifacts and job handles before retrying.
+- The bulk root is selected by the desktop storage preference, never by model text or ambient environment. It must be a direct directory separate from source and task data. Missing or redirected storage fails closed. Existing legacy releases remain valid rollback targets; changing a pinned bulk root requires a verified migration.
 - Successful candidate worktrees are retained because they are the active release and rollback target. Do not delete an active or previous release directory from the journal. There is no automatic installation of missing dependencies.
 
 ## State and operation

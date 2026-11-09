@@ -20,7 +20,9 @@ test('voice keeps the full discovery index without repeating long procedures', (
   assert.ok(!result.includes('manual-worker'), 'form-only IDs must not be offered to agent_launch');
   assert.match(result, /old-report: Old report \(inactive\)/);
   assert.ok(result.length < inventory.skills[0].description.length / 2);
-  assert.match(result, /tool_search.*tool_describe.*tool_call/);
+  for (const capability of ['tool_search', 'tool_describe', 'tool_call', 'skill_open']) assert.ok(result.includes(capability), capability);
+  assert.match(result, /already named.*tool_describe.*tool_call/);
+  assert.match(result, /tool_search only to discover an unknown capability/);
   assert.match(result, /permission controls/);
 });
 

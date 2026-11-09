@@ -115,6 +115,9 @@ test("the written config carries the two settings that decide whether tools run"
   assert.equal(config.sandbox.onUnavailable, "allow");
   // A headless run has nobody to answer a question and waits forever.
   assert.equal(config.permission.question, "deny");
+  assert.equal(config.mcp.api_anything.type, "local");
+  assert.equal(config.mcp.api_anything.command[2], "public");
+  assert.equal(config.mcp.api_anything.environment.ELECTRON_RUN_AS_NODE, "1");
 });
 
 test("the instruction adds what the runtime cannot know, and nothing it already owns", () => {

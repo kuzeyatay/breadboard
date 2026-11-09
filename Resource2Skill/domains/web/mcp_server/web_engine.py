@@ -121,6 +121,9 @@ Path(result_path).write_text(json.dumps(result), encoding="utf-8")
         try:
             proc = subprocess.run(
                 [sys.executable, "-c", runner, str(code_path), output_dir, str(params_path), str(result_path)],
+                # MCP owns stdin. Inheriting that pipe can block a nested
+                # Windows Python process before its first instruction.
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=timeout_sec,

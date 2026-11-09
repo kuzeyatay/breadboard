@@ -14,6 +14,12 @@ test('voice prepares by default without listening, migrates preferences, and rem
     writeVoiceAssistantPreferences(db, 1, { ...DEFAULT_VOICE_ASSISTANT, voiceModel: 'anthropic/claude-sonnet-4-5', startVoiceOnStartup: false });
     assert.equal(readVoiceAssistantPreferences(db, 1).voiceModel, 'anthropic/claude-sonnet-4-5');
     assert.equal(readVoiceAssistantPreferences(db, 1).startVoiceOnStartup, false);
+    assert.equal(readVoiceAssistantPreferences(db, 1).voiceThinking, 'fast');
+    writeVoiceAssistantPreferences(db, 1, { ...readVoiceAssistantPreferences(db, 1), voiceThinking: 'high' });
+    assert.equal(readVoiceAssistantPreferences(db, 1).voiceThinking, 'high');
+    assert.equal(readVoiceAssistantPreferences(db, 1).voiceModel, 'anthropic/claude-sonnet-4-5');
+    assert.equal(readVoiceAssistantPreferences(db, 2).voiceThinking, 'fast');
+    assert.equal(parseVoiceAssistantPreferences({ ...DEFAULT_VOICE_ASSISTANT, voiceThinking: 'invalid' }), null);
     assert.deepEqual(readVoiceAssistantPreferences(db, 2), DEFAULT_VOICE_ASSISTANT);
     for (const value of [null, [], {}, { ...DEFAULT_VOICE_ASSISTANT, command:'execute' }, { ...DEFAULT_VOICE_ASSISTANT, alwaysOnVoiceAssistant:'true' }]) assert.equal(parseVoiceAssistantPreferences(value), null);
     writeVoiceAssistantPreferences(db, 1, DEFAULT_VOICE_ASSISTANT);

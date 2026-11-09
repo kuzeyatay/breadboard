@@ -1,11 +1,11 @@
+import { systemPromptText } from "@/lib/system-prompts/service";
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
 import { GLOBAL_MODEL_SENTINEL } from "@/lib/ai-models.ts";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
-import { withCouncil } from "@/lib/council.ts";
+import { withCouncil } from "@/lib/system-prompts/council.ts";
 import {
   GENOFFICE_AI_LIMITS,
-  GENOFFICE_AI_SYSTEM_PROMPT,
   parseGenOfficeAiHistory,
   parseGenOfficeAiReply,
 } from "@/lib/hermes/genoffice-ai.ts";
@@ -92,7 +92,7 @@ export async function POST(
       {
         role: "system",
         content: [
-          GENOFFICE_AI_SYSTEM_PROMPT,
+          systemPromptText("word-assistant", userId),
           renderGenOfficeWritingSkillsDirective(writingSkills),
         ].join("\n\n"),
       },
@@ -120,7 +120,7 @@ export async function POST(
       }, {
         taskType: "small_revision",
         pageId: artifact.id,
-      }));
+      }, userId));
       const message = response.choices[0]?.message;
       if (!message) throw new Error("Bread returned no Word assistant response.");
       const toolCalls = (message.tool_calls ?? []).filter(
@@ -165,7 +165,7 @@ export async function POST(
     messages.push({
       role: "system",
       content:
-        "The Word writing-tool budget is exhausted. Do not request another tool. Return the final JSON object now, using only verified tool results and the supported GenOffice actions.",
+        systemPromptText("word-tool-limit", userId),
     });
     const finalResponse = await client.chat.completions.create(withCouncil({
       model: GLOBAL_MODEL_SENTINEL,
@@ -174,7 +174,7 @@ export async function POST(
     }, {
       taskType: "small_revision",
       pageId: artifact.id,
-    }));
+    }, userId));
     return NextResponse.json(
       parseGenOfficeAiReply(finalResponse.choices[0]?.message?.content ?? ""),
     );

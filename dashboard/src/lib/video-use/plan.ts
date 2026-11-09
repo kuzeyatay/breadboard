@@ -1,3 +1,4 @@
+import { renderSystemPrompt } from "../system-prompts/service.ts";
 // Turning "cut the dead air and make it vertical" into a cut.
 //
 // This is the reasoning step of the clone's pipeline — Transcribe → Pack → LLM
@@ -139,36 +140,8 @@ export function editingInstructions(root: string): string {
 // Prompt
 // ---------------------------------------------------------------------------
 
-function systemPrompt(root: string): string {
-  return [
-    "You are the editor in a video editing pipeline. You do not see the video: you read it, from a transcript or a silence map, and you decide the cut.",
-    "",
-    "You answer with ONE JSON object and nothing else. No prose, no code fence, no explanation outside the object.",
-    "",
-    "```",
-    "{",
-    '  "summary": "one sentence, past tense, describing what you changed",',
-    '  "ranges": [{"start": 0.0, "end": 12.5, "reason": "why this is in the cut"}],',
-    '  "grade": null,',
-    '  "aspect": "original",',
-    '  "subtitles": "none",',
-    '  "transform": {"speed": 1, "mute": false, "volumeDb": 0, "fadeInSeconds": 0, "fadeOutSeconds": 0, "reverse": false}',
-    "}",
-    "```",
-    "",
-    "Field rules:",
-    "- `ranges` are seconds into the ORIGINAL source, in the order they should play. They may skip material, repeat it, or reorder it. They are the whole cut: whatever is not in a range is not in the video.",
-    `- \`grade\` is null, one of ${GRADE_PRESETS.map((preset) => `"${preset}"`).join(", ")}, or an ffmpeg video filter chain (for example "eq=contrast=1.08:saturation=1.1"). "auto" analyses each segment and applies a subtle correction — it is the right choice when someone asks for a clean-up rather than a look. File paths, graph labels and quotes are refused.`,
-    '- `aspect` is "original", "16:9", "9:16", "1:1" or "4:5". Anything but "original" centre-crops and rescales the frame.',
-    '- `subtitles` is "burn" only when captions were asked for AND a transcript is available. Otherwise "none".',
-    "- `transform` applies to the finished cut. `speed` 0.25-4 (audio is pitch-corrected), `volumeDb` -30 to 20, fades in seconds, `reverse` plays it backwards.",
-    "",
-    "How to decide:",
-    editingInstructions(root),
-    "",
-    "You are revising an existing edit program, not starting from nothing. Keep everything the person did not ask you to change. If they ask for something this pipeline cannot do (an overlay, a new soundtrack, a graphic), do the part you can and say what you skipped in `summary`.",
-    "Do not ask questions. If anything is ambiguous, pick the most obvious interpretation and proceed.",
-  ].join("\n");
+function systemPrompt(root: string, userId?: number | null): string {
+  return renderSystemPrompt("video-editing", userId, { "grade_presets": String(GRADE_PRESETS.map((preset) => `"${preset}"`).join(", ")), "editing_instructions": String(editingInstructions(root)) });
 }
 
 function describeProgram(program: VideoEditProgram): string {
@@ -191,6 +164,7 @@ function describeProgram(program: VideoEditProgram): string {
 }
 
 export interface VideoPlanInput {
+  userId?: number | null;
   baseUrl: string;
   model: string;
   reasoningEffort?: string;
@@ -484,7 +458,7 @@ export function extractJson(content: string): unknown {
  * model is not misreading the format, it is disagreeing with it.
  */
 export async function planEdit(input: VideoPlanInput): Promise<VideoPlanResult> {
-  const system = systemPrompt(input.root);
+  const system = systemPrompt(input.root, input.userId);
   const usage: PlanUsage = { inputTokens: 0, outputTokens: 0 };
   let correction: string | undefined;
 

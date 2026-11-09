@@ -177,6 +177,7 @@ async function drive(run: RunState, input: RuntimeMeetingNotesInput): Promise<vo
   } else {
     emit(run, "notes.started", { characters: transcriptText.length });
     const written = await summarizeMeeting({
+      userId: input.userId,
       transcript: transcriptText,
       baseUrl: input.baseUrl,
       model: input.model,
@@ -225,7 +226,7 @@ async function drive(run: RunState, input: RuntimeMeetingNotesInput): Promise<vo
     } else {
       try {
         if (summary && !notes) {
-          notes = saveNotesArtifact({
+          notes = await saveNotesArtifact({
             context,
             summary,
             markdown,
@@ -236,7 +237,7 @@ async function drive(run: RunState, input: RuntimeMeetingNotesInput): Promise<vo
           });
         }
         if (transcript && !transcriptArtifact) {
-          transcriptArtifact = saveTranscriptArtifact({
+          transcriptArtifact = await saveTranscriptArtifact({
             context,
             transcript,
             title: summary?.meetingName || input.source.title,

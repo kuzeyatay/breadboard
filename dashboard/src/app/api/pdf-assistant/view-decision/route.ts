@@ -1,3 +1,4 @@
+import { systemPromptText } from "../../../../lib/system-prompts/service.ts";
 import { NextResponse } from "next/server";
 import { requireUserId, requireReadableCluster } from "@/lib/server-auth";
 import { gardenPdfReference, readGardenPdfPages } from "@/lib/pdf-garden-reading.ts";
@@ -65,7 +66,7 @@ export async function POST(request: Request) {
                 ? body.selectedText
                 : undefined,
             history,
-          }),
+          }, systemPromptText("pdf-view-decision", userId)),
           response_format: { type: "json_object" },
         },
         {

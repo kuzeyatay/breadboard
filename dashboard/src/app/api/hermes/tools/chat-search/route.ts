@@ -147,7 +147,9 @@ export async function POST(request: Request) {
 
     let gardenSlug: string | undefined;
     if (session.surface === "garden_chat") {
-      if (session.garden_id === null) {
+      // Runtime garden_id is a URL slug; cluster_id is the numeric foreign key
+      // used by both clusters.id and conversations.default_garden_id.
+      if (session.cluster_id === null) {
         throw new ApiError(
           403,
           "chat_search_garden_scope_missing",
@@ -155,7 +157,7 @@ export async function POST(request: Request) {
         );
       }
       const garden = db.prepare("SELECT slug FROM clusters WHERE id = ?").get(
-        session.garden_id,
+        session.cluster_id,
       ) as { slug: string } | undefined;
       if (!garden?.slug) {
         throw new ApiError(
@@ -184,7 +186,7 @@ export async function POST(request: Request) {
       session.user_id,
       session.surface,
       session.conversation_id,
-      ...(session.surface === "garden_chat" ? [session.garden_id] : []),
+      ...(session.surface === "garden_chat" ? [session.cluster_id] : []),
     ) as ConversationRow[];
 
     const readMessages = db.prepare(

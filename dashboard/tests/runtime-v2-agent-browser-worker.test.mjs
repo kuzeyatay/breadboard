@@ -13,6 +13,8 @@ import {
 } from "../scripts/runtime-v2-agent-browser-worker.mjs";
 import {
   parseRuntimeV2AgentBrowserAuthProbe,
+  runtimeBrowserChildEnvironment,
+  runtimeBrowserScratchPath,
   sealRuntimeV2AgentBrowserCommand,
 } from "../scripts/runtime-v2-agent-browser-executor.mjs";
 
@@ -63,7 +65,7 @@ function fixture(
       'if (tabIndex >= 0 && process.env.AGENT_BROWSER_CDP && args[tabIndex + 1] === "--json") {',
       '  process.stdout.write(JSON.stringify({ success: true, data: { tabs: [{ active: true, label: null, tabId: "t1", title: "Breadboard", type: "page", url: "http://127.0.0.1/dashboard" }, { active: false, label: null, tabId: "t2", title: "Agent Browser", type: "page", url: desktopTarget }] }, error: null }) + "\\n");',
       '} else if (tabIndex >= 0 && process.env.AGENT_BROWSER_CDP && args[tabIndex + 1] === "t2") {',
-      '  fs.writeFileSync(path.join(process.env.HOME, "desktop-connect.json"), JSON.stringify({ args, cdp: process.env.AGENT_BROWSER_CDP, executable: process.env.AGENT_BROWSER_EXECUTABLE_PATH ?? null, profile: process.env.AGENT_BROWSER_PROFILE ?? null }));',
+      '  fs.writeFileSync(path.join(path.dirname(process.env.AGENT_BROWSER_DOWNLOAD_PATH), "desktop-connect.json"), JSON.stringify({ args, cdp: process.env.AGENT_BROWSER_CDP, executable: process.env.AGENT_BROWSER_EXECUTABLE_PATH ?? null, profile: process.env.AGENT_BROWSER_PROFILE ?? null }));',
       '  process.stdout.write("switched\\n");',
       '} else if (args.includes("get") && args.includes("url") && process.env.AGENT_BROWSER_CDP) {',
       '  process.stdout.write(desktopTarget + "\\n");',
@@ -82,6 +84,7 @@ function fixture(
     path.join(jobRoot, "input.json"),
     `${JSON.stringify({
       task: "Open the example page",
+      ...(typeof options.systemPrompt === "string" ? { systemPrompt: options.systemPrompt } : {}),
       provider: "chatmock",
       model: "test-model",
       modelBaseUrl,
@@ -138,9 +141,9 @@ function publishDesktopBrowserReceipt(current, cdpPort = 9_333) {
 
 async function modelServer(handler) {
   const server = http.createServer(async (request, response) => {
-    let body = "";
-    for await (const chunk of request) body = `${body}${chunk}`;
-    const value = await handler(JSON.parse(body));
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const value = await handler(JSON.parse(Buffer.concat(chunks).toString("utf8")));
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(value));
   });
@@ -157,7 +160,7 @@ async function modelServer(handler) {
 }
 
 function launchWorker(current) {
-  const child = spawn(process.execPath, [workerPath, "start.json"], {
+  const child = spawn(process.execPath, [...process.execArgv, workerPath, "start.json"], {
     cwd: current.attemptRoot,
     env:
       process.platform === "win32"
@@ -275,6 +278,64 @@ test("Agent Browser worker accepts only its exact user + agent scope and fixed p
   }
 });
 
+test("browser agent uses the embedded API then drives the browser when an operation is missing", async () => {
+  let step = 0;
+  const server = await modelServer((request) => {
+    assert.ok(request.tools.some(tool => tool.function.name === "api_anything"));
+    assert.ok(request.tools.some(tool => tool.function.name === "agent_browser"));
+    const reply = (name, args) => ({ choices: [{ message: { role: "assistant", content: "", tool_calls: [
+      { id: `call_${step}`, type: "function", function: { name, arguments: JSON.stringify(args) } },
+    ] } }] });
+    step += 1;
+    if (step === 1) return reply("api_anything", { action: "status" });
+    const previous = request.messages.at(-1);
+    if (step === 2) {
+      const result = JSON.parse(previous.content);
+      assert.equal(result.ok, true);
+      assert.ok(result.sites > 100);
+      return reply("api_anything", { action: "call_operation", site: "missing-website", operation: "read" });
+    }
+    if (step === 3) {
+      assert.equal(JSON.parse(previous.content).fallback.recommended, true);
+      return reply("agent_browser", { command: "open https://example.com" });
+    }
+    assert.match(previous.content, /command completed/);
+    return { choices: [{ message: { role: "assistant", content: "Completed with browser fallback." } }] };
+  });
+  const current = fixture(server.url);
+  try {
+    const exit = await launchWorker(current).completed;
+    assert.equal(exit.code, 0, exit.stderr);
+    assert.equal(step, 4, exit.stdout);
+    const result = JSON.parse(fs.readFileSync(path.join(current.dataRoot, "runtime", "jobs", current.identity.jobId, "result.json"), "utf8"));
+    assert.equal(result.run.status, "completed", JSON.stringify(result));
+  } finally {
+    fs.rmSync(current.dataRoot, { recursive: true, force: true });
+    await server.close();
+  }
+});
+
+test("an API-only browser-agent task completes without starting a browser", async () => {
+  let step = 0;
+  const server = await modelServer((request) => {
+    if (++step === 1) return { choices: [{ message: { role: "assistant", content: "", tool_calls: [
+      { id: "status", type: "function", function: { name: "api_anything", arguments: '{"action":"status"}' } },
+    ] } }] };
+    assert.equal(JSON.parse(request.messages.at(-1).content).ok, true);
+    return { choices: [{ message: { role: "assistant", content: "Website APIs are ready." } }] };
+  });
+  const current = fixture(server.url);
+  try {
+    const exit = await launchWorker(current).completed;
+    assert.equal(exit.code, 0, exit.stderr);
+    assert.equal(step, 2);
+    assert.equal(fs.existsSync(path.join(current.dataRoot, "agent-browser-scratch")), false);
+  } finally {
+    fs.rmSync(current.dataRoot, { recursive: true, force: true });
+    await server.close();
+  }
+});
+
 test("Agent Browser worker stop input is exact and bounded", () => {
   assert.deepEqual(parseRuntimeV2AgentBrowserStopRecord('{"type":"stop","force":false}\n'), {
     type: "stop",
@@ -291,9 +352,12 @@ test("Agent Browser worker stop input is exact and bounded", () => {
 });
 
 test("desktop mode selects the visible Breadboard target without Edge or an external profile", async () => {
-  const server = await modelServer(() => ({
-    choices: [{ message: { role: "assistant", content: "done" } }],
-  }));
+  let step = 0;
+  const server = await modelServer(() => ++step === 1 ? {
+    choices: [{ message: { role: "assistant", content: "", tool_calls: [
+      { id: "browser", type: "function", function: { name: "agent_browser", arguments: '{"command":"snapshot -i"}' } },
+    ] } }],
+  } : { choices: [{ message: { role: "assistant", content: "done" } }] });
   const current = fixture(server.url, undefined, { browserMode: "desktop" });
   publishDesktopBrowserReceipt(current);
   try {
@@ -303,7 +367,7 @@ test("desktop mode selects the visible Breadboard target without Edge or an exte
     assert.deepEqual({ code: exit.code, signal: exit.signal }, { code: 0, signal: null }, exit.stderr);
     const connected = JSON.parse(
       fs.readFileSync(
-        path.join(current.workspacePath, "runtime-home", "desktop-connect.json"),
+        path.join(current.workspacePath, "desktop-connect.json"),
         "utf8",
       ),
     );
@@ -316,6 +380,37 @@ test("desktop mode selects the visible Breadboard target without Edge or an exte
     fs.rmSync(current.dataRoot, { recursive: true, force: true });
     await server.close();
   }
+});
+
+test("browser startup uses short attempt-isolated scratch and one daemon configuration", () => {
+  const current = fixture("http://127.0.0.1:9999");
+  try {
+    const input = {
+      ...current,
+      request: { browserMode: "external", browserExecutable: process.execPath, engine: "chrome", profilePath: null, timeoutMs: 120_000 },
+    };
+    const first = runtimeBrowserChildEnvironment(input);
+    const next = runtimeBrowserChildEnvironment(input);
+    assert.deepEqual(first, next);
+    assert.equal(first.AGENT_BROWSER_IDLE_TIMEOUT_MS, "120000");
+    assert.equal(first.AGENT_BROWSER_SESSION, current.identity.jobId);
+    assert.equal(first.AGENT_BROWSER_PROFILE, undefined);
+    assert.ok(first.TEMP.length < path.join(current.workspacePath, "tmp").length);
+    assert.ok(first.HOME.startsWith(path.join(current.dataRoot, "agent-browser-scratch")));
+    assert.notEqual(runtimeBrowserScratchPath({ ...input, identity: { ...current.identity, attempt: 2 } }), input.browserScratchPath);
+    assert.equal(first.BREADBOARD_SUPERVISOR_CONTROL_TOKEN, undefined);
+  } finally { fs.rmSync(current.dataRoot, { recursive: true, force: true }); }
+});
+
+test("browser scratch rejects a redirected parent", () => {
+  const current = fixture("http://127.0.0.1:9999");
+  try {
+    const target = path.join(current.dataRoot, "unrelated");
+    fs.mkdirSync(target);
+    fs.symlinkSync(target, path.join(current.dataRoot, "agent-browser-scratch"), process.platform === "win32" ? "junction" : "dir");
+    assert.throws(() => runtimeBrowserScratchPath(current), /unredirected Runtime directory/);
+    assert.deepEqual(fs.readdirSync(target), []);
+  } finally { fs.rmSync(current.dataRoot, { recursive: true, force: true }); }
 });
 
 test("model commands cannot escape the sealed Runtime session or private workspace", () => {
@@ -554,4 +649,19 @@ test("Next has no browser/agent subprocess fallback after the Runtime V2 cutover
   assert.match(executor, /process\.argv\.length !== 3/u);
   assert.match(executor, /MAX_SCREENSHOT_TOTAL_BYTES/u);
   assert.match(executor, /agent-browser-artifacts/u);
+});
+
+test("browser worker sends the saved prompt, including empty and full Unicode values", async () => {
+  for (const prompt of ["SAVED_BROWSER_PROMPT", "", "界".repeat(64_000)]) {
+    const requests = [];
+    const server = await modelServer(body => { requests.push(body); return { choices: [{ message: { role: "assistant", content: "Done." } }] }; });
+    const current = fixture(server.url, { userId: 7, gardenId: null, conversationId: "abr_" + "b".repeat(32) }, { systemPrompt: prompt });
+    try {
+      const launched = launchWorker(current); launched.child.stdin.end();
+      const result = await launched.completed;
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].messages[0].content, prompt);
+    } finally { await server.close(); fs.rmSync(current.dataRoot, { recursive: true, force: true }); }
+  }
 });

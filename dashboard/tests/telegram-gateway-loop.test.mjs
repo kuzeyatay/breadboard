@@ -9,6 +9,7 @@ import http from "node:http";
 import test from "node:test";
 
 import { TelegramGateway } from "../src/lib/telegram/gateway.ts";
+import { sendMessage } from "../src/lib/telegram/client.ts";
 
 const TOKEN = "1234567890:AAdummy-token-for-tests-0123456789abcd";
 
@@ -45,6 +46,12 @@ async function startFakeTelegram(plan, options = {}) {
       if (method === "sendChatAction") return reply(200, { ok: true, result: true });
       if (method === "sendMessage") {
         sent.push(payload);
+        if (options.sendFailure && (!options.rejectEntitiesOnly || payload.entities?.length)) {
+          return reply(options.sendFailure, {
+            ok: false, error_code: options.sendFailure,
+            description: options.sendDescription ?? "Bad Request: can't parse entities",
+          });
+        }
         return reply(200, { ok: true, result: { message_id: sent.length } });
       }
       if (method === "getUpdates") {
@@ -129,7 +136,7 @@ test("the loop polls, queues, acknowledges, sends, and stops", async (t) => {
   assert.equal(fake.sent.length, 1);
   assert.equal(fake.sent[0].chat_id, "123456789");
   assert.equal(fake.sent[0].text, "yes");
-  // Plain text on purpose: Telegram rejects the Markdown an agent tends to write.
+  // Formatting is sent as explicit entities, never Telegram's Markdown dialect.
   assert.equal(fake.sent[0].parse_mode, undefined);
 
   const stoppedAt = Date.now();
@@ -141,6 +148,38 @@ test("the loop polls, queues, acknowledges, sends, and stops", async (t) => {
   const callsAtStop = fake.updateCalls();
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal(fake.updateCalls(), callsAtStop, "the loop kept polling after stop");
+});
+
+test("assistant Markdown is delivered as readable text with explicit formatting", async (t) => {
+  const fake = await startFakeTelegram(() => ({ result: [] }));
+  t.after(async () => { await fake.close(); delete process.env.BREADBOARD_TELEGRAM_API_BASE; });
+  await sendMessage(TOKEN, "123456789", "🌱 **Only this chat is active.** See [details](https://example.com/status).");
+  assert.equal(fake.sent.length, 1);
+  assert.equal(fake.sent[0].text, "🌱 Only this chat is active. See details.");
+  assert.deepEqual(fake.sent[0].entities, [
+    { type: "bold", offset: 3, length: 25 },
+    { type: "text_link", offset: 33, length: 7, url: "https://example.com/status" },
+  ]);
+  assert.equal(fake.sent[0].parse_mode, undefined);
+});
+
+test("a formatting rejection retries the readable text without Markdown markers", async (t) => {
+  const fake = await startFakeTelegram(() => ({ result: [] }), { sendFailure: 400, rejectEntitiesOnly: true });
+  t.after(async () => { await fake.close(); delete process.env.BREADBOARD_TELEGRAM_API_BASE; });
+  await sendMessage(TOKEN, "123456789", "Only **this chat** is active.");
+  assert.equal(fake.sent.length, 2);
+  assert.equal(fake.sent[1].text, "Only this chat is active.");
+  assert.equal(fake.sent[1].entities, undefined);
+});
+
+test("other Telegram failures do not trigger a formatting retry", async (t) => {
+  for (const status of [400, 401, 429, 500]) {
+    const fake = await startFakeTelegram(() => ({ result: [] }), { sendFailure: status, sendDescription: "Delivery unavailable" });
+    try {
+      await assert.rejects(sendMessage(TOKEN, "123456789", "**Hello**"), /Delivery unavailable/);
+      assert.equal(fake.sent.length, 1);
+    } finally { await fake.close(); delete process.env.BREADBOARD_TELEGRAM_API_BASE; }
+  }
 });
 
 test("a stolen update stream stops the loop instead of hammering Telegram", async (t) => {

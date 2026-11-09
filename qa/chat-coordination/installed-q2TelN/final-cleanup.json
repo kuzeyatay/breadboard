@@ -1,0 +1,387 @@
+{
+  "startedAt": "2026-11-07T16:31:09.102Z",
+  "requests": [
+    {
+      "id": "conv_0XowQHWnNWgUPl2qkVPiRCMb",
+      "method": "GET",
+      "submittedAt": "2026-11-07T16:31:09.106Z",
+      "status": 404,
+      "body": {
+        "error": "Conversation not found.",
+        "code": "conversation_not_found"
+      }
+    },
+    {
+      "id": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+      "method": "GET",
+      "submittedAt": "2026-11-07T16:31:09.201Z",
+      "status": 200,
+      "body": {
+        "session": {
+          "id": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+          "title": "QA chat coordination 02dd9a48-1c05-4922-9f1b-043522b03871 receiver",
+          "scopeKind": "global",
+          "defaultGardenId": null,
+          "activeAgencyAgentSlug": null,
+          "scheduledChatJobId": null,
+          "hookId": null,
+          "pinned": false,
+          "pinnedAt": null,
+          "archived": false,
+          "archivedAt": null,
+          "temporary": false,
+          "highlight": null,
+          "createdAt": "2026-11-07 16:16:48",
+          "updatedAt": "2026-11-07 16:18:29",
+          "surface": "dashboard_terminal",
+          "originLabel": "Terminal",
+          "gardenId": null,
+          "pageSlug": null,
+          "status": "idle",
+          "activeDirectory": "\\\\?\\C:\\Users\\20252082\\AppData\\Roaming\\breadboard-desktop\\Data\\runtime\\hermes-workspaces\\conversations\\conv_zajpctsblfcfm4lqfvkkiyon\\conv_zajpctsblfcfm4lqfvkkiyon",
+          "filesystemMode": "restricted",
+          "capabilityMode": "knowledge",
+          "activeRun": null,
+          "messages": [
+            {
+              "id": "msg_29332034",
+              "clientMessageId": "qa-02dd9a48-1c05-4922-9f1b-043522b03871-receiver",
+              "role": "user",
+              "surface": "dashboard_terminal",
+              "content": "Remember this private test fact in this chat: the validation code supplied by the user is answer-b7762128-72c2-436d-9c7e-9f8213abd57d. When a later message asks for the validation code, return that exact code. For this setup turn only, reply READY. Do not use tools.",
+              "status": "complete",
+              "orderIndex": 0,
+              "createdAt": "2026-11-07 16:16:49",
+              "updatedAt": "2026-11-07 16:16:54",
+              "attachmentNames": [],
+              "attachments": [],
+              "tools": [],
+              "pending": false,
+              "failed": false,
+              "interrupted": false,
+              "responseDurationMs": 5000,
+              "responseCompletedAt": "2026-11-07 16:16:54"
+            },
+            {
+              "id": "msg_29332035",
+              "clientMessageId": "qa-02dd9a48-1c05-4922-9f1b-043522b03871-receiver",
+              "role": "assistant",
+              "surface": "dashboard_terminal",
+              "content": "READY",
+              "status": "complete",
+              "orderIndex": 1,
+              "sources": [],
+              "usage": {
+                "inputTokens": 27998,
+                "outputTokens": 5,
+                "totalTokens": 28003,
+                "cachedInputTokens": 0,
+                "reasoningTokens": 0,
+                "scope": "turn",
+                "apiCalls": 1,
+                "contextUsedTokens": 27998,
+                "contextLimitTokens": 256000,
+                "responseDurationMs": 5417
+              },
+              "createdAt": "2026-11-07 16:16:49",
+              "updatedAt": "2026-11-07 16:17:00",
+              "attachmentNames": [],
+              "attachments": [],
+              "activityLabel": "Thinking",
+              "reasoning": "(¬‿¬) computing...",
+              "tools": [],
+              "verification": {
+                "state": "not_applicable",
+                "evidence": [],
+                "unsupportedClaims": [],
+                "assumptions": [],
+                "externalAgents": [],
+                "capabilities": {
+                  "superAgent": false,
+                  "used": []
+                }
+              },
+              "pending": false,
+              "failed": false,
+              "interrupted": false,
+              "responseDurationMs": 5417,
+              "responseCompletedAt": "2026-11-07T16:17:00.764Z"
+            },
+            {
+              "id": "msg_29332038",
+              "clientMessageId": "chat-message:msg_3942dcad-fb1f-4e59-b940-e3027a34f935",
+              "role": "user",
+              "surface": "dashboard_terminal",
+              "content": "Message from chat \"Validation code retrieval from saved QA chat\" (conv_0XowQHWnNWgUPl2qkVPiRCMb):\n\nWhat is the validation code the user provided in this chat's setup message? Reply with the exact code.",
+              "status": "complete",
+              "orderIndex": 2,
+              "createdAt": "2026-11-07 16:18:29",
+              "updatedAt": "2026-11-07 16:18:29",
+              "attachmentNames": [],
+              "attachments": [],
+              "tools": [],
+              "pending": false,
+              "failed": false,
+              "interrupted": false,
+              "responseDurationMs": 0,
+              "responseCompletedAt": "2026-11-07 16:18:29"
+            },
+            {
+              "id": "msg_29332039",
+              "clientMessageId": "chat-message:msg_3942dcad-fb1f-4e59-b940-e3027a34f935",
+              "role": "assistant",
+              "surface": "dashboard_terminal",
+              "content": "answer-b7762128-72c2-436d-9c7e-9f8213abd57d",
+              "status": "complete",
+              "orderIndex": 3,
+              "sources": [],
+              "usage": {
+                "inputTokens": 28260,
+                "outputTokens": 29,
+                "totalTokens": 28289,
+                "cachedInputTokens": 6272,
+                "reasoningTokens": 0,
+                "scope": "turn",
+                "apiCalls": 1,
+                "contextUsedTokens": 28260,
+                "contextLimitTokens": 256000,
+                "responseDurationMs": 2831
+              },
+              "createdAt": "2026-11-07 16:18:29",
+              "updatedAt": "2026-11-07 16:18:33",
+              "attachmentNames": [],
+              "attachments": [],
+              "activityLabel": "Thinking",
+              "reasoning": "(⊙_⊙) musing...",
+              "tools": [],
+              "verification": {
+                "state": "not_applicable",
+                "evidence": [],
+                "unsupportedClaims": [],
+                "assumptions": [],
+                "externalAgents": [],
+                "capabilities": {
+                  "superAgent": false,
+                  "used": []
+                }
+              },
+              "pending": false,
+              "failed": false,
+              "interrupted": false,
+              "responseDurationMs": 2831,
+              "responseCompletedAt": "2026-11-07T16:18:33.045Z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+      "method": "DELETE",
+      "submittedAt": "2026-11-07T16:31:09.238Z",
+      "status": 200,
+      "body": {
+        "deleted": true,
+        "retained": false,
+        "id": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+        "cancelled": {
+          "runs": 0,
+          "agentRuns": 0
+        }
+      }
+    },
+    {
+      "id": "conv_0XowQHWnNWgUPl2qkVPiRCMb",
+      "method": "GET",
+      "submittedAt": "2026-11-07T16:31:09.568Z",
+      "status": 404,
+      "body": {
+        "error": "Conversation not found.",
+        "code": "conversation_not_found"
+      }
+    },
+    {
+      "id": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+      "method": "GET",
+      "submittedAt": "2026-11-07T16:31:09.585Z",
+      "status": 404,
+      "body": {
+        "error": "Conversation not found.",
+        "code": "conversation_not_found"
+      }
+    }
+  ],
+  "released": true,
+  "identity": {
+    "origin": "http://127.0.0.1:61342",
+    "fingerprint": "5d738f9e61746b95029067c22ac5ce7c5d09e3d439a7067ec6ebe1e3ee5b1339"
+  },
+  "receiverSnapshot": {
+    "id": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+    "title": "QA chat coordination 02dd9a48-1c05-4922-9f1b-043522b03871 receiver",
+    "scopeKind": "global",
+    "defaultGardenId": null,
+    "activeAgencyAgentSlug": null,
+    "scheduledChatJobId": null,
+    "hookId": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "archived": false,
+    "archivedAt": null,
+    "temporary": false,
+    "highlight": null,
+    "createdAt": "2026-11-07 16:16:48",
+    "updatedAt": "2026-11-07 16:18:29",
+    "surface": "dashboard_terminal",
+    "originLabel": "Terminal",
+    "gardenId": null,
+    "pageSlug": null,
+    "status": "idle",
+    "activeDirectory": "\\\\?\\C:\\Users\\20252082\\AppData\\Roaming\\breadboard-desktop\\Data\\runtime\\hermes-workspaces\\conversations\\conv_zajpctsblfcfm4lqfvkkiyon\\conv_zajpctsblfcfm4lqfvkkiyon",
+    "filesystemMode": "restricted",
+    "capabilityMode": "knowledge",
+    "activeRun": null,
+    "messages": [
+      {
+        "id": "msg_29332034",
+        "clientMessageId": "qa-02dd9a48-1c05-4922-9f1b-043522b03871-receiver",
+        "role": "user",
+        "surface": "dashboard_terminal",
+        "content": "Remember this private test fact in this chat: the validation code supplied by the user is answer-b7762128-72c2-436d-9c7e-9f8213abd57d. When a later message asks for the validation code, return that exact code. For this setup turn only, reply READY. Do not use tools.",
+        "status": "complete",
+        "orderIndex": 0,
+        "createdAt": "2026-11-07 16:16:49",
+        "updatedAt": "2026-11-07 16:16:54",
+        "attachmentNames": [],
+        "attachments": [],
+        "tools": [],
+        "pending": false,
+        "failed": false,
+        "interrupted": false,
+        "responseDurationMs": 5000,
+        "responseCompletedAt": "2026-11-07 16:16:54"
+      },
+      {
+        "id": "msg_29332035",
+        "clientMessageId": "qa-02dd9a48-1c05-4922-9f1b-043522b03871-receiver",
+        "role": "assistant",
+        "surface": "dashboard_terminal",
+        "content": "READY",
+        "status": "complete",
+        "orderIndex": 1,
+        "sources": [],
+        "usage": {
+          "inputTokens": 27998,
+          "outputTokens": 5,
+          "totalTokens": 28003,
+          "cachedInputTokens": 0,
+          "reasoningTokens": 0,
+          "scope": "turn",
+          "apiCalls": 1,
+          "contextUsedTokens": 27998,
+          "contextLimitTokens": 256000,
+          "responseDurationMs": 5417
+        },
+        "createdAt": "2026-11-07 16:16:49",
+        "updatedAt": "2026-11-07 16:17:00",
+        "attachmentNames": [],
+        "attachments": [],
+        "activityLabel": "Thinking",
+        "reasoning": "(¬‿¬) computing...",
+        "tools": [],
+        "verification": {
+          "state": "not_applicable",
+          "evidence": [],
+          "unsupportedClaims": [],
+          "assumptions": [],
+          "externalAgents": [],
+          "capabilities": {
+            "superAgent": false,
+            "used": []
+          }
+        },
+        "pending": false,
+        "failed": false,
+        "interrupted": false,
+        "responseDurationMs": 5417,
+        "responseCompletedAt": "2026-11-07T16:17:00.764Z"
+      },
+      {
+        "id": "msg_29332038",
+        "clientMessageId": "chat-message:msg_3942dcad-fb1f-4e59-b940-e3027a34f935",
+        "role": "user",
+        "surface": "dashboard_terminal",
+        "content": "Message from chat \"Validation code retrieval from saved QA chat\" (conv_0XowQHWnNWgUPl2qkVPiRCMb):\n\nWhat is the validation code the user provided in this chat's setup message? Reply with the exact code.",
+        "status": "complete",
+        "orderIndex": 2,
+        "createdAt": "2026-11-07 16:18:29",
+        "updatedAt": "2026-11-07 16:18:29",
+        "attachmentNames": [],
+        "attachments": [],
+        "tools": [],
+        "pending": false,
+        "failed": false,
+        "interrupted": false,
+        "responseDurationMs": 0,
+        "responseCompletedAt": "2026-11-07 16:18:29"
+      },
+      {
+        "id": "msg_29332039",
+        "clientMessageId": "chat-message:msg_3942dcad-fb1f-4e59-b940-e3027a34f935",
+        "role": "assistant",
+        "surface": "dashboard_terminal",
+        "content": "answer-b7762128-72c2-436d-9c7e-9f8213abd57d",
+        "status": "complete",
+        "orderIndex": 3,
+        "sources": [],
+        "usage": {
+          "inputTokens": 28260,
+          "outputTokens": 29,
+          "totalTokens": 28289,
+          "cachedInputTokens": 6272,
+          "reasoningTokens": 0,
+          "scope": "turn",
+          "apiCalls": 1,
+          "contextUsedTokens": 28260,
+          "contextLimitTokens": 256000,
+          "responseDurationMs": 2831
+        },
+        "createdAt": "2026-11-07 16:18:29",
+        "updatedAt": "2026-11-07 16:18:33",
+        "attachmentNames": [],
+        "attachments": [],
+        "activityLabel": "Thinking",
+        "reasoning": "(⊙_⊙) musing...",
+        "tools": [],
+        "verification": {
+          "state": "not_applicable",
+          "evidence": [],
+          "unsupportedClaims": [],
+          "assumptions": [],
+          "externalAgents": [],
+          "capabilities": {
+            "superAgent": false,
+            "used": []
+          }
+        },
+        "pending": false,
+        "failed": false,
+        "interrupted": false,
+        "responseDurationMs": 2831,
+        "responseCompletedAt": "2026-11-07T16:18:33.045Z"
+      }
+    ]
+  },
+  "canonicalRows": [
+    {
+      "id": "conv_0XowQHWnNWgUPl2qkVPiRCMb",
+      "count": 0
+    },
+    {
+      "id": "conv_zAJpCTsBLfcfm4lQfvKkiyon",
+      "count": 0
+    }
+  ],
+  "finishedAt": "2026-11-07T16:31:09.622Z",
+  "transport": "Existing authenticated product renderer via runtimeSession; no foreground, globals, model, voice, or restart actions"
+}

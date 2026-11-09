@@ -12,7 +12,7 @@ import type { OuterAgentEvent } from "../runtime-v2/outer-agent-run.ts";
 import { assertMusicCollectible, musicArtifactContext, publishMusic } from "./artifacts.ts";
 import { planMusic } from "./planning.ts";
 import { musicSources, resolveMusicSource, sourceMusicRequest } from "./sources.ts";
-import { musicLaunch, updateMusicLaunch } from "./store.ts";
+import { musicLaunch, updateMusicLaunch, musicSwarmRequestId } from "./store.ts";
 import { inspectWav, spliceWav } from "./wav.ts";
 import { musicRequestSchema, type MusicRequest } from "./request.ts";
 import { preparedAceStep } from "../acestep/prepared.ts";
@@ -204,7 +204,7 @@ export async function executeMusicWorker(input: MusicWorkerRequest & {
     const summary = `[Music · version ${saved.version}](${url})\n\nRequested ${request.duration}s; measured ${measured.duration.toFixed(2)}s. ${request.operation === "variation" ? "Full regeneration." : request.operation === "repaint" ? request.preserveOutsideInterval ? "Samples outside the selected interval were preserved by a bounded splice." : "Interval-conditioned repaint; unchanged audio outside the interval is not guaranteed." : ""}\n\nPeak: ${measured.peakDbfs?.toFixed(1) ?? "silent"} dBFS; clipped samples: ${measured.clippedSamples}.\n\n${analysis}\n\nBPM/key estimates and conditioning do not guarantee exact performance or lyric accuracy. No listening-based quality judgment was performed.`;
     const resultSummary = summary + (saved.lyricsId ? `\n\n[Lyrics](/api/hermes/artifacts/${saved.lyricsId}/download?conversationId=${encodeURIComponent(input.conversationPublicId)}&version=1)` : "");
     updateMusicLaunch(input.userId, input.launchId, { artifact_id: saved.artifact.id, artifact_version: saved.version, collection_state: "completed", summary: resultSummary });
-    finishExternalAgentTurn({ conversationId: context.conversationId, clientMessageId: launch.client_message_id, outcome: "completed", content: resultSummary });
+    if (!musicSwarmRequestId(launch)) finishExternalAgentTurn({ conversationId: context.conversationId, clientMessageId: launch.client_message_id, outcome: "completed", content: resultSummary });
     event("run.completed", { summary: resultSummary, artifactId: saved.artifact.id, version: saved.version, duration: measured.duration });
     return { status: "completed" };
   }
@@ -221,7 +221,7 @@ export async function executeMusicWorker(input: MusicWorkerRequest & {
     updateMusicLaunch(input.userId, input.launchId, { collection_state: aborted ? "aborted" : ambiguous ? "uncertain" : "failed", provider_state: providerState, summary });
     if (context) {
       try {
-        finishExternalAgentTurn({ conversationId: context.conversationId, clientMessageId: launch.client_message_id, outcome: aborted ? "aborted" : "failed", content: summary });
+        if (!musicSwarmRequestId(launch)) finishExternalAgentTurn({ conversationId: context.conversationId, clientMessageId: launch.client_message_id, outcome: aborted ? "aborted" : "failed", content: summary });
       }
       catch { /* The owning conversation may have been deleted. */ }
     }

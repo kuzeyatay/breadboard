@@ -1,3 +1,5 @@
+import { withGardenSystemPromptContext } from "./system-prompts/service.ts";
+import { renderSystemPrompt } from "./system-prompts/service.ts";
 // Breadboard visualization service: generates VisualSpec JSON through
 // ChatMock/Council, stores specs per garden, migrates legacy bracket
 // placeholders into real breadboard-visual blocks, and records ledger events.
@@ -9,7 +11,7 @@ import type { Dirent } from 'node:fs';
 import type OpenAI from 'openai';
 import { externalRuntimeFilesystem as fs } from './external-runtime-filesystem.ts';
 import { externalRuntimePath as path } from './external-runtime-path.ts';
-import { withCouncil } from './council';
+import { withCouncil } from "./system-prompts/council.ts";
 import {
   buildVisualBlock,
   findVisualPlaceholders,
@@ -186,40 +188,9 @@ export function appendGardenEvent(
 // Generation
 // ---------------------------------------------------------------------------
 
-const IMPLEMENTED_PROPS_GUIDE = `Prop contracts for the interactive types (these are the ONLY allowed types):
-- function_plot: { "family": "sine"|"cosine"|"damped_sine"|"exp_decay"|"exponential"|"gaussian"|"polynomial"|"linear"|"abs"|"reciprocal", "parameters": {"a":1,"b":1,"c":0,"d":0} or {"coefficients":[c0,c1,...]}, "xMin": -5, "xMax": 5, "expressionLatex": "f(x)=..." }
-- linked_time_plots: { "amplitude": 1, "angularFrequency": 1, "phase": 0, "duration": 12, "showPosition": true, "showVelocity": true, "showAcceleration": true }
-- mass_spring: { "amplitude": 1, "angularFrequency": 1, "phase": 0, "showForceVector": true, "showVelocityVector": false }
-- energy_exchange: { "amplitude": 1, "springConstant": 1, "mass": 1, "phase": 0 }
-- resonance_curve: { "naturalFrequency": 1, "damping": 0.2, "driveFrequency": 1 }
-- lif_neuron (leaky integrate-and-fire membrane simulator: input, leak, threshold, reset, refractory): { "restPotential": 0, "threshold": 1, "resetPotential": 0, "inputCurrent": 1.2, "leak": 0.15, "refractory": 2, "duration": 40 } — good controls: inputCurrent, leak, threshold, refractory (sliders).
-- neural_coding (rate coding vs temporal coding for one stimulus): { "strength": 0.6, "mode": "both" } — controls: strength (slider 0..1), mode (select: rate|temporal|both).
-- stdp_window (spike-timing-dependent plasticity Δw vs Δt): { "aPlus": 1, "aMinus": 1, "tauPlus": 20, "tauMinus": 20, "deltaT": 8 } — controls: deltaT (slider, e.g. -60..60), aPlus, aMinus (sliders).
-- tradeoff_explorer (accuracy/latency/energy tradeoff across model families): { "models": [ {"label": "ANN", "accuracy": 0.99, "latency": 0.9, "energy": 0.95}, {"label": "Converted SNN", "accuracy": 0.95, "latency": 0.6, "energy": 0.45}, {"label": "Surrogate-gradient SNN", "accuracy": 0.96, "latency": 0.45, "energy": 0.4}, {"label": "STDP SNN", "accuracy": 0.86, "latency": 0.35, "energy": 0.2} ], "priority": "balanced" } — accuracy is 0..1 higher-better; latency and energy are 0..1 lower-better (cost). Control: priority (select: accuracy|latency|energy|balanced).
-- metric_calculator (direct metric input/output calculator): { "correct": 920, "total": 1000, "stimulusTime": 0, "decisionTime": 24, "spikeCount": 180, "energyPerSpike": 0.002 } -- controls: correct, total, decisionTime, spikeCount, energyPerSpike (sliders).
-- training_curve (loss/accuracy/convergence curve): { "learningRate": 0.35, "noise": 0.08, "threshold": 0.9, "epochs": 30 } -- controls: learningRate, noise, threshold, epochs (sliders).
-Controls bind by "name" to a prop key (e.g. a slider named "amplitude" drives props.amplitude).`;
 
-const VISUAL_SPEC_SYSTEM_PROMPT =
-  `You design ONE interactive visualization spec for a Breadboard learning page. ` +
-  `Return ONLY a single JSON object — no markdown fence, no commentary.\n\n` +
-  `Required fields: id (short slug like "vis_shm_energy_001"), type, title, sourceAnchors (array, may be empty; ` +
-  `each anchor: {sourceId?, sourceTitle?, page?, figureId?, description}), conceptTargets (string array), ` +
-  `pedagogicalPurpose (why this visual belongs exactly here), props (object), controls (array of ` +
-  `{name, label, type: "slider"|"toggle"|"select", min?, max?, step?, options?, defaultValue?}), ` +
-  `caption, regenerationPrompt (how to improve it next time). Optional: subtitle, misconceptionTargets, ` +
-  `formulaRefs ({latex, explanation, symbols}), annotations ({label, target?, explanation}).\n\n` +
-  `Allowed types: ${IMPLEMENTED_VISUAL_TYPES.join(', ')}. Every visual you design MUST be genuinely interactive — ` +
-  `there is no static fallback, so any other type is rejected and nothing is shown.\n` +
-  `If none of the allowed interactive types genuinely fits this concept, return exactly {"skip": true, "reason": "why no interactive visual fits"} ` +
-  `instead of forcing a spec. A page with no visual is always better than a non-interactive one.\n\n` +
-  IMPLEMENTED_PROPS_GUIDE +
-  `\n\nHard rules:\n` +
-  `- The visual must clarify the specific concept at this point in the page, intuition before memorization.\n` +
-  `- Controls must teach something (each control should change what the learner sees meaningfully).\n` +
-  `- Include sourceAnchors whenever source figures/pages are given; never invent source-specific claims and never exceed the source scope.\n` +
-  `- Strings only contain plain text and LaTeX. Never produce code, scripts, HTML tags, URLs to executables, or event handlers.\n` +
-  `- Numbers must be finite; keep props physically sensible.`;
+
+function visualSpecSystemPrompt(): string { return renderSystemPrompt("visual-specification", undefined, { "context_1": String(IMPLEMENTED_VISUAL_TYPES.join(', ')) }); }
 
 export interface VisualGenerationContext {
   gardenId?: string;
@@ -264,6 +235,7 @@ export async function generateVisualSpec(
   model: string,
   context: VisualGenerationContext,
 ): Promise<GeneratedVisual> {
+  return withGardenSystemPromptContext(context.gardenId ?? '', async () => {
   const userPayload = {
     visualOpportunity: context.visualOpportunity,
     sectionTitle: context.sectionTitle,
@@ -293,7 +265,7 @@ export async function generateVisualSpec(
     const response = await client.chat.completions.create(withCouncil({
       model,
       messages: [
-        { role: 'system', content: VISUAL_SPEC_SYSTEM_PROMPT },
+        { role: 'system', content: visualSpecSystemPrompt() },
         {
           role: 'user',
           content:
@@ -350,6 +322,8 @@ export async function generateVisualSpec(
     return { spec: null, errors };
   }
   return finalizeSpec(spec, context);
+
+  }, undefined);
 }
 
 function finalizeSpec(spec: VisualSpec, context: VisualGenerationContext): GeneratedVisual {

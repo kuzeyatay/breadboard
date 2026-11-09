@@ -214,6 +214,7 @@ async function drive(run: RunState, input: StartVimaxRunInput): Promise<void> {
         ? { conversationContext: input.conversationContext }
         : {}),
       target: {
+        userId: input.userId,
         baseUrl: input.baseUrl,
         model: input.model,
         reasoningEffort: input.reasoningEffort,

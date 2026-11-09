@@ -39,6 +39,7 @@ For captures / actions with `capture_after=True`:
 from __future__ import annotations
 
 import base64
+import contextvars
 import json
 import logging
 import os
@@ -177,6 +178,55 @@ def _get_backend() -> ComputerUseBackend:
         return _backend
 
 
+# A selection may change while the human considers an approval. Bind that
+# selection in trusted execution context, never in model-writable arguments.
+# The lock covers only selection reads/dispatch, never the approval wait.
+_input_lock = threading.RLock()
+_input_target_binding = contextvars.ContextVar("computer_use_input_target", default=None)
+
+
+def _selected_target(backend) -> Optional[Tuple[int, int, int]]:
+    if backend is None:
+        return None
+    try:
+        target = backend.current_input_target()
+    except Exception:
+        return None
+    if not isinstance(target, dict):
+        return None
+    if any(type(target.get(key)) is not int or target[key] <= 0
+           for key in ("pid", "window_id")):
+        return None
+    generation = target.get("generation")
+    if type(generation) is not int or generation < 0:
+        return None
+    return target["pid"], target["window_id"], generation
+
+
+def current_input_target() -> Optional[Dict[str, int]]:
+    """Read the current native target, without creating or starting a backend."""
+    with _input_lock, _backend_lock:
+        target = _selected_target(_backend)
+    return {"pid": target[0], "window_id": target[1]} if target else None
+
+
+def clear_input_target_binding() -> None:
+    """Discard a prior invocation's binding, including denied approvals."""
+    _input_target_binding.set(None)
+
+
+def bind_input_target(args: Dict[str, Any], session_id: str) -> Optional[Dict[str, int]]:
+    """Bind the already-selected native target for a trusted approval hook."""
+    clear_input_target_binding()
+    with _input_lock, _backend_lock:
+        target = _selected_target(_backend)
+        if target is None:
+            return None
+        signature = json.dumps(args, sort_keys=True, ensure_ascii=True)
+        _input_target_binding.set((_backend, session_id, signature, target))
+    return {"pid": target[0], "window_id": target[1]}
+
+
 def reset_backend_for_tests() -> None:  # pragma: no cover
     """Test helper — tear down the cached backend and per-session state."""
     global _backend
@@ -265,6 +315,8 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     Returns either a JSON string (text-only) or a dict marked `_multimodal`
     (image + summary) which run_agent.py wraps into the tool message.
     """
+    binding = _input_target_binding.get()
+    clear_input_target_binding()
     action = (args.get("action") or "").strip().lower()
     if not action:
         return json.dumps({"error": "missing `action`"})
@@ -308,7 +360,17 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         })
 
     try:
-        return _dispatch(backend, action, args)
+        with _input_lock:
+            if binding is not None and (
+                binding[0] is not backend or binding[1] != session_id
+                or binding[2] != json.dumps(args, sort_keys=True, ensure_ascii=True)
+                or binding[3] != _selected_target(backend)
+            ):
+                return json.dumps({
+                    "error": "Selected window changed after approval was requested; capture and approve the current target before input.",
+                    "code": "input_target_changed",
+                })
+            return _dispatch(backend, action, args)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})

@@ -34,6 +34,7 @@ import { applyModification, buildDesign } from "./design.ts";
 import { firmwareLogicBrief } from "./firmware.ts";
 import { generateFirmwareLogic, HardwareModelError, interpretTurn } from "./model-client.ts";
 import { assessSafety } from "./safety.ts";
+import { restrictsExternalResearch } from "../research/scope.ts";
 import {
   enclosureBriefFromDesign,
   enclosureIntent,
@@ -317,7 +318,7 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
   const preferenceNote = input.preferences ? hardwarePreferenceNote(input.preferences) : null;
 
   emit(run, "interpret.started", { revising: Boolean(previousDesign) });
-  const turn: HardwareTurn = await interpretTurn({
+  const turn: HardwareTurn = await interpretTurn({ userId: input.userId,
     baseUrl: input.baseUrl,
     model: input.model,
     reasoningEffort: input.reasoningEffort,
@@ -373,8 +374,9 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
   const designId = previousDesign?.id ?? `hwd_${randomUUID().replaceAll("-", "")}`;
 
   emit(run, "component-discovery.started", {});
-  const discovery = await discoverRequestComponents({
+  const discovery = await discoverRequestComponents({ userId: input.userId,
     request,
+    allowExternalResearch: !restrictsExternalResearch(run.brief),
     previous: previousDesign?.componentResearch,
     baseUrl: input.baseUrl,
     model: input.model,
@@ -435,7 +437,7 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
     : "";
   const logic = initialCounts.errors
     ? null
-    : await generateFirmwareLogic({
+    : await generateFirmwareLogic({ userId: input.userId,
         baseUrl: input.baseUrl,
         model: input.model,
         reasoningEffort: input.reasoningEffort,
@@ -474,7 +476,7 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
   const enclosure = {
     wanted:
       input.parsed.enclosure ??
-      (preferredEnclosure === "never"
+      (detected.declined || preferredEnclosure === "never"
         ? false
         : detected.wanted || preferredEnclosure === "always"),
     remaining: detected.remaining,

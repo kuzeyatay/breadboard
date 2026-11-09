@@ -14,7 +14,7 @@ const garden = source("../src/app/gardens/[clusterSlug]/workspace-client.tsx");
 test("attachment previews keep the conversation open for PDF and media", () => {
   assert.match(dialog, /source\.kind === "pdf"[\s\S]*?<iframe/);
   assert.match(dialog, /source\.kind === "audio"[\s\S]*?<BreadboardAudioPlayer/);
-  assert.match(dialog, /<ReclaimingVideo/);
+  assert.match(dialog, /<BreadboardVideoPlayer/);
   assert.match(dialog, /DialogPrimitive\.Portal/);
   assert.match(dialog, /Close attachment preview/);
 });

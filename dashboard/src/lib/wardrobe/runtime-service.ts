@@ -1,6 +1,6 @@
 import type { WardrobeService, StartOptions } from "./service.ts";
-import type { SetupStatus } from "./status.ts";
-import type { WardrobeAvailability } from "./runtime.ts";
+import { setupStatus, type SetupStatus } from "./status.ts";
+import { runtimeAvailability, type WardrobeAvailability } from "./runtime.ts";
 import {
   callRuntimeAgentService,
   inspectRuntimeAgentService,
@@ -65,6 +65,13 @@ export function readWardrobeRuntimeStatus(scope: RuntimeAgentScope): Promise<{
   setup: SetupStatus;
   service: WardrobeService | null;
 }> {
+  // Starting the gateway for a missing installation reserves its environment
+  // until idle shutdown and prevents the very setup this status recommends.
+  // These filesystem-only checks need no service or lease.
+  const availability = runtimeAvailability();
+  if (!availability.cloned || !availability.installed) {
+    return Promise.resolve({ availability, setup: setupStatus(), service: null });
+  }
   return withRuntimeAgentServiceLease("wardrobe", "authenticated-status", () =>
     callRuntimeAgentService(
       "wardrobe",

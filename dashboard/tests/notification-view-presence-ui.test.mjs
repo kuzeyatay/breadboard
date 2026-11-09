@@ -27,7 +27,7 @@ test('green dots synchronize across chat surfaces, reloads, hidden tabs, and sta
         return <div>{window.dots.map(id=><UnreadChatDot key={id} label={id+' unread'}/>)}</div>;}
       createRoot(document.getElementById('root')).render(<App/>);
     ` },
-    bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic',
+    bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: 'app.js',
     define: { 'process.env.NODE_ENV': '"development"' },
   });
   const records = [];
@@ -130,14 +130,15 @@ test('every notification host suppresses the viewed target and preserves backgro
     stdin: { loader: 'tsx', resolveDir: root, contents: `
       import React from 'react'; import {createRoot} from 'react-dom/client'; import {flushSync} from 'react-dom';
       import {Toaster,useToast} from './src/app/components/toast';
-      import {setActiveLearnNotificationGarden,isChatNotificationTargetViewed} from './src/lib/chat-notification-inbox';
-      import {useChatNotificationView} from './src/lib/use-chat-notification-view';
+      import {setActiveLearnNotificationGarden,isChatNotificationTargetViewed,registerChatNotificationTarget} from './src/lib/chat-notification-inbox';
       import {notifyChatResponseReady} from './src/lib/task-completion-notification';
       import {isNotificationPageActive,registerInlineSelectionNotificationView} from './src/lib/notification-view-presence';
       window.openInline=registerInlineSelectionNotificationView;
       window.complete=notifyChatResponseReady; window.setLearn=setActiveLearnNotificationGarden;
       window.isViewed=isChatNotificationTargetViewed; window.isActive=isNotificationPageActive;
-      function Surface({target}){useChatNotificationView(target);return null;}
+      // Legacy target registrations still serve Learn and compatibility callers.
+      // The production message-scoped hook is exercised by the geometry test below.
+      function Surface({target}){React.useLayoutEffect(()=>target?registerChatNotificationTarget(target):undefined,[target]);return null;}
       function App(){const {toasts,dismissToast}=useToast({desktopOverlay:location.pathname==='/overlay'});
         const [target,setTarget]=React.useState(null),[surfaces,setSurfaces]=React.useState([]);
         window.setChat=target=>flushSync(()=>setTarget(target));window.setSurfaces=surfaces=>flushSync(()=>setSurfaces(surfaces));
@@ -148,7 +149,7 @@ test('every notification host suppresses the viewed target and preserves backgro
           onOpenChat={target=>{window.openedTarget=target;return true;}}/></>;}
       createRoot(document.getElementById('root')).render(<App/>);
     ` },
-    bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic',
+    bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: 'app.js',
     define: { 'process.env.NODE_ENV': '"development"' },
     plugins: [{ name: 'navigation-fixture', setup(build) {
       build.onResolve({ filter: /^(next\/navigation|\.\/navigation-progress)$/ }, a => ({ path: a.path, namespace: 'fixture' }));
@@ -330,7 +331,7 @@ test('every notification host suppresses the viewed target and preserves backgro
     response:'Which time period?', chatTitle:'Research', target:garden, updatedAt:new Date().toISOString() });
   await pollAll();
   await overlay.waitForFunction(() => window.shown.includes('question_background'));
-  const questionCard = overlay.getByRole('status').filter({hasText:'Answer needed'});
+  const questionCard = overlay.getByRole('status').filter({hasText:'Which time period?'});
   assert.match(await questionCard.textContent(),/Which time period\?/);
   assert.equal(await questionCard.getByRole('textbox').count(),0,'a question opens its existing answer card rather than starting another turn');
   await questionCard.getByRole('button',{name:'Open chat to answer',exact:true}).last().click();

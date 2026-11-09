@@ -1,0 +1,205 @@
+{
+  "report": [
+    {
+      "config": {
+        "name": "desktop-light",
+        "width": 1440,
+        "height": 900,
+        "desktop": true,
+        "theme": "light"
+      },
+      "geometry": {
+        "navbar": {
+          "x": 0,
+          "y": 32,
+          "width": 1440,
+          "height": 69,
+          "bottom": 101,
+          "scrollWidth": 1440,
+          "clientWidth": 1440
+        },
+        "workspace": {
+          "x": 0,
+          "y": 101,
+          "width": 1440,
+          "height": 799,
+          "bottom": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440
+        },
+        "composer": {
+          "x": 325,
+          "y": 774,
+          "width": 827,
+          "height": 102,
+          "bottom": 876,
+          "scrollWidth": 855,
+          "clientWidth": 825
+        },
+        "body": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 900,
+          "bottom": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440
+        },
+        "documentHeight": 900,
+        "viewportHeight": 900,
+        "plants": 24
+      }
+    },
+    {
+      "config": {
+        "name": "desktop-dark",
+        "width": 1440,
+        "height": 900,
+        "desktop": true,
+        "theme": "dark"
+      },
+      "geometry": {
+        "navbar": {
+          "x": 0,
+          "y": 32,
+          "width": 1440,
+          "height": 69,
+          "bottom": 101,
+          "scrollWidth": 1440,
+          "clientWidth": 1440
+        },
+        "workspace": {
+          "x": 0,
+          "y": 101,
+          "width": 1440,
+          "height": 799,
+          "bottom": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440
+        },
+        "composer": {
+          "x": 325,
+          "y": 774,
+          "width": 827,
+          "height": 102,
+          "bottom": 876,
+          "scrollWidth": 856,
+          "clientWidth": 825
+        },
+        "body": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 900,
+          "bottom": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440
+        },
+        "documentHeight": 900,
+        "viewportHeight": 900,
+        "plants": 24
+      }
+    },
+    {
+      "config": {
+        "name": "narrow-light",
+        "width": 640,
+        "height": 850,
+        "desktop": true,
+        "theme": "light"
+      },
+      "geometry": {
+        "navbar": {
+          "x": 0,
+          "y": 32,
+          "width": 640,
+          "height": 69,
+          "bottom": 101,
+          "scrollWidth": 640,
+          "clientWidth": 640
+        },
+        "workspace": {
+          "x": 0,
+          "y": 101,
+          "width": 640,
+          "height": 749,
+          "bottom": 850,
+          "scrollWidth": 640,
+          "clientWidth": 640
+        },
+        "composer": {
+          "x": 16,
+          "y": 732,
+          "width": 608,
+          "height": 102,
+          "bottom": 834,
+          "scrollWidth": 636,
+          "clientWidth": 606
+        },
+        "body": {
+          "x": 0,
+          "y": 0,
+          "width": 640,
+          "height": 850,
+          "bottom": 850,
+          "scrollWidth": 640,
+          "clientWidth": 640
+        },
+        "documentHeight": 850,
+        "viewportHeight": 850,
+        "plants": 24
+      }
+    },
+    {
+      "config": {
+        "name": "mobile-browser",
+        "width": 390,
+        "height": 844,
+        "desktop": false,
+        "theme": "light"
+      },
+      "geometry": {
+        "navbar": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 69,
+          "bottom": 69,
+          "scrollWidth": 390,
+          "clientWidth": 390
+        },
+        "workspace": {
+          "x": 0,
+          "y": 69,
+          "width": 390,
+          "height": 775,
+          "bottom": 844,
+          "scrollWidth": 390,
+          "clientWidth": 390
+        },
+        "composer": {
+          "x": 16,
+          "y": 726,
+          "width": 358,
+          "height": 102,
+          "bottom": 828,
+          "scrollWidth": 386,
+          "clientWidth": 356
+        },
+        "body": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 844,
+          "bottom": 844,
+          "scrollWidth": 390,
+          "clientWidth": 390
+        },
+        "documentHeight": 844,
+        "viewportHeight": 844,
+        "plants": 24
+      }
+    }
+  ],
+  "errors": []
+}

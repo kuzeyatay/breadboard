@@ -381,7 +381,7 @@ async function openGardenDocument(
 
 async function gardenComposer(page: Page, authority: PackagedParityUiAuthority) {
   await openGardenWorkspace(page, authority.garden, ACTION_TIMEOUT_MS);
-  const composer = page.getByPlaceholder(/Ask about your documents/).last();
+  const composer = page.getByPlaceholder('Ask anything.', { exact: true }).last();
   await expect(composer).toBeEditable({ timeout: ACTION_TIMEOUT_MS });
   return composer;
 }
@@ -666,7 +666,7 @@ async function submitFollowUp(
   }
 
   const composer = prepared.kind === "garden"
-    ? page.getByPlaceholder(/Ask about your documents/).last()
+    ? page.getByPlaceholder('Ask anything.', { exact: true }).last()
     : prepared.kind === "legacy-garden"
       ? page.getByPlaceholder('Ask anything', { exact: true }).last()
       : await terminalComposer(page);
@@ -905,7 +905,7 @@ async function exerciseCancellation(
   await stop.click();
   await expect(stop).toBeHidden({ timeout: ACTION_TIMEOUT_MS });
   const composer = prepared.kind === "garden"
-    ? page.getByPlaceholder(/Ask about your documents/).last()
+    ? page.getByPlaceholder('Ask anything.', { exact: true }).last()
     : prepared.kind === "legacy-garden"
       ? page.getByPlaceholder('Ask anything', { exact: true }).last()
       : page.getByPlaceholder(/Ask anything across your gardens/).last();
@@ -939,7 +939,7 @@ async function assertRecovery(
         await expect(page.getByText(marker, { exact: false }).last()).toBeVisible({ timeout: ACTION_TIMEOUT_MS });
         break;
       case "surface:garden-chat":
-        await expect(page.getByPlaceholder(/Ask about your documents/).last()).toBeEditable({ timeout: ACTION_TIMEOUT_MS });
+        await expect(page.getByPlaceholder('Ask anything.', { exact: true }).last()).toBeEditable({ timeout: ACTION_TIMEOUT_MS });
         await expect(page.getByText(marker, { exact: false }).last()).toBeVisible({ timeout: ACTION_TIMEOUT_MS });
         break;
       case "surface:legacy-garden-chat": {

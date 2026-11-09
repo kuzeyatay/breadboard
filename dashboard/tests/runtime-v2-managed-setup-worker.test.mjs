@@ -100,6 +100,34 @@ test("managed setup launches validated Windows Python paths without extended nam
   assert.equal(result.code, 0);
 });
 
+test("managed setup runs a Windows Node entrypoint supplied as a native canonical path", { skip: process.platform !== "win32" }, async (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-setup-node-path-"));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  const script = path.join(fixture, "entry.cjs");
+  fs.writeFileSync(script, "process.stdout.write('BREADBOARD_NODE_ENTRY_OK')");
+  const result = await runManagedSetupCommand(path.toNamespacedPath(process.execPath), [path.toNamespacedPath(script)], {
+    cwd: path.toNamespacedPath(fixture), env: process.env,
+    signal: new AbortController().signal, timeoutMs: 10_000,
+  });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, "BREADBOARD_NODE_ENTRY_OK");
+});
+
+test("managed browser installation preserves the cache location with an ordinary Windows path", async () => {
+  const env = { PLAYWRIGHT_BROWSERS_PATH: String.raw`\\?\D:\BreadboardLargeFiles\browsers`, UNRELATED: "unchanged" };
+  const result = await runManagedSetupCommand("node.exe", ["playwright.js", "install", "chromium"], {
+    cwd: String.raw`C:\Breadboard`, platform: "win32", env,
+    signal: new AbortController().signal, timeoutMs: 1000,
+    spawnImpl: (_executable, _args, options) => {
+      assert.equal(options.env.PLAYWRIGHT_BROWSERS_PATH, String.raw`D:\BreadboardLargeFiles\browsers`);
+      assert.equal(options.env.UNRELATED, "unchanged");
+      return fakeChild("browser ready");
+    },
+  });
+  assert.equal(result.code, 0);
+  assert.equal(env.PLAYWRIGHT_BROWSERS_PATH, String.raw`\\?\D:\BreadboardLargeFiles\browsers`);
+});
+
 test("the operation registry is closed and rejects extra request fields", () => {
     assert.deepEqual(Object.keys(MANAGED_SETUP_OPERATIONS).sort(), [
       "acestep",
@@ -901,8 +929,12 @@ test("OpenMontage stages its runtime, Python, and Remotion under Runtime data", 
   const source = path.join(appRoot, "OpenMontage");
   const fixtures = new Map([
     ["AGENT_GUIDE.md", "# fixture\n"],
+    ["pipeline_defs/direct-animation.yaml", "name: direct-animation\nversion: '1.0'\nstages: []\n"],
+    ["skills/pipelines/direct-animation/idea-director.md", "# supplied brief\n"],
+    ["skills/pipelines/direct-animation/compose-director.md", "# render and review\n"],
     ["requirements.txt", "pyyaml>=6\n"],
     ["tools/tool_registry.py", "# fixture\n"],
+    ["tools/base_tool.py", "# original command launcher\n"],
     ["remotion-composer/package.json", '{"name":"openmontage-remotion"}\n'],
     ["remotion-composer/package-lock.json", '{"lockfileVersion":3}\n'],
     ["remotion-composer/src/index.tsx", "export {};\n"],
@@ -962,11 +994,17 @@ test("OpenMontage stages its runtime, Python, and Remotion under Runtime data", 
   assert.equal(fs.existsSync(path.join(runtime, "node_modules")), false);
   assert.equal(fs.existsSync(python), true);
   assert.equal(fs.existsSync(path.join(source, ".venv")), false);
+  fs.writeFileSync(path.join(source, "pipeline_defs/direct-animation.yaml"), "updated pipeline\n");
+  fs.writeFileSync(path.join(source, "tools/base_tool.py"), "# repaired command launcher\n");
+  fs.writeFileSync(path.join(runtime, ".env"), "OWNED_USER_SETTING=preserved\n");
   const remotion = await executeManagedSetup(
     { protocolVersion: 1, operation: "openmontage", action: "install-remotion" },
     context,
   );
   assert.equal(remotion.ok, true);
+  assert.equal(fs.readFileSync(path.join(runtime, "pipeline_defs/direct-animation.yaml"), "utf8"), "updated pipeline\n");
+  assert.equal(fs.readFileSync(path.join(runtime, "tools/base_tool.py"), "utf8"), "# repaired command launcher\n");
+  assert.equal(fs.readFileSync(path.join(runtime, ".env"), "utf8"), "OWNED_USER_SETTING=preserved\n");
   assert.equal(
     fs.existsSync(path.join(runtime, "remotion-composer", "node_modules", "remotion", "package.json")),
     true,
@@ -1053,6 +1091,25 @@ test("MoneyPrinter stages writable config and storage under Runtime data", async
     assert.equal(launch.options.detached, false);
     assert.equal(launch.options.env.BREADBOARD_SUPERVISOR_CONTROL_TOKEN, undefined);
   }
+  // A repair updates fixed dependency manifests while retaining the writable
+  // app clone, even when its config/media differ from the original bundle.
+  fs.writeFileSync(path.join(runtime, "config.toml"), "[app]\nuser_setting = 'retained'\n");
+  fs.writeFileSync(path.join(runtime, "storage", "local_videos", "fixture.mp4"), "retained media\n");
+  const repairedManifests = {
+    "requirements.txt": "edge-tts==7.3.1\n",
+    "pyproject.toml": '[project]\nname = "moneyprinterturbo"\ndependencies = ["edge-tts==7.3.1"]\n',
+    "uv.lock": 'version = 1\n# owned repaired lock fixture\n',
+  };
+  for (const [name, contents] of Object.entries(repairedManifests)) fs.writeFileSync(path.join(source, name), contents);
+  const beforeRepair = launches.length;
+  const repaired = await executeManagedSetup(
+    { protocolVersion: 1, operation: "money-printer", action: "reinstall" }, context,
+  );
+  assert.equal(repaired.ok, true);
+  assert.equal(launches[beforeRepair].args[0], "sync");
+  for (const [name, contents] of Object.entries(repairedManifests)) assert.equal(fs.readFileSync(path.join(runtime, name), "utf8"), contents);
+  assert.match(fs.readFileSync(path.join(runtime, "config.toml"), "utf8"), /user_setting = 'retained'/);
+  assert.equal(fs.readFileSync(path.join(runtime, "storage", "local_videos", "fixture.mp4"), "utf8"), "retained media\n");
   const removed = await executeManagedSetup(
     { protocolVersion: 1, operation: "money-printer", action: "remove" },
     { ...context, spawnImpl: () => { throw new Error("remove must not spawn"); } },

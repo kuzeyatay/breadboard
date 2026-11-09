@@ -1,3 +1,4 @@
+import { renderSystemPrompt } from "../system-prompts/service.ts";
 // Turning a sentence into a study.
 //
 // A MatrAIx survey is a precise object: a questionnaire whose choice ids the
@@ -143,32 +144,8 @@ const STUDY_TOOL = {
   },
 };
 
-function systemPrompt(catalog: MatraixCatalog, request: MatraixRequest): string {
-  return [
-    "You design instruments for MatrAIx, which answers a question by putting it to a",
-    "sampled population of persona agents rather than to one assistant.",
-    "",
-    "Write the questionnaire the brief needs and choose the cohort that should answer it.",
-    "",
-    "How to write questions that measure something:",
-    "- Ask about behaviour and trade-offs, not approval. 'Would you like this' is answered",
-    "  yes by almost everyone and tells you nothing.",
-    "- Every choice set must contain a real refusal and a real indifference, worded as",
-    "  reasonably as the positive options.",
-    "- Put any price, tier, or constraint from the brief into the context, and then ask",
-    "  questions that force a choice against it.",
-    "- Between four and eight questions is usually right. One likert question is useful as a",
-    "  summary measure; a questionnaire made only of likert questions is not.",
-    "",
-    "The cohort:",
-    `- This study samples ${request.respondents} respondents from a pool of ${catalog.count}`,
-    "  personas. Filters cut that pool down, so filter only for what the brief actually asks",
-    "  for. Every filtered-out persona is a respondent you do not get.",
-    "- Use only the dimensions and values below, spelled exactly as they appear.",
-    "",
-    "Dimensions available in this persona pool:",
-    renderDimensionMenu(catalog),
-  ].join("\n");
+function systemPrompt(catalog: MatraixCatalog, request: MatraixRequest, userId?: number | null): string {
+  return renderSystemPrompt("persona-study", userId, { "respondents": String(request.respondents), "population": String(catalog.count), "dimensions": String(renderDimensionMenu(catalog)) });
 }
 
 function userPrompt(request: MatraixRequest, conversationContext?: string): string {
@@ -270,13 +247,14 @@ async function callTool(
  * questionnaire that will make the clone raise once per respondent.
  */
 export async function designStudy(input: {
+  userId?: number | null;
   target: MatraixDesignTarget;
   catalog: MatraixCatalog;
   request: MatraixRequest;
   conversationContext?: string;
 }): Promise<StudyDraft> {
   const messages: ChatMessage[] = [
-    { role: "system", content: systemPrompt(input.catalog, input.request) },
+    { role: "system", content: systemPrompt(input.catalog, input.request, input.userId) },
     { role: "user", content: userPrompt(input.request, input.conversationContext) },
   ];
   const first = await callTool(input.target, messages);

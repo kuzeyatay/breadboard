@@ -1,0 +1,124 @@
+{
+  "passed": true,
+  "inference": "deterministic fixture",
+  "actualRuntime": "Hermes AIAgent",
+  "toolRequests": [
+    "chat_list",
+    "chat_send_message",
+    "chat_wait",
+    "chat_list",
+    "chat_send_message",
+    "chat_wait",
+    "chat_wait",
+    "chat_list",
+    "chat_send_message",
+    "chat_wait"
+  ],
+  "modelCalls": [
+    {
+      "kind": "seed",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_list"
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_send_message"
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_wait"
+    },
+    {
+      "kind": "receiver",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_list"
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_send_message"
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_wait"
+    },
+    {
+      "kind": "seed",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_wait"
+    },
+    {
+      "kind": "receiver",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_list"
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_send_message"
+    },
+    {
+      "kind": "sender",
+      "tool": "chat_wait"
+    },
+    {
+      "kind": "receiver",
+      "tool": null
+    },
+    {
+      "kind": "sender",
+      "tool": null
+    },
+    {
+      "kind": "receiver",
+      "tool": null
+    },
+    {
+      "kind": "seed",
+      "tool": null
+    },
+    {
+      "kind": "receiver",
+      "tool": null
+    },
+    {
+      "kind": "seed",
+      "tool": null
+    }
+  ],
+  "senderAnswer": "Chat two answered: The saved answer is answer-d759e8e3-1fa2-447f-adbd-ed1b8fa6eb33.",
+  "busyAnswer": "Chat two answered: The saved answer is answer-d759e8e3-1fa2-447f-adbd-ed1b8fa6eb33.",
+  "restoredAnswer": "Chat two answered: The saved answer is answer-d759e8e3-1fa2-447f-adbd-ed1b8fa6eb33.",
+  "recoveredAnswer": "The saved answer is answer-d759e8e3-1fa2-447f-adbd-ed1b8fa6eb33.",
+  "envelopeStatus": "complete",
+  "receiverTurns": 6,
+  "verified": [
+    "agent tool discovery",
+    "authenticated plugin callback",
+    "receiver history",
+    "closed-tab delivery",
+    "busy-chat queue",
+    "non-cancelling timeout",
+    "fresh-process queue recovery",
+    "receiving goal resumes after peer answer",
+    "receiver runtime restoration"
+  ]
+}

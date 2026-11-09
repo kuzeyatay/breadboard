@@ -1,0 +1,7 @@
+{
+  "checkedAt": "2026-10-15T08:25:25.544Z",
+  "shortcut": "Ctrl + Win",
+  "physical": false,
+  "passed": false,
+  "error": "Electron exited without completing the assertions"
+}

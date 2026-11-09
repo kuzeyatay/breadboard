@@ -17,6 +17,7 @@ Design notes:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
@@ -109,14 +110,42 @@ def _parse_frontmatter_name(markdown: str) -> Tuple[Optional[str], str]:
     return name, body.strip()
 
 
-def render_persona_block(slug: str) -> Optional[str]:
+class BreadboardPersonaError(RuntimeError):
+    """A configured Breadboard session could not load its current persona."""
+
+
+def _breadboard_persona(slug: str, task_id: str) -> Optional[str]:
+    try:
+        from plugins.breadboard import _call_breadboard
+
+        result = json.loads(_call_breadboard(
+            {"slug": slug}, tool_name="system_prompt_persona",
+            route="/api/hermes/tools/system-prompts", route_kind="system_prompts",
+            task_id=task_id,
+        ))
+        if not isinstance(result, dict) or "error" in result or "persona" not in result:
+            raise ValueError("The session prompt service did not return a persona.")
+        persona = result["persona"]
+        if persona is not None and not isinstance(persona, str):
+            raise ValueError("The session prompt service returned an invalid persona.")
+        return persona
+    except Exception as error:
+        raise BreadboardPersonaError(
+            "Breadboard could not load this specialist's current instructions. Retry the delegation."
+        ) from error
+
+
+def render_persona_block(slug: str, *, task_id: Optional[str] = None) -> Optional[str]:
     """Return an injectable specialist-identity block for a roster slug, or None.
 
-    Fails open: unknown slug / unset root / read error all return None.
+    Standalone Hermes keeps its file fallback. Breadboard sessions resolve the
+    current account settings on each delegation and report lookup failures.
     """
     normalized = _normalize_slug(slug)
     if not normalized:
         return None
+    if task_id and os.environ.get("BREADBOARD_HERMES_TOOL_SECRET", "").strip():
+        return _breadboard_persona(normalized, task_id)
     path = _get_index().get(normalized)
     if not path:
         return None

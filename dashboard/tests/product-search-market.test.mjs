@@ -3,8 +3,10 @@ import fs from "node:fs";
 import test from "node:test";
 
 import {
+  deferProductSearchMarketContext,
   productSearchMarketContext,
   resolveProductSearchMarket,
+  resolveProductSearchMarketContext,
   setProductSearchMarketContext,
 } from "../src/lib/product-search/market-context.ts";
 
@@ -95,13 +97,84 @@ test("runtime market context replaces, expires, and clears instead of persisting
 
 test("the tool route overrides model locale from signed runtime market context", () => {
   const route = source("../src/app/api/hermes/tools/product-search/route.ts");
-  assert.match(route, /productSearchMarketContext\(session\.id\)/);
+  assert.match(route, /await resolveProductSearchMarketContext\(session\.id\)/);
   assert.match(route, /\.\.\.\(market \? \{ country: market\.locale \} : \{\}\)/);
   assert.match(route, /localizedMarket: Boolean\(market\)/);
 
   const turn = source("../src/lib/conversations/turn-service.ts");
   assert.match(turn, /resolveProductSearchMarket\(currentLocationSnapshot\)/);
-  assert.match(turn, /setProductSearchMarketContext\(session\.row\.id, productSearchMarket\)/);
+  assert.match(turn, /installTurnMarket\(session\.row\.id\)/);
+  assert.match(turn, /deferProductSearchMarketContext\(runtimeSessionId, resolveTurnMarket\)/);
   assert.match(turn, /currentLocationSnapshot && tools\.product_search === true/);
   assert.doesNotMatch(turn, /requestUsesShoppingLocation/);
+});
+
+const MARKET = { locale: "nl-nl", countryCode: "NL", countryName: "Netherlands" };
+
+test("voice market preparation makes no network call until shopping needs it", async () => {
+  let calls = 0;
+  deferProductSearchMarketContext(991_002, async () => { calls++; return MARKET; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 0);
+  assert.equal(productSearchMarketContext(991_002), null);
+  const results = await Promise.all([
+    resolveProductSearchMarketContext(991_002),
+    resolveProductSearchMarketContext(991_002),
+  ]);
+  assert.deepEqual(results, [MARKET, MARKET]);
+  assert.equal(calls, 1);
+  assert.deepEqual(await resolveProductSearchMarketContext(991_002), MARKET);
+  assert.equal(calls, 1);
+  setProductSearchMarketContext(991_002, null);
+});
+
+test("an interrupted lookup cannot resurrect location or overwrite a newer turn", async () => {
+  for (const replacement of [null, { locale: "jp-ja", countryCode: "JP", countryName: "Japan" }]) {
+    let finish;
+    deferProductSearchMarketContext(991_003, () => new Promise(resolve => { finish = resolve; }));
+    const old = resolveProductSearchMarketContext(991_003);
+    await Promise.resolve();
+    setProductSearchMarketContext(991_003, replacement);
+    finish(MARKET);
+    assert.equal(await old, null);
+    assert.deepEqual(await resolveProductSearchMarketContext(991_003), replacement);
+  }
+  setProductSearchMarketContext(991_003, null);
+});
+
+test("replacing a deferred turn never mixes its market with an in-flight old lookup", async () => {
+  let finish;
+  deferProductSearchMarketContext(991_004, () => new Promise(resolve => { finish = resolve; }));
+  const old = resolveProductSearchMarketContext(991_004);
+  await Promise.resolve();
+  const japan = { locale: "jp-ja", countryCode: "JP", countryName: "Japan" };
+  deferProductSearchMarketContext(991_004, async () => japan);
+  finish(MARKET);
+  assert.equal(await old, null);
+  assert.deepEqual(await resolveProductSearchMarketContext(991_004), japan);
+  setProductSearchMarketContext(991_004, null);
+});
+
+test("expired and failed deferred lookups do not invent a market or repeatedly block tools", async () => {
+  let calls = 0;
+  deferProductSearchMarketContext(991_005, async () => { calls++; return MARKET; }, 10_000);
+  assert.equal(await resolveProductSearchMarketContext(991_005, () => 10_000 + 31 * 60_000), null);
+  assert.equal(calls, 0);
+  deferProductSearchMarketContext(991_005, async () => { calls++; throw new Error("offline"); });
+  assert.equal(await resolveProductSearchMarketContext(991_005), null);
+  assert.equal(await resolveProductSearchMarketContext(991_005), null);
+  assert.equal(calls, 1);
+  setProductSearchMarketContext(991_005, null);
+});
+
+test("a lookup that expires in flight cannot extend permission to stale location context", async () => {
+  let finish;
+  let now = 10_000;
+  deferProductSearchMarketContext(991_006, () => new Promise(resolve => { finish = resolve; }), now);
+  const pending = resolveProductSearchMarketContext(991_006, () => now);
+  await Promise.resolve();
+  now += 31 * 60_000;
+  finish(MARKET);
+  assert.equal(await pending, null);
+  assert.equal(productSearchMarketContext(991_006, now), null);
 });

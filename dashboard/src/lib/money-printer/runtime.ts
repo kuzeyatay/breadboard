@@ -14,6 +14,7 @@
 // again.
 
 import { spawn } from "node:child_process";
+import { runtimeProcessPath } from "../../../scripts/runtime-v2-paths.mjs";
 import { managedModelCacheEnvironment } from "../../../scripts/runtime-v2-bulk-paths.mjs";
 import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
@@ -225,9 +226,12 @@ export function moneyPrinterEnv(
     PYTHONIOENCODING: "utf-8",
     PYTHONUTF8: "1",
     PYTHONUNBUFFERED: "1",
+    // Thousands of first-import bytecode writes can stall removable storage.
+    // Existing bytecode remains readable; new compilation stays in memory.
+    PYTHONDONTWRITEBYTECODE: "1",
     // moviepy, pydub and the clone's own encoder all read this one variable, so
     // pointing it at the repository's ffmpeg is enough for every stage.
-    ...(ffmpeg ? { IMAGEIO_FFMPEG_EXE: ffmpeg } : {}),
+    ...(ffmpeg ? { IMAGEIO_FFMPEG_EXE: runtimeProcessPath(ffmpeg) } : {}),
     ...extra,
   };
 }
@@ -257,8 +261,10 @@ export function runCommand(
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(command, args, {
-        cwd: options.cwd,
+      child = spawn(runtimeProcessPath(command), args, {
+        // The clone joins its module root with forward slashes. Extended
+        // Windows paths disable that normalization and break config.toml.
+        cwd: runtimeProcessPath(options.cwd),
         windowsHide: true,
         env: moneyPrinterEnv(options.env ?? {}),
         stdio: ["ignore", "pipe", "pipe"],

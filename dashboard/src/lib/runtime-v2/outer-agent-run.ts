@@ -3,6 +3,9 @@ if (typeof window !== "undefined") {
 }
 
 import { randomUUID } from "node:crypto";
+import { currentSwarmInvocation, swarmRuntimeIdentity } from "../swarm/invocation.ts";
+import { freezeSwarmRuntimePayload } from "../swarm/runtime-receipts.ts";
+import { ensureAgentArtifactConversation } from "../conversations/agent-artifact-runtime.ts";
 import {
   abandonRuntimeJobInput,
   cancelRuntimeJob,
@@ -878,11 +881,16 @@ export async function startOuterAgentRun(input: {
   readonly inputBlobs?: readonly OuterAgentRuntimeBlobInput[];
 }): Promise<{ runId: string; status: OuterAgentRunStatus }> {
   const adapter = OUTER_AGENT_RUNTIME_ADAPTERS[input.kind];
-  const requestId = input.requestId ?? randomUUID();
+  const invocation = currentSwarmInvocation();
+  if (invocation && (invocation.userId !== input.userId || invocation.agentId !== input.kind)) {
+    throw new Error("Team dispatch cannot switch its authenticated executor.");
+  }
+  const requestId = invocation?.requestId ?? input.requestId ?? randomUUID();
   if (!REQUEST_ID.test(requestId)) {
     throw new TypeError("Outer-agent Runtime request identity is invalid.");
   }
   assertSealedRequestPayload(input.requestPayload);
+  const requestPayload = invocation ? freezeSwarmRuntimePayload(invocation, input.requestPayload) : input.requestPayload;
   const existing = getOuterAgentRuntimeRunByRequest(input.userId, input.kind, requestId);
   if (existing) {
     try {
@@ -908,7 +916,14 @@ export async function startOuterAgentRun(input: {
       return { runId: existing.job_id, status: "failed" };
     }
   }
-  const authority = runtimeAuthority(adapter, input.userId);
+  // Establish chat ownership and its runtime before an artifact-producing
+  // specialist is admitted, including when this is the first chat turn.
+  const payload = requestPayload && typeof requestPayload === "object" && !Array.isArray(requestPayload)
+    ? requestPayload as { conversationPublicId?: unknown } : {};
+  await ensureAgentArtifactConversation({ userId: input.userId, conversationPublicId: invocation?.conversationPublicId ?? payload.conversationPublicId });
+  const authority = invocation
+    ? swarmRuntimeIdentity(invocation, adapter.scopePrefix, adapter.jobType).authority
+    : runtimeAuthority(adapter, input.userId);
   const idempotencyKey = `${adapter.jobType}-v2:${input.userId}:${requestId}`;
   if (input.images?.length && input.inputBlobs?.length) {
     throw new TypeError("Outer-agent Runtime inputs have more than one owner.");
@@ -923,7 +938,7 @@ export async function startOuterAgentRun(input: {
       await submitRuntimeJob(authority, {
         jobType: adapter.jobType,
         idempotencyKey,
-        requestPayload: input.requestPayload,
+        requestPayload,
         inputUploads: staged.uploadIds.map((uploadId) => ({ uploadId })),
       }),
     );

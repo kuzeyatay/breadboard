@@ -1,3 +1,4 @@
+import { systemPromptText } from "../system-prompts/service.ts";
 // In-memory run manager for the Agent Reach agent. Breadboard drives the loop
 // itself: it calls ChatMock (OpenAI-compatible) with two tools — run one
 // allowlisted upstream command, and read a file that command wrote — and
@@ -11,6 +12,7 @@
 // Runs are ephemeral: events live here and the SSE route replays them.
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { API_ANYTHING_AGENT_TOOL, executeApiAnythingAgentTool } from "../api-anything/agents.ts";
 import { mkdir, open, lstat, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { confinePath, parseCommand } from "./commands.ts";
@@ -90,6 +92,7 @@ const MODEL_ATTEMPTS = 3;
 const RETENTION_MS = 10 * 60 * 1000;
 
 const TOOLS = [
+  API_ANYTHING_AGENT_TOOL,
   {
     type: "function" as const,
     function: {
@@ -548,7 +551,7 @@ async function drive(run: RunState, input: RuntimeWorkerStartRunInput): Promise<
   const messages: ChatMessage[] = [
     {
       role: "system",
-      content: buildSystemPrompt({
+      content: systemPromptText("api-anything-policy", run.userId) + "\n\n" + buildSystemPrompt({ userId: run.userId,
         root: runtime.root,
         channels,
         workspace: run.workspace,
@@ -638,6 +641,15 @@ async function drive(run: RunState, input: RuntimeWorkerStartRunInput): Promise<
           parsedArguments = {};
         }
 
+        if (call.function.name === "api_anything") {
+          emit(run, "fetch.started", { kind: "api", display: "Website API" });
+          const result = await executeApiAnythingAgentTool(run.userId, parsedArguments, phaseSignal);
+          const content = JSON.stringify(result);
+          emit(run, "fetch.completed", { kind: "api", display: "Website API", chars: content.length });
+          messages.push({ role: "tool", tool_call_id: call.id, content });
+          continue;
+        }
+
         if (call.function.name === "read_output_file") {
           const requested = typeof parsedArguments.path === "string" ? parsedArguments.path : "";
           emit(run, "fetch.started", { kind: "file", display: `read ${requested}` });
@@ -706,7 +718,7 @@ async function drive(run: RunState, input: RuntimeWorkerStartRunInput): Promise<
     const timer = setTimeout(() => writing.abort(new DOMException("The evidence write-up budget ended.", "TimeoutError")), WRITEUP_TOTAL_TIMEOUT_MS);
     timer.unref?.();
     try {
-      run.finalText = await writeRetrievedFindings({
+      run.finalText = await writeRetrievedFindings({ userId: run.userId,
         messages, signal: writing.signal,
         onProgress: summary => emit(run, "agent.thinking", {state: "active", step: stepsUsed + 1, summary}),
         complete: async (writeMessages, writeSignal) => {

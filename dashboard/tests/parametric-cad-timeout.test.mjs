@@ -97,6 +97,38 @@ test("CAD generation accepts the service's five-minute ceiling and rejects large
   }
 });
 
+test("source builds retain the engine ceiling instead of truncating valid long CAD work", async (t) => {
+  for (const [engine, ceiling, requiredDuration] of [
+    ["cadquery", 300_000, 172_000],
+    ["solidworks", 120_000, 90_000],
+  ]) {
+    await t.test(engine, async (t) => {
+      t.mock.method(globalThis, "fetch", async () => {
+        const payload = await response().json();
+        const call = payload.choices[0].message.tool_calls[0];
+        call.function.arguments = JSON.stringify({
+          ...JSON.parse(call.function.arguments), timeoutMs: 9_999_999,
+        });
+        return new Response(JSON.stringify(payload), {
+          headers: { "content-type": "application/json" },
+        });
+      });
+      let calls = 0;
+      const result = await runCadProjectBuildPhase({
+        ...target, project, toolContext: context({ engine }), maxBuildSteps: 1,
+        runTool: async (_name, args) => {
+          calls += 1;
+          assert.equal(args.timeoutMs, ceiling, "Model cannot raise the engine's execution cap");
+          assert.ok(args.timeoutMs >= requiredDuration, "Valid long builds must reach validation/export");
+          return { ok: true, validationPassed: true, revision: 1 };
+        },
+      });
+      assert.equal(calls, 1);
+      assert.equal(result.stoppedBecause, "answered");
+    });
+  }
+});
+
 test("rebuild budgets use recorded execution duration while remaining bounded", () => {
   for (const value of ["broken", "{}", "null", '{"buildDurationMs":-1}', '{"buildDurationMs":"150000"}']) {
     assert.equal(cadRebuildTimeoutMs(value), 90_000);

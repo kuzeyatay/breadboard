@@ -124,6 +124,13 @@ test("browser selection messages and trusted rail bounds are narrow and validate
   assert.equal(browserContentLeft(1_920, true, 1_200), 960);
   assert.equal(browserContentLeft(1_280, true, 700), 640);
   assert.equal(browserContentLeft(640, true), 320);
+  for (const [zoom, terminalRight] of [[0.8, 512], [Math.sqrt(1.2), 640 * Math.sqrt(1.2)], [1.25, 800], [1.5, 960], [2, 960]] as const) {
+    assert.ok(browserContentLeft(1920, true, 640, zoom) >= terminalRight,
+      `the website must not cover the zoomed Terminal at ${zoom}`);
+    assert.ok(browserContentLeft(1920, true, 640, zoom) - terminalRight < 1,
+      'native rounding leaves less than one DIP of space');
+    assert.equal(browserContentLeft(1920, false, 640, zoom), Math.ceil(40 * zoom));
+  }
   assert.equal(browserContentTop(), BROWSER_CONTENT_TOP_INSET);
   assert.equal(browserContentTop(300), BROWSER_CONTENT_TOP_INSET, "page stays below the toolbar regardless of dropdown size");
   assert.equal(browserContentTop(100), 99, "tiny windows keep the page within the viewport");

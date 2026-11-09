@@ -80,8 +80,14 @@ export async function cancelRuntimeSessionWork(
   row: RuntimeSessionRow,
 ): Promise<RuntimeSessionCancelReport> {
   const conversation = row.conversation_id ? getConversationById(row.conversation_id) : null;
-  if (conversation) cancelTaskRecovery(conversation.id);
-  if (conversation && readGoalModeState(conversation.public_id)?.status === "active") {
+  let inlineTurn = false;
+  try { inlineTurn = Boolean(JSON.parse(row.runtime_metadata ?? "{}").inlineTurnId); } catch { /* Legacy rows have no inline scope. */ }
+  if (conversation && !inlineTurn) cancelTaskRecovery(conversation.id);
+  if (conversation && !inlineTurn) {
+    const { cancelConversationSwarms } = await import("../swarm/pump.ts");
+    await cancelConversationSwarms(userId, conversation.id);
+  }
+  if (conversation && !inlineTurn && readGoalModeState(conversation.public_id)?.status === "active") {
     setGoalModeStatus({ conversationPublicId: conversation.public_id, status: "paused" });
   }
   const activeRun = getActiveRuntimeRun(row.id);

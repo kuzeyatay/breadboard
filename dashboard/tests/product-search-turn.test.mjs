@@ -70,6 +70,32 @@ test("no matches and unavailable search are distinct receipts with no invented c
 test("disabled tools and non-buying requests never call the planner or search", async () => {
   const unexpected = async () => { assert.fail("unexpected external call"); };
   for (const input of [{ request, enabled: false }, { request: "Explain USB4", enabled: true }]) {
-    assert.equal(await prepareProductSearchTurn(input, { fetcher: unexpected, search: unexpected }), null);
+    assert.equal(await prepareProductSearchTurn({ ...input, resolveCountry: unexpected }, { fetcher: unexpected, search: unexpected }), null);
   }
+});
+
+test("shopping resolves its server market alongside planning and keeps it over the model's country", async () => {
+  let finishCountry;
+  const country = new Promise(resolve => { finishCountry = resolve; });
+  let lookupStarted = false;
+  let searched = false;
+  const pending = prepareProductSearchTurn({ request, enabled: true, resolveCountry: () => { lookupStarted = true; return country; } }, {
+    fetcher: async () => {
+      await Promise.resolve();
+      assert.equal(lookupStarted, true, "lookup and planning run concurrently");
+      finishCountry("nl-nl");
+      return planner();
+    },
+    search: async args => { searched = true; assert.equal(args.country, "nl-nl"); return result; },
+  });
+  assert.equal((await pending).result.productsReturned, 1);
+  assert.equal(searched, true);
+});
+
+test("unavailable location still allows a real shopping search", async () => {
+  const turn = await prepareProductSearchTurn({ request, enabled: true, resolveCountry: async () => { throw new Error("offline"); } }, {
+    fetcher: planner,
+    search: async args => { assert.equal(args.country, "us-en"); return result; },
+  });
+  assert.equal(turn.result.productsReturned, 1);
 });

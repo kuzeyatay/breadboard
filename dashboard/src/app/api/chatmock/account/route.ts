@@ -12,11 +12,30 @@ const NO_STORE_HEADERS = {
   Expires: "0",
 };
 
+/** The login job lives in the Runtime; a busy supervisor must not hold the
+ * account list hostage. The panel keeps its previous login state meanwhile. */
+const LOGIN_STATE_WAIT_MS = 4_000;
+
+async function loginStateWithin(userId: number) {
+  let cancel = () => {};
+  try {
+    return await Promise.race([
+      refreshChatmockLoginState(userId),
+      new Promise<undefined>((resolve) => {
+        const timer = setTimeout(() => resolve(undefined), LOGIN_STATE_WAIT_MS);
+        cancel = () => clearTimeout(timer);
+      }),
+    ]);
+  } finally {
+    cancel();
+  }
+}
+
 export async function GET() {
   try {
     const userId = await requireUserId();
     return NextResponse.json(
-      { account: readChatmockAccount(), login: await refreshChatmockLoginState(userId) },
+      { account: readChatmockAccount(), login: await loginStateWithin(userId) },
       { headers: NO_STORE_HEADERS },
     );
   } catch (error) {

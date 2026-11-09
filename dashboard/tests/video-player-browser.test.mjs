@@ -34,8 +34,8 @@ test("video controls stay readable and work; generated videos play above their o
     plugins: [{ name: "test-boundaries", setup(builder) {
       builder.onResolve({ filter: /(^|\/)(artifact-viewer|artifact-image-studio|artifact-image-preview|artifact-video-studio|inline-interactive-visualizer|use-desktop-tabs|desktop-browser-tabs)$/ }, args => ({ path: args.path, namespace: "fixture" }));
       builder.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ loader: "tsx", resolveDir: root, contents:
-        args.path.endsWith("use-desktop-tabs") ? "export const useDesktopTabs=()=>window.testTabs||null;" :
-        args.path.endsWith("desktop-browser-tabs") ? "export const sendDesktopTabsCommand=async command=>{window.tabCommand=command;return true;};" :
+        args.path.endsWith("use-desktop-tabs") ? "export const useDesktopTabs=()=>window.testTabs||null;export const useDesktopTabsEnabled=()=>!!window.testTabs?.enabled;" :
+        args.path.endsWith("desktop-browser-tabs") ? "export const sendDesktopTabsCommand=async command=>{window.tabCommand=command;return true;};export const desktopTabsBridge=()=>undefined;export const openInDesktopTab=()=>false;" :
         args.path.endsWith("artifact-viewer") ? `
           export default function Viewer(){return null;}
           export const ARTIFACT_BROWSER_EVENT='artifact-event', artifactDescription=artifact=>artifact.kind;
@@ -81,7 +81,7 @@ test("video controls stay readable and work; generated videos play above their o
     // These assertions use the real global theme CSS that caused the regression.
     for (const theme of ["light", "dark"]) {
       await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
-      for (const name of ["Play", "Stop", "Exit player", "Fullscreen"]) {
+      for (const name of ["Play", "Mute", "Exit player", "Fullscreen"]) {
         const contrast = await button(name).evaluate(element => {
           const style = getComputedStyle(element);
           const luminance = value => value.match(/[\d.]+/g).slice(0,3).map(Number).map(v => {v/=255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4;}).reduce((sum,v,i)=>sum+v*[.2126,.7152,.0722][i],0);
@@ -97,27 +97,30 @@ test("video controls stay readable and work; generated videos play above their o
     assert.equal(await video.evaluate(v=>v.paused),true);
     await page.getByRole("slider",{name:"Seek",exact:true}).fill("5");
     await page.waitForFunction(() => Math.abs(document.querySelector("video").currentTime-5)<.1);
-    await button("Forward 10 seconds").click();
+    await page.evaluate(()=>document.activeElement.blur());
+    await page.keyboard.press("l");
     await page.waitForFunction(() => document.querySelector("video").currentTime > 14);
-    await button("Rewind 10 seconds").click();
+    await page.keyboard.press("j");
     await page.waitForFunction(() => document.querySelector("video").currentTime < 6);
-    await button("Stop").click();
-    assert.equal(await video.evaluate(v=>v.paused && v.currentTime===0),true);
     await button("Play").click();
     await button("Mute").click();
     await button("Unmute").waitFor();
     assert.equal(await video.evaluate(v=>v.muted),true);
-    await page.getByRole("slider",{name:"Volume",exact:true}).fill("0.4");
-    assert.equal(await video.evaluate(v=>v.volume===.4&&!v.muted),true);
+    await button("Unmute").click();
+    await button("Mute").waitFor();
+    assert.equal(await video.evaluate(v=>!v.muted),true);
     await button("Fullscreen").click();
     await button("Exit fullscreen").waitFor();
-    assert.equal(await page.evaluate(()=>document.fullscreenElement?.getAttribute("aria-label")),"Video player");
+    assert.match(await page.evaluate(()=>document.fullscreenElement?.getAttribute("aria-label")),/^Video player/);
     await button("Exit fullscreen").click();
     await button("Fullscreen").waitFor();
-    // Space on Stop must activate Stop, rather than toggling playback globally.
-    await button("Stop").focus();
+    // Space on Mute must activate Mute, rather than toggling playback globally.
+    await button("Pause").click();
+    await button("Mute").focus();
     await page.keyboard.press("Space");
-    assert.equal(await video.evaluate(v=>v.paused && v.currentTime===0),true);
+    assert.equal(await video.evaluate(v=>v.paused && v.muted),true);
+    await page.keyboard.press("Space");
+    assert.equal(await video.evaluate(v=>v.paused && !v.muted),true);
     await page.evaluate(()=>document.activeElement.blur());
     await page.keyboard.press("k");
     await button("Pause").waitFor();
@@ -125,7 +128,7 @@ test("video controls stay readable and work; generated videos play above their o
     await button("Play").waitFor();
     for (const width of [1280,375,280]) {
       await page.setViewportSize({width,height:700});
-      for (const name of ["Play","Stop","Fullscreen","Exit player"]) {
+      for (const name of ["Play","Mute","Fullscreen","Exit player"]) {
         const bounds = await button(name).boundingBox();
         assert.ok(bounds && bounds.x>=0 && bounds.y>=0 && bounds.x+bounds.width<=width+1 && bounds.y+bounds.height<=700, `${name} fits ${width}px`);
       }
@@ -143,7 +146,7 @@ test("video controls stay readable and work; generated videos play above their o
     assert.deepEqual(await page.evaluate(()=>window.tabCommand),{type:"close",id:42});
     await page.evaluate(()=>{window.testTabs=null;window.renderPlayer({sourceUrl:"/broken.webm",backHref:"/"});});
     await page.getByRole("alert").waitFor();
-    assert.equal(await button("Play").isDisabled(),true);
+    assert.equal(await button("Play").count(),0);
     await button("Exit player").click();
     await page.waitForURL("http://localhost:53149/");
     await page.goto("http://localhost:53149/player");
@@ -154,7 +157,8 @@ test("video controls stay readable and work; generated videos play above their o
     await card.waitFor();
     assert.equal(await page.locator("video").count(),1,"only previewable videos owned by this response get players");
     const preview = card.locator("video");
-    assert.equal(await preview.getAttribute("controls"),"");
+    assert.equal(await preview.getAttribute("controls"),null,"the shared player owns the controls");
+    await card.getByRole("button",{name:"Fullscreen",exact:true}).waitFor();
     assert.equal(await preview.getAttribute("preload"),"metadata");
     assert.equal(await preview.evaluate(v=>v.autoplay),false);
     assert.match(await preview.getAttribute("src"),/film\/preview\?conversationId=chat-1&version=2/);
@@ -163,8 +167,8 @@ test("video controls stay readable and work; generated videos play above their o
     await page.waitForFunction(()=>document.querySelector("video")?.readyState>=2);
     const vb=await preview.boundingBox(),lb=await link.boundingBox();
     assert.ok(vb.y+vb.height<=lb.y+1 && vb.width<=576 && vb.height<=320);
-    assert.equal(await preview.evaluate(v=>{const r=v.getBoundingClientRect();return document.elementFromPoint(r.x+20,r.bottom-20)===v;}),true,"card does not cover video controls");
-    // Native controls remain browser-owned; exercise the actual media decoder.
+    assert.equal(await preview.evaluate(v=>{const r=v.getBoundingClientRect();return v.closest("[role=region]").contains(document.elementFromPoint(r.x+20,r.bottom-20));}),true,"card does not cover video controls");
+    // Exercise the actual media decoder.
     await preview.evaluate(v=>v.play());
     await page.waitForFunction(()=>document.querySelector("video").currentTime>.1);
     await preview.evaluate(v=>{v.pause();v.currentTime=4;});

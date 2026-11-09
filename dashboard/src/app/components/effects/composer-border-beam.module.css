@@ -29,18 +29,18 @@
 
 .light {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  /* A square covering the composer's diagonal even as its height changes. */
-  width: 145cqmax;
-  aspect-ratio: 1;
-  background: conic-gradient(transparent 0deg, var(--beam-primary) 38deg, transparent 105deg);
-  transform: translate(-50%, -50%) rotate(0deg);
+  top: 0;
+  left: 0;
+  width: clamp(140px, 32cqw, 360px);
+  height: 100px;
+  background: radial-gradient(ellipse, var(--beam-primary), transparent 70%);
+  opacity: 0.65;
+  transform: translate(-50%, -50%);
 }
 
 .light + .light {
-  background: conic-gradient(transparent 0deg, var(--beam-secondary) 52deg, transparent 145deg);
-  transform: translate(-50%, -50%) rotate(160deg);
+  background: radial-gradient(ellipse, var(--beam-secondary), transparent 70%);
+  opacity: 0.5;
 }
 
 @media (prefers-reduced-motion: reduce) {

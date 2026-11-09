@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useConfirmDialog } from "@/app/components/confirm-dialog";
 import { AGENT_MANAGER_CATALOG, AGENT_MANAGER_WORKFLOWS, type AgentManagerEntry, type AgentManagerAction } from "@/lib/agent-manager/catalog.ts";
-import { agentManagerStatus, type AgentManagerStatus, type AgentManagerOperation } from "@/lib/agent-manager/status.ts";
+import { agentHealthCheckTimeoutMs, agentManagerStatus, type AgentManagerStatus, type AgentManagerOperation } from "@/lib/agent-manager/status.ts";
 
 export interface AgentManagerPanelProps {
   onOpenAgentSettings?: (agentId: string) => void;
@@ -35,7 +35,11 @@ export function AgentManagerPanel({ onOpenAgentSettings, onChanged }: AgentManag
     }
     setChecking((current) => new Set(current).add(entry.id));
     try {
-      const response = await fetch(`${entry.healthUrl}${force ? "?refresh=1&force=1" : ""}`, { cache: "no-store", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : AbortSignal.timeout(25000) });
+      // These checks import the installed Python environment. Keep the normal
+      // short budget for other agents, while allowing a bounded cold disk read.
+      const timeoutMs = agentHealthCheckTimeoutMs(entry.id);
+      const timeout = AbortSignal.timeout(timeoutMs);
+      const response = await fetch(`${entry.healthUrl}${force ? "?refresh=1&force=1" : ""}`, { cache: "no-store", signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
       const body = await response.json();
       if (!signal?.aborted) setStatuses((current) => ({ ...current, [entry.id]: agentManagerStatus(entry, body, response.ok) }));
     } catch {
@@ -160,7 +164,7 @@ export function AgentManagerPanel({ onOpenAgentSettings, onChanged }: AgentManag
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 className="font-serif text-xl text-[var(--ink-heading)]">Agent Manager</h2>
-        <p className="mt-1 max-w-3xl text-sm leading-6 text-[var(--ink-muted)]">Manage the {AGENT_MANAGER_CATALOG.length} specialists behind your eight workflows. Each specialist remains available to select on its own.</p>
+        <p className="mt-1 max-w-3xl text-sm leading-6 text-[var(--ink-muted)]">Manage the {AGENT_MANAGER_CATALOG.length} specialists used by your eight Master Agents. You can also choose any specialist directly.</p>
         <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">Removing dependencies preserves conversations, generated artifacts and user files. Shared models and connected accounts are managed in settings.</p>
         {storageRoot && <p className="mt-1 break-all text-xs leading-5 text-[var(--ink-muted)]">{bulkStorageRoot ? "Chats and settings" : "Managed storage"}: {storageRoot}</p>}
         {bulkStorageRoot && <p className="mt-1 break-all text-xs leading-5 text-[var(--ink-muted)]">Agent downloads: {bulkStorageRoot}</p>}
@@ -169,9 +173,9 @@ export function AgentManagerPanel({ onOpenAgentSettings, onChanged }: AgentManag
     </div>
     {error && <p role="alert" className="text-sm text-red-600">{error} <button className="underline" onClick={() => void refresh(true)}>Retry</button></p>}
     <div className="flex flex-wrap gap-2">
-      <input aria-label="Search agents" placeholder="Search agents" value={query} onChange={(event) => setQuery(event.target.value)} className="min-w-48 flex-1 rounded-lg border border-[var(--line)] bg-transparent px-3 py-2 text-sm" />
-      <select aria-label="Filter by workflow" value={workflowId} onChange={(event) => setWorkflowId(event.target.value)} className={controlClass}><option value="">All workflows</option>{AGENT_MANAGER_WORKFLOWS.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}</select>
-      <select aria-label="Filter by installation" value={filter} onChange={(event) => setFilter(event.target.value)} className={controlClass}><option value="all">All agents</option><option value="installed">Installed / included</option><option value="attention">Needs attention</option></select>
+      <input aria-label="Search specialists" placeholder="Search specialists" value={query} onChange={(event) => setQuery(event.target.value)} className="min-w-48 flex-1 rounded-lg border border-[var(--line)] bg-transparent px-3 py-2 text-sm" />
+      <select aria-label="Filter by Master Agent" value={workflowId} onChange={(event) => setWorkflowId(event.target.value)} className={controlClass}><option value="">All Master Agents</option>{AGENT_MANAGER_WORKFLOWS.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}</select>
+      <select aria-label="Filter by installation" value={filter} onChange={(event) => setFilter(event.target.value)} className={controlClass}><option value="all">All specialists</option><option value="installed">Installed / included</option><option value="attention">Needs attention</option></select>
     </div>
     <div className="divide-y divide-[var(--line)] rounded-xl border border-[var(--line)]">
       {visible.map((entry) => {
@@ -205,7 +209,7 @@ export function AgentManagerPanel({ onOpenAgentSettings, onChanged }: AgentManag
           {(busy || operation || notices[entry.id]) && <div aria-live="polite" className="text-xs leading-5"><p className={operation?.state === "failed" || notices[entry.id] ? "text-red-600" : "text-[var(--ink-muted)]"}>{submitting.has(entry.id) ? "Submitting setup to Runtime…" : operation ? `${operation.finished ? "" : "Setup in progress · "}${operation.message}` : ""}</p>{notices[entry.id] && <p className="text-red-600">{notices[entry.id]}</p>}</div>}
         </article>;
       })}
-      {!visible.length && <p className="p-4 text-sm text-[var(--ink-muted)]">No agents match these filters.</p>}
+      {!visible.length && <p className="p-4 text-sm text-[var(--ink-muted)]">No specialists match these filters.</p>}
     </div>
     {confirmDialog}
   </section>;

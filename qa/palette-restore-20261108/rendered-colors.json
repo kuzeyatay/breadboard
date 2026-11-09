@@ -1,0 +1,230 @@
+{
+  "light": {
+    "historical": {
+      "left": {
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "linear-gradient(155deg, color(srgb 0.929412 0.956549 0.92502), rgb(230, 240, 230))",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "color(srgb 0.720471 0.795608 0.747137)"
+      },
+      "right": {
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "linear-gradient(155deg, color(srgb 0.929412 0.956549 0.92502), rgb(230, 240, 230))",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "color(srgb 0.720471 0.795608 0.747137)"
+      },
+      "canvas": {
+        "backgroundColor": "rgb(230, 240, 230)",
+        "backgroundImage": "none",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "rgb(188, 207, 194)"
+      },
+      "paper": {
+        "backgroundColor": "rgb(250, 247, 239)",
+        "backgroundImage": "none",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "rgb(19, 32, 27)"
+      },
+      "navbar": {
+        "backgroundColor": "rgb(250, 247, 239)",
+        "backgroundImage": "none",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "color(srgb 0.720471 0.795608 0.747137)"
+      },
+      "selected": {
+        "backgroundColor": "color(srgb 0.963137 0.962588 0.92949)",
+        "backgroundImage": "none",
+        "color": "rgb(15, 26, 22)",
+        "borderColor": "rgb(15, 26, 22)"
+      },
+      "accordion": {
+        "backgroundColor": "color(srgb 0.944314 0.956 0.92102)",
+        "backgroundImage": "none",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "rgb(19, 32, 27)"
+      },
+      "control": {
+        "backgroundColor": "color(srgb 0.963137 0.962588 0.92949)",
+        "backgroundImage": "none",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "color(srgb 0.720471 0.795608 0.747137)"
+      },
+      "scrollbar": {
+        "backgroundColor": "color(srgb 0.927059 0.949961 0.913255)",
+        "backgroundImage": "none",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "rgb(19, 32, 27)"
+      }
+    },
+    "current": {
+      "left": {
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "linear-gradient(155deg, color(srgb 0.929412 0.956549 0.92502), rgb(230, 240, 230))",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "color(srgb 0.720471 0.795608 0.747137)"
+      },
+      "right": {
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "linear-gradient(155deg, color(srgb 0.929412 0.956549 0.92502), rgb(230, 240, 230))",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "color(srgb 0.720471 0.795608 0.747137)"
+      },
+      "canvas": {
+        "backgroundColor": "rgb(230, 240, 230)",
+        "backgroundImage": "none",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "rgb(188, 207, 194)"
+      },
+      "paper": {
+        "backgroundColor": "rgb(250, 247, 239)",
+        "backgroundImage": "none",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "rgb(19, 32, 27)"
+      },
+      "navbar": {
+        "backgroundColor": "rgb(250, 247, 239)",
+        "backgroundImage": "none",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "color(srgb 0.720471 0.795608 0.747137)"
+      },
+      "selected": {
+        "backgroundColor": "color(srgb 0.963137 0.962588 0.92949)",
+        "backgroundImage": "none",
+        "color": "rgb(15, 26, 22)",
+        "borderColor": "rgb(15, 26, 22)"
+      },
+      "accordion": {
+        "backgroundColor": "color(srgb 0.944314 0.956 0.92102)",
+        "backgroundImage": "none",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "rgb(19, 32, 27)"
+      },
+      "control": {
+        "backgroundColor": "color(srgb 0.963137 0.962588 0.92949)",
+        "backgroundImage": "none",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "color(srgb 0.720471 0.795608 0.747137)"
+      },
+      "scrollbar": {
+        "backgroundColor": "color(srgb 0.927059 0.949961 0.913255)",
+        "backgroundImage": "none",
+        "color": "rgb(19, 32, 27)",
+        "borderColor": "rgb(19, 32, 27)"
+      }
+    }
+  },
+  "dark": {
+    "historical": {
+      "left": {
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "linear-gradient(155deg, color(srgb 0.116 0.140471 0.123843), rgb(24, 29, 26))",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(74, 86, 78)"
+      },
+      "right": {
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "linear-gradient(155deg, color(srgb 0.116 0.140471 0.123843), rgb(24, 29, 26))",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(74, 86, 78)"
+      },
+      "canvas": {
+        "backgroundColor": "rgb(15, 18, 16)",
+        "backgroundImage": "none",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(44, 53, 47)"
+      },
+      "paper": {
+        "backgroundColor": "rgb(24, 29, 26)",
+        "backgroundImage": "none",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(210, 217, 208)"
+      },
+      "navbar": {
+        "backgroundColor": "rgb(24, 29, 26)",
+        "backgroundImage": "none",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(74, 86, 78)"
+      },
+      "selected": {
+        "backgroundColor": "rgb(10, 12, 11)",
+        "backgroundImage": "none",
+        "color": "rgb(233, 237, 229)",
+        "borderColor": "rgb(233, 237, 229)"
+      },
+      "accordion": {
+        "backgroundColor": "color(srgb 0.0778824 0.0938824 0.0839216)",
+        "backgroundImage": "none",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(210, 217, 208)"
+      },
+      "control": {
+        "backgroundColor": "rgb(10, 12, 11)",
+        "backgroundImage": "none",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(74, 86, 78)"
+      },
+      "scrollbar": {
+        "backgroundColor": "color(srgb 0.0701176 0.0843922 0.0752941)",
+        "backgroundImage": "none",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(210, 217, 208)"
+      }
+    },
+    "current": {
+      "left": {
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "linear-gradient(155deg, color(srgb 0.116 0.140471 0.123843), rgb(24, 29, 26))",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(74, 86, 78)"
+      },
+      "right": {
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "linear-gradient(155deg, color(srgb 0.116 0.140471 0.123843), rgb(24, 29, 26))",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(74, 86, 78)"
+      },
+      "canvas": {
+        "backgroundColor": "rgb(15, 18, 16)",
+        "backgroundImage": "none",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(44, 53, 47)"
+      },
+      "paper": {
+        "backgroundColor": "rgb(24, 29, 26)",
+        "backgroundImage": "none",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(210, 217, 208)"
+      },
+      "navbar": {
+        "backgroundColor": "rgb(24, 29, 26)",
+        "backgroundImage": "none",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(74, 86, 78)"
+      },
+      "selected": {
+        "backgroundColor": "rgb(10, 12, 11)",
+        "backgroundImage": "none",
+        "color": "rgb(233, 237, 229)",
+        "borderColor": "rgb(233, 237, 229)"
+      },
+      "accordion": {
+        "backgroundColor": "color(srgb 0.0778824 0.0938824 0.0839216)",
+        "backgroundImage": "none",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(210, 217, 208)"
+      },
+      "control": {
+        "backgroundColor": "rgb(10, 12, 11)",
+        "backgroundImage": "none",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(74, 86, 78)"
+      },
+      "scrollbar": {
+        "backgroundColor": "color(srgb 0.0701176 0.0843922 0.0752941)",
+        "backgroundImage": "none",
+        "color": "rgb(210, 217, 208)",
+        "borderColor": "rgb(210, 217, 208)"
+      }
+    }
+  }
+}

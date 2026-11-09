@@ -35,6 +35,7 @@ import {
 } from "@/lib/conversations/store";
 import { isChatHighlight } from "@/lib/conversations/highlights";
 import { reconcileMaxResearchConversation } from "@/lib/max-research/conversation-persistence.ts";
+import { reconcileVibeTradingConversation } from "@/lib/vibe-trading/conversation-persistence.ts";
 import {
   normalizeGenerativeUiResources,
   type GenerativeUiResource,
@@ -584,6 +585,7 @@ async function readSessions(
   for (const row of rows) {
     if (row.user_id === currentUserId && row.conversation_id != null) {
       await reconcileMaxResearchConversation(currentUserId, row.conversation_id);
+      await reconcileVibeTradingConversation(currentUserId, row.conversation_id);
     }
   }
 

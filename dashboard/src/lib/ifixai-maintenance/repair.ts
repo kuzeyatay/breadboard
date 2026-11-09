@@ -1,4 +1,5 @@
 import type { IfixAiFailure } from "./runner.ts";
+import { scopedSystemPromptText } from "../system-prompts/service.ts";
 
 const MAX_CANDIDATE_CHARS = 8_000;
 
@@ -76,14 +77,7 @@ export async function generateRepairOverlay(input: {
         messages: [
           {
             role: "system",
-            content: [
-              "You maintain the behavior prompt for a local-first knowledge assistant.",
-              "Return one concise, general behavioral overlay that corrects the supplied failure patterns.",
-              "Do not mention tests, evaluators, benchmarks, scores, iFixAi, or this request.",
-              "Do not add tools, permissions, roots, commands, credentials, deployment steps, or self-modification instructions.",
-              "Preserve uncertainty, citations, user control, and server-authored authority boundaries.",
-              "Output only text between ===OVERLAY=== and ===END OVERLAY===.",
-            ].join(" "),
+            content: scopedSystemPromptText("maintenance-repair"),
           },
           {
             role: "user",

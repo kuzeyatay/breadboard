@@ -220,7 +220,7 @@ export default function InlineDeerFlowRun({
         );
         if (!reportedRef.current) {
           reportedRef.current = true;
-          notifyTaskCompleted(task);
+          notifyTaskCompleted(task, { runId });
           onTerminalRef.current?.({ outcome: "completed", content: summary });
         }
       }
@@ -299,7 +299,7 @@ export default function InlineDeerFlowRun({
         summary={steps.at(-1)?.display || thinking}
         agentName="DeerFlow"
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         {/* The task is the user's own message directly above this card. The
             header carries the agent, the model it is running on, and its state. */}
         <header className="bb-agent-run-header">

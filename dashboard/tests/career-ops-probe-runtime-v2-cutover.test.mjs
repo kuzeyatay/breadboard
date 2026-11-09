@@ -488,3 +488,9 @@ test("the doctor environment is closed and the health route cannot start a servi
   assert.match(workerSource, /CHATMOCK_API_KEY/u);
   assert.match(read("src/lib/career-ops/runtime.ts"), /\["doctor\.mjs", "--json"\]/u);
 });
+
+test("the browser probe presents native Windows cache paths without the extended namespace", { skip: process.platform !== "win32" }, () => {
+  const browserRoot = path.resolve("browser-cache-fixture");
+  const child = careerOpsDoctorEnv({PLAYWRIGHT_BROWSERS_PATH:path.toNamespacedPath(browserRoot)});
+  assert.equal(child.PLAYWRIGHT_BROWSERS_PATH,browserRoot);
+});

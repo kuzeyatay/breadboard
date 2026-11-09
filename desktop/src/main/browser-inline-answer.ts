@@ -1,3 +1,4 @@
+import { setNotificationViewVisible, trackTransparentNotificationView } from "./notification-visible-region";
 import { WebContentsView, type BrowserWindow, type Rectangle } from "electron";
 import { rendererWebPreferences } from "./window-options";
 import { IPC_CHANNELS } from "../shared/ipc-contract";
@@ -19,6 +20,7 @@ export class BrowserInlineAnswer {
   private anchor: { x: number; y: number; height?: number };
   state: BrowserInlineAnswerState;
   get isClosed() { return this.closed; }
+  get isVisible() { return this.ready && !this.closed && this.visible; }
   constructor(private window: BrowserWindow, readonly ownerId: number, selection: BrowserSelection,
     viewport: Rectangle, anchor: { x: number; y: number; height?: number }, preloadPath: string, private onClose: () => void, private note?: string) {
     this.selection = selection; this.viewport = viewport; this.anchor = anchor;
@@ -26,6 +28,7 @@ export class BrowserInlineAnswer {
     this.view = new WebContentsView({ webPreferences: rendererWebPreferences(preloadPath) });
     this.contents = this.view.webContents;
     this.view.setBackgroundColor("#00000000");
+    trackTransparentNotificationView(this.view, '.bb-inline-answer, .bb-chat-selection-menu, [role="dialog"]');
     this.view.setBounds({ x: viewport.x + viewport.width - 1, y: viewport.y - 999, width: Math.min(612, viewport.width), height: 1000 });
     window.contentView.addChildView(this.view);
     this.contents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -63,7 +66,7 @@ export class BrowserInlineAnswer {
     this.view.setBounds({ width: Math.ceil(width), height: Math.ceil(height),
       x: Math.round(Math.max(pane.x, Math.min(pane.x + pane.width - width, this.manual?.x ?? pane.x + this.anchor.x - 24))),
       y: Math.round(Math.max(pane.y, Math.min(pane.y + pane.height - height, this.manual?.y ?? pane.y + y))) });
-    this.view.setVisible(this.visible);
+    setNotificationViewVisible(this.view, this.visible);
   }
   close() {
     if (this.closed) return; this.closed = true;

@@ -4,10 +4,16 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 
 import type { ChatGreeting } from "@/lib/hermes/chat-greeting";
 import { SKETCH_MARGIN, sketchRectOutlines, type SketchBox } from "@/lib/hermes/sketch-outline";
+import { useSuggestionCardText } from './use-suggestion-card-text';
+import { usePersonalize } from '../use-personalize';
+import { AUTH_CHANGED_EVENT } from '@/lib/auth-events';
+import { RECALL_SETTINGS_CHANGED_EVENT } from '../recall-autostart-lifecycle';
+import { completeRecommendationPrompts, RECOMMENDATION_REFRESH_EVENT } from '@/lib/recommendations/types';
 
 interface Props {
   greeting: ChatGreeting | null;
   suggestions: string[];
+  suggestionScopeKey?: string;
   /**
    * An opener was picked. It goes into the composer rather than straight to the
    * runtime: these are starting points, and most of them want a subject filled
@@ -26,7 +32,8 @@ interface Props {
 /**
  * What a blank chat shows: a greeting that knows roughly what time it is and
  * roughly what you have been doing, and four openers drawn from the same
- * reading. Both step forward every hour.
+ * reading. The greeting steps forward hourly; personalized cards refresh as
+ * the user's schedule and recent work change.
  *
  * Shared by the runtime terminal and the legacy one so the two cannot drift.
  * The greeting is held back until the clock and the activity signals have both
@@ -36,6 +43,7 @@ interface Props {
 export default function ChatGreetingEmptyState({
   greeting,
   suggestions,
+  suggestionScopeKey,
   onSelectSuggestion,
   disabled = false,
   footnote,
@@ -58,7 +66,7 @@ export default function ChatGreetingEmptyState({
           {greeting?.question ?? " "}
         </p>
       </div>
-      <ChatSuggestionCards suggestions={suggestions} disabled={disabled} onSelectSuggestion={onSelectSuggestion} />
+      <ChatSuggestionCards suggestions={suggestions} suggestionScopeKey={suggestionScopeKey} disabled={disabled} onSelectSuggestion={onSelectSuggestion} />
       {footnote ? (
         <p className={`text-xs text-gray-700 transition-opacity duration-500 motion-reduce:transition-none ${greeting ? "opacity-100" : "opacity-0"}`}>
           {footnote}
@@ -68,11 +76,24 @@ export default function ChatGreetingEmptyState({
   );
 }
 
-export function ChatSuggestionCards({ suggestions, disabled = false, onSelectSuggestion }: Pick<Props, 'suggestions' | 'disabled' | 'onSelectSuggestion'>) {
+type CardsProps = Pick<Props, 'suggestions' | 'suggestionScopeKey' | 'disabled' | 'onSelectSuggestion'>;
+export function ChatSuggestionCards(props: CardsProps) {
+  const [personalize]=usePersonalize();
+  const [privacyRevision,setPrivacyRevision]=useState(0);
+  useEffect(()=>{
+    const changed=()=>setPrivacyRevision(value=>value+1);
+    const events=[AUTH_CHANGED_EVENT,RECALL_SETTINGS_CHANGED_EVENT,RECOMMENDATION_REFRESH_EVENT];
+    for(const event of events) window.addEventListener(event,changed);
+    return ()=>{for(const event of events) window.removeEventListener(event,changed);};
+  },[]);
+  return <SuggestionGrid key={JSON.stringify([props.suggestionScopeKey,personalize,privacyRevision])} {...props} suggestions={completeRecommendationPrompts(props.suggestions)}/>;
+}
+
+function SuggestionGrid({suggestions,disabled=false,onSelectSuggestion}:CardsProps) {
   return <div className="grid w-full max-w-xl gap-2 sm:grid-cols-2" aria-label="Suggested next steps">
         {suggestions.map((prompt, index) => (
           <SuggestionCard
-            key={prompt}
+            key={index}
             prompt={prompt}
             index={index}
             disabled={disabled}
@@ -107,6 +128,10 @@ function SuggestionCard({
   onSelect: (prompt: string) => void;
 }) {
   const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const [held,setHeld]=useState<string|null>(null);
+  const pointer=useRef(false),focused=useRef(false);
+  const shown=held??prompt;
+  const text = useSuggestionCardText(shown, held!==null);
   const [box, setBox] = useState<SketchBox | null>(null);
 
   useEffect(() => {
@@ -145,7 +170,12 @@ function SuggestionCard({
     <button
       ref={buttonRef}
       type="button"
-      onClick={() => onSelect(prompt)}
+      onPointerEnter={event=>{if(event.pointerType==='mouse'){pointer.current=true;setHeld(shown);}}}
+      onPointerLeave={()=>{pointer.current=false;if(!focused.current)setHeld(null);}}
+      onFocus={()=>{focused.current=true;setHeld(shown);}}
+      onBlur={()=>{focused.current=false;if(!pointer.current)setHeld(null);}}
+      onClick={() => onSelect(text.actionable)}
+      aria-label={text.actionable}
       disabled={disabled}
       className="bb-terminal-suggestion neu-button border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
     >
@@ -172,7 +202,11 @@ function SuggestionCard({
           </>
         ) : null}
       </svg>
-      <span className="block">{prompt}</span>
+      <span className="grid" data-card-suggestion-phase={text.phase}>
+        <span aria-hidden className="invisible col-start-1 row-start-1">{shown}</span>
+        <span aria-hidden className="invisible col-start-1 row-start-1">{text.previous}</span>
+        <span aria-hidden className="bb-card-suggestion-text col-start-1 row-start-1" data-reduced-motion={text.reduced}>{text.displayed || '\u00a0'}</span>
+      </span>
     </button>
   );
 }

@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 
 import esbuild from "esbuild";
 
+import { composeHermesSystemPrompt } from "../src/lib/hermes/system-prompts.ts";
+
 import { fetchWeatherForecast, weatherCondition } from "../src/lib/weather/forecast.ts";
 import {
   parseWeatherChatIntent,
@@ -239,19 +241,26 @@ test("the display contract and accessible material treatment ship with the tool"
     path.join(repoRoot, "hermes-config", "system", "weather-results.md"),
     "utf8",
   );
-  const composer = fs.readFileSync(
-    path.join(dashboardRoot, "src", "lib", "hermes", "system-prompts.ts"),
-    "utf8",
-  );
   const css = fs.readFileSync(path.join(dashboardRoot, "src", "app", "globals.css"), "utf8");
   assert.match(prompt, /```weather-results/);
   assert.match(prompt, /all the dates/);
   assert.match(prompt, /alongside ordinary prose/);
   assert.match(prompt, /widget-only response/);
-  assert.match(
-    composer,
-    /allowedTools\.includes\("weather_forecast"\)[\s\S]{0,140}readSystemPrompt\("weather-results"\)/,
-  );
+  const decision = {
+    mode: "knowledge", implementationRequired: false,
+    authorizedRoots: [], authorizedPathPatterns: [],
+    allowedOperations: ["knowledge_work"], allowedCommandPatterns: [],
+  };
+  for (const surface of ["dashboard_terminal", "garden_chat", "quartz_ai"]) {
+    const enabled = composeHermesSystemPrompt({
+      surface, decision: { ...decision, allowedTools: ["weather_forecast"] },
+    });
+    const disabled = composeHermesSystemPrompt({
+      surface, decision: { ...decision, allowedTools: [] },
+    });
+    assert.equal(enabled.split(prompt.trim()).length, 2, `${surface}: contract included once`);
+    assert.ok(!disabled.includes(prompt.trim()), `${surface}: unavailable tool has no contract`);
+  }
   assert.match(css, /prefers-reduced-motion[\s\S]+chat-weather-card/);
   assert.match(css, /prefers-reduced-transparency/);
   assert.match(css, /prefers-contrast/);

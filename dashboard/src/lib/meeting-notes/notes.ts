@@ -1,3 +1,4 @@
+import { systemPromptText } from "../system-prompts/service.ts";
 // Meetily's meeting-notes pass, ported.
 //
 // The clone's supported runtime is a Tauri desktop app: a person clicks Record,
@@ -395,34 +396,6 @@ export function extractJson(content: string): unknown {
  * spelled out here because pydantic-ai used to supply it as a tool schema, and
  * that scaffolding is what the port replaces.
  */
-const NOTES_SYSTEM = `You extract structured meeting notes from a transcript.
-
-Answer with JSON only — no prose, no explanation, no code fence. The object must have exactly these keys:
-
-{
-  "MeetingName": "a short name for this meeting",
-  "People": {"title": "People", "blocks": []},
-  "SessionSummary": {"title": "Session Summary", "blocks": []},
-  "CriticalDeadlines": {"title": "Critical Deadlines", "blocks": []},
-  "KeyItemsDecisions": {"title": "Key Items & Decisions", "blocks": []},
-  "ImmediateActionItems": {"title": "Immediate Action Items", "blocks": []},
-  "NextSteps": {"title": "Next Steps", "blocks": []},
-  "MeetingNotes": {"meeting_name": "...", "sections": []}
-}
-
-A block is {"id": "1", "type": "text", "content": "...", "color": ""}.
-
-IMPORTANT: Block types must be one of: 'text', 'bullet', 'heading1', 'heading2'
-- Use 'text' for regular paragraphs
-- Use 'bullet' for list items
-- Use 'heading1' for major headings
-- Use 'heading2' for subheadings
-
-For the color field, use 'gray' for less important content or '' (empty string) for default.
-
-People is always present: one block per participant, written as "Person Name (Role, Details)".
-
-If a specific section (like Critical Deadlines) has no relevant information in this chunk, return an empty list for its 'blocks'. Never invent a deadline, an owner, or a decision that is not in the transcript.`;
 
 function chunkInstruction(input: {
   chunk: string;
@@ -458,6 +431,7 @@ export interface ChunkProgress {
 }
 
 export interface SummarizeInput {
+  userId?: number;
   transcript: string;
   baseUrl: string;
   model: string;
@@ -500,7 +474,7 @@ export async function summarizeMeeting(input: SummarizeInput): Promise<Summarize
     input.progress?.onChunkStart?.(index, chunks.length);
 
     const messages: ChatMessage[] = [
-      { role: "system", content: NOTES_SYSTEM },
+      { role: "system", content: systemPromptText("meeting-notes", input.userId) },
       {
         role: "user",
         content: chunkInstruction({

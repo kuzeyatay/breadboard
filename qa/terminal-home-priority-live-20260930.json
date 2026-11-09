@@ -1,0 +1,20 @@
+[
+  {
+    "boost": false,
+    "rewritten": 0,
+    "elapsed": 12518,
+    "ready": false,
+    "sketches": 0,
+    "age": 11951,
+    "scriptMaxQueue": 0
+  },
+  {
+    "boost": true,
+    "rewritten": 48,
+    "elapsed": 6616,
+    "ready": true,
+    "sketches": 10,
+    "age": 6540,
+    "scriptMaxQueue": 4843
+  }
+]

@@ -111,7 +111,7 @@ export default function InlineOpenExecutiveRun({
         setElapsed(asNumber(payload.elapsedSec));
         if (!reportedRef.current) {
           reportedRef.current = true;
-          notifyTaskCompleted(task);
+          notifyTaskCompleted(task, { runId });
           onTerminalRef.current?.({ outcome: "completed", content: summary });
         }
       }
@@ -192,7 +192,7 @@ export default function InlineOpenExecutiveRun({
         summary={stage}
         agentName={OPENEXECUTIVE_AGENT_NAME}
       />
-      <div className="bb-agent-run-card overflow-hidden">
+      <div data-notification-run={runId} className="bb-agent-run-card overflow-hidden">
         <header className="bb-agent-run-header">
           <p className="bb-agent-run-title min-w-0 truncate">
             {OPENEXECUTIVE_AGENT_NAME}

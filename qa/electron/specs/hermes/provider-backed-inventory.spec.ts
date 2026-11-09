@@ -313,7 +313,7 @@ test("Hermes provider-backed scenario inventory", async ({ qa }) => {
     if (new URL(page.url()).pathname !== new URL(gardenA.workspaceHref, page.url()).pathname) {
       await openGardenWorkspace(page, gardenA);
     }
-    const composer = page.getByPlaceholder(/Ask about your documents/).first();
+    const composer = page.getByPlaceholder('Ask anything.', { exact: true }).first();
     await expect(composer).toBeEditable({ timeout: 60_000 });
     await composer.fill("Write a very long harmless explanation of why a disposable QA run is isolated, and keep streaming until stopped.");
     await page.getByRole("button", { name: "Send", exact: true }).last().click();
@@ -400,7 +400,7 @@ async function sendGardenTurn(
   criterion: (assistantText: string) => boolean,
   timeoutMs = 60_000,
 ): Promise<TurnResult> {
-  const composer = page.getByPlaceholder(/Ask about your documents/).first();
+  const composer = page.getByPlaceholder('Ask anything.', { exact: true }).first();
   await expect(composer).toBeVisible({ timeout: 30_000 });
   await expect(composer).toBeEditable({ timeout: 120_000 });
   const beforeCount = await assistantBlockCount(page);
@@ -470,14 +470,14 @@ async function waitForTurn(
       : "";
     failureText = await page.getByRole("alert").allTextContents().then((items) => items.join("\n").trim()).catch(() => "");
     userMessageVisible = await page.locator(".neu-chat-message-user").filter({ hasText: prompt }).count().then((count) => count > 0).catch(() => false);
-    const composer = page.getByPlaceholder(/Ask about your documents|Ask anything across your gardens/).first();
+    const composer = page.getByPlaceholder(/^Ask anything\.$|Ask anything across your gardens/).first();
     const composerUsable = await composer.isEnabled().catch(() => false);
     const delta = assistantText.trim();
     if (criterion(delta)) return { completed: true, assistantText: delta, failureText, userMessageVisible, composerUsable };
     if (failureText && composerUsable) return { completed: false, assistantText, failureText, userMessageVisible, composerUsable };
     await delay(250);
   }
-  const composerUsable = await page.getByPlaceholder(/Ask about your documents|Ask anything across your gardens/).first().isEnabled().catch(() => false);
+  const composerUsable = await page.getByPlaceholder(/^Ask anything\.$|Ask anything across your gardens/).first().isEnabled().catch(() => false);
   return { completed: false, assistantText, failureText, userMessageVisible, composerUsable };
 }
 

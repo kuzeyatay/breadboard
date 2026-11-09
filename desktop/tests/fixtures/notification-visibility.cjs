@@ -3,7 +3,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const { pathToFileURL } = require('node:url');
-const { app, ipcMain, webContents } = require('electron');
+const { app, ipcMain, webContents, Notification } = require('electron');
+// This opacity-zero fixture verifies layout, not OS presentation. Keep its
+// synthetic unseen chat cards out of the user's desktop and speakers. Actual
+// OS delivery is exercised separately during an explicit physical test slot.
+const nativeShows = [];
+Notification.prototype.show = function () { nativeShows.push({title:this.title,body:this.body}); queueMicrotask(() => this.emit('show')); };
 const { WindowManager } = require('../../dist/main/window-manager.js');
 const { isTabsCommand, IPC_CHANNELS } = require('../../dist/shared/ipc-contract.js');
 const dir = process.argv[2];
@@ -44,6 +49,10 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC_CHANNELS.tabsCommand, (event, command) =>
     isTabsCommand(command) && manager.tabs.handleCommand(event.sender, command));
   const window = manager.createMainWindow();
+  // Model foreground transitions in this opacity-zero fixture; never take
+  // focus from the user's app. Real Win32 focus has a separate physical test.
+  let focused = true;
+  window.isFocused = () => focused;
   window.setOpacity(0);
   window.showInactive();
   window.setContentSize(1000, 800);
@@ -66,7 +75,10 @@ app.whenReady().then(async () => {
     const card=host?.firstElementChild;
     const response=document.querySelector('[aria-label="AI response"]');
     const rect=element=>element ? {width:element.getBoundingClientRect().width,height:element.getBoundingClientRect().height} : null;
-    return {viewport:{width:innerWidth,height:innerHeight,outerWidth,outerHeight},host:rect(host),card:rect(card),response:rect(response)};
+    const style=getComputedStyle(document.querySelector('.bb-notification-overlay-page'));
+    return {viewport:{width:innerWidth,height:innerHeight,outerWidth,outerHeight},
+      layoutViewport:{width:parseFloat(style.getPropertyValue('--bb-toast-viewport-width')),height:parseFloat(style.getPropertyValue('--bb-toast-viewport-height'))},
+      host:rect(host),card:rect(card),response:rect(response)};
   })()`);
   const assertVisible = async label => {
     await until(() => view.getBounds().x < window.getContentSize()[0] - 1 && view.getBounds().y >= 0, label + ' is onscreen');
@@ -87,7 +99,7 @@ app.whenReady().then(async () => {
   await base.executeJavaScript(`window.deliverInbox(${JSON.stringify(inbox)})`);
   await assertVisible('Response notification');
   await until(async () => (await geometry()).response?.height > 100, 'readable response area after a short notification').catch(async error => { throw Error(error.message + ': ' + JSON.stringify(await geometry())); });
-  assert.ok((await geometry()).response.width > 500, 'a response can grow wider than the previous short toast');
+  assert.ok((await geometry()).response.width > short.card.width, 'a response can grow wider than the previous short toast');
   const assertCardBounds = async () => {
     const measured = await geometry();
     const bounds = view.getBounds();
@@ -103,7 +115,7 @@ app.whenReady().then(async () => {
   manager.tabs.handleCommand(base, {type:'voice-overlay',open:false});
 
   window.setContentSize(1000, 650);
-  await until(async () => Math.abs((await geometry()).viewport.height - window.getContentSize()[1]) <= 1 && (await geometry()).viewport.height < 800, 'renderer follows the resized window').catch(async error => { throw Error(error.message + ': ' + JSON.stringify({size:window.getContentSize(), geometry:await geometry()})); });
+  await until(async () => Math.abs((await geometry()).layoutViewport.height - (window.getContentSize()[1] - 32)) <= 1, 'layout limits follow the resized window below the tab strip').catch(async error => { throw Error(error.message + ': ' + JSON.stringify({size:window.getContentSize(), geometry:await geometry()})); });
   await until(async () => Math.abs(view.getBounds().height - (await geometry()).host.height) <= 1, 'resized card bounds settle');
   await assertCardBounds();
   assert.ok((await geometry()).response.height > 100, 'resized response remains readable');
@@ -154,7 +166,25 @@ app.whenReady().then(async () => {
   manager.tabs.setNotificationsVisible(true);
   await assertVisible('Notifications restored after enabling the global setting');
 
-  assert.equal(overlay.isAudioMuted(), !window.isFocused(), 'only a foreground notification can chime');
+  assert.equal(overlay.isAudioMuted(), true, 'an opacity-zero layout fixture cannot present an audible notification');
+  focused = false;
+  window.emit('blur');
+  await until(() => view.getBounds().y < 0, 'unfocused app parks the in-app card even while the host is shown');
+  assert.equal(window.isVisible(), true);
+  assert.equal(window.isMinimized(), false);
+  assert.equal(overlay.isAudioMuted(), true, 'Windows delivery owns sound while another app is active');
+  inbox = [{id:'background-routing',title:'Response ready',type:'success',chatTitle:'Background routing',
+    response:'A new unseen response while another app has focus.',target:{surface:'dashboard_terminal',chatId:'background-chat'},updatedAt:new Date().toISOString()}];
+  await base.executeJavaScript(`window.deliverInbox(${JSON.stringify(inbox)})`);
+  await until(() => nativeShows.filter(notice => notice.title === 'Background routing').length === 1, 'background response reaches the OS notification path');
+  assert.ok(view.getBounds().y < 0, 'background notification does not also display an in-app card');
+  window.emit('blur');
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.equal(nativeShows.filter(notice => notice.title === 'Background routing').length, 1, 'background refresh does not duplicate Windows delivery');
+  focused = true;
+  window.emit('focus');
+  await assertVisible('Returning foreground restores the retained card');
+  assert.equal(nativeShows.filter(notice => notice.title === 'Background routing').length, 1);
   window.hide();
   assert.equal(overlay.isAudioMuted(), true, 'hiding the window silences its notifications');
   window.showInactive();

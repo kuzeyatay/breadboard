@@ -3,6 +3,8 @@ import type { ChatNotificationTarget } from "../chat-notification-inbox.ts";
 /** Compact account inbox entry, shared by every history list. */
 export interface UnreadChatRecord {
   id: string;
+  messageKeys?: string[];
+  inlineSelectionId?: string;
   target: ChatNotificationTarget;
 }
 

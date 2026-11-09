@@ -210,12 +210,13 @@ async function drawWithChatModel(input: {
 
 /** Draw with the Responses image tool on the chat model. */
 async function drawWithResponsesTool(input: {
+  userId?: number | null;
   baseUrl: string;
   prompt: string;
   reference?: { dataUrl: string } | null;
 }): Promise<DrawAttempt> {
   try {
-    const generated = await generateArtifactImage({
+    const generated = await generateArtifactImage({ userId: input.userId,
       baseURL: input.baseUrl,
       prompt: input.prompt,
       sourceImage: input.reference ?? null,
@@ -287,6 +288,7 @@ export async function planImageBackends(input: {
  * so the rest of the film does not pay for the same failure again.
  */
 export async function drawImageBytes(input: {
+  userId?: number | null;
   baseUrl: string;
   plan: ImagePlan;
   prompt: string;
@@ -311,7 +313,7 @@ export async function drawImageBytes(input: {
   }
 
   if (input.plan.responsesTool) {
-    const attempt = await drawWithResponsesTool({
+    const attempt = await drawWithResponsesTool({ userId: input.userId,
       baseUrl: input.baseUrl,
       prompt: input.prompt,
       reference: input.reference ?? null,

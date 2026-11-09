@@ -14,6 +14,15 @@ function strictInteger(raw, fallback, key, min, max) {
   return value;
 }
 
+// Keep the existing eight-GiB default. Smaller heaps reduce the compiler's
+// actual V8 ceiling and its admission estimate together; the Windows reserve
+// and three-GiB non-V8/worker allowance remain unchanged.
+export function dashboardBuildMemoryPlan(env = process.env) {
+  const heapMb = strictInteger(env.BREADBOARD_DASHBOARD_BUILD_HEAP_MB, 8_192,
+    "BREADBOARD_DASHBOARD_BUILD_HEAP_MB", 4_096, 8_192);
+  return { heapMb, estimateMb: heapMb + 3_072 };
+}
+
 export function assertWindowsCommitHeadroom({ operation, estimateMb }) {
   if (process.platform !== "win32") return null;
   const sampled = spawnSync(

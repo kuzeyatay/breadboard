@@ -64,7 +64,9 @@ test('notification sounds follow rendered cards, page visibility, native visibil
       const overlay=location.pathname==='/overlay';
       let nativeVisible=false; const listeners=new Set();
       window.nativeVisible=value=>{nativeVisible=value;for(const fn of listeners)fn(value);};
-      if(overlay)window.breadboardDesktop={onNotificationOverlayVisibility:fn=>{listeners.add(fn);fn(nativeVisible);return()=>listeners.delete(fn);}};
+      // A real overlay only chimes for cards inside uncovered native regions, so the stub must be a complete tabs bridge.
+      if(overlay)window.breadboardDesktop={onNotificationOverlayVisibility:fn=>{listeners.add(fn);fn(nativeVisible);return()=>listeners.delete(fn);},
+        getTabsState:async()=>({enabled:true,tabs:[],extensions:[],notificationVisibleRects:[{x:0,y:0,width:4000,height:4000}]}),onTabsState:()=>()=>{},tabs:async()=>true};
       let now=10000; Date.now=()=>now;
       window.notes=0;
       window.AudioContext=class {

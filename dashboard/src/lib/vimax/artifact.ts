@@ -201,7 +201,7 @@ export async function drawProductionImage(input: {
       }
     }
 
-    const attempt = await drawImageBytes({
+    const attempt = await drawImageBytes({ userId: input.context.userId,
       baseUrl: input.baseUrl,
       plan: input.plan,
       prompt: input.prompt,

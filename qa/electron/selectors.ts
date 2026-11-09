@@ -157,7 +157,7 @@ export const SELECTORS = {
     cancelUpload: role("button", /^(?:Cancel|Cancel upload)$/),
     closeUpload: role("button", "Close", true),
     newChat: role("button", "New chat", true),
-    chatComposer: placeholder("Ask about your documents…", true),
+    chatComposer: placeholder("Ask anything.", true),
     renameChat: role("button", "Rename chat", true),
     deleteChat: role("button", "Delete chat", true),
     videos: role("button", /^Videos(?:$|\s|\()/),

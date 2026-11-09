@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
 import { responseTextForSpeech } from '../src/lib/speech/response-text.ts';
-import { splitSpeechPassages } from '../src/lib/speech/passages.ts';
+import { splitSpeechPassages, speechSentenceEnds } from '../src/lib/speech/passages.ts';
 import { applyPronunciations, parsePronunciations } from '../src/lib/speech/pronunciation.ts';
 
 const corpus = JSON.parse(fs.readFileSync(new URL('./fixtures/speech-prosody.json', import.meta.url), 'utf8'));
@@ -38,6 +38,19 @@ test('long sentences split at clauses and CJK sentences need no following whites
   assert.equal(splitSpeechPassages('When the rain stops, we can walk to the station together.', { maxCharacters: 37 })[0], 'When the rain stops,');
   assert.equal(splitSpeechPassages('準備ができました。次の手順に進みましょう！', { maxCharacters: 16 })[0], '準備ができました。');
   assert.equal(splitSpeechPassages('She said, “Take your time.” Then she left the room.', { maxCharacters: 34 })[0], 'She said, “Take your time.”');
+});
+
+test('explicit temperature units close sentences without treating ordinary initials as units', () => {
+  for (const unit of ['°C', '° F', 'degrees C', 'degree F', '℃', '℉']) {
+    const first = `The reading is 11${unit.startsWith('degree') ? ' ' : ''}${unit}.`;
+    const text = first + ' Keep the window closed.';
+    assert.equal(speechSentenceEnds(text)[0], first.length, unit);
+    assert.equal(splitSpeechPassages(text, { maxCharacters: first.length + 7 })[0], first, unit);
+  }
+  for (const initial of ['C', 'F']) {
+    const text = `Ask ${initial}. Smith before opening the window.`;
+    assert.deepEqual(speechSentenceEnds(text), [text.length]);
+  }
 });
 
 test('both provider budgets preserve text across long readings, quotes, and Unicode', () => {

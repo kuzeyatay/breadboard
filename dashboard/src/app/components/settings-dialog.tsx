@@ -11,6 +11,7 @@ import SettingsMcp from "@/app/components/settings-mcp";
 import SettingsProviders from "@/app/components/settings-providers";
 import SettingsRecall from "@/app/components/settings-recall";
 import SettingsSpeech from "@/app/components/settings-speech";
+import SettingsSystem from "@/app/components/settings-system";
 import SettingsVoiceCalibration from "@/app/components/settings-voice-calibration";
 
 export type SettingsTab =
@@ -22,6 +23,7 @@ export type SettingsTab =
   | "speech"
   | "messaging"
   | "guardrails"
+  | "system"
   | "recall";
 
 interface SettingsDialogProps {
@@ -59,6 +61,11 @@ const TABS: Array<{ value: SettingsTab; label: string; description: string }> = 
     value: "voice",
     label: "Tone",
     description: "Match replies to your writing style.",
+  },
+  {
+    value: "system",
+    label: "System",
+    description: "Customize the instructions Breadboard uses.",
   },
   {
     value: "speech",
@@ -160,8 +167,8 @@ export default function SettingsDialog({
         aria-modal={presentation === "modal" ? "true" : undefined}
         aria-labelledby="settings-dialog-title"
         className={`${open ? "flex" : "hidden"} ${presentation === "modal"
-          ? "bb-modal-panel neu-dialog max-h-[min(46rem,92vh)] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border text-[var(--ink)]"
-          : `${anchorRef ? "min-h-0 w-full" : "absolute bottom-0 right-full z-50 mr-2 max-h-[min(42rem,calc(100vh-2rem))] w-[min(56rem,calc(100vw-2rem))]"} neu-popover flex-col overflow-hidden rounded-2xl border border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--ink)] shadow-2xl`}`}
+          ? "bb-modal-panel neu-dialog max-h-[min(46rem,92vh)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border text-[var(--ink)]"
+          : `${anchorRef ? "min-h-0 w-full" : "absolute bottom-0 right-full z-50 mr-2 max-h-[min(42rem,calc(100vh-2rem))] w-[min(64rem,calc(100vw-2rem))]"} neu-popover flex-col overflow-hidden rounded-2xl border border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--ink)] shadow-2xl`}`}
       >
         <div className="flex shrink-0 items-start justify-between gap-3 px-6 pb-4 pt-5">
           <div className="min-w-0">
@@ -222,6 +229,11 @@ export default function SettingsDialog({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-4">
+          {visitedTabs.has("system") ? (
+            <div id="settings-panel-system" role="tabpanel" aria-labelledby="settings-tab-system" hidden={tab !== "system"}>
+              <SettingsSystem />
+            </div>
+          ) : null}
           {visitedTabs.has("account") ? (
             <div
               id="settings-panel-account"
@@ -336,7 +348,7 @@ export default function SettingsDialog({
       open={open}
       portal={false}
       maxHeight={672}
-      className="fixed z-[110] flex w-[min(56rem,calc(100vw-24px))]"
+      className="fixed z-[110] flex w-[min(64rem,calc(100vw-24px))]"
     >
       {panel}
     </ViewportPopover>

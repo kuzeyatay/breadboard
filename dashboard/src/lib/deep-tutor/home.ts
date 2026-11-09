@@ -20,6 +20,7 @@ import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.
 import { repositoryRoot } from "../runtime-paths.ts";
 import { fileServerScriptPath, nodeExecutable } from "./runtime.ts";
 import type { TutorScope } from "./materials.ts";
+import { apiAnythingMcpServer } from "../api-anything/agents.ts";
 
 /** Stable ids so a rewritten catalog never invalidates a running session. */
 const LLM_PROFILE_ID = "llm-profile-breadboard-chatmock";
@@ -86,7 +87,7 @@ export function provisionHome(input: ProvisionInput): ProvisionedHome {
   writeEmbeddingCatalog(settingsDirectory, input);
   writeMainConfig(settingsDirectory);
   writeInterface(settingsDirectory, input.language);
-  const materialsMounted = writeMcpConfig(settingsDirectory, input.scope);
+  const materialsMounted = writeMcpConfig(settingsDirectory, input.scope, input.userId);
 
   return { home, settingsDirectory, materialsMounted };
 }
@@ -247,7 +248,7 @@ function writeInterface(settingsDirectory: string, language: string): void {
  * with no file tools at all, not with tools that answer "nothing found" and
  * make it look like the material is empty when it is simply out of reach.
  */
-function writeMcpConfig(settingsDirectory: string, scope: TutorScope): boolean {
+function writeMcpConfig(settingsDirectory: string, scope: TutorScope, userId: number): boolean {
   const file = path.join(settingsDirectory, "mcp.json");
   const existing = readJson(file);
   const servers =
@@ -255,6 +256,12 @@ function writeMcpConfig(settingsDirectory: string, scope: TutorScope): boolean {
       ? { ...(existing.servers as Record<string, unknown>) }
       : {};
 
+  const websiteApis = apiAnythingMcpServer(userId);
+  if (websiteApis) servers["api-anything"] = {
+    ...websiteApis, type: "stdio", enabled: true, enabled_tools: ["*"], tool_timeout: 30,
+    env: { ELECTRON_RUN_AS_NODE: "1" },
+  };
+  else delete servers["api-anything"];
   const script = fileServerScriptPath();
   if (!script || !scope.roots.length) {
     delete servers[FILE_SERVER_NAME];

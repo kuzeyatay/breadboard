@@ -365,3 +365,37 @@ test("changes from every surface invalidate the terminal summary cache", async (
     client.invalidateHermesSessionSummaries();
   }
 });
+
+
+test("Terminal history includes older chats beyond 100 without pins consuming Recents slots", async () => {
+  const chats = db.transaction(() => Array.from({ length: 1205 }, (_, index) => {
+    const chat = store.createConversation({ userId: 1, title: `History ${index}`,
+      surface: index % 2 ? "garden_chat" : "dashboard_terminal",
+      ...(index % 2 ? { defaultGardenId: 10, scopeKind: "garden" } : {}) });
+    if (index < 4) store.setConversationPinned(chat, true);
+    return chat;
+  }))();
+  const oldest = chats[0], newest = chats.at(-1);
+  finish(oldest, "old-history"); finish(newest, "new-history");
+  // Same-timestamp ties still have a stable id ordering. A very old pin must
+  // remain in Pinned without truncating any unpinned or other-surface chats.
+  db.prepare("UPDATE conversations SET updated_at='2000-01-01 00:00:00' WHERE id=?").run(oldest.id);
+  const archived = store.createConversation({ userId: 1, title: "Archived" });
+  store.setConversationArchived(archived, true);
+  store.createConversation({ userId: 1, temporary: true, title: "Off the record" });
+  store.createConversation({ userId: 2, title: "Other account" });
+  const api = route("route.ts");
+  const response = await api.GET(new Request("http://localhost/api/hermes/sessions?surface=dashboard_terminal"));
+  assert.equal(response.status, 200);
+  const { sessions } = await response.json();
+  assert.equal(sessions.length, 1205);
+  assert.equal(sessions.filter(chat => chat.pinned).length, 4);
+  assert.equal(sessions.filter(chat => !chat.pinned).length, 1201);
+  assert.equal(new Set(sessions.map(chat => chat.id)).size, 1205);
+  assert.ok(sessions.slice(0, 4).every(chat => chat.pinned));
+  assert.equal(sessions.find(chat => chat.id === oldest.public_id).messageCount, 2);
+  assert.equal(sessions.find(chat => chat.id === newest.public_id).messageCount, 2);
+  assert.ok(sessions.every(chat => !Object.hasOwn(chat, "messages")), "history never downloads full transcripts");
+  const scoped = await (await api.GET(new Request("http://localhost/api/hermes/sessions?surface=garden_chat"))).json();
+  assert.equal(scoped.sessions.length, 602, "surface filtering cannot lose older chats to a global cap");
+});
