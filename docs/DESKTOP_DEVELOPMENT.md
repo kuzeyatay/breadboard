@@ -2,22 +2,84 @@
 
 ## Prerequisites
 
-The tested desktop toolchain is Windows 10/11 x64, Node ≥ 22, npm, Rust/Cargo,
-Bun ≥ 1.3.14, and Python ≥ 3.11 with pip. Windows x64 is the only supported
-installer target. The shell and pure unit tests are portable, but non-Windows
-desktop development and packaging are not release-verified.
+The full desktop development stack currently expects:
 
-Install dependencies from the repository root:
+- Windows 10 or 11 x64 (the only supported installer target; the shell and
+  pure unit tests are portable, but non-Windows desktop development and
+  packaging are not release-verified);
+- Node.js `22.15+`, `23.5+`, or `24+` and npm (the installer build pins
+  24.14.1);
+- Python 3.11+ and [`uv`](https://docs.astral.sh/uv/);
+- Rust and Cargo;
+- Bun 1.3.14+;
+- Git.
 
-```bat
+Docker Desktop, Docker Engine, or Podman is optional and is only needed for
+features that depend on containerized services, such as social publishing.
+Some media and specialist agents have their own documented prerequisites.
+
+## Clone and install
+
+```powershell
+git clone https://github.com/kuzeyatay/breadboard.git
+cd breadboard
+
+npm ci
 npm ci --prefix dashboard
 npm ci --prefix quartz
 npm ci --prefix desktop
-cd hermes && bun install && cd ..
+npm ci --prefix hermes-agent
+
+Push-Location hermes-agent
+uv sync
+Pop-Location
 ```
+
+The repository contains several integrated upstream projects as ordinary
+tracked files (see [VENDORED_REPOSITORIES.md](VENDORED_REPOSITORIES.md)). Some
+optional capabilities also provision isolated runtimes on first use or through
+a dedicated `npm run setup:*` command.
 
 ChatMock is source-only Python; its dependencies are assembled into the
 packaged runtime by `npm run desktop:prepare`.
+
+## Configure development secrets
+
+```powershell
+Copy-Item .env.example .env
+Copy-Item dashboard/.env.example dashboard/.env.local
+```
+
+At minimum, replace the placeholder `NEXTAUTH_SECRET` in
+`dashboard/.env.local` with a long random value. Review both example files
+before starting: they document model providers, local services, connected apps,
+paths, and optional capabilities.
+
+Never commit `.env`, `dashboard/.env.local`, OAuth tokens, provider keys, or
+generated runtime credentials.
+
+## Run modes
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | The integrated Electron application in lean mode (see below). |
+| `npm run desktop:dev:hot` | Electron plus the hot Next.js development server. |
+| `npm run desktop:dev:lean` | Production-like standalone dashboard with lower long-running compiler overhead. |
+| `npm run dev:dashboard` | Dashboard only; other required services must already be available. |
+| `npm run dev:quartz` | Quartz Garden only. |
+| `npm run dev:chatmock` | Local OpenAI-compatible model bridge only. |
+| `npm run dev:hermes` | Hermes runtime only. |
+
+Default manual-development URLs are:
+
+- Dashboard: `http://localhost:3000`
+- Quartz: `http://localhost:8081`
+- ChatMock API: `http://localhost:8765/v1`
+- Hermes: `http://localhost:9129`
+
+Desktop launches use dynamically allocated loopback ports, so these defaults do
+not necessarily match an Electron session.
+
 
 ### Explicit developer/build provisioning
 
@@ -160,3 +222,63 @@ and Windows Job Object ownership bound the remaining long-lived trees. Resource
 caps remain emergency backstops, not the reclamation mechanism.
 
 See `docs/MEMORY_TUNING.md` for the reserve policy and measurement commands.
+
+## Building the Windows installer
+
+```powershell
+npm run desktop:build:dashboard
+npm run desktop:prepare
+npm run desktop:test
+npm run desktop:verify
+npm run desktop:dist:win
+```
+
+The installer is written to the configured desktop release directory. The
+default development output is under:
+
+```text
+%LOCALAPPDATA%/breadboard-desktop-build/release/
+```
+
+The same steps run on a hosted Windows runner through the "Desktop checks and
+installer" workflow. Before distributing a build, follow the
+[desktop release checklist](DESKTOP_RELEASE_CHECKLIST.md).
+
+## Other validation entry points
+
+```powershell
+npm run test:dashboard
+npm run desktop:test
+npm run test:scripts
+npm run qa:runtime-v2:parity
+npm run qa:electron:critical
+```
+
+Some suites build native components, launch Electron, or prepare local services.
+See the desktop and Runtime V2 documentation before running packaged, burn-in,
+or memory QA.
+
+## Repository layout
+
+```text
+breadboard/
+|-- dashboard/        Next.js application, APIs, persistence, and UI
+|-- desktop/          Electron shell and desktop packaging
+|-- native/           Rust Runtime V2 supervisor and shared protocols
+|-- runtime-v2/       Runtime manifests and service contracts
+|-- hermes-agent/     Conversational agent runtime
+|-- hermes-config/    Breadboard agent, system, and tool configuration
+|-- chatmock/         Local OpenAI-compatible provider bridge
+|-- quartz/           Garden source and generated Quartz site
+|-- docs/             Architecture, operations, and integration guides
+|-- qa/               Electron, runtime, memory, and packaged-app QA
+|-- scripts/          Setup, launch, migration, and validation helpers
+`-- shared/           Cross-runtime shared assets and contracts
+```
+
+Additional top-level directories are pinned source snapshots of the upstream
+projects Breadboard integrates. They are committed as ordinary monorepo files,
+not Git submodules, so a normal clone contains the integration source. See the
+[source snapshot manifest](VENDORED_REPOSITORIES.md) for revisions, licenses,
+deliberate size exclusions, and the refresh procedure.
+
