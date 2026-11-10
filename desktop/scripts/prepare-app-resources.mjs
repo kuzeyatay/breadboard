@@ -978,9 +978,22 @@ log(`staging Codex coding agent from ${codexSource}`);
 fs.mkdirSync(path.dirname(codexTarget), { recursive: true });
 fs.copyFileSync(codexSource, codexTarget);
 if (process.platform === "win32") {
+  // The npm distribution (@openai/codex, vendor/x86_64-pc-windows-msvc) keeps
+  // codex.exe and the code-mode host under bin/ and the sandbox helpers under
+  // codex-resources/; a flattened install has them all beside codex.exe.
+  const codexDistribution = path.dirname(codexSource);
+  const companionDirectories = [
+    codexDistribution,
+    path.join(codexDistribution, "..", "codex-resources"),
+    path.join(codexDistribution, "..", "bin"),
+  ];
   for (const name of CODEX_WINDOWS_RUNTIME_FILES.filter((name) => name !== "codex.exe")) {
-    const companion = path.join(path.dirname(codexSource), name);
-    if (!fs.existsSync(companion)) fail(`The Codex distribution is incomplete: missing ${name} beside ${codexSource}.`);
+    const companion = companionDirectories
+      .map((directory) => path.join(directory, name))
+      .find((candidate) => fs.existsSync(candidate));
+    if (!companion) {
+      fail(`The Codex distribution is incomplete: missing ${name} beside ${codexSource} or in its codex-resources directory.`);
+    }
     fs.copyFileSync(companion, path.join(path.dirname(codexTarget), name));
   }
 }
