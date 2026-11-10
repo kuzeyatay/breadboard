@@ -4005,7 +4005,7 @@
       "capabilityIds": [
         "runtime-agent:music-producer"
       ],
-      "requirement": "optional",
+      "requirement": "required",
       "launchProfiles": [
         {
           "modes": [

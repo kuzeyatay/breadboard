@@ -309,8 +309,8 @@ const PINNED_GBRAIN_RUNTIME = {
   adapter: {
     package: "@breadboard/gbrain-adapter",
     version: "0.1.0",
-    sourceGitTree: "321aea7a3e2a891322bab0d9565561f825ca1c2b",
-    sourceSha256: "EAEBE95DD7B53C2425F3B875982DEE6FBD149FAECE71961D94682A15389DFBED",
+    sourceGitTree: "3156c9276b39146ad955fbca44caae95018f5ddd",
+    sourceSha256: "F65186A17DB50B8BC92675D00F9D8467997357F4795BA32A9BCD615DFBEE20B0",
     sourceFileCount: 13,
     packageSha256: "3FBB7B271E513887BE51AF945DDBAADA302856715347B911319B0A71BF60BFBB",
     bunLockSha256: "346D47609DC78FD25DEF4D49A74865689B68A0B0BD27F46BA2857CA8F28F2AE2",
@@ -849,7 +849,10 @@ const PACKAGED_SERVICE_CLOSURE_POLICIES = Object.freeze({
   hermes: { dataRoot: "none", bootstrap: ["app-root:hermes-agent/breadboard_runtime.py", "app-root:hermes-agent/hermes_cli/main.py"] },
   gbrain: { dataRoot: "none", bootstrap: ["app-root:gbrain/runtime-artifact.json"] },
   // Source only: the interpreter is built under the data root on first use.
-  comfyui: { dataRoot: "writable-state", bootstrap: ["app-root:comfyui/main.py"] },
+  comfyui: {
+    dataRoot: "managed-install",
+    bootstrap: ["app-root:comfyui/main.py", "app-root:dashboard/scripts/runtime-v2-managed-setup-executor.mjs"],
+  },
   "telegram-gateway": { dataRoot: "none", bootstrap: ["app-root:dashboard/scripts/runtime-v2-telegram-gateway-service.mjs"] },
   "whatsapp-gateway": { dataRoot: "none", bootstrap: ["app-root:dashboard/scripts/runtime-v2-whatsapp-gateway-service.mjs"] },
   openwork: {
@@ -918,6 +921,14 @@ const PACKAGED_SERVICE_CLOSURE_POLICIES = Object.freeze({
     dataRoot: "writable-state",
     bootstrap: ["app-root:dashboard/scripts/runtime-v2-spotify-playback-service.mjs"],
     externalBoundary: ["installed Edge or Chrome, Spotify Premium account, and Spotify network access"],
+  },
+  acestep: {
+    dataRoot: "managed-install",
+    bootstrap: [
+      "app-root:dashboard/scripts/acestep-managed-service.py",
+      "app-root:dashboard/scripts/acestep-setup.py",
+      "app-root:dashboard/scripts/runtime-v2-managed-setup-executor.mjs",
+    ],
   },
   "bambu-printer": {
     dataRoot: "writable-state",

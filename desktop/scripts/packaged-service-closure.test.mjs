@@ -448,7 +448,7 @@ test("packaged OCI stacks use reviewed linux-amd64 index and child-manifest dige
 test("only genuinely unresolved packaged prerequisites remain release blockers", () => {
   const rows = closureRows();
   assert.doesNotMatch(rows.get("comfyui"), /releaseBlocker/u);
-  assert.match(rows.get("comfyui"), /dataRoot: "writable-state", bootstrap: \["app-root:comfyui\/main\.py"\]/u);
+  assert.match(rows.get("comfyui"), /dataRoot: "managed-install"[\s\S]*app-root:comfyui\/main\.py/u);
   assert.doesNotMatch(rows.get("wardrobe"), /releaseBlocker/u);
   assert.match(rows.get("wardrobe"), /dataRoot: "writable-state"[\s\S]*wardrobe-runtime\/runtime-artifact\.json/u);
   assert.doesNotMatch(rows.get("mem0-semantic-engine"), /releaseBlocker/u);
