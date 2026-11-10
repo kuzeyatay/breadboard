@@ -496,6 +496,17 @@ async function main() {
     inviteCode = null;
   }
   record("initial invite code exists in desktop config", inviteCode !== null);
+  // A fresh install sends the sign-in page to account creation (no invite
+  // needed for the first account); an install with accounts shows sign-in.
+  const firstLogin = await fetchOk(`${base}/auth/login`, { redirect: "manual" });
+  const firstLoginTarget = firstLogin?.headers.get("location") ?? "";
+  record(
+    "sign-in page either creates the first account or signs in",
+    firstLogin !== null &&
+      ((firstLogin.status >= 300 && firstLogin.status < 400 && firstLoginTarget.includes("/auth/register")) ||
+        firstLogin.status === 200),
+    `status ${firstLogin?.status}${firstLoginTarget ? ` -> ${firstLoginTarget}` : ""}`,
+  );
   const username = `smoke${Date.now().toString(36)}`;
   const email = `${username}@local.test`;
   const password = "Smoke-test-1234";
@@ -509,6 +520,16 @@ async function main() {
     register !== null && register.ok,
     `status ${register?.status}`,
   );
+  // With an account on the install, the open first account is closed again:
+  // sign-in no longer redirects and a second registration needs the code.
+  const laterLogin = await fetchOk(`${base}/auth/login`, { redirect: "manual" });
+  record("sign-in page stays put once an account exists", laterLogin?.status === 200, `status ${laterLogin?.status}`);
+  const uninvited = await fetchOk(`${base}/api/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: `${username}b`, password, email: `b-${email}` }),
+  });
+  record("a second account still needs an invite code", uninvited?.status === 400, `status ${uninvited?.status}`);
 
   // NextAuth credentials sign-in (CSRF + callback), collecting cookies.
   const jar = new Map();

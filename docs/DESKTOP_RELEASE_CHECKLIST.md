@@ -22,6 +22,12 @@
    cleanup and fatal logs, then uninstalls and confirms user data remains.
 11. Inspect `installed-smoke-summary.json`, `app-smoke-results.json`, and
    `app-smoke.log` in the evidence directory. Every check must pass.
+12. First-run by hand, on a machine (or Windows account) that has never run
+   Breadboard: the first window must land on "Welcome to Breadboard" with no
+   invite-code field, creating the account must sign in directly, and a blank
+   chat must show "No model is connected yet" with a button that opens
+   Settings -> Account. Sign in with ChatGPT there; the notice must be gone on
+   the next new chat and a message must get an answer.
 
 ## Signing status — **currently unsigned**
 

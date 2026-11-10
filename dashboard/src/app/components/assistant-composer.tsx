@@ -23,6 +23,7 @@ import dynamic from 'next/dynamic';
 import AttachmentPreviewDialog from '@/app/components/attachment-preview-dialog';
 import ComposerAddMenu, { type ComposerAddMenuHandle } from '@/app/components/composer-add-menu';
 import SettingsDialog, { type SettingsTab } from '@/app/components/settings-dialog';
+import { OPEN_SETTINGS_EVENT } from '@/lib/model-connection';
 import BreadboardLoader from '@/app/components/breadboard-loader';
 import ComposerBorderBeam from '@/app/components/effects/composer-border-beam';
 import MetalSendButton from '@/app/components/effects/metal-send-button';
@@ -1094,6 +1095,18 @@ export default function AssistantComposer({
     return () => window.removeEventListener('keydown', handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lightboxIndex, imageAttachments.length]);
+  // The blank-chat notice asks for Settings → Account from outside the
+  // composer; the popover state lives here, so it listens here.
+  useEffect(() => {
+    const open = (event: Event) => {
+      // Several composers can be mounted (side chats); only a visible one answers.
+      if (settingsButtonRef.current && settingsButtonRef.current.getClientRects().length === 0) return;
+      setSettingsInitialTab(((event as CustomEvent).detail as SettingsTab | undefined) ?? 'account');
+      setIntelligencePanel('settings');
+    };
+    window.addEventListener(OPEN_SETTINGS_EVENT, open);
+    return () => window.removeEventListener(OPEN_SETTINGS_EVENT, open);
+  }, []);
   // Modes come from the active model; the fallback covers the moment before
   // ChatMock's model list has loaded.
   const effortOptions = intelligenceModes?.length

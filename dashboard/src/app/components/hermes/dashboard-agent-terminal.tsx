@@ -39,6 +39,7 @@ import WorkspaceSideChat from "./workspace-side-chat";
 import ArchivedChatsPanel from "./archived-chats-panel";
 import { initialStarredMessageTarget, type StarredMessageTarget } from "../use-starred-message-jump";
 import ChatGreetingEmptyState from "./chat-greeting-empty-state";
+import ConnectModelNotice from "./connect-model-notice";
 import { useChatGreeting } from "./use-chat-greeting";
 import { ArtifactDockHostProvider } from "./artifact-dock-host";
 import ArtifactPanel, { ARTIFACT_AI_EDIT_EVENT } from "./artifact-panel";
@@ -9796,13 +9797,16 @@ onClearCareerOps={() => {
                   // — but the greeting itself is chosen by the hour and by what
                   // this person has actually been doing, not written into the
                   // markup.
-                  <ChatGreetingEmptyState
-                    greeting={chatGreeting.greeting}
-                    suggestions={chatGreeting.suggestions}
-                    suggestionScopeKey={chatGreeting.suggestionScopeKey}
-                    onSelectSuggestion={fillComposerWithPrompt}
-                    disabled={runtimeUnavailable}
-                  />
+                  <>
+                    <ConnectModelNotice />
+                    <ChatGreetingEmptyState
+                      greeting={chatGreeting.greeting}
+                      suggestions={chatGreeting.suggestions}
+                      suggestionScopeKey={chatGreeting.suggestionScopeKey}
+                      onSelectSuggestion={fillComposerWithPrompt}
+                      disabled={runtimeUnavailable}
+                    />
+                  </>
                 }
               />
             </div>

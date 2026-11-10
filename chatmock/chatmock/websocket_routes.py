@@ -185,7 +185,7 @@ def register_websocket_routes(sock: Sock) -> None:
                         if session_id:
                             clear_responses_reuse_state(session_id)
                         _send_error(
-                            "Missing ChatGPT credentials. Run 'python3 chatmock.py login' first.",
+                            "No ChatGPT account is signed in. Open Settings → Account in Breadboard to sign in or add an API key.",
                             status_code=401,
                         )
                         break

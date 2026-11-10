@@ -144,7 +144,7 @@ def start_upstream_request(
             jsonify(
                 {
                     "error": {
-                        "message": "Missing ChatGPT credentials. Run 'python3 chatmock.py login' first.",
+                        "message": "No ChatGPT account is signed in. Open Settings → Account in Breadboard to sign in or add an API key.",
                     }
                 }
             ),
@@ -229,7 +229,7 @@ def start_upstream_raw_request(
             jsonify(
                 {
                     "error": {
-                        "message": "Missing ChatGPT credentials. Run 'python3 chatmock.py login' first.",
+                        "message": "No ChatGPT account is signed in. Open Settings → Account in Breadboard to sign in or add an API key.",
                     }
                 }
             ),
