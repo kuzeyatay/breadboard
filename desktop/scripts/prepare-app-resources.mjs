@@ -344,9 +344,10 @@ const PINNED_MEM0_RUNTIME = Object.freeze({
     runtimeNetworkRequired: false,
   },
   dist: {
+    // Map-free (see scripts/setup-mem0.mjs): source maps follow the checkout line endings.
     buildOutput: {
-      fileCount: 12,
-      sha256: "D33627F29BF81CFC570E5E8AA8356EC4C4D0612AB7D2F8BBEA47B67A47A86167",
+      fileCount: 8,
+      sha256: "A1D0BBFAD86DAC1954E1D330CD335C839E5A7D4950682824A7841C51AB8CA78A",
     },
     stagedOutput: {
       fileCount: 8,
@@ -1734,7 +1735,7 @@ log("staging finite-worker production dependency closures");
   if (!fs.existsSync(sourceDist)) {
     fail("Mem0's reviewed build output is missing; run the fail-closed setup before packaging.");
   }
-  const buildOutput = await sha256Tree(sourceDist);
+  const buildOutput = await sha256Tree(sourceDist, (relative) => relative.endsWith(".map"));
   if (
     buildOutput.fileCount !== PINNED_MEM0_RUNTIME.dist.buildOutput.fileCount ||
     buildOutput.sha256 !== PINNED_MEM0_RUNTIME.dist.buildOutput.sha256
