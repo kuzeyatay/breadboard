@@ -48,9 +48,9 @@ function validMandatoryServices() {
   return MANDATORY_RUNTIME_SERVICE_IDS.map(mandatoryService);
 }
 
-test("locks the exact 32 mandatory Runtime V2 service identities including GBrain", () => {
-  assert.equal(MANDATORY_RUNTIME_SERVICE_IDS.length, 32);
-  assert.equal(new Set(MANDATORY_RUNTIME_SERVICE_IDS).size, 32);
+test("locks the exact 34 mandatory Runtime V2 service identities including GBrain", () => {
+  assert.equal(MANDATORY_RUNTIME_SERVICE_IDS.length, 34);
+  assert.equal(new Set(MANDATORY_RUNTIME_SERVICE_IDS).size, 34);
   assert.equal(MANDATORY_RUNTIME_SERVICE_IDS.includes("gbrain"), true);
   assert.deepEqual(validateMandatoryRuntimeServices(validMandatoryServices()), []);
   assert.deepEqual(validateMandatoryRuntimeServices(manifest.services), []);

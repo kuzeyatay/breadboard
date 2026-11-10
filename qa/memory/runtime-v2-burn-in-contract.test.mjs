@@ -609,7 +609,7 @@ test("requires a fresh cryptographic packaged all-service/GBrain receipt binding
   );
   assert.match(
     errorsFor((receipt) => { receipt.serviceEvidence.serviceCount = 31; }),
-    /all 32 mandatory services including GBrain/i,
+    /all 34 mandatory services including GBrain/i,
   );
   assert.match(
     errorsFor((receipt) => {
@@ -827,7 +827,7 @@ test("exports the exact objective thresholds", () => {
     observedServiceIds: ["chatmock", "dashboard", "gbrain", "quartz"],
     manifestWideEvidenceAuthority: "runtime-v2-services-receipt",
   });
-  assert.equal(RUNTIME_V2_BURN_IN.mandatoryServiceIds.length, 32);
+  assert.equal(RUNTIME_V2_BURN_IN.mandatoryServiceIds.length, 34);
   assert.equal(RUNTIME_V2_BURN_IN.mandatoryServiceIds.includes("gbrain"), true);
 });
 

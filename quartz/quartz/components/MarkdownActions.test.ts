@@ -37,11 +37,21 @@ test("the editor loader survives Quartz's keepNames server build without stoppin
   })
   const script = module.exports.default!().afterDOMLoaded
   const listeners = new Map<string, () => void>()
+  // The loader installs the deletion stylesheet and a DOM observer before it
+  // looks for edit controls, so the stub carries just enough DOM for that.
+  const noop = () => {}
   const context = vm.createContext({
-    window: {},
+    window: { addEventListener: noop, parent: null },
+    MutationObserver: class { observe = noop },
+    CustomEvent: class { constructor(public type: string, public init?: unknown) {} },
     document: {
       readyState: "complete",
+      head: { append: noop },
+      documentElement: { toggleAttribute: noop },
+      createElement: () => ({ dataset: {}, textContent: "" }),
+      dispatchEvent: noop,
       querySelector: () => null,
+      querySelectorAll: () => [],
       addEventListener: (type: string, callback: () => void) => listeners.set(type, callback),
     },
   })

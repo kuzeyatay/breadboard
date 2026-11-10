@@ -125,9 +125,9 @@ function serviceEvidenceSandbox() {
   };
 }
 
-test("the packaged receipt authority derives all 32 mandatory services including GBrain", () => {
+test("the packaged receipt authority derives all 34 mandatory services including GBrain", () => {
   const ids = manifestMandatoryServiceIds(manifest);
-  assert.equal(ids.length, 32);
+  assert.equal(ids.length, 34);
   assert.equal(ids.includes("gbrain"), true);
   assert.deepEqual(ids, [...ids].sort());
 });
@@ -351,7 +351,7 @@ test("canonical latest-success publication is atomic, burn-only, fresh, and cryp
     assert.equal(binding.outcome, "PASS");
     assert.equal(binding.suite, "burn");
     assert.equal(binding.runtimeMode, "packaged");
-    assert.equal(binding.serviceCount, 32);
+    assert.equal(binding.serviceCount, 34);
     assert.equal(binding.gbrainIncluded, true);
     assert.equal(binding.receiptSha256, sha256File(sandbox.receiptPath));
     assert.equal(binding.executable.sha256, sha256File(sandbox.executablePath));

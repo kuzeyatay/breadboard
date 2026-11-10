@@ -31,6 +31,8 @@ export const MANDATORY_RUNTIME_SERVICE_IDS = Object.freeze([
   "deer-flow",
   "vibe-trading",
   "stock-analyst",
+  "acestep",
+  "bambu-printer",
 ]);
 
 const mandatoryIds = new Set(MANDATORY_RUNTIME_SERVICE_IDS);

@@ -391,7 +391,7 @@ function validateServiceEvidenceBinding(value, burnStartedAt, errors) {
     value.serviceCount !== RUNTIME_V2_BURN_IN.mandatoryServiceIds.length ||
     value.gbrainIncluded !== true
   ) {
-    errors.push(`${label} does not bind all 32 mandatory services including GBrain.`);
+    errors.push(`${label} does not bind all 34 mandatory services including GBrain.`);
   }
   if (
     !record(value.executable) ||
