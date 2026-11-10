@@ -3,9 +3,13 @@ name: Desktop checks and installer
 # Phase 1 of the production-readiness plan: every push proves the repository
 # still installs and the fast suites still pass on a machine that is not the
 # development workstation. The installer job is manual (or tag-triggered)
-# because it needs ~12 GB of free disk and the full Python/Rust/Bun/uv
+# because it needs ~10 GB of free disk and the full Python/Rust/Bun/uv
 # toolchain; GitHub's hosted Windows runners are at the edge of that budget,
 # so a larger or self-hosted Windows runner can be selected at dispatch time.
+#
+# Every build command runs as its own step: PowerShell does not stop a step
+# when a native command fails, so one multi-command step hid four distinct
+# failures behind a single exit code on the first run.
 
 on:
   push:
@@ -26,7 +30,7 @@ on:
         type: boolean
         default: false
       runner:
-        description: Runner label for the installer job (needs ~12 GB free disk)
+        description: Runner label for the installer job (needs ~10 GB free disk)
         type: string
         default: windows-latest
 
@@ -43,6 +47,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
+      # The hosted Windows image sets core.autocrlf=true, which rewrites every
+      # text file on checkout and breaks byte-exact asset and lock receipts.
+      - name: Keep checked-out bytes exact
+        shell: pwsh
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
           submodules: false
@@ -59,28 +68,29 @@ jobs:
         shell: pwsh
         run: |
           npm ci
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --prefix dashboard
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --prefix desktop
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --prefix quartz
-      - name: Script and security regression tests
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Script tests
         shell: pwsh
-        run: |
-          npm run test:scripts
-          npm run security:test
-      - name: Desktop shell compiles (main, preload, native helpers, tests)
+        run: npm run test:scripts
+      - name: Security regression tests
         shell: pwsh
-        run: |
-          npm --prefix desktop run build
-          npm --prefix desktop run test:build
+        run: npm run security:test
+      - name: Desktop shell compiles (main, preload, native helpers)
+        shell: pwsh
+        run: npm --prefix desktop run build
+      - name: Desktop tests compile
+        shell: pwsh
+        run: npm --prefix desktop run test:build
       - name: Quartz unit tests
         shell: pwsh
         run: npm --prefix quartz test
       - name: Quartz production dependency audit
-        # The release checklist requires zero advisories. The remaining ones
-        # (katex, minimatch, satori, sharp, toml) need semver-major bumps that
-        # must be reviewed by hand, so this step reports instead of failing
-        # until those are landed.
-        continue-on-error: true
         shell: pwsh
         run: npm audit --prefix quartz --omit=dev
 
@@ -92,10 +102,24 @@ jobs:
     timeout-minutes: 240
     env:
       BREADBOARD_DESKTOP_RELEASE_DIR: ${{ github.workspace }}\release
+      # The standalone dashboard build asks for an 11 GB heap plus a free-commit
+      # reserve. A hosted runner has 16 GB of RAM and a small pagefile, so the
+      # pagefile step below raises the commit limit and the reserve is pinned
+      # to a size the runner can actually hold.
+      BREADBOARD_MIN_FREE_COMMIT_MB: '2048'
     steps:
+      - name: Keep checked-out bytes exact
+        shell: pwsh
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
           submodules: false
+      - name: Raise the Windows pagefile for the dashboard build
+        uses: al-cheb/configure-pagefile-action@v1.4
+        with:
+          minimum-size: 16GB
+          maximum-size: 32GB
+          disk-root: 'D:'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -115,23 +139,48 @@ jobs:
         shell: pwsh
         run: |
           npm ci
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --prefix dashboard
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --prefix desktop
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --prefix quartz
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --prefix hermes-agent
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Push-Location hermes-agent
           uv sync
+          $code = $LASTEXITCODE
           Pop-Location
-      - name: Build dashboard, stage runtimes, test, verify, package
-        # Mirrors docs/DESKTOP_RELEASE_CHECKLIST.md steps 4 to 9.
+          if ($code) { exit $code }
+      # Mirrors docs/DESKTOP_RELEASE_CHECKLIST.md steps 4 to 9, one step each.
+      - name: Build the standalone dashboard
         shell: pwsh
-        run: |
-          npm run desktop:build:dashboard
-          npm run desktop:prepare
-          npm run desktop:test
-          npm run desktop:verify
-          npm run desktop:dist:win
-          npm run desktop:verify
+        run: npm run desktop:build:dashboard
+      - name: Build the native runtime supervisor
+        shell: pwsh
+        run: npm --prefix desktop run prepare:native-runtime
+      - name: Stage runtimes
+        shell: pwsh
+        run: npm --prefix desktop run prepare:runtimes
+      - name: Stage app resources
+        shell: pwsh
+        run: npm --prefix desktop run prepare:app
+      - name: Stage transcription tools
+        shell: pwsh
+        run: npm --prefix desktop run prepare:transcription
+      - name: Desktop test suite
+        shell: pwsh
+        run: npm run desktop:test
+      - name: Verify staged resources
+        shell: pwsh
+        run: npm run desktop:verify
+      - name: Package the NSIS installer
+        shell: pwsh
+        run: npm run desktop:dist:win
+      - name: Verify the unpacked package
+        shell: pwsh
+        run: npm run desktop:verify
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:

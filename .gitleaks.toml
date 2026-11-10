@@ -94,3 +94,24 @@ condition = "AND"
 paths = ['''^api-anything/sites/(airbnb|bluesky)\.json$''']
 regexTarget = "match"
 regexes = ['''x-airbnb-api-key": "d306zoyjsyarp7ifhu67rjxn52tv0t20"''', '''rkey": "3mxz7goeycc2f"''']
+
+[[allowlists]]
+description = "feynman upstream snapshot: sha256 file receipts in its patch scripts and fixtures, example tokens in its changelog and tests, and its own public PostHog project token"
+targetRules = ["generic-api-key"]
+paths = ['''^feynman/(CHANGELOG\.md|scripts/lib/[^/]+\.mjs|fixtures/.*|src/telemetry/posthog\.ts|tests/.*)$''']
+
+[[allowlists]]
+description = "PRAXIST upstream snapshot: sha256 artifact receipts in its examples and a placeholder key in its hardening tests"
+targetRules = ["generic-api-key"]
+paths = ['''^PRAXIST/(examples|tests)/.*''']
+
+[[allowlists]]
+description = "codenotch upstream snapshot: a dummy token in its tests and the public Sparkle EdDSA update key"
+targetRules = ["generic-api-key"]
+paths = ['''^codenotch/(Tests/.*|project\.yml)$''']
+
+[[allowlists]]
+description = "OpenExecutive upstream snapshot: invented Discord user ids in its unit tests"
+targetRules = ["discord-client-id"]
+paths = ['''^OpenExecutive/packages/core/tests/.*''']
+

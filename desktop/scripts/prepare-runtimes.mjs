@@ -30,6 +30,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { commitAtomicDirectorySwap } from "./atomic-artifact-swap.mjs";
+import { assertPinnedCleanCheckout } from "./pinned-source-checkout.mjs";
 import { ensureChatMockSourceHook } from "./chatmock-python-source-hook.mjs";
 import { ensureHermesSourceHook } from "./hermes-python-source-hook.mjs";
 import { ensureHermesComputerUseClient } from "./hermes-computer-use-runtime.mjs";
@@ -493,27 +494,26 @@ async function prepareBun() {
   return { runtime: "bun", version, source: bunPath };
 }
 
+/**
+ * Every upstream tree in this repository is a vendored snapshot tracked by the
+ * outer checkout (see docs/VENDORED_REPOSITORIES.md), not a nested clone, so a
+ * clean machine has nothing to `rev-parse` inside it. The reviewed upstream
+ * commit lives in the tracked BREADBOARD_SOURCE_COMMIT receipt and the tree
+ * must byte-match the index.
+ */
+function requirePinnedVendoredSource(label, sourceRoot, expectedCommit) {
+  try {
+    return assertPinnedCleanCheckout({ label, sourceRoot, expectedCommit, allowVendoredSnapshot: true });
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+}
+
 function requireHermesPin() {
   if (!fs.existsSync(path.join(hermesRoot, "pyproject.toml"))) {
     fail(`Hermes checkout is missing: ${hermesRoot}`);
   }
-  const actual = execFileSync("git", ["-C", hermesRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-  }).trim();
-  if (actual !== HERMES_UPSTREAM_COMMIT) {
-    fail(
-      `Hermes checkout is ${actual}; packaging is pinned to ${HERMES_UPSTREAM_COMMIT}.`,
-    );
-  }
-  const status = execFileSync(
-    "git",
-    ["-C", hermesRoot, "status", "--porcelain", "--untracked-files=all"],
-    { encoding: "utf8" },
-  ).trim();
-  if (status !== "") {
-    fail("Hermes checkout must be fully clean before its locked runtime is assembled.");
-  }
-  return actual;
+  return requirePinnedVendoredSource("Hermes", hermesRoot, HERMES_UPSTREAM_COMMIT);
 }
 
 function serviceArtifactEnvironmentName(service, suffix) {
@@ -524,12 +524,7 @@ function requireIfixAiPin() {
   if (!fs.existsSync(path.join(ifixAiRoot, "pyproject.toml"))) {
     fail(`iFixAi checkout is missing: ${ifixAiRoot}`);
   }
-  const actual = execFileSync("git", ["-C", ifixAiRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-  }).trim();
-  if (actual !== IFIXAI_UPSTREAM_COMMIT) {
-    fail(`iFixAi checkout is ${actual}; packaging is pinned to ${IFIXAI_UPSTREAM_COMMIT}.`);
-  }
+  const actual = requirePinnedVendoredSource("iFixAi", ifixAiRoot, IFIXAI_UPSTREAM_COMMIT);
   return actual;
 }
 

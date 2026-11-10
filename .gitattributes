@@ -98,3 +98,6 @@ wardrobe/** linguist-vendored=true -whitespace
 watch/** linguist-vendored=true -whitespace
 watermarks-remover/** linguist-vendored=true -whitespace
 dashboard/src/lib/speech/clap/upstream/** linguist-vendored
+
+# Byte-exact filter lists: build-adblocker.mjs hashes them against upstream.json
+desktop/assets/adblocker/** -text

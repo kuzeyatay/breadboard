@@ -44,6 +44,21 @@ import {
   writeSourceCommitReceipt,
 } from "./pinned-source-checkout.mjs";
 import { assertStandaloneDashboardRuntimeDependencies } from "./dashboard-build-cache.mjs";
+
+/**
+ * Every upstream tree in this repository is a vendored snapshot tracked by the
+ * outer checkout (see docs/VENDORED_REPOSITORIES.md), not a nested clone, so a
+ * clean machine has nothing to `rev-parse` inside it. The reviewed upstream
+ * commit lives in the tracked BREADBOARD_SOURCE_COMMIT receipt and the tree
+ * must byte-match the index.
+ */
+function requirePinnedVendoredSource(label, sourceRoot, expectedCommit) {
+  try {
+    return assertPinnedCleanCheckout({ label, sourceRoot, expectedCommit, allowVendoredSnapshot: true });
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+}
 import {
   assertCurrentStandaloneBuildManifest,
   packagedDashboardCopyPlan,
@@ -821,7 +836,7 @@ async function stagePinnedTrackedSourceClosure({
   sourceRoot,
   targetRoot,
   expectedCommit,
-  allowVendoredSnapshot = false,
+  allowVendoredSnapshot = true,
   include,
   required,
 }) {
@@ -982,6 +997,7 @@ if (process.platform !== "win32") fs.chmodSync(codexTarget, 0o755);
       label: "Voicebox",
       sourceRoot: path.join(repoRoot, "voicebox"),
       expectedCommit: PINNED_PACKAGED_SERVICE_COMMITS.voicebox,
+      allowVendoredSnapshot: true,
     });
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
@@ -1409,6 +1425,7 @@ log("staging PenEcho Runtime service closure");
     label: "PenEcho",
     sourceRoot: source,
     expectedCommit: REVIEWED_LOCAL_SOURCE_COMMITS.penecho,
+      allowVendoredSnapshot: true,
   });
   const required = ["server.js", "src", "public", "package.json", "LICENSE", "NOTICE"];
   for (const entry of required) {
@@ -1585,6 +1602,7 @@ log("staging finite-worker production dependency closures");
     label: "Google image-search MCP",
     sourceRoot: googleImagesSource,
     expectedCommit: REVIEWED_LOCAL_SOURCE_COMMITS.googleImages,
+      allowVendoredSnapshot: true,
   });
   freshDir(googleImagesTarget);
   for (const entry of ["package.json", "LICENSE"]) {
@@ -1962,17 +1980,7 @@ log("staging pinned Ruflo planner and Claude Code executor");
   }
 
   const sourceRoot = path.join(repoRoot, "ruflo");
-  const sourceRevision = spawnSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualRevision = sourceRevision.status === 0 ? sourceRevision.stdout.trim() : "";
-  if (actualRevision !== expectedRuflo.reviewedCheckoutCommit) {
-    fail(
-      `Ruflo checkout must be pinned to ${expectedRuflo.reviewedCheckoutCommit}; ` +
-        `found ${actualRevision || "unknown"}.`,
-    );
-  }
+  const actualRevision = requirePinnedVendoredSource("Ruflo", sourceRoot, expectedRuflo.reviewedCheckoutCommit);
   const sourceManifest = JSON.parse(
     fs.readFileSync(path.join(sourceRoot, "v3", "@claude-flow", "cli", "package.json"), "utf8"),
   );
@@ -2140,6 +2148,7 @@ log("staging TradingAgents immutable worker source");
     label: "TradingAgents",
     sourceRoot: source,
     expectedCommit: REVIEWED_LOCAL_SOURCE_COMMITS.tradingAgents,
+      allowVendoredSnapshot: true,
   });
   for (const required of [
     path.join(source, "pyproject.toml"),
@@ -2216,6 +2225,7 @@ log("staging Agent Reach immutable setup source");
     label: "Agent Reach",
     sourceRoot: source,
     expectedCommit: REVIEWED_LOCAL_SOURCE_COMMITS.agentReach,
+      allowVendoredSnapshot: true,
   });
   for (const required of [
     path.join(source, "pyproject.toml"),
@@ -2475,14 +2485,7 @@ fs.copyFileSync(
 {
   const ifixAiRoot = path.join(repoRoot, "iFixAi");
   const expected = "4ac9cc1c8765427300d98dc30855c18349610cf1";
-  const revision = spawnSync("git", ["-C", ifixAiRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actual = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actual !== expected) {
-    fail(`iFixAi checkout must be pinned to ${expected}; found ${actual || "unknown"}.`);
-  }
+  const actual = requirePinnedVendoredSource("iFixAi", ifixAiRoot, expected);
   const target = path.join(stagingRoot, "ifixai");
   freshDir(target);
   fs.copyFileSync(path.join(ifixAiRoot, "LICENSE"), path.join(target, "LICENSE"));
@@ -2653,6 +2656,7 @@ log("staging watermarks-remover scripts");
     label: "Watermarks Remover",
     sourceRoot: watermarksSource,
     expectedCommit: REVIEWED_LOCAL_SOURCE_COMMITS.watermarks,
+      allowVendoredSnapshot: true,
   });
   const watermarksSkill = path.join(watermarksSource, "skills", "remove-ai-marks");
   if (!fs.existsSync(path.join(watermarksSkill, "scripts", "clean_file.py"))) {
@@ -2831,16 +2835,7 @@ await stagePinnedTrackedSourceClosure({
 
 // --- scientific-agent-skills ---------------------------------------------
 {
-  const revision = spawnSync("git", ["-C", scientificSkillsRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actual = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actual !== SCIENTIFIC_SKILLS_UPSTREAM_COMMIT) {
-    fail(
-      `Scientific skills checkout must be pinned to ${SCIENTIFIC_SKILLS_UPSTREAM_COMMIT}; found ${actual || "unknown"}.`,
-    );
-  }
+  const actual = requirePinnedVendoredSource("Scientific skills", scientificSkillsRoot, SCIENTIFIC_SKILLS_UPSTREAM_COMMIT);
   log(`staging scientific-agent-skills ${actual.slice(0, 12)} source closure`);
   const target = path.join(stagingRoot, "scientific-agent-skills");
   freshDir(target);
@@ -2888,16 +2883,7 @@ await stagePinnedTrackedSourceClosure({
 // prepare-runtimes.mjs. Keeping source outside the runtime makes the maintained
 // Breadboard gateway patch and Breadboard plugin explicit and inspectable.
 {
-  const revision = spawnSync("git", ["-C", hermesRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actual = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actual !== HERMES_UPSTREAM_COMMIT) {
-    fail(
-      `Hermes checkout must be pinned to ${HERMES_UPSTREAM_COMMIT}; found ${actual || "unknown"}.`,
-    );
-  }
+  const actual = requirePinnedVendoredSource("Hermes", hermesRoot, HERMES_UPSTREAM_COMMIT);
   const status = spawnSync(
     "git",
     ["-C", hermesRoot, "status", "--porcelain", "--untracked-files=all"],
@@ -3060,14 +3046,7 @@ fs.copyFileSync(
   const premortemSource = path.join(repoRoot, "premortem");
   const premortemTarget = path.join(stagingRoot, "premortem-runtime");
   const expectedCommit = "724247b820e2bab3613e1055d990ee0efc963a83";
-  const revision = spawnSync("git", ["-C", premortemSource, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`Premortem checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("Premortem", premortemSource, expectedCommit);
   const sitePackagesSource = path.join(premortemSource, ".venv", "Lib", "site-packages");
   if (!fs.existsSync(path.join(sitePackagesSource, "typer", "__init__.py"))) {
     fail(`Premortem staged dependency closure is missing Typer: ${sitePackagesSource}`);
@@ -3103,14 +3082,7 @@ fs.copyFileSync(
   const expectedCommit = "d8c814e9259824ee57018d2b6fde88b2dc5840d2";
   const expectedPythonVersion = "Python 3.12.13";
   const expectedPythonHash = "4F461F0C0DE64E82EB54FBCED0FD1D678D79D34EDA38660B07781E2BBA8064D6";
-  const revision = spawnSync("git", ["-C", agentLoopSource, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`Agent Loop checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("Agent Loop", agentLoopSource, expectedCommit);
   const pythonSource = path.resolve(
     process.env.BREADBOARD_AGENT_LOOP_PYTHON_ROOT ??
       path.join(process.env.APPDATA ?? "", "uv", "python", "cpython-3.12-windows-x86_64-none"),
@@ -3176,14 +3148,7 @@ fs.copyFileSync(
   const omhSource = path.join(repoRoot, "oh-my-hermes");
   const omhTarget = path.join(stagingRoot, "oh-my-hermes");
   const expectedCommit = "080030ccef0d3c15123a3f7478b671a0d2ddcf22";
-  const revision = spawnSync("git", ["-C", omhSource, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`Oh My Hermes checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("Oh My Hermes", omhSource, expectedCommit);
   const status = spawnSync("git", ["-C", omhSource, "status", "--porcelain", "--untracked-files=no"], {
     encoding: "utf8",
     shell: false,
@@ -3243,14 +3208,7 @@ fs.copyFileSync(
   const factcheckSource = path.join(repoRoot, "bullshit-detector");
   const factcheckTarget = path.join(stagingRoot, "bullshit-detector");
   const expectedCommit = "7b8fac1857eba19d25665825793dfbaf0414c6bf";
-  const revision = spawnSync("git", ["-C", factcheckSource, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`Factcheck checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("Factcheck", factcheckSource, expectedCommit);
   const status = spawnSync("git", ["-C", factcheckSource, "status", "--porcelain", "--untracked-files=no"], {
     encoding: "utf8",
     shell: false,
@@ -3295,14 +3253,7 @@ fs.copyFileSync(
   const loopxSource = path.join(repoRoot, "loopx");
   const loopxTarget = path.join(stagingRoot, "LoopX");
   const expectedCommit = "924213b86ba7788bdb83ebecab9569ec6cd79b41";
-  const revision = spawnSync("git", ["-C", loopxSource, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`LoopX checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("LoopX", loopxSource, expectedCommit);
   const status = spawnSync("git", ["-C", loopxSource, "status", "--porcelain", "--untracked-files=no"], {
     encoding: "utf8",
     shell: false,
@@ -3336,14 +3287,7 @@ fs.copyFileSync(
   const legalSource = path.join(repoRoot, "harvey-labs");
   const legalTarget = path.join(stagingRoot, "harvey-labs");
   const expectedCommit = "55510f0e609ffa5cf6f5df17d9a813ce4bb33d0c";
-  const revision = spawnSync("git", ["-C", legalSource, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`Harvey LAB checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("Harvey LAB", legalSource, expectedCommit);
   const files = [
     "LICENSE",
     "pyproject.toml",
@@ -3392,14 +3336,7 @@ fs.copyFileSync(
   const sf3dSource = path.join(repoRoot, "stable-fast-3d");
   const sf3dTarget = path.join(stagingRoot, "stable-fast-3d");
   const expectedCommit = "ff21fc491b4dc5314bf6734c7c0dabd86b5f5bb2";
-  const revision = spawnSync("git", ["-C", sf3dSource, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`Stable Fast 3D checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("Stable Fast 3D", sf3dSource, expectedCommit);
   freshDir(sf3dTarget);
   for (const relative of ["__init__.py", "LICENSE.md", "README.md", "requirements.txt"]) {
     const source = path.join(sf3dSource, relative);
@@ -3434,14 +3371,7 @@ fs.copyFileSync(
   const sourceRoot = path.join(repoRoot, "MatrAIx-Persona-8B");
   const targetRoot = path.join(stagingRoot, "MatrAIx-Persona-8B");
   const expectedCommit = "2418b37ffb99f79c0a7d4b3dd4e461ced498aefc";
-  const revision = spawnSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`MatrAIx checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("MatrAIx", sourceRoot, expectedCommit);
   const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"], {
     encoding: "utf8",
     shell: false,
@@ -3501,14 +3431,7 @@ fs.copyFileSync(
   const sourceRoot = path.join(repoRoot, "ShapeR");
   const targetRoot = path.join(stagingRoot, "ShapeR");
   const expectedCommit = "8e9bd5b25a075bdd2fc4d60027d27e515fa11769";
-  const revision = spawnSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`ShapeR checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("ShapeR", sourceRoot, expectedCommit);
   const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=all"], {
     encoding: "utf8",
     shell: false,
@@ -3566,14 +3489,7 @@ fs.copyFileSync(
   const sourceRoot = path.join(repoRoot, "Resource2Skill");
   const targetRoot = path.join(stagingRoot, "Resource2Skill");
   const expectedCommit = "7f101b4cfe214cc496d085a34efac528a17cc375";
-  const revision = spawnSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`Resource2Skill checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("Resource2Skill", sourceRoot, expectedCommit);
   const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"], {
     encoding: "utf8",
     shell: false,
@@ -3644,14 +3560,7 @@ fs.copyFileSync(
     ["helpers/grade.py", "CAC78B55A9D15E5CA52A9FAD043CBAA9BE2A3728C34CE2BC2A55E39BCE88520C"],
     ["helpers/render.py", "5D8927669DCDBD0C2DE31D9AFF4E9EC6251F2700E8D49463EFAA0918BB698D37"],
   ]);
-  const revision = spawnSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`Video Use checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("Video Use", sourceRoot, expectedCommit);
   const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=all"], {
     encoding: "utf8",
     shell: false,
@@ -3737,14 +3646,7 @@ fs.copyFileSync(
   const sourceRoot = path.join(repoRoot, "hyperframes");
   const targetRoot = path.join(stagingRoot, "hyperframes");
   const expectedCommit = "29f004cfc04b351bf38a8b28b20916bb5bad9fc4";
-  const revision = spawnSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`HyperFrames checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("HyperFrames", sourceRoot, expectedCommit);
   const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"], {
     encoding: "utf8",
     shell: false,
@@ -4222,14 +4124,7 @@ fs.copyFileSync(
   const sourceRoot = path.join(repoRoot, "OpenMontage");
   const targetRoot = path.join(stagingRoot, "OpenMontage");
   const expectedCommit = "4eab34c5cfcccaa4f1970554928feccce73ee930";
-  const revision = spawnSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`OpenMontage checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("OpenMontage", sourceRoot, expectedCommit);
   const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"], {
     encoding: "utf8",
     shell: false,
@@ -4289,14 +4184,7 @@ fs.copyFileSync(
   const sourceRoot = path.join(repoRoot, "bolt-slides");
   const targetRoot = path.join(stagingRoot, "bolt-slides");
   const expectedCommit = "53b55bcf365dc2864fac29e7a5594213611142be";
-  const revision = spawnSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`Bolt Slides checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("Bolt Slides", sourceRoot, expectedCommit);
   const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"], {
     encoding: "utf8",
     shell: false,
@@ -4356,14 +4244,7 @@ fs.copyFileSync(
   const sourceRoot = path.join(repoRoot, "subsai");
   const targetRoot = path.join(stagingRoot, "subsai");
   const expectedCommit = "5ed78a85d2b868a907c811404f7cd9179db39968";
-  const revision = spawnSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`SubsAI checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("SubsAI", sourceRoot, expectedCommit);
   const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"], {
     encoding: "utf8",
     shell: false,
@@ -4421,14 +4302,7 @@ fs.copyFileSync(
   const openPlanterSource = path.join(repoRoot, "OpenPlanter");
   const openPlanterTarget = path.join(stagingRoot, "OpenPlanter");
   const expectedCommit = "81d75620ff50a69f576bc19a8bb17738e952387a";
-  const revision = spawnSync("git", ["-C", openPlanterSource, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`OpenPlanter checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("OpenPlanter", openPlanterSource, expectedCommit);
   freshDir(openPlanterTarget);
   for (const relative of ["pyproject.toml", "LICENSE"]) {
     const source = path.join(openPlanterSource, relative);
@@ -4459,14 +4333,7 @@ fs.copyFileSync(
   const deepTutorSource = path.join(repoRoot, "DeepTutor");
   const deepTutorTarget = path.join(stagingRoot, "DeepTutor");
   const expectedCommit = "37c3db6df7e886aee4f61c97ec5e618b8ab379e8";
-  const revision = spawnSync("git", ["-C", deepTutorSource, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`Deep Tutor checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("Deep Tutor", deepTutorSource, expectedCommit);
   freshDir(deepTutorTarget);
   for (const relative of ["pyproject.toml", "LICENSE", "README.md"]) {
     const source = path.join(deepTutorSource, relative);
@@ -4497,14 +4364,7 @@ fs.copyFileSync(
   const voxSource = path.join(repoRoot, "vox-director");
   const voxTarget = path.join(stagingRoot, "vox-director");
   const expectedCommit = "668ec3946fe0139bc985313b15c1a300fca42f94";
-  const revision = spawnSync("git", ["-C", voxSource, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  const actualCommit = revision.status === 0 ? revision.stdout.trim() : "";
-  if (actualCommit !== expectedCommit) {
-    fail(`Vox Director checkout must be pinned to ${expectedCommit}; found ${actualCommit || "unknown"}.`);
-  }
+  const actualCommit = requirePinnedVendoredSource("Vox Director", voxSource, expectedCommit);
   const files = [
     "SKILL.md",
     "LICENSE",

@@ -325,3 +325,6 @@ desktop/artifacts/
 # Upstream demo media omitted from the api-anything snapshot (see
 # docs/VENDORED_REPOSITORIES.md).
 /api-anything/docs/media/
+
+# Upstream history of vendored snapshots, kept beside the files but never a checkout
+.git-upstream-metadata/

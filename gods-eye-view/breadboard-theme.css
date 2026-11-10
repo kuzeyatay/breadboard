@@ -1,0 +1,284 @@
+/* ═══════════════════════════════════════════════
+   GOD'S EYE VIEW — Breadboard host theme
+   ═══════════════════════════════════════════════
+
+   Loaded by every page but inert until <html data-breadboard="light|dark">
+   is set, which index.html does from `?bb=light|dark` before first paint and
+   again on a `breadboard:theme` postMessage from the embedding dashboard.
+
+   The cockpit reads its whole look from the custom properties declared at the
+   top of style.css, so the theme is mostly a re-declaration of those in
+   Breadboard's paper-and-botanical palette (dashboard/src/app/globals.css):
+   paper planes, ink text, a muted green accent, Source Sans 3 and IBM Plex
+   Mono, 13px/8px radii. Paper does not glow, so every text-shadow goes.
+
+   Two layers, because the scene under everything is black in both schemes:
+   text drawn straight onto the globe (title, style indicator, HUD readouts)
+   keeps the *dark* scheme's light ink and accent whatever the scheme, while
+   the glass surfaces become paper and re-scope the tokens to ink inside. */
+
+html[data-breadboard] {
+  /* Light paper. */
+  --bb-paper-bg: #e6f0e6;
+  --bb-paper-surface: #faf7ef;
+  --bb-paper-raised: #fffefb;
+  --bb-paper-strong: #ece3d2;
+  --bb-ink: #13201b;
+  --bb-ink-heading: #0f1a16;
+  --bb-ink-muted: #50615a;
+  --bb-line: #bccfc2;
+  --bb-line-strong: #9cb7a7;
+  --bb-botanical: #4f6f68;
+  --bb-botanical-hover: #3f5f58;
+  --bb-botanical-2: #7b97aa;
+  --bb-danger: #a45c5c;
+  --bb-shadow: 0 8px 24px rgba(19, 32, 27, 0.14);
+  color-scheme: light;
+
+  /* On the scene: the dark scheme's ink and accent, in both schemes. */
+  --bb-scene-ink: #e2e7de;
+  --bb-scene-ink-muted: #aab3a7;
+  --bb-scene-accent: #91b7a1;
+
+  /* The clone's own tokens, re-pointed. Text and accent default to the
+     on-scene values; surfaces below swap them for ink. */
+  --bg-dark: var(--bb-paper-bg);
+  --glass-bg: color-mix(in srgb, var(--bb-paper-surface) 86%, transparent);
+  --glass-border: color-mix(in srgb, var(--bb-line) 75%, transparent);
+  --glass-border-hover: var(--bb-line-strong);
+  --accent: var(--bb-scene-accent);
+  --accent-dim: color-mix(in srgb, var(--bb-scene-accent) 14%, transparent);
+  --accent-glow: transparent;
+  --text-primary: var(--bb-scene-ink);
+  --text-secondary: var(--bb-scene-ink-muted);
+  --text-dim: color-mix(in srgb, var(--bb-scene-ink-muted) 60%, transparent);
+  --font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+  --font-sans: 'Source Sans 3', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --panel-radius: 13px;
+  --btn-radius: 8px;
+}
+
+html[data-breadboard="dark"] {
+  /* Charcoal paper: the dashboard's dark planes. */
+  --bb-paper-bg: #0b0c0a;
+  --bb-paper-surface: #171916;
+  --bb-paper-raised: #212420;
+  --bb-paper-strong: #2d312b;
+  --bb-ink: #ccd2c9;
+  --bb-ink-heading: #e2e7de;
+  --bb-ink-muted: #8d968b;
+  --bb-line: #2e3530;
+  --bb-line-strong: #454f48;
+  --bb-botanical: #91b7a1;
+  --bb-botanical-hover: #a6c8b4;
+  --bb-botanical-2: #9fb5c4;
+  --bb-danger: #c98282;
+  --bb-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
+  color-scheme: dark;
+  --glass-bg: color-mix(in srgb, var(--bb-paper-surface) 82%, transparent);
+}
+
+/* ── Paper surfaces: ink inside ──────────────── */
+/* Every container style.css paints with --glass-bg, plus the loading screen,
+   which sits on --bg-dark (now paper). Custom properties inherit, so setting
+   them here re-colours everything inside without touching its rules. */
+html[data-breadboard] :is(
+  #loading-screen,
+  #gev-voice-control,
+  .panel-inner,
+  #pp-toggles,
+  .pp-toggle-btn,
+  .pp-slider-row,
+  #param-slider-panel,
+  .location-inner,
+  #top-center-actions button,
+  #toast,
+  .cockpit-utility-control.is-expanded,
+  .cockpit-utility-launcher,
+  .data-panel-inner,
+  .global-context-panel-inner,
+  .cctv-panel-inner,
+  .scene-panel-inner,
+  #command-dock > #control-panel
+) {
+  --accent: var(--bb-botanical);
+  --accent-dim: color-mix(in srgb, var(--bb-botanical) 14%, transparent);
+  --text-primary: var(--bb-ink);
+  --text-secondary: var(--bb-ink-muted);
+  --text-dim: color-mix(in srgb, var(--bb-ink-muted) 88%, var(--bb-paper-surface));
+  color: var(--text-primary);
+}
+
+/* ── Command dock (the bottom bar) ───────────── */
+/* Styled in its own hard-coded navy-and-cyan block in style.css rather than
+   from the tokens, so it is re-dressed piece by piece: paper bar, paper voice
+   widget, ink labels, botanical meter bars. Transient voice states
+   (listening, executing, error) keep their own colours. */
+html[data-breadboard] #command-dock {
+  --accent: var(--bb-botanical);
+  --accent-dim: color-mix(in srgb, var(--bb-botanical) 14%, transparent);
+  --text-primary: var(--bb-ink);
+  --text-secondary: var(--bb-ink-muted);
+  --text-dim: color-mix(in srgb, var(--bb-ink-muted) 88%, var(--bb-paper-surface));
+  color: var(--bb-ink);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--bb-shadow);
+}
+
+html[data-breadboard] #command-dock > #location-bar {
+  border-right-color: var(--glass-border);
+}
+
+html[data-breadboard] #command-dock > #control-panel {
+  border-left-color: var(--glass-border);
+}
+
+html[data-breadboard] #command-dock > #gev-voice-control {
+  background: var(--bb-paper-raised);
+  border-color: var(--bb-line-strong);
+  box-shadow: var(--bb-shadow);
+}
+
+html[data-breadboard] #command-dock .gev-voice-kicker,
+html[data-breadboard] #command-dock .gev-mic-label,
+html[data-breadboard] #command-dock .location-toolbar-label,
+html[data-breadboard] #command-dock .panel-title,
+html[data-breadboard] .location-mini-city {
+  color: var(--bb-ink-muted);
+}
+
+html[data-breadboard] #command-dock .location-toolbar-label::after,
+html[data-breadboard] #command-dock #control-panel .panel-title::after {
+  color: var(--bb-botanical);
+}
+
+html[data-breadboard] #command-dock .location-toolbar-label::after {
+  background: linear-gradient(to right, var(--bb-line), transparent);
+}
+
+html[data-breadboard] #command-dock #control-panel .panel-title::after {
+  background: linear-gradient(to left, var(--bb-line), transparent);
+}
+
+html[data-breadboard] #command-dock .dock-label-icon {
+  background: var(--bb-ink-muted);
+}
+
+html[data-breadboard] #command-dock .gev-voice-visualizer {
+  border-bottom-color: var(--bb-line-strong);
+}
+
+html[data-breadboard] #command-dock .gev-voice-visualizer span {
+  background: var(--bb-botanical);
+  box-shadow: none;
+}
+
+html[data-breadboard] #command-dock .gev-mic-orbit {
+  background: var(--accent-dim);
+  border-color: color-mix(in srgb, var(--bb-botanical) 55%, transparent);
+  box-shadow: none;
+}
+
+html[data-breadboard] #command-dock .dock-pin-btn {
+  background: var(--bb-paper-raised);
+  box-shadow: var(--bb-shadow);
+}
+
+/* The flight HUD draws on the scene and keys its colour off one property. */
+html[data-breadboard] #cockpit-hud {
+  --cockpit-accent: var(--bb-scene-accent);
+}
+
+/* ── No neon ─────────────────────────────────── */
+html[data-breadboard] body *,
+html[data-breadboard] body *::before,
+html[data-breadboard] body *::after {
+  text-shadow: none !important;
+}
+
+html[data-breadboard] ::selection {
+  background: color-mix(in srgb, var(--bb-botanical) 28%, transparent);
+}
+
+/* ── Title and readouts (on the scene) ───────── */
+html[data-breadboard] #title-bar .title-glow {
+  display: none;
+}
+
+html[data-breadboard] #title-bar h1 {
+  font-family: var(--font-sans);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--bb-scene-ink);
+}
+
+html[data-breadboard] #title-bar .title-accent {
+  color: var(--bb-scene-accent);
+  font-weight: 400;
+}
+
+html[data-breadboard] #title-bar .title-logo {
+  filter: none;
+}
+
+html[data-breadboard] #title-bar .subtitle,
+html[data-breadboard] #style-indicator .indicator-label {
+  letter-spacing: 0.18em;
+}
+
+html[data-breadboard] #style-indicator .indicator-value {
+  letter-spacing: 0.12em;
+  font-weight: 500;
+}
+
+/* ── Panels: raised paper, one soft shadow ───── */
+html[data-breadboard] .panel-inner,
+html[data-breadboard] .data-panel-inner,
+html[data-breadboard] .scene-panel-inner,
+html[data-breadboard] .cctv-panel-inner,
+html[data-breadboard] .global-context-panel-inner,
+html[data-breadboard] .location-inner,
+html[data-breadboard] #toast,
+html[data-breadboard] #top-center-actions button {
+  box-shadow: var(--bb-shadow);
+}
+
+html[data-breadboard] #toast {
+  border-color: color-mix(in srgb, var(--bb-botanical) 45%, transparent);
+}
+
+html[data-breadboard] .panel-drag-handle.compact {
+  border-color: color-mix(in srgb, var(--bb-line) 75%, transparent);
+  background: color-mix(in srgb, var(--bb-paper-raised) 55%, transparent);
+}
+
+/* ── Buttons that were white-on-black glass ──── */
+html[data-breadboard] .style-btn {
+  background: color-mix(in srgb, var(--bb-paper-raised) 55%, transparent);
+  border-color: color-mix(in srgb, var(--bb-line) 60%, transparent);
+}
+
+html[data-breadboard] .style-btn::before {
+  display: none;
+}
+
+html[data-breadboard] .style-btn:hover {
+  background: var(--bb-paper-raised);
+  border-color: var(--bb-line-strong);
+}
+
+html[data-breadboard] .style-btn.active {
+  border-color: var(--bb-botanical);
+  background: var(--accent-dim);
+  box-shadow: none;
+}
+
+/* On light paper a 6% white border is invisible: give every bordered control
+   the dashboard's line colour instead. `border: none` controls keep no border
+   because only the colour changes. */
+html[data-breadboard="light"] button,
+html[data-breadboard="light"] [role="button"] {
+  border-color: color-mix(in srgb, var(--bb-line) 60%, transparent);
+}

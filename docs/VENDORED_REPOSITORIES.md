@@ -145,3 +145,15 @@ compression) after those exclusions.
 | `wardrobe` | https://github.com/tandpfun/wardrobe | `main` | `f44006cce7e4779e595a35b25fbbc8dabc68d7e4` |
 | `watch` | https://github.com/bradautomates/claude-video | `main` | `0b7ada9a8c2fb08f1f52cb21c02ae39261338739` |
 | `watermarks-remover` | https://github.com/guillaumemeyer/watermarks-remover | `main` | `ff5db594f189373b80afde42449b5ad952270c95` |
+
+## Source receipts for packaging
+
+Every vendored tree is ordinary tracked files, never a gitlink or a nested
+checkout (2026-11-10: the last eight gitlinks were converted). The packaging
+scripts therefore cannot `git rev-parse` inside a tree; each pinned tree
+carries a tracked `BREADBOARD_SOURCE_COMMIT` receipt naming the reviewed
+upstream commit, and `desktop/scripts/pinned-source-checkout.mjs` checks that
+the receipt matches the pin and that the tree byte-matches the index. When a
+snapshot is updated, update the receipt, the table above, and the pin in the
+packaging script together. Any `.git-upstream-metadata/` directory beside a
+snapshot is ignored upstream history kept for reference only.
