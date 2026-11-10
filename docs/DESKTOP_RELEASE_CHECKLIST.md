@@ -31,6 +31,33 @@
    Settings -> Account. Sign in with ChatGPT there; the notice must be gone on
    the next new chat and a message must get an answer.
 
+## Building on CI instead of the workstation
+
+The "Desktop checks and installer" workflow (`.github/workflows/desktop.yml`)
+runs steps 2 to 9 on a hosted Windows runner when dispatched with
+`build_installer=true` (`gh workflow run desktop.yml -f build_installer=true`).
+It needs nothing from the workstation: every input is either tracked, pinned
+to a download URL, or verified against a checked-in receipt after download.
+
+Inputs the runner fetches that are not in the repository:
+
+- Claude Code 2.1.239 (Ruflo's executor): downloaded by
+  `prepare-app-resources.mjs` from Anthropic's release bucket when no local
+  copy matches the pinned hash.
+- Voicebox speech server and OpenCode: built on the workstation (PyInstaller
+  and a source build cannot be reproduced byte-for-byte), published as assets
+  of the `prebuilt-binaries-<date>` prerelease of this repository and verified
+  against their receipts after download. Rebuilding either means uploading
+  the new file, updating its receipt, and pointing the workflow at the new
+  release tag.
+- Codex, Graft, CPython 3.12.13 for Agent Loop, the Google Flow MCP build and
+  the Google image-search MCP's pnpm graph: installed from the pinned
+  versions in the workflow's install steps.
+
+The installer is uploaded as the `Breadboard-Setup-x64` workflow artifact.
+Steps 10 to 12 (installed smoke and first-run by hand) still happen on a
+machine.
+
 ## Signing status — **currently unsigned**
 
 There are no code-signing credentials in this repository. Windows resource

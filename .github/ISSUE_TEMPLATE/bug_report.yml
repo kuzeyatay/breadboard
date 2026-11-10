@@ -1,0 +1,47 @@
+name: Bug report
+description: Something in the Breadboard desktop app did not work.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The diagnostic bundle is the fastest way for us to see what happened:
+        open **Profile**, press **Export diagnostics**, and attach the zip it saves. It contains the
+        app's redacted logs, recent crash dumps and runtime state, and nothing is uploaded until you attach it.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what Breadboard did instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Breadboard version
+      description: Shown on the startup screen and in Profile.
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How Breadboard is installed
+      options:
+        - Windows installer (Breadboard-Setup-x64.exe)
+        - Development checkout (npm run desktop:dev)
+        - Self-hosted (Ubuntu)
+    validations:
+      required: true
+  - type: textarea
+    id: bundle
+    attributes:
+      label: Diagnostic bundle
+      description: Drag the exported zip here. If the app does not start, use "Copy diagnostics" on the startup screen and paste the text instead.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a garden
+        2. ...

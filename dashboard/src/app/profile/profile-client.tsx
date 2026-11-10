@@ -11,7 +11,7 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import SignOutButton from "@/app/components/sign-out-button";
-import { RefreshCw } from "lucide-react";
+import { FileArchive, RefreshCw } from "lucide-react";
 
 import BackLink from "@/app/components/back-link";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
@@ -101,6 +101,10 @@ import {
   breadboardRestartControl,
   type BreadboardRestartControl,
 } from "@/lib/desktop-app-restart.ts";
+import {
+  breadboardDiagnosticsControl,
+  type BreadboardDiagnosticsControl,
+} from "@/lib/desktop-diagnostics.ts";
 
 interface Invite {
   id: number;
@@ -2221,6 +2225,67 @@ function AuditFeed({ entries }: { entries: AuditEntry[] }) {
 // ---------------------------------------------------------------------- page
 
 /**
+ * Saves a zip of the shell's redacted diagnostics, logs and crash dumps for a
+ * bug report. Desktop only: a browser cannot reach the shell's logs.
+ */
+function ExportDiagnosticsButton() {
+  const [control, setControl] = useState<BreadboardDiagnosticsControl | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void Promise.resolve().then(() => {
+      const desktop = breadboardDiagnosticsControl();
+      if (active && desktop) setControl(() => desktop);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (!control) return null;
+
+  async function exportBundle() {
+    if (!control || busy) return;
+    setBusy(true);
+    setStatus(null);
+    try {
+      const saved = await control.exportBundle();
+      if (saved) setStatus({ ok: true, text: `Saved ${saved}` });
+    } catch {
+      setStatus({ ok: false, text: "Export failed. Check the Breadboard logs and try again." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <button
+        type="button"
+        onClick={() => void exportBundle()}
+        disabled={busy}
+        aria-busy={busy}
+        title="Save a zip of redacted logs, crash dumps and runtime state to attach to a bug report. Nothing is uploaded."
+        className="neu-button flex items-center gap-1.5 rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-400 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-wait disabled:opacity-60"
+      >
+        <FileArchive className="h-4 w-4 shrink-0" aria-hidden />
+        <span aria-live="polite">{busy ? "Exporting…" : "Export diagnostics"}</span>
+      </button>
+      {status && (
+        <p
+          className={`max-w-56 break-all text-right text-xs ${status.ok ? "text-gray-500" : "text-red-400"}`}
+          role={status.ok ? "status" : "alert"}
+        >
+          {status.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
  * Restarts the complete desktop product. It is intentionally absent in an
  * ordinary browser, where reloading this page would leave every service alive
  * and would not honor what the control says.
@@ -2461,6 +2526,7 @@ export default function ProfileClient({
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
+            <ExportDiagnosticsButton />
             <RestartBreadboardButton />
             <SignOutButton
               className="neu-button flex items-center gap-1.5 rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-400 transition-colors hover:border-gray-600 hover:text-white"

@@ -10,6 +10,7 @@ export const IPC_CHANNELS = {
   retryService: "breadboard:retry-service",
   openLogs: "breadboard:open-logs",
   copyDiagnostics: "breadboard:copy-diagnostics",
+  exportDiagnostics: "breadboard:export-diagnostics",
   quit: "breadboard:quit",
   restartApp: "breadboard:restart-app",
   pickFolder: "breadboard:pick-folder",
@@ -157,6 +158,7 @@ export interface TabView {
     extensionsOpen?: boolean;
     hls?: { streams: BrowserHlsStream[]; available: boolean };
     adBlock?: { enabled: boolean; available: boolean; site: string | null; siteEnabled: boolean; blocked: number };
+    vpn?: { enabled: boolean; status: "off" | "connecting" | "on" | "error" };
     terminalWidth: number;
     zoomPercent?: number;
     translation?: BrowserTranslationState;
@@ -490,6 +492,7 @@ export type TabsCommand = TabsAction & { targetTabId?: number; generation?: numb
 
 type TabsAction =
   | { type: "browser-adblock-enabled"; enabled: boolean }
+  | { type: "browser-vpn-enabled"; enabled: boolean }
   | { type: "browser-adblock-site-enabled"; enabled: boolean; site: string }
   | { type: "browser-shell-context"; ownerKey: string }
   | { type: "page-loading"; id: number; documentGeneration: number; pending: boolean }
@@ -579,7 +582,8 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
   const isExtensionId = (id: unknown) =>
     typeof id === "string" && /^[a-p]{32}$/u.test(id);
   switch (command.type) {
-    case "browser-adblock-enabled": return typeof command.enabled === "boolean";
+    case "browser-adblock-enabled":
+    case "browser-vpn-enabled": return typeof command.enabled === "boolean";
     case "browser-adblock-site-enabled":
       return typeof command.enabled === "boolean" && typeof command.site === "string" && command.site.length > 0 && command.site.length <= 253;
     case "browser-shell-context": return typeof command.ownerKey === "string" && command.ownerKey.length <= 256;

@@ -29,6 +29,7 @@ export const PRELOAD_IPC_CHANNELS = {
   retryService: "breadboard:retry-service",
   openLogs: "breadboard:open-logs",
   copyDiagnostics: "breadboard:copy-diagnostics",
+  exportDiagnostics: "breadboard:export-diagnostics",
   quit: "breadboard:quit",
   restartApp: "breadboard:restart-app",
   pickFolder: "breadboard:pick-folder",
@@ -188,6 +189,13 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.openLogs) as Promise<void>,
     copyDiagnostics: (): Promise<void> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.copyDiagnostics) as Promise<void>,
+    /**
+     * Write a zip of the redacted diagnostics report, rotated logs and recent
+     * crash dumps to a location the person picks. Resolves with the saved
+     * path, or null when the dialog was cancelled.
+     */
+    exportDiagnostics: (): Promise<string | null> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.exportDiagnostics) as Promise<string | null>,
     quit: (): Promise<void> => ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.quit) as Promise<void>,
     /**
      * Relaunch the complete application. Development launches rebuild the

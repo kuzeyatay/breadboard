@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { isCodeDockAction, isCodeDockPage } from "../shared/code-dock";
+import { writeDiagnosticBundle } from "./diagnostic-bundle";
 import {
   app,
   BrowserWindow,
   clipboard,
+  crashReporter,
   dialog,
   ipcMain,
   Menu,
@@ -376,6 +378,16 @@ export class AppLifecycle {
       app.commandLine,
       app.getPath("userData"),
     );
+    if (process.platform === "win32") {
+      // Electron has no Google location key, so geolocation fails on the
+      // network provider. Use Windows Location instead, as Chrome does.
+      const enabled = app.commandLine.getSwitchValue("enable-features").split(",").filter(Boolean);
+      app.commandLine.appendSwitch("enable-features", [...enabled,
+        "LocationProviderManager:LocationProviderManagerMode/PlatformOnly", "WinrtGeolocationImplementation"].join(","));
+    }
+    // Native crashes leave minidumps under app.getPath("crashDumps") for the
+    // diagnostic bundle. Nothing is uploaded anywhere.
+    crashReporter.start({ productName: "Breadboard", uploadToServer: false, compress: true });
     app.on("second-instance", () => {
       const window = this.windows?.window;
       if (window) {
@@ -1193,18 +1205,28 @@ export class AppLifecycle {
       await shell.openPath(this.logs.directory);
     });
     ipcMain.handle(IPC_CHANNELS.copyDiagnostics, () => {
-      const diagnostics = {
-        app: app.getVersion(),
-        electron: process.versions.electron,
-        mode: this.paths.mode,
-        config: redactedPersistentConfigSummary(this.persistentConfig),
-        runtime: this.runtime?.snapshot() ?? null,
-        services: this.runtime?.snapshot()?.services ?? [],
-        failure: this.startupState.failure ?? null,
-      };
       clipboard.writeText(
-        JSON.stringify(runtimeProductCopy(diagnostics), null, 2),
+        JSON.stringify(runtimeProductCopy(this.diagnosticsReport()), null, 2),
       );
+    });
+    ipcMain.handle(IPC_CHANNELS.exportDiagnostics, async (event) => {
+      const window = this.windowForSender(event.sender);
+      if (!window || window.isDestroyed()) return null;
+      const stamp = new Date().toISOString().slice(0, 19).replace(/:/gu, "-");
+      const result = await dialog.showSaveDialog(window, {
+        title: "Save Breadboard diagnostic bundle",
+        defaultPath: path.join(app.getPath("downloads"), `Breadboard-diagnostics-${stamp}.zip`),
+        filters: [{ name: "Zip archive", extensions: ["zip"] }],
+      });
+      if (result.canceled || !result.filePath) return null;
+      const bundle = await writeDiagnosticBundle({
+        destination: result.filePath,
+        report: runtimeProductCopy(this.diagnosticsReport()),
+        logsDir: this.logs.directory,
+        crashDumpsDir: app.getPath("crashDumps"),
+      });
+      this.logs.forService("desktop").write(`[desktop] diagnostic bundle written: ${bundle.path} (${bundle.files} files)`);
+      return bundle.path;
     });
     ipcMain.handle(IPC_CHANNELS.quit, (event) => {
       // Browser tabs are created with the product preload, so every page the
@@ -1695,6 +1717,19 @@ export class AppLifecycle {
    * extra promise: source changes must be compiled before the old process
    * leaves, while a failed build keeps the still-working app open.
    */
+  /** The redacted state behind "Copy diagnostics" and the diagnostic bundle. */
+  private diagnosticsReport() {
+    return {
+      app: app.getVersion(),
+      electron: process.versions.electron,
+      mode: this.paths.mode,
+      config: redactedPersistentConfigSummary(this.persistentConfig),
+      runtime: this.runtime?.snapshot() ?? null,
+      services: this.runtime?.snapshot()?.services ?? [],
+      failure: this.startupState.failure ?? null,
+    };
+  }
+
   private restartApplication(): Promise<boolean> {
     if (this.appRestartInFlight) return this.appRestartInFlight;
 
