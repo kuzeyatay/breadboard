@@ -1793,12 +1793,12 @@ export class AppLifecycle {
             enabled: false,
           },
           {
-            label: "Show sign-up invite code",
+            label: "Show invite code for another account",
             click: () => {
               void dialog.showMessageBox({
                 type: "info",
                 title: "Breadboard invite code",
-                message: "Use this invite code to create your local account:",
+                message: "Use this invite code to add another local account:",
                 detail: this.persistentConfig.initialInviteCode,
               });
             },

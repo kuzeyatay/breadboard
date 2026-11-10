@@ -67,7 +67,7 @@ const quartzTheme = fs.readFileSync(
   new URL("../../quartz/quartz/components/scripts/darkmode.inline.ts", import.meta.url),
   "utf8",
 );
-const login = fs.readFileSync(new URL("../src/app/auth/login/page.tsx", import.meta.url), "utf8");
+const login = fs.readFileSync(new URL("../src/app/auth/login/login-form.tsx", import.meta.url), "utf8");
 const profile = fs.readFileSync(
   new URL("../src/app/profile/profile-client.tsx", import.meta.url),
   "utf8",

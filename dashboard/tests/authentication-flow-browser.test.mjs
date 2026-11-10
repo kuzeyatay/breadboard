@@ -12,7 +12,7 @@ test("login errors recover, callback screens return, and browser tabs follow sig
   const bundle = await build({ absWorkingDir: root, metafile: true, bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
     alias: { "@": path.join(root, "src") }, stdin: { resolveDir: root, loader: "tsx", contents: `
       import React from 'react'; import {createRoot} from 'react-dom/client';
-      import Login from '@/app/auth/login/page';
+      import Login from '@/app/auth/login/login-form';
       import AuthenticationSync from '@/app/components/authentication-sync';
       import SignOutButton from '@/app/components/sign-out-button';
       createRoot(document.getElementById('root')).render(<><AuthenticationSync />

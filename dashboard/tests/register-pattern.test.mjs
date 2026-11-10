@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 const source = fs.readFileSync(
-  new URL("../src/app/auth/register/page.tsx", import.meta.url),
+  new URL("../src/app/auth/register/register-form.tsx", import.meta.url),
   "utf8",
 );
 

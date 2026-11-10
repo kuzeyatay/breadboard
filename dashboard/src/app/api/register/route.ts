@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import bcrypt from 'bcrypt';
 import db from '@/lib/db';
 import { normalizeInviteCode } from '@/lib/invites';
+import { countUsers, firstAccountOpen } from '@/lib/first-account';
 
 interface InviteRow {
   id: number;
@@ -41,7 +42,9 @@ export async function POST(request: Request) {
     const normalizedInviteCode =
       typeof inviteCode === 'string' ? normalizeInviteCode(inviteCode) : '';
 
-    if (!normalizedInviteCode) {
+    // A fresh desktop install has nobody who could hand out an invite yet.
+    const openFirstAccount = !normalizedInviteCode && firstAccountOpen();
+    if (!normalizedInviteCode && !openFirstAccount) {
       return NextResponse.json({ error: 'Invite code is required' }, { status: 400 });
     }
 
@@ -59,6 +62,9 @@ export async function POST(request: Request) {
 
     try {
       const createUser = db.transaction(() => {
+        if (openFirstAccount && countUsers() > 0) {
+          throw new Error('Invite code is required');
+        }
         const result = db.prepare(
           'INSERT INTO users (username, email, password_hash, created_at) VALUES (?, ?, ?, ?)',
         ).run(cleanUsername, email.toLowerCase().trim(), passwordHash, new Date().toISOString());
@@ -93,6 +99,9 @@ export async function POST(request: Request) {
       }
       if (err instanceof Error && err.message === 'Invite code is invalid or already used') {
         return NextResponse.json({ error: err.message }, { status: 403 });
+      }
+      if (err instanceof Error && err.message === 'Invite code is required') {
+        return NextResponse.json({ error: err.message }, { status: 400 });
       }
       throw err;
     }

@@ -1,5 +1,6 @@
 import { signOut } from "next-auth/react";
 import { desktopTabsBridge } from "./desktop-browser-tabs";
+import { startNavigationProgress } from "@/app/components/navigation-progress";
 export { authReturnPath } from "./auth-navigation";
 
 import { AUTH_CHANGED_EVENT } from './auth-events';
@@ -10,6 +11,13 @@ export async function synchronizeDesktopAuthentication(): Promise<boolean> {
   if (!desktop) return false;
   try { return await desktop.tabs({ type: "auth-sync" }); }
   catch { return false; }
+}
+
+/** After NextAuth accepted the credentials: tell the shell, then move on. */
+export async function completeSignIn(callbackUrl: string): Promise<void> {
+  startNavigationProgress();
+  window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
+  if (!await synchronizeDesktopAuthentication()) window.location.replace(callbackUrl);
 }
 
 export async function signOutOfWorkspace(): Promise<void> {
