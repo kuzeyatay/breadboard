@@ -978,21 +978,30 @@ log(`staging Codex coding agent from ${codexSource}`);
 fs.mkdirSync(path.dirname(codexTarget), { recursive: true });
 fs.copyFileSync(codexSource, codexTarget);
 if (process.platform === "win32") {
-  // The npm distribution (@openai/codex, vendor/x86_64-pc-windows-msvc) keeps
-  // codex.exe and the code-mode host under bin/ and the sandbox helpers under
-  // codex-resources/; a flattened install has them all beside codex.exe.
+  // The npm distribution (@openai/codex, vendor/x86_64-pc-windows-msvc) spreads
+  // the helpers over bin/, codex-resources/ and codex-path/; a flattened
+  // install has them all beside codex.exe. Look beside codex.exe first, then
+  // anywhere under the distribution root, a few levels deep.
   const codexDistribution = path.dirname(codexSource);
-  const companionDirectories = [
-    codexDistribution,
-    path.join(codexDistribution, "..", "codex-resources"),
-    path.join(codexDistribution, "..", "bin"),
-  ];
+  const codexDistributionRoot = path.dirname(codexDistribution);
+  const findCompanion = (name) => {
+    const beside = path.join(codexDistribution, name);
+    if (fs.existsSync(beside)) return beside;
+    const queue = [[codexDistributionRoot, 0]];
+    while (queue.length > 0) {
+      const [directory, depth] = queue.shift();
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const candidate = path.join(directory, entry.name);
+        if (entry.isFile() && entry.name === name) return candidate;
+        if (entry.isDirectory() && depth < 3) queue.push([candidate, depth + 1]);
+      }
+    }
+    return null;
+  };
   for (const name of CODEX_WINDOWS_RUNTIME_FILES.filter((name) => name !== "codex.exe")) {
-    const companion = companionDirectories
-      .map((directory) => path.join(directory, name))
-      .find((candidate) => fs.existsSync(candidate));
+    const companion = findCompanion(name);
     if (!companion) {
-      fail(`The Codex distribution is incomplete: missing ${name} beside ${codexSource} or in its codex-resources directory.`);
+      fail(`The Codex distribution is incomplete: missing ${name} beside ${codexSource} or under ${codexDistributionRoot}.`);
     }
     fs.copyFileSync(companion, path.join(path.dirname(codexTarget), name));
   }
