@@ -57,6 +57,8 @@ export const PACKAGED_SERVICE_EVIDENCE_DEFINITIONS = Object.freeze([
   { id: "deer-flow", policy: "lease" },
   { id: "vibe-trading", policy: "lease" },
   { id: "stock-analyst", policy: "lease" },
+  { id: "acestep", policy: "lease" },
+  { id: "bambu-printer", policy: "lease" },
 ] as const satisfies readonly PackagedServiceEvidenceDefinition[]);
 
 const DEFINITION_BY_ID = new Map<

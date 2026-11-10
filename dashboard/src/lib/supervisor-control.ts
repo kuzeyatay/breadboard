@@ -16,9 +16,14 @@ const SERVICE_LEASE_TRANSPORT_GRACE_MS = 5_000;
 // Runtime V2 manifests bound service readiness to seven days. Mirror the two
 // native grace terms only as a fail-closed response ceiling; the actual timer
 // always comes from the authenticated, service-bound native contract below.
+// The native contract may also wait for a graceful idle stop before a fresh
+// acquire (runtime-protocol MAX_SERVICE_IDLE_STOP_WAIT_MS: a five-minute cap
+// plus two seconds of padding), so the ceiling carries that term too.
+const MAX_SERVICE_IDLE_STOP_WAIT_MS = 302_000;
 const MAX_SERVICE_LEASE_ACQUIRE_TIMEOUT_MS =
   MAX_MANIFEST_SERVICE_STARTUP_TIMEOUT_MS +
   SERVICE_LEASE_SETTLEMENT_GRACE_MS +
+  MAX_SERVICE_IDLE_STOP_WAIT_MS +
   SERVICE_LEASE_RESPONSE_GRACE_MS;
 const MAX_CONTROL_RESPONSE_BYTES = 64 * 1024;
 const MAX_JOB_REQUEST_BYTES = 256 * 1024;

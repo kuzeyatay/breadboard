@@ -104,6 +104,8 @@ const TRUSTED_SERVICE_ENVIRONMENT_SOURCES = new Set([
   "vibe-trading",
   "stock-analyst",
   "solidworks-mcp",
+  "acestep",
+  "bambu-printer",
 ]);
 const TRUSTED_WORKER_ENVIRONMENT_SOURCES = new Set([
   "minimal",
@@ -148,6 +150,7 @@ const TRUSTED_WORKER_ENVIRONMENT_SOURCES = new Set([
   "loopx",
   "resource2skill",
   "outer-matraix",
+  "music-producer",
   "formsmith",
   "hyperframes",
   "openmontage",

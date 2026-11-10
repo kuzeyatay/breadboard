@@ -149,11 +149,11 @@ test("packaged evidence source covers every manifest service and explicitly leas
   assert.equal(result.ok, true);
 });
 
-test("ownership coverage reconciles all 44 service-cutover owners and every external boundary", () => {
+test("ownership coverage reconciles all 46 service-cutover owners and every external boundary", () => {
   const definitions = inventoryEvidenceDefinitions(inventory, manifest);
   assert.equal(
     definitions.filter(({ disposition }) => disposition !== "external-prerequisite").length,
-    44,
+    46,
   );
   assert.equal(
     definitions.filter(({ disposition }) => disposition === "live-managed-service").length,
@@ -410,7 +410,7 @@ test("canonical latest-success read rejects stale, incomplete, non-burn, and cha
           executionInventory: inventory,
           nowMs: sandbox.nowMs,
         }),
-        /invalid|successful packaged burn|all-32-service\/GBrain/i,
+        /invalid|successful packaged burn|all-34-service\/GBrain/i,
       );
       assert.equal(fs.existsSync(serviceEvidenceLatestSuccessPath(sandbox.sandboxRoot)), false);
     } finally {

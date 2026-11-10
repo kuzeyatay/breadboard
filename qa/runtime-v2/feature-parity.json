@@ -81,14 +81,14 @@
     "sourceRefs",
     "sourceSha256"
   ],
-  "capabilityCount": 495,
+  "capabilityCount": 498,
   "countsByCategory": {
     "agency-persona": 264,
     "approval": 8,
     "artifact-type": 16,
     "attachment": 6,
     "chat-surface": 5,
-    "connection": 11,
+    "connection": 12,
     "connection-catalog": 3,
     "default-prompt": 10,
     "first-party-persona": 2,
@@ -100,8 +100,8 @@
     "recovery": 10,
     "registry": 9,
     "repository": 2,
-    "runtime-agent": 36,
-    "tool-family": 40,
+    "runtime-agent": 37,
+    "tool-family": 41,
     "workflow": 24
   },
   "sourceCatalogs": {
@@ -29500,6 +29500,143 @@
       "baselineContractSha256": "4b5775ca9655015f4465084d27c7ea1d5ba6e769fa4052dccc44047666d1a3a4"
     },
     {
+      "capabilityId": "connection:bambu-lab",
+      "sourceIdentity": "bambu-lab",
+      "displayName": "Bambu Lab printer",
+      "category": "connection",
+      "visibleEntryPoint": "Settings -> Connections -> Bambu Lab printer",
+      "slashCommand": null,
+      "implicitTrigger": null,
+      "selectionSemantics": "Connected printer capabilities are exposed through the guarded printer MCP tool namespace.",
+      "routeOrIpcContract": "GET/POST/DELETE /api/hermes/connections/bambu, /connect, /studio, /jobs, /[printerId]; internal gateway callback /api/hermes/connections/bambu/internal",
+      "requiredServiceOrWorker": [
+        "service:bambu-printer (Runtime V2 on-demand LAN printer gateway)"
+      ],
+      "providerRequirements": [],
+      "credentialRequirements": [
+        "Bambu Lab printer LAN access code or Bambu Connect/Studio sign-in on this machine"
+      ],
+      "externalSoftwareRequirements": [
+        "Bambu Lab printer reachable on the LAN; Bambu Connect or Bambu Studio for native confirmation"
+      ],
+      "inputTypes": [
+        "connection action",
+        "print job request"
+      ],
+      "outputTypes": [
+        "connection-status",
+        "printer-job-status"
+      ],
+      "artifactTypes": [],
+      "progressEventContract": "Printer job state is polled through the leased gateway tick and projected into the connection's job records.",
+      "streamingContract": "Conversation SSE with bounded replay.",
+      "cancellationBehavior": "Releasing the lease or deleting the job stops gateway activity; the native owner stops the service after its idle TTL.",
+      "approvalBehavior": "No capability-specific approval beyond the submitted user action.",
+      "followUpContextBehavior": "Conversation-bound transcript and selected capability context.",
+      "restartBehavior": "Durable printer and job records survive Dashboard restart; the gateway is cold-started again on the next lease.",
+      "recoveryBehavior": "The gateway recovers pending jobs from the dashboard's internal callback before ticking; installed evidence NOT RUN.",
+      "preMigrationStatus": "SOURCE_PRESENT",
+      "preMigrationEvidence": [
+        "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+        "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+        "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+        "dashboard/src/lib/bambu/mcp-guard.ts:3",
+        "dashboard/src/lib/bambu/runtime-client.ts:39",
+        "dashboard/src/lib/bambu/server.ts:10",
+        "dashboard/src/lib/hermes/tool-scopes.ts:271",
+        "desktop/runtime-v2/manifests/services.json:4080"
+      ],
+      "postMigrationStatus": "NOT RUN",
+      "postMigrationEvidence": [],
+      "uiEntryPoint": "Settings -> Connections -> Bambu Lab printer",
+      "selectionEvidence": {
+        "preMigration": [
+          "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+          "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+          "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+          "dashboard/src/lib/bambu/mcp-guard.ts:3",
+          "dashboard/src/lib/bambu/runtime-client.ts:39",
+          "dashboard/src/lib/bambu/server.ts:10",
+          "dashboard/src/lib/hermes/tool-scopes.ts:271",
+          "desktop/runtime-v2/manifests/services.json:4080"
+        ],
+        "postMigration": []
+      },
+      "runtimePath": "/api/hermes/connections/bambu -> acquireServiceLease(bambu-printer) -> Runtime V2 runtime-v2-bambu-service.mjs -> POST /api/hermes/connections/bambu/internal",
+      "serviceWorkerEvidence": {
+        "preMigration": [
+          "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+          "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+          "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+          "dashboard/src/lib/bambu/mcp-guard.ts:3",
+          "dashboard/src/lib/bambu/runtime-client.ts:39",
+          "dashboard/src/lib/bambu/server.ts:10",
+          "dashboard/src/lib/hermes/tool-scopes.ts:271",
+          "desktop/runtime-v2/manifests/services.json:4080"
+        ],
+        "postMigration": []
+      },
+      "outputArtifactEvidence": {
+        "preMigration": [
+          "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+          "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+          "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+          "dashboard/src/lib/bambu/mcp-guard.ts:3",
+          "dashboard/src/lib/bambu/runtime-client.ts:39",
+          "dashboard/src/lib/bambu/server.ts:10",
+          "dashboard/src/lib/hermes/tool-scopes.ts:271",
+          "desktop/runtime-v2/manifests/services.json:4080"
+        ],
+        "postMigration": []
+      },
+      "cancellationEvidence": {
+        "preMigration": [
+          "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+          "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+          "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+          "dashboard/src/lib/bambu/mcp-guard.ts:3",
+          "dashboard/src/lib/bambu/runtime-client.ts:39",
+          "dashboard/src/lib/bambu/server.ts:10",
+          "dashboard/src/lib/hermes/tool-scopes.ts:271",
+          "desktop/runtime-v2/manifests/services.json:4080"
+        ],
+        "postMigration": []
+      },
+      "recoveryEvidence": {
+        "preMigration": [
+          "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+          "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+          "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+          "dashboard/src/lib/bambu/mcp-guard.ts:3",
+          "dashboard/src/lib/bambu/runtime-client.ts:39",
+          "dashboard/src/lib/bambu/server.ts:10",
+          "dashboard/src/lib/hermes/tool-scopes.ts:271",
+          "desktop/runtime-v2/manifests/services.json:4080"
+        ],
+        "postMigration": []
+      },
+      "result": "NOT RUN",
+      "stoppedServiceBehavior": "Must remain visible while stopped; the original action cold-starts the dependency without another user action.",
+      "mockOrFallbackDeclarations": {
+        "count": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "evidence": [],
+        "truncated": false
+      },
+      "sourceRefs": [
+        "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+        "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+        "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+        "dashboard/src/lib/bambu/mcp-guard.ts:3",
+        "dashboard/src/lib/bambu/runtime-client.ts:39",
+        "dashboard/src/lib/bambu/server.ts:10",
+        "dashboard/src/lib/hermes/tool-scopes.ts:271",
+        "desktop/runtime-v2/manifests/services.json:4080"
+      ],
+      "sourceSha256": "2982e6b352348fb663417244bf7ba8bcb7221e5c554415cd15203935ced845b5",
+      "baselineContractSha256": "d7a5c620190b053205892f726d0a5d38b34bc6f1666278d3b8780feb8296dea7"
+    },
+    {
       "capabilityId": "connection:github",
       "sourceIdentity": "composio:github",
       "displayName": "GitHub",
@@ -41560,6 +41697,130 @@
       "baselineContractSha256": "1bfc6417fa91a623d7d508311bf5f0dd14b4a7edf2a96786405ca211c7bf0850"
     },
     {
+      "capabilityId": "runtime-agent:music-producer",
+      "sourceIdentity": "music-producer",
+      "displayName": "Music Producer",
+      "category": "runtime-agent",
+      "visibleEntryPoint": "Agents tab and /agents:music-producer",
+      "slashCommand": "/agents:music-producer",
+      "implicitTrigger": null,
+      "selectionSemantics": "{\"stacksCapabilities\":false,\"acceptsAttachments\":false,\"launchableByModel\":true,\"requiresLaunchApproval\":true}",
+      "routeOrIpcContract": "/api/music-producer/runs; SSE /api/music-producer/runs/[runId]/events; POST /api/music-producer/runs/[runId]/abort",
+      "requiredServiceOrWorker": [
+        "registered Runtime V2 music-producer disposable worker"
+      ],
+      "providerRequirements": [],
+      "credentialRequirements": [],
+      "externalSoftwareRequirements": [],
+      "inputTypes": [
+        "text"
+      ],
+      "outputTypes": [
+        "chat-message",
+        "external-agent-run-card",
+        "durable-transcript-field"
+      ],
+      "artifactTypes": [
+        "agent-specific"
+      ],
+      "progressEventContract": "Fenced Runtime worker events are durably projected and replayed from /api/music-producer/runs/[runId]/events.",
+      "streamingContract": "Conversation SSE with bounded replay.",
+      "cancellationBehavior": "POST /api/music-producer/runs/[runId]/abort cancels the exact Runtime job; the native owner applies the registered graceful window and complete-tree termination.",
+      "approvalBehavior": "Model launch requires explicit approval; direct user selection is the launch authority.",
+      "followUpContextBehavior": "Conversation-bound musicProducerRun descriptor restores the run card and follow-up context.",
+      "restartBehavior": "The durable exact-job mapping, fenced event projection, and transcript descriptor survive Dashboard restart; installed restart evidence remains NOT RUN.",
+      "recoveryBehavior": "External run kind music_producer maps to musicProducerRun; missing or mismatched Runtime identity fails closed without a Next fallback.",
+      "preMigrationStatus": "SOURCE_PRESENT",
+      "preMigrationEvidence": [
+        "dashboard/src/app/api/music-producer/runs/[runId]/abort/route.ts:7",
+        "dashboard/src/app/api/music-producer/runs/[runId]/events/route.ts:7",
+        "dashboard/src/app/api/music-producer/runs/route.ts:14",
+        "dashboard/src/lib/conversations/external-agent-runs.ts:6",
+        "dashboard/src/lib/hermes/capability-combinations.ts:1",
+        "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
+      ],
+      "postMigrationStatus": "NOT RUN",
+      "postMigrationEvidence": [],
+      "uiEntryPoint": "Agents tab and /agents:music-producer",
+      "selectionEvidence": {
+        "preMigration": [
+          "dashboard/src/app/api/music-producer/runs/[runId]/abort/route.ts:7",
+          "dashboard/src/app/api/music-producer/runs/[runId]/events/route.ts:7",
+          "dashboard/src/app/api/music-producer/runs/route.ts:14",
+          "dashboard/src/lib/conversations/external-agent-runs.ts:6",
+          "dashboard/src/lib/hermes/capability-combinations.ts:1",
+          "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
+        ],
+        "postMigration": []
+      },
+      "runtimePath": "/api/music-producer/runs -> authenticated durable Runtime submit -> registered music-producer disposable worker -> fenced replay at /api/music-producer/runs/[runId]/events",
+      "serviceWorkerEvidence": {
+        "preMigration": [
+          "dashboard/src/app/api/music-producer/runs/[runId]/abort/route.ts:7",
+          "dashboard/src/app/api/music-producer/runs/[runId]/events/route.ts:7",
+          "dashboard/src/app/api/music-producer/runs/route.ts:14",
+          "dashboard/src/lib/conversations/external-agent-runs.ts:6",
+          "dashboard/src/lib/hermes/capability-combinations.ts:1",
+          "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
+        ],
+        "postMigration": []
+      },
+      "outputArtifactEvidence": {
+        "preMigration": [
+          "dashboard/src/app/api/music-producer/runs/[runId]/abort/route.ts:7",
+          "dashboard/src/app/api/music-producer/runs/[runId]/events/route.ts:7",
+          "dashboard/src/app/api/music-producer/runs/route.ts:14",
+          "dashboard/src/lib/conversations/external-agent-runs.ts:6",
+          "dashboard/src/lib/hermes/capability-combinations.ts:1",
+          "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
+        ],
+        "postMigration": []
+      },
+      "cancellationEvidence": {
+        "preMigration": [
+          "dashboard/src/app/api/music-producer/runs/[runId]/abort/route.ts:7",
+          "dashboard/src/app/api/music-producer/runs/[runId]/events/route.ts:7",
+          "dashboard/src/app/api/music-producer/runs/route.ts:14",
+          "dashboard/src/lib/conversations/external-agent-runs.ts:6",
+          "dashboard/src/lib/hermes/capability-combinations.ts:1",
+          "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
+        ],
+        "postMigration": []
+      },
+      "recoveryEvidence": {
+        "preMigration": [
+          "dashboard/src/app/api/music-producer/runs/[runId]/abort/route.ts:7",
+          "dashboard/src/app/api/music-producer/runs/[runId]/events/route.ts:7",
+          "dashboard/src/app/api/music-producer/runs/route.ts:14",
+          "dashboard/src/lib/conversations/external-agent-runs.ts:6",
+          "dashboard/src/lib/hermes/capability-combinations.ts:1",
+          "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
+        ],
+        "postMigration": []
+      },
+      "result": "NOT RUN",
+      "stoppedServiceBehavior": "Must remain visible while stopped; the original action cold-starts the dependency without another user action.",
+      "mockOrFallbackDeclarations": {
+        "count": 2,
+        "sha256": "396398405c40943e3c5afe44f52f9b0d539ea303904bc40a3904caa843e9d2e9",
+        "evidence": [
+          "dashboard/src/lib/conversations/external-agent-runs.ts:169:* metadata; the fallback repairs rows written by the older card-takeover model,",
+          "dashboard/src/lib/hermes/runtime-agent-briefs.ts:225:\"Choose it when the deck will be presented or shared as a link and the interactivity is the point — a punchline that lands on a click, a live product mock. Resource2Skill makes the"
+        ],
+        "truncated": false
+      },
+      "sourceRefs": [
+        "dashboard/src/app/api/music-producer/runs/[runId]/abort/route.ts:7",
+        "dashboard/src/app/api/music-producer/runs/[runId]/events/route.ts:7",
+        "dashboard/src/app/api/music-producer/runs/route.ts:14",
+        "dashboard/src/lib/conversations/external-agent-runs.ts:6",
+        "dashboard/src/lib/hermes/capability-combinations.ts:1",
+        "dashboard/src/lib/hermes/runtime-agent-briefs.ts:174"
+      ],
+      "sourceSha256": "60277f1dcef5aa20c807d9c0156009c2cbcefdb5488742b41b34b13bad774e91",
+      "baselineContractSha256": "dcb3ab83c0c6f772ccbdf629309044bdf3225aabd46e36a816bd057c7f6a90c5"
+    },
+    {
       "capabilityId": "runtime-agent:opencode",
       "sourceIdentity": "opencode",
       "displayName": "OpenCode",
@@ -44252,6 +44513,143 @@
       ],
       "sourceSha256": "87d6d9aebb2735486038d55bb096050192f9d1b3c62d0dfd8177d679598f14aa",
       "baselineContractSha256": "5c927f649c15871330a3da2fd59c8a2f52364ef075e2d8ac73d3ee6c0eb799ef"
+    },
+    {
+      "capabilityId": "tool-family:bambu",
+      "sourceIdentity": "bambu-tools",
+      "displayName": "Bambu printer tools",
+      "category": "tool-family",
+      "visibleEntryPoint": "Chat tool call bambu_print_prepare on a connected printer",
+      "slashCommand": null,
+      "implicitTrigger": null,
+      "selectionSemantics": "Available in the tool scope once a Bambu Lab printer connection exists; printing itself requires native confirmation.",
+      "routeOrIpcContract": "Hermes tool bambu_print_prepare guarded by bambu/mcp-guard.ts; job routes under /api/hermes/connections/bambu/jobs",
+      "requiredServiceOrWorker": [
+        "service:bambu-printer (Runtime V2 on-demand LAN printer gateway)"
+      ],
+      "providerRequirements": [],
+      "credentialRequirements": [
+        "Bambu Lab printer LAN access code or Bambu Connect/Studio sign-in on this machine"
+      ],
+      "externalSoftwareRequirements": [
+        "Bambu Lab printer reachable on the LAN; Bambu Connect or Bambu Studio for native confirmation"
+      ],
+      "inputTypes": [
+        "text",
+        "model attachment"
+      ],
+      "outputTypes": [
+        "chat-message",
+        "printer-job-status"
+      ],
+      "artifactTypes": [],
+      "progressEventContract": "Printer job state is polled through the leased gateway tick and projected into the connection's job records.",
+      "streamingContract": "Conversation SSE with bounded replay.",
+      "cancellationBehavior": "Releasing the lease or deleting the job stops gateway activity; the native owner stops the service after its idle TTL.",
+      "approvalBehavior": "Print start requires native confirmation in Bambu Connect/Studio; the tool only prepares the job.",
+      "followUpContextBehavior": "Conversation-bound transcript and selected capability context.",
+      "restartBehavior": "Durable printer and job records survive Dashboard restart; the gateway is cold-started again on the next lease.",
+      "recoveryBehavior": "The gateway recovers pending jobs from the dashboard's internal callback before ticking; installed evidence NOT RUN.",
+      "preMigrationStatus": "SOURCE_PRESENT",
+      "preMigrationEvidence": [
+        "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+        "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+        "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+        "dashboard/src/lib/bambu/mcp-guard.ts:3",
+        "dashboard/src/lib/bambu/runtime-client.ts:39",
+        "dashboard/src/lib/bambu/server.ts:10",
+        "dashboard/src/lib/hermes/tool-scopes.ts:271",
+        "desktop/runtime-v2/manifests/services.json:4080"
+      ],
+      "postMigrationStatus": "NOT RUN",
+      "postMigrationEvidence": [],
+      "uiEntryPoint": "Chat tool call bambu_print_prepare on a connected printer",
+      "selectionEvidence": {
+        "preMigration": [
+          "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+          "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+          "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+          "dashboard/src/lib/bambu/mcp-guard.ts:3",
+          "dashboard/src/lib/bambu/runtime-client.ts:39",
+          "dashboard/src/lib/bambu/server.ts:10",
+          "dashboard/src/lib/hermes/tool-scopes.ts:271",
+          "desktop/runtime-v2/manifests/services.json:4080"
+        ],
+        "postMigration": []
+      },
+      "runtimePath": "/api/hermes/connections/bambu -> acquireServiceLease(bambu-printer) -> Runtime V2 runtime-v2-bambu-service.mjs -> POST /api/hermes/connections/bambu/internal",
+      "serviceWorkerEvidence": {
+        "preMigration": [
+          "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+          "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+          "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+          "dashboard/src/lib/bambu/mcp-guard.ts:3",
+          "dashboard/src/lib/bambu/runtime-client.ts:39",
+          "dashboard/src/lib/bambu/server.ts:10",
+          "dashboard/src/lib/hermes/tool-scopes.ts:271",
+          "desktop/runtime-v2/manifests/services.json:4080"
+        ],
+        "postMigration": []
+      },
+      "outputArtifactEvidence": {
+        "preMigration": [
+          "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+          "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+          "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+          "dashboard/src/lib/bambu/mcp-guard.ts:3",
+          "dashboard/src/lib/bambu/runtime-client.ts:39",
+          "dashboard/src/lib/bambu/server.ts:10",
+          "dashboard/src/lib/hermes/tool-scopes.ts:271",
+          "desktop/runtime-v2/manifests/services.json:4080"
+        ],
+        "postMigration": []
+      },
+      "cancellationEvidence": {
+        "preMigration": [
+          "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+          "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+          "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+          "dashboard/src/lib/bambu/mcp-guard.ts:3",
+          "dashboard/src/lib/bambu/runtime-client.ts:39",
+          "dashboard/src/lib/bambu/server.ts:10",
+          "dashboard/src/lib/hermes/tool-scopes.ts:271",
+          "desktop/runtime-v2/manifests/services.json:4080"
+        ],
+        "postMigration": []
+      },
+      "recoveryEvidence": {
+        "preMigration": [
+          "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+          "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+          "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+          "dashboard/src/lib/bambu/mcp-guard.ts:3",
+          "dashboard/src/lib/bambu/runtime-client.ts:39",
+          "dashboard/src/lib/bambu/server.ts:10",
+          "dashboard/src/lib/hermes/tool-scopes.ts:271",
+          "desktop/runtime-v2/manifests/services.json:4080"
+        ],
+        "postMigration": []
+      },
+      "result": "NOT RUN",
+      "stoppedServiceBehavior": "Must remain visible while stopped; the original action cold-starts the dependency without another user action.",
+      "mockOrFallbackDeclarations": {
+        "count": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "evidence": [],
+        "truncated": false
+      },
+      "sourceRefs": [
+        "dashboard/scripts/runtime-v2-bambu-service.mjs:4",
+        "dashboard/src/app/api/hermes/connections/bambu/internal/route.ts:8",
+        "dashboard/src/app/api/hermes/connections/bambu/route.ts:7",
+        "dashboard/src/lib/bambu/mcp-guard.ts:3",
+        "dashboard/src/lib/bambu/runtime-client.ts:39",
+        "dashboard/src/lib/bambu/server.ts:10",
+        "dashboard/src/lib/hermes/tool-scopes.ts:271",
+        "desktop/runtime-v2/manifests/services.json:4080"
+      ],
+      "sourceSha256": "2982e6b352348fb663417244bf7ba8bcb7221e5c554415cd15203935ced845b5",
+      "baselineContractSha256": "a0a2797666246c36db2d628c127babed796e10e044ed9249719750b724e67a64"
     },
     {
       "capabilityId": "tool-family:calendar",

@@ -503,6 +503,7 @@ const publicFailureCodes = [
   "BREADBOARD_RESOURCE_EXHAUSTED",
   "JOB_INTERRUPTED",
   "JOB_UNCERTAIN",
+  "SERVICE_DEPENDENCY_UNAVAILABLE",
 ];
 const sanitizedRuntimeFailureMessage = "Runtime job execution failed.";
 const jobEventFenceRules = {
@@ -2460,7 +2461,10 @@ requirePattern(
 );
 requirePattern(
   rust,
-  /pub const MAX_SERVICE_LEASE_ACQUIRE_TIMEOUT_MS:\s*u64\s*=\s*MAX_TIMEOUT_MS\s*\+\s*SERVICE_LEASE_SETTLEMENT_GRACE_MS\s*\+\s*SERVICE_LEASE_RESPONSE_GRACE_MS\s*;/,
+  // The acquire ceiling also carries the bounded idle-stop wait: an acquire
+  // that lands while the previous generation is still stopping gracefully
+  // waits out that stop before its own cold start may begin.
+  /pub const MAX_SERVICE_LEASE_ACQUIRE_TIMEOUT_MS:\s*u64\s*=\s*MAX_TIMEOUT_MS\s*\+\s*MAX_SERVICE_IDLE_STOP_WAIT_MS\s*\+\s*SERVICE_LEASE_SETTLEMENT_GRACE_MS\s*\+\s*SERVICE_LEASE_RESPONSE_GRACE_MS\s*;/,
   "Rust maximum service-acquire timeout is not derived from manifest and runtime grace bounds",
 );
 requirePattern(
@@ -2923,7 +2927,7 @@ requirePattern(
 );
 requirePattern(
   rustServiceEngine,
-  /fn service_acquire_timeouts\(startup_ms:\s*u64\)[\s\S]*?pending:\s*Duration::from_millis\(startup_ms \+ SERVICE_LEASE_SETTLEMENT_GRACE_MS\)[\s\S]*?response:\s*Duration::from_millis\([\s\S]*?startup_ms \+ SERVICE_LEASE_SETTLEMENT_GRACE_MS \+ SERVICE_LEASE_RESPONSE_GRACE_MS/,
+  /fn service_acquire_timeouts\(startup_ms:\s*u64,\s*graceful_stop_ms:\s*u64\)[\s\S]*?let pending = Duration::from_millis\(startup_ms \+ SERVICE_LEASE_SETTLEMENT_GRACE_MS\);[\s\S]*?let idle_pending = pending[\s\S]*?Duration::from_millis\(graceful_stop_ms\)\.min\(MAX_PROCESS_OWNER_GRACEFUL_SHUTDOWN\)[\s\S]*?FORCE_STOP_PADDING[\s\S]*?response:\s*idle_pending\.saturating_add\(Duration::from_millis\(SERVICE_LEASE_RESPONSE_GRACE_MS\)\)/,
   "Rust service-acquire deadlines are not derived from manifest readiness plus the bounded grace terms",
 );
 requirePattern(
@@ -2948,7 +2952,10 @@ requireAbsent(
 );
 requirePattern(
   rustServiceEngine,
-  /fn begin_owned_acquire[\s\S]*?self\.registry\.service\(&service_id\)[\s\S]*?service_acquire_timeouts\(definition\.readiness\.startup_timeout_ms\)\.pending/,
+  // A fresh acquire derives its pending deadline from the manifest; an
+  // override only carries an already-derived deadline through an idle-stop
+  // wait or a worker-dependency restart, never extending it.
+  /fn begin_owned_acquire\([\s\S]*?begin_owned_acquire_with_deadline\(authority,\s*owner,\s*reply,\s*None[\s\S]*?fn begin_owned_acquire_with_deadline\([\s\S]*?self\.registry\.service\(&service_id\)[\s\S]*?service_acquire_timeouts\(definition\.readiness\.startup_timeout_ms,\s*definition\.graceful_shutdown_ms\)[\s\S]*?pending_deadline:\s*pending\.then\(\|\|\s*\{\s*pending_deadline_override\.unwrap_or_else\(\|\|\s*\{\s*Instant::now\(\)\s*\.checked_add\(timeouts\.pending\)/,
   "Rust controller does not independently enforce the trusted manifest readiness deadline",
 );
 requirePattern(
@@ -3122,7 +3129,7 @@ requirePattern(
 );
 requirePattern(
   rustControlViews,
-  /fn public_failure_code\(record:\s*&JobRecord\)\s*->\s*Option<RuntimePublicFailureCode>[\s\S]*?record\.failure_code\.as_ref\(\)\.map\(\|_\|\s*match record\.state[\s\S]*?JobState::ResourceExhausted\s*=>\s*RuntimePublicFailureCode::ResourceExhausted[\s\S]*?JobState::Interrupted\s*=>\s*RuntimePublicFailureCode::Interrupted[\s\S]*?JobState::Uncertain\s*=>\s*RuntimePublicFailureCode::Uncertain[\s\S]*?_\s*=>\s*RuntimePublicFailureCode::RuntimeJobFailed/,
+  /fn public_failure_code\(record:\s*&JobRecord\)\s*->\s*Option<RuntimePublicFailureCode>[\s\S]*?record\.failure_code\.as_ref\(\)\.map\(\|code\|\s*match record\.state[\s\S]*?JobState::ResourceExhausted\s*=>\s*RuntimePublicFailureCode::ResourceExhausted[\s\S]*?JobState::Interrupted\s*=>\s*RuntimePublicFailureCode::Interrupted[\s\S]*?JobState::Uncertain\s*=>\s*RuntimePublicFailureCode::Uncertain[\s\S]*?JobState::Failed if code\.as_str\(\) == "SERVICE_DEPENDENCY_UNAVAILABLE"\s*=>\s*\{\s*RuntimePublicFailureCode::ServiceDependencyUnavailable[\s\S]*?_\s*=>\s*RuntimePublicFailureCode::RuntimeJobFailed/,
   "Rust job status failure code is not derived from closed runtime-owned state categories",
 );
 requirePattern(
@@ -3663,7 +3670,7 @@ requirePattern(
 );
 requirePattern(
   next,
-  /function hasValidRuntimeJobFailure[\s\S]*?RUNTIME_PUBLIC_FAILURE_CODES\.has\(value\.failureCode[\s\S]*?value\.failureMessage !== SANITIZED_RUNTIME_FAILURE_MESSAGE[\s\S]*?case "RUNTIME_JOB_FAILED":[\s\S]*?case "WORKER_FAILED":[\s\S]*?value\.state === "failed"[\s\S]*?case "BREADBOARD_RESOURCE_EXHAUSTED":[\s\S]*?value\.state === "resource_exhausted"[\s\S]*?case "JOB_INTERRUPTED":[\s\S]*?value\.state === "interrupted"[\s\S]*?case "JOB_UNCERTAIN":[\s\S]*?value\.state === "uncertain"[\s\S]*?default:[\s\S]*?return false[\s\S]*?function parseRuntimeJobSnapshot[\s\S]*?RUNTIME_PUBLIC_STAGES\.has\(value\.stage[\s\S]*?hasValidRuntimeJobFailure\(value\)/,
+  /function hasValidRuntimeJobFailure[\s\S]*?RUNTIME_PUBLIC_FAILURE_CODES\.has\(value\.failureCode[\s\S]*?value\.failureMessage !== SANITIZED_RUNTIME_FAILURE_MESSAGE[\s\S]*?case "RUNTIME_JOB_FAILED":[\s\S]*?case "WORKER_FAILED":[\s\S]*?case "SERVICE_DEPENDENCY_UNAVAILABLE":[\s\S]*?value\.state === "failed"[\s\S]*?case "BREADBOARD_RESOURCE_EXHAUSTED":[\s\S]*?value\.state === "resource_exhausted"[\s\S]*?case "JOB_INTERRUPTED":[\s\S]*?value\.state === "interrupted"[\s\S]*?case "JOB_UNCERTAIN":[\s\S]*?value\.state === "uncertain"[\s\S]*?default:[\s\S]*?return false[\s\S]*?function parseRuntimeJobSnapshot[\s\S]*?RUNTIME_PUBLIC_STAGES\.has\(value\.stage[\s\S]*?hasValidRuntimeJobFailure\(value\)/,
   "Next runtime-job snapshot does not enforce closed runtime-owned stage/failure values",
 );
 requirePattern(
@@ -3698,7 +3705,7 @@ requirePattern(
 );
 requirePattern(
   next,
-  /const MAX_SERVICE_LEASE_ACQUIRE_TIMEOUT_MS\s*=\s*MAX_MANIFEST_SERVICE_STARTUP_TIMEOUT_MS\s*\+\s*SERVICE_LEASE_SETTLEMENT_GRACE_MS\s*\+\s*SERVICE_LEASE_RESPONSE_GRACE_MS\s*;/,
+  /const MAX_SERVICE_IDLE_STOP_WAIT_MS = 302_000;[\s\S]*?const MAX_SERVICE_LEASE_ACQUIRE_TIMEOUT_MS\s*=\s*MAX_MANIFEST_SERVICE_STARTUP_TIMEOUT_MS\s*\+\s*SERVICE_LEASE_SETTLEMENT_GRACE_MS\s*\+\s*MAX_SERVICE_IDLE_STOP_WAIT_MS\s*\+\s*SERVICE_LEASE_RESPONSE_GRACE_MS\s*;/,
   "Next maximum service-acquire timeout is not derived from the shared manifest and runtime grace bounds",
 );
 const nextServiceLeaseContractBlock = sourceBlock(
@@ -3718,7 +3725,8 @@ requireAbsent(
 );
 requirePattern(
   next,
-  /export async function acquireServiceLease\([\s\S]*?serviceLeaseControlTimeoutMs\(serviceId,\s*env\)[\s\S]*?`\/v1\/services\/\$\{serviceId\}\/lease`[\s\S]*?\{ reason \}[\s\S]*?timeoutMs \?\? CONTROL_TIMEOUT_MS[\s\S]*?typeof result\.leaseId !== "string"[\s\S]*?result\.serviceId !== serviceId[\s\S]*?targetId:\s*serviceId/,
+  // A caller-supplied timeout may only shorten the contract deadline.
+  /export async function acquireServiceLease\([\s\S]*?const contractTimeoutMs = await serviceLeaseControlTimeoutMs\(serviceId,\s*env\)[\s\S]*?Math\.min\(options\.timeoutMs,\s*contractTimeoutMs \?\? CONTROL_TIMEOUT_MS\)[\s\S]*?:\s*contractTimeoutMs \?\? CONTROL_TIMEOUT_MS[\s\S]*?`\/v1\/services\/\$\{serviceId\}\/lease`[\s\S]*?\{ reason \}[\s\S]*?typeof result\.leaseId !== "string"[\s\S]*?result\.serviceId !== serviceId[\s\S]*?targetId:\s*serviceId/,
   "Next service acquire is not bound to the requested service and opaque lease ID",
 );
 requirePattern(

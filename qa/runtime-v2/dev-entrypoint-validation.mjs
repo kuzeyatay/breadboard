@@ -48,15 +48,34 @@ export function validateDevEntrypoints(input) {
     errors.push("The primary development command still launches a legacy process tree.");
   }
 
-  if (
-    desktopScripts.dev !==
-    "npm run build && npm run prepare:native-runtime && node scripts/prepare-hot-dev-runtimes.mjs && npm run prepare:transcription && node scripts/sync-dev-runtime-manifests.mjs --stage-runtime-bins && node scripts/dev.mjs"
-  ) {
+  // The ordered boundaries must appear in this order and Electron must be the
+  // final step; further preparation steps (computer-use driver, dashboard
+  // asset builds) may be interleaved without weakening the order.
+  const devSteps = String(desktopScripts.dev ?? "").split("&&").map((step) => step.trim());
+  const orderedBoundaries = [
+    "npm run build",
+    "npm run prepare:native-runtime",
+    "node scripts/prepare-hot-dev-runtimes.mjs",
+    "npm run prepare:transcription",
+    "node scripts/sync-dev-runtime-manifests.mjs --stage-runtime-bins",
+    "node scripts/dev.mjs",
+  ];
+  let cursor = 0;
+  for (const boundary of orderedBoundaries) {
+    const index = devSteps.indexOf(boundary, cursor);
+    if (index === -1) {
+      cursor = -1;
+      break;
+    }
+    cursor = index + 1;
+  }
+  if (cursor === -1 || devSteps.at(-1) !== "node scripts/dev.mjs") {
     errors.push(
       "The desktop development command must prepare the native runtime, incrementally prove the hot non-bin runtime closure, prepare transcription tools, strictly stage the hot bin closure, then enter through Electron.",
     );
   }
-  if (desktopScripts.predev !== "node scripts/sync-dev-runtime-manifests.mjs") {
+  const predevSteps = String(desktopScripts.predev ?? "").split("&&").map((step) => step.trim());
+  if (predevSteps.at(-1) !== "node scripts/sync-dev-runtime-manifests.mjs") {
     errors.push("Desktop development does not refresh the checked-in Runtime V2 manifests before launch.");
   }
   if (!/BREADBOARD_DESKTOP_DASHBOARD_MODE:\s*["']standalone["']/u.test(leanSource)) {

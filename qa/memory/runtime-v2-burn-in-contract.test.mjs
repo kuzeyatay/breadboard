@@ -150,7 +150,7 @@ function validReceipt() {
       finishedAt: "2026-08-25T23:30:00.000Z",
       validatedAt: "2026-08-25T23:45:00.000Z",
       maximumAgeMs: 21_600_000,
-      serviceCount: 32,
+      serviceCount: 34,
       gbrainIncluded: true,
       executable: {
         path: "C:\\breadboard\\release\\win-unpacked\\Breadboard.exe",

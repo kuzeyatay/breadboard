@@ -42,6 +42,34 @@ test("accepts hot Electron as the default and keeps lean Electron explicit", () 
   assert.deepEqual(result.errors, []);
 });
 
+test("accepts extra preparation steps between the ordered boundaries", () => {
+  const result = validateDevEntrypoints({
+    ...validInput,
+    desktopPackage: {
+      scripts: {
+        predev:
+          "node ../dashboard/scripts/build-quartz-runtime.mjs && node scripts/sync-dev-runtime-manifests.mjs",
+        dev: validInput.desktopPackage.scripts.dev.replace(
+          "npm run prepare:transcription",
+          "npm run prepare:computer-use && npm run prepare:transcription",
+        ),
+      },
+    },
+  });
+  assert.deepEqual(result.errors, []);
+
+  const reordered = validateDevEntrypoints({
+    ...validInput,
+    desktopPackage: {
+      scripts: {
+        ...validInput.desktopPackage.scripts,
+        dev: `${validInput.desktopPackage.scripts.dev} && npm run prepare:transcription`,
+      },
+    },
+  });
+  assert.match(reordered.errors.join("\n"), /then enter through Electron/u);
+});
+
 test("rejects the legacy multi-service development owner", () => {
   const result = validateDevEntrypoints({
     ...validInput,

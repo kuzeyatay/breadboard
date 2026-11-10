@@ -45,6 +45,30 @@ test("accepts one fixed Rust owner with status, shutdown, and fatal cleanup", ()
   });
 });
 
+test("accepts a runtime-root retry that replaces the owner through createRuntimeProcess", () => {
+  const retryLifecycle = validLifecycle.replace(
+    "async shutdown()",
+    `private createRuntimeProcess(): RuntimeProcess {
+    return new RuntimeProcess({});
+  }
+  async retryRoot() { await this.runtime.stop(); this.runtime = this.createRuntimeProcess(); }
+  async shutdown()`,
+  );
+  const ok = validateElectronRuntimeOwner({
+    appLifecycleSource: retryLifecycle,
+    runtimeProcessSource: validAdapter,
+  });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.counts.runtimeConstructions, 2);
+
+  const stray = validateElectronRuntimeOwner({
+    appLifecycleSource: `${retryLifecycle}\nconst other = new RuntimeProcess({});`,
+    runtimeProcessSource: validAdapter,
+  });
+  assert.equal(stray.ok, false);
+  assert.match(stray.errors.join("\n"), /single runtime owner slot/u);
+});
+
 test("rejects dual ownership and a dashboard URL that bypasses Runtime V2", () => {
   const result = validateElectronRuntimeOwner({
     appLifecycleSource: `
@@ -59,7 +83,7 @@ test("rejects dual ownership and a dashboard URL that bypasses Runtime V2", () =
   });
   assert.equal(result.ok, false);
   assert.match(result.errors.join("\n"), /legacy ServiceManager import/u);
-  assert.match(result.errors.join("\n"), /construct exactly one RuntimeProcess/u);
+  assert.match(result.errors.join("\n"), /single runtime owner slot/u);
   assert.match(result.errors.join("\n"), /Runtime V2 dashboard URL/u);
   assert.match(result.errors.join("\n"), /startup retry/u);
   assert.ok(result.counts.forbiddenLegacyOwners >= 4);

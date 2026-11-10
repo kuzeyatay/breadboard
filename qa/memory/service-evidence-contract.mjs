@@ -565,7 +565,7 @@ function validatedReceiptBinding({
   }
   const requiredIds = manifestMandatoryServiceIds(serviceManifest);
   if (
-    requiredIds.length !== 32 ||
+    requiredIds.length !== 34 ||
     !requiredIds.includes("gbrain") ||
     receipt.services.length !== requiredIds.length ||
     !receipt.services.some(({ serviceId }) => serviceId === "gbrain") ||
@@ -574,7 +574,7 @@ function validatedReceiptBinding({
       gates.length !== SERVICE_EVIDENCE_GATES.length ||
       gates.some(({ status }) => status !== "pass"))
   ) {
-    throw new Error("Packaged service evidence prerequisite lacks complete all-32-service/GBrain PASS coverage.");
+    throw new Error("Packaged service evidence prerequisite lacks complete all-34-service/GBrain PASS coverage.");
   }
   const canonicalReceiptPath = expectedReceiptPath(repoRoot, receipt.runId);
   if (!samePath(resolvedReceiptPath, canonicalReceiptPath)) {

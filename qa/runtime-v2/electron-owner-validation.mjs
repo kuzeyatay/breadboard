@@ -39,7 +39,10 @@ export function validateElectronRuntimeOwner(input) {
     ["direct Learn shutdown", /\bstopDetachedLearnWorker(?:Now)?\s*\(/u],
     ["Electron-owned Hermes service configuration", /\bwriteHermesRuntimeConfig\s*\(/u],
     ["Electron-owned CLIProxy preparation", /\bprepareCliproxy\s*\(/u],
-    ["Electron-owned WhisperX runtime repair", /\brepairWhisperXFfmpeg\s*\(/u],
+    // repairWhisperXFfmpeg is not listed: it is idempotent first-run filesystem
+    // preparation (hard-links PyAV's FFmpeg DLLs for torchcodec) that the Rust
+    // runtime does not perform, deliberately restored alongside the CLIProxy
+    // and Quartz asset preparation in 6b23df03d7. It owns no process.
     ["Electron-owned Quartz service provisioning", /\b(?:needsQuartzProvisioning|provisionQuartzWorkspace)\s*\(/u],
   ];
   for (const [label, pattern] of forbiddenLifecyclePatterns) {
@@ -49,8 +52,20 @@ export function validateElectronRuntimeOwner(input) {
   if (!/from\s+["']\.\/runtime-process["']/u.test(lifecycle)) {
     errors.push("AppLifecycle does not import RuntimeProcess.");
   }
-  if (occurrences(lifecycle, /\bnew\s+RuntimeProcess\s*\(/gu) !== 1) {
-    errors.push("AppLifecycle must construct exactly one RuntimeProcess.");
+  // A RuntimeProcess owns one OS process exactly once, so a runtime-root retry
+  // (d5ea9b5a05) stops the previous owner and constructs a replacement through
+  // createRuntimeProcess(). Every construction must still land in the single
+  // `this.runtime` slot; a second live owner is what this rule forbids.
+  const runtimeConstructions = occurrences(lifecycle, /\bnew\s+RuntimeProcess\s*\(/gu);
+  const ownedConstructions =
+    occurrences(lifecycle, /\b(?:this\.)?runtime\s*=\s*new\s+RuntimeProcess\s*\(/gu) +
+    (/\bcreateRuntimeProcess\s*\(\s*\)\s*:\s*RuntimeProcess\s*\{[^}]*\breturn\s+new\s+RuntimeProcess\s*\(/u.test(
+      lifecycle,
+    ) && /\bthis\.runtime\s*=\s*this\.createRuntimeProcess\s*\(\s*\)/u.test(lifecycle)
+      ? 1
+      : 0);
+  if (runtimeConstructions === 0 || runtimeConstructions !== ownedConstructions) {
+    errors.push("AppLifecycle must construct RuntimeProcess only into its single runtime owner slot.");
   }
   if (occurrences(lifecycle, /\bawait\s+this\.[A-Za-z0-9_]*runtime[A-Za-z0-9_]*\.start\s*\(/giu) !== 1) {
     errors.push("AppLifecycle must await exactly one RuntimeProcess start.");
