@@ -156,7 +156,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $root = Join-Path (npm root -g).Trim() "@nanonets\graft"
           "BREADBOARD_GRAFT_PACKAGE_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-      - name: Download the reviewed prebuilt sidecars
+      - name: Download the reviewed prebuilt binaries
         # Voicebox's speech server and OpenCode are built on the maintainer
         # workstation and cannot be reproduced byte-for-byte here. The staging
         # script verifies both against their checked-in receipts (exact size
@@ -165,9 +165,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $dir = Join-Path $env:RUNNER_TEMP "prebuilt-sidecars"
+          $dir = Join-Path $env:RUNNER_TEMP "prebuilt-binaries"
           New-Item -ItemType Directory -Force $dir | Out-Null
-          gh release download prebuilt-sidecars-2026-11-10 --pattern voicebox-server.exe --pattern opencode.exe --dir $dir
+          gh release download prebuilt-binaries-2026-11-10 --pattern voicebox-server.exe --pattern opencode.exe --dir $dir
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $voicebox = Join-Path $dir "voicebox-server.exe"
           "VOICEBOX_SERVER_BIN=$voicebox" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
