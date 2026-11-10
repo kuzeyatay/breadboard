@@ -563,7 +563,8 @@
         {
           "modes": [
             "lean",
-            "hot"
+            "hot",
+            "packaged"
           ],
           "executableAuthority": "data-root",
           "allowedExecutable": "runtime-v2/services/comfyui/.venv/Scripts/python.exe",
@@ -644,102 +645,6 @@
               {
                 "authority": "data-root",
                 "path": "runtime-v2/toolchains/comfyui/server.py"
-              }
-            ]
-          },
-          "resourceLimits": {
-            "estimatedColdStartCommitMb": 4096,
-            "softCommitLimitMb": 12288,
-            "hardCommitLimitMb": 16384
-          }
-        },
-        {
-          "modes": [
-            "packaged"
-          ],
-          "executableAuthority": "runtime-root",
-          "allowedExecutable": "runtimes/comfyui-python/python.exe",
-          "arguments": [
-            {
-              "kind": "literal",
-              "value": "-s"
-            },
-            {
-              "kind": "app-path",
-              "path": "comfyui/main.py"
-            },
-            {
-              "kind": "literal",
-              "value": "--cpu"
-            },
-            {
-              "kind": "literal",
-              "value": "--port"
-            },
-            {
-              "kind": "runtime-value",
-              "value": "service-port"
-            },
-            {
-              "kind": "literal",
-              "value": "--listen"
-            },
-            {
-              "kind": "literal",
-              "value": "127.0.0.1"
-            },
-            {
-              "kind": "literal",
-              "value": "--disable-auto-launch"
-            },
-            {
-              "kind": "literal",
-              "value": "--dont-print-server"
-            },
-            {
-              "kind": "literal",
-              "value": "--base-directory"
-            },
-            {
-              "kind": "data-path",
-              "path": "comfyui"
-            }
-          ],
-          "environmentSource": "comfyui",
-          "workingDirectory": {
-            "kind": "app-subdirectory",
-            "path": "comfyui"
-          },
-          "installProbe": {
-            "kind": "files-present",
-            "files": [
-              {
-                "authority": "runtime-root",
-                "path": "runtimes/comfyui-python/python.exe"
-              },
-              {
-                "authority": "runtime-root",
-                "path": "runtimes/comfyui-python/runtime-artifact.json"
-              },
-              {
-                "authority": "app-root",
-                "path": "comfyui/runtime-artifact.json"
-              },
-              {
-                "authority": "app-root",
-                "path": "comfyui/pylock.packaged.toml"
-              },
-              {
-                "authority": "app-root",
-                "path": "comfyui/main.py"
-              },
-              {
-                "authority": "app-root",
-                "path": "comfyui/folder_paths.py"
-              },
-              {
-                "authority": "app-root",
-                "path": "comfyui/server.py"
               }
             ]
           },

@@ -7,11 +7,16 @@
 //   build-resources/runtimes/python/          — CPython embeddable distribution
 //       matching the local Python's minor version, with ChatMock's pinned
 //       dependencies installed into Lib/site-packages
-//   build-resources/runtimes/{cad,colpali,humanizer,comfyui}-python/
+//   build-resources/runtimes/{cad,colpali,humanizer}-python/
 //       — self-contained, exact official CPython bases plus hashed Windows
 //       wheel closures. These are copied program roots rather than ordinary
 //       venvs: a Windows venv retains an absolute builder-machine `home` path
 //       and is not a clean-machine package boundary.
+//
+// ComfyUI is deliberately not here. Its PyTorch closure is 1.6 GB and only
+// useful with a GPU, so the installer ships its reviewed source only and the
+// managed-setup worker builds the environment under the data root on first
+// use (see docs/COMFYUI_IMAGE_MODE.md).
 //
 // The script is deterministic for a given machine toolchain and fails loudly
 // when a runtime cannot be produced — packaging must not silently drop one.
@@ -197,93 +202,6 @@ const PACKAGED_PYTHON_SERVICES = Object.freeze([
     externalBoundary: ["locally licensed Windows SolidWorks installation and COM automation"],
   },
 ]);
-
-const PINNED_COMFYUI_RUNTIME = Object.freeze({
-  schemaVersion: 1,
-  service: "comfyui",
-  package: "ComfyUI",
-  packageVersion: "0.30.0",
-  platform: "win32",
-  architecture: "x64",
-  runtimeDirectory: "comfyui-python",
-  python: {
-    version: "3.12.10",
-    archiveUrl: "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip",
-    archiveSha256: "4ACBED6DD1C744B0376E3B1CF57CE906F9DC9E95E68824584C8099A63025A3C3",
-    runtimeExecutableSha256: "4D6F5F81A4BCA11191C4C7C6B43632694D0A4CE74E068619D8FDC161D469859A",
-    baseClosureSha256: "00AFF22F464AFC3194EF14EE02B5AC3B9AF5819084FE9CC25EB4FB783EC0F55F",
-    baseClosureFileCount: 35,
-    licenseSha256: "A4771D2216653FCA4E3472566A762BA8CE5358F6F6599455FE7CFACEB60D14B3",
-  },
-  uv: {
-    version: "0.12.5",
-    executableSha256: "8DA6CEDEF60C27AC997EBF400FBFC6D373C5B0A7AE6A299B9D52BE7FE63723FB",
-  },
-  source: {
-    upstreamCommit: "2eb609766a749e3104485979615e062e401bab97",
-    pyprojectSha256: "B4B313450FDD6F2B5D83772D64ECE440E66A0CCB7793B33A45C01E9F4E171735",
-    requirementsSha256: "BDCFEC87BEAE821F2374C4A4CE36237E6BCEA08DDA7CF86881D49816E85BCA64",
-  },
-  dependencyLock: {
-    format: "pylock.toml",
-    target: "cp312-win_amd64",
-    policy: "cpu",
-    constraintsSha256: "49858A870C6241099BB64C4D7844508948C88D38B1E32E7804003A34BC1E8924",
-    lockSha256: "E3D62AAE9F162C85F5CE6AED996C2A3C6EE253099F796873EC02EE306D696788",
-    packageCount: 85,
-    wheelCount: 94,
-    hashesRequired: true,
-    sourceDistributionsAllowed: false,
-    approvedHosts: ["files.pythonhosted.org", "download-r2.pytorch.org"],
-    corePackages: {
-      "comfy-aimdo": "0.4.13",
-      "comfy-kitchen": "0.2.26",
-      "comfyui-frontend-package": "1.48.6",
-      "comfyui-workflow-templates": "0.11.31",
-      torch: "2.11.0+cpu",
-      torchaudio: "2.11.0+cpu",
-      torchvision: "0.26.0+cpu",
-    },
-  },
-  install: {
-    tool: "uv",
-    exact: true,
-    buildAllowed: false,
-    runtimeNetworkRequired: false,
-  },
-  modelAssets: { bundled: false, storageAuthority: "data-root" },
-});
-
-const COMFYUI_PACKAGED_SERVICE = Object.freeze({
-  id: PINNED_COMFYUI_RUNTIME.service,
-  package: PINNED_COMFYUI_RUNTIME.package,
-  packageVersion: PINNED_COMFYUI_RUNTIME.packageVersion,
-  serviceDirectory: "comfyui",
-  packagedSourceDirectory: "comfyui",
-  runtimeDirectory: PINNED_COMFYUI_RUNTIME.runtimeDirectory,
-  pythonVersion: PINNED_COMFYUI_RUNTIME.python.version,
-  pythonArchiveUrl: PINNED_COMFYUI_RUNTIME.python.archiveUrl,
-  pythonArchiveSha256: PINNED_COMFYUI_RUNTIME.python.archiveSha256,
-  pythonExecutableSha256: PINNED_COMFYUI_RUNTIME.python.runtimeExecutableSha256,
-  pythonRuntimeSha256: PINNED_COMFYUI_RUNTIME.python.baseClosureSha256,
-  pythonRuntimeFileCount: PINNED_COMFYUI_RUNTIME.python.baseClosureFileCount,
-  pythonLicenseSha256: PINNED_COMFYUI_RUNTIME.python.licenseSha256,
-  upstreamCommit: PINNED_COMFYUI_RUNTIME.source.upstreamCommit,
-  pyprojectSha256: PINNED_COMFYUI_RUNTIME.source.pyprojectSha256,
-  requirementsSha256: PINNED_COMFYUI_RUNTIME.source.requirementsSha256,
-  constraintsSha256: PINNED_COMFYUI_RUNTIME.dependencyLock.constraintsSha256,
-  lockSha256: PINNED_COMFYUI_RUNTIME.dependencyLock.lockSha256,
-  packageCount: PINNED_COMFYUI_RUNTIME.dependencyLock.packageCount,
-  wheelCount: PINNED_COMFYUI_RUNTIME.dependencyLock.wheelCount,
-  approvedHosts: PINNED_COMFYUI_RUNTIME.dependencyLock.approvedHosts,
-  corePackages: PINNED_COMFYUI_RUNTIME.dependencyLock.corePackages,
-  runtimeReceipt: PINNED_COMFYUI_RUNTIME,
-  importPathReceipt: "breadboard-comfyui.pth",
-  lockSource: "desktop/runtime-v2/vendor/comfyui/pylock.packaged.toml",
-  smokeImports:
-    "sys.argv=['comfyui-smoke','--cpu']; import comfy.options; " +
-    "comfy.options.enable_args_parsing(); import server; assert hasattr(server, 'PromptServer')",
-});
 
 const CHATMOCK_PINNED_DEPS = [
   "blinker==1.9.0",
@@ -831,122 +749,6 @@ function exportUvProjectLock(uv, service, closure) {
   return { ...closure, lockPath, lockedPackages, cleanupRoot: lockRoot };
 }
 
-function requireComfyUiRuntimeSources(service) {
-  const serviceRoot = path.join(repoRoot, "comfyui");
-  const vendorRoot = path.join(desktopRoot, "runtime-v2", "vendor", "comfyui");
-  const constraintsPath = path.join(vendorRoot, "constraints.packaged.txt");
-  const lockPath = path.join(vendorRoot, "pylock.packaged.toml");
-  for (const requiredPath of [
-    path.join(serviceRoot, "main.py"),
-    path.join(serviceRoot, "server.py"),
-    path.join(serviceRoot, "pyproject.toml"),
-    path.join(serviceRoot, "requirements.txt"),
-    constraintsPath,
-    lockPath,
-  ]) {
-    if (!fs.existsSync(requiredPath)) fail(`ComfyUI packaged closure is missing ${requiredPath}.`);
-  }
-
-  const revision = spawnSync("git", ["-C", serviceRoot, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    shell: false,
-  });
-  if (revision.status !== 0 || revision.stdout.trim() !== service.upstreamCommit) {
-    fail(`ComfyUI checkout must be pinned to ${service.upstreamCommit}.`);
-  }
-  const sourceStatus = spawnSync(
-    "git",
-    ["-C", serviceRoot, "status", "--porcelain=v1", "--untracked-files=all"],
-    { encoding: "utf8", shell: false },
-  );
-  if (sourceStatus.status !== 0 || sourceStatus.stdout.trim()) {
-    fail("ComfyUI's pinned upstream checkout must be fully clean.");
-  }
-  const vendorStatus = spawnSync(
-    "git",
-    [
-      "-C",
-      repoRoot,
-      "status",
-      "--porcelain=v1",
-      "--untracked-files=all",
-      "--",
-      "desktop/runtime-v2/vendor/comfyui/constraints.packaged.txt",
-      "desktop/runtime-v2/vendor/comfyui/pylock.packaged.toml",
-    ],
-    { encoding: "utf8", shell: false },
-  );
-  if (vendorStatus.status !== 0 || vendorStatus.stdout.trim()) {
-    fail("ComfyUI's Breadboard-owned constraints and lock must be tracked and clean.");
-  }
-  for (const [filePath, expectedHash, label] of [
-    [path.join(serviceRoot, "pyproject.toml"), service.pyprojectSha256, "pyproject.toml"],
-    [path.join(serviceRoot, "requirements.txt"), service.requirementsSha256, "requirements.txt"],
-    [constraintsPath, service.constraintsSha256, "packaged constraints"],
-    [lockPath, service.lockSha256, "packaged lock"],
-  ]) {
-    const actualHash = canonicalFileSha256(filePath);
-    if (actualHash !== expectedHash) {
-      fail(`ComfyUI ${label} is not the reviewed immutable file (${actualHash}).`);
-    }
-  }
-
-  const lockSource = fs.readFileSync(lockPath, "utf8").replace(/\r\n/gu, "\n");
-  if (!lockSource.startsWith('lock-version = "1.0"\ncreated-by = "uv"\nrequires-python = ">=3.12.10"\n')) {
-    fail("ComfyUI packaged lock has an unexpected pylock header.");
-  }
-  if (/(?:^|\n)sdist = /u.test(lockSource)) {
-    fail("ComfyUI packaged lock must not admit source distributions.");
-  }
-  const packageBlocks = lockSource.split(/(?=^\[\[packages\]\]$)/gmu).filter((block) =>
-    block.startsWith("[[packages]]"),
-  );
-  const lockedPackages = parsePylockPackages(lockPath);
-  if (
-    packageBlocks.length !== service.packageCount ||
-    lockedPackages.size !== service.packageCount
-  ) {
-    fail(
-      `ComfyUI packaged lock must contain ${service.packageCount} unique packages; found ${packageBlocks.length}/${lockedPackages.size}.`,
-    );
-  }
-  let wheelCount = 0;
-  for (const block of packageBlocks) {
-    const name = block.match(/^name = "([^"]+)"$/mu)?.[1] ?? "unknown";
-    const urls = [...block.matchAll(/url = "([^"]+)"/gu)].map((match) => match[1]);
-    const hashes = [...block.matchAll(/sha256 = "([0-9a-f]+)"/gu)].map((match) => match[1]);
-    if (urls.length === 0 || urls.length !== hashes.length) {
-      fail(`ComfyUI lock package ${name} does not have one SHA-256 per wheel.`);
-    }
-    for (const [index, url] of urls.entries()) {
-      let parsed;
-      try {
-        parsed = new URL(url);
-      } catch {
-        fail(`ComfyUI lock package ${name} has an invalid wheel URL.`);
-      }
-      if (
-        parsed.protocol !== "https:" ||
-        !service.approvedHosts.includes(parsed.hostname) ||
-        !parsed.pathname.toLowerCase().endsWith(".whl") ||
-        !/^[0-9a-f]{64}$/u.test(hashes[index])
-      ) {
-        fail(`ComfyUI lock package ${name} has an unreviewed wheel artifact.`);
-      }
-    }
-    wheelCount += urls.length;
-  }
-  if (wheelCount !== service.wheelCount) {
-    fail(`ComfyUI packaged lock must contain ${service.wheelCount} reviewed wheels; found ${wheelCount}.`);
-  }
-  for (const [packageName, expectedVersion] of Object.entries(service.corePackages)) {
-    if (lockedPackages.get(normalizeDistributionName(packageName)) !== expectedVersion) {
-      fail(`ComfyUI packaged lock does not pin ${packageName}==${expectedVersion}.`);
-    }
-  }
-  return { serviceRoot, lockPath, lockedPackages };
-}
-
 async function acquirePackagedServicePythonArchive(service) {
   const zipName = `python-${service.pythonVersion}-embed-amd64.zip`;
   const suppliedPythonArchive = process.env[
@@ -1445,7 +1247,6 @@ function parsePrepareOptions(arguments_) {
     "bun",
     "python",
     ...PACKAGED_PYTHON_SERVICES.map((service) => service.id),
-    COMFYUI_PACKAGED_SERVICE.id,
   ]);
   if (options.only && !validTargets.has(options.only)) {
     fail(`Unknown runtime target ${options.only}. Expected one of: ${[...validTargets].join(", ")}.`);
@@ -1477,8 +1278,7 @@ function parsePrepareOptions(arguments_) {
 prepareOptions = parsePrepareOptions(process.argv.slice(2));
 const selected = (target) => prepareOptions.only === null || prepareOptions.only === target;
 const selectedPackagedServices = PACKAGED_PYTHON_SERVICES.filter((service) => selected(service.id));
-const selectedComfyUi = selected(COMFYUI_PACKAGED_SERVICE.id);
-const needsPackagedServiceUv = selectedPackagedServices.length > 0 || selectedComfyUi;
+const needsPackagedServiceUv = selectedPackagedServices.length > 0;
 const packagedServiceUv = needsPackagedServiceUv ? await requirePackagedServiceUv() : null;
 if (prepareOptions.prefetch) {
   await prefetchPackagedServiceRuntime(packagedServiceUv, selectedPackagedServices[0]);
@@ -1489,16 +1289,6 @@ if (prepareOptions.prefetch) {
   if (selected("python")) manifest.push(await preparePython());
   for (const service of selectedPackagedServices) {
     manifest.push(await preparePackagedServiceRuntime(packagedServiceUv, service));
-  }
-  if (selectedComfyUi) {
-    const comfyUiClosure = requireComfyUiRuntimeSources(COMFYUI_PACKAGED_SERVICE);
-    manifest.push(
-      await preparePackagedServiceRuntime(
-        packagedServiceUv,
-        COMFYUI_PACKAGED_SERVICE,
-        comfyUiClosure,
-      ),
-    );
   }
   const manifestPath = path.join(runtimesDir, "runtimes-manifest.json");
   let combinedManifest = manifest;

@@ -94,61 +94,6 @@ const PINNED_PACKAGED_SERVICE_COMMITS = Object.freeze({
   wardrobe: "f44006cce7e4779e595a35b25fbbc8dabc68d7e4",
 });
 const SOURCE_ARTIFACT_RECEIPT_NAME = "BREADBOARD_SOURCE_ARTIFACT.json";
-const PINNED_COMFYUI_RUNTIME = Object.freeze({
-  schemaVersion: 1,
-  service: "comfyui",
-  package: "ComfyUI",
-  packageVersion: "0.30.0",
-  platform: "win32",
-  architecture: "x64",
-  runtimeDirectory: "comfyui-python",
-  python: {
-    version: "3.12.10",
-    archiveUrl: "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip",
-    archiveSha256: "4ACBED6DD1C744B0376E3B1CF57CE906F9DC9E95E68824584C8099A63025A3C3",
-    runtimeExecutableSha256: "4D6F5F81A4BCA11191C4C7C6B43632694D0A4CE74E068619D8FDC161D469859A",
-    baseClosureSha256: "00AFF22F464AFC3194EF14EE02B5AC3B9AF5819084FE9CC25EB4FB783EC0F55F",
-    baseClosureFileCount: 35,
-    licenseSha256: "A4771D2216653FCA4E3472566A762BA8CE5358F6F6599455FE7CFACEB60D14B3",
-  },
-  uv: {
-    version: "0.12.5",
-    executableSha256: "8DA6CEDEF60C27AC997EBF400FBFC6D373C5B0A7AE6A299B9D52BE7FE63723FB",
-  },
-  source: {
-    upstreamCommit: "2eb609766a749e3104485979615e062e401bab97",
-    pyprojectSha256: "B4B313450FDD6F2B5D83772D64ECE440E66A0CCB7793B33A45C01E9F4E171735",
-    requirementsSha256: "BDCFEC87BEAE821F2374C4A4CE36237E6BCEA08DDA7CF86881D49816E85BCA64",
-  },
-  dependencyLock: {
-    format: "pylock.toml",
-    target: "cp312-win_amd64",
-    policy: "cpu",
-    constraintsSha256: "49858A870C6241099BB64C4D7844508948C88D38B1E32E7804003A34BC1E8924",
-    lockSha256: "E3D62AAE9F162C85F5CE6AED996C2A3C6EE253099F796873EC02EE306D696788",
-    packageCount: 85,
-    wheelCount: 94,
-    hashesRequired: true,
-    sourceDistributionsAllowed: false,
-    approvedHosts: ["files.pythonhosted.org", "download-r2.pytorch.org"],
-    corePackages: {
-      "comfy-aimdo": "0.4.13",
-      "comfy-kitchen": "0.2.26",
-      "comfyui-frontend-package": "1.48.6",
-      "comfyui-workflow-templates": "0.11.31",
-      torch: "2.11.0+cpu",
-      torchaudio: "2.11.0+cpu",
-      torchvision: "0.26.0+cpu",
-    },
-  },
-  install: {
-    tool: "uv",
-    exact: true,
-    buildAllowed: false,
-    runtimeNetworkRequired: false,
-  },
-  modelAssets: { bundled: false, storageAuthority: "data-root" },
-});
 const VOICEBOX_ARTIFACT_RECEIPT = path.join(
   desktopRoot,
   "runtime-v2",
@@ -5093,9 +5038,9 @@ for (const service of PACKAGED_PYTHON_SERVICES) {
 }
 
 // --- ComfyUI (Runtime V2 on-demand local image service) ------------------
-// Models/cache/output remain mutable user data. Program source and the exact
-// Breadboard-owned Windows CPU dependency authority are immutable package
-// inputs; prepare-runtimes.mjs assembles the interpreter separately.
+// Only the reviewed program source ships. The interpreter and its PyTorch
+// closure are built under the data root by the managed-setup worker on first
+// use; models/cache/output remain mutable user data.
 {
   const comfyUiSource = path.join(repoRoot, "comfyui");
   const comfyUiTarget = path.join(stagingRoot, "comfyui");
@@ -5136,24 +5081,6 @@ for (const service of PACKAGED_PYTHON_SERVICES) {
       "server.py",
     ],
   });
-  const comfyUiVendorRoot = path.join(desktopRoot, "runtime-v2", "vendor", "comfyui");
-  for (const [fileName, expectedHash] of [
-    ["constraints.packaged.txt", PINNED_COMFYUI_RUNTIME.dependencyLock.constraintsSha256],
-    ["pylock.packaged.toml", PINNED_COMFYUI_RUNTIME.dependencyLock.lockSha256],
-  ]) {
-    const source = path.join(comfyUiVendorRoot, fileName);
-    if (!fs.existsSync(source)) fail(`ComfyUI packaged dependency authority is missing ${source}.`);
-    const identity = canonicalFileIdentity(source);
-    if (identity.sha256 !== expectedHash) {
-      fail(`ComfyUI ${fileName} is not the reviewed immutable file (${identity.sha256}).`);
-    }
-    fs.copyFileSync(source, path.join(comfyUiTarget, fileName));
-  }
-  fs.writeFileSync(
-    path.join(comfyUiTarget, "runtime-artifact.json"),
-    `${JSON.stringify(PINNED_COMFYUI_RUNTIME, null, 2)}\n`,
-    { encoding: "utf8", mode: 0o644 },
-  );
 }
 
 // --- ui-tars-adapter (browser + actual-desktop sidecar; optional runtime) --

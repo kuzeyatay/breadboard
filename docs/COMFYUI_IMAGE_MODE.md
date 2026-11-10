@@ -62,10 +62,12 @@ restarts the same service. Admission denial remains the structured
 `BREADBOARD_RESOURCE_EXHAUSTED` response used elsewhere in the UI.
 
 Packaged desktop builds stage reviewed ComfyUI source and its license only.
-Models, environments, caches, inputs, outputs, and user data are forbidden from
-the package. The setup-produced Python interpreter and readiness marker live
-under the pinned desktop data root and must both exist before Runtime V2 will
-launch the service.
+No interpreter ships: the PyTorch closure is 1.6 GB and only earns its place on
+a machine with a GPU, so it is built on first use instead (a several-gigabyte
+download, shown as such in the panel). Models, environments, caches, inputs,
+outputs, and user data are forbidden from the package. The setup-produced
+Python interpreter and readiness marker live under the pinned desktop data root
+and must both exist before Runtime V2 will launch the service, in every mode.
 
 ## Setup
 

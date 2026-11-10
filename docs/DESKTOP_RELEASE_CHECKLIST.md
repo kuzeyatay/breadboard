@@ -11,6 +11,8 @@
 4. `npm run desktop:build:dashboard` — clean standalone build.
 5. `npm run desktop:prepare` — runtimes + staged resources (records versions
    in `build-resources/runtimes/runtimes-manifest.json`).
+   ComfyUI's interpreter is deliberately not staged: it is built under the data
+   root on first use (docs/COMFYUI_IMAGE_MODE.md).
 6. `npm run desktop:test` — full desktop suite green.
 7. `npm run desktop:verify` — staged-resource guard green.
 8. `npm run desktop:dist:win` — NSIS installer.

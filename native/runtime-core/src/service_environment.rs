@@ -6966,11 +6966,11 @@ fn build_comfyui_environment(
     builder.insert("PYTHONDONTWRITEBYTECODE", "1")?;
     builder.insert(
         "COMFYUI_ROOT",
-        comfyui_toolchain_directory(mode, paths).into_os_string(),
+        comfyui_toolchain_directory(paths).into_os_string(),
     )?;
     builder.insert(
         "COMFYUI_ENV_DIR",
-        comfyui_environment_directory(mode, paths).into_os_string(),
+        comfyui_environment_directory(paths).into_os_string(),
     )?;
     builder.insert(
         "COMFYUI_RUNTIME_DIR",
@@ -7465,11 +7465,11 @@ fn build_dashboard_environment(
     )?;
     builder.insert(
         "COMFYUI_ROOT",
-        comfyui_toolchain_directory(mode, paths).into_os_string(),
+        comfyui_toolchain_directory(paths).into_os_string(),
     )?;
     builder.insert(
         "COMFYUI_ENV_DIR",
-        comfyui_environment_directory(mode, paths).into_os_string(),
+        comfyui_environment_directory(paths).into_os_string(),
     )?;
     builder.insert(
         "COMFYUI_RUNTIME_DIR",
@@ -8182,18 +8182,16 @@ fn hermes_computer_use_driver(paths: &RuntimePaths) -> PathBuf {
         .join("cua-driver.exe")
 }
 
-fn comfyui_toolchain_directory(mode: RuntimeMode, paths: &RuntimePaths) -> PathBuf {
-    match mode {
-        RuntimeMode::Lean | RuntimeMode::Hot => paths.managed_payload_path("runtime-v2/toolchains/comfyui"),
-        RuntimeMode::Packaged => paths.app_root().join("comfyui"),
-    }
+// ComfyUI is not bundled: the installer carries only its reviewed source, and
+// the managed-setup worker copies that source and builds the Python
+// environment under the data root on first use. Every mode therefore launches
+// the same setup-produced tree, exactly like acestep and deer-flow.
+fn comfyui_toolchain_directory(paths: &RuntimePaths) -> PathBuf {
+    paths.managed_payload_path("runtime-v2/toolchains/comfyui")
 }
 
-fn comfyui_environment_directory(mode: RuntimeMode, paths: &RuntimePaths) -> PathBuf {
-    match mode {
-        RuntimeMode::Lean | RuntimeMode::Hot => paths.managed_payload_path("runtime-v2/services/comfyui/.venv"),
-        RuntimeMode::Packaged => paths.runtime_root().join("runtimes").join("comfyui-python"),
-    }
+fn comfyui_environment_directory(paths: &RuntimePaths) -> PathBuf {
+    paths.managed_payload_path("runtime-v2/services/comfyui/.venv")
 }
 
 fn comfyui_runtime_directory(paths: &RuntimePaths) -> PathBuf {
@@ -8627,7 +8625,7 @@ mod tests {
     }
 
     #[test]
-    fn comfyui_and_wardrobe_use_immutable_packaged_runtimes_and_writable_state() {
+    fn comfyui_uses_its_setup_produced_data_root_tree_in_every_mode_and_wardrobe_keeps_writable_state() {
         let (_temporary, paths, _config, os_environment) = fixture();
         let endpoints = endpoints();
 
@@ -8673,21 +8671,27 @@ mod tests {
             );
         }
 
+        // The installer ships no ComfyUI interpreter: packaged installs build
+        // the same data-root environment on first use as the development modes.
         let comfyui = values(
             &build_comfyui_environment(RuntimeMode::Packaged, &paths, &endpoints, &os_environment)
                 .unwrap(),
         );
         assert_eq!(
             comfyui["COMFYUI_ROOT"],
-            paths.app_root().join("comfyui").to_string_lossy()
+            paths
+                .data_root()
+                .join("runtime-v2/toolchains/comfyui")
+                .to_string_lossy()
         );
         assert_eq!(
             comfyui["COMFYUI_ENV_DIR"],
             paths
-                .runtime_root()
-                .join("runtimes/comfyui-python")
+                .data_root()
+                .join("runtime-v2/services/comfyui/.venv")
                 .to_string_lossy()
         );
+        assert!(!comfyui["COMFYUI_ENV_DIR"].contains("comfyui-python"));
         assert_eq!(
             comfyui["COMFYUI_RUNTIME_DIR"],
             paths

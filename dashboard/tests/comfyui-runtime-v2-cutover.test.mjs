@@ -260,11 +260,13 @@ test("the ComfyUI manifest uses only closed data/app authorities and never stage
   );
   const service = manifest.services.find((candidate) => candidate.id === "comfyui");
   assert.ok(service);
+  // One profile for every mode: the installer ships ComfyUI source only, and
+  // the packaged app builds and launches the same data-root environment.
   assert.deepEqual(
     service.launchProfiles.map((profile) => profile.modes),
-    [["lean", "hot"], ["packaged"]],
+    [["lean", "hot", "packaged"]],
   );
-  const [managedProfile, packagedProfile] = service.launchProfiles;
+  const [managedProfile] = service.launchProfiles;
   assert.equal(managedProfile.executableAuthority, "data-root");
   assert.equal(
     managedProfile.allowedExecutable,
@@ -283,25 +285,7 @@ test("the ComfyUI manifest uses only closed data/app authorities and never stage
     path: "runtime-v2/toolchains/comfyui",
   });
 
-  assert.equal(packagedProfile.executableAuthority, "runtime-root");
-  assert.equal(
-    packagedProfile.allowedExecutable,
-    "runtimes/comfyui-python/python.exe",
-  );
-  assert.ok(packagedProfile.arguments.some(
-    (argument) => argument.kind === "app-path" && argument.path === "comfyui/main.py",
-  ));
-  assert.ok(packagedProfile.installProbe.files.some(
-    (probe) => probe.authority === "runtime-root" &&
-      probe.path === "runtimes/comfyui-python/python.exe",
-  ));
-  assert.ok(packagedProfile.installProbe.files.some(
-    (probe) => probe.authority === "app-root" && probe.path === "comfyui/main.py",
-  ));
-  assert.deepEqual(packagedProfile.workingDirectory, {
-    kind: "app-subdirectory",
-    path: "comfyui",
-  });
+  assert.doesNotMatch(JSON.stringify(service), /comfyui-python|runtime-root/u);
 
   const closedAuthorities = new Set(["app-root", "data-root", "runtime-root"]);
   for (const profile of service.launchProfiles) {

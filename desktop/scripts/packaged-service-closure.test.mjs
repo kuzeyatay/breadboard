@@ -134,12 +134,13 @@ test("packaged native services launch only reviewed immutable artifacts", () => 
     authority === "app-root" && value === "openwork-runtime/apps/server/src/cli.ts"));
   assert.doesNotMatch(JSON.stringify(packaged("openwork")), /data-root|data-path/iu);
 
-  assert.equal(packaged("comfyui").allowedExecutable, "runtimes/comfyui-python/python.exe");
+  // ComfyUI ships as source only; the packaged app builds and launches the
+  // same data-root environment the development modes use.
+  assert.equal(packaged("comfyui").executableAuthority, "data-root");
+  assert.equal(packaged("comfyui").allowedExecutable, "runtime-v2/services/comfyui/.venv/Scripts/python.exe");
   assert.ok(packaged("comfyui").installProbe.files.some(({ authority, path: value }) =>
-    authority === "runtime-root" && value === "runtimes/comfyui-python/runtime-artifact.json"));
-  assert.ok(packaged("comfyui").installProbe.files.some(({ authority, path: value }) =>
-    authority === "app-root" && value === "comfyui/runtime-artifact.json"));
-  assert.doesNotMatch(JSON.stringify(packaged("comfyui")), /runtime-v2\/services\/comfyui\/\.venv/iu);
+    authority === "data-root" && value === "runtime-v2/services/comfyui/.venv/.breadboard-comfyui-ready"));
+  assert.doesNotMatch(JSON.stringify(byId.get("comfyui")), /comfyui-python/iu);
   for (const profile of byId.get("comfyui").launchProfiles) {
     const entrypointIndex = profile.arguments.findIndex(
       ({ path: value }) => value?.endsWith("comfyui/main.py"),
@@ -447,7 +448,7 @@ test("packaged OCI stacks use reviewed linux-amd64 index and child-manifest dige
 test("only genuinely unresolved packaged prerequisites remain release blockers", () => {
   const rows = closureRows();
   assert.doesNotMatch(rows.get("comfyui"), /releaseBlocker/u);
-  assert.match(rows.get("comfyui"), /dataRoot: "writable-state"[\s\S]*comfyui-python\/runtime-artifact\.json/u);
+  assert.match(rows.get("comfyui"), /dataRoot: "writable-state", bootstrap: \["app-root:comfyui\/main\.py"\]/u);
   assert.doesNotMatch(rows.get("wardrobe"), /releaseBlocker/u);
   assert.match(rows.get("wardrobe"), /dataRoot: "writable-state"[\s\S]*wardrobe-runtime\/runtime-artifact\.json/u);
   assert.doesNotMatch(rows.get("mem0-semantic-engine"), /releaseBlocker/u);
