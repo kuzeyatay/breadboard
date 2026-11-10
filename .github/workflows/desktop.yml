@@ -231,7 +231,14 @@ jobs:
         shell: pwsh
         run: npm run desktop:verify
       - name: Package the NSIS installer
+        # Signing is optional. With the WIN_CSC_LINK (base64 PFX) and
+        # WIN_CSC_KEY_PASSWORD repository secrets set, electron-builder signs
+        # Breadboard.exe and the installer; with them unset the build stays
+        # unsigned exactly as before.
         shell: pwsh
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: npm run desktop:dist:win
       - name: Verify the unpacked package
         shell: pwsh
