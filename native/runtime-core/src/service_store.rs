@@ -1834,9 +1834,16 @@ fn ensure_service_registration_tx(
     if let Some(existing) = existing {
         let lease = &registration.lease;
         let expected_idle_ttl = lease.idle_ttl_ms();
-        if existing.display_name != lease.display_name()
-            || existing.required != lease.required()
-            || existing.startup_policy != lease.startup_policy()
+        // The display name and the required flag describe a service to
+        // operators; neither grants lifecycle authority. A manifest that
+        // re-labels a service therefore updates the row, the way restart
+        // bounds migrate below, instead of refusing to start the runtime on
+        // every install that registered the old value (exit code 70 before
+        // readiness, with the cause withheld as pre-ready stderr).
+        if existing.display_name != lease.display_name() || existing.required != lease.required() {
+            bind_migrated_service_identity_tx(transaction, &existing, lease, now_ms)?;
+        }
+        if existing.startup_policy != lease.startup_policy()
             || existing.restart_policy != lease.restart_policy()
             || existing.resource_class != registration.resource_class
             || existing.max_concurrent_leases != lease.limits().max_concurrent_leases()
@@ -1923,6 +1930,31 @@ fn ensure_service_registration_tx(
             to_i64(maximum_backoff_ms, "maximum service restart backoff")?,
         ],
     )?;
+    Ok(())
+}
+
+fn bind_migrated_service_identity_tx(
+    transaction: &Transaction<'_>,
+    service: &ServiceRow,
+    lease: &ServiceLeaseRegistration,
+    now_ms: u64,
+) -> Result<(), DurableServiceStoreError> {
+    let changed = transaction.execute(
+        "UPDATE runtime_services
+         SET display_name=?2, required=?3, last_observed_at=?4, updated_at=?4
+         WHERE service_id=?1",
+        params![
+            service.service_id,
+            lease.display_name(),
+            if lease.required() { 1_i64 } else { 0_i64 },
+            to_i64(now_ms, "service registration time")?,
+        ],
+    )?;
+    if changed != 1 {
+        return Err(DurableServiceStoreError::RegistrationConflict(
+            service.service_id.clone(),
+        ));
+    }
     Ok(())
 }
 
@@ -3334,6 +3366,51 @@ mod tests {
             ServiceStartupPolicy::OnDemand,
             ResourceClass::Core,
         )
+    }
+
+    #[test]
+    fn re_registration_migrates_display_name_and_required_but_refuses_lifecycle_drift() {
+        let (_directory, store) = store();
+        let limits = ServiceLeaseLimits::new(16, 1_000, 2).unwrap();
+        let optional = DurableServiceRegistration::new(
+            ServiceLeaseRegistration::from_definition(&definition("search"), false, limits).unwrap(),
+            ResourceClass::Core,
+            definition("search").restart_bounds.clone(),
+        )
+        .unwrap();
+        store.register_durable_service(&optional, 100).unwrap();
+
+        // The manifest later marks the service required and renames it: the
+        // stored row follows instead of refusing the whole runtime start.
+        let mut renamed = definition("search");
+        renamed.display_name = "Search (renamed)".into();
+        let required = DurableServiceRegistration::new(
+            ServiceLeaseRegistration::from_definition(&renamed, true, limits).unwrap(),
+            ResourceClass::Core,
+            renamed.restart_bounds.clone(),
+        )
+        .unwrap();
+        store.register_durable_service(&required, 200).unwrap();
+        {
+            let connection = store.connection.lock().unwrap();
+            let row = query_service_tx(&connection, "search").unwrap();
+            assert!(row.required);
+            assert_eq!(row.display_name, "Search (renamed)");
+        }
+
+        // Lifecycle authority still fails closed.
+        let mut drifted = renamed.clone();
+        drifted.idle_ttl_ms = Some(999);
+        let conflicting = DurableServiceRegistration::new(
+            ServiceLeaseRegistration::from_definition(&drifted, true, limits).unwrap(),
+            ResourceClass::Core,
+            drifted.restart_bounds.clone(),
+        )
+        .unwrap();
+        assert!(matches!(
+            store.register_durable_service(&conflicting, 300),
+            Err(DurableServiceStoreError::RegistrationConflict(id)) if id == "search"
+        ));
     }
 
     fn registration_with_policy_and_class(
