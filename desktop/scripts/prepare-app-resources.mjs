@@ -237,13 +237,13 @@ const PINNED_WARDROBE_RUNTIME = Object.freeze({
     sha256: "AE53F7EA6A10B4F2F4C8483473E25A13579CE5B7E9F85BF0D9144923D98C46A1",
   },
   packageManifest: {
-    size: 631,
-    sha256: "25EF9D9862AD6A6864465F5B0293222A60E4C8D5AD062688D44B530C908FCDFF",
+    size: 606,
+    sha256: "07CCA7E9EBB7663C9B0D9CACB0053D901B18084D6BA9F75C5BC88690973C7141",
   },
   dependencyLock: {
     format: "npm-lockfile-v3",
-    size: 112_294,
-    sha256: "10417E4CC550BEC667376D779259445AAD6E4ECA3643C651526FAE11E262523E",
+    size: 109_168,
+    sha256: "E289ED65CF54B5B28B7042883A5A7BFE21DAB48012ECC1D47C93F78718DC2D3E",
   },
   nodeModules: {
     fileCount: 14_106,
@@ -2006,12 +2006,17 @@ log("staging pinned Ruflo planner and Claude Code executor");
   copyTree(installedModules, path.join(target, "node_modules"));
   fs.copyFileSync(receiptPath, path.join(target, "runtime-artifact.json"));
   fs.copyFileSync(dependencyLock, path.join(target, "BREADBOARD_DEPENDENCY_LOCK.json"));
+  // The license is tracked text: hash and stage its repository bytes (LF) so a
+  // checkout with core.autocrlf=true yields the same identity as a clean clone.
   const sourceLicense = path.join(sourceRoot, "LICENSE");
-  const licenseHash = await sha256File(sourceLicense);
+  const CRLF = String.fromCharCode(13, 10);
+  const LF = String.fromCharCode(10);
+  const licenseBytes = Buffer.from(fs.readFileSync(sourceLicense, "utf8").split(CRLF).join(LF), "utf8");
+  const licenseHash = createHash("sha256").update(licenseBytes).digest("hex").toUpperCase();
   if (licenseHash !== expectedRuflo.licenseSha256) {
     fail(`Ruflo license must have SHA-256 ${expectedRuflo.licenseSha256}; found ${licenseHash}.`);
   }
-  fs.copyFileSync(sourceLicense, path.join(target, "LICENSE"));
+  fs.writeFileSync(path.join(target, "LICENSE"), licenseBytes);
   fs.rmSync(installRoot, { recursive: true, force: true });
 
   const claudeTarget = path.join(desktopRoot, "resources", "bin", "claude.exe");
@@ -3509,8 +3514,8 @@ fs.copyFileSync(
   const targetRoot = path.join(stagingRoot, "video-use");
   const expectedCommit = "8e94eb04d22c5de30bd0febd2cd06fb4103949dd";
   const reviewedFileHashes = new Map([
-    ["helpers/grade.py", "CAC78B55A9D15E5CA52A9FAD043CBAA9BE2A3728C34CE2BC2A55E39BCE88520C"],
-    ["helpers/render.py", "5D8927669DCDBD0C2DE31D9AFF4E9EC6251F2700E8D49463EFAA0918BB698D37"],
+    ["helpers/grade.py", "49EE56F9B1B0FA59F1FE0C63A2DEE8580EA4D523A8CA083F716CDAB51F6D5076"],
+    ["helpers/render.py", "29E3D95FE6C8DFD955C3D7C8EE8E134D20AA61E1C949F848058ED2A869D4D86D"],
   ]);
   const actualCommit = requirePinnedVendoredSource("Video Use", sourceRoot, expectedCommit);
   const status = spawnSync("git", ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=all"], {
@@ -3531,7 +3536,8 @@ fs.copyFileSync(
     );
   }
   for (const [relative, expectedHash] of reviewedFileHashes) {
-    const actualHash = await sha256File(path.join(sourceRoot, ...relative.split("/")));
+    // Tracked text: compare repository (LF) bytes so autocrlf checkouts agree with clean clones.
+    const actualHash = canonicalFileIdentity(path.join(sourceRoot, ...relative.split("/"))).sha256;
     if (actualHash !== expectedHash) {
       fail(`Video Use reviewed file ${relative} must have SHA-256 ${expectedHash}; found ${actualHash}.`);
     }
@@ -3718,11 +3724,13 @@ fs.copyFileSync(
   ]) {
     const artifact = path.join(runtimeRoot, relative);
     const metadata = fs.lstatSync(artifact, { throwIfNoEntry: false });
+    // Tracked text: repository (LF) identity, independent of checkout line endings.
+    const identity = metadata?.isFile() ? canonicalFileIdentity(artifact) : null;
     if (
       !metadata?.isFile() ||
       metadata.isSymbolicLink() ||
-      metadata.size !== expected.size ||
-      (await sha256File(artifact)) !== expected.sha256
+      identity.size !== expected.size ||
+      identity.sha256 !== expected.sha256
     ) {
       fail(`Wardrobe's ${artifactLabel} is not the reviewed immutable file.`);
     }

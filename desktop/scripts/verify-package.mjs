@@ -139,13 +139,13 @@ const PINNED_WARDROBE_RUNTIME = Object.freeze({
     sha256: "AE53F7EA6A10B4F2F4C8483473E25A13579CE5B7E9F85BF0D9144923D98C46A1",
   },
   packageManifest: {
-    size: 631,
-    sha256: "25EF9D9862AD6A6864465F5B0293222A60E4C8D5AD062688D44B530C908FCDFF",
+    size: 606,
+    sha256: "07CCA7E9EBB7663C9B0D9CACB0053D901B18084D6BA9F75C5BC88690973C7141",
   },
   dependencyLock: {
     format: "npm-lockfile-v3",
-    size: 112_294,
-    sha256: "10417E4CC550BEC667376D779259445AAD6E4ECA3643C651526FAE11E262523E",
+    size: 109_168,
+    sha256: "E289ED65CF54B5B28B7042883A5A7BFE21DAB48012ECC1D47C93F78718DC2D3E",
   },
   nodeModules: {
     fileCount: 14_106,
@@ -268,7 +268,7 @@ const PINNED_RUFLO_RUNTIME = {
     wrapperSha256: "52134740D49ECC69F2EB4BE72DA8218DA05E81AF9C1FD1813160041D13D88D9E",
     entrypointSha256: "4EC921923FB00AD86F89B171B0DBC293A1EC613C8CE0A20CBDC8169D4C836E51",
     distEntrypointSha256: "E219547441EE029B8447715FFCBC2B80C4DF4DA1ED8CB0FD1B936034973CB019",
-    licenseSha256: "D5F6D91BA2E65A09F157CD1336034804E850FCAC3296684221368B3F26FA6CCF",
+    licenseSha256: "A45BA66FA502C49AD108440536D8AA91DFE9C04575A32A01287839BEE336199C",
     omittedDependencyClasses: ["dev", "optional"],
   },
   claudeCode: {
@@ -1882,6 +1882,8 @@ function checkMandatoryPackagedClosures(resources, binRoot, label, bundledNode) 
         filePath: artifact,
         expectedHash: expected.sha256,
         expectedSize: expected.size,
+        // The checkout manifests are tracked text; npm-installed files are compared verbatim.
+        canonical: relative === "package.json" || relative === "package-lock.json",
         label: `${label} Wardrobe ${artifactLabel}`,
       });
     }
@@ -3949,11 +3951,12 @@ function checkResourcesRoot(resources, binRoot, label) {
     },
     {
       filePath: path.join(videoUseRoot, "helpers", "pack_transcripts.py"),
-      expectedHash: "8571693B23C62938B9A22C51B33284347D6BEF8645372E226E39613BF4A23252",
+      expectedHash: "F9E419DEF5F0A014D5E1FD16FDAD801013AE068854C1D474C3492297E2304F4B",
       label: `${label} Speech/media transcript packer`,
     },
   ]) {
-    if (fs.existsSync(check.filePath)) hashChecks.push(check);
+    // Tracked text sources: compare repository (LF) bytes regardless of checkout line endings.
+    if (fs.existsSync(check.filePath)) hashChecks.push({ ...check, canonical: true });
   }
   for (const relative of [
     ["SKILL.md"],
@@ -3980,8 +3983,8 @@ function checkResourcesRoot(resources, binRoot, label) {
   }
   const videoUseReviewedReceipt = path.join(videoUseRoot, "BREADBOARD_PATCHED_FILES.json");
   const videoUseReviewedHashes = {
-    "helpers/grade.py": "CAC78B55A9D15E5CA52A9FAD043CBAA9BE2A3728C34CE2BC2A55E39BCE88520C",
-    "helpers/render.py": "5D8927669DCDBD0C2DE31D9AFF4E9EC6251F2700E8D49463EFAA0918BB698D37",
+    "helpers/grade.py": "49EE56F9B1B0FA59F1FE0C63A2DEE8580EA4D523A8CA083F716CDAB51F6D5076",
+    "helpers/render.py": "29E3D95FE6C8DFD955C3D7C8EE8E134D20AA61E1C949F848058ED2A869D4D86D",
   };
   if (fs.existsSync(videoUseReviewedReceipt)) {
     try {
@@ -4004,7 +4007,7 @@ function checkResourcesRoot(resources, binRoot, label) {
   for (const [relative, expectedHash] of Object.entries(videoUseReviewedHashes)) {
     const filePath = path.join(videoUseRoot, ...relative.split("/"));
     if (fs.existsSync(filePath)) {
-      hashChecks.push({ filePath, expectedHash, label: `${label} Video Use reviewed file ${relative}` });
+      hashChecks.push({ filePath, expectedHash, canonical: true, label: `${label} Video Use reviewed file ${relative}` });
     }
   }
   forbidMatches(
