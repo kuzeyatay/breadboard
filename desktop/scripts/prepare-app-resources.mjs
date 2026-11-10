@@ -4940,6 +4940,56 @@ for (const [name, source] of licenseSources) {
   }
 }
 
+// One index of everything shipped under resources/licenses, so the notices are
+// discoverable without opening every file. The family is a label read from the
+// text; the file itself is authoritative.
+{
+  const families = [
+    ["GNU AFFERO", "AGPL-3.0"],
+    ["GNU GENERAL PUBLIC", "GPL-3.0"],
+    ["GNU LESSER", "LGPL"],
+    ["APACHE LICENSE", "Apache-2.0"],
+    ["MIT LICENSE", "MIT"],
+    ["MOZILLA PUBLIC", "MPL-2.0"],
+    ["ELASTIC LICENSE", "Elastic-2.0"],
+    ["COMMERCIAL LICENSE", "commercial"],
+    ["TENCENT HUNYUAN", "Tencent Hunyuan Community"],
+    ["CREATIVE COMMONS", "Creative Commons"],
+    ["BSD", "BSD"],
+    ["ISC", "ISC"],
+  ];
+  const indexName = "THIRD-PARTY-NOTICES.md";
+  const rows = fs
+    .readdirSync(licensesTarget)
+    .filter((name) => name !== indexName)
+    .sort()
+    .map((name) => {
+      const head = fs.readFileSync(path.join(licensesTarget, name), "utf8").slice(0, 3000).toUpperCase();
+      const family = /NOTICES/u.test(name)
+        ? "notices bundle"
+        : families.find(([needle]) => head.includes(needle))?.[1] ?? "see file";
+      const component = name.replace(/-(?:LICENSE|NOTICE)(?:-LICENSE)?\.txt$/u, "");
+      return `| ${component} | ${family} | ${name} |`;
+    });
+  fs.writeFileSync(
+    path.join(licensesTarget, indexName),
+    [
+      "# Third-party notices",
+      "",
+      "Breadboard itself is MIT licensed. The components below are staged into this",
+      "installation under their own licenses; every file in this folder is the license",
+      "text as shipped by its project. Services whose license is AGPL or GPL run as",
+      "separate programs alongside Breadboard and are not linked into it.",
+      "",
+      "| Component | License | File |",
+      "| --- | --- | --- |",
+      ...rows,
+      "",
+    ].join("\n"),
+  );
+  log(`indexed ${rows.length} license notices`);
+}
+
 // Sanity guard: no databases or env files may be staged.
 const forbidden = [];
 function scanForbidden(dir) {
