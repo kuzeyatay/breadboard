@@ -13,6 +13,7 @@ import { providerRequiresStoredKey } from "./model-provider.ts";
 import { UITarsServiceError } from "./errors.ts";
 import { refreshAgentRuns, syncRunProjection } from "./runtime-run-manager.ts";
 import { isRuntimeV2ServiceControlConfigured, readSupervisedServiceSnapshot, SupervisorResourceExhaustedError } from "../supervisor-control.ts";
+import { unavailableServiceMessage } from "../runtime-v2/unavailable-service-message.ts";
 
 export { UITarsServiceError } from "./errors.ts";
 
@@ -48,12 +49,19 @@ export async function health(): Promise<{
   mode: UITarsMode;
   runtimeState: RuntimeState;
   health: Awaited<ReturnType<UITarsClient["health"]>>;
+  /** Why the runtime is unavailable, in words the person can act on. */
+  message?: string;
 }> {
   const currentMode = uiTarsMode();
   if (isRuntimeV2ServiceControlConfigured()) {
     const snapshot = await readSupervisedServiceSnapshot("ui-tars");
     if (!snapshot || ["installation-unavailable", "resource-blocked", "failed"].includes(snapshot.state)) {
-      return { mode: currentMode, runtimeState: "unavailable", health: STOPPED_HEALTH };
+      return {
+        mode: currentMode,
+        runtimeState: "unavailable",
+        health: STOPPED_HEALTH,
+        message: unavailableServiceMessage("The computer-use runtime", snapshot?.state),
+      };
     }
     if (snapshot.state === "available-but-stopped" || snapshot.state === "stopped") {
       // Native installation availability permits an on-demand start; it says

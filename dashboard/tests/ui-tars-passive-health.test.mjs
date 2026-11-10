@@ -4,6 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 import {defaultAgentConfiguration, validateAgentConfiguration} from "../src/lib/ui-tars/config.ts";
 import {providerRequiresStoredKey} from "../src/lib/ui-tars/model-provider.ts";
+import {unavailableServiceMessage} from "../src/lib/runtime-v2/unavailable-service-message.ts";
 
 function fixture() {
   const state = {native: true, snapshot: {state: "available-but-stopped"}, rows: [], probes: 0, reads: [], adapter: {status: "healthy", runtime: "agent-tars", realBrowser: true, operator: "browser", operators: ["browser"], version: "fixture"}};
@@ -15,6 +16,7 @@ function fixture() {
     "./model-provider.ts": {providerRequiresStoredKey},
     "./errors.ts": {UITarsServiceError: class extends Error {}},
     "./runtime-run-manager.ts": {refreshAgentRuns: async () => {}, syncRunProjection: async () => {}},
+    "../runtime-v2/unavailable-service-message.ts": {unavailableServiceMessage},
     "../supervisor-control.ts": {SupervisorResourceExhaustedError: class extends Error {}, isRuntimeV2ServiceControlConfigured: () => state.native, readSupervisedServiceSnapshot: async id => {state.reads.push(id); return state.snapshot;}},
   };
   const source = fs.readFileSync(new URL("../src/lib/ui-tars/service.ts", import.meta.url), "utf8");

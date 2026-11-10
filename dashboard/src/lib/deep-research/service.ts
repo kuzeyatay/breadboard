@@ -29,6 +29,7 @@ import {
   readSupervisedServiceSnapshot,
 } from "../supervisor-control.ts";
 import { readOuterAgentRunView } from "../runtime-v2/outer-agent-run.ts";
+import { unavailableServiceMessage } from "../runtime-v2/unavailable-service-message.ts";
 
 export class DeepResearchError extends Error {
   status: number;
@@ -83,12 +84,19 @@ export async function health(): Promise<{
   mode: DeepResearchMode;
   runtimeState: RuntimeState;
   health: ServiceHealth;
+  /** Why the runtime is unavailable, in words the person can act on. */
+  message?: string;
 }> {
   const currentMode = deepResearchMode();
   if (isRuntimeV2ServiceControlConfigured()) {
     const snapshot = await readSupervisedServiceSnapshot("deep-research");
     if (!snapshot) {
-      return { mode: currentMode, runtimeState: "unavailable", health: STOPPED_HEALTH };
+      return {
+        mode: currentMode,
+        runtimeState: "unavailable",
+        health: STOPPED_HEALTH,
+        message: unavailableServiceMessage("Deep Research", null),
+      };
     }
     if (snapshot.state === "available-but-stopped" || snapshot.state === "stopped") {
       return { mode: currentMode, runtimeState: "available", health: STOPPED_HEALTH };
@@ -98,7 +106,12 @@ export async function health(): Promise<{
       snapshot.state === "resource-blocked" ||
       snapshot.state === "failed"
     ) {
-      return { mode: currentMode, runtimeState: "unavailable", health: STOPPED_HEALTH };
+      return {
+        mode: currentMode,
+        runtimeState: "unavailable",
+        health: STOPPED_HEALTH,
+        message: unavailableServiceMessage("Deep Research", snapshot.state),
+      };
     }
   }
   const serviceHealth = await client().health();
