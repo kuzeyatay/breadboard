@@ -489,7 +489,6 @@ const PACKAGED_PYTHON_SERVICES = Object.freeze([
     pythonRuntimeFileCount: 34,
     pythonLicenseSha256: "59688D8633CE27B1D8220F223B9520C4E039E4BA6CCCEB345793A74FD5C155B9",
     upstreamCommit: "a6d1f1be409547c43503dc4a4dcf2c39e6d99096",
-    independentCheckout: true,
     sourceArchive: {
       name: "SolidworksMCP-python-a6d1f1be.zip",
       url: "https://codeload.github.com/andrewbartels1/SolidworksMCP-python/zip/a6d1f1be409547c43503dc4a4dcf2c39e6d99096",
@@ -4665,13 +4664,9 @@ for (const service of PACKAGED_PYTHON_SERVICES) {
       fail(`${service.id} packaged source and lock closure must be tracked and clean.`);
     }
     if (service.upstreamCommit) {
-      const commit = spawnSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
-        encoding: "utf8",
-        shell: false,
-      });
-      if (commit.status !== 0 || commit.stdout.trim() !== service.upstreamCommit) {
-        fail(`${service.id} checkout is not pinned to ${service.upstreamCommit}.`);
-      }
+      // Upstream trees are vendored snapshots: the reviewed commit lives in
+      // their tracked receipt, not in a nested checkout.
+      requirePinnedVendoredSource(service.id, sourceRoot, service.upstreamCommit);
     }
     const revision = spawnSync(
       "git",
