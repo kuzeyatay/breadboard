@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isCodeDockAction, isCodeDockPage } from "../shared/code-dock";
 import { writeDiagnosticBundle } from "./diagnostic-bundle";
+import { newerDataRootVersion, recordDataRootVersion } from "./data-root-version";
 import {
   app,
   BrowserWindow,
@@ -414,6 +415,20 @@ export class AppLifecycle {
       moduleDir: this.moduleDir,
     });
     ensureMutableDirectories(this.paths);
+
+    // Refuse a data root a newer Breadboard already migrated; running an older
+    // app over it is how workspaces get corrupted.
+    const newerVersion = newerDataRootVersion(this.paths.dataRoot, app.getVersion());
+    if (newerVersion) {
+      dialog.showErrorBox(
+        "Breadboard cannot open this data",
+        `This data was last used by Breadboard ${newerVersion}, which is newer than this Breadboard ${app.getVersion()}. ` +
+          `Install Breadboard ${newerVersion} or newer, or move the data folder aside first: ${this.paths.dataRoot}`,
+      );
+      app.exit(78);
+      return;
+    }
+    recordDataRootVersion(this.paths.dataRoot, app.getVersion());
 
     this.persistentConfig = loadOrCreatePersistentConfig(this.paths.configDir);
 
