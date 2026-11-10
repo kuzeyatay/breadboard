@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from . import DEFAULT_BATCH_SIZE, DEFAULT_MODEL_ID
+from . import DEFAULT_BATCH_SIZE, DEFAULT_MODEL_ID, DEFAULT_MODEL_REVISION
 
 #: How long the weights stay resident after the last request.
 IDLE_UNLOAD_SECONDS = 600.0
@@ -139,12 +139,18 @@ class Embedder:
             self._dtype = "bfloat16" if use_cuda else "float32"
 
             try:
+                # The default checkpoint is pinned to its reviewed revision; a
+                # custom model id is taken as given.
+                revision = DEFAULT_MODEL_REVISION if self.model_id == DEFAULT_MODEL_ID else None
                 self._model = ColIdefics3.from_pretrained(
                     self.model_id,
+                    revision=revision,
                     torch_dtype=torch_dtype,
                     device_map=self._device,
                 ).eval()
-                self._processor = ColIdefics3Processor.from_pretrained(self.model_id)
+                self._processor = ColIdefics3Processor.from_pretrained(
+                    self.model_id, revision=revision
+                )
                 self._load_error = ""
             except Exception as error:  # noqa: BLE001 - reported, not raised at boot
                 self._model = None

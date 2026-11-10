@@ -25,6 +25,11 @@ SERVICE_VERSION = "1.0.0"
 #: colpali-engine exports no class by that name, whatever the README implies.
 DEFAULT_MODEL_ID = "vidore/colSmol-500M"
 
+#: The reviewed revision of that checkpoint. The first index on a machine
+#: downloads exactly this snapshot (about 1 GB) into the service home; later
+#: uploads to the Hub never change what Breadboard runs.
+DEFAULT_MODEL_REVISION = "0aaa9726104ce485884c7b8faa8a58a72d5fdbe7"
+
 #: Pages embedded per forward pass. Small on purpose: a batch of eight 1200px
 #: pages is where a 6 GB card starts swapping, and the indexing runs in the
 #: background where latency costs nothing.
@@ -38,6 +43,7 @@ MAX_INDEXED_PAGES = 300
 __all__ = [
     "SERVICE_VERSION",
     "DEFAULT_MODEL_ID",
+    "DEFAULT_MODEL_REVISION",
     "DEFAULT_BATCH_SIZE",
     "MAX_INDEXED_PAGES",
 ]

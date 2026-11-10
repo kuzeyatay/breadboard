@@ -39,6 +39,6 @@ export async function GET() {
         ? `Searching document pages with ${health.modelId} on ${health.device}.`
         : health.status === "degraded"
           ? `ColPali is installed but not usable: ${health.detail || "unknown reason"}. Documents are being inlined whole.`
-          : "ColPali is not running. Documents are being inlined whole, as they were before it existed.",
+          : "ColPali is not running; it starts when a document is indexed, and the first index on this machine downloads its model (about 1 GB). Until then documents are inlined whole.",
   });
 }

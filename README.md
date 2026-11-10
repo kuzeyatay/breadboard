@@ -83,7 +83,7 @@ accounts Breadboard cannot provide. The app shows each state in its settings.
 | Spotify playback | Needs Microsoft Edge and a Spotify Premium account |
 | SolidWorks agent | Needs a licensed SolidWorks on this PC |
 | Bambu printer | Needs a Bambu LAN printer in Developer Mode |
-| ColPali visual document retrieval | Not available in installed builds yet (developer checkouts only) |
+| ColPali visual document retrieval | Model (about 1 GB) downloads on first use |
 
 ## Known limitations
 

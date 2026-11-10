@@ -341,8 +341,8 @@ const PACKAGED_PYTHON_SERVICES = Object.freeze([
     pythonRuntimeSha256: "227E429CEEFA8C3D9F37AF5BAB72689D4DD1C09C25C693CF28144F1054D560E5",
     pythonRuntimeFileCount: 34,
     pythonLicenseSha256: "59688D8633CE27B1D8220F223B9520C4E039E4BA6CCCEB345793A74FD5C155B9",
-    sourceGitTree: "91c9d36c7de0e719c8126f55fbadeeec4c642428",
-    sourceSha256: "DFB0D4BF4280D2BCA2C8B5586A7941E2ED96C8CF91381622860E7DD7D7CB8392",
+    sourceGitTree: "d146bb9f81bf7e15fcb0d162ad402cb5948335d1",
+    sourceSha256: "F49FAAEA9A789FDDC6F7C6B31865E0B8EC2F5082E7AA34C69AE40B1F5F795C87",
     sourceFileCount: 6,
     pyprojectSha256: "C4D4CAAC42C1AACE9227E98C2FB9EF430964EFBF7FF92FDF9C764C13A367A94C",
     requirementsSha256: "AF9BE4D427C2765527E636B46E9A01E7FA7C030B515AF82ECAC5CF80C4674ECE",
@@ -936,12 +936,12 @@ const PACKAGED_SERVICE_CLOSURE_POLICIES = Object.freeze({
   colpali: {
     dataRoot: "none",
     bootstrap: ["app-root:colpali-service/runtime-artifact.json"],
-    externalBoundary: ["user-provisioned ColPali model weights in data-root storage"],
+    externalBoundary: ["ColPali model weights downloaded into data-root storage on first use"],
   },
   humanizer: {
     dataRoot: "none",
     bootstrap: ["app-root:humanizer-service/runtime-artifact.json"],
-    externalBoundary: ["user-provisioned Humanizer model weights in data-root storage"],
+    externalBoundary: ["Humanizer model weights downloaded into data-root storage on first use"],
   },
   voicebox: {
     dataRoot: "writable-state",

@@ -47,6 +47,10 @@ def main(argv: list[str]) -> int:
         os.path.expanduser("~"), ".breadboard", "colpali"
     )
     index_root = arguments.index_root or os.path.join(home, "index")
+    # Model files downloaded on first use live beside the index, inside the
+    # data root Breadboard owns, not in the user profile cache.
+    os.environ.setdefault("HF_HOME", os.path.join(home, "models"))
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     model_id = arguments.model or os.environ.get("BREADBOARD_COLPALI_MODEL", "").strip() or None
 
     serve(arguments.host, arguments.port, secret, index_root, model_id)
