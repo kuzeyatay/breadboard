@@ -101,6 +101,7 @@ test("the install plan is fixed, contained, non-detached, and strips Runtime sec
       dataRoot,
       platform: "win32",
       arch: "x64",
+      execPath: path.join(dataRoot, "no-npm-here", "node.exe"),
       env: {
         PATH: "C:\\Windows\\System32",
         SystemRoot: "C:\\Windows",
@@ -166,6 +167,29 @@ test("the cancellation record is exact and bounded", () => {
   );
 });
 
+test("a Node that ships npm beside it runs npm-cli.js through that Node", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-recall-npm-"));
+  try {
+    const npmCli = path.join(root, "node_modules", "npm", "bin", "npm-cli.js");
+    fs.mkdirSync(path.dirname(npmCli), { recursive: true });
+    fs.writeFileSync(npmCli, "");
+    const execPath = path.join(root, "node.exe");
+    const plan = buildRecallInstallPlan({
+      dataRoot: root,
+      platform: "win32",
+      arch: "x64",
+      execPath,
+      env: { PATH: "C:\\Windows\\System32", SystemRoot: "C:\\Windows" },
+    });
+    assert.equal(plan.command, execPath);
+    assert.equal(plan.args[0], npmCli);
+    assert.equal(plan.args[1], "install");
+    assert.equal(plan.shell, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("an already-installed pinned binary completes without launching npm", async (t) => {
   const dataRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), "breadboard-recall-existing-"),
@@ -222,7 +246,7 @@ test("a fresh install launches one attached fixed npm child with a scrubbed envi
   });
   assert.equal(result.changed, true);
   assert.equal(launch.options.detached, false);
-  assert.deepEqual(launch.args, [
+  assert.deepEqual(launch.args.slice(-5), [
     "install",
     `${RECALL_CLI_PACKAGE}@${RECALL_CLI_VERSION}`,
     "--no-audit",

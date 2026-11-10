@@ -72,30 +72,6 @@ const PINNED_CLIPROXY_RUNTIME = Object.freeze({
     sha256: "93DF585E5FA07EAD6D47A3AB2DBDF0255782A39FE830022C0274A70394223CC8",
   },
 });
-const PINNED_RECALL_RUNTIME = Object.freeze({
-  schemaVersion: 1,
-  name: "@screenpipe/cli-win32-x64",
-  version: "0.4.37",
-  platform: "win32",
-  architecture: "x64",
-  npmIntegrity: "sha512-5QXYbw2xdqAXCf0+NlNRYrCK1leo+fUnlb8cUNBlS/cvg/xiRSH5WgkwPYhCgWDYz2EpBdcMH4f6pbOSN3JRMA==",
-  dependencyLockSha256: "23F14A87B339926E0846CF82CC8AC91637F4663331E70D780A70B11067788B08",
-  files: {
-    "DirectML.dll": { size: 18_527_776, sha256: "9C9E6D822561C6C41B90E6994B3E8857CF1D66DBFB1E0C4C799C7C89B4E92DA1" },
-    "libopenblas.dll": { size: 51_117_073, sha256: "B554C45AF7B39154C561FB4879FD784D4928462E9A70335AADD9B1DE3C75E9E2" },
-    "msvcp140_1.dll": { size: 35_768, sha256: "206C931BF90FDAD8816DE3B5E2EF80B2BCAA9406C89ECC05FE6FDDFFE251E982" },
-    "msvcp140.dll": { size: 643_512, sha256: "7C26614E1D733892C2DEAC7E245CE115504B1D80592DD0A01B08E3E5A55F89CA" },
-    "onnxruntime.dll": { size: 17_270_304, sha256: "A2323BC49544645B911743052F1EDCE594E17DF1E3423B71468C7386BC902F80" },
-    "screenpipe.exe": { size: 44_297_272, sha256: "3BF31DBC0F2DE666046F8D439A0C758CF5F0430640AD19F9D33046DF9A8FA0FB" },
-    "vcruntime140_1.dll": { size: 50_112, sha256: "A7146C08F89FE5B04541AB507CDB59FF7B44534D4BA3C668A426C6450A03434E" },
-    "vcruntime140.dll": { size: 178_616, sha256: "D1F4225DF2CD877DBF130D5668A021DCE3F94118455FF5EC952061C30AFC9CE7" },
-  },
-  license: {
-    name: "LICENSE.md",
-    size: 3_705,
-    sha256: "5A2DED76EAAAF6BFB3FF6BB7C4D995D7D5C8CF4F48FB940A7BEBCCEB2BCFAA58",
-  },
-});
 const PINNED_OPENSCIENCE_RUNTIME = Object.freeze({
   schemaVersion: 1,
   name: "@synsci/openscience",
@@ -891,7 +867,16 @@ const PACKAGED_SERVICE_CLOSURE_POLICIES = Object.freeze({
       "runtime-root:bin/vlm-ocr/runtime-artifact.json",
     ],
   },
-  recall: { dataRoot: "writable-state", bootstrap: ["runtime-root:bin/recall/runtime-artifact.json"] },
+  // Screenpipe is under a commercial license that forbids bundling it in a
+  // product. Installed Breadboard fetches it into the data root from npm on
+  // the user's request through the same install worker development uses.
+  recall: {
+    dataRoot: "managed-install",
+    bootstrap: [
+      "app-root:dashboard/scripts/runtime-v2-recall-install-executor.mjs",
+      "app-root:dashboard/scripts/runtime-v2-recall-install-worker.mjs",
+    ],
+  },
   "mem0-semantic-engine": {
     dataRoot: "writable-state",
     bootstrap: ["app-root:dashboard/node_modules/mem0ai/runtime-artifact.json"],
@@ -2191,35 +2176,6 @@ function checkMandatoryPackagedClosures(resources, binRoot, label, bundledNode) 
     ) {
       problems.push(`${label} VLM OCR llama.cpp version smoke failed: ${output.trim() || "no output"}`);
     }
-  }
-
-  const recallRoot = path.join(binRoot, "recall");
-  requireExactJsonReceipt(
-    path.join(recallRoot, "runtime-artifact.json"),
-    `${label} Recall immutable runtime receipt`,
-    PINNED_RECALL_RUNTIME,
-  );
-  for (const [name, expected] of Object.entries(PINNED_RECALL_RUNTIME.files)) {
-    const artifact = path.join(recallRoot, name);
-    requireDirectFile(artifact, `${label} Recall runtime ${name}`);
-    if (fs.existsSync(artifact)) {
-      hashChecks.push({
-        filePath: artifact,
-        expectedHash: expected.sha256,
-        expectedSize: expected.size,
-        label: `${label} Recall runtime ${name}`,
-      });
-    }
-  }
-  const recallLicense = path.join(resources, "licenses", "recall-LICENSE.txt");
-  requireDirectFile(recallLicense, `${label} Recall license`);
-  if (fs.existsSync(recallLicense)) {
-    hashChecks.push({
-      filePath: recallLicense,
-      expectedHash: PINNED_RECALL_RUNTIME.license.sha256,
-      expectedSize: PINNED_RECALL_RUNTIME.license.size,
-      label: `${label} Recall license`,
-    });
   }
 
   const openscienceRoot = path.join(appRoot, "openscience-cli");

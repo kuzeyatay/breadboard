@@ -1712,7 +1712,8 @@
         {
           "modes": [
             "lean",
-            "hot"
+            "hot",
+            "packaged"
           ],
           "executableAuthority": "data-root",
           "allowedExecutable": "recall/cli/node_modules/@screenpipe/cli-win32-x64/bin/screenpipe.exe",
@@ -1752,62 +1753,6 @@
               {
                 "authority": "data-root",
                 "path": "recall/cli/node_modules/@screenpipe/cli-win32-x64/bin/screenpipe.exe"
-              }
-            ]
-          },
-          "resourceLimits": {
-            "estimatedColdStartCommitMb": 1024,
-            "softCommitLimitMb": 2048,
-            "hardCommitLimitMb": 4096
-          }
-        },
-        {
-          "modes": [
-            "packaged"
-          ],
-          "executableAuthority": "runtime-root",
-          "allowedExecutable": "bin/recall/screenpipe.exe",
-          "arguments": [
-            {
-              "kind": "literal",
-              "value": "record"
-            },
-            {
-              "kind": "literal",
-              "value": "--port"
-            },
-            {
-              "kind": "runtime-value",
-              "value": "service-port"
-            },
-            {
-              "kind": "literal",
-              "value": "--data-dir"
-            },
-            {
-              "kind": "data-path",
-              "path": "recall/data"
-            },
-            {
-              "kind": "runtime-arguments",
-              "value": "recall-capture"
-            }
-          ],
-          "environmentSource": "recall",
-          "workingDirectory": {
-            "kind": "data-subdirectory",
-            "path": "recall"
-          },
-          "installProbe": {
-            "kind": "files-present",
-            "files": [
-              {
-                "authority": "runtime-root",
-                "path": "bin/recall/screenpipe.exe"
-              },
-              {
-                "authority": "runtime-root",
-                "path": "bin/recall/runtime-artifact.json"
               }
             ]
           },

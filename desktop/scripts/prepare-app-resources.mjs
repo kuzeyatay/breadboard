@@ -141,30 +141,6 @@ const PINNED_CLIPROXY_RUNTIME = Object.freeze({
     sha256: "93DF585E5FA07EAD6D47A3AB2DBDF0255782A39FE830022C0274A70394223CC8",
   },
 });
-const PINNED_RECALL_RUNTIME = Object.freeze({
-  schemaVersion: 1,
-  name: "@screenpipe/cli-win32-x64",
-  version: "0.4.37",
-  platform: "win32",
-  architecture: "x64",
-  npmIntegrity: "sha512-5QXYbw2xdqAXCf0+NlNRYrCK1leo+fUnlb8cUNBlS/cvg/xiRSH5WgkwPYhCgWDYz2EpBdcMH4f6pbOSN3JRMA==",
-  dependencyLockSha256: "23F14A87B339926E0846CF82CC8AC91637F4663331E70D780A70B11067788B08",
-  files: {
-    "DirectML.dll": { size: 18_527_776, sha256: "9C9E6D822561C6C41B90E6994B3E8857CF1D66DBFB1E0C4C799C7C89B4E92DA1" },
-    "libopenblas.dll": { size: 51_117_073, sha256: "B554C45AF7B39154C561FB4879FD784D4928462E9A70335AADD9B1DE3C75E9E2" },
-    "msvcp140_1.dll": { size: 35_768, sha256: "206C931BF90FDAD8816DE3B5E2EF80B2BCAA9406C89ECC05FE6FDDFFE251E982" },
-    "msvcp140.dll": { size: 643_512, sha256: "7C26614E1D733892C2DEAC7E245CE115504B1D80592DD0A01B08E3E5A55F89CA" },
-    "onnxruntime.dll": { size: 17_270_304, sha256: "A2323BC49544645B911743052F1EDCE594E17DF1E3423B71468C7386BC902F80" },
-    "screenpipe.exe": { size: 44_297_272, sha256: "3BF31DBC0F2DE666046F8D439A0C758CF5F0430640AD19F9D33046DF9A8FA0FB" },
-    "vcruntime140_1.dll": { size: 50_112, sha256: "A7146C08F89FE5B04541AB507CDB59FF7B44534D4BA3C668A426C6450A03434E" },
-    "vcruntime140.dll": { size: 178_616, sha256: "D1F4225DF2CD877DBF130D5668A021DCE3F94118455FF5EC952061C30AFC9CE7" },
-  },
-  license: {
-    name: "LICENSE.md",
-    size: 3_705,
-    sha256: "5A2DED76EAAAF6BFB3FF6BB7C4D995D7D5C8CF4F48FB940A7BEBCCEB2BCFAA58",
-  },
-});
 const PINNED_OPENSCIENCE_RUNTIME = Object.freeze({
   schemaVersion: 1,
   name: "@synsci/openscience",
@@ -1175,64 +1151,6 @@ await stagePinnedVlmOcrRuntime({
   offline: process.env.BREADBOARD_OFFLINE_PACKAGE_ASSEMBLY === "1",
   log,
 });
-
-// Recall's recorder is an exact native npm artifact plus its adjacent DLL
-// closure. Package it once so installed mode never performs an npm download
-// before the capture service can start.
-{
-  if (process.platform !== "win32" || process.arch !== "x64") {
-    fail("The reviewed packaged Recall runtime currently supports Windows x64 only.");
-  }
-  const authority = path.join(desktopRoot, "runtime-v2", "vendor", "recall");
-  const target = path.join(stagingRoot, "recall-runtime-authority");
-  freshDir(target);
-  for (const entry of ["package.json", "package-lock.json"]) {
-    const source = path.join(authority, entry);
-    if (!fs.existsSync(source)) fail(`Recall immutable npm authority is missing: ${source}`);
-    fs.copyFileSync(source, path.join(target, entry));
-  }
-  if ((await sha256File(path.join(target, "package-lock.json"))) !== PINNED_RECALL_RUNTIME.dependencyLockSha256) {
-    fail("Recall's immutable npm lock is not the reviewed lock.");
-  }
-  installProductionDependencies({
-    label: "recall",
-    target,
-    tempName: "breadboard-recall-runtime-install",
-    command: "ci",
-  });
-  const installed = path.join(target, "node_modules", "@screenpipe", "cli-win32-x64");
-  const runtime = path.join(desktopRoot, "resources", "bin", "recall");
-  freshDir(runtime);
-  for (const [name, expected] of Object.entries(PINNED_RECALL_RUNTIME.files)) {
-    const source = path.join(installed, "bin", name);
-    const metadata = fs.lstatSync(source, { throwIfNoEntry: false });
-    if (!metadata?.isFile() || metadata.isSymbolicLink()) {
-      fail(`Recall's reviewed native closure is missing ${name}.`);
-    }
-    const identity = { size: metadata.size, sha256: await sha256File(source) };
-    if (identity.size !== expected.size || identity.sha256 !== expected.sha256) {
-      fail(`Recall's reviewed native closure does not match for ${name}.`);
-    }
-    fs.copyFileSync(source, path.join(runtime, name));
-  }
-  const licenseSource = path.join(installed, PINNED_RECALL_RUNTIME.license.name);
-  const licenseIdentity = {
-    size: fs.statSync(licenseSource).size,
-    sha256: await sha256File(licenseSource),
-  };
-  if (
-    licenseIdentity.size !== PINNED_RECALL_RUNTIME.license.size ||
-    licenseIdentity.sha256 !== PINNED_RECALL_RUNTIME.license.sha256
-  ) fail("Recall's packaged license is not the reviewed license.");
-  fs.writeFileSync(
-    path.join(runtime, "runtime-artifact.json"),
-    `${JSON.stringify(PINNED_RECALL_RUNTIME, null, 2)}\n`,
-    { encoding: "utf8", mode: 0o644 },
-  );
-  const licensesRoot = path.join(desktopRoot, "build-resources", "licenses");
-  fs.mkdirSync(licensesRoot, { recursive: true });
-  fs.copyFileSync(licenseSource, path.join(licensesRoot, "recall-LICENSE.txt"));
-}
 
 /**
  * Produce a production `node_modules` for an already-staged package.

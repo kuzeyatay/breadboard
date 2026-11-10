@@ -78,12 +78,15 @@ export function buildRecallInstallPlan({
   platform = process.platform,
   arch = process.arch,
   env = process.env,
+  execPath = process.execPath,
 }) {
   if (typeof dataRoot !== "string" || !path.isAbsolute(dataRoot)) {
     fail("The Recall install data root is invalid.");
   }
   const platformPackage = recallPlatformPackage(platform, arch);
   if (!platformPackage) fail("Recall is not supported on this platform.");
+  const npmCli = path.join(path.dirname(execPath), "node_modules", "npm", "bin", "npm-cli.js");
+  const bundledNpmCli = fs.existsSync(npmCli) ? npmCli : null;
   const home = path.resolve(dataRoot, "recall");
   const cliRoot = path.join(home, "cli");
   const statusPath = path.join(home, "install-status.json");
@@ -116,15 +119,19 @@ export function buildRecallInstallPlan({
     statusPath,
     binaryPath,
     versionPath,
-    command: platform === "win32" ? "npm.cmd" : "npm",
+    // Node ships npm beside its executable, both on development hosts and in
+    // the installed app's bundled runtime. Running npm-cli.js through the
+    // current Node needs no PATH lookup, which the runtime scrubs for workers.
+    command: bundledNpmCli ? execPath : platform === "win32" ? "npm.cmd" : "npm",
     args: [
+      ...(bundledNpmCli ? [bundledNpmCli] : []),
       "install",
       `${RECALL_CLI_PACKAGE}@${RECALL_CLI_VERSION}`,
       "--no-audit",
       "--no-fund",
       "--loglevel=error",
     ],
-    shell: platform === "win32",
+    shell: !bundledNpmCli && platform === "win32",
     env: inheritedInstallEnvironment(env),
   };
 }

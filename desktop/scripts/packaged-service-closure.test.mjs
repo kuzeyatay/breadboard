@@ -119,9 +119,10 @@ test("packaged native services launch only reviewed immutable artifacts", () => 
     value === "bin/voicebox-runtime-artifact.json"));
   assert.doesNotMatch(JSON.stringify(packaged("voicebox")), /python|setup-voicebox|start-voicebox/iu);
 
-  assert.equal(packaged("recall").allowedExecutable, "bin/recall/screenpipe.exe");
-  assert.ok(packaged("recall").installProbe.files.some(({ path: value }) =>
-    value === "bin/recall/runtime-artifact.json"));
+  // Screenpipe is never shipped: installed mode fetches it into the data root
+  // through the install worker, exactly like development modes.
+  assert.equal(packaged("recall").executableAuthority, "data-root");
+  assert.doesNotMatch(JSON.stringify(packaged("recall")), /bin\/recall|runtime-root/u);
 
   assert.ok(packaged("cliproxy").installProbe.files.some(({ path: value }) =>
     value === "bin/cliproxy-runtime-artifact.json"));
@@ -170,7 +171,8 @@ test("packaged native services launch only reviewed immutable artifacts", () => 
   assert.match(verifier, /voiceboxArtifactReceiptProblems\(reviewed\)/u);
   assert.match(verifier, /receiptBytesMatch/u);
   assert.match(preparer, /PINNED_CLIPROXY_RUNTIME/u);
-  assert.match(preparer, /PINNED_RECALL_RUNTIME/u);
+  assert.doesNotMatch(preparer, /PINNED_RECALL_RUNTIME|screenpipe/u);
+  assert.doesNotMatch(verifier, /PINNED_RECALL_RUNTIME|screenpipe/u);
   assert.match(preparer, /PINNED_OPENSCIENCE_RUNTIME/u);
   assert.match(preparer, /PINNED_OPENWORK_RUNTIME/u);
   assert.match(
