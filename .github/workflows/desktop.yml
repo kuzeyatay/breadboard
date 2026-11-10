@@ -192,6 +192,15 @@ jobs:
           $code = $LASTEXITCODE
           Pop-Location
           if ($code) { exit $code }
+          # The Google image-search MCP is a pnpm workspace; prepare-app-resources.mjs
+          # copies its production dependency graph from its own node_modules.
+          npm install -g pnpm@10.14.0-0
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Push-Location mcp-google-images-search
+          pnpm install --frozen-lockfile --prod --ignore-scripts
+          $code = $LASTEXITCODE
+          Pop-Location
+          if ($code) { exit $code }
       - name: Install the Codex coding agent the installer ships
         # prepare-app-resources.mjs stages codex.exe and its Windows helpers
         # from CODEX_BIN. The pinned version matches the workstation's staged
