@@ -201,6 +201,12 @@ jobs:
           $code = $LASTEXITCODE
           Pop-Location
           if ($code) { exit $code }
+          # The Google Flow MCP is staged from its compiled dist and its
+          # production dependency graph, both produced here from the pinned lock.
+          npm ci --prefix google-flow-mcp --ignore-scripts
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build --prefix google-flow-mcp
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Install the Codex coding agent the installer ships
         # prepare-app-resources.mjs stages codex.exe and its Windows helpers
         # from CODEX_BIN. The pinned version matches the workstation's staged
