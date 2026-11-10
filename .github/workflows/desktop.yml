@@ -124,7 +124,9 @@ jobs:
           disk-root: 'D:'
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          # The bundled Node runtime is copied from the Node that runs the
+          # packaging scripts, and mem0's native build is pinned to it.
+          node-version: '24.14.1'
       - uses: actions/setup-python@v5
         with:
           # prepare-runtimes.mjs downloads the CPython embeddable build that
