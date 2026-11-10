@@ -37,8 +37,10 @@ on:
 permissions:
   contents: read
 
+# A manual installer build must not be cancelled by the next push: dispatch
+# runs and push runs keep separate groups.
 concurrency:
-  group: desktop-${{ github.ref }}
+  group: desktop-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
