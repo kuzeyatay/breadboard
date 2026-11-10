@@ -2121,10 +2121,21 @@ log("staging pinned Ruflo planner and Claude Code executor");
     }
   }
   if (!claudeSource) {
-    fail(
-      `Claude Code ${expectedClaude.version} (${expectedClaude.sha256}) was not found. ` +
-        "Install that exact official native build or set RUFLO_CLAUDE_BIN before packaging.",
-    );
+    // No local copy: fetch the pinned build from the official release bucket
+    // (the URL claude.ai/install.ps1 uses). The receipt below admits it, not
+    // the URL, so a clean packaging host needs no manual install.
+    const url = `https://downloads.claude.ai/claude-code-releases/${expectedClaude.version}/win32-x64/claude.exe`;
+    log(`downloading Claude Code ${expectedClaude.version} from the official release bucket`);
+    const response = await fetch(url, { redirect: "follow" });
+    if (!response.ok) fail(`Claude Code download failed with HTTP ${response.status}.`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const sha256 = createHash("sha256").update(bytes).digest("hex").toUpperCase();
+    if (bytes.length !== expectedClaude.size || sha256 !== expectedClaude.sha256) {
+      fail(`Claude Code download is not the reviewed build (${bytes.length} bytes, SHA-256 ${sha256}).`);
+    }
+    fs.mkdirSync(path.dirname(claudeTarget), { recursive: true });
+    fs.writeFileSync(claudeTarget, bytes);
+    claudeSource = claudeTarget;
   }
   fs.mkdirSync(path.dirname(claudeTarget), { recursive: true });
   if (path.resolve(claudeSource) !== path.resolve(claudeTarget)) {

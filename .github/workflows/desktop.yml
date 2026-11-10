@@ -139,6 +139,41 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: '0.12.5'
+      - name: Install the Python the Agent Loop runtime is pinned to
+        # prepare-app-resources.mjs pins the uv-managed CPython 3.12.13 build
+        # by executable hash; the same uv release installs the same build.
+        shell: pwsh
+        run: |
+          uv python install 3.12.13
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $root = Join-Path (uv python dir).Trim() "cpython-3.12.13-windows-x86_64-none"
+          "BREADBOARD_AGENT_LOOP_PYTHON_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & (Join-Path $root "python.exe") --version
+      - name: Install the Graft code-index toolchain the installer ships
+        shell: pwsh
+        run: |
+          npm install -g @nanonets/graft@0.10.1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $root = Join-Path (npm root -g).Trim() "@nanonets\graft"
+          "BREADBOARD_GRAFT_PACKAGE_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Download the reviewed prebuilt sidecars
+        # Voicebox's speech server and OpenCode are built on the maintainer
+        # workstation and cannot be reproduced byte-for-byte here. The staging
+        # script verifies both against their checked-in receipts (exact size
+        # and SHA-256) before it ships them.
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "prebuilt-sidecars"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          gh release download prebuilt-sidecars-2026-11-10 --pattern voicebox-server.exe --pattern opencode.exe --dir $dir
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $voicebox = Join-Path $dir "voicebox-server.exe"
+          "VOICEBOX_SERVER_BIN=$voicebox" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $opencode = "opencode/packages/opencode/dist/opencode-windows-x64/bin"
+          New-Item -ItemType Directory -Force $opencode | Out-Null
+          Move-Item (Join-Path $dir "opencode.exe") (Join-Path $opencode "opencode.exe")
       - name: Install workspaces
         shell: pwsh
         run: |
