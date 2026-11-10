@@ -521,7 +521,7 @@ function canonicalFileIdentity(filePath) {
   };
 }
 
-async function sha256Tree(root) {
+async function sha256Tree(root, exclude = () => false) {
   const records = [];
   async function visit(directory) {
     const entries = fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
@@ -530,6 +530,7 @@ async function sha256Tree(root) {
     for (const entry of entries) {
       const fullPath = path.join(directory, entry.name);
       const relativePath = path.relative(root, fullPath).split(path.sep).join("/");
+      if (exclude(relativePath)) continue;
       const metadata = fs.lstatSync(fullPath);
       if (metadata.isSymbolicLink()) fail(`Immutable source closure contains a symlink: ${fullPath}`);
       if (metadata.isDirectory()) {
