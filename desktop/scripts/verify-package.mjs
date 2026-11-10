@@ -820,7 +820,7 @@ function checkDashboardCompilerRuntime(dashboard, bundledNode, label) {
 }
 
 const PACKAGED_SERVICE_CLOSURE_POLICIES = Object.freeze({
-  chatmock: { dataRoot: "none", bootstrap: ["app-root:chatmock/chatmock.py"] },
+  chatmock: { dataRoot: "none", bootstrap: ["app-root:chatmock/chatmock.py", "app-root:chatmock/breadboard_runtime.py"] },
   dashboard: { dataRoot: "none", bootstrap: ["app-root:dashboard-standalone/dashboard/server.js"] },
   hermes: { dataRoot: "none", bootstrap: ["app-root:hermes-agent/breadboard_runtime.py", "app-root:hermes-agent/hermes_cli/main.py"] },
   gbrain: { dataRoot: "none", bootstrap: ["app-root:gbrain/runtime-artifact.json"] },

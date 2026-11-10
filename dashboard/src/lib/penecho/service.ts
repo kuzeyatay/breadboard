@@ -150,7 +150,7 @@ export async function ensurePenechoService(): Promise<PenechoService> {
       () => null,
     );
     if (snapshot?.state === "installation-unavailable") {
-      throw new Error("The PenEcho clone was not found next to Breadboard.");
+      throw new Error("PenEcho is missing from this Breadboard installation. Reinstalling Breadboard restores it.");
     }
     if (snapshot?.state === "resource-blocked") {
       throw new Error(

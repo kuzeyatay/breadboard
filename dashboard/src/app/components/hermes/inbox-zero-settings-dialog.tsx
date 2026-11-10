@@ -265,7 +265,7 @@ export default function InboxZeroSettingsDialog({ onClose }: { onClose: () => vo
                   detail={
                     health.installed
                       ? health.cloneRoot
-                      : `Not found at ${health.cloneRoot}. Clone elie222/inbox-zero there.`
+                      : `Inbox Zero's source is missing at ${health.cloneRoot}. Reinstalling Breadboard restores it.`
                   }
                 />
                 <Row

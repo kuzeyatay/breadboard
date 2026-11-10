@@ -304,7 +304,7 @@ export async function readSpotifyPlaybackRuntimeStatus(
       error:
         snapshot.state === "resource-blocked"
           ? "Breadboard does not have enough memory headroom to start Spotify playback."
-          : "Breadboard could not start its protected-audio browser.",
+          : "Breadboard could not start Microsoft Edge for protected audio. Spotify playback needs Edge installed and a Spotify Premium account.",
     };
   }
   if (
@@ -326,7 +326,7 @@ export async function readSpotifyPlaybackRuntimeStatus(
       error:
         error instanceof SpotifyPlaybackRuntimeError
           ? error.message
-          : "Breadboard could not start its protected-audio browser.",
+          : "Breadboard could not start Microsoft Edge for protected audio. Spotify playback needs Edge installed and a Spotify Premium account.",
     };
   }
 }

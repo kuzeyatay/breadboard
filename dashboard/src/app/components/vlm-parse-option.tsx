@@ -76,12 +76,12 @@ export function useVlmOcrAvailability(active: boolean): {
 
 export function vlmUnavailableReason(status: VlmOcrAvailability): string {
   if (!status.enabled) {
-    return "Turned off — set VLM_OCR_ENABLED=true to use it.";
+    return "Local OCR is turned off in this Breadboard's settings.";
   }
   return (
-    `No OCR model server at ${status.baseUrl || "the configured address"}` +
+    "Local OCR is not available right now" +
     (status.detail ? ` (${status.detail})` : "") +
-    ", and auto-start is off."
+    "."
   );
 }
 

@@ -41,18 +41,18 @@ const USER_MESSAGES: Record<VideoTranscriptionErrorCode, string> = {
   BREADBOARD_RESOURCE_EXHAUSTED:
     "Breadboard does not currently have enough available memory to start media transcription.",
   feature_disabled:
-    "Media transcription is disabled. Set VIDEO_TRANSCRIPTION_ENABLED=true and restart the dashboard.",
+    "Media transcription is turned off in this Breadboard's settings.",
   scriberr_unavailable:
-    "Scriberr is not reachable. Start Scriberr and check SCRIBERR_BASE_URL.",
+    "The transcription service is not running. Restart Breadboard and try again.",
   scriberr_auth_failed:
-    "Scriberr rejected the configured credentials. Check SCRIBERR_API_TOKEN (or username/password).",
+    "The transcription service rejected Breadboard's credentials. Restart Breadboard and try again.",
   scriberr_rejected: "Scriberr rejected the request.",
   ytdlp_unavailable:
-    "yt-dlp was not found. Install yt-dlp or set YTDLP_PATH.",
+    "yt-dlp is missing from this Breadboard installation. Reinstalling Breadboard restores it.",
   ffmpeg_unavailable:
-    "FFmpeg was not found. Install FFmpeg or set FFMPEG_PATH.",
+    "FFmpeg is missing from this Breadboard installation. Reinstalling Breadboard restores it.",
   ffprobe_unavailable:
-    "ffprobe was not found. Install FFmpeg (which includes ffprobe) or set FFPROBE_PATH.",
+    "ffprobe is missing from this Breadboard installation. Reinstalling Breadboard restores it.",
   youtube_invalid_url:
     "That is not a valid YouTube video URL. Paste a link like https://www.youtube.com/watch?v=…",
   youtube_playlist:
