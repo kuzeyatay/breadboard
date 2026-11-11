@@ -59,10 +59,13 @@ export class BrowserToolbarPopover {
   private layout(height: number): void {
     const [windowWidth = 800, windowHeight = 600] = this.window.getContentSize();
     const width = Math.min(this.maxWidth, Math.max(1, windowWidth - 16));
-    const y = Math.max(0, Math.min(Math.round(this.anchor.y), windowHeight - 48));
+    // Near the bottom edge the card moves up to fit; it used to keep its place
+    // and lose whatever did not fit below it.
+    const cardHeight = Math.max(1, Math.min(Math.ceil(height), 480, windowHeight - 16));
+    const y = Math.max(0, Math.min(Math.round(this.anchor.y), windowHeight - cardHeight - 8));
     this.view.setBounds({
       x: Math.max(8, Math.min(Math.round(this.anchor.x) - width, windowWidth - width - 8)),
-      y, width, height: Math.max(1, Math.min(Math.ceil(height), 480, windowHeight - y - 8)),
+      y, width, height: cardHeight,
     });
   }
 

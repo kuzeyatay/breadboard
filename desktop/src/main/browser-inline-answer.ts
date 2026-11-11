@@ -20,6 +20,8 @@ export class BrowserInlineAnswer {
   private anchor: { x: number; y: number; height?: number };
   state: BrowserInlineAnswerState;
   get isClosed() { return this.closed; }
+  /** True once the card has been shown and has taken keyboard focus. */
+  get isRevealed() { return this.revealed && !this.closed; }
   get isVisible() { return this.ready && !this.closed && this.visible; }
   constructor(private window: BrowserWindow, readonly ownerId: number, selection: BrowserSelection,
     viewport: Rectangle, anchor: { x: number; y: number; height?: number }, preloadPath: string, private onClose: () => void, private note?: string) {

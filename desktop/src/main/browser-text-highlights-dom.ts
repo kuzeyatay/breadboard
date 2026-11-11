@@ -45,7 +45,7 @@ function installBrowserTextHighlights() {
       const visible = rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
       const key = JSON.stringify({anchor,visible});
       if (key !== lastPosition) { lastPosition = key; send("position", entry, anchor, visible); }
-    }, 80);
+    }, 32);
   }
   const hide = () => { if (selected) send("dismiss", selected, selectedAnchor); selected = null; };
   const eligible = (node: Node) => node.nodeType === Node.TEXT_NODE && !node.parentElement?.closest(skip);
