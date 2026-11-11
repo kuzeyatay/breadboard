@@ -5026,12 +5026,48 @@ if (fs.existsSync(winUnpacked)) {
   console.log("[verify-package] release/win-unpacked not present; checked staging roots only");
 }
 
-if (fs.existsSync(localBase)) {
-  for (const name of fs.readdirSync(localBase)) {
-    if (!/^Breadboard-Setup-.*-x64\.exe$/.test(name)) continue;
-    const installer = path.join(localBase, name);
-    if (fs.statSync(installer).size < 10 * 1024 * 1024) {
-      problems.push(`incomplete NSIS installer (under 10 MB): ${installer}`);
+function directoryBytes(root) {
+  let total = 0;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const entryPath = path.join(root, entry.name);
+    if (entry.isDirectory()) total += directoryBytes(entryPath);
+    else if (entry.isFile()) total += fs.statSync(entryPath).size;
+  }
+  return total;
+}
+
+// NSIS stores at most 2 GiB of packed data and makensis does not fail past
+// it: run 43039676209 produced a 167 MB installer from a 10 GB payload that
+// electron-builder, the blockmap step and this verifier all accepted. The
+// payload report shows where the bytes are; the ratio check refuses an
+// installer that cannot hold them (Python and Node trees pack 2:1 to 4:1).
+if (fs.existsSync(winUnpacked)) {
+  const packagedBytes = directoryBytes(winUnpacked);
+  console.log(`[verify-package] win-unpacked payload: ${(packagedBytes / 2 ** 30).toFixed(2)} GiB`);
+  const resourcesRoot = path.join(winUnpacked, "resources");
+  const report = [];
+  for (const entry of fs.readdirSync(resourcesRoot, { withFileTypes: true })) {
+    const entryPath = path.join(resourcesRoot, entry.name);
+    if (!entry.isDirectory()) continue;
+    for (const child of fs.readdirSync(entryPath, { withFileTypes: true })) {
+      const childPath = path.join(entryPath, child.name);
+      report.push([child.isDirectory() ? directoryBytes(childPath) : fs.statSync(childPath).size, `${entry.name}/${child.name}`]);
+    }
+  }
+  for (const [bytes, name] of report.sort((a, b) => b[0] - a[0]).slice(0, 40)) {
+    console.log(`[verify-package]   ${String(Math.round(bytes / 2 ** 20)).padStart(6)} MiB  ${name}`);
+  }
+  if (fs.existsSync(localBase)) {
+    for (const name of fs.readdirSync(localBase)) {
+      if (!/^Breadboard-Setup-.*-x64\.exe$/.test(name)) continue;
+      const installer = path.join(localBase, name);
+      const installerBytes = fs.statSync(installer).size;
+      console.log(`[verify-package] installer: ${(installerBytes / 2 ** 20).toFixed(0)} MiB ${installer}`);
+      if (installerBytes < packagedBytes / 5) {
+        problems.push(
+          `NSIS installer cannot hold the payload: ${(installerBytes / 2 ** 20).toFixed(0)} MiB for a ${(packagedBytes / 2 ** 30).toFixed(2)} GiB win-unpacked (NSIS packs at most 2 GiB; shrink the payload or use another target): ${installer}`,
+        );
+      }
     }
   }
 }
