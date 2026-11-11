@@ -8,6 +8,7 @@ import {
 } from "@/lib/audio-attachments.ts";
 import { readSourceMediaReference, scanClusterKnowledgeCooperatively } from "@/lib/knowledge.ts";
 import { getVideoTranscriptionStore } from "@/lib/scriberr/instance";
+import { keepMediaDriveAwake } from "@/lib/media-drive-wake.ts";
 import {
   RouteError,
   requireReadableClusterFromSlug,
@@ -94,6 +95,8 @@ export async function GET(
         throw new RouteError(404, "Media source not found");
       }
       mediaPath = job.mediaOriginPath;
+      // Playing a recording keeps its drive from sleeping for a while.
+      keepMediaDriveAwake(mediaPath);
       if (!fs.existsSync(mediaPath)) {
         throw new RouteError(404, `The original file is no longer at ${mediaPath}`);
       }

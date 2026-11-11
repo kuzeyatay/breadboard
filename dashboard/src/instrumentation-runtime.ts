@@ -25,6 +25,12 @@ void Promise.all([import("./lib/db.ts"), import("./lib/knowledge.ts")]).then(asy
   if (!contentPath) return;
   const recent = db.prepare("SELECT slug FROM clusters WHERE last_viewed_at IS NOT NULL ORDER BY last_viewed_at DESC LIMIT 3").all() as Array<{ slug: string }>;
   // One at a time, so the parsing never competes with itself.
+  // Recordings of the gardens used last may sit on a sleeping external drive:
+  // start it turning now rather than when the first video is clicked.
+  void import("./lib/media-drive-wake.ts").then(({ wakeGardenMediaDrive }) => {
+    const owners = db.prepare("SELECT id, user_id FROM clusters WHERE last_viewed_at IS NOT NULL ORDER BY last_viewed_at DESC LIMIT 3").all() as Array<{ id: number; user_id: number }>;
+    for (const owner of owners) wakeGardenMediaDrive(owner.id, owner.user_id);
+  }).catch(() => undefined);
   for (const { slug } of recent) await scanClusterKnowledgeCooperatively(contentPath, slug, { migrateSources: false }).catch(() => undefined);
 }).catch(() => { /* Best effort: the first scan simply reads a cold disk. */ });
 
