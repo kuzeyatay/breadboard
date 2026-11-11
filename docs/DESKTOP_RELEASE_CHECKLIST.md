@@ -13,7 +13,10 @@
    in `build-resources/runtimes/runtimes-manifest.json`).
    ComfyUI's interpreter is deliberately not staged: it is built under the data
    root on first use (docs/COMFYUI_IMAGE_MODE.md).
-6. `npm run desktop:test` — full desktop suite green.
+6. `npm run desktop:test` — full desktop suite green. Run it on a machine with a
+   desktop session: the Electron fixtures and screen lanes need one. CI runs the
+   same command with `BREADBOARD_DESKTOP_TEST_UNIT_ONLY=1`, which keeps only the
+   Node-only files.
 7. `npm run desktop:verify` — staged-resource guard green.
 8. `npm run desktop:dist:win` — NSIS installer.
 9. `npm run desktop:verify` again — now also validates `release/win-unpacked`.
