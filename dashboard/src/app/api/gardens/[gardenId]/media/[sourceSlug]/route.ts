@@ -6,7 +6,7 @@ import {
   audioAttachmentFormat,
   audioFormatMimeType,
 } from "@/lib/audio-attachments.ts";
-import { scanClusterKnowledgeCooperatively } from "@/lib/knowledge.ts";
+import { readSourceMediaReference, scanClusterKnowledgeCooperatively } from "@/lib/knowledge.ts";
 import { getVideoTranscriptionStore } from "@/lib/scriberr/instance";
 import {
   RouteError,
@@ -71,10 +71,12 @@ export async function GET(
       throw new RouteError(500, "QUARTZ_CONTENT_PATH not configured");
     }
 
-    const source = (await scanClusterKnowledgeCooperatively(contentPath, cluster.slug)).nodes.find(
-      (node) =>
-        node.type === "source-document" && node.slug === sourceSlug.trim(),
-    );
+    const source =
+      readSourceMediaReference(contentPath, cluster.slug, sourceSlug) ??
+      (await scanClusterKnowledgeCooperatively(contentPath, cluster.slug)).nodes.find(
+        (node) =>
+          node.type === "source-document" && node.slug === sourceSlug.trim(),
+      );
     if (!source?.sourceMedia) {
       throw new RouteError(404, "Media source not found");
     }

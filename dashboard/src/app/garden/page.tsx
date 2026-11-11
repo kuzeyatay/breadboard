@@ -11,7 +11,9 @@ import {
   prepareOrganizationQuartzIndex,
   preparePrivateClusterQuartzIndex,
   preparePrivateQuartzIndex,
+  preparePrivateQuartzIndexCooperatively,
   preparePublicQuartzIndex,
+  publishedPrivateQuartzIndex,
 } from "@/lib/quartz-garden-index";
 import {
   publishQuartzAfterMutation,
@@ -35,6 +37,26 @@ function switchClass(active: boolean): string {
   return active
     ? "rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-950 shadow-sm"
     : "rounded-md px-3 py-1.5 text-xs font-medium text-gray-400 transition hover:text-white";
+}
+
+const libraryRefreshes = new Set<number>();
+
+/** One refresh per account at a time; a failure only leaves older figures. */
+function refreshPrivateLibraryInBackground(userId: number): void {
+  if (libraryRefreshes.has(userId)) return;
+  libraryRefreshes.add(userId);
+  void (async () => {
+    const prepared = await preparePrivateQuartzIndexCooperatively(userId);
+    if (!prepared?.publishRequired) return;
+    await waitForQuartzPublicationInFlight();
+    await publishQuartzAfterMutation("refresh private garden index", {
+      userId,
+      topologyImpact: "none",
+      scope: [],
+    });
+  })()
+    .catch(() => undefined)
+    .finally(() => libraryRefreshes.delete(userId));
 }
 
 export default async function GardenHomePage({
@@ -69,7 +91,12 @@ export default async function GardenHomePage({
           : preparePrivateQuartzIndex(userId))
     );
   };
-  let preparedIndex = prepareRequestedIndex();
+  // "Explore all": show the page Quartz already has and bring its figures up
+  // to date behind it, rather than scanning every garden and publishing first.
+  const alreadyPublished =
+    view === "private" && !rawCluster ? publishedPrivateQuartzIndex(userId) : null;
+  if (alreadyPublished) refreshPrivateLibraryInBackground(userId);
+  let preparedIndex = alreadyPublished ?? prepareRequestedIndex();
 
   // The library index is generated on demand. Do not hand the iframe a slug
   // that the currently published Quartz tree does not contain yet: keeping

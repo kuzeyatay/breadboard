@@ -3415,6 +3415,32 @@ function parseMarkdownFile(content: string): {
   return { data, body };
 }
 
+/**
+ * One source note's media reference, read from that note alone. Playing a
+ * video needs a single frontmatter line; resolving it through the garden scan
+ * re-parsed every note (4.5 s for a large garden) whenever the five-minute
+ * graph cache had lapsed. Returns null when the note is not where uploads put
+ * it, and the caller falls back to the scan.
+ */
+export function readSourceMediaReference(
+  contentPath: string,
+  clusterSlug: string,
+  sourceSlug: string,
+): { slug: string; sourceMedia: string; sourceFile: string } | null {
+  const slug = sourceSlug.trim();
+  if (!slug || /[\\/]/.test(slug) || slug.startsWith(".")) return null;
+  try {
+    const { data } = parseMarkdownFile(
+      fs.readFileSync(path.join(contentPath, clusterSlug.trim(), "sources", `${slug}.md`), "utf-8"),
+    );
+    const sourceMedia = frontmatterString(data, "source_media");
+    if (!sourceMedia || inferKnowledgeType(data) !== "source-document") return null;
+    return { slug, sourceMedia, sourceFile: frontmatterString(data, "source_file") };
+  } catch {
+    return null;
+  }
+}
+
 function frontmatterString(data: Frontmatter, key: string): string {
   const value = data[key];
   return typeof value === "string" ? value : "";

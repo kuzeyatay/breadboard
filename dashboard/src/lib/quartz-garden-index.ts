@@ -315,8 +315,42 @@ export function refreshPrivateQuartzIndex(userId: number): string | null {
   return preparePrivateQuartzIndexes(userId)[0]?.slug ?? null;
 }
 
+/**
+ * The account landing page as Quartz last published it, without reading any
+ * garden. Opening "Explore all" re-read every note of every garden on the
+ * server's only thread (about 4 s with all tabs frozen) and then waited for a
+ * full publication whenever a count had moved, which during an upload is
+ * always. A page that already exists is shown at once; its figures catch up
+ * through `preparePrivateQuartzIndexCooperatively` in the background.
+ */
+export function publishedPrivateQuartzIndex(
+  userId: number,
+): QuartzGardenIndexPreparation | null {
+  const baseContentPath = contentPath();
+  if (!baseContentPath || !Number.isFinite(userId)) return null;
+  const slug = `${PRIVATE_LIBRARY_ROOT}/user-${userId}`;
+  const publicRoot = path.resolve(baseContentPath, "..", "public");
+  const published = [
+    path.join(publicRoot, slug, "index.html"),
+    path.join(publicRoot, `${slug}.html`),
+  ].some((candidate) => {
+    try {
+      return fs.statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  });
+  return published ? { slug, title: "My garden", publishRequired: false } : null;
+}
+
 /** Background creation work must also leave the server free to open the garden. */
 export async function refreshPrivateQuartzIndexCooperatively(userId: number): Promise<string | null> {
+  return (await preparePrivateQuartzIndexCooperatively(userId))?.slug ?? null;
+}
+
+export async function preparePrivateQuartzIndexCooperatively(
+  userId: number,
+): Promise<QuartzGardenIndexPreparation | null> {
   const baseContentPath = contentPath();
   if (!baseContentPath || !Number.isFinite(userId)) return null;
   const clusters: GardenCluster[] = [];
@@ -339,7 +373,7 @@ export async function refreshPrivateQuartzIndexCooperatively(userId: number): Pr
     row,
     stats: statsBySlug.get(row.slug) ?? { ...EMPTY_CLUSTER_STATS },
   }));
-  return writePrivateQuartzIndexes(userId, { baseContentPath, clusters: currentClusters })[0]?.slug ?? null;
+  return writePrivateQuartzIndexes(userId, { baseContentPath, clusters: currentClusters })[0] ?? null;
 }
 
 interface PrivateGardenIndex {
