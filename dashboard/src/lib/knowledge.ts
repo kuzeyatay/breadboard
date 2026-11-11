@@ -6,6 +6,7 @@ import { buildKnowledgeTree } from "./knowledge-tree.ts";
 import { isPptxSource } from "./garden-source-display.ts";
 import { withoutDetachedVisualPayloads } from "./garden-detached-visual.ts";
 import { runCooperatively } from "./cooperative-task.ts";
+import { openNoteTexts } from "./note-text-cache.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { externalRuntimeFilesystem as fs } from "./external-runtime-filesystem.ts";
 import OpenAI from "openai";
@@ -3620,10 +3621,11 @@ function* scanClusterKnowledgeSteps(
   }
   if (cached) dropClusterKnowledge(cacheKey);
 
+  const noteTexts = openNoteTexts(clusterDir);
   for (const { entry, filePath, folder, relPath, stat } of markdownEntries) {
     yield;
     const modifiedAt = stat.mtime.toISOString();
-    const content = fs.readFileSync(filePath, "utf-8");
+    const content = noteTexts.read(relPath, filePath, stat);
     const { data, body: rawBody } = parseMarkdownFile(content);
     const body = withoutDetachedVisualPayloads(rawBody);
     const slug = entry.replace(/\.md$/, "");
@@ -3726,6 +3728,7 @@ function* scanClusterKnowledgeSteps(
       content,
     });
   }
+  noteTexts.finish(markdownEntries.map((item) => item.relPath));
 
   // Older versions created a timestamped source and a complete second concept
   // set when the same local file was uploaded again. Treat the newest ingest as
