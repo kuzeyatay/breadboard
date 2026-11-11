@@ -3,6 +3,7 @@ import test from 'node:test';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
+import Database from 'better-sqlite3';
 
 async function fixture(t) {
   const state = { reads: [], generations: [], generates: 0, personalize: true, recall: true, allowedGarden: true };
@@ -12,7 +13,13 @@ async function fixture(t) {
   const mocks = {
     '../system-prompts/service.ts': 'export const systemPromptRevision=()=>0;',
     'server-only': '',
-    '../db.ts': 'export default {prepare:()=>({get:()=>globalThis.recommendationCacheFixture.allowedGarden})};',
+    // The shown-cards board goes to a real in-memory database when a test
+    // supplies one; every other query keeps answering the garden check.
+    '../db.ts': `const f=()=>globalThis.recommendationCacheFixture;
+      export default {
+        exec:sql=>{ if(!f().shownDb) throw Error('no store'); return f().shownDb.exec(sql); },
+        prepare:sql=>f().shownDb&&/recommendation_shown_cards/.test(sql)?f().shownDb.prepare(sql):({get:()=>f().allowedGarden}),
+      };`,
     '../hermes/route-core.ts': 'export class ApiError extends Error {constructor(status,code,message){super(message);this.status=status;}}',
     '../hermes/runtime-store.ts': 'export const getHermesUserSettings=()=>({composerSwitches:{personalize:globalThis.recommendationCacheFixture.personalize},defaultModel:"test"});',
     '../recall/settings.ts': 'export const getRecallSettings=()=>({agentAccess:globalThis.recommendationCacheFixture.recall});',
@@ -21,8 +28,8 @@ async function fixture(t) {
       if(s.holdRead)await s.holdRead;
       return s.evidence ?? [{id:'chat:'+user,source:'chat',title:'Work '+user,summary:'',gardenSlug:context.gardenSlug}];
     };`,
-    './generate.ts': `export const generateRecommendations=async({evidence,previousPrompts})=>{
-      const s=globalThis.recommendationCacheFixture;s.generates++;s.generations.push({previousPrompts});
+    './generate.ts': `export const generateRecommendations=async({evidence,shown})=>{
+      const s=globalThis.recommendationCacheFixture;s.generates++;s.generations.push({previousPrompts:(shown??[]).map(card=>card.prompt)});
       if(s.holdGeneration)await s.holdGeneration;
       return [{id:evidence[0].id,prompt:evidence[0].title,sourceIds:[evidence[0].id],sourceLabel:'Recent chat'}];
     };`,
@@ -49,7 +56,7 @@ test('recommendations share reads across surfaces but never across accounts or g
   assert.equal(f.state.reads.length,3);
 });
 
-test('three-minute refresh rereads evidence and remembers shown prompts separately for each user',async t=>{
+test('three-minute refresh rereads evidence and hands back the cards on screen, separately for each user',async t=>{
   const f=await fixture(t);
   const now=Date.now();
   t.mock.method(Date,'now',()=>now);
@@ -75,8 +82,7 @@ test('cached evidence used by cards and inline suggestions cannot escape garden 
   }
   assert.equal(f.state.reads.length,1);
   const cards=await f.recommendationsForUser(1,{gardenSlug:'empty'});
-  assert.equal(cards.length,4);
-  assert.ok(cards.every(card=>card.sourceIds.length===0&&card.prompt.includes('this garden')));
+  assert.deepEqual(cards,[],'no grounded evidence means no cards, not generic garden filler');
   assert.equal(f.state.generates,0);
 });
 
@@ -89,7 +95,7 @@ test('Recall revocation while generating suppresses the result and changes the c
   await f.recommendationsForUser(1,{});assert.equal(f.state.reads.length,2);
 });
 
-test('explicit refresh preserves recent prompts for rotation; privacy invalidation still forgets them',async t=>{
+test('explicit refresh keeps the cards on screen; privacy invalidation forgets them',async t=>{
   const f=await fixture(t);
   await f.recommendationsForUser(1,{});
   await f.recommendationsForUser(1,{}, {refresh:true});
@@ -112,4 +118,16 @@ test('disconnect invalidates in-flight source reads and generated cards', async 
   f.state.holdGeneration=null;
   assert.equal((await f.recommendationsForUser(1,{})).length,1);
   assert.equal(f.state.reads.length,3);
+});
+
+test('the cards on screen survive a server restart, and a privacy reset forgets them there too',async t=>{
+  const shownDb=new Database(':memory:');
+  const before=await fixture(t);before.state.shownDb=shownDb;
+  await before.recommendationsForUser(1,{});
+  // A fresh bundle with no shared in-memory state is a restarted server.
+  const after=await fixture(t);after.state.shownDb=shownDb;
+  await after.recommendationsForUser(1,{});
+  assert.deepEqual(after.state.generations.at(-1).previousPrompts,['Work 1']);
+  after.invalidateRecommendations(1);
+  assert.equal(shownDb.prepare('SELECT COUNT(*) AS n FROM recommendation_shown_cards').get().n,0);
 });

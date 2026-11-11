@@ -6,12 +6,10 @@ import { fileURLToPath } from "node:url";
 
 import {
   CHAT_GREETING_ROTATION_MS,
-  CHAT_SUGGESTION_COUNT,
   EMPTY_CHAT_GREETING_SIGNALS,
   chatGreetingBucket,
   msUntilNextChatGreeting,
   resolveChatGreeting,
-  resolveChatSuggestions,
 } from "../src/lib/hermes/chat-greeting.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -50,22 +48,13 @@ function greeting(now, overrides = {}) {
   });
 }
 
-function suggestions(now, overrides = {}) {
-  return resolveChatSuggestions({
-    signals: { ...SIGNALS, ...overrides.signals },
-    scope: overrides.scope ?? "mine",
-    temporary: overrides.temporary ?? false,
-    now,
-  });
-}
-
 /** Every greeting across `hours` consecutive hours from a fixed starting point. */
 function sweep(hours, overrides = {}, startHour = 0) {
   const results = [];
   for (let index = 0; index < hours; index += 1) {
     const now = new Date(2026, 7, 19, startHour, 0, 0, 0);
     now.setHours(now.getHours() + index);
-    results.push({ now, greeting: greeting(now, overrides), suggestions: suggestions(now, overrides) });
+    results.push({ now, greeting: greeting(now, overrides) });
   }
   return results;
 }
@@ -207,99 +196,12 @@ test("the greeting reads the activity, not just the clock", () => {
   assert.ok(new Set(busy.map((entry) => entry.greeting.leadId)).has("still-going"));
 });
 
-test("four openers, all different, and all four move with the hour", () => {
-  const first = suggestions(at(13));
-  assert.equal(first.length, CHAT_SUGGESTION_COUNT);
-  assert.equal(new Set(first).size, CHAT_SUGGESTION_COUNT);
-  assert.deepEqual(suggestions(at(13, { minute: 59 })), first);
-
-  const next = suggestions(at(14));
-  assert.notDeepEqual(next, first);
-  assert.equal(new Set(next).size, CHAT_SUGGESTION_COUNT);
-});
-
-test("the openers do not fall into a short repeating cycle", () => {
-  // Sliding the window by its own width looks fine and is not: a pool that
-  // happens to be a multiple of four long comes back around every four hours.
-  const week = sweep(24 * 7).map((entry) => entry.suggestions.join(" | "));
-  for (let index = 1; index < week.length; index += 1) {
-    assert.notEqual(week[index], week[index - 1], `hour ${index} repeated the hour before it`);
-  }
-  // Family diversity deliberately collapses some windows onto the same four
-  // cards — that is the point of it — so a day is not 24 distinct sets. It
-  // should still be most of a day rather than a handful on repeat.
-  const day = week.slice(0, 24);
-  assert.ok(
-    new Set(day).size >= 12,
-    `only ${new Set(day).size} distinct sets of openers across a day`,
-  );
-});
-
-test("the openers name the gardens and chats they are about", () => {
-  const day = sweep(24 * 7).flatMap((entry) => entry.suggestions);
-  assert.ok(day.some((prompt) => prompt.includes("Thermodynamics")));
-  assert.ok(day.some((prompt) => prompt.includes("Control Theory")));
-  assert.ok(day.some((prompt) => prompt.includes("Entropy and the second law")));
-
-  // Nothing is templated with a garden that is not there.
-  for (const prompt of sweep(24 * 7, {
-    signals: { gardenCount: 0, recentGardens: [], recentChats: [] },
-  }).flatMap((entry) => entry.suggestions)) {
-    assert.doesNotMatch(prompt, /\{|\}|undefined|NaN/);
-  }
-});
-
-test("an empty account is offered somewhere to start", () => {
-  const openers = new Set(
-    sweep(24 * 3, { signals: { ...EMPTY_CHAT_GREETING_SIGNALS } }).flatMap((entry) => entry.suggestions),
-  );
-  assert.ok(openers.has("How do I start my first garden?"));
-  // Nothing offers to review or connect gardens that do not exist yet.
-  for (const prompt of openers) {
-    assert.doesNotMatch(prompt, /across all gardens|different gardens|before an exam/);
-  }
-  for (const entry of sweep(24 * 3, { signals: { ...EMPTY_CHAT_GREETING_SIGNALS } })) {
-    assert.equal(entry.suggestions.length, CHAT_SUGGESTION_COUNT);
-  }
-});
-
-test("the public hub never offers to read a private garden", () => {
-  for (const entry of sweep(24 * 7, { scope: "public" })) {
-    assert.equal(entry.suggestions.length, CHAT_SUGGESTION_COUNT);
-    for (const prompt of entry.suggestions) {
-      assert.doesNotMatch(prompt, /\bmy \b|\bmy gardens\b|Thermodynamics|Control Theory|Entropy/);
-      assert.match(prompt, /public/);
-    }
-  }
+test("the public hub asks its own questions", () => {
   const questions = new Set(sweep(24 * 7, { scope: "public" }).map((entry) => entry.greeting.questionId));
   assert.ok(questions.has("public-find"));
 });
 
 test("off the record asks the questions worth asking when nothing is kept", () => {
-  const offRecord = new Set(
-    sweep(24 * 3, { temporary: true, signals: { recentGardens: [], recentChats: [] } }).flatMap(
-      (entry) => entry.suggestions,
-    ),
-  );
-  // Accumulation is the wrong invitation in a chat that keeps nothing, so none
-  // of the openers about spanning, connecting or revising gardens survive here.
-  for (const prompt of offRecord) {
-    assert.doesNotMatch(prompt, /span|overlap|connections between|review before an exam/i);
-  }
-  assert.ok(offRecord.has("Quiz me on a topic in my notes, without keeping the score."));
-  assert.ok(
-    offRecord.has("Explain a concept from my gardens as if I had never seen it."),
-  );
-  // A chat that keeps nothing never offers to resume a chat that was kept.
-  for (const prompt of offRecord) assert.doesNotMatch(prompt, /Pick up where I left off/);
-
-  const publicOffRecord = new Set(
-    sweep(24 * 3, { temporary: true, scope: "public" }).flatMap((entry) => entry.suggestions),
-  );
-  assert.ok(
-    publicOffRecord.has("Quiz me on a public-garden topic, without keeping the score."),
-  );
-
   const leads = new Set(sweep(24 * 3, { temporary: true }).map((entry) => entry.greeting.questionId));
   assert.ok(leads.has("off-the-record") || leads.has("quietly"));
 });
@@ -507,20 +409,6 @@ test("a calendar easter egg only lands on the day it is about", () => {
   }
 });
 
-test("the lighter openers are prompts, not punchlines", () => {
-  // Unlike the greetings these are offered every hour, because each one is
-  // worth sending. That also keeps the pool a fixed size hour to hour, which
-  // the window's stride depends on.
-  const day = new Set(sweep(24 * 7).flatMap((entry) => entry.suggestions));
-  assert.ok(day.has("Quiz me on a topic from my notes and do not go easy."));
-  assert.ok(day.has("Settle an argument I am having with myself."));
-  assert.ok(day.has("Find the weakest thing I have written and tell me why it is weak."));
-  assert.ok(day.has("Find a rabbit hole in my gardens worth going down."));
-  assert.ok(day.has("Give me a side quest based on what I have been learning."));
-  // Every card is still something you could press send on.
-  for (const prompt of day) assert.match(prompt, /[.?]$/);
-});
-
 test("inside a garden the chat is about that garden", () => {
   const garden = { name: "breadboard-dev", slug: "breadboard-dev" };
   const week = [];
@@ -530,7 +418,6 @@ test("inside a garden the chat is about that garden", () => {
     week.push({
       now,
       greeting: resolveChatGreeting({ signals: SIGNALS, scope: "mine", temporary: false, garden, now }),
-      suggestions: resolveChatSuggestions({ signals: SIGNALS, scope: "mine", temporary: false, garden, now }),
     });
   }
 
@@ -546,36 +433,6 @@ test("inside a garden the chat is about that garden", () => {
     "no question named the open garden all week",
   );
 
-  const openers = new Set(week.flatMap((entry) => entry.suggestions));
-  // The openers are about this garden — by name, or as "here"/"this garden".
-  assert.ok(openers.has("Summarize what I know in breadboard-dev."));
-  assert.ok(openers.has("Quiz me on breadboard-dev and do not go easy."));
-  // The one outcome a garden chat has that the hub does not.
-  assert.ok(openers.has("Answer something here worth saving as a page."));
-  // Nothing offers another garden by name; the hub pools name recent gardens,
-  // and none of those belong in a chat that cannot see them.
-  for (const prompt of openers) {
-    assert.doesNotMatch(prompt, /Thermodynamics|Control Theory|Entropy and the second law/);
-  }
-  // Garden suggestions never reach into other gardens.
-  const outward = [...openers].filter((prompt) => prompt.includes("other gardens"));
-  assert.deepEqual(outward, []);
-
-  // Four slots, always filled, even for an account with one garden and no history.
-  for (let index = 0; index < 24 * 3; index += 1) {
-    const now = new Date(2026, 7, 19, 0, 0, 0, 0);
-    now.setHours(now.getHours() + index);
-    const thin = resolveChatSuggestions({
-      signals: { ...EMPTY_CHAT_GREETING_SIGNALS, name: "Grey", gardenCount: 1 },
-      scope: "mine",
-      temporary: false,
-      garden,
-      now,
-    });
-    assert.equal(thin.length, CHAT_SUGGESTION_COUNT);
-    for (const prompt of thin) assert.doesNotMatch(prompt, /other gardens/);
-  }
-
   // Two gardens open in two tabs do not say the same thing at the same hour.
   const now = at(15);
   const here = resolveChatGreeting({ signals: SIGNALS, scope: "mine", temporary: false, garden, now });
@@ -587,22 +444,6 @@ test("inside a garden the chat is about that garden", () => {
     now,
   });
   assert.notEqual(`${here.leadId}/${here.questionId}`, `${there.leadId}/${there.questionId}`);
-});
-
-test('temporary, public and browser-adjacent garden chats keep the garden suggestion pool', () => {
-  const garden={name:'Circuits',slug:'circuits'};
-  const gardenPool=new Set(Array.from({length:24*7},(_,index)=>resolveChatSuggestions({signals:SIGNALS,scope:'mine',temporary:false,garden,now:new Date(2026,7,19,index)})).flat());
-  for (let hour=0;hour<24*7;hour++) {
-    const now=new Date(2026,7,19,hour);
-    const expected=resolveChatSuggestions({signals:SIGNALS,scope:'mine',temporary:false,garden,now});
-    // Each mode can rotate differently, but may only select garden actions.
-    assert.equal(expected.length,4);
-    for (const scope of ['mine','public']) for (const temporary of [false,true]) for (const browser of [false,true]) {
-      const actual=resolveChatSuggestions({signals:SIGNALS,scope,temporary,browser,garden,now});
-      assert.equal(actual.length,4);
-      assert.ok(actual.every(prompt=>gardenPool.has(prompt)),JSON.stringify(actual));
-    }
-  }
 });
 
 test("two people do not step through the pools in lockstep", () => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {completeRecommendations,evidenceRecommendations,selectRecommendations} from '../src/lib/recommendations/types.ts';
+import {completeRecommendationPrompts,evidenceRecommendations,selectRecommendations} from '../src/lib/recommendations/types.ts';
 import {generateRecommendations} from './helpers/recommendation-model-fixture.mjs';
 
 const context={localDate:'2026-11-08',localTime:'12:24'};
@@ -14,8 +14,7 @@ const garden={id:'garden',source:'garden',title:'Engineering ethics',summary:'Co
 
 test('the screenshot case never turns rent into a project or a gym visit into a meeting',async()=>{
   const cards=await generateRecommendations({evidence:[rent,gym,gap],context,model:'none'});
-  assert.equal(cards.length,4);
-  assert.ok(cards.every(card=>card.sourceIds.length===0),'with no useful action, generic fallbacks are honest');
+  assert.deepEqual(cards,[],'with no useful action there are no cards at all');
   assert.doesNotMatch(cards.map(card=>card.prompt).join(' '),/rent|gym|25.minute/i);
 });
 
@@ -32,8 +31,8 @@ test('unsupported model proposals are rejected even when they cite valid evidenc
     {prompt:'List questions I want answered at Gym: Upper A + cardio.',sourceIds:['gym']},
     {prompt:'Draft a response addressing the requested measurements changes.',sourceIds:['mail']}];
   const cards=await generateRecommendations({evidence:[rent,gym,gap,mail],context,model:'selected',fetcher:async()=>Response.json({choices:[{message:{content:JSON.stringify(output)}}]})});
-  assert.equal(cards.length,4);assert.deepEqual(cards[0].sourceIds,['mail']);
-  assert.ok(cards.slice(1).every(card=>card.sourceIds.length===0));
+  assert.ok(cards.length>=1&&cards.length<=2);assert.deepEqual(cards[0].sourceIds,['mail']);
+  assert.ok(cards.every(card=>card.sourceIds.every(id=>id==='mail')));
 });
 
 test('a task inside a calendar plan and its direct action cannot occupy two cards',()=>{
@@ -42,14 +41,15 @@ test('a task inside a calendar plan and its direct action cannot occupy two card
   assert.equal(selectRecommendations(candidates,[gap,task],[],context).length,1);
 });
 
-test('empty, partial, duplicate and failed-provider results still yield exactly four unique cards',async()=>{
+test('empty, partial, duplicate and failed-provider results are never padded with generic cards',async()=>{
   for(const evidence of [[],[reading],[reading,garden]]){
     const cards=await generateRecommendations({evidence,context,model:'selected',fetcher:async()=>{throw Error('offline');}});
-    assert.equal(cards.length,4);assert.equal(new Set(cards.map(card=>card.prompt)).size,4);
-    assert.equal(cards.filter(card=>card.sourceIds.length>0).length,evidence.length);
+    assert.ok(cards.length<=4);assert.equal(new Set(cards.map(card=>card.prompt)).size,cards.length);
+    assert.ok(cards.every(card=>card.sourceIds.length>0));
+    assert.equal(cards.length,evidence.length);
   }
   const one=evidenceRecommendations([mail])[0];
-  assert.equal(completeRecommendations([one,one]).length,4);
+  assert.deepEqual(completeRecommendationPrompts([one.prompt,one.prompt]),[one.prompt]);
 });
 
 test('real complications may be useful while ordinary bill payments remain simple',()=>{

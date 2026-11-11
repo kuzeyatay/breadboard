@@ -28,6 +28,7 @@ export async function POST(request: Request) {
       localTime: cleanRecommendationText(body.localTime, 5) || undefined,
       timeZone: cleanRecommendationText(body.timeZone, 100) || undefined,
     }, { baseUrl: resolveChatmockBaseUrl(request).baseURL, refresh: body.refresh === true });
-    return Response.json({ recommendations }, { headers: { 'Cache-Control': 'no-store' } });
+    // The basis fingerprint is server bookkeeping and quotes the evidence.
+    return Response.json({ recommendations: recommendations.map(({ basis: _basis, ...card }) => card) }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) { return apiErrorResponse(error); }
 }

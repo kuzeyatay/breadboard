@@ -6,7 +6,7 @@ import { getRecallSettings } from '../recall/settings.ts';
 import { ApiError } from '../hermes/route-core.ts';
 import { readRecommendationEvidence } from './sources.ts';
 import { generateRecommendations } from './generate.ts';
-import { completeRecommendations, scopedRecommendationEvidence, RECOMMENDATION_TTL_MS, type Recommendation, type RecommendationContext, type RecommendationEvidence } from './types.ts';
+import { scopedRecommendationEvidence, selectRecommendations, RECOMMENDATION_TTL_MS, type Recommendation, type RecommendationContext, type RecommendationEvidence } from './types.ts';
 import { recommendationClock } from './clock.ts';
 import { usefulVoiceOpeners, type PreparedVoiceOpener } from './voice-opener.ts';
 
@@ -16,7 +16,8 @@ interface RecommendationState {
   evidenceCache: Map<string, Entry<RecommendationEvidence[]>>;
   recommendationCache: Map<string, Entry<Recommendation[]>>;
   generations: Map<number, object>;
-  recentlyShown: Map<string, string[]>;
+  /** The cards each reader currently has on screen, per surface. */
+  recentlyShown: Map<string, Recommendation[]>;
   voiceOpeners: Map<number, PreparedOpeners>;
 }
 // Route importers may be bundled separately. Share the invalidation identities
@@ -65,7 +66,56 @@ export function invalidateRecommendations(userId: number, {preserveHistory=false
   for (const cache of [evidenceCache, recommendationCache]) {
     for (const key of cache.keys()) if (key.startsWith(`${userId}:`)) cache.delete(key);
   }
-  if(!preserveHistory) for (const key of recentlyShown.keys()) if (key.startsWith(`${userId}:`)) recentlyShown.delete(key);
+  if(!preserveHistory) {
+    for (const key of recentlyShown.keys()) if (key.startsWith(`${userId}:`)) recentlyShown.delete(key);
+    try { shownStore()?.forget.run(userId); } catch { /* Store optional. */ }
+  }
+}
+
+/**
+ * The cards each reader has on screen, kept in the database too, so a server
+ * restart does not reshuffle a board that was meant to stay put. Keyed like the
+ * in-memory map, which includes the local date, so yesterday's board expires
+ * on its own; rows older than two days are swept on write.
+ */
+let shownStatements: { read: { get: (...args: unknown[]) => unknown }; write: { run: (...args: unknown[]) => unknown };
+  forget: { run: (...args: unknown[]) => unknown }; sweep: { run: (...args: unknown[]) => unknown } } | null | undefined;
+function shownStore() {
+  if (shownStatements !== undefined) return shownStatements;
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS recommendation_shown_cards (
+      user_id INTEGER NOT NULL, history_key TEXT NOT NULL, cards TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (user_id, history_key))`);
+    // better-sqlite3 types prepare() as a union of Statement generics; only the call shapes matter here.
+    shownStatements = ({
+      read: db.prepare('SELECT cards FROM recommendation_shown_cards WHERE user_id = ? AND history_key = ?'),
+      write: db.prepare(`INSERT INTO recommendation_shown_cards (user_id, history_key, cards) VALUES (?, ?, ?)
+        ON CONFLICT (user_id, history_key) DO UPDATE SET cards = excluded.cards, updated_at = datetime('now')`),
+      forget: db.prepare('DELETE FROM recommendation_shown_cards WHERE user_id = ?'),
+      sweep: db.prepare("DELETE FROM recommendation_shown_cards WHERE updated_at < datetime('now', '-2 days')"),
+    }) as unknown as NonNullable<typeof shownStatements>;
+  } catch { shownStatements = null; }
+  return shownStatements;
+}
+
+function shownCards(userId: number, historyKey: string): Recommendation[] {
+  const memory = recentlyShown.get(historyKey);
+  if (memory) return memory;
+  try {
+    const row = shownStore()?.read.get(userId, historyKey) as { cards: string } | undefined;
+    const cards = row ? JSON.parse(row.cards) : [];
+    return Array.isArray(cards) ? cards.filter(card => card && typeof card.prompt === 'string' && Array.isArray(card.sourceIds)) : [];
+  } catch { return []; }
+}
+
+function rememberShown(userId: number, historyKey: string, cards: Recommendation[]) {
+  recentlyShown.set(historyKey, cards);
+  if (recentlyShown.size>40) recentlyShown.delete(recentlyShown.keys().next().value!);
+  try {
+    const store = shownStore();
+    store?.write.run(userId, historyKey, JSON.stringify(cards.map(({ voice: _voice, ...card }) => card)));
+    store?.sweep.run();
+  } catch { /* A board that cannot be saved still works for this process. */ }
 }
 
 /** Cached-only read: no model, connected source, or pending generation is
@@ -104,18 +154,30 @@ export async function recommendationsForUser(userId: number, context: Recommenda
   if (!access.enabled) return [];
   const evidence = await recommendationEvidence(userId, context);
   if (generations.get(userId) !== current || policy(userId).key !== access.key) return [];
-  if (!evidence.length) { voiceOpeners.delete(userId); return completeRecommendations([], context); }
+  if (!evidence.length) { voiceOpeners.delete(userId); return []; }
   const historyKey = `${userId}:${JSON.stringify([access.key,contextKey(context)])}`;
   const key = `${historyKey}:${JSON.stringify([access.model,options.baseUrl,Math.floor(Date.now()/RECOMMENDATION_TTL_MS),evidence])}`;
-  const result = await cached(recommendationCache, key, () => generateRecommendations({ userId, evidence, context, model: access.model, baseUrl: options.baseUrl, previousPrompts:recentlyShown.get(historyKey) ?? [] }));
-  if (generations.get(userId) !== current || policy(userId).key !== access.key) return [];
-  const expiresAt = recommendationCache.get(key)?.expires ?? Date.now();
-  voiceOpeners.set(userId, { policyKey: access.key, expiresAt,
-    items: usefulVoiceOpeners(result, evidence, context, expiresAt) });
-  if (voiceOpeners.size > 40) voiceOpeners.delete(voiceOpeners.keys().next().value!);
-  if (result.length) {
-    recentlyShown.set(historyKey,[...new Set([...(recentlyShown.get(historyKey) ?? []),...result.map(item=>item.prompt)])].slice(-8));
-    if (recentlyShown.size>40) recentlyShown.delete(recentlyShown.keys().next().value!);
+  const generate = () => cached(recommendationCache, key, () => generateRecommendations({ userId, evidence, context, model: access.model, baseUrl: options.baseUrl, shown:shownCards(userId, historyKey) }));
+  const settle = (result: Recommendation[]) => {
+    if (generations.get(userId) !== current || policy(userId).key !== access.key) return [];
+    const expiresAt = recommendationCache.get(key)?.expires ?? Date.now();
+    voiceOpeners.set(userId, { policyKey: access.key, expiresAt,
+      items: usefulVoiceOpeners(result, evidence, context, expiresAt) });
+    if (voiceOpeners.size > 40) voiceOpeners.delete(voiceOpeners.keys().next().value!);
+    rememberShown(userId, historyKey, result);
+    return result;
+  };
+  // The board is meant to stay put until a card stops applying or something
+  // beats it. When the model has to be asked again (5-12 s), the cards already
+  // on screen that still apply to today's evidence are returned at once and the
+  // model's answer replaces them on the next read. An explicit refresh waits.
+  const ready = recommendationCache.get(key);
+  if (!options.refresh && !(ready && ready.expires > Date.now())) {
+    const standing = selectRecommendations([], evidence, shownCards(userId, historyKey), context);
+    if (standing.length) {
+      void generate().then(settle, () => undefined);
+      return standing;
+    }
   }
-  return result;
+  return settle(await generate());
 }

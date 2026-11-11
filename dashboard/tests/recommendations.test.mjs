@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { collectRecommendationEvidence } from '../src/lib/recommendations/collect.ts';
-import { completeRecommendations, evidenceRecommendations, parseRecommendations, selectRecommendations, GARDEN_FALLBACK_RECOMMENDATION_PROMPTS } from '../src/lib/recommendations/types.ts';
+import { evidenceRecommendations, parseRecommendations, selectRecommendations } from '../src/lib/recommendations/types.ts';
 import { generateRecommendations } from './helpers/recommendation-model-fixture.mjs';
 
 const evidence = [
@@ -51,12 +51,10 @@ test('model failure still offers diverse next steps grounded in actual evidence'
   assert.deepEqual(evidenceRecommendations([]),[]);
 });
 
-test('garden fallback stays with the selected garden instead of unrelated mail', async () => {
+test('garden cards stay with the selected garden instead of unrelated mail, and are not padded', async () => {
   const suggestions = await generateRecommendations({evidence,context:{gardenSlug:'circuits'},model:'none'});
-  assert.equal(suggestions.length,4);
+  assert.equal(suggestions.length,1);
   assert.deepEqual(suggestions[0].sourceIds,['garden:4']);
-  assert.ok(suggestions.slice(1).every(item=>item.sourceIds.length===0));
-  assert.ok(suggestions.slice(1).every(item=>GARDEN_FALLBACK_RECOMMENDATION_PROMPTS.includes(item.prompt)));
 });
 
 test('generation sends bounded evidence as untrusted data and never enables tools', async () => {
@@ -91,7 +89,7 @@ test('garden generation sends only explicit garden evidence and rejects outside 
   assert.deepEqual(supplied.evidence.map(item=>item.id),['garden:4','recall:scoped']);
   assert.doesNotMatch(JSON.stringify(supplied),/Lab report feedback|RLC lab meeting|Transient response|Neuro computation/);
   assert.match(request.messages[1].content,/Garden scope is mandatory/);
-  assert.equal(cards.length,4);
+  assert.ok(cards.length>=1&&cards.length<=4);
   assert.ok(cards.some(card=>card.sourceIds.includes('recall:scoped')),'explicitly garden-linked Recall remains usable');
   assert.ok(cards.every(card=>card.sourceIds.every(id=>['garden:4','recall:scoped'].includes(id))));
   assert.doesNotMatch(JSON.stringify(cards),/gym|feedback|Neuro/);
@@ -100,17 +98,16 @@ test('garden generation sends only explicit garden evidence and rejects outside 
   assert.ok(evidenceRecommendations(mixed,[],context).every(card=>card.sourceIds.every(id=>['garden:4','recall:scoped'].includes(id))));
 });
 
-test('a garden with no matching evidence always has four garden fallbacks and never calls the model', async () => {
+test('a garden with no matching evidence shows no cards and never calls the model', async () => {
   for (const model of ['none','selected']) {
     const cards=await generateRecommendations({evidence,context:{gardenSlug:'empty-garden'},model,
       fetcher:async()=>assert.fail('unrelated evidence must not start a completion')});
-    assert.deepEqual(cards.map(card=>card.prompt),GARDEN_FALLBACK_RECOMMENDATION_PROMPTS);
-    assert.ok(cards.every(card=>card.sourceIds.length===0));
+    assert.deepEqual(cards,[]);
   }
 });
 
-test('a model may decline to invent suggestions; grounded alternatives and then generic cards fill four slots', async () => {
+test('a model may decline to invent suggestions; grounded alternatives fill the slots, nothing generic', async () => {
   const run = content => generateRecommendations({evidence,context:{},model:'selected',fetcher:async()=>Response.json({choices:[{message:{content}}]})});
-  assert.deepEqual(await run('[]'),completeRecommendations(evidenceRecommendations(evidence)));
-  assert.deepEqual(await run('[{"prompt":"Guess something","sourceIds":["fake"]}]'),completeRecommendations(evidenceRecommendations(evidence)));
+  assert.deepEqual(await run('[]'),evidenceRecommendations(evidence));
+  assert.deepEqual(await run('[{"prompt":"Guess something","sourceIds":["fake"]}]'),evidenceRecommendations(evidence));
 });

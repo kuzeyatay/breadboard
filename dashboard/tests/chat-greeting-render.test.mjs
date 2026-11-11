@@ -17,7 +17,6 @@ import esbuild from "esbuild";
 import {
   EMPTY_CHAT_GREETING_SIGNALS,
   resolveChatGreeting,
-  resolveChatSuggestions,
 } from "../src/lib/hermes/chat-greeting.ts";
 
 const dashboardRoot = path.resolve(fileURLToPath(import.meta.url), "..", "..");
@@ -68,6 +67,14 @@ const SIGNALS = {
   daysSinceJoined: 90,
 };
 
+/** The cards come from the person's own evidence now; any four grounded prompts will do here. */
+const CARDS = [
+  "Turn my discussion about \u201cEntropy\u201d into notes with decisions and any follow-ups.",
+  "Quiz me on the key ideas in \u201cThermodynamics\u201d, using my garden notes.",
+  "Help me find out why my scheduled task \u201cMorning brief\u201d failed and fix it.",
+  "Check my Linear for open items assigned to me and help me pick what to tackle first.",
+];
+
 function screenAt(hour, overrides = {}) {
   const now = new Date(2026, 7, 19, hour, 0, 0, 0);
   const input = {
@@ -77,7 +84,7 @@ function screenAt(hour, overrides = {}) {
     now,
   };
   const greeting = resolveChatGreeting(input);
-  const suggestions = resolveChatSuggestions(input);
+  const suggestions = CARDS;
   const html = renderToStaticMarkup(
     React.createElement(ChatGreetingEmptyState, {
       greeting,
@@ -184,12 +191,36 @@ test("each card's outline sketches itself, and no two draw in unison", () => {
 
   // Decorative, so it is out of the accessibility tree and out of the way of
   // the pointer; the button's name is still just its prompt.
-  assert.equal((screen.html.match(/aria-hidden/g) ?? []).length, 4);
+  assert.equal((screen.html.match(/aria-hidden/g) ?? []).length, 4 * 4);
 
   // The card's radius has one source. It was a Tailwind class and is now the
   // custom property the drawn outline's own radius is derived from, and a
   // second source is how the line stops following the corner it draws.
   assert.doesNotMatch(screen.html, /rounded-lg/);
+});
+
+test("each card says where it came from, and urgent ones say so", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ChatGreetingEmptyState, {
+      greeting: null,
+      suggestions: CARDS.slice(0, 2),
+      suggestionDetails: {
+        [CARDS[0]]: { label: "Recent chat", usefulness: "helpful" },
+        [CARDS[1]]: { label: "Scheduled", usefulness: "urgent" },
+      },
+      onSelectSuggestion: () => {},
+    }),
+  );
+  assert.match(html, />Recent chat</);
+  assert.match(html, /Needs attention · Scheduled/);
+  assert.equal((html.match(/data-suggestion-usefulness="urgent"/g) ?? []).length, 1);
+});
+
+test("no grounded cards means no cards, not filler", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ChatGreetingEmptyState, { greeting: null, suggestions: [], onSelectSuggestion: () => {} }),
+  );
+  assert.doesNotMatch(html, /Suggested next steps/);
 });
 
 test("nothing is drawn until the clock and the signals have landed", () => {

@@ -9,11 +9,14 @@ import { usePersonalize } from '../use-personalize';
 import { AUTH_CHANGED_EVENT } from '@/lib/auth-events';
 import { RECALL_SETTINGS_CHANGED_EVENT } from '../recall-autostart-lifecycle';
 import { completeRecommendationPrompts, RECOMMENDATION_REFRESH_EVENT } from '@/lib/recommendations/types';
+import type { SuggestionDetail } from './use-chat-greeting';
 
 interface Props {
   greeting: ChatGreeting | null;
   suggestions: string[];
   suggestionScopeKey?: string;
+  /** Where each card came from and how useful it is, keyed by prompt. */
+  suggestionDetails?: Record<string, SuggestionDetail>;
   /**
    * An opener was picked. It goes into the composer rather than straight to the
    * runtime: these are starting points, and most of them want a subject filled
@@ -44,6 +47,7 @@ export default function ChatGreetingEmptyState({
   greeting,
   suggestions,
   suggestionScopeKey,
+  suggestionDetails,
   onSelectSuggestion,
   disabled = false,
   footnote,
@@ -66,7 +70,7 @@ export default function ChatGreetingEmptyState({
           {greeting?.question ?? " "}
         </p>
       </div>
-      <ChatSuggestionCards suggestions={suggestions} suggestionScopeKey={suggestionScopeKey} disabled={disabled} onSelectSuggestion={onSelectSuggestion} />
+      <ChatSuggestionCards suggestions={suggestions} suggestionScopeKey={suggestionScopeKey} suggestionDetails={suggestionDetails} disabled={disabled} onSelectSuggestion={onSelectSuggestion} />
       {footnote ? (
         <p className={`text-xs text-gray-700 transition-opacity duration-500 motion-reduce:transition-none ${greeting ? "opacity-100" : "opacity-0"}`}>
           {footnote}
@@ -76,7 +80,7 @@ export default function ChatGreetingEmptyState({
   );
 }
 
-type CardsProps = Pick<Props, 'suggestions' | 'suggestionScopeKey' | 'disabled' | 'onSelectSuggestion'>;
+type CardsProps = Pick<Props, 'suggestions' | 'suggestionScopeKey' | 'suggestionDetails' | 'disabled' | 'onSelectSuggestion'>;
 export function ChatSuggestionCards(props: CardsProps) {
   const [personalize]=usePersonalize();
   const [privacyRevision,setPrivacyRevision]=useState(0);
@@ -89,12 +93,15 @@ export function ChatSuggestionCards(props: CardsProps) {
   return <SuggestionGrid key={JSON.stringify([props.suggestionScopeKey,personalize,privacyRevision])} {...props} suggestions={completeRecommendationPrompts(props.suggestions)}/>;
 }
 
-function SuggestionGrid({suggestions,disabled=false,onSelectSuggestion}:CardsProps) {
+function SuggestionGrid({suggestions,suggestionDetails,disabled=false,onSelectSuggestion}:CardsProps) {
+  // Nothing grounded to offer means no cards, not filler.
+  if (!suggestions.length) return null;
   return <div className="grid w-full max-w-xl gap-2 sm:grid-cols-2" aria-label="Suggested next steps">
         {suggestions.map((prompt, index) => (
           <SuggestionCard
             key={index}
             prompt={prompt}
+            detail={suggestionDetails?.[prompt]}
             index={index}
             disabled={disabled}
             onSelect={onSelectSuggestion}
@@ -118,11 +125,13 @@ function SuggestionGrid({suggestions,disabled=false,onSelectSuggestion}:CardsPro
  */
 function SuggestionCard({
   prompt,
+  detail,
   index,
   disabled,
   onSelect,
 }: {
   prompt: string;
+  detail?: SuggestionDetail;
   index: number;
   disabled: boolean;
   onSelect: (prompt: string) => void;
@@ -207,6 +216,12 @@ function SuggestionCard({
         <span aria-hidden className="invisible col-start-1 row-start-1">{text.previous}</span>
         <span aria-hidden className="bb-card-suggestion-text col-start-1 row-start-1" data-reduced-motion={text.reduced}>{text.displayed || '\u00a0'}</span>
       </span>
+      {detail?.label ? (
+        <span className="mt-1 flex items-center gap-1.5 text-[11px] text-gray-500" data-suggestion-usefulness={detail.usefulness}>
+          {detail.usefulness === 'urgent' ? <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-amber-400" /> : null}
+          {detail.usefulness === 'urgent' ? `Needs attention · ${detail.label}` : detail.label}
+        </span>
+      ) : null}
     </button>
   );
 }

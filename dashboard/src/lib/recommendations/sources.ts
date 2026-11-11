@@ -17,6 +17,10 @@ import type { ConnectedAppProxyRequest } from '../connected-apps/types.ts';
 import { calendarRecommendationEvidence } from './calendar-context.ts';
 import { recallRecommendationEvidence, recallTopicQuery } from './recall-context.ts';
 import { recommendationClock } from './clock.ts';
+import { activityRecommendationEvidence, connectedAppName, connectionRecommendationEvidence } from './activity-context.ts';
+
+/** Apps whose actual items are read below; every other connection is offered by name. */
+const DEEP_READ_APPS = new Set(['gmail', 'microsoft-outlook', 'google-calendar']);
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -32,6 +36,7 @@ async function connectionReader(userId: number, signal: AbortSignal) {
   const composio = remote.status === 'fulfilled' ? remote.value : [];
   const embedded = local.status === 'fulfilled' ? local.value : [];
   const slugs = new Set([...composio, ...embedded].filter(item => item.enabled).map(item => item.slug));
+  const apps = [...slugs].map(slug => ({ slug, name: findNangoIntegration(slug)?.name || connectedAppName(slug) }));
   const read: ConnectedRead = async (slug, request) => {
     signal.throwIfAborted();
     if (request.method !== 'GET') throw new Error('Recommendations only read connected apps.');
@@ -52,7 +57,7 @@ async function connectionReader(userId: number, signal: AbortSignal) {
     if (!integration) throw new Error('Connection unavailable');
     return embeddedProviderRequest({ userId, integration, request, signal });
   };
-  return { slugs, read };
+  return { slugs, apps, read };
 }
 
 async function gmail(read: ConnectedRead): Promise<RecommendationEvidence[]> {
@@ -100,11 +105,12 @@ function localEvidence(userId: number, context: RecommendationContext): Recommen
   const safeRead = (read: () => RecommendationEvidence[]) => { try { result.push(...read()); } catch { /* Optional store not initialized. */ } };
   safeRead(() => {
     const rows = db.prepare(`SELECT c.id, c.title, c.updated_at, g.slug,
-      (SELECT substr(m.content, 1, 800) FROM conversation_messages m WHERE m.conversation_id=c.id AND m.status='complete' ORDER BY m.order_index DESC LIMIT 1) AS excerpt
+      (SELECT substr(m.content, 1, 300) FROM conversation_messages m WHERE m.conversation_id=c.id AND m.role='user' ORDER BY m.order_index DESC LIMIT 1) AS asked,
+      (SELECT substr(m.content, 1, 500) FROM conversation_messages m WHERE m.conversation_id=c.id AND m.role='assistant' AND m.status='complete' ORDER BY m.order_index DESC LIMIT 1) AS excerpt
       FROM conversations c LEFT JOIN clusters g ON g.id=c.default_garden_id
-      WHERE c.user_id=? AND c.temporary=0 AND c.title<>'New chat' AND c.updated_at >= datetime('now','-14 days')
-      AND (? IS NULL OR g.slug=?) ORDER BY c.updated_at DESC LIMIT 4`).all(userId, context.gardenSlug ?? null, context.gardenSlug ?? null) as Array<{id:number;title:string;updated_at:string;slug:string;excerpt:string}>;
-    return rows.map(row => ({ id:`chat:${row.id}`,source:'chat',title:row.title,summary:row.excerpt,timestamp:row.updated_at,gardenSlug:row.slug }));
+      WHERE c.user_id=? AND c.temporary=0 AND c.title<>'New chat' AND c.updated_at >= datetime('now','-21 days')
+      AND (? IS NULL OR g.slug=?) ORDER BY c.updated_at DESC LIMIT 5`).all(userId, context.gardenSlug ?? null, context.gardenSlug ?? null) as Array<{id:number;title:string;updated_at:string;slug:string;asked:string|null;excerpt:string|null}>;
+    return rows.map(row => ({ id:`chat:${row.id}`,source:'chat',title:row.title,summary:[row.asked&&`Last asked: ${row.asked}`,row.excerpt&&`Last reply: ${row.excerpt}`].filter(Boolean).join(' '),timestamp:row.updated_at,gardenSlug:row.slug }));
   });
   if (!context.gardenSlug) safeRead(() => {
     const rows = db.prepare(`SELECT t.id,t.title,t.description,t.due_date,p.name FROM plan_tasks t JOIN plan_projects p ON p.id=t.project_id
@@ -117,6 +123,7 @@ function localEvidence(userId: number, context: RecommendationContext): Recommen
       .all(userId,context.gardenSlug ?? null,context.gardenSlug ?? null) as Array<{id:number;name:string;slug:string}>;
     return rows.map(row => ({ id:`garden:${row.id}`,source:'garden',title:row.name,summary:'A recently opened garden.',gardenSlug:row.slug }));
   });
+  if (!context.gardenSlug) safeRead(() => activityRecommendationEvidence(db, userId));
   return result;
 }
 
@@ -149,8 +156,14 @@ export async function readRecommendationEvidence(userId: number, context: Recomm
       return recallRecommendationEvidence(reads.flatMap(read=>read.status==='fulfilled'?read.value.hits:[]),calendar);
     },
     async () => {
-      const { slugs, read } = await connectionReader(userId, signal);
+      const { slugs, apps, read } = await connectionReader(userId, signal);
+      let mcp: Array<{ slug: string; name: string }> = [];
+      try {
+        mcp = (db.prepare('SELECT slug, display_name FROM hermes_mcp_connections WHERE user_id = ? AND enabled = 1').all(userId) as Array<{ slug: string; display_name: string | null }>)
+          .map(row => ({ slug: row.slug, name: row.display_name || connectedAppName(row.slug) }));
+      } catch { /* MCP store optional. */ }
       return collectRecommendationEvidence([
+        async () => connectionRecommendationEvidence([...apps, ...mcp], DEEP_READ_APPS),
         async () => slugs.has('gmail') ? gmail(read) : [],
         async () => slugs.has('microsoft-outlook') ? outlook(read) : [],
         async () => slugs.has('google-calendar') ? googleCalendar(read) : [],

@@ -37,7 +37,7 @@ function fixture(t) {
   const db=new Database(':memory:');t.after(()=>{db.close();delete globalThis.recFixture;});
   db.exec(`CREATE TABLE clusters(id INTEGER PRIMARY KEY,user_id INTEGER,name TEXT,slug TEXT,last_viewed_at TEXT,created_at TEXT);
     CREATE TABLE conversations(id INTEGER PRIMARY KEY,user_id INTEGER,title TEXT,default_garden_id INTEGER,temporary INTEGER,updated_at TEXT);
-    CREATE TABLE conversation_messages(conversation_id INTEGER,content TEXT,status TEXT,order_index INTEGER);
+    CREATE TABLE conversation_messages(conversation_id INTEGER,content TEXT,status TEXT,order_index INTEGER,role TEXT NOT NULL DEFAULT 'assistant');
     CREATE TABLE plan_projects(id INTEGER PRIMARY KEY,user_id INTEGER,name TEXT,archived INTEGER);
     CREATE TABLE plan_tasks(id INTEGER PRIMARY KEY,user_id INTEGER,project_id INTEGER,title TEXT,description TEXT,due_date TEXT,completed_at TEXT,updated_at TEXT);
     INSERT INTO plan_projects VALUES(1,1,'Circuits',0),(2,2,'Private project',0),(3,1,'Old project',1);
@@ -47,7 +47,7 @@ function fixture(t) {
       (4,1,3,'Archived task','',NULL,NULL,datetime('now'));
     INSERT INTO clusters VALUES(1,1,'Circuits','circuits',datetime('now'),datetime('now')),(2,2,'Private other garden','secret',datetime('now'),datetime('now'));
     INSERT INTO conversations VALUES(1,1,'My lab notes',1,0,datetime('now')),(2,2,'Other user secret',2,0,datetime('now')),(3,1,'Temporary secret',1,1,datetime('now'));
-    INSERT INTO conversation_messages VALUES(1,'Review the transient result','complete',1),(2,'Private body','complete',1),(3,'Off the record','complete',1);`);
+    INSERT INTO conversation_messages VALUES(1,'Review the transient result','complete',1,'assistant'),(2,'Private body','complete',1,'assistant'),(3,'Off the record','complete',1,'assistant');`);
   const calls=[];
   const state={db,calls,agendaCalls:[],agenda:{occurrences:[],returned:0,total:0},settings:{captureEnabled:true,agentAccess:true},
     connections:async user=>['gmail','microsoft-outlook','google-calendar'].map(slug=>({slug,enabled:true,connectionId:`${user}:${slug}`})),
@@ -104,7 +104,7 @@ test('garden reads stay inside the selected owned garden without querying accoun
   const state=fixture(t);
   state.db.exec(`INSERT INTO clusters VALUES(3,1,'Neuro','neuro',datetime('now'),datetime('now'));
     INSERT INTO conversations VALUES(4,1,'Neuro room problem',3,0,datetime('now'));
-    INSERT INTO conversation_messages VALUES(4,'Check the conflicting room numbers','complete',1);`);
+    INSERT INTO conversation_messages VALUES(4,'Check the conflicting room numbers','complete',1,'assistant');`);
   state.connections=()=>assert.fail('No account-wide connected apps in a garden');
   state.recall=()=>assert.fail('Unscoped screen captures cannot establish garden membership');
   const evidence=await sources.readRecommendationEvidence(1,{gardenSlug:'circuits'});

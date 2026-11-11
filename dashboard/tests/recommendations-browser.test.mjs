@@ -6,7 +6,7 @@ import { build } from 'esbuild';
 import { chromium, expect } from '@playwright/test';
 import postcss from 'postcss';
 import tailwindcss from '@tailwindcss/postcss';
-import { completeRecommendations, evidenceRecommendations } from '../src/lib/recommendations/types.ts';
+import { evidenceRecommendations } from '../src/lib/recommendations/types.ts';
 
   const root=path.resolve(process.env.BREADBOARD_TEST_SOURCE_ROOT ?? path.resolve(import.meta.dirname,'..'));
 test('starter cards refresh, erase and type safely, preserve drafts, and immediately clear private context', {timeout:120_000},async t=>{
@@ -23,7 +23,7 @@ test('starter cards refresh, erase and type safely, preserve drafts, and immedia
         window.configure=next=>setConfig(old=>({...old,...next}));window.personalize=personalize;
         return <main className="neu-surface min-h-screen px-6 py-10" style={{background:'var(--paper-surface)',color:'var(--ink)'}}>
           <ChatGreetingEmptyState greeting={greeting.greeting}
-            suggestions={greeting.suggestions} suggestionScopeKey={greeting.suggestionScopeKey}
+            suggestions={greeting.suggestions} suggestionScopeKey={greeting.suggestionScopeKey} suggestionDetails={greeting.suggestionDetails}
             onSelectSuggestion={setDraft}/>
           <div className="mx-auto max-w-xl"><textarea aria-label="Draft" className="neu-composer w-full rounded-2xl p-4" value={draft} onChange={event=>setDraft(event.target.value)}/>
           <button id="send" onClick={()=>window.sent.push(draft)}>Send</button></div>
@@ -59,21 +59,22 @@ test('starter cards refresh, erase and type safely, preserve drafts, and immedia
     const body=route.request().postDataJSON();requests.push(body);
     if(offline){await route.fulfill({status:503,json:{error:'offline'}});return;}
     const evidence=body.gardenSlug?[{id:'garden:'+body.gardenSlug,source:'garden',title:body.gardenSlug,summary:'Garden notes',gardenSlug:body.gardenSlug}]:[];
-    const result=body.gardenSlug?completeRecommendations(evidenceRecommendations(evidence,[],body),body):items();
+    const result=body.gardenSlug?evidenceRecommendations(evidence,[],body):items();
     if(hold)await new Promise(resolve=>{release=resolve;});
     await route.fulfill({json:{recommendations:result}}).catch(()=>{});
   });
   await page.route('http://recommend.test/',route=>route.fulfill({contentType:'text/html',body:'<html data-theme="light"><div id="root"></div></html>'}));
   await page.goto('http://recommend.test/');await page.addStyleTag({content:css});await page.addScriptTag({content:bundle.outputFiles[0].text});
-  const cards=page.locator('.bb-terminal-suggestion');await expect(cards).toHaveCount(4).catch(error=>{console.error({errors,requests});throw error;});
+  const cards=page.locator('.bb-terminal-suggestion');
+  // No generic openers while the grounded cards are on their way.
+  await expect(cards).toHaveCount(0);
   await expect.poll(()=>requests.length).toBe(1);await expect.poll(()=>Boolean(greetingRelease)).toBe(true);
-  // The real greeting hook must retain its scope while its separate signals
-  // arrive, or React remounts the cards and silently skips the rewrite.
   greetingRelease();
-  await expect(cards.first().locator('[data-card-suggestion-phase]')).toHaveAttribute('data-card-suggestion-phase','erase');
+  await expect(cards).toHaveCount(4).catch(error=>{console.error({errors,requests});throw error;});
   await page.clock.runFor(2500);
   await expect(cards.filter({hasText:'transient-response'})).toHaveCount(1);
-  await expect(cards.filter({hasText:/Gmail|Calendar · Gmail|Recall|Plan · Your garden/})).toHaveCount(0);
+  // Each card says where it came from.
+  await expect(cards.filter({hasText:/Gmail|Calendar · Gmail|Recall|Plan · Your garden/})).toHaveCount(4);
   const screenshotDir=process.env.BREADBOARD_RECOMMENDATION_SCREENSHOTS ?? path.join(root,'artifacts','recommendations-qa');fs.mkdirSync(screenshotDir,{recursive:true});
   await page.locator('main > div').first().screenshot({path:path.join(screenshotDir,'light.png')});
   await cards.first().click();await expect(page.getByRole('textbox',{name:'Draft'})).toHaveValue('Draft a response to the feedback on my lab report.');
@@ -137,20 +138,18 @@ test('starter cards refresh, erase and type safely, preserve drafts, and immedia
   await expect.poll(()=>requests.length).toBe(7);
 
   const initial=requests.length;
-  await page.evaluate(()=>window.configure({temporary:true}));await expect(cards).toHaveCount(4);
-  await expect(cards.filter({hasText:'transient-response'})).toHaveCount(0);
+  await page.evaluate(()=>window.configure({temporary:true}));await expect(cards).toHaveCount(0);
   await page.clock.runFor(150);assert.equal(requests.length,initial);
-  await page.evaluate(()=>window.configure({temporary:false,scope:'public'}));await expect(cards).toHaveCount(4);
+  await page.evaluate(()=>window.configure({temporary:false,scope:'public'}));await expect(cards).toHaveCount(0);
   await page.clock.runFor(150);assert.equal(requests.length,initial);
   await page.evaluate(()=>window.configure({scope:'mine'}));await expect(cards).toHaveCount(4);
-  await page.evaluate(()=>window.personalize(false));await expect(cards).toHaveCount(4);
-  await expect(cards.filter({hasText:'transient-response'})).toHaveCount(0);
+  await page.evaluate(()=>window.personalize(false));await expect(cards).toHaveCount(0);
   await page.evaluate(()=>window.personalize(true));await expect(cards).toHaveCount(4);
 
   // A slow old garden read cannot win after the context changes.
   hold=true;release=undefined;
   await page.evaluate(()=>window.configure({gardenSlug:'old-garden'}));await expect.poll(()=>Boolean(release)).toBe(true);
-  await expect(cards).toHaveCount(4);
+  await expect(cards).toHaveCount(0);
   await expect(cards.filter({hasText:/calendar opening|lab report|transient-response/})).toHaveCount(0);
   hold=false;account=2;
   await page.evaluate(()=>window.configure({gardenSlug:'new-garden'}));release();
@@ -161,34 +160,28 @@ test('starter cards refresh, erase and type safely, preserve drafts, and immedia
   // Revoking Recall discards displayed private suggestions before re-reading.
   recall=false;
   await page.evaluate(()=>window.dispatchEvent(new Event('breadboard:recall-settings-changed')));
-  await expect(cards).toHaveCount(4);await expect(cards.filter({hasText:'transient-response'})).toHaveCount(0);
+  await expect(cards.filter({hasText:'transient-response'})).toHaveCount(0);
   assert.equal(requests.at(-1).refresh,true);
-  await page.evaluate(()=>window.dispatchEvent(new Event('breadboard:auth-changed')));await expect(cards).toHaveCount(4);
+  await page.evaluate(()=>window.dispatchEvent(new Event('breadboard:auth-changed')));
   await expect(cards.filter({hasText:'using my garden notes.'})).toHaveCount(0);
-  await page.evaluate(()=>window.dispatchEvent(new Event('focus')));await expect(cards).toHaveCount(4);
+  await page.evaluate(()=>window.dispatchEvent(new Event('focus')));await expect(cards.first()).toBeVisible();
   await page.evaluate(()=>document.documentElement.dataset.theme='dark');
   await page.setViewportSize({width:420,height:800});await expect(cards.first()).toBeVisible();
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
   await page.locator('main > div').first().screenshot({path:path.join(screenshotDir,'dark-narrow.png')});
 
-  // Cold garden load: even before greeting signals or providers arrive, the
-  // four visible/actionable cards belong to the garden. An outage, temporary
-  // mode and disabled personalization must never substitute general prompts.
+  // Cold garden load with every provider down: nothing grounded exists, so
+  // no cards at all. Temporary mode and disabled personalization never
+  // substitute general prompts either.
   greetingHeld=true;greetingRelease=undefined;offline=true;
   await page.goto('http://recommend.test/');
   await page.evaluate(()=>{window.initialGardenSlug='Circuits';});
   await page.addStyleTag({content:css});await page.addScriptTag({content:bundle.outputFiles[0].text});
-  await expect(cards).toHaveCount(4);
-  const assertGardenCards=async()=>{
-    const labels=await cards.evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')));
-    assert.ok(labels.every(text=>/this garden|Circuits|\bhere\b/i.test(text)),JSON.stringify(labels));
-    assert.ok(labels.every(text=>!/rough idea|calendar|rent|gym|other gardens/i.test(text)));
-  };
-  await assertGardenCards();await expect.poll(()=>Boolean(greetingRelease)).toBe(true);
-  greetingRelease();await page.clock.runFor(3000);await assertGardenCards();
+  await expect.poll(()=>Boolean(greetingRelease)).toBe(true);
+  greetingRelease();await page.clock.runFor(3000);await expect(cards).toHaveCount(0);
   for(const temporary of [true,false]){
     await page.evaluate(temporary=>window.configure({temporary}),temporary);
-    await page.clock.runFor(3000);await expect(cards).toHaveCount(4);await assertGardenCards();
+    await page.clock.runFor(3000);await expect(cards).toHaveCount(0);
   }
-  await page.evaluate(()=>window.personalize(false));await page.clock.runFor(3000);await assertGardenCards();
+  await page.evaluate(()=>window.personalize(false));await page.clock.runFor(3000);await expect(cards).toHaveCount(0);
 });
