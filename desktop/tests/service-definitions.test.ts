@@ -226,6 +226,10 @@ test("hot-reload dashboard gets a bounded dev heap; packaged runtime is untouche
 test("Voicebox is supervised from its dev environment and remains server-only", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-voicebox-"));
   const savedPython = process.env["VOICEBOX_PYTHON"];
+  // A prebuilt server binary (the CI installer job exports one) outranks the
+  // dev interpreter this test is about.
+  const savedServer = process.env["VOICEBOX_SERVER_BIN"];
+  delete process.env["VOICEBOX_SERVER_BIN"];
   try {
     const backend = path.join(root, "voicebox", "backend");
     fs.mkdirSync(backend, { recursive: true });
@@ -267,6 +271,8 @@ test("Voicebox is supervised from its dev environment and remains server-only", 
   } finally {
     if (savedPython === undefined) delete process.env["VOICEBOX_PYTHON"];
     else process.env["VOICEBOX_PYTHON"] = savedPython;
+    if (savedServer === undefined) delete process.env["VOICEBOX_SERVER_BIN"];
+    else process.env["VOICEBOX_SERVER_BIN"] = savedServer;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
