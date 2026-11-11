@@ -11,7 +11,6 @@ import {
   prepareOrganizationQuartzIndex,
   preparePrivateClusterQuartzIndex,
   preparePrivateQuartzIndex,
-  preparePrivateQuartzIndexCooperatively,
   preparePublicQuartzIndex,
   publishedPrivateQuartzIndex,
 } from "@/lib/quartz-garden-index";
@@ -37,33 +36,6 @@ function switchClass(active: boolean): string {
   return active
     ? "rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-950 shadow-sm"
     : "rounded-md px-3 py-1.5 text-xs font-medium text-gray-400 transition hover:text-white";
-}
-
-const libraryRefreshes = new Set<number>();
-const libraryRefreshedAt = new Map<number, number>();
-// Creating, renaming, moving and deleting a garden already rewrite this page.
-// Only its note and link counts drift, and re-counting means reading every
-// garden and publishing, which slows every other tab while it runs.
-const LIBRARY_REFRESH_INTERVAL_MS = 6 * 60 * 60_000;
-
-/** One refresh per account at a time; a failure only leaves older figures. */
-function refreshPrivateLibraryInBackground(userId: number): void {
-  if (libraryRefreshes.has(userId)) return;
-  if (Date.now() - (libraryRefreshedAt.get(userId) ?? 0) < LIBRARY_REFRESH_INTERVAL_MS) return;
-  libraryRefreshedAt.set(userId, Date.now());
-  libraryRefreshes.add(userId);
-  void (async () => {
-    const prepared = await preparePrivateQuartzIndexCooperatively(userId);
-    if (!prepared?.publishRequired) return;
-    await waitForQuartzPublicationInFlight();
-    await publishQuartzAfterMutation("refresh private garden index", {
-      userId,
-      topologyImpact: "none",
-      scope: [],
-    });
-  })()
-    .catch(() => undefined)
-    .finally(() => libraryRefreshes.delete(userId));
 }
 
 export default async function GardenHomePage({
@@ -98,11 +70,14 @@ export default async function GardenHomePage({
           : preparePrivateQuartzIndex(userId))
     );
   };
-  // "Explore all": show the page Quartz already has and bring its figures up
-  // to date behind it, rather than scanning every garden and publishing first.
+  // "Explore all": show the page Quartz already has. Preparing it here read
+  // every garden and then waited for a publication; doing the same in the
+  // background still made every other tab take 3-6 s for about a minute.
+  // ponytail: the note and link counts on this page now only move when a
+  // garden is created, renamed, moved or deleted (those rewrite it). If the
+  // figures matter between such changes, re-count from the ingestion publish.
   const alreadyPublished =
     view === "private" && !rawCluster ? publishedPrivateQuartzIndex(userId) : null;
-  if (alreadyPublished) refreshPrivateLibraryInBackground(userId);
   let preparedIndex = alreadyPublished ?? prepareRequestedIndex();
 
   // The library index is generated on demand. Do not hand the iframe a slug
