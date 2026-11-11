@@ -1117,9 +1117,86 @@ function* walkMarkdown(clusterDir: string): Generator<void, {
   return { entries, incomplete };
 }
 
+/**
+ * The two projection caches, kept across restarts.
+ *
+ * A cache key already names one exact file state (path, device, inode, size,
+ * modified and changed times), so an entry is as trustworthy after a restart
+ * as it was a second after it was made. Without the file, the first Learn
+ * status read after every launch opened each lesson and note of the garden
+ * again, synchronously: 18-22 s for a large garden, with every tab frozen,
+ * because a file's first open costs several milliseconds on Windows.
+ */
+let projectionsLoaded = false;
+let projectionSave: ReturnType<typeof setTimeout> | undefined;
+
+function projectionCacheFile(): string | null {
+  const data = process.env.BREADBOARD_DATA_DIR?.trim();
+  return data ? path.join(data, "cache", "learn-status-projections.json") : null;
+}
+
+function loadPersistedProjections(): void {
+  if (projectionsLoaded) return;
+  projectionsLoaded = true;
+  const file = projectionCacheFile();
+  if (!file) return;
+  try {
+    const saved = JSON.parse(fs.readFileSync(file, "utf8")) as {
+      version?: unknown;
+      source?: unknown;
+      metadata?: unknown;
+    };
+    if (saved.version !== 1) return;
+    for (const [entries, cache] of [
+      [saved.source, statusSourceProjectionCache],
+      [saved.metadata, statusMetadataProjectionCache],
+    ] as const) {
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        if (!Array.isArray(entry)) continue;
+        const [key, projection] = entry as [unknown, StatusMarkdownProjection | null];
+        if (
+          typeof key !== "string" ||
+          !projection ||
+          typeof projection.incomplete !== "boolean" ||
+          (projection.node !== null &&
+            (typeof projection.node !== "object" ||
+              typeof projection.node.slug !== "string" ||
+              typeof projection.node.relPath !== "string"))
+        ) continue;
+        if (!cache.has(key)) cache.set(key, projection);
+      }
+    }
+  } catch {
+    // Absent, torn or from another version: the files themselves are read.
+  }
+}
+
+function schedulePersistedProjections(): void {
+  const file = projectionCacheFile();
+  if (!file || projectionSave) return;
+  // One write a little after a burst of reads, never one per file.
+  projectionSave = setTimeout(() => {
+    projectionSave = undefined;
+    const payload = JSON.stringify({
+      version: 1,
+      source: [...statusSourceProjectionCache],
+      metadata: [...statusMetadataProjectionCache],
+    });
+    const temporary = `${file}.${process.pid}.tmp`;
+    void fs.promises
+      .mkdir(path.dirname(file), { recursive: true })
+      .then(() => fs.promises.writeFile(temporary, payload, "utf8"))
+      .then(() => fs.promises.rename(temporary, file))
+      .catch(() => fs.promises.rm(temporary, { force: true }).catch(() => undefined));
+  }, 5_000);
+  projectionSave.unref?.();
+}
+
 function cachedMarkdownProjection(
   key: string,
 ): StatusMarkdownProjection | null {
+  loadPersistedProjections();
   for (const cache of [
     statusSourceProjectionCache,
     statusMetadataProjectionCache,
@@ -1146,6 +1223,7 @@ function cacheMarkdownProjection(
     : STATUS_METADATA_CACHE_LIMIT;
   cache.delete(key);
   cache.set(key, projection);
+  schedulePersistedProjections();
   while (cache.size > limit) {
     const oldest = cache.keys().next().value as
       | string
