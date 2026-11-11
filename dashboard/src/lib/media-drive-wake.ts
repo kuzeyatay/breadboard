@@ -8,13 +8,16 @@ import { getVideoTranscriptionStore } from "./scriberr/instance";
  * video opened in Breadboard.
  *
  * Opening a garden that has such recordings (or playing one) reads one byte
- * from one of them in the background, and keeps doing so every two minutes
+ * from one of them in the background, and keeps doing so every 25 seconds
  * for the next half hour, so the drive is turning when a video is clicked and
  * does not fall asleep again while the garden is in use. Half an hour after
  * the last garden open or playback it is left alone and may sleep. Nothing
  * waits on any of this, and a missing drive or file is simply ignored.
  */
-const TOUCH_INTERVAL_MS = 2 * 60_000;
+// Measured on the drive this was written for: still awake 35 s after its last
+// read, asleep at 45 s. A longer interval does not keep it awake; it wakes it
+// over and over, which is worse for the drive than either extreme.
+const TOUCH_INTERVAL_MS = 25_000;
 const KEEP_AWAKE_MS = 30 * 60_000;
 /** media path -> keep touching it until this time */
 const awake = new Map<string, number>();
