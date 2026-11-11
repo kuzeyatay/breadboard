@@ -3648,6 +3648,9 @@ export const OPTIONAL_PYTHON_SERVICES = Object.freeze({
     directory: "cad-service",
     pythonVersion: "3.12.10",
     smokeImports: "import cadquery, OCP, pydantic, breadboard_cad.server, breadboard_cad.cadquery_engine",
+    // CadQuery's native graph can fault during interpreter teardown; the real
+    // worker exits the same way after its result is written (prepare-runtimes).
+    hardExitAfterSmoke: true,
     displayName: "parametric CAD (CadQuery)",
   }),
 });
@@ -3703,7 +3706,11 @@ async function optionalPythonServiceSetup(operation, action, context) {
   const lock = directPath(path.join(root, "pylock.packaged.toml"), "isFile", `${spec.displayName} lock`);
   const venv = serviceEnvironment(runtimeBulkDataRoot(context.dataRoot, context.env), operation);
   const marker = optionalComponentReadyMarker(venv, operation);
-  const verifyArgs = ["-s", "-c", `${spec.smokeImports}; print('ok')`];
+  const verifyArgs = ["-s", "-c", [
+    spec.smokeImports,
+    "print('ok')",
+    ...(spec.hardExitAfterSmoke ? ["import os, sys; sys.stdout.flush(); sys.stderr.flush(); os._exit(0)"] : []),
+  ].join("; ")];
   const env = { ...context.env };
   if (!env.UV_PYTHON_INSTALL_DIR?.trim()) {
     const cache = managedPayloadTarget(context.dataRoot, "runtime-v2/toolchains/cache", context.env);
