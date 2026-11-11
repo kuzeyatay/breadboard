@@ -386,6 +386,12 @@ export class AppLifecycle {
       app.commandLine.appendSwitch("enable-features", [...enabled,
         "LocationProviderManager:LocationProviderManagerMode/PlatformOnly", "WinrtGeolocationImplementation"].join(","));
     }
+    // Chromium allows six HTTP/1.1 connections per host across ALL tabs. Every
+    // Breadboard tab talks to the one loopback dashboard, and event streams,
+    // long polls, chat answers and media hold connections open, so a handful
+    // of tabs starved every other request (pages, PDFs, notifications) for
+    // minutes while the server sat idle.
+    app.commandLine.appendSwitch("ignore-connections-limit", "127.0.0.1,localhost");
     // Native crashes leave minidumps under app.getPath("crashDumps") for the
     // diagnostic bundle. Nothing is uploaded anywhere.
     crashReporter.start({ productName: "Breadboard", uploadToServer: false, compress: true });
