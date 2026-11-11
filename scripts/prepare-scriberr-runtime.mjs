@@ -227,7 +227,12 @@ export async function prepareScriberrRuntime({ outputDir = defaultOutputDir } = 
   const manifest = readManifest(outputDir);
   const scriberrTarget = path.join(outputDir, "scriberr.exe");
   const ytdlpTarget = path.join(outputDir, "yt-dlp.exe");
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-transcription-"));
+  // Scratch lives on the repository volume: the Go toolchain is renamed into
+  // .runtime at the end, and a rename across drives (CI keeps the checkout on
+  // D: and TEMP on C:) fails with EXDEV.
+  const tempRoot = path.join(repoRoot, ".runtime", "tmp");
+  fs.mkdirSync(tempRoot, { recursive: true });
+  const tempDir = fs.mkdtempSync(path.join(tempRoot, "breadboard-transcription-"));
   const fingerprint = sourceFingerprint(SCRIBERR_BUILD.sourceDir);
 
   try {
