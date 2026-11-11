@@ -14,18 +14,17 @@ void Promise.all([import("./lib/db.ts"), import("./lib/conversations/coordinatio
   await recoverPendingChatMessages(db);
 }).catch(() => { /* Durable outboxes are also recovered on the next tool read. */ });
 
-// One pass, no timer: warm the OS file cache for the gardens opened last, then
-// parse the most recent one in slices so its first open after a restart finds
-// the knowledge graph cached instead of parsing every note. Read-only: the
-// open itself still runs the source migration.
-void Promise.all([import("./lib/db.ts"), import("./lib/garden-file-warmup.ts"), import("./lib/knowledge.ts")]).then(async ([{ default: db }, { warmGardenFiles }, { scanClusterKnowledgeCooperatively }]) => {
+// One pass, no timer: parse the gardens opened last, in slices, so their first
+// open after a restart finds the knowledge graph ready. Each note's text comes
+// from the garden's cache file (note-text-cache.ts), so this no longer reads
+// every note from disk first: that pre-read cost about 10 ms a file, a minute
+// and a half for three large gardens, during the busiest part of a launch.
+// Read-only: the open itself still runs the source migration.
+void Promise.all([import("./lib/db.ts"), import("./lib/knowledge.ts")]).then(async ([{ default: db }, { scanClusterKnowledgeCooperatively }]) => {
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
   if (!contentPath) return;
   const recent = db.prepare("SELECT slug FROM clusters WHERE last_viewed_at IS NOT NULL ORDER BY last_viewed_at DESC LIMIT 3").all() as Array<{ slug: string }>;
-  await warmGardenFiles(contentPath, recent.map(row => row.slug));
-  // One at a time, so the parsing never competes with itself. A large garden's
-  // first open after a launch otherwise parsed every note while the person
-  // waited (8-19 s for the page and its PDFs, with other tabs slowed too).
+  // One at a time, so the parsing never competes with itself.
   for (const { slug } of recent) await scanClusterKnowledgeCooperatively(contentPath, slug, { migrateSources: false }).catch(() => undefined);
 }).catch(() => { /* Best effort: the first scan simply reads a cold disk. */ });
 
