@@ -222,12 +222,16 @@ export function scheduleTaskRecovery(conversationId: number, sourceRunId: string
   pending.set(sourceRunId, work);
 }
 
-/** Restart-safe queue, drained by the existing background recovery worker. */
+/**
+ * Restart-safe queue, drained by the existing background recovery worker.
+ * The pending test is written exactly as in idx_hermes_runs_task_recovery_pending_safe
+ * (db.ts) so SQLite answers from that small index instead of reading every run.
+ */
 export function resumePendingTaskRecoveries(): number {
   const rows = db.prepare(`SELECT r.id, s.conversation_id FROM hermes_runs r
     JOIN hermes_runtime_sessions s ON s.id=r.runtime_session_id
-    WHERE r.status IN ('completed','error') AND s.conversation_id IS NOT NULL
-      AND json_extract(r.dispatch_json, '$.taskRecovery.pending')=1`).all() as Array<{ id: string; conversation_id: number }>;
+    WHERE json_extract(CASE WHEN json_valid(r.dispatch_json) THEN r.dispatch_json END, '$.taskRecovery.pending') = 1
+      AND r.status IN ('completed','error') AND s.conversation_id IS NOT NULL`).all() as Array<{ id: string; conversation_id: number }>;
   let resumed = 0;
   for (const row of rows) {
     if (!taskRecoveryCurrent(row.conversation_id, row.id, `recovery:${row.id}`)) continue;

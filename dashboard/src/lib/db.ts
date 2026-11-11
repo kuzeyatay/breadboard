@@ -684,6 +684,15 @@ db.exec(`
       id
     );
 
+  -- Only the runs still waiting for a task recovery. The recovery worker asks
+  -- for them every minute; without this it parsed dispatch_json of every
+  -- finished run (hundreds of megabytes) and froze the server for about a
+  -- second each time. The expression must stay identical to the one in
+  -- resumePendingTaskRecoveries, and json_valid guards it as above.
+  CREATE INDEX IF NOT EXISTS idx_hermes_runs_task_recovery_pending_safe
+    ON hermes_runs(id)
+    WHERE json_extract(CASE WHEN json_valid(dispatch_json) THEN dispatch_json END, '$.taskRecovery.pending') = 1;
+
   CREATE TABLE IF NOT EXISTS hermes_steer_requests (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     runtime_session_id INTEGER NOT NULL REFERENCES hermes_runtime_sessions(id) ON DELETE CASCADE,
