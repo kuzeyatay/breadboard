@@ -1,4 +1,4 @@
-import { isTranslationLanguage, isBrowserMediaPermissionList, notificationOrigin, type BrowserMediaPermission, type BrowserPreferences, type BrowserPreferenceCommand, type BrowserTranslationState } from "./browser-preferences";
+import { isTranslationLanguage, isBrowserMediaPermissionList, isAppLinkScheme, notificationOrigin, type BrowserMediaPermission, type BrowserPreferences, type BrowserPreferenceCommand, type BrowserTranslationState, type SavedPasswordSummary } from "./browser-preferences";
 import { isTabGroupId, isTabGroupColor, type TabGroup } from "./tab-groups";
 import { normalizeAnnotationTarget } from "./browser-annotations";
 import type { BrowserSelection } from "./web-text-selection";
@@ -206,6 +206,8 @@ export interface TabsState {
   /** Unpacked Chromium extensions active in Breadboard's isolated browser profile. */
   extensions: BrowserExtensionView[];
   browserPreferences?: BrowserPreferences;
+  /** Saved website sign-ins (origin and username only) for Browser settings. */
+  savedPasswords?: SavedPasswordSummary[];
 }
 
 export interface BrowserExtensionView {
@@ -607,6 +609,12 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
       return isBrowserMediaPermissionList(command.media) && typeof command.origin === "string" &&
         notificationOrigin(command.origin) === command.origin &&
         (command.permission === "default" || command.permission === "granted" || command.permission === "denied");
+    case "browser-app-link":
+      return typeof command.origin === "string" && notificationOrigin(command.origin) === command.origin &&
+        isAppLinkScheme(command.scheme) && typeof command.allowed === "boolean";
+    case "browser-password-delete":
+      return typeof command.origin === "string" && command.origin.length <= 2_048 &&
+        typeof command.username === "string" && command.username.length <= 512;
     case "browser-notification-permission":
       return notificationOrigin(command.origin) !== null && notificationOrigin(command.origin) === command.origin &&
         ["default", "granted", "denied"].includes(String(command.permission));

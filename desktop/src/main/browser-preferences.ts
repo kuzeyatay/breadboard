@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { atomicWriteFile } from "./runtime-config";
-import { isTranslationLanguage, isBrowserMediaPermission, isBrowserMediaPermissionList, notificationOrigin, translationSite, type BrowserMediaPermission, type BrowserPreferences, type BrowserPreferenceCommand } from "../shared/browser-preferences";
+import { isTranslationLanguage, isBrowserMediaPermission, isBrowserMediaPermissionList, notificationOrigin, translationSite, isAppLinkScheme, type BrowserMediaPermission, type BrowserPreferences, type BrowserPreferenceCommand } from "../shared/browser-preferences";
 
 /** The same persistent profile owns browser cookies and notification grants. */
 export class BrowserPreferenceStore {
@@ -29,7 +29,11 @@ export class BrowserPreferenceStore {
               (permission !== "granted" && permission !== "denied")))) {
         throw new Error("Invalid media permissions");
       }
-      this.value = { ...value, organizationSidebarEnabled: value.organizationSidebarEnabled !== false, translationSites, mediaSites };
+      // Unreadable app-link entries are dropped, not fatal: they only skip a confirmation.
+      const appLinks = Object.fromEntries(Object.entries(value.appLinks && typeof value.appLinks === "object" ? value.appLinks : {})
+        .filter(([origin, schemes]) => notificationOrigin(origin) === origin && Array.isArray(schemes))
+        .map(([origin, schemes]) => [origin, (schemes as unknown[]).filter(isAppLinkScheme)]));
+      this.value = { ...value, organizationSidebarEnabled: value.organizationSidebarEnabled !== false, translationSites, mediaSites, appLinks };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         this.readError = true;
@@ -40,7 +44,11 @@ export class BrowserPreferenceStore {
   }
   snapshot(): BrowserPreferences {
     return { ...this.value, sites: { ...this.value.sites }, translationSites: { ...this.value.translationSites },
-      mediaSites: Object.fromEntries(Object.entries(this.value.mediaSites ?? {}).map(([origin, permissions]) => [origin, { ...permissions }])) };
+      mediaSites: Object.fromEntries(Object.entries(this.value.mediaSites ?? {}).map(([origin, permissions]) => [origin, { ...permissions }])),
+      appLinks: Object.fromEntries(Object.entries(this.value.appLinks ?? {}).map(([origin, schemes]) => [origin, [...schemes]])) };
+  }
+  appLinkAllowed(origin: string, scheme: string): boolean {
+    return this.value.appLinks?.[origin]?.includes(scheme) === true;
   }
   translationLanguageFor(url: string): string | undefined {
     const site = translationSite(url);
@@ -80,6 +88,14 @@ export class BrowserPreferenceStore {
       }
       if (Object.keys(permissions).length) next.mediaSites![command.origin] = permissions;
       else delete next.mediaSites![command.origin];
+    } else if (command.type === "browser-app-link") {
+      if (notificationOrigin(command.origin) !== command.origin || !isAppLinkScheme(command.scheme)) return false;
+      const schemes = new Set(next.appLinks![command.origin] ?? []);
+      if (command.allowed) schemes.add(command.scheme); else schemes.delete(command.scheme);
+      if (schemes.size) next.appLinks![command.origin] = [...schemes].sort();
+      else delete next.appLinks![command.origin];
+    } else if (command.type === "browser-password-delete") {
+      return false; // Passwords live in BrowserPasswords, never in this file.
     } else {
       if (notificationOrigin(command.origin) !== command.origin) return false;
       if (command.permission === "default") delete next.sites[command.origin];

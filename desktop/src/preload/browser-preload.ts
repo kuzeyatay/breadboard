@@ -82,6 +82,98 @@ function installScriptPopupPolicy() {
 // Install before page scripts run, without synthesizing a user gesture.
 void webFrame.executeJavaScript(`(${installScriptPopupPolicy.toString()})()`);
 
+// Saved passwords. This runs in the preload's isolated world: it reads and
+// fills login fields through the shared DOM, and page scripts never see the
+// bridge or a stored password until the person focuses a login field.
+function installPasswordManager() {
+  if (window.top !== window) return;
+  const isPassword = (node: unknown): node is HTMLInputElement =>
+    node instanceof HTMLInputElement && node.type === "password";
+  const isUsername = (node: unknown): node is HTMLInputElement =>
+    node instanceof HTMLInputElement && ["text", "email", "tel", ""].includes(node.type) &&
+    (/user|login|email|account|name|id/iu.test(`${node.name} ${node.id} ${node.autocomplete}`) || node.type === "email");
+  const scope = (field: HTMLInputElement): ParentNode => field.form ?? document;
+  const usernameFor = (password: HTMLInputElement) => {
+    const inputs = Array.from(scope(password).querySelectorAll("input"));
+    const before = inputs.slice(0, inputs.indexOf(password)).reverse();
+    return before.find(isUsername) ?? before.find(input => ["text", "email"].includes(input.type) && input.value) ?? null;
+  };
+  const visiblePassword = (root: ParentNode) =>
+    Array.from(root.querySelectorAll("input[type=password]")).find(input => (input as HTMLInputElement).offsetParent !== null) as HTMLInputElement | undefined;
+
+  let lastSent = "";
+  const capture = (root: ParentNode) => {
+    const password = visiblePassword(root);
+    if (!password?.value) return;
+    // Sign-up and change-password forms have several password fields; save the last (new) one.
+    const all = Array.from(root.querySelectorAll("input[type=password]")) as HTMLInputElement[];
+    const value = all.length > 1 ? all[all.length - 1]!.value || password.value : password.value;
+    const username = usernameFor(password)?.value ?? "";
+    const key = `${username}\u0000${value}`;
+    if (key === lastSent) return;
+    lastSent = key;
+    ipcRenderer.send("breadboard:web-password:submitted", username, value);
+  };
+  document.addEventListener("submit", event => capture(event.target as HTMLFormElement), true);
+  // Script-driven logins rarely submit a form: also treat Enter in a password
+  // field or a click on the form's button as the sign-in.
+  document.addEventListener("keydown", event => {
+    if (event.key === "Enter" && isPassword(event.target)) capture(scope(event.target));
+  }, true);
+  document.addEventListener("click", event => {
+    const button = (event.target as Element | null)?.closest?.("button, input[type=submit], [role=button]");
+    if (!button) return;
+    const root = (button as HTMLButtonElement).form ?? button.closest("form") ?? document;
+    if (visiblePassword(root)) capture(root);
+  }, true);
+
+  // First page of a two-step sign-in: only a username, the password comes later.
+  document.addEventListener("change", event => {
+    const field = event.target;
+    if (isUsername(field) && field.value && !visiblePassword(scope(field))) {
+      ipcRenderer.send("breadboard:web-password:username", field.value);
+    }
+  }, true);
+
+  let saved: Promise<Array<{ username: string; password: string }>> | null = null;
+  const setValue = (input: HTMLInputElement, value: string) => {
+    if (input.value === value) return;
+    input.focus();
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  document.addEventListener("focusin", event => {
+    const field = event.target;
+    if (!isPassword(field) && !isUsername(field)) return;
+    const password = isPassword(field) ? field : visiblePassword(scope(field as HTMLInputElement));
+    if (!password || password.value) return;
+    saved ??= ipcRenderer.invoke("breadboard:web-password:get").catch(() => []);
+    void saved.then(credentials => {
+      if (!credentials.length || password.value) return;
+      const username = usernameFor(password);
+      // ponytail: fills the typed-username match or the first sign-in; no chooser for several accounts.
+      const match = credentials.find(item => username?.value && item.username === username.value) ?? credentials[0]!;
+      if (username && !username.value && match.username) setValue(username, match.username);
+      setValue(password, match.password);
+      (field as HTMLInputElement).focus();
+    });
+  }, true);
+}
+installPasswordManager();
+
+// Electron never implemented window.prompt(); answer it like Chrome does.
+contextBridge.exposeInMainWorld("breadboardWebDialogs", {
+  prompt: (message: unknown, value: unknown): string | null =>
+    ipcRenderer.sendSync("breadboard:web-dialog:prompt", String(message ?? ""), String(value ?? "")),
+});
+void webFrame.executeJavaScript(`(${(() => {
+  const bridge = (window as unknown as { breadboardWebDialogs: { prompt(message: string, value: string): string | null } }).breadboardWebDialogs;
+  window.prompt = function prompt(message?: string, value?: string) {
+    return bridge.prompt(message === undefined ? "" : String(message), value === undefined ? "" : String(value));
+  };
+}).toString()})()`);
+
 const notificationChannel = "breadboard:web-notification";
 let cachedPermission: NotificationPermission = ipcRenderer.sendSync(`${notificationChannel}:permission`);
 let backgroundNotificationPage = ipcRenderer.sendSync(`${notificationChannel}:background`) === true;

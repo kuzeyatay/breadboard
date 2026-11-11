@@ -31,7 +31,10 @@ import { ChatNotificationDelivery, isChatNotificationCardVisible } from "./chat-
 import { annotationPageUrl, browserOrganizationWidth, normalizeAnnotationTarget, type BrowserAnnotationTarget } from "../shared/browser-annotations";
 import { browserAnnotationCaptureScript, browserAnnotationPaintScript } from "./browser-annotations-dom";
 import { BrowserPreferenceStore } from "./browser-preferences";
+import { BrowserPasswords } from "./browser-passwords";
+import { installDevicePickers, installScreenSharePicker, setAppLinkStore, setBrowserDialogTheme } from "./browser-dialogs";
 import { BrowserAdBlocker } from "./browser-adblocker";
+import { BrowserVpn } from "./browser-vpn";
 import { BrowserNotifications } from "./browser-notifications";
 import { BrowserNotificationPages } from "./browser-notification-pages";
 import { browserUserAgent } from "./browser-user-agent";
@@ -359,6 +362,10 @@ export const TAB_LOADING_SCENE_TOP_INSET =
   BREADBOARD_TITLE_BAR.height + BROWSER_TOOLBAR_HEIGHT;
 /** Cookies and storage persist, but never share Breadboard's local session. */
 export const BROWSER_SESSION_PARTITION = "persist:breadboard-browser";
+const PRIVATE_BROWSER_PERMISSIONS = new Set([
+  "fullscreen", "clipboard-sanitized-write", "display-capture", "hid", "serial", "usb", "pointerLock", "keyboardLock", "fileSystem",
+]);
+
 const BROWSER_WEB_PREFERENCES = {
   preload: path.join(__dirname, "../preload/browser-preload.js"),
   contextIsolation: true,
@@ -802,6 +809,22 @@ function isNavigationShortcut(shortcut: TabShortcut): boolean {
  * the trusted page inside each tab from the state sent here, so a tab brought
  * to the front already has the strip drawn when it is seen.
  */
+
+/**
+ * A selection card takes keyboard focus when it appears, so Ctrl+C reached the
+ * card and copied nothing: the text the person selected is on the page. Unless
+ * the card has a selection of its own, the copy goes to the page.
+ */
+function copyPageSelectionFromCard(card: WebContents, page: WebContents): void {
+  card.on("before-input-event", (_event, input) => {
+    if (input.type !== "keyDown" || !(input.control || input.meta) || input.shift || input.alt ||
+        input.key.toLowerCase() !== "c") return;
+    void card.executeJavaScript(
+      "String(getSelection() || '').length > 0 || (() => { const e = document.activeElement; " +
+      "return !!e && 'selectionStart' in e && e.selectionStart !== e.selectionEnd; })()",
+    ).then(own => { if (!own && !page.isDestroyed()) page.copy(); }, () => undefined);
+  });
+}
 export class TabManager {
   readonly codeDock: CodeDockManager;
 
@@ -930,7 +953,9 @@ export class TabManager {
   private readonly browserExtensionIcons = new Map<string, string | undefined>();
   private readonly browserVisitedLinks: BrowserVisitedLinks;
   private readonly browserPreferences: BrowserPreferenceStore;
+  private readonly browserPasswords: BrowserPasswords;
   private readonly browserAdBlocker: BrowserAdBlocker;
+  private readonly browserVpn: BrowserVpn;
   private readonly browserHls: BrowserHlsDownloads;
   private readonly browserNotifications: BrowserNotifications;
   private readonly browserNotificationPages: BrowserNotificationPages;
@@ -988,7 +1013,18 @@ export class TabManager {
     });
     this.browserHls = new BrowserHlsDownloads(options.browserDownloads, options.downloadSettings, () => this.broadcastAll());
     this.browserPreferences = new BrowserPreferenceStore(options.browserPreferencesConfigDir ?? options.browserExtensionsConfigDir ?? app.getPath("userData"), message => this.log(message));
+    this.browserPasswords = new BrowserPasswords(options.browserPreferencesConfigDir ?? options.browserExtensionsConfigDir ?? app.getPath("userData"),
+      message => this.log(message), () => this.broadcastAll());
+    setBrowserDialogTheme(() => this.options.theme());
+    setAppLinkStore({
+      allowed: (origin, scheme) => this.browserPreferences.appLinkAllowed(origin, scheme),
+      allow: (origin, scheme) => {
+        if (this.browserPreferences.update({ type: "browser-app-link", origin, scheme, allowed: true })) this.broadcastAll();
+      },
+    });
     this.browserAdBlocker = new BrowserAdBlocker(options.browserExtensionsConfigDir ?? app.getPath("userData"),
+      () => this.broadcastAll(), message => this.log(message));
+    this.browserVpn = new BrowserVpn(options.browserExtensionsConfigDir ?? app.getPath("userData"),
       () => this.broadcastAll(), message => this.log(message));
     this.browserNotifications = new BrowserNotifications(this.browserPreferences,
       contents => this.hostByContents.get(contents.id)?.window,
@@ -1707,6 +1743,7 @@ export class TabManager {
       const partition = `breadboard-private-${randomUUID()}`;
       this.privateProfile = { partition, session: session.fromPartition(partition, { cache: false }), users: 0, translationSites: new Map() };
       this.browserAdBlocker.attachSession(this.privateProfile.session, true);
+      this.browserVpn.attachSession(this.privateProfile.session);
     }
     return this.privateProfile.partition;
   }
@@ -2200,11 +2237,14 @@ export class TabManager {
       case "browser-notifications-enabled":
       case "browser-notification-permission":
       case "browser-media-permission":
+      case "browser-app-link":
       case "browser-translation-language": {
         const saved = this.browserPreferences.update(command);
         if (saved) this.browserNotifications.preferencesChanged();
         return saved;
       }
+      case "browser-password-delete":
+        return this.browserPasswords.remove(command.origin, command.username);
       case "browser-notification-action":
         return sender === host.notificationOverlay?.contents && this.browserNotifications.action(command.id, command.action, host.window);
       case "browser-notification-permission-response":
@@ -2669,6 +2709,14 @@ export class TabManager {
         // pane. Its dropdown still needs native bounds above the website.
         if (host.activeId === tab.id || this.toolbarTab(host) === tab) this.layout(host);
         return true;
+      }
+      case "browser-vpn-enabled": {
+        const popup = host.extensionsPopover?.contents === sender ? host.extensionsPopover : undefined;
+        const tab = popup ? tabById(host, popup.ownerId) : senderTab;
+        if (!tab?.browser || tab.id !== host.activeId) return false;
+        // A first switch-on installs WARP; the Windows permission prompt takes
+        // focus, which must not dismiss the popover reporting the outcome.
+        return popup ? popup.keepOpenDuring(() => this.browserVpn.setEnabled(command.enabled)) : this.browserVpn.setEnabled(command.enabled);
       }
       case "browser-adblock-enabled":
       case "browser-adblock-site-enabled": {
@@ -3486,6 +3534,14 @@ export class TabManager {
       }, browser.highlights?.saved(selection.reference.id)?.note);
     host.inlineAnswer = answer;
     this.hostByContents.set(answer.contents.id, host);
+    copyPageSelectionFromCard(answer.contents, browser.contents);
+    // Clicking the page or the browser chrome gives it keyboard focus back,
+    // which is the outside click that dismisses the card.
+    const dismissOutside = () => { if (answer.isRevealed) answer.close(); };
+    for (const outside of [browser.contents, tab.contents]) {
+      outside.on("focus", dismissOutside);
+      answer.contents.once("destroyed", () => { if (!outside.isDestroyed()) outside.removeListener("focus", dismissOutside); });
+    }
     const url = new URL("/browser/inline-answer", browser.shellUrl); url.searchParams.set("theme", this.options.theme());
     void answer.contents.loadURL(url.href).catch(() => answer.close());
     void runInDocument(browser.contents, `window.__breadboardHighlights?.track(${JSON.stringify(selection.reference.id)})`).catch(() => undefined);
@@ -3507,6 +3563,7 @@ export class TabManager {
       }, 490);
     host.selectionPopover = popup; host.selectionCandidate = { tab, entry, anchor };
     this.hostByContents.set(popup.contents.id, host);
+    if (browser.contents) copyPageSelectionFromCard(popup.contents, browser.contents);
     const url = new URL("/browser/selection-popover", browser.shellUrl);
     url.searchParams.set("entry", JSON.stringify(entry));
     if (this.browserOrganizationAllowed(host, tab)) url.searchParams.set("community", "1");
@@ -3600,7 +3657,11 @@ export class TabManager {
       tab.automationPreparing = false;
       if (!host.window.isDestroyed() && !contents.isDestroyed() && !page.attached) {
         const current = tabById(host, host.activeId);
-        if (current?.contents === contents && coveredChrome) {
+        // Decide from the tab in front now, not the one this capture started
+        // on. Browser tabs share this view: a capture begun for a background
+        // tab used to remove it from under the browser tab selected meanwhile,
+        // leaving a live website beside a blank rail.
+        if (current?.view === view) {
           current.attached = true;
           this.layout(host);
         } else {
@@ -3685,6 +3746,7 @@ export class TabManager {
 
   private ensureBrowserExtensions(browserSession: Session): Promise<void> {
     this.browserAdBlocker.attachSession(browserSession);
+    this.browserVpn.attachSession(browserSession);
     if (this.browserExtensionSession === browserSession && this.browserExtensionsReady) {
       return this.browserExtensionsReady;
     }
@@ -3992,6 +4054,7 @@ export class TabManager {
                 tab.browser.showingHome ? "" : tab.url,
                 session.fromPartition(tab.browser.privatePartition ?? BROWSER_SESSION_PARTITION),
               ),
+              vpn: this.browserVpn.snapshot(),
               uiKey: tab.browser.uiKey,
               // The run marker only exists so the worker can select this exact
               // Chromium target. It is not an address the person can use, so
@@ -4050,6 +4113,7 @@ export class TabManager {
       savedGroups: host.savedGroups.map(({ tabs, ...group }) => ({ ...group, tabCount: tabs.length })),
       extensions: this.browserExtensionViews(),
       browserPreferences: this.browserPreferences.snapshot(),
+      savedPasswords: this.browserPasswords.list(),
     };
   }
 
@@ -4678,6 +4742,7 @@ export class TabManager {
     browser.view = view;
     browser.contents = view.webContents;
     this.browserAdBlocker.attachPage(browser.contents, Boolean(browser.privatePartition));
+    this.browserVpn.attachPage(browser.contents);
     if (!browser.privatePartition) this.browserHls.attach(browser.contents);
     // The preload asks before page scripts run, including after redirects or
     // reloads. Once the person interacts, later documents need no restore guard.
@@ -5233,10 +5298,16 @@ export class TabManager {
       configurePermissions: (target: Session) => {
         if (!browser.privatePartition) return this.browserNotifications.installSession(target);
         // Keep ordinary page controls working without persisting site grants.
-        const allowed = (permission: string) => permission === "fullscreen" || permission === "clipboard-sanitized-write";
+        // Screen share and device access stay available: their pickers are the consent.
+        const allowed = (permission: string) => PRIVATE_BROWSER_PERMISSIONS.has(permission);
         target.setPermissionCheckHandler((_contents, permission) => allowed(permission));
-        target.setPermissionRequestHandler((_contents, permission, callback) => callback(allowed(permission)));
+        target.setPermissionRequestHandler((_contents, permission, callback, details) => callback(allowed(permission) ||
+          // Screen capture's device-less "media" request; the share picker asks the person.
+          (permission === "media" && "mediaTypes" in details && !details.mediaTypes?.length)));
+        installScreenSharePicker(target, page => !page.isDestroyed());
+        installDevicePickers(target);
       },
+      passwords: browser.privatePartition || browser.automationRunId ? undefined : this.browserPasswords,
       onOpenWindow: (details) => {
         const owner = current();
         if (!owner || !this.enabled || !this.browserUrl || owner.window.isDestroyed() || this.backgroundNotificationTabs.has(contents)) {
@@ -6855,6 +6926,21 @@ export class TabManager {
     if (host.window.isDestroyed() || (host.pending && !host.pendingAtFront)) return;
     const tab = tabById(host, host.activeId);
     const browser = liveBrowserPage(tab?.browser);
+    // Every browser tab is a copy sharing one native rail/panels view, each
+    // with its own `attached` flag. When that view leaves the window on
+    // another copy's account, the tab in front is left flagged detached and
+    // nothing below restacks it: the website shows, the rail never does.
+    // The settled tab in front always owns the view.
+    if (host.shellEnabled && tab?.sharedChrome && tab.view && !host.pending && host.presentedId === tab.id &&
+        !tab.automationPreparing && (!tab.attached || !host.window.contentView.children.includes(tab.view))) {
+      this.log("browser rail was out of the window under its selected tab; reattached");
+      const [width = 1, height = 1] = host.window.getContentSize();
+      setViewBounds(tab.view, { x: 0, y: BREADBOARD_TITLE_BAR.height, width, height: Math.max(1, height - BREADBOARD_TITLE_BAR.height) });
+      tab.attached = true;
+      setNotificationViewVisible(tab.view, true);
+      // Let refreshSelectedSurfaces renew its native visibility too.
+      this.foregroundSurfaceViews.get(host)?.delete(tab.view);
+    }
     if (!tab?.view || !tab.attached) return;
     // Only legacy per-tab chrome hosts suggestions. The persistent shell has
     // its own transparent toolbar; raising its opaque home/panels document

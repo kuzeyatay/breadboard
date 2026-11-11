@@ -112,3 +112,20 @@ test("translation remembers the target for all site paths across restarts and ca
     }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("sites remembered to open desktop apps persist, validate and can be removed", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-app-links-"));
+  try {
+    const store = new BrowserPreferenceStore(dir);
+    assert.equal(store.appLinkAllowed("https://tue.zoom.us", "zoommtg"), false);
+    assert.ok(store.update({ type: "browser-app-link", origin: "https://tue.zoom.us", scheme: "zoommtg", allowed: true }));
+    assert.equal(new BrowserPreferenceStore(dir).appLinkAllowed("https://tue.zoom.us", "zoommtg"), true);
+    assert.equal(store.update({ type: "browser-app-link", origin: "https://tue.zoom.us/path", scheme: "zoommtg", allowed: true }), false);
+    assert.equal(store.update({ type: "browser-password-delete", origin: "https://a.nl", username: "x" }), false);
+    assert.ok(store.update({ type: "browser-app-link", origin: "https://tue.zoom.us", scheme: "zoommtg", allowed: false }));
+    assert.deepEqual(new BrowserPreferenceStore(dir).snapshot().appLinks, {});
+    assert.ok(isTabsCommand({ type: "browser-app-link", origin: "https://tue.zoom.us", scheme: "msteams", allowed: true }));
+    assert.ok(!isTabsCommand({ type: "browser-app-link", origin: "https://tue.zoom.us", scheme: "Bad Scheme", allowed: true }));
+    assert.ok(isTabsCommand({ type: "browser-password-delete", origin: "http://router.local", username: "admin" }));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

@@ -4,6 +4,17 @@ import { isBrowserMediaPermission, notificationOrigin, type BrowserMediaPermissi
 import type { DesktopNotificationToast } from "../shared/ipc-contract";
 import type { BrowserPreferenceStore } from "./browser-preferences";
 import { isSafeBrowserUrl } from "./security";
+import { confirmOpenApp, installDevicePickers, installScreenSharePicker } from "./browser-dialogs";
+
+/** Chromium permissions that map onto a saved per-site choice. */
+// clipboard-read stays denied: Electron 33 also asks it for every execCommand("copy"),
+// so a prompt would stall ordinary copy buttons. Ctrl+V still pastes natively.
+const SITE_PERMISSIONS: Partial<Record<string, BrowserMediaPermission>> = { geolocation: "location" };
+/** Granted without a prompt, as Chrome does: each is gated by a user gesture or picker. */
+const GESTURE_PERMISSIONS = new Set(["clipboard-sanitized-write", "fullscreen", "display-capture", "hid", "serial", "usb", "pointerLock", "keyboardLock", "fileSystem", "midi", "speaker-selection"]);
+const PERMISSION_LABELS: Record<BrowserMediaPermission, string> = {
+  microphone: "microphone", camera: "camera", location: "location",
+};
 import type { BrowserWebPush } from "./browser-web-push";
 
 const CHANNEL = "breadboard:web-notification";
@@ -43,6 +54,8 @@ export class BrowserNotifications {
   installSession(target: Session): void {
     if (this.sessions.has(target)) return;
     this.sessions.add(target);
+    installScreenSharePicker(target, contents => this.isWebPageRequest(contents, contents.getURL()));
+    installDevicePickers(target);
     target.setPermissionCheckHandler((contents, permission, origin, details) => {
       if (permission === "media" && details.mediaType === "audio" && this.lentMicrophone(contents, origin)) return true;
       if (permission === "media") {
@@ -53,7 +66,11 @@ export class BrowserNotifications {
           (!details.requestingUrl || this.isMediaRequest(contents, details.requestingUrl)) &&
           this.preferences.mediaPermission(origin, kind) === "granted");
       }
-      if (permission === "clipboard-sanitized-write" || permission === "fullscreen") {
+      const site = SITE_PERMISSIONS[permission];
+      if (site) {
+        return this.isMediaRequest(contents, details.requestingUrl || origin) && this.preferences.mediaPermission(origin, site) === "granted";
+      }
+      if (GESTURE_PERMISSIONS.has(permission)) {
         return this.isWebPageRequest(contents, details.requestingUrl || origin);
       }
       return permission === "notifications" &&
@@ -67,6 +84,9 @@ export class BrowserNotifications {
         if (mediaTypes?.length && mediaTypes.every(kind => kind === "audio") && this.lentMicrophone(contents, url)) {
           return callback(true);
         }
+        // getDisplayMedia asks "media" with no device types before its picker,
+        // which is the real consent (installScreenSharePicker).
+        if (mediaTypes && !mediaTypes.length) return callback(this.isWebPageRequest(contents, url || contents.getURL()));
         if (!this.isMediaRequest(contents, url) || !mediaTypes?.length ||
             mediaTypes.some(kind => kind !== "audio" && kind !== "video")) return callback(false);
         const media: BrowserMediaPermission[] = [];
@@ -75,8 +95,22 @@ export class BrowserNotifications {
         void this.request(contents, url, media).then(value => callback(value === "granted"), () => callback(false));
         return;
       }
-      if (permission === "clipboard-sanitized-write" || permission === "fullscreen") {
+      const site = SITE_PERMISSIONS[permission];
+      if (site) {
+        const url = details.requestingUrl || contents.getURL();
+        if (!this.isMediaRequest(contents, url)) return callback(false);
+        void this.request(contents, url, [site]).then(value => callback(value === "granted"), () => callback(false));
+        return;
+      }
+      if (GESTURE_PERMISSIONS.has(permission)) {
         return callback(this.isWebPageRequest(contents, details.requestingUrl || contents.getURL()));
+      }
+      if (permission === "openExternal" && "externalURL" in details && typeof details.externalURL === "string" &&
+          this.isWebPageRequest(contents, contents.getURL())) {
+        // A frame launching zoommtg:/msteams:. The confirmation opens it itself.
+        callback(false);
+        void confirmOpenApp(contents, details.externalURL);
+        return;
       }
       if (permission !== "notifications" || !this.pages.has(contents) || details.isMainFrame === false) return callback(false);
       void this.request(contents, details.requestingUrl || contents.getURL()).then(value => callback(value === "granted"), () => callback(false));
@@ -143,7 +177,7 @@ export class BrowserNotifications {
     const requestedMedia = media?.filter(kind => this.preferences.mediaPermission(origin, kind) === "default");
     const prompt: PermissionPrompt = { id: randomUUID(), key, origin, media, requestedMedia, contents, window, promise, resolve };
     this.prompts.set(key, prompt);
-    const devices = requestedMedia?.join(" and ");
+    const devices = requestedMedia?.map(kind => PERMISSION_LABELS[kind]).join(" and ");
     if (!this.publish(contents, {
       type: "success", title: devices ? `Allow ${devices}?` : "Allow notifications?",
       message: devices ? `This site wants to use your ${devices}. You can change this in Browser settings.`

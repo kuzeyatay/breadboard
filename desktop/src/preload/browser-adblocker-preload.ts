@@ -116,6 +116,20 @@ function refresh() {
   if (active) { apply(payload, true); observe(); }
 }
 
+// The lists stop YouTube from scheduling ads, but YouTube changes its player
+// faster than any pinned snapshot. When an ad starts anyway, end it: seeking
+// to its last frame makes the player move on to the video. The element is not
+// muted because YouTube reuses it for the video that follows.
+function skipVideoAd() {
+  if (!active) return;
+  const player = document.querySelector(".html5-video-player.ad-showing");
+  if (!player) return;
+  const video = player.querySelector("video");
+  if (video && Number.isFinite(video.duration) && video.currentTime < video.duration - 0.1) video.currentTime = video.duration;
+  player.querySelector<HTMLElement>(".ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern")?.click();
+}
+if (/(^|\.)youtube(-nocookie)?\.com$/.test(location.hostname)) setInterval(skipVideoAd, 250);
+
 ipcRenderer.on(`${CHANNEL}:changed`, refresh);
 document.addEventListener("DOMContentLoaded", observe, { once: true });
 // Extended filters can depend on text, unlike ordinary ID/class CSS rules.

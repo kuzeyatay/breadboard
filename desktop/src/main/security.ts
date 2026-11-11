@@ -9,6 +9,10 @@ import {
   type WebContents,
   type WindowOpenHandlerResponse,
 } from "electron";
+import {
+  confirmOpenApp, handleBeforeUnload, handleBluetoothPicker, handleBrowserLogin, handleBrowserPrompt,
+  handleCertificateErrors, isAppLaunchUrl,
+} from "./browser-dialogs";
 
 /**
  * Renderer lockdown:
@@ -111,10 +115,17 @@ export function isSafeBrowserUrl(targetUrl: string): boolean {
   }
 }
 
+/** A file the page built in memory (URL.createObjectURL / data URI). */
+export function isInPageFileUrl(targetUrl: string): boolean {
+  return /^(?:blob|data):/iu.test(targetUrl);
+}
+
 export interface ExternalBrowserHandlers {
   /** Install the browser profile's notification and clipboard-write policy. */
   configurePermissions?: (session: Session) => void;
   onOpenWindow: (details: HandlerDetails) => WindowOpenHandlerResponse;
+  /** Saved sign-ins for this page; omitted for private and automation pages. */
+  passwords?: { attach(contents: WebContents): void };
   /** One inert shell-owned document used to identify an automation target. */
   isTrustedBootstrapUrl?: (url: string) => boolean;
 }
@@ -136,8 +147,20 @@ export function hardenExternalBrowserWebContents(
       handlers.isTrustedBootstrapUrl?.(targetUrl) !== true
     ) {
       event.preventDefault();
+      // Script-built files (Angular/FileSaver "Download" buttons) open or
+      // navigate to a blob:/data: URL. Never render it in the page; hand it to
+      // the download manager like Chrome and Firefox effectively do.
+      if (isInPageFileUrl(targetUrl)) contents.downloadURL(targetUrl);
+      // zoommtg:, msteams:, mailto: ... ask, then open the desktop app.
+      else if (isAppLaunchUrl(targetUrl)) void confirmOpenApp(contents, targetUrl);
     }
   };
+  handleBrowserLogin(contents);
+  handleBrowserPrompt(contents);
+  handleCertificateErrors(contents);
+  handleBeforeUnload(contents);
+  handleBluetoothPicker(contents);
+  handlers.passwords?.attach(contents);
   contents.on("will-navigate", guardWebUrl);
   contents.on("will-redirect", guardWebUrl);
   contents.setWindowOpenHandler((details) => {
@@ -147,6 +170,8 @@ export function hardenExternalBrowserWebContents(
     if (isSafeBrowserUrl(details.url) || details.url === "about:blank") {
       return handlers.onOpenWindow(details);
     }
+    if (isInPageFileUrl(details.url)) contents.downloadURL(details.url);
+    else if (isAppLaunchUrl(details.url)) void confirmOpenApp(contents, details.url);
     return { action: "deny" };
   });
   contents.on("will-attach-webview", (event) => event.preventDefault());

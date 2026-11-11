@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   allowExternalBrowserNavigationFor,
   allowedOriginsFor,
+  hardenExternalBrowserWebContents,
   isExternalBrowserWebContents,
   isNavigationAllowed,
   isRendererPermissionAllowed,
@@ -136,4 +137,40 @@ test("only the owned dashboard origin may request an audio-only microphone grant
       true,
     ),
   );
+});
+
+test("browser pages hand script-built blob:/data: files to the download manager", () => {
+  const listeners = new Map<string, (event: { preventDefault(): void }, url: string) => void>();
+  let openHandler: (details: { url: string }) => { action: string } = () => ({ action: "" });
+  const downloads: string[] = [];
+  const fake = {
+    id: 9_001,
+    on: (name: string, listener: never) => listeners.set(name, listener),
+    once: () => {},
+    setWindowOpenHandler: (handler: typeof openHandler) => { openHandler = handler; },
+    downloadURL: (url: string) => downloads.push(url),
+    ipc: { on: () => {} },
+    session: { setPermissionCheckHandler: () => {}, setPermissionRequestHandler: () => {} },
+  };
+  hardenExternalBrowserWebContents(fake as never, { onOpenWindow: () => ({ action: "allow" }) });
+  let prevented = 0;
+  const event = { preventDefault: () => { prevented++; } };
+  listeners.get("will-navigate")!(event, "blob:https://tue.osiris-student.nl/1f2e");
+  listeners.get("will-navigate")!(event, "javascript:alert(1)");
+  listeners.get("will-navigate")!(event, "https://example.com/");
+  assert.equal(openHandler({ url: "data:application/pdf;base64,JVBERi0=" }).action, "deny");
+  assert.equal(openHandler({ url: "https://example.com/" }).action, "allow");
+  assert.equal(prevented, 2);
+  assert.deepEqual(downloads, ["blob:https://tue.osiris-student.nl/1f2e", "data:application/pdf;base64,JVBERi0="]);
+  revokeExternalBrowserNavigationFor(9_001);
+});
+
+test("app links reach the OS only for ordinary app schemes", async () => {
+  const { isAppLaunchUrl } = await import("../src/main/browser-dialogs");
+  for (const url of ["zoommtg://zoom.us/join?confno=1", "msteams:/l/meetup-join/x", "mailto:a@b.nl", "tel:+31", "spotify:track:1"]) {
+    assert.ok(isAppLaunchUrl(url), url);
+  }
+  for (const url of ["https://x.nl", "javascript:alert(1)", "file:///C:/x", "ms-msdt:/id PCWDiagnostic", "search-ms:query=x", "SHELL:startup", "data:text/html,x", "not a url"]) {
+    assert.ok(!isAppLaunchUrl(url), url);
+  }
 });
