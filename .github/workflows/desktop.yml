@@ -286,10 +286,13 @@ jobs:
         # Breadboard.exe and the installer; with them unset the build stays
         # unsigned exactly as before.
         shell: pwsh
+        # `npm run desktop:dist:win` would rebuild the dashboard and restage
+        # everything the steps above already produced; only electron-builder
+        # remains.
         env:
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: npm run desktop:dist:win
+        run: node desktop/scripts/dist-win.mjs
       - name: Verify the unpacked package
         shell: pwsh
         run: npm run desktop:verify
