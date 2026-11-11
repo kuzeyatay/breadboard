@@ -207,6 +207,10 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm run build --prefix google-flow-mcp
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # The embedded API Anything runtime is bundled with esbuild from its
+          # checkout; the bundle resolves zod, tldts and node-html-parser there.
+          npm ci --prefix api-anything --ignore-scripts --omit=dev
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Install the Codex coding agent the installer ships
         # prepare-app-resources.mjs stages codex.exe and its Windows helpers
         # from CODEX_BIN. The pinned version matches the workstation's staged
