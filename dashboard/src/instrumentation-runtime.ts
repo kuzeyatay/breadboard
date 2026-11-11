@@ -23,7 +23,10 @@ void Promise.all([import("./lib/db.ts"), import("./lib/garden-file-warmup.ts"), 
   if (!contentPath) return;
   const recent = db.prepare("SELECT slug FROM clusters WHERE last_viewed_at IS NOT NULL ORDER BY last_viewed_at DESC LIMIT 3").all() as Array<{ slug: string }>;
   await warmGardenFiles(contentPath, recent.map(row => row.slug));
-  if (recent[0]) await scanClusterKnowledgeCooperatively(contentPath, recent[0].slug, { migrateSources: false });
+  // One at a time, so the parsing never competes with itself. A large garden's
+  // first open after a launch otherwise parsed every note while the person
+  // waited (8-19 s for the page and its PDFs, with other tabs slowed too).
+  for (const { slug } of recent) await scanClusterKnowledgeCooperatively(contentPath, slug, { migrateSources: false }).catch(() => undefined);
 }).catch(() => { /* Best effort: the first scan simply reads a cold disk. */ });
 
 // One-time handoff of durable physical jobs to their native supervisor owner.
