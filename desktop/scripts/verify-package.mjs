@@ -2192,6 +2192,7 @@ function checkMandatoryPackagedClosures(resources, binRoot, label, bundledNode) 
     hashChecks.push({
       filePath: openscienceLock,
       expectedHash: PINNED_OPENSCIENCE_RUNTIME.dependencyLockSha256,
+      canonical: true,
       label: `${label} OpenScience immutable npm lock`,
     });
   }

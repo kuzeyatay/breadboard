@@ -4522,7 +4522,8 @@ await stagePinnedTrackedSourceClosure({
     }
     fs.copyFileSync(source, path.join(target, entry));
   }
-  if ((await sha256File(path.join(target, "package-lock.json"))) !== PINNED_OPENSCIENCE_RUNTIME.dependencyLockSha256) {
+  // Tracked text: the pin is the repository (LF) hash, independent of checkout line endings.
+  if (canonicalFileIdentity(path.join(target, "package-lock.json")).sha256 !== PINNED_OPENSCIENCE_RUNTIME.dependencyLockSha256) {
     fail("OpenScience's immutable npm lock is not the reviewed lock.");
   }
   const lock = JSON.parse(fs.readFileSync(path.join(target, "package-lock.json"), "utf8"));
