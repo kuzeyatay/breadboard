@@ -149,6 +149,21 @@ jobs:
           $root = Join-Path (uv python dir).Trim() "cpython-3.12.13-windows-x86_64-none"
           "BREADBOARD_AGENT_LOOP_PYTHON_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & (Join-Path $root "python.exe") --version
+      - name: Build the Premortem and Agent Loop environments the staging copies
+        # prepare-app-resources.mjs stages these two services' site-packages from
+        # a venv beside each checkout. The BREADBOARD_REQUIREMENTS_LOCK.txt files
+        # are the workstation's frozen package sets; the venv interpreters are the
+        # same uv-managed builds the staged runtimes use.
+        shell: pwsh
+        run: |
+          uv venv --python 3.13.13 premortem/.venv
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          uv pip install --python premortem/.venv/Scripts/python.exe -r premortem/BREADBOARD_REQUIREMENTS_LOCK.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          uv venv --python 3.12.13 agent-loop-engineering-kit/.venv
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          uv pip install --python agent-loop-engineering-kit/.venv/Scripts/python.exe -r agent-loop-engineering-kit/BREADBOARD_REQUIREMENTS_LOCK.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Install the Graft code-index toolchain the installer ships
         shell: pwsh
         run: |
