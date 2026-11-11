@@ -41,7 +41,7 @@ export class BrowserInlineAnswer {
     if (!this.ready || this.closed || this.contents.isDestroyed()) return;
     this.contents.send(IPC_CHANNELS.browserInlineAnswerState, { ...this.state, content: { ...this.state.content, note: this.note }, selection: this.selection.reference,
       conversationId: this.selection.conversationId,
-      viewport: { width: this.viewport.width, height: this.viewport.height } });
+      viewport: { width: this.viewport.width / this.zoom(), height: this.viewport.height / this.zoom() } });
   }
   connect() { this.ready = true; this.publish(); }
   update(state: BrowserInlineAnswerState) { this.state = { ...state, content: { ...state.content, ownerReady: true } }; this.publish(); }
@@ -50,8 +50,11 @@ export class BrowserInlineAnswer {
     this.viewport = viewport; this.anchor = anchor; this.visible = visible; this.layout();
     if (changed) this.publish();
   }
+  /** The card reports CSS pixels; the shared page zoom makes those larger than window pixels. */
+  private zoom() { return this.contents.isDestroyed() ? 1 : this.contents.getZoomFactor() || 1; }
   resize(width: number, height: number) {
-    this.size = { width, height }; this.layout();
+    const zoom = this.zoom();
+    this.size = { width: width * zoom, height: height * zoom }; this.layout();
     if (!this.revealed && !this.closed && this.visible && !this.contents.isDestroyed()) { this.revealed = true; this.contents.focus(); }
   }
   move(dx: number, dy: number) {

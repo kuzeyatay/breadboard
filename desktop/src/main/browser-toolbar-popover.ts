@@ -56,9 +56,20 @@ export class BrowserToolbarPopover {
     this.contents.on("will-navigate", event => event.preventDefault());
   }
 
-  private layout(height: number): void {
+  /**
+   * The card measures itself in CSS pixels, and Breadboard's pages share one
+   * zoom level. At 110% a card sized with its own numbers got a view about a
+   * tenth too small and lost its right and bottom edges.
+   */
+  private zoom(): number {
+    return this.contents.isDestroyed() ? 1 : this.contents.getZoomFactor() || 1;
+  }
+
+  private layout(cssHeight: number): void {
+    const zoom = this.zoom();
+    const height = cssHeight * zoom;
     const [windowWidth = 800, windowHeight = 600] = this.window.getContentSize();
-    const width = Math.min(this.maxWidth, Math.max(1, windowWidth - 16));
+    const width = Math.min(Math.ceil(this.maxWidth * zoom), Math.max(1, windowWidth - 16));
     // Near the bottom edge the card moves up to fit; it used to keep its place
     // and lose whatever did not fit below it.
     const cardHeight = Math.max(1, Math.min(Math.ceil(height), 480, windowHeight - 16));
