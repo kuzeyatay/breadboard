@@ -800,7 +800,7 @@ function checkDashboardCompilerRuntime(dashboard, bundledNode, label) {
         "-e",
         [
           `const { bundleCustomInteractiveVisualizer } = await import(${JSON.stringify(compilerModuleUrl)});`,
-          'const result = await bundleCustomInteractiveVisualizer({manifest:{mode:"3d",title:"Packaged compiler probe"},files:{"index.html":"<main id=\\"app\\"><canvas></canvas></main><script src=\\"main.js\\"></script>","styles.css":"canvas{display:block}","main.js":"const scene=new THREE.Scene();void scene;"}});',
+          'const result = await bundleCustomInteractiveVisualizer({manifest:{mode:"3d",title:"Packaged compiler probe",runtime:{id:"breadboard-interactive-visualizer",version:"2.0.0",threeVersion:"0.185.1"}},files:{"index.html":"<main id=\\"app\\"><canvas></canvas></main><script src=\\"main.js\\"></script>","styles.css":"canvas{display:block}","main.js":"const scene=new THREE.Scene();void scene;"}});',
           'if (!result.html.includes("breadboard:interactive-visualizer:v1")) process.exit(2);',
         ].join(""),
       ],
@@ -997,12 +997,12 @@ function checkPackagedServiceProfiles(resources, binRoot, label, manifest) {
   const manifestIds = manifest.services.map((service) => service?.id);
   const policyIds = Object.keys(PACKAGED_SERVICE_CLOSURE_POLICIES);
   if (
-    manifestIds.length !== 32 ||
+    manifestIds.length !== policyIds.length ||
     new Set(manifestIds).size !== manifestIds.length ||
     [...manifestIds].sort().join("\0") !== [...policyIds].sort().join("\0")
   ) {
     problems.push(
-      `${label} packaged service closure matrix must cover the exact 32 manifest services`,
+      `${label} packaged service closure matrix must cover exactly the ${policyIds.length} manifest services`,
     );
   }
   for (const service of manifest.services) {
@@ -2324,7 +2324,7 @@ function checkResourcesRoot(resources, binRoot, label) {
         ) {
           problems.push(`${label} Runtime V2 ${manifestName} is stale relative to its checked-in source`);
         }
-        const expectedVersion = manifestName === "services.json" ? 3 : 2;
+        const expectedVersion = manifestName === "services.json" ? 4 : 2;
         if (manifest?.version !== expectedVersion) {
           problems.push(`${label} Runtime V2 ${manifestName} has an unsupported version`);
         }
@@ -3573,19 +3573,19 @@ function checkResourcesRoot(resources, binRoot, label) {
     },
     {
       relative: ["lib", "openwork", "prompt.ts"],
-      sha256: "5B0F0C4A4F056515206DB710733A5CA0CAB88308A5A4FD777C5547F5241A0C28",
+      sha256: "F0E9F650ADD0FD5EE431CFBD765FC93B378578D7F179B495B58EBA3F42FA8165",
     },
     {
       relative: ["lib", "openwork", "runtime-worker-service.ts"],
-      sha256: "9A133156E3A544E78E321F3318D8B7ECE164B75424F17F500BABB07C5400045D",
+      sha256: "D7264C74F82C1EEC1E88FF0B620AF7BED28665D1E8877EC58D263A5AA54BD335",
     },
     {
       relative: ["lib", "openwork", "runtime-artifact.ts"],
-      sha256: "B2CEB157865A9DB7B4E27B9355CA7614527FBEE8DF66E620F4C4FA07718EE8BC",
+      sha256: "B54592F84C6B3A47B2FF666ADE4555B0D5AAF9220AC22DA3783F82ACB22A2DDA",
     },
     {
       relative: ["lib", "chat-token-usage.ts"],
-      sha256: "C822DB0DBA13017EEDE3E6CCBAE1A128BB83D2A0B937786C072A2287A7056C0F",
+      sha256: "FA99D2A6D0F709A1CE94E0589CB33077B2397303B721531D03FC203AC3773631",
     },
   ];
   for (const check of openworkWorkerSourceChecks) {
@@ -3932,17 +3932,17 @@ function checkResourcesRoot(resources, binRoot, label) {
   for (const check of [
     {
       filePath: path.join(resources, "app-services", "dashboard", "scripts", "runtime-v2-speech-media-worker.mjs"),
-      expectedHash: "DB8C1EFF878C33CF5303F4F0DE663117E908948707A20ECE2532D9062458FC38",
+      expectedHash: "0DF1A1513218AAA6B3FB3723AB211E182EB45CEDF90209F739FD473C82BB44E4",
       label: `${label} Speech/media sealed worker`,
     },
     {
       filePath: path.join(resources, "app-services", "dashboard", "scripts", "runtime-v2-speech-media-executor.mjs"),
-      expectedHash: "CBA4CFF8C71E2A63628E3B03D4B684D8E4E277CCE65BE4CA4D2217C027E56A28",
+      expectedHash: "E4068EC3F6DEADE03B8C3560AEE95834771C45D9ECFBFFE3465921AA4F907886",
       label: `${label} Speech/media sealed executor`,
     },
     {
       filePath: path.join(resources, "app-services", "dashboard", "scripts", "runtime-v2-worker-events.mjs"),
-      expectedHash: "4ED2F4026FE4824B20437F2A25BD8E1A5C7F3B6D3B564E855EC65B7FBAE08FB2",
+      expectedHash: "F8C132D9949174290533A69140E5FC0577DAB102EB409BA06AA1BF64D1E6D1AC",
       label: `${label} Speech/media sealed worker events`,
     },
     {
@@ -4788,10 +4788,14 @@ function checkResourcesRoot(resources, binRoot, label) {
     `${label} ChatMock package`,
   );
   if (fs.existsSync(python)) {
+    // The embeddable Python has no cwd on sys.path; its site hook reads the
+    // source root the launcher exports, so the probe exports it the same way.
+    const chatMockRoot = path.join(resources, "app-services", "chatmock");
     const chatMockImport = spawnSync(python, ["-c", "import chatmock; import chatmock.cli"], {
-      cwd: path.join(resources, "app-services", "chatmock"),
+      cwd: chatMockRoot,
       encoding: "utf8",
       windowsHide: true,
+      env: { ...process.env, BREADBOARD_CHATMOCK_SOURCE_ROOT: chatMockRoot },
     });
     if (chatMockImport.status !== 0) {
       const output = `${chatMockImport.stderr ?? ""}\n${chatMockImport.stdout ?? ""}`.trim();

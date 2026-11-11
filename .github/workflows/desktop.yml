@@ -220,8 +220,11 @@ jobs:
           npm install -g pnpm@10.14.0-0
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Push-Location mcp-google-images-search
-          pnpm install --frozen-lockfile --prod --ignore-scripts
+          # tsc emits src/index.js in place (outDir "./"); the staging step
+          # copies that entrypoint, so the compiler and tsc-alias are needed.
+          pnpm install --frozen-lockfile --ignore-scripts
           $code = $LASTEXITCODE
+          if (-not $code) { pnpm run build:tsc; $code = $LASTEXITCODE }
           Pop-Location
           if ($code) { exit $code }
           # The Google Flow MCP is staged from its compiled dist and its
