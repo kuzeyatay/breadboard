@@ -24,11 +24,23 @@ const MAX_GARDENS = 12;
 const SAVE_INTERVAL_MS = 60_000;
 const gardens = new Map<string, Map<string, NoteText>>();
 const savedAt = new Map<string, number>();
-let diskDir: string | null = null;
+// undefined: decide from the environment. Tests set a directory or null.
+let override: string | null | undefined;
 
-/** Only the dashboard server keeps the file; workers use the in-memory cache alone. */
+/**
+ * Only the dashboard server keeps the file. Runtime workers import this module
+ * from source, without NEXT_RUNTIME, and use the in-memory cache alone, so an
+ * ingestion that rewrites notes does not also rewrite a garden-sized file.
+ */
+function diskDirectory(): string | null {
+  if (override !== undefined) return override;
+  const data = process.env.BREADBOARD_DATA_DIR?.trim();
+  return data && process.env.NEXT_RUNTIME === "nodejs" ? path.join(data, "cache", "garden-notes") : null;
+}
+
+/** Test seam: keep the files under this data directory, or nowhere for null. */
 export function enableNoteTextDiskCache(dataDirectory: string | null): void {
-  diskDir = dataDirectory ? path.join(dataDirectory, "cache", "garden-notes") : null;
+  override = dataDirectory ? path.join(dataDirectory, "cache", "garden-notes") : null;
 }
 
 /** Test seam: drop everything held in memory, as a restart would. */
@@ -38,7 +50,8 @@ export function forgetNoteTextsInMemory(): void {
 }
 
 function cacheFile(key: string): string | null {
-  return diskDir ? path.join(diskDir, `${path.basename(key)}.json`) : null;
+  const directory = diskDirectory();
+  return directory ? path.join(directory, `${path.basename(key)}.json`) : null;
 }
 
 function load(key: string): Map<string, NoteText> {

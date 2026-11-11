@@ -18,12 +18,9 @@ void Promise.all([import("./lib/db.ts"), import("./lib/conversations/coordinatio
 // parse the most recent one in slices so its first open after a restart finds
 // the knowledge graph cached instead of parsing every note. Read-only: the
 // open itself still runs the source migration.
-void Promise.all([import("./lib/db.ts"), import("./lib/garden-file-warmup.ts"), import("./lib/knowledge.ts"), import("./lib/note-text-cache.ts"), import("./lib/runtime-paths.ts")]).then(async ([{ default: db }, { warmGardenFiles }, { scanClusterKnowledgeCooperatively }, { enableNoteTextDiskCache }, { dashboardDataDir }]) => {
+void Promise.all([import("./lib/db.ts"), import("./lib/garden-file-warmup.ts"), import("./lib/knowledge.ts")]).then(async ([{ default: db }, { warmGardenFiles }, { scanClusterKnowledgeCooperatively }]) => {
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
   if (!contentPath) return;
-  // One file per garden holds its notes' text, so a garden opens after a
-  // restart without reading thousands of files one by one.
-  enableNoteTextDiskCache(dashboardDataDir());
   const recent = db.prepare("SELECT slug FROM clusters WHERE last_viewed_at IS NOT NULL ORDER BY last_viewed_at DESC LIMIT 3").all() as Array<{ slug: string }>;
   await warmGardenFiles(contentPath, recent.map(row => row.slug));
   // One at a time, so the parsing never competes with itself. A large garden's
