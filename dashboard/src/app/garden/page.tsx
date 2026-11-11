@@ -40,10 +40,17 @@ function switchClass(active: boolean): string {
 }
 
 const libraryRefreshes = new Set<number>();
+const libraryRefreshedAt = new Map<number, number>();
+// Creating, renaming, moving and deleting a garden already rewrite this page.
+// Only its note and link counts drift, and re-counting means reading every
+// garden and publishing, which slows every other tab while it runs.
+const LIBRARY_REFRESH_INTERVAL_MS = 30 * 60_000;
 
 /** One refresh per account at a time; a failure only leaves older figures. */
 function refreshPrivateLibraryInBackground(userId: number): void {
   if (libraryRefreshes.has(userId)) return;
+  if (Date.now() - (libraryRefreshedAt.get(userId) ?? 0) < LIBRARY_REFRESH_INTERVAL_MS) return;
+  libraryRefreshedAt.set(userId, Date.now());
   libraryRefreshes.add(userId);
   void (async () => {
     const prepared = await preparePrivateQuartzIndexCooperatively(userId);
