@@ -1907,6 +1907,7 @@ export class AppLifecycle {
         return;
       }
       this.windows?.tabs.freezeSession();
+      this.windows?.tabs.prepareForQuit();
       this.computerUseIndicator?.stop();
       this.voiceCompanion?.stop();
       this.voiceCompanion = null;

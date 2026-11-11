@@ -62,9 +62,9 @@ generated runtime credentials.
 
 | Command | Purpose |
 | --- | --- |
-| `npm run dev` | The integrated Electron application in lean mode (see below). |
+| `npm run dev` | The integrated Electron application with the hot Next.js compiler (same as `desktop:dev:hot`). |
 | `npm run desktop:dev:hot` | Electron plus the hot Next.js development server. |
-| `npm run desktop:dev:lean` | Production-like standalone dashboard with lower long-running compiler overhead. |
+| `npm run desktop:dev:lean` | The usual development launch: the real Electron app over the prebuilt standalone dashboard (see below). |
 | `npm run dev:dashboard` | Dashboard only; other required services must already be available. |
 | `npm run dev:quartz` | Quartz Garden only. |
 | `npm run dev:chatmock` | Local OpenAI-compatible model bridge only. |
@@ -94,11 +94,11 @@ fallback to either command.
 ## Normal development: lean mode
 
 ```bat
-npm run dev
+npm run desktop:dev:lean
 ```
 
-is the primary integrated-development command. It selects
-`desktop:dev:lean`, builds or reuses the standalone production-like dashboard,
+is the primary integrated-development command (the root `npm run dev` is the
+hot-compiler mode below). It builds or reuses the standalone production-like dashboard,
 and launches the real Electron application with Runtime V2:
 
 - Electron owns windows and exactly one fixed `breadboard-runtime.exe` root;
@@ -108,12 +108,6 @@ and launches the real Electron application with Runtime V2:
   use the same Runtime V2 contracts as the packaged app;
 - logs: `.runtime/desktop-logs/*.log`;
 - desktop config/secrets: `.runtime/desktop-config/desktop-config.json`.
-
-The explicit equivalent is:
-
-```bat
-npm run desktop:dev:lean
-```
 
 If dashboard inputs changed but Windows cannot preserve the configured commit
 reserve during a rebuild, lean mode reuses the last complete compatible build.

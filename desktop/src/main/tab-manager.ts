@@ -31,7 +31,10 @@ import { ChatNotificationDelivery, isChatNotificationCardVisible } from "./chat-
 import { annotationPageUrl, browserOrganizationWidth, normalizeAnnotationTarget, type BrowserAnnotationTarget } from "../shared/browser-annotations";
 import { browserAnnotationCaptureScript, browserAnnotationPaintScript } from "./browser-annotations-dom";
 import { BrowserPreferenceStore } from "./browser-preferences";
+import { BrowserPasswords } from "./browser-passwords";
+import { confirmTabClose, installDevicePickers, installScreenSharePicker, mayBlockUnload, setAppLinkStore } from "./browser-dialogs";
 import { BrowserAdBlocker } from "./browser-adblocker";
+import { BrowserVpn } from "./browser-vpn";
 import { BrowserNotifications } from "./browser-notifications";
 import { BrowserNotificationPages } from "./browser-notification-pages";
 import { browserUserAgent } from "./browser-user-agent";
@@ -359,6 +362,10 @@ export const TAB_LOADING_SCENE_TOP_INSET =
   BREADBOARD_TITLE_BAR.height + BROWSER_TOOLBAR_HEIGHT;
 /** Cookies and storage persist, but never share Breadboard's local session. */
 export const BROWSER_SESSION_PARTITION = "persist:breadboard-browser";
+const PRIVATE_BROWSER_PERMISSIONS = new Set([
+  "fullscreen", "clipboard-sanitized-write", "display-capture", "hid", "serial", "usb", "pointerLock", "keyboardLock", "fileSystem",
+]);
+
 const BROWSER_WEB_PREFERENCES = {
   preload: path.join(__dirname, "../preload/browser-preload.js"),
   contextIsolation: true,
@@ -930,7 +937,11 @@ export class TabManager {
   private readonly browserExtensionIcons = new Map<string, string | undefined>();
   private readonly browserVisitedLinks: BrowserVisitedLinks;
   private readonly browserPreferences: BrowserPreferenceStore;
+  private readonly browserPasswords: BrowserPasswords;
+  /** Tabs waiting on a "Leave site?" answer, so a second Ctrl+W does not ask twice. */
+  private readonly confirmingClose = new WeakSet<Tab>();
   private readonly browserAdBlocker: BrowserAdBlocker;
+  private readonly browserVpn: BrowserVpn;
   private readonly browserHls: BrowserHlsDownloads;
   private readonly browserNotifications: BrowserNotifications;
   private readonly browserNotificationPages: BrowserNotificationPages;
@@ -987,7 +998,17 @@ export class TabManager {
     });
     this.browserHls = new BrowserHlsDownloads(options.browserDownloads, options.downloadSettings, () => this.broadcastAll());
     this.browserPreferences = new BrowserPreferenceStore(options.browserPreferencesConfigDir ?? options.browserExtensionsConfigDir ?? app.getPath("userData"), message => this.log(message));
+    this.browserPasswords = new BrowserPasswords(options.browserPreferencesConfigDir ?? options.browserExtensionsConfigDir ?? app.getPath("userData"),
+      message => this.log(message), () => this.broadcastAll());
+    setAppLinkStore({
+      allowed: (origin, scheme) => this.browserPreferences.appLinkAllowed(origin, scheme),
+      allow: (origin, scheme) => {
+        if (this.browserPreferences.update({ type: "browser-app-link", origin, scheme, allowed: true })) this.broadcastAll();
+      },
+    });
     this.browserAdBlocker = new BrowserAdBlocker(options.browserExtensionsConfigDir ?? app.getPath("userData"),
+      () => this.broadcastAll(), message => this.log(message));
+    this.browserVpn = new BrowserVpn(options.browserExtensionsConfigDir ?? app.getPath("userData"),
       () => this.broadcastAll(), message => this.log(message));
     this.browserNotifications = new BrowserNotifications(this.browserPreferences,
       contents => this.hostByContents.get(contents.id)?.window,
@@ -1566,6 +1587,15 @@ export class TabManager {
     this.rememberSession(host);
   }
 
+  /**
+   * Quitting closes every window, and the hidden ChatGPT pages intercept
+   * close to park themselves. Destroy them first, or app.quit() stalls on a
+   * stray sign-in window after the runtime has already stopped.
+   */
+  prepareForQuit(): void {
+    this.destroyChatgptWebPages();
+  }
+
   /** Snapshot before services or windows begin tearing down. */
   freezeSession(): void {
     if (this.sessionFrozen) return;
@@ -1697,6 +1727,7 @@ export class TabManager {
       const partition = `breadboard-private-${randomUUID()}`;
       this.privateProfile = { partition, session: session.fromPartition(partition, { cache: false }), users: 0, translationSites: new Map() };
       this.browserAdBlocker.attachSession(this.privateProfile.session, true);
+      this.browserVpn.attachSession(this.privateProfile.session);
     }
     return this.privateProfile.partition;
   }
@@ -2190,11 +2221,14 @@ export class TabManager {
       case "browser-notifications-enabled":
       case "browser-notification-permission":
       case "browser-media-permission":
+      case "browser-app-link":
       case "browser-translation-language": {
         const saved = this.browserPreferences.update(command);
         if (saved) this.browserNotifications.preferencesChanged();
         return saved;
       }
+      case "browser-password-delete":
+        return this.browserPasswords.remove(command.origin, command.username);
       case "browser-notification-action":
         return sender === host.notificationOverlay?.contents && this.browserNotifications.action(command.id, command.action, host.window);
       case "browser-notification-permission-response":
@@ -2659,6 +2693,14 @@ export class TabManager {
         // pane. Its dropdown still needs native bounds above the website.
         if (host.activeId === tab.id || this.toolbarTab(host) === tab) this.layout(host);
         return true;
+      }
+      case "browser-vpn-enabled": {
+        const popup = host.extensionsPopover?.contents === sender ? host.extensionsPopover : undefined;
+        const tab = popup ? tabById(host, popup.ownerId) : senderTab;
+        if (!tab?.browser || tab.id !== host.activeId) return false;
+        // A first switch-on installs WARP; the Windows permission prompt takes
+        // focus, which must not dismiss the popover reporting the outcome.
+        return popup ? popup.keepOpenDuring(() => this.browserVpn.setEnabled(command.enabled)) : this.browserVpn.setEnabled(command.enabled);
       }
       case "browser-adblock-enabled":
       case "browser-adblock-site-enabled": {
@@ -3675,6 +3717,7 @@ export class TabManager {
 
   private ensureBrowserExtensions(browserSession: Session): Promise<void> {
     this.browserAdBlocker.attachSession(browserSession);
+    this.browserVpn.attachSession(browserSession);
     if (this.browserExtensionSession === browserSession && this.browserExtensionsReady) {
       return this.browserExtensionsReady;
     }
@@ -3982,6 +4025,7 @@ export class TabManager {
                 tab.browser.showingHome ? "" : tab.url,
                 session.fromPartition(tab.browser.privatePartition ?? BROWSER_SESSION_PARTITION),
               ),
+              vpn: this.browserVpn.snapshot(),
               uiKey: tab.browser.uiKey,
               // The run marker only exists so the worker can select this exact
               // Chromium target. It is not an address the person can use, so
@@ -4040,6 +4084,7 @@ export class TabManager {
       savedGroups: host.savedGroups.map(({ tabs, ...group }) => ({ ...group, tabCount: tabs.length })),
       extensions: this.browserExtensionViews(),
       browserPreferences: this.browserPreferences.snapshot(),
+      savedPasswords: this.browserPasswords.list(),
     };
   }
 
@@ -4668,6 +4713,7 @@ export class TabManager {
     browser.view = view;
     browser.contents = view.webContents;
     this.browserAdBlocker.attachPage(browser.contents, Boolean(browser.privatePartition));
+    this.browserVpn.attachPage(browser.contents);
     if (!browser.privatePartition) this.browserHls.attach(browser.contents);
     // The preload asks before page scripts run, including after redirects or
     // reloads. Once the person interacts, later documents need no restore guard.
@@ -5223,10 +5269,16 @@ export class TabManager {
       configurePermissions: (target: Session) => {
         if (!browser.privatePartition) return this.browserNotifications.installSession(target);
         // Keep ordinary page controls working without persisting site grants.
-        const allowed = (permission: string) => permission === "fullscreen" || permission === "clipboard-sanitized-write";
+        // Screen share and device access stay available: their pickers are the consent.
+        const allowed = (permission: string) => PRIVATE_BROWSER_PERMISSIONS.has(permission);
         target.setPermissionCheckHandler((_contents, permission) => allowed(permission));
-        target.setPermissionRequestHandler((_contents, permission, callback) => callback(allowed(permission)));
+        target.setPermissionRequestHandler((_contents, permission, callback, details) => callback(allowed(permission) ||
+          // Screen capture's device-less "media" request; the share picker asks the person.
+          (permission === "media" && "mediaTypes" in details && !details.mediaTypes?.length)));
+        installScreenSharePicker(target, page => !page.isDestroyed());
+        installDevicePickers(target);
       },
+      passwords: browser.privatePartition || browser.automationRunId ? undefined : this.browserPasswords,
       onOpenWindow: (details) => {
         const owner = current();
         if (!owner || !this.enabled || !this.browserUrl || owner.window.isDestroyed() || this.backgroundNotificationTabs.has(contents)) {
@@ -5565,6 +5617,18 @@ export class TabManager {
     if (index < 0) return false;
     const tab = host.tabs[index];
     if (!tab || tab.anchored) return false;
+    // A page with unsaved changes may ask "Leave site?" first; others close at once.
+    const page = tab.browser?.contents;
+    if (mayBlockUnload(page)) {
+      if (this.confirmingClose.has(tab)) return true;
+      this.confirmingClose.add(tab);
+      void confirmTabClose(page).then(leave => {
+        this.confirmingClose.delete(tab);
+        const current = tabIndex(host, tab.id);
+        if (leave && current >= 0 && !host.window.isDestroyed()) this.dropTab(host, current);
+      });
+      return true;
+    }
     return this.dropTab(host, index);
   }
 
