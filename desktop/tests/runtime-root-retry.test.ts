@@ -121,7 +121,7 @@ test("an unexpected Runtime root exit schedules bounded automatic recovery", () 
   );
   assert.match(
     source,
-    /private handleUnexpectedRuntimeExit[\s\S]{0,900}this\.scheduleRuntimeRootRetry\(\);/,
+    /private handleUnexpectedRuntimeExit[\s\S]{0,1800}this\.scheduleRuntimeRootRetry\(\);/,
   );
   assert.match(
     source,

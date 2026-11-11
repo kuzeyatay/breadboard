@@ -339,6 +339,7 @@ test("fast dev dashboard uses an existing standalone build", () => {
   );
   fs.mkdirSync(path.dirname(server), { recursive: true });
   fs.writeFileSync(server, "");
+  fs.writeFileSync(path.join(dashboardRoot, ".next-desktop", "breadboard-build-manifest.json"), "{}");
   const previous = process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"];
   process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"] = "standalone";
   try {
@@ -519,6 +520,8 @@ test("dev ChatMock reloads when its provider integration changes", () => {
     path.join(paths.appRoot, "chatmock", "chatmock", "providers", "dispatch.py"),
     path.join(paths.appRoot, "chatmock", "chatmock", "providers", "registry.py"),
     path.join(paths.appRoot, "chatmock", "chatmock", "providers", "store.py"),
+    path.join(paths.appRoot, "chatmock", "chatmock", "subscription_voice.py"),
+    path.join(paths.appRoot, "chatmock", "chatmock", "app.py"),
   ]);
 });
 

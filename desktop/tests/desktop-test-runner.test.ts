@@ -85,3 +85,26 @@ test("desktop test discovery ignores stale JavaScript whose source was removed",
   assert.deepEqual(JSON.parse(run.stdout), ["current.test.js"]);
 });
 
+
+test("unit-only desktop tests leave every Electron-driven file and screen lane out", () => {
+  const desktopRoot = path.resolve(__dirname, "..", "..");
+  const runnerUrl = pathToFileURL(path.join(desktopRoot, "scripts", "run-desktop-tests.mjs")).href;
+  const sources = {
+    "pure.test.ts": "import { test } from 'node:test';",
+    "fixture.test.ts": "runElectronFixture(require(\"electron\") as string, [])",
+    "helper.test.ts": "import { runElectronFixture } from './helpers/run-electron-fixture';",
+    "binary.test.ts": "spawnSync(path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe'))",
+  };
+  const probe = `
+    import { desktopTestLanes, unitOnlyDesktopTestFiles } from ${JSON.stringify(runnerUrl)};
+    const sources = ${JSON.stringify(sources)};
+    const files = unitOnlyDesktopTestFiles(Object.keys(sources).map((f) => f.replace(/[.]ts$/, ".js")), "tests", (file) => sources[file.slice(file.lastIndexOf("tests") + 6)]);
+    process.stdout.write(JSON.stringify({ files, lanes: desktopTestLanes(files, { unitOnly: true }) }));
+  `;
+  const run = spawnSync(process.execPath, ["--input-type=module", "--eval", probe], { cwd: desktopRoot, encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), {
+    files: ["pure.test.js"],
+    lanes: [{ id: "parallel", mode: "parallel", files: ["pure.test.js"] }],
+  });
+});

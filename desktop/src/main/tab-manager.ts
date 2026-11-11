@@ -959,10 +959,11 @@ export class TabManager {
 
   constructor(options: TabManagerOptions) {
     this.options = options;
-    this.codeDock = new CodeDockManager(resolveVSCodeStorage(app.getPath("userData"), options.bulkRoot));
+    this.codeDock = new CodeDockManager(resolveVSCodeStorage(options.browserExtensionsConfigDir ?? app.getPath("userData"), options.bulkRoot));
     // JWT rotation is not an account change. Verify once in the shell instead
     // of repeatedly discarding/reloading a spare renderer on every cookie write.
-    session.defaultSession.cookies.on("changed", (_event, cookie) => {
+    // Unit tests construct a manager under plain Node, where Electron's modules are absent.
+    session?.defaultSession?.cookies.on("changed", (_event, cookie) => {
       if (!/^(?:__Secure-)?next-auth\.session-token(?:\.\d+)?$/.test(cookie.name)) return;
       if (this.authenticationUrl) {
         if (this.authenticationTimer) clearTimeout(this.authenticationTimer);

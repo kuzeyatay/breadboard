@@ -108,7 +108,11 @@ jobs:
       # reserve. A hosted runner has 16 GB of RAM and a small pagefile, so the
       # pagefile step below raises the commit limit and the reserve is pinned
       # to a size the runner can actually hold.
-      BREADBOARD_MIN_FREE_COMMIT_MB: '2048'
+      BREADBOARD_MIN_FREE_COMMIT_MB: '4096'
+      # The runner's default TEMP is an 8.3 short path (RUNNER~1); Breadboard
+      # refuses a data directory whose canonical path differs from the given one.
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
     steps:
       - name: Keep checked-out bytes exact
         shell: pwsh
@@ -267,7 +271,11 @@ jobs:
         shell: pwsh
         run: npm --prefix desktop run prepare:transcription
       - name: Desktop test suite
+        # The hosted runner has no interactive desktop; Electron fixtures and
+        # screen lanes run only on a developer machine.
         shell: pwsh
+        env:
+          BREADBOARD_DESKTOP_TEST_UNIT_ONLY: '1'
         run: npm run desktop:test
       - name: Verify staged resources
         shell: pwsh

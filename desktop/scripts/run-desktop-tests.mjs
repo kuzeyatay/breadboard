@@ -58,7 +58,26 @@ export function partitionDesktopTestFiles(discoveredFiles) {
   };
 }
 
-export function desktopTestLanes(discoveredFiles) {
+/**
+ * Hosted CI runners have no interactive desktop session, so every test that
+ * launches Electron (a fixture, the packaged binary, or a screen lane) is left
+ * out there; BREADBOARD_DESKTOP_TEST_UNIT_ONLY=1 keeps the Node-only files.
+ */
+export function isUnitOnlyTestSource(sourceText) {
+  return !["require(\"electron\")", "run-electron-fixture", "electron.exe"].some((marker) => sourceText.includes(marker));
+}
+
+export function unitOnlyDesktopTestFiles(
+  discoveredFiles,
+  sourceRoot = path.join(DESKTOP_ROOT, "tests"),
+  readSource = (file) => fs.readFileSync(file, "utf8"),
+) {
+  return discoveredFiles.filter((name) =>
+    isUnitOnlyTestSource(readSource(path.join(sourceRoot, name.replace(/[.]js$/, ".ts")))));
+}
+
+export function desktopTestLanes(discoveredFiles, { unitOnly = false } = {}) {
+  if (unitOnly) return [{ id: "parallel", mode: "parallel", files: [...discoveredFiles] }];
   const partition = partitionDesktopTestFiles(discoveredFiles);
   return [
     { id: "parallel", mode: "parallel", files: partition.parallel },
@@ -78,8 +97,8 @@ export function nodeTestArguments(lane, extraArguments = []) {
   ];
 }
 
-export async function runDesktopTestPlan(discoveredFiles, runLane) {
-  for (const lane of desktopTestLanes(discoveredFiles)) {
+export async function runDesktopTestPlan(discoveredFiles, runLane, options = {}) {
+  for (const lane of desktopTestLanes(discoveredFiles, options)) {
     const status = await runLane(lane);
     if (!Number.isSafeInteger(status) || status !== 0) {
       return Number.isSafeInteger(status) && status > 0 ? status : 1;
@@ -125,9 +144,12 @@ function samePath(left, right) {
 const invokedDirectly = typeof process.argv[1] === "string" && samePath(process.argv[1], SCRIPT_PATH);
 if (invokedDirectly) {
   try {
+    const unitOnly = process.env["BREADBOARD_DESKTOP_TEST_UNIT_ONLY"] === "1";
+    const discovered = discoverDesktopTestFiles();
     process.exitCode = await runDesktopTestPlan(
-      discoverDesktopTestFiles(),
+      unitOnly ? unitOnlyDesktopTestFiles(discovered) : discovered,
       (lane) => spawnNodeTestLane(lane, process.argv.slice(2)),
+      { unitOnly },
     );
   } catch (error) {
     process.stderr.write(

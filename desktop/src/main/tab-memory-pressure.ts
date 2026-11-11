@@ -8,6 +8,8 @@ import type { TabMemoryPressure } from "./tab-surface-cache";
  * capacity. This observer has no service-admission or document-discard authority.
  */
 export function observeTabMemoryPressure(changed: (state: TabMemoryPressure) => void): () => void {
+  // Plain Node (unit tests) has no Electron process memory info and nothing to observe.
+  if (typeof process.getSystemMemoryInfo !== "function") return () => undefined;
   const governor = new MemoryGovernor({
     // The admission floors (20% of RAM: 6.4 GB on 32 GB) protect multi-GB
     // service launches. Holding them against a 128 MB surface cache and one
