@@ -1739,6 +1739,14 @@
               "path": "recall/data"
             },
             {
+              "kind": "literal",
+              "value": "--visual-check-interval-ms"
+            },
+            {
+              "kind": "literal",
+              "value": "10000"
+            },
+            {
               "kind": "runtime-arguments",
               "value": "recall-capture"
             }
