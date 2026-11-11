@@ -1267,7 +1267,14 @@ function parsePrepareOptions(arguments_) {
 
 prepareOptions = parsePrepareOptions(process.argv.slice(2));
 const selected = (target) => prepareOptions.only === null || prepareOptions.only === target;
-const selectedPackagedServices = PACKAGED_PYTHON_SERVICES.filter((service) => selected(service.id));
+// BREADBOARD_PACKAGE_DIET=1 (the installer job) leaves out the environments the
+// installed app builds on first use; development staging keeps them.
+const FIRST_USE_PYTHON_SERVICES = new Set(["colpali", "humanizer", "cad"]);
+const packageDiet = process.env.BREADBOARD_PACKAGE_DIET === "1";
+const selectedPackagedServices = PACKAGED_PYTHON_SERVICES.filter(
+  (service) => selected(service.id) && !(packageDiet && FIRST_USE_PYTHON_SERVICES.has(service.id)),
+);
+if (packageDiet) log("package diet: first-use Python environments are not staged");
 const needsPackagedServiceUv = selectedPackagedServices.length > 0;
 const packagedServiceUv = needsPackagedServiceUv ? await requirePackagedServiceUv() : null;
 if (prepareOptions.prefetch) {

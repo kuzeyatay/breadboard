@@ -139,10 +139,13 @@ export function resolveVoiceboxRuntime(
     return { command: binaryOverride, argsPrefix: [], cwd: path.dirname(binaryOverride) };
   }
   if (paths.mode === "packaged") {
-    const binary = path.join(paths.binDir, executable);
-    return fs.existsSync(binary)
-      ? { command: binary, argsPrefix: [], cwd: paths.runtimeDir }
-      : null;
+    // The speech server is an optional component installed on first use;
+    // a binary staged beside the app (older packages) still wins.
+    const binary = [
+      path.join(paths.binDir, executable),
+      ...managedPayloadCandidates(paths, `runtime-v2/toolchains/voicebox/${executable}`),
+    ].find((candidate) => fs.existsSync(candidate));
+    return binary ? { command: binary, argsPrefix: [], cwd: paths.runtimeDir } : null;
   }
 
   const root = path.join(paths.appRoot, "voicebox");
@@ -203,6 +206,19 @@ export function colpaliServiceUrl(config: DesktopRuntimeConfig): string {
  * the environment is a 3.5 GB opt-in, and without it document attachments are
  * inlined whole exactly as they were before ColPali existed.
  */
+/**
+ * Where an optional component installed on first use lands: the Runtime's
+ * managed payload namespace under the bulk root when one is configured, else
+ * under the data root. Both are listed so a payload that predates the bulk
+ * drive still counts.
+ */
+function managedPayloadCandidates(paths: ResolvedPaths, relative: string): string[] {
+  const segments = relative.split("/");
+  return [paths.bulkRoot, paths.dataRoot]
+    .filter((candidate): candidate is string => Boolean(candidate))
+    .map((candidate) => path.join(candidate, ...segments));
+}
+
 export function resolveColpaliPython(paths: ResolvedPaths): string | null {
   const executable = process.platform === "win32" ? "python.exe" : "python";
   const scripts = process.platform === "win32" ? "Scripts" : "bin";
@@ -211,6 +227,7 @@ export function resolveColpaliPython(paths: ResolvedPaths): string | null {
     override,
     path.join(paths.runtimesDir, "colpali-python", scripts, executable),
     path.join(paths.runtimesDir, "colpali-python", executable),
+    ...managedPayloadCandidates(paths, "runtime-v2/services/colpali/.venv/Scripts/python.exe"),
     path.join(paths.appRoot, ".runtime", "colpali-venv", scripts, executable),
   ].filter((candidate): candidate is string => Boolean(candidate));
   const python = candidates.find((candidate) => fs.existsSync(candidate));
@@ -244,6 +261,7 @@ export function resolveHumanizerPython(paths: ResolvedPaths): string | null {
     override,
     path.join(paths.runtimesDir, "humanizer-python", scripts, executable),
     path.join(paths.runtimesDir, "humanizer-python", executable),
+    ...managedPayloadCandidates(paths, "runtime-v2/services/humanizer/.venv/Scripts/python.exe"),
     path.join(paths.appRoot, ".runtime", "humanizer-venv", scripts, executable),
   ].filter((candidate): candidate is string => Boolean(candidate));
   const python = candidates.find((candidate) => fs.existsSync(candidate));
@@ -280,6 +298,7 @@ export function resolveCadPython(paths: ResolvedPaths): string | null {
     override,
     path.join(paths.runtimesDir, "cad-python", scripts, executable),
     path.join(paths.runtimesDir, "cad-python", executable),
+    ...managedPayloadCandidates(paths, "runtime-v2/services/cad/.venv/Scripts/python.exe"),
     path.join(paths.appRoot, ".runtime", "cad-venv", scripts, executable),
   ].filter((candidate): candidate is string => Boolean(candidate));
   const python = candidates.find((candidate) => fs.existsSync(candidate));

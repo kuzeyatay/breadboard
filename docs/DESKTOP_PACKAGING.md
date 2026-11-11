@@ -96,6 +96,8 @@ npx electron-builder --win nsis --x64 --prepackaged "<release>\win-unpacked" -c.
 | Docker (Scriberr) | **Never required.** Optional compatibility mode, off by default | Scriberr is AGPL + has no native Windows binaries in this repo; transcription is an optional capability with an honest unavailable state. |
 | Docker/Podman (Postiz) | **Never required at startup.** The coordinator is an on-demand Runtime V2 service started only when Socials Manager is opened; the window never waits for it. Compose assets are bundled, container images are pulled by the local engine | The desktop supervisor waits for the web app, bootstraps its local account, verifies the authenticated API, and writes all coordinator/Compose output to `postiz.log`. |
 
+| OCR weights, ColPali/Humanizer/CAD Python environments, Voicebox server | **Installed on first use**, never packaged. The managed-setup executor builds the environments from the shipped `pylock.packaged.toml` with uv and downloads the pinned weights/binary; `BREADBOARD_PACKAGE_DIET=1` (set by the installer job) skips staging them and `electron-builder.yml` filters them out of any full local staging | NSIS stores at most 2 GiB of packed data and silently truncates beyond it (run 43039676209 produced a 167 MB installer from a 10 GB payload); these five payloads are ~2 GiB packed. verify-package pins the first-use installer to the same receipts |
+
 ## electron-builder layout
 
 - `app.asar` contains only the compiled desktop shell (`desktop/dist`).

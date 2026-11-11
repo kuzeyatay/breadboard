@@ -367,6 +367,7 @@ export async function stagePinnedVlmOcrRuntime({
   licensesRoot,
   suppliedPaths = {},
   offline = false,
+  skipModels = false,
   log = () => {},
 } = {}) {
   if (process.platform !== PINNED_VLM_OCR_RUNTIME.platform || process.arch !== PINNED_VLM_OCR_RUNTIME.architecture) {
@@ -463,6 +464,12 @@ export async function stagePinnedVlmOcrRuntime({
       ["llama.cpp license", suppliedPaths.llamaLicense, PINNED_VLM_OCR_RUNTIME.llamaCpp.license, stagedLlamaLicense],
       ["HunyuanOCR license", suppliedPaths.modelLicense, PINNED_VLM_OCR_RUNTIME.model.license, stagedModelLicense],
     ]) {
+      // The installed app downloads the weights on first use; a diet build ships
+      // the runtime, receipt and licenses only.
+      if (skipModels && destination.startsWith(stagedModels)) {
+        log(`skipping ${label}: installed on first use`);
+        continue;
+      }
       log(`acquiring ${label}`);
       await acquirePinnedArtifact({ label, suppliedPath, receipt, destination, offline });
     }

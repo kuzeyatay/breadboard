@@ -2255,7 +2255,7 @@ export default function DashboardClient({
   const hasVlmCompatibleFile = uploadFiles.some((f) =>
     VLM_PARSE_FILE_RE.test(f.name),
   );
-  const { status: vlmStatus, loading: vlmStatusLoading } =
+  const { status: vlmStatus, loading: vlmStatusLoading, refresh: refreshVlmStatus } =
     useVlmOcrAvailability(Boolean(uploadCluster) && hasVlmCompatibleFile);
   const vlmUploadEnabled =
     parseWithVlm && hasVlmCompatibleFile && vlmStatus.available;
@@ -3511,6 +3511,7 @@ export default function DashboardClient({
 
               {hasVlmCompatibleFile && !allDoneOrError(uploadCluster) && (
                 <VlmParseOption
+                  onInstalled={refreshVlmStatus}
                   checked={parseWithVlm}
                   onChange={(next) => {
                     setParseWithVlm(next);

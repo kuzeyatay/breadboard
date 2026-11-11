@@ -4,18 +4,23 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
 
 export const MANAGED_SETUP_OPERATIONS = Object.freeze({
   "audio-analyzer": Object.freeze(["check", "download", "install"]),
   "bolt-slides": Object.freeze(["install-dependencies", "remove"]),
+  cad: Object.freeze(["install", "remove"]),
   "career-ops": Object.freeze(["install", "browsers", "scaffold", "remove"]),
   "claude-code": Object.freeze(["status", "logout", "refresh-usage"]),
   acestep: Object.freeze(["install", "remove"]),
+  colpali: Object.freeze(["install", "remove"]),
   comfyui: Object.freeze(["install"]),
   "deep-tutor": Object.freeze(["install", "reinstall", "remove"]),
   "deer-flow": Object.freeze(["install", "reinstall", "remove"]),
   "google-images": Object.freeze(["check", "install"]),
+  humanizer: Object.freeze(["install", "remove"]),
   hyperframes: Object.freeze(["install-cli", "remove"]),
   legal: Object.freeze(["install", "reinstall", "remove"]),
   matraix: Object.freeze(["install-runtime", "remove"]),
@@ -30,6 +35,8 @@ export const MANAGED_SETUP_OPERATIONS = Object.freeze({
   subsai: Object.freeze(["build-subtitles", "remove-subtitles"]),
   tradingagents: Object.freeze(["install", "reinstall", "remove"]),
   "vibe-trading": Object.freeze(["install", "reinstall", "remove"]),
+  "vlm-ocr": Object.freeze(["install", "remove"]),
+  voicebox: Object.freeze(["install", "remove"]),
   wardrobe: Object.freeze(["install", "remove"]),
 });
 
@@ -3617,14 +3624,208 @@ export function validateManagedSetupRequest(value) {
   return value;
 }
 
+
+// Optional components that ship as source and receipts only. Their payloads
+// (two Python environments with torch, the OCR weights, the speech server)
+// would push the NSIS installer past its 2 GiB packed limit, so installed
+// Breadboard builds or downloads them here on the user's request, pinned to
+// the same versions the development staging uses. verify-package fails the
+// build when these pins drift from desktop/scripts.
+export const OPTIONAL_PYTHON_SERVICES = Object.freeze({
+  colpali: Object.freeze({
+    directory: "colpali-service",
+    pythonVersion: "3.13.13",
+    smokeImports: "import colpali_engine, numpy, PIL, pydantic, torch, transformers, breadboard_colpali.server; from colpali_engine.models import ColIdefics3, ColIdefics3Processor",
+    displayName: "visual document search (ColPali)",
+  }),
+  humanizer: Object.freeze({
+    directory: "humanizer-service",
+    pythonVersion: "3.13.13",
+    smokeImports: "import pydantic, safetensors, sentencepiece, torch, transformers, breadboard_humanizer.server; from transformers import AutoModelForSeq2SeqLM, AutoTokenizer",
+    displayName: "natural rewriting (Humanizer)",
+  }),
+  cad: Object.freeze({
+    directory: "cad-service",
+    pythonVersion: "3.12.10",
+    smokeImports: "import cadquery, OCP, pydantic, breadboard_cad.server, breadboard_cad.cadquery_engine",
+    displayName: "parametric CAD (CadQuery)",
+  }),
+});
+
+export const OPTIONAL_COMPONENT_DOWNLOADS = Object.freeze({
+  "vlm-ocr": Object.freeze({
+    payload: "runtime-v2/toolchains/vlm-ocr-models",
+    displayName: "local OCR model (HunyuanOCR)",
+    files: Object.freeze([
+      Object.freeze({
+        name: "HunyuanOCR-Q8_0.gguf",
+        url: "https://huggingface.co/ggml-org/HunyuanOCR-GGUF/resolve/8e070c9ad79e4ca97a9b4daa2f1ce17e8759afb1/HunyuanOCR-Q8_0.gguf?download=true",
+        size: 577_949_408,
+        sha256: "CDAFC794CAFEAE377868D7A40A70E282A737E39ABE77C0D8B73614447B364A21",
+      }),
+      Object.freeze({
+        name: "mmproj-HunyuanOCR-Q8_0.gguf",
+        url: "https://huggingface.co/ggml-org/HunyuanOCR-GGUF/resolve/8e070c9ad79e4ca97a9b4daa2f1ce17e8759afb1/mmproj-HunyuanOCR-Q8_0.gguf?download=true",
+        size: 732_938_240,
+        sha256: "B77913164FF73D4C0DC4D994E236ED72BACBBE5C5DB1EC9B2828627B46C32804",
+      }),
+    ]),
+  }),
+  voicebox: Object.freeze({
+    payload: "runtime-v2/toolchains/voicebox",
+    displayName: "Voicebox speech server",
+    files: Object.freeze([
+      Object.freeze({
+        name: "voicebox-server.exe",
+        url: "https://github.com/kuzeyatay/breadboard/releases/download/prebuilt-binaries-2026-11-10/voicebox-server.exe",
+        size: 674_908_785,
+        sha256: "B5316B4EB910CE087867EFBACD1D1E2739B3BAC6DB3C8FFB16123D30EAA94578",
+      }),
+    ]),
+  }),
+});
+
+const OPTIONAL_COMPONENT_DOWNLOAD_TIMEOUT_MS = 2 * 60 * 60_000;
+
+function optionalComponentReadyMarker(venv, operation) {
+  return path.join(venv, `.breadboard-${operation}-ready`);
+}
+
+/** Install one of the packaged Python services into the managed data root
+ * exactly as prepare-runtimes.mjs assembles it for the installer: uv selects
+ * the pinned interpreter, then installs the hashed pylock closure. The
+ * service source stays in the application root; the venv is the only payload. */
+async function optionalPythonServiceSetup(operation, action, context) {
+  const spec = OPTIONAL_PYTHON_SERVICES[operation];
+  if (!spec) fail("The optional component is unavailable.");
+  if (action === "remove") return removeManagedEnvironments(context, operation);
+  const root = directPath(path.join(context.appRoot, spec.directory), "isDirectory", `${spec.displayName} source`);
+  const lock = directPath(path.join(root, "pylock.packaged.toml"), "isFile", `${spec.displayName} lock`);
+  const venv = serviceEnvironment(runtimeBulkDataRoot(context.dataRoot, context.env), operation);
+  const marker = optionalComponentReadyMarker(venv, operation);
+  const verifyArgs = ["-s", "-c", `${spec.smokeImports}; print('ok')`];
+  const env = { ...context.env };
+  if (!env.UV_PYTHON_INSTALL_DIR?.trim()) {
+    const cache = managedPayloadTarget(context.dataRoot, "runtime-v2/toolchains/cache", context.env);
+    fs.mkdirSync(path.join(cache, "python"), { recursive: true });
+    env.UV_PYTHON_INSTALL_DIR = path.join(cache, "python");
+  }
+  let python = pythonInVenv(venv, context.platform);
+  if (python && fs.existsSync(marker)) {
+    const ready = await runManagedSetupCommand(python, verifyArgs, {
+      cwd: root, env: inheritedToolEnvironment(env), signal: context.signal,
+      timeoutMs: VERIFY_TIMEOUT_MS, spawnImpl: context.spawnImpl, platform: context.platform,
+    });
+    if (ready.code === 0 && ready.stdout.includes("ok")) {
+      return { ok: true, message: `${spec.displayName} is already installed.`, detail: "" };
+    }
+  }
+  if (!python) {
+    const created = await createPythonEnvironment({
+      root, venv, env, signal: context.signal, spawnImpl: context.spawnImpl,
+      pythonVersion: spec.pythonVersion, requireUv: true,
+    });
+    if (isRecord(created)) return created;
+    python = created;
+  }
+  const failed = await installPythonRequirements({
+    root,
+    python,
+    requirementArgs: [
+      "--preview-features", "pylock", "--requirements", lock, "--exact", "--require-hashes",
+      "--no-build", "--no-config", "--no-sources", "--strict",
+    ],
+    verifyArgs,
+    verifyCwd: root,
+    env,
+    signal: context.signal,
+    spawnImpl: context.spawnImpl,
+    label: spec.displayName,
+  });
+  if (failed) return failed;
+  fs.writeFileSync(marker, `${new Date().toISOString()}\n`, { mode: 0o600 });
+  return { ok: true, message: `${spec.displayName} is installed and ready.`, detail: "" };
+}
+
+async function fileMatchesPin(filePath, pin) {
+  const metadata = fs.lstatSync(filePath, { throwIfNoEntry: false });
+  if (!metadata?.isFile() || metadata.isSymbolicLink() || metadata.size !== pin.size) return false;
+  const hash = crypto.createHash("sha256");
+  for await (const chunk of fs.createReadStream(filePath)) hash.update(chunk);
+  return hash.digest("hex").toUpperCase() === pin.sha256;
+}
+
+/** Stream one pinned file to disk, hashing as it arrives; the part file only
+ * takes the final name once size and SHA-256 match the pin. */
+async function downloadPinnedFile(pin, target, context) {
+  const response = await context.fetchImpl(pin.url, {
+    redirect: "follow",
+    signal: AbortSignal.any([context.signal, AbortSignal.timeout(OPTIONAL_COMPONENT_DOWNLOAD_TIMEOUT_MS)]),
+  });
+  if (!response.ok || !response.body) {
+    fail(`The ${pin.name} download failed with HTTP ${response.status}.`, 502, "setup_download_failed");
+  }
+  const part = `${target}.${crypto.randomUUID()}.part`;
+  const hash = crypto.createHash("sha256");
+  let total = 0;
+  try {
+    await pipeline(
+      Readable.fromWeb(response.body),
+      new Transform({
+        transform(chunk, _encoding, callback) {
+          total += chunk.length;
+          if (total > pin.size) {
+            callback(new Error(`The ${pin.name} download exceeded its pinned size.`));
+            return;
+          }
+          hash.update(chunk);
+          callback(null, chunk);
+        },
+      }),
+      fs.createWriteStream(part, { flags: "wx" }),
+    );
+    if (total !== pin.size || hash.digest("hex").toUpperCase() !== pin.sha256) {
+      fail(`The ${pin.name} download did not match its pin; nothing was installed.`, 502, "setup_checksum_mismatch");
+    }
+    fs.renameSync(part, target);
+  } finally {
+    fs.rmSync(part, { force: true });
+  }
+}
+
+async function optionalDownloadSetup(operation, action, context) {
+  const spec = OPTIONAL_COMPONENT_DOWNLOADS[operation];
+  if (!spec) fail("The optional component is unavailable.");
+  if (action === "remove") return removeManagedEnvironments(context, operation);
+  const target = managedPayloadTarget(context.dataRoot, spec.payload, context.env);
+  fs.mkdirSync(target, { recursive: true });
+  directPath(target, "isDirectory", `${spec.displayName} install root`);
+  let downloaded = 0;
+  for (const pin of spec.files) {
+    const filePath = path.join(target, pin.name);
+    if (await fileMatchesPin(filePath, pin)) continue;
+    fs.rmSync(filePath, { force: true });
+    await downloadPinnedFile(pin, filePath, context);
+    downloaded += 1;
+  }
+  return {
+    ok: true,
+    message: downloaded === 0
+      ? `${spec.displayName} is already installed.`
+      : `${spec.displayName} is installed and ready.`,
+    detail: "",
+  };
+}
+
 const REMOVABLE_ENVIRONMENTS = new Set([
   "deep-tutor", "deer-flow", "legal", "money-printer", "openexecutive", "shorts", "stock-analyst", "tradingagents", "vibe-trading",
 ]);
 
 export function managedSetupPayloads(operation, action) {
-  if (REMOVABLE_ENVIRONMENTS.has(operation) || operation === "matraix") {
+  if (REMOVABLE_ENVIRONMENTS.has(operation) || operation === "matraix" || Object.hasOwn(OPTIONAL_PYTHON_SERVICES, operation)) {
     return [`runtime-v2/services/${operation}/.venv`];
   }
+  if (Object.hasOwn(OPTIONAL_COMPONENT_DOWNLOADS, operation)) return [OPTIONAL_COMPONENT_DOWNLOADS[operation].payload];
   if (operation === "openmontage") return ["runtime-v2/toolchains/openmontage",
     ...(action === "install-dependencies" ? ["runtime-v2/services/openmontage/.venv"] : [])];
   if (operation === "resource2skill") return ["runtime-v2/services/resource2skill/.venv",
@@ -3639,7 +3840,8 @@ export function managedSetupPayloads(operation, action) {
 }
 
 export function managedRemovalTargets(serviceId) {
-  if (REMOVABLE_ENVIRONMENTS.has(serviceId) || serviceId === "matraix") return [[`runtime-v2/services/${serviceId}/.venv`]];
+  if (REMOVABLE_ENVIRONMENTS.has(serviceId) || serviceId === "matraix" || Object.hasOwn(OPTIONAL_PYTHON_SERVICES, serviceId)) return [[`runtime-v2/services/${serviceId}/.venv`]];
+  if (Object.hasOwn(OPTIONAL_COMPONENT_DOWNLOADS, serviceId)) return [[OPTIONAL_COMPONENT_DOWNLOADS[serviceId].payload]];
   // Only dependency/model leaves are removable. Runtime sources may contain
   // generated work, so retain them along with all state and shared caches.
   return ({
@@ -3758,6 +3960,12 @@ async function dispatchManagedSetup(canonical, context) {
   if (canonical.operation === "vibe-trading") return vibeTradingSetup(canonical.action, context);
   if (canonical.operation === "stock-analyst") return stockAnalystSetup(canonical.action, context);
   if (canonical.operation === "money-printer") return moneyPrinterSetup(canonical.action, context);
+  if (Object.hasOwn(OPTIONAL_PYTHON_SERVICES, canonical.operation)) {
+    return optionalPythonServiceSetup(canonical.operation, canonical.action, context);
+  }
+  if (Object.hasOwn(OPTIONAL_COMPONENT_DOWNLOADS, canonical.operation)) {
+    return optionalDownloadSetup(canonical.operation, canonical.action, context);
+  }
   if (Object.hasOwn(PYTHON_CLONE_SETUPS, canonical.operation)) {
     return managedPythonCloneSetup(canonical.operation, canonical.action, context);
   }

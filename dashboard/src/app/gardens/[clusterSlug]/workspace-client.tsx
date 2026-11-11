@@ -14411,7 +14411,7 @@ if (careerOpsAgent) {
   const hasVlmCompatibleFile = uploadFiles.some((f) =>
     VLM_PARSE_FILE_RE.test(f.name),
   );
-  const { status: vlmStatus, loading: vlmStatusLoading } =
+  const { status: vlmStatus, loading: vlmStatusLoading, refresh: refreshVlmStatus } =
     useVlmOcrAvailability(showUpload && hasVlmCompatibleFile);
   const vlmUploadEnabled =
     parseWithVlm && hasVlmCompatibleFile && vlmStatus.available;
@@ -19879,6 +19879,7 @@ onClearCareerOps={() => {
               {/* Parse using VLM (local HunyuanOCR GGUF) */}
               {!isViewingUploadTask && hasVlmCompatibleFile && !allDoneOrError && (
                 <VlmParseOption
+                  onInstalled={refreshVlmStatus}
                   checked={parseWithVlm}
                   onChange={(next) => {
                     setParseWithVlm(next);

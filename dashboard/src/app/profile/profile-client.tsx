@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import Link from "next/link";
+import { OptionalComponentsSection } from "./optional-components-section";
 import { useRouter } from "next/navigation";
 import SignOutButton from "@/app/components/sign-out-button";
 import { FileArchive, RefreshCw } from "lucide-react";
@@ -2548,6 +2549,9 @@ export default function ProfileClient({
             </SignOutButton>
           </div>
         </section>
+
+        {/* ---------------------------------------------- optional components */}
+        <OptionalComponentsSection />
 
         {/* ----------------------------------------------------- about you */}
         <div className="mt-4">

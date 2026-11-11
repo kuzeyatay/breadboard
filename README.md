@@ -68,14 +68,17 @@ agents.
 
 Most of Breadboard works right after installation. Some capabilities download
 their runtime the first time you turn them on, and a few depend on software or
-accounts Breadboard cannot provide. The app shows each state in its settings.
+accounts Breadboard cannot provide. The app shows each state in its settings, and the Settings page has an
+“Optional components” section where the large downloads can be installed or
+removed ahead of time.
 
 | Capability | State in an installed Breadboard |
 | --- | --- |
 | Gardens, Learn, Garden Chat, Terminal, artifacts, in-app browser, Quartz publishing | Included |
-| Transcription of audio and video, local OCR | Included |
+| Transcription of audio and video | Included |
+| Local OCR (“Parse using VLM”) | OCR model (1.3 GB) downloads on first use |
 | Coding agents (Codex, Claude Code, OpenCode) | Included; each uses its own sign-in |
-| Speech (read aloud, dictation, voice profiles) | Speech models download on first use |
+| Speech (read aloud, dictation, voice profiles) | Speech server (675 MB) and speech models download on first use |
 | Recall (screen and audio memory) | Capture engine downloads from npm on first use |
 | Music, video, research and finance agents | Their Python runtimes download on first use |
 | ComfyUI image generation | Environment downloads on first use; you supply the model checkpoints |
@@ -83,7 +86,9 @@ accounts Breadboard cannot provide. The app shows each state in its settings.
 | Spotify playback | Needs Microsoft Edge and a Spotify Premium account |
 | SolidWorks agent | Needs a licensed SolidWorks on this PC |
 | Bambu printer | Needs a Bambu LAN printer in Developer Mode |
-| ColPali visual document retrieval | Model (about 1 GB) downloads on first use |
+| ColPali visual document retrieval | Python environment (1.4 GB) and model download on first use |
+| Natural rewriting (Humanizer) | Python environment (1.3 GB) and model download on first use |
+| Parametric CAD (CadQuery) | Python environment (700 MB) downloads on first use |
 
 ## Known limitations
 

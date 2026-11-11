@@ -2776,8 +2776,8 @@ impl TrustedWorkerEnvironmentSet {
         let manim_timeout = product_environment_value(os_environment, "MANIM_TIMEOUT_MS")
             .and_then(|value| value.to_str())
             .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| (30_000..=360_000).contains(value))
-            .unwrap_or(300_000);
+            .filter(|value| (30_000..=21_600_000).contains(value))
+            .unwrap_or(7_200_000);
         manim_pairs.push((
             OsString::from("MANIM_TIMEOUT_MS"),
             OsString::from(manim_timeout.to_string()),
@@ -5532,19 +5532,16 @@ fn build_vlm_ocr_environment(
                 .join("llama-server.exe")
                 .into_os_string(),
         )?;
+        // The weights are an optional component installed on first use; they
+        // live under the managed data (or bulk) root, never in the package.
+        let models = paths.managed_payload_path("runtime-v2/toolchains/vlm-ocr-models");
         builder.insert(
             "VLM_OCR_MODEL_PATH",
-            vlm_root
-                .join("models")
-                .join("HunyuanOCR-Q8_0.gguf")
-                .into_os_string(),
+            models.join("HunyuanOCR-Q8_0.gguf").into_os_string(),
         )?;
         builder.insert(
             "VLM_OCR_MMPROJ_PATH",
-            vlm_root
-                .join("models")
-                .join("mmproj-HunyuanOCR-Q8_0.gguf")
-                .into_os_string(),
+            models.join("mmproj-HunyuanOCR-Q8_0.gguf").into_os_string(),
         )?;
     } else {
         for name in [
@@ -7157,6 +7154,12 @@ fn write_hermes_runtime_config(
             "auxiliary:\n",
             "  title_generation:\n",
             "    enabled: false\n",
+            // Side work runs on the background model chosen on the profile
+            // page: ChatMock's `default` names it. Mirrors start-hermes.mjs.
+            "  compression:\n",
+            "    model: default\n",
+            "delegation:\n",
+            "  model: default\n",
             "memory:\n",
             "  memory_enabled: false\n",
             "  user_profile_enabled: false\n",
@@ -8558,19 +8561,15 @@ mod tests {
                 .join("llama-server.exe")
                 .to_string_lossy()
         );
+        let models = paths.managed_payload_path("runtime-v2/toolchains/vlm-ocr-models");
+        assert!(models.starts_with(paths.data_root()));
         assert_eq!(
             packaged["VLM_OCR_MODEL_PATH"],
-            vlm_root
-                .join("models")
-                .join("HunyuanOCR-Q8_0.gguf")
-                .to_string_lossy()
+            models.join("HunyuanOCR-Q8_0.gguf").to_string_lossy()
         );
         assert_eq!(
             packaged["VLM_OCR_MMPROJ_PATH"],
-            vlm_root
-                .join("models")
-                .join("mmproj-HunyuanOCR-Q8_0.gguf")
-                .to_string_lossy()
+            models.join("mmproj-HunyuanOCR-Q8_0.gguf").to_string_lossy()
         );
         assert!(!packaged.contains_key("VLM_OCR_HF_REPO"));
     }
@@ -10511,6 +10510,10 @@ mod tests {
                 "auxiliary:\n",
                 "  title_generation:\n",
                 "    enabled: false\n",
+                "  compression:\n",
+                "    model: default\n",
+                "delegation:\n",
+                "  model: default\n",
                 "memory:\n",
                 "  memory_enabled: false\n",
                 "  user_profile_enabled: false\n",

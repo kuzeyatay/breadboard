@@ -16,12 +16,15 @@ import { RuntimeAuthorityUnavailableError } from "./authority-error.ts";
 export type ManagedSetupServiceId =
   | "audio-analyzer"
   | "bolt-slides"
+  | "cad"
   | "career-ops"
   | "acestep"
+  | "colpali"
   | "comfyui"
   | "deep-tutor"
   | "deer-flow"
   | "google-images"
+  | "humanizer"
   | "hyperframes"
   | "legal"
   | "matraix"
@@ -36,6 +39,8 @@ export type ManagedSetupServiceId =
   | "subsai"
   | "tradingagents"
   | "vibe-trading"
+  | "vlm-ocr"
+  | "voicebox"
   | "wardrobe";
 
 export interface ManagedSetupResult {

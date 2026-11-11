@@ -44,6 +44,13 @@ extraResources:
     to: app-services/dashboard/node_modules/mem0ai/node_modules/openai/node_modules/node-fetch/node_modules/whatwg-url/node_modules/tr46/lib/.gitkeep
   - from: build-resources/runtimes
     to: runtimes
+    # Installed on first use (see OPTIONAL_PYTHON_SERVICES in the managed
+    # setup executor); the NSIS installer cannot hold them.
+    filter:
+      - "**/*"
+      - "!colpali-python/**"
+      - "!humanizer-python/**"
+      - "!cad-python/**"
   - from: build-resources/runtime-v2
     to: runtime-v2
   - from: build-resources/bun-cache
@@ -56,6 +63,9 @@ extraResources:
     to: bin
     filter:
       - "**/*"
+      # Installed on first use (OPTIONAL_COMPONENT_DOWNLOADS); the receipts ship.
+      - "!vlm-ocr/models/**"
+      - "!voicebox-server.exe"
 
 win:
   target:

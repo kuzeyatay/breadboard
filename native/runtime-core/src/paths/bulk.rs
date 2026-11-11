@@ -22,6 +22,9 @@ const VENV_IDS: &[&str] = &[
     "matraix",
     "openmontage",
     "subsai",
+    "colpali",
+    "humanizer",
+    "cad",
 ];
 const TOOLCHAINS: &[&str] = &[
     "bolt-slides",
@@ -34,6 +37,8 @@ const TOOLCHAINS: &[&str] = &[
     "openmaic",
     "openmaic-tools",
     "cache",
+    "vlm-ocr-models",
+    "voicebox",
 ];
 const TOP_LEVEL: &[&str] = &[
     "hyperframes-cli",
@@ -121,6 +126,8 @@ fn required_files(namespace: &str) -> &[&str] {
         "runtime-v2/toolchains/comfyui" => &["main.py"],
         "runtime-v2/toolchains/openmaic" => &[".next/BUILD_ID", "packages/@openmaic/generation/dist/index.js", "public/vendor/maic-importer/index.js"],
         "runtime-v2/toolchains/google-images" => &["src/index.js"],
+        "runtime-v2/toolchains/vlm-ocr-models" => &["HunyuanOCR-Q8_0.gguf", "mmproj-HunyuanOCR-Q8_0.gguf"],
+        "runtime-v2/toolchains/voicebox" => &["voicebox-server.exe"],
         "hyperframes-cli" => &["node_modules/hyperframes/bin/hyperframes.mjs"],
         "openscience-cli" => &["node_modules/@synsci/openscience/bin/openscience"],
         "openwork-runtime" => &[

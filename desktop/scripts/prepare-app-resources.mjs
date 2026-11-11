@@ -75,6 +75,9 @@ import {
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(desktopRoot, "..");
+// BREADBOARD_PACKAGE_DIET=1 (the installer job) leaves out payloads the installed
+// app downloads on first use; their receipts and licenses still ship.
+const packageDiet = process.env.BREADBOARD_PACKAGE_DIET === "1";
 const stagingRoot = path.join(desktopRoot, "build-resources", "app-services");
 const runtimeV2ManifestSource = path.join(desktopRoot, "runtime-v2", "manifests");
 const runtimeV2ManifestTarget = path.join(
@@ -1026,6 +1029,12 @@ if (process.platform !== "win32") fs.chmodSync(codexTarget, 0o755);
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
+  if (packageDiet) {
+    log("package diet: Voicebox server is downloaded on first use; staging its receipt only");
+    fs.mkdirSync(path.dirname(voiceboxTarget), { recursive: true });
+    fs.rmSync(voiceboxTarget, { force: true });
+    fs.copyFileSync(VOICEBOX_ARTIFACT_RECEIPT, voiceboxReceiptTarget);
+  } else {
   const targetTriple =
     process.platform === "win32"
       ? "x86_64-pc-windows-msvc.exe"
@@ -1061,6 +1070,7 @@ if (process.platform !== "win32") fs.chmodSync(codexTarget, 0o755);
   fs.copyFileSync(source, voiceboxTarget);
   fs.copyFileSync(VOICEBOX_ARTIFACT_RECEIPT, voiceboxReceiptTarget);
   if (process.platform !== "win32") fs.chmodSync(voiceboxTarget, 0o755);
+  }
 }
 
 // CLIProxyAPI is mandatory in packaged mode. Development may still use its
@@ -1142,6 +1152,7 @@ await stagePinnedCuaDriverRuntime({
 await stagePinnedVlmOcrRuntime({
   targetRoot: path.join(desktopRoot, "resources", "bin", "vlm-ocr"),
   licensesRoot: path.join(desktopRoot, "build-resources", "licenses"),
+  skipModels: packageDiet,
   suppliedPaths: {
     llamaArchive: process.env.BREADBOARD_VLM_OCR_LLAMA_ARCHIVE,
     model: process.env.BREADBOARD_VLM_OCR_MODEL_ARTIFACT,

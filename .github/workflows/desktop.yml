@@ -109,6 +109,10 @@ jobs:
       # pagefile step below raises the commit limit and the reserve is pinned
       # to a size the runner can actually hold.
       BREADBOARD_MIN_FREE_COMMIT_MB: '4096'
+      # The OCR weights, the PyTorch Python environments and the Voicebox
+      # server are installed on first use; shipping them would exceed the
+      # 2 GiB NSIS limit. Receipts and licenses still ship.
+      BREADBOARD_PACKAGE_DIET: '1'
     steps:
       - name: Keep checked-out bytes exact
         shell: pwsh

@@ -11,9 +11,11 @@ const IDENTIFIER = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const VENV_SERVICES = new Set([
   "deep-tutor", "deer-flow", "legal", "money-printer", "openexecutive", "shorts", "stock-analyst", "tradingagents", "vibe-trading",
   "acestep", "comfyui", "resource2skill", "formsmith", "solidworks-mcp", "agent-reach", "matraix", "openmontage", "subsai",
+  "colpali", "humanizer", "cad",
 ]);
 const TOP_LEVEL = new Set(["hyperframes-cli", "hyperframes-browser", "openscience-cli", "openwork-runtime"]);
-const TOOLCHAINS = new Set(["bolt-slides", "wardrobe", "openmontage", "comfyui", "google-images", "audio-analyzer", "career-ops-browsers", "openmaic", "openmaic-tools", "cache"]);
+const TOOLCHAINS = new Set(["bolt-slides", "wardrobe", "openmontage", "comfyui", "google-images", "audio-analyzer", "career-ops-browsers", "openmaic", "openmaic-tools", "cache",
+  "vlm-ocr-models", "voicebox"]);
 const STATEFUL_TOOLCHAINS = new Set(["career-ops", "money-printer"]);
 const CACHE_PAYLOADS = new Set([
   "runtime-v2/toolchains/cache", "runtime-v2/services/acestep/uv-cache", "runtime-v2/services/acestep/cache",
@@ -23,6 +25,8 @@ const PAYLOAD_FILES = {
   "runtime-v2/toolchains/wardrobe": ["node_modules/vite/bin/vite.js"],
   "runtime-v2/toolchains/openmontage": ["AGENT_GUIDE.md", "tools/tool_registry.py"],
   "runtime-v2/toolchains/google-images": ["src/index.js"],
+  "runtime-v2/toolchains/vlm-ocr-models": ["HunyuanOCR-Q8_0.gguf", "mmproj-HunyuanOCR-Q8_0.gguf"],
+  "runtime-v2/toolchains/voicebox": ["voicebox-server.exe"],
   "runtime-v2/toolchains/comfyui": ["main.py"],
   "runtime-v2/toolchains/openmaic": [".next/BUILD_ID", "packages/@openmaic/generation/dist/index.js", "public/vendor/maic-importer/index.js"],
   "hyperframes-cli": ["node_modules/hyperframes/bin/hyperframes.mjs"],

@@ -1663,12 +1663,12 @@
                 "path": "bin/vlm-ocr/runtime-artifact.json"
               },
               {
-                "authority": "runtime-root",
-                "path": "bin/vlm-ocr/models/HunyuanOCR-Q8_0.gguf"
+                "authority": "data-root",
+                "path": "runtime-v2/toolchains/vlm-ocr-models/HunyuanOCR-Q8_0.gguf"
               },
               {
-                "authority": "runtime-root",
-                "path": "bin/vlm-ocr/models/mmproj-HunyuanOCR-Q8_0.gguf"
+                "authority": "data-root",
+                "path": "runtime-v2/toolchains/vlm-ocr-models/mmproj-HunyuanOCR-Q8_0.gguf"
               }
             ]
           },
@@ -2764,9 +2764,13 @@
           "modes": [
             "packaged"
           ],
-          "executableAuthority": "runtime-root",
-          "allowedExecutable": "runtimes/cad-python/python.exe",
+          "executableAuthority": "data-root",
+          "allowedExecutable": "runtime-v2/services/cad/.venv/Scripts/python.exe",
           "arguments": [
+            {
+              "kind": "literal",
+              "value": "-s"
+            },
             {
               "kind": "literal",
               "value": "-m"
@@ -2805,16 +2809,20 @@
             "kind": "files-present",
             "files": [
               {
-                "authority": "runtime-root",
-                "path": "runtimes/cad-python/python.exe"
+                "authority": "data-root",
+                "path": "runtime-v2/services/cad/.venv/Scripts/python.exe"
+              },
+              {
+                "authority": "data-root",
+                "path": "runtime-v2/services/cad/.venv/.breadboard-cad-ready"
               },
               {
                 "authority": "app-root",
                 "path": "cad-service/breadboard_cad/__main__.py"
               },
               {
-                "authority": "runtime-root",
-                "path": "runtimes/cad-python/runtime-artifact.json"
+                "authority": "app-root",
+                "path": "cad-service/pylock.packaged.toml"
               },
               {
                 "authority": "app-root",
@@ -3110,9 +3118,13 @@
           "modes": [
             "packaged"
           ],
-          "executableAuthority": "runtime-root",
-          "allowedExecutable": "runtimes/colpali-python/python.exe",
+          "executableAuthority": "data-root",
+          "allowedExecutable": "runtime-v2/services/colpali/.venv/Scripts/python.exe",
           "arguments": [
+            {
+              "kind": "literal",
+              "value": "-s"
+            },
             {
               "kind": "literal",
               "value": "-m"
@@ -3151,16 +3163,20 @@
             "kind": "files-present",
             "files": [
               {
-                "authority": "runtime-root",
-                "path": "runtimes/colpali-python/python.exe"
+                "authority": "data-root",
+                "path": "runtime-v2/services/colpali/.venv/Scripts/python.exe"
+              },
+              {
+                "authority": "data-root",
+                "path": "runtime-v2/services/colpali/.venv/.breadboard-colpali-ready"
               },
               {
                 "authority": "app-root",
                 "path": "colpali-service/breadboard_colpali/__main__.py"
               },
               {
-                "authority": "runtime-root",
-                "path": "runtimes/colpali-python/runtime-artifact.json"
+                "authority": "app-root",
+                "path": "colpali-service/pylock.packaged.toml"
               },
               {
                 "authority": "app-root",
@@ -3279,9 +3295,13 @@
           "modes": [
             "packaged"
           ],
-          "executableAuthority": "runtime-root",
-          "allowedExecutable": "runtimes/humanizer-python/python.exe",
+          "executableAuthority": "data-root",
+          "allowedExecutable": "runtime-v2/services/humanizer/.venv/Scripts/python.exe",
           "arguments": [
+            {
+              "kind": "literal",
+              "value": "-s"
+            },
             {
               "kind": "literal",
               "value": "-m"
@@ -3324,16 +3344,20 @@
             "kind": "files-present",
             "files": [
               {
-                "authority": "runtime-root",
-                "path": "runtimes/humanizer-python/python.exe"
+                "authority": "data-root",
+                "path": "runtime-v2/services/humanizer/.venv/Scripts/python.exe"
+              },
+              {
+                "authority": "data-root",
+                "path": "runtime-v2/services/humanizer/.venv/.breadboard-humanizer-ready"
               },
               {
                 "authority": "app-root",
                 "path": "humanizer-service/breadboard_humanizer/__main__.py"
               },
               {
-                "authority": "runtime-root",
-                "path": "runtimes/humanizer-python/runtime-artifact.json"
+                "authority": "app-root",
+                "path": "humanizer-service/pylock.packaged.toml"
               },
               {
                 "authority": "app-root",
@@ -3435,8 +3459,8 @@
           "modes": [
             "packaged"
           ],
-          "executableAuthority": "runtime-root",
-          "allowedExecutable": "bin/voicebox-server.exe",
+          "executableAuthority": "data-root",
+          "allowedExecutable": "runtime-v2/toolchains/voicebox/voicebox-server.exe",
           "arguments": [
             {
               "kind": "literal",
@@ -3472,8 +3496,8 @@
             "kind": "files-present",
             "files": [
               {
-                "authority": "runtime-root",
-                "path": "bin/voicebox-server.exe"
+                "authority": "data-root",
+                "path": "runtime-v2/toolchains/voicebox/voicebox-server.exe"
               },
               {
                 "authority": "runtime-root",

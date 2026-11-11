@@ -14,6 +14,12 @@ import { findNestedDashboardRuntimeDuplicates } from "./packaged-dashboard-input
 import { voiceboxArtifactReceiptProblems } from "./voicebox-artifact-receipt.mjs";
 import { PINNED_CUA_DRIVER_RUNTIME } from "./cua-driver-runtime-artifact.mjs";
 import { PINNED_VLM_OCR_RUNTIME } from "./vlm-ocr-runtime-artifact.mjs";
+// Optional components the installer leaves out: the executor that installs
+// them on first use must pin exactly what staging would have shipped.
+import {
+  OPTIONAL_COMPONENT_DOWNLOADS,
+  OPTIONAL_PYTHON_SERVICES,
+} from "../../dashboard/scripts/runtime-v2-managed-setup-executor.mjs";
 import {
   PATENT_DISCLOSURE_REQUIRED_FILES,
   PATENT_DISCLOSURE_UPSTREAM_COMMIT,
@@ -860,11 +866,13 @@ const PACKAGED_SERVICE_CLOSURE_POLICIES = Object.freeze({
     ],
   },
   penecho: { dataRoot: "none", bootstrap: ["app-root:penecho/BREADBOARD_SOURCE_COMMIT"] },
+  // The llama.cpp runtime ships; the 1.3 GB of weights are installed on first use.
   "vlm-ocr": {
-    dataRoot: "none",
+    dataRoot: "managed-install",
     bootstrap: [
       "app-root:dashboard/scripts/runtime-v2-vlm-ocr-service.mjs",
       "runtime-root:bin/vlm-ocr/runtime-artifact.json",
+      "app-root:dashboard/scripts/runtime-v2-managed-setup-executor.mjs",
     ],
   },
   // Screenpipe is under a commercial license that forbids bundling it in a
@@ -923,7 +931,15 @@ const PACKAGED_SERVICE_CLOSURE_POLICIES = Object.freeze({
   cliproxy: { dataRoot: "none", bootstrap: ["runtime-root:bin/cliproxy-runtime-artifact.json"] },
   quartz: { dataRoot: "none", bootstrap: ["app-root:dashboard/scripts/runtime-v2-quartz-static-service.mjs", "app-root:dashboard/scripts/quartz-canonical-reader-bridge.mjs", "app-root:dashboard/scripts/quartz-reader-shell.mjs"] },
   "ui-tars": { dataRoot: "none", bootstrap: ["app-root:ui-tars-adapter/package.json"] },
-  cad: { dataRoot: "none", bootstrap: ["app-root:cad-service/runtime-artifact.json"] },
+  // Source and hashed lock ship; the Python environment is built on first use.
+  cad: {
+    dataRoot: "managed-install",
+    bootstrap: [
+      "app-root:cad-service/runtime-artifact.json",
+      "app-root:cad-service/pylock.packaged.toml",
+      "app-root:dashboard/scripts/runtime-v2-managed-setup-executor.mjs",
+    ],
+  },
   "solidworks-mcp": {
     dataRoot: "writable-state",
     bootstrap: [
@@ -934,18 +950,30 @@ const PACKAGED_SERVICE_CLOSURE_POLICIES = Object.freeze({
     externalBoundary: ["locally licensed Windows SolidWorks installation and COM automation"],
   },
   colpali: {
-    dataRoot: "none",
-    bootstrap: ["app-root:colpali-service/runtime-artifact.json"],
+    dataRoot: "managed-install",
+    bootstrap: [
+      "app-root:colpali-service/runtime-artifact.json",
+      "app-root:colpali-service/pylock.packaged.toml",
+      "app-root:dashboard/scripts/runtime-v2-managed-setup-executor.mjs",
+    ],
     externalBoundary: ["ColPali model weights downloaded into data-root storage on first use"],
   },
   humanizer: {
-    dataRoot: "none",
-    bootstrap: ["app-root:humanizer-service/runtime-artifact.json"],
+    dataRoot: "managed-install",
+    bootstrap: [
+      "app-root:humanizer-service/runtime-artifact.json",
+      "app-root:humanizer-service/pylock.packaged.toml",
+      "app-root:dashboard/scripts/runtime-v2-managed-setup-executor.mjs",
+    ],
     externalBoundary: ["Humanizer model weights downloaded into data-root storage on first use"],
   },
+  // The reviewed receipt ships; the 675 MB server is downloaded on first use.
   voicebox: {
-    dataRoot: "writable-state",
-    bootstrap: ["runtime-root:bin/voicebox-runtime-artifact.json"],
+    dataRoot: "managed-install",
+    bootstrap: [
+      "runtime-root:bin/voicebox-runtime-artifact.json",
+      "app-root:dashboard/scripts/runtime-v2-managed-setup-executor.mjs",
+    ],
     externalBoundary: ["on-demand speech-model assets stored under the writable Voicebox data root"],
   },
   scriberr: { dataRoot: "none", bootstrap: ["runtime-root:bin/transcription-runtime.json"] },
@@ -1471,6 +1499,16 @@ function checkPackagedPythonService(resources, label, service) {
   const runtimeReceiptPath = path.join(runtimeRoot, "runtime-artifact.json");
   const retainedRuntimeLock = path.join(runtimeRoot, "pylock.packaged.toml");
   const expectedReceipt = packagedServiceReceipt(service);
+  // Installed on first use: the package carries source, lock and receipt, and
+  // the executor must build exactly this interpreter version from this source.
+  const optionalRuntime = Object.hasOwn(OPTIONAL_PYTHON_SERVICES, service.id);
+  if (optionalRuntime) {
+    const spec = OPTIONAL_PYTHON_SERVICES[service.id];
+    if (spec.pythonVersion !== service.pythonVersion || spec.directory !== service.serviceDirectory) {
+      problems.push(`${label} ${service.id} first-use installer pins differ from the reviewed runtime`);
+    }
+  }
+  const runtimeStaged = !optionalRuntime || fs.existsSync(runtimeRoot);
   for (const [filePath, fileLabel] of [
     [path.join(sourceModule, service.entrypointFile ?? "__main__.py"), "source entrypoint"],
     [path.join(sourceRoot, "pyproject.toml"), "project metadata"],
@@ -1489,11 +1527,15 @@ function checkPackagedPythonService(resources, label, service) {
       ? [[path.join(sourceRoot, "BREADBOARD_UPSTREAM_COMMIT"), "upstream revision receipt"]]
       : []),
     [appReceiptPath, "app source receipt"],
-    [python, "fixed packaged interpreter"],
-    [path.join(runtimeRoot, "LICENSE.txt"), "CPython license"],
-    [importPathReceipt, "packaged source import path"],
-    [runtimeReceiptPath, "runtime receipt"],
-    ...(service.lockFormat === "uv-project-export"
+    ...(runtimeStaged
+      ? [
+          [python, "fixed packaged interpreter"],
+          [path.join(runtimeRoot, "LICENSE.txt"), "CPython license"],
+          [importPathReceipt, "packaged source import path"],
+          [runtimeReceiptPath, "runtime receipt"],
+        ]
+      : []),
+    ...(service.lockFormat === "uv-project-export" && runtimeStaged
       ? [[retainedRuntimeLock, "runtime packaged lock"]]
       : []),
     ...(service.noticesSha256
@@ -1502,7 +1544,7 @@ function checkPackagedPythonService(resources, label, service) {
   ]) {
     requireDirectFile(filePath, `${label} ${service.id} ${fileLabel}`);
   }
-  for (const relativePath of service.dependencyLicensePaths) {
+  for (const relativePath of runtimeStaged ? service.dependencyLicensePaths : []) {
     requireDirectFile(
       path.join(runtimeRoot, "Lib", "site-packages", ...relativePath.split("/")),
       `${label} ${service.id} dependency license ${relativePath}`,
@@ -2150,6 +2192,9 @@ function checkMandatoryPackagedClosures(resources, binRoot, label, bundledNode) 
       "HunyuanOCR license",
     ],
   ]) {
+    // The two model files are installed on first use; a package may carry them
+    // (older staging) but need not. Licenses always ship.
+    if (artifact.startsWith(vlmOcrModels) && !fs.existsSync(artifact)) continue;
     requireDirectFile(artifact, `${label} VLM OCR ${artifactLabel}`);
     if (fs.existsSync(artifact)) {
       hashChecks.push({
@@ -2158,6 +2203,19 @@ function checkMandatoryPackagedClosures(resources, binRoot, label, bundledNode) 
         expectedSize: expected.size,
         label: `${label} VLM OCR ${artifactLabel}`,
       });
+    }
+  }
+  const firstUseModels = OPTIONAL_COMPONENT_DOWNLOADS["vlm-ocr"]?.files ?? [];
+  for (const [index, expected] of [PINNED_VLM_OCR_RUNTIME.model.weights, PINNED_VLM_OCR_RUNTIME.model.projector].entries()) {
+    const pinned = firstUseModels[index];
+    if (
+      !pinned ||
+      pinned.name !== expected.name ||
+      pinned.url !== expected.url ||
+      pinned.size !== expected.size ||
+      pinned.sha256 !== expected.sha256
+    ) {
+      problems.push(`${label} VLM OCR first-use installer pin for ${expected.name} differs from the reviewed receipt`);
     }
   }
   const vlmOcrServer = path.join(vlmOcrRuntime, "llama-server.exe");
@@ -2253,8 +2311,17 @@ function checkMandatoryPackagedClosures(resources, binRoot, label, bundledNode) 
       if (receiptProblems.length > 0 || !receiptBytesMatch || JSON.stringify(staged) !== JSON.stringify(reviewed)) {
         problems.push(`${label} Voicebox reviewed/staged native receipt is not exact`);
       } else {
+        const firstUse = OPTIONAL_COMPONENT_DOWNLOADS.voicebox?.files?.[0];
+        if (
+          !firstUse ||
+          firstUse.name !== reviewed.executable ||
+          firstUse.size !== reviewed.size ||
+          firstUse.sha256 !== reviewed.sha256
+        ) {
+          problems.push(`${label} Voicebox first-use installer pin differs from the reviewed receipt`);
+        }
+        // The server is installed on first use; a package may still carry it.
         const executable = path.join(binRoot, reviewed.executable);
-        requireDirectFile(executable, `${label} Voicebox reviewed native executable`);
         if (fs.existsSync(executable)) {
           hashChecks.push({
             filePath: executable,
