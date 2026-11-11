@@ -268,7 +268,10 @@ type Frontmatter = Record<string, string | string[]>;
 
 const clusterKnowledgeCache = new Map<string, ClusterKnowledgeCacheEntry>();
 const CLUSTER_KNOWLEDGE_CACHE_MAX_ENTRIES = 12;
-const CLUSTER_KNOWLEDGE_CACHE_TTL_MS = 5 * 60 * 1000;
+// Every read still checks the files' sizes and times, so this only bounds how
+// long an unvisited garden's parsed graph is kept. At five minutes, returning
+// to a large garden after a short break re-parsed every note (2-5 s).
+const CLUSTER_KNOWLEDGE_CACHE_TTL_MS = 30 * 60 * 1000;
 let clusterKnowledgeCacheGeneration = 0;
 
 function dropClusterKnowledge(cacheKey: string): void {
