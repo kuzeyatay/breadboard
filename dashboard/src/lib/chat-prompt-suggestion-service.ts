@@ -6,6 +6,11 @@ import { parseRecommendations, scopedRecommendationEvidence, type Recommendation
 
 export { PROMPT_SUGGESTION_INSTRUCTION } from "./system-prompts/feature-defaults.ts";
 
+/** Chat model pattern -> the lighter model that writes its one-line suggestions. */
+const FAST_SUGGESTION_MODELS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^cliproxy\/gemini-/u, 'cliproxy/gemini-3.5-flash-lite'],
+];
+
 /** A bounded, tool-free completion; failure simply means no suggestion. */
 export async function generatePromptSuggestion(input: {
   userId?: number;
@@ -32,31 +37,42 @@ export async function generatePromptSuggestion(input: {
   timer.unref?.();
   try {
     const base = normalizeChatmockBaseUrl(input.baseUrl) ?? localChatmockBaseUrl();
-    const response = await (input.fetcher ?? fetch)(`${base}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY || 'local'}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemPromptText("prompt-suggestions", input.userId) },
-          ...(context.gardenSlug ? [{ role: 'system', content: 'This conversation is inside one garden. Suggest only a follow-up that helps understand, study or improve this garden, grounded in its supplied evidence. Ignore unrelated errands, mail, scheduling and other gardens even when the transcript mentions them. Return only JSON {"prompt":"...","sourceIds":["exact garden evidence id"]}, or null if no useful garden follow-up is supported. All cited evidence must belong to the selected garden. This output format overrides the plain-text format.' }] : []),
-          { role: 'user', content: `Conversation transcript (JSON):\n${JSON.stringify(messages)}${context.gardenSlug ? `\nSelected garden (JSON):\n${JSON.stringify(context.gardenSlug)}` : ''}${evidence.length ? `\nRelevant background evidence (JSON):\n${JSON.stringify(evidence.slice(0, 20))}` : ''}` },
-        ],
-        max_completion_tokens: 128,
-        reasoning_effort: 'low',
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
-    if (!response.ok || controller.signal.aborted) return null;
-    const payload = await response.json();
-    if (controller.signal.aborted) return null;
-    const raw = payload.choices?.[0]?.message?.content;
-    const suggestion = normalizePromptSuggestion(context.gardenSlug
-      ? parseRecommendations([JSON.parse(raw)], evidence.slice(0, 20), 1)[0]?.prompt
-      : raw);
-    return suggestion && !messages.some(message => message.role === 'user' && message.content.toLowerCase() === suggestion.toLowerCase())
-      ? suggestion : null;
+    const ask = async (askModel: string): Promise<string | null> => {
+      const response = await (input.fetcher ?? fetch)(`${base}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY || 'local'}` },
+        body: JSON.stringify({
+          model: askModel,
+          messages: [
+            { role: 'system', content: systemPromptText("prompt-suggestions", input.userId) },
+            ...(context.gardenSlug ? [{ role: 'system', content: 'This conversation is inside one garden. Suggest only a follow-up that helps understand, study or improve this garden, grounded in its supplied evidence. Ignore unrelated errands, mail, scheduling and other gardens even when the transcript mentions them. Return only JSON {"prompt":"...","sourceIds":["exact garden evidence id"]}, or null if no useful garden follow-up is supported. All cited evidence must belong to the selected garden. This output format overrides the plain-text format.' }] : []),
+            { role: 'user', content: `Conversation transcript (JSON):\n${JSON.stringify(messages)}${context.gardenSlug ? `\nSelected garden (JSON):\n${JSON.stringify(context.gardenSlug)}` : ''}${evidence.length ? `\nRelevant background evidence (JSON):\n${JSON.stringify(evidence.slice(0, 20))}` : ''}` },
+          ],
+          max_completion_tokens: 128,
+          reasoning_effort: 'low',
+          stream: false,
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok || controller.signal.aborted) return null;
+      const payload = await response.json();
+      if (controller.signal.aborted) return null;
+      const raw = payload.choices?.[0]?.message?.content;
+      const suggestion = normalizePromptSuggestion(context.gardenSlug
+        ? parseRecommendations([JSON.parse(raw)], evidence.slice(0, 20), 1)[0]?.prompt
+        : raw);
+      return suggestion && !messages.some(message => message.role === 'user' && message.content.toLowerCase() === suggestion.toLowerCase())
+        ? suggestion : null;
+    };
+    // A one-line follow-up does not need the chat's own model: a lighter one on
+    // the same subscription answers in about 1.2 s instead of 3.5-4 s. If it is
+    // unavailable or returns nothing usable, the chat's model is asked as before.
+    const fast = FAST_SUGGESTION_MODELS.find(([pattern]) => pattern.test(model))?.[1];
+    if (fast && fast !== model) {
+      const quick = await ask(fast).catch(() => null);
+      if (quick || controller.signal.aborted) return quick;
+    }
+    return await ask(model);
   } catch {
     return null;
   } finally {
