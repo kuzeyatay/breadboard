@@ -140,13 +140,21 @@ jobs:
         with:
           version: '0.12.5'
       - name: Install the Python the Agent Loop runtime is pinned to
-        # prepare-app-resources.mjs pins the uv-managed CPython 3.12.13 build
-        # by executable hash; the same uv release installs the same build.
+        # prepare-app-resources.mjs pins the CPython 3.12.13 interpreter by
+        # executable hash. That hash belongs to python-build-standalone release
+        # 20260408 (the workstation's uv install); newer uv manifests pick a later
+        # release, so the exact archive is fetched and verified here.
         shell: pwsh
         run: |
-          uv python install 3.12.13
+          $archive = Join-Path $env:RUNNER_TEMP "cpython-3.12.13-20260408.tar.gz"
+          Invoke-WebRequest -Uri "https://github.com/astral-sh/python-build-standalone/releases/download/20260408/cpython-3.12.13+20260408-x86_64-pc-windows-msvc-install_only_stripped.tar.gz" -OutFile $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash
+          if ($hash -ne "802162FB50165FC138DB0C737ABDA695E1CB819BFB52E4D230D14F8A5AF880B2") { Write-Error "unexpected archive hash $hash"; exit 1 }
+          $dest = Join-Path $env:RUNNER_TEMP "agent-loop-python"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          tar -xzf $archive -C $dest
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $root = Join-Path (uv python dir).Trim() "cpython-3.12.13-windows-x86_64-none"
+          $root = Join-Path $dest "python"
           "BREADBOARD_AGENT_LOOP_PYTHON_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & (Join-Path $root "python.exe") --version
       - name: Build the Premortem and Agent Loop environments the staging copies
@@ -160,7 +168,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           uv pip install --python premortem/.venv/Scripts/python.exe -r premortem/BREADBOARD_REQUIREMENTS_LOCK.txt
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          uv venv --python 3.12.13 agent-loop-engineering-kit/.venv
+          uv venv --python (Join-Path $env:BREADBOARD_AGENT_LOOP_PYTHON_ROOT "python.exe") agent-loop-engineering-kit/.venv
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           uv pip install --python agent-loop-engineering-kit/.venv/Scripts/python.exe -r agent-loop-engineering-kit/BREADBOARD_REQUIREMENTS_LOCK.txt
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
