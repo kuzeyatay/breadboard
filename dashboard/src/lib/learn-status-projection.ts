@@ -52,7 +52,10 @@ const STATUS_SOURCE_FILE_BYTE_LIMIT = 64 * 1024 * 1024;
 const STATUS_SOURCE_TOTAL_BYTE_LIMIT = 256 * 1024 * 1024;
 const STATUS_PENDING_WHITESPACE_LIMIT = 1024 * 1024;
 const STATUS_STREAM_CHUNK_BYTES = 64 * 1024;
-const STATUS_SOURCE_CACHE_LIMIT = 128;
+// Source entries hold a hash and a word count, never the body. At 128, shared
+// by every garden, a course with more sources than that re-read and re-hashed
+// them on every status poll (0.4-0.7 s each for the largest gardens).
+const STATUS_SOURCE_CACHE_LIMIT = STATUS_MARKDOWN_ENTRY_LIMIT;
 // Metadata entries are a few frontmatter fields (most are just "not a source"),
 // and a garden can hold thousands of notes: at 128 every status poll reopened
 // every note's header. Cover as many notes as one walk accepts.

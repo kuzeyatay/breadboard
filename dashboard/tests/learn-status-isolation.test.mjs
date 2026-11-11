@@ -129,7 +129,8 @@ test("both status runtime aliases use one lightweight in-process projection", ()
   )?.[1];
   assert.ok(statusNode);
   assert.doesNotMatch(statusNode, /\b(?:body|content)\s*:/);
-  assert.match(projection, /const STATUS_SOURCE_CACHE_LIMIT = 128/);
+  // Source entries hold no bodies either: a hash and a word count.
+  assert.match(projection, /const STATUS_SOURCE_CACHE_LIMIT = STATUS_MARKDOWN_ENTRY_LIMIT;/);
   // Metadata entries hold no bodies (above), so one per note a walk accepts.
   assert.match(projection, /const STATUS_METADATA_CACHE_LIMIT = STATUS_MARKDOWN_ENTRY_LIMIT;/);
   assert.match(projection, /const STATUS_MARKDOWN_ENTRY_LIMIT = 16_384;/);

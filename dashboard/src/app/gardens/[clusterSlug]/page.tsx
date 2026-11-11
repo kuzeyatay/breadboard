@@ -7,6 +7,7 @@ import { getCluster, getReadableCluster } from "@/app/actions/clusters";
 import db from "@/lib/db";
 import { organizationClusterClause } from "@/lib/organizations/store";
 import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
+import { wakeGardenMediaDrive } from "@/lib/media-drive-wake.ts";
 import WorkspaceClient from "./workspace-client";
 
 // Share the access check and saved name with metadata within each server render.
@@ -90,6 +91,8 @@ export default async function WorkspacePage({
 }) {
   const { clusterSlug } = await params;
   const { userId, cluster, isOwner } = await getWorkspacePageData(clusterSlug);
+  // Start an idle external drive turning before a recording is clicked.
+  wakeGardenMediaDrive(cluster.id, userId);
   const requested = await searchParams;
   const initialChatId = Array.isArray(requested.chat)
     ? requested.chat[0] ?? null
