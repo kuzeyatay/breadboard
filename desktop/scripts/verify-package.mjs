@@ -5135,6 +5135,18 @@ if (fs.existsSync(winUnpacked)) {
           `NSIS installer cannot hold the payload: ${(installerBytes / 2 ** 20).toFixed(0)} MiB for a ${(packagedBytes / 2 ** 30).toFixed(2)} GiB win-unpacked (NSIS packs at most 2 GiB; shrink the payload or use another target): ${installer}`,
         );
       }
+      // The packed data block cannot exceed 2 GiB and GitHub release assets
+      // cannot either. Refuse anything within 32 MiB of it, and say so loudly
+      // from 160 MiB out, so growth is caught before it truncates a build.
+      const nsisLimit = 2 * 2 ** 30;
+      const headroomMiB = (nsisLimit - installerBytes) / 2 ** 20;
+      if (headroomMiB < 32) {
+        problems.push(
+          `NSIS installer is ${(installerBytes / 2 ** 20).toFixed(0)} MiB, within 32 MiB of the 2048 MiB NSIS/GitHub limit: move another payload to first-use install (see OPTIONAL_COMPONENT_DOWNLOADS)`,
+        );
+      } else if (headroomMiB < 160) {
+        console.log(`[verify-package] WARNING: only ${headroomMiB.toFixed(0)} MiB of headroom under the 2048 MiB NSIS limit`);
+      }
     }
   }
 }
