@@ -75,7 +75,6 @@ extraResources:
       - "!codex-code-mode-host.exe"
       - "!codex-command-runner.exe"
       - "!codex-windows-sandbox-setup.exe"
-      - "!rg.exe"
 
 win:
   target:

@@ -948,10 +948,8 @@ async function resolvePackagedServiceSourceRoot(service) {
 // Codex is a native coding agent launched per task by the dashboard. Stage the
 // exact executable so an installed app does not depend on a global install.
 // The installer leaves it out (OPTIONAL_COMPONENT_DOWNLOADS pins the same
-// npm platform build for first-use install).
-if (packageDiet) {
-  log("package diet: Codex coding agent is not staged");
-} else {
+// npm platform build for first-use install) but keeps the distribution's
+// rg.exe: Hermes's file tools find ripgrep on the packaged service PATH.
 const codexSource = resolveCodexBinary();
 const codexTarget = path.join(
   desktopRoot,
@@ -959,9 +957,13 @@ const codexTarget = path.join(
   "bin",
   process.platform === "win32" ? "codex.exe" : "codex",
 );
-log(`staging Codex coding agent from ${codexSource}`);
 fs.mkdirSync(path.dirname(codexTarget), { recursive: true });
-fs.copyFileSync(codexSource, codexTarget);
+if (packageDiet) {
+  log(`package diet: Codex coding agent is not staged; only rg.exe from ${codexSource}`);
+} else {
+  log(`staging Codex coding agent from ${codexSource}`);
+  fs.copyFileSync(codexSource, codexTarget);
+}
 if (process.platform === "win32") {
   // The npm distribution (@openai/codex, vendor/x86_64-pc-windows-msvc) spreads
   // the helpers over bin/, codex-resources/ and codex-path/; a flattened
@@ -983,7 +985,9 @@ if (process.platform === "win32") {
     }
     return null;
   };
-  for (const name of CODEX_WINDOWS_RUNTIME_FILES.filter((name) => name !== "codex.exe")) {
+  for (const name of CODEX_WINDOWS_RUNTIME_FILES.filter(
+    (name) => name !== "codex.exe" && (!packageDiet || name === "rg.exe"),
+  )) {
     const companion = findCompanion(name);
     if (!companion) {
       fail(`The Codex distribution is incomplete: missing ${name} beside ${codexSource} or under ${codexDistributionRoot}.`);
@@ -991,8 +995,7 @@ if (process.platform === "win32") {
     fs.copyFileSync(companion, path.join(path.dirname(codexTarget), name));
   }
 }
-if (process.platform !== "win32") fs.chmodSync(codexTarget, 0o755);
-}
+if (!packageDiet && process.platform !== "win32") fs.chmodSync(codexTarget, 0o755);
 
 // Voicebox ships its Python/ML dependency closure as a native sidecar. Its
 // upstream requirements contain floating and Git dependencies, so a source

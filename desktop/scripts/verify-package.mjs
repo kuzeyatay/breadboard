@@ -2364,11 +2364,15 @@ function checkResourcesRoot(resources, binRoot, label) {
     ) {
       problems.push(`${label} Codex first-use installer pins differ from the packaged runtime file list`);
     }
-    const staged = CODEX_WINDOWS_RUNTIME_FILES.filter((name) => fs.existsSync(path.join(binRoot, name)));
-    if (staged.length > 0 && staged.length !== CODEX_WINDOWS_RUNTIME_FILES.length) {
+    // rg.exe always ships (Hermes's file tools use it); the Codex files
+    // themselves are all present (older packages) or all absent.
+    requireFile(path.join(binRoot, "rg.exe"), `${label} ripgrep for Hermes file tools`);
+    const codexOnly = CODEX_WINDOWS_RUNTIME_FILES.filter((name) => name !== "rg.exe");
+    const staged = codexOnly.filter((name) => fs.existsSync(path.join(binRoot, name)));
+    if (staged.length > 0 && staged.length !== codexOnly.length) {
       problems.push(`${label} Codex runtime is staged incompletely (${staged.join(", ")})`);
     }
-    for (const name of staged) {
+    for (const name of CODEX_WINDOWS_RUNTIME_FILES.filter((name) => fs.existsSync(path.join(binRoot, name)))) {
       const pin = firstUse?.files?.find((entry) => entry.name === name);
       if (pin) hashChecks.push({ filePath: path.join(binRoot, name), expectedHash: pin.sha256, expectedSize: pin.size, label: `${label} Codex runtime ${name}` });
     }
