@@ -18,7 +18,6 @@ interface Source {
   visible: (card: DesktopChatNotification) => boolean;
   open: (card: DesktopChatNotification) => void;
   delivered: (ids: string[]) => void;
-  reported?: Set<string>;
 }
 
 /** One OS alert for a chat message whose in-app cards cannot be seen. */
@@ -29,12 +28,15 @@ export class ChatNotificationDelivery {
   private pending = new Map<string, ReturnType<typeof setTimeout>>();
   private alerts = new Map<string, Notification>();
   private failed = new Set<string>();
+  // Keyed by overlay webContents id, which survives a reload. An overlay that
+  // reloads (renderer crash, Runtime restart, heavy load) must not be told
+  // about, and chime for, deliveries it was already told about.
+  private reported = new Map<number, Set<string>>();
 
   constructor(private readonly log: (line: string) => void = () => {}) {}
 
   update(id: number, source: Source): void {
     const previous = this.sources.get(id);
-    source.reported = previous?.reported ?? new Set();
     this.sources.set(id, source);
     const live = new Set(source.cards.map(card => card.id));
     for (const card of previous?.cards ?? []) {
@@ -50,7 +52,9 @@ export class ChatNotificationDelivery {
   remove(id: number): void {
     this.sources.delete(id);
     this.refresh();
-    if (!this.sources.size) { this.receipts.clear(); this.osReceipts.clear(); this.failed.clear(); }
+    // Receipts stay: the overlay that comes back re-reports every card still in
+    // the inbox, and clearing them re-sent each of those as a new OS alert.
+    if (!this.sources.size) this.failed.clear();
   }
 
   refresh(): void {
@@ -64,10 +68,13 @@ export class ChatNotificationDelivery {
       if (visible) this.withdraw(id);
       if (this.receipts.has(id)) {
         this.cancelPending(id);
-        for (const { source } of entries) {
-          if (!this.osReceipts.has(id) || source.reported!.has(id)) continue;
-          source.reported!.add(id);
-          if (source.reported!.size > 512) source.reported!.delete(source.reported!.values().next().value!);
+        for (const [sourceId, source] of this.sources) {
+          if (!entries.some(entry => entry.source === source)) continue;
+          const reported = this.reported.get(sourceId) ?? new Set<string>();
+          this.reported.set(sourceId, reported);
+          if (!this.osReceipts.has(id) || reported.has(id)) continue;
+          reported.add(id);
+          if (reported.size > 512) reported.delete(reported.values().next().value!);
           source.delivered([id]);
         }
       } else if (!this.pending.has(id) && !this.alerts.has(id) && !this.failed.has(id)) {

@@ -93,6 +93,14 @@ test('native clicks use the current exact-chat route and alert cleanup is bounde
   assert.equal(f.alerts[1]!.closed,1); assert.equal(f.pending(),0);
 });
 
+test('an overlay that reloads does not re-alert or re-chime notices it already delivered', () => {
+  const f = fixture(); const overlay = f.source(1,[card('kept')]); f.flush();
+  assert.equal(f.alerts.length,1); assert.deepEqual(overlay.received,['kept']);
+  f.delivery.remove(1);
+  f.source(1,[card('kept')]); f.flush(); f.delivery.refresh(); f.flush();
+  assert.equal(f.alerts.length,1); assert.deepEqual(overlay.received,['kept']);
+});
+
 test('failed or unsupported OS delivery does not loop, and a late show after removal is closed', () => {
   const f = fixture(); f.settings({fail:true}); f.source(1,[card('failed')]); f.flush();
   f.delivery.refresh(); f.flush(); assert.equal(f.alerts.length,1); assert.equal(f.sources.get(1)!.received.length,0);
