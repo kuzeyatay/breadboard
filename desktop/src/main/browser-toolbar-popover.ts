@@ -34,9 +34,13 @@ export class BrowserToolbarPopover {
     window.contentView.addChildView(this.view);
     const dismiss = () => this.close();
     const dismissOnFocus = () => { if (!this.modalDepth) dismiss(); };
+    // Focus going to the page or the shell means "clicked outside" only once
+    // the card is on screen and holds the focus. While it is still loading it
+    // was closed by any focus change, so the selected text got no card at all.
+    const dismissOnOutsideFocus = () => { if (this.revealed) dismissOnFocus(); };
     for (const contents of outside) {
-      contents.on("focus", dismissOnFocus);
-      this.cleanups.push(() => { if (!contents.isDestroyed()) contents.removeListener("focus", dismissOnFocus); });
+      contents.on("focus", dismissOnOutsideFocus);
+      this.cleanups.push(() => { if (!contents.isDestroyed()) contents.removeListener("focus", dismissOnOutsideFocus); });
     }
     window.on("blur", dismissOnFocus);
     window.on("resize", dismiss);
