@@ -97,6 +97,9 @@ test("the ChatGPT page's lent microphone is audio-only, chatgpt.com-only and tak
   notifications.installSession({
     setPermissionCheckHandler: (handler: typeof check) => { check = handler; },
     setPermissionRequestHandler: (handler: typeof request) => { request = handler; },
+    // The screen-share and device pickers install here too; this test covers the microphone only.
+    setDisplayMediaRequestHandler: () => {},
+    on: () => {},
   } as never);
   let url = "https://chatgpt.com/c/6ac60436";
   const page = { isDestroyed: () => false, getURL: () => url, once: () => {} };
