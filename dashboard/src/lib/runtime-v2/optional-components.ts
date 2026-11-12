@@ -1,4 +1,6 @@
 import "server-only";
+import fs from "node:fs";
+import path from "node:path";
 import {
   inspectRuntimeJob,
   readSupervisedServiceSnapshots,
@@ -11,6 +13,7 @@ import {
   readManagedSetupResult,
   submitManagedSetupJob,
 } from "./managed-setup-job.ts";
+import { runtimeV2PayloadRoot } from "../runtime-paths.ts";
 
 /**
  * Components the installer deliberately leaves out. Each one would push the
@@ -45,6 +48,26 @@ export const OPTIONAL_COMPONENTS = Object.freeze([
     name: "Voicebox speech server",
     detail: "Local text-to-speech server. 675 MB download.",
   },
+  // The rest are not supervised services: their state is whether the file
+  // managed setup leaves behind exists under the payload root.
+  {
+    id: "codex",
+    name: "Codex coding agent",
+    detail: "OpenAI's Codex CLI for the Codex terminal, HyperFrames and OpenMontage. 148 MB download.",
+    probe: "runtime-v2/toolchains/codex/codex.exe",
+  },
+  {
+    id: "claude-code",
+    name: "Claude Code",
+    detail: "The executor Ruflo swarms run through. 338 MB download.",
+    probe: "runtime-v2/toolchains/claude-code/claude.exe",
+  },
+  {
+    id: "resource2skill-frames",
+    name: "Resource2Skill reference frames",
+    detail: "Example frames the skill agent shows its model. 220 MB download.",
+    probe: "runtime-v2/toolchains/resource2skill-frames/.breadboard-resource2skill-frames-ready",
+  },
 ] as const);
 
 export type OptionalComponentId = (typeof OPTIONAL_COMPONENTS)[number]["id"];
@@ -64,18 +87,30 @@ export interface OptionalComponentState {
   installed: boolean | null;
 }
 
+function probeInstalled(probe: string): boolean {
+  const segments = probe.split("/");
+  const file = segments.pop() ?? "";
+  try {
+    return fs.existsSync(path.join(runtimeV2PayloadRoot(segments.join("/")), file));
+  } catch {
+    return false;
+  }
+}
+
 export async function readOptionalComponentStates(): Promise<OptionalComponentState[]> {
-  const ids = OPTIONAL_COMPONENTS.map((component) => component.id as SupervisedServiceId);
+  const supervised = OPTIONAL_COMPONENTS.filter((component) => !("probe" in component));
+  const ids = supervised.map((component) => component.id as SupervisedServiceId);
   const snapshots = await readSupervisedServiceSnapshots(ids).catch(() => null);
   const states = new Map(snapshots?.map((snapshot) => [snapshot.id, snapshot.state]) ?? []);
   return OPTIONAL_COMPONENTS.map((component) => {
-    const state = states.get(component.id as SupervisedServiceId);
-    return {
-      id: component.id,
-      name: component.name,
-      detail: component.detail,
-      installed: state === undefined ? null : state !== "installation-unavailable",
-    };
+    let installed: boolean | null;
+    if ("probe" in component) {
+      installed = probeInstalled(component.probe);
+    } else {
+      const state = states.get(component.id as SupervisedServiceId);
+      installed = state === undefined ? null : state !== "installation-unavailable";
+    }
+    return { id: component.id, name: component.name, detail: component.detail, installed };
   });
 }
 

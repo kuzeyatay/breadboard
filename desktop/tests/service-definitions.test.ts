@@ -79,7 +79,8 @@ test("dashboard env propagates dynamic ports, secrets and data locations", () =>
     dashboard.env["HERMES_CUA_DRIVER_CMD"],
     resolveHermesComputerUseDriver(paths),
   );
-  assert.equal(dashboard.env["CODEX_BIN"], path.join(paths.binDir, "codex.exe"));
+  assert.equal(dashboard.env["CODEX_BIN"], path.join(paths.bulkRoot ?? paths.dataRoot, "runtime-v2", "toolchains", "codex", "codex.exe"));
+  assert.equal(dashboard.env["RUFLO_CLAUDE_BIN"], path.join(paths.bulkRoot ?? paths.dataRoot, "runtime-v2", "toolchains", "claude-code", "claude.exe"));
   assert.equal(dashboard.env["CODEX_HOME"], paths.codexHome);
   assert.equal(
     dashboard.env["ARIS_ROOT"],
@@ -768,7 +769,8 @@ test("Codex is a dashboard-launched coding agent, not a supervised chat runtime"
   assert.equal(codex, undefined);
   const dashboard = definitions.find((definition) => definition.id === "dashboard");
   if (!dashboard) throw new Error("Dashboard service should be registered");
-  assert.equal(dashboard.env["CODEX_BIN"], path.join(paths.binDir, "codex.exe"));
+  // Installed on first use: the path is the managed payload, present or not.
+  assert.equal(dashboard.env["CODEX_BIN"], path.join(paths.bulkRoot ?? paths.dataRoot, "runtime-v2", "toolchains", "codex", "codex.exe"));
   assert.equal(dashboard.env["CODEX_HOME"], paths.codexHome);
 });
 

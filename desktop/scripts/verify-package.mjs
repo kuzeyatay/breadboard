@@ -2351,7 +2351,28 @@ function checkResourcesRoot(resources, binRoot, label) {
   const python = path.join(resources, "runtimes", "python", "python.exe");
   const dashboard = path.join(resources, "app-services", "dashboard-standalone", "dashboard");
   requireFile(node, `${label} bundled Node`);
-  for (const name of CODEX_WINDOWS_RUNTIME_FILES) requireFile(path.join(binRoot, name), `${label} Codex runtime ${name}`);
+  // Codex is installed on first use. The first-use pins must name exactly the
+  // runtime files staging shipped; a package that still carries them must
+  // carry the pinned bytes.
+  {
+    const firstUse = OPTIONAL_COMPONENT_DOWNLOADS.codex;
+    const pinnedNames = (firstUse?.files ?? []).map((pin) => pin.name);
+    if (
+      !firstUse?.archive?.url?.startsWith("https://registry.npmjs.org/@openai/codex/-/codex-") ||
+      JSON.stringify([...pinnedNames].sort()) !== JSON.stringify([...CODEX_WINDOWS_RUNTIME_FILES].sort()) ||
+      JSON.stringify(Object.values(firstUse.archive.members ?? {}).sort()) !== JSON.stringify([...CODEX_WINDOWS_RUNTIME_FILES].sort())
+    ) {
+      problems.push(`${label} Codex first-use installer pins differ from the packaged runtime file list`);
+    }
+    const staged = CODEX_WINDOWS_RUNTIME_FILES.filter((name) => fs.existsSync(path.join(binRoot, name)));
+    if (staged.length > 0 && staged.length !== CODEX_WINDOWS_RUNTIME_FILES.length) {
+      problems.push(`${label} Codex runtime is staged incompletely (${staged.join(", ")})`);
+    }
+    for (const name of staged) {
+      const pin = firstUse?.files?.find((entry) => entry.name === name);
+      if (pin) hashChecks.push({ filePath: path.join(binRoot, name), expectedHash: pin.sha256, expectedSize: pin.size, label: `${label} Codex runtime ${name}` });
+    }
+  }
   requireFile(bun, `${label} bundled Bun`);
   requireDirectFile(python, `${label} bundled Python`);
   if (fs.existsSync(python)) {
@@ -2361,10 +2382,6 @@ function checkResourcesRoot(resources, binRoot, label) {
       label: `${label} bundled Python executable`,
     });
   }
-  requireFile(
-    path.join(binRoot, "codex.exe"),
-    `${label} Codex coding-agent binary`,
-  );
   requireFile(
     path.join(binRoot, "runtime-supervisor.exe"),
     `${label} transitional Windows Job Object containment helper`,
@@ -2657,10 +2674,28 @@ function checkResourcesRoot(resources, binRoot, label) {
     [path.join(rufloRoot, "LICENSE"), "Ruflo license"],
     [rufloLock, "Ruflo frozen dependency lock"],
     [rufloReceipt, "Ruflo immutable artifact receipt"],
-    [claudeBinary, "pinned Claude Code executor"],
     [claudeReceipt, "Claude Code immutable artifact receipt"],
   ]) {
     requireDirectFile(filePath, `${label} ${fileLabel}`);
+  }
+  // Claude Code is installed on first use from the official release bucket;
+  // the pin must be the reviewed build, and a package that still carries the
+  // executable must carry those bytes.
+  {
+    const expected = PINNED_RUFLO_RUNTIME.claudeCode;
+    const firstUse = OPTIONAL_COMPONENT_DOWNLOADS["claude-code"]?.files?.[0];
+    if (
+      !firstUse ||
+      firstUse.name !== "claude.exe" ||
+      firstUse.url !== `https://downloads.claude.ai/claude-code-releases/${expected.version}/win32-x64/claude.exe` ||
+      firstUse.size !== expected.size ||
+      firstUse.sha256 !== expected.sha256
+    ) {
+      problems.push(`${label} Claude Code first-use installer pin differs from the reviewed receipt`);
+    }
+    if (fs.existsSync(claudeBinary)) {
+      hashChecks.push({ filePath: claudeBinary, expectedHash: expected.sha256, expectedSize: expected.size, label: `${label} pinned Claude Code executor` });
+    }
   }
   for (const [receiptPath, receiptLabel] of [
     [rufloReceipt, "Ruflo"],
@@ -3930,6 +3965,18 @@ function checkResourcesRoot(resources, binRoot, label) {
       path.join(resource2SkillRoot, ...relative),
       `${label} Resource2Skill immutable source ${relative.join("/")}`,
     );
+  }
+  // The reference frames are installed on first use as one pinned archive.
+  {
+    const firstUse = OPTIONAL_COMPONENT_DOWNLOADS["resource2skill-frames"];
+    if (
+      firstUse?.payload !== "runtime-v2/toolchains/resource2skill-frames" ||
+      firstUse.archive?.prefix !== "skills_library/" ||
+      !/^[0-9A-F]{64}$/u.test(firstUse.archive?.sha256 ?? "") ||
+      !(firstUse.archive?.size > 0)
+    ) {
+      problems.push(`${label} Resource2Skill reference-frames first-use installer pin is incomplete`);
+    }
   }
   const resource2SkillCommitReceipt = path.join(resource2SkillRoot, "BREADBOARD_UPSTREAM_COMMIT");
   if (

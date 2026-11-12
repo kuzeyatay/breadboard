@@ -311,6 +311,19 @@ def _flatten_skill_tool_result(tool_name: str, result_text: str) -> str:
     )
 
 
+def _overlay_frame_path(skill_dir: Path, relative: str) -> Path | None:
+    """Breadboard installs the reference frames separately from the read-only
+    source tree (RESOURCE2SKILL_FRAMES_ROOT mirrors ``skills_library/``)."""
+    overlay = os.environ.get("RESOURCE2SKILL_FRAMES_ROOT")
+    if not overlay:
+        return None
+    try:
+        inside = skill_dir.resolve().relative_to(Path(__file__).resolve().parents[1])
+    except ValueError:
+        return None
+    return Path(overlay) / inside / relative
+
+
 def _expand_mcp_value(value: str) -> str:
     """Expand `${VAR}` and `${VAR:-default}` expressions using the local environment."""
     def repl(match: re.Match[str]) -> str:
@@ -1953,6 +1966,8 @@ class AgentExecutor:
                     resolved_frames = []
                     for f in frames:
                         frame_path = skill_dir / f["path"]
+                        if not frame_path.exists():
+                            frame_path = _overlay_frame_path(skill_dir, f["path"]) or frame_path
                         if frame_path.exists():
                             resolved_frames.append({
                                 **f,

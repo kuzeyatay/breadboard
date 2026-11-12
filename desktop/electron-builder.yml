@@ -34,6 +34,10 @@ compression: normal
 extraResources:
   - from: build-resources/app-services
     to: app-services
+    filter:
+      - "**/*"
+      # Installed on first use (OPTIONAL_COMPONENT_DOWNLOADS["resource2skill-frames"]).
+      - "!Resource2Skill/skills_library/**/*.jpg"
   # builder-util's directory walker unconditionally omits `.gitkeep` before
   # FileSet filters run. These two zero-byte markers participate in reviewed
   # immutable closure receipts, so copy them through the single-file path,
@@ -66,6 +70,12 @@ extraResources:
       # Installed on first use (OPTIONAL_COMPONENT_DOWNLOADS); the receipts ship.
       - "!vlm-ocr/models/**"
       - "!voicebox-server.exe"
+      - "!claude.exe"
+      - "!codex.exe"
+      - "!codex-code-mode-host.exe"
+      - "!codex-command-runner.exe"
+      - "!codex-windows-sandbox-setup.exe"
+      - "!rg.exe"
 
 win:
   target:

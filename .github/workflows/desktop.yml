@@ -241,22 +241,6 @@ jobs:
           # checkout; the bundle resolves zod, tldts and node-html-parser there.
           npm ci --prefix api-anything --ignore-scripts --omit=dev
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Install the Codex coding agent the installer ships
-        # prepare-app-resources.mjs stages codex.exe and its Windows helpers
-        # from CODEX_BIN. The pinned version matches the workstation's staged
-        # binaries; the npm package carries the platform build as an
-        # optional dependency.
-        shell: pwsh
-        run: |
-          npm install -g @openai/codex@0.151.0-alpha.7.2
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $root = (npm root -g).Trim()
-          $codex = Get-ChildItem -Path $root -Recurse -Filter codex.exe -File |
-            Where-Object { $_.FullName -match 'x86_64-pc-windows-msvc' } |
-            Select-Object -First 1
-          if (-not $codex) { Write-Error "codex.exe was not found under $root"; exit 1 }
-          "CODEX_BIN=$($codex.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          & $codex.FullName --version
       # Mirrors docs/DESKTOP_RELEASE_CHECKLIST.md steps 4 to 9, one step each.
       - name: Build the standalone dashboard
         shell: pwsh

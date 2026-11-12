@@ -272,7 +272,7 @@ export function runtimeAvailability(
       source: launcher.source,
       executor: { available: false },
       reason:
-        "Ruflo plans swarms but runs them through Claude Code. Install Claude Code, or set RUFLO_CLAUDE_BIN to its path.",
+        "Ruflo plans swarms but runs them through Claude Code. Install it under Settings → Optional components, or set RUFLO_CLAUDE_BIN to its path.",
     };
   }
   return {

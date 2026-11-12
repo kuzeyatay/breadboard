@@ -308,11 +308,12 @@ export function resolveCadPython(paths: ResolvedPaths): string | null {
     : null;
 }
 
-/** Prefer a Codex binary built from the cloned source in dev; packaged builds
- * use the binary staged under resources/bin by prepare-app-resources.mjs. */
+/** Prefer a Codex binary built from the cloned source in dev. Packaged builds
+ * install Codex on first use (managed setup); the path points there even
+ * before the install so the dashboard sees the binary as soon as it lands. */
 export function resolveCodexBinary(paths: ResolvedPaths): string {
   const executable = process.platform === "win32" ? "codex.exe" : "codex";
-  if (paths.mode === "packaged") return path.join(paths.binDir, executable);
+  if (paths.mode === "packaged") return resolveFirstUseBinary(paths, executable, "runtime-v2/toolchains/codex");
   const override = process.env["CODEX_BIN"]?.trim();
   if (override && fs.existsSync(override)) return override;
   for (const profile of ["release", "debug"]) {
@@ -327,6 +328,20 @@ export function resolveCodexBinary(paths: ResolvedPaths): string {
     if (fs.existsSync(candidate)) return candidate;
   }
   return executable;
+}
+
+/** Where a first-use binary is or will be: a copy staged beside the app
+ * (older packages) wins, else the managed payload on the bulk or data root. */
+function resolveFirstUseBinary(paths: ResolvedPaths, executable: string, payload: string): string {
+  const managed = managedPayloadCandidates(paths, `${payload}/${executable}`);
+  const candidates = [path.join(paths.binDir, executable), ...managed];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? managed[0]!;
+}
+
+/** Claude Code is Ruflo's executor; packaged builds install it on first use. */
+export function resolveClaudeBinary(paths: ResolvedPaths): string | undefined {
+  if (paths.mode !== "packaged") return undefined;
+  return resolveFirstUseBinary(paths, "claude.exe", "runtime-v2/toolchains/claude-code");
 }
 
 export interface MissingRuntime {
@@ -933,6 +948,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       // --- Hermes runtime (server only) ---
       CODEX_BIN: resolveCodexBinary(paths),
       CODEX_HOME: paths.codexHome,
+      ...(resolveClaudeBinary(paths) ? { RUFLO_CLAUDE_BIN: resolveClaudeBinary(paths)! } : {}),
       // ARIS is a read-only research methodology/skill checkout consumed by
       // the dashboard per turn; it is not a separate network service.
       ARIS_ROOT: process.env["ARIS_ROOT"]?.trim()

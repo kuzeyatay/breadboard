@@ -39,6 +39,9 @@ const TOOLCHAINS: &[&str] = &[
     "cache",
     "vlm-ocr-models",
     "voicebox",
+    "claude-code",
+    "codex",
+    "resource2skill-frames",
 ];
 const TOP_LEVEL: &[&str] = &[
     "hyperframes-cli",
@@ -128,6 +131,11 @@ fn required_files(namespace: &str) -> &[&str] {
         "runtime-v2/toolchains/google-images" => &["src/index.js"],
         "runtime-v2/toolchains/vlm-ocr-models" => &["HunyuanOCR-Q8_0.gguf", "mmproj-HunyuanOCR-Q8_0.gguf"],
         "runtime-v2/toolchains/voicebox" => &["voicebox-server.exe"],
+        "runtime-v2/toolchains/claude-code" => &["claude.exe"],
+        "runtime-v2/toolchains/codex" => &["codex.exe"],
+        "runtime-v2/toolchains/resource2skill-frames" => {
+            &[".breadboard-resource2skill-frames-ready"]
+        }
         "hyperframes-cli" => &["node_modules/hyperframes/bin/hyperframes.mjs"],
         "openscience-cli" => &["node_modules/@synsci/openscience/bin/openscience"],
         "openwork-runtime" => &[

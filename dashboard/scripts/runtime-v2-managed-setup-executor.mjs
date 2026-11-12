@@ -13,8 +13,9 @@ export const MANAGED_SETUP_OPERATIONS = Object.freeze({
   "bolt-slides": Object.freeze(["install-dependencies", "remove"]),
   cad: Object.freeze(["install", "remove"]),
   "career-ops": Object.freeze(["install", "browsers", "scaffold", "remove"]),
-  "claude-code": Object.freeze(["status", "logout", "refresh-usage"]),
+  "claude-code": Object.freeze(["status", "logout", "refresh-usage", "install", "remove"]),
   acestep: Object.freeze(["install", "remove"]),
+  codex: Object.freeze(["install", "remove"]),
   colpali: Object.freeze(["install", "remove"]),
   comfyui: Object.freeze(["install"]),
   "deep-tutor": Object.freeze(["install", "reinstall", "remove"]),
@@ -30,6 +31,7 @@ export const MANAGED_SETUP_OPERATIONS = Object.freeze({
   openscience: Object.freeze(["install", "remove"]),
   openwork: Object.freeze(["prepare-server", "remove"]),
   resource2skill: Object.freeze(["install-runtime", "install-web", "install-blender", "remove"]),
+  "resource2skill-frames": Object.freeze(["install", "remove"]),
   shorts: Object.freeze(["install", "reinstall", "remove"]),
   "stock-analyst": Object.freeze(["install", "reinstall", "remove"]),
   subsai: Object.freeze(["build-subtitles", "remove-subtitles"]),
@@ -3686,6 +3688,63 @@ export const OPTIONAL_COMPONENT_DOWNLOADS = Object.freeze({
       }),
     ]),
   }),
+  // The same pinned build desktop/scripts/prepare-app-resources.mjs stages
+  // (desktop/runtime-v2/vendor/ruflo/runtime-artifact.json).
+  "claude-code": Object.freeze({
+    payload: "runtime-v2/toolchains/claude-code",
+    displayName: "Claude Code",
+    files: Object.freeze([
+      Object.freeze({
+        name: "claude.exe",
+        url: "https://downloads.claude.ai/claude-code-releases/2.1.239/win32-x64/claude.exe",
+        size: 337_672_352,
+        sha256: "0BC1304C7847C317CC550007E7561F9BF270EAA68A0E85A3F381AFB18EE20A2B",
+      }),
+    ]),
+  }),
+  // The npm platform build of the Codex CLI the installer job used to stage
+  // (desktop/scripts/codex-runtime-files.mjs lists the same five files).
+  codex: Object.freeze({
+    payload: "runtime-v2/toolchains/codex",
+    displayName: "Codex coding agent",
+    archive: Object.freeze({
+      name: "codex-0.151.0-alpha.7.2-win32-x64.tgz",
+      url: "https://registry.npmjs.org/@openai/codex/-/codex-0.151.0-alpha.7.2-win32-x64.tgz",
+      size: 147_603_468,
+      sha256: "72A08B7C8080DA8B9BC99056943FE664C7265C5C5651F0AE7882A3B0C628D691",
+      gzip: true,
+      members: Object.freeze({
+        "package/vendor/x86_64-pc-windows-msvc/bin/codex.exe": "codex.exe",
+        "package/vendor/x86_64-pc-windows-msvc/bin/codex-code-mode-host.exe": "codex-code-mode-host.exe",
+        "package/vendor/x86_64-pc-windows-msvc/codex-resources/codex-command-runner.exe": "codex-command-runner.exe",
+        "package/vendor/x86_64-pc-windows-msvc/codex-resources/codex-windows-sandbox-setup.exe": "codex-windows-sandbox-setup.exe",
+        "package/vendor/x86_64-pc-windows-msvc/codex-path/rg.exe": "rg.exe",
+      }),
+    }),
+    files: Object.freeze([
+      Object.freeze({ name: "codex.exe", size: 313_790_256, sha256: "24A37127B8298B7BF96CA9B1D51A63C0685D561D1596F052BEC73F734ED524B5" }),
+      Object.freeze({ name: "codex-code-mode-host.exe", size: 72_301_360, sha256: "8E878D00480F8024AB22747B45243D952D746002663DB2D9BE48195962AC4846" }),
+      Object.freeze({ name: "codex-command-runner.exe", size: 8_196_912, sha256: "06076D247B122DE06BCDCBF5E34161BC37FCBB1FC91FC2F7E050B1B0A0C24C9E" }),
+      Object.freeze({ name: "codex-windows-sandbox-setup.exe", size: 15_414_064, sha256: "C89BA976C911C4BB7582BBADFAFBA596EBA14FC78F91344492F3E6D11EF95037" }),
+      Object.freeze({ name: "rg.exe", size: 4_218_880, sha256: "14231169855EC5205CF5A1B6F1DB358FF4AED4247C86B69CE8AAE647C77F6680" }),
+    ]),
+  }),
+  // Resource2Skill's reference frames (every tracked skills_library/**/*.jpg at
+  // the pinned source revision, 2088 files). The agent reads them only when
+  // present, so the installer leaves them out; packed as one ustar archive.
+  "resource2skill-frames": Object.freeze({
+    payload: "runtime-v2/toolchains/resource2skill-frames",
+    displayName: "Resource2Skill reference frames",
+    archive: Object.freeze({
+      name: "resource2skill-reference-frames.tar",
+      url: "https://github.com/kuzeyatay/breadboard/releases/download/prebuilt-binaries-2026-11-10/resource2skill-reference-frames.tar",
+      size: 219_166_720,
+      sha256: "59BE126B52AD4B7BABAB0BA07F19EFC91AAD72A8FA6FC2ADDDB531E3E61CA410",
+      gzip: false,
+      prefix: "skills_library/",
+    }),
+    files: Object.freeze([]),
+  }),
 });
 
 const OPTIONAL_COMPONENT_DOWNLOAD_TIMEOUT_MS = 2 * 60 * 60_000;
@@ -3800,6 +3859,65 @@ async function downloadPinnedFile(pin, target, context) {
   }
 }
 
+/** Unpack the regular files of a ustar archive already verified against its
+ * pin. `members` maps archive paths to file names under `target`; `prefix`
+ * keeps every member below it at its own relative path. Reads the archive in
+ * place, so a 300 MB executable never sits in memory. */
+function extractTar(archivePath, target, { members, prefix }) {
+  const fd = fs.openSync(archivePath, "r");
+  const header = Buffer.alloc(512);
+  const chunk = Buffer.alloc(1024 * 1024);
+  const field = (start, length) => header.toString("utf8", start, start + length).replace(/\0.*$/su, "");
+  let extracted = 0;
+  try {
+    for (let offset = 0; fs.readSync(fd, header, 0, 512, offset) === 512; ) {
+      const name = field(0, 100);
+      if (!name) break;
+      const size = Number.parseInt(field(124, 12).trim() || "0", 8);
+      if (!Number.isSafeInteger(size) || size < 0) fail(`The ${path.basename(archivePath)} archive has an invalid member.`);
+      const type = header.toString("utf8", 156, 157);
+      if (type === "x" || type === "g" || type === "L" || type === "K") {
+        fail(`The ${path.basename(archivePath)} archive uses extended headers; only ustar is accepted.`);
+      }
+      const ustarPrefix = field(257, 6).startsWith("ustar") ? field(345, 155) : "";
+      const member = ustarPrefix ? `${ustarPrefix}/${name}` : name;
+      let relative = null;
+      if (members) relative = members[member] ?? null;
+      else if (member.startsWith(prefix)) relative = member;
+      const regular = type === "0" || type === "\0";
+      if (regular && relative !== null) {
+        if (relative.split("/").some((segment) => !segment || segment === "." || segment === "..") || path.isAbsolute(relative) || relative.includes("\\")) {
+          fail(`The ${path.basename(archivePath)} archive member ${member} has an unsafe path.`);
+        }
+        const destination = path.join(target, ...relative.split("/"));
+        if (!pathWithin(target, destination)) fail("The archive member escaped its install root.");
+        fs.mkdirSync(path.dirname(destination), { recursive: true });
+        const out = fs.openSync(destination, "w");
+        try {
+          for (let done = 0; done < size; ) {
+            const read = fs.readSync(fd, chunk, 0, Math.min(chunk.length, size - done), offset + 512 + done);
+            if (read <= 0) fail(`The ${path.basename(archivePath)} archive is truncated.`);
+            fs.writeSync(out, chunk, 0, read);
+            done += read;
+          }
+        } finally {
+          fs.closeSync(out);
+        }
+        extracted += 1;
+      }
+      offset += 512 + Math.ceil(size / 512) * 512;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (extracted === 0) fail(`The ${path.basename(archivePath)} archive held none of the expected files.`);
+  return extracted;
+}
+
+function isOptionalDownloadRequest({ operation, action }) {
+  return Object.hasOwn(OPTIONAL_COMPONENT_DOWNLOADS, operation) && (action === "install" || action === "remove");
+}
+
 async function optionalDownloadSetup(operation, action, context) {
   const spec = OPTIONAL_COMPONENT_DOWNLOADS[operation];
   if (!spec) fail("The optional component is unavailable.");
@@ -3808,7 +3926,37 @@ async function optionalDownloadSetup(operation, action, context) {
   fs.mkdirSync(target, { recursive: true });
   directPath(target, "isDirectory", `${spec.displayName} install root`);
   let downloaded = 0;
+  if (spec.archive) {
+    // One archive yields every file: the marker says the whole set is in
+    // place, the pins (when the archive carries executables) say which bytes.
+    const marker = optionalComponentReadyMarker(target, operation);
+    const pinned = await Promise.all(spec.files.map((pin) => fileMatchesPin(path.join(target, pin.name), pin)));
+    if (!fs.existsSync(marker) || !pinned.every(Boolean)) {
+      fs.rmSync(marker, { force: true });
+      const archivePath = path.join(target, spec.archive.name);
+      const tarPath = spec.archive.gzip ? `${archivePath}.tar` : archivePath;
+      try {
+        await downloadPinnedFile(spec.archive, archivePath, context);
+        if (spec.archive.gzip) {
+          fs.rmSync(tarPath, { force: true });
+          await pipeline(fs.createReadStream(archivePath), zlib.createGunzip(), fs.createWriteStream(tarPath, { flags: "wx" }));
+        }
+        extractTar(tarPath, target, spec.archive);
+      } finally {
+        fs.rmSync(archivePath, { force: true });
+        fs.rmSync(tarPath, { force: true });
+      }
+      for (const pin of spec.files) {
+        if (!(await fileMatchesPin(path.join(target, pin.name), pin))) {
+          fail(`The ${spec.displayName} archive did not contain the pinned ${pin.name}.`, 502, "setup_checksum_mismatch");
+        }
+      }
+      fs.writeFileSync(marker, `${new Date().toISOString()}\n`);
+      downloaded += 1;
+    }
+  }
   for (const pin of spec.files) {
+    if (!pin.url) continue;
     const filePath = path.join(target, pin.name);
     if (await fileMatchesPin(filePath, pin)) continue;
     fs.rmSync(filePath, { force: true });
@@ -3832,7 +3980,7 @@ export function managedSetupPayloads(operation, action) {
   if (REMOVABLE_ENVIRONMENTS.has(operation) || operation === "matraix" || Object.hasOwn(OPTIONAL_PYTHON_SERVICES, operation)) {
     return [`runtime-v2/services/${operation}/.venv`];
   }
-  if (Object.hasOwn(OPTIONAL_COMPONENT_DOWNLOADS, operation)) return [OPTIONAL_COMPONENT_DOWNLOADS[operation].payload];
+  if (isOptionalDownloadRequest({ operation, action })) return [OPTIONAL_COMPONENT_DOWNLOADS[operation].payload];
   if (operation === "openmontage") return ["runtime-v2/toolchains/openmontage",
     ...(action === "install-dependencies" ? ["runtime-v2/services/openmontage/.venv"] : [])];
   if (operation === "resource2skill") return ["runtime-v2/services/resource2skill/.venv",
@@ -3939,6 +4087,8 @@ export async function executeManagedSetup(request, options) {
 
 async function dispatchManagedSetup(canonical, context) {
   if (canonical.operation === "audio-analyzer") return audioSetup(canonical.action, context);
+  // First-use downloads; "claude-code" also carries the account operations.
+  if (isOptionalDownloadRequest(canonical)) return optionalDownloadSetup(canonical.operation, canonical.action, context);
   if (canonical.operation === "claude-code") {
     return claudeAccountOperation(canonical.action, context);
   }
@@ -3969,9 +4119,6 @@ async function dispatchManagedSetup(canonical, context) {
   if (canonical.operation === "money-printer") return moneyPrinterSetup(canonical.action, context);
   if (Object.hasOwn(OPTIONAL_PYTHON_SERVICES, canonical.operation)) {
     return optionalPythonServiceSetup(canonical.operation, canonical.action, context);
-  }
-  if (Object.hasOwn(OPTIONAL_COMPONENT_DOWNLOADS, canonical.operation)) {
-    return optionalDownloadSetup(canonical.operation, canonical.action, context);
   }
   if (Object.hasOwn(PYTHON_CLONE_SETUPS, canonical.operation)) {
     return managedPythonCloneSetup(canonical.operation, canonical.action, context);

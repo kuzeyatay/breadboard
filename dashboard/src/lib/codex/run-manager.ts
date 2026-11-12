@@ -212,7 +212,7 @@ export function runtimeAvailability(env: NodeJS.ProcessEnv = process.env): {
     installed: cloned,
     reason: cloned
       ? "The Codex clone is present but no executable was found. Build it or set CODEX_BIN."
-      : "Codex was not found. Clone or install it, or set CODEX_BIN.",
+      : "Codex is not installed. Install it under Settings → Optional components, or set CODEX_BIN.",
   };
 }
 

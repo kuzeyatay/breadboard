@@ -77,7 +77,7 @@ removed ahead of time.
 | Gardens, Learn, Garden Chat, Terminal, artifacts, in-app browser, Quartz publishing | Included |
 | Transcription of audio and video | Included |
 | Local OCR (“Parse using VLM”) | OCR model (1.3 GB) downloads on first use |
-| Coding agents (Codex, Claude Code, OpenCode) | Included; each uses its own sign-in |
+| Coding agents (Codex, Claude Code, OpenCode) | OpenCode included; Codex (148 MB) and Claude Code (338 MB) download on first use; each uses its own sign-in |
 | Speech (read aloud, dictation, voice profiles) | Speech server (675 MB) and speech models download on first use |
 | Recall (screen and audio memory) | Capture engine downloads from npm on first use |
 | Music, video, research and finance agents | Their Python runtimes download on first use |

@@ -2513,7 +2513,7 @@ impl TrustedWorkerEnvironmentSet {
         for (name, value) in [
             (
                 "CODEX_BIN",
-                paths.runtime_root().join("bin").join("codex.exe"),
+                first_use_binary_path(mode, paths, "codex.exe", "runtime-v2/toolchains/codex"),
             ),
             ("CODEX_HOME", codex_home(mode, paths)),
             (
@@ -2564,7 +2564,7 @@ impl TrustedWorkerEnvironmentSet {
             ),
             (
                 "RUFLO_CLAUDE_BIN",
-                paths.runtime_root().join("bin").join("claude.exe"),
+                first_use_binary_path(mode, paths, "claude.exe", "runtime-v2/toolchains/claude-code"),
             ),
             (
                 "BREADBOARD_GRAFT_CLI",
@@ -3126,6 +3126,10 @@ impl TrustedWorkerEnvironmentSet {
                 paths.data_root().join("resource2skill-runs"),
             ),
             (
+                "RESOURCE2SKILL_FRAMES_ROOT",
+                paths.managed_payload_path("runtime-v2/toolchains/resource2skill-frames"),
+            ),
+            (
                 "PLAYWRIGHT_BROWSERS_PATH",
                 paths
                     .data_root()
@@ -3272,7 +3276,7 @@ impl TrustedWorkerEnvironmentSet {
             ),
             (
                 "CODEX_BIN",
-                paths.runtime_root().join("bin").join("codex.exe"),
+                first_use_binary_path(mode, paths, "codex.exe", "runtime-v2/toolchains/codex"),
             ),
         ] {
             hyperframes_pairs.push((OsString::from(name), value.into_os_string()));
@@ -3311,7 +3315,7 @@ impl TrustedWorkerEnvironmentSet {
         for (name, value) in [
             (
                 "CODEX_BIN",
-                paths.runtime_root().join("bin").join("codex.exe"),
+                first_use_binary_path(mode, paths, "codex.exe", "runtime-v2/toolchains/codex"),
             ),
             ("OPENMONTAGE_FFMPEG_PATH", paths.runtime_root().join("bin")),
         ] {
@@ -7981,6 +7985,22 @@ fn build_dashboard_environment(
     Ok(builder.finish())
 }
 
+/// Codex and Claude Code are installed on first use by managed setup
+/// (`OPTIONAL_COMPONENT_DOWNLOADS`); a packaged app never carries them under
+/// `bin/`. Development keeps the binaries desktop/resources/bin stages.
+fn first_use_binary_path(
+    mode: RuntimeMode,
+    paths: &RuntimePaths,
+    executable: &str,
+    payload: &str,
+) -> PathBuf {
+    if mode == RuntimeMode::Packaged {
+        paths.managed_payload_path(payload).join(executable)
+    } else {
+        paths.runtime_root().join("bin").join(executable)
+    }
+}
+
 fn graft_cli_path(
     mode: RuntimeMode,
     paths: &RuntimePaths,
@@ -11317,7 +11337,10 @@ mod tests {
             worker_values(&workers.prepare_for_source(TrustedWorkerEnvironmentSource::OuterCodex));
         assert_eq!(
             codex["CODEX_BIN"],
-            paths.runtime_root().join("bin/codex.exe").to_string_lossy()
+            paths
+                .managed_payload_path("runtime-v2/toolchains/codex")
+                .join("codex.exe")
+                .to_string_lossy()
         );
         assert_eq!(
             codex["CODEX_HOME"],
@@ -11335,8 +11358,8 @@ mod tests {
         assert_eq!(
             ruflo["RUFLO_CLAUDE_BIN"],
             paths
-                .runtime_root()
-                .join("bin/claude.exe")
+                .managed_payload_path("runtime-v2/toolchains/claude-code")
+                .join("claude.exe")
                 .to_string_lossy()
         );
         assert_eq!(ruflo["RUFLO_CLAUDE_MODEL"], "claude-sonnet");
@@ -11628,6 +11651,12 @@ mod tests {
                 .join("runtime-v2/services/resource2skill/browsers")
                 .to_string_lossy()
         );
+        assert_eq!(
+            resource2skill["RESOURCE2SKILL_FRAMES_ROOT"],
+            paths
+                .managed_payload_path("runtime-v2/toolchains/resource2skill-frames")
+                .to_string_lossy()
+        );
         assert_eq!(resource2skill["CHATMOCK_API_KEY"], "local");
         let outer_matraix = worker_values(
             &workers.prepare_for_source(TrustedWorkerEnvironmentSource::OuterMatraix),
@@ -11674,7 +11703,10 @@ mod tests {
         );
         assert_eq!(
             hyperframes["CODEX_BIN"],
-            paths.runtime_root().join("bin/codex.exe").to_string_lossy()
+            paths
+                .managed_payload_path("runtime-v2/toolchains/codex")
+                .join("codex.exe")
+                .to_string_lossy()
         );
         let openmontage =
             worker_values(&workers.prepare_for_source(TrustedWorkerEnvironmentSource::OpenMontage));

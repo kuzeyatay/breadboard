@@ -947,6 +947,11 @@ async function resolvePackagedServiceSourceRoot(service) {
 
 // Codex is a native coding agent launched per task by the dashboard. Stage the
 // exact executable so an installed app does not depend on a global install.
+// The installer leaves it out (OPTIONAL_COMPONENT_DOWNLOADS pins the same
+// npm platform build for first-use install).
+if (packageDiet) {
+  log("package diet: Codex coding agent is not staged");
+} else {
 const codexSource = resolveCodexBinary();
 const codexTarget = path.join(
   desktopRoot,
@@ -987,6 +992,7 @@ if (process.platform === "win32") {
   }
 }
 if (process.platform !== "win32") fs.chmodSync(codexTarget, 0o755);
+}
 
 // Voicebox ships its Python/ML dependency closure as a native sidecar. Its
 // upstream requirements contain floating and Git dependencies, so a source
@@ -2031,6 +2037,12 @@ log("staging pinned Ruflo planner and Claude Code executor");
   fs.rmSync(installRoot, { recursive: true, force: true });
 
   const claudeTarget = path.join(desktopRoot, "resources", "bin", "claude.exe");
+  fs.mkdirSync(path.dirname(claudeTarget), { recursive: true });
+  fs.copyFileSync(receiptPath, path.join(path.dirname(claudeTarget), "claude-runtime-artifact.json"));
+  if (packageDiet) {
+    // Installed on first use from the same release bucket; the receipt ships.
+    log("package diet: Claude Code executor is not staged");
+  } else {
   const lookup = spawnSync("where.exe", ["claude.exe"], {
     encoding: "utf8",
     windowsHide: true,
@@ -2072,11 +2084,10 @@ log("staging pinned Ruflo planner and Claude Code executor");
     fs.writeFileSync(claudeTarget, bytes);
     claudeSource = claudeTarget;
   }
-  fs.mkdirSync(path.dirname(claudeTarget), { recursive: true });
   if (path.resolve(claudeSource) !== path.resolve(claudeTarget)) {
     fs.copyFileSync(claudeSource, claudeTarget);
   }
-  fs.copyFileSync(receiptPath, path.join(path.dirname(claudeTarget), "claude-runtime-artifact.json"));
+  }
 }
 
 // The document-skill worker imports the vendored Python package and its
@@ -3474,6 +3485,9 @@ fs.copyFileSync(
   freshDir(targetRoot);
   for (const relative of listing.stdout.split("\0").filter(Boolean)) {
     const portable = relative.replaceAll("\\", "/");
+    // Reference frames (207 MiB of JPEGs) are installed on first use
+    // (OPTIONAL_COMPONENT_DOWNLOADS["resource2skill-frames"]).
+    if (packageDiet && /^skills_library\/.*\.jpg$/u.test(portable)) continue;
     if (
       /(^|\/)(?:\.git|\.venv|\.runtime|__pycache__|\.pytest_cache|\.ruff_cache|\.mypy_cache|node_modules)(?:\/|$)/u.test(portable) ||
       /\.(?:pyc|pyo)$/u.test(portable)

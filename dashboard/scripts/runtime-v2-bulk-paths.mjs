@@ -15,7 +15,7 @@ const VENV_SERVICES = new Set([
 ]);
 const TOP_LEVEL = new Set(["hyperframes-cli", "hyperframes-browser", "openscience-cli", "openwork-runtime"]);
 const TOOLCHAINS = new Set(["bolt-slides", "wardrobe", "openmontage", "comfyui", "google-images", "audio-analyzer", "career-ops-browsers", "openmaic", "openmaic-tools", "cache",
-  "vlm-ocr-models", "voicebox"]);
+  "vlm-ocr-models", "voicebox", "claude-code", "codex", "resource2skill-frames"]);
 const STATEFUL_TOOLCHAINS = new Set(["career-ops", "money-printer"]);
 const CACHE_PAYLOADS = new Set([
   "runtime-v2/toolchains/cache", "runtime-v2/services/acestep/uv-cache", "runtime-v2/services/acestep/cache",
@@ -27,6 +27,9 @@ const PAYLOAD_FILES = {
   "runtime-v2/toolchains/google-images": ["src/index.js"],
   "runtime-v2/toolchains/vlm-ocr-models": ["HunyuanOCR-Q8_0.gguf", "mmproj-HunyuanOCR-Q8_0.gguf"],
   "runtime-v2/toolchains/voicebox": ["voicebox-server.exe"],
+  "runtime-v2/toolchains/claude-code": ["claude.exe"],
+  "runtime-v2/toolchains/codex": ["codex.exe"],
+  "runtime-v2/toolchains/resource2skill-frames": [".breadboard-resource2skill-frames-ready"],
   "runtime-v2/toolchains/comfyui": ["main.py"],
   "runtime-v2/toolchains/openmaic": [".next/BUILD_ID", "packages/@openmaic/generation/dist/index.js", "public/vendor/maic-importer/index.js"],
   "hyperframes-cli": ["node_modules/hyperframes/bin/hyperframes.mjs"],
