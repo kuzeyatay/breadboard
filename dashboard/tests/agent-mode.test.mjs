@@ -255,7 +255,7 @@ test("a super-agent turn selects the whole inventory for itself", () => {
   assert.match(turnService, /allowAllConnectionTools: superAgent/);
   assert.match(
     turnService,
-    /renderSuperAgentDirective\(superAgentInventory, researchPipeline\)/,
+    /renderSuperAgentTurnFocus\(superAgentInventory, researchPipeline\)/,
   );
   // How exhaustive the request is is decided before dispatch, from the request
   // text, so the turn cannot argue itself into a cheaper obligation later.
@@ -299,7 +299,7 @@ test("the tracked research pipeline is offered only to a request that earns it",
   // super-agent turn — and every non-super-agent turn — is unchanged.
   assert.match(
     superAgentDirective,
-    /if \(researchPlan\) sections\.push\(researchPipelineRule\(researchPlan\)\)/,
+    /researchPlan \? researchPipelineRule\(researchPlan\) : ""/,
   );
 });
 

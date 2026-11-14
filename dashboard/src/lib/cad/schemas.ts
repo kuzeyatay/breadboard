@@ -165,6 +165,8 @@ export const cadFileReferenceSchema = z.object({
     "glb",
     "3mf",
     "sldprt",
+    "fcstd",
+    "freecad-source",
     "source",
     "operations",
     "spec",

@@ -49,6 +49,7 @@ function installBrowserTextHighlights() {
   }
   const hide = () => { if (selected) send("dismiss", selected, selectedAnchor); selected = null; };
   const eligible = (node: Node) => node.nodeType === Node.TEXT_NODE && !node.parentElement?.closest(skip);
+  const excluded = (node: Node) => (node instanceof Element ? node : node.parentElement)?.closest(skip);
   function textIndex() {
     if (index) return index;
     const nodes: Array<{ node: Text; start: number; end: number }> = [];
@@ -160,7 +161,9 @@ function installBrowserTextHighlights() {
   addEventListener("scroll", () => { hide(); reportPosition(); }, { capture: true, signal: abort.signal });
   addEventListener("resize", () => { hide(); reportPosition(); }, { signal: abort.signal });
   const observer = new MutationObserver(records => {
-    if (records.every(record => (record.target as Element).closest?.("[data-breadboard-selection]"))) return;
+    // Editors are excluded from the text index. Typing (including IME changes
+    // to Text nodes) must not invalidate it or rescan a long conversation.
+    if (records.every(record => excluded(record.target))) return;
     index = null;
     // No idle page scan. Active pages rebuild one cached text index per batch.
     if (!entries.length || timer) return;
@@ -171,7 +174,17 @@ function installBrowserTextHighlights() {
     track(id) { tracked = id; lastPosition = ""; reportPosition(); },
     update(next, error) {
       entries = next; paint();
-      if (!error) { selected = null; window.getSelection()?.removeAllRanges(); }
+      if (!error) {
+        const selection = window.getSelection();
+        // A delayed load/save may finish after the person starts typing or
+        // selects another passage. Only dismiss the annotation's own selection.
+        if (selected && selection && !selection.isCollapsed && selection.rangeCount) {
+          const range = selection.getRangeAt(0);
+          if (!excluded(range.startContainer) && !excluded(range.endContainer) &&
+              selection.toString().trim() === selected.quote) selection.removeAllRanges();
+        }
+        selected = null;
+      }
     },
     dispose() {
       abort.abort(); observer.disconnect(); clearTimeout(timer); clearTimeout(positionTimer); style.remove();

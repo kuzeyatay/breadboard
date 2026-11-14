@@ -123,7 +123,7 @@ export function prepareTaskRecovery(conversationId: number, sourceRunId: string)
   const run = getRuntimeRun(sourceRunId)!;
   const dispatch = parseRuntimeRunDispatch(run);
   const state = dispatch.taskRecovery!;
-  const original = db.prepare(`SELECT metadata FROM conversation_messages
+  const original = db.prepare(`SELECT metadata FROM conversation_message_reads
     WHERE conversation_id=? AND client_message_id=? AND role='user'`)
     .get(conversationId, state.rootClientMessageId) as { metadata: string | null } | undefined;
   const metadata = original?.metadata ? JSON.parse(original.metadata) : {};

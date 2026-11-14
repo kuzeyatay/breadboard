@@ -602,7 +602,7 @@ async function readSessions(
               legacy.sources, legacy.token_usage, legacy.tool_calls,
               legacy.runtime_status, legacy.runtime_error, legacy.created_at
        FROM chat_messages legacy
-       LEFT JOIN conversation_messages canonical
+       LEFT JOIN conversation_message_reads canonical
          ON canonical.id = legacy.canonical_message_id
        WHERE legacy.session_id IN (${placeholders})
        ORDER BY legacy.session_id, legacy.order_index`,

@@ -34,7 +34,7 @@ function allConversationMessages(
 ): ConversationMessageRow[] {
   return database
     .prepare(
-      `SELECT * FROM conversation_messages
+      `SELECT * FROM conversation_message_reads
        WHERE conversation_id = ?
        ORDER BY order_index ASC`,
     )

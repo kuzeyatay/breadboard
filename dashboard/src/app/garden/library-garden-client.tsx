@@ -24,6 +24,7 @@ import { useQuartzReaderLayout } from './use-quartz-reader-layout';
 import { useQuartzNavigationProgress } from './use-quartz-navigation-progress';
 import GardenDocumentEditorBridge from './garden-document-editor-bridge';
 import GardenMarkdownArtifacts from './garden-markdown-artifacts';
+import GardenFilesBridge from './garden-files-bridge';
 
 interface Props {
   src: string;
@@ -406,6 +407,7 @@ export default function LibraryGardenClient({ src, title, quartzViewId = null }:
       <Toaster toasts={toasts} onDismiss={dismissToast} />
       <GardenDocumentEditorBridge iframeRef={iframeRef} quartzOrigin={quartzOrigin} />
       <GardenMarkdownArtifacts iframeRef={iframeRef} quartzOrigin={quartzOrigin} />
+      <GardenFilesBridge iframeRef={iframeRef} quartzOrigin={quartzOrigin} onSelectCluster={setActiveCluster} onSelectDocument={setActiveMarkdown} />
     </div>
   );
 }

@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 const JOB_COLUMNS: &str = "job_id, job_type, worker_kind, resource_class, owner_principal, user_id, garden_id, conversation_id, state, stage, attempt, worker_instance_id, input_manifest_path, workspace_path, checkpoint_path, result_path, created_at, started_at, updated_at, finished_at, last_heartbeat_at, last_worker_sequence, progress_current, progress_total, failure_code, failure_message, cancellation_requested, idempotency_key, request_digest, (SELECT evidence.resource FROM runtime_job_resource_exhaustion evidence WHERE evidence.job_id=runtime_jobs.job_id), (SELECT evidence.required_headroom_mb FROM runtime_job_resource_exhaustion evidence WHERE evidence.job_id=runtime_jobs.job_id), (SELECT evidence.available_headroom_mb FROM runtime_job_resource_exhaustion evidence WHERE evidence.job_id=runtime_jobs.job_id)";
 const ADMISSION_RESOURCE_EXHAUSTED_FAILURE_CODE: &str = "BREADBOARD_RESOURCE_EXHAUSTED";
 const ADMISSION_RESOURCE_EXHAUSTED_FAILURE_MESSAGE: &str =
@@ -1021,6 +1021,9 @@ impl JobStore {
         database_pin.revalidate()?;
         let database_path = database_pin.absolute().to_path_buf();
         let mut connection = Connection::open(&database_path)?;
+        if connection.query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0))? == 0 {
+            connection.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+        }
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         initialize_schema(&mut connection)?;
@@ -1106,6 +1109,9 @@ impl JobStore {
             return Ok(None);
         }
         let replay = replay_existing_submission_tx(&transaction, input)?;
+        if replay.is_none() {
+            crate::storage_maintenance::reject_expired_occurrence(&transaction, input.owner.principal(), &input.idempotency_key)?;
+        }
         transaction.commit()?;
         Ok(replay)
     }
@@ -1150,6 +1156,7 @@ impl JobStore {
             transaction.commit()?;
             return Ok(existing);
         }
+        crate::storage_maintenance::reject_expired_occurrence(&transaction, input.owner.principal(), &input.idempotency_key)?;
         if query_job_optional(&transaction, &input.job_id)?.is_some() {
             return Err(StoreError::JobIdConflict(input.job_id.clone()));
         }
@@ -6234,6 +6241,11 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> {
         migrate_schema_v13(&transaction)?;
         version = 13;
     }
+    if version == 13 {
+        validate_schema_v13_shape(&transaction)?;
+        transaction.execute_batch(crate::storage_maintenance::SCHEMA)?;
+        version = 14;
+    }
     if version != SCHEMA_VERSION {
         return Err(StoreError::UnsupportedSchemaVersion {
             found: version,
@@ -6248,7 +6260,15 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> {
             supported: SCHEMA_VERSION,
         });
     }
-    validate_schema_v13_shape(&transaction)?;
+    let mut storage_objects = SCHEMA_V13_OBJECTS.to_vec();
+    storage_objects.extend_from_slice(&["runtime_storage_watermarks", "runtime_storage_proofs", "runtime_storage_daily", "runtime_storage_cursor"]);
+    validate_schema_v13_shape_for(&transaction, 14, &storage_objects)?;
+    for (kind,name) in [
+        ("table","runtime_storage_watermarks"), ("table","runtime_storage_proofs"),
+        ("table","runtime_storage_daily"), ("table","runtime_storage_cursor"),
+    ] {
+        require_schema_object_matches(&transaction,14,kind,name,crate::storage_maintenance::SCHEMA)?;
+    }
     transaction.commit()?;
     Ok(())
 }
@@ -6950,8 +6970,12 @@ fn validate_schema_v12_shape(connection: &Connection) -> Result<(), StoreError> 
 }
 
 fn validate_schema_v13_shape(connection: &Connection) -> Result<(), StoreError> {
+    validate_schema_v13_shape_for(connection, 13, SCHEMA_V13_OBJECTS)
+}
+
+fn validate_schema_v13_shape_for(connection: &Connection, version: i64, objects: &[&str]) -> Result<(), StoreError> {
     let runtime_services_schema = schema_v13_runtime_services();
-    validate_schema_v9_shape_for(connection, 13, SCHEMA_V13_OBJECTS, &runtime_services_schema)?;
+    validate_schema_v9_shape_for(connection, version, objects, &runtime_services_schema)?;
     for (object_type, object_name, schema) in [
         ("table", "runtime_job_idempotency_cancellations", SCHEMA_V10),
         (
@@ -6972,11 +6996,11 @@ fn validate_schema_v13_shape(connection: &Connection) -> Result<(), StoreError> 
         ("table", "runtime_schedules", SCHEMA_V12),
         ("index", "runtime_schedules_due_idx", SCHEMA_V12),
     ] {
-        require_schema_object_matches(connection, 13, object_type, object_name, schema)?;
+        require_schema_object_matches(connection, version, object_type, object_name, schema)?;
     }
     require_table_columns(
         connection,
-        13,
+        version,
         "runtime_schedules",
         &[
             "schedule_id",
@@ -6998,7 +7022,7 @@ fn validate_schema_v13_shape(connection: &Connection) -> Result<(), StoreError> 
             "updated_at",
         ],
     )?;
-    require_no_unexpected_schema_objects(connection, 13, SCHEMA_V13_OBJECTS)?;
+    require_no_unexpected_schema_objects(connection, version, objects)?;
     Ok(())
 }
 
@@ -12652,13 +12676,13 @@ mod tests {
         let future_path = directory.path().join("future.sqlite3");
         let connection = Connection::open(&future_path).unwrap();
         connection
-            .execute_batch("PRAGMA user_version = 14;")
+            .execute_batch("PRAGMA user_version = 15;")
             .unwrap();
         drop(connection);
         assert!(matches!(
             JobStore::open_for_test(future_path),
             Err(StoreError::UnsupportedSchemaVersion {
-                found: 14,
+                found: 15,
                 supported: SCHEMA_VERSION
             })
         ));

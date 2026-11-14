@@ -244,6 +244,22 @@ export function readIngestRecovery({
   return readStored(gardenId, recoveryId, dataRoot);
 }
 
+/** Whether the job that retained a record durably committed its garden write. */
+function failedJobCommitted(dataRoot: string, jobId: string): boolean {
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(jobId)) return false;
+  try {
+    const tombstone = JSON.parse(
+      fs.readFileSync(
+        path.join(dataRoot, "runtime", "jobs", jobId, "ingestion-commit.json"),
+        "utf8",
+      ),
+    );
+    return tombstone?.transactionId === jobId && tombstone?.state === "committed";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Every usable record for a garden, newest failure first. A record whose
  * manifest or retained bytes no longer validate, or that is older than the
@@ -280,6 +296,12 @@ export function listIngestRecoveries({
         continue;
       }
       if (!stored && nowMs - directoryStat.mtimeMs < 60_000) continue;
+      fs.rmSync(path.join(root, entry.name), { recursive: true, force: true });
+      continue;
+    }
+    if (failedJobCommitted(dataRoot, stored.record.failedJobId)) {
+      // Kept by an older worker that reported a post-commit site-build
+      // failure as a failed upload: the document is already in the garden.
       fs.rmSync(path.join(root, entry.name), { recursive: true, force: true });
       continue;
     }

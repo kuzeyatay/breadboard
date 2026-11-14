@@ -20,12 +20,14 @@ import {
   containerModelSettings,
   ensureCredentials,
   hasEmailProvider,
+  writeCredentials,
   stackStatus,
   startStack,
 } from "./stack.ts";
-import { mintSession, listMailboxes } from "./session.ts";
+import { mintSession, listMailboxes, seedGoogleMailbox } from "./session.ts";
 import { verifySession } from "./client.ts";
 import type {
+  BreadboardGmailGrant,
   InboxZeroSession,
   ReadyResult,
   SetupStatus,
@@ -87,7 +89,7 @@ export async function setupStatus(
   if (!hasEmailProvider(credentials)) {
     return step(
       "oauth_client_missing",
-      "Inbox Zero needs your own Google or Microsoft OAuth client before it can read a mailbox. Add one in its settings.",
+      "Inbox Zero needs a mailbox. Connect Gmail in Breadboard's Connections, or add your own Google or Microsoft OAuth client in its settings.",
     );
   }
   const stack = await stackStatus(config);
@@ -141,6 +143,8 @@ export async function ensureReady(input: {
   chatmockApiKey: string;
   model: string;
   preferredEmail?: string;
+  /** Breadboard's Gmail connection, used when Inbox Zero has no mailbox of its own. */
+  gmail?: BreadboardGmailGrant;
   config?: InboxZeroConfig;
 }): Promise<ReadyResult> {
   if (!Number.isSafeInteger(input.scopeUserId) || input.scopeUserId < 1) {
@@ -157,19 +161,39 @@ export async function ensureReady(input: {
     };
   }
 
-  const credentials = ensureCredentials(config);
+  let credentials = ensureCredentials(config);
+  // Adopt the Google client Breadboard's Gmail grant was issued to, unless the
+  // user configured a different one for Inbox Zero (its refresh token would be
+  // useless there, so that setup is left to its own sign-in).
+  let clientChanged = false;
+  const gmail =
+    input.gmail &&
+    (!credentials.googleClientId || credentials.googleClientId === input.gmail.clientId)
+      ? input.gmail
+      : undefined;
+  if (
+    gmail &&
+    (credentials.googleClientId !== gmail.clientId ||
+      credentials.googleClientSecret !== gmail.clientSecret)
+  ) {
+    credentials = { ...credentials, googleClientId: gmail.clientId, googleClientSecret: gmail.clientSecret };
+    writeCredentials(config, credentials);
+    clientChanged = true;
+  }
   if (!hasEmailProvider(credentials)) {
     return {
       ok: false,
       setup: step(
         "oauth_client_missing",
-        "Inbox Zero needs your own Google or Microsoft OAuth client before it can read a mailbox. Add one in its settings.",
+        "Inbox Zero needs a mailbox. Connect Gmail in Breadboard's Connections, or add your own Google or Microsoft OAuth client in its settings.",
       ),
     };
   }
 
   let stack = await stackStatus(config);
-  if (!stack.reachable) {
+  // A running stack still carries the old client in its environment; `up -d`
+  // recreates the containers whose environment changed.
+  if (!stack.reachable || (clientChanged && input.allowStart)) {
     if (!input.allowStart) {
       return {
         ok: false,
@@ -195,6 +219,16 @@ export async function ensureReady(input: {
           { stack },
         ),
       };
+    }
+  }
+
+  // Before the cached-session shortcut, so a reconnected (wider) Gmail grant
+  // reaches Inbox Zero on the next run rather than after the cache expires.
+  if (gmail) {
+    try {
+      await seedGoogleMailbox(config, credentials, gmail);
+    } catch (error) {
+      return { ok: false, setup: step("stack_not_running", describe(error), { stack }) };
     }
   }
 

@@ -236,3 +236,28 @@ test("a failed publication still lets the reader open", async () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a published Garden left pending by a failed publication repairs itself in the background", async () => {
+  const { root, contentPath, publicPath } = quartzRoot();
+  try {
+    publishGarden(publicPath, "math-1");
+    const quartz = await loadQuartzPublish();
+    const publications = recordPublications(quartz);
+    const marker = path.join(root, "quartz", ".publish-pending", "math-1");
+    await withEnvironment(contentPath, async () => {
+      quartz.markQuartzPublicationPending("math-1");
+      assert.equal(fs.existsSync(marker), true);
+      await quartz.ensureGardenPublicationForView(1, "math-1");
+      for (let i = 0; i < 200 && fs.existsSync(marker); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(publications.length, 1, "the stale Garden is republished once");
+      assert.equal(publications[0].scope[0], "math-1");
+      assert.equal(fs.existsSync(marker), false, "a successful publication clears the marker");
+      await quartz.ensureGardenPublicationForView(1, "math-1");
+      assert.equal(publications.length, 1);
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

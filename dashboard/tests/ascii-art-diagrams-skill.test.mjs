@@ -91,6 +91,8 @@ test("explicit ASCII and text-diagram requests select the skill", () => {
 test("ordinary diagrams, discussion, other formats, and prose are not stolen", () => {
   for (const text of [
     "draw an architecture diagram of the auth flow",
+    "draw a box-and-arrow layout of the compressor",
+    "box-and-arrow layout of the compressor please",
     "what is ASCII art?",
     "explain why ASCII diagrams can be useful",
     "ASCII diagrams are compact",

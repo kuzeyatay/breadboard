@@ -4,12 +4,13 @@ import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import db from "@/lib/db.ts";
 import {
   createHook,
-  CHAT_COMPLETED_PROVIDER,
   getHookByIdForUser,
+  hookAction,
   listHooksForUser,
   updateHook,
   type HookRow,
 } from "@/lib/hooks/store.ts";
+import { isLifecycleHookProvider } from "@/lib/hooks/natural-language.ts";
 import {
   createTelegramSubscription,
   type TelegramSubscriptionResult,
@@ -38,7 +39,9 @@ function presentHook(hook: HookRow) {
     id: hook.id,
     name: hook.name,
     provider: hook.provider,
-    mode: hook.mode,
+    mode: hookAction(hook),
+    command: hook.command ?? null,
+    lastResult: hook.last_result ?? null,
     workflowId: hook.workflow_id,
     chatInstructions: hook.chat_instructions,
     providerConfig: redacted,
@@ -47,10 +50,7 @@ function presentHook(hook: HookRow) {
     createdAt: hook.created_at,
     lastFiredAt: hook.last_fired_at,
     fireCount: hook.fire_count,
-    url:
-      hook.provider === CHAT_COMPLETED_PROVIDER
-        ? null
-        : buildWebhookTriggerUrl(hook.id),
+    url: isLifecycleHookProvider(hook.provider) ? null : buildWebhookTriggerUrl(hook.id),
   };
 }
 
@@ -78,7 +78,9 @@ export async function POST(request: Request) {
       {
         name: typeof body.name === "string" ? body.name : "",
         provider: typeof body.provider === "string" ? body.provider : "",
-        mode: body.mode === "workflow" ? "workflow" : "chat",
+        mode:
+          body.mode === "workflow" || body.mode === "command" ? body.mode : "chat",
+        command: typeof body.command === "string" ? body.command : null,
         workflowId: typeof body.workflowId === "string" ? body.workflowId : null,
         chatInstructions: typeof body.chatInstructions === "string" ? body.chatInstructions : null,
         providerConfig,

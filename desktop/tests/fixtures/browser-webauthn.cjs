@@ -122,7 +122,7 @@ app.whenReady().then(async () => {
   assert.equal(registrationData.type, "webauthn.create");
   assert.equal(registrationData.origin, origin);
   assert.equal(registrationData.challenge, "AQIDBA");
-  const assertion = await popup.executeJavaScript(`(async () => {
+  const assertionPending = popup.executeJavaScript(`(async () => {
     const result = await navigator.credentials.get({ publicKey: {
       challenge: new Uint8Array([5, 6, 7, 8]), rpId: 'localhost', userVerification: 'required',
     } });
@@ -130,6 +130,12 @@ app.whenReady().then(async () => {
       clientData: [...new Uint8Array(result.response.clientDataJSON)],
       signature: [...new Uint8Array(result.response.signature)], userHandle: [...new Uint8Array(result.response.userHandle)] };
   })()`, true);
+  const chooser = await until(() => BrowserWindow.getAllWindows().find(candidate =>
+    candidate.getTitle() === "Sign in with a passkey" && !candidate.webContents.isLoading()), "passkey account chooser");
+  assert.equal(await chooser.webContents.executeJavaScript("document.body.textContent.includes('fixture@example.test')"), true);
+  assert.equal(await chooser.webContents.executeJavaScript("document.body.textContent.includes('localhost')"), true);
+  await chooser.webContents.executeJavaScript("document.querySelector('button[name=response][value=\"0\"]').click()");
+  const assertion = await assertionPending;
   assert.equal(assertion.id, credential.id, "discoverable sign-in finds the registered passkey");
   assert.deepEqual(assertion.userHandle, [7, 8, 9]);
   const clientData = Buffer.from(assertion.clientData);
@@ -143,6 +149,14 @@ app.whenReady().then(async () => {
   assert.equal(verify("sha256", Buffer.concat([authenticatorData, createHash("sha256").update(clientData).digest()]),
     createPublicKey({ key: Buffer.from(credential.publicKey), format: "der", type: "spki" }),
     Buffer.from(assertion.signature)), true, "assertion signature verifies against the registered public key");
+
+  const cancelled = popup.executeJavaScript(`navigator.credentials.get({ publicKey: {
+    challenge: new Uint8Array([9]), rpId: 'localhost', userVerification: 'required',
+  } }).then(() => 'unexpected success', error => error.name)`, true);
+  const cancelChooser = await until(() => BrowserWindow.getAllWindows().find(candidate =>
+    candidate.getTitle() === "Sign in with a passkey" && !candidate.webContents.isLoading()), "cancellable account chooser");
+  await cancelChooser.webContents.executeJavaScript("document.querySelector('[data-cancel]').click()");
+  assert.equal(await cancelled, "NotAllowedError", "cancelling the chooser does not select an account");
 
   assert.equal(await popup.executeJavaScript(`navigator.credentials.get({ publicKey: {
     challenge: new Uint8Array([1]), rpId: 'unrelated.example', userVerification: 'required',
@@ -159,7 +173,7 @@ app.whenReady().then(async () => {
   })()`, true), "AbortError", "a request without user presence remains cancellable");
   await cdp("WebAuthn.disable");
   popup.debugger.detach();
-  await command({ type: "close", id: state().activeId });
+  assert.equal(await manager.handleCommand(await activeChrome(), { type: "close", id: state().activeId }), true);
   await until(() => popup.isDestroyed(), "popup cleanup");
 
   let menu;

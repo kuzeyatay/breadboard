@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Download, Ellipsis, PictureInPicture2, Plus, Puzzle, RotateCw, ShieldCheck, Trash2 } from "lucide-react";
+import { Check, ChevronDown, Download, Ellipsis, Globe, PictureInPicture2, Plus, Puzzle, RotateCw, ShieldCheck, Trash2 } from "lucide-react";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
 import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
 import styles from "./browser-extensions-popover.module.css";
@@ -14,6 +14,7 @@ export default function BrowserExtensionsPopover() {
   const pageReady = browser?.pageReady;
   const adBlock = browser?.adBlock;
   const hls = browser?.hls;
+  const vpn = browser?.vpn;
   const googlePipReady = !browser?.private && extensions.some(extension => extension.id === "hkgfoiooedgoejojocmhlaklaeopbecg" && extension.action);
   const [extensionAction, setExtensionAction] = useState<string | null>(null);
   const [extensionError, setExtensionError] = useState<string | null>(null);
@@ -54,6 +55,19 @@ export default function BrowserExtensionsPopover() {
       if (!ok) setExtensionError("The ad blocker setting could not be saved. Try again.");
     } catch {
       setExtensionError("The ad blocker did not respond. Try again.");
+    } finally { setExtensionAction(null); }
+  }
+
+  async function toggleVpn() {
+    if (!vpn) return;
+    setExtensionAction("vpn");
+    setExtensionError(null);
+    try {
+      if (!await sendDesktopTabsCommand({ type: "browser-vpn-enabled", enabled: !vpn.enabled })) {
+        setExtensionError("Cloudflare WARP could not be installed. Try again.");
+      }
+    } catch {
+      setExtensionError("The VPN did not respond. Try again.");
     } finally { setExtensionAction(null); }
   }
 
@@ -169,6 +183,19 @@ export default function BrowserExtensionsPopover() {
             <p className={styles.version}>Blocks ads and trackers, hides ad panels, and applies video-site fixes. Reload after changing a setting.</p>
             {browser?.private ? <p className={styles.version}>Changes last for this private session.</p> : null}
           </div> : null}
+        </div> : null}
+        {vpn ? <div className={styles.extension}>
+          <div className={styles.row}>
+            <button type="button" className={styles.rowAction} role="switch" aria-label="VPN"
+              aria-checked={vpn.enabled} disabled={extensionAction !== null} onClick={() => void toggleVpn()}>
+              <span className={`${styles.icon} ${styles.pipIcon}`} aria-hidden="true"><Globe size={28} /></span>
+              <span className={styles.copy}><strong>VPN</strong>
+                <small>{extensionAction === "vpn" && !vpn.enabled ? "Setting up…" : vpn.status === "on" ? "Built in · On"
+                  : vpn.status === "connecting" ? "Connecting…" : vpn.status === "error" ? "Can't connect" : "Built in · Off"}</small>
+              </span>
+              <span className={styles.toggle} data-enabled={vpn.enabled} aria-hidden="true" />
+            </button>
+          </div>
         </div> : null}
         {!googlePipReady ? <button type="button" aria-label="Picture in Picture" className={`${styles.rowAction} ${styles.pictureInPicture}`} disabled={!pageReady}
           onClick={() => void sendDesktopTabsCommand({ type: "browser-extensions-picture-in-picture" })}>

@@ -13,6 +13,7 @@ import { cadDefaults, type CadDefaults } from "./defaults.ts";
 import { buildCadManifest } from "./artifact.ts";
 import { DEFAULT_CAD_ENGINE, type CadEngineId } from "./engines.ts";
 import { readSolidWorksRuntimeStatus } from "./solidworks/runtime-service.ts";
+import { freecadAvailability } from "./freecad/config.ts";
 import { runCadAgentLoop, runCadProjectBuildPhase } from "./model-client.ts";
 import { cadPlanningPrompt, cadSystemPrompt, summariseProjectForModel } from "./prompts.ts";
 import { getCadProject, readRevisionParameters, type CadProjectRow } from "./project-store.ts";
@@ -136,6 +137,13 @@ export async function designCadPart(
   // never quietly swapped for the other one.
   const requested: CadEngineId = input.engine ?? DEFAULT_CAD_ENGINE;
   let engine = requested;
+  if (requested === "freecad") {
+    const availability = freecadAvailability();
+    if (!availability.available) {
+      return { ok: false, refused: false, safety, attemptsUsed: 0, reason: availability.message };
+    }
+    input.emit?.("cad.engine.selected", { engine: "freecad" });
+  }
   if (requested === "solidworks") {
     const { availability } = await readSolidWorksRuntimeStatus();
     if (!availability.available) {

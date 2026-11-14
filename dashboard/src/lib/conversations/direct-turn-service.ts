@@ -62,6 +62,7 @@ import {
 import { getActiveRuntimeRun } from "../hermes/run-store.ts";
 import { preservesLiteralTeachingText } from "../teaching-plan.ts";
 import { systemPromptText } from "../system-prompts/service.ts";
+import { capsEmphasisSection } from "../hermes/caps-emphasis.ts";
 import {
   chatCorePrompt,
 } from "../hermes/system-prompts.ts";
@@ -224,6 +225,7 @@ function directSystemPrompt(
     currentLocationContext,
     referencedChatContext,
     persona,
+    capsEmphasisSection({ userText }),
   ].filter(Boolean).join("\n\n");
 }
 

@@ -24,6 +24,8 @@ import { publishQuartzAfterMutation } from "./quartz-publish.ts";
 import { acquireGardenMutationLeaseWithIngestionRecovery } from "./garden-mutation-recovery.ts";
 import { assertGardenMutationWritePaths } from "./garden-mutation-lease-core.ts";
 import { isGardenUserPath } from "./garden-user-content.ts";
+import { gardenFiles } from "./garden-files/repository.ts";
+import { libraryFolderScope, changeMixedFolder, preserveFolderForTrash } from "./garden-files/mixed-folders.ts";
 import {
   copyGardenFolderContents,
   existingGardenFolder,
@@ -64,6 +66,17 @@ function resolveFolderDir(clusterDir: string, folder: string): string {
     throw new GardenFilesystemError("Invalid folder path", 400);
   }
   return target;
+}
+
+/** Imported folders can exist before the first Markdown note materializes them. */
+function existingNotesOrFilesFolder(clusterDir: string, userId: number, clusterSlug: string, folder: string): string {
+  try { return existingGardenFolder(clusterDir, folder); }
+  catch (error) {
+    if (!(error instanceof GardenFilesystemError) || error.status !== 404) throw error;
+    const entry = gardenFiles().list(libraryFolderScope(userId, clusterSlug)).find(item => item.kind === "folder" && item.path.toLowerCase() === folder.normalize("NFC").toLowerCase());
+    if (entry) return entry.path;
+    throw error;
+  }
 }
 
 function acquireStructureMutationLease(
@@ -246,10 +259,12 @@ export async function copyGardenFolder(input: {
     let number = 1;
     const sibling = (n: number) => [parent, `${basename}-copy${n === 1 ? "" : `-${n}`}`].filter(Boolean).join("/");
     let newFolder = sibling(number);
-    while (fs.existsSync(resolveFolderDir(clusterDir, newFolder))) newFolder = sibling(++number);
+    const library = gardenFiles(), scope = libraryFolderScope(input.userId, input.clusterSlug);
+    const libraryPaths = new Set(library.list(scope).map(entry => entry.path.toLowerCase()));
+    while (fs.existsSync(resolveFolderDir(clusterDir, newFolder)) || libraryPaths.has(newFolder.toLowerCase())) newFolder = sibling(++number);
     const name = `${title} copy${number === 1 ? "" : ` ${number}`}`;
     assertGardenMutationWritePaths(lease, clusterDir, [newFolder]);
-    copyGardenFolderContents(clusterDir, folder, newFolder, slugify);
+    changeMixedFolder(library, scope, "copy", folder, newFolder, () => copyGardenFolderContents(clusterDir, folder, newFolder, slugify));
     writeGardenFolderTitle(resolveFolderDir(clusterDir, newFolder), name);
     refreshClusterIndex(contentPath, input.clusterSlug, { migrateSources: false });
     copied = { folder, newFolder, name };
@@ -293,7 +308,7 @@ export async function moveGardenDocument(input: {
   // sections). Normalize only new folder names, as creation does.
   let folder = normalizeGardenFolder(input.toFolder);
   if (typeof input.toFolder === "string" && input.toFolder) {
-    try { folder = existingGardenFolder(clusterDir, input.toFolder); }
+    try { folder = existingNotesOrFilesFolder(clusterDir, input.userId, input.clusterSlug, input.toFolder); }
     catch (error) { if (!(error instanceof GardenFilesystemError) || error.status !== 404) throw error; }
   }
   const beforeMove = findDocument();
@@ -323,8 +338,13 @@ export async function moveGardenDocument(input: {
       );
     }
 
-    fs.mkdirSync(targetDir, { recursive: true });
-    fs.renameSync(found.filePath, destPath);
+    const library = gardenFiles(), scope = libraryFolderScope(input.userId, input.clusterSlug);
+    library.database.transaction(() => {
+      const destination = path.relative(clusterDir, destPath).replace(/\\/g, "/");
+      if (library.list(scope).some(file => file.path.toLowerCase() === destination.toLowerCase())) throw new GardenFilesystemError("A file with that name already exists in the target folder", 409);
+      fs.mkdirSync(targetDir, { recursive: true });
+      fs.renameSync(found.filePath, destPath);
+    }).immediate();
     removePublicArtifacts(
       contentPath,
       input.clusterSlug,
@@ -354,12 +374,14 @@ export async function renameGardenFolder(input: {
   clusterSlug: string;
   folder: unknown;
   name: unknown;
+  toFolder?: string;
 }): Promise<{ folder: string; newFolder: string }> {
   const contentPath = contentRoot();
   const clusterDir = gardenDirectory(input.clusterSlug, contentPath);
 
   const oldFolder = typeof input.folder === "string" ? input.folder.replace(/\\/g, "/") : "";
-  const renamedFolder = [...oldFolder.split("/").slice(0, -1), normalizeGardenFolder(input.name)].join("/");
+  const targetParent = input.toFolder === undefined ? oldFolder.split("/").slice(0, -1).join("/") : input.toFolder;
+  const renamedFolder = [targetParent, normalizeGardenFolder(input.name)].filter(Boolean).join("/");
 
   const lease = acquireStructureMutationLease(
     contentPath,
@@ -386,8 +408,9 @@ export async function renameGardenFolder(input: {
       );
     }
 
-    const parent = folder.split("/").slice(0, -1).join("/");
+    const parent = input.toFolder === undefined ? folder.split("/").slice(0, -1).join("/") : input.toFolder ? existingNotesOrFilesFolder(clusterDir, input.userId, input.clusterSlug, input.toFolder) : "";
     const newFolder = parent ? `${parent}/${newName}` : newName;
+    if (newFolder.startsWith(`${folder}/`)) throw new GardenFilesystemError("A folder cannot be moved inside itself", 400);
     assertGardenMutationWritePaths(lease, clusterDir, [folder, newFolder]);
     if (isAutomaticGardenFolder(newFolder)) {
       throw new GardenFilesystemError("That name is reserved for an automatically created folder", 400);
@@ -409,7 +432,7 @@ export async function renameGardenFolder(input: {
     }
 
     fs.mkdirSync(path.dirname(newDir), { recursive: true });
-    if (newFolder !== folder) fs.renameSync(oldDir, newDir);
+    if (newFolder !== folder) changeMixedFolder(gardenFiles(), libraryFolderScope(input.userId, input.clusterSlug), "move", folder, newFolder, () => fs.renameSync(oldDir, newDir));
     if (newFolder !== folder) rewriteRenamedFolderLinks(clusterDir, folder, newFolder);
 
     // Keep the Quartz folder title in sync with the new name.
@@ -432,8 +455,7 @@ export async function renameGardenFolder(input: {
 
 /**
  * Delete a folder and every note inside it, along with their generated Quartz
- * output and saved PDF edits. There is no trash: callers must have the user's
- * explicit instruction for this exact folder before calling.
+ * output. Original notes and files are kept in the private file trash.
  */
 export async function deleteGardenFolder(input: {
   userId: number;
@@ -443,18 +465,16 @@ export async function deleteGardenFolder(input: {
 }): Promise<{ folder: string; deletedSlugs: string[] }> {
   const contentPath = contentRoot();
   const clusterDir = gardenDirectory(input.clusterSlug, contentPath);
+  const folder = existingGardenFolder(clusterDir, input.folder);
 
   const lease = acquireStructureMutationLease(
     contentPath,
     input.clusterSlug,
     "delete-folder",
-    [normalizeGardenFolder(input.folder)],
+    [folder],
   );
   let deleted: { folder: string; deletedSlugs: string[] };
   try {
-    const folder = normalizeGardenFolder(input.folder);
-    if (!folder) throw new GardenFilesystemError("folder is required", 400);
-
     const dir = resolveFolderDir(clusterDir, folder);
     if (dir === clusterDir) {
       throw new GardenFilesystemError("Invalid folder path", 400);
@@ -465,7 +485,9 @@ export async function deleteGardenFolder(input: {
       item.entry.replace(/\.md$/i, ""),
     );
 
-    fs.rmSync(dir, { recursive: true, force: true });
+    const library = gardenFiles(), scope = libraryFolderScope(input.userId, input.clusterSlug);
+    preserveFolderForTrash(library, scope, folder);
+    changeMixedFolder(library, scope, "trash", folder, "", () => fs.rmSync(dir, { recursive: true, force: true }));
     removePublicArtifacts(contentPath, input.clusterSlug, folder);
 
     if (deletedSlugs.length > 0) {
@@ -481,13 +503,13 @@ export async function deleteGardenFolder(input: {
   } finally {
     lease.release();
   }
-  await publishQuartzAfterMutation(
+  void publishQuartzAfterMutation(
     `delete folder ${input.clusterSlug}/${deleted.folder}`,
     {
       userId: input.userId,
       gardenSlug: input.clusterSlug,
     },
-  );
+  ).catch(error => console.error("[garden] Folder moved to trash; publication failed:", error));
   return deleted;
 }
 

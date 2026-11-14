@@ -719,6 +719,9 @@ function driveSessionEventPump(
               success: event.payload.success,
             },
           });
+          // Beside the audit record on purpose: both describe a tool the
+          // runtime actually reported, not one replayed from the audit log.
+          fireToolLifecycleHooks("tool_used", session.row.conversation_id, event.payload);
         }
       };
       const reconcileSuccessfulMemorySaves = () => {
@@ -1096,7 +1099,7 @@ function driveSessionEventPump(
               ? normalizeChatTokenUsage(event.payload.usage) : null;
             if (label || usage) {
               db.prepare(`UPDATE conversation_messages SET
-                metadata=json_patch(COALESCE(metadata, '{}'), ?),
+                metadata=json_patch(COALESCE((SELECT metadata FROM conversation_message_reads WHERE id=conversation_messages.id), '{}'), ?),
                 token_usage=COALESCE(?, token_usage), updated_at=datetime('now')
                 WHERE conversation_id=? AND client_message_id=? AND role='assistant' AND status='pending'`)
                 .run(JSON.stringify(label ? { activityLabel: label } : {}),
@@ -1212,6 +1215,7 @@ function driveSessionEventPump(
             forwardEvent = false;
           } else if (event.type === "tool.started") {
             sawTurnOutput = true;
+            fireToolLifecycleHooks("tool_started", session.row.conversation_id, event.payload);
             recordAuditEvent({
               eventType: "tool.requested",
               runtimeSessionId: session.row.id,
@@ -1481,6 +1485,35 @@ function sessionEventPump(session: AuthorizedRuntimeSession) {
  * a viewer. Turns dispatched without a browser — a scheduled chat, for instance —
  * still need their assistant output consumed, verified, and persisted.
  */
+/**
+ * Tell the user's tool hooks that a tool started or finished. Loaded lazily and
+ * never awaited: a hook is automation beside the turn and must not be able to
+ * slow or fail the stream that is carrying the answer.
+ */
+function fireToolLifecycleHooks(
+  event: "tool_started" | "tool_used",
+  conversationId: number | null,
+  payload: { toolName?: unknown; toolCallId?: unknown },
+): void {
+  if (conversationId === null) return;
+  const toolName = String(payload.toolName ?? "");
+  const toolCallId = String(payload.toolCallId ?? "");
+  if (!toolName || !toolCallId) return;
+  void import("../hooks/lifecycle.ts")
+    .then(({ fireLifecycleHooks }) =>
+      fireLifecycleHooks({
+        event,
+        conversationId,
+        occurrenceId: toolCallId,
+        matchText: toolName,
+        detail: { tool: { name: toolName, callId: toolCallId } },
+      }),
+    )
+    .catch((error) => {
+      console.error("[hooks] tool hook loader failed", error);
+    });
+}
+
 export function startSessionEventPump(session: AuthorizedRuntimeSession): void {
   sessionEventPump(session);
 }

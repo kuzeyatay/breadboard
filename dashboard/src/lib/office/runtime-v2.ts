@@ -489,6 +489,12 @@ function requiredConversationScope(scope: RuntimeV2OfficeScope): asserts scope i
   }
 }
 
+/** File-library edits are scoped to an owned Garden, independently of a chat. */
+function requiredDocumentScope(scope: RuntimeV2OfficeScope): void {
+  if (scope.gardenId?.trim()) { authority(scope); return; }
+  requiredConversationScope(scope);
+}
+
 export async function runOfficeCommandViaRuntime(
   scope: RuntimeV2OfficeCommandScope,
   workspace: string,
@@ -571,7 +577,7 @@ export async function prepareOfficeExportViaRuntime(
     control?: RuntimeV2OfficeControl;
   } = {},
 ): Promise<OfficeExportStaging> {
-  requiredConversationScope(scope);
+  requiredDocumentScope(scope);
   const described = describeOfficeExport(workspace, args);
   const metadata = fs.lstatSync(described.filePath);
   if (
@@ -824,7 +830,7 @@ export async function runDocumentEditViaRuntime(
   args: Record<string, unknown>,
   options: RuntimeV2OfficeExecutionOptions = {},
 ): Promise<RuntimeDocumentInspectResult | RuntimeOfficeWriteStaging<RuntimeDocumentPatchResult>> {
-  requiredConversationScope(scope);
+  requiredDocumentScope(scope);
   const source = workspaceInput(workspace, args.file, [".docx", ".pptx"]);
   const patches = Array.isArray(args.patches) ? args.patches : [];
   const action = patches.length > 0 ? "patch" : "inspect";
@@ -1015,7 +1021,7 @@ export async function inspectSpreadsheetViaRuntime(
   filePath: string,
   options: RuntimeV2OfficeExecutionOptions = {},
 ): Promise<RuntimeSpreadsheetInspectResult> {
-  requiredConversationScope(scope);
+  requiredDocumentScope(scope);
   const completed = await runOfficeInputOperation(
     scope,
     [directFileInput(filePath, path.basename(filePath), OFFICE_MIME_TYPES[".xlsx"])],
@@ -1063,7 +1069,7 @@ export async function editSpreadsheetViaRuntime(
   patches: unknown,
   options: RuntimeV2OfficeExecutionOptions & { title?: string | null } = {},
 ): Promise<RuntimeOfficeWriteStaging<{ patched: string[] }>> {
-  requiredConversationScope(scope);
+  requiredDocumentScope(scope);
   const patchBytes = sealedPatches(patches, 2_000);
   const completed = await runOfficeInputOperation(
     scope,

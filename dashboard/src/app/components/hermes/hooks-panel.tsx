@@ -13,6 +13,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { parseHookRequest, resolveWorkflowByName } from "@/lib/hooks/natural-language.ts";
+
+type HookActionMode = "chat" | "workflow" | "command";
+
 interface Props {
   /**
    * Set inside a garden: the panel lists only that garden's hooks, and a hook
@@ -26,7 +30,9 @@ interface PresentedHook {
   id: string;
   name: string;
   provider: string;
-  mode: "chat" | "workflow";
+  mode: HookActionMode;
+  command: string | null;
+  lastResult: string | null;
   workflowId: string | null;
   chatInstructions: string | null;
   providerConfig: Record<string, unknown>;
@@ -48,6 +54,8 @@ interface ProviderField {
   placeholder?: string;
   optional?: boolean;
   prefillRandom?: boolean;
+  /** Not a secret: shown as typed rather than masked. */
+  plain?: boolean;
 }
 
 interface ProviderDef {
@@ -56,7 +64,17 @@ interface ProviderDef {
   fields: ProviderField[];
   instructions: string[];
   internal?: boolean;
+  /** Internal triggers: when it runs, completing "Runs automatically …". */
+  summary?: string;
 }
+
+const TOOL_MATCHER_FIELD: ProviderField = {
+  key: "matcher",
+  label: "Only these tools",
+  placeholder: "Optional — a tool name, or several such as web_search|web_extract",
+  optional: true,
+  plain: true,
+};
 
 function randomToken(): string {
   return crypto.randomUUID().replaceAll("-", "");
@@ -66,12 +84,73 @@ const PROVIDERS: ProviderDef[] = [
   {
     id: "chat_completed",
     label: "Chat completed",
-    fields: [],
+    fields: [
+      {
+        key: "matcher",
+        label: "Only chats that mention",
+        placeholder: "Optional — a word, or a pattern such as invoice|receipt",
+        optional: true,
+        plain: true,
+      },
+    ],
     internal: true,
+    summary: "after a successful chat",
     instructions: [
       "Runs only after an assistant answer is saved successfully.",
       "Failed, cancelled, temporary, and hook-created chats are ignored.",
       "A Garden hook reacts to chats in that Garden; a dashboard hook reacts everywhere.",
+    ],
+  },
+  {
+    id: "session_started",
+    label: "Chat started",
+    fields: [],
+    internal: true,
+    summary: "when a new chat starts",
+    instructions: [
+      "Runs once when a new chat is created.",
+      "Temporary and hook-created chats are ignored.",
+    ],
+  },
+  {
+    id: "prompt_submitted",
+    label: "Prompt sent",
+    fields: [
+      {
+        key: "matcher",
+        label: "Only prompts that mention",
+        placeholder: "Optional — a word, or a pattern such as deploy|release",
+        optional: true,
+        plain: true,
+      },
+    ],
+    internal: true,
+    summary: "when a prompt is sent",
+    instructions: [
+      "Runs when a message is accepted for an answer.",
+      "It is told about the prompt; it cannot change or stop it.",
+    ],
+  },
+  {
+    id: "tool_started",
+    label: "Tool started",
+    fields: [TOOL_MATCHER_FIELD],
+    internal: true,
+    summary: "when a tool starts",
+    instructions: [
+      "Runs as the assistant begins a tool call.",
+      "It is told about the call; it cannot approve or block it.",
+    ],
+  },
+  {
+    id: "tool_used",
+    label: "Tool finished",
+    fields: [TOOL_MATCHER_FIELD],
+    internal: true,
+    summary: "after a tool finishes",
+    instructions: [
+      "Runs after each tool call the assistant completes.",
+      "Leave the filter empty to react to every tool.",
     ],
   },
   {
@@ -199,9 +278,11 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
   const requestActive = useRef(false);
 
   const [creating, setCreating] = useState(false);
+  const [description, setDescription] = useState("");
   const [name, setName] = useState("");
   const [provider, setProvider] = useState("generic");
-  const [mode, setMode] = useState<"chat" | "workflow">("chat");
+  const [mode, setMode] = useState<HookActionMode>("chat");
+  const [command, setCommand] = useState("");
   const [chatInstructions, setChatInstructions] = useState("");
   const [workflowId, setWorkflowId] = useState("");
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
@@ -243,12 +324,14 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
 
   function openCreateForm() {
     setCreating(true);
+    setDescription("");
     setJustCreated(null);
     setFormError(null);
     setName("");
     setProvider("generic");
     setMode("chat");
     setChatInstructions("");
+    setCommand("");
     setWorkflowId("");
     setFieldValues({ token: randomToken() });
 
@@ -278,6 +361,27 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
     setFieldValues(next);
   }
 
+  /**
+   * The sentence fills the form rather than bypassing it: what was understood
+   * stays visible and editable, and a provider's secret is still asked for.
+   */
+  function describeHook(nextDescription: string) {
+    setDescription(nextDescription);
+    if (!nextDescription.trim()) return;
+    const parsed = parseHookRequest(nextDescription);
+    // Re-selecting the same provider would regenerate its token on every key.
+    if (parsed.provider !== provider) selectProvider(parsed.provider);
+    if (providerDef(parsed.provider).fields.some((field) => field.key === "matcher")) {
+      setFieldValues((prev) => ({ ...prev, matcher: parsed.matcher ?? "" }));
+    }
+    setName(parsed.name);
+    setMode(parsed.mode);
+    setChatInstructions(parsed.instructions);
+    setCommand(parsed.command ?? "");
+    // An unknown or ambiguous name leaves the picker empty rather than guessing.
+    setWorkflowId(resolveWorkflowByName(parsed.workflowName, workflows)?.id ?? "");
+  }
+
   async function submitCreate() {
     if (saving) return;
     setFormError(null);
@@ -291,6 +395,10 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
     }
     if (mode === "workflow" && !workflowId) {
       setFormError("Pick a workflow to run.");
+      return;
+    }
+    if (mode === "command" && !command.trim()) {
+      setFormError("Enter the command to run.");
       return;
     }
     const missingProviderField = activeDef.fields.find(
@@ -312,6 +420,7 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
           mode,
           chatInstructions: mode === "chat" ? chatInstructions.trim() : null,
           workflowId: mode === "workflow" ? workflowId : null,
+          command: mode === "command" ? command.trim() : null,
           providerConfig: fieldValues,
           gardenSlug,
         }),
@@ -409,7 +518,7 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
                 <h3 className="text-base font-semibold text-[var(--ink-heading)]">Hook created</h3>
                 <p className="mt-1 text-xs text-[var(--ink-muted)]">
                   {providerDef(justCreated.provider).internal
-                    ? "Breadboard will run this hook after a chat completes successfully."
+                    ? `Breadboard will run this hook ${providerDef(justCreated.provider).summary}.`
                     : `${providerDef(justCreated.provider).label} sends events to this URL.`}
                 </p>
                 {justCreated.url ? (
@@ -443,6 +552,27 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
                 <h3 className="text-base font-semibold text-[var(--ink-heading)]">New hook</h3>
 
                 <label className="mt-3 block text-xs font-medium">
+                  Describe it
+                  <textarea
+                    value={description}
+                    onChange={(event) => describeHook(event.target.value)}
+                    rows={2}
+                    autoFocus
+                    placeholder="When a GitHub issue is opened, triage it and tell me what needs attention."
+                    className="neu-control mt-1 w-full resize-none rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--botanical)]"
+                  />
+                  <span className="mt-1 block text-[10px] font-normal text-[var(--ink-muted)]">
+                    {description.trim()
+                      ? `Understood as: ${activeDef.label}${
+                          fieldValues.matcher ? ` matching ${fieldValues.matcher}` : ""
+                        } → ${
+                          mode === "command" ? "run a command" : mode === "workflow" ? "run a workflow" : "start a chat"
+                        }. Correct anything below.`
+                      : "Or fill in the fields below yourself."}
+                  </span>
+                </label>
+
+                <label className="mt-3 block text-xs font-medium">
                   Name
                   <input
                     value={name}
@@ -471,12 +601,12 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
                   <label key={field.key} className="mt-3 block text-xs font-medium">
                     {field.label}
                     <input
-                      type="password"
+                      type={field.plain ? "text" : "password"}
                       value={fieldValues[field.key] ?? ""}
                       onChange={(event) =>
                         setFieldValues((prev) => ({ ...prev, [field.key]: event.target.value }))
                       }
-                      placeholder={field.optional ? "Optional" : undefined}
+                      placeholder={field.placeholder ?? (field.optional ? "Optional" : undefined)}
                       className="neu-control mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 font-mono text-sm outline-none focus:border-[var(--botanical)]"
                     />
                   </label>
@@ -485,7 +615,7 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
                 <div className="mt-4 border-t border-[var(--line)] pt-3">
                   <p className="text-xs font-medium">When this hook fires</p>
                   <div
-                    className="neu-segmented mt-2 grid grid-cols-2 rounded-xl p-1"
+                    className="neu-segmented mt-2 grid grid-cols-3 rounded-xl p-1"
                     role="group"
                     aria-label="Hook action"
                   >
@@ -513,9 +643,36 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
                     >
                       Run a workflow
                     </button>
+                    <button
+                      type="button"
+                      aria-pressed={mode === "command"}
+                      onClick={() => setMode("command")}
+                      className={`rounded-lg px-3 py-2 text-xs transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.97] motion-reduce:transform-none ${
+                        mode === "command"
+                          ? "neu-selected bg-[var(--paper-raised)] font-medium text-[var(--botanical)]"
+                          : "text-[var(--ink-muted)]"
+                      }`}
+                    >
+                      Run a command
+                    </button>
                   </div>
 
-                  {mode === "chat" ? (
+                  {mode === "command" ? (
+                    <label className="mt-3 block text-xs font-medium">
+                      Command
+                      <input
+                        value={command}
+                        onChange={(event) => setCommand(event.target.value)}
+                        spellCheck={false}
+                        placeholder="node scripts/on-event.mjs"
+                        className="neu-control mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 font-mono text-sm outline-none focus:border-[var(--botanical)]"
+                      />
+                      <span className="mt-1 block text-[10px] font-normal text-[var(--ink-muted)]">
+                        Runs in a shell on this computer, from your home folder, with nobody asked
+                        first. The event arrives as JSON on standard input. Stopped after 60 seconds.
+                      </span>
+                    </label>
+                  ) : mode === "chat" ? (
                     <label className="mt-3 block text-xs font-medium">
                       Instructions for the assistant
                       <textarea
@@ -609,7 +766,7 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
                         {providerDef(hook.provider).label}
                       </span>
                       <span className="rounded-full border border-[var(--line)] px-2 py-0.5 text-[10px] text-[var(--ink-muted)]">
-                        {hook.mode === "chat" ? "Chat" : "Workflow"}
+                        {hook.mode === "command" ? "Command" : hook.mode === "chat" ? "Chat" : "Workflow"}
                       </span>
                       {!hook.enabled ? (
                         <span className="rounded-full border border-[var(--line)] px-2 py-0.5 text-[10px] text-[var(--ink-muted)]">
@@ -624,11 +781,21 @@ export default function HooksPanel({ gardenSlug = null }: Props = {}) {
                       </div>
                     ) : (
                       <p className="mt-2 text-xs text-[var(--ink-muted)]">
-                        Runs automatically after a successful chat.
+                        Runs automatically {providerDef(hook.provider).summary ?? ""}
+                        {typeof hook.providerConfig.matcher === "string" && hook.providerConfig.matcher
+                          ? `, matching ${hook.providerConfig.matcher}`
+                          : ""}
+                        .
                       </p>
                     )}
+                    {hook.command ? (
+                      <code className="mt-2 block truncate text-[11px] text-[var(--ink-muted)]">
+                        {hook.command}
+                      </code>
+                    ) : null}
                     <p className="mt-2 text-[10px] text-[var(--ink-muted)]">
                       Last fired {formatRelative(hook.lastFiredAt)} · {hook.fireCount} total
+                      {hook.lastResult ? ` · ${hook.lastResult}` : ""}
                     </p>
                   </div>
                   <div className="flex shrink-0 flex-col items-stretch gap-1.5">

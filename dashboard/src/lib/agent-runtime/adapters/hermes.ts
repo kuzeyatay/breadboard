@@ -563,6 +563,8 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "interactive_visualizer_rollback",
       "interactive_visualizer_cancel",
       "manim_create",
+      "to_markdown",
+      "video_render",
       "premortem_run",
       "factcheck_run",
       "patent_disclosure_guide",

@@ -26,7 +26,7 @@ export async function executeNangoAction(input: {
 }): Promise<NangoActionResult> {
   const action = validateConnectedAction(input.action, input.args);
   if (["google_calendar_preview_breadboard_export", "google_calendar_export_breadboard_events"].includes(action.action.name)) {
-    throw new ApiError(409, "composio_required", "Connect Google Calendar through Composio to copy Breadboard events.");
+    throw new ApiError(409, "composio_required", "Connect Google Calendar from Connections to copy Breadboard events.");
   }
   const connection = await resolveNangoConnection(
     input.userId,

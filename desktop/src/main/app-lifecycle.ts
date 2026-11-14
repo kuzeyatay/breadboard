@@ -11,6 +11,7 @@ import {
   ipcMain,
   Menu,
   powerSaveBlocker,
+  powerMonitor,
   session,
   shell,
 } from "electron";
@@ -18,6 +19,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { LogManager } from "./log-manager";
+import { startStorageMaintenance } from "./storage-maintenance";
+import { runRequestedStorageCompaction } from "./storage-compaction";
+import { cleanReleasedInstallationDownloads } from "../shared/released-downloads";
 import { initializeAppSession } from "./app-session";
 import { installAppAssetTransport } from "./app-assets";
 import { sendSpotifyRequest } from "./spotify-control";
@@ -406,6 +410,20 @@ export class AppLifecycle {
 
     await app.whenReady();
     initializeAppSession();
+    const stopStorageMaintenance = startStorageMaintenance({
+      dashboardUrl: () => this.runtimeDashboardUrl,
+      session: session.defaultSession,
+      afterMaintenance: async result => {
+        if (result.housekeepingAllowed) {
+          this.logs?.prune();
+          const deadline = Date.now() + 50;
+          const yieldNow = () => Date.now() >= deadline || powerMonitor.getSystemIdleTime() < 120;
+          cleanReleasedInstallationDownloads(path.join(this.paths.configDir, "code", "versions"), yieldNow);
+        }
+        await this.runStorageCompaction();
+      },
+    });
+    app.once("before-quit", stopStorageMaintenance);
     installAppAssetTransport(session.defaultSession, () => this.runtimeDashboardUrl);
 
     inhibitSystemSleepUntilQuit(powerSaveBlocker, (listener) => {
@@ -1017,6 +1035,28 @@ export class AppLifecycle {
     return this.runtime.state === "ready";
   }
 
+  private async runStorageCompaction(): Promise<void> {
+    if (this.quitting || this.runtimeRestartInFlight || this.sourceRepairActivator?.busy || this.runtime?.state !== "ready") return;
+    const runtime = this.runtime;
+    const work = (async () => {
+      await runRequestedStorageCompaction({
+        dataRoot: this.paths.dataRoot, appRoot: this.paths.appRoot, runtimeRoot: this.paths.runtimeRoot, binDir: this.paths.binDir,
+        idle: () => !this.quitting && powerMonitor.getSystemIdleTime() >= 120,
+        quiesce: () => runtime.quiesceForRepair(),
+        resume: () => runtime.resumeAfterRepairDeferral(),
+        stop: async () => {
+          this.clearRuntimeRootStabilityTimer(); this.stopRuntimeStatusPolling(); this.clearScheduledRuntimeRootRetry();
+          return (await runtime.stop()).exited;
+        },
+        restart: async () => { if (!this.quitting) await this.retryRuntimeRootOnce(); },
+      });
+      return this.runtime?.state === "ready";
+    })();
+    this.runtimeRestartInFlight = work;
+    try { await work; }
+    finally { if (this.runtimeRestartInFlight === work) this.runtimeRestartInFlight = null; }
+  }
+
   private allowDashboardOrigin(dashboardUrl: string): void {
     this.allowedOrigins.origins.add(new URL(dashboardUrl).origin);
   }
@@ -1117,7 +1157,7 @@ export class AppLifecycle {
     this.runtimeStatusRefreshInFlight = true;
     try {
       await this.applyRuntimeSnapshot(await runtime.status());
-      await this.sourceRepairActivator?.tick();
+      if (!this.runtimeRestartInFlight) await this.sourceRepairActivator?.tick();
     } catch {
       // A transient control read cannot create a second owner or change the UI
       // to a false terminal state. Process exit is reported by the fixed-root

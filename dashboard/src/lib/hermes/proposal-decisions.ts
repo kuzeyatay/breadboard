@@ -35,7 +35,7 @@ export async function decideGardenProposal(input: {
     const content = typeof payload.content === "string" ? payload.content : "";
     if (!title || !content.trim()) throw new ApiError(400, "invalid_note_proposal", "This note proposal is missing its title or content.");
     document = await createGardenDocument({
-      userId, clusterSlug: access.slug, title, content,
+      userId, clusterSlug: access.slug, title, content, authorship: "ai-written",
       preserveContent: payload.preserveContent === true,
       folder: typeof payload.folder === "string" ? payload.folder : "",
       tags: Array.isArray(payload.tags) ? payload.tags.filter((tag): tag is string => typeof tag === "string") : ["assistant-response"],

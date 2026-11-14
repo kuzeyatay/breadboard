@@ -26,10 +26,10 @@ export async function POST(request: Request) {
       throw new ApiError(403, "image_turn", "Image inspection is unavailable on this turn.");
     }
     const dispatch = parseRuntimeRunDispatch(run);
-    const messages = db.prepare(`SELECT m.id, m.metadata FROM conversation_messages m
+    const messages = db.prepare(`SELECT m.id, m.metadata FROM conversation_message_reads m
       JOIN conversations c ON c.id=m.conversation_id
       WHERE m.conversation_id=? AND c.user_id=? AND m.role='user'
-        AND m.order_index < (SELECT order_index FROM conversation_messages
+        AND m.order_index < (SELECT order_index FROM conversation_message_reads
           WHERE conversation_id=? AND client_message_id=? AND role='assistant')
       ORDER BY m.order_index DESC LIMIT 40`).all(
       session.conversation_id, session.user_id, session.conversation_id, dispatch.clientMessageId ?? "",

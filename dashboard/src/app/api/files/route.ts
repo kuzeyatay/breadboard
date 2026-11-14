@@ -18,7 +18,7 @@ export async function GET(request: Request) {
       // compared. Return the retained upload, never the path supplied by a model.
       let beforeId = Number.MAX_SAFE_INTEGER;
       for (;;) {
-        const rows = db.prepare(`SELECT m.id, m.metadata FROM conversation_messages m
+        const rows = db.prepare(`SELECT m.id, m.metadata FROM conversation_message_reads m
           JOIN conversations c ON c.id=m.conversation_id
           WHERE c.user_id=? AND m.role='user' AND m.id<?
             AND m.metadata LIKE '%"image"%'

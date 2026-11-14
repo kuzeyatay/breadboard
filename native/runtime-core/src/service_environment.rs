@@ -123,6 +123,9 @@ const OPTIONAL_ELECTRON_GATED_PRODUCT_ENVIRONMENT_NAMES: &[&str] = &[
     "BREADBOARD_SPOTIFY_BROWSER_PATH",
     "BREADBOARD_SOLIDWORKS_EXE",
     "BREADBOARD_SOLIDWORKS_VERSION",
+    "BREADBOARD_FREECAD_CMD",
+    "BREADBOARD_FREECAD_HOME",
+    "BREADBOARD_FREECAD_PYTHON",
     "AGENT_BROWSER_EXECUTABLE_PATH",
     "HYPERFRAMES_BROWSER_PATH",
     "SF3D_DEVICE",
@@ -1523,6 +1526,9 @@ impl TrustedWorkerEnvironmentSet {
             "BREADBOARD_SOLIDWORKS_WORKSPACE",
             "BREADBOARD_SOLIDWORKS_MCP_PATH",
             "BREADBOARD_SOLIDWORKS_PYTHON",
+            "BREADBOARD_FREECAD_CMD",
+            "BREADBOARD_FREECAD_HOME",
+            "BREADBOARD_FREECAD_PYTHON",
             "BREADBOARD_UV_PATH",
             "BREADBOARD_SOLIDWORKS_EXE",
             "BREADBOARD_SOLIDWORKS_VERSION",
@@ -3479,6 +3485,9 @@ impl TrustedWorkerEnvironmentSet {
         for name in [
             "BREADBOARD_SOLIDWORKS_EXE",
             "BREADBOARD_SOLIDWORKS_VERSION",
+            "BREADBOARD_FREECAD_CMD",
+            "BREADBOARD_FREECAD_HOME",
+            "BREADBOARD_FREECAD_PYTHON",
             "HTTP_PROXY",
             "HTTPS_PROXY",
             "ALL_PROXY",
@@ -3774,6 +3783,11 @@ impl TrustedWorkerEnvironmentSet {
             "LANG",
             "LC_ALL",
         ] {
+            if let Some(value) = product_environment_value(os_environment, name) {
+                outer_parametric_cad_pairs.push((OsString::from(name), value.to_os_string()));
+            }
+        }
+        for name in ["BREADBOARD_FREECAD_CMD", "BREADBOARD_FREECAD_HOME", "BREADBOARD_FREECAD_PYTHON"] {
             if let Some(value) = product_environment_value(os_environment, name) {
                 outer_parametric_cad_pairs.push((OsString::from(name), value.to_os_string()));
             }
@@ -9324,6 +9338,9 @@ mod tests {
                 ("HTTPS_PROXY", OsString::from("http://proxy.example:8443")),
                 ("LANG", OsString::from("C.UTF-8")),
                 ("OPENAI_API_KEY", OsString::from("must-not-cross")),
+                ("BREADBOARD_FREECAD_CMD", OsString::from(r"C:\FreeCAD\bin\FreeCADCmd.exe")),
+                ("BREADBOARD_FREECAD_HOME", OsString::from(r"C:\Data\FreeCAD")),
+                ("BREADBOARD_FREECAD_PYTHON", OsString::from(r"C:\Data\FreeCAD\venv\Scripts\python.exe")),
             ],
         )
         .unwrap();
@@ -9355,6 +9372,8 @@ mod tests {
         assert!(!wardrobe.contains_key("BREADBOARD_SUPERVISOR_CONTROL_TOKEN"));
         assert!(!wardrobe.contains_key("CHATMOCK_API_KEY"));
         assert!(!wardrobe.contains_key("OPENAI_API_KEY"));
+        assert!(!wardrobe.contains_key("BREADBOARD_FREECAD_CMD"));
+        assert!(!wardrobe.contains_key("BREADBOARD_FREECAD_PYTHON"));
 
         let parametric_cad = worker_values(
             &workers.prepare_for_source(TrustedWorkerEnvironmentSource::OuterParametricCad),
@@ -9372,6 +9391,9 @@ mod tests {
         assert_eq!(parametric_cad["CHATMOCK_API_KEY"], "local");
         assert_eq!(parametric_cad["HTTPS_PROXY"], "http://proxy.example:8443");
         assert_eq!(parametric_cad["LANG"], "C.UTF-8");
+        assert_eq!(parametric_cad["BREADBOARD_FREECAD_CMD"], r"C:\FreeCAD\bin\FreeCADCmd.exe");
+        assert_eq!(parametric_cad["BREADBOARD_FREECAD_HOME"], r"C:\Data\FreeCAD");
+        assert_eq!(parametric_cad["BREADBOARD_FREECAD_PYTHON"], r"C:\Data\FreeCAD\venv\Scripts\python.exe");
         assert!(!parametric_cad.contains_key("BREADBOARD_SOLIDWORKS_SERVICE_URL"));
         assert!(!parametric_cad.contains_key("OPENAI_API_KEY"));
         assert!(!parametric_cad.contains_key("NEXTAUTH_SECRET"));

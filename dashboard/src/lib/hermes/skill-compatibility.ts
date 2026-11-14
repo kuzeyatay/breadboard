@@ -101,6 +101,7 @@ const RUNTIME_ALIASES: Record<string, string> = {
   "audio-renderer": "audio-file",
   "video-renderer": "video-file",
   "manim-runtime": "video-file",
+  "remotion-runtime": "video-file",
   "diagram-renderer": "diagram-file",
   "interactive-visualizer-runtime": "interactive-visualizer",
   "gadget-runtime": "gadget",
@@ -123,6 +124,7 @@ const RUNTIME_PUBLICATION_TOOLS: Record<string, readonly string[]> = {
   "interactive-visualizer-runtime": ["interactive_visualizer_create"],
   "gadget-runtime": ["gadget_generate"],
   "manim-runtime": ["manim_create"],
+  "remotion-runtime": ["video_render"],
   // `image_to_3d` files its own mesh: the bytes are staged and imported
   // server-side, so there is nothing for `artifact_create`/`artifact_render` to
   // do and no raw model output that could bypass the import verification.

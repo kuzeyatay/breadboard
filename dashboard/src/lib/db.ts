@@ -38,6 +38,7 @@ import {
   externalRuntimePathExists,
 } from "./external-runtime-filesystem.ts";
 import { openRuntimeSqliteDatabase } from "./runtime-sqlite-database.ts";
+import { ensurePdfObjectSchema } from "./storage/pdf-revisions.ts";
 
 const DB_ROOT = databaseDir();
 const DB_PATH = path.join(DB_ROOT, "brain.db");
@@ -1069,4 +1070,5 @@ if (initialInviteCode) {
   ).run(initialInviteCode, new Date().toISOString());
 }
 
+ensurePdfObjectSchema(db);
 export default db;

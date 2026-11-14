@@ -52,7 +52,8 @@ function serialize(chatId: string, work: () => Promise<void>): void {
 
 async function handleMessage(message: TelegramInboundMessage): Promise<void> {
   const gateway = getTelegramGateway();
-  const { deliverTelegramFollowUps, routeTelegramMessage } = await import("./inbound.ts");
+  const { deliverTelegramFollowUps, deliverTelegramLateReply, routeTelegramMessage } =
+    await import("./inbound.ts");
   const messages = await store();
 
   // Telegram replays unacknowledged updates on reconnect; one id may only ever
@@ -77,6 +78,12 @@ async function handleMessage(message: TelegramInboundMessage): Promise<void> {
   } catch {
     // A failed delivery leaves the answer in the durable transcript, which is
     // where the user can still read it. Retrying risks duplicate replies.
+  }
+  if (outcome.status === "failed" && outcome.lateReply) {
+    // Detached: watching an hours-long turn must not block this chat's queue.
+    void deliverTelegramLateReply(outcome.lateReply, (reply) =>
+      gateway.sendMessage(message.chatId, reply),
+    ).catch(() => {});
   }
 }
 

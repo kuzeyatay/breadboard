@@ -73,7 +73,7 @@ test("Breadboard drives the same pairing and gateway modes the Hermes CLI does",
 test("a WhatsApp message goes through the same authenticated turn pipeline as the browser", () => {
   assert.match(inbound, /createConversation\(/);
   assert.match(inbound, /startConversationTurn\(/);
-  assert.match(inbound, /prepareWhatsAppAttachments\(settings\.ownerUserId, message\)/);
+  assert.match(inbound, /prepareWhatsAppAttachments\(ownerUserId, message\)/);
   assert.match(inbound, /resolveConversationRuntime\(/);
   // The chat must be a Terminal chat, which is what makes it show up in the
   // desktop app's Recents rather than living only inside WhatsApp.
@@ -113,7 +113,7 @@ test("a WhatsApp turn runs on the owner's selected model, not the hardcoded defa
   // There is no model picker in WhatsApp, so the saved Intelligence preference
   // is the selection. Omitting it silently routes to DEFAULT_MODEL, which is a
   // different model than the app itself answers with.
-  assert.match(inbound, /getHermesUserSettings\(settings\.ownerUserId\)/);
+  assert.match(inbound, /getHermesUserSettings\(ownerUserId\)/);
   assert.match(inbound, /model: preference\.fallbackModel/);
   assert.match(inbound, /reasoningEffort: preference\.reasoningEffort/);
   assert.ok(
@@ -126,7 +126,7 @@ test("the agent is told it is answering into WhatsApp, not the app window", () =
   // The chat is a Terminal chat, so nothing else in the turn distinguishes a
   // message read on a phone from one read in the Breadboard window.
   assert.match(inbound, /deliveryChannel: "whatsapp"/);
-  assert.match(turnService, /renderDeliveryChannel\(context\.deliveryChannel\)/);
+  assert.match(turnService, /renderDeliveryChannel\(context\.deliveryChannel, approvalPolicy\.yoloMode\)/);
   // A browser must not be able to claim it is WhatsApp.
   assert.match(turnService, /DELIVERY_CHANNELS\.includes\(/);
 

@@ -39,7 +39,7 @@ export function starredPdfGardenId(db: Database.Database, userId: number, reques
   if (attachment) {
     // A reused upload may occur in several chats; keep its original Garden.
     const row = db.prepare(`SELECT c.default_garden_id AS gardenId
-      FROM conversation_messages m JOIN conversations c ON c.id = m.conversation_id
+      FROM conversation_message_reads m JOIN conversations c ON c.id = m.conversation_id
       JOIN json_each(CASE WHEN json_valid(m.metadata) THEN m.metadata ELSE '{}' END, '$.attachments') attachment
       WHERE c.user_id = ? AND c.default_garden_id IS NOT NULL AND m.role = 'user'
         AND json_extract(attachment.value, '$.blobId') = ?

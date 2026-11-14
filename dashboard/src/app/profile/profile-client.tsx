@@ -120,8 +120,9 @@ function formatCount(value: number): string {
   return numbers.format(value);
 }
 
-/** "5.8M", "12.4k", "812" — a headline number that fits in a tile. */
+/** "1.89B", "5.8M", "12.4k", "812" — a headline number that fits in a tile. */
 function formatCompact(value: number): string {
+  if (value >= 1_000_000_000) return `${Number((value / 1_000_000_000).toFixed(2))}B`;
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
   if (value >= 10_000) return `${Math.round(value / 1_000)}k`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;

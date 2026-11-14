@@ -1,10 +1,11 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const http = require("node:http");
+const https = require("node:https");
 const path = require("node:path");
 const { app, BrowserWindow, session } = require("electron");
 const { BrowserAdBlocker } = require("../../dist/main/browser-adblocker.js");
 const { FiltersEngine } = require("../../dist/main/browser-adblocker-engine.js");
+const { createFixtureTls } = require("../helpers/fixture-tls.cjs");
 const [dir] = process.argv.slice(2);
 app.setPath("userData", path.join(dir, "profile"));
 app.commandLine.appendSwitch("host-resolver-rules", "MAP *.fixture.test 127.0.0.1, MAP www.youtube.com 127.0.0.1, MAP www.primevideo.com 127.0.0.1");
@@ -20,8 +21,9 @@ const prime = { cuepointPlaylist: [{ ad: true }], ads: [{ ad: true }], vodPlayba
 const mpd = `<?xml version="1.0"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT60S"><Period id="ad" start="PT0S"><SupplementalProperty value="Ad"/><AdaptationSet><BaseURL>/ad.mp4</BaseURL></AdaptationSet></Period><Period id="content" start="PT10S"><AdaptationSet><ContentProtection schemeIdUri="urn:uuid:fixture-drm"/><BaseURL>/movie.mp4</BaseURL></AdaptationSet><AdaptationSet contentType="text"><BaseURL>/subtitles.vtt</BaseURL></AdaptationSet></Period></MPD>`;
 
 app.whenReady().then(async () => {
-  const server = http.createServer((req, res) => {
-    const url = new URL(req.url, `http://${req.headers.host}`);
+  const tls = await createFixtureTls();
+  const server = https.createServer(tls.options, (req, res) => {
+    const url = new URL(req.url, `https://${req.headers.host}`);
     res.setHeader("cache-control", "no-store");
     if (url.pathname.endsWith("/player")) { res.setHeader("content-type", "application/json"); return res.end(JSON.stringify(youtube)); }
     if (url.pathname === "/movie.mpd") { res.setHeader("content-type", "application/dash+xml"); return res.end(mpd); }
@@ -62,36 +64,38 @@ app.whenReady().then(async () => {
   ] });
   const blocker = new BrowserAdBlocker(dir, () => {}, console.log, engine);
   const profile = session.fromPartition("adblock-streaming-fixture", { cache: false });
+  tls.trust(profile);
   const window = new BrowserWindow({ show: false, webPreferences: { session: profile, sandbox: true, contextIsolation: true } });
   const page = window.webContents;
   page.on("console-message", (_e, level, message) => { if (level >= 2) console.log("Renderer:", message.slice(0,250)); });
   blocker.attachPage(page);
-  const load = async host => { await page.loadURL(`http://${host}:${port}/watch`); await until(() => page.executeJavaScript("window.pageReady === true"), "page ready"); };
+  const load = async host => { await page.loadURL(`https://${host}:${port}/watch`); await until(() => page.executeJavaScript("window.pageReady === true"), "page ready"); };
   await load("rules.fixture.test");
   assert.equal(await page.executeJavaScript("window.initialRuleValue"), false, "scriptlet runs before first page script, under CSP");
   await until(() => page.executeJavaScript("['#ad-slot','.sponsor-card','.promo-card'].every(s => getComputedStyle(document.querySelector(s)).display === 'none')"), "CSS and both extended selectors");
   await page.executeJavaScript("document.querySelector('.sponsor-card').textContent = 'Organic'; const d = document.createElement('div'); d.className = 'dynamic-ad'; document.body.append(d); const a = document.createElement('div'); a.className = 'allowed-ad'; document.body.append(a);");
   await until(() => page.executeJavaScript("getComputedStyle(document.querySelector('.dynamic-ad')).display === 'none' && getComputedStyle(document.querySelector('.sponsor-card')).display !== 'none' && getComputedStyle(document.querySelector('.promo-card')).display === 'none'"), "dynamic selectors and extended unhide");
   assert.equal(await page.executeJavaScript("getComputedStyle(document.querySelector('.allowed-ad')).display !== 'none'"), true, "cosmetic exceptions win");
-  assert.equal(await page.executeJavaScript(`new Promise(resolve => { const s = document.createElement('script'); s.src = 'http://sdk.fixture.test:${port}/noop.js'; s.onload = () => resolve(true); s.onerror = () => resolve(false); document.head.append(s); })`), false, "CSP stays enforced for unrelated origins");
+  assert.equal(await page.executeJavaScript(`new Promise(resolve => { const s = document.createElement('script'); s.src = 'https://sdk.fixture.test:${port}/noop.js'; s.onload = () => resolve(true); s.onerror = () => resolve(false); document.head.append(s); })`), false, "CSP stays enforced for unrelated origins");
   // Same-origin replacement is permitted by CSP, fulfills load, and does not
   // execute the server's response (which would be HTML).
   engine.updateFromDiff({ added: ["||rules.fixture.test^*/noop.js$script,redirect=noopjs"] });
   assert.equal(await page.executeJavaScript("new Promise(resolve => { const s = document.createElement('script'); s.src = '/noop.js'; s.onload = () => resolve(true); s.onerror = () => resolve(false); document.head.append(s); })"), true);
   assert.equal(await page.executeJavaScript("typeof window.adSdkExecuted"), "undefined", "replacement loads without executing the advertising SDK");
   assert.deepEqual(await page.executeJavaScript("fetch('/echo?tracking=secret&keep=yes').then(r => r.json())"), { query: "?keep=yes" });
-  blocker.setSiteEnabled(`http://rules.fixture.test:${port}`, false, profile);
+  blocker.setSiteEnabled(`https://rules.fixture.test:${port}`, false, profile);
   await until(() => page.executeJavaScript("['#ad-slot','.dynamic-ad','.promo-card'].every(s => getComputedStyle(document.querySelector(s)).display !== 'none')"), "pause removes all cosmetic effects");
   await load("rules.fixture.test");
   assert.equal(await page.executeJavaScript("typeof window.initialRuleValue"), "undefined", "paused site gets no scriptlets after reload");
-  blocker.setSiteEnabled(`http://rules.fixture.test:${port}`, true, profile);
+  blocker.setSiteEnabled(`https://rules.fixture.test:${port}`, true, profile);
 
   await load("www.youtube.com");
   const inline = await page.executeJavaScript("({ player: window.inlinePlayer, flags: window.inlineFlags })");
   assert.equal(inline.player.adPlacements, undefined, "initial inline player is filtered before the first page script consumes it");
   assert.equal(inline.player.adSlots, undefined);
   assert.deepEqual(inline.player.streamingData, youtube.streamingData);
-  assert.deepEqual(inline.flags, { all_web_enable_network_machine: false, all_web_network_machine_raw_request: false }, "YouTube transport compatibility flags apply before inline startup");
+  await page.executeJavaScript("document.body.insertAdjacentHTML('beforeend', '<div class=\"html5-video-player ad-showing\"><button class=\"ytp-skip-ad-button\"></button></div>'); document.querySelector('.ytp-skip-ad-button').onclick = () => { window.adSkipped = true; }; 0");
+  await until(() => page.executeJavaScript("window.adSkipped === true"), "an ad that starts anyway is skipped");
   for (const method of ["fetchPlayer", "xhrPlayer"]) {
     const response = await page.executeJavaScript(`window.${method}()`);
     assert.equal(response.adPlacements, undefined, `YouTube ${method} ad placements removed`);
@@ -109,8 +113,8 @@ app.whenReady().then(async () => {
   assert.equal(serialization.result, '{"marker":"content"}');
   assert.equal(serialization.reads, 7, "six player-request scriptlets share native JSON functions instead of doing 64 serializations");
   assert.equal(await page.executeJavaScript("['scriptletGlobals', 'safeSelf', 'proxyApplyFn', 'JSONPath'].every(key => !(key in window))"), true, "scriptlet helpers and saved native functions remain private");
-  blocker.setSiteEnabled(`http://performance.fixture.test:${port}`, false, profile);
-  blocker.setSiteEnabled(`http://performance.fixture.test:${port}`, true, profile);
+  blocker.setSiteEnabled(`https://performance.fixture.test:${port}`, false, profile);
+  blocker.setSiteEnabled(`https://performance.fixture.test:${port}`, true, profile);
   await until(() => page.executeJavaScript("getComputedStyle(document.querySelector('#ad-slot')).display === 'none'"), "reenabled cosmetics");
   assert.equal(await page.executeJavaScript(`(() => {
     let reads = 0;
@@ -137,10 +141,11 @@ app.whenReady().then(async () => {
 
   const beforePrivate = fs.readFileSync(path.join(dir, "browser-adblocker.json"), "utf8");
   const privateProfile = session.fromPartition("adblock-streaming-private", { cache: false });
+  tls.trust(privateProfile);
   const privateWindow = new BrowserWindow({ show: false, webPreferences: { session: privateProfile, sandbox: true, contextIsolation: true } });
   blocker.attachPage(privateWindow.webContents, true);
   blocker.setEnabled(true, privateProfile);
-  const primeUrl = `http://www.primevideo.com:${port}/watch`;
+  const primeUrl = `https://www.primevideo.com:${port}/watch`;
   await privateWindow.loadURL(primeUrl);
   assert.equal(await privateWindow.webContents.executeJavaScript("window.primeResult.ads"), undefined, "private streaming protection works independently");
   assert.deepEqual(await page.executeJavaScript("window.fetchPlayer()"), youtube, "private enable does not enable regular pages");
@@ -151,7 +156,7 @@ app.whenReady().then(async () => {
   privateWindow.destroy();
 
   const unregistered = new BrowserWindow({ show: false, webPreferences: { session: profile, sandbox: true } });
-  await unregistered.loadURL(`http://rules.fixture.test:${port}/watch`);
+  await unregistered.loadURL(`https://rules.fixture.test:${port}/watch`);
   assert.equal(await unregistered.webContents.executeJavaScript("typeof window.initialRuleValue"), "undefined", "unregistered background pages receive a safe startup reply");
   unregistered.destroy();
   window.destroy(); server.close();

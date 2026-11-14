@@ -6,14 +6,18 @@
 // deciding what an agent may do with it afterward.
 
 import BambuConnectionEntry from "./settings-bambu";
+import BlenderConnectionEntry from "./settings-blender";
 import GoogleFlowConnectionEntry from "./settings-google-flow";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RECOMMENDATION_REFRESH_EVENT } from '@/lib/recommendations/types';
 import { invalidateCommandResponseCache } from "@/lib/hermes/command-client-cache";
 import { invalidateSettingsCache } from "@/lib/settings-client-cache";
 import { readConnectionsPanel } from "@/lib/settings-connections-read";
+import { openAuthorizationUrl } from "@/lib/auth-window";
 
 const SPOTIFY_CONNECTION_URL = "/api/hermes/connections/spotify";
+// The catalog holds well over a thousand apps; the rest are reached by search.
+const MAX_VISIBLE_APPS = 120;
 
 type ComposioResponse = {
   configured: boolean;
@@ -187,6 +191,8 @@ export default function SettingsConnections() {
 
   const googleFlowMatchesQuery = !query.trim() ||
     "google flow veo subscription video generation".includes(query.trim().toLowerCase());
+  const blenderMatchesQuery = !query.trim() ||
+    "blender 3d modeling materials animation rendering".includes(query.trim().toLowerCase());
 
   async function connectSpotify() {
     const popup = window.open(
@@ -211,8 +217,7 @@ export default function SettingsConnections() {
       }
       invalidateSettingsCache("/api/hermes/mcp");
       invalidateCommandResponseCache();
-      if (popup) popup.location.replace(payload.authorizationUrl);
-      else window.location.assign(payload.authorizationUrl);
+      openAuthorizationUrl(popup, payload.authorizationUrl);
       setConnectionsMessage(
         "Finish signing in with Spotify in the opened window, then return here.",
       );
@@ -278,11 +283,7 @@ export default function SettingsConnections() {
             `${integration.name} sign-in could not be started.`,
         );
       }
-      if (popup) {
-        popup.location.href = payload.authorizationUrl;
-      } else {
-        window.location.assign(payload.authorizationUrl);
-      }
+      openAuthorizationUrl(popup, payload.authorizationUrl);
       setConnectionsMessage(
         `Finish connecting ${integration.name} in the opened window.`,
       );
@@ -332,12 +333,13 @@ export default function SettingsConnections() {
       ) : null}
       {!appIntegrations.length && !spotify && connectionsLoading ? (
         <LoadingRows />
-      ) : bambuMatchesQuery || googleFlowMatchesQuery || spotifyMatchesQuery || visibleAppIntegrations.length ? (
+      ) : bambuMatchesQuery || blenderMatchesQuery || googleFlowMatchesQuery || spotifyMatchesQuery || visibleAppIntegrations.length ? (
         <ul
           className="grid grid-cols-1 gap-2 sm:grid-cols-2"
           aria-label="Available app connections"
         >
           {bambuMatchesQuery ? <BambuConnectionEntry /> : null}
+          {blenderMatchesQuery ? <BlenderConnectionEntry /> : null}
           {googleFlowMatchesQuery ? <GoogleFlowConnectionEntry /> : null}
           {spotifyMatchesQuery ? (
             <li className="neu-card flex min-w-0 items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] p-3">
@@ -389,7 +391,7 @@ export default function SettingsConnections() {
               </span>
             </li>
           ) : null}
-          {visibleAppIntegrations.map((integration) => (
+          {visibleAppIntegrations.slice(0, MAX_VISIBLE_APPS).map((integration) => (
             <li
               key={integration.integrationId}
               className="neu-card flex min-w-0 items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] p-3"
@@ -424,6 +426,11 @@ export default function SettingsConnections() {
               </button>
             </li>
           ))}
+          {visibleAppIntegrations.length > MAX_VISIBLE_APPS ? (
+            <li className="px-1 py-2 text-xs text-[var(--ink-muted)] sm:col-span-2">
+              {visibleAppIntegrations.length - MAX_VISIBLE_APPS} more apps. Search to find one.
+            </li>
+          ) : null}
         </ul>
       ) : (
         <p className="px-4 py-10 text-center text-sm text-[var(--ink-muted)]">

@@ -256,39 +256,82 @@ function seededUnit(id, channel) {
   hash = Math.imul(hash ^ hash >>> 13, 3266489909);
   return ((hash ^ hash >>> 16) >>> 0) / 4294967296;
 }
-function sphericalTopologyPositions(nodes) {
-  const positions = /* @__PURE__ */ new Map();
-  const sectors = /* @__PURE__ */ new Map();
-  let count = 0;
-  for (const node of nodes) {
-    if (node.kind === "garden") {
-      positions.set(node.id, { x: 0, y: 0, z: 0 });
-      continue;
-    }
-    const key = node.sectorId ?? node.folderId ?? node.id;
-    const members = sectors.get(key) ?? [];
-    members.push(node);
-    sectors.set(key, members);
-    count += 1;
+function fillSphere(positions, members, center, groupOf) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const node of members) {
+    const key = groupOf(node);
+    const group = groups.get(key) ?? [];
+    group.push(node);
+    groups.set(key, group);
   }
+  const count = members.length;
   const extent = Math.max(180, Math.sqrt(count) * 96);
   let start = -Math.PI / 2;
-  for (const key of [...sectors.keys()].sort()) {
-    const members = sectors.get(key);
-    const arc = Math.PI * 2 * members.length / count;
-    for (const node of members) {
+  for (const key of [...groups.keys()].sort()) {
+    const group = groups.get(key);
+    const arc = Math.PI * 2 * group.length / count;
+    for (const node of group) {
       const anchor = node.kind === "folder";
       const longitude = start + arc * (anchor ? 0.5 : seededUnit(node.id, "longitude"));
       const latitude = (seededUnit(node.id, "latitude") * 2 - 1) * (anchor ? 0.35 : 1);
       const radius = extent * (anchor ? 0.42 : Math.cbrt(0.06 + 0.94 * seededUnit(node.id, "radius")));
       const ring = radius * Math.sqrt(1 - latitude * latitude);
       positions.set(node.id, {
-        x: Math.cos(longitude) * ring,
-        y: latitude * radius,
-        z: Math.sin(longitude) * ring
+        x: center.x + Math.cos(longitude) * ring,
+        y: center.y + latitude * radius,
+        z: center.z + Math.sin(longitude) * ring
       });
     }
     start += arc;
+  }
+  return extent;
+}
+function sphericalTopologyPositions(nodes, separateSectors = false) {
+  const positions = /* @__PURE__ */ new Map();
+  const rest = [];
+  for (const node of nodes) {
+    if (node.kind === "garden") positions.set(node.id, { x: 0, y: 0, z: 0 });
+    else rest.push(node);
+  }
+  const sectorOf = (node) => node.sectorId ?? node.folderId ?? node.id;
+  const sectors = /* @__PURE__ */ new Map();
+  if (separateSectors) {
+    for (const node of rest) {
+      const members = sectors.get(sectorOf(node)) ?? [];
+      if (node.id !== sectorOf(node)) members.push(node);
+      sectors.set(sectorOf(node), members);
+    }
+  }
+  if (sectors.size < 2) {
+    if (rest.length > 0) fillSphere(positions, rest, { x: 0, y: 0, z: 0 }, sectorOf);
+    return positions;
+  }
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const branchOf = (node) => {
+    let current = node;
+    for (let hops = 0; hops < 16; hops++) {
+      const parent = current.folderId ? byId.get(current.folderId) : void 0;
+      if (!parent || parent.id === node.sectorId) break;
+      current = parent;
+    }
+    return current.id;
+  };
+  const spheres = [...sectors.entries()].map(([id, members]) => ({ id, members, radius: Math.max(180, Math.sqrt(members.length) * 96) })).sort((a, b) => b.radius - a.radius || (a.id < b.id ? -1 : 1));
+  const placed = [{ x: 0, y: 0, radius: 0 }];
+  for (const sphere of spheres) {
+    let center = { x: 0, y: 0, z: 0 };
+    for (let step = 0; step < 2e4; step++) {
+      const distance = sphere.radius * 1.2 + 140 + step * 10;
+      const angle = step * 0.4;
+      center = { x: Math.cos(angle) * distance, y: Math.sin(angle) * distance, z: 0 };
+      if (placed.every(
+        (other) => Math.hypot(center.x - other.x, center.y - other.y) >= (sphere.radius + other.radius) * 1.2 + 140
+      ))
+        break;
+    }
+    placed.push({ x: center.x, y: center.y, radius: sphere.radius });
+    positions.set(sphere.id, center);
+    if (sphere.members.length > 0) fillSphere(positions, sphere.members, center, branchOf);
   }
   return positions;
 }
@@ -621,7 +664,7 @@ function analysisStatus(payload) {
     return {
       mode: "concept-lexical",
       notice: "",
-      detail: "Concept and lexical mode. Semantic bridges will appear after vector analysis runs for this Garden."
+      detail: "Showing topic and keyword connections. Related concepts will appear after analysis."
     };
   }
   return {
@@ -1739,7 +1782,10 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
     }, 0));
   };
   const gardenSlug = payload.garden.slug;
-  const positionScope = context.scopeFolderPath ? `${gardenSlug}:folder:${context.scopeFolderPath}` : `${gardenSlug}:root`;
+  const gardenSpheres = !context.scopeFolderPath && payload.folders.some(
+    (folder) => folder.id === "aggregate:root" || folder.id === "profile-thought-topology:root"
+  );
+  const positionScope = context.scopeFolderPath ? `${gardenSlug}:folder:${context.scopeFolderPath}` : gardenSpheres ? `${gardenSlug}:gardens` : `${gardenSlug}:root`;
   const storedPositions = interactive ? readStoredPositions(positionScope) : {};
   const planOptions = {
     preview: compact,
@@ -1755,7 +1801,8 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
   await yieldIfNeeded();
   const camera = new TopologyCamera3D();
   const plannedHomes = sphericalTopologyPositions(
-    compact || settings.filteredLayout === "cross-section" && settings.excludedFolderIds.length > 0 ? planThoughtTopology(payload, { scopeFolderPath: context.scopeFolderPath }).nodes : plan.nodes
+    compact || settings.filteredLayout === "cross-section" && settings.excludedFolderIds.length > 0 ? planThoughtTopology(payload, { scopeFolderPath: context.scopeFolderPath }).nodes : plan.nodes,
+    gardenSpheres
   );
   await yieldIfNeeded();
   const depthSpread = [...plannedHomes.values()].reduce(

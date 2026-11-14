@@ -175,20 +175,14 @@ button.desktop-explorer {
       &.source-document {
         --source-node-color: var(--source-node-color-light, #15803d);
 
-        margin: 0.1rem 0 0.35rem -0.15rem;
-        padding: 0.25rem 0.35rem 0.3rem 0.25rem;
-        border: 1px solid color-mix(in srgb, var(--source-node-color) 52%, transparent);
-        background: color-mix(in srgb, var(--source-node-color) 12%, transparent);
-
-        & > a {
-          color: var(--dark);
+        & .source-kind-flag {
+          cursor: default;
           opacity: 1;
-          font-weight: $mediumWeight;
+          border-color: var(--source-node-color);
         }
 
-        & > a.active {
-          color: var(--source-node-color);
-          font-weight: $semiBoldWeight;
+        & .source-kind-flag .explorer-flag-swatch {
+          background: var(--source-node-color);
         }
       }
 
@@ -672,3 +666,19 @@ html.explorer-modal-open {
     width: 100%;
   }
 }
+// File entries use the existing tree spacing and colors.
+.explorer-managed-file > a {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.explorer-file-type {
+  flex: 0 0 27px;
+  font: 8px/1.5 var(--codeFont);
+  opacity: .6;
+  text-align: center;
+}
+.garden-file-open .center { visibility: hidden; }
+.garden-file-open { overflow: hidden; }
+.explorer-file-add { flex-shrink: 0; }

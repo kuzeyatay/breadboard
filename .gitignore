@@ -328,3 +328,16 @@ desktop/artifacts/
 
 # Upstream history of vendored snapshots, kept beside the files but never a checkout
 .git-upstream-metadata/
+
+# Remotion runtime for the Video skill: the pinned install and per-render job
+# folders. package.json and package-lock.json are tracked.
+remotion-runtime/node_modules/
+remotion-runtime/jobs/
+
+remotion-runtime/cache/
+
+# Video engine projects: renders, fetched audio and generated entry files.
+remotion-runtime/projects/*/renders/
+remotion-runtime/projects/*/public/
+remotion-runtime/projects/*/metadata/
+remotion-runtime/projects/*/index.tsx

@@ -25,11 +25,10 @@ export function resolveUnifiedWorkflowContinuation(input: {
     WHERE m.conversation_id = ? AND c.user_id = ? AND m.client_message_id = ? AND m.role = 'user'`)
     .get(input.conversationId, input.userId, input.clientMessageId) as { order_index: number } | undefined;
   if (!current) return null;
-  const origin = db.prepare(`SELECT * FROM conversation_messages
-    WHERE conversation_id = ? AND role = 'user'
+  const origin = db.prepare(`SELECT * FROM conversation_message_reads WHERE id IN (SELECT id FROM conversation_messages WHERE conversation_id = ? AND role = 'user'
       AND COALESCE(json_extract(CASE WHEN json_valid(metadata) THEN metadata END, '$.internalAgentContinuation'), 0) <> 1
       AND COALESCE(json_extract(CASE WHEN json_valid(metadata) THEN metadata END, '$.delegatedAgentRun'), 0) <> 1
-    ORDER BY order_index DESC LIMIT 1`).get(input.conversationId) as MessageRow | undefined;
+    ORDER BY order_index DESC LIMIT 1) ORDER BY order_index DESC`).get(input.conversationId) as MessageRow | undefined;
   if (!origin || origin.order_index >= current.order_index) return null;
   let chosen: ReturnType<typeof parseUnifiedWorkflowCommand>;
   try { chosen = parseUnifiedWorkflowCommand(origin.content); } catch { return null; }
@@ -45,10 +44,10 @@ export function resolveUnifiedWorkflowContinuation(input: {
   if (!saved || saved.workflowId !== chosen.workflowId || saved.modeId !== chosen.modeId) return null;
   const selection = chosen.selection;
   const workers = db.prepare(`SELECT client_message_id, role, status, order_index, content, metadata
-    FROM conversation_messages WHERE conversation_id = ? AND order_index > ? AND order_index < ?
+    FROM conversation_message_reads WHERE id IN (SELECT id FROM conversation_messages WHERE conversation_id = ? AND order_index > ? AND order_index < ?
       AND json_extract(CASE WHEN json_valid(metadata) THEN metadata END, '$.delegatedAgentRun') = 1
       AND json_extract(CASE WHEN json_valid(metadata) THEN metadata END, '$.externalAgent') = 1
-    ORDER BY order_index`).all(input.conversationId, origin.order_index, current.order_index) as MessageRow[];
+    ORDER BY order_index) ORDER BY order_index`).all(input.conversationId, origin.order_index, current.order_index) as MessageRow[];
   const terminal = workers.filter((row) => row.role === "assistant" &&
     ["complete", "failed", "aborted"].includes(row.status) &&
     ["completed", "failed", "aborted"].includes(String(object(row.metadata).externalAgentOutcome)));

@@ -29,6 +29,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { stageFreeCADAssets } from "./freecad-assets.mjs";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -398,8 +399,8 @@ const PACKAGED_PYTHON_SERVICES = Object.freeze([
     pythonRuntimeSha256: "00AFF22F464AFC3194EF14EE02B5AC3B9AF5819084FE9CC25EB4FB783EC0F55F",
     pythonRuntimeFileCount: 35,
     pythonLicenseSha256: "A4771D2216653FCA4E3472566A762BA8CE5358F6F6599455FE7CFACEB60D14B3",
-    sourceGitTree: "5aefb9916024e9614be1b2ff652275b3599e5ff8",
-    sourceSha256: "7BC480AE705750B9C056CC73DB418A65B813E1D06084FDD3AC78645E19DDC3BC",
+    sourceGitTree: "2c7c4171d42476ebb10719c30bc5eec3ea5d7018",
+    sourceSha256: "F76AA08F5650B76CC64DA0F1DCCE498D6C5C51EF050D39FEC403DF0CEB33D2C3",
     sourceFileCount: 11,
     pyprojectSha256: "062EE60275B6A65DB9AC6717AFCA300752350CD2A8F834A31B7895F8C80B006F",
     requirementsSha256: "2007C2A50F445ED19EDD602140835536F33E2A0C29BBE94EF4E8682A2CE3F1C3",
@@ -2251,6 +2252,7 @@ for (const entry of [
   "api-anything-worker.mjs",
   "api-anything-mcp.mjs",
   "runtime-v2-dashboard.mjs",
+  "runtime-v2-dashboard-watchdog.mjs",
   "runtime-v2-learn-worker.mjs",
   "runtime-v2-document-ingestion-worker.mjs",
   "runtime-v2-anydoc-pdf-worker.mjs",
@@ -2419,6 +2421,12 @@ fs.copyFileSync(
   path.join(repoRoot, "scripts", "setup-comfyui.mjs"),
   path.join(scriptsTarget, "setup-comfyui.mjs"),
 );
+// Blender stays optional; ship the pinned installer and MCP launcher, with
+// its Python environment provisioned in the user's writable data directory.
+for (const entry of ["blender-mcp-server.py", "blender-requirements.txt", "blender-requirements.in", "setup-blender.mjs"]) {
+  fs.copyFileSync(path.join(repoRoot, "scripts", entry), path.join(scriptsTarget, entry));
+}
+fs.copyFileSync(path.join(repoRoot, "dashboard", "scripts", "blender-runtime.mjs"), path.join(runtimeV2DashboardScripts, "blender-runtime.mjs"));
 fs.copyFileSync(
   path.join(repoRoot, "scripts", "tradingagents-bridge.py"),
   path.join(scriptsTarget, "tradingagents-bridge.py"),
@@ -4605,6 +4613,10 @@ await stagePinnedTrackedSourceClosure({
   );
 }
 
+// The pinned MCP source and trusted runner ship read-only. Setup installs the
+// Python environment in user data; FreeCAD remains an external prerequisite.
+stageFreeCADAssets(repoRoot, stagingRoot);
+
 if (fs.existsSync(path.join(repoRoot, "shared"))) {
   log("staging shared assets");
   freshDir(path.join(stagingRoot, "shared"));
@@ -4959,6 +4971,7 @@ const licenseSources = [
   ["codex", path.join(repoRoot, "codex", "LICENSE")],
   ["comfyui", path.join(repoRoot, "comfyui", "LICENSE")],
   ["goal", path.join(repoRoot, "goal", "LICENSE")],
+  ["freecad-mcp", path.join(repoRoot, "freecad-service", "vendor", "freecad-mcp", "LICENSE")],
   ["gbrain", path.join(repoRoot, "gbrain", "LICENSE")],
   ["hermes-agent", path.join(hermesRoot, "LICENSE")],
   ["humanizer-THIRD-PARTY-NOTICES", path.join(repoRoot, "humanizer-service", "THIRD_PARTY_NOTICES.md")],

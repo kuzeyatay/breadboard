@@ -56,7 +56,7 @@ export async function resolveGardenAttachment(
 
   // A follow-up can refer to earlier uploads, but never future queued turns.
   const rows = database.prepare(`
-    SELECT metadata FROM conversation_messages
+    SELECT metadata FROM conversation_message_reads
     WHERE conversation_id = ? AND role = 'user' AND id <= ? AND metadata IS NOT NULL
     ORDER BY id DESC
   `).iterate(context.conversationId, active.id) as Iterable<{ metadata: string }>;

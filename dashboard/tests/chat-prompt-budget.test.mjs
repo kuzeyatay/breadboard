@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
-import { boundPromptContext, HERMES_SYSTEM_PROMPT_LIMIT, COMPOSED_SYSTEM_PROMPT_LIMIT } from "../src/lib/hermes/prompt-budget.ts";
+import { boundPromptContext, HERMES_SYSTEM_PROMPT_LIMIT, COMPOSED_SYSTEM_PROMPT_LIMIT, TURN_CONTEXT_MARKER } from "../src/lib/hermes/prompt-budget.ts";
 import { composeRecentConversationContext, RECENT_CONTEXT_LIMIT } from "../src/lib/conversations/recent-context.ts";
 
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-prompt-budget-"));
@@ -118,13 +118,23 @@ test("small contexts are exact and excerpt boundaries are Unicode safe at every 
 
 test("oversized evidence preserves all policy and the final response contract", () => {
   const policy = composeHermesSystemPrompt({ surface: "garden_chat", decision });
-  const ending = policy.slice(policy.indexOf("# artifact_delivery"));
   const prompt = composeHermesSystemPrompt({ surface: "garden_chat", decision,
+    stableAdditional: "Standing inventory.",
     additional: "Evidence begins. " + "x".repeat(900_000) + " Evidence ends.", persona: "Speak plainly." });
   assert.ok(prompt.length <= COMPOSED_SYSTEM_PROMPT_LIMIT);
   assert.ok(prompt.startsWith(policy.slice(0, policy.indexOf("# artifact_delivery"))));
-  assert.ok(prompt.endsWith(ending));
   assert.ok(prompt.indexOf("Speak plainly.") < prompt.indexOf("# artifact_delivery"));
+  // The session-stable head (policy, inventory, persona, response contract)
+  // precedes the marker; what changes every turn follows it, so the runtime
+  // can keep the head byte-identical in the system message across turns.
+  const [stable, turn] = prompt.split(TURN_CONTEXT_MARKER);
+  assert.match(stable, /Standing inventory\./);
+  assert.match(stable, /# artifact_delivery/);
+  assert.doesNotMatch(stable, /# server_capability_decision|Evidence begins/);
+  assert.match(turn, /# server_capability_decision[\s\S]*Evidence begins/);
+  const other = composeHermesSystemPrompt({ surface: "garden_chat", decision: { ...decision, expiresAt: "2099-01-01T00:00:00.000Z" },
+    stableAdditional: "Standing inventory.", additional: "Different evidence.", persona: "Speak plainly." });
+  assert.equal(other.split(TURN_CONTEXT_MARKER)[0], stable);
   assert.match(prompt, /# server_capability_decision/);
   assert.match(prompt, /Authorized roots: none/);
   assert.match(prompt, /Evidence begins/);

@@ -285,6 +285,37 @@ app.whenReady().then(async () => {
   await until(async () => (await dropdownMetrics()).height >= 359, "resizing larger restores the full dropdown");
   await closeSuggestions(first);
   await until(() => host.shell.view.getBounds().height === initialBounds.y, "Escape restores toolbar height and page input");
+  // A failure also needs native space below the bookmarks bar. Opening or
+  // closing address suggestions must not overwrite that independent extent.
+  const beforeErrorBounds = first.browser.view.getBounds();
+  const openPopover = manager.openToolbarPopover;
+  manager.openToolbarPopover = () => Promise.resolve(false);
+  await host.shell.contents.executeJavaScript("document.querySelector('[aria-label^=Downloads]').click()");
+  await until(() => host.shell.contents.executeJavaScript("!!document.querySelector('[aria-label=\"Dismiss downloads error\"]')"), "download error rendered");
+  const errorMetrics = () => host.shell.contents.executeJavaScript(`(() => {
+    const card = document.querySelector('[role="alert"]');
+    const bounds = card.getBoundingClientRect();
+    const dismiss = card.querySelector('[aria-label="Dismiss downloads error"]');
+    const action = dismiss.getBoundingClientRect();
+    return { bottom: bounds.bottom, left: bounds.left, right: bounds.right,
+      clickable: dismiss.contains(document.elementFromPoint(action.x + action.width / 2, action.y + action.height / 2)) };
+  })()`);
+  await until(async () => host.shell.view.getBounds().height >= Math.ceil((await errorMetrics()).bottom), "download error crosses the native toolbar boundary");
+  assert.equal((await errorMetrics()).clickable, true, "the error's bottom action is visible and clickable");
+  assert.ok((await errorMetrics()).left >= 0 && (await errorMetrics()).right <= window.getContentSize()[0]);
+  assert.deepEqual(first.browser.view.getBounds(), beforeErrorBounds, "an error must not resize the website");
+  if (process.env.BREADBOARD_DOWNLOADS_POPOVER_QA_DIR) {
+    fs.mkdirSync(process.env.BREADBOARD_DOWNLOADS_POPOVER_QA_DIR, { recursive: true });
+    fs.writeFileSync(path.join(process.env.BREADBOARD_DOWNLOADS_POPOVER_QA_DIR, "toolbar-error.png"), (await host.shell.contents.capturePage()).toPNG());
+  }
+  await host.shell.contents.executeJavaScript("document.querySelector('.browser-address-input').focus()");
+  await until(() => first.browser.addressSuggestionsOpen, "suggestions and the error coexist");
+  await closeSuggestions(first);
+  assert.ok(host.shell.view.getBounds().height >= Math.ceil((await errorMetrics()).bottom), "closing suggestions must not clip an existing error");
+  await host.shell.contents.executeJavaScript("document.querySelector('[aria-label=\"Dismiss downloads error\"]').click()");
+  await until(() => host.shell.view.getBounds().height === initialBounds.y, "dismissing the error restores website input");
+  manager.openToolbarPopover = openPopover;
+  await clickUpperPage();
   command({ type: "browser", url: origin + "/other" });
   const second = host.tabs.find(tab => tab.id === host.activeId);
   await until(() => !host.pending && second.browser.ready, "second website ready");

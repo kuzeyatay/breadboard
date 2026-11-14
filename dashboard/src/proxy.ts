@@ -3,6 +3,9 @@ import type { NextRequest } from 'next/server';
 import { getToken } from 'next-auth/jwt';
 
 export async function proxy(request: NextRequest) {
+  // File links authorize the Garden and the individual file on the server.
+  // This lets an explicitly shared file in a public Garden open anonymously.
+  if (/^\/garden\/[^/]+\/files\/gf_[a-f0-9]{32}\/?$/.test(request.nextUrl.pathname)) return NextResponse.next();
   const token = await getToken({
     req: request,
     secret: process.env.NEXTAUTH_SECRET,

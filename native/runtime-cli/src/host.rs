@@ -118,6 +118,8 @@ pub(crate) enum HostError {
     TrustedPath(#[from] PathError),
     #[error("trusted worker manifest is invalid: {0}")]
     WorkerManifest(String),
+    #[error("storage recovery failed: {0}")]
+    StorageRecovery(String),
     #[error("trusted service manifest is invalid: {0}")]
     ServiceManifest(String),
     #[error("trusted Runtime V2 registry is invalid: {0}")]
@@ -304,6 +306,8 @@ fn run_after_bootstrap(
         PRIOR_GENERATION_DRAIN_WAIT,
     )?;
     let generation_membership = generation_guard.membership();
+    breadboard_runtime_core::recover_storage_swaps(&paths, &prior_generation_drained)
+        .map_err(|error| HostError::StorageRecovery(error.to_string()))?;
     if shutdown.is_requested() {
         return Err(HostError::ParentDisconnected);
     }

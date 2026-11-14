@@ -58,12 +58,12 @@ test("Manim has a guarded production path and a video renderer", () => {
 test("the slash command resolves and loads the Manim skill", async () => {
   const resolved = await resolveCommandMessage(
     1,
-    "/manim explain completing the square",
+    "/math-animation explain completing the square",
     process.cwd(),
     { mode: "knowledge", surface: "dashboard_terminal" },
   );
   assert.deepEqual(resolved.invocations.map((invocation) => invocation.slug), [MANIM_SKILL]);
-  assert.match(resolved.text, /Reviewed skill guidance: manim/);
+  assert.match(resolved.text, /Reviewed skill guidance: math-animation/);
   assert.match(resolved.text, /"code"/);
   assert.match(resolved.text, /"sceneName"/);
 });
@@ -155,4 +155,63 @@ test("the Docker invocation is pinned, offline, read-only, and resource bounded"
   } finally {
     fs.rmSync(workDirectory, { recursive: true, force: true });
   }
+});
+
+test("a plain request for a math video selects Math Animation, with or without naming Manim", async () => {
+  const { videoCommandText } = await import("../src/lib/hermes/video-intent.ts");
+  const pick = (text, priorMessages = []) =>
+    videoCommandText({ text, surface: "garden_chat", authenticated: true, priorMessages });
+  for (const text of [
+    "create an animated video using manim explaining derivatives",
+    "make a video explaining the Pythagorean theorem with narration",
+    "explain eigenvectors using manim",
+    "animate how a Fourier series builds a square wave",
+  ]) {
+    const picked = pick(text);
+    assert.equal(picked.skill, MANIM_SKILL, text);
+    assert.equal(picked.text, `/${MANIM_SKILL} ${text}`, text);
+  }
+  // Other videos keep their own skills, and talk about Manim is not an order.
+  assert.equal(pick("make a launch video for our app").skill, "video");
+  assert.equal(pick("make a cinematic 3d video of a city").skill, "film");
+  assert.equal(pick("what is manim?").automatic, false);
+  // Sound follow-ups stay with the animation that was just made.
+  const made = [{ role: "assistant", content: "The math animation shows a secant line becoming the tangent." }];
+  assert.equal(pick("add narration and calm background music", made).text, `/${MANIM_SKILL} add narration and calm background music`);
+});
+
+test("sound is validated like the Video skill's and mixed under the untouched picture", async () => {
+  const { soundtrackArgs, validateManimSound } = await import("../src/lib/manim/soundtrack.ts");
+  assert.deepEqual(validateManimSound({}), { music: null, narration: [] });
+  const sound = validateManimSound({
+    music: { search: "calm piano" },
+    narration: [{ text: "Second.", atSeconds: 6 }, { text: "First.", atSeconds: 1 }],
+  });
+  assert.deepEqual(sound.narration.map((line) => line.atSeconds), [1, 6]);
+  assert.throws(
+    () => validateManimSound({ music: { url: "https://example.com/song.mp3" } }),
+    (error) => error instanceof ManimServiceError && error.code === "manim_invalid_arguments",
+  );
+  const args = soundtrackArgs({
+    videoPath: "scene.mp4",
+    audioDirectory: "sound",
+    outputPath: "out.mp4",
+    videoSeconds: 12,
+    audio: {
+      music: { file: "music.mp3", volume: 0.5, startSeconds: 30, fadeInSeconds: 0.4, fadeOutSeconds: 1.5, title: "t" },
+      narration: [{ file: "voice-0.mp3", atSeconds: 1, durationSeconds: 2 }],
+      notes: [],
+    },
+  });
+  const filter = args[args.indexOf("-filter_complex") + 1];
+  assert.match(filter, /\[1:a\]volume=0\.5,.*afade=t=out:st=10\.50:d=1\.5\[m\]/);
+  assert.match(filter, /\[2:a\]adelay=1000:all=1\[v0\]/);
+  assert.match(filter, /\[m\]\[v0\]amix=inputs=2/);
+  assert.equal(args[args.indexOf("-c:v") + 1], "copy");
+  // Narration alone takes the first audio input.
+  const voiceOnly = soundtrackArgs({
+    videoPath: "scene.mp4", audioDirectory: "sound", outputPath: "out.mp4", videoSeconds: 5,
+    audio: { music: null, narration: [{ file: "voice-0.mp3", atSeconds: 0.5, durationSeconds: 2 }], notes: [] },
+  });
+  assert.match(voiceOnly[voiceOnly.indexOf("-filter_complex") + 1], /^\[1:a\]adelay=500:all=1\[v0\];\[v0\]amix=inputs=1/);
 });

@@ -447,6 +447,16 @@ async function activeTokens(userId: number, integration: NangoIntegration): Prom
   return refreshed;
 }
 
+/** The OAuth client a connection was granted to. Another local service that
+ *  holds the same grant (Inbox Zero) must refresh under this exact client. */
+export function connectedAppOAuthClient(integrationValue: string): OAuthClient {
+  const integration = findNangoIntegration(integrationValue);
+  if (!integration) {
+    throw new ApiError(400, "invalid_app_integration", "The app connection is invalid.");
+  }
+  return oauthClient(integration);
+}
+
 export async function connectedAppTokensFor(
   userId: number,
   integrationValue: string,

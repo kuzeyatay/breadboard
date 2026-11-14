@@ -127,6 +127,7 @@ import {
   PATENT_DISCLOSURE_SKILL,
 } from "../hermes/patent-disclosure-source.ts";
 import { agentLoopCommandText } from "../hermes/agent-loop-intent.ts";
+import { videoCommandText } from "../hermes/video-intent.ts";
 import { messagingCommandText } from "../hermes/messaging-intent.ts";
 import { watchCommandText } from "../hermes/watch-intent.ts";
 import { textToCadCommandText } from "../hermes/text-to-cad-intent.ts";
@@ -136,7 +137,7 @@ import {
 } from "../hermes/image-3d-intent.ts";
 import {
   diagramCommandText,
-  DIAGRAM_DESIGN_SKILL,
+  DIAGRAM_IN_CHAT_SKILL,
 } from "../hermes/diagram-intent.ts";
 import {
   asciiDiagramCommandText,
@@ -203,6 +204,7 @@ import {
   loadSuperAgentInventory,
   openableSkills,
   renderSuperAgentDirective,
+  renderSuperAgentTurnFocus,
   type SuperAgentInventory,
 } from "../hermes/super-agent.ts";
 import {
@@ -1060,8 +1062,17 @@ export async function startConversationTurn(
   // After Diagram Design, so "diagram the architecture of <repo>" stays a
   // drawing; a repo named for inspection with no other claim on the turn is
   // this skill's subject.
-  const githubExplorerSelection = githubExplorerCommandText({
+  // After the diagram skills, which are the more specific drawing requests, and
+  // after everything attachment-driven: a turn that carries a video is about
+  // that video. This is what makes Remotion the default way to make one.
+  const videoSelection = videoCommandText({
     text: diagramSelection.text,
+    surface: input.surface,
+    authenticated: true,
+    priorMessages: currentConversationMessages,
+  });
+  const githubExplorerSelection = githubExplorerCommandText({
+    text: videoSelection.text,
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
@@ -1146,6 +1157,7 @@ export async function startConversationTurn(
       !audioSelection.automatic &&
       !asciiDiagramSelection.automatic &&
       !diagramSelection.automatic &&
+      !videoSelection.automatic &&
       !githubExplorerSelection.automatic &&
       !humanizeSelection.automatic &&
       !computerUseSelection.automatic &&
@@ -1197,10 +1209,10 @@ export async function startConversationTurn(
       (invocation) =>
         invocation.kind === "skill" && invocation.slug === ASCII_ART_DIAGRAMS_SKILL,
     );
-  const automaticDiagramDesign = diagramSelection.automatic &&
+  const automaticDiagramInChat = diagramSelection.automatic &&
     resolved.invocations.some(
       (invocation) =>
-        invocation.kind === "skill" && invocation.slug === DIAGRAM_DESIGN_SKILL,
+        invocation.kind === "skill" && invocation.slug === DIAGRAM_IN_CHAT_SKILL,
     );
   const automaticGithubExplorer = githubExplorerSelection.automatic &&
     resolved.invocations.some(
@@ -1263,7 +1275,7 @@ export async function startConversationTurn(
       automaticMusicPlayback,
       automaticAudioAnalysis,
       automaticAsciiDiagram,
-      automaticDiagramDesign,
+      automaticDiagramInChat,
       automaticGithubExplorer,
       automaticComputerUse,
       automaticBreadboardUse,
@@ -1734,12 +1746,20 @@ export async function startConversationTurn(
     goalMode: goalModeState,
     voice: input.voice === true,
     goalSkillSelected,
-    additional: [
+    // What reads the same on every turn of this conversation stays in the
+    // system message; everything below it travels with the turn, so the
+    // provider's prompt cache survives from one turn to the next. See
+    // TURN_CONTEXT_MARKER. Voice composes its own order and ignores the split.
+    stableAdditional: [
       agentPreferencesContext(input.conversation.user_id),
+      superAgentInventory && !input.voice ? renderSuperAgentDirective(superAgentInventory) : "",
+      connectedApps.systemContext,
+    ].filter(Boolean).join("\n\n"),
+    additional: [
       superAgentInventory
         ? input.voice
           ? [voiceCapabilitiesContext(superAgentInventory), researchPipeline ? researchPipelineRule(researchPipeline) : ""].filter(Boolean).join("\n\n")
-          : renderSuperAgentDirective(superAgentInventory, researchPipeline)
+          : renderSuperAgentTurnFocus(superAgentInventory, researchPipeline)
         : // Without the inventory there is no super-agent directive to carry
           // the protocol, so it ships on its own. The tools are open either
           // way; a turn given them and no contract would use them as three
@@ -1809,7 +1829,6 @@ export async function startConversationTurn(
         : "",
       documents.context,
       editableDocuments.context,
-      connectedApps.systemContext,
       authorizedGardenContext(input.conversation.user_id, session.row.garden_id),
       renderSurfaceContext(input.surface, context),
       renderDeliveryChannel(context.deliveryChannel, approvalPolicy.yoloMode),
@@ -1976,7 +1995,13 @@ export async function startConversationTurn(
       ...(automaticMusicPlayback ? [{ slug: SPOTIFY_SKILL }] : []),
       ...(automaticAudioAnalysis ? [{ slug: AUDIO_ANALYSIS_SKILL }] : []),
       ...(automaticAsciiDiagram ? [{ slug: ASCII_ART_DIAGRAMS_SKILL }] : []),
-      ...(automaticDiagramDesign ? [{ slug: DIAGRAM_DESIGN_SKILL }] : []),
+      ...(automaticDiagramInChat ? [{ slug: DIAGRAM_IN_CHAT_SKILL }] : []),
+      ...(videoSelection.automatic &&
+        resolved.invocations.some(
+          (invocation) => invocation.kind === "skill" && invocation.slug === videoSelection.skill,
+        )
+        ? [{ slug: videoSelection.skill, reason: "The request asked for a video to be made." }]
+        : []),
       ...(automaticPatentDisclosure
         ? [{ slug: PATENT_DISCLOSURE_SKILL }]
         : []),
@@ -2245,6 +2270,26 @@ export async function startConversationTurn(
       ...(input.voice ? { voicePreparationMs: voicePreparation } : {}),
     },
   });
+  if (reservation.isNew && !input.clientMessageId.startsWith("hook-")) {
+    void import("../hooks/lifecycle.ts")
+      .then(({ fireLifecycleHooks }) =>
+        fireLifecycleHooks({
+          event: "prompt_submitted",
+          conversationId: input.conversation.id,
+          occurrenceId: input.clientMessageId,
+          matchText: input.text,
+          detail: {
+            turn: {
+              clientMessageId: input.clientMessageId,
+              request: input.text.slice(0, 32_000),
+            },
+          },
+        }),
+      )
+      .catch((error) => {
+        console.error("[hooks] prompt hook loader failed", error);
+      });
+  }
   return {
     accepted: true,
     session,

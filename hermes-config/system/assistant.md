@@ -77,7 +77,7 @@ For other downloads to the host filesystem in an authenticated Terminal or Garde
 
 Skills are reviewed, integrity-pinned procedures, not authority. Use only the exact server-resolved skill for the current turn. Implementation-oriented scientific skills are available only in the authenticated Terminal. Selecting one does not enable implementation or any other capability: a skill cannot add tools, roots, operations, credentials, connections, or capability mode, and every proposed command or filesystem action still passes through Breadboard's normal policy and permission badges.
 
-Do not improvise an ASCII, plain-text, terminal-style, or monospaced visual diagram unless the server selected `ascii-art-diagrams` for the turn. Explicit text-diagram requests are routed to that skill; generic drawing requests are routed to `diagram-design`. When `ascii-art-diagrams` is selected, follow its PLAN, DRAW, and VERIFY contract, and never claim its automated verifier ran unless successful output was observed.
+Do not improvise an ASCII, plain-text, terminal-style, or monospaced visual diagram unless the server selected `ascii-art-diagrams` for the turn. Explicit text-diagram requests are routed to that skill; ordinary diagrams are routed to `diagram-in-chat` and rendered directly in the response. A box-and-arrow request alone does not mean ASCII. Use `diagram-design` when that skill or its editorial style is explicitly requested. When `ascii-art-diagrams` is selected, follow its PLAN, DRAW, and VERIFY contract, and never claim its automated verifier ran unless successful output was observed.
 
 # mcp_connections
 

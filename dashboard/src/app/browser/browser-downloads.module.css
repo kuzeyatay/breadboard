@@ -24,9 +24,12 @@
 .spinner { position: absolute; inset: 2px; border: 1.5px solid color-mix(in srgb, currentColor 20%, transparent); border-top-color: currentColor; border-right-color: currentColor; border-radius: 50%; animation: download-spin 1s linear infinite; pointer-events: none; }
 @keyframes download-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; border-color: currentColor; } }
-.toolbarError { position: absolute; top: 44px; right: 0; width: 260px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--paper-raised); color: var(--ink-heading); font-size: 12px; }
+.toolbarError { position: absolute; top: 44px; right: 0; z-index: 30; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 280px; max-width: calc(100vw - 16px); padding: 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--paper-raised); color: var(--ink-heading); font-size: 12px; line-height: 18px; white-space: normal; }
+.toolbarError > span { flex: 1 1 100%; overflow-wrap: anywhere; }
+.toolbarError button { min-height: 28px; cursor: pointer; text-decoration: underline; }
+.toolbarError button:last-child { display: grid; place-items: center; margin-left: auto; width: 28px; }
 
-.popover { box-sizing: border-box; width: 100%; display: flex; flex-direction: column; max-height: 480px; border: 1px solid color-mix(in srgb, var(--ink-muted) 25%, transparent); border-radius: 10px; overflow: hidden; background: var(--paper-raised); color: var(--ink-heading); font-family: var(--font-source-sans), Arial, sans-serif; }
+.popover { box-sizing: border-box; width: 100%; display: flex; flex-direction: column; max-height: var(--downloads-popover-height, 480px); border: 1px solid color-mix(in srgb, var(--ink-muted) 25%, transparent); border-radius: 10px; overflow: hidden; background: var(--paper-raised); color: var(--ink-heading); font-family: var(--font-source-sans), Arial, sans-serif; }
 .recentList { overflow-y: auto; min-height: 0; padding: 4px 10px; }
 .recentRow { display: flex; align-items: center; gap: 12px; padding: 14px 6px; }
 .recentRow + .recentRow { border-top: 1px solid color-mix(in srgb, var(--ink-muted) 15%, transparent); }

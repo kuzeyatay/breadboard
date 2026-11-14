@@ -162,6 +162,7 @@ class ConvertRequest(StrictModel):
     content_base64: str = Field(alias="contentBase64")
     timeout_ms: int = Field(default=120_000, alias="timeoutMs", ge=1_000, le=600_000)
     exports: list[ExportRequest] = Field(default_factory=list)
+    expectations: ValidationExpectations | None = None
     linear_tolerance: float = Field(default=0.05, alias="linearTolerance", gt=0, le=5)
     angular_tolerance: float = Field(default=0.2, alias="angularTolerance", gt=0, le=2)
 

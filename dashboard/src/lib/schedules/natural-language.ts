@@ -6,7 +6,7 @@
 // falls back to a daily 09:00 job it then shows the user, so an unparsed phrase
 // produces a schedule you can see and correct rather than a silent guess.
 
-import { describeCronExpression } from "./cron.ts";
+import { cronFromScheduledTask, describeCronExpression, SCHEDULED_TASK_WEEKDAYS } from "./cron.ts";
 
 export interface ParsedScheduleRequest {
   cron: string;
@@ -124,6 +124,16 @@ function readRelativeDelay(text: string): RelativeDelay | null {
   return laterMatch ? relativeDelayFromMatch(laterMatch) : null;
 }
 
+const DAY_TOKEN = `(?:${DAY_NAMES.join("|")})s?`;
+/** "every monday, wednesday and friday" as one span, so it leaves the prompt whole. */
+const DAY_LIST = new RegExp(
+  String.raw`\b(?:(?:every|each|on)\s+)?${DAY_TOKEN}(?:\s*(?:,\s*(?:and\s+)?|and\s+|&\s*)${DAY_TOKEN})*\b`,
+);
+/** "every 2 hours", "every other hour", "every 15 minutes". */
+const INTERVAL = new RegExp(
+  String.raw`\b(?:every|each)\s+(?:(other)\s+|(${NUMBER_TOKEN})\s*)(hours?|hrs?|minutes?|mins?)\b`,
+);
+
 function cronForOneShot(runAt: Date): string {
   return `${runAt.getMinutes()} ${runAt.getHours()} ${runAt.getDate()} ${runAt.getMonth() + 1} *`;
 }
@@ -181,9 +191,20 @@ export function parseScheduleRequest(
   let oneShot = false;
   let runAt: string | null = null;
 
-  const weekdayIndex = DAY_NAMES.findIndex((day) =>
-    new RegExp(`\\b(?:every |each |on )?${day}s?\\b`).test(lower),
-  );
+  const dayList = DAY_LIST.exec(lower);
+  const dayIndexes = dayList
+    ? DAY_NAMES.map((day, index) => (new RegExp(`\\b${day}s?\\b`).test(dayList[0]) ? index : -1))
+        .filter((index) => index >= 0)
+    : [];
+  const intervalMatch = INTERVAL.exec(lower);
+  const intervalCount = intervalMatch
+    ? intervalMatch[1] ? 2 : numberFromToken(intervalMatch[2])
+    : 0;
+  const intervalIsHours = intervalMatch ? /^h/.test(intervalMatch[3]) : false;
+  const interval =
+    Number.isInteger(intervalCount) && intervalCount >= 1 && intervalCount <= (intervalIsHours ? 23 : 59)
+      ? intervalCount
+      : 0;
   const hourly = /\b(?:every|each) hour\b|\bhourly\b/.test(lower);
   const weekends = /\bweekends?\b/.test(lower);
   const weekdays = /\bweekdays?\b|\bwork ?days?\b|\bevery business day\b/.test(lower);
@@ -198,6 +219,21 @@ export function parseScheduleRequest(
     oneShot = true;
     runAt = due.toISOString();
     consumed.push(relative.matched);
+  } else if (interval && intervalMatch) {
+    // "every 2 hours on weekdays": the cadence comes from the interval, and any
+    // day words narrow which days it runs on.
+    const days = weekdays ? [1, 2, 3, 4, 5] : weekends ? [0, 6] : dayIndexes;
+    cron = intervalIsHours
+      ? cronFromScheduledTask({
+          type: "hourly",
+          intervalHours: interval,
+          days: days.map((day) => SCHEDULED_TASK_WEEKDAYS[day]),
+        })
+      : `${interval === 1 ? "*" : `*/${interval}`} * * * ${days.length ? days.join(",") : "*"}`;
+    recognized = true;
+    consumed.push(intervalMatch[0]);
+    if (dayList) consumed.push(dayList[0]);
+    consumed.push("on weekdays", "on weekends", "weekdays", "weekends");
   } else if (hourly) {
     cron = `${time.minute} * * * *`;
     recognized = true;
@@ -210,16 +246,14 @@ export function parseScheduleRequest(
     cron = `${time.minute} ${time.hour} * * 0,6`;
     recognized = true;
     consumed.push("every weekend", "weekends", "weekend");
-  } else if (weekdayIndex >= 0) {
-    cron = `${time.minute} ${time.hour} * * ${weekdayIndex}`;
+  } else if (dayList) {
+    cron = cronFromScheduledTask({
+      type: "weekly",
+      days: dayIndexes.map((day) => SCHEDULED_TASK_WEEKDAYS[day]),
+      time: `${time.hour}:${String(time.minute).padStart(2, "0")}`,
+    });
     recognized = true;
-    consumed.push(
-      `every ${DAY_NAMES[weekdayIndex]}`,
-      `each ${DAY_NAMES[weekdayIndex]}`,
-      `on ${DAY_NAMES[weekdayIndex]}`,
-      `${DAY_NAMES[weekdayIndex]}s`,
-      DAY_NAMES[weekdayIndex],
-    );
+    consumed.push(dayList[0]);
   } else if (monthly || dayOfMonth) {
     const day = Math.min(28, Math.max(1, Number(dayOfMonth?.[1] ?? 1)));
     cron = `${time.minute} ${time.hour} ${day} * *`;
@@ -269,7 +303,7 @@ const SCHEDULE_ACTION_CUE =
 const EXPLICIT_SCHEDULING_ACTION =
   /^(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:please\s+)?(?:schedule|remind me|set up (?:a |an )?(?:reminder|schedule|recurring task))\b/i;
 const RECURRING_PERIOD =
-  /\b(?:every|each)\s+(?:hour|day|week|month|morning|evening|weekday|weekend|work ?day|business day|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/i;
+  /\b(?:every|each)\s+(?:(?:other|\d+|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+)?(?:hour|hr|minute|min|day|week|month|morning|evening|weekday|weekend|work ?day|business day|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/i;
 const CADENCE_WORD = /\b(?:hourly|daily|weekly|monthly|weekdays?|weekends?|work ?days?)\b/i;
 const CADENCE_AT_START = /^(?:hourly|daily|weekly|monthly|(?:on )?(?:weekdays?|weekends?|work ?days?))\b/i;
 const CADENCE_AT_END_OR_TIME =

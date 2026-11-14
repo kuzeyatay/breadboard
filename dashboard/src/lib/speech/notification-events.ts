@@ -10,7 +10,7 @@ export interface NotificationSpeechNotice {
   response?: string;
   dismissed?: boolean;
   website?: { id: string; origin: string };
-  notificationPermission?: { id: string; origin: string; media?: ("microphone" | "camera")[] };
+  notificationPermission?: { id: string; origin: string; media?: ("microphone" | "camera" | "location")[] };
 }
 
 export interface NotificationInboxSnapshot {

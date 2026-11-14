@@ -9,6 +9,7 @@ import { renderSystemPrompt } from "../system-prompts/service.ts";
 
 import { cadDefaults, fastenerReference, type CadDefaults } from "./defaults.ts";
 import { DEFAULT_CAD_ENGINE, type CadEngineId } from "./engines.ts";
+import { FREECAD_PROGRAM_INSTRUCTIONS } from "./freecad/prompts.ts";
 import { CAD_VALIDATION_DISCLAIMER, engineeringReviewNotice, type CadSafetyDecision } from "./safety.ts";
 
 const EXAMPLE_PROGRAM = `import cadquery as cq
@@ -72,6 +73,7 @@ const EXAMPLE_SOLIDWORKS_PROGRAM = `{
 
 /** The engine-specific half of the instructions: how the design is written. */
 function programInstructions(engine: CadEngineId): string[] {
+  if (engine === "freecad") return FREECAD_PROGRAM_INSTRUCTIONS;
   if (engine !== "solidworks") {
     return [
       "## Writing the program",
@@ -182,6 +184,19 @@ export function cadSystemPrompt(input: CadPromptInput): string {
   const notice = engineeringReviewNotice(input.safety);
   const engine = input.engine ?? DEFAULT_CAD_ENGINE;
   const solidworks = engine === "solidworks";
+  if (engine === "freecad") {
+    return [
+      "You are Breadboard's Parametric CAD agent using FreeCAD through neka-nat/freecad-mcp.",
+      "First create or read the design specification with cad_create_project or cad_get_project, then call cad_generate_model. Read measured validation before claiming success.",
+      `You have ${input.attemptBudget} build attempts. Repair reported geometry errors within that budget.`,
+      ...FREECAD_PROGRAM_INSTRUCTIONS,
+      "For a numeric edit to an existing design, use cad_update_parameters. For structural edits, provide a complete replacement FreeCAD program.",
+      `Manufacturing defaults (millimetres): ${JSON.stringify(defaults)}.`,
+      CAD_VALIDATION_DISCLAIMER,
+      ...(notice ? [notice] : []),
+      ...(input.existingProject ? ["Existing design:", input.existingProject] : []),
+    ].join("\n");
+  }
 
   return renderSystemPrompt("cad-design", input.userId, { "introduction": String(solidworks
       ? "You are Breadboard's Parametric CAD agent, building on the SolidWorks backend. You turn a"

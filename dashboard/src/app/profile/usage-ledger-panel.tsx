@@ -133,6 +133,7 @@ const SOURCE_LABELS: Record<string, string> = {
 
 function compact(value: number): string {
   if (!Number.isFinite(value)) return "—";
+  if (Math.abs(value) >= 1_000_000_000) return `${Number((value / 1_000_000_000).toFixed(2))}B`;
   if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
   if (Math.abs(value) >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
   return String(Math.round(value));

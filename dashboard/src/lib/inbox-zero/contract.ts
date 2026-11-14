@@ -81,3 +81,23 @@ export interface InboxZeroStatusResult {
   };
   setup: SetupStatus;
 }
+
+/**
+ * Breadboard's own Gmail connection, handed to Inbox Zero so the user does not
+ * sign in twice. The client is the one the grant was issued to: Inbox Zero
+ * refreshes the access token itself, and Google only honours a refresh token
+ * under the client that minted it.
+ */
+export interface BreadboardGmailGrant {
+  clientId: string;
+  clientSecret: string;
+  accessToken: string;
+  refreshToken: string | null;
+  expiresAt: string | null;
+  scope: string | null;
+  /** Google's stable account id (`sub`) — better-auth's providerAccountId. */
+  sub: string;
+  email: string;
+  name: string | null;
+  picture: string | null;
+}

@@ -92,6 +92,21 @@ export async function startRun(
   input: StartInboxZeroRuntimeRunInput,
 ): Promise<{ runId: string; status: OuterAgentRunStatus }> {
   const runtimeChatId = chatIdFor(input.userId, input.conversationKey);
+  // Hand Breadboard's Gmail connection to the stack controller (memory only) so
+  // Inbox Zero uses it instead of failing on its own OAuth setup. Best effort:
+  // without it the run reports the usual setup step.
+  try {
+    const [{ breadboardGmailGrant }, { offerBreadboardGmail }] = await Promise.all([
+      import("./breadboard-gmail.ts"),
+      import("./runtime-service.ts"),
+    ]);
+    await offerBreadboardGmail(
+      { userId: input.userId },
+      await breadboardGmailGrant(input.userId),
+    );
+  } catch (error) {
+    console.warn("[inbox-zero] could not offer the Breadboard Gmail grant:", error);
+  }
   return startOuterAgentRun({
     kind: "inbox-zero",
     userId: input.userId,

@@ -11,12 +11,14 @@ import imageViewerStyle from "../styles/imageViewer.scss"
 import pageUnderstandingScript from "../scripts/pageUnderstanding.inline"
 import pageUnderstandingStyle from "../styles/pageUnderstanding.scss"
 import longDocumentStyle from "../styles/longDocument.scss"
+import { PAGE_AUTHORSHIP_LABELS, pageAuthorship } from "../../../../dashboard/src/lib/page-authorship"
 
 const Content: QuartzComponent = ({ fileData, tree }: QuartzComponentProps) => {
   const content = htmlToJsx(fileData.filePath!, deferLongDocumentBlocks(tree)) as ComponentChildren
   const classes: string[] = fileData.frontmatter?.cssclasses ?? []
   const classString = ["popover-hint", ...classes].join(" ")
-  return <article class={classString}>{content}</article>
+  const authorship = PAGE_AUTHORSHIP_LABELS[pageAuthorship(fileData.frontmatter as Record<string, unknown>)]
+  return <article class={classString} data-authorship={authorship}>{content}</article>
 }
 
 Content.afterDOMLoaded = `${sourceVisualsScript}\n${imageViewerScript}\n${pageUnderstandingScript}`

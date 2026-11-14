@@ -2263,7 +2263,11 @@ fn active_lease_counts_tx(
         "SELECT
             SUM(CASE WHEN lifecycle_state='pending' THEN 1 ELSE 0 END),
             SUM(CASE WHEN lifecycle_state='active' THEN 1 ELSE 0 END)
-         FROM runtime_service_leases WHERE service_id=?1",
+         FROM runtime_service_leases
+         WHERE service_id=?1 AND lifecycle_state IN ('pending','active')",
+        // Released leases are never pruned. Without the state filter this
+        // walked every lease the service ever held, for every service, on
+        // each controller tick: ~40% of a core at 146k released rows.
         params![service_id],
         |row| {
             Ok((
@@ -2288,7 +2292,8 @@ fn exact_generation_lease_counts_tx(
             SUM(CASE WHEN lifecycle_state='pending' THEN 1 ELSE 0 END),
             SUM(CASE WHEN lifecycle_state='active' THEN 1 ELSE 0 END)
          FROM runtime_service_leases
-         WHERE service_id=?1 AND generation=?2",
+         WHERE service_id=?1 AND lifecycle_state IN ('pending','active')
+           AND generation=?2",
         params![service_id, to_i64(generation, "service generation")?],
         |row| {
             Ok((

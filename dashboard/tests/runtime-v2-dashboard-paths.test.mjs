@@ -14,10 +14,13 @@ test("the standalone dashboard receives readable native data paths", { skip: pro
   fs.mkdirSync(standalone, { recursive: true });
   const entry = path.join(scripts, "runtime-v2-dashboard.mjs");
   fs.copyFileSync(new URL("../scripts/runtime-v2-dashboard.mjs", import.meta.url), entry);
+  for (const name of ["source-repair-release.mjs", "runtime-v2-dashboard-watchdog.mjs"]) {
+    fs.copyFileSync(new URL(`../scripts/${name}`, import.meta.url), path.join(scripts, name));
+  }
   fs.writeFileSync(path.join(standalone, "server.js"), 'console.log(JSON.stringify({data:process.env.BREADBOARD_DATA_DIR,app:process.env.BREADBOARD_REPO_ROOT}));');
   const result = spawnSync(process.execPath, [entry], {
     encoding: "utf8", windowsHide: true, timeout: 10_000,
-    env: { ...process.env, BREADBOARD_DATA_DIR: path.toNamespacedPath(root), BREADBOARD_REPO_ROOT: path.toNamespacedPath(root) },
+    env: { ...process.env, PORT: "39001", BREADBOARD_DATA_DIR: path.toNamespacedPath(root), BREADBOARD_REPO_ROOT: path.toNamespacedPath(root) },
   });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { data: fs.realpathSync.native(root), app: fs.realpathSync.native(root) });

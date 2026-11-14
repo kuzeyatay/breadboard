@@ -123,7 +123,7 @@ export async function POST(request: Request) {
       throw new ApiError(
         403,
         "interactive_visualizer_skill_not_selected",
-        "Select interactive-visualizer or interactive-visualizer-in-chat for this turn.",
+        "Select diagram-in-chat, interactive-visualizer, or interactive-visualizer-in-chat for this turn.",
       );
     }
     const visualizerContext = {

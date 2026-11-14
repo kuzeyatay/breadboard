@@ -32,6 +32,9 @@ export type ContentDetails = {
   richContent?: string
   date?: Date
   description?: string
+  /** Runtime-only authenticated library entries; never emitted into the static index. */
+  gardenFileId?: string
+  gardenFileKind?: "file" | "folder"
 }
 
 interface Options {

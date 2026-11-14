@@ -50,6 +50,32 @@ export class LogManager {
     for (const writer of this.writers.values()) writer.close();
     this.writers.clear();
   }
+
+  /** Called only by idle housekeeping; current writers keep their handles valid. */
+  prune(now = Date.now(), maxBytes = 250 * 1024 * 1024): number {
+    const directory = path.resolve(this.logsDir);
+    if (fs.lstatSync(directory).isSymbolicLink()) return 0;
+    const actual = fs.realpathSync(directory);
+    if ((process.platform === "win32" ? actual.toLowerCase() : actual) !== (process.platform === "win32" ? directory.toLowerCase() : directory)) return 0;
+    const files = fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+      if (!entry.isFile() || !/^[a-zA-Z0-9_-]+\.log(?:\.1)?$/u.test(entry.name)) return [];
+      const filePath = path.resolve(directory, entry.name);
+      if (path.dirname(filePath) !== directory) return [];
+      const stat = fs.lstatSync(filePath);
+      return stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 ? [{ filePath, bytes: stat.size, modified: stat.mtimeMs }] : [];
+    }).sort((a,b) => a.modified-b.modified);
+    let total = files.reduce((sum,file) => sum+file.bytes,0), released = 0;
+    for (const file of files) {
+      if (file.modified >= now-10*86400_000 && total <= maxBytes) continue;
+      try {
+        const writer = [...this.writers.values()].find(candidate => candidate.filePath === file.filePath);
+        if (writer instanceof FileLogWriter) writer.clear();
+        else fs.unlinkSync(file.filePath);
+        total -= file.bytes; released += file.bytes;
+      } catch { /* Locked logs remain counted, and are retried next idle period. */ }
+    }
+    return released;
+  }
 }
 
 function sanitizeId(id: string): string {
@@ -105,6 +131,8 @@ class FileLogWriter implements LogWriter {
     }
     this.open("w");
   }
+
+  clear(): void { this.close(); this.open("w"); }
 
   readTail(maxLines: number): string[] {
     try {

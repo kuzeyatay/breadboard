@@ -45,6 +45,15 @@ export function ensureHooksSchema(db: Db): void {
   // Garden's own Hooks panel lists only its own, and a chat those hooks start
   // opens inside that garden with that garden's tools.
   ensureColumn(db, "hooks", "garden_slug", "garden_slug TEXT");
+
+  // A hook that runs a shell command instead of starting a chat or a workflow.
+  // The CHECK on `mode` predates this and SQLite cannot widen a CHECK without
+  // rebuilding the table (which hook_deliveries and conversations point at),
+  // so a command hook is stored with mode "chat" and a non-null command;
+  // hookAction() in store.ts is the one place that reads the two together.
+  ensureColumn(db, "hooks", "command", "command TEXT");
+  // The outcome of the last command run, e.g. "Exit 0" or "Exit 1: <output>".
+  ensureColumn(db, "hooks", "last_result", "last_result TEXT");
 }
 
 function ensureColumn(db: Db, table: string, column: string, definition: string): void {

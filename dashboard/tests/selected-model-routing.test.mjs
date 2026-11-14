@@ -77,7 +77,9 @@ test('the old pinning rationale is replaced, not silently left behind', () => {
 
 test('Learn overrides accept concrete model IDs and fall back only when omitted', () => {
   assert.equal(resolveLearnRequestModel({}, 'gpt-5.6-sol'), 'gpt-5.6-sol');
-  assert.equal(resolveLearnRequestModel({model:' cliproxy/claude-opus-5 '}, 'gpt-5.6-sol'), 'cliproxy/claude-opus-5');
+  assert.equal(resolveLearnRequestModel({model:' openaiweb/gpt-6-pro '}, 'gpt-5.6-sol'), 'openaiweb/gpt-6-pro');
+  // The gateway never serves Claude-Code-proxy models for Learn's one-call contract.
+  assert.throws(() => resolveLearnRequestModel({model:' cliproxy/claude-opus-5 '}, 'gpt-5.6-sol'), InvalidLearnRouteBodyError);
   for (const model of [null, '', 42, {}, [], 'default', 'chat', 'AUTO', 'invalid model']) {
     assert.throws(() => resolveLearnRequestModel({model}, 'gpt-5.6-sol'), InvalidLearnRouteBodyError);
   }

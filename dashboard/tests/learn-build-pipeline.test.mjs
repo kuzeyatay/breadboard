@@ -821,11 +821,15 @@ test("1a. default workspace falls back to OS temp when LOCALAPPDATA staging is u
   );
   fs.writeFileSync(blockedLocalAppData, "file blocks workspace descendants\n");
   const originalLocalAppData = process.env.LOCALAPPDATA;
+  const originalDataDirectory = process.env.BREADBOARD_DATA_DIR;
+  const originalWorkerDirectory = process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
   const gardenSlug = `g-fallback-${crypto.randomUUID()}`;
   const jobId = `job-fallback-${crypto.randomUUID()}`;
 
   try {
     process.env.LOCALAPPDATA = blockedLocalAppData;
+    delete process.env.BREADBOARD_DATA_DIR;
+    delete process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
     const ws = createLearnBuildWorkspace({
       gardenSlug,
       jobId,
@@ -846,6 +850,10 @@ test("1a. default workspace falls back to OS temp when LOCALAPPDATA staging is u
   } finally {
     if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
     else process.env.LOCALAPPDATA = originalLocalAppData;
+    if (originalDataDirectory === undefined) delete process.env.BREADBOARD_DATA_DIR;
+    else process.env.BREADBOARD_DATA_DIR = originalDataDirectory;
+    if (originalWorkerDirectory === undefined) delete process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+    else process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = originalWorkerDirectory;
   }
 });
 
@@ -2312,7 +2320,7 @@ test("chatmock-unavailable with a non-deterministic blocker stops as chatmock_un
   assert.equal(result.stoppedReason, "chatmock_unavailable");
 });
 
-test("retaining a failed workspace disposes older retained ones beyond the per-garden cap", () => {
+test("retaining failed workspaces preserves unique work regardless of a count cap", () => {
   // Live 2026-09-16: eight superseded telecom-1 workspaces (6.4 GB) filled the
   // disk and a Learn rollback died with ENOSPC.
   const repo = tmp("retention-repo");
@@ -2341,7 +2349,7 @@ test("retaining a failed workspace disposes older retained ones beyond the per-g
       workspaces.push(ws);
     }
     const surviving = workspaces.filter((ws) => fs.existsSync(ws.workspaceRoot)).map((ws) => ws.jobId);
-    assert.deepEqual(surviving, ["job-retained-2", "job-retained-3"], "only the newest two retained workspaces survive");
+    assert.deepEqual(surviving, workspaces.map(ws => ws.jobId), "unrelated recoverable work must survive");
 
     const active = createLearnBuildWorkspace({
       gardenSlug,
@@ -2351,7 +2359,7 @@ test("retaining a failed workspace disposes older retained ones beyond the per-g
       contractFingerprint: "cf-active",
       sourceSetFingerprint: "sf-active",
     });
-    assert.deepEqual(pruneRetainedLearnBuildWorkspaces({ gardenSlug, limit: 1 }), [workspaces[2].workspaceRoot]);
+    assert.deepEqual(pruneRetainedLearnBuildWorkspaces({ gardenSlug, limit: 1 }), []);
     assert.ok(fs.existsSync(active.workspaceRoot), "an active workspace is never pruned");
     assert.ok(fs.existsSync(workspaces[3].workspaceRoot));
     disposeLearnBuildWorkspace(active);

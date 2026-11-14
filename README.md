@@ -82,6 +82,7 @@ removed ahead of time.
 | Recall (screen and audio memory) | Capture engine downloads from npm on first use |
 | Music, video, research and finance agents | Their Python runtimes download on first use |
 | ComfyUI image generation | Environment downloads on first use; you supply the model checkpoints |
+| Blender scene editing and rendering (`/blender`) | Needs Blender and uv; run `npm run setup:blender`, enable the supplied add-on, then connect Blender in Settings |
 | Socials Manager (Postiz), Inbox Zero | Need Docker Desktop or Podman |
 | Spotify playback | Needs Microsoft Edge and a Spotify Premium account |
 | SolidWorks agent | Needs a licensed SolidWorks on this PC |
@@ -89,6 +90,7 @@ removed ahead of time.
 | ColPali visual document retrieval | Python environment (1.4 GB) and model download on first use |
 | Natural rewriting (Humanizer) | Python environment (1.3 GB) and model download on first use |
 | Parametric CAD (CadQuery) | Python environment (700 MB) downloads on first use |
+| FreeCAD CAD backend | Needs FreeCAD and the MCP bridge; see [FreeCAD setup](docs/FREECAD_INTEGRATION.md) |
 
 ## Known limitations
 

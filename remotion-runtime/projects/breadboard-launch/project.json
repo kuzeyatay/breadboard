@@ -1,0 +1,214 @@
+{
+  "title": "Breadboard launch",
+  "purpose": "A product launch video for Breadboard as a workspace where a person, a team and their agents work in one place: home screen, gardens, chat with evidence, agents, the built-in browser, and the eight built-in places.",
+  "audience": "People seeing Breadboard for the first time",
+  "duration": 36,
+  "fps": 60,
+  "format": "landscape",
+  "creativeDirection": {
+    "tone": "Direct and busy: something changes on every beat",
+    "look": "Flat 2D, full frame, in the app's own light theme: pale green canvas, warm paper cards, ink text",
+    "typography": "Source Sans 3 throughout, as in the app; the title is the navbar lockup (logo and lowercase wordmark, medium weight) scaled up; IBM Plex Mono for commands",
+    "pacing": "One screen per eight-beat phrase, hard cuts on the downbeats, a 2D camera that moves to the active part of the screen every few beats"
+  },
+  "audio": {
+    "music": {
+      "url": "https://www.youtube.com/watch?v=DArzZ3RvejU",
+      "startSeconds": 85.9,
+      "fadeInSeconds": 0.3,
+      "fadeOutSeconds": 3.6
+    },
+    "grid": {
+      "bpm": 135,
+      "buildHits": [
+        0.95,
+        1.45,
+        1.92,
+        2.79,
+        2.94
+      ],
+      "drop": 3.2,
+      "phrases": [
+        3.2,
+        6.76,
+        10.33,
+        13.88,
+        17.44,
+        20.99,
+        24.54,
+        28.11
+      ],
+      "rolls": [
+        [
+          8.11,
+          8.33,
+          8.55,
+          8.78
+        ],
+        [
+          22.33,
+          22.56,
+          22.77,
+          23
+        ],
+        [
+          29.67,
+          29.89,
+          30.11
+        ]
+      ],
+      "musicStops": 32.24
+    }
+  },
+  "scenes": [
+    {
+      "id": "opening",
+      "file": "scenes/Title.tsx",
+      "startTime": 0,
+      "duration": 6.76,
+      "purpose": "Five loose files land on the build hits, the drop pulls them into the lockup, a promise changes on every beat, then the lockup docks into the navbar of the home screen.",
+      "shots": [
+        {
+          "visualType": "motion-graphics",
+          "renderer": "dom",
+          "camera": "Slow push in",
+          "text": [
+            "Your knowledge is everywhere.",
+            "breadboard",
+            "Research deeply.",
+            "Learn from any source.",
+            "Plan with your team.",
+            "Browse with agents.",
+            "Code, design, publish.",
+            "All in one place."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "home",
+      "file": "scenes/Home.tsx",
+      "startTime": 6.76,
+      "duration": 3.57,
+      "purpose": "The home screen: widgets, search, the eight places lighting up across the drum roll, shortcuts, gardens, and the terminal rising from the dock.",
+      "shots": [
+        {
+          "visualType": "interface",
+          "renderer": "dom",
+          "camera": "Zooms to the active panel on the beat",
+          "text": [
+            "One home for all your work."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "learn",
+      "file": "scenes/Garden.tsx",
+      "startTime": 10.33,
+      "duration": 3.55,
+      "purpose": "Sources drop into a garden; a lesson is written with its formula, figure and page reference while the Learning Map grows.",
+      "shots": [
+        {
+          "visualType": "interface",
+          "renderer": "dom",
+          "camera": "Zooms to the active panel on the beat",
+          "text": [
+            "Drop in what you know. Get it explained."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ask",
+      "file": "scenes/Chat.tsx",
+      "startTime": 13.88,
+      "duration": 3.56,
+      "purpose": "Chat in a shared garden: a question about a contract a teammate added, the streamed answer, the verdict, the source and the cited page.",
+      "shots": [
+        {
+          "visualType": "interface",
+          "renderer": "dom",
+          "camera": "Zooms to the active panel on the beat",
+          "text": [
+            "Ask. See the evidence."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "agents",
+      "file": "scenes/Chat.tsx",
+      "startTime": 17.44,
+      "duration": 3.55,
+      "purpose": "The capability palette runs down its agents; Parametric CAD is chosen and models a wall bracket step by step while the part turns.",
+      "shots": [
+        {
+          "visualType": "interface",
+          "renderer": "dom",
+          "camera": "Zooms to the active panel on the beat",
+          "text": [
+            "Hand the work to agents."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "browser",
+      "file": "scenes/Work.tsx",
+      "startTime": 20.99,
+      "duration": 3.55,
+      "purpose": "The built-in browser driven by an agent: it fills a supplier form on the four roll hits, submits, compares three offers and saves a sheet to the garden.",
+      "shots": [
+        {
+          "visualType": "interface",
+          "renderer": "dom",
+          "camera": "Zooms to the active panel on the beat",
+          "text": [
+            "A browser your agents can drive."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "places",
+      "file": "scenes/Home.tsx",
+      "startTime": 24.54,
+      "duration": 3.57,
+      "purpose": "Plan, Code, Organization, Timer, Settings, Voice, Gestures and Screen Time, one screen per beat.",
+      "shots": [
+        {
+          "visualType": "interface",
+          "renderer": "dom",
+          "camera": "Zooms to the active panel on the beat",
+          "text": [
+            "Plan, code, talk, focus. All built in."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "closing",
+      "file": "scenes/Title.tsx",
+      "startTime": 28.11,
+      "duration": 7.89,
+      "purpose": "The lockup, a recap of what is inside, three verbs on the last roll, where to get it, then a small grey sign-off.",
+      "shots": [
+        {
+          "visualType": "motion-graphics",
+          "renderer": "dom",
+          "camera": "Slow push in",
+          "text": [
+            "breadboard",
+            "Research.",
+            "Learn.",
+            "Build.",
+            "github.com/kuzeyatay/breadboard",
+            "Free and open source, for Windows",
+            "*Made with breadboard"
+          ]
+        }
+      ]
+    }
+  ]
+}

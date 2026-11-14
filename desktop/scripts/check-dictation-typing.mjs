@@ -20,10 +20,12 @@ for (const [name, files] of [
   const run = spawnSync(path.join(windows, 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'), [...common, '/out:' + path.join(directory, name + '.exe'), ...files.map(file => path.join(desktop, file))], { windowsHide: true, encoding: 'utf8' });
   if (run.status !== 0) throw Error(run.stdout + run.stderr);
 }
-const env = { ...process.env, BREADBOARD_DICTATION_INTERACTIVE: '1', BREADBOARD_DICTATION_QUICK: '1' };
-if (process.argv[2]) env.BREADBOARD_DICTATION_BASELINE = path.resolve(process.argv[2]);
+const env = { ...process.env, BREADBOARD_DICTATION_INTERACTIVE: process.argv.includes('--auto') ? '0' : '1', BREADBOARD_DICTATION_QUICK: '1' };
+const baseline = process.argv.slice(2).find(argument => !argument.startsWith('--'));
+if (baseline) env.BREADBOARD_DICTATION_BASELINE = path.resolve(baseline);
 delete env.ELECTRON_RUN_AS_NODE; delete env.NODE_TEST_CONTEXT;
 const log = path.join(directory, 'check.log'), fd = fs.openSync(log, 'w');
-const child = spawn(require('electron'), [path.join(desktop, 'tests/fixtures/dictation-chromium.cjs'), directory], { cwd: desktop, env, windowsHide: false, detached: true, stdio: ['ignore', fd, fd] });
+const fixture = process.argv.includes('--composer') ? 'dictation-composer.cjs' : 'dictation-chromium.cjs';
+const child = spawn(require('electron'), [path.join(desktop, 'tests/fixtures', fixture), directory], { cwd: desktop, env, windowsHide: false, detached: true, stdio: ['ignore', fd, fd] });
 fs.closeSync(fd); child.unref();
 console.log(JSON.stringify({ pid: child.pid, directory, log }));

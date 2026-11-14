@@ -4,7 +4,8 @@ import type { HermesSurface } from "./config.ts";
 import type { CapabilityDecision } from "./capability-policy.ts";
 import { loopStateSection } from "../loopx/governance.ts";
 import { goalModeSection, type GoalModeState } from "../goal-mode.ts";
-import { boundPromptContext, COMPOSED_SYSTEM_PROMPT_LIMIT, HERMES_SYSTEM_PROMPT_LIMIT } from "./prompt-budget.ts";
+import { capsEmphasisSection } from "./caps-emphasis.ts";
+import { boundPromptContext, COMPOSED_SYSTEM_PROMPT_LIMIT, HERMES_SYSTEM_PROMPT_LIMIT, TURN_CONTEXT_MARKER } from "./prompt-budget.ts";
 
 export function chatCorePrompt(userId?: number | null): string {
   return [systemPromptText("chat-core", userId), systemPromptText("conversation-references", userId)].filter(Boolean).join("\n\n");
@@ -20,8 +21,14 @@ export function composeHermesSystemPrompt(input: {
   surface: HermesSurface;
   decision: CapabilityDecision;
   additional?: string;
+  /**
+   * Context that reads the same on every turn of a conversation (inventories,
+   * standing rules). It stays in the system message, ahead of the turn-context
+   * marker, so the runtime can keep the provider's prompt cache warm.
+   */
+  stableAdditional?: string;
   persona?: string;
-  /** Compatibility input; the shared chat contract does not classify requests. */
+  /** The user's message; only read for all-caps emphasis. */
   userText?: string;
   /**
    * The conversation whose LoopX goal governs this turn. Passed by the surfaces
@@ -55,9 +62,9 @@ export function composeHermesSystemPrompt(input: {
   const readSystemPrompt = (id: string) => systemPromptText(id, input.userId);
   const sections = [chatCorePrompt(input.userId)];
   const turnPolicies: string[] = [];
-  // Voice keeps the unchanged capability catalog ahead of policies that vary
-  // each turn. All policies still accompany every applicable submission.
-  const appendTurnPolicy = (policy: string) => (input.voice ? turnPolicies : sections).push(policy);
+  // Policies that vary each turn follow everything that does not. All policies
+  // still accompany every applicable submission.
+  const appendTurnPolicy = (policy: string) => turnPolicies.push(policy);
   if (input.adhdMode) sections.push(readSystemPrompt("concise-mode"));
   const voiceSection = input.voice ? readSystemPrompt("voice-conversation") : '';
   sections.push(readSystemPrompt(input.surface === "quartz_ai" ? "quartz-surface" : "chat-surface"));
@@ -97,7 +104,6 @@ export function composeHermesSystemPrompt(input: {
     `Expires at: ${decision.expiresAt ?? "end of knowledge turn"}`,
     "This record describes authority; it does not grant anything beyond the tool controls.",
   ].join("\n");
-  if (!input.voice) sections.push(capabilityContext);
   const loopState = loopStateSection(input.conversationPublicId, input.surface);
   if (loopState) appendTurnPolicy(loopState);
   const goal = goalModeSection(input.goalMode ?? null, process.env, {
@@ -106,16 +112,28 @@ export function composeHermesSystemPrompt(input: {
     budgetPrompt: readSystemPrompt("goal-budget"),
   });
   if (goal) appendTurnPolicy(goal);
+  const shouted = capsEmphasisSection({ userText: input.userText });
+  if (shouted) appendTurnPolicy(shouted);
   const ending = [input.persona?.trim() ?? "", readSystemPrompt(input.voice ? "voice-artifacts" : "artifact-delivery")].filter(Boolean).join("\n\n");
   const policy = sections.filter(Boolean).join("\n\n");
   const voiceAuthority = input.voice ? capabilityContext : '';
   const turnPolicy = turnPolicies.filter(Boolean).join("\n\n");
   const composedLimit = Math.min(COMPOSED_SYSTEM_PROMPT_LIMIT,
     HERMES_SYSTEM_PROMPT_LIMIT - readSystemPrompt("runtime-base").length - 8_000);
-  const context = boundPromptContext(input.additional?.trim() ?? "", composedLimit - policy.length - ending.length - voiceSection.length - voiceAuthority.length - turnPolicy.length - (turnPolicy ? 10 : 8));
+  const stable = input.stableAdditional?.trim() ?? "";
+  const context = boundPromptContext(input.additional?.trim() ?? "", composedLimit - policy.length - stable.length - capabilityContext.length - TURN_CONTEXT_MARKER.length - ending.length - voiceSection.length - turnPolicy.length - 16);
+  // Everything after the marker changes turn to turn: the grant (its expiry
+  // alone differs every time), memory, retrieved evidence and per-request
+  // policies. Hermes delivers that part on the current user message and keeps
+  // only the part before it in the system message, so the system message and
+  // the history behind it stay cached across turns. See
+  // split_ephemeral_system_prompt in hermes-agent/agent/turn_context.py.
+  if (!input.voice) {
+    return [policy, stable, ending, TURN_CONTEXT_MARKER, capabilityContext, context, turnPolicy].filter(Boolean).join("\n\n");
+  }
   // Keep the spoken-turn contract after the large optional capability catalog.
   // Available tools must not turn a conversation into unsolicited investigation.
   // Changing grant expiry must not invalidate the stable capability catalog on
   // every spoken turn. Authority remains explicit and enforced at tool calls.
-  return [policy, context, turnPolicy, ending, voiceAuthority, voiceSection].filter(Boolean).join("\n\n");
+  return [policy, stable, context, turnPolicy, ending, voiceAuthority, voiceSection].filter(Boolean).join("\n\n");
 }

@@ -411,7 +411,7 @@ I will use the Erlang B table to size the trunk group.`);
     assert.equal(assessLessonQuality(repaired).hardFail, false);
   });
 
-  test("lesson quality enforces the 1400-word minimum without an upper word limit", () => {
+  test("a lesson has no length floor beyond a stub, and a draft has a story ceiling", () => {
     const concise = `Imagine walking three metres east and then one metre west along a straight path. Your feet have travelled four metres altogether. Distance counts every part of that journey, regardless of which way you were facing. Displacement instead describes the change from your starting position to your finishing position, including its direction. You finish two metres east of where you began, so your displacement is two metres east.
 
 To calculate that change, choose east as the positive direction and place your starting point at zero. The first walk changes your position by positive three metres. Walking west changes it by negative one metre. Adding those changes gives positive two metres. The sign records direction; it does not mean that you walked a negative distance. Choosing west as positive would reverse the sign of the displacement while describing exactly the same journey.
@@ -426,20 +426,26 @@ For example, if you now walk two metres west, you return to the starting point. 
 **Answer.** The distance is ten metres because both legs count toward the ground covered. The displacement is zero because the walker finishes at the starting point.
 
 </details>`;
+    // 1400 words was a floor every page padded up to. A complete short
+    // explanation passes; only a stub fails.
     assert.ok(proseWordCount(concise) >= 120 && proseWordCount(concise) < 1400);
-    assert.deepEqual(assessLessonQuality(concise).problems.map((p) => p.code), ["short"]);
-    assert.equal(assessLessonQuality(concise).hardFail, true);
-    const boundary = `${concise}\n\n${"distance ".repeat(1399 - proseWordCount(concise))}`;
-    assert.equal(proseWordCount(boundary), 1399);
-    assert.ok(assessLessonQuality(boundary).problems.some((p) => p.code === "short" && p.hard));
-    assert.deepEqual(assessLessonQuality(`${boundary} distance`).problems, []);
-    const overview = `${concise}\n\nDistance describes the journey; displacement describes where you end up.`;
-    assert.deepEqual(assessLessonQuality(overview, { minWords: 250 }).problems, []);
-    // Semantic review judges repetition and explanatory depth separately;
-    // the local gate must not impose an upper length limit on a long draft.
+    assert.deepEqual(assessLessonQuality(concise).problems, []);
+    // A published page is never judged on length or on where its exercises sit.
     const long = GOOD_BODY.repeat(3);
     assert.ok(proseWordCount(long) > 2000);
     assert.deepEqual(assessLessonQuality(long).problems, []);
+    // A draft has a ceiling that follows its number of ideas, with 10% slack,
+    // and keeps exercises out of the story.
+    const draft = assessLessonQuality(long, { maxStoryWords: 800 }).problems;
+    assert.ok(draft.some((p) => p.code === "over-length" && p.hard));
+    assert.ok(draft.some((p) => p.code === "exercise-in-story" && p.hard));
+    const story = concise.slice(0, concise.indexOf("**Question.**")).trim();
+    const shaped = `${story}
+
+## Practice
+
+${concise.slice(concise.indexOf("**Question.**"))}`;
+    assert.deepEqual(assessLessonQuality(shaped, { maxStoryWords: 800 }).problems, []);
   });
 
   test("assessLessonQuality hard-fails stubs, commentary, fallback, and reference-dump pages", () => {
@@ -459,17 +465,15 @@ For example, if you now walk two metres west, you return to the starting point. 
     assert.ok(assessLessonQuality(refs).problems.some((p) => p.code === "raw-reference-dump" && p.hard));
   });
 
-  test("assessLessonQuality hard-fails a missing example or Q&A", () => {
-    const noExample = "**Question.** a\n\n**Answer.** b\n\n" + "A spiking neuron fires. ".repeat(120);
-    assert.ok(assessLessonQuality(noExample).problems.some((p) => p.code === "no-example" && p.hard));
+  test("assessLessonQuality requires no example cue word and no invented exercise", () => {
+    // Both gates were satisfied by ritual ("For example," plus a token Q&A)
+    // rather than by teaching; the reader review judges concreteness instead.
+    const plain = "A spiking neuron fires when its potential crosses a threshold. ".repeat(40);
+    assert.deepEqual(assessLessonQuality(plain).problems, []);
+    const unanswered = `${plain}
 
-    const analogy =
-      "**Question.** a\n\n**Answer.** b\n\n" +
-      "A simple analogy is a room full of motion detectors where only the changed detector reports activity. ".repeat(120);
-    assert.equal(
-      assessLessonQuality(analogy).problems.some((p) => p.code === "no-example"),
-      false,
-    );
+**Question.** Why?`;
+    assert.ok(assessLessonQuality(unanswered).problems.some((p) => p.code === "no-qa" && p.hard));
   });
 });
 

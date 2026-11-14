@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { ensureChatPayloadSchema } from "../storage/chat-payloads.ts";
 import type Database from "better-sqlite3";
 import { ensureChatNotificationSchema } from "../chat-notifications/store.ts";
 import { ensureLearnNotificationSchema } from "../chat-notifications/learn.ts";
@@ -173,6 +174,7 @@ export function ensureConversationSchema(database: Database.Database): void {
     );
   `);
 
+  ensureChatPayloadSchema(database);
   ensureStarredMessagesSchema(database);
   ensureColumn(database, "chat_sessions", "conversation_id", "conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL");
   ensureColumn(

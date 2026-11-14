@@ -7,6 +7,18 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { runElectronFixture } from './helpers/run-electron-fixture';
 
+function compileAccessibilityProbe(root: string, directory: string) {
+  const windows = process.env.SystemRoot || 'C:\\Windows';
+  const references = ['UIAutomationClient', 'UIAutomationTypes', 'WindowsBase', 'System.Speech'].map(name =>
+    '/reference:' + path.join(windows, 'Microsoft.NET/assembly/GAC_MSIL', name, 'v4.0_4.0.0.0__31bf3856ad364e35', name + '.dll'));
+  const compile = spawnSync(path.join(windows, 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
+    ['/nologo', '/target:exe', '/platform:x64', `/out:${path.join(directory, 'probe.exe')}`,
+      '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll', '/reference:System.Web.Extensions.dll',
+      '/reference:Accessibility.dll', ...references, path.join(root, 'tests/fixtures/dictation-native-host.cs')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(compile.status, 0, compile.stdout + compile.stderr);
+  fs.copyFileSync(path.join(root, 'dist/native/windows-dictation.exe'), path.join(directory, 'windows-dictation.exe'));
+}
+
 test('a cold editor can acquire live preview after its selection becomes available without retargeting the hold', { skip: process.platform !== 'win32' }, () => {
   const root = path.resolve(__dirname, '../..');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bb-dictation-preview-'));
@@ -28,24 +40,36 @@ test('a cold editor can acquire live preview after its selection becomes availab
 });
 
 test('native accessibility recognizes Chromium input, textarea and rich editors and rejects stale or non-editable focus',
-  { skip: process.platform !== 'win32', timeout: 240000 }, async () => {
+  { skip: process.platform !== 'win32', timeout: 240000 }, async t => {
   const root = path.resolve(__dirname, '../..');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bb-dictation-chromium-'));
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE; delete env.NODE_TEST_CONTEXT;
   try {
-    const windows = process.env.SystemRoot || 'C:\\Windows';
-    const references = ['UIAutomationClient', 'UIAutomationTypes', 'WindowsBase', 'System.Speech'].map(name =>
-      '/reference:' + path.join(windows, 'Microsoft.NET/assembly/GAC_MSIL', name, 'v4.0_4.0.0.0__31bf3856ad364e35', name + '.dll'));
-    const compile = spawnSync(path.join(windows, 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      ['/nologo', '/target:exe', '/platform:x64', `/out:${path.join(directory, 'probe.exe')}`,
-        '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll', '/reference:System.Web.Extensions.dll',
-        '/reference:Accessibility.dll', ...references, path.join(root, 'tests/fixtures/dictation-native-host.cs')], { encoding: 'utf8', windowsHide: true });
-    assert.equal(compile.status, 0, compile.stdout + compile.stderr);
-    fs.copyFileSync(path.join(root, 'dist/native/windows-dictation.exe'), path.join(directory, 'windows-dictation.exe'));
+    compileAccessibilityProbe(root, directory);
     const result = await runElectronFixture(require('electron') as string, [path.join(root, 'tests/fixtures/dictation-chromium.cjs'), directory], root, env, 230000, true);
     assert.equal(result.error, undefined, result.output + String(result.error ?? ''));
     assert.equal(result.status, 0, result.output);
+    const verified = JSON.parse(fs.readFileSync(path.join(directory, 'passed.json'), 'utf8')) as { skipped?: string };
+    if (verified.skipped) { t.skip(verified.skipped); return; }
     const receipt = path.resolve(root, '../qa/system-dictation/chromium-fields.json');
+    fs.mkdirSync(path.dirname(receipt), { recursive: true });
+    fs.copyFileSync(path.join(directory, 'passed.json'), receipt);
+  } finally { fs.rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+});
+
+test('Breadboard chat receives atomic live revisions while Ctrl+Shift is held, then submits the final words once',
+  { skip: process.platform !== 'win32', timeout: 45000 }, async t => {
+  const root = path.resolve(__dirname, '../..');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bb-dictation-composer-'));
+  const env: NodeJS.ProcessEnv = { ...process.env, BREADBOARD_DICTATION_INTERACTIVE: '0' }; delete env.ELECTRON_RUN_AS_NODE; delete env.NODE_TEST_CONTEXT;
+  try {
+    compileAccessibilityProbe(root, directory);
+    const result = await runElectronFixture(require('electron') as string, [path.join(root, 'tests/fixtures/dictation-composer.cjs'), directory], root, env, 40000, true);
+    assert.equal(result.error, undefined, result.output + String(result.error ?? ''));
+    assert.equal(result.status, 0, result.output);
+    const verified = JSON.parse(fs.readFileSync(path.join(directory, 'passed.json'), 'utf8')) as { skipped?: string };
+    if (verified.skipped) { t.skip(verified.skipped); return; }
+    const receipt = path.resolve(root, '../qa/system-dictation/composer-streaming.json');
     fs.mkdirSync(path.dirname(receipt), { recursive: true });
     fs.copyFileSync(path.join(directory, 'passed.json'), receipt);
   } finally { fs.rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }

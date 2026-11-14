@@ -44,7 +44,9 @@ test("garden chat has terminal-style history, new chat, and skill review", () =>
   assert.match(chat, /openHistorySession/);
   assert.match(chat, /startNewChat/);
   assert.match(chat, /<SkillReviewPanel/);
-  assert.match(chat, /SUGGESTED_PROMPTS/);
+  // Empty-state cards are the grounded garden recommendations, never a fixed list.
+  assert.match(chat, /useRecommendations\(\{ gardenSlug \}\)/);
+  assert.doesNotMatch(chat, /SUGGESTED_PROMPTS/);
 });
 
 test("garden chat keeps the proposal reviewer", () => {

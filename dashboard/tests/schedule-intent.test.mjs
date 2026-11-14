@@ -54,3 +54,18 @@ test('explicit delayed tasks and reminders retain their exact due time',()=>{
 test('the dedicated schedule editor retains its visible default for an ambiguous draft',()=>{
   const result=parseScheduleRequest('keep an eye on my reading list',now);assert.equal(result.recognized,false);assert.equal(result.cron,'0 9 * * *');
 });
+
+for(const [prompt,cron,task] of [
+  ['every 2 hours check the build','0 */2 * * *','check the build'],
+  ['every other hour check the build','0 */2 * * *','check the build'],
+  ['check the build every 3 hours on weekdays','0 */3 * * 1,2,3,4,5','check the build'],
+  ['every 15 minutes check the queue','*/15 * * * *','check the queue'],
+  ['every monday, wednesday and friday at 9am send me a brief','0 9 * * 1,3,5','send me a brief'],
+  ['send me a brief every tuesday and thursday at 18:30','30 18 * * 2,4','send me a brief'],
+])test('intervals and day lists are scheduled: '+prompt,()=>{
+  const result=parseExplicitScheduleRequest(prompt,now);assert.ok(result);
+  assert.equal(result.cron,cron);assert.equal(result.prompt,task);assert.equal(result.oneShot,false);
+});
+test('an interval the scheduler cannot express is not silently rounded',()=>{
+  assert.equal(parseScheduleRequest('every 90 minutes check the build',now).cron,'0 9 * * *');
+});

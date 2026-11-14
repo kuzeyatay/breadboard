@@ -342,7 +342,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   ) as AiSettings['providers'],
 }
 
-export function App({ readOnly = false }: { readOnly?: boolean } = {}) {
+export function App({ readOnly = false, onDirtyChange, onAskAi }: { readOnly?: boolean; onDirtyChange?: (dirty: boolean) => void; onAskAi?: (instruction?: string) => void } = {}) {
   // subscribe to language switches for re-render; strings all go through module-level t, so memoized callbacks never capture stale closures
   const { lang } = useI18n()
   const [doc, setDoc] = useState<DocState | null>(null)
@@ -2774,6 +2774,7 @@ export function App({ readOnly = false }: { readOnly?: boolean } = {}) {
   const anyDirtyRef = useRef(false)
   const hasUnsavedChanges = isDocDirty(fileCtxRef.current)
   anyDirtyRef.current = hasUnsavedChanges
+  useEffect(() => { onDirtyChange?.(hasUnsavedChanges) }, [hasUnsavedChanges, onDirtyChange])
 
   // close guard: the main process queries dirty state before closing a tab/window; choosing "Save" runs a full save and reports back
   useEffect(() => {
@@ -2995,6 +2996,7 @@ export function App({ readOnly = false }: { readOnly?: boolean } = {}) {
           if (doc) openStats()
           break
         case 'ai-proofread':
+          if (onAskAi) { onAskAi(t('ribbonEditorPrompt')); break }
           // Same flow as Review > Editor: one-time whole-document-rewrite ack,
           // then auto-run the AI proofread preset
           if (doc) {
@@ -3433,10 +3435,12 @@ export function App({ readOnly = false }: { readOnly?: boolean } = {}) {
         showGrid={showGrid}
         splitView={splitView}
         {...ribbonActions}
+        onToggleAi={onAskAi ?? ribbonActions.onToggleAi}
+        onAiPreset={onAskAi ?? ribbonActions.onAiPreset}
       />
 
       <div className="app-main">
-        {doc && (
+        {doc && !onAskAi && (
           <div className={`ai-dock${showAi ? '' : ' collapsed'}`}>
             {/* always mounted: collapse must not drop state or in-flight runs */}
             <AiPanel
@@ -3729,6 +3733,7 @@ export function App({ readOnly = false }: { readOnly?: boolean } = {}) {
           onLink={() => setShowLinkModal(true)}
           onNewComment={startNewComment}
           onAiPreset={(text) => {
+            if (onAskAi) { onAskAi(text); return }
             setShowAi(true)
             setAiPreset({ text, nonce: Date.now(), autoRun: true })
           }}

@@ -928,7 +928,7 @@ const showCareerOps =
       matchesAgentSearch(
         "Parametric CAD",
         PARAMETRIC_CAD_COMMAND,
-        "cad 3d print stl step glb cadquery enclosure bracket mount adapter spacer bushing knob printable model mm millimetre",
+        "cad 3d print stl step glb cadquery freecad fcstd enclosure bracket mount adapter spacer bushing knob printable model mm millimetre",
       );
     const showHyperframes =
       surface !== "quartz_ai" &&

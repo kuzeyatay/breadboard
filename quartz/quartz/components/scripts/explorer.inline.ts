@@ -1,4 +1,5 @@
 import { FileTrieNode } from "../../util/fileTrie"
+import { installGardenFiles, managedExplorerEntries, managedFileNode, decorateFileFolder } from "./gardenFileExplorer"
 import {
   gardenClusterFoldersFromJson,
   groupGardenExplorerNodes,
@@ -1038,6 +1039,7 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
   const template = document.getElementById("template-file") as HTMLTemplateElement
   const clone = template.content.cloneNode(true) as DocumentFragment
   const li = clone.querySelector("li") as HTMLLIElement
+  if (managedFileNode(node, li)) return li
   const a = li.querySelector("a") as HTMLAnchorElement
   const flagColor = validFlagColor(node.data?.flagColor)
   const sourceKind = topologySourceKind(
@@ -1083,6 +1085,22 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
 
   const flagMenu = document.createElement("div")
   flagMenu.className = "explorer-flag-menu"
+
+  if (sourceKind) {
+    // Source boxes carry their kind's fixed color; no palette, no understanding repaint.
+    const fixed = document.createElement("button")
+    fixed.type = "button"
+    fixed.className = "explorer-flag-button source-kind-flag"
+    fixed.disabled = true
+    fixed.title = sourceKind
+    fixed.ariaLabel = sourceKind
+    const fixedSwatch = document.createElement("span")
+    fixedSwatch.className = "explorer-flag-swatch"
+    fixed.appendChild(fixedSwatch)
+    flagMenu.appendChild(fixed)
+    li.insertBefore(flagMenu, a)
+    return li
+  }
 
   const flag = document.createElement("button")
   flag.type = "button"
@@ -1276,7 +1294,7 @@ function createFolderNode(
         event.preventDefault()
         event.stopPropagation()
         const ok = window.confirm(
-          `Delete the folder "${relFolder}" and all notes inside it? This cannot be undone.`,
+          `Move the folder "${diskFolder}" and everything inside it to trash? You can restore it from Files.`,
         )
         if (!ok) return
         sendDeleteFolder(cluster, relFolder)
@@ -1309,6 +1327,7 @@ function createFolderNode(
     }
   }
 
+  if (!isVirtualCluster) decorateFileFolder(node, folderContainer, folderTitle, cluster, isGardenRoot ? "" : diskFolder, isGardenRoot || Boolean(canonicalFolder))
   if (isVirtualCluster) folderContainer.classList.add("garden-cluster-group")
 
   if (isGardenRoot) {
@@ -1364,6 +1383,7 @@ function reviveDataFn(source: string | undefined) {
 }
 
 async function setupExplorer(currentSlug: FullSlug) {
+  installGardenFiles(() => { if (explorerSlug) void setupExplorer(explorerSlug) })
   explorerSlug = currentSlug
   saveFolderSnapshot()
   bindCreateFolderResultListener()
@@ -1451,6 +1471,11 @@ async function setupExplorer(currentSlug: FullSlug) {
       }
     }
     explorerDocuments = documents
+    for (const entry of managedExplorerEntries(allowedClusters, documents.values(), [...canonicalFolders].flatMap(([cluster, folders]) => [...folders.keys()].map(folder => `${cluster}/${folder}`)))) {
+      // Existing folder indexes keep their authored title and reader behavior.
+      if (entry.gardenFileKind === "folder" && documents.has(entry.slug)) continue
+      documents.set(entry.slug, entry)
+    }
     const trie = FileTrieNode.fromEntries([...documents].map(([slug, entry]) => [slug, {
       ...entry, title: savedTitles.get(slug) ?? entry.title,
     }]))

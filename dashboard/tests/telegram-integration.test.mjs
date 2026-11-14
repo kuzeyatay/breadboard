@@ -10,6 +10,10 @@ import {
 } from "../src/lib/telegram/delegated-follow-up.ts";
 import { normalizeInbound } from "../src/lib/telegram/gateway.ts";
 import {
+  deliverLateAssistantReply,
+  LATE_REPLY_FAILURE_TEXT,
+} from "../src/lib/conversations/late-reply.ts";
+import {
   conversationIsSameDay,
   messageText,
   HELP_TEXT,
@@ -30,6 +34,8 @@ const messaging = source("../src/app/components/settings-messaging.tsx");
 const connectionRoute = source("../src/app/api/telegram/connection/route.ts");
 const statusRoute = source("../src/app/api/telegram/route.ts");
 const db = source("../src/lib/db.ts");
+const whatsappInbound = source("../src/lib/whatsapp/inbound.ts");
+const whatsappService = source("../src/lib/whatsapp/service.ts");
 
 test("an update flattens into the shape the rest of Breadboard reads", () => {
   const message = normalizeInbound({
@@ -139,6 +145,52 @@ test("only the owner's allowed senders can spend tokens", () => {
   assert.match(statusRoute, /store\.requireOwner\(userId\)/);
   // A stranger gets silence, not a reply that confirms the bot is live.
   assert.match(inbound, /status: "ignored", reason: "not_allowed"/);
+});
+
+test("a turn that outlives the inbound wait still delivers its answer late", async () => {
+  // The late poller sends the answer once the turn settles, nothing on a
+  // second timeout, and a readable failure instead of silence on a dead turn.
+  const sent = [];
+  const states = [[], [{ clientMessageId: "m1", role: "assistant", content: "", status: "pending", orderIndex: 3 }],
+    [{ clientMessageId: "m1", role: "assistant", content: " the late answer ", status: "complete", orderIndex: 3 }]];
+  const complete = await deliverLateAssistantReply({
+    clientMessageId: "m1",
+    listMessages: () => states.length > 1 ? states.shift() : states[0],
+    onReply: async (content) => { sent.push(content); },
+    maxWaitMs: 10_000, pollMs: 1, sleep: async () => {},
+  });
+  assert.deepEqual(complete, { status: "complete", orderIndex: 3 });
+  assert.deepEqual(sent, ["the late answer"]);
+
+  let clock = 0;
+  const timedOut = await deliverLateAssistantReply({
+    clientMessageId: "m1", listMessages: () => [],
+    onReply: async () => { throw new Error("a timeout must stay silent"); },
+    maxWaitMs: 100, pollMs: 1, now: () => clock, sleep: async () => { clock += 50; },
+  });
+  assert.deepEqual(timedOut, { status: "timeout" });
+
+  const failures = [];
+  const failed = await deliverLateAssistantReply({
+    clientMessageId: "m1",
+    listMessages: () => [{ clientMessageId: "m1", role: "assistant", content: "", status: "failed", orderIndex: 2 }],
+    onReply: async (content) => { failures.push(content); },
+    maxWaitMs: 100, pollMs: 1, sleep: async () => {},
+  });
+  assert.equal(failed.status, "failed");
+  assert.deepEqual(failures, [LATE_REPLY_FAILURE_TEXT]);
+
+  // Both transports hand a timed-out turn to the late deliverer, detached so
+  // hours of watching never block the chat's serialized inbound queue.
+  for (const [inboundSource, serviceSource, deliver] of [
+    [inbound, service, "deliverTelegramLateReply"],
+    [whatsappInbound, whatsappService, "deliverWhatsAppLateReply"],
+  ]) {
+    assert.match(inboundSource, /lateReply: \{ conversationId: conversation\.id, clientMessageId \}/);
+    assert.match(serviceSource, new RegExp(`void ${deliver}\\(outcome\\.lateReply`));
+  }
+  // The late Telegram answer still completes delegated-agent hand-backs.
+  assert.match(inbound, /deliverTelegramFollowUps\(\s*\{ conversationId: conversation\.id, afterOrder: result\.orderIndex \}/);
 });
 
 test("a replayed update never produces a second turn or a second reply", () => {

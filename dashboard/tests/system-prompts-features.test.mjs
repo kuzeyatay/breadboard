@@ -101,9 +101,11 @@ test("every catalog entry has a unique ID and an editable default within the API
 
 test("suggestions and titles read the latest override on each invocation and isolate accounts", async () => {
   const { generatePromptSuggestion } = await import("../src/lib/chat-prompt-suggestion-service.ts");
+  const { generateSentenceCompletion } = await import("../src/lib/sentence-completion-service.ts");
   const { generateConversationTitle } = await import("../src/lib/conversations/title-service.ts");
   for (const [id, run] of [
     ["prompt-suggestions", options => generatePromptSuggestion({ ...options, model: "gpt-5.6-sol", messages: [{ role: "user", content: "Explain circuits" }, { role: "assistant", content: "Here is the explanation." }] })],
+    ["sentence-completion", options => generateSentenceCompletion({ ...options, draft: "Can you explain", messages: [] })],
     ["conversation-titles", options => generateConversationTitle({ ...options, model: "gpt-5.6-sol", firstPrompt: "Explain circuits" })],
   ]) {
     const captured = [];

@@ -16,6 +16,7 @@ import {
   type ZettelNote,
 } from "./learning-unit-contract.ts";
 import type { KnowledgeClaimPlan, SemanticConceptPlan } from "./semantic-core.ts";
+import { MIN_LESSON_STORY_WORDS, lessonStoryProblems } from "./learn-story.ts";
 import type {
   ContractInteractiveVisualPlan,
   TeachingMediumPlan,
@@ -928,6 +929,12 @@ export const PIPELINE_VOCABULARY_PATTERNS: RegExp[] = [
   /\bthis (?:unit|page|lesson) is deferred\b/i,
   /\bdeferred until\b[^.]*\bevidence\b/i,
   /\b(?:material|evidence|passages?) assigned to this unit\b/i,
+  // Compliance narration: the page reporting how it handled a source item
+  // ("Verbatim formula quotation.", "Quoted transcription requiring
+  // correction.") across the electromagnetism-1 lessons (2026-11-09).
+  /\bverbatim (?:source )?(?:formula|quotation|transcription)\b/i,
+  /\bformula quotation\b/i,
+  /\b(?:quoted|source) transcription\b/i,
 ];
 
 /** Bibliography/reference-list chunks ("[12] A. Author, \"Title\", ...") pasted
@@ -1444,11 +1451,11 @@ export function formatQualityProblemForRepair(problem: QualityProblem): string {
     : summary;
 }
 
-/** Minimum explanatory prose for a lesson; there is no maximum word count. */
-/** Raised from 700 (2026-09-16) and again to 1400: lessons stopped at the
- * planner's estimate and read as a seven-minute summary; the writer prompt
- * carries no target and says depth, not length, decides when to stop. */
-export const MIN_LESSON_WORDS = 1400;
+/** A lesson has no length floor beyond "not a stub". The 1400-word floor
+ * (2026-09-16) made every page pad to it and every repair restate it; the
+ * story now has a ceiling that follows its number of ideas instead (see
+ * learn-story.ts). */
+export const MIN_LESSON_WORDS = MIN_LESSON_STORY_WORDS;
 
 /** A lesson may break into beats, but a beat per paragraph is the listicle the
  * original no-headings rule was written against. */
@@ -1614,6 +1621,9 @@ export function assessLessonQuality(
   options: {
     assignedVisualUrls?: string[];
     minWords?: number;
+    /** Prose-word ceiling for the story, from the teaching plan's idea count.
+     * Set for a page being drafted; a published page is never re-judged on it. */
+    maxStoryWords?: number;
     /** Citations the syllabus assigns that this garden does not contain, paired
      * with a detector. A page naming one is teaching from material nobody
      * uploaded, which is a hard failure however fluent the prose is. */
@@ -1696,10 +1706,13 @@ export function assessLessonQuality(
   const hasQuestion = /\*\*Question\.\*\*/.test(body);
   const hasAnswer =
     /\*\*Answer\.\*\*/.test(body) || /<details>\s*<summary>\s*Answer\s*<\/summary>/i.test(body);
-  if (!hasQuestion || !hasAnswer) {
-    const missing = !hasQuestion && !hasAnswer ? "Question./Answer. pair" : !hasQuestion ? "Question. block" : "answer for its question";
-    problems.push({ code: "no-qa", message: `missing a ${missing}`, hard: true });
+  // A page owes exercises only when the plan assigned some (the
+  // source-question gate checks those); it is never required to invent one.
+  // An exercise that is present still needs its worked answer.
+  if (hasQuestion && !hasAnswer) {
+    problems.push({ code: "no-qa", message: "missing an answer for its question", hard: true });
   }
+  problems.push(...lessonStoryProblems(body, { maxStoryWords: options.maxStoryWords }));
   if (words < 120) {
     // Reject near-empty stubs separately from lessons below the prose minimum.
     problems.push({ code: "empty", message: `only ${words} words of prose`, hard: true });
@@ -1720,10 +1733,6 @@ export function assessLessonQuality(
       hard: true,
       evidence: [...new Set(aiisms)],
     });
-  }
-  const hasExample = /\b(for example|for instance|imagine|consider|suppose|think of|picture|analogy|worked example)\b/i.test(body);
-  if (!hasExample) {
-    problems.push({ code: "no-example", message: "no concrete example / analogy cue", hard: true });
   }
   // Counted, not just requested: prompt guidance alone once produced 35
   // headings across 40 pages. A heading inside the body splits the subsection

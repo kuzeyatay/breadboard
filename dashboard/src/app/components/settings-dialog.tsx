@@ -12,6 +12,7 @@ import SettingsProviders from "@/app/components/settings-providers";
 import SettingsRecall from "@/app/components/settings-recall";
 import SettingsSpeech from "@/app/components/settings-speech";
 import SettingsSystem from "@/app/components/settings-system";
+import SettingsStorage from "@/app/components/settings-storage";
 import SettingsVoiceCalibration from "@/app/components/settings-voice-calibration";
 
 export type SettingsTab =
@@ -24,6 +25,7 @@ export type SettingsTab =
   | "messaging"
   | "guardrails"
   | "system"
+  | "storage"
   | "recall";
 
 interface SettingsDialogProps {
@@ -36,6 +38,7 @@ interface SettingsDialogProps {
 }
 
 const TABS: Array<{ value: SettingsTab; label: string; description: string }> = [
+  { value: "storage", label: "Storage", description: "Manage storage while preserving your chats and work." },
   {
     value: "account",
     label: "Accounts",
@@ -229,6 +232,11 @@ export default function SettingsDialog({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-4">
+          {visitedTabs.has("storage") ? (
+            <div id="settings-panel-storage" role="tabpanel" aria-labelledby="settings-tab-storage" hidden={tab !== "storage"}>
+              <SettingsStorage active={tab === "storage"} />
+            </div>
+          ) : null}
           {visitedTabs.has("system") ? (
             <div id="settings-panel-system" role="tabpanel" aria-labelledby="settings-tab-system" hidden={tab !== "system"}>
               <SettingsSystem />

@@ -196,6 +196,45 @@ def convert_tool_choice(tool_choice: Any) -> Dict[str, Any] | None:
     return None
 
 
+_EPHEMERAL = {"type": "ephemeral"}
+
+
+def _mark_cache_breakpoints(body: Dict[str, Any]) -> None:
+    """Place Anthropic prompt-cache breakpoints (at most the four allowed).
+
+    Anthropic caches nothing without them. The prefix is tools, then system,
+    then messages, so:
+      * the system block caches the tool schemas and the system prompt;
+      * the newest block caches the whole request, which is what a tool loop
+        re-reads on each of its calls;
+      * the turn boundaries before the last two user-authored messages cache
+        the conversation history. A client may attach per-turn context to the
+        newest user message and send that message bare on later turns, so the
+        cache entries written while a turn runs never match again; the entry
+        that does survive is the one ending just before that message. Marking
+        the previous boundary as well reads it back however long the turn in
+        between was.
+    """
+    system = body.get("system")
+    if isinstance(system, str) and system:
+        body["system"] = [{"type": "text", "text": system, "cache_control": dict(_EPHEMERAL)}]
+    messages = body.get("messages") or []
+    authored = [
+        index
+        for index, message in enumerate(messages)
+        if message.get("role") == "user"
+        and any(block.get("type") != "tool_result" for block in message.get("content") or [])
+    ]
+    # Block-level markers rather than the top-level automatic one: this builder
+    # also serves Anthropic-compatible upstreams that predate that field.
+    for index in {*(boundary - 1 for boundary in authored[-2:]), len(messages) - 1}:
+        if index < 0:
+            continue
+        blocks = messages[index].get("content") or []
+        if blocks and (blocks[-1].get("type") != "text" or blocks[-1].get("text")):
+            blocks[-1]["cache_control"] = dict(_EPHEMERAL)
+
+
 def build_payload(payload: Dict[str, Any], upstream_model: str, *, stream: bool) -> Dict[str, Any]:
     messages, system = convert_messages(payload.get("messages") or [])
     body: Dict[str, Any] = {
@@ -206,6 +245,7 @@ def build_payload(payload: Dict[str, Any], upstream_model: str, *, stream: bool)
     }
     if system:
         body["system"] = system
+    _mark_cache_breakpoints(body)
 
     effort = payload.get("reasoning_effort")
     normalized_effort = effort.strip().lower() if isinstance(effort, str) else ""

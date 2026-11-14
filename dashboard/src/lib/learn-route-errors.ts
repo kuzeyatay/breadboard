@@ -21,10 +21,25 @@ export function resolveLearnRequestModel(body: Record<string, unknown>, defaultM
   if (normalizeAssistantModelId(body.model === undefined ? defaultModel : body.model)?.toLowerCase() === NO_MODEL_SENTINEL) {
     throw new InvalidLearnRouteBodyError(NO_DEFAULT_MODEL_MESSAGE);
   }
-  if (body.model === undefined) return defaultModel;
+  if (body.model === undefined) return assertLearnAdmissibleModel(defaultModel);
   const model = normalizeAssistantModelId(body.model);
   if (!model || ["default", "chat", "auto"].includes(model.toLowerCase())) {
     throw new InvalidLearnRouteBodyError("Choose a valid model for this Learn run.");
+  }
+  return assertLearnAdmissibleModel(model);
+}
+
+/** ChatMock refuses Claude models served through the Claude Code proxy for
+ * Learn's one-call contract (providers/dispatch.py,
+ * strict_single_attempt_supported). Without this check the run started,
+ * retried the refusal as an HTTP 502 thirteen times, and stopped with "check
+ * that the provider is available" (isolated circuits run, 2026-11-10). */
+export const LEARN_INADMISSIBLE_MODEL_MESSAGE =
+  "Claude models that run through the Claude Code proxy cannot be used for Learn, because Learn needs exactly one provider call per step. Choose another model for this Learn run.";
+
+export function assertLearnAdmissibleModel(model: string): string {
+  if (/^cliproxy\/claude-/i.test(model.trim())) {
+    throw new InvalidLearnRouteBodyError(LEARN_INADMISSIBLE_MODEL_MESSAGE);
   }
   return model;
 }

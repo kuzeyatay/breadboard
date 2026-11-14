@@ -9,7 +9,8 @@ const root=path.resolve(import.meta.dirname,'../..');
 const defaults=Object.fromEntries(FEATURE_SYSTEM_PROMPTS.map(item=>[item.id,item.defaultContent]));
 const built=await build({bundle:true,write:false,format:'cjs',platform:'node',
   stdin:{resolveDir:root,contents:`export {generateRecommendations} from './src/lib/recommendations/generate.ts';
-    export {generatePromptSuggestion} from './src/lib/chat-prompt-suggestion-service.ts';`},
+    export {generateSentenceCompletion} from './src/lib/sentence-completion-service.ts';
+    export {generatePromptSuggestion,generatePdfSuggestions} from './src/lib/chat-prompt-suggestion-service.ts';`},
   plugins:[{name:'prompt-store-boundary',setup(b){
     b.onResolve({filter:/system-prompts\/service\.ts$/},()=>({path:'prompt-defaults',namespace:'fixture'}));
     b.onLoad({filter:/.*/,namespace:'fixture'},()=>({contents:`const defaults=${JSON.stringify(defaults)};
@@ -17,4 +18,4 @@ const built=await build({bundle:true,write:false,format:'cjs',platform:'node',
   }}]});
 const module={exports:{}};
 new Function('module','exports','require',built.outputFiles[0].text)(module,module.exports,createRequire(import.meta.url));
-export const {generateRecommendations,generatePromptSuggestion}=module.exports;
+export const {generateRecommendations,generatePromptSuggestion,generatePdfSuggestions,generateSentenceCompletion}=module.exports;

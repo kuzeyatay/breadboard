@@ -115,3 +115,16 @@ description = "OpenExecutive upstream snapshot: invented Discord user ids in its
 targetRules = ["discord-client-id"]
 paths = ['''^OpenExecutive/packages/core/tests/.*''']
 
+
+[[allowlists]]
+description = "FreeLLMAPI test fixtures: fake provider keys (gsk_test…, agnes_test…) and redaction samples"
+targetRules = ["generic-api-key"]
+paths = ['''^freellmapi/server/src/__tests__/''']
+
+[[allowlists]]
+description = "FreeLLMAPI migration file names, chart data keys and the backup key placeholder"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^freellmapi/(server/src/db/migrate/defaults\.ts|client/src/pages/AnalyticsPage\.tsx|server/src/lib/db-backup\.ts)$''']
+regexTarget = "line"
+regexes = ['''(_FILENAME = '\d{8}_\d{6}_[a-z_]+\.ts'|dataKey="p95|PLACEHOLDER_KEY = 'replace-with-64-char-hex')''']

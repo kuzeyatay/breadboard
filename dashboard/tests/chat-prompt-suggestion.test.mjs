@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { normalizePromptSuggestion, promptSuggestionContext } from '../src/lib/chat-prompt-suggestion.ts';
-import { generatePromptSuggestion } from './helpers/recommendation-model-fixture.mjs';
+import { generatePromptSuggestion, generatePdfSuggestions } from './helpers/recommendation-model-fixture.mjs';
 
 const messages = [
   { role: 'user', content: 'Explain RLC circuits', attachments: ['private.pdf'] },
@@ -107,4 +107,15 @@ test('timeout and caller cancellation abort the upstream completion', async () =
       assert.equal(signal.aborted, true);
     } finally { clearTimeout(keepAlive); }
   }
+});
+
+test('PDF suggestions are grounded in the page text, capped at four, and empty on bad output', async () => {
+  let sent;
+  const questions = await generatePdfSuggestions({ title: 'Lecture 4', pageNumber: 3, model: 'selected',
+    pageText: 'Gauss law: flux equals enclosed charge over epsilon zero.',
+    fetcher: async (_url, init) => { sent = JSON.parse(init.body); return completion('```json\n["Why is the flux independent of radius?","Derive E for a line charge","Q3","Q4","Q5"]\n```'); } });
+  assert.deepEqual(questions, ['Why is the flux independent of radius?', 'Derive E for a line charge', 'Q3', 'Q4']);
+  assert.match(sent.messages[1].content, /Gauss law/);
+  assert.deepEqual(await generatePdfSuggestions({ title: 'x', pageNumber: 1, model: 'selected', pageText: 'text', fetcher: async () => completion('not json') }), []);
+  assert.deepEqual(await generatePdfSuggestions({ title: 'x', pageNumber: 1, model: 'selected', pageText: '  ', fetcher: async () => assert.fail('no text, no request') }), []);
 });

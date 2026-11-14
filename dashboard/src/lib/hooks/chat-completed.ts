@@ -5,11 +5,8 @@
 import "server-only";
 
 import db from "@/lib/db.ts";
-import {
-  listEnabledChatCompletionHooks,
-  recordDelivery,
-  recordHookFire,
-} from "./store.ts";
+import { deliverLifecycleEvent } from "./lifecycle.ts";
+import { listEnabledChatCompletionHooks } from "./store.ts";
 
 const MAX_MESSAGE_CHARS = 32_000;
 
@@ -111,16 +108,11 @@ export function fireSuccessfulChatHooks(input: {
       conversation.garden_slug,
       db,
     );
-    for (const hook of hooks) {
-      const deliveryKey = `chat.completed:${assistant.id}`;
-      if (!recordDelivery(hook.id, deliveryKey, db)) continue;
-      recordHookFire(hook.id, db);
-      void import("./dispatch.ts")
-        .then(({ dispatchHook }) => dispatchHook(hook, payload))
-        .catch((error) => {
-          console.error(`[hooks] chat completion dispatch failed for hook ${hook.id}`, error);
-        });
-    }
+    deliverLifecycleEvent(hooks, {
+      deliveryKey: `chat.completed:${assistant.id}`,
+      matchText: `${request.text}\n${response.text}`,
+      payload,
+    });
   } catch (error) {
     // Completion hooks are post-commit automation. They must never turn a
     // successfully persisted chat into an error for the person who sent it.

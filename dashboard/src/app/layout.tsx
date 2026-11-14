@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
 import { Suspense } from "react";
+import AmbientFrameGovernorRuntime from "@/app/components/ambient-frame-governor-runtime";
 import AppThemeRuntime from "@/app/components/app-theme-runtime";
 import EnterSubmitRuntime from "@/app/components/enter-submit-runtime";
 import { UserIdleRuntime } from "@/app/components/effects/use-user-idle";
@@ -113,6 +114,7 @@ export default function RootLayout({
         <AppThemeRuntime />
         <EnterSubmitRuntime />
         <UserIdleRuntime />
+        <AmbientFrameGovernorRuntime />
         <AuthenticationSync />
         <AnchoredTabNavigationGuard />
         <CurrentLocationAutoRefresh />

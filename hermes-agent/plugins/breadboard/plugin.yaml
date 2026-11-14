@@ -47,6 +47,8 @@ provides_tools:
   - audio_compare
   - music_recognize
   - manim_create
+  - video_render
+  - to_markdown
   - omh_run
   - capability_gap
   - capability_search
@@ -89,6 +91,12 @@ provides_tools:
   - spotify_search
   - spotify_play
   - spotify_create_playlist
+  - schedule_create
+  - schedule_list
+  - schedule_delete
+  - hook_create
+  - hook_list
+  - hook_delete
   - calendar_list_calendars
   - calendar_agenda
   - calendar_search_events

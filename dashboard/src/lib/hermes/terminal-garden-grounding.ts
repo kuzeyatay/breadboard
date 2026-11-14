@@ -153,8 +153,8 @@ export async function retrieveTerminalGardenGrounding(input: {
       contextBudget: 14_000,
     });
     const sources = uniqueSources(retrieval.chunks);
-    const [{ readThoughtTopology }, { queryThoughtTopologyGraph, compactThoughtTopologyGraph }] = await Promise.all([
-      import("../thought-topology/storage.ts"), import("./thought-topology-graph.ts"),
+    const [{ readThoughtTopology }, { queryThoughtTopologyGraph, compactThoughtTopologyGraph }, { chatCocitations }] = await Promise.all([
+      import("../thought-topology/storage.ts"), import("./thought-topology-graph.ts"), import("./chat-cocitation.ts"),
     ]);
     const topologies = new Map(gardens.map(garden => [garden.slug, readThoughtTopology(garden.rootPath)]));
     const neighborhoods = sources.slice(0, 2).flatMap(source => {
@@ -162,6 +162,7 @@ export async function retrieveTerminalGardenGrounding(input: {
       if (!topology) return [];
       const graph = queryThoughtTopologyGraph(topology, {
         start: source.pageRelPath, depth: 1, limit: 6, includeHierarchy: false,
+        chatLinks: chatCocitations(input.userId, source.gardenSlug),
       });
       if (!graph.startNode) return [];
       // Only show connections to the matched page. Dense connections between

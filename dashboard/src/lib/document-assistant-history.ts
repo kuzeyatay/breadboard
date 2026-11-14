@@ -72,7 +72,7 @@ export function syncDocumentAssistantHistory(input: {
     let changed = false;
     for (const entry of entries) {
       const imported = db.prepare(`SELECT m.* FROM document_assistant_entries e
-        LEFT JOIN conversation_messages m ON m.id = e.message_id WHERE e.artifact_id = ? AND e.entry_id = ?`)
+        LEFT JOIN conversation_message_reads m ON m.id = e.message_id WHERE e.artifact_id = ? AND e.entry_id = ?`)
         .get(artifact.id, entry.id) as ConversationMessageRow | undefined;
       if (imported) {
         if (entry.role === "user") userClientId = imported.client_message_id;
@@ -115,7 +115,7 @@ export function syncDocumentAssistantHistory(input: {
       changed = true;
     }
     if (changed) db.prepare("UPDATE conversations SET next_order_index = ?, updated_at = datetime('now') WHERE id = ?").run(order, conversation.id);
-    const rows = db.prepare(`SELECT m.*, e.entry_id FROM conversation_messages m
+    const rows = db.prepare(`SELECT m.*, e.entry_id FROM conversation_message_reads m
       LEFT JOIN document_assistant_entries e ON e.message_id = m.id
       WHERE m.conversation_id = ? ORDER BY m.order_index DESC LIMIT ?`)
       .all(conversation.id, DOCUMENT_ASSISTANT_HISTORY_LIMIT) as (ConversationMessageRow & { entry_id: string | null })[];

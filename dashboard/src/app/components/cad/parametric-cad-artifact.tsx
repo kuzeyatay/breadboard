@@ -38,6 +38,8 @@ const FORMAT_LABELS: Record<string, string> = {
   glb: "GLB · 3D preview",
   "3mf": "3MF · for slicing",
   sldprt: "SLDPRT · native SolidWorks part",
+  fcstd: "FCStd · native FreeCAD document",
+  "freecad-source": "FreeCAD Python source",
   source: "CadQuery source",
   operations: "SolidWorks operations",
   spec: "Design specification",
@@ -802,6 +804,8 @@ export default function ParametricCadArtifact({
                 and it has no entrypoint to call. */}
             {design.provenance.engine === "solidworks"
               ? "SolidWorks operation program"
+              : design.provenance.engine === "freecad"
+              ? `FreeCAD program · ${design.entrypoint}(doc, params)`
               : `CadQuery program · ${design.entrypoint}(params)`}{" "}
             · {design.provenance.engine} {design.provenance.engineVersion} on OpenCascade{" "}
             {design.provenance.kernelVersion}

@@ -33,13 +33,18 @@ test("idle background tabs unload sooner as Windows commit runs out", () => {
   assert.equal(idleUnloadDelayMs("normal", null), 10 * 60_000);
   assert.equal(idleUnloadDelayMs("normal", 20_000), 10 * 60_000);
   assert.equal(idleUnloadDelayMs("normal", 6_000), 5 * 60_000);
-  assert.equal(idleUnloadDelayMs("constrained", 20_000), 5 * 60_000);
-  assert.equal(idleUnloadDelayMs("normal", 3_000), 0);
-  assert.equal(idleUnloadDelayMs("critical", null), 0);
+  assert.equal(idleUnloadDelayMs("constrained", 20_000), 10 * 60_000);
+  assert.equal(idleUnloadDelayMs("critical", 20_000), 10 * 60_000);
+  assert.equal(idleUnloadDelayMs("emergency", 20_000), 10 * 60_000);
+  assert.equal(idleUnloadDelayMs("normal", 3_000), 60_000);
+  assert.equal(idleUnloadDelayMs("critical", null), 60_000);
+  assert.equal(idleUnloadDelayMs("emergency", null), 0);
+  assert.equal(idleUnloadDelayMs("normal", 512), 0);
 });
 
 test("the few most recently left background tabs stay warm unless memory is short", () => {
   const tabs = [{ id: 1, backgroundSince: 100 }, { id: 2, backgroundSince: 400 }, { id: 3 }, { id: 4, backgroundSince: 300 }, { id: 5, backgroundSince: 200 }];
-  assert.deepEqual([...warmBackgroundTabs(tabs, 60_000, 3)], [2, 4, 5]);
+  assert.deepEqual([...warmBackgroundTabs(tabs, 5 * 60_000, 3)], [2, 4, 5]);
+  assert.deepEqual([...warmBackgroundTabs(tabs, 60_000, 3)], []);
   assert.deepEqual([...warmBackgroundTabs(tabs, 0, 3)], []);
 });

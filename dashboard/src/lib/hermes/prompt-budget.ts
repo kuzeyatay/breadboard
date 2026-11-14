@@ -4,6 +4,12 @@ export const HERMES_SYSTEM_PROMPT_LIMIT = 262_144;
 // Leave room for the runtime's identity and transport policy wrapper.
 export const COMPOSED_SYSTEM_PROMPT_LIMIT = 240_000;
 
+/**
+ * Separates the session-stable head of a composed prompt from the per-turn
+ * tail. Must match TURN_CONTEXT_MARKER in hermes-agent/agent/turn_context.py.
+ */
+export const TURN_CONTEXT_MARKER = "<!-- breadboard:turn-context -->";
+
 export const CONTEXT_OMISSION = "\n\n[Context excerpt: some text was omitted to fit this turn. Full messages and sources remain stored. Retrieve the relevant original if the missing text is needed; do not infer it.]\n\n";
 
 /** Bound injected context, preserving both its introduction and latest material. */

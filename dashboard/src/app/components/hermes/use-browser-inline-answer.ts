@@ -2,33 +2,40 @@
 
 import { useEffect, useRef } from "react";
 import { desktopTabsBridge, sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
-import type { BrowserInlineAnswerContent, BrowserInlineAnswerState } from "@/lib/browser-inline-answer";
-import type { ChatTextSelectionReference } from "@/lib/chat-text-selection";
+import type { BrowserInlineAnswerAction, BrowserInlineAnswerContent, BrowserInlineAnswerState } from "@/lib/browser-inline-answer";
+import { normalizeChatTextSelectionReference, type ChatTextSelectionReference } from "@/lib/chat-text-selection";
 import type { ChatAttachment } from "@/lib/chat-attachments";
 
 /** The Terminal remains the sole runtime owner. Only the visible card is mirrored. */
-export function useBrowserInlineAnswer({ selection, content, onAsk, onStop, onDelete, onClose }: {
+export function useBrowserInlineAnswer({ selection, content, onAsk, onStop, onDelete, onHighlight, onAskInChat, onClose }: {
   selection?: { requestId: string; reference: ChatTextSelectionReference } | null;
   content: BrowserInlineAnswerContent | null;
-  onAsk: (question: string, attachments: readonly ChatAttachment[]) => void;
-  onStop: () => void;
-  onDelete: () => void;
+  /** `nested` is a follow-up asked inside the card's answer; absent means the web highlight. */
+  onAsk: (question: string, attachments: readonly ChatAttachment[], nested?: ChatTextSelectionReference) => void;
+  onStop: (nested?: ChatTextSelectionReference) => void;
+  onDelete: (nested?: ChatTextSelectionReference) => void;
+  onHighlight: (passage: ChatTextSelectionReference, change: NonNullable<BrowserInlineAnswerAction["highlight"]>) => void;
+  onAskInChat: (passage: ChatTextSelectionReference) => void;
   onClose: () => void;
 }) {
   const bridge = desktopTabsBridge();
   const native = Boolean(selection?.reference.mode === "inline" && bridge?.onBrowserInlineAnswerAction);
-  const latest = useRef({ content, onAsk, onStop, onDelete, onClose });
+  const latest = useRef({ content, onAsk, onStop, onDelete, onClose, onHighlight, onAskInChat });
   const queued = useRef<BrowserInlineAnswerState | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => { latest.current = { content, onAsk, onStop, onDelete, onClose }; }, [content, onAsk, onStop, onDelete, onClose]);
+  useEffect(() => { latest.current = { content, onAsk, onStop, onDelete, onClose, onHighlight, onAskInChat }; }, [content, onAsk, onStop, onDelete, onClose, onHighlight, onAskInChat]);
   useEffect(() => {
     if (!native || !selection) return;
     return bridge?.onBrowserInlineAnswerAction?.(action => {
       if (action.requestId !== selection.requestId || action.selectionId !== selection.reference.id) return;
       const owner = latest.current;
-      if (action.action === "ask" && owner.content?.canAsk && action.question) owner.onAsk(action.question, action.attachments ?? []);
-      else if (action.action === "stop") owner.onStop();
-      else if (action.action === "delete") owner.onDelete();
+      const nested = normalizeChatTextSelectionReference(action.selection) ?? undefined;
+      if (action.selection && !nested) return;
+      if (action.action === "ask" && owner.content?.canAsk && action.question) owner.onAsk(action.question, action.attachments ?? [], nested);
+      else if (action.action === "stop") owner.onStop(nested);
+      else if (action.action === "delete") owner.onDelete(nested);
+      else if (action.action === "highlight" && nested && action.highlight) owner.onHighlight(nested, action.highlight);
+      else if (action.action === "ask-in-chat" && nested && owner.content?.canAsk) owner.onAskInChat(nested);
       else if (action.action === "close") owner.onClose();
     });
   }, [native, bridge, selection]);

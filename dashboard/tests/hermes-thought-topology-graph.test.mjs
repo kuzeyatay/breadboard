@@ -222,7 +222,64 @@ test("the every-turn compact packet keeps graph structure without verbose explan
     }),
   );
   assert.match(JSON.stringify(compact), /edge:strong/);
-  assert.doesNotMatch(JSON.stringify(compact), /Resonance depends on/);
+  assert.doesNotMatch(JSON.stringify(compact), /the model of oscillation/);
+  // One short sentence per typed edge, with the direction already applied.
+  assert.equal(compact.edges.find((edge) => edge.id === "edge:strong").reads, "Resonance depends on Oscillation.");
+  assert.equal(compact.linkQuality.status, "sparse");
+});
+
+test("follow walks typed relations the way they read: prerequisites out, dependants in", () => {
+  const prerequisites = queryThoughtTopologyGraph(fixture(), {
+    start: "page:resonance", follow: "out", relationTypes: ["depends-on"], depth: 3,
+  });
+  assert.deepEqual(prerequisites.nodes.map((node) => node.id), ["page:resonance", "page:oscillation"]);
+  assert.deepEqual(prerequisites.edges.map((edge) => edge.id), ["edge:strong"]);
+
+  // Oscillation needs nothing; walking out from it finds no prerequisite.
+  const none = queryThoughtTopologyGraph(fixture(), { start: "page:oscillation", follow: "out", depth: 3 });
+  assert.deepEqual(none.nodes.map((node) => node.id), ["page:oscillation"]);
+
+  const dependants = queryThoughtTopologyGraph(fixture(), { start: "page:oscillation", follow: "in", depth: 3 });
+  assert.deepEqual(dependants.nodes.map((node) => node.id), ["page:oscillation", "page:resonance"]);
+  // An undirected "related" edge is never part of a directed walk.
+  assert.equal(dependants.edges.some((edge) => edge.id === "edge:weak"), false);
+});
+
+test("target returns the shortest chain of relations as sentences, skipping folder hops", () => {
+  const graph = queryThoughtTopologyGraph(fixture(), { start: "page:unrelated", target: "Resonance" });
+  assert.equal(graph.path.found, true);
+  assert.equal(graph.path.hops, 2);
+  assert.deepEqual(graph.path.reads, [
+    "Oscillation and Weak relation are related.",
+    "Resonance depends on Oscillation.",
+  ]);
+  assert.equal(graph.edges.some((edge) => edge.type === "contains"), false);
+
+  const directed = queryThoughtTopologyGraph(fixture(), { start: "page:unrelated", target: "page:resonance", follow: "out" });
+  assert.equal(directed.path.found, false);
+
+  const missing = queryThoughtTopologyGraph(fixture(), { start: "page:oscillation", target: "reson" });
+  assert.equal(missing.path.target, null);
+  assert.deepEqual(missing.availableMatches.map((match) => match.id), ["page:resonance"]);
+});
+
+test("linkQuality says when an absent link means nothing", () => {
+  const lexical = fixture();
+  lexical.build.retrievalMode = "concept-lexical";
+  lexical.edges = [];
+  const quality = queryThoughtTopologyGraph(lexical, { start: "page:oscillation" }).linkQuality;
+  assert.equal(quality.status, "structure-only");
+  assert.match(quality.note, /embedding service was unavailable/);
+  assert.match(quality.note, /says nothing about whether pages are related/);
+
+  const dense = fixture();
+  for (let index = 0; index < 4; index += 1) {
+    dense.edges.push({ ...dense.edges[1], id: `edge:extra-${index}` });
+  }
+  const linked = queryThoughtTopologyGraph(dense, { start: "page:resonance" }).linkQuality;
+  assert.equal(linked.status, "linked");
+  assert.equal(linked.startNodeLinks, 1);
+  assert.equal(linked.typedLinks, 1);
 });
 
 test("garden_get_graph_neighbors serves the stored Thought Topology to Hermes", async () => {

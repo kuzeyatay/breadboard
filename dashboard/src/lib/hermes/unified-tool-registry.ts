@@ -24,6 +24,9 @@ export interface ConnectedAppTurnRegistry {
   toolCount: number;
 }
 
+/** Prompt characters spent on full connected-app action entries per turn. */
+const CONNECTED_ACTION_DETAIL_CHARACTERS = 6_000;
+
 const EMPTY_CONNECTED_APP_REGISTRY: ConnectedAppTurnRegistry = {
   connectionNames: [],
   tools: {},
@@ -160,15 +163,33 @@ export async function connectedAppRegistryForTurn(input: {
         tools.mcp_call = true;
         toolCount += actions.length;
         contextLines.push(
-          `Connected app accounts (brokered by Composio): ${connectedApps.join(", ")}. Invoke their exact actions with Breadboard's mcp_call using connection=${JSON.stringify(COMPOSIO_RUNTIME_NAME)}, tool=<action name>, and args=<the listed arguments>.`,
+          `Connected app accounts: ${connectedApps.join(", ")}. Invoke their exact actions with Breadboard's mcp_call using connection=${JSON.stringify(COMPOSIO_RUNTIME_NAME)}, tool=<action name>, and args=<the listed arguments>.`,
+        );
+        contextLines.push(
+          `A connected app with no action listed below has its own tools: call connection=${JSON.stringify(COMPOSIO_RUNTIME_NAME)}, tool="__breadboard_list_tools", args={} to get their exact names and arguments.`,
         );
         contextLines.push(...connectedAppUsageInstructions(connectedApps));
+        // Full entries until the budget is spent, then names only: discovery
+        // returns every action's description and arguments, so a long catalogue
+        // costs one lookup instead of thousands of tokens on every turn.
+        let detailBudget = CONNECTED_ACTION_DETAIL_CHARACTERS;
+        const nameOnly: string[] = [];
         for (const action of actions) {
           const target =
             action.fixedConnectionSlug ??
             `any connected app (set args.connection to one of: ${connectedApps.join(", ")})`;
+          const line = `${action.name} [${action.risk}; ${target}] — ${action.description} Arguments: ${action.argumentDescription}`;
+          if (line.length <= detailBudget) {
+            detailBudget -= line.length;
+            contextLines.push(line);
+          } else {
+            detailBudget = 0;
+            nameOnly.push(`${action.name} [${action.risk}]`);
+          }
+        }
+        if (nameOnly.length) {
           contextLines.push(
-            `${action.name} [${action.risk}; ${target}] — ${action.description} Arguments: ${action.argumentDescription}`,
+            `Also callable, by exact name: ${nameOnly.join(", ")}. Before calling one of these, get its description and arguments with connection=${JSON.stringify(COMPOSIO_RUNTIME_NAME)}, tool="__breadboard_list_tools", args={}.`,
           );
         }
       }

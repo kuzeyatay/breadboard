@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invalidateCommandResponseCache } from "@/lib/hermes/command-client-cache";
+import { openAuthorizationUrl } from "@/lib/auth-window";
 import {
   fetchCachedSettings,
   invalidateSettingsCache,
@@ -201,8 +202,7 @@ export default function SettingsMcp() {
         throw new Error(payload.message ?? payload.error ?? "The MCP action failed.");
       }
       if (payload.authorizationUrl) {
-        if (authWindow) authWindow.location.replace(payload.authorizationUrl);
-        else window.location.assign(payload.authorizationUrl);
+        openAuthorizationUrl(authWindow, payload.authorizationUrl);
         setNotice("Secure sign-in opened. Test the MCP server after completing it.");
       } else {
         await refreshAfterMutation(

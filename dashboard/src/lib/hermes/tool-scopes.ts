@@ -191,6 +191,15 @@ export const MUSIC_RECOGNITION_TOOLS = ["music_recognize"] as const;
 // pinned, network-disabled container and the server imports the verified MP4.
 export const MANIM_TOOLS = ["manim_create"] as const;
 
+// Plain conversion of an attachment or link to a Markdown file, shared by the
+// document-, link-, video- and audio-to-markdown skills. No Garden, no Learn.
+export const TO_MARKDOWN_TOOLS = ["to_markdown"] as const;
+
+// Remotion rendering for the default Video skill. The model supplies one
+// validated TSX composition; the server renders it with the pinned runtime and
+// imports the MP4.
+export const VIDEO_RENDER_TOOLS = ["video_render"] as const;
+
 // Cloned Agent Loop Engineering Kit. The callback designs, checks and dry-runs
 // a loop contract inside the session's workspace; it never executes the loop's
 // real task and never creates cron, webhook or Kanban automation.
@@ -324,6 +333,19 @@ export const CALENDAR_TOOLS = [
   "calendar_create_event",
   "calendar_update_event",
   "calendar_delete_event",
+] as const;
+
+// Scheduled chats and hooks. "Check my inbox every morning at 9" creates the
+// schedule itself rather than telling the user to open the Scheduled panel.
+// The route takes the user and garden from the verified session and only
+// creates chat-mode hooks (no persisted shell commands, no secrets).
+export const AUTOMATION_TOOLS = [
+  "schedule_create",
+  "schedule_list",
+  "schedule_delete",
+  "hook_create",
+  "hook_list",
+  "hook_delete",
 ] as const;
 
 /** Calendar operations that persist a change, for audit and UI descriptions. */
@@ -496,6 +518,8 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...AUDIO_ANALYSIS_TOOLS,
       ...MUSIC_RECOGNITION_TOOLS,
       ...MANIM_TOOLS,
+      ...TO_MARKDOWN_TOOLS,
+      ...VIDEO_RENDER_TOOLS,
       ...AGENT_LOOP_TOOLS,
       ...MULTISIM_TOOLS,
       ...OMH_TOOLS,
@@ -512,6 +536,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...MAP_TOOLS,
       ...SPOTIFY_TOOLS,
       ...CALENDAR_TOOLS,
+      ...AUTOMATION_TOOLS,
       ...PLAN_TOOLS,
       ...OFFICE_TOOLS,
       ...DOCUMENT_TOOLS,
@@ -548,6 +573,8 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...AUDIO_ANALYSIS_TOOLS,
     ...MUSIC_RECOGNITION_TOOLS,
     ...MANIM_TOOLS,
+    ...TO_MARKDOWN_TOOLS,
+    ...VIDEO_RENDER_TOOLS,
     ...AGENT_LOOP_TOOLS,
     ...MULTISIM_TOOLS,
     ...OMH_TOOLS,
@@ -565,6 +592,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...MAP_TOOLS,
     ...SPOTIFY_TOOLS,
     ...CALENDAR_TOOLS,
+    ...AUTOMATION_TOOLS,
     ...PLAN_TOOLS,
     ...OFFICE_TOOLS,
     ...DOCUMENT_TOOLS,

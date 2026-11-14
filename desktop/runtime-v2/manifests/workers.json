@@ -1018,7 +1018,7 @@
       "readyTimeoutMs": 30000,
       "heartbeatTimeoutMs": 30000,
       "gracefulCancellationMs": 30000,
-      "maximumRuntimeMs": 420000,
+      "maximumRuntimeMs": 7500000,
       "exitAfterJob": true
     },
     {

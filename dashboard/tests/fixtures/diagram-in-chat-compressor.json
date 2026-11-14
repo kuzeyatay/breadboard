@@ -1,0 +1,110 @@
+{
+  "plan": {
+    "schemaVersion": 1,
+    "title": "Compressor and pneumatic muscle",
+    "objective": "Show compressor pressure feedback and mutually exclusive muscle fill and vent paths.",
+    "mode": "2d",
+    "rationale": "A planar flow diagram separates air lines from control feedback.",
+    "concepts": [
+      "Compressor",
+      "Pressure feedback",
+      "3/2 valve",
+      "McKibben muscle"
+    ],
+    "assumptions": [
+      "Functional schematic, not installation instructions."
+    ],
+    "controls": [
+      {
+        "id": "zoom-in",
+        "label": "Zoom in",
+        "type": "button",
+        "purpose": "Inspect labels"
+      },
+      {
+        "id": "zoom-out",
+        "label": "Zoom out",
+        "type": "button",
+        "purpose": "See context"
+      },
+      {
+        "id": "fit",
+        "label": "Fit diagram",
+        "type": "button",
+        "purpose": "Restore full view"
+      }
+    ],
+    "outputs": [
+      {
+        "id": "diagram",
+        "label": "Diagram",
+        "purpose": "Show pneumatic and control relationships"
+      }
+    ],
+    "interactions": [
+      "Zoom and pan to inspect; fit restores full view"
+    ],
+    "animation": {
+      "enabled": false,
+      "canPause": false,
+      "canReset": false
+    },
+    "dataRequirements": [],
+    "assetRequirements": [],
+    "accessibilityRequirements": [
+      "Labelled controls and SVG; keyboard pan"
+    ],
+    "sourceReferences": []
+  },
+  "package": {
+    "schemaVersion": 2,
+    "manifest": {
+      "schemaVersion": 2,
+      "artifactType": "interactive-visualizer",
+      "title": "Compressor and pneumatic muscle",
+      "description": "Air supply and pressure feedback with alternate fill and exhaust paths.",
+      "accessibilityDescription": "Compressor pump feeds tank and regulator. Tank pressure controls a switch which turns the motor on and off. Regulated air feeds a valve connected to a muscle and room exhaust.",
+      "mode": "2d",
+      "entry": "index.html",
+      "runtime": {
+        "id": "breadboard-interactive-visualizer",
+        "version": "2.0.0"
+      }
+    },
+    "assumptions": [
+      "Functional schematic; fill and vent arrows represent alternate states of the same muscle connection."
+    ],
+    "limitations": [
+      "Does not specify fittings, pressure ratings, or safety equipment."
+    ],
+    "sourceReferences": [],
+    "semanticTests": [
+      {
+        "name": "Compressor membership",
+        "assertion": "Motor and air pump, tank, regulator and gauge, and pressure switch are within purchased compressor boundary."
+      },
+      {
+        "name": "Feedback direction",
+        "assertion": "Tank-pressure signal runs from tank to switch; motor on/off control runs from switch to motor and air pump."
+      },
+      {
+        "name": "Air direction",
+        "assertion": "Pump feeds tank, tank feeds regulator, regulator feeds valve; fill goes valve to muscle, release goes muscle to valve, exhaust goes valve to room."
+      },
+      {
+        "name": "Alternative states",
+        "assertion": "Visible note states fill and vent are mutually exclusive and depicts two directions on the same muscle connection, not two simultaneously open lines."
+      },
+      {
+        "name": "Visual integrity",
+        "assertion": "All edge endpoints derive from node ports; group contains its nodes; labels do not overlap nodes or each other, all contents are within initial bounds, and theme tokens maintain contrast."
+      }
+    ],
+    "assets": [],
+    "files": {
+      "index.html": "<!doctype html><html><head><link rel=\"stylesheet\" href=\"styles.css\"></head><body><main id=\"app\"><h1>Compressor and pneumatic muscle</h1><div class=\"toolbar\"><button data-action=\"zoom-in\" aria-label=\"Zoom in\">Zoom in</button><button data-action=\"zoom-out\" aria-label=\"Zoom out\">Zoom out</button><button data-action=\"fit\" aria-label=\"Fit diagram\">Fit diagram</button><span>Drag to pan · Arrow keys to move</span></div><svg viewBox=\"0 0 860 780\" width=\"860\" height=\"780\" tabindex=\"0\" role=\"img\" aria-labelledby=\"title desc\"><title id=\"title\">Compressor pressure feedback and muscle air paths</title><desc id=\"desc\">Inside the purchased compressor, the pump feeds the tank and outlet regulator. Tank pressure signals the automatic switch, which controls the motor. Outside, regulated supply feeds a 3/2 valve. Alternate fill and release paths connect valve and muscle; vented air exits to the room. Fill and vent are never simultaneously open.</desc></svg><p><strong>Alternative valve states:</strong> Fill: supply → muscle; exhaust closed. Vent: muscle → room; supply closed. Never simultaneously open.</p><p class=\"hint\">Solid arrows: air flow. Dashed arrows: pressure sensing / motor control. Two muscle arrows show alternate flow directions through the same connection.</p><script src=\"main.js\"></script></main></body></html>",
+      "styles.css": "*{box-sizing:border-box}body{margin:0;background:transparent;color:var(--viz-text);font-family:system-ui,sans-serif}main{padding:12px}h1{font-size:18px;font-weight:600;margin:0 0 12px}.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.toolbar span,.hint{color:var(--viz-muted);font-size:12px}button{min-height:30px;padding:4px 10px;background:var(--viz-panel);border:1px solid var(--viz-line);border-radius:6px;color:var(--viz-text);font:inherit;font-size:13px;cursor:pointer}svg{width:100%;height:auto;display:block;touch-action:none;user-select:none}.node{fill:var(--viz-diagram-node);stroke:var(--viz-diagram-border)}.node-label{fill:var(--viz-diagram-text);font-size:15px;font-weight:550}.edge{fill:none;stroke:var(--viz-muted);stroke-width:1.4}.signal{stroke-dasharray:5 4}.group{fill:var(--viz-diagram-group);stroke:var(--viz-line)}.edge-pill{fill:var(--viz-bg);stroke:var(--viz-line)}.edge-label{fill:var(--viz-text);font-size:12px}.heading{fill:var(--viz-text);font-size:15px}p{font-size:14px;line-height:1.5;margin:8px 0}svg:focus-visible{outline:2px solid var(--viz-accent)}",
+      "main.js": "const svg=document.querySelector('svg'),ns=svg.namespaceURI;function el(t,a={},text){const e=document.createElementNS(ns,t);Object.entries(a).forEach(([k,v])=>e.setAttribute(k,v));if(text)e.textContent=text;return e}function add(t,a,text){const e=el(t,a,text);svg.append(e);return e}const defs=add('defs');const marker=el('marker',{id:'arrow',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:6,markerHeight:6,orient:'auto-start-reverse'});marker.append(el('path',{d:'M 1 1 L 9 5 L 1 9',fill:'none',stroke:'var(--viz-muted)','stroke-width':1.4}));defs.append(marker);add('rect',{x:24,y:24,width:500,height:450,rx:16,class:'group'});add('text',{x:274,y:53,'text-anchor':'middle',class:'heading'},'Purchased compressor unit');const nodes={pump:{x:210,y:85,w:230,h:64,l:['Motor and air pump']},tank:{x:290,y:200,w:150,h:64,l:['Air tank']},reg:{x:254,y:320,w:240,h:64,l:['Outlet regulator','and gauge']},sw:{x:48,y:390,w:180,h:64,l:['Automatic','pressure switch']},muscle:{x:595,y:320,w:230,h:64,l:['McKibben muscle']},valve:{x:575,y:560,w:250,h:64,l:['3/2 fill-and-vent valve']},room:{x:595,y:690,w:210,h:60,l:['Exhaust to room']}};function port(id,s,f=.5){const n=nodes[id];return s==='N'?[n.x+n.w*f,n.y]:s==='S'?[n.x+n.w*f,n.y+n.h]:s==='W'?[n.x,n.y+n.h*f]:[n.x+n.w,n.y+n.h*f]}function edge(a,sa,b,sb,mid=[],label='',seg=0,dashed=false,fa=.5,fb=.5){const pts=[port(a,sa,fa),...mid,port(b,sb,fb)];add('path',{d:pts.map((p,i)=>(i?'L':'M')+p.join(' ')).join(' '),class:'edge'+(dashed?' signal':''),'marker-end':'url(#arrow)','data-from':a,'data-to':b});if(label){const p=pts[seg],q=pts[seg+1],x=(p[0]+q[0])/2,y=(p[1]+q[1])/2,w=label.length*6.5+18;add('rect',{x:x-w/2,y:y-12,width:w,height:24,rx:12,class:'edge-pill'});add('text',{x,y:y+4,'text-anchor':'middle',class:'edge-label'},label)}}edge('pump','S','tank','N',[], '',0,false,.675,.5);edge('tank','S','reg','N',[]);edge('tank','W','sw','N',[[138,232]],'Tank pressure',0,true);edge('sw','N','pump','W',[[88,350],[88,117]],'Motor on/off',1,true,.222,.5);edge('reg','S','valve','W',[[374,592]],'Air supply',0);edge('valve','N','muscle','S',[],'Fill',0,false,.8,.783);edge('muscle','S','valve','N',[],'Release air',0,false,.25,.31);edge('valve','S','room','N',[],'Exhaust',0);Object.entries(nodes).forEach(([id,n])=>{const g=add('g',{'data-node':id});g.append(el('rect',{x:n.x,y:n.y,width:n.w,height:n.h,rx:16,class:'node'}));const t=el('text',{x:n.x+n.w/2,'text-anchor':'middle',class:'node-label'});n.l.forEach((line,i)=>t.append(el('tspan',{x:n.x+n.w/2,y:n.y+n.h/2+5+(i-(n.l.length-1)/2)*19},line)));g.append(t)});let v=[0,0,860,780];function render(){svg.setAttribute('viewBox',v.join(' '))}function zoom(f){const w=v[2]*f,h=v[3]*f;if(w<215||w>1720)return;v=[v[0]+(v[2]-w)/2,v[1]+(v[3]-h)/2,w,h];render()}document.querySelector('[data-action=\"zoom-in\"]').onclick=()=>zoom(.8);document.querySelector('[data-action=\"zoom-out\"]').onclick=()=>zoom(1.25);document.querySelector('[data-action=\"fit\"]').onclick=()=>{v=[0,0,860,780];render()};let drag;svg.addEventListener('pointerdown',e=>{if(e.button!==0)return;drag={x:e.clientX,y:e.clientY,v:[...v]};svg.setPointerCapture(e.pointerId)});svg.addEventListener('pointermove',e=>{if(!drag)return;const r=svg.getBoundingClientRect();v=[drag.v[0]-(e.clientX-drag.x)*drag.v[2]/r.width,drag.v[1]-(e.clientY-drag.y)*drag.v[3]/r.height,v[2],v[3]];render()});svg.addEventListener('pointerup',()=>drag=null);svg.addEventListener('pointercancel',()=>drag=null);svg.addEventListener('keydown',e=>{const d=v[2]*.05;if(e.key==='ArrowLeft')v[0]-=d;else if(e.key==='ArrowRight')v[0]+=d;else if(e.key==='ArrowUp')v[1]-=d;else if(e.key==='ArrowDown')v[1]+=d;else if(e.key==='+'||e.key==='='){zoom(.8);e.preventDefault();return}else if(e.key==='-'){zoom(1.25);e.preventDefault();return}else return;e.preventDefault();render()});"
+    }
+  }
+}

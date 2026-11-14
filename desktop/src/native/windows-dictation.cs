@@ -49,6 +49,7 @@ internal static class BreadboardDictation
     private static Control dispatcher;
     private static IntPtr keyboard, mouse;
     private static int sequence;
+    private static int editSequence;
     private static Session current;
     private static bool anchorQueued;
     private static long lastAnchorPoll;
@@ -76,7 +77,10 @@ internal static class BreadboardDictation
         internal int PreviewStart = -1, PreviewEnd;
         internal string OriginalSelection, PreviewText, NextPreview;
         internal bool PreviewQueued;
+        internal bool RendererInput;
+        internal RendererEdit Edit;
     }
+    private sealed class RendererEdit { internal int Id; internal bool? Applied; }
     private static IntPtr Focus()
     {
         GuiInfo info = new GuiInfo(); info.Size = Marshal.SizeOf(typeof(GuiInfo));
@@ -313,7 +317,7 @@ internal static class BreadboardDictation
                     if (session.Window != GetForegroundWindow() || session.Focus != Focus()) { CancelFor("focus"); return; }
                     session.Anchor = anchor;
                     session.Started = true;
-                    Emit(new { type = "start", id = session.Id, anchor = anchor, mode = session.ScreenAware ? "reply" : "dictate" });
+                    Emit(new { type = "start", id = session.Id, window = session.Window.ToInt64(), anchor = anchor, mode = session.ScreenAware ? "reply" : "dictate" });
                     if (session.Released) Emit(new { type = "stop", id = session.Id });
                 }
             }
@@ -471,6 +475,35 @@ internal static class BreadboardDictation
             textMatches = expected == null || SamePreview(actual, expected) });
         throw new InvalidOperationException("The editor could not confirm the dictated text. The visible draft has been kept.");
     }
+    private static void EnableRendererInput(int id)
+    {
+        lock (gate) { if (current != null && current.Id == id) current.RendererInput = true; }
+    }
+    private static void CompleteRendererEdit(int id, int request, bool applied)
+    {
+        lock (gate) {
+            if (current == null || current.Id != id || current.Edit == null || current.Edit.Id != request || current.Edit.Applied.HasValue) return;
+            current.Edit.Applied = applied; Monitor.PulseAll(gate);
+        }
+    }
+    private static void EditRenderer(Session session, string text)
+    {
+        lock (gate) {
+            if (current != session || session.Window != GetForegroundWindow() || session.Focus != Focus() || OtherModifiers())
+                throw new InvalidOperationException("The text field changed. The visible dictation draft has been kept.");
+            var edit = new RendererEdit { Id = ++editSequence };
+            session.Edit = edit;
+            try {
+                Emit(new { type = "edit", id = session.Id, request = edit.Id, text = text });
+                long deadline = clock.ElapsedMilliseconds + 5000;
+                // The pipe reader acknowledges independently of this worker.
+                // Release the hook's lock while waiting; cancellation wins.
+                while (current == session && !edit.Applied.HasValue && clock.ElapsedMilliseconds < deadline) Monitor.Wait(gate, 50);
+                if (current != session || edit.Applied != true)
+                    throw new InvalidOperationException("The editor could not insert the dictated text. The visible draft has been kept.");
+            } finally { session.Edit = null; }
+        }
+    }
     // Select only this hold's inserted span. IA2 offsets preserve Unicode and
     // surrounding rich-text markup; no select-all or guessed backspace count.
     private static bool UpdatePreview(Session session, string text)
@@ -509,16 +542,19 @@ internal static class BreadboardDictation
         foreach (char character in suffix) { inputs.Add(Key(0, character, 4)); inputs.Add(Key(0, character, 6)); }
         bool attemptedInput = false;
         try {
-            Input[] batch = inputs.ToArray();
-            lock (gate) {
-                if (current != session || session.Window != GetForegroundWindow() || session.Focus != Focus() || OtherModifiers()) return false;
-                previewInputPending = true;
-                attemptedInput = true;
+            if (session.RendererInput) EditRenderer(session, suffix);
+            else {
+                Input[] batch = inputs.ToArray();
+                lock (gate) {
+                    if (current != session || session.Window != GetForegroundWindow() || session.Focus != Focus() || OtherModifiers()) return false;
+                    previewInputPending = true;
+                    attemptedInput = true;
+                }
+                // SendInput can synchronously call our keyboard hook. Never hold
+                // the hook's gate while Windows dispatches a release/cancellation.
+                if (SendInput((uint)batch.Length, batch, Marshal.SizeOf(typeof(Input))) != batch.Length)
+                    throw new InvalidOperationException("Windows blocked live dictation in this editor.");
             }
-            // SendInput can synchronously call our keyboard hook. Never hold
-            // the hook's gate while Windows dispatches a release/cancellation.
-            if (SendInput((uint)batch.Length, batch, Marshal.SizeOf(typeof(Input))) != batch.Length)
-                throw new InvalidOperationException("Windows blocked live dictation in this editor.");
             lock (gate) {
                 if (current != session) return false;
                 session.PreviewText = text; session.PreviewEnd = session.PreviewStart + text.Length;
@@ -575,7 +611,7 @@ internal static class BreadboardDictation
                 : session.Element == null || !Automation.Compare(session.Element, AutomationElement.FocusedElement))
                 throw new InvalidOperationException("The text field changed. Hold Ctrl + Shift to dictate again.");
             string insertionText = text;
-            if (session.PreviewText != null) {
+            if (session.PreviewText != null || (session.RendererInput && CapturePreview(session))) {
                 if (!UpdatePreview(session, text)) throw new InvalidOperationException("The text field changed. The visible dictation draft has been kept.");
                 insertionText = "";
             }
@@ -642,6 +678,8 @@ internal static class BreadboardDictation
                     if (type == "finish") dispatcher.Invoke((Action)delegate { lock (gate) { if (current != null && current.Id == id) { current.VoiceFinished = true; chord.Complete(); Finish(); } } });
                     else if (type == "insert") { string text = Convert.ToString(command["text"]); bool submit = command.ContainsKey("submit") && command["submit"] is bool && (bool)command["submit"]; work.Add(delegate { Insert(id, text, submit); }); }
                     else if (type == "preview") QueuePreview(id, Convert.ToString(command["text"]));
+                    else if (type == "renderer-input") EnableRendererInput(id);
+                    else if (type == "edited") CompleteRendererEdit(id, Convert.ToInt32(command["request"]), command.ContainsKey("applied") && command["applied"] is bool && (bool)command["applied"]);
                     else if (type == "cancel") dispatcher.BeginInvoke((Action)delegate { lock (gate) { if (current != null && current.Id == id) CancelFor("host"); } });
                     else if (type == "quit") break;
                 }

@@ -1,0 +1,424 @@
+{
+  "passed": true,
+  "results": [
+    {
+      "text": "Can",
+      "result": {
+        "editable": true,
+        "streamable": true,
+        "focused": true,
+        "caret": [
+          617,
+          407,
+          1,
+          26
+        ],
+        "bounds": [
+          573,
+          404,
+          632,
+          39
+        ],
+        "selection": [
+          3,
+          3
+        ],
+        "selected": null,
+        "text": null,
+        "foreground": true,
+        "preview": true,
+        "previewState": null,
+        "error": null,
+        "editMilliseconds": 15
+      },
+      "dom": {
+        "text": "Can",
+        "start": 3,
+        "end": 3,
+        "events": 1,
+        "sent": []
+      }
+    },
+    {
+      "text": "Can you",
+      "result": {
+        "editable": true,
+        "streamable": true,
+        "focused": true,
+        "caret": [
+          660,
+          407,
+          1,
+          26
+        ],
+        "bounds": [
+          573,
+          404,
+          632,
+          39
+        ],
+        "selection": [
+          7,
+          7
+        ],
+        "selected": null,
+        "text": null,
+        "foreground": true,
+        "preview": true,
+        "previewState": null,
+        "error": null,
+        "editMilliseconds": 6
+      },
+      "dom": {
+        "text": "Can you",
+        "start": 7,
+        "end": 7,
+        "events": 1,
+        "sent": []
+      }
+    },
+    {
+      "text": "Can you explain",
+      "result": {
+        "editable": true,
+        "streamable": true,
+        "focused": true,
+        "caret": [
+          737,
+          407,
+          1,
+          26
+        ],
+        "bounds": [
+          573,
+          404,
+          632,
+          39
+        ],
+        "selection": [
+          15,
+          15
+        ],
+        "selected": null,
+        "text": null,
+        "foreground": true,
+        "preview": true,
+        "previewState": null,
+        "error": null,
+        "editMilliseconds": 5
+      },
+      "dom": {
+        "text": "Can you explain",
+        "start": 15,
+        "end": 15,
+        "events": 1,
+        "sent": []
+      }
+    },
+    {
+      "text": "Can you explain the",
+      "result": {
+        "editable": true,
+        "streamable": true,
+        "focused": true,
+        "caret": [
+          775,
+          407,
+          1,
+          26
+        ],
+        "bounds": [
+          573,
+          404,
+          632,
+          39
+        ],
+        "selection": [
+          19,
+          19
+        ],
+        "selected": null,
+        "text": null,
+        "foreground": true,
+        "preview": true,
+        "previewState": null,
+        "error": null,
+        "editMilliseconds": 5
+      },
+      "dom": {
+        "text": "Can you explain the",
+        "start": 19,
+        "end": 19,
+        "events": 1,
+        "sent": []
+      }
+    },
+    {
+      "text": "Can you explain the circuit in detail?",
+      "result": {
+        "editable": true,
+        "streamable": true,
+        "focused": true,
+        "caret": [
+          936,
+          407,
+          1,
+          26
+        ],
+        "bounds": [
+          573,
+          404,
+          632,
+          39
+        ],
+        "selection": [
+          38,
+          38
+        ],
+        "selected": null,
+        "text": null,
+        "foreground": true,
+        "preview": true,
+        "previewState": null,
+        "error": null,
+        "editMilliseconds": 7
+      },
+      "dom": {
+        "text": "Can you explain the circuit in detail?",
+        "start": 38,
+        "end": 38,
+        "events": 1,
+        "sent": []
+      }
+    },
+    {
+      "text": "Can you explain this circuit in detail?",
+      "result": {
+        "editable": true,
+        "streamable": true,
+        "focused": true,
+        "caret": [
+          940,
+          407,
+          1,
+          26
+        ],
+        "bounds": [
+          573,
+          404,
+          632,
+          39
+        ],
+        "selection": [
+          39,
+          39
+        ],
+        "selected": null,
+        "text": null,
+        "foreground": true,
+        "preview": true,
+        "previewState": null,
+        "error": null,
+        "editMilliseconds": 32
+      },
+      "dom": {
+        "text": "Can you explain this circuit in detail?",
+        "start": 39,
+        "end": 39,
+        "events": 1,
+        "sent": []
+      }
+    },
+    {
+      "text": "Can you explain this circuit in detail? The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river.",
+      "result": {
+        "editable": true,
+        "streamable": true,
+        "focused": true,
+        "caret": [
+          985,
+          485,
+          1,
+          26
+        ],
+        "bounds": [
+          573,
+          404,
+          632,
+          116
+        ],
+        "selection": [
+          231,
+          231
+        ],
+        "selected": null,
+        "text": null,
+        "foreground": true,
+        "preview": true,
+        "previewState": null,
+        "error": null,
+        "editMilliseconds": 9
+      },
+      "dom": {
+        "text": "Can you explain this circuit in detail? The words should appear while I am still speaking. I can pause between sentences and then continue with more details. Please keep every final word, including purple bicycles beside the river.",
+        "start": 231,
+        "end": 231,
+        "events": 1,
+        "sent": []
+      }
+    },
+    {
+      "text": "Can you explain",
+      "result": {
+        "editable": true,
+        "streamable": true,
+        "focused": true,
+        "caret": [
+          737,
+          407,
+          1,
+          26
+        ],
+        "bounds": [
+          573,
+          404,
+          632,
+          39
+        ],
+        "selection": [
+          15,
+          15
+        ],
+        "selected": null,
+        "text": null,
+        "foreground": true,
+        "preview": true,
+        "previewState": null,
+        "error": null,
+        "editMilliseconds": 33
+      },
+      "dom": {
+        "text": "Can you explain",
+        "start": 15,
+        "end": 15,
+        "events": 1,
+        "sent": []
+      }
+    },
+    {
+      "text": "",
+      "result": {
+        "editable": true,
+        "streamable": true,
+        "focused": true,
+        "caret": [
+          576,
+          407,
+          1,
+          27
+        ],
+        "bounds": [
+          573,
+          404,
+          632,
+          39
+        ],
+        "selection": [
+          0,
+          0
+        ],
+        "selected": null,
+        "text": null,
+        "foreground": true,
+        "preview": true,
+        "previewState": null,
+        "error": null,
+        "editMilliseconds": 31
+      },
+      "dom": {
+        "text": "",
+        "start": 0,
+        "end": 0,
+        "events": 1,
+        "sent": []
+      }
+    },
+    {
+      "text": "Hello café 😀",
+      "result": {
+        "editable": true,
+        "streamable": true,
+        "focused": true,
+        "caret": [
+          713,
+          411,
+          1,
+          26
+        ],
+        "bounds": [
+          573,
+          404,
+          632,
+          43
+        ],
+        "selection": [
+          13,
+          13
+        ],
+        "selected": null,
+        "text": null,
+        "foreground": true,
+        "preview": true,
+        "previewState": null,
+        "error": null,
+        "editMilliseconds": 18
+      },
+      "dom": {
+        "text": "Hello café 😀",
+        "start": 13,
+        "end": 13,
+        "events": 1,
+        "sent": []
+      }
+    },
+    {
+      "text": "Hello café 😃",
+      "result": {
+        "editable": true,
+        "streamable": true,
+        "focused": true,
+        "caret": [
+          713,
+          411,
+          1,
+          26
+        ],
+        "bounds": [
+          573,
+          404,
+          632,
+          43
+        ],
+        "selection": [
+          13,
+          13
+        ],
+        "selected": null,
+        "text": null,
+        "foreground": true,
+        "preview": true,
+        "previewState": null,
+        "error": null,
+        "editMilliseconds": 30
+      },
+      "dom": {
+        "text": "Hello café 😃",
+        "start": 13,
+        "end": 13,
+        "events": 1,
+        "sent": []
+      }
+    }
+  ],
+  "edits": 12
+}

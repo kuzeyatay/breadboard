@@ -1,12 +1,14 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const http = require("node:http");
+const https = require("node:https");
 const path = require("node:path");
 const { createRequire } = require("node:module");
 const { app, BrowserWindow, ipcMain, session, webContents } = require("electron");
 const { TabManager, BROWSER_SESSION_PARTITION } = require("../../dist/main/tab-manager.js");
 const { BrowserAdBlocker } = require("../../dist/main/browser-adblocker.js");
 const { IPC_CHANNELS, isTabsCommand } = require("../../dist/shared/ipc-contract.js");
+const { createFixtureTls } = require("../helpers/fixture-tls.cjs");
 const [dir] = process.argv.slice(2);
 app.setPath("userData", path.join(dir, "profile"));
 app.commandLine.appendSwitch("host-resolver-rules", "MAP *.fixture.test 127.0.0.1, MAP securepubads.g.doubleclick.net 127.0.0.1, MAP www.google-analytics.com 127.0.0.1");
@@ -27,22 +29,23 @@ const respond = request => {
   if (request.url === tracker) return new Response("window.trackerLoaded = true", { headers });
   if (url.pathname === "/app.js") return new Response("window.contentLoaded = true", { headers });
   return new Response(`<!doctype html><title>Ad blocker fixture</title><meta name="referrer" content="no-referrer"><h1>Article</h1>
-    <script src="${ads}"></script><script src="${tracker}"></script><script src="http://cdn.fixture.test:${webPort}/app.js"></script>`,
+    <script src="${ads}"></script><script src="${tracker}"></script><script src="https://cdn.fixture.test:${webPort}/app.js"></script>`,
     { headers: { "content-type": "text/html", "cache-control": "no-store" } });
 };
 
 app.whenReady().then(async () => {
-  // Use real HTTP sockets: protocol.handle bypasses Electron's webRequest hooks.
-  const web = http.createServer(async (req, res) => {
-    const response = respond({ url: `http://${req.headers.host}${req.url}` });
+  // Use real HTTPS sockets: protocol.handle bypasses Electron's webRequest hooks.
+  const tls = await createFixtureTls();
+  const web = https.createServer(tls.options, async (req, res) => {
+    const response = respond({ url: `https://${req.headers.host}${req.url}` });
     for (const [key, value] of response.headers) res.setHeader(key, value);
     res.end(Buffer.from(await response.arrayBuffer()));
   });
   await new Promise(resolve => web.listen(0, "127.0.0.1", resolve));
   webPort = web.address().port;
-  ads = `http://securepubads.g.doubleclick.net:${webPort}/tag/js/gpt.js`;
-  tracker = `http://www.google-analytics.com:${webPort}/analytics.js`;
-  article = `http://news.fixture.test:${webPort}/article`;
+  ads = `https://securepubads.g.doubleclick.net:${webPort}/tag/js/gpt.js`;
+  tracker = `https://www.google-analytics.com:${webPort}/analytics.js`;
+  article = `https://news.fixture.test:${webPort}/article`;
   const dashboard = path.resolve(__dirname, "../../../dashboard");
   const requireDashboard = createRequire(path.join(dashboard, "package.json"));
   const bundle = requireDashboard("esbuild").buildSync({
@@ -66,6 +69,8 @@ app.whenReady().then(async () => {
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
+  tls.trust(browserSession);
+  tls.trust(session.defaultSession);
   let headerCalls = 0;
   browserSession.webRequest.onHeadersReceived((details, callback) => { headerCalls++; callback({ responseHeaders: details.responseHeaders }); });
   const loading = path.join(dir, "loading.html"); fs.writeFileSync(loading, "<!doctype html>");
@@ -130,7 +135,7 @@ app.whenReady().then(async () => {
   await page.loadURL(article);
   assert.deepEqual(await result(page), { ads: true, tracker: true, content: true });
   manager.handleCommand(chrome, { type: "browser-adblock-enabled", enabled: true });
-  await page.loadURL(`http://other.fixture.test:${webPort}/article`);
+  await page.loadURL(`https://other.fixture.test:${webPort}/article`);
   assert.deepEqual(await result(page), { ads: false, tracker: false, content: true });
   assert.equal(state().blocked, 2, "navigation resets the document counter");
   await page.loadURL(ads);
@@ -138,6 +143,7 @@ app.whenReady().then(async () => {
 
   // A fresh private session filters immediately and never writes exceptions.
   const privateSession = session.fromPartition("adblock-private-fixture", { cache: false });
+  tls.trust(privateSession);
   const privateWindow = new BrowserWindow({ show: false, webPreferences: { session: privateSession, sandbox: true } });
   const blocker = new BrowserAdBlocker(dir, () => {});
   blocker.attachPage(privateWindow.webContents, true);

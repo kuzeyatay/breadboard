@@ -233,6 +233,27 @@ _SPECS: Tuple[ProviderSpec, ...] = (
         reasoning_efforts=("low", "medium", "high"),
     ),
     ProviderSpec(
+        id="freellmapi",
+        label="Free LLM API",
+        kind=KIND_OPENAI_COMPATIBLE,
+        # FreeLLMAPI sibling service (scripts/start-freellmapi.mjs): providers'
+        # free tiers pooled behind one endpoint. No default base URL on
+        # purpose: only a launcher that actually started it exports one, so
+        # the provider never counts as configured while nothing is listening.
+        default_base_url=None,
+        api_key_env=("FREELLMAPI_API_KEY",),
+        base_url_env=("FREELLMAPI_BASE_URL",),
+        requires_api_key=False,
+        base_url_editable=True,
+        # Its catalog is hundreds of un-namespaced ids, which discovery
+        # narrows to nothing; `auto` is its router and the point of it.
+        # Specific models can be pinned in Settings.
+        suggested_models=("auto",),
+        # Its own key manager, on the launcher's default port.
+        docs_url="http://127.0.0.1:3417",
+        description="Free tiers from many providers behind one router. Add your own provider keys in its key manager.",
+    ),
+    ProviderSpec(
         id="custom",
         label="Custom endpoint",
         kind=KIND_OPENAI_COMPATIBLE,

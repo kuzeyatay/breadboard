@@ -314,3 +314,59 @@ export function describeCronExpression(expression: string): string {
   }
   return `${cadence} ${dayParts.join(", ")}`;
 }
+
+// The schedule shape Codex publishes for plugin scheduled tasks
+// (codex-rs/app-server-protocol/src/protocol/v2/plugin.rs, ScheduledTaskSchedule).
+// Breadboard keeps cron as its one stored form, so a Codex-shaped schedule is
+// lowered to cron here and then runs through the same store and leases.
+
+export type ScheduledTaskWeekday = "MO" | "TU" | "WE" | "TH" | "FR" | "SA" | "SU";
+
+export type ScheduledTaskSchedule =
+  | { type: "hourly"; intervalHours: number; days: ScheduledTaskWeekday[] | null }
+  | { type: "daily"; time: string }
+  | { type: "weekdays"; time: string }
+  | { type: "weekly"; days: ScheduledTaskWeekday[]; time: string };
+
+/** Indexed by cron's day-of-week number (0 = Sunday). */
+export const SCHEDULED_TASK_WEEKDAYS: ScheduledTaskWeekday[] = [
+  "SU", "MO", "TU", "WE", "TH", "FR", "SA",
+];
+
+function taskDaysField(days: ScheduledTaskWeekday[] | null): string {
+  if (!days || days.length === 0) return "*";
+  const indexes = days.map((day) => SCHEDULED_TASK_WEEKDAYS.indexOf(day));
+  if (indexes.includes(-1)) throw new CronError("A schedule day must be one of MO, TU, WE, TH, FR, SA, SU.");
+  return [...new Set(indexes)]
+    .sort((a, b) => a - b)
+    .join(",");
+}
+
+/** Lower a Codex scheduled-task schedule to a 5-field cron expression. */
+export function cronFromScheduledTask(schedule: ScheduledTaskSchedule): string {
+  let cron: string;
+  if (schedule.type === "hourly") {
+    const interval = schedule.intervalHours;
+    if (!Number.isInteger(interval) || interval < 1 || interval > 23) {
+      throw new CronError("An hourly schedule needs an interval between 1 and 23 hours.");
+    }
+    // ponytail: cron's */N restarts at midnight, so an interval that does not
+    // divide 24 has one shorter gap per day. Store an anchor time if that matters.
+    cron = `0 ${interval === 1 ? "*" : `*/${interval}`} * * ${taskDaysField(schedule.days)}`;
+  } else {
+    const time = /^(\d{1,2}):(\d{2})$/.exec(schedule.time ?? "");
+    if (!time) throw new CronError(`"${schedule.time}" is not a time of day (HH:MM).`);
+    const days =
+      schedule.type === "daily"
+        ? "*"
+        : schedule.type === "weekdays"
+          ? "1-5"
+          : taskDaysField(schedule.days);
+    if (schedule.type === "weekly" && days === "*") {
+      throw new CronError("A weekly schedule needs at least one day.");
+    }
+    cron = `${Number(time[2])} ${Number(time[1])} * * ${days}`;
+  }
+  parseCronExpression(cron);
+  return cron;
+}

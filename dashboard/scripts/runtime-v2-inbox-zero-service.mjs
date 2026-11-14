@@ -329,6 +329,48 @@ function ensureOptions(value) {
   };
 }
 
+// Breadboard's Gmail grant per user, offered by the Next facade right before a
+// run. Memory only: the tokens already live encrypted in Breadboard's vault and
+// must not be copied into the runtime job store or a second file on disk.
+const gmailGrants = new Map();
+const MAX_GMAIL_GRANTS = 64;
+
+function optionalText(value, label, maximum) {
+  return value === null ? null : boundedText(value, label, maximum);
+}
+
+function offerGmailGrant(scope, input) {
+  if (!exactRecord(input, ["action", "grant"])) fail("The Gmail grant request is invalid.", 400);
+  const value = input.grant;
+  if (value === null) {
+    gmailGrants.delete(scope.userId);
+    return { ok: true };
+  }
+  if (!exactRecord(value, [
+    "clientId", "clientSecret", "accessToken", "refreshToken", "expiresAt",
+    "scope", "sub", "email", "name", "picture",
+  ])) fail("The Gmail grant is invalid.", 400);
+  const email = boundedText(value.email, "Gmail address", 320);
+  if (!/^[^@\s]+@[^@\s]+$/u.test(email)) fail("The Gmail address is invalid.", 400);
+  const expiresAt = optionalText(value.expiresAt, "Token expiry", 64);
+  if (expiresAt !== null && Number.isNaN(Date.parse(expiresAt))) fail("Token expiry is invalid.", 400);
+  gmailGrants.delete(scope.userId);
+  gmailGrants.set(scope.userId, {
+    clientId: boundedText(value.clientId, "Google client ID", 1_024),
+    clientSecret: boundedText(value.clientSecret, "Google client secret", 1_024),
+    accessToken: boundedText(value.accessToken, "Access token", 8_192),
+    refreshToken: optionalText(value.refreshToken, "Refresh token", 8_192),
+    expiresAt,
+    scope: optionalText(value.scope, "Token scope", 4_096),
+    sub: boundedText(value.sub, "Google account id", 256),
+    email,
+    name: optionalText(value.name, "Name", 512),
+    picture: optionalText(value.picture, "Picture", 2_048),
+  });
+  while (gmailGrants.size > MAX_GMAIL_GRANTS) gmailGrants.delete(gmailGrants.keys().next().value);
+  return { ok: true };
+}
+
 async function ensureFor(modules, config, body) {
   if (!exactRecord(body, ["scope", "options"])) fail("The Inbox Zero ensure request is invalid.", 400);
   validateInboxZeroScope(body.scope);
@@ -338,6 +380,7 @@ async function ensureFor(modules, config, body) {
     scopeUserId: body.scope.userId,
     allowStart: true,
     ...options,
+    ...(gmailGrants.has(body.scope.userId) ? { gmail: gmailGrants.get(body.scope.userId) } : {}),
     config,
   });
   if (!ready.ok && !(await modules.stack.webReachable(config))) {
@@ -362,6 +405,8 @@ async function setupFor(modules, config, body) {
   validateInboxZeroScope(body.scope);
   const input = body.input;
   const action = boundedText(input.action, "Setup action", 64);
+
+  if (action === "gmail_grant") return offerGmailGrant(body.scope, input);
 
   if (action === "save_oauth") {
     if (!exactRecord(input, [

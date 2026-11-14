@@ -28,7 +28,7 @@ test("Garden Stop works after restore, across chats, and through late worker reg
     import {createRoot} from 'react-dom/client';
     import AssistantComposer from './src/app/components/assistant-composer';
     import {useLegacyAgentActivity} from './src/app/components/hermes/use-legacy-agent-activity';
-    import {abortGardenTurnCheckpoint} from './src/lib/conversations/garden-turn-client';
+    import {abortGardenTurnCheckpoint,holdGardenTurnsUntil} from './src/lib/conversations/garden-turn-client';
     const hasRunningExternalAgent=m=>m.externalAgentOutcome==='running';
     window.requests=[];window.pending=[];window.resets=[];window.errors=[];
     window.fetch=async(url,init={})=>{
@@ -74,6 +74,7 @@ test("Garden Stop works after restore, across chats, and through late worker reg
         return chatSessions.find(c=>c.id===id);
       }
       async function persistExternalAgentTurn(){window.persisted=true;}
+      function updateChatMessages(id,updater){window.interrupted=updater([{role:'assistant',clientMessageId:'local-'+id}])[0].interrupted;}
       ${functions.get('stopActiveGardenTurn')}
       ${functions.get('commitExternalAgentTurn')}
       window.control={configure:patch=>{
@@ -126,6 +127,7 @@ test("Garden Stop works after restore, across chats, and through late worker reg
     await page.evaluate(()=>window.release());
     await page.evaluate(()=>window.control.configure({id:1}));
     await stop().click();await page.waitForFunction(()=>window.oldSignal.aborted);
+    assert.equal(await page.evaluate(()=>window.interrupted),true,'the answer reads interrupted before the server replies');
     assert.equal(await page.evaluate(()=>window.control.clarification),null);
     assert.deepEqual(await page.evaluate(()=>window.requests.slice(1)),['/api/hermes/sessions/conv_1/abort','/api/chat-sessions/1/turns']);
     await page.evaluate(()=>{window.control.late();window.release()});

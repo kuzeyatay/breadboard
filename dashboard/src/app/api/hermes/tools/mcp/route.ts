@@ -14,6 +14,7 @@ import {
 import { COMPOSIO_RUNTIME_NAME, listComposioConnections } from "@/lib/composio/service.ts";
 import { connectedAppUsageInstructions } from "@/lib/hermes/connected-app-context.ts";
 import { executeComposioAction } from "@/lib/composio/executor.ts";
+import { connectedAppTool, connectedAppToolSummaries, executeConnectedAppTool } from "@/lib/composio/app-tools.ts";
 import {
   verifyCapabilityToken,
   tokenAllows,
@@ -236,7 +237,10 @@ export async function POST(request: Request) {
           (await listComposioConnections(session.user_id, request.signal))
             .map(connection => connection.slug),
         )];
-        const available = nangoActionSummariesForConnections(connections);
+        const available = [
+          ...nangoActionSummariesForConnections(connections),
+          ...(await connectedAppToolSummaries(session.user_id, request.signal)),
+        ];
         recordAuditEvent({
           eventType: "connected_app.tools_discovered",
           runtimeSessionId: session.id,
@@ -254,7 +258,10 @@ export async function POST(request: Request) {
           },
         });
       }
-      const action = nangoActionFor(tool);
+      const appTool = nangoActionFor(tool)
+        ? null
+        : await connectedAppTool(session.user_id, tool, request.signal);
+      const action = nangoActionFor(tool) ?? appTool;
       if (!action) {
         throw new ApiError(
           403,
@@ -298,7 +305,9 @@ export async function POST(request: Request) {
         },
       });
       try {
-        const data = await executeComposioAction({
+        const data = appTool
+          ? await executeConnectedAppTool({ userId: session.user_id, tool: appTool, args, signal: request.signal })
+          : await executeComposioAction({
           userId: session.user_id,
           signal: request.signal,
           allowedGardenIds: verified.token.allowedGardenIds ?? (verified.token.activeGardenId ? [verified.token.activeGardenId] : []),

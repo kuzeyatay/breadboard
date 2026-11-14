@@ -14,6 +14,8 @@ import { assertGardenMutationWritePaths, withGardenMutationLease } from "./garde
 import { applyGardenRevision } from "./garden-revision.ts";
 import { ApiError } from "./hermes/route-core.ts";
 import { teachingReviewHash } from "./teaching-plan.ts";
+import { markPageEdit } from "./quartz-document-metadata.ts";
+import type { PageAuthorship } from "./page-authorship.ts";
 
 export interface CreateGardenDocumentInput {
   userId: number;
@@ -23,6 +25,8 @@ export interface CreateGardenDocumentInput {
   folder?: string;
   tags?: string[];
   preserveContent?: boolean;
+  /** Who wrote the body; agent-made notes pass "ai-written". */
+  authorship?: PageAuthorship;
   /** Recheck the originating run after waiting for the write lease. */
   beforeWrite?: () => void;
 }
@@ -70,7 +74,7 @@ export async function reviseGardenDocument(input: {
     // proposal's target. Revalidate exact passages under the lease; relocate
     // numbered hunks only when their complete source blocks are still unique.
     const baseChanged = Boolean(input.teachingBaseHash && teachingReviewHash(previous, null) !== input.teachingBaseHash);
-    const content = applyGardenRevision(previous, input.patchOrReplacement, input.originalText, { relocateHunks: baseChanged });
+    const content = markPageEdit(previous, applyGardenRevision(previous, input.patchOrReplacement, input.originalText, { relocateHunks: baseChanged }), "ai");
     try {
       fs.writeFileSync(page.filePath, content, "utf8");
       refreshClusterIndex(contentPath, input.clusterSlug, { migrateSources: false });
@@ -160,6 +164,7 @@ export async function createGardenDocument(
         `date: ${JSON.stringify(new Date().toISOString())}`,
         'source: "user-note"',
         'knowledge_type: "user-note"',
+        `authorship: ${JSON.stringify(input.authorship ?? "human-written")}`,
         semanticHintsLine.trimEnd(),
         "---",
         "",

@@ -237,7 +237,7 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   ])).serving;
   await page.goto(base);
   const select = page.getByRole("combobox", { name: "Default model", exact: true });
-  const fallback = page.getByRole("combobox", { name: "Fallback model", exact: true });
+  const fallback = page.getByRole("combobox", { name: "Fallback/Background model", exact: true });
   await page.getByRole("alert").first().waitFor();
   assert.equal(await select.isDisabled(), true);
   failReads = false;
@@ -258,7 +258,7 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   assert.equal(selectedModelForUser(1), "gpt-5.6-sol");
   assert.deepEqual(gatewayWrites, [], "startup preferences never change gateway routing");
   await fallback.selectOption("cliproxy/claude-opus-5");
-  await page.getByText("Saved. Claude Opus 5 is your fallback model.", { exact: true }).waitFor();
+  await page.getByText("Saved. Claude Opus 5 is your fallback/background model.", { exact: true }).waitFor();
   assert.equal(gatewayModel, "cliproxy/claude-opus-5");
   assert.equal(await topologyModel(), "cliproxy/claude-opus-5");
   assert.equal(topologyRequests.at(-1).model, "default");
@@ -284,7 +284,7 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   await page.getByText("Saved. GPT-5.6 Sol is your default model.", { exact: true }).waitFor();
   await page.getByText("cliproxy/claude-opus-5|high", { exact: true }).waitFor();
   await fallback.selectOption("gpt-5.6-sol");
-  await page.getByText("Saved. GPT-5.6 Sol is your fallback model.", { exact: true }).waitFor();
+  await page.getByText("Saved. GPT-5.6 Sol is your fallback/background model.", { exact: true }).waitFor();
   assert.equal(selectedModelForUser(1), "gpt-5.6-sol");
   assert.equal(gatewayModel, "gpt-5.6-sol");
   assert.equal(await topologyModel(), "gpt-5.6-sol", "an existing topology generator follows the new default without restarting");
@@ -384,7 +384,7 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   assert.equal(selectedModelForUser(1), "gpt-5.6-sol");
   assert.equal(await topologyModel(), "gpt-5.6-sol");
   await fallback.selectOption("none");
-  await page.getByRole("status").filter({hasText: "Saved. Fallback is disabled."}).waitFor();
+  await page.getByRole("status").filter({hasText: "Saved. Fallback/background model is disabled."}).waitFor();
   assert.equal(selectedModelForUser(1), "none");
   assert.equal(gatewayModel, "none");
   await expectValue("Chat B", "gpt-5.6-sol", "max");
@@ -404,7 +404,7 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   await page.getByText("Saved. GPT-5.6 Sol is your default model.", { exact: true }).waitFor();
   assert.equal(selectedModelForUser(1), "none", "startup changes do not re-enable fallback");
   await fallback.selectOption("gpt-5.6-sol");
-  await page.getByText("Saved. GPT-5.6 Sol is your fallback model.", { exact: true }).waitFor();
+  await page.getByText("Saved. GPT-5.6 Sol is your fallback/background model.", { exact: true }).waitFor();
   await expectValue("Chat B", "gpt-5.6-sol", "max");
   assert.equal(await topologyModel(), "gpt-5.6-sol");
   assert.deepEqual(errors, []);

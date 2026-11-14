@@ -120,6 +120,14 @@ writeFileSync(
     "auxiliary:",
     "  title_generation:",
     "    enabled: false",
+    // Side work runs on the background model chosen on the profile page, not
+    // on whatever the chat is using: ChatMock's `default` names that model.
+    // Summarising a long context and running a delegated worker are the two
+    // places a turn spends tokens the user never reads.
+    "  compression:",
+    "    model: default",
+    "delegation:",
+    "  model: default",
     "memory:",
     "  memory_enabled: false",
     "  user_profile_enabled: false",

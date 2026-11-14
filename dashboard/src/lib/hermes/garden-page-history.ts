@@ -77,7 +77,7 @@ export async function gardenPageHistory(input: {
       json_extract(e.value, '$.details.result.moved') AS moved,
       json_extract(e.value, '$.details.result.proposalId') AS proposalId,
       json_extract(e.value, '$.details.args.rationale') AS rationale
-    FROM conversations c JOIN conversation_messages m ON m.conversation_id = c.id
+    FROM conversations c JOIN conversation_message_reads m ON m.conversation_id = c.id
     JOIN json_each(CASE WHEN json_valid(m.metadata) THEN m.metadata ELSE '{}' END, '$.verification.evidence') e
     WHERE c.user_id = ? AND c.temporary = 0 AND m.role = 'assistant'
       AND instr(m.metadata, ?) > 0

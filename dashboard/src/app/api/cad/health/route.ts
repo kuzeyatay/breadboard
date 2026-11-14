@@ -4,6 +4,7 @@ import { CadServiceError } from "@/lib/cad/errors.ts";
 import { cadServiceConfigured, cadServiceHealth } from "@/lib/cad/service.ts";
 import { readSolidWorksRuntimeStatus } from "@/lib/cad/solidworks/runtime-service.ts";
 import { describeSolidWorksAvailability } from "@/lib/cad/solidworks/status.ts";
+import { freecadAvailability } from "@/lib/cad/freecad/config.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -18,8 +19,10 @@ export const runtime = "nodejs";
  * already healthy; it never acquires a lease or wakes Python/SolidWorks.
  */
 async function backends() {
+  const freecad = freecadAvailability();
   const { availability: solidworks, bridge } = await readSolidWorksRuntimeStatus();
   return {
+    freecad: { available: freecad.available, code: freecad.code, message: freecad.message },
     solidworks: {
       available: solidworks.available,
       code: solidworks.code,

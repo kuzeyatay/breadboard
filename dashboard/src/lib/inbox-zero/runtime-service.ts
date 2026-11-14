@@ -9,6 +9,7 @@ import {
   type RuntimeAgentScope,
 } from "../runtime-agent-service.ts";
 import type {
+  BreadboardGmailGrant,
   InboxZeroSession,
   InboxZeroStatusResult,
   ReadyResult,
@@ -306,4 +307,22 @@ export function runInboxZeroSetup(
     }
     return { ok: value.ok, setup };
   });
+}
+
+/**
+ * Offer (or withdraw, with null) Breadboard's Gmail grant to the stack
+ * controller, which holds it in memory for this user's next readiness check.
+ */
+export function offerBreadboardGmail(
+  scope: Pick<RuntimeAgentScope, "userId">,
+  grant: BreadboardGmailGrant | null,
+): Promise<unknown> {
+  return withInboxZeroStackLease(scope, "gmail-grant", () =>
+    callRuntimeAgentService(
+      "inbox-zero-stack",
+      "/v1/setup",
+      scopedAgentRequest(scope, { input: { action: "gmail_grant", grant } }),
+      { timeoutMs: 30_000 },
+    ),
+  );
 }

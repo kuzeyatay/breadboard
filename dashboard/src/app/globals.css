@@ -2126,8 +2126,33 @@ html[data-breadboard-desktop="true"] .desktop-title-bar {
   opacity: 0.6;
 }
 
-/* Reserve the control slots even while hidden. Removing them from flex layout
-   changes the strip's intrinsic width and resizes every tab on hover/focus. */
+/* The controls float over the title's end instead of taking flex slots, so an
+   idle tab gives its whole width to the title and nothing resizes on hover.
+   The title fades out under them only while they are shown. */
+.bb-tab-anchor,
+.bb-tab-close {
+  position: absolute;
+  top: 3px;
+}
+
+.bb-tab-close {
+  right: 4px;
+}
+
+.bb-tab-anchor {
+  right: 30px;
+}
+
+.bb-tab:is(:hover, :focus-within, [data-active="true"], [data-anchored="true"]) .bb-tab-title {
+  --bb-tab-controls: 49px;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - var(--bb-tab-controls) - 10px), transparent calc(100% - var(--bb-tab-controls)));
+  mask-image: linear-gradient(to right, #000 calc(100% - var(--bb-tab-controls) - 10px), transparent calc(100% - var(--bb-tab-controls)));
+}
+
+.bb-tab:is(:hover, :focus-within, [data-active="true"]):has(> .bb-tab-anchor[hidden]) .bb-tab-title {
+  --bb-tab-controls: 23px;
+}
+
 .bb-tab:not(:hover):not(:focus-within):not([data-active="true"]) .bb-tab-close,
 .bb-tab:not(:hover):not(:focus-within):not([data-active="true"]) .bb-tab-anchor:not([aria-pressed="true"]) {
   visibility: hidden;

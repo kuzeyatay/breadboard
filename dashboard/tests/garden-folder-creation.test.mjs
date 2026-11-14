@@ -7,6 +7,9 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { build } from "esbuild";
 import { chromium } from "playwright";
+import Database from "better-sqlite3";
+import { Readable } from "node:stream";
+import { GardenFileStore } from "../src/lib/garden-files/store.ts";
 import { canonicalQuartzReaderShell } from "../scripts/quartz-reader-shell.mjs";
 import { withCanonicalQuartzReader } from "../../quartz/quartz/components/scripts/canonicalReader.mjs";
 
@@ -19,7 +22,9 @@ async function fixture() {
   const previous = process.env.QUARTZ_CONTENT_PATH;
   // Exercise the same extended Windows paths used by the desktop runtime.
   process.env.QUARTZ_CONTENT_PATH = path.toNamespacedPath(content);
-  const state = { allowed: true, busy: false, leased: false, publishes: 0, refreshes: 0 };
+  const database = new Database(':memory:');
+  database.exec("CREATE TABLE users(id INTEGER PRIMARY KEY); CREATE TABLE clusters(id INTEGER PRIMARY KEY,slug TEXT,user_id INTEGER); CREATE TABLE pdf_document_edits(cluster_id INTEGER,document_slug TEXT,source_pdf_path TEXT,pdf_data BLOB,byte_length INTEGER,updated_by_user_id INTEGER,updated_at TEXT,UNIQUE(cluster_id,document_slug)); INSERT INTO users VALUES(7); INSERT INTO clusters VALUES(1,'physics',7)");
+  const state = { allowed: true, busy: false, leased: false, publishes: 0, refreshes: 0, database, dataRoot: dir };
   globalThis.__folderFixture = state;
   const normalization = fs.readFileSync(path.join(root, "src/lib/garden-documents.ts"), "utf8")
     .match(/export function normalizeGardenFolder\(value: unknown\): string \{[\s\S]*?\n\}/)[0];
@@ -30,8 +35,10 @@ async function fixture() {
       return {cluster:{slug,id:1},userId:7};
     } export const requireReadableClusterFromSlug=requireOwnedClusterFromSlug;
     export const routeErrorResponse=e=>Response.json({error:e.message},{status:403});`,
-    "./db.ts": "export default {};",
-    "./runtime-paths.ts": "export const dashboardDataDir=()=>'';",
+    "./db.ts": "export default globalThis.__folderFixture.database;",
+    "../db.ts": "export default globalThis.__folderFixture.database;",
+    "./runtime-paths.ts": "export const dashboardDataDir=()=>globalThis.__folderFixture.dataRoot;",
+    "../runtime-paths.ts": "export const dashboardDataDir=()=>globalThis.__folderFixture.dataRoot;",
     "./knowledge.ts": `import fs from 'node:fs';import path from 'node:path';
       export const slugify=s=>s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
       export const refreshClusterIndex=()=>{globalThis.__folderFixture.refreshes++};
@@ -56,7 +63,7 @@ async function fixture() {
     "@/lib/garden-mutation-lease": "export const isGardenMutationBusyError=e=>e.code==='garden_busy';",
   };
   const bundle = await build({
-    entryPoints: [path.join(root, "src/app/api/folders/route.ts")],
+    stdin: { resolveDir: root, contents: "export * from './src/app/api/folders/route.ts'; export {moveGardenDocument,renameGardenFolder} from './src/lib/garden-filesystem.ts'; export {restoreFolderNotes,restoreMixedFolder,preserveFolderForTrash,changeMixedFolder,recoverMixedFolderOperations} from './src/lib/garden-files/mixed-folders.ts';" },
     bundle: true, platform: "node", format: "cjs", write: false,
     plugins: [{ name: "folder-fixture", setup(builder) {
       builder.onResolve({ filter: /.*/ }, args => stubs[args.path] === undefined ? undefined : { path: args.path, namespace: "fixture" });
@@ -67,16 +74,86 @@ async function fixture() {
   });
   const module = { exports: {} };
   new Function("require", "module", "exports", bundle.outputFiles[0].text)(createRequire(import.meta.url), module, module.exports);
-  return { ...module.exports, state, content, close() {
+  const store = new GardenFileStore(database, path.join(dir, 'garden-files'));
+  return { ...module.exports, state, content, store, close() {
     if (previous === undefined) delete process.env.QUARTZ_CONTENT_PATH;
     else process.env.QUARTZ_CONTENT_PATH = previous;
     delete globalThis.__folderFixture;
+    database.close();
     fs.rmSync(dir, { recursive: true, force: true });
   } };
 }
 
 const createRequest = folder => new Request("http://localhost/api/folders", {
   method: "POST", body: JSON.stringify({ clusterSlug: "physics", folder }),
+});
+
+test('interrupted mixed folder operations recover disk and metadata together', async () => {
+  const app = await fixture(), scope = { gardenId: 'physics', clusterId: 1, userId: 7, ownerId: 7 };
+  try {
+    await app.POST(createRequest('Recovery'));
+    const source = path.join(app.content, 'physics/recovery'), target = path.join(app.content, 'physics/moved');
+    fs.writeFileSync(path.join(source, 'note.md'), 'Recover these bytes');
+    const file = app.store.import(scope, 'recovery/data.bin', await app.store.stage(Readable.from(['Original bytes'])));
+    const parent = app.store.list(scope).find(entry => entry.path === 'recovery');
+    assert.throws(() => app.changeMixedFolder(app.store, scope, 'move', 'recovery', 'moved', () => { fs.renameSync(source, target); throw Error('Interrupted'); }), /Interrupted/);
+    assert.equal(app.store.get(scope, file.id).path, 'recovery/data.bin');
+    assert.equal(fs.readFileSync(path.join(source, 'note.md'), 'utf8'), 'Recover these bytes');
+    fs.renameSync(source, target);
+    const insert = app.state.database.prepare('INSERT INTO garden_folder_operations VALUES(?,?,?,?,?,?,?)');
+    insert.run('stopped-move', 2147483647, JSON.stringify(scope), 'move', parent.id, 'recovery', 'moved');
+    app.recoverMixedFolderOperations(app.store);
+    assert.equal(fs.existsSync(target), false); assert.equal(fs.existsSync(source), true);
+    app.preserveFolderForTrash(app.store, scope, 'recovery');
+    fs.rmSync(path.join(source, 'note.md'));
+    insert.run('stopped-trash', 2147483647, JSON.stringify(scope), 'trash', parent.id, 'recovery', '');
+    app.recoverMixedFolderOperations(app.store);
+    assert.equal(fs.readFileSync(path.join(source, 'note.md'), 'utf8'), 'Recover these bytes');
+    assert.equal(app.state.database.prepare('SELECT COUNT(*) AS n FROM garden_folder_operations').get().n, 0);
+  } finally { app.close(); }
+});
+
+test('notes and mixed folders move into imported folders without changing their names', async () => {
+  const app = await fixture(), scope = { gardenId: 'physics', clusterId: 1, userId: 7, ownerId: 7 };
+  try {
+    app.store.createFolder(scope, 'Imported Δ folder');
+    fs.writeFileSync(path.join(app.content, 'physics/note.md'), 'Original note');
+    await app.moveGardenDocument({ userId: 7, clusterSlug: 'physics', slug: 'note', toFolder: 'Imported Δ folder' });
+    assert.equal(fs.readFileSync(path.join(app.content, 'physics/Imported Δ folder/note.md'), 'utf8'), 'Original note');
+    await app.POST(createRequest('Mixed'));
+    fs.writeFileSync(path.join(app.content, 'physics/mixed/other.md'), 'Inside mixed folder');
+    const file = app.store.import(scope, 'mixed/raw.bin', await app.store.stage(Readable.from(['Original bytes'])));
+    app.store.createFolder(scope, 'Destination folder');
+    await app.renameGardenFolder({ userId: 7, clusterSlug: 'physics', folder: 'mixed', name: 'mixed', toFolder: 'Destination folder' });
+    assert.equal(app.store.get(scope, file.id).path, 'Destination folder/mixed/raw.bin');
+    assert.equal(fs.readFileSync(path.join(app.content, 'physics/Destination folder/mixed/other.md'), 'utf8'), 'Inside mixed folder');
+  } finally { app.close(); }
+});
+
+test('mixed folders rename, copy and restore notes and original files together', async () => {
+  const app = await fixture(), scope = { gardenId: 'physics', clusterId: 1, userId: 7, ownerId: 7 };
+  try {
+    await app.POST(createRequest('My collection'));
+    fs.writeFileSync(path.join(app.content, 'physics/my-collection/note.md'), 'Keep this note');
+    app.state.database.prepare('INSERT INTO pdf_document_edits VALUES(?,?,?,?,?,?,?)').run(1, 'note', 'source.pdf', Buffer.from('annotated PDF'), 13, 7, '2026-11-13');
+    const original = app.store.import(scope, 'my-collection/data.bin', await app.store.stage(Readable.from([Buffer.from([0,255,1])])));
+    const renamed = await app.PUT(new Request('http://localhost/api/folders', { method: 'PUT', body: JSON.stringify({ clusterSlug: 'physics', folder: 'my-collection', name: 'Research' }) }));
+    assert.equal(renamed.status, 200, await renamed.clone().text());
+    assert.equal(app.store.get(scope, original.id).path, 'research/data.bin');
+    assert.equal(fs.readFileSync(path.join(app.content, 'physics/research/note.md'), 'utf8'), 'Keep this note');
+    const copied = await app.POST(new Request('http://localhost/api/folders', { method: 'POST', body: JSON.stringify({ clusterSlug: 'physics', folder: 'research', action: 'copy' }) }));
+    const { newFolder } = await copied.json();
+    const copy = app.store.list(scope).find(entry => entry.path === `${newFolder}/data.bin`);
+    assert.ok(copy); assert.notEqual(copy.id, original.id); assert.equal(copy.visibility, 'private');
+    const deleted = await app.DELETE(new Request('http://localhost/api/folders', { method: 'DELETE', body: JSON.stringify({ clusterSlug: 'physics', folder: 'research' }) }));
+    assert.equal(deleted.status, 200, await deleted.clone().text());
+    assert.equal(fs.existsSync(path.join(app.content, 'physics/research')), false);
+    const parent = app.store.list(scope, true).find(entry => entry.path === 'research');
+    const restored = app.restoreMixedFolder(app.store, scope, parent.id);
+    assert.equal(app.state.database.prepare('SELECT pdf_data FROM pdf_document_edits WHERE document_slug = ?').get('note').pdf_data.toString(), 'annotated PDF');
+    assert.equal(fs.readFileSync(path.join(app.content, 'physics/research/note.md'), 'utf8'), 'Keep this note');
+    assert.deepEqual(fs.readFileSync(app.store.content(scope, original.id).path), Buffer.from([0,255,1]));
+  } finally { app.close(); }
 });
 
 test("saved folder pages render empty folders, recursive totals, and current contents before publication", async () => {

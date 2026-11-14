@@ -19,7 +19,8 @@ import {
 } from "../supervisor-control.ts";
 
 const PROTOCOL_VERSION = 1;
-const MAX_OPERATION_MS = 7 * 60_000;
+// The two-hour render limit plus time to queue, start and collect the file.
+const MAX_OPERATION_MS = 125 * 60_000;
 const TERMINAL_STATES = new Set<RuntimeJobSnapshot["state"]>([
   "cancelled",
   "succeeded",

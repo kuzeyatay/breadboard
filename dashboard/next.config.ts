@@ -44,6 +44,7 @@ const dataTraceExcludes = [
   ".env*",
   "*.md",
   "*.log",
+  "*.txt",
   ".tmp-*",
   "tmp-*",
   "*.db",
@@ -207,6 +208,10 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     '/api/speech/livekit': livekitRuntimeTraceIncludes(bundlerRoot),
     '/api/anydoc/status': [
+      'node_modules/@firecrawl/anydoc/**/*',
+      'node_modules/@firecrawl/anydoc-win32-x64-msvc/**/*',
+    ],
+    '/api/hermes/tools/to-markdown': [
       'node_modules/@firecrawl/anydoc/**/*',
       'node_modules/@firecrawl/anydoc-win32-x64-msvc/**/*',
     ],

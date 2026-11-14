@@ -324,8 +324,8 @@ const PACKAGED_PYTHON_SERVICES = Object.freeze([
     pythonRuntimeSha256: "00AFF22F464AFC3194EF14EE02B5AC3B9AF5819084FE9CC25EB4FB783EC0F55F",
     pythonRuntimeFileCount: 35,
     pythonLicenseSha256: "A4771D2216653FCA4E3472566A762BA8CE5358F6F6599455FE7CFACEB60D14B3",
-    sourceGitTree: "5aefb9916024e9614be1b2ff652275b3599e5ff8",
-    sourceSha256: "7BC480AE705750B9C056CC73DB418A65B813E1D06084FDD3AC78645E19DDC3BC",
+    sourceGitTree: "2c7c4171d42476ebb10719c30bc5eec3ea5d7018",
+    sourceSha256: "F76AA08F5650B76CC64DA0F1DCCE498D6C5C51EF050D39FEC403DF0CEB33D2C3",
     sourceFileCount: 11,
     pyprojectSha256: "062EE60275B6A65DB9AC6717AFCA300752350CD2A8F834A31B7895F8C80B006F",
     requirementsSha256: "2007C2A50F445ED19EDD602140835536F33E2A0C29BBE94EF4E8682A2CE3F1C3",
@@ -4847,6 +4847,11 @@ function checkResourcesRoot(resources, binRoot, label) {
     requireFile(path.join(resources, "app-services", "scripts", script), `${label} Google Flow ${script}`);
   }
   requireFile(path.join(resources, "app-services", "hermes-skills", "prebuilt", "veo", "SKILL.md"), `${label} Featured Veo skill`);
+  for (const script of ["blender-mcp-server.py", "blender-requirements.txt", "setup-blender.mjs"]) {
+    requireFile(path.join(resources, "app-services", "scripts", script), `${label} Blender ${script}`);
+  }
+  requireFile(path.join(resources, "app-services", "hermes-skills", "prebuilt", "blender", "SKILL.md"), `${label} Featured Blender skill`);
+  requireFile(path.join(resources, "app-services", "dashboard", "scripts", "blender-runtime.mjs"), `${label} Blender runtime configuration`);
   requireSourceCommitReceipt(path.join(resources, "app-services", "google-flow-mcp"), `${label} Google Flow reviewed source`, "6826452a4a2e93bf7313d1be1626a9034fd7dc27");
   requireFile(
     path.join(resources, "app-services", "mcp-google-images-search", "LICENSE"),

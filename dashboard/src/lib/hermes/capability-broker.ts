@@ -24,6 +24,7 @@ import {
   AGENT_LOOP_TOOLS,
   ARTIFACT_TOOLS,
   CALENDAR_TOOLS,
+  AUTOMATION_TOOLS,
   COMPUTER_USE_TOOLS,
   BREADBOARD_USE_TOOLS,
   GADGET_TOOLS,
@@ -34,6 +35,8 @@ import {
   SKILL_LESSON_TOOLS,
   MESSAGING_TOOLS,
   MANIM_TOOLS,
+  TO_MARKDOWN_TOOLS,
+  VIDEO_RENDER_TOOLS,
   MULTISIM_TOOLS,
   MAP_TOOLS,
   IMAGE_SEARCH_TOOLS,
@@ -246,6 +249,8 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...AUDIO_ANALYSIS_TOOLS,
       ...MUSIC_RECOGNITION_TOOLS,
       ...MANIM_TOOLS,
+      ...TO_MARKDOWN_TOOLS,
+      ...VIDEO_RENDER_TOOLS,
       ...AGENT_LOOP_TOOLS,
       ...MULTISIM_TOOLS,
       ...OMH_TOOLS,
@@ -264,6 +269,7 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...MAP_TOOLS,
       ...SPOTIFY_TOOLS,
       ...CALENDAR_TOOLS,
+      ...AUTOMATION_TOOLS,
       ...PLAN_TOOLS,
       ...OFFICE_TOOLS,
       ...DOCUMENT_TOOLS,
@@ -827,6 +833,16 @@ function buildToolMap(
   for (const tool of MANIM_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  // Markdown conversion reads only this conversation's attachments or a public
+  // URL; its route checks that one of the *-to-markdown skills is selected.
+  for (const tool of TO_MARKDOWN_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
+  // Video receives source too. Its route checks the selected skill and renders
+  // with the pinned Remotion runtime.
+  for (const tool of VIDEO_RENDER_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   // "What was I doing at four?" is a plain knowledge turn, so Recall does not
   // depend on the turn's capability class either. What it can reach is decided
   // by the user's own Recall settings, checked on every call server-side.
@@ -838,7 +854,7 @@ function buildToolMap(
   // these integrations do not depend on a filesystem capability class. The
   // calendar route is session-scoped and its writes stay inside that user's
   // writable calendars.
-  for (const tool of [...WORLDMONITOR_TOOLS, ...CALENDAR_TOOLS]) {
+  for (const tool of [...WORLDMONITOR_TOOLS, ...CALENDAR_TOOLS, ...AUTOMATION_TOOLS]) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
   // "Show me pictures of an F-11" is a plain knowledge turn as well, and the
@@ -992,6 +1008,7 @@ function buildToolMap(
     // schedule, and the monitor is a signed-in feature of the dashboard.
     for (const tool of WORLDMONITOR_TOOLS) map[tool] = false;
     for (const tool of CALENDAR_TOOLS) map[tool] = false;
+    for (const tool of AUTOMATION_TOOLS) map[tool] = false;
     // Image search spends a signed-in deployment's Google API quota, and this
     // surface is the anonymous public one.
     for (const tool of IMAGE_SEARCH_TOOLS) map[tool] = false;

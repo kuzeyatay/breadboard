@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { sourceRepairRelease } from "./source-repair-release.mjs";
+import { startDashboardWatchdog } from "./runtime-v2-dashboard-watchdog.mjs";
 
 // Keep one manifest entrypoint relative to appRoot in both supported layouts:
 //   dev:      <repo>/dashboard/scripts/this-file
@@ -54,4 +55,5 @@ for (const name of ["BREADBOARD_DATA_DIR", "BREADBOARD_REPO_ROOT"]) {
   }
 }
 process.chdir(path.dirname(server));
+startDashboardWatchdog({ port: Number(process.env.PORT) });
 await import(pathToFileURL(server).href);

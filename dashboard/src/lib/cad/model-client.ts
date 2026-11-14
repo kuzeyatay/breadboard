@@ -19,6 +19,7 @@ import {
 } from "../model-transport.ts";
 import { humanizeProviderError } from "../provider-error.ts";
 import { DEFAULT_CAD_ENGINE, type CadEngineId } from "./engines.ts";
+import { FREECAD_PROGRAM_INSTRUCTIONS } from "./freecad/prompts.ts";
 import { cadToolDefinitions, runCadTool, type CadToolContext } from "./tools.ts";
 import { SUPPORTED_OPERATIONS } from "./solidworks/operations.ts";
 import type { CadProjectRow } from "./project-store.ts";
@@ -595,7 +596,7 @@ export async function runCadProjectBuildPhase(input: CadModelTarget & {
               "Build the outer body first with a closed sketch and an extrude, then remove material with sketch-and-cut. A hole is a circle cut deeper than the body is thick.",
               "Every coordinate, radius and depth is in millimetres.",
             ]
-          : [
+          : engine === "freecad" ? ["Call cad_generate_model now with a complete FreeCAD program.", ...FREECAD_PROGRAM_INSTRUCTIONS] : [
               "Call cad_generate_model now with one complete, deterministic CadQuery program.",
               "Use DEFAULT_PARAMS plus build_model(params), keep all geometry in millimetres, and return a dict of named solids.",
             ])).join("\n") }),

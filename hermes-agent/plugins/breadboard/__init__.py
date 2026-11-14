@@ -127,8 +127,16 @@ _HUMANIZER_REQUEST_TIMEOUT_SECONDS = 840
 # roughly a gigabyte of gated model weights. This has to outlast that ceiling or
 # a successful first reconstruction comes back as a socket error.
 _IMAGE_TO_3D_REQUEST_TIMEOUT_SECONDS = 320
-# Manim gets the same five-minute dashboard budget plus loopback overhead.
-_MANIM_REQUEST_TIMEOUT_SECONDS = 320
+# A Manim render may run for two hours (heavy 3D scenes are slow on the CPU
+# renderer); this outlasts it, plus narration, music download and the mix.
+_MANIM_REQUEST_TIMEOUT_SECONDS = 130 * 60
+# A Remotion render bundles, opens a headless browser and encodes every frame;
+# music download and narration come first. The dashboard allows about eleven
+# minutes in total, so this has to outlast it.
+_VIDEO_REQUEST_TIMEOUT_SECONDS = 720
+# Markdown conversion may transcribe an hour of audio locally, or wait on a
+# video's captions and a Whisper fallback (Watch allows 45 min plus queueing).
+_TO_MARKDOWN_REQUEST_TIMEOUT_SECONDS = 55 * 60
 # Audio analysis is seconds of CPU on a song and tens of seconds on a long
 # lossless file, dominated by decoding. Well under the dashboard's own ten-minute
 # ceiling, but far enough above the 45-second default that a full album track
@@ -541,7 +549,14 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 "Windows paths. For Linux use an explicit WSL distro and a saved "
                 "script file; nested PowerShell/Bash/Python -c quoting is lossy. "
                 "Save scripts longer than 2000 UTF-8 bytes in the authorized "
-                "workspace and invoke the file. Syntax-check generated scripts "
+                "workspace and invoke the file. The same rule covers prompts "
+                "and messages handed to another program (for example launching "
+                "a Claude Code session with a task): first write the complete "
+                "text to a workspace file with workspace_write, then start the "
+                "program reading that file, such as claude (Get-Content -Raw "
+                "<file>). Never truncate or summarize the handed-off text, and "
+                "never use the clipboard as the delivery mechanism. "
+                "Syntax-check generated scripts "
                 "with their target interpreter before execution. Read-only inspection and focused verification "
                 "may run automatically; any other valid command pauses for "
                 "explicit permission. Set timeoutSeconds to a suitable bound. "
@@ -698,6 +713,16 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                                 "maxItems": 12,
                             },
                             "includeHierarchy": {"type": "boolean"},
+                            "follow": {
+                                "type": "string",
+                                "enum": ["out", "in"],
+                                "description": "Walk only typed, directed relations. out follows them as they read (with relationTypes [\"depends-on\"]: what this page needs first); in walks backwards (what builds on it).",
+                            },
+                            "target": {
+                                "type": "string",
+                                "maxLength": 512,
+                                "description": "Another node to connect to: returns the shortest chain of relations from slug to target, each step as a sentence in path.reads.",
+                            },
                         }
                         if name == "garden_get_graph_neighbors"
                         else {}
@@ -722,7 +747,7 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             ),
             (
                 "garden_get_graph_neighbors",
-                "Traverse the authorized Garden's Thought Topology as a bounded typed property graph. The result includes Garden-folder-page contains edges plus scored affinity edges with relation, direction, weight, explanation, evidence, and provenance. The slug may be a node id, page slug/path, folder path, or Garden slug.",
+                "Traverse the authorized Garden's Thought Topology as a bounded typed property graph. The result includes Garden-folder-page contains edges plus scored affinity edges with relation, direction, weight, explanation, evidence, and provenance. The slug may be a node id, page slug/path, folder path, or Garden slug. Use follow=out with relationTypes [\"depends-on\",\"derives-from\"] for prerequisites, and target to explain how two pages connect. Check linkQuality first: when status is structure-only, missing neighbours mean nothing; use garden_search instead.",
             ),
         )
     ),
@@ -1776,7 +1801,9 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             (
                 "Render one self-contained Manim Community scene inside a "
                 "guarded network-disabled container and publish the verified "
-                "MP4 as a durable video artifact."
+                "MP4 as a durable video artifact, optionally with spoken "
+                "narration and a music bed from a YouTube link or search. "
+                "This is how a math animation is made."
             ),
             {
                 "title": {"type": "string", "minLength": 1, "maxLength": 240},
@@ -1784,8 +1811,115 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 "code": {"type": "string", "minLength": 1, "maxLength": 65536},
                 "sceneName": {"type": "string", "minLength": 1, "maxLength": 64},
                 "quality": {"type": "string", "enum": ["draft", "standard", "high"]},
+                "music": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "maxLength": 300},
+                        "search": {"type": "string", "maxLength": 120},
+                        "startSeconds": {"type": "number", "minimum": 0, "maximum": 900},
+                        "volume": {"type": "number", "minimum": 0, "maximum": 1},
+                        "fadeInSeconds": {"type": "number", "minimum": 0, "maximum": 10},
+                        "fadeOutSeconds": {"type": "number", "minimum": 0, "maximum": 10},
+                    },
+                },
+                "narration": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string", "minLength": 1, "maxLength": 600},
+                            "atSeconds": {"type": "number", "minimum": 0},
+                        },
+                        "required": ["text", "atSeconds"],
+                    },
+                },
             },
             ["title", "description", "code"],
+        ),
+    ),
+    (
+        "video_render",
+        "/api/hermes/tools/video",
+        "video",
+        _schema(
+            "video_render",
+            (
+                "Render one Remotion composition (a single TSX file that "
+                "default-exports a React component) to an MP4 at 30 or 60 fps, "
+                "optionally with a music bed from a YouTube link or search and "
+                "spoken narration, and publish it as a durable video artifact. "
+                "This is the default way to make a video. With mode "
+                "analyze_music it renders nothing and returns the tempo, hits, "
+                "drops and rolls of a track so the video can be cut to it."
+            ),
+            {
+                "mode": {"type": "string", "enum": ["render", "preview", "analyze_music"]},
+                "projectId": {"type": "string", "maxLength": 63},
+                "project": {"type": "object"},
+                "files": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string", "maxLength": 98304},
+                },
+                "title": {"type": "string", "minLength": 1, "maxLength": 240},
+                "description": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "code": {"type": "string", "minLength": 1, "maxLength": 98304},
+                "durationSeconds": {"type": "number", "minimum": 1, "maximum": 180},
+                "format": {"type": "string", "enum": ["landscape", "portrait", "square"]},
+                "quality": {"type": "string", "enum": ["draft", "standard"]},
+                "fps": {"type": "integer", "enum": [30, 60]},
+                "music": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "maxLength": 300},
+                        "search": {"type": "string", "maxLength": 120},
+                        "startSeconds": {"type": "number", "minimum": 0, "maximum": 900},
+                        "volume": {"type": "number", "minimum": 0, "maximum": 1},
+                        "fadeInSeconds": {"type": "number", "minimum": 0, "maximum": 10},
+                        "fadeOutSeconds": {"type": "number", "minimum": 0, "maximum": 10},
+                    },
+                },
+                "narration": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string", "minLength": 1, "maxLength": 600},
+                            "atSeconds": {"type": "number", "minimum": 0},
+                        },
+                        "required": ["text", "atSeconds"],
+                    },
+                },
+                "asRequested": {"type": "boolean"},
+            },
+            [],
+        ),
+    ),
+    (
+        "to_markdown",
+        "/api/hermes/tools/to-markdown",
+        "to_markdown",
+        _schema(
+            "to_markdown",
+            (
+                "Convert one source to a Markdown file and attach it to the reply: "
+                "a document attached to this conversation (PDF, Word, PowerPoint, "
+                "Excel, OpenDocument, text), an attached audio or video file "
+                "(transcribed), a YouTube or other video link (captions or "
+                "transcript), or any web page or online PDF link. Returns the "
+                "artifact and the start of the Markdown."
+            ),
+            {
+                "source": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000,
+                    "description": "The URL exactly as the user gave it, or the exact filename of an attachment in this conversation.",
+                },
+                "title": {"type": "string", "maxLength": 240},
+            },
+            ["source"],
         ),
     ),
     (
@@ -2975,16 +3109,20 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         _schema(
             "breadboard_usage",
             (
-                "Read the connected ChatGPT/Codex account usage meter shown in "
-                "Breadboard's usage notch. Call when asked about personal Codex "
-                "usage, limits, remaining allowance, reset times, or reserve "
-                "status, before saying you cannot access the meter. Returns "
-                "reported windows with used and remaining percentages, reset "
-                "timestamps, plan and reserve status. A missing window is "
-                "unknown. If refreshed is false or stale is true, label values "
-                "as last-known; if available is false, report the read failure. "
-                "Read-only and spends no model quota. This is subscription "
-                "allowance, not API billing or conversation token usage."
+                "Read the connected account usage meters shown in Breadboard's "
+                "usage notch: the ChatGPT/Codex subscription at the top level "
+                "and the Claude Code (Anthropic) subscription under `claude`. "
+                "Call when asked about personal Codex or Claude usage, limits, "
+                "remaining allowance, reset times, or reserve status, before "
+                "saying you cannot access a meter. Returns reported windows "
+                "with used and remaining percentages, reset timestamps, plan "
+                "and reserve status; both meters share the same window shape. "
+                "A missing window is unknown. If refreshed is false or stale "
+                "is true, label values as last-known; if available is false on "
+                "a meter, report that meter's read failure without discarding "
+                "the other. Read-only and spends no model quota. This is "
+                "subscription allowance, not API billing or conversation "
+                "token usage."
             ),
             {},
         ),
@@ -3760,6 +3898,105 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             "accepts. Call this before interpreting a follow-up like 'how far is "
             "it from there' — the answer is structured state, not something to "
             "infer from the conversation.",
+        ),
+    ),
+    # Automations — scheduled chats and hooks. The agent sets these up itself;
+    # it must never answer "open the Scheduled panel and click New".
+    (
+        "schedule_create",
+        "/api/hermes/tools/automation",
+        "automation",
+        _schema(
+            "schedule_create",
+            "Schedule a chat that Breadboard starts on its own later, as a new "
+            "conversation in this terminal or garden, running `prompt` as if the "
+            "user had typed it. ALWAYS use this when the user asks for something "
+            "to happen at a time or on a recurrence ('every morning at 9 check my "
+            "inbox', 'in two hours remind me to...', 'every Friday summarize...'); "
+            "do not tell them to set it up in the Scheduled panel. Write `prompt` "
+            "as a self-contained instruction for that future run (e.g. 'emails "
+            "from the last 24 hours', not 'emails received at 9am'). Give `cron` "
+            "for a recurrence or `runAt` for a single run. Times are the user's "
+            "local time. Confirm what was scheduled from the result.",
+            {
+                "prompt": {"type": "string", "maxLength": 20000},
+                "cron": {
+                    "type": "string",
+                    "description": "5-field cron in local time, e.g. '0 9 * * *' daily 09:00, '30 8 * * 1-5' weekdays 08:30.",
+                },
+                "runAt": {
+                    "type": "string",
+                    "description": "ISO timestamp for a one-time run instead of cron.",
+                },
+            },
+            ["prompt"],
+        ),
+    ),
+    (
+        "schedule_list",
+        "/api/hermes/tools/automation",
+        "automation",
+        _schema(
+            "schedule_list",
+            "List the user's scheduled chats with id, prompt, schedule, next and "
+            "last run. Use before deleting one or to answer 'what have I scheduled'.",
+        ),
+    ),
+    (
+        "schedule_delete",
+        "/api/hermes/tools/automation",
+        "automation",
+        _schema(
+            "schedule_delete",
+            "Delete one scheduled chat by id (from schedule_list).",
+            {"id": {"type": "number"}},
+            ["id"],
+        ),
+    ),
+    (
+        "hook_create",
+        "/api/hermes/tools/automation",
+        "automation",
+        _schema(
+            "hook_create",
+            "Create a hook: when a trigger fires, Breadboard starts a chat that "
+            "follows `instructions`. ALWAYS use this for 'whenever X happens, do "
+            "Y' requests instead of telling the user to open the Hooks panel. "
+            "Breadboard triggers: chat_completed, session_started, "
+            "prompt_submitted, tool_started, tool_used; `matcher` (regex, "
+            "optional) filters them by tool name or turn text. External "
+            "triggers (github, linear, generic webhook, ...) return a `url` the "
+            "user must paste into that service; providers that need a token or "
+            "signing secret (telegram, stripe, slack, gitlab, generic) cannot be "
+            "created here — send the user to the Hooks panel for those.",
+            {
+                "name": {"type": "string", "maxLength": 120},
+                "provider": {"type": "string"},
+                "instructions": {"type": "string", "maxLength": 8000},
+                "matcher": {"type": "string", "maxLength": 200},
+            },
+            ["name", "provider", "instructions"],
+        ),
+    ),
+    (
+        "hook_list",
+        "/api/hermes/tools/automation",
+        "automation",
+        _schema(
+            "hook_list",
+            "List the user's hooks (in a garden: that garden's hooks) with id, "
+            "trigger, instructions and webhook url.",
+        ),
+    ),
+    (
+        "hook_delete",
+        "/api/hermes/tools/automation",
+        "automation",
+        _schema(
+            "hook_delete",
+            "Delete one hook by id (from hook_list).",
+            {"id": {"type": "string"}},
+            ["id"],
         ),
     ),
     # Calendar — the user's own schedule at /calendar. Hermes can read and
@@ -4738,6 +4975,7 @@ def _request_payload(
         "worldmonitor",
         "map",
         "calendar",
+        "automation",
         "plan",
         "office",
         "document",
@@ -4763,7 +5001,7 @@ def _request_payload(
     # These tools file their binary output as an artifact, so they need the
     # same tool-call id the artifact routes do: that is what binds the result to
     # the response it was produced under.
-    if route_kind in {"artifact", "memory", "workflow", "image_to_3d", "manim"}:
+    if route_kind in {"artifact", "memory", "workflow", "image_to_3d", "manim", "video", "to_markdown"}:
         return {"action": tool_name, "args": args, "toolCallId": tool_call_id}
     if route_kind == "mcp":
         payload = {
@@ -5075,6 +5313,10 @@ def _call_breadboard(
             if route_kind == "image_to_3d"
             else _MANIM_REQUEST_TIMEOUT_SECONDS
             if route_kind == "manim"
+            else _VIDEO_REQUEST_TIMEOUT_SECONDS
+            if route_kind == "video"
+            else _TO_MARKDOWN_REQUEST_TIMEOUT_SECONDS
+            if route_kind == "to_markdown"
             else _AUDIO_REQUEST_TIMEOUT_SECONDS
             if route_kind == "audio"
             else _IMAGE_GENERATION_REQUEST_TIMEOUT_SECONDS
@@ -5402,12 +5644,13 @@ def _guard_computer_use(
 def register(ctx) -> None:
     """Register only narrow Breadboard tools in the ``breadboard`` toolset."""
     from .multisim import register_tools
-    from .history_context import deduplicate_history
+    from .history_context import deduplicate_history, tag_session
 
     register_tools(ctx, _call_breadboard)
     register_middleware = getattr(ctx, "register_middleware", None)
     if callable(register_middleware):
         register_middleware("llm_request", deduplicate_history)
+        register_middleware("llm_request", tag_session)
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         register_hook("pre_tool_call", _guard_computer_use)

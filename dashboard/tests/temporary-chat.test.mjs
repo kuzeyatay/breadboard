@@ -282,6 +282,14 @@ const greetingEngine = fs.readFileSync(
   new URL("../src/lib/hermes/chat-greeting.ts", import.meta.url),
   "utf8",
 );
+const greetingHook = fs.readFileSync(
+  new URL("../src/app/components/hermes/use-chat-greeting.ts", import.meta.url),
+  "utf8",
+);
+const recommendationsHook = fs.readFileSync(
+  new URL("../src/app/components/use-recommendations.ts", import.meta.url),
+  "utf8",
+);
 const gardenWorkspace = fs.readFileSync(
   new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url),
   "utf8",
@@ -359,17 +367,16 @@ test("what the user says in a temporary chat is drawn on a broken outline", () =
 });
 
 test("the blank temporary chat asks for different things, and says so without a disclaimer", () => {
-  // The greeting and the openers are chosen by the hour now, so the mode is
-  // something the terminal hands to that engine rather than a branch in the
-  // markup. What must not change is that the mode still reaches it.
+  // The greeting is chosen by the hour, so the mode is something the terminal
+  // hands to that engine rather than a branch in the markup. What must not
+  // change is that the mode still reaches it.
   assert.match(terminal, /useChatGreeting\(\{ scope, temporary: temporaryChat \}\)/);
-  assert.match(greetingEngine, /const TEMPORARY_OWN_SUGGESTIONS: SuggestionCandidate\[\] = \[/);
-  assert.match(greetingEngine, /const TEMPORARY_PUBLIC_SUGGESTIONS: SuggestionCandidate\[\] = \[/);
-  // Both scopes are covered: the mode is available over the public hub too.
-  assert.match(
-    greetingEngine,
-    /if \(context\.temporary\) \{\s*\n\s*return context\.scope === "public"\s*\n?\s*\? TEMPORARY_PUBLIC_SUGGESTIONS\s*\n?\s*: TEMPORARY_OWN_SUGGESTIONS;/,
-  );
+  assert.match(greetingEngine, /temporary \? "temporary" : "kept"/);
+  // Cards come only from personal evidence, and a chat kept off the record
+  // reads none: it shows no cards rather than generic off-the-record ones.
+  assert.match(greetingHook, /allowPersonalContext = enabled && personalize && scope !== 'public' && !temporary/);
+  assert.match(recommendationsHook, /const allowed = enabled && personalize && !temporary && scope !== 'public'/);
+  assert.doesNotMatch(greetingEngine, /TEMPORARY_OWN_SUGGESTIONS|TEMPORARY_PUBLIC_SUGGESTIONS/);
   // The banner above the transcript already says what is switched off, so the
   // empty state does not say it a second time — and never did say it twice.
   assert.doesNotMatch(terminal, /Answers are still grounded/);

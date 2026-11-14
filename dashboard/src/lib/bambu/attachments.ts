@@ -8,7 +8,7 @@ import { fail, type PrintJob } from "./types.ts";
 import { MAX_FILE_BYTES } from "./inspection.ts";
 export function slicedAttachments(job: PrintJob) {
   const rows = db.prepare(`SELECT m.id AS message_id, m.metadata, m.created_at, c.public_id AS conversation_public_id, c.title AS conversation_title, c.surface
-    FROM conversation_messages m JOIN conversations c ON c.id = m.conversation_id
+    FROM conversation_message_reads m JOIN conversations c ON c.id = m.conversation_id
     WHERE c.user_id = ? AND c.public_id = ? AND m.role = 'user' ORDER BY m.id DESC LIMIT 100`).all(job.scope.userId, job.scope.conversationPublicId) as UploadSourceRow[];
   return collectUploads(rows, 100).filter(item => /\.gcode\.3mf$/i.test(item.name) && item.hasContent).map(item => ({ id: item.id, name: item.name }));
 }
@@ -22,7 +22,7 @@ export async function stageAttachment(job: PrintJob, value: { uploadId?: unknown
   } else {
     const parsed = typeof value.uploadId === "string" ? parseUploadId(value.uploadId) : null;
     if (!parsed) fail("Choose an authorized sliced attachment.", "attachment_required", 400);
-    const row = db.prepare(`SELECT m.metadata FROM conversation_messages m JOIN conversations c ON c.id = m.conversation_id
+    const row = db.prepare(`SELECT m.metadata FROM conversation_message_reads m JOIN conversations c ON c.id = m.conversation_id
       WHERE m.id = ? AND m.role = 'user' AND c.user_id = ? AND c.public_id = ?`).get(parsed.messageId, job.scope.userId, job.scope.conversationPublicId) as { metadata: string | null } | undefined;
     if (!row) fail("Attachment not found in this conversation.", "attachment_not_found", 404);
     const attachment = messageAttachments(row.metadata)[parsed.index];

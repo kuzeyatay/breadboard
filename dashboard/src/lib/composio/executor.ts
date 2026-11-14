@@ -14,7 +14,7 @@ export interface ComposioActionResult {
   data: unknown;
 }
 
-/** Execute a policy-checked Breadboard connected-app action through Composio. */
+/** Execute a policy-checked Breadboard connected-app action. */
 export async function executeComposioAction(input: {
   userId: number;
   action: string;

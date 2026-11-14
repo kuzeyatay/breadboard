@@ -20,7 +20,7 @@ import {
 } from "../src/lib/hermes/skill-shortlist.ts";
 import { skillsOwningTools } from "../src/lib/hermes/capability-usage.ts";
 import { ASCII_ART_DIAGRAMS_SKILL } from "../src/lib/hermes/ascii-diagram-intent.ts";
-import { DIAGRAM_DESIGN_SKILL } from "../src/lib/hermes/diagram-intent.ts";
+import { DIAGRAM_DESIGN_SKILL, DIAGRAM_IN_CHAT_SKILL } from "../src/lib/hermes/diagram-intent.ts";
 import { GITHUB_EXPLORER_SKILL } from "../src/lib/hermes/github-explorer-intent.ts";
 import { HUMANIZE_SKILL } from "../src/lib/hermes/humanize-intent.ts";
 import { COMPUTER_USE_SKILL } from "../src/lib/hermes/computer-use-intent.ts";
@@ -89,6 +89,7 @@ test("routed skills are pinned to the constants their routers export", () => {
   for (const slug of [
     ASCII_ART_DIAGRAMS_SKILL,
     DIAGRAM_DESIGN_SKILL,
+    DIAGRAM_IN_CHAT_SKILL,
     GITHUB_EXPLORER_SKILL,
     HUMANIZE_SKILL,
     COMPUTER_USE_SKILL,
@@ -117,7 +118,7 @@ test("the exclusions cover every skill whose selection unlocks a tool", () => {
     assert.ok(exclusions.has(slug), `${slug} owns a tool and must be excluded`);
   }
   // Sanity on the derivation itself: the routes that check their own skill.
-  for (const slug of ["watch", "oh-my-hermes", "manim", "office"]) {
+  for (const slug of ["watch", "oh-my-hermes", "math-animation", "office"]) {
     assert.ok(skillsOwningTools().has(slug));
   }
 });
@@ -203,7 +204,10 @@ test("the Super agent inventory is ordered by the request and lists every slug",
   assert.ok(superAgent.includes("orderSkillsForRequest("));
   assert.ok(superAgent.includes("rankSkillsForRequest(request, skills)"));
   assert.ok(superAgent.includes("moreSkillSlugs: skills.slugs.slice(MAX_DESCRIBED_SKILLS, slugOnlyCut)"));
-  assert.ok(superAgent.includes("Also installed, by slug:"));
+  // Every slug is listed in name order in the session-stable directive; the
+  // request-ranked descriptions travel separately with the turn.
+  assert.ok(superAgent.includes("Installed, by slug: ${listedSlugs.join"));
+  assert.ok(superAgent.includes("## Skills matching this request"));
   // The old prefix listing hid everything past the first 120.
   assert.equal(superAgent.includes("MAX_LISTED_SKILLS"), false);
 });

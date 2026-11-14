@@ -175,7 +175,7 @@ test("the inline visualizer keeps its clickable artifact card directly below the
   // with a floating corner control.
   assert.doesNotMatch(inlineBranch, /onOpen=/);
   assert.match(cards, /function InlineArtifactFileCard/);
-  assert.match(cards, /onClick=\{\(\) => void context\.openArtifact\(artifact\.id\)\}/);
+  assert.match(cards, /onClick=\{\(\) => void context\.openArtifact\(artifact\.id, artifact\.version\)\}/);
   assert.doesNotMatch(embed, /onClick=\{onOpen\}/);
   assert.match(
     embed,

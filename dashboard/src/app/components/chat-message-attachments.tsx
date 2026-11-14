@@ -25,6 +25,12 @@ interface Props {
   attachmentNames?: readonly string[];
   /** Garden sources focused for this turn that still have previewable bytes. */
   sourceAttachments?: readonly AttachmentPreviewSource[];
+  /**
+   * The message is being edited: show every attachment as a plain chip with a
+   * remove control, so one can be left off the resend. The owner filters the
+   * removed names out of the props above.
+   */
+  onRemove?: (name: string) => void;
 }
 
 /** One attached-file chip, whether it links anywhere or not. */
@@ -58,6 +64,7 @@ export default function ChatMessageAttachments({
   attachments: allAttachments,
   attachmentNames: allAttachmentNames,
   sourceAttachments = [],
+  onRemove,
 }: Props) {
   const { attachments, attachmentNames } = useMemo(
     () => visibleChatMessageAttachments(allAttachments, allAttachmentNames),
@@ -149,6 +156,38 @@ export default function ChatMessageAttachments({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [images.length, openImageIndex]);
+
+  if (onRemove) {
+    const names = [
+      ...new Set([
+        ...sourceAttachments.map((source) => source.name),
+        ...attachments.map((attachment) => attachment.name),
+        ...fileEntries.map((attachment) => attachment.name),
+      ]),
+    ];
+    if (names.length === 0) return null;
+    return (
+      <div className="flex flex-wrap justify-end gap-1" data-testid="editable-chat-attachments">
+        {names.map((name) => (
+          <span key={name} className={FILE_CHIP_CLASS}>
+            <PaperclipIcon />
+            <span className="truncate">{name}</span>
+            <button
+              type="button"
+              onClick={() => onRemove(name)}
+              className="-mr-1 grid h-4 w-4 shrink-0 place-items-center rounded-full transition-colors hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]"
+              title={`Remove ${name} from this message`}
+              aria-label={`Remove ${name} from this message`}
+            >
+              <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M18 6 6 18" />
+              </svg>
+            </button>
+          </span>
+        ))}
+      </div>
+    );
+  }
 
   if (
     images.length === 0 &&

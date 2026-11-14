@@ -19,6 +19,8 @@ import {
   useState,
 } from "react";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
+import { useRecommendations } from "@/app/components/use-recommendations";
+import { ChatSuggestionCards } from "./chat-greeting-empty-state";
 import { useConfirmDialog } from "@/app/components/confirm-dialog";
 import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
 import { attachmentOnlyMessageText, reusableChatAttachments, type ChatAttachment } from "@/lib/chat-attachments";
@@ -129,13 +131,6 @@ function SettingsGearIcon({ className }: { className?: string }) {
   );
 }
 
-const SUGGESTED_PROMPTS = [
-  "Summarize the main ideas of this garden.",
-  "Quiz me on this garden.",
-  "Find gaps or missing prerequisites in these notes.",
-  "Trace the sources behind a key claim.",
-];
-
 function formatChatTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
@@ -161,6 +156,7 @@ export default function GardenAgentChat({
     setReasoningEffort,
     intelligenceModes: selectedIntelligenceModes,
   } = useAssistantIntelligence({ scope: `garden_chat:${gardenSlug}`, sessionId: session.sessionId, createdSessionId: session.createdSessionId, shared: true });
+  const recommendations = useRecommendations({ gardenSlug });
   const [activeAnswerIntelligence, setActiveAnswerIntelligence] = useState<{
     model: string;
     reasoningEffort: typeof selectedReasoningEffort;
@@ -663,7 +659,12 @@ export default function GardenAgentChat({
   );
 
   const editMessage = useCallback(
-    (messageIndex: number, text: string, branchGroupId: string) => {
+    (
+      messageIndex: number,
+      text: string,
+      branchGroupId: string,
+      detachedAttachmentNames: readonly string[] = [],
+    ) => {
       if (routeDeepResearchCommand(text, { branchGroupId })) return;
       void session.send(text, {
         model,
@@ -673,7 +674,9 @@ export default function GardenAgentChat({
         // An edit rewrites the words, not what they were about: the screenshot
         // the question referred to has to come with it.
         attachments: reusableChatAttachments(
-          session.messages[messageIndex]?.attachments,
+          session.messages[messageIndex]?.attachments?.filter(
+            (attachment) => !detachedAttachmentNames.includes(attachment.name),
+          ),
         ),
       });
     },
@@ -1153,19 +1156,14 @@ export default function GardenAgentChat({
                   correction.
                 </p>
               </div>
-              <div className="grid w-full max-w-md gap-2">
-                {SUGGESTED_PROMPTS.map((prompt) => (
-                  <button
-                    type="button"
-                    key={prompt}
-                    onClick={() => sendSuggestedPrompt(prompt)}
-                    disabled={busy}
-                    className="neu-button rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-xs text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {prompt}
-                  </button>
-                ))}
-              </div>
+              {/* Grounded garden cards only; an empty garden shows none. */}
+              <ChatSuggestionCards
+                suggestions={recommendations.map(item => item.prompt)}
+                suggestionDetails={Object.fromEntries(recommendations.map(item => [item.prompt, { label: item.sourceLabel, usefulness: item.usefulness }]))}
+                suggestionScopeKey={gardenSlug}
+                disabled={busy}
+                onSelectSuggestion={sendSuggestedPrompt}
+              />
             </div>
           }
         />

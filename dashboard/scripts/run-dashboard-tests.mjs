@@ -11,6 +11,7 @@ const TESTS_ROOT = path.join(DASHBOARD_ROOT, "tests");
  * serial so each test retains deterministic browser cleanup proof; production
  * admission now permits independently bounded heavyweight classes to overlap. */
 export const SERIAL_BROWSER_TEST_FILES = Object.freeze([
+  "diagram-in-chat-browser.test.mjs",
   "api-anything-ui.test.mjs",
   "system-prompts-browser.test.mjs",
   "desktop-tab-overflow-browser.test.mjs",
@@ -42,6 +43,7 @@ export const SERIAL_BROWSER_TEST_FILES = Object.freeze([
   "composer-layout-browser.test.mjs",
   "browser-terminal-layout-browser.test.mjs",
   "chat-prompt-suggestion-browser.test.mjs",
+  "sentence-completion-browser.test.mjs",
   "recommendations-browser.test.mjs",
   "composer-add-menu-browser.test.mjs",
   "composer-menu-search-browser.test.mjs",

@@ -112,7 +112,7 @@ test('separately bundled route importers share cached evidence, cards and invali
   b.invalidateRecommendations(1);
   a.state.completed = true;
   const fallback=await a.recommendationsForUser(1, {});
-  assert.equal(fallback.length,4);assert.ok(fallback.every(card=>card.sourceIds.length===0&&!card.voice));
+  assert.deepEqual(fallback,[],'a completed task leaves no card, not generic filler');
   assert.equal(a.state.reads, 2, 'Invalidation also discards the other importer’s evidence.');
   assert.deepEqual(a.preparedVoiceOpenersForUser(1), []);
   assert.deepEqual(b.preparedVoiceOpenersForUser(1), []);
@@ -127,7 +127,7 @@ test('a second bundled importer prevents an in-flight first importer from restor
   b.invalidateRecommendations(1);
   a.state.completed = true; a.state.hold = null;
   const fallback=await b.recommendationsForUser(1, {});
-  assert.equal(fallback.length,4);assert.ok(fallback.every(card=>card.sourceIds.length===0&&!card.voice));
+  assert.deepEqual(fallback,[],'a completed task leaves no card, not generic filler');
   release(); assert.deepEqual(await pending, []);
   assert.deepEqual(b.preparedVoiceOpenersForUser(1), []);
   assert.deepEqual(a.preparedVoiceOpenersForUser(1), []);

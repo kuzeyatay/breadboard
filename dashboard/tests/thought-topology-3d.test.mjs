@@ -91,6 +91,40 @@ test("3D camera preserves screen-plane dragging and scatters large scopes into a
         assert.ok(Math.min(...rim) / Math.max(...rim) > 0.9, "the outline stays circular throughout orbit");
       }
     }
+    // A library of Gardens: one separated sphere per Garden, laid out like its own map.
+    const sizes = [400, 60, 60, 5, 0];
+    const library = [garden, ...sizes.flatMap((size, g) => [
+      { id: `g${g}`, kind: "folder", sectorId: `g${g}`, folderId: null },
+      { id: `g${g}/sub`, kind: "folder", sectorId: `g${g}`, folderId: `g${g}` },
+      ...Array.from({ length: size }, (_, i) => ({
+        id: `g${g}/p${i}`, kind: "page", sectorId: `g${g}`, folderId: i % 2 ? `g${g}` : `g${g}/sub`,
+      })),
+    ])];
+    const separated = sphericalTopologyPositions(library, true);
+    assert.deepEqual(separated, sphericalTopologyPositions([...library].reverse(), true));
+    assert.deepEqual(separated.get("garden"), { x: 0, y: 0, z: 0 });
+    const reach = sizes.map((_, g) => {
+      const centre = separated.get(`g${g}`);
+      return Math.max(...library.filter((n) => n.sectorId === `g${g}`).map((n) => {
+        const p = separated.get(n.id);
+        return Math.hypot(p.x - centre.x, p.y - centre.y, p.z - centre.z);
+      }));
+    });
+    for (let a = 0; a < sizes.length; a++) {
+      assert.ok(Math.hypot(separated.get(`g${a}`).x, separated.get(`g${a}`).y) > reach[a] + 100, "library node stays outside every sphere");
+      for (let b = a + 1; b < sizes.length; b++) {
+        const p = separated.get(`g${a}`), q = separated.get(`g${b}`);
+        assert.ok(Math.hypot(p.x - q.x, p.y - q.y) > reach[a] + reach[b] + 100, `Gardens ${a} and ${b} are clearly apart`);
+      }
+    }
+    // One Garden's sphere matches the map it has on its own page.
+    const own = sphericalTopologyPositions(library.filter((n) => n.sectorId === "g1" && n.id !== "g1")
+      .map((n) => ({ ...n, sectorId: n.folderId === "g1" && n.kind === "page" ? n.id : "g1/sub" })));
+    const shifted = separated.get("g1/p0"), centre1 = separated.get("g1");
+    assert.ok(Math.abs(shifted.x - centre1.x - own.get("g1/p0").x) < 1e-6);
+    // Without the flag, and inside a single Garden, the shared sphere is unchanged.
+    assert.deepEqual(sphericalTopologyPositions(library), sphericalTopologyPositions(library, false));
+    assert.ok(Math.hypot(...Object.values(sphericalTopologyPositions(library).get("g0"))) < 2000);
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 });
 

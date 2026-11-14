@@ -566,6 +566,7 @@ type TabsAction =
   | { type: "browser-organization-target"; target: import("./browser-annotations").BrowserAnnotationTarget }
   | { type: "browser-organization-markers"; items: Array<{ id: string; target: import("./browser-annotations").BrowserAnnotationTarget }> }
   | { type: "browser-address-suggestions"; open: boolean; bottom?: number }
+  | { type: "browser-toolbar-error"; open: boolean; bottom?: number }
   | { type: "browser-extension-load" }
   | { type: "browser-extension-action"; id: string; menuId?: string }
   | { type: "browser-extension-reload"; id: string }
@@ -730,6 +731,7 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
             command.width <= 1_600))
       );
     case "browser-address-suggestions":
+    case "browser-toolbar-error":
       return typeof command.open === "boolean" &&
         (command.bottom === undefined ||
           (typeof command.bottom === "number" && Number.isFinite(command.bottom) &&

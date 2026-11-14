@@ -45,7 +45,7 @@ export async function GET(request: Request) {
         `SELECT m.id AS message_id, m.metadata AS metadata, m.created_at AS created_at,
                 c.public_id AS conversation_public_id, c.title AS conversation_title,
                 c.surface AS surface, c.legacy_chat_session_id AS legacy_chat_session_id
-         FROM conversation_messages m
+         FROM conversation_message_reads m
          JOIN conversations c ON c.id = m.conversation_id
          WHERE c.user_id = ?
            AND m.role = 'user'

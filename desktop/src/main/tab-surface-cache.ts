@@ -44,8 +44,18 @@ export class TabSurfaceCache {
  * commit, not physical RAM, is what ran out in the 2026-10-16 and 10-19 crashes,
  * so low free commit shortens the delay even while physical pressure is normal. */
 export function idleUnloadDelayMs(pressure: TabMemoryPressure, freeCommitMb: number | null): number {
-  if (pressure === "critical" || pressure === "emergency" || (freeCommitMb !== null && freeCommitMb < 4096)) return 0;
-  if (pressure === "constrained" || (freeCommitMb !== null && freeCommitMb < 8192)) return 5 * 60_000;
+  // On Windows the surface governor measures physical RAM. It can trim GPU
+  // surfaces while commit still has ample room for live documents. Use actual
+  // commit headroom for document eviction when it is available.
+  if (freeCommitMb !== null) {
+    if (freeCommitMb < 1024) return 0;
+    if (freeCommitMb < 4096) return 60_000;
+    if (freeCommitMb < 8192) return 5 * 60_000;
+    return 10 * 60_000;
+  }
+  if (pressure === "emergency") return 0;
+  if (pressure === "critical") return 60_000;
+  if (pressure === "constrained") return 5 * 60_000;
   return 10 * 60_000;
 }
 
@@ -53,14 +63,14 @@ export function idleUnloadDelayMs(pressure: TabMemoryPressure, freeCommitMb: num
  * few most recently left, so flipping between them stays instant. */
 export const WARM_BACKGROUND_TABS = 3;
 
-/** Ids of the `warm` background tabs left most recently. A zero delay means
- * memory is short, and then nothing is held warm. */
+/** Ids of the `warm` background tabs left most recently. Under acute pressure
+ * pages receive only the short grace period, rather than an indefinite lease. */
 export function warmBackgroundTabs(
   tabs: ReadonlyArray<{ id: number; backgroundSince?: number }>,
   delayMs: number,
   warm = WARM_BACKGROUND_TABS,
 ): Set<number> {
-  if (delayMs === 0) return new Set();
+  if (delayMs <= 60_000) return new Set();
   return new Set(tabs
     .filter((tab): tab is { id: number; backgroundSince: number } => tab.backgroundSince !== undefined)
     .sort((a, b) => b.backgroundSince - a.backgroundSince)

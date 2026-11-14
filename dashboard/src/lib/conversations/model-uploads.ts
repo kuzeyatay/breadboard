@@ -1,3 +1,4 @@
+import { attachmentReferenced } from "../storage/attachment-references.ts";
 // Ownership and lifetime for the stored bytes of an attached 3D model.
 //
 // The blob store (model-blob-store.ts) knows where bytes are; this knows whose
@@ -6,9 +7,8 @@
 // at that moment no message references it yet, so the message join every other
 // attachment is authorized through does not exist.
 //
-// Lifetime: a blob dies with the conversation that referenced it. Blobs that
-// were attached and then never sent have no owning message at all, so they are
-// swept once they are old enough to be certain they were abandoned.
+// Lifetime: explicit deletion may release a blob only after all indexed chat
+// references are gone. Unsent attachments remain protected user content.
 
 import type Database from "better-sqlite3";
 import db from "../db.ts";
@@ -19,11 +19,6 @@ import {
 import { removeModelBlob, type StoredModelBlob } from "./model-blob-store.ts";
 import { messageAttachments } from "./uploads.ts";
 
-/** How long an unsent blob is kept before it counts as abandoned. */
-const SWEEP_AGE_HOURS = 24;
-/** Upper bound on the work one opportunistic sweep may do. */
-const SWEEP_CANDIDATE_LIMIT = 50;
-const SWEEP_MESSAGE_LIMIT = 2_000;
 
 export interface ModelBlobRecord {
   blobId: string;
@@ -107,7 +102,7 @@ function conversationBlobIds(
 ): string[] {
   const rows = database
     .prepare(
-      `SELECT metadata FROM conversation_messages
+      `SELECT metadata FROM conversation_message_reads
        WHERE conversation_id = ? AND metadata LIKE '%mdl_%'`,
     )
     .all(conversationId) as Array<{ metadata: string | null }>;
@@ -133,58 +128,15 @@ export function removeConversationModelBlobs(
     const record = toRecord(select.get(blobId) as ModelBlobRow | undefined);
     return record ? [record] : [];
   });
-  return forgetBlobs(blobs, database);
+  return forgetBlobs(blobs.filter(blob => !attachmentReferenced(database, blob.blobId, conversationId)), database);
 }
 
-/**
- * Delete this user's aged blobs that no message refers to — the residue of an
- * attachment that was picked and then removed, or a draft never sent.
- *
- * Bounded on both sides: at most `SWEEP_CANDIDATE_LIMIT` blobs are considered
- * and at most `SWEEP_MESSAGE_LIMIT` messages are read, so this stays cheap
- * enough to run on the upload path.
- */
+/** Compatibility API: unsent uploads remain protected user content. */
 export function sweepUnreferencedModelBlobs(
   userId: number,
   database: Database.Database = db,
 ): number {
-  const candidates = (
-    database
-      .prepare(
-        `SELECT * FROM chat_model_blobs
-         WHERE user_id = ?
-           AND created_at < datetime('now', ?)
-         ORDER BY created_at
-         LIMIT ${SWEEP_CANDIDATE_LIMIT}`,
-      )
-      .all(userId, `-${SWEEP_AGE_HOURS} hours`) as ModelBlobRow[]
-  ).flatMap((row) => {
-    const record = toRecord(row);
-    return record ? [record] : [];
-  });
-  if (candidates.length === 0) return 0;
-
-  const referenced = new Set(
-    (
-      database
-        .prepare(
-          `SELECT m.metadata AS metadata
-           FROM conversation_messages m
-           JOIN conversations c ON c.id = m.conversation_id
-           WHERE c.user_id = ? AND m.metadata LIKE '%mdl_%'
-           ORDER BY m.id DESC
-           LIMIT ${SWEEP_MESSAGE_LIMIT}`,
-        )
-        .all(userId) as Array<{ metadata: string | null }>
-    ).flatMap((row) =>
-      messageAttachments(row.metadata).flatMap((attachment) =>
-        attachment.type === "model" ? [attachment.blobId] : [],
-      ),
-    ),
-  );
-
-  return forgetBlobs(
-    candidates.filter((blob) => !referenced.has(blob.blobId)),
-    database,
-  );
+  // Unsent uploads are user content. Age and a bounded history sample are
+  // not disposal authority; explicit chat deletion owns this lifecycle.
+  return 0;
 }

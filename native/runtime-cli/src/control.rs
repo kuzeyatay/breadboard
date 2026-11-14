@@ -139,6 +139,9 @@ struct ControlRequestPrelude {
 /// already-authorized operations; it never receives raw HTTP headers or the
 /// control bearer.
 pub(crate) trait RuntimeJobControl: Send + Sync {
+    fn storage_maintenance(&self) -> Result<breadboard_runtime_core::StorageMaintenanceReport, RuntimeJobControlError> {
+        Err(RuntimeJobControlError::Internal)
+    }
     fn reserve_job_input(
         &self,
         context: &AuthenticatedJobContext,
@@ -618,7 +621,8 @@ fn route_authority(path: &str) -> ControlRouteAuthority {
     } else if path == "/v1/shutdown" || path.starts_with("/v1/lifecycle/services/")
         || matches!(path, "/v1/lifecycle/quiesce" | "/v1/lifecycle/resume") {
         ControlRouteAuthority::Lifecycle
-    } else if path == "/v1/internal/jobs/learn-recovery"
+    } else if path == "/v1/internal/storage/maintenance"
+        || path == "/v1/internal/jobs/learn-recovery"
         || path == "/v1/jobs"
         || path.starts_with("/v1/jobs/")
         || path == "/v1/job-inputs"
@@ -957,6 +961,16 @@ where
     }
 
     match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/v1/internal/storage/maintenance") => {
+            if &*request.body != b"{}" {
+                write_control_response(stream,400,"Bad Request",b"{\"error\":\"bad-request\"}")?;
+            } else {
+                match job_control.storage_maintenance() {
+                    Ok(report) => write_control_response(stream,200,"OK",&bounded_json(&report)?)?,
+                    Err(_) => write_control_response(stream,503,"Service Unavailable",b"{\"error\":\"maintenance-unavailable\"}")?,
+                }
+            }
+        }
         ("POST", "/v1/lifecycle/quiesce") => {
             match shutdown.quiesce() {
                 Ok((workers, leases)) => write_control_response(stream, 200, "OK",
@@ -2560,7 +2574,11 @@ fn complete_buffered_request(
 }
 
 fn request_body_limit(method: &str, path: &str) -> usize {
-    if method == "POST" && path == "/v1/jobs" {
+    if method == "POST" && path == "/v1/internal/storage/maintenance" {
+        // This operation accepts only the exact empty object, and never a job
+        // specification or a caller-selected filesystem path.
+        2
+    } else if method == "POST" && path == "/v1/jobs" {
         MAX_REQUEST_BODY_BYTES
     } else if method == "POST" && path == "/v1/internal/jobs/learn-recovery" {
         MAX_LEARN_RECOVERY_REQUEST_BODY_BYTES
@@ -2588,6 +2606,7 @@ fn accepts_json_request_body(method: &str, path: &str) -> bool {
         && matches!(
             path,
             "/v1/jobs"
+                | "/v1/internal/storage/maintenance"
                 | "/v1/internal/jobs/learn-recovery"
                 | "/v1/jobs/lookup"
                 | "/v1/jobs/cancel-by-idempotency"
@@ -3034,6 +3053,7 @@ mod tests {
     struct UnreachableJobControl;
 
     struct RecordingJobControl {
+        storage_calls: Mutex<usize>,
         reserve_calls: Mutex<Vec<RuntimeJobInputReservationRequest>>,
         upload_attempts: Mutex<usize>,
         upload_calls: Mutex<Vec<(String, Vec<u8>)>>,
@@ -3053,6 +3073,7 @@ mod tests {
     impl RecordingJobControl {
         fn successful() -> Self {
             Self {
+                storage_calls: Mutex::new(0),
                 reserve_calls: Mutex::new(Vec::new()),
                 upload_attempts: Mutex::new(0),
                 upload_calls: Mutex::new(Vec::new()),
@@ -3506,6 +3527,10 @@ mod tests {
     }
 
     impl RuntimeJobControl for RecordingJobControl {
+        fn storage_maintenance(&self) -> Result<breadboard_runtime_core::StorageMaintenanceReport, RuntimeJobControlError> {
+            *self.storage_calls.lock().unwrap() += 1;
+            Ok(breadboard_runtime_core::StorageMaintenanceReport::default())
+        }
         fn reserve_job_input(
             &self,
             _context: &AuthenticatedJobContext,
@@ -3965,6 +3990,28 @@ mod tests {
         assert!(authorities
             .authenticate(Some("Bearer unknown-unknown-unknown-unknown"))
             .is_none());
+    }
+
+    #[test]
+    fn storage_maintenance_accepts_bounded_json_over_the_authenticated_socket() {
+        let jobs = RecordingJobControl::successful();
+        for (token, body, status) in [
+            (DASHBOARD_TOKEN, b"{}".as_slice(), "200 OK"),
+            (DASHBOARD_TOKEN, b"".as_slice(), "400 Bad Request"),
+            (DASHBOARD_TOKEN, b"[]".as_slice(), "400 Bad Request"),
+            (DASHBOARD_TOKEN, br#"{"path":"outside"}"#.as_slice(), "400 Bad Request"),
+            (LIFECYCLE_TOKEN, b"{}".as_slice(), "403 Forbidden"),
+        ] {
+            let headers = format!("Content-Type: application/json\r\nContent-Length: {}\r\n", body.len());
+            let (result, response) = issue_raw_job_control_request(
+                "POST", "/v1/internal/storage/maintenance", token, false,
+                &headers, body, &jobs,
+            );
+            assert!(result.is_ok());
+            assert!(response.starts_with(&format!("HTTP/1.1 {status}")), "{response}");
+        }
+        assert_eq!(*jobs.storage_calls.lock().unwrap(), 1);
+        assert!(jobs.submit_calls.lock().unwrap().is_empty());
     }
 
     #[test]

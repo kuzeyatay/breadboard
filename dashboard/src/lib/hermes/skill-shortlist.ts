@@ -67,6 +67,10 @@ export const ROUTED_SKILLS: ReadonlySet<string> = new Set([
   "step-parts",
   "urdf",
   "watch",
+  // Film owns the render tool and has the router; Video shares that tool and is
+  // reached by its own command, so neither is offered by the lexical fallback.
+  "video",
+  "film",
   "patent-disclosure-skill",
   "image-to-3d",
   "spotify",
@@ -74,6 +78,7 @@ export const ROUTED_SKILLS: ReadonlySet<string> = new Set([
   "recognize-music",
   "ascii-art-diagrams",
   "diagram-design",
+  "diagram-in-chat",
   "github-explorer",
   "humanize",
   "computer-use",

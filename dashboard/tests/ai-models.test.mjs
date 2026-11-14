@@ -231,3 +231,9 @@ test('chatgpt.com tab models sit in their own section and are marked (web)', () 
   assert.deepEqual(groups.map((group) => group.vendorLabel), ['OpenAI', 'OpenAI (web)', 'Anthropic']);
   assert.deepEqual(groups[1].models, ['openaiweb/auto', 'openaiweb/gpt-5-2']);
 });
+
+test('Free LLM API heads the menu, above OpenAI', () => {
+  const groups = groupAssistantModels(['gpt-5.6-sol', 'cliproxy/claude-sonnet-5', 'freellmapi/auto']);
+  assert.deepEqual(groups.map((group) => group.vendorLabel), ['Free LLM API', 'OpenAI', 'Anthropic']);
+  assert.equal(formatAssistantModelName('freellmapi/auto'), 'Auto');
+});

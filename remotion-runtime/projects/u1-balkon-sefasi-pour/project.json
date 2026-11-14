@@ -1,0 +1,102 @@
+{
+  "creativeDirection": "look: Deep forest-espresso darkness lit by warm tungsten and sage accents, where matte stoneware ceramics, orbiting roasted beans, and a continuous espresso pour meet rising steam and crema, contrasted by one sunlit cream stoneware overhead shot.",
+  "format": "landscape",
+  "audience": "Visitors to balkonsefasi.com looking for specialty coffee, pastries, and a calm neighborhood cafe in Kozyatagi, Kadikoy",
+  "duration": 26,
+  "scenes": [
+    {
+      "duration": 3,
+      "purpose": "Set the morning balcony mood among trees before the drop",
+      "id": "morning-mist",
+      "transitionOut": "hard cut on the 3.0s drop with light flash",
+      "shots": [
+        {
+          "camera": "slow dolly in toward empty stoneware cup",
+          "text": [
+            "Kozyatağı",
+            "A balcony among the trees"
+          ],
+          "renderer": "three",
+          "visualType": "3d"
+        }
+      ],
+      "file": "Video.tsx"
+    },
+    {
+      "transitionOut": "hard cut on 12.0s hit into daylight stoneware",
+      "file": "Video.tsx",
+      "purpose": "Show rich espresso pouring from a gooseneck spout into the stoneware cup with splash and rising steam",
+      "id": "the-pour",
+      "duration": 9,
+      "shots": [
+        {
+          "visualType": "3d",
+          "renderer": "three",
+          "camera": "3/4 close-up, then low rim-level orbit, then rising 45-degree pull back",
+          "text": [
+            "Freshly poured",
+            "Espresso and filter, until 01:00"
+          ]
+        }
+      ]
+    },
+    {
+      "transitionOut": "hard cut on 18.0s hit back to evening warmth",
+      "purpose": "Provide bright stoneware daylight contrast with orbiting roasted coffee beans",
+      "shots": [
+        {
+          "text": [
+            "Balkon Sefası",
+            "Specialty coffee and homemade cakes"
+          ],
+          "visualType": "3d",
+          "camera": "high overhead glide descending toward crema surface",
+          "renderer": "three"
+        }
+      ],
+      "duration": 6,
+      "id": "crema-daylight",
+      "file": "Video.tsx"
+    },
+    {
+      "transitionOut": "hard cut on 21.0s beat",
+      "shots": [
+        {
+          "camera": "macro pull-back above cup rim",
+          "renderer": "three",
+          "text": [
+            "Home away home",
+            "Kadıköy, Istanbul"
+          ],
+          "visualType": "3d"
+        }
+      ],
+      "file": "Video.tsx",
+      "id": "steam-craft",
+      "duration": 3,
+      "purpose": "Highlight rising aromatic steam ribbons and handcrafted ceramics"
+    },
+    {
+      "shots": [
+        {
+          "visualType": "mixed",
+          "text": [
+            "Balkon Sefası",
+            "Kozyatağı · 09:00 to 01:00",
+            "balkonsefasi.com"
+          ],
+          "renderer": "three",
+          "camera": "balanced off-center wide shot slowly settling"
+        }
+      ],
+      "id": "brand-finale",
+      "purpose": "Hold the Balkon Sefasi mark beside the steaming cup as music fades out",
+      "file": "Video.tsx",
+      "duration": 5,
+      "transitionOut": "fade out with music tail"
+    }
+  ],
+  "title": "Balkon Sefası",
+  "purpose": "Introduce Balkon Sefasi on its website hero with a tactile 3D coffee pouring sequence",
+  "fps": 60
+}

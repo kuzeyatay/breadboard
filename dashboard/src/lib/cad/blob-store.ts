@@ -54,6 +54,18 @@ export const CAD_FILE_DESCRIPTORS: Record<
     label: "CadQuery source",
     binary: false,
   },
+  fcstd: {
+    filename: "model.FCStd",
+    mimeType: "application/x-extension-fcstd",
+    label: "FCStd (native FreeCAD document)",
+    binary: true,
+  },
+  "freecad-source": {
+    filename: "freecad-model.py",
+    mimeType: "text/x-python; charset=utf-8",
+    label: "FreeCAD Python source",
+    binary: false,
+  },
   // A SolidWorks build has no Python program; its design is the ordered
   // operation list, which belongs in its own slot rather than in a file called
   // model.py that contains JSON.

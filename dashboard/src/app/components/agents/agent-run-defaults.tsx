@@ -39,6 +39,13 @@ const secondaryButton =
  * desktop application, and reading this must never start one.
  */
 const STATUS_PROBES: Record<string, (signal: AbortSignal) => Promise<string>> = {
+  freecad: async (signal) => {
+    const response = await fetch("/api/cad/health", { cache: "no-store", signal });
+    const payload = (await response.json().catch(() => ({}))) as {
+      engines?: { freecad?: { message?: string } };
+    };
+    return payload.engines?.freecad?.message ?? "";
+  },
   solidworks: async (signal) => {
     const response = await fetch("/api/cad/health", { cache: "no-store", signal });
     const payload = (await response.json().catch(() => ({}))) as {

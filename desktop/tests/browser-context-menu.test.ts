@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ContextMenuParams } from "electron";
-import { browserContextMenuTemplate, cleanBrowserContextLink } from "../src/main/browser-context-menu";
+import { browserContextMenuTemplate, browserSelectionLink, cleanBrowserContextLink } from "../src/main/browser-context-menu";
 
 const params = (patch: Partial<ContextMenuParams> = {}): ContextMenuParams => ({
   linkURL: "", linkText: "", selectionText: "", srcURL: "", pageURL: "https://example.com/", frameURL: "",
@@ -41,6 +41,24 @@ test("clean links preserve functional parameters and untouched signed URL encodi
   assert.equal(cleanBrowserContextLink(signed.replace("#part", "&utm_source=mail#part")), signed);
   assert.equal(cleanBrowserContextLink("https://example.com/?id=2&utm_source=one&utm_source=two&FBCLID=track#part"), "https://example.com/?id=2#part");
   assert.equal(menu({ linkURL: signed }).find(item => item.id === "copy-clean-link")?.enabled, false);
+});
+
+test("selection links retain anchors, replace old highlights, and escape text-fragment delimiters", () => {
+  const link = browserSelectionLink(params({ pageURL: "https://example.com/article#section:~:text=old", selectionText: "  A-B, C & café  " }));
+  assert.equal(link, "https://example.com/article#section:~:text=A%2DB%2C%20C%20%26%20caf%C3%A9");
+  assert.equal(browserSelectionLink(params({ pageURL: "https://example.com/article", frameURL: "https://frame.example/document", selectionText: "text" })), "https://frame.example/document#:~:text=text");
+  assert.equal(browserSelectionLink(params({ pageURL: "file:///secret", selectionText: "text" })), null);
+  assert.equal(browserSelectionLink(params()), null);
+});
+
+test("selected page text offers the same useful actions without navigation clutter", () => {
+  const items = menu({ selectionText: "Selected text", editFlags: { ...params().editFlags, canCopy: true } });
+  for (const id of ["copy", "select-all", "copy-highlight-link", "copy-quote", "search", "translate-text", "translate-text-dutch", "ask"]) {
+    assert.equal(items.find(item => item.id === id)?.enabled, true, id);
+  }
+  assert.ok(!items.some(item => item.id === "reload"));
+  const password = menu({ selectionText: "secret", isEditable: true, formControlType: "input-password" });
+  assert.ok(!password.some(item => ["copy-highlight-link", "copy-quote"].includes(item.id ?? "")));
 });
 
 test("editing honors Chromium capabilities and password fields never offer text export actions", () => {

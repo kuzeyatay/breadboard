@@ -33,6 +33,7 @@ test('chat updates do not remeasure the draft; editing, rewrapping, viewport cap
       ${constants}
       function Composer({value, onChange, noise}) {
         const compact = false;
+        const menuSearch = null, sentenceCompletion = {text: null};
         const internalTextareaRef = useRef(null), commandBackdropRef = useRef(null);
         ${hooks}
         return <div id="container"><textarea rows={1} ref={assignTextareaRef} value={value} onChange={e=>onChange(e.target.value)}/><span>{noise}</span></div>;

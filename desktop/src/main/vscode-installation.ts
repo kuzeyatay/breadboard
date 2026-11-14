@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { releaseInstallationDownload } from "../shared/released-downloads";
 
 export interface VSCodeInstallation { executable: string; kind: "installed" | "managed" }
 export interface VSCodeStorage { stateRoot: string; payloadRoot: string; bulkRoot?: string }
@@ -144,6 +145,10 @@ export async function installVSCode(storage: VSCodeStorage, onProgress: (phase: 
     signal.throwIfAborted();
     await fs.promises.mkdir(storage.stateRoot, { recursive: true });
     await fs.promises.writeFile(path.join(storage.stateRoot, "managed.json"), JSON.stringify({ commit: release.version }));
+    // If immediate removal is blocked, the idle coordinator can recognize this
+    // verified, released archive after seven days without guessing from its age.
+    try { if (fs.existsSync(path.join(temp, "vscode.zip"))) releaseInstallationDownload(temp, "vscode.zip"); }
+    catch { /* A receipt failure cannot invalidate an already verified install. */ }
     return { executable, kind: "managed" };
   } finally {
     // This unique staging directory is created above, always under our versions directory.

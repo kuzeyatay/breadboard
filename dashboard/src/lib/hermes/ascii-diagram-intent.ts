@@ -33,13 +33,18 @@ const MAKE_NOUN_WITH_STYLE = new RegExp(
   "i",
 );
 
+const MAKE_STYLED_DIAGRAM = new RegExp(
+  `\\b${MAKE_VERB}\\b[^.!?]{0,60}\\b${ASCII_STYLE}\\b[^.!?]{0,35}\\b${DIAGRAM_NOUN}\\b`,
+  "i",
+);
+
 const VERB_WITH_TEXT_DIAGRAM = new RegExp(
-  `\\b${MAKE_VERB}\\b[^.!?]{0,60}\\b(?:text[\\s-]+diagram|text[\\s-]+flowchart|box[\\s-]and[\\s-]arrow)\\b`,
+  `\\b${MAKE_VERB}\\b[^.!?]{0,60}\\b(?:text[\\s-]+diagram|text[\\s-]+flowchart)\\b`,
   "i",
 );
 
 const TEXT_DIAGRAM_NOUN_LED =
-  /\b(?:text[\s-]+diagram|text[\s-]+flowchart|box[\s-]and[\s-]arrow(?:\s+layout)?)\b[^.!?]{0,40}\b(?:of|for|showing|that\s+shows|please)\b/i;
+  /\b(?:text[\s-]+diagram|text[\s-]+flowchart)\b[^.!?]{0,40}\b(?:of|for|showing|that\s+shows|please)\b/i;
 
 /** "No Mermaid; ASCII please" and similarly terse but explicit requests. */
 const TERSE_ASCII_REQUEST =
@@ -120,6 +125,7 @@ export function shouldAutoSelectAsciiDiagram(
     QUALIFIED_NOUN_LED.test(prose) ||
     VISUAL_VERB_WITH_STYLE.test(prose) ||
     MAKE_NOUN_WITH_STYLE.test(prose) ||
+    MAKE_STYLED_DIAGRAM.test(prose) ||
     VERB_WITH_TEXT_DIAGRAM.test(prose) ||
     TEXT_DIAGRAM_NOUN_LED.test(prose) ||
     TERSE_ASCII_REQUEST.test(prose) ||

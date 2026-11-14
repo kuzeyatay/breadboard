@@ -164,6 +164,7 @@ const GATEWAY_GROUPS: Readonly<Record<string, string>> = {
   openrouter: 'OpenRouter',
   groq: 'Groq',
   together: 'Together AI',
+  freellmapi: 'Free LLM API',
   custom: 'Custom endpoint',
 };
 
@@ -218,6 +219,11 @@ export function groupAssistantModels(
     }
     group.models.push(modelId);
   }
+  // Free models head the menu; the rest keep first-appearance order.
+  groups.sort(
+    (a, b) =>
+      Number(b.vendorId === 'freellmapi') - Number(a.vendorId === 'freellmapi'),
+  );
   return groups;
 }
 
@@ -306,6 +312,8 @@ export function formatAssistantModelName(modelId: string): string {
   if (bare === 'gpt-5.6-terra') return 'GPT-5.6 Terra';
   if (bare === 'gpt-5.6-luna-reserve') return 'GPT-5.6 Luna (Reserve)';
   if (bare === 'gpt-5.6-luna') return 'GPT-5.6 Luna';
+  // FreeLLMAPI's router: it picks whichever free model is available.
+  if (modelId === 'freellmapi/auto') return 'Auto';
   if (bare === GLOBAL_MODEL_SENTINEL) return 'Default model';
   // A route rather than a version, so it reads as an aside instead of turning
   // into a version number the way `formatClaudeModelName` would spell it.

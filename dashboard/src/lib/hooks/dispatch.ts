@@ -13,7 +13,9 @@ import {
   authorizeGardenAccess,
   resolveConversationRuntime,
 } from "@/lib/hermes/session-service.ts";
-import type { HookRow } from "./store.ts";
+import db from "@/lib/db.ts";
+import { describeHookCommandResult, runHookCommand } from "./command.ts";
+import { hookAction, recordHookResult, type HookRow } from "./store.ts";
 
 const MAX_PAYLOAD_CHARS = 8_000;
 
@@ -123,9 +125,43 @@ async function dispatchWorkflowHook(hook: HookRow, payload: unknown): Promise<vo
   });
 }
 
+/**
+ * Run the hook's shell command with the event as JSON on stdin. The outcome is
+ * kept on the hook row, since nobody is watching a terminal when it runs.
+ */
+async function dispatchCommandHook(hook: HookRow, payload: unknown): Promise<void> {
+  let timeoutSeconds: unknown;
+  try {
+    timeoutSeconds = JSON.parse(hook.provider_config || "{}").timeoutSeconds;
+  } catch {
+    timeoutSeconds = undefined;
+  }
+  const result = await runHookCommand(hook.command ?? "", payload, {
+    ...(typeof timeoutSeconds === "number" && timeoutSeconds > 0
+      ? { timeoutMs: timeoutSeconds * 1_000 }
+      : {}),
+    env: {
+      BREADBOARD_HOOK_ID: hook.id,
+      BREADBOARD_HOOK_NAME: hook.name,
+      BREADBOARD_HOOK_EVENT: hook.provider,
+    },
+  });
+  const summary = describeHookCommandResult(result);
+  recordHookResult(hook.id, summary, db);
+  if (result.timedOut || result.exitCode !== 0) {
+    console.warn(`[hooks] hook ${hook.id} command: ${summary}`);
+  }
+}
+
 /** Fire-and-forget entry point. Never throws — every failure is caught and logged. */
 export function dispatchHook(hook: HookRow, payload: unknown): void {
-  const run = hook.mode === "workflow" ? dispatchWorkflowHook(hook, payload) : dispatchChatHook(hook, payload);
+  const action = hookAction(hook);
+  const run =
+    action === "command"
+      ? dispatchCommandHook(hook, payload)
+      : action === "workflow"
+        ? dispatchWorkflowHook(hook, payload)
+        : dispatchChatHook(hook, payload);
   run.catch((error) => {
     console.error(`[hooks] dispatch failed for hook ${hook.id} (${hook.mode})`, error);
   });

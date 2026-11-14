@@ -37,7 +37,7 @@ export async function GET(
     const row = db
       .prepare(
         `SELECT m.metadata AS metadata
-         FROM conversation_messages m
+         FROM conversation_message_reads m
          JOIN conversations c ON c.id = m.conversation_id
          WHERE m.id = ? AND c.user_id = ?`,
       )

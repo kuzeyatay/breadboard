@@ -1,4 +1,4 @@
 interface:
-  display_name: "Manim"
-  short_description: "Create polished mathematical animation videos"
-  default_prompt: "Use $manim to create and publish a clear Manim animation explaining this concept."
+  display_name: "Math Animation"
+  short_description: "Explain math with an animated, narrated video"
+  default_prompt: "Use $math-animation to create and publish a clear Manim animation explaining this concept."

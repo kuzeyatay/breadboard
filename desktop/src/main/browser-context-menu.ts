@@ -5,7 +5,7 @@ export type BrowserContextAction =
   | "open-link-tab" | "open-link-window" | "open-link-private" | "bookmark-link" | "save-link" | "copy-link" | "copy-clean-link"
   | "open-image" | "save-image" | "copy-image" | "copy-image-link" | "open-media" | "save-media" | "copy-media-link" | "picture-in-picture"
   | "undo" | "redo" | "cut" | "copy" | "paste" | "paste-plain" | "delete" | "select-all"
-  | "comment" | "search" | "translate-text" | "ask" | "back" | "forward" | "reload" | "bookmark-page" | "save-page" | "print" | "translate-page" | "copy-page-link" | "inspect";
+  | "copy-highlight-link" | "copy-quote" | "comment" | "search" | "translate-text" | "translate-text-dutch" | "ask" | "back" | "forward" | "reload" | "bookmark-page" | "save-page" | "print" | "translate-page" | "copy-page-link" | "inspect";
 
 export function browserContextWebUrl(value: string): boolean {
   try { return ["http:", "https:"].includes(new URL(value).protocol); } catch { return false; }
@@ -29,6 +29,17 @@ export function cleanBrowserContextLink(value: string): string {
   // +), which can invalidate a signed download URL with tracking appended.
   if (changed) url.search = retained.join("&");
   return changed ? url.href : value;
+}
+
+export function browserSelectionLink(params: Pick<ContextMenuParams, "pageURL" | "frameURL" | "selectionText">): string | null {
+  const source = params.frameURL || params.pageURL;
+  if (!browserContextWebUrl(source) || !params.selectionText.trim()) return null;
+  const url = new URL(source);
+  // Preserve the page's anchor while replacing any previous text directive.
+  const anchor = url.hash.split(":~:", 1)[0];
+  const text = encodeURIComponent(params.selectionText.trim()).replace(/-/g, "%2D");
+  url.hash = `${anchor}:~:text=${text}`;
+  return url.href;
 }
 
 function selectedText(params: ContextMenuParams): string {
@@ -96,15 +107,25 @@ export function browserContextMenuTemplate(
       item("Select All", "select-all", flags.canSelectAll, "CommandOrControl+A"),
     ]);
   } else if (params.selectionText.trim()) {
-    groups.push([item("Copy", "copy", flags.canCopy, "CommandOrControl+C")]);
+    groups.push([
+      item("Copy", "copy", flags.canCopy, "CommandOrControl+C"),
+      item("Select All", "select-all", flags.canSelectAll, "CommandOrControl+A"),
+    ]);
+  }
+  if (params.selectionText.trim() && params.formControlType !== "input-password") {
+    groups.push([
+      item("Copy Link to Highlight", "copy-highlight-link", Boolean(browserSelectionLink(params))),
+      item("Copy Quote with Source", "copy-quote"),
+    ]);
   }
   const text = selectedText(params);
   if (text) {
     const label = text.replace(/\s+/gu, " ");
-    const preview = (label.length > 36 ? `${label.slice(0, 36)}…` : label).replace(/&/g, "&&");
+    const preview = (label.length > 24 ? `${label.slice(0, 24)}…` : label).replace(/&/g, "&&");
     groups.push([
       item(`Search Google for “${preview}”`, "search"),
       item(params.selectionText.trim() ? "Translate Selection to English" : "Translate Link Text to English", "translate-text"),
+      item(params.selectionText.trim() ? "Translate Selection to Dutch" : "Translate Link Text to Dutch", "translate-text-dutch"),
       item("Ask Breadboard", "ask"),
     ]);
   } else if (params.linkURL && browserContextWebUrl(params.linkURL)) {
@@ -142,6 +163,7 @@ export interface BrowserContextControls {
 export async function runBrowserContextAction(
   action: BrowserContextAction, contents: WebContents, params: ContextMenuParams, controls: BrowserContextControls,
 ): Promise<void> {
+  if (runBrowserSelectionAction(action, contents, params, controls)) return;
   const open = (url: string, background = true) => { if (browserContextWebUrl(url)) controls.openTab(url, background); };
   switch (action) {
     case "comment": await controls.comment?.(); return;
@@ -161,21 +183,45 @@ export async function runBrowserContextAction(
     case "copy-image": contents.copyImageAt(params.x, params.y); return;
     case "copy-image-link": case "copy-media-link": clipboard.writeText(params.srcURL); return;
     case "copy-page-link": clipboard.writeText(params.pageURL); return;
-    case "undo": contents.undo(); return;
-    case "redo": contents.redo(); return;
-    case "cut": contents.cut(); return;
-    case "copy": contents.copy(); return;
-    case "paste": contents.paste(); return;
-    case "paste-plain": contents.pasteAndMatchStyle(); return;
-    case "delete": contents.delete(); return;
-    case "select-all": contents.selectAll(); return;
-    case "search": if (selectedText(params)) open(`https://www.google.com/search?q=${encodeURIComponent(selectedText(params))}`, false); return;
-    case "translate-text": if (selectedText(params)) open(`https://translate.google.com/?sl=auto&tl=en&text=${encodeURIComponent(selectedText(params))}&op=translate`, false); return;
-    case "ask": controls.ask([selectedText(params), params.linkURL].filter(Boolean).join("\n").slice(0, 8_000)); return;
     case "back": case "forward": case "reload": controls.navigate(action); return;
     case "save-page": await controls.pageAction("save"); return;
     case "translate-page": await controls.pageAction("translate"); return;
     case "print": case "picture-in-picture": await controls.pageAction(action); return;
-    case "inspect": contents.inspectElement(params.x, params.y); return;
+  }
+}
+
+/** The text actions also work on trusted app pages without browser-only controls. */
+export function runBrowserSelectionAction(
+  action: BrowserContextAction, contents: WebContents, params: ContextMenuParams,
+  controls: Pick<BrowserContextControls, "openTab" | "ask">,
+): boolean {
+  const open = (url: string) => controls.openTab(url, false);
+  switch (action) {
+    case "copy-highlight-link": {
+      if (params.formControlType === "input-password") return true;
+      const link = browserSelectionLink(params);
+      if (link) clipboard.writeText(link);
+      return true;
+    }
+    case "copy-quote":
+      if (params.formControlType !== "input-password" && params.selectionText.trim()) {
+        clipboard.writeText(`${params.selectionText.trim().split(/\r?\n/).map(line => `> ${line}`).join("\n")}\n\n${params.frameURL || params.pageURL}`);
+      }
+      return true;
+    case "undo": contents.undo(); return true;
+    case "redo": contents.redo(); return true;
+    case "cut": contents.cut(); return true;
+    case "copy": contents.copy(); return true;
+    case "paste": contents.paste(); return true;
+    case "paste-plain": contents.pasteAndMatchStyle(); return true;
+    case "delete": contents.delete(); return true;
+    case "select-all": contents.selectAll(); return true;
+    case "search": if (selectedText(params)) open(`https://www.google.com/search?q=${encodeURIComponent(selectedText(params))}`); return true;
+    case "translate-text": case "translate-text-dutch":
+      if (selectedText(params)) open(`https://translate.google.com/?sl=auto&tl=${action === "translate-text-dutch" ? "nl" : "en"}&text=${encodeURIComponent(selectedText(params))}&op=translate`);
+      return true;
+    case "ask": controls.ask([selectedText(params), params.linkURL].filter(Boolean).join("\n").slice(0, 8_000)); return true;
+    case "inspect": contents.inspectElement(params.x, params.y); return true;
+    default: return false;
   }
 }

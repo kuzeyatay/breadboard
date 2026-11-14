@@ -718,9 +718,18 @@ async function mountThoughtTopologyScene(
     }, 0))
   }
   const gardenSlug = payload.garden.slug
+  // A library of several Gardens (Quartz aggregate or the profile map) draws
+  // one sphere per Garden. Pins from the old shared sphere do not carry over.
+  const gardenSpheres =
+    !context.scopeFolderPath &&
+    payload.folders.some(
+      (folder) => folder.id === "aggregate:root" || folder.id === "profile-thought-topology:root",
+    )
   const positionScope = context.scopeFolderPath
     ? `${gardenSlug}:folder:${context.scopeFolderPath}`
-    : `${gardenSlug}:root`
+    : gardenSpheres
+      ? `${gardenSlug}:gardens`
+      : `${gardenSlug}:root`
   const storedPositions = interactive ? readStoredPositions(positionScope) : {}
   const planOptions = {
     preview: compact,
@@ -742,6 +751,7 @@ async function mountThoughtTopologyScene(
       (settings.filteredLayout === "cross-section" && settings.excludedFolderIds.length > 0)
       ? planThoughtTopology(payload, { scopeFolderPath: context.scopeFolderPath }).nodes
       : plan.nodes,
+    gardenSpheres,
   )
   await yieldIfNeeded()
   const depthSpread = [...plannedHomes.values()].reduce(

@@ -85,7 +85,7 @@ export function validateRuntimeV2ManimEnvironment(environment) {
     !/^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,511}$/u.test(environment.MANIM_DOCKER_IMAGE)
   ) fail("The sealed Manim Docker runtime is unavailable.");
   const timeout = Number(environment.MANIM_TIMEOUT_MS);
-  if (!Number.isSafeInteger(timeout) || timeout < 30_000 || timeout > 6 * 60_000) {
+  if (!Number.isSafeInteger(timeout) || timeout < 30_000 || timeout > 6 * 60 * 60_000) {
     fail("The sealed Manim timeout is invalid.");
   }
 }

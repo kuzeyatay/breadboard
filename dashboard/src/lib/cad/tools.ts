@@ -23,6 +23,8 @@ import {
   type CadExportRequest,
 } from "./service.ts";
 import { buildWithSolidWorks } from "./solidworks/backend.ts";
+import { buildWithFreeCAD } from "./freecad/backend.ts";
+import { FREECAD_PROGRAM_INSTRUCTIONS } from "./freecad/prompts.ts";
 import { SUPPORTED_OPERATIONS } from "./solidworks/operations.ts";
 import {
   cadAssemblySchema,
@@ -205,7 +207,7 @@ const exportModelArgs = z.object({
   projectId: z.string().min(1),
   revision: z.number().int().min(1).optional(),
   formats: z
-    .array(z.enum(["step", "stl", "glb", "3mf", "sldprt", "source", "operations", "spec", "report"]))
+    .array(z.enum(["step", "stl", "glb", "3mf", "sldprt", "fcstd", "freecad-source", "source", "operations", "spec", "report"]))
     .max(10)
     .default([]),
 });
@@ -253,7 +255,7 @@ const DESIGN_SPEC_SCHEMA: Record<string, unknown> = {
         properties: {
           id: {
             type: "string",
-            description: "The exact key used in the CadQuery program's params dict.",
+            description: "The exact key used in the geometry program's params dict.",
           },
           label: { type: "string", maxLength: 120 },
           value: { type: ["number", "string", "boolean"] },
@@ -596,7 +598,7 @@ export const CAD_TOOL_DEFINITIONS: ToolDefinition[] = [
           type: "array",
           items: {
             type: "string",
-            enum: ["step", "stl", "glb", "3mf", "sldprt", "source", "operations", "spec", "report"],
+            enum: ["step", "stl", "glb", "3mf", "sldprt", "fcstd", "freecad-source", "source", "operations", "spec", "report"],
           },
         },
       },
@@ -692,6 +694,15 @@ const SOLIDWORKS_GENERATE_MODEL: ToolDefinition = {
 
 /** The tool contracts for one backend. CadQuery's are the shipped defaults. */
 export function cadToolDefinitions(engine: CadEngineId = DEFAULT_CAD_ENGINE): ToolDefinition[] {
+  if (engine === "freecad") return CAD_TOOL_DEFINITIONS.map((tool) => tool.name === "cad_generate_model" ? {
+    ...tool,
+    description: "Build a native FreeCAD document through FreeCAD MCP, export and measure the geometry, validate it, and save a revision with FCStd, STEP and preview files.",
+    parameters: { ...SOLIDWORKS_GENERATE_MODEL.parameters, properties: {
+      ...(SOLIDWORKS_GENERATE_MODEL.parameters.properties as Record<string, unknown>),
+      source: { type: "string", description: FREECAD_PROGRAM_INSTRUCTIONS.join("\n") },
+      timeoutMs: { type: "integer", minimum: 1000, maximum: 300000 },
+    } },
+  } : tool);
   if (engine !== "solidworks") return CAD_TOOL_DEFINITIONS;
   return CAD_TOOL_DEFINITIONS.map((tool) =>
     tool.name === "cad_generate_model" ? SOLIDWORKS_GENERATE_MODEL : tool,
@@ -991,7 +1002,10 @@ export async function buildAndRecord(
             ...(context.signal ? { signal: context.signal } : {}),
             ...(context.emit ? { emit: context.emit } : {}),
           })
-        : await cadServiceExecute(executeRequest, {
+        : engine === "freecad" ? await buildWithFreeCAD({
+            source: input.source, request: executeRequest,
+            env: context.env, signal: context.signal, emit: context.emit,
+          }) : await cadServiceExecute(executeRequest, {
             ...(context.env ? { env: context.env } : {}),
             ...(context.signal ? { signal: context.signal } : {}),
           });
@@ -1069,7 +1083,7 @@ export async function buildAndRecord(
 
   const issues = [
     ...normalizeIssues(response.issues),
-    ...(engine === "cadquery" ? unusedCadParameterIssues(input.source, recordedSpec) : []),
+    ...(engine !== "solidworks" ? unusedCadParameterIssues(input.source, recordedSpec) : []),
   ];
   const status = statusFromIssues(issues);
   const passed = status !== "invalid";
@@ -1125,7 +1139,7 @@ export async function buildAndRecord(
   }
   // The design's source, under the slot that matches what it actually is: a
   // CadQuery program, or a SolidWorks operation list.
-  files.push({ format: engine === "solidworks" ? "operations" : "source", content: input.source });
+  files.push({ format: engine === "solidworks" ? "operations" : engine === "freecad" ? "freecad-source" : "source", content: input.source });
   files.push({ format: "spec", content: `${JSON.stringify(spec, null, 2)}\n` });
   files.push({
     format: "report",
@@ -1284,7 +1298,11 @@ function createProjectTool(rawArguments: unknown, context: CadToolContext): CadT
     expectedSolidCount: expectedSolidCount(merged) ?? null,
     defaults: context.defaults,
     disclaimers: disclaimers(context.safety),
-    next: "Call cad_generate_model with the CadQuery program for this specification.",
+    next: context.engine === "freecad"
+      ? "Call cad_generate_model with a FreeCAD Python program defining build_model(doc, params) for this specification."
+      : context.engine === "solidworks"
+        ? "Call cad_generate_model with the SolidWorks operation program for this specification."
+        : "Call cad_generate_model with the CadQuery program for this specification.",
   };
 }
 

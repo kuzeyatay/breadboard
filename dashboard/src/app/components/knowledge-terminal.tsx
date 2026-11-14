@@ -1024,6 +1024,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
                   greeting={chatGreeting.greeting}
                   suggestions={chatGreeting.suggestions}
                   suggestionScopeKey={chatGreeting.suggestionScopeKey}
+                  suggestionDetails={chatGreeting.suggestionDetails}
                   onSelectSuggestion={fillComposerWithPrompt}
                 />
               ) : (
@@ -1098,6 +1099,9 @@ export default function KnowledgeTerminal({ scope }: Props) {
               attachments={chatAttachments}
               onRemoveAttachment={(index) =>
                 setChatAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))
+              }
+              onReplaceAttachment={(index, attachment) =>
+                setChatAttachments((current) => current.map((item, itemIndex) => (itemIndex === index ? attachment : item)))
               }
               statusMessage={attachmentStatus}
               voiceMessages={messages}

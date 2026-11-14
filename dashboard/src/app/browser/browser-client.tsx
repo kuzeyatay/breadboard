@@ -5,6 +5,7 @@ import { Search } from "lucide-react";
 import DashboardAgentTerminal from "@/app/components/hermes/dashboard-agent-terminal";
 import BrowserNavigation from "./browser-navigation";
 import BrowserOrganizationPanel from "./browser-organization-panel";
+import { BROWSER_REVEAL_TERMINAL_EVENT } from "@/lib/browser-inline-answer";
 import {
   useEffect,
   useCallback,
@@ -503,6 +504,13 @@ function BrowserContent({
     void sendDesktopTabsCommand({ type: "browser-terminal", open, width: terminalWidthRef.current });
   }
 
+  useEffect(() => {
+    if (!isActive) return;
+    const reveal = () => { setTerminalLoaded(true); setActivePanel("terminal"); setBrowserPanelOpen(true); };
+    window.addEventListener(BROWSER_REVEAL_TERMINAL_EVENT, reveal);
+    return () => window.removeEventListener(BROWSER_REVEAL_TERMINAL_EVENT, reveal);
+  });
+
   useEffect(() => isActive ? registerClapDock(() => {
     setTerminalLoaded(true);
     setActivePanel('terminal');
@@ -772,6 +780,7 @@ function BrowserContent({
               <div className="mx-auto mt-4 w-full max-w-xl">
                 <ChatSuggestionCards suggestions={chatGreeting.suggestions}
                   suggestionScopeKey={chatGreeting.suggestionScopeKey}
+                  suggestionDetails={chatGreeting.suggestionDetails}
                   onSelectSuggestion={prompt => {
                     setRecommendationDraft(previous => ({ text: prompt, selectionKey, key: (previous?.key ?? 0) + 1 }));
                     setTerminalLoaded(true);

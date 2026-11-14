@@ -817,7 +817,7 @@ export function compactConversationMemoryIfNeeded(
 ): boolean {
   const snapshot = loadConversationMemoryState(conversationId, database);
   const messages = database.prepare(`
-    SELECT * FROM conversation_messages
+    SELECT * FROM conversation_message_reads
     WHERE conversation_id = ? AND status <> 'pending'
     ORDER BY order_index
   `).all(conversationId) as ConversationMessageRow[];

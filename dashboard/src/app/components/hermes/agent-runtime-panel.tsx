@@ -4,6 +4,7 @@ import { chatQuestionSelections } from "@/lib/chat-text-selection";
 import { notificationMessageKeys } from "@/lib/chat-notification-visibility";
 import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
 import { useBrowserInlineAnswer } from "./use-browser-inline-answer";
+import { BROWSER_REVEAL_TERMINAL_EVENT, type BrowserInlineNestedThread } from "@/lib/browser-inline-answer";
 
 // Shared conversation UI for Hermes-backed surfaces. Renders streaming
 // assistant output, reasoning, tool activity, source citations, permission
@@ -327,6 +328,8 @@ interface Props {
     messageIndex: number,
     text: string,
     branchGroupId: string,
+    /** Attachments the person took off the message while editing it. */
+    detachedAttachmentNames?: readonly string[],
   ) => void;
   onEditAssistantMessage?: (
     message: AgentMessage,
@@ -368,6 +371,7 @@ interface Props {
   attachmentUploadError?: string;
   attachments?: ComposerAttachment[];
   onRemoveAttachment?: (index: number) => void;
+  onReplaceAttachment?: (index: number, attachment: ComposerAttachment) => void;
   /** Returns a queued message's files to the external composer owner for editing. */
   onRestoreQueuedAttachments?: (attachments: ComposerAttachment[]) => void;
   statusMessage?: string;
@@ -759,6 +763,7 @@ export default function AgentRuntimePanel({
   attachmentUploadError,
   attachments,
   onRemoveAttachment,
+  onReplaceAttachment,
   onRestoreQueuedAttachments,
   statusMessage,
   compact,
@@ -881,6 +886,8 @@ export default function AgentRuntimePanel({
   const copiedUserTimerRef = useRef<number | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [messageEditText, setMessageEditText] = useState("");
+  // Attachments taken off the message being edited; they stay off the resend.
+  const [detachedAttachmentNames, setDetachedAttachmentNames] = useState<string[]>([]);
   const [editingAssistantMessageId, setEditingAssistantMessageId] = useState<
     string | null
   >(null);
@@ -1665,6 +1672,7 @@ export default function AgentRuntimePanel({
   function beginMessageEdit(message: AgentMessage, messageId: string) {
     setEditingMessageId(messageId);
     setMessageEditText(message.content);
+    setDetachedAttachmentNames([]);
   }
 
   function saveMessageEdit(message: AgentMessage, messageIndex: number) {
@@ -1686,7 +1694,7 @@ export default function AgentRuntimePanel({
     }));
     setEditingMessageId(null);
     setMessageEditText("");
-    onEditMessage(messageIndex, text, branch.groupId);
+    onEditMessage(messageIndex, text, branch.groupId, detachedAttachmentNames);
   }
 
   function beginAssistantMessageEdit(message: AgentMessage, messageId: string, content = message.content) {
@@ -2284,7 +2292,31 @@ export default function AgentRuntimePanel({
   // the content cap so its inner edges equal the composer's outer edges.
   const transcriptColumnWidthClass = compact ? "max-w-[50rem]" : "max-w-[66rem]";
   const webThread = webSelection?.reference.mode === "inline" ? inlineSelectionThreads.get(webSelection.reference.id) : undefined;
-  const webAnswerContent = useMemo(() => webThread ? {
+  const webAnswerContent = useMemo(() => {
+    if (!webThread) return null;
+    // Follow-ups asked inside the web answer, at any depth. The native card is
+    // a separate renderer, so it receives them as data and drills into them.
+    const answerIds = new Set(webThread.answerMessageId ? [webThread.answerMessageId] : []);
+    const nested: BrowserInlineNestedThread[] = [];
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const thread of inlineSelectionThreads.values()) {
+        if (!answerIds.has(thread.selection.sourceMessageId) || nested.some(item => item.selection.id === thread.selection.id)) continue;
+        nested.push({ selection: thread.selection, question: thread.question, questionAttachments: thread.attachments,
+          answer: thread.answer, reasoning: thread.reasoning, progressNotes: thread.progressNotes, pending: thread.pending,
+          usage: thread.usage, responseDurationMs: thread.responseDurationMs, responseCompletedAt: thread.responseCompletedAt,
+          verification: thread.verification, startedAt: thread.startedAt, answerMessageId: thread.answerMessageId,
+          starMessageId: thread.starMessageId, artifactMessageId: thread.artifactMessageId });
+        if (thread.answerMessageId) answerIds.add(thread.answerMessageId);
+        grew = true;
+      }
+    }
+    const annotations = Object.fromEntries([...answerIds].flatMap(id => {
+      const entries = annotationsByMessage.get(id);
+      return entries ? [[id, entries]] : [];
+    }));
+    return {
+    nested, annotations,
     question: webThread.question, questionAttachments: webThread.attachments,
     answer: conversationLoading ? "Loading saved answer…" : webThread.answer,
     reasoning: webThread.reasoning, progressNotes: webThread.progressNotes, pending: webThread.pending,
@@ -2295,11 +2327,40 @@ export default function AgentRuntimePanel({
     persistDraft: !temporaryChat || sideChat,
     canAsk: Boolean(onAskSelection && !webThread.pending && !conversationLocked),
     ...(webHighlightDeleteFailure?.id === webThread.selection.id ? { error: "The highlight could not be deleted. Try deleting it again." } : {}),
-  } : null, [webThread, conversationLoading, sessionId, temporaryChat, sideChat, surface, onAskSelection, conversationLocked, webHighlightDeleteFailure]);
+    };
+  }, [webThread, inlineSelectionThreads, annotationsByMessage, conversationLoading, sessionId, temporaryChat, sideChat, surface, onAskSelection, conversationLocked, webHighlightDeleteFailure]);
   const nativeWebAnswer = useBrowserInlineAnswer({ selection: webSelection, content: webAnswerContent,
-    onAsk: (question, attachments) => { if (webThread) askInlineSelectionAgain(webThread.selection, question, attachments); },
-    onStop: () => { if (webThread && onAbortInline) onAbortInline(webThread.selection.id); else stopInlineAnswer(); },
-    onDelete: () => { if (webThread) void deleteInlineSelection(webThread.selection); },
+    onAsk: (question, attachments, nested) => {
+      if (!webThread) return;
+      if (nested && !savedInlineSelections.some(item => item.id === nested.id)) setSavedInlineSelections(current => [...current, nested]);
+      askInlineSelectionAgain(nested ?? webThread.selection, question, attachments);
+    },
+    onStop: (nested) => {
+      const target = nested ?? webThread?.selection;
+      if (target && onAbortInline) onAbortInline(target.id); else stopInlineAnswer();
+    },
+    onDelete: (nested) => { const target = nested ?? webThread?.selection; if (target) void deleteInlineSelection(target); },
+    // Passages inside the web card use the same saved highlights as transcript text.
+    onHighlight: (passage, change) => setSavedChatHighlights((current) => {
+      const overlaps = (item: { sourceMessageId: string; start: number; end: number }) =>
+        item.sourceMessageId === passage.sourceMessageId && chatTextSelectionsOverlap(item, passage);
+      const existing = current.find(overlaps);
+      const rest = current.filter((item) => !overlaps(item));
+      if (change.color === null) return rest;
+      const color = change.color && isChatHighlightColor(change.color) ? change.color : existing?.color;
+      const note = change.note === undefined ? existing?.note : normalizeChatHighlightNote(change.note);
+      if (!color && !note) return rest;
+      return [...rest, { id: existing?.id ?? crypto.randomUUID(), sourceMessageId: passage.sourceMessageId,
+        start: passage.start, end: passage.end, quote: passage.quote, prefix: passage.prefix, suffix: passage.suffix,
+        ...(color ? { color } : {}), ...(note ? { note } : {}) }];
+    }),
+    onAskInChat: (passage) => {
+      setComposerSelection({ ...passage, mode: "chat" });
+      setOpenInlineAnswers([]);
+      // The browser owns its drawer; ask it to show the Terminal composer.
+      window.dispatchEvent(new Event(BROWSER_REVEAL_TERMINAL_EVENT));
+      window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+    },
     onClose: () => setOpenInlineAnswers(current => current.filter(answer => answer.id !== webSelection?.reference.id)),
   });
   const visibleInlineAnswers = (sourceAnswer
@@ -2593,10 +2654,24 @@ export default function AgentRuntimePanel({
                       }
                     >
                     {message.role === "user" ? (
-                      <ChatMessageAttachments
-                        attachments={message.attachments}
-                        attachmentNames={message.attachmentNames}
-                      />
+                      editingMessageId === messageBranchId(message, index) ? (
+                        <ChatMessageAttachments
+                          attachments={message.attachments?.filter(
+                            (attachment) => !detachedAttachmentNames.includes(attachment.name),
+                          )}
+                          attachmentNames={message.attachmentNames?.filter(
+                            (name) => !detachedAttachmentNames.includes(name),
+                          )}
+                          onRemove={(name) =>
+                            setDetachedAttachmentNames((current) => [...current, name])
+                          }
+                        />
+                      ) : (
+                        <ChatMessageAttachments
+                          attachments={message.attachments}
+                          attachmentNames={message.attachmentNames}
+                        />
+                      )
                     ) : null}
                     {message.role === "user" ? (
                       <ChatVideoLinkEmbeds
@@ -4167,6 +4242,7 @@ export default function AgentRuntimePanel({
           attachmentUploadError={attachmentUploadError}
           attachments={attachments}
           onRemoveAttachment={onRemoveAttachment}
+          onReplaceAttachment={onReplaceAttachment}
           statusMessage={statusMessage}
           browserAgent={browserAgent}
           onClearBrowserAgent={onClearBrowserAgent}

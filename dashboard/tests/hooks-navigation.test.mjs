@@ -14,6 +14,7 @@ const dashboardClient = source("../src/app/dashboard/dashboard-client.tsx");
 const database = source("../src/lib/db.ts");
 const hookStore = source("../src/lib/hooks/store.ts");
 const chatCompleted = source("../src/lib/hooks/chat-completed.ts");
+const lifecycle = source("../src/lib/hooks/lifecycle.ts");
 const conversationStore = source("../src/lib/conversations/store.ts");
 const webhookTrigger = source("../src/app/api/webhooks/trigger/[path]/route.ts");
 
@@ -76,7 +77,10 @@ test("successful chat hooks are post-commit, deduplicated, and cannot recurse", 
   assert.match(chatCompleted, /clientMessageId\.startsWith\("hook-"\)/);
   assert.match(chatCompleted, /conversation\.temporary === 1/);
   assert.match(chatCompleted, /assistant\.status !== "complete"/);
-  assert.match(chatCompleted, /recordDelivery\(hook\.id, deliveryKey, db\)/);
-  assert.match(chatCompleted, /recordHookFire\(hook\.id, db\)/);
-  assert.match(webhookTrigger, /hook\.provider === CHAT_COMPLETED_PROVIDER/);
+  // Dedupe and fire accounting are shared by every Breadboard-owned trigger.
+  assert.match(chatCompleted, /deliverLifecycleEvent\(hooks, \{/);
+  assert.match(lifecycle, /recordDelivery\(hook\.id, input\.deliveryKey, db\)/);
+  assert.match(lifecycle, /recordHookFire\(hook\.id, db\)/);
+  assert.match(lifecycle, /conversation\.temporary === 1 \|\| conversation\.hook_id/);
+  assert.match(webhookTrigger, /isLifecycleHookProvider\(hook\.provider\)/);
 });

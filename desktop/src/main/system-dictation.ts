@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, screen, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
+import { BrowserWindow, ipcMain, screen, webContents, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents, type WebFrameMain } from 'electron';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import * as path from 'node:path';
@@ -8,7 +8,8 @@ import { dictationPosition, DICTATION_WINDOW_SIZE, type DictationAnchor } from '
 import { captureDictationScreen, type DictationScreen } from './dictation-screen';
 
 const READY = 'breadboard:dictation-ready', REPORT = 'breadboard:dictation-report', CONTEXT = 'breadboard:dictation-screen';
-type Notice = { type: string; id?: number; message?: string; text?: string; submit?: boolean; anchor?: DictationAnchor; mode?: 'dictate' | 'reply' };
+type Notice = { type: string; id?: number; message?: string; text?: string; submit?: boolean; anchor?: DictationAnchor; mode?: 'dictate' | 'reply'; window?: number; request?: number; applied?: boolean };
+type Editor = { window: BrowserWindow; contents: WebContents; frame: WebFrameMain; url: string; request: number; editing: boolean };
 
 /** A non-focusable microphone owner; only its private renderer can return text. */
 export class SystemDictation {
@@ -16,7 +17,7 @@ export class SystemDictation {
   private helper: ChildProcessWithoutNullStreams | null = null;
   private opening: Promise<void> | null = null;
   private target = '';
-  private active: { id: number; released: boolean; committing?: boolean; submit?: boolean; mode?: 'dictate' | 'reply'; context?: Promise<DictationScreen> } | null = null;
+  private active: { id: number; released: boolean; committing?: boolean; submit?: boolean; mode?: 'dictate' | 'reply'; context?: Promise<DictationScreen>; editor?: Editor } | null = null;
   private limitTimer?: NodeJS.Timeout;
   private anchor: DictationAnchor | null = null;
   private stopped = false;
@@ -132,6 +133,43 @@ export class SystemDictation {
       : Promise.reject(new Error('The selected text field has no screen position. Try another field.'));
     void this.active.context.catch(() => {});
   }
+  private focusedEditor(nativeWindow?: number): Editor | undefined {
+    const window = BrowserWindow.getFocusedWindow(), contents = webContents.getFocusedWebContents();
+    const base = this.options.dashboardUrl();
+    if (!window || !contents || contents === this.window?.webContents || !base || !Number.isSafeInteger(nativeWindow)) return;
+    // A remembered Electron focus is not authority to type when another app
+    // owns the Windows foreground. Match the helper's captured native window.
+    const handle = window.getNativeWindowHandle();
+    const hwnd = handle.length === 8 ? Number(handle.readBigUInt64LE()) : handle.readUInt32LE();
+    const url = contents.getURL();
+    if (hwnd !== nativeWindow || !contents.isFocused() || contents.focusedFrame !== contents.mainFrame) return;
+    try { if (new URL(url).origin !== new URL(base).origin) return; } catch { return; }
+    return { window, contents, frame: contents.mainFrame, url, request: 0, editing: false };
+  }
+  private async edit(notice: Notice) {
+    const active = this.active, editor = active?.editor;
+    if (!active || active.id !== notice.id || !Number.isSafeInteger(notice.request) || notice.request! <= 0) return;
+    if (editor && notice.request! <= editor.request) return; // Never replay an edit.
+    let applied = false, editing = false;
+    try {
+      if (!editor || editor.editing || typeof notice.text !== 'string' || notice.text.length > 32000 || notice.text.includes('\0')) return;
+      editor.request = notice.request!;
+      const { window, contents, frame, url } = editor;
+      if (window.isDestroyed() || !window.isFocused() || contents.isDestroyed() || !contents.isFocused()
+        || contents.mainFrame !== frame || contents.focusedFrame !== frame || contents.getURL() !== url) return;
+      editor.editing = editing = true;
+      // The native helper has selected and verified only this hold's span.
+      // One renderer edit avoids per-character keyboard hooks, held Ctrl and
+      // hundreds of React renders. Native accessibility still confirms it.
+      if (notice.text) await contents.insertText(notice.text);
+      else contents.delete();
+      applied = true;
+    } catch { /* An ambiguous edit must never be retried as keystrokes. */ }
+    finally {
+      if (editor && editing) editor.editing = false;
+      if (this.active === active) this.write({ type: 'edited', id: notice.id, request: notice.request, applied });
+    }
+  }
   private receive(notice: Notice) {
     if (notice.type === 'ready' || notice.type === 'hooks-restored') {
       this.options.log(notice.type === 'ready' ? '[dictation] keyboard hooks ready' : '[dictation] keyboard hooks restored');
@@ -139,7 +177,8 @@ export class SystemDictation {
     }
     if (notice.type === 'start' && Number.isSafeInteger(notice.id)) {
       this.cancel();
-      this.active = { id: notice.id!, released: false, mode: notice.mode === 'reply' ? 'reply' : 'dictate' };
+      this.active = { id: notice.id!, released: false, mode: notice.mode === 'reply' ? 'reply' : 'dictate', editor: this.focusedEditor(notice.window) };
+      if (this.active.editor) this.write({ type: 'renderer-input', id: notice.id });
       this.anchor = null; this.updateAnchor(notice.anchor);
       if (this.active.mode === 'reply') this.captureContext();
       this.show(); this.send(notice);
@@ -147,7 +186,9 @@ export class SystemDictation {
     } else if (notice.type === 'error' && (!notice.id || this.active?.id === notice.id || !this.active)) {
       this.fail(notice.message || 'Dictation could not finish.');
     } else if (notice.id === this.active?.id) {
-      if (notice.type === 'mode' && notice.mode === 'reply' && !this.active!.released && !this.active!.committing) {
+      if (notice.type === 'edit') {
+        void this.edit(notice);
+      } else if (notice.type === 'mode' && notice.mode === 'reply' && !this.active!.released && !this.active!.committing) {
         this.active!.mode = 'reply'; this.captureContext(); this.send(notice);
       } else if (notice.type === 'anchor') {
         this.updateAnchor(notice.anchor); this.show();

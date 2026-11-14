@@ -400,10 +400,11 @@ async function executeReadTool(
     start: unknown,
     overrides: Record<string, unknown> = {},
   ) => {
-    const [{ readThoughtTopology }, { queryThoughtTopologyGraph }] =
+    const [{ readThoughtTopology }, { queryThoughtTopologyGraph }, { chatCocitations }] =
       await Promise.all([
         import("../thought-topology/storage.ts"),
         import("./thought-topology-graph.ts"),
+        import("./chat-cocitation.ts"),
       ]);
     const topology = readThoughtTopology(
       path.join(contentPath(), cluster.slug),
@@ -416,6 +417,11 @@ async function executeReadTool(
           minWeight: overrides.minWeight,
           relationTypes: overrides.relationTypes,
           includeHierarchy: overrides.includeHierarchy,
+          follow: overrides.follow,
+          target: overrides.target,
+          // The reader's own chats only; never fall back to the owner's, whose
+          // questions a shared-Garden reader must not see.
+          chatLinks: chatCocitations(userId, cluster.slug),
         })
       : null;
   };
@@ -638,6 +644,7 @@ async function executeSaveNote(
       if (activeRun && current?.id !== activeRun.id) throw new Error("This turn was superseded; nothing was saved.");
     },
     preserveContent: true,
+    authorship: "ai-written",
     userId: cluster.user_id,
     clusterSlug: cluster.slug,
     title,

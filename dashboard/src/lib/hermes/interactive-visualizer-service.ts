@@ -38,6 +38,7 @@ import { precheckInteractiveVisualizerPackage } from "./interactive-visualizer-p
 import {
   isInlineInteractiveVisualizerSkill,
   isInteractiveVisualizerSkill,
+  type InteractiveVisualizerSkill,
 } from "./interactive-visualizer-skills.ts";
 
 /**
@@ -81,7 +82,7 @@ export interface InteractiveVisualizerToolContext {
   assistantMessageId: number | null;
   toolCallId: string | null;
   surface: "dashboard_terminal" | "garden_chat";
-  sourceSkill: "interactive-visualizer" | "interactive-visualizer-in-chat";
+  sourceSkill: InteractiveVisualizerSkill;
 }
 
 function json(value: unknown): string {

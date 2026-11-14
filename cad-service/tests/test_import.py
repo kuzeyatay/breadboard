@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 from breadboard_cad.executor import convert
-from breadboard_cad.models import ConvertRequest
+from breadboard_cad.models import ConvertRequest, ValidationExpectations
 
 
 def _request(payload: bytes, fmt: str = "step") -> ConvertRequest:
@@ -97,11 +97,25 @@ class ImportTest(unittest.TestCase):
         self.assertGreater(result.volume, 0)
         self.assertTrue(result.solids[0].watertight)
         self.assertGreater(result.tessellation.triangle_count, 0)
+        self.assertEqual(result.issues, [])  # Ordinary attachments have no design promises.
 
         glb = outcome.files["glb"]
         self.assertGreater(len(glb), 0)
         # glTF's container magic: what came back really is a GLB.
         self.assertEqual(glb[:4], b"glTF")
+
+    def test_generated_step_is_checked_against_design_expectations(self) -> None:
+        request = _request(self.step).model_copy(update={
+            "expectations": ValidationExpectations(
+                expectedSolidCount=2,
+                boundingBox={"x": 40},
+                printerBed={"x": 15, "y": 15, "z": 15},
+            ),
+        })
+        result = convert(request).result
+        self.assertTrue(result.ok, result.failure.message if result.failure else "")
+        errors = {issue.code for issue in result.issues if issue.severity == "error"}
+        self.assertTrue({"solid_count_mismatch", "bounding_box_mismatch", "exceeds_printer_bed"} <= errors)
 
     def test_the_kernel_reads_brep_and_iges_as_well(self) -> None:
         brep = convert(_request(self.brep, "brep")).result

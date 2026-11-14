@@ -17,7 +17,7 @@ export function persistAssistantProgress(input: {
   db.transaction(() => {
     const updated = db.prepare(`
       UPDATE conversation_messages
-      SET metadata = json_patch(COALESCE(metadata, '{}'), ?), updated_at = datetime('now')
+      SET metadata = json_patch(COALESCE((SELECT metadata FROM conversation_message_reads WHERE id=conversation_messages.id), '{}'), ?), updated_at = datetime('now')
       WHERE conversation_id = ? AND client_message_id = ?
         AND role = 'assistant' AND status = 'pending'
       RETURNING id

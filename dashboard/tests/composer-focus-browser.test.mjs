@@ -31,6 +31,7 @@ test('the visible composer padding focuses the draft without stealing control or
       import {createPortal} from 'react-dom';
       import ComposerBorderBeam from '@/app/components/effects/composer-border-beam';
       import PromptSuggestionOverlay from '@/app/components/prompt-suggestion-overlay';
+      import {useSentenceCompletion} from '@/app/components/use-sentence-completion';
       import {composerSegments} from '@/lib/composer-links';
       import {splitLeadingCommandTokens} from '@/app/components/hermes/command-text';
       function App() {
@@ -44,6 +45,7 @@ test('the visible composer padding focuses the draft without stealing control or
         const uploadQueued=null, uploadQueuedRef=useRef(null), cancelUploadSend=()=>{};
         const isAddingDocuments=false, queueDisabled=false, holdForUploads=()=>false;
         const promptSuggestion={text:null,dismiss:()=>{},handleKeyDown:()=>false};
+        const sentenceCompletion=useSentenceCompletion({conversationKey:'focus-test',value,enabled:false,onChange});
         const canSubmit=false, isSending=false, disabled=false, submitMessage=()=>{};
         const handlePaste=()=>{}, syncCommandBackdrop=()=>{}, textareaStyle=undefined;
         const placeholder='Ask anything.';

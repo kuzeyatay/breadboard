@@ -57,7 +57,7 @@ export interface ToastItem {
   question?: boolean;
   clarification?: NotificationClarification;
   website?: { id: string; origin: string };
-  notificationPermission?: { id: string; origin: string; media?: ("microphone" | "camera")[] };
+  notificationPermission?: { id: string; origin: string; media?: ("microphone" | "camera" | "location")[] };
   target?: ChatNotificationTarget;
   /** 0-100 for a notice that tracks a running pipeline; renders a status bar. */
   progressPercent?: number;
@@ -275,7 +275,7 @@ export function useToast({ desktopOverlay = false, notificationCenter = false }:
     chatId?: string,
     response?: string,
     website?: { id: string; origin: string },
-    notificationPermission?: { id: string; origin: string; media?: ("microphone" | "camera")[] },
+    notificationPermission?: { id: string; origin: string; media?: ("microphone" | "camera" | "location")[] },
     noticeId?: string,
   ) => {
     const id = notificationPermission ? `website-permission:${notificationPermission.id}` : website ? `website:${website.id}` : noticeId ?? `toast:${crypto.randomUUID()}`;
@@ -541,6 +541,7 @@ function WebsiteNotificationPermissionCard({ toast }: { toast: ToastItem }) {
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
             {request.media?.includes('camera') ? <><rect x="3" y="6" width="13" height="12" rx="2" /><path d="m16 10 5-3v10l-5-3" /></>
               : request.media?.includes('microphone') ? <><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" /></>
+              : request.media?.includes('location') ? <><path d="M12 21s-7-6.2-7-12a7 7 0 0 1 14 0c0 5.8-7 12-7 12Z" /><circle cx="12" cy="9" r="2.5" /></>
               : <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />}
           </svg>
         </span>

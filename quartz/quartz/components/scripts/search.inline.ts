@@ -3,6 +3,7 @@ import { ContentDetails } from "../../plugins/emitters/contentIndex"
 import { registerEscapeHandler, removeAllChildren } from "./util"
 import { FullSlug, normalizeRelativeURLs, resolveRelative } from "../../util/path"
 import { scopeSearchEntries, searchScope } from "./searchScope"
+import { searchManagedFiles, openManagedFile, managedFileHref } from "./gardenFileExplorer"
 
 interface Item {
   id: number
@@ -401,7 +402,7 @@ function setupSearch(
     return new URL(resolveRelative(currentSlug, slug), location.toString())
   }
 
-  const resultToHTML = ({ slug, title, content, tags }: Item) => {
+  const resultToHTML = ({ slug, title, content, tags, file }: Item) => {
     const htmlTags = tags.length > 0 ? `<ul class="tags">${tags.join("")}</ul>` : ``
     const itemTile = document.createElement("a")
     itemTile.classList.add("result-card")
@@ -412,8 +413,16 @@ function setupSearch(
       ${htmlTags}
       <p class="card-description">${content}</p>
     `
+    if (file) {
+      itemTile.dataset.gardenFileId = file.id
+      itemTile.querySelector("h3")!.textContent = file.name
+      itemTile.querySelector("p")!.textContent = `${file.gardenId} / ${file.path}`
+      itemTile.href = managedFileHref(file)
+      itemTile.target = "_top"
+    }
     const handler = (event: MouseEvent) => {
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+      if (file) { event.preventDefault(); event.stopImmediatePropagation(); openManagedFile(file) }
       hideSearch()
     }
 
@@ -486,6 +495,7 @@ function setupSearch(
 
   async function displayPreview(el: HTMLElement | null) {
     if (!searchLayout || !enablePreview || !el || !preview) return
+    if (el.dataset.gardenFileId) { preview.replaceChildren(); return }
     const slug = el.id as FullSlug
     const innerDiv = await fetchContent(slug).then((contents) =>
       contents.flatMap((content) => [...highlightHTML(currentSearchTerm, content).children]),
@@ -568,7 +578,8 @@ function setupSearch(
       ...getByField("tags"),
     ])
     const finalResults = [...allIds].map((id) => formatForDisplay(currentSearchTerm, id))
-    await displayResults(finalResults)
+    const files: Item[] = searchType === "tags" ? [] : searchManagedFiles(currentSearchTerm, searchScope(currentSlug)).map((file, index) => ({ id: -index - 1, slug: `__file-${file.id}` as FullSlug, title: "", content: "", tags: [], file }))
+    await displayResults([...files, ...finalResults])
   }
 
   const showBasicSearch = () => showSearch("basic")

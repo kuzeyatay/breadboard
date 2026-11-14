@@ -14,10 +14,10 @@ test("the composer grows with a draft up to a cap, then scrolls", () => {
   // ...but a very long draft stops at the cap instead of pushing the
   // conversation off screen, and the overflow scrolls inside the field.
   assert.match(composer, /const cap = composerMaxHeight\(lineHeight\)/);
-  assert.match(composer, /const capped = natural > cap/);
+  assert.match(composer, /const capped = displayHeight > cap/);
   assert.match(
     composer,
-    /textarea\.style\.height = `\$\{capped \? cap : natural\}px`/,
+    /textarea\.style\.height = `\$\{capped \? cap : displayHeight\}px`/,
   );
   assert.match(composer, /textarea\.style\.overflowY = capped \? 'auto' : ''/);
   // The scrollbar is off while the height is being measured: an `auto`

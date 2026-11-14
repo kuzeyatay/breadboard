@@ -30,7 +30,7 @@ await build({
 const shellTarget = path.join(desktopRoot, "dist/window-shell");
 fs.mkdirSync(shellTarget, { recursive: true });
 const shellBundle = await build({
-  entryPoints: ["index", "tab-group"].map(name => path.join(desktopRoot, `src/window-shell/${name}.tsx`)),
+  entryPoints: ["index", "tab-group", "downloads"].map(name => path.join(desktopRoot, `src/window-shell/${name}.tsx`)),
   outdir: shellTarget, bundle: true, minify: true, metafile: true,
   platform: "browser", format: "iife", jsx: "automatic",
   tsconfig: path.join(desktopRoot, "../dashboard/tsconfig.json"),
@@ -39,6 +39,7 @@ const shellBundle = await build({
 });
 fs.copyFileSync(path.join(desktopRoot, "src/window-shell/index.html"), path.join(shellTarget, "index.html"));
 fs.copyFileSync(path.join(desktopRoot, "src/window-shell/tab-group.html"), path.join(shellTarget, "tab-group.html"));
+fs.copyFileSync(path.join(desktopRoot, "src/window-shell/downloads.html"), path.join(shellTarget, "downloads.html"));
 fs.copyFileSync(path.join(desktopRoot, "src/window-shell/fonts.css"), path.join(shellTarget, "fonts.css"));
 fs.cpSync(path.join(desktopRoot, "src/window-shell/fonts"), path.join(shellTarget, "fonts"), { recursive: true });
 // The shared controls rely on Tailwind's reset AND utility classes. Stripping

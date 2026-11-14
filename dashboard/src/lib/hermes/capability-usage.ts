@@ -123,7 +123,9 @@ const TOOL_OWNERS: Record<string, ToolOwner> = {
     id: "send-to-my-phone",
     label: "Send to my phone",
   },
-  manim_create: { kind: "skill", id: "manim", label: "Manim" },
+  manim_create: { kind: "skill", id: "math-animation", label: "Math Animation" },
+  to_markdown: { kind: "skill", id: "document-to-markdown", label: "Convert to Markdown" },
+  video_render: { kind: "skill", id: "film", label: "Film" },
   image_to_3d: { kind: "skill", id: "image-to-3d", label: "Image to 3D" },
   audio_analyze: { kind: "skill", id: "audio-analysis", label: "Audio analysis" },
   audio_compare: { kind: "skill", id: "audio-analysis", label: "Audio analysis" },
@@ -245,6 +247,7 @@ export const AUTOMATIC_SELECTION_REASONS: Record<string, string> = {
   "ascii-art-diagrams":
     "The message asked for an ASCII or plain-text diagram.",
   "diagram-design": "The message asked for a diagram.",
+  "diagram-in-chat": "The message asked for a diagram in the reply.",
   "computer-use":
     "The message asked to operate a graphical desktop application.",
   goal: "The message set an objective to keep working toward.",

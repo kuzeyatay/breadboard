@@ -6,7 +6,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { build } from "esbuild";
-import { readCodexUsageStatus } from "../src/lib/hermes/usage-status.ts";
+import { readClaudeUsageStatus, readCodexUsageStatus } from "../src/lib/hermes/usage-status.ts";
 import { allowedToolsForSurface } from "../src/lib/hermes/tool-scopes.ts";
 import { brokerCapabilities } from "../src/lib/hermes/capability-broker.ts";
 import { planTask } from "../src/lib/hermes/task-plan.ts";
@@ -15,6 +15,10 @@ import { issueCapabilityToken } from "../src/lib/hermes/capability-token.ts";
 
 const TOOL = "breadboard_usage";
 const NOW = new Date("2026-11-08T12:00:30Z");
+
+// The Claude meter must read this machine's real sign-in in no test: an empty
+// config dir makes every Claude read a deterministic "not signed in".
+process.env.CLAUDE_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-usage-claude-"));
 const report = () => ({
   captured_at: "2026-11-08T12:00:00Z", account: "test@example.com", plan: "pro",
   primary: { used_percent: 100, window_minutes: 10080, resets_in_seconds: 3600 },
@@ -86,6 +90,10 @@ test("the real usage reader reports reserve, unknown windows and capture-based r
   assert.equal(result.windows[1].resets_in_seconds, 3570);
   assert.equal(result.windows[2].resets_at, "2026-11-08T14:00:00.000Z");
   assert.doesNotMatch(JSON.stringify(result), /must-not-escape|access_token/);
+  assert.equal(result.claude.provider, "anthropic");
+  assert.equal(result.claude.available, false);
+  assert.match(result.claude.error, /not signed in/);
+  assert.deepEqual(result.claude.windows, []);
   t.mock.timers.tick(3000);
   const cached = await readCodexUsageStatus(fixture.baseURL);
   assert.equal(cached.age_seconds, 33);
@@ -110,6 +118,45 @@ test("chat uses the same absolute GPT reset times as the notch", async (t) => {
   assert.equal(second.windows.find(w => w.key === "primary").resets_in_seconds, 7169);
   assert.equal(second.windows.find(w => w.key === "primary").resets_at, "2026-11-08T14:00:00.000Z");
   assert.deepEqual(fixture.requests, [["GET", "/v1/settings/usage"]]);
+});
+
+test("the Claude meter maps subscription windows into the shared window shape", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: NOW });
+  const reader = async (model) => {
+    assert.match(model, /^cliproxy\/claude-/);
+    return {
+      provider: "anthropic", available: true, captured_at: "2026-11-08T12:00:00Z",
+      model: "claude-sonnet-5", usage_url: "https://claude.ai/settings/usage",
+      limits: [
+        { key: "five_hour", label: "Current session", limit: { used_percent: 55, resets_in_seconds: 3600 } },
+        { key: "seven_day", label: "Current week (all models)", limit: { used_percent: 12 } },
+      ],
+    };
+  };
+  const status = await readClaudeUsageStatus(reader);
+  assert.equal(status.provider, "anthropic");
+  assert.equal(status.available, true);
+  assert.equal(status.age_seconds, 30);
+  assert.deepEqual(status.windows.map((w) => [w.key, w.used_percent, w.remaining_percent, w.window_minutes]), [
+    ["five_hour", 55, 45, 300], ["seven_day", 12, 88, 10080],
+  ]);
+  assert.equal(status.windows[0].resets_at, "2026-11-08T13:00:00.000Z");
+  assert.equal(status.windows[0].resets_in_seconds, 3570);
+  assert.equal(status.windows[1].resets_at, null);
+  assert.equal(status.windows[1].resets_in_seconds, null);
+
+  const stale = await readClaudeUsageStatus(async () => ({
+    provider: "anthropic", available: true, captured_at: "2026-11-08T11:00:00Z",
+    model: "claude-sonnet-5", usage_url: "", stale: true, refresh_error: "offline",
+    limits: [{ key: "five_hour", label: "Current session", limit: { used_percent: 20 } }],
+  }));
+  assert.equal(stale.stale, true);
+  assert.equal(stale.refresh_error, "offline");
+
+  const failed = await readClaudeUsageStatus(async () => { throw new Error("Claude Code is not signed in."); });
+  assert.equal(failed.available, false);
+  assert.match(failed.error, /not signed in/);
+  assert.deepEqual(failed.windows, []);
 });
 
 test("a failed refresh preserves stale evidence and never turns missing usage into zero", async (t) => {

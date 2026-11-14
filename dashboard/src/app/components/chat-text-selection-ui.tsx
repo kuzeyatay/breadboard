@@ -277,7 +277,8 @@ export function ChatSelectionMenu({
   highlighted: boolean;
   highlightColor?: ChatHighlightColor;
   note?: string;
-  onHighlightColor: (color: ChatHighlightColor) => void;
+  /** Omitted where no highlight store exists (the native web answer card). */
+  onHighlightColor?: (color: ChatHighlightColor) => void;
   onRemoveHighlight: () => void;
   onSaveNote?: (note: string | null) => void;
   onAskInChat?: () => void;
@@ -331,13 +332,8 @@ export function ChatSelectionMenu({
   const width = Math.min(
     editingNote
       ? 470
-      : onAskInChat && onAskHere
-          ? highlighted
-            ? 420
-            : 390
-          : highlighted
-            ? 250
-            : 220,
+      : (onHighlightColor ? (highlighted ? 250 : 220) : 0) +
+        (onAskInChat && onAskHere ? 170 : onAskInChat || onAskHere ? 96 : 0),
     window.innerWidth - 20,
   );
   const left = Math.max(
@@ -357,7 +353,7 @@ export function ChatSelectionMenu({
       onPointerDown={(event: ReactPointerEvent) => event.preventDefault()}
     >
       <div className="flex items-center">
-        <div
+        {onHighlightColor ? <div
           className="flex shrink-0 items-center gap-0.5 px-1"
           role="group"
           aria-label="Highlight color"
@@ -393,7 +389,7 @@ export function ChatSelectionMenu({
               <span aria-hidden>&times;</span>
             </button>
           ) : null}
-        </div>
+        </div> : null}
         {onSaveNote ? (
           <>
             <span className="my-1 h-5 w-px bg-[var(--line)]" aria-hidden />
@@ -411,9 +407,9 @@ export function ChatSelectionMenu({
             </button>
           </>
         ) : null}
-        {onAskInChat && onAskHere ? (
+        {onAskInChat ? (
           <>
-            <span className="my-1 h-5 w-px bg-[var(--line)]" aria-hidden />
+            {onHighlightColor ? <span className="my-1 h-5 w-px bg-[var(--line)]" aria-hidden /> : null}
             <button
               type="button"
               onClick={onAskInChat}
@@ -421,7 +417,11 @@ export function ChatSelectionMenu({
             >
               Ask in chat
             </button>
-            <span className="my-1 h-5 w-px bg-[var(--line)]" aria-hidden />
+          </>
+        ) : null}
+        {onAskHere ? (
+          <>
+            {onHighlightColor || onAskInChat ? <span className="my-1 h-5 w-px bg-[var(--line)]" aria-hidden /> : null}
             <button
               type="button"
               onClick={onAskHere}
@@ -682,7 +682,9 @@ export function InlineSelectionAnswerPopover({
   onStop?: () => void;
   onAskAgain?: (question: string, attachments: readonly ChatAttachment[]) => void;
   /** The native host supplies the webpage's available size and moves the card. */
-  embedded?: { width: number; height: number; onSize: (width: number, height: number) => void; onMove: (dx: number, dy: number) => void };
+  embedded?: { width: number; height: number; onSize: (width: number, height: number) => void; onMove: (dx: number, dy: number) => void;
+    /** Where this card sits inside the native view; nested cards stack at their anchor. */
+    left?: number; top?: number };
   questionDisabled?: boolean;
   deleteDisabled?: boolean;
   initialEditing?: boolean;
@@ -779,14 +781,15 @@ export function InlineSelectionAnswerPopover({
       const measure = () => {
         frame = 0;
         const expanded = Boolean(popover.querySelector(".bb-inline-artifact-list, .bb-viz-renderer, .bb-viz-placeholder"));
-        const width = Math.max(1, Math.min(expanded ? 960 : 400, embedded.width - 32));
-        const maxHeight = Math.max(1, Math.min(expanded ? embedded.height - 32 : 520, embedded.height - 32));
+        const left = embedded.left ?? 16, top = embedded.top ?? 16;
+        const width = Math.max(1, Math.min(expanded ? 960 : 400, embedded.width - left - 16));
+        const maxHeight = Math.max(1, Math.min(expanded ? embedded.height - top - 16 : 520, embedded.height - top - 16));
         // The native view already positions the card over the website. Keep
         // its local geometry independent of the application document's flow.
-        Object.assign(popover.style, { position: "fixed", left: "16px", top: "16px", width: `${width}px`, maxHeight: `${maxHeight}px`, visibility: "visible" });
+        Object.assign(popover.style, { position: "fixed", left: `${left}px`, top: `${top}px`, width: `${width}px`, maxHeight: `${maxHeight}px`, visibility: "visible" });
         const height = Math.ceil(popover.getBoundingClientRect().height);
         const size = `${width}:${height}`;
-        if (size !== lastSize) { lastSize = size; embedded.onSize(width + 32, height + 32); }
+        if (size !== lastSize) { lastSize = size; embedded.onSize(left + width + 16, top + height + 16); }
       };
       const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
       const observer = new ResizeObserver(schedule);

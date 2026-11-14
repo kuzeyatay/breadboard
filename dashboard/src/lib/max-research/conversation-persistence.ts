@@ -71,7 +71,7 @@ function maxResearchTurns(input: {
       message.client_message_id AS clientMessageId,
       json_extract(message.metadata, '$.externalAgentRun.runId') AS runId,
       json_extract(message.metadata, '$.externalAgentOutcome') AS outcome
-    FROM conversation_messages AS message
+    FROM conversation_message_reads AS message
     JOIN conversations AS conversation ON conversation.id = message.conversation_id
     WHERE ${filters.join(" AND ")}
   `).all(...values) as RunningMaxResearchTurn[];

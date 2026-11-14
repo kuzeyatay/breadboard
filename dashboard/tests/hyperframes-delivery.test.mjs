@@ -12,6 +12,7 @@ import { prepareTurn } from '../src/lib/hermes/dispatch-core.ts';
 import { agentLaunchContinuationMessage } from '../src/lib/hermes/agent-launch.ts';
 import { completedResearchDelivery } from '../src/lib/conversations/completed-research.ts';
 import { textToCadCommandText } from '../src/lib/hermes/text-to-cad-intent.ts';
+import { ensureChatPayloadSchema, compressMessageField } from '../src/lib/storage/chat-payloads.ts';
 
 const result='Rendered the animation. Next step: [video.mp4](C:/Users/me/runtime/project/out/video.mp4).';
 const handback=agentLaunchContinuationMessage({agentName:'Hyperframes',outcome:'completed',content:result,continuationId:'worker'});
@@ -49,11 +50,14 @@ test('verified MP4 becomes one durable chat artifact across concurrent delivery 
     CREATE TABLE conversations(id INTEGER PRIMARY KEY,public_id TEXT,user_id INTEGER,surface TEXT,default_garden_id INTEGER,title TEXT);
     CREATE TABLE hermes_runtime_sessions(id INTEGER PRIMARY KEY,conversation_id INTEGER,user_id INTEGER,external_session_id TEXT,hermes_session_id TEXT);
     CREATE TABLE hermes_runs(id TEXT PRIMARY KEY,runtime_session_id INTEGER,instruction TEXT,status TEXT,dispatch_json TEXT,started_at TEXT NOT NULL,finished_at TEXT);
-    CREATE TABLE conversation_messages(id INTEGER PRIMARY KEY,conversation_id INTEGER,role TEXT,metadata TEXT);
+    CREATE TABLE conversation_messages(id INTEGER PRIMARY KEY,conversation_id INTEGER,role TEXT,metadata TEXT,sources TEXT);
     INSERT INTO users VALUES(1);
     INSERT INTO conversations VALUES(10,'conv_video',1,'dashboard_terminal',NULL,'Cat explainer');
     INSERT INTO hermes_runtime_sessions VALUES(20,10,1,'session_video',NULL);`);
-  database.prepare('INSERT INTO conversation_messages VALUES(30,10,?,?)').run('assistant',JSON.stringify({externalAgentRun:{kind:'hyperframes',runId:'job_video'}}));
+  const toolResults=['Exact completed video diagnostics. '.repeat(4000)];
+  database.prepare('INSERT INTO conversation_messages VALUES(30,10,?,?,NULL)').run('assistant',JSON.stringify({externalAgentRun:{kind:'hyperframes',runId:'job_video'},toolResults}));
+  ensureChatPayloadSchema(database);
+  assert.ok(compressMessageField(database,30,'metadata')>0);
   ensureArtifactSchema(database);
   const file=path.join(root,'runtime/jobs/job_video/attempts/1/worker_video/workspace/project/out/video.mp4');
   fs.mkdirSync(path.dirname(file),{recursive:true});
@@ -69,6 +73,7 @@ test('verified MP4 becomes one durable chat artifact across concurrent delivery 
     assert.equal(reads,0,'ownership is checked before touching the runtime');
     const [a,b]=await Promise.all([publishHyperframesVideo(1,'job_video',options),publishHyperframesVideo(1,'job_video',options)]);
     assert.equal(a.id,b.id);assert.equal(a.originating_message_id,30);assert.equal(a.conversation_public_id,'conv_video');
+    assert.deepEqual(JSON.parse(database.prepare('SELECT metadata FROM conversation_message_reads WHERE id=30').get().metadata).toolResults,toolResults);
     const output=artifactFile({artifact:a,version:1,purpose:'preview',storageRoot:options.storageRoot,database});
     assert.deepEqual(fs.readFileSync(output.path),bytes);
     fs.unlinkSync(file);

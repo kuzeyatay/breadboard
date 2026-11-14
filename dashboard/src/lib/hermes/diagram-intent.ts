@@ -1,23 +1,11 @@
-// When a turn asking for a drawing should select the Diagram Design skill on
-// its own.
-//
-// "Draw me an architecture diagram of this" names no skill, and without one the
-// model answers with a Mermaid block or an ASCII box sketch — the two outputs
-// the skill exists to replace. Nobody types `/diagram-design` for the same
-// reason nobody types `/watch` at a video: the sentence already says what it
-// wants.
-//
-// The rule is text-only, unlike Watch or Image to 3D. There is no attachment
-// that means "diagram" — a screenshot is usually the *subject* of one, not a
-// request for one — so the wording has to carry it: a making verb next to a
-// diagram noun, a diagram noun leading its own sentence, or a source file that
-// is already a diagram.
-//
-// Runs after the interactive visualizer in both chains, which matters: an
-// interactive or animated model belongs to that runtime, and once it has
-// claimed the turn the text starts with a slash and nothing here fires.
+// Ordinary diagrams use the shared inline visualizer. The older Diagram Design
+// pack stays available through its explicit command for its editorial style.
+// Simulations are routed first; explicit commands retain the selected skill.
 
 import type { HermesSurface } from "./config.ts";
+import { interactiveVisualizerAvailable } from "./interactive-visualizer-config.ts";
+import { DIAGRAM_IN_CHAT_SKILL } from "./interactive-visualizer-skills.ts";
+export { DIAGRAM_IN_CHAT_SKILL } from "./interactive-visualizer-skills.ts";
 
 /** The first-party skill directory name, which is also its slash command. */
 export const DIAGRAM_DESIGN_SKILL = "diagram-design";
@@ -29,7 +17,7 @@ export const DIAGRAM_DESIGN_SKILL = "diagram-design";
  * verb, never on their own.
  */
 const DIAGRAM_NOUN =
-  "(?:diagram|flow[\\s-]?chart|org(?:ani[sz]ation(?:al)?)?[\\s-]?chart|swim[\\s-]?lane(?:s)?|lifecycle|architecture|topology|wireframe|schematic|sequence|state[\\s-]machine|entity[\\s-]relationship|er[\\s-]diagram|data[\\s-]model|timeline|roadmap|gantt|quadrant|2\\s?x\\s?2|venn|pyramid|funnel|radar[\\s-]chart|spider[\\s-]chart|bar[\\s-]chart|line[\\s-]chart|scatter[\\s-]?plot|tree|hierarchy|mind[\\s-]?map|layer[\\s-]stack|process[\\s-]map|value[\\s-]stream|chart|graph)";
+  "(?:diagram|box[\\s-]and[\\s-]arrows?(?:\\s+layout)?|flow[\\s-]?chart|org(?:ani[sz]ation(?:al)?)?[\\s-]?chart|swim[\\s-]?lane(?:s)?|lifecycle|architecture|topology|wireframe|schematic|sequence|state[\\s-]machine|entity[\\s-]relationship|er[\\s-]diagram|data[\\s-]model|timeline|roadmap|gantt|quadrant|2\\s?x\\s?2|venn|pyramid|funnel|radar[\\s-]chart|spider[\\s-]chart|bar[\\s-]chart|line[\\s-]chart|scatter[\\s-]?plot|tree|hierarchy|mind[\\s-]?map|layer[\\s-]stack|process[\\s-]map|value[\\s-]stream|chart|graph)";
 
 /**
  * Asking for one to be made. Four shapes, because the same request is written
@@ -97,7 +85,7 @@ const PICTURE_REQUEST =
  * declined and the request is still not a static drawing.
  */
 const INTERACTIVE_REQUEST =
-  /\b(?:interactive|simulat(?:e|ion)|clickable|draggable|slider|zoomable|playable|three\.?js|webgl|3-?d\s+(?:model|scene|object))\b/i;
+  /\b(?:interactive|simulat(?:e|ion)|slider|playable|three\.?js|webgl|3-?d\s+(?:model|scene|object))\b/i;
 
 /** A link is not prose; it is stripped before any test so a URL cannot match one. */
 const ANY_URL = /\bhttps?:\/\/\S+/gi;
@@ -111,7 +99,7 @@ const REVISION_REQUEST =
   /^(?:(?:can|could|would|will|please)\s+you\s+|please\s+|now\s+)?(?:(?:make|move|swap|change|add|remove|drop|widen|shrink|resize|recolo(?:u)?r|tweak|adjust|fix|redo|redraw|split|merge|flip|rotate|relabel|rename|simplify|clean\s+up|try)\b[^.!?]{0,80}|(?:try|do)\s+(?:it|that)\s+again)[?.!]*$/i;
 
 const DIAGRAM_CONTEXT =
-  /(?:\/diagram-design\b|diagram-design|\b(?:diagram|flowchart|swimlane|org chart|quadrant|venn|gantt)\b)/i;
+  /(?:\/diagram-(?:in-chat|design)\b|diagram-in-chat|diagram-design|\b(?:diagram|flowchart|swimlane|org chart|quadrant|venn|gantt)\b)/i;
 
 function drewADiagramRecently(
   priorMessages: ReadonlyArray<{ role: string; content: string }> | undefined,
@@ -131,14 +119,12 @@ export interface DiagramIntentInput {
   priorMessages?: ReadonlyArray<{ role: string; content: string }>;
 }
 
-export function shouldAutoSelectDiagramDesign(input: DiagramIntentInput): boolean {
+export function shouldAutoSelectDiagramInChat(input: DiagramIntentInput): boolean {
   const text = input.text.trim();
   // Both conversational surfaces, and neither of the unauthenticated ones:
   // the diagram is filed as an artifact on the conversation. An explicit
   // command already says what the turn is, so never argue with one.
-  const available =
-    input.authenticated &&
-    (input.surface === "dashboard_terminal" || input.surface === "garden_chat");
+  const available = interactiveVisualizerAvailable(input.surface, input.authenticated);
   if (!available || !text || text.startsWith("/")) return false;
   const prose = text.replace(ANY_URL, " ");
   if (
@@ -175,9 +161,9 @@ export function shouldAutoSelectDiagramDesign(input: DiagramIntentInput): boolea
 export function diagramCommandText(
   input: DiagramIntentInput,
 ): { text: string; automatic: boolean } {
-  const automatic = shouldAutoSelectDiagramDesign(input);
+  const automatic = shouldAutoSelectDiagramInChat(input);
   return {
-    text: automatic ? `/${DIAGRAM_DESIGN_SKILL} ${input.text}` : input.text,
+    text: automatic ? `/${DIAGRAM_IN_CHAT_SKILL} ${input.text}` : input.text,
     automatic,
   };
 }

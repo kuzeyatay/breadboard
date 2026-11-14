@@ -14,6 +14,7 @@ import {
   session,
   webContents,
   type BrowserWindowConstructorOptions,
+  type ContextMenuParams,
   type Event as ElectronEvent,
   type HandlerDetails,
   type Input,
@@ -120,7 +121,8 @@ import { browserTextHighlightsBootstrapScript } from "./browser-text-highlights-
 import { parseWebSelectionAction, type BrowserSelection, type WebTextHighlight } from "../shared/web-text-selection";
 import { FindInPage } from "./find-in-page";
 import { browserMenuTemplate, browserMenuShortcut, savedPageFilename, type BrowserMenuAction } from "./browser-menu";
-import { browserContextMenuTemplate, runBrowserContextAction } from "./browser-context-menu";
+import { browserContextMenuTemplate, runBrowserContextAction, runBrowserSelectionAction } from "./browser-context-menu";
+import { installSelectionContextMenu } from "./selection-context-menu";
 import { pasteOnRightClick } from "./right-click-paste";
 import { tabContextMenuTemplate, type TabContextAction } from "./tab-context-menu";
 import {
@@ -241,6 +243,8 @@ interface BrowserPage extends PageFindState {
   terminalWidth: number;
   /** Raise the transparent trusted chrome over the page while recents is open. */
   addressSuggestionsOpen: boolean;
+  /** Inline toolbar failures also cross the native website view boundary. */
+  toolbarErrorBottom?: number;
   /** The trusted new-tab page precedes the first web page in user navigation. */
   homeEntryAvailable: boolean;
   /** The trusted new-tab page is currently shown instead of the web view. */
@@ -607,7 +611,7 @@ function tabById(host: Host, id: number): Tab | undefined {
   return host.tabs.find((tab) => tab.id === id);
 }
 
-/** Typed text that exists only in the page: a changed field, or a focused editor
+/** Typed text that exists only in the page: a changed field, or a rich-text editor
  * with content. A probe that fails or does not answer in 2 s counts as unsaved. */
 function hasUnsavedInput(contents: WebContents): Promise<boolean> {
   // executeJavaScript waits for did-stop-loading on a page still loading its
@@ -620,8 +624,11 @@ function hasUnsavedInput(contents: WebContents): Promise<boolean> {
       if (skip.includes((field.type || "text").toLowerCase())) continue;
       if (field.value && field.value !== field.defaultValue) return true;
     }
-    const focused = document.activeElement;
-    return Boolean(focused && focused.isContentEditable && (focused.textContent || "").trim());
+    // Focus can move to the tab strip before the idle sweep. Rich-text drafts
+    // still belong to the person after their editor loses focus.
+    return Array.from(document.querySelectorAll('[contenteditable]')).some(
+      editor => editor.isContentEditable && (editor.textContent || "").trim()
+    );
   })()`).then(Boolean, () => true);
   const timeout = new Promise<boolean>((resolve) => { setTimeout(() => resolve(true), 2000).unref?.(); });
   return Promise.race([probe, timeout]);
@@ -1891,6 +1898,9 @@ export class TabManager {
       if (host.shell) this.send(host.shell.contents, this.shellState(host));
     };
     window.on("resize", relayout);
+    // Windows can finish changing its client area after the fullscreen resize
+    // event. Follow the native content bounds so the page fills the final size.
+    window.contentView.on("bounds-changed", relayout);
     window.on("show", () => this.syncCodeDocks(host));
     window.on("hide", () => this.syncCodeDocks(host));
     window.on("minimize", () => this.syncCodeDocks(host));
@@ -2083,28 +2093,31 @@ export class TabManager {
     const command = request.command;
     const active = tabById(host, host.activeId);
     if (!active) return false;
-    if (command.type === "browser-address-suggestions" && !command.open) {
+    if ((command.type === "browser-address-suggestions" || command.type === "browser-toolbar-error") && !command.open) {
       // Dismissal belongs to this trusted toolbar, not the website document.
       // Its delayed blur/cleanup can carry the generation from before a
       // navigation; rejecting it leaves an invisible native view over the page.
       const target = tabById(host, request.targetId ?? -1);
       if (!target?.browser) return false;
-      target.browser.addressSuggestionsOpen = false;
-      target.browser.suggestionsBottom = undefined;
+      if (command.type === "browser-toolbar-error") target.browser.toolbarErrorBottom = undefined;
+      else {
+        target.browser.addressSuggestionsOpen = false;
+        target.browser.suggestionsBottom = undefined;
+      }
       if (host.activeId === target.id || this.toolbarTab(host) === target) this.layout(host);
       return true;
     }
     if (!isTabStripCommand(command)) {
       const allowed = ["back", "forward", "reload", "browser-navigate", "browser-stop", "browser-menu",
         "browser-translation-menu", "browser-translate", "browser-translation-restore", "browser-downloads-popover",
-        "browser-downloads-close", "browser-extensions-popover", "browser-extensions-close", "browser-address-suggestions", "browser-organization"].includes(command.type);
+        "browser-downloads-close", "browser-extensions-popover", "browser-extensions-close", "browser-address-suggestions", "browser-toolbar-error", "browser-organization"].includes(command.type);
       const target = tabById(host, request.targetId ?? -1);
       if (!allowed || !target || (target !== active && !splitMembers(host).includes(target) && target !== this.toolbarTab(host)) ||
           request.generation !== target.generation || request.revision !== host.presentationRevision) return false;
       if (target !== active) {
         // Toolbar effects also publish closed autocomplete/popovers. They may
         // update the visible browser beside a local page without selecting it.
-        if (["browser-address-suggestions", "browser-downloads-close", "browser-extensions-close"].includes(command.type)) {
+        if (["browser-address-suggestions", "browser-toolbar-error", "browser-downloads-close", "browser-extensions-close"].includes(command.type)) {
           // Cleanup from retained controls must not cancel the incoming tab or
           // be dispatched to it through the shared browser renderer.
           if (!splitMembers(host).includes(target)) return false;
@@ -2547,7 +2560,7 @@ export class TabManager {
         if (!answer || answer.contents !== sender || answer.selection.requestId !== command.action.requestId ||
             answer.selection.reference?.id !== command.action.selectionId) return false;
         if (command.action.action === "ask" && answer.state.content.canAsk !== true) return false;
-        if (command.action.action === "delete" && answer.state.content.ownerReady !== true) return false;
+        if (["delete", "highlight", "ask-in-chat"].includes(command.action.action) && answer.state.content.ownerReady !== true) return false;
         const owner = tabById(host, answer.ownerId);
         if (!owner || owner.contents.isDestroyed()) return false;
         if (command.action.action === "close") answer.close();
@@ -2696,6 +2709,13 @@ export class TabManager {
           const browser = liveBrowserPage(tab.browser);
           if (browser?.attached) browser.contents.focus();
         }
+        return true;
+      }
+      case "browser-toolbar-error": {
+        const tab = senderTab;
+        if (!tab?.browser) return false;
+        tab.browser.toolbarErrorBottom = command.open ? command.bottom : undefined;
+        if (host.activeId === tab.id || this.toolbarTab(host) === tab) this.layout(host);
         return true;
       }
       case "browser-address-suggestions": {
@@ -3379,7 +3399,8 @@ export class TabManager {
           const inFront = () => host.window.isDestroyed() || !host.tabs.includes(tab) || host.activeId === tab.id ||
             host.presentedId === tab.id || host.pending?.id === tab.id || splitMembers(host).includes(tab);
           if (inFront() || warm.has(tab.id) || tab.backgroundSince === undefined || Date.now() - tab.backgroundSince < delay) continue;
-          if (!(await this.canUnloadIdleTab(tab)) || inFront()) continue;
+          const backgroundSince = tab.backgroundSince;
+          if (!(await this.canUnloadIdleTab(tab)) || inFront() || tab.backgroundSince !== backgroundSince) continue;
           if (this.neutralizeTab(host, tab)) unloaded += 1;
         }
         if (unloaded === 0 || host.window.isDestroyed()) continue;
@@ -3496,8 +3517,9 @@ export class TabManager {
     if (host[key]) return Promise.resolve(true);
     host[kind === "downloads" ? "extensionsPopover" : "downloadsPopover"]?.close();
     const popup = new BrowserToolbarPopover(
-      host.window, tab.id, this.toolbarAnchor(tab, anchor), this.options.preloadPath,
-      [tab.contents, ...(tab.browser?.contents ? [tab.browser.contents] : [])],
+      host.window, tab.id, this.toolbarAnchor(tab, anchor), kind === "downloads"
+        ? path.join(__dirname, "../preload/downloads-preload.js") : this.options.preloadPath,
+      [tab.contents, ...(host.shell ? [host.shell.contents] : []), ...(tab.browser?.contents ? [tab.browser.contents] : [])],
       () => {
         this.hostByContents.delete(popup.contents.id);
         if (host[key] === popup) host[key] = undefined;
@@ -3508,10 +3530,26 @@ export class TabManager {
     );
     host[key] = popup;
     this.hostByContents.set(popup.contents.id, host);
+    if (kind === "downloads") {
+      const file = path.join(__dirname, "../window-shell/downloads.html");
+      (this.options.allowed.localFiles ??= new Set()).add(pathToFileURL(file).href);
+      popup.contents.ipc.handle("breadboard:downloads-state", event =>
+        event.senderFrame === popup.contents.mainFrame ? this.stateFor(popup.contents) : null);
+      popup.contents.ipc.handle("breadboard:downloads-command", (event, value: unknown) => {
+        if (event.senderFrame !== popup.contents.mainFrame || !isTabsCommand(value) ||
+            !["browser-downloads-resize", "browser-downloads-close", "browser-downloads-show-all"].includes(value.type)) return false;
+        return this.handleCommand(popup.contents, value);
+      });
+    }
     this.broadcast(host);
     const url = new URL(`/browser/${kind}-popover`, shellUrl);
     if (kind === "extensions") url.searchParams.set("theme", this.options.theme());
-    return popup.contents.loadURL(url.toString()).then(() => true, error => {
+    // Downloads are owned by Electron. Their controls must keep working when
+    // the workspace server is unavailable, just like the tab strip.
+    const loaded = kind === "downloads"
+      ? popup.contents.loadFile(path.join(__dirname, "../window-shell/downloads.html"))
+      : popup.contents.loadURL(url.toString());
+    return loaded.then(() => true, error => {
       if (popup.isClosed) return true;
       this.log(`${kind} popover failed: ${String(error)}`);
       popup.close();
@@ -4145,6 +4183,7 @@ export class TabManager {
     for (const tab of host.retainedTabControls) this.send(tab.contents, this.stateForTab(host, tab, state));
     if (host.preparedNewTab) this.send(host.preparedNewTab.contents, this.stateForTab(host, host.preparedNewTab, state));
     this.scheduleNewTabPreparation(host);
+    if (host.downloadsPopover) this.send(host.downloadsPopover.contents, state);
     if (host.extensionsPopover) this.send(host.extensionsPopover.contents, state);
     if (host.selectionPopover) this.send(host.selectionPopover.contents, state);
     if (host.inlineAnswer) this.send(host.inlineAnswer.contents, { ...state, notificationPageVisible: host.inlineAnswer.isVisible });
@@ -5161,21 +5200,22 @@ export class TabManager {
       for (const resume of waiting) resume();
     };
     let contextRevision = 0;
-    contents.on("context-menu", (event, params) => {
+    const showContextMenu = (params: ContextMenuParams) => {
       const owner = current();
       if (!owner || owner.window.isDestroyed() || owner.activeId !== tab.id || browser.showingHome || !browser.attached) return;
-      event.preventDefault();
       const revision = ++contextRevision;
+      const presentation = owner.presentationRevision;
+      const documentUrl = contents.getURL();
       browser.menu?.closePopup(owner.window);
-      if (pasteOnRightClick(contents, event, params)) return;
+      owner.selectionPopover?.close();
       const menu = Menu.buildFromTemplate(browserContextMenuTemplate(params, {
         annotationsEnabled: this.browserOrganizationAllowed(owner, tab),
         canGoBack: browser.homeEntryAvailable || this.browserNavigationTarget(tab, "back") !== null,
         canGoForward: this.browserNavigationTarget(tab, "forward") !== null,
       }, action => setImmediate(() => {
         // Menu actions belong to the document and tab that were right-clicked.
-        if (revision !== contextRevision || contents.isDestroyed() || tab.contents.isDestroyed() || owner.window.isDestroyed()
-          || owner.activeId !== tab.id || browser.showingHome || !owner.tabs.includes(tab)) return;
+        if (revision !== contextRevision || presentation !== owner.presentationRevision || contents.isDestroyed() || tab.contents.isDestroyed() || owner.window.isDestroyed()
+          || owner.activeId !== tab.id || browser.showingHome || !owner.tabs.includes(tab) || contents.getURL() !== documentUrl) return;
         contents.focus();
         void runBrowserContextAction(action, contents, params, {
           privateBrowsing: Boolean(browser.privatePartition || owner.privateBrowsing),
@@ -5218,9 +5258,16 @@ export class TabManager {
       // Let Electron anchor to the native pointer; page coordinates are relative
       // to the web view and would otherwise miss the toolbar/fullscreen offset.
       menu.popup({ window: owner.window, callback: () => { if (browser.menu === menu) browser.menu = undefined; } });
+    };
+    installSelectionContextMenu(contents, showContextMenu);
+    contents.on("context-menu", (event, params) => {
+      const owner = current();
+      if (!owner || owner.window.isDestroyed() || owner.activeId !== tab.id || browser.showingHome || !browser.attached) return;
+      event.preventDefault();
+      if (!pasteOnRightClick(contents, event, params)) showContextMenu(params);
     });
     contents.on("did-start-navigation", (_event, _url, inPlace) => {
-      if (inPlace) return;
+      if (inPlace || _url.startsWith("breadboard-selection:")) return;
       contextRevision++;
       browser.annotationTarget = undefined; browser.annotationMarkers = [];
       void runInDocument(contents, browserAnnotationPaintScript([])).catch(() => undefined);
@@ -5615,9 +5662,9 @@ export class TabManager {
     return true;
   }
 
-  private askAboutBrowserSelection(host: Host, tab: Tab, browser: BrowserPage, text: string): void {
+  private askAboutBrowserSelection(host: Host, tab: Tab, browser: BrowserPage, text: string, source?: Pick<BrowserSelection, "title" | "url">): void {
     if (!text.trim()) return;
-    browser.selection = { text: text.slice(0, 8_000), title: tab.title || browserFallbackTitle(tab.url), url: tab.url };
+    browser.selection = { text: text.slice(0, 8_000), ...(source ?? { title: tab.title || browserFallbackTitle(tab.url), url: tab.url }) };
     browser.terminalOpen = true;
     browser.organizationOpen = false;
     browser.addressSuggestionsOpen = false;
@@ -6718,7 +6765,7 @@ export class TabManager {
       // Keep the toolbar's native bounds with the website still on screen.
       // Terminal can spend several seconds preparing its initial widgets.
       const toolbar = this.toolbarTab(host);
-      const shellHeight = toolbar?.browser ? Math.min(height, Math.max(browserContentTop(height), toolbar.browser.addressSuggestionsOpen ? toolbar.browser.suggestionsBottom ?? 440 : 0)) : inset;
+      const shellHeight = toolbar?.browser ? Math.min(height, Math.max(browserContentTop(height), toolbar.browser.addressSuggestionsOpen ? toolbar.browser.suggestionsBottom ?? 440 : 0, toolbar.browser.toolbarErrorBottom ?? 0)) : inset;
       setViewBounds(host.shell.view, { x: 0, y: 0, width, height: host.tabDragPreview ? height : shellHeight });
       if (!host.window.contentView.children.includes(host.shell.view)) host.window.contentView.addChildView(host.shell.view);
       setNotificationViewVisible(host.shell.view, !host.browserFullscreen && !active?.voiceOverlay);
@@ -6945,7 +6992,7 @@ export class TabManager {
     // Only legacy per-tab chrome hosts suggestions. The persistent shell has
     // its own transparent toolbar; raising its opaque home/panels document
     // here would cover the website whenever the address input is focused.
-    const chromeOnTop = !host.shellEnabled && browser?.addressSuggestionsOpen && !host.browserFullscreen;
+    const chromeOnTop = !host.shellEnabled && (browser?.addressSuggestionsOpen || browser?.toolbarErrorBottom !== undefined) && !host.browserFullscreen;
     const views: View[] = [tab.view];
     if (browser?.attached && !browser.showingHome) {
       if (chromeOnTop) views.unshift(browser.view);
@@ -7305,17 +7352,68 @@ export class TabManager {
     // replacement window), so every handler asks again rather than closing
     // over the host it was created under.
     const current = (): Host | undefined => this.hostByContents.get(contents.id);
+    // One trusted browser renderer can represent several tabs. Resolve its
+    // active owner at invocation time instead of using the renderer's spare id.
+    const activeTab = (owner: Host) => owner.browserChrome?.contents === contents ? tabById(owner, owner.activeId) : tab;
+    let selectionRevision = 0;
+    let selectionMenu: Menu | undefined;
+    const closeSelectionMenu = () => {
+      selectionRevision++;
+      const owner = current();
+      if (owner && !owner.window.isDestroyed()) selectionMenu?.closePopup(owner.window);
+      selectionMenu = undefined;
+    };
+    const showSelectionMenu = (params: ContextMenuParams) => {
+      const owner = current();
+      const source = owner && activeTab(owner);
+      if (!owner || !source || owner.window.isDestroyed() || owner.activeId !== source.id || !owner.tabs.includes(source)) return;
+      closeSelectionMenu();
+      const revision = selectionRevision;
+      const presentation = owner.presentationRevision;
+      const documentUrl = contents.getURL();
+      // Internal links keep their own navigation menu. Text actions work on
+      // every app page, including shared browser home and Terminal surfaces.
+      const textParams = { ...params, linkURL: "", linkText: "", srcURL: "", mediaType: "none" as const };
+      const menu = Menu.buildFromTemplate(browserContextMenuTemplate(textParams, { canGoBack: false, canGoForward: false }, action => setImmediate(() => {
+        if (revision !== selectionRevision || presentation !== owner.presentationRevision || contents.isDestroyed() || owner.window.isDestroyed() || current() !== owner ||
+            owner.activeId !== source.id || !owner.tabs.includes(source) || contents.getURL() !== documentUrl) return;
+        contents.focus();
+        runBrowserSelectionAction(action, contents, textParams, {
+          openTab: (url, background) => { this.openBrowserTab(owner, url, background); },
+          ask: text => {
+            if (!text.trim()) return;
+            const target = source.browser ? source : this.openBrowserTab(owner);
+            if (!target?.browser) return;
+            this.askAboutBrowserSelection(owner, target, target.browser, text, { title: source.title, url: documentUrl });
+          },
+        });
+      })));
+      selectionMenu = menu;
+      source.menu = menu;
+      menu.popup({ window: owner.window, callback: () => {
+        if (selectionMenu === menu) selectionMenu = undefined;
+        if (source.menu === menu) source.menu = undefined;
+      } });
+    };
+    installSelectionContextMenu(contents, showSelectionMenu);
+    contents.on("did-start-navigation", (_event, _url, inPlace, isMainFrame) => { if (isMainFrame && !inPlace) closeSelectionMenu(); });
     contents.on("context-menu", (event, params) => {
       const owner = current();
-      if (!owner || owner.window.isDestroyed() || owner.activeId !== tab.id) return;
+      const source = owner && activeTab(owner);
+      if (!owner || !source || owner.window.isDestroyed() || owner.activeId !== source.id) return;
       if (pasteOnRightClick(contents, event, params)) return;
+      if (params.selectionText.trim() || params.isEditable) {
+        event.preventDefault();
+        showSelectionMenu(params);
+        return;
+      }
       if (!isSafeBrowserUrl(params.linkURL) || !isNavigationAllowed(this.options.allowed, params.linkURL)) return;
       event.preventDefault();
       const url = params.linkURL;
       const documentUrl = contents.getURL();
       const open = (inWindow: boolean) => setImmediate(() => {
         if (contents.isDestroyed() || owner.window.isDestroyed() || current() !== owner ||
-            owner.activeId !== tab.id || !owner.tabs.includes(tab) || contents.getURL() !== documentUrl) return;
+            owner.activeId !== source.id || !owner.tabs.includes(source) || contents.getURL() !== documentUrl) return;
         if (inWindow) this.options.openWindow(url);
         else this.openLocalTab(contents, url, true);
       });

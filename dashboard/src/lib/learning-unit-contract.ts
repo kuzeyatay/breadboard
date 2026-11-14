@@ -2529,7 +2529,11 @@ export function learningUnitArtifactLoad(unit: LearningUnitContract): {
     Number.isFinite(plannedUpper) && plannedUpper > 0 ? plannedUpper : LESSON_MIN_WORDS_FOR_LOAD,
     MAX_PLANNED_WORDS_FOR_ARTIFACT_CAP,
   );
-  return { artifacts, cap: Math.max(MIN_ARTIFACTS_PER_UNIT_CAP, Math.floor(words / PLANNED_WORDS_PER_TEACHABLE_ARTIFACT)), plannedUpper };
+  // A page carries the assigned items its story does not need in an appendix
+  // (learn-story.ts), so a short planned story no longer lowers the cap: only
+  // the absolute ceiling binds. `words` stays for callers that report it.
+  void words;
+  return { artifacts, cap: Math.max(MIN_ARTIFACTS_PER_UNIT_CAP, Math.floor(MAX_PLANNED_WORDS_FOR_ARTIFACT_CAP / PLANNED_WORDS_PER_TEACHABLE_ARTIFACT)), plannedUpper };
 }
 
 export function learningUnitLoadProblems(
@@ -2542,7 +2546,7 @@ export function learningUnitLoadProblems(
     const { artifacts, cap, plannedUpper } = learningUnitArtifactLoad(unit);
     if (artifacts > cap) {
       problems.push(
-        `the learning unit titled "${unit.title}" carries ${artifacts} source figures, formulas, and tables for a lesson planned at up to ${Number.isFinite(plannedUpper) ? plannedUpper : "an unstated number of"} words; a lesson can teach at most about one source artifact per ${PLANNED_WORDS_PER_TEACHABLE_ARTIFACT} planned words (${cap} here). Split it at coherent conceptual boundaries into several focused learning units that each own the artifacts they actually teach, or omit artifacts that add no in-scope teaching value with a model-authored reason`,
+        `the learning unit titled "${unit.title}" carries ${artifacts} source figures, formulas, and tables for a lesson planned at up to ${Number.isFinite(plannedUpper) ? plannedUpper : "an unstated number of"} words; a lesson page can carry at most ${cap} assigned source artifacts (${cap} here). Split it at coherent conceptual boundaries into several focused learning units that each own the artifacts they actually teach, or omit artifacts that add no in-scope teaching value with a model-authored reason`,
       );
     }
   }
@@ -3342,6 +3346,36 @@ function modelAuthoredSectionGroups(
 }
 
 /**
+ * The course is one story: a concept a unit needs must not be first taught by
+ * a later unit. Only exact normalized labels count, because a fuzzy match
+ * would invent dependencies; a prerequisite no unit teaches is background.
+ */
+export function learningUnitOrderProblems(
+  units: readonly Pick<LearningUnitContract, "id" | "title" | "prerequisiteConcepts" | "newConcepts">[],
+): string[] {
+  const key = (label: string) => label.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const firstTaughtAt = new Map<string, number>();
+  units.forEach((unit, index) => {
+    for (const concept of unit.newConcepts ?? []) {
+      const label = key(concept);
+      if (label && !firstTaughtAt.has(label)) firstTaughtAt.set(label, index);
+    }
+  });
+  const problems: string[] = [];
+  units.forEach((unit, index) => {
+    for (const concept of unit.prerequisiteConcepts ?? []) {
+      const taughtAt = firstTaughtAt.get(key(concept));
+      if (taughtAt === undefined || taughtAt <= index) continue;
+      const later = units[taughtAt];
+      problems.push(
+        `unit "${unit.id}" (${unit.title}) needs "${concept}", which is first taught later by unit "${later.id}" (${later.title}); order the units so the concept is taught before it is needed, or teach it in "${unit.id}"`,
+      );
+    }
+  });
+  return problems;
+}
+
+/**
  * Validate the learning-unit contract set against learning-quality rules. This
  * runs BEFORE page generation, so semantic mistakes are caught in the plan, not
  * repaired in the finalizer. Returns a list of problems; empty means the plan is
@@ -3508,6 +3542,7 @@ export function validateLearningUnitContracts(
     }
   }
 
+  if (options.requireModelAuthoredSemantics) problems.push(...learningUnitOrderProblems(units));
   return problems;
 }
 

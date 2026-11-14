@@ -9,6 +9,21 @@ mod streaming_body;
 mod worker_dispatcher;
 
 fn main() {
+    let args: Vec<_> = std::env::args_os().collect();
+    if args.len()==5 && args[1]=="--storage-compact" {
+        let result=(|| -> Result<_,Box<dyn std::error::Error>> {
+            let paths=breadboard_runtime_core::RuntimePaths::new(
+                std::path::PathBuf::from(&args[2]),std::path::PathBuf::from(&args[3]),std::path::PathBuf::from(&args[4]))?;
+            let (_guard,drained)=breadboard_runtime_core::RuntimeGenerationGuard::acquire(
+                paths.runtime_generation_scope(),std::time::Duration::ZERO,std::time::Duration::from_secs(5))?;
+            breadboard_runtime_core::compact_storage(&paths,&drained)
+        })();
+        match result {
+            Ok(report)=>println!("{}",serde_json::to_string(&report).expect("serializable maintenance report")),
+            Err(error)=>{eprintln!("breadboard storage maintenance: {error}");std::process::exit(70);}
+        }
+        return;
+    }
     if std::env::args_os().count() != 1 {
         eprintln!("breadboard-runtime: command-line arguments are not accepted");
         std::process::exit(64);

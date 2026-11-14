@@ -120,6 +120,7 @@ const PDFJS_WORKER_URL = "/api/pdfjs/pdf.worker.mjs";
 const PDFJS_IMAGE_RESOURCES_PATH = "/api/pdfjs/images/";
 
 interface Props {
+  fileRevision?: number;
   clusterSlug?: string;
   documentSlug?: string;
   title: string;
@@ -329,6 +330,7 @@ function OutlineItem({
 }
 
 export default function PdfViewerClient({
+  fileRevision,
   clusterSlug = "",
   documentSlug = "",
   title,
@@ -405,7 +407,7 @@ export default function PdfViewerClient({
     return `/api/documents/${encodeURIComponent(documentSlug)}/source-pdf?${params.toString()}`;
   }, [clusterSlug, documentSlug, sourceUrl]);
 
-  const saveQueue = useMemo(() => pdfSaveQueue(pdfUrl, title), [pdfUrl, title]);
+  const saveQueue = useMemo(() => pdfSaveQueue(pdfUrl, title, fileRevision), [pdfUrl, title, fileRevision]);
 
   const historyUrl = useMemo(() => {
     if (readOnly || sourceUrl) return null;
@@ -1223,6 +1225,7 @@ export default function PdfViewerClient({
     async (
       deliver: (bytes: Uint8Array) => void | Promise<void>,
       fallbackMessage: string,
+      requireSaved = true,
     ) => {
       const pdfDocument = pdfDocumentRef.current;
       if (!pdfDocument) return;
@@ -1230,10 +1233,11 @@ export default function PdfViewerClient({
       setExporting(true);
       setError("");
       try {
-        if (saveState !== "saved") {
+        if (requireSaved && saveState !== "saved") {
           const saved = await saveEditedPdfToServer();
           if (!saved) return;
         }
+        pdfViewerRef.current?._layerProperties?.annotationEditorUIManager?.unselectAll();
         const data = await pdfDocument.saveDocument();
         await deliver(data);
       } catch (saveError) {
@@ -1252,6 +1256,7 @@ export default function PdfViewerClient({
       exportEdited(
         (bytes) => downloadBytes(bytes, editedFileName),
         "Could not download the edited PDF.",
+        false,
       ),
     [editedFileName, exportEdited],
   );

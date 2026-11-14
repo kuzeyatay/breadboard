@@ -1,0 +1,19 @@
+{
+  "name": "breadboard-remotion-runtime",
+  "private": true,
+  "description": "Pinned Remotion install that renders the videos authored through Breadboard's remotion skill.",
+  "dependencies": {
+    "@remotion/cli": "4.0.542",
+    "@remotion/google-fonts": "4.0.542",
+    "@remotion/layout-utils": "4.0.542",
+    "@remotion/motion-blur": "4.0.542",
+    "@remotion/noise": "4.0.542",
+    "@remotion/paths": "4.0.542",
+    "@remotion/shapes": "4.0.542",
+    "@remotion/transitions": "4.0.542",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "remotion": "4.0.542",
+    "three": "0.170.0"
+  }
+}

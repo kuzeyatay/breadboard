@@ -23,17 +23,22 @@ export function pendingPdfSaves() {
   return [...queues.values()].filter(queue => queue.snapshot.state !== "saved");
 }
 
-export function pdfSaveQueue(url: string, title = "PDF") {
+export function pdfSaveQueue(url: string, title = "PDF", revision?: number) {
   let queue = queues.get(url);
   if (!queue) {
     queue = new PdfSaveQueue(url, title);
     queues.set(url, queue);
   }
+  if (revision !== undefined) queue.seedRevision(revision);
   return queue;
 }
 
 /** Owns uploads and retries for the lifetime of the app, independent of routes. */
 export class PdfSaveQueue {
+  private revision: number | undefined;
+  seedRevision(revision: number) {
+    if (!this.jobs.length && !this.running) this.revision = revision;
+  }
   snapshot: PdfSaveSnapshot = { state: "saved", error: "", savedAt: "" };
   private jobs: SaveJob[] = [];
   private running: Promise<boolean> | null = null;
@@ -106,7 +111,7 @@ export class PdfSaveQueue {
         catch (error) { job.bytes = null; throw error; }
         const response = await this.request(this.url, {
           method: "PUT",
-          headers: { "Content-Type": "application/pdf" },
+          headers: { "Content-Type": "application/pdf", ...(this.revision === undefined ? {} : { "x-file-revision": String(this.revision) }) },
           body: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
         });
         if (!response.ok) {
@@ -117,6 +122,11 @@ export class PdfSaveQueue {
             continue;
           }
           throw new Error(typeof body.error === "string" ? body.error : "Could not save the edited PDF.");
+        }
+        if (this.revision !== undefined) {
+          const body = await response.json().catch(() => ({}));
+          if (Number.isSafeInteger(body.file?.revision)) this.revision = body.file.revision;
+          if (body.file && typeof window !== "undefined") window.dispatchEvent(new CustomEvent("sb:garden-file-updated", { detail: body.file }));
         }
         this.jobs.shift();
       } catch (error) {

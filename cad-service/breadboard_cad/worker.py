@@ -22,6 +22,7 @@ from typing import Any
 from .guard import check_source
 from .models import BuildRequest, BuildResult, ConvertRequest, ExecutionFailure
 from .memory_limit import apply_worker_memory_limit
+from .validation import validate_model
 
 #: The name an imported file is given inside the workspace. Never the name the
 #: user's file had: that is a string from a browser, and this one is a path.
@@ -134,8 +135,6 @@ def run_job(request: BuildRequest, workdir: str) -> BuildResult:
                 exceptionType="EngineError",
             ).model_copy(update=versions)
 
-    from .validation import validate_model
-
     issues = validate_model(
         model.solids,
         model.bounding_box,
@@ -238,6 +237,16 @@ def run_convert(request: ConvertRequest, workdir: str) -> BuildResult:
         boundingBox=model.bounding_box,
         tessellation=tessellation,
         exports=exports,
+        issues=(
+            validate_model(
+                model.solids,
+                model.bounding_box,
+                tessellation,
+                request.expectations,
+                [export.format for export in exports],
+                getattr(model, "interferences", lambda: [])(),
+            ) if request.expectations is not None else []
+        ),
         durationMs=int((time.monotonic() - started) * 1000),
         **versions,
     )

@@ -20,14 +20,18 @@ and quick-fix lists (including annual lists through 2026) and scriptlet/redirect
 resources are bundled from Ghostery's compatible distribution. These assets
 are licensed under GPL-3.0; see GPL-3.0.txt and the notices in each list. The
 unmodified asset URLs, source revision, and SHA-256 checksums are recorded in
-upstream.json. Source: https://github.com/ghostery/adblocker/tree/c18718adc33e82a086d996d0b0f75deb3d01745a/packages/adblocker/assets/ublock-origin
+upstream.json. The scriptlet/redirect resources come from
+https://github.com/ghostery/adblocker/tree/6f0610bf5eec1f31c4975ce0e707cdf47023e5b5/packages/adblocker/assets/ublock-origin
+and the lists from https://github.com/uBlockOrigin/uAssets/tree/c9008387b70f543d4ba87209c438b7f48693196b/filters
+(Ghostery's mirror of the lists lags by weeks).
 Original projects: https://github.com/uBlockOrigin/uAssets and
 https://github.com/gorhill/uBlock. Engine/content/selector helpers are unmodified
 MPL-2.0 packages at 2.20.1; see MPL-2.0.txt. Their license comments and source
 maps are retained in the bundled JavaScript.
 
-Refresh these assets explicitly with `node scripts/update-adblocker.mjs <full-commit-SHA>`
-from desktop/, using a ghostery/adblocker commit. The build checks every pinned
+Refresh these assets explicitly with
+`node scripts/update-adblocker.mjs <ghostery/adblocker SHA> <uBlockOrigin/uAssets SHA>`
+from desktop/. Video-site rules go stale within weeks, so refresh for every release. The build checks every pinned
 asset checksum and compiles the lists/resources offline. Review upstream changes
 and rerun both ad blocker tests before releasing an updated snapshot.
 
@@ -39,6 +43,9 @@ snapshot prevents YouTube's stacked JSON/fetch/XHR scriptlets from recursively
 calling earlier wrappers. Extended selectors support text/ancestor matching. Browser
 CSP is preserved; it can still refuse a replacement resource. No downloaded
 code is executed at runtime and no product bridge is exposed to websites.
+
+On YouTube, an ad that starts despite the rules is ended by seeking to its
+last frame and pressing its skip button (browser-adblocker-preload.ts).
 
 YouTube player-response and Prime Video JSON/DASH rules are enabled, alongside
 the lists' other streaming-site rules. This is best-effort filtering: services

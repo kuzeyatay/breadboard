@@ -62,7 +62,9 @@ document.addEventListener("nav", () => {
       const retry = document.createElement("button")
       retry.type = "button"
       retry.textContent = "Retry"
-      footer.append(label, status, retry)
+      const authorship = document.createElement("span")
+      authorship.className = "bb-page-authorship"
+      footer.append(label, authorship, status, retry)
       article.append(footer)
     }
     const checkbox = footer.querySelector<HTMLInputElement>("input")!
@@ -75,6 +77,10 @@ document.addEventListener("nav", () => {
       }, { signal: controller.signal })
       boundControls.add(checkbox)
     }
+    const authorship = footer.querySelector<HTMLElement>(".bb-page-authorship")!
+    const authorshipText = article.dataset.authorship ? `Status: ${article.dataset.authorship}` : ""
+    if (authorship.textContent !== authorshipText) authorship.textContent = authorshipText
+    authorship.hidden = !authorshipText
     const understood = displayedValue()
     checkbox.checked = understood
     // Refreshing on window focus must not disable the control before a click

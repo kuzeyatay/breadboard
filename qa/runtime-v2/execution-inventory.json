@@ -2446,7 +2446,7 @@
       "classification": "disposable-job",
       "current_state": "runtime_v2_disposable_setup_worker_family",
       "target_state": "runtime_v2_disposable_setup_worker_family",
-      "sources": ["desktop/runtime-v2/manifests/workers.json", "native/runtime-core/src/service_environment.rs", "dashboard/scripts/runtime-v2-managed-setup-worker.mjs", "dashboard/scripts/runtime-v2-managed-setup-executor.mjs", "dashboard/scripts/runtime-v2-agent-reach-setup-worker.mjs", "dashboard/scripts/runtime-v2-agent-reach-setup-executor.mjs", "dashboard/scripts/runtime-v2-recall-install-worker.mjs", "dashboard/scripts/runtime-v2-recall-install-executor.mjs", "scripts/setup-cad.mjs", "scripts/setup-colpali.mjs", "scripts/setup-comfyui.mjs", "scripts/setup-humanizer.mjs", "scripts/setup-ifixai.mjs", "scripts/setup-manim.mjs", "scripts/setup-matraix.mjs", "scripts/setup-mem0.mjs", "scripts/setup-resource2skill.mjs", "scripts/setup-sf3d.mjs", "scripts/setup-voicebox.mjs", "dashboard/scripts/acestep-setup.py"],
+      "sources": ["desktop/runtime-v2/manifests/workers.json", "native/runtime-core/src/service_environment.rs", "dashboard/scripts/runtime-v2-managed-setup-worker.mjs", "dashboard/scripts/runtime-v2-managed-setup-executor.mjs", "dashboard/scripts/runtime-v2-agent-reach-setup-worker.mjs", "dashboard/scripts/runtime-v2-agent-reach-setup-executor.mjs", "dashboard/scripts/runtime-v2-recall-install-worker.mjs", "dashboard/scripts/runtime-v2-recall-install-executor.mjs", "scripts/setup-cad.mjs", "scripts/setup-freecad.mjs", "scripts/setup-colpali.mjs", "scripts/setup-comfyui.mjs", "scripts/setup-humanizer.mjs", "scripts/setup-ifixai.mjs", "scripts/setup-manim.mjs", "scripts/setup-matraix.mjs", "scripts/setup-mem0.mjs", "scripts/setup-resource2skill.mjs", "scripts/setup-sf3d.mjs", "scripts/setup-voicebox.mjs", "dashboard/scripts/acestep-setup.py"],
       "evidence": ["Focused setup suites prove authenticated zero-blob or explicitly sealed-blob submission, fixed source/output roots, private attempt workspaces, bounded cancellation, and no Electron/Next direct-spawn fallback. Standalone audio/Google commands are separately classified as external developer/build-time provisioning; integrated Electron and memory evidence remain NOT RUN."]
     },
     {
@@ -3116,12 +3116,12 @@
       "display_name": "Parametric CAD attempt",
       "capability_ids": ["runtime-agent:parametric-cad"],
       "current_owner": "Rust Runtime V2 disposable worker",
-      "executable_runtime": "bundled Node outer-agent worker calling the sealed Runtime-owned CAD service",
+      "executable_runtime": "bundled Node outer-agent worker calling the sealed Runtime-owned CAD service and an optional finite FreeCAD MCP child",
       "root_command": "runtime-v2-parametric-cad-worker.mjs start.json",
       "startup_policy": "explicit command or confirmed Super Agent launch",
       "dependency_chain": ["service:dashboard", "service:chatmock", "service:cad"],
       "api_root": "/api/cad/runs",
-      "flags": {"spawns_descendants": false, "calls_model": true, "launches_chromium": false, "uses_docker": false, "uses_wsl": false, "handles_large_files": true},
+      "flags": {"spawns_descendants": true, "calls_model": true, "launches_chromium": false, "uses_docker": false, "uses_wsl": false, "handles_large_files": true},
       "finite": true, "persistent": false, "exits_after_work": true,
       "idle_behavior": "fresh worker exits after the terminal event and releases its ChatMock and CAD leases",
       "cancel_behavior": "authenticated exact-job cancellation allows 60 seconds for service cleanup before Rust terminates the worker and releases both leases",
@@ -3131,7 +3131,7 @@
       "classification": "disposable-job",
       "current_state": "runtime_v2_disposable_worker_with_cad_and_chatmock_leases",
       "target_state": "runtime_v2_disposable_worker_with_cad_and_chatmock_leases",
-      "sources": ["desktop/runtime-v2/manifests/workers.json", "native/runtime-core/src/service_environment.rs", "dashboard/src/app/api/cad/runs/route.ts", "dashboard/src/lib/cad/runtime-run-manager.ts", "dashboard/src/lib/cad/runtime-parameter-action.ts", "dashboard/src/lib/cad/runtime-worker-adapter.ts", "dashboard/src/lib/cad/run-manager.ts", "dashboard/src/lib/cad/parameter-action.ts", "dashboard/src/lib/cad/project-store.ts", "dashboard/src/lib/cad/artifact.ts", "dashboard/scripts/runtime-v2-parametric-cad-worker.mjs", "dashboard/scripts/runtime-v2-outer-agent-worker-core.mjs", "dashboard/scripts/runtime-v2-outer-agent-adapters.mjs"],
+      "sources": ["desktop/runtime-v2/manifests/workers.json", "native/runtime-core/src/service_environment.rs", "dashboard/src/app/api/cad/runs/route.ts", "dashboard/src/lib/cad/runtime-run-manager.ts", "dashboard/src/lib/cad/runtime-parameter-action.ts", "dashboard/src/lib/cad/runtime-worker-adapter.ts", "dashboard/src/lib/cad/run-manager.ts", "dashboard/src/lib/cad/parameter-action.ts", "dashboard/src/lib/cad/freecad/mcp.ts", "dashboard/src/lib/cad/freecad/backend.ts", "freecad-service/runner.py", "dashboard/src/lib/cad/project-store.ts", "dashboard/src/lib/cad/artifact.ts", "dashboard/scripts/runtime-v2-parametric-cad-worker.mjs", "dashboard/scripts/runtime-v2-outer-agent-worker-core.mjs", "dashboard/scripts/runtime-v2-outer-agent-adapters.mjs"],
       "evidence": ["Dedicated Parametric CAD Runtime V2 boundary checks, shared outer-agent tests 14/14, real fresh-worker completion, and Runtime-stop cancellation pass. The worker admits only sealed run or parameter-update operations, holds native ChatMock and CAD dependencies, excludes SolidWorks from this request contract, and has no Next fallback. Integrated Electron and memory evidence remain NOT RUN."]
     },
     {

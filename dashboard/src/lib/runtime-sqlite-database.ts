@@ -27,5 +27,9 @@ export function openRuntimeSqliteDatabase(input: {
   ) {
     throw new TypeError("The Runtime SQLite path is outside its authority.");
   }
-  return Reflect.construct(Database, [candidate]) as Database.Database;
+  const database = Reflect.construct(Database, [candidate]) as Database.Database;
+  // Only an empty database can change this without a full rebuild. Existing
+  // installations are converted by the offline maintenance command.
+  if (database.pragma("page_count", { simple: true }) === 0) database.pragma("auto_vacuum = INCREMENTAL");
+  return database;
 }

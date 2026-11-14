@@ -7,6 +7,7 @@
 // leaves the last good design as the project's current one.
 
 import { cadDefaults } from "./defaults.ts";
+import { cadEngineFromProvenance } from "./engines.ts";
 import { CadServiceError } from "./errors.ts";
 import {
   buildCadManifest,
@@ -65,6 +66,10 @@ export async function applyParameterUpdate(
   }
 
   const spec = JSON.parse(project.design_spec_json) as CADDesignSpec;
+  const engine = cadEngineFromProvenance(revision.provenance_json);
+  if (engine === "solidworks") {
+    throw new CadServiceError("unsupported_on_engine", "Ask for a revised SolidWorks operation program to change this part's dimensions.");
+  }
   const editable = new Map(
     spec.parameters.filter((parameter) => parameter.editable).map((p) => [p.id, p]),
   );
@@ -121,6 +126,7 @@ export async function applyParameterUpdate(
     instruction,
     safety,
     defaults: cadDefaults(project.process),
+    engine,
     attemptsRemaining: 1,
     projectId: project.id,
     ...(input.database ? { database: input.database } : {}),

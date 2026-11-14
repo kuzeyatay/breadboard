@@ -5,6 +5,7 @@ import { pageFlagColor, understandingPageSlug } from '@/lib/page-understanding-t
 import { listClusterFolders, scanClusterKnowledgeCooperatively } from '@/lib/knowledge';
 import { INTERNAL_CONCEPT_TYPE, isLegacySubtopicRelPath, readingOrderRank } from '@/lib/learning-garden';
 import { createGardenDocument } from '@/lib/garden-documents.ts';
+import { isPageAuthorship } from '@/lib/page-authorship.ts';
 import { requireOwnedClusterFromSlug, requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
@@ -113,7 +114,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { clusterSlug, title, content, folder, tags } = body;
+    const { clusterSlug, title, content, folder, tags, authorship } = body;
 
     if (typeof clusterSlug !== 'string' || !clusterSlug.trim()) {
       return NextResponse.json({ error: 'clusterSlug is required' }, { status: 400 });
@@ -131,6 +132,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'tags must be an array of strings' }, { status: 400 });
     }
 
+    if (authorship !== undefined && !isPageAuthorship(authorship)) {
+      return NextResponse.json({ error: 'authorship is invalid' }, { status: 400 });
+    }
+
     const { cluster, userId } = await requireOwnedClusterFromSlug(clusterSlug);
 
     const created = await createGardenDocument({
@@ -140,6 +145,7 @@ export async function POST(request: Request) {
       content,
       folder,
       tags: Array.isArray(tags) ? tags : [],
+      authorship,
     });
 
     return NextResponse.json({ success: true, ...created });

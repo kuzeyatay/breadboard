@@ -59,7 +59,7 @@ function selectUpload(input: CreateArtifactFromUploadInput): SelectedUpload {
   const database = input.database ?? db;
   const row = database.prepare(`
     SELECT m.id, m.content, m.metadata
-    FROM conversation_messages m
+    FROM conversation_message_reads m
     JOIN conversations c ON c.id = m.conversation_id
     WHERE m.conversation_id = ?
       AND c.user_id = ?

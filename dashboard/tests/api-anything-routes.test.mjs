@@ -86,6 +86,7 @@ test("chat API tools enforce capability, account, active run, connection and nat
     "@/lib/composio/service.ts": 'export const COMPOSIO_RUNTIME_NAME = "composio";' + unexpected(["listComposioConnections"]),
     "@/lib/hermes/connected-app-context.ts": unexpected(["connectedAppUsageInstructions"]),
     "@/lib/composio/executor.ts": unexpected(["executeComposioAction"]),
+    "@/lib/composio/app-tools.ts": unexpected(["connectedAppTool", "connectedAppToolSummaries", "executeConnectedAppTool"]),
     "@/lib/hermes/mcp-connections.ts": unexpected(["getMcpConnection", "listMcpConnections", "runtimeMcpConfig"]),
     "@/lib/goal-mode.ts": 'export const GOAL_MODE_CONNECTION = "goal";' + unexpected(["callGoalModeTool"]),
     "@/lib/hermes/capability-policy.ts": unexpected(["connectionToolAllowed"]),

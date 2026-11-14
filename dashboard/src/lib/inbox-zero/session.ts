@@ -26,6 +26,7 @@ import { composeArgs } from "./stack.ts";
 import type { InboxZeroConfig, InboxZeroCredentials } from "./config.ts";
 import {
   SESSION_COOKIE_NAME,
+  type BreadboardGmailGrant,
   type InboxZeroSession,
   type MailboxIdentity,
 } from "./contract.ts";
@@ -113,7 +114,7 @@ export async function resolveMailbox(
   const rows = await psql(
     config,
     credentials,
-    `SELECT ea.id, ea.email, ea."userId", a."providerId"
+    `SELECT ea.id, ea.email, ea."userId", a.provider
        FROM "EmailAccount" ea
        JOIN "Account" a ON a.id = ea."accountId"
       ORDER BY ea."createdAt" ASC`,
@@ -138,13 +139,79 @@ export async function listMailboxes(
   const rows = await psql(
     config,
     credentials,
-    `SELECT ea.email, a."providerId"
+    `SELECT ea.email, a.provider
        FROM "EmailAccount" ea
        JOIN "Account" a ON a.id = ea."accountId"
       ORDER BY ea."createdAt" ASC`,
     env,
   );
   return rows.map(([email, provider]) => ({ email: email ?? "", provider: provider ?? "" }));
+}
+
+/**
+ * Connect Breadboard's Gmail grant as an Inbox Zero mailbox, exactly as its own
+ * Google sign-in would have: a User, a better-auth Account (provider `google`,
+ * providerAccountId = Google `sub`) and the EmailAccount bound to it.
+ *
+ * Tokens go in as plaintext; Inbox Zero's `decryptToken` passes plaintext
+ * through and re-encrypts on its first refresh. An existing mailbox keeps its
+ * own tokens (Inbox Zero refreshes them) until the Breadboard grant changes
+ * scope — i.e. the user reconnected Gmail with more permissions — or the
+ * account was marked disconnected; then the newer grant replaces them.
+ */
+export async function seedGoogleMailbox(
+  config: InboxZeroConfig,
+  credentials: InboxZeroCredentials,
+  grant: BreadboardGmailGrant,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const email = grant.email.trim().toLowerCase();
+  const text = (value: string | null) => (value ? quote(value) : "NULL");
+  const expiresAt = grant.expiresAt ? quote(new Date(grant.expiresAt).toISOString()) : "now()";
+  await psql(
+    config,
+    credentials,
+    `UPDATE "Account" SET
+       access_token = ${quote(grant.accessToken)},
+       refresh_token = COALESCE(${text(grant.refreshToken)}, refresh_token),
+       expires_at = ${expiresAt},
+       scope = ${text(grant.scope)},
+       "disconnectedAt" = NULL,
+       "updatedAt" = now()
+     WHERE provider = 'google' AND "providerAccountId" = ${quote(grant.sub)}
+       AND (scope IS DISTINCT FROM ${text(grant.scope)} OR "disconnectedAt" IS NOT NULL)`,
+    env,
+  );
+  await psql(
+    config,
+    credentials,
+    `WITH u AS (
+       INSERT INTO "User" (id, email, name, image, "emailVerified", "createdAt", "updatedAt")
+       SELECT ${quote(randomUUID())}, ${quote(email)}, ${text(grant.name)}, ${text(grant.picture)}, true, now(), now()
+        WHERE NOT EXISTS (SELECT 1 FROM "EmailAccount" WHERE lower(email) = ${quote(email)})
+       ON CONFLICT (email) DO UPDATE SET "updatedAt" = now()
+       RETURNING id
+     ), a AS (
+       INSERT INTO "Account" (id, "userId", provider, type, "providerAccountId", access_token,
+                              refresh_token, expires_at, scope, token_type, "createdAt", "updatedAt")
+       SELECT ${quote(randomUUID())}, u.id, 'google', 'oidc', ${quote(grant.sub)}, ${quote(grant.accessToken)},
+              ${text(grant.refreshToken)}, ${expiresAt}, ${text(grant.scope)}, 'Bearer', now(), now()
+         FROM u
+       ON CONFLICT (provider, "providerAccountId") DO UPDATE SET
+         access_token = EXCLUDED.access_token,
+         refresh_token = COALESCE(EXCLUDED.refresh_token, "Account".refresh_token),
+         expires_at = EXCLUDED.expires_at,
+         scope = EXCLUDED.scope,
+         "disconnectedAt" = NULL,
+         "updatedAt" = now()
+       RETURNING id, "userId"
+     )
+     INSERT INTO "EmailAccount" (id, email, name, image, "userId", "accountId", "createdAt", "updatedAt")
+     SELECT ${quote(randomUUID())}, ${quote(email)}, ${text(grant.name)}, ${text(grant.picture)}, a."userId", a.id, now(), now()
+       FROM a
+     ON CONFLICT DO NOTHING`,
+    env,
+  );
 }
 
 /** The cookie value better-auth will accept for this session token. */

@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createDisposableScratch, releaseDisposableScratch } from "../storage/scratch.ts";
 import path from "node:path";
 
 const metafileTypes = new Map([
@@ -42,7 +42,7 @@ export function renderWindowsMetafileToPng(data: Buffer, mediaType: string): Buf
   if (!extension || process.platform !== "win32" || data.length === 0 || data.length > 25 * 1024 * 1024) return null;
   let directory: string | undefined;
   try {
-    directory = mkdtempSync(path.join(tmpdir(), "breadboard-metafile-"));
+    directory = createDisposableScratch("metafile-render");
     const inputPath = path.join(directory, `image.${extension}`);
     const outputPath = path.join(directory, "image.png");
     writeFileSync(inputPath, data, { flag: "wx" });
@@ -57,7 +57,7 @@ export function renderWindowsMetafileToPng(data: Buffer, mediaType: string): Buf
     const png = readFileSync(outputPath);
     return png.length >= 8 && png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? png : null;
   } catch { return null; }
-  finally { if (directory) rmSync(directory, { recursive: true, force: true }); }
+  finally { if (directory) { releaseDisposableScratch(directory); rmSync(directory, { recursive: true, force: true }); } }
 }
 
 export function windowsPowerShellPath(environment: NodeJS.ProcessEnv = process.env): string {

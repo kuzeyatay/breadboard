@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/neka-nat/freecad-mcp",
+  "commit": "5014bd9d538b8d09e11201e219cfe291ebca7b4e",
+  "license": "MIT",
+  "mode": "MCP stdio execute_code_headless",
+  "files": ["src/", "pyproject.toml", "uv.lock", "LICENSE", "README.md", "addon/FreeCADMCP/package.xml"],
+  "notes": "Unmodified upstream server. GUI addon code is not needed for headless builds. FreeCAD itself is installed separately."
+}

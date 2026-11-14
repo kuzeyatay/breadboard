@@ -8,6 +8,8 @@
 // This module is imported by client components. It must stay free of
 // server-only imports.
 
+import { isCadBackendPreference, requestedCadEngine, type CadBackendPreference } from "./engines.ts";
+
 export const PARAMETRIC_CAD_COMMAND = "/agents:parametric-cad";
 export const PARAMETRIC_CAD_AGENT_ID = "parametric-cad";
 export const PARAMETRIC_CAD_AGENT_NAME = "Parametric CAD";
@@ -23,6 +25,8 @@ export interface ParametricCadRequest {
   units: "mm" | "inch" | null;
   /** `--fresh` starts a new project instead of revising the one in this chat. */
   fresh: boolean;
+  /** Optional for saved requests made before backend selection was added. */
+  cadBackend?: CadBackendPreference | null;
 }
 
 /**
@@ -79,12 +83,13 @@ export function requestsNewCadProject(brief: string): boolean {
  */
 export function parseParametricCadRequest(
   task: string,
-  defaults?: Partial<Pick<ParametricCadRequest, "process" | "printerBed" | "units">>,
+  defaults?: Partial<Pick<ParametricCadRequest, "process" | "printerBed" | "units" | "cadBackend">>,
 ): ParametricCadRequest {
   let process: ParametricCadRequest["process"] = defaults?.process ?? null;
   let printerBed: ParametricCadRequest["printerBed"] = defaults?.printerBed ?? null;
   let units: ParametricCadRequest["units"] = defaults?.units ?? null;
   let fresh = requestsNewCadProject(task);
+  let cadBackend: CadBackendPreference | null | undefined = requestedCadEngine(task) ?? (defaults?.cadBackend !== "auto" ? defaults?.cadBackend : null);
 
   const bed = BED.exec(task);
   if (bed) {
@@ -92,6 +97,12 @@ export function parseParametricCadRequest(
   }
 
   const brief = task
+    .replace(/(?:^|\s)--cad[= ]("[^"]+"|[^\s]+)/gi, (match, value: string) => {
+      const requested = value.replace(/^"|"$/g, "").trim().toLowerCase();
+      if (!isCadBackendPreference(requested)) return match;
+      cadBackend = requested;
+      return " ";
+    })
     .replace(BED, " ")
     .replace(/(?:^|\s)--(fdm|sla|sls)\b/gi, (_match, value: string) => {
       process = value.toLowerCase() as ParametricCadRequest["process"];
@@ -107,5 +118,5 @@ export function parseParametricCadRequest(
     })
     .trim();
 
-  return { brief, process, printerBed, units, fresh };
+  return { brief, process, printerBed, units, fresh, ...(cadBackend ? { cadBackend } : {}) };
 }

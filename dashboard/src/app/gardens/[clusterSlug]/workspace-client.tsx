@@ -69,7 +69,7 @@ import ChatDisclaimer from "@/app/components/chat/chat-disclaimer";
 import CollapsibleUserMessage from "@/app/components/chat/collapsible-user-message";
 import ChatGreetingEmptyState from "@/app/components/hermes/chat-greeting-empty-state";
 import type { ChatGreeting } from "@/lib/hermes/chat-greeting";
-import { useChatGreeting } from "@/app/components/hermes/use-chat-greeting";
+import { useChatGreeting, type SuggestionDetail } from "@/app/components/hermes/use-chat-greeting";
 import { useChatDraft } from "@/app/components/hermes/use-chat-draft";
 import { forgetChatDrafts } from "@/lib/conversations/drafts";
 import { messageRewriteReview } from "@/app/components/humanizer/rewrite-status";
@@ -579,6 +579,7 @@ import { isLearnRunningStatus, LEARN_ACTIVE_STAGE_LABELS } from "@/lib/learn-sta
 import { learnOperationActivity } from "@/lib/learn-operation-activity";
 import {
   abortGardenTurnCheckpoint,
+  holdGardenTurnsUntil,
   fetchGardenChat,
   reserveGardenTurnCheckpoint,
   saveGardenChatSession,
@@ -1883,6 +1884,7 @@ interface ChatTranscriptProps {
   /** What a blank chat greets with — resolved by the workspace, garden-aware. */
   greeting: ChatGreeting | null;
   greetingSuggestions: string[];
+  greetingSuggestionDetails?: Record<string, SuggestionDetail>;
   /** An opener was picked: it fills the composer the workspace owns. */
   onSelectSuggestion: (prompt: string) => void;
   onGenerativeUiAction: (action: GenerativeUiAction) => void;
@@ -1903,7 +1905,11 @@ interface ChatTranscriptProps {
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
   pendingClarification: ClarificationPrompt | null;
   onClarificationAnswer: (answer: string) => void;
-  onEditMessage: (messageIndex: number, text: string) => void;
+  onEditMessage: (
+    messageIndex: number,
+    text: string,
+    detachedAttachmentNames: readonly string[],
+  ) => void;
   /** Remove one exchange: this message and the answer it produced. */
   onDeleteMessage: (messageIndex: number) => void;
   onRetryAssistant: (messageIndex: number) => void;
@@ -2005,6 +2011,7 @@ const ChatTranscript = memo(function ChatTranscript({
   clusterSlug,
   greeting,
   greetingSuggestions,
+  greetingSuggestionDetails,
   onSelectSuggestion,
   onGenerativeUiAction,
   activeProductComparison,
@@ -2044,6 +2051,8 @@ const ChatTranscript = memo(function ChatTranscript({
   const copiedUserTimerRef = useRef<number | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [messageEditText, setMessageEditText] = useState("");
+  // Attachments taken off the message being edited; they stay off the resend.
+  const [detachedAttachmentNames, setDetachedAttachmentNames] = useState<string[]>([]);
   const [copiedUserId, setCopiedUserId] = useState<string | null>(null);
   const [promptToSave, setPromptToSave] = useState<string | null>(null);
   const {
@@ -2120,6 +2129,7 @@ const ChatTranscript = memo(function ChatTranscript({
   function beginMessageEdit(message: Message, messageId: string) {
     setEditingMessageId(messageId);
     setMessageEditText(message.content);
+    setDetachedAttachmentNames([]);
   }
 
   /** The sibling answers this one shares a user message with, if any. */
@@ -2149,7 +2159,7 @@ const ChatTranscript = memo(function ChatTranscript({
     if (!text) return;
     setEditingMessageId(null);
     setMessageEditText("");
-    onEditMessage(messageIndex, text);
+    onEditMessage(messageIndex, text, detachedAttachmentNames);
   }
 
   async function deleteMessageTurn(messageIndex: number) {
@@ -2209,6 +2219,7 @@ const ChatTranscript = memo(function ChatTranscript({
             <ChatGreetingEmptyState
               greeting={greeting}
               suggestions={greetingSuggestions}
+              suggestionDetails={greetingSuggestionDetails}
               suggestionScopeKey={JSON.stringify([clusterSlug, temporaryChat])}
               onSelectSuggestion={onSelectSuggestion}
               footnote={
@@ -2381,6 +2392,9 @@ const ChatTranscript = memo(function ChatTranscript({
                       focusedNameSet.has(name),
                     )),
               );
+              const editingThisMessage = editingMessageId === messageInteractionId;
+              const stillAttached = (name: string) =>
+                !editingThisMessage || !detachedAttachmentNames.includes(name);
               return (
                 <div className="flex w-full flex-col gap-3"
                   data-notification-message={msg.role === "assistant" && !msg.pending && msg.content.trim()
@@ -2397,14 +2411,17 @@ const ChatTranscript = memo(function ChatTranscript({
                     {msg.role === "user" ? (
                       <div className={`flex min-w-0 flex-col items-end gap-1 ${editingMessageId === messageInteractionId ? "w-full" : "max-w-[80%]"}`}>
                         <ChatMessageAttachments
-                          attachments={msg.attachments}
-                          sourceAttachments={focusedSourceAttachments}
+                          attachments={msg.attachments?.filter((attachment) => stillAttached(attachment.name))}
+                          sourceAttachments={focusedSourceAttachments.filter((source) => stillAttached(source.name))}
                           attachmentNames={[
                             ...new Set([
                               ...(msg.attachmentNames ?? []),
                               ...(msg.focusedDocumentNames ?? []),
                             ]),
-                          ]}
+                          ].filter(stillAttached)}
+                          onRemove={editingThisMessage
+                            ? (name) => setDetachedAttachmentNames((current) => [...current, name])
+                            : undefined}
                         />
                         <ChatVideoLinkEmbeds
                           text={msg.content}
@@ -6476,29 +6493,78 @@ export default function WorkspaceClient({
     if (sessionId !== null && (launchingExternalAgent !== null || delegatedAgentLaunching)) {
       stoppedExternalLaunchesRef.current.add(sessionId);
     }
+    // Calling abort cancels this viewer's own request before its first await,
+    // so the turn stops locally whatever the server is busy with.
+    const serverStop = Promise.all([
+      // With no saved chat this aborts only the local preparation. Never use
+      // another chat's last-started turn as the selected chat's stop target.
+      conversationId || sessionId === null
+        ? agentActivity.abort(conversationId)
+        : Promise.resolve(false),
+      turn ? abortGardenTurnCheckpoint(turn.sessionId, turn.clientMessageId) : Promise.resolve(),
+    ]).then(([stopped]) => stopped, () => false);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      stoppingGardenChatsRef.current.delete(sessionId);
+      setStoppingGardenChats(new Set(stoppingGardenChatsRef.current));
+    };
+    // A turn started after this Stop owns the chat; nothing here may touch it.
+    const supersededByNewTurn = () => {
+      const current = activeGardenTurnRef.current;
+      return current !== null && current.sessionId === sessionId &&
+        current.clientMessageId !== turn?.clientMessageId;
+    };
+    if (sessionId === null) {
+      try {
+        await serverStop;
+        setDraftMessages(null);
+      } finally {
+        release();
+      }
+      return;
+    }
+    // Stop is the person's decision, so no round trip owns what they see: the
+    // answer reads Interrupted now. The chat's next turn waits for the server
+    // side of the stop instead (see holdGardenTurnsUntil).
+    holdGardenTurnsUntil(sessionId, serverStop);
+    if (turn) {
+      const stoppedAt = new Date().toISOString();
+      updateChatMessages(sessionId, (current) => current.map((message) =>
+        message.role === "assistant" && message.clientMessageId === turn.clientMessageId &&
+          !message.responseCompletedAt
+          ? { ...message, pending: false, interrupted: true, responseCompletedAt: stoppedAt }
+          : message));
+    }
+    const settleLocally = () => {
+      if (supersededByNewTurn()) return;
+      gardenTurnObserversRef.current.get(sessionId)?.recover();
+      setChatStreaming(sessionId, false);
+    };
     try {
-      const [stopped] = await Promise.all([
-        // With no saved chat this aborts only the local preparation. Never use
-        // another chat's last-started turn as the selected chat's stop target.
-        conversationId || sessionId === null
-          ? agentActivity.abort(conversationId)
-          : Promise.resolve(false),
-        turn ? abortGardenTurnCheckpoint(turn.sessionId, turn.clientMessageId) : Promise.resolve(),
+      const prompt = await Promise.race([
+        serverStop.then(() => true),
+        new Promise<false>((resolve) => window.setTimeout(() => resolve(false), 1_500)),
       ]);
+      if (!prompt) {
+        // A busy server must not keep Stop spinning. Hand the composer back
+        // and reconcile with the durable transcript when the stop lands.
+        settleLocally();
+        release();
+      }
+      const stopped = await serverStop;
+      if (supersededByNewTurn()) return;
       if (!stopped) {
+        // The server never confirmed it, so the run may still be going: leave
+        // the chat as the server reports it, with Stop there to press again.
         setExternalAgentStatus("Could not stop the conversation. Try Stop again.");
         return;
       }
-      if (sessionId !== null) {
-        gardenTurnObserversRef.current.get(sessionId)?.recover();
-        setChatStreaming(sessionId, false);
-        await refreshChatSession(sessionId);
-      } else {
-        setDraftMessages(null);
-      }
+      settleLocally();
+      await refreshChatSession(sessionId);
     } finally {
-      stoppingGardenChatsRef.current.delete(sessionId);
-      setStoppingGardenChats(new Set(stoppingGardenChatsRef.current));
+      release();
     }
   }
   const { queueFollowUp, headerContent: queuedFollowUpsHeader } =
@@ -6506,6 +6572,7 @@ export default function WorkspaceClient({
       conversationKey: activeChatId === null ? null : String(activeChatId),
       runInFlight: isStreaming || externalRunHoldsQueue || stoppingGardenChat,
       steerableRunActive: steerableTurnActive,
+      stopping: stoppingGardenChat,
       externalRunActive: externalRunHoldsQueue,
       onSteer: steerActiveResponse,
       onRestoreDraft: (text, attachments, selection) => {
@@ -8322,21 +8389,10 @@ export default function WorkspaceClient({
     if (!previousUser || previousUser.role !== "user") return;
     const retryAttachments = reusableChatAttachments(previousUser.attachments);
     warnAboutUnreusableAttachments(previousUser);
-    const retryFocusedDocumentNames = normalizeFocusedDocumentNames(
-      previousUser.focusedDocumentNames,
-    );
-    const legacyFocusedNames = new Set(retryFocusedDocumentNames);
-    const retryFocusedDocumentSlugs = normalizeFocusedDocumentSlugs(
-      previousUser.focusedDocumentSlugs?.length
-        ? previousUser.focusedDocumentSlugs
-        : documents
-            .filter(
-              (document) =>
-                document.type === "source-document" &&
-                legacyFocusedNames.has(document.title || document.name),
-            )
-            .map((document) => document.slug),
-    );
+    const {
+      names: retryFocusedDocumentNames,
+      slugs: retryFocusedDocumentSlugs,
+    } = focusedDocumentsOfMessage(previousUser);
     const failedAttempt = messages[messageIndex];
     const attemptDiedEmpty =
       failedAttempt?.role === "assistant" &&
@@ -8498,13 +8554,74 @@ export default function WorkspaceClient({
     );
   }
 
-  function handleEditUserMessage(messageIndex: number, text: string) {
+  /** The Garden documents a sent message was focused on, for sending it again. */
+  function focusedDocumentsOfMessage(message: Message): { names: string[]; slugs: string[] } {
+    const names = normalizeFocusedDocumentNames(message.focusedDocumentNames);
+    const legacyFocusedNames = new Set(names);
+    const slugs = normalizeFocusedDocumentSlugs(
+      message.focusedDocumentSlugs?.length
+        ? message.focusedDocumentSlugs
+        : documents
+            .filter(
+              (document) =>
+                document.type === "source-document" &&
+                legacyFocusedNames.has(document.title || document.name),
+            )
+            .map((document) => document.slug),
+    );
+    return { names, slugs };
+  }
+
+  /**
+   * An edit rewrites the words and keeps what they were about: the message's
+   * own uploads and focused Garden documents go with it, except the ones the
+   * person took off while editing.
+   */
+  function handleEditUserMessage(
+    messageIndex: number,
+    text: string,
+    detachedAttachmentNames: readonly string[] = [],
+  ) {
     if (isStreaming || !activeChat) return;
     const previousUser = messages[messageIndex];
     if (!previousUser || previousUser.role !== "user") return;
-    const editedAttachments = reusableChatAttachments(previousUser.attachments);
-    warnAboutUnreusableAttachments(previousUser);
-    void handleSubmit(text, messages.slice(0, messageIndex), editedAttachments);
+    // A Garden source chip can show an alias of the saved focused name, so a
+    // detached source takes every name it goes by with it.
+    const detachedSources = gardenSourceAttachments.filter((source) =>
+      [source.name, ...(source.aliases ?? [])].some((name) =>
+        detachedAttachmentNames.includes(name),
+      ),
+    );
+    const detached = new Set([
+      ...detachedAttachmentNames,
+      ...detachedSources.flatMap((source) => [source.name, ...(source.aliases ?? [])]),
+    ]);
+    const detachedSlugs = new Set(detachedSources.map((source) => source.slug));
+    const keptAttachments = previousUser.attachments?.filter(
+      (attachment) => !detached.has(attachment.name),
+    );
+    warnAboutUnreusableAttachments({
+      ...previousUser,
+      attachments: keptAttachments,
+      attachmentNames: previousUser.attachmentNames?.filter((name) => !detached.has(name)),
+    });
+    const focused = focusedDocumentsOfMessage(previousUser);
+    const focusedDocumentSlugs = focused.slugs.filter((slug) => !detachedSlugs.has(slug));
+    void handleSubmit(
+      text,
+      messages.slice(0, messageIndex),
+      reusableChatAttachments(keptAttachments),
+      false,
+      undefined,
+      {
+        // Slugs are the authority; names are only sent for a legacy message
+        // that has none, so a detached document cannot ride back in by name.
+        focusedDocumentSlugs,
+        focusedDocumentNames: focused.slugs.length
+          ? []
+          : focused.names.filter((name) => !detached.has(name)),
+      },
+    );
   }
 
   // Applies one queued message to the active chat turn as a course
@@ -13838,7 +13955,7 @@ if (careerOpsAgent) {
       const composed = [
         ...nextMessages,
         ...steerContext.messages,
-        { ...assistantMsg },
+        { ...assistantMsg, ...(agentSignal?.aborted ? { interrupted: true } : {}) },
       ];
       // A background worker can finish while Hermes streams an interim
       // synthesis. Preserve the worker's latest terminal metadata whenever the
@@ -13879,6 +13996,7 @@ if (careerOpsAgent) {
         textSelection
           ? { ...userMsg, selectedText: textSelection.quote }
           : userMsg,
+        agentSignal,
       );
       userMsg.id = checkpoint.userMessageId;
       assistantMsg.id = checkpoint.assistantMessageId;
@@ -13893,10 +14011,31 @@ if (careerOpsAgent) {
       );
       checkpointSaved = true;
     } catch {
-      addToast(
-        chatSaveFailureLabel(sessionId, session.title, nextMessages, clusterName),
-        "error", "Chat was not saved", String(sessionId),
+      // Stop during the save is not a failed save: the turn stays on screen as
+      // interrupted, and the reservation seals whatever the request committed.
+      if (!agentSignal?.aborted) {
+        addToast(
+          chatSaveFailureLabel(sessionId, session.title, nextMessages, clusterName),
+          "error", "Chat was not saved", String(sessionId),
+        );
+      }
+    }
+    if (!checkpointSaved && agentSignal?.aborted) {
+      assistantMsg.content = "(stopped)";
+      assistantMsg.responseDurationMs = Math.round(
+        performance.now() - responseStartedAt,
       );
+      assistantMsg.responseCompletedAt = new Date().toISOString();
+      updateChatMessages(sessionId, messagesWithAssistant());
+      setChatStreaming(sessionId, false);
+      if (showedDraft) setDraftMessages(null);
+      if (activeSteerContextRef.current === steerContext) {
+        activeSteerContextRef.current = null;
+      }
+      if (activeGardenTurnRef.current?.clientMessageId === clientMessageId) {
+        activeGardenTurnRef.current = null;
+      }
+      return;
     }
     if (!checkpointSaved) {
       setChatStreaming(sessionId, awaitedLaunchesRef.current.size > 0);
@@ -13919,7 +14058,13 @@ if (careerOpsAgent) {
       assistantMsg.responseCompletedAt = new Date().toISOString();
       updateChatMessages(sessionId, messagesWithAssistant());
       setChatStreaming(sessionId, false);
-      activeGardenTurnRef.current = null;
+      if (showedDraft) setDraftMessages(null);
+      if (activeSteerContextRef.current === steerContext) {
+        activeSteerContextRef.current = null;
+      }
+      if (activeGardenTurnRef.current?.clientMessageId === clientMessageId) {
+        activeGardenTurnRef.current = null;
+      }
       return;
     }
     try {
@@ -18393,6 +18538,7 @@ if (careerOpsAgent) {
                 clusterSlug={clusterSlug}
                 greeting={chatGreeting.greeting}
                 greetingSuggestions={chatGreeting.suggestions}
+                greetingSuggestionDetails={chatGreeting.suggestionDetails}
                 onSelectSuggestion={fillComposerWithPrompt}
                 onGenerativeUiAction={handleGenerativeUiAction}
                 activeProductComparison={productPanel?.compareProductIds.length
@@ -18671,6 +18817,9 @@ if (careerOpsAgent) {
               attachmentUploadError={attachmentUploadError}
               attachments={chatAttachments}
               onRemoveAttachment={removeChatAttachment}
+              onReplaceAttachment={(index, attachment) =>
+                setChatAttachments((prev) => prev.map((item, i) => (i === index ? attachment : item)))
+              }
               voiceMessages={messages}
               voiceConversationId={activeChatId}
               voiceCreatedConversationId={createdChatId}

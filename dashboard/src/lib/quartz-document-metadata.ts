@@ -1,4 +1,11 @@
 import { isMap, parseDocument } from "yaml";
+import { editedPageAuthorship, pageAuthorship } from "./page-authorship.ts";
+
+/** Record an edit of `previous` (now `next`) in the page's `authorship` field. */
+export function markPageEdit(previous: string, next: string, editor: "human" | "ai"): string {
+  const authorship = editedPageAuthorship(pageAuthorship(readQuartzMetadata(previous)), editor);
+  return readQuartzMetadata(next).authorship === authorship ? next : updateQuartzMetadata(next, "authorship", authorship);
+}
 
 function frontmatter(content: string) {
   return content.match(/^(---[ \t]*\r?\n)([\s\S]*?)(\r?\n---[ \t]*(?=\r?\n|$))/);

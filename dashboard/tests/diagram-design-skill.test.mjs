@@ -13,8 +13,9 @@ import test from "node:test";
 import { listApprovedSkills, listFirstPartySkills } from "../src/lib/hermes/skills.ts";
 import {
   diagramCommandText,
-  shouldAutoSelectDiagramDesign,
+  shouldAutoSelectDiagramInChat,
   DIAGRAM_DESIGN_SKILL,
+  DIAGRAM_IN_CHAT_SKILL,
 } from "../src/lib/hermes/diagram-intent.ts";
 import { visualizerCommandText } from "../src/lib/hermes/interactive-visualizer-intent.ts";
 import {
@@ -28,7 +29,7 @@ import {
 const shippedSkill = `${targetRoot}/SKILL.md`;
 
 function selects(text, priorMessages) {
-  return shouldAutoSelectDiagramDesign({
+  return shouldAutoSelectDiagramInChat({
     text,
     surface: "dashboard_terminal",
     authenticated: true,
@@ -204,11 +205,11 @@ test("a follow-up keeps the guidance the first diagram was drawn with", () => {
 test("selection is scoped to authenticated chat surfaces", () => {
   const text = "draw me an architecture diagram of the payment service";
   assert.equal(
-    shouldAutoSelectDiagramDesign({ text, surface: "quartz_ai", authenticated: true }),
+    shouldAutoSelectDiagramInChat({ text, surface: "quartz_ai", authenticated: true }),
     false,
   );
   assert.equal(
-    shouldAutoSelectDiagramDesign({
+    shouldAutoSelectDiagramInChat({
       text,
       surface: "dashboard_terminal",
       authenticated: false,
@@ -221,7 +222,7 @@ test("the command text is the skill's slash command plus the untouched message",
   const text = "draw me an architecture diagram of the payment service";
   assert.deepEqual(
     diagramCommandText({ text, surface: "garden_chat", authenticated: true }),
-    { text: `/${DIAGRAM_DESIGN_SKILL} ${text}`, automatic: true },
+    { text: `/${DIAGRAM_IN_CHAT_SKILL} ${text}`, automatic: true },
   );
 });
 

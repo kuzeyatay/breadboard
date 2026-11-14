@@ -17,6 +17,8 @@ test("theme synchronization preserves comments, nested preferences, and chosen l
   assert.equal(parse(dark)["window.autoDetectColorScheme"], false);
   assert.equal(parse(dark)["window.titleBarStyle"], "native");
   assert.equal(parse(dark)["window.menuStyle"], "custom");
+  assert.equal(parse(dark)["security.workspace.trust.enabled"], false);
+  assert.equal(parse(withVSCodeTheme('{"security.workspace.trust.enabled": true}', "dark"))["security.workspace.trust.enabled"], true);
   assert.equal(withVSCodeTheme(dark, "dark"), dark);
   assert.equal(parse(withVSCodeTheme(dark, "light"))["workbench.colorTheme"], "Light Modern");
 });

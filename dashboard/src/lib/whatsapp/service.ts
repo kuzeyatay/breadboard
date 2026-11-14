@@ -49,7 +49,7 @@ function serialize(chatId: string, work: () => Promise<void>): void {
 
 async function handleMessage(message: WhatsAppInboundMessage): Promise<void> {
   const bridge = getWhatsAppBridge();
-  const { routeWhatsAppMessage } = await import("./inbound.ts");
+  const { deliverWhatsAppLateReply, routeWhatsAppMessage } = await import("./inbound.ts");
   const messages = await store();
 
   // WhatsApp redelivers on reconnect; one id may only ever produce one turn.
@@ -63,6 +63,12 @@ async function handleMessage(message: WhatsAppInboundMessage): Promise<void> {
   } catch {
     // A failed delivery leaves the answer in the durable transcript, which is
     // where the user can still read it. Retrying risks duplicate replies.
+  }
+  if (outcome.status === "failed" && outcome.lateReply) {
+    // Detached: watching an hours-long turn must not block this chat's queue.
+    void deliverWhatsAppLateReply(outcome.lateReply, (reply) =>
+      bridge.sendMessage(message.chatId, reply),
+    ).catch(() => {});
   }
 }
 

@@ -64,6 +64,7 @@ import { useChatNotificationView } from "@/lib/use-chat-notification-view";
 import { useUnreadChats } from "@/lib/conversations/unread-client";
 import { UnreadChatDot } from "./hermes/history-client";
 import { useTextHighlights } from "./use-text-highlights";
+import { ChatSuggestionCards } from "./hermes/chat-greeting-empty-state";
 import { TextHighlightSaveStatus } from "./text-highlight-save-status";
 import PdfAssistantResizeHandle from "./pdf-assistant-resize-handle";
 
@@ -151,6 +152,36 @@ export default function PdfAssistant({
     preparing ||
     ["connecting", "streaming", "waiting"].includes(session.connection);
   const disabled = loading || session.loadingSession;
+  const [pageSuggestions, setPageSuggestions] = useState<{ key: string; items: string[] } | null>(null);
+  const suggestionKey = `${documentKey}:${pageNumber}`;
+  const showSuggestions = open && !loading && messages.length === 0 && Boolean(intelligence.model);
+
+  // Questions grounded in the page being read, not generic openers. Waits for
+  // page flicking to settle; a page with no text layer simply gets no cards.
+  useEffect(() => {
+    if (!showSuggestions || pageSuggestions?.key === suggestionKey) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        const page = await pdfDocumentRef.current?.getPage(pageNumber);
+        const content = await page?.getTextContent();
+        const pageText = content?.items.map((item) => ("str" in item ? item.str : "")).join(" ").trim() ?? "";
+        if (!pageText || controller.signal.aborted) return;
+        const response = await fetch("/api/pdf-suggestions", {
+          method: "POST", cache: "no-store", signal: controller.signal,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: intelligence.model, title, pageNumber, pageText }),
+        });
+        const payload = response.ok ? await response.json() : null;
+        if (!controller.signal.aborted && Array.isArray(payload?.suggestions)) {
+          setPageSuggestions({ key: suggestionKey, items: payload.suggestions });
+        }
+      } catch {
+        // No grounded questions is better than generic ones.
+      }
+    }, 500);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [showSuggestions, suggestionKey, pageSuggestions?.key, pageNumber, title, intelligence.model, pdfDocumentRef]);
   const viewingChatId = open || openAnswer ? session.sessionId : null;
 
   useChatNotificationView(viewingChatId
@@ -758,6 +789,7 @@ export default function PdfAssistant({
           attachmentUploadError={attachmentUploadError}
           attachments={chatAttachments}
           onRemoveAttachment={index => setChatAttachments(current => current.filter((_, position) => position !== index))}
+          onReplaceAttachment={(index, attachment) => setChatAttachments(current => current.map((item, position) => position === index ? attachment : item))}
           onRestoreQueuedAttachments={attachments => setChatAttachments(attachments.filter(item => item.context !== "pdf"))}
           composerTextareaRef={textareaRef}
           selectionDraft={{
@@ -868,26 +900,19 @@ export default function PdfAssistant({
                 Ask about the document, a figure, or what’s on this page.
                 Highlight text to ask in chat or keep an answer beside it.
               </p>
-              <div className="mt-5 grid gap-2">
-                {[
-                  "Explain what’s on this page.",
-                  "Summarize the main ideas in this document.",
-                  "Help me understand the figure on this page.",
-                ].map((question) => (
-                  <button
-                    key={question}
-                    type="button"
+              {pageSuggestions?.items.length ? (
+                <div className="mt-5 flex justify-center">
+                  <ChatSuggestionCards
+                    suggestions={pageSuggestions.items}
+                    suggestionScopeKey={pageSuggestions.key}
                     disabled={disabled || busy}
-                    onClick={() => {
+                    onSelectSuggestion={(question) => {
                       setInput(question);
                       textareaRef.current?.focus();
                     }}
-                    className="neu-button rounded-lg border border-[var(--line)] px-3 py-2.5 text-left text-xs disabled:opacity-40"
-                  >
-                    {question}
-                  </button>
-                ))}
-              </div>
+                  />
+                </div>
+              ) : null}
             </div>
           }
         />

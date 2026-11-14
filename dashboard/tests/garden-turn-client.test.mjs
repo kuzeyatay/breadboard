@@ -176,3 +176,25 @@ test("heartbeat failures do not replace the actual dispatch error or leak timers
   await flush();
   assert.equal(requests, 2);
 });
+
+test("Stop answers at once during a slow checkpoint, seals what it committed, and holds the next turn", async (t) => {
+  const requests = [];
+  let landSlowSave;
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    requests.push(`${init.method} ${JSON.parse(init.body).clientMessageId}`);
+    if (requests.length === 1) await new Promise(resolve => { landSlowSave = resolve; });
+    return Response.json({ userMessage: { id: "msg_1" }, assistantMessage: { id: "msg_2" } });
+  });
+  const stop = new AbortController();
+  const stopped = reserveGardenTurnCheckpoint(901, "stopped-turn", { role: "user", content: "First" }, stop.signal);
+  await flush();
+  stop.abort();
+  await assert.rejects(stopped, { name: "AbortError" }, "Stop must not wait for the save");
+
+  const next = reserveGardenTurnCheckpoint(901, "next-turn", { role: "user", content: "Second" });
+  await flush();
+  assert.deepEqual(requests, ["POST stopped-turn"], "the next turn waits for the stopped one to be sealed");
+  landSlowSave();
+  assert.equal((await next).assistantMessageId, "msg_2");
+  assert.deepEqual(requests, ["POST stopped-turn", "DELETE stopped-turn", "POST next-turn"]);
+});

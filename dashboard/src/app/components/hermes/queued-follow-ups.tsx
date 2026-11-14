@@ -140,6 +140,9 @@ export function useQueuedFollowUps({
   const queueRef = useRef<HTMLDivElement>(null);
   const [applyingSteerId, setApplyingSteerId] = useState<string | null>(null);
   const [sendingQueuedId, setSendingQueuedId] = useState<string | null>(null);
+  // Steer pressed before the answer had a run to steer: the correction is
+  // held and applied the moment the run registers, instead of being refused.
+  const [armedSteerId, setArmedSteerId] = useState<string | null>(null);
   const [draggedQueuedId, setDraggedQueuedId] = useState<string | null>(null);
   const [dragOverQueuedId, setDragOverQueuedId] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<
@@ -233,6 +236,26 @@ export function useQueuedFollowUps({
     sendingQueuedId,
   ]);
 
+  // A turn that is still being dispatched can be steered as soon as its run
+  // exists; an agent card's run, or a run being stopped, never can.
+  const steerCanBeArmed =
+    Boolean(onSteer) && runInFlight && !steerableRunActive && !stopping && !externalRunActive;
+
+  useEffect(() => {
+    if (!armedSteerId) return;
+    if (!runInFlight || stopping) {
+      // The turn ended first; the queue sends the message as a follow-up.
+      setArmedSteerId(null);
+      return;
+    }
+    if (!steerableRunActive || applyingSteerId) return;
+    const armed = queuedFollowUps.find((item) => item.id === armedSteerId);
+    setArmedSteerId(null);
+    if (armed) void applyQueuedSteer(armed);
+    // applyQueuedSteer is recreated every render and reads only current state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyingSteerId, armedSteerId, queuedFollowUps, runInFlight, steerableRunActive, stopping]);
+
   function queueFollowUp(
     text: string,
     attachments: readonly ChatAttachment[] = [],
@@ -279,6 +302,12 @@ export function useQueuedFollowUps({
 
   async function applyQueuedSteer(item: QueuedFollowUp) {
     if (applyingSteerId) return;
+    if (steerCanBeArmed) {
+      // Pressing again takes the request back.
+      setSteerNote(null);
+      setArmedSteerId((current) => (current === item.id ? null : item.id));
+      return;
+    }
     if (!onSteer || !steerableRunActive || stopping) {
       showSteerNote(item.id, steerUnavailableReason());
       return;
@@ -555,15 +584,17 @@ export function useQueuedFollowUps({
                     // than swallowing the click. Only a steer already in flight
                     // takes the control away.
                     disabled={Boolean(applyingSteerId)}
-                    aria-disabled={!canSteerNow}
+                    aria-disabled={!canSteerNow && !steerCanBeArmed}
                     className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-sm transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40 ${
-                      canSteerNow ? "" : "opacity-45"
+                      canSteerNow || steerCanBeArmed ? "" : "opacity-45"
                     }`}
                     aria-label={`Steer the active response with: ${itemDescription}`}
                     title={
                       canSteerNow
                         ? "Steer the active response"
-                        : steerUnavailableReason()
+                        : steerCanBeArmed
+                          ? "Steer the answer as soon as it starts working"
+                          : steerUnavailableReason()
                     }
                   >
                     <svg
@@ -581,7 +612,9 @@ export function useQueuedFollowUps({
                       />
                     </svg>
                     <span>
-                      {applyingSteerId === item.id ? "Steering..." : "Steer"}
+                      {applyingSteerId === item.id
+                        ? "Steering..."
+                        : armedSteerId === item.id ? "Steering soon" : "Steer"}
                     </span>
                   </button>
                   <button
@@ -612,12 +645,14 @@ export function useQueuedFollowUps({
                   </button>
               </>
             </div>
-            {steerNote?.id === item.id ? (
+            {steerNote?.id === item.id || armedSteerId === item.id ? (
               <p
                 role="status"
                 className="px-2 pb-1 pl-11 text-xs text-[var(--ink-muted)]"
               >
-                {steerNote.text}
+                {armedSteerId === item.id
+                  ? "This steers the answer as soon as it starts working. If the answer finishes first, it sends as a follow-up."
+                  : steerNote?.text}
               </p>
             ) : null}
           </div>

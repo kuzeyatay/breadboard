@@ -77,3 +77,18 @@ test("descriptions read like the cadence a person picked", () => {
   assert.equal(describeCronExpression("0 7 1 * *"), "At 07:00 on day 1 of the month");
   assert.equal(describeCronExpression("nope"), "Invalid schedule");
 });
+
+test("Codex scheduled-task schedules lower to cron", async () => {
+  const { cronFromScheduledTask, CronError } = await import("../src/lib/schedules/cron.ts");
+  assert.equal(cronFromScheduledTask({ type: "hourly", intervalHours: 1, days: null }), "0 * * * *");
+  assert.equal(cronFromScheduledTask({ type: "hourly", intervalHours: 4, days: ["SA", "SU"] }), "0 */4 * * 0,6");
+  assert.equal(cronFromScheduledTask({ type: "daily", time: "07:05" }), "5 7 * * *");
+  assert.equal(cronFromScheduledTask({ type: "weekdays", time: "9:00" }), "0 9 * * 1-5");
+  assert.equal(cronFromScheduledTask({ type: "weekly", days: ["FR", "MO", "MO"], time: "18:30" }), "30 18 * * 1,5");
+  for (const bad of [
+    { type: "hourly", intervalHours: 0, days: null },
+    { type: "daily", time: "25:00" },
+    { type: "weekly", days: [], time: "09:00" },
+    { type: "weekly", days: ["XX"], time: "09:00" },
+  ]) assert.throws(() => cronFromScheduledTask(bad), CronError);
+});

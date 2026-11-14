@@ -323,12 +323,6 @@ const EMPTY_STATS: GraphStats = {
   words: 0,
 };
 
-const SUGGESTED_PROMPTS = [
-  'What are the main topics in this garden?',
-  'Where is this concept discussed in the source pages?',
-  'Summarize the source tree and how the topics connect.',
-  'Which notes should I read first?',
-];
 const PROMPTS_KEY = 'sb_prompts_v1';
 const DEFAULT_PROMPTS: SavedPrompt[] = [
   {
@@ -978,6 +972,28 @@ export default function GardenAssistant({
     useAttachmentPreparation(`${activeClusterSlug}:${activeChatId ?? ""}`);
   const [attachmentStatus, setAttachmentStatus] = useState('');
   const attachmentInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const useFile = (event: Event) => {
+      const detail = (event as CustomEvent<{ action: string; instruction?: string; file: { id: string; gardenId: string; name: string; mimeType: string; size: number; version: number } }>).detail;
+      if (detail?.action !== 'chat' || detail.file.gardenId !== activeClusterSlug) return;
+      setChatOpen(true); setShowHistory(false);
+      if (typeof detail.instruction === 'string' && detail.instruction.length <= 10000) setInput(current => current || detail.instruction!);
+      void (async () => {
+        try {
+          if (detail.file.size > 128 * 1024 * 1024) throw new Error('Chat attachments must be 128 MB or smaller.');
+          setAttachmentStatus(`Preparing ${detail.file.name}…`);
+          const response = await fetch(`/api/gardens/${encodeURIComponent(detail.file.gardenId)}/files/${encodeURIComponent(detail.file.id)}/content?version=${detail.file.version}`);
+          if (!response.ok) throw new Error('The file could not be attached. Try again from its file menu.');
+          const blob = await response.blob();
+          if (clusterSlugRef.current !== detail.file.gardenId) return;
+          await addAttachmentFiles([new File([blob], detail.file.name, { type: detail.file.mimeType })]);
+          composerTextareaRef.current?.focus();
+        } catch (cause) { setAttachmentStatus(cause instanceof Error ? cause.message : 'The file could not be attached.'); }
+      })();
+    };
+    window.addEventListener('sb:garden-file-use', useFile);
+    return () => window.removeEventListener('sb:garden-file-use', useFile);
+  }, [activeClusterSlug, activeChatId, beginAttachmentPreparation]);
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
   const [showPrompts, setShowPrompts] = useState(false);
   const [promptSearch, setPromptSearch] = useState('');
@@ -2787,23 +2803,14 @@ export default function GardenAssistant({
                   {formatNumber(stats.words)} words are indexed for this garden.
                 </p>
               </div>
-              {recommendations.length ? <ChatSuggestionCards
+              {/* Only cards grounded in this garden; nothing generic when there are none. */}
+              <ChatSuggestionCards
                 suggestions={recommendations.map(item => item.prompt)}
+                suggestionDetails={Object.fromEntries(recommendations.map(item => [item.prompt, { label: item.sourceLabel, usefulness: item.usefulness }]))}
                 suggestionScopeKey={JSON.stringify([activeClusterSlug,activeMarkdown?.title,temporaryChat])}
+                disabled={chatIsStreaming || !hasActiveCluster}
                 onSelectSuggestion={prompt => { setInput(prompt); composerTextareaRef.current?.focus(); }}
-              /> : <div className="space-y-2">
-                {SUGGESTED_PROMPTS.map((prompt) => (
-                  <button
-                    type="button"
-                    key={prompt}
-                    onClick={() => { setInput(prompt); composerTextareaRef.current?.focus(); }}
-                    disabled={chatIsStreaming || !hasActiveCluster}
-                    className="neu-button block w-full rounded-md border border-gray-800 bg-gray-950/50 px-3 py-2 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {prompt}
-                  </button>
-                ))}
-              </div>}
+              />
             </div>
           ) : (
             <VirtualizedMessageList
@@ -2959,6 +2966,9 @@ export default function GardenAssistant({
           attachments={chatAttachments}
           onRemoveAttachment={(index) =>
             setChatAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))
+          }
+          onReplaceAttachment={(index, attachment) =>
+            setChatAttachments((current) => current.map((item, itemIndex) => (itemIndex === index ? attachment : item)))
           }
           statusMessage={attachmentStatus}
           voiceMessages={messages}

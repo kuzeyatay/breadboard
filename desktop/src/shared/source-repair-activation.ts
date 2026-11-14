@@ -16,6 +16,7 @@ export interface SourceRepairActivationHost {
 /** Lives in Electron, outside the dashboard/runtime it can replace. */
 export class SourceRepairActivator {
   private working = false;
+  get busy(): boolean { return this.working; }
   private retryAfter = 0;
   constructor(private readonly dataRoot: string, private readonly baseRoot: string,
     private readonly host: SourceRepairActivationHost,

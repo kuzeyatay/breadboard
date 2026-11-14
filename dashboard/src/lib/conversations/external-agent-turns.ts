@@ -230,7 +230,7 @@ export function attachExternalAgentRun(input: {
   let attachedNewRun = false;
   const attach = database.transaction(() => {
     const row = database.prepare(`
-      SELECT * FROM conversation_messages
+      SELECT * FROM conversation_message_reads
       WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'
       LIMIT 1
     `).get(
@@ -375,13 +375,11 @@ export function findExternalAgentAssistantMessage(input: {
   const runId = input.runId.trim();
   if (!runId) return null;
   const row = database.prepare(`
-    SELECT * FROM conversation_messages
-    WHERE conversation_id = ?
+    SELECT * FROM conversation_message_reads WHERE id IN (SELECT id FROM conversation_messages WHERE conversation_id = ?
       AND role = 'assistant'
       AND json_extract(metadata, '$.externalAgentRun.runId') = ?
     ORDER BY id DESC
-    LIMIT 1
-  `).get(input.conversationId, runId) as ConversationMessageRow | undefined;
+    LIMIT 1) ORDER BY id DESC`).get(input.conversationId, runId) as ConversationMessageRow | undefined;
   return row ?? null;
 }
 
@@ -414,7 +412,7 @@ export function attachVideoToExternalAgentUserTurn(input: {
   const update = database.transaction(() => {
     const userMessage = database.prepare(`
       SELECT user_message.*
-      FROM conversation_messages AS user_message
+      FROM conversation_message_reads AS user_message
       JOIN conversation_messages AS assistant_message
         ON assistant_message.conversation_id = user_message.conversation_id
        AND assistant_message.client_message_id = user_message.client_message_id
@@ -485,7 +483,7 @@ export function finishExternalAgentTurn(input: {
   let replayed = false;
   const finish = database.transaction(() => {
     const row = database.prepare(`
-      SELECT * FROM conversation_messages
+      SELECT * FROM conversation_message_reads
       WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'
     `).get(
       input.conversationId,
@@ -609,7 +607,7 @@ export function reconcileExternalAgentTerminalTiming(input: {
 }, database: Database.Database = db): ConversationMessageRow | null {
   if (!Number.isFinite(input.terminalAtMs) || input.terminalAtMs < 0) return null;
   const row = database.prepare(`
-    SELECT * FROM conversation_messages
+    SELECT * FROM conversation_message_reads
     WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'
     LIMIT 1
   `).get(

@@ -208,6 +208,7 @@ import {
   compiledReferenceLines,
 } from "@/lib/learn-utils";
 import { extractVerbatimDisplayMath, formulaNotationKey, normalizeQuartzMarkdown } from "@/lib/quartz-markdown";
+import { MAX_LESSON_REPAIRS, lessonStoryWordCeiling, lessonStoryWordTarget, repairGrowthProblem } from "@/lib/learn-story";
 import {
   attachLearnTokenUsageTracking,
   emptyLearnTokenUsage,
@@ -1031,12 +1032,15 @@ const LESSON_REVIEW_FINAL_RESIDUAL_ALLOWANCE = Math.max(
  * draft came back at 19 again (2026-10-07): repairs converge, redrafts reset. */
 // A second draft after 5 repairs came back unrepaired and lost a required
 // figure (2.5, 2026-10-07 20:27): the whole budget now goes to one draft.
-const MAX_PAGE_REPAIR_ROUNDS = Math.max(1, envPositiveInt("LEARN_MAX_PAGE_REPAIR_ROUNDS", 8));
+// Eight rounds was the loop that grew pages: nearly every finding asked for
+// more text (electromagnetism-1, 2026-10). A reader review that can also ask
+// for less converges in a few; see MAX_LESSON_REPAIRS.
+const MAX_PAGE_REPAIR_ROUNDS = Math.max(1, envPositiveInt("LEARN_MAX_PAGE_REPAIR_ROUNDS", MAX_LESSON_REPAIRS));
 /** Content repairs one page may use across all its drafts. At 3, telecom-1
  * lesson 1.2 (a dense PSD derivation) converged to a single undefined unit
  * ("μs") and still failed the whole run (2026-10-03); a repair costs minutes,
  * a failed page a resume and a fresh draft. */
-const MAX_PAGE_CONTENT_REPAIRS = Math.max(3, envPositiveInt("LEARN_MAX_PAGE_CONTENT_REPAIRS", 8));
+const MAX_PAGE_CONTENT_REPAIRS = Math.max(3, envPositiveInt("LEARN_MAX_PAGE_CONTENT_REPAIRS", 2 * MAX_LESSON_REPAIRS));
 const MAX_PAGE_ATTEMPTS = Math.max(
   1,
   // A resumed job replays its earlier attempts from council checkpoints, so a
@@ -13047,11 +13051,14 @@ function assessModelAuthoredLessonQuality(
     requiredSourceQuestions: PageDossier["requiredSourceQuestions"];
     /** Required formulas this lesson's reader progression flags as malformed. */
     planErratumFormulaIds?: ReadonlySet<string>;
+    /** Story word ceiling; passed for a draft, never for a published page. */
+    maxStoryWords?: number;
   },
 ): ReturnType<typeof assessLessonQuality> {
   const base = assessLessonQuality(body, {
     assignedVisualUrls: options.assignedVisualUrls,
     unavailableCitations: options.unavailableCitations,
+    maxStoryWords: options.maxStoryWords,
   });
   const figureProblems: QualityProblem[] = figurePlacementProblems(body, {
     // Two figures of headroom for interpreted figures from the lesson's own
@@ -16736,6 +16743,11 @@ export async function runTextbookGeneration({
         // stable receipt hash keys on the dossier before the plan rewrites it.
         const prePlanAssumedBackground = pageDossier.assumedBackground;
         pageDossier.assumedBackground = teachingPlan.background;
+        // The story's length follows its number of ideas. Both values travel
+        // beside the dossier, not in it, so accepted-page hashes are unchanged.
+        const storyWordCeiling = lessonStoryWordCeiling(teachingPlan.steps.length);
+        const nextQuestion = (section.subsections[subsectionIndex + 1] ??
+          map.learningMap.sections[sectionIndex + 1]?.subsections[0])?.learningQuestion;
         const teachingContext = { assumedBackground: teachingPlan.background, earlierLessons, teachingPlan };
         const teachingContextHash = teachingEvidenceHash({ ...teachingContext, model });
         // sourceContext carries small routing metadata only during page
@@ -17048,7 +17060,10 @@ export async function runTextbookGeneration({
         // only after reviewing the actual text against the current predecessors.
         if (pageBody !== null && !acceptedReplay) {
           const problems = await reviewLessonTerms(pageBody, "reused");
-          if (problems.length > 0) {
+          // A published page is rewritten for a knowledge defect, never for
+          // wordiness alone: the reader review now also reports passages that
+          // could be cut, and that must not rewrite a whole existing garden.
+          if (!lessonReviewResidualIsAcceptable(problems, [], Number.MAX_SAFE_INTEGER)) {
             lastAttemptBody = pageBody;
             lastQuality = { ok: false, hardFail: true, problems };
             pageBody = null;
@@ -17085,7 +17100,7 @@ export async function runTextbookGeneration({
                   placeholderFailure
                     ? "The previous draft contained unfinished author-facing wording. Return a self-contained final lesson and silently check that every line teaches the concept rather than directing a future writer or commenting on the draft."
                     : "",
-                  'Resolve the listed failures with a complete explanation, a concrete example, and a real Question./Answer. Write at least 1400 words of real explanatory prose, with no upper word limit. Above that minimum, let length follow the reasoning needed for understanding. Teach the concept directly; never comment on "the paper" or "the source".',
+                  `Resolve the listed failures with the smallest change that fixes each one, and keep the story within ${storyWordCeiling} prose words. Add text only where a listed failure says the reader could not follow; otherwise remove or correct. Teach the concept directly; never comment on "the paper" or "the source".`,
                 ]
                   .filter(Boolean)
                   .join(" ");
@@ -17118,10 +17133,13 @@ export async function runTextbookGeneration({
                   plannedEarlier: taughtEarlier,
                   earlierLessons,
                   taughtLater,
+                  // Writers overshoot a stated limit by about 15% (benchmark,
+                  // 2026-11-10), so the draft is given less than the gate allows.
+                  wordCeiling: lessonStoryWordTarget(storyWordCeiling),
+                  ...(nextQuestion ? { nextQuestion } : {}),
                   instructions: {
-                    style: "flowing beginner-friendly textbook subsection",
+                    style: "study-notebook lesson: one short continuous story, then Practice, then More from the sources",
                     sourceAware: true,
-                    includeQuestions: true,
                     includeVisualsWhereRelevant: true,
                   },
                   ...(retryNote ? { retryNote } : {}),
@@ -17156,6 +17174,7 @@ export async function runTextbookGeneration({
             canonicalSourceAnchors: selectedCanonicalSourceAnchors,
             requiredSourceQuestions: pageDossier.requiredSourceQuestions,
             planErratumFormulaIds,
+            maxStoryWords: storyWordCeiling,
           });
           // A draft that clears the deterministic gates is then read for
           // technical terms it relies on without teaching them; each one is a
@@ -17222,16 +17241,18 @@ export async function runTextbookGeneration({
                   plannedEarlier: taughtEarlier,
                   earlierLessons,
                   taughtLater,
+                  wordCeiling: storyWordCeiling,
                   repairRules: [
                     "Fix only the listed hard failures.",
                     "Preserve correct existing content.",
+                    "A failure that asks for removal is fixed by deleting. Add text only where a listed failure says the reader could not follow, with the fewest sentences that close the gap.",
                     ...(formulasNeedingRepair.length > 0
                       ? [
                           "For each missing source formula, the literal copy-sheet replacement overrides preserving the malformed draft math. Replace the variant; do not retain or duplicate it.",
                         ]
                       : []),
                     "Do not restart from scratch unless the page is unusable.",
-                    "Keep the section flowing and beginner-friendly.",
+                    "Keep the story continuous and in plain words; exercises stay under ## Practice.",
                     "Turn every unfinished or author-facing line into a self-contained learner explanation; do not reproduce diagnostic wording.",
                     "Remove empty or ellipsis-only bullets instead of returning scaffold bullets.",
                     "Keep source-only constraints.",
@@ -17291,8 +17312,23 @@ export async function runTextbookGeneration({
                 requiredFormulaKeys.has(formulaKey(displays[0].formula)) &&
                 !repairedFormulaKeys.has(formulaKey(displays[0].formula));
             });
-            attemptBody = restoreDroppedVisuals(attemptBody ?? "", repairedBody, [...assignedVisualUrls, ...droppedFormulaBlocks]);
-            attemptBody = removeEmptyBulletScaffolds(unwrapNestedDisplayMath(demoteBodyBeatHeadings(attemptBody)));
+            const beforeRepair = attemptBody ?? "";
+            const repairCandidate = removeEmptyBulletScaffolds(unwrapNestedDisplayMath(demoteBodyBeatHeadings(
+              restoreDroppedVisuals(beforeRepair, repairedBody, [...assignedVisualUrls, ...droppedFormulaBlocks]),
+            )));
+            // A repair that returns a fragment, or grows the story beyond
+            // what its findings justify, is discarded; the next round repairs
+            // the earlier draft again with that verdict listed. The model
+            // rewrites, never code.
+            const growth = repairGrowthProblem(beforeRepair, repairCandidate, hardQualityProblems);
+            if (growth) {
+              appendLearnEvent(contentPath, gardenId, "learn_lesson_repair_rejected", {
+                jobId: job.id, pageId, attempt, repairRound, code: growth.code, message: growth.message,
+              });
+              quality = { ok: false, hardFail: true, problems: [...hardQualityProblems.filter((problem) => problem.code !== "repair-growth" && problem.code !== "repair-collapse"), growth] };
+              continue;
+            }
+            attemptBody = repairCandidate;
             quality = assessModelAuthoredLessonQuality(attemptBody, {
               assignedVisualUrls,
               assignedVisualRequirements,
@@ -17301,6 +17337,7 @@ export async function runTextbookGeneration({
               canonicalSourceAnchors: selectedCanonicalSourceAnchors,
               requiredSourceQuestions: pageDossier.requiredSourceQuestions,
               planErratumFormulaIds,
+              maxStoryWords: storyWordCeiling,
             });
             if (!quality.hardFail) {
               const termProblems = await reviewLessonTerms(attemptBody, "repaired", repairRound, attempt);

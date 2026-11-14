@@ -33,6 +33,7 @@ import {
   type CadArtifactContext,
 } from "./artifact.ts";
 import { designCadPart, MAX_BUILD_ATTEMPTS } from "./design-service.ts";
+import { isCadEngineId, resolveCadEngine } from "./engines.ts";
 import { CadServiceError } from "./errors.ts";
 import { SupervisorResourceExhaustedError } from "../supervisor-control.ts";
 import { CadModelError } from "./model-client.ts";
@@ -287,7 +288,17 @@ async function drive(run: RunState, input: StartCadRunInput): Promise<void> {
 
   emit(run, "interpret.started", { revising: Boolean(existingProject) });
 
+  const explicitBackend = parseParametricCadRequest(input.brief).cadBackend;
+  const priorEngine = previousDesign?.provenance.engine;
+  const choice = resolveCadEngine({
+    flag: explicitBackend,
+    brief: isCadEngineId(priorEngine) ? priorEngine : null,
+    setting: input.parsed.cadBackend,
+  });
+
   const outcome = await designCadPart({
+    engine: choice.engine,
+    engineExplicit: choice.explicit,
     userId: input.userId,
     conversationId: conversation.id,
     clusterId: conversation.surface === "garden_chat" ? conversation.default_garden_id : null,

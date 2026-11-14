@@ -13,8 +13,8 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import db from "@/lib/db.ts";
+import { isLifecycleHookProvider } from "@/lib/hooks/natural-language.ts";
 import {
-  CHAT_COMPLETED_PROVIDER,
   getHookById,
   recordDelivery,
   recordHookFire,
@@ -48,7 +48,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   if (
     !hook ||
     hook.enabled !== 1 ||
-    hook.provider === CHAT_COMPLETED_PROVIDER
+    isLifecycleHookProvider(hook.provider)
   ) {
     return new NextResponse("Not Found", { status: 404 });
   }
@@ -63,7 +63,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (
     !hook ||
     hook.enabled !== 1 ||
-    hook.provider === CHAT_COMPLETED_PROVIDER
+    isLifecycleHookProvider(hook.provider)
   ) {
     return new NextResponse("Not Found", { status: 404 });
   }

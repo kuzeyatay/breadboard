@@ -197,7 +197,7 @@ export function artifactDescription(artifact: PresentedArtifact): string {
     return `${artifact.filename.toLowerCase().endsWith(".bbcir") ? "Circuit project" : "SPICE netlist"} · ${extensionLabel(artifact.filename)}`;
   }
   if (artifact.renderer === "interactive-visualizer") {
-    return `Interactive model · ${extensionLabel(artifact.filename)}`;
+    return `${artifact.sourceSkill === "diagram-in-chat" ? "Diagram" : "Interactive model"} · ${extensionLabel(artifact.filename)}`;
   }
   if (artifact.renderer === "gadget") {
     const bindings = artifact.metadata?.bindings;
@@ -1087,6 +1087,7 @@ export default function ArtifactViewer({
           content: markdown,
           folder: ARTIFACTS_FOLDER,
           tags: ["artifact"],
+          authorship: "ai-written",
         }),
       });
       const result = (await response.json().catch(() => ({}))) as {

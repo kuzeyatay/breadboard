@@ -11,7 +11,9 @@ export const MANIM_QUALITY_FLAGS: Record<ManimQuality, "l" | "m" | "h"> = {
 
 export const MAX_MANIM_SOURCE_BYTES = 64 * 1024;
 export const MAX_MANIM_VIDEO_BYTES = 128 * 1024 * 1024;
-export const DEFAULT_MANIM_TIMEOUT_MS = 5 * 60_000;
+// A heavy 3D scene can take many minutes on the CPU renderer. The limit only
+// exists to stop a scene that never ends.
+export const DEFAULT_MANIM_TIMEOUT_MS = 2 * 60 * 60_000;
 export const DEFAULT_MANIM_IMAGE = "manimcommunity/manim:v0.20.1";
 
 export interface ManimConfig {

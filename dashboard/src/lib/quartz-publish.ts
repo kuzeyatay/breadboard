@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { availableParallelism } from "node:os";
 
-import { externalRuntimePathExists } from "./external-runtime-filesystem.ts";
+import {
+  externalRuntimeFilesystem,
+  externalRuntimePathExists,
+} from "./external-runtime-filesystem.ts";
 import { externalRuntimePath as path } from "./external-runtime-path.ts";
 import { invalidateGardenNoteCount } from "./garden-note-count-cache.ts";
 import {
@@ -172,6 +175,36 @@ function gardenIsPublished(gardenSlug: string): boolean {
   return externalRuntimePathExists(
     path.join(publicRoot, gardenSlug, "index.html"),
   );
+}
+
+/**
+ * A Garden whose content changed but whose publication failed (the upload
+ * worker's site build timed out, say) is marked here so the next view of it
+ * republishes instead of leaving the new pages unrendered indefinitely.
+ */
+function pendingPublicationMarker(gardenSlug: string): string | null {
+  const contentPath = process.env.QUARTZ_CONTENT_PATH?.trim();
+  if (!contentPath || !SCOPE_ROOT.test(gardenSlug) || gardenSlug.includes("/")) {
+    return null;
+  }
+  return path.join(path.resolve(contentPath, ".."), ".publish-pending", gardenSlug);
+}
+
+export function markQuartzPublicationPending(gardenSlug: string): void {
+  const marker = pendingPublicationMarker(gardenSlug);
+  if (!marker) return;
+  externalRuntimeFilesystem.mkdirSync(path.dirname(marker), { recursive: true });
+  externalRuntimeFilesystem.writeFileSync(marker, "");
+}
+
+function clearQuartzPublicationPending(gardenSlug: string): void {
+  const marker = pendingPublicationMarker(gardenSlug);
+  if (!marker) return;
+  try {
+    externalRuntimeFilesystem.rmSync(marker, { force: true });
+  } catch {
+    // Worst case is one redundant scoped publication on the next view.
+  }
 }
 
 function publishMode(): "await" | "background" {
@@ -523,7 +556,36 @@ export async function ensureGardenPublicationForView(
 ): Promise<void> {
   const contentPath = process.env.QUARTZ_CONTENT_PATH?.trim();
   if (!gardenSlug || !contentPath) return;
-  if (gardenIsPublished(gardenSlug)) return;
+  if (gardenIsPublished(gardenSlug)) {
+    // The pages exist but are stale: repair in the background, never block
+    // the reader on what may be a full-site rebuild.
+    const marker = pendingPublicationMarker(gardenSlug);
+    if (
+      marker &&
+      externalRuntimePathExists(marker) &&
+      shouldAutoPublish() &&
+      !gardenRecoveryPublishes.has(gardenSlug) &&
+      Date.now() - (gardenRecoveryAttempts.get(gardenSlug) ?? 0) >=
+        GARDEN_RECOVERY_RETRY_MS
+    ) {
+      gardenRecoveryAttempts.set(gardenSlug, Date.now());
+      gardenRecoveryPublishes.set(
+        gardenSlug,
+        publishQuartzAfterMutation(`publish pending garden ${gardenSlug}`, {
+          userId,
+          requireSuccess: true,
+          topologyImpact: "none",
+          scope: [gardenSlug],
+        })
+          // Already logged; the marker stays for the next view after backoff.
+          .catch(() => undefined)
+          .finally(() => {
+            gardenRecoveryPublishes.delete(gardenSlug);
+          }),
+      );
+    }
+    return;
+  }
   // Nothing has been written for this Garden yet; its first content mutation
   // publishes it.
   if (!externalRuntimePathExists(path.join(contentPath, gardenSlug))) return;
@@ -596,6 +658,9 @@ export async function publishQuartzAfterMutation(
   if (options.requireSuccess) {
     try {
       await publishPromise;
+      for (const root of [options.gardenSlug, ...(options.scope ?? [])]) {
+        if (root) clearQuartzPublicationPending(root);
+      }
       return;
     } catch (error) {
       logPublishError(reason, error);

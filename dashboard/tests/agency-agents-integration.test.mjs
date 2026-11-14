@@ -135,7 +135,10 @@ test("persona overlay follows server capability and authorized context without c
   const personaIndex = prompt.indexOf("<agency_agent_persona>");
   assert.ok(capabilityIndex >= 0);
   assert.ok(capabilityIndex < contextIndex);
-  assert.ok(contextIndex < personaIndex);
+  // The persona is part of the session-stable head; the grant and the turn's
+  // context follow the turn-context marker and are unchanged by it.
+  assert.ok(personaIndex >= 0 && personaIndex < prompt.indexOf("<!-- breadboard:turn-context -->"));
+  assert.ok(prompt.indexOf("<!-- breadboard:turn-context -->") < capabilityIndex);
   assert.match(prompt, /Allowed operations: knowledge_work/);
   assert.match(prompt, /Authorized roots: none/);
 });

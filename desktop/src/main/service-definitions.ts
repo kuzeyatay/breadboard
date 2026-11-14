@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -41,6 +42,24 @@ import {
  * also why startup checks whether one is already listening there.
  */
 export const SCRIBERR_PORT = 8091;
+
+/** Must match FREELLMAPI_DEFAULT_PORT in scripts/start-freellmapi.mjs. */
+const FREELLMAPI_PORT = 3417;
+
+/** The loopback bearer the launcher also reads; minted once per checkout. */
+function freellmapiApiKey(home: string): string {
+  const file = path.join(home, "api-key");
+  try {
+    const stored = fs.readFileSync(file, "utf8").trim();
+    if (stored) return stored;
+  } catch {
+    // first run
+  }
+  const key = `freellmapi-${crypto.randomBytes(24).toString("hex")}`;
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(file, key, { encoding: "utf8", mode: 0o600 });
+  return key;
+}
 
 export interface RuntimeBinaries {
   node: string;
@@ -552,6 +571,24 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       }
     : {};
 
+  // FreeLLMAPI (free-tier router, vendored at freellmapi/). Source checkouts
+  // only: scripts/start-freellmapi.mjs installs and builds it in place, and its
+  // state lives in the repo's .runtime/ so `npm run dev` and the desktop share
+  // one instance and one bearer.
+  // ponytail: not staged into packaged installs; add to prepare-app-resources
+  // when the installer should ship it.
+  const freellmapiLauncher = path.join(paths.appRoot, "scripts", "start-freellmapi.mjs");
+  const freellmapiHome = path.join(paths.appRoot, ".runtime", "freellmapi");
+  const freellmapiEnabled =
+    paths.mode === "dev" &&
+    process.env["FREELLMAPI_MODE"]?.trim().toLowerCase() !== "disabled" &&
+    fs.existsSync(freellmapiLauncher);
+  const freellmapiUrl = `http://127.0.0.1:${FREELLMAPI_PORT}`;
+  const freellmapiKey = freellmapiEnabled ? freellmapiApiKey(freellmapiHome) : "";
+  const freellmapiClientEnv: Record<string, string> = freellmapiEnabled
+    ? { FREELLMAPI_BASE_URL: `${freellmapiUrl}/v1`, FREELLMAPI_API_KEY: freellmapiKey }
+    : {};
+
   // Recall (local screen + audio capture). Not a supervised service on purpose
   // — see main/recall.ts for why the dashboard owns the recorder process. These
   // are the locations both sides must agree on.
@@ -613,6 +650,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       // key is stored in providers.json, so a first-run install reaches the
       // proxy before any catalog sync has happened.
       ...cliproxyClientEnv,
+      ...freellmapiClientEnv,
     },
     healthCheck: {
       type: "http",
@@ -1435,11 +1473,41 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     restartPolicy: "on-failure",
   };
 
+  const freellmapi: DesktopServiceDefinition = {
+    id: "freellmapi",
+    displayName: "Free LLM API (free-tier router)",
+    required: false,
+    startPolicy: "eager",
+    estimatedColdStartCommitMb: 384,
+    priority: 80,
+    command: binaries.node,
+    args: [freellmapiLauncher],
+    cwd: paths.appRoot,
+    env: {
+      ...shared,
+      FREELLMAPI_HOME: freellmapiHome,
+      FREELLMAPI_PORT: String(FREELLMAPI_PORT),
+      FREELLMAPI_API_KEY: freellmapiKey,
+    },
+    healthCheck: {
+      type: "http",
+      url: `${freellmapiUrl}/v1/models`,
+      headers: { Authorization: `Bearer ${freellmapiKey}` },
+      timeoutMs: 2_500,
+      intervalMs: 1_000,
+    },
+    // The first launch runs npm ci and two builds.
+    startupTimeoutMs: 300_000,
+    gracefulShutdownMs: 5_000,
+    restartPolicy: "on-failure",
+  };
+
   const definitions: DesktopServiceDefinition[] = [chatmock];
   // Before ChatMock's wave completes: ChatMock resolves `cliproxy/<model>` per
   // request, so ordering only affects how quickly the first such call succeeds,
   // not correctness.
   if (cliproxyEnabled) definitions.push(cliproxy);
+  if (freellmapiEnabled) definitions.push(freellmapi);
   definitions.push(hermes);
   if (gbrainEnabled) definitions.push(gbrain);
   if (uiTarsEnabled) definitions.push(uiTars);

@@ -11,6 +11,10 @@
 // An explicit /new can still start a fresh chat within the day.
 
 import { wakeAgentRuntime } from "../agent-runtime/wake.ts";
+import {
+  deliverLateAssistantReply,
+  LATE_REPLY_MAX_WAIT_MS,
+} from "../conversations/late-reply.ts";
 import db from "../db.ts";
 import { prepareTelegramAttachments } from "../messaging-attachments/prepare.ts";
 import {
@@ -62,7 +66,12 @@ export type TelegramRouteOutcome =
       delegatedFollowUp?: TelegramDelegatedFollowUp;
     }
   | { status: "ignored"; reason: string }
-  | { status: "failed"; reply: string; reason: string };
+  | { status: "failed"; reply: string; reason: string; lateReply?: TelegramLateReply };
+
+export interface TelegramLateReply {
+  conversationId: number;
+  clientMessageId: string;
+}
 
 export interface RouteDependencies {
   store: TelegramStore;
@@ -340,7 +349,8 @@ export async function routeTelegramMessage(
         status: "failed",
         reason: "timeout",
         reply:
-          "That is taking a while. The answer will finish in the Breadboard app — open the chat there to read it.",
+          "That is taking a while. I will send the answer here when it finishes; it is also in the Breadboard app.",
+        lateReply: { conversationId: conversation.id, clientMessageId },
       };
     }
     return {
@@ -399,6 +409,34 @@ function telegramFollowUpMessage(
     orderIndex: message.orderIndex,
     metadata: message.metadata,
   };
+}
+
+/**
+ * Deliver the answer a timed-out inbound turn eventually produced, then any
+ * delegated-agent hand-backs that answer owns. Runs detached from the inbound
+ * drain so a slow turn never blocks the chat's queue of later messages.
+ */
+export async function deliverTelegramLateReply(
+  late: TelegramLateReply,
+  onReply: (content: string) => Promise<void>,
+): Promise<void> {
+  const conversation = getConversationById(late.conversationId);
+  if (!conversation || conversation.surface !== "dashboard_terminal") return;
+  const result = await deliverLateAssistantReply({
+    clientMessageId: late.clientMessageId,
+    listMessages: () =>
+      listConversationMessages(conversation.id, { limit: 500 }).map(
+        telegramFollowUpMessage,
+      ),
+    onReply,
+    maxWaitMs: LATE_REPLY_MAX_WAIT_MS,
+  });
+  if (result.status === "complete" && result.orderIndex !== undefined) {
+    await deliverTelegramFollowUps(
+      { conversationId: conversation.id, afterOrder: result.orderIndex },
+      onReply,
+    );
+  }
 }
 
 /** Finish and emit every private delegated-agent hand-back owned by Telegram. */

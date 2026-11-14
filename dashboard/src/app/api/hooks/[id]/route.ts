@@ -4,12 +4,13 @@ import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import db from "@/lib/db.ts";
 import {
   deleteHook,
-  CHAT_COMPLETED_PROVIDER,
   getHookByIdForUser,
+  hookAction,
   HookError,
   updateHook,
   type HookRow,
 } from "@/lib/hooks/store.ts";
+import { isLifecycleHookProvider } from "@/lib/hooks/natural-language.ts";
 import { deleteTelegramSubscription } from "@/lib/sim/triggers/providers/telegram";
 import { buildWebhookTriggerUrl } from "@/lib/sim/triggers/webhook-url";
 
@@ -30,7 +31,9 @@ function presentHook(hook: HookRow) {
     id: hook.id,
     name: hook.name,
     provider: hook.provider,
-    mode: hook.mode,
+    mode: hookAction(hook),
+    command: hook.command ?? null,
+    lastResult: hook.last_result ?? null,
     workflowId: hook.workflow_id,
     chatInstructions: hook.chat_instructions,
     providerConfig: redacted,
@@ -39,10 +42,7 @@ function presentHook(hook: HookRow) {
     createdAt: hook.created_at,
     lastFiredAt: hook.last_fired_at,
     fireCount: hook.fire_count,
-    url:
-      hook.provider === CHAT_COMPLETED_PROVIDER
-        ? null
-        : buildWebhookTriggerUrl(hook.id),
+    url: isLifecycleHookProvider(hook.provider) ? null : buildWebhookTriggerUrl(hook.id),
   };
 }
 

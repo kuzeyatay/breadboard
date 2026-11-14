@@ -67,8 +67,12 @@ app.whenReady().then(async () => {
   await window.webContents.executeJavaScript('window.seedPlaceholder()');
   await new Promise(resolve => setTimeout(resolve, 150));
   const placeholder = await command('capture');
+  if (!interactive && !placeholder.foreground) {
+    helper.stdin.end();
+    return { passed: true, skipped: 'Windows denied fixture foreground access; run check-dictation-typing.mjs interactively to exercise live typing.' };
+  }
   const placeholderBefore = await command('text 0 -1');
-  assert.equal(placeholder.streamable, true, 'a read-only placeholder outside the caret must not delay all words until release');
+  assert.equal(placeholder.streamable, true, 'a read-only placeholder outside the caret must not delay all words until release: ' + JSON.stringify({placeholder, placeholderBefore}));
   assert.deepEqual(placeholder.selection, [1, 1], 'placeholder contributes an embedded-object offset before the caret');
   await command('remember-placeholder');
   for (const character of 'Testing breadb') window.webContents.sendInputEvent({ type: 'char', keyCode: character });

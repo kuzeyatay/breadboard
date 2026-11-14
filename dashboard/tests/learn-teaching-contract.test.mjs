@@ -329,13 +329,12 @@ test("a collapsed answer block satisfies the question gate without a bold Answer
   const outcome = assessLessonQuality(collapsed);
   assert.ok(!outcome.problems.some((p) => p.code === "no-qa"), "a collapsed answer is an answer");
 
-  // The bold marker still works, and a page with neither still fails.
+  // The bold marker still works. A page with no exercise is fine: exercises
+  // are owed only when the plan assigns some, never invented to pass a gate.
   const bold = `## Title\n\n${prose}\n\n**Question.** Why?\n\n**Answer.** Because.`;
   assert.ok(!assessLessonQuality(bold).problems.some((p) => p.code === "no-qa"));
   const none = `## Title\n\n${prose}`;
-  const missing = assessLessonQuality(none).problems.find((p) => p.code === "no-qa");
-  assert.ok(missing, "a page with no question at all is still a hard failure");
-  assert.equal(missing.hard, true);
+  assert.ok(!assessLessonQuality(none).problems.some((p) => p.code === "no-qa"), "a page is never required to invent an exercise");
 
   // A question whose answer never arrives is named as that, not as the pair.
   const orphan = `## Title\n\n${prose}\n\n**Question.** Why?`;

@@ -135,7 +135,7 @@ export function deepTutorDefaults(values: AgentSettingValues): DeepTutorDefaults
 
 export type ParametricCadDefaults = Pick<
   ParametricCadRequest,
-  "process" | "printerBed" | "units"
+  "process" | "printerBed" | "units" | "cadBackend"
 >;
 
 export function parametricCadDefaults(values: AgentSettingValues): ParametricCadDefaults {
@@ -146,6 +146,8 @@ export function parametricCadDefaults(values: AgentSettingValues): ParametricCad
     process: choice(values, "process", ["fdm", "sla", "sls"] as const),
     printerBed,
     units: choice(values, "units", ["mm", "inch"] as const),
+    ...(choice(values, "cadBackend", CAD_BACKEND_PREFERENCES)
+      ? { cadBackend: choice(values, "cadBackend", CAD_BACKEND_PREFERENCES)! } : {}),
   };
 }
 

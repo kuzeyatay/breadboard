@@ -49,7 +49,7 @@ export function upstreamBody(markdown) {
 
 export const PREAMBLE = `---
 name: diagram-design
-description: Draw a diagram as one self-contained HTML file with inline SVG — architecture, flowchart, sequence, state machine, ER/data model, timeline, swimlane, quadrant, radar, loop, nested, tree, org chart, layer stack, Venn, pyramid/funnel, bar, line, Gantt, scatter, process, medallion, or data flow. Use whenever someone asks to diagram, draw, sketch, chart, or map something out, or to redraw a draw.io or Mermaid source.
+description: Draw a diagram as one self-contained HTML file with inline SVG — architecture, flowchart, sequence, state machine, ER/data model, timeline, swimlane, quadrant, radar, loop, nested, tree, org chart, layer stack, Venn, pyramid/funnel, bar, line, Gantt, scatter, process, medallion, or data flow. Use when the user explicitly selects diagram-design or requests its editorial HTML style. Ordinary in-chat diagrams use diagram-in-chat.
 ---
 
 # Diagram Design

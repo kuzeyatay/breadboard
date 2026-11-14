@@ -1,6 +1,6 @@
 ---
 name: ascii-art-diagrams
-description: Create and verify ASCII art, text-only visualizations, or text-based diagrams in any chat response or file. Use whenever a task asks for or would produce an ASCII diagram, ASCII visualization, text diagram, box-and-arrow layout, text flowchart, text architecture map, text sequence diagram, or similar monospaced visual. Follow the PLAN, DRAW, and VERIFY workflow before presenting the diagram. Do not use for Mermaid, SVG, raster images, or ordinary prose/code that is not a visual diagram.
+description: Create and verify ASCII art and text diagrams when the user explicitly requests ASCII, plain text, terminal-style, or monospaced output. Follow the PLAN, DRAW, and VERIFY workflow. An ordinary diagram or box-and-arrow request uses diagram-in-chat; use this skill only for the requested text medium.
 license: MIT
 metadata:
   source: https://github.com/jasnell/opencode-skill-ascii-art-diagrams

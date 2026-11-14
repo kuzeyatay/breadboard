@@ -41,10 +41,11 @@ function functions(file, names, scope, result) {
   return execute(declarations.map((node) => node.getText(tree)).join("\n"), scope, result);
 }
 
-const renderSuperAgentDirective = functions("lib/hermes/super-agent.ts", [
-  "renderSuperAgentDirective", "runtimeAgentCatalogue", "researchRoutingRule",
+const { renderSuperAgentDirective, renderSuperAgentTurnFocus } = functions("lib/hermes/super-agent.ts", [
+  "renderSuperAgentDirective", "renderSuperAgentTurnFocus", "runtimeAgentCatalogue", "researchRoutingRule",
   "emailRoutingRule", "godsEyeRoutingRule",
-], { ...briefs, ...inbox, ...globe }, "renderSuperAgentDirective");
+], { ...briefs, ...inbox, ...globe, MAX_DESCRIBED_SKILLS: 8, MAX_SLUG_ONLY_SKILLS: 432, RUNTIME_AGENT_GUIDE_SLUG: "runtime-agents" },
+  "({ renderSuperAgentDirective, renderSuperAgentTurnFocus })");
 
 const workspace = ast("app/gardens/[clusterSlug]/workspace-client.tsx");
 let requestExpression;
@@ -117,6 +118,8 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandRe
     },
     loadSuperAgentInventory: async (input) => { captured.inventoryLoads.push(input); return inventory; },
     renderSuperAgentDirective,
+    renderSuperAgentTurnFocus,
+    voiceReplyWithOpener: (text) => text,
     agentPreferencesContext: (userId) => {
       assert.equal(userId, 7);
       return payload.testPreferences ? renderAgentPreferences(payload.testPreferences) : "";
@@ -138,7 +141,7 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandRe
     suppliedEvidenceText: empty, gardenInstructionsContext: empty, gardenSourceInventoryContext: async () => "",
     composeMemoryContext: empty, renderSkillShortlistDirective, renderWatchVideoContext: empty,
     gardenTurnContext: empty, ...quartzSelection,
-    composeHermesSystemPrompt: ({ additional }) => additional,
+    composeHermesSystemPrompt: ({ stableAdditional, additional }) => [stableAdditional, additional].filter(Boolean).join("\n\n"),
     beginRuntimeRun: (input) => { captured.run = input; return { id: "run_regression" }; },
     hermesMessageId: (id) => id,
     legacyGardenEventStream: async (_session, _signal, _prepared, _run, _client, _message, _web, start, recover) => {

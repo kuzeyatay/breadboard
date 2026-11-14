@@ -12,6 +12,10 @@
 // An explicit /new can still start a fresh chat within the day.
 
 import { wakeAgentRuntime } from "../agent-runtime/wake.ts";
+import {
+  deliverLateAssistantReply,
+  LATE_REPLY_MAX_WAIT_MS,
+} from "../conversations/late-reply.ts";
 import db from "../db.ts";
 import { prepareWhatsAppAttachments } from "../messaging-attachments/prepare.ts";
 import {
@@ -48,7 +52,12 @@ import type { WhatsAppStore } from "./store.ts";
 export type WhatsAppRouteOutcome =
   | { status: "replied"; reply: string; conversationId: string }
   | { status: "ignored"; reason: string }
-  | { status: "failed"; reply: string; reason: string };
+  | { status: "failed"; reply: string; reason: string; lateReply?: WhatsAppLateReply };
+
+export interface WhatsAppLateReply {
+  conversationId: number;
+  clientMessageId: string;
+}
 
 export interface RouteDependencies {
   store: WhatsAppStore;
@@ -263,7 +272,8 @@ export async function routeWhatsAppMessage(
         status: "failed",
         reason: "timeout",
         reply:
-          "That is taking longer than WhatsApp can wait on. The answer will finish in the Breadboard app.",
+          "That is taking a while. I will send the answer here when it finishes; it is also in the Breadboard app.",
+        lateReply: { conversationId: conversation.id, clientMessageId },
       };
     }
     return {
@@ -300,4 +310,26 @@ export async function routeWhatsAppMessage(
           : "Breadboard could not answer that message.",
     };
   }
+}
+
+/**
+ * Deliver the answer a timed-out inbound turn eventually produced. Runs
+ * detached from the inbound drain so a slow turn never blocks the chat's
+ * queue of later messages.
+ */
+export async function deliverWhatsAppLateReply(
+  late: WhatsAppLateReply,
+  onReply: (content: string) => Promise<void>,
+): Promise<void> {
+  const conversation = getConversationById(late.conversationId);
+  if (!conversation || conversation.surface !== "dashboard_terminal") return;
+  await deliverLateAssistantReply({
+    clientMessageId: late.clientMessageId,
+    listMessages: () =>
+      listConversationMessages(conversation.id, { limit: 500 }).map(
+        presentConversationMessage,
+      ),
+    onReply: (content) => onReply(content.slice(0, MAX_REPLY_CHARS)),
+    maxWaitMs: LATE_REPLY_MAX_WAIT_MS,
+  });
 }

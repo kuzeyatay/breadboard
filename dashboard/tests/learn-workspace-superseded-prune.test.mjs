@@ -66,7 +66,7 @@ test("a resume source is kept while its resumed run is still active", () => {
   });
 });
 
-test("a retained successor holding every receipt disposes its ancestors", () => {
+test("a receipt superset alone cannot dispose unique ancestor bytes", () => {
   withRuntimeRoot(({ repo, gardenSlug }) => {
     const first = workspace(repo, gardenSlug, "job-a");
     writeReceipts(first, ["1.1"]);
@@ -77,11 +77,11 @@ test("a retained successor holding every receipt disposes its ancestors", () => 
     const third = workspace(repo, gardenSlug, "job-c");
     assert.equal(third.resumedFromJobId, "job-b");
     writeReceipts(third, ["1.1", "1.2", "1.3"]);
-    // Retaining runs the prune itself: both superseded ancestors go.
+    // A new receipt is not proof that every old draft and output survived.
     retain(third, "2026-10-14T12:00:00.000Z");
 
-    assert.ok(!fs.existsSync(first.workspaceRoot));
-    assert.ok(!fs.existsSync(second.workspaceRoot));
+    assert.ok(fs.existsSync(first.workspaceRoot));
+    assert.ok(fs.existsSync(second.workspaceRoot));
     assert.ok(fs.existsSync(third.workspaceRoot), "newest complete copy always survives");
   });
 });

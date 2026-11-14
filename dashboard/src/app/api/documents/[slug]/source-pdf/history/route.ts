@@ -111,7 +111,7 @@ export async function DELETE(
     const entry = db
       .prepare(
         `SELECT id, source_pdf_path, pdf_data, byte_length, saved_by_user_id, saved_at
-         FROM pdf_document_edit_history
+         FROM pdf_document_history_reads
          WHERE cluster_id = ? AND document_slug = ?
          ORDER BY id DESC
          LIMIT 1`,

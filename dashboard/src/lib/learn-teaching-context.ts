@@ -4,7 +4,9 @@ import type { QualityProblem } from "./learn-utils.ts";
 // v15 (2026-10-08): need-before-tool, one notation per relation, provenance
 // out of prose. Stage keys carry this, so changed prompts never collide with
 // checkpoints recorded under the old wording.
-export const TEACHING_REVIEW_VERSION = "reader-progression-v15";
+// v16 (2026-11-10): story plus appendices, word ceiling from the idea count,
+// reader review that can ask for less (see learn-story.ts).
+export const TEACHING_REVIEW_VERSION = "reader-progression-v16";
 
 export interface EarlierLessonEvidence {
   pageId: string;
@@ -45,7 +47,7 @@ export function lessonReviewResidualIsAcceptable(
   _newConcepts: readonly string[] = [],
   allowance = 3,
 ): boolean {
-  const presentationOnly = new Set(["restated-idea", "unearned-callout", "reteaches-earlier-unit"]);
+  const presentationOnly = new Set(["restated-idea", "unearned-callout", "reteaches-earlier-unit", "dead-weight"]);
   return problems.length <= allowance && problems.every((problem) => presentationOnly.has(problem.code));
 }
 

@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadDashboardEnv, loadRootEnv } from "./load-root-env.mjs";
 import { loadOrCreateScriberrCredentials } from "./prepare-scriberr-runtime.mjs";
 import { probeService, WARMING_BUDGET_MS } from "./service-probe.mjs";
+import { freellmapiApiKey, freellmapiPort } from "./start-freellmapi.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
@@ -160,6 +161,11 @@ if (humanizerMode !== "disabled" && !humanizerEnabled) {
 // bearer is shared with ChatMock through the environment so the `cliproxy`
 // provider works the moment both are up; the key itself is generated per
 // install and lives under CLIPROXY_HOME.
+const freellmapiEnabled =
+  (process.env.FREELLMAPI_MODE?.trim().toLowerCase() || "optional") !== "disabled";
+const freellmapiBaseUrlValue = `http://127.0.0.1:${freellmapiPort()}/v1`;
+const freellmapiKeyValue = freellmapiEnabled ? freellmapiApiKey() : "";
+
 const cliproxyMode = process.env.CLIPROXY_MODE?.trim().toLowerCase() || "required";
 const cliproxyEnabled = cliproxyMode !== "disabled";
 const cliproxyPortValue = /^\d+$/.test(process.env.CLIPROXY_PORT ?? "")
@@ -263,6 +269,10 @@ const runtimeEnv = {
   HUMANIZER_SERVICE_URL: humanizerServiceUrl,
   // Subscription proxy. ChatMock reads CLIPROXY_* as the `cliproxy` provider's
   // endpoint and bearer, so subscription models are reachable as cliproxy/<model>.
+  // FreeLLMAPI sibling: ChatMock's `freellmapi` provider reads these.
+  ...(freellmapiEnabled
+    ? { FREELLMAPI_BASE_URL: freellmapiBaseUrlValue, FREELLMAPI_API_KEY: freellmapiKeyValue }
+    : {}),
   CLIPROXY_MODE: cliproxyMode,
   CLIPROXY_PORT: cliproxyPortValue,
   CLIPROXY_BASE_URL: cliproxyBaseUrlValue,
@@ -608,6 +618,20 @@ async function main() {
         "[stack] Scriberr not reachable yet; video transcription stays unavailable until it is up.\n",
       );
     }
+  }
+
+  // Free-tier router. Optional and never awaited: its first launch installs
+  // and builds, and ChatMock resolves `freellmapi/<model>` per request.
+  if (freellmapiEnabled) {
+    await startUnlessRunning(
+      "freellmapi",
+      {
+        url: `${freellmapiBaseUrlValue}/models`,
+        headers: { Authorization: `Bearer ${freellmapiKeyValue}` },
+      },
+      process.execPath,
+      [path.join(repoRoot, "scripts", "start-freellmapi.mjs")],
+    );
   }
 
   // Subscription proxy. The first launch downloads the binary, so allow a

@@ -23,6 +23,22 @@ export interface GardenTurnCheckpoint {
 }
 
 const pendingChatSaves = new Map<number, Promise<void>>();
+// Server-side work a stopped turn still owes its chat: the stop request itself,
+// and sealing a checkpoint whose save was abandoned mid-flight. The screen does
+// not wait for any of it; the next turn's reservation does.
+const pendingTurnStops = new Map<number, Promise<unknown>>();
+
+/** Keep this chat's next turn behind `work` without holding the interface. */
+export function holdGardenTurnsUntil(sessionId: number, work: Promise<unknown>): void {
+  const held = Promise.all([
+    pendingTurnStops.get(sessionId)?.catch(() => undefined),
+    work.catch(() => undefined),
+  ]);
+  pendingTurnStops.set(sessionId, held);
+  void held.then(() => {
+    if (pendingTurnStops.get(sessionId) === held) pendingTurnStops.delete(sessionId);
+  });
+}
 const transientSaveStatuses = new Set([408, 429, 500, 502, 503, 504]);
 
 /** Retry the same snapshot, never the model request or a rejected edit. */
@@ -71,8 +87,51 @@ export function saveGardenChatSession(
   return save;
 }
 
-/** Reserve an adjacent user/assistant pair before any turn work is dispatched. */
-export async function reserveGardenTurnCheckpoint(
+/**
+ * Reserve an adjacent user/assistant pair before any turn work is dispatched.
+ *
+ * Stop (`signal`) is answered at once, however slow the save is. The request
+ * itself is left to finish, because it may already have committed the pair;
+ * whatever it committed is sealed as soon as it lands, and the chat's next
+ * reservation waits for that.
+ */
+export function reserveGardenTurnCheckpoint(
+  sessionId: number,
+  clientMessageId: string,
+  message: GardenTurnCheckpointMessage,
+  signal?: AbortSignal,
+): Promise<GardenTurnCheckpoint> {
+  const startedAt = Date.now();
+  const reservation = (async () => {
+    await pendingTurnStops.get(sessionId)?.catch(() => undefined);
+    return requestGardenTurnCheckpoint(sessionId, clientMessageId, message, signal);
+  })();
+  void reservation.catch(() => undefined).then(() => {
+    const elapsed = Date.now() - startedAt;
+    // A slow reservation is the dead window before an answer starts thinking.
+    if (elapsed > 3_000) console.warn(`[garden-chat] turn checkpoint took ${elapsed} ms`);
+  });
+  if (!signal) return reservation;
+  return new Promise((resolve, reject) => {
+    const stop = () => {
+      holdGardenTurnsUntil(
+        sessionId,
+        reservation.catch(() => undefined).then(() =>
+          abortGardenTurnCheckpoint(sessionId, clientMessageId)),
+      );
+      reject(new DOMException("The turn was stopped.", "AbortError"));
+    };
+    if (signal.aborted) {
+      stop();
+      return;
+    }
+    signal.addEventListener("abort", stop, { once: true });
+    reservation.then(resolve, reject).finally(() =>
+      signal.removeEventListener("abort", stop));
+  });
+}
+
+async function requestGardenTurnCheckpoint(
   sessionId: number,
   clientMessageId: string,
   message: GardenTurnCheckpointMessage,

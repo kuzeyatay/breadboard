@@ -71,6 +71,7 @@ import {
   loadSuperAgentInventory,
   openableSkills,
   renderSuperAgentDirective,
+  renderSuperAgentTurnFocus,
 } from "./super-agent.ts";
 import {
   computerUseSkillChoices,
@@ -139,6 +140,7 @@ import { factcheckCommandText } from "./factcheck-intent.ts";
 import { patentDisclosureCommandText } from "./patent-disclosure-intent.ts";
 import { PATENT_DISCLOSURE_SKILL } from "./patent-disclosure-source.ts";
 import { agentLoopCommandText } from "./agent-loop-intent.ts";
+import { videoCommandText } from "./video-intent.ts";
 import { messagingCommandText } from "./messaging-intent.ts";
 import { humanizeCommandText } from "./humanize-intent.ts";
 import {
@@ -147,7 +149,7 @@ import {
 } from "./computer-use-intent.ts";
 import { breadboardUseCommandText, BREADBOARD_USE_SKILL } from "./breadboard-use-intent.ts";
 import { imageTo3dCommandText, IMAGE_TO_3D_SKILL } from "./image-3d-intent.ts";
-import { diagramCommandText, DIAGRAM_DESIGN_SKILL } from "./diagram-intent.ts";
+import { diagramCommandText, DIAGRAM_IN_CHAT_SKILL } from "./diagram-intent.ts";
 import {
   asciiDiagramCommandText,
   ASCII_ART_DIAGRAMS_SKILL,
@@ -661,8 +663,16 @@ export async function openGardenAgentChat(
     // The same second copy of the chain: a repo named for inspection has to
     // select the skill here exactly as it does in conversations/turn-service.ts,
     // after Diagram Design and before messaging for the same reasons.
-    const githubExplorerSelection = githubExplorerCommandText({
+    // The same second copy of the chain as conversations/turn-service.ts: a
+    // request to make a video selects the Video skill here too.
+    const videoSelection = videoCommandText({
       text: diagramSelection.text,
+      surface: "garden_chat",
+      authenticated: true,
+      priorMessages: messages,
+    });
+    const githubExplorerSelection = githubExplorerCommandText({
+      text: videoSelection.text,
       surface: "garden_chat",
       authenticated: true,
       priorMessages: messages,
@@ -720,6 +730,7 @@ export async function openGardenAgentChat(
         !audioSelection.automatic &&
         !asciiDiagramSelection.automatic &&
         !diagramSelection.automatic &&
+        !videoSelection.automatic &&
         !githubExplorerSelection.automatic &&
         !humanizeSelection.automatic &&
         !computerUseSelection.automatic &&
@@ -913,7 +924,7 @@ export async function openGardenAgentChat(
         automaticPatentDisclosure,
         automaticInteractiveVisualizer: visualizerSelection.automatic,
         automaticAsciiDiagram,
-        automaticDiagramDesign: diagramSelection.automatic,
+        automaticDiagramInChat: diagramSelection.automatic,
         automaticGithubExplorer: githubExplorerSelection.automatic,
         automaticComputerUse,
         automaticBreadboardUse,
@@ -1031,14 +1042,18 @@ export async function openGardenAgentChat(
       conversationPublicId: conversation.public_id,
       adhdMode: payload.adhdMode === true,
       voice: payload.voice === true,
-      additional: [
+      // What reads the same on every turn of this conversation stays in the
+      // system message; the rest travels with the turn. See TURN_CONTEXT_MARKER.
+      stableAdditional: [
         agentPreferencesContext(userId),
         superAgentInventory ? renderSuperAgentDirective(superAgentInventory) : "",
         // The garden's own standing instructions, set from the workspace header's
-        // settings dialog. Placed ahead of the rest of the turn's context so it
-        // reads as a preference the assistant carries into the work, not as a
-        // late correction bolted onto the end of the prompt.
+        // settings dialog.
         gardenInstructionsContext(session.row.cluster_id),
+        connectedApps.systemContext,
+      ].filter(Boolean).join("\n\n"),
+      additional: [
+        superAgentInventory ? renderSuperAgentTurnFocus(superAgentInventory) : "",
         // Ahead of the topology packet: what the Garden holds is read before
         // how its concepts relate, because the first question of a Garden turn
         // is whether the material is already here.
@@ -1048,7 +1063,6 @@ export async function openGardenAgentChat(
         // Directly after memory, so the repository reads as something the
         // assistant knows about this Garden rather than a tool it was handed.
         repository?.systemContext ?? "",
-        connectedApps.systemContext,
         // Empty unless this turn was offered a shortlist above.
         renderSkillShortlistDirective(skillShortlist),
         documents.context,
@@ -1126,7 +1140,13 @@ export async function openGardenAgentChat(
         ...(spotifySelection.automatic ? [{ slug: SPOTIFY_SKILL }] : []),
         ...(audioSelection.automatic ? [{ slug: AUDIO_ANALYSIS_SKILL }] : []),
         ...(automaticAsciiDiagram ? [{ slug: ASCII_ART_DIAGRAMS_SKILL }] : []),
-        ...(diagramSelection.automatic ? [{ slug: DIAGRAM_DESIGN_SKILL }] : []),
+        ...(diagramSelection.automatic ? [{ slug: DIAGRAM_IN_CHAT_SKILL }] : []),
+        ...(videoSelection.automatic &&
+          resolved.invocations.some(
+            (invocation) => invocation.kind === "skill" && invocation.slug === videoSelection.skill,
+          )
+          ? [{ slug: videoSelection.skill, reason: "The request asked for a video to be made." }]
+          : []),
         ...(githubExplorerSelection.automatic
           ? [{ slug: GITHUB_EXPLORER_SKILL }]
           : []),

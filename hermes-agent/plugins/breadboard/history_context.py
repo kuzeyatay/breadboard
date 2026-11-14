@@ -112,6 +112,24 @@ def _project(text: str, history: dict) -> tuple[str, int]:
     return text[:start] + "\n".join(lines) + text[end:], removed
 
 
+def tag_session(request: dict[str, Any], session_id: str = "", **_context: Any) -> dict[str, Any] | None:
+    """Hermes llm_request middleware: name the conversation to the model proxy.
+
+    ChatMock keys the upstream prompt cache on this header. Without it the key
+    is derived from the first user message, whose wire form differs between
+    the turn it is sent on (it carries that turn's context) and every later
+    replay, so the first two turns of a conversation would not share a cache.
+    """
+    if not session_id:
+        return None
+    headers = dict(request.get("extra_headers") or {})
+    if headers.get("X-Session-Id") == session_id:
+        return None
+    headers["X-Session-Id"] = session_id
+    return {"request": {**request, "extra_headers": headers}, "source": "breadboard-session",
+            "reason": "Named the conversation for the provider prompt cache."}
+
+
 def deduplicate_history(request: dict[str, Any], **_context: Any) -> dict[str, Any] | None:
     """Hermes llm_request middleware; no model calls, state or schema changes."""
     history = _history(request)
@@ -135,10 +153,14 @@ def deduplicate_history(request: dict[str, Any], **_context: Any) -> dict[str, A
     for key in ("messages", "input"):
         messages = request.get(key)
         if isinstance(messages, list):
+            # The per-turn context travels on the current (last) user message.
+            current = max((i for i, m in enumerate(messages)
+                           if isinstance(m, dict) and m.get("role") == "user"), default=-1)
             projected[key] = [
                 {**message, "content": project_content(message.get("content"))}
-                if isinstance(message, dict) and message.get("role") in {"system", "developer"}
-                else message for message in messages
+                if isinstance(message, dict) and (
+                    message.get("role") in {"system", "developer"} or i == current)
+                else message for i, message in enumerate(messages)
             ]
     for key in ("system", "instructions"):
         if key in request:

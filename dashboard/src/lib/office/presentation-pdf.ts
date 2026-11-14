@@ -5,6 +5,7 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 import { resolveBrowserExecutable } from "../agent-browser/browser-profile.ts";
 import { runOfficeCli } from "./officecli.ts";
+import { createDisposableScratch, releaseDisposableScratch } from "../storage/scratch.ts";
 
 function previewBrowserExecutable(): string | null {
   const explicit = process.env.BREADBOARD_VISUAL_BROWSER_PATH?.trim() ||
@@ -32,7 +33,7 @@ export async function renderPresentationPdf(
 ): Promise<Buffer> {
   signal = signal ? AbortSignal.any([signal, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000);
   signal?.throwIfAborted();
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-pptx-pdf-"));
+  const directory = createDisposableScratch("presentation-render");
   // Native tools disagree on Windows TEMP/TMP precedence. Both OfficeCLI and
   // Chromium must use this render's writable scratch directory.
   const renderEnv = { ...process.env, TEMP: directory, TMP: directory, TMPDIR: directory };
@@ -104,6 +105,7 @@ export async function renderPresentationPdf(
   } finally {
     signal?.removeEventListener("abort", abort);
     await browser?.close().catch(() => {});
+    releaseDisposableScratch(directory);
     fs.rmSync(directory, { recursive: true, force: true });
   }
 }

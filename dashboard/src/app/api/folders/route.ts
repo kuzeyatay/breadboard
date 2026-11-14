@@ -9,6 +9,7 @@ import {
   renameGardenFolder,
 } from '@/lib/garden-filesystem';
 import { isGardenMutationBusyError } from '@/lib/garden-mutation-lease';
+import { GardenFileError } from '@/lib/garden-files/store';
 import { requireOwnedClusterFromSlug, requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
@@ -46,7 +47,7 @@ async function getContext(clusterSlug: unknown, readable = false): Promise<
 
 /** Structure failures carry the status the caller should see; nothing else leaks. */
 function failure(error: unknown): NextResponse {
-  if (error instanceof GardenFilesystemError) {
+  if (error instanceof GardenFilesystemError || error instanceof GardenFileError) {
     return json({ error: error.message }, { status: error.status });
   }
   if (isGardenMutationBusyError(error)) {

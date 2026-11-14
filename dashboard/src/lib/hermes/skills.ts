@@ -62,6 +62,7 @@ function isReviewedLocalUpstreamId(upstreamId: string | undefined): boolean {
 }
 const DEDICATED_RUNTIME_FIRST_PARTY_SKILLS = new Set([
   "veo",
+  "blender",
   "multisim-agent",
   // earthtojake/text-to-cad is artifact engineering, not repository software
   // engineering. Its manifests necessarily contain Python/XML/CLI examples;
@@ -70,7 +71,10 @@ const DEDICATED_RUNTIME_FIRST_PARTY_SKILLS = new Set([
   ...TEXT_TO_CAD_SKILLS,
   "interactive-visualizer",
   "interactive-visualizer-in-chat",
-  "manim",
+  "diagram-in-chat",
+  "math-animation",
+  "video",
+  "film",
   "watch",
   "send-to-my-phone",
   "generate-gadget",

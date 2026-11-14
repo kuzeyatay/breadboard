@@ -42,7 +42,7 @@ interface FieldBase {
    * name to one read of an existing status endpoint when the panel opens; there
    * is no polling.
    */
-  statusProbe?: "solidworks";
+  statusProbe?: "solidworks" | "freecad";
 }
 
 export type AgentSettingField =
@@ -412,6 +412,7 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
             label: "SolidWorks",
             help: "Windows only, and SolidWorks must be installed.",
           },
+          { value: "freecad", label: "FreeCAD", help: "Native FreeCAD documents. Requires FreeCAD and its MCP bridge." },
         ],
         default: "auto",
       },
@@ -425,6 +426,20 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     appliesWhen:
       "Applies to every part designed from chat, and to the enclosures Hardware Blueprint asks this agent for.",
     fields: [
+      {
+        key: "cadBackend",
+        kind: "select",
+        label: "CAD backend",
+        help: "Choose the application that creates your model.",
+        flag: "--cad freecad",
+        statusProbe: "freecad",
+        options: [
+          { value: "auto", label: "Let the design decide" },
+          { value: "cadquery", label: "Parametric CAD (CadQuery)" },
+          { value: "freecad", label: "FreeCAD", help: "Creates native .FCStd documents with editable features." },
+        ],
+        default: "auto",
+      },
       {
         key: "process",
         kind: "select",

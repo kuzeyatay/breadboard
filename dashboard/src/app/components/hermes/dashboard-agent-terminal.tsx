@@ -92,6 +92,10 @@ import {
   OPEN_SCHEDULES_PANEL_EVENT,
 } from "./schedule-client";
 import { parseExplicitScheduleRequest } from "@/lib/schedules/natural-language.ts";
+import {
+  parseExplicitHookRequest,
+  resolveWorkflowByName,
+} from "@/lib/hooks/natural-language.ts";
 import { parseCalendarReminderRequest } from "@/lib/calendar/reminder-request.ts";
 import {
   normalizeScheduledChatReceipt,
@@ -6600,6 +6604,57 @@ const launchCareerOpsRun = useCallback(
         }
         return;
       }
+      // A standing instruction ("whenever a chat finishes, …") becomes a hook
+      // instead of a message. The gate is deliberately narrow — see
+      // parseExplicitHookRequest — and covers only the triggers Breadboard
+      // fires itself; a webhook's URL and secret belong in the Hooks panel.
+      const hookRequest = textOverride === undefined && chatAttachments.length === 0
+        ? parseExplicitHookRequest(text)
+        : null;
+      if (hookRequest) {
+        setInput("");
+        setAttachmentStatus("");
+        try {
+          let workflowId: string | null = null;
+          if (hookRequest.mode === "workflow") {
+            const listResponse = await fetch("/api/workflows/local", { cache: "no-store" });
+            const list = (await listResponse.json().catch(() => ({}))) as {
+              workflows?: Array<{ id: string; name: string }>;
+            };
+            workflowId =
+              resolveWorkflowByName(hookRequest.workflowName, list.workflows ?? [])?.id ?? null;
+            if (!workflowId) {
+              throw new Error(
+                `No single saved workflow matches “${hookRequest.workflowName}”. Create this hook in the Hooks panel to pick one.`,
+              );
+            }
+          }
+          const response = await fetch("/api/hooks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: hookRequest.name,
+              provider: hookRequest.provider,
+              mode: hookRequest.mode,
+              chatInstructions: hookRequest.mode === "chat" ? hookRequest.instructions : null,
+              workflowId,
+              command: hookRequest.command,
+              providerConfig: hookRequest.matcher ? { matcher: hookRequest.matcher } : {},
+            }),
+          });
+          const payload = (await response.json().catch(() => ({}))) as { error?: string };
+          if (!response.ok) {
+            throw new Error(payload.error ?? "This hook could not be created.");
+          }
+          setAttachmentStatus(`Hook created: ${hookRequest.name}. Manage it in Hooks.`);
+        } catch (cause) {
+          setInput(text);
+          setAttachmentStatus(
+            cause instanceof Error ? cause.message : "This hook could not be created.",
+          );
+        }
+        return;
+      }
       // Plain-language time instructions create the schedule before their
       // confirmation turn is persisted. Keep this conservative and attachment-free:
       // the parser only returns explicit recurring language or a relative delay
@@ -8109,7 +8164,12 @@ if (careerOpsAgent) {
   );
 
   const editMessage = useCallback(
-    (messageIndex: number, text: string, branchGroupId: string) => {
+    (
+      messageIndex: number,
+      text: string,
+      branchGroupId: string,
+      detachedAttachmentNames: readonly string[] = [],
+    ) => {
       if (runtimeUnavailable) return;
       if (routeMusicProducerCommand(text, { branchGroupId })) return;
       if (
@@ -8144,7 +8204,9 @@ if (careerOpsAgent) {
         // An edit rewrites the words, not what they were about: the screenshot
         // the question referred to has to come with it.
         attachments: reusableChatAttachments(
-          session.messages[messageIndex]?.attachments,
+          session.messages[messageIndex]?.attachments?.filter(
+            (attachment) => !detachedAttachmentNames.includes(attachment.name),
+          ),
         ),
       });
     },
@@ -9786,6 +9848,9 @@ onClearCareerOps={() => {
                 attachmentUploadError={attachmentUploadError}
                 attachments={chatAttachments}
                 onRemoveAttachment={removeChatAttachment}
+                onReplaceAttachment={(index, attachment) =>
+                  setChatAttachments((current) => current.map((item, position) => (position === index ? attachment : item)))
+                }
                 onRestoreQueuedAttachments={(attachments) =>
                   setChatAttachments(attachments)
                 }
@@ -9803,6 +9868,7 @@ onClearCareerOps={() => {
                       greeting={chatGreeting.greeting}
                       suggestions={chatGreeting.suggestions}
                       suggestionScopeKey={chatGreeting.suggestionScopeKey}
+                      suggestionDetails={chatGreeting.suggestionDetails}
                       onSelectSuggestion={fillComposerWithPrompt}
                       disabled={runtimeUnavailable}
                     />

@@ -29,7 +29,7 @@ function metadataRecord(value: string | null): Record<string, unknown> | null {
 export function backfillGenerativeUiResources(database: Database.Database): number {
   const rows = database.prepare(`
     SELECT id, metadata
-    FROM conversation_messages
+    FROM conversation_message_reads
     WHERE role = 'assistant'
       AND metadata LIKE '%"product_search"%'
       AND metadata LIKE '%"uiResources"%'

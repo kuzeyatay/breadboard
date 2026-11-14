@@ -345,11 +345,30 @@ async function pickDevice<T>(contents: WebContents | null | undefined, title: st
   return shown[response];
 }
 
-/** WebHID, WebUSB and Web Serial choosers. Picking a device is the consent. */
+/** Device and passkey choosers. Picking an item is the consent. */
 const devicePickerSessions = new WeakSet<Session>();
 export function installDevicePickers(target: Session): void {
   if (devicePickerSessions.has(target)) return;
   devicePickerSessions.add(target);
+  // Modern Electron delegates discoverable passkey account selection to the
+  // embedder. Without a chooser, even a matching credential is cancelled.
+  target.on("select-webauthn-account", (_event, details, callback) => {
+    void (async () => {
+      const frame = details.frame;
+      const contents = frame && allWebContents.fromFrame(frame);
+      if (!frame || !contents || contents.isDestroyed() || !details.accounts.length) return;
+      const url = frame.url;
+      const accounts = details.accounts;
+      const { response } = await showChoiceDialog(contents, {
+        title: "Sign in with a passkey", message: `Choose an account for ${details.relyingPartyId}.`,
+        buttons: [...accounts.map(account => account.name && account.displayName && account.name !== account.displayName
+          ? `${account.displayName} (${account.name})` : account.name || account.displayName || "Passkey"), "Cancel"],
+        cancel: accounts.length, stacked: true,
+      });
+      if (contents.isDestroyed() || frame.detached || frame.url !== url) return;
+      return accounts[response]?.credentialId;
+    })().then(credential => callback(credential), () => callback());
+  });
   target.on("select-hid-device", (event, details, callback) => {
     event.preventDefault();
     void pickDevice(details.frame ? allWebContents.fromFrame(details.frame) : undefined, "Connect a device", "HID device", details.deviceList,

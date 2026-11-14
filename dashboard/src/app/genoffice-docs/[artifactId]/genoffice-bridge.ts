@@ -3,14 +3,17 @@ import type {
   OpenDocxResult,
   PickImageResult,
   UiTheme,
+  MenuCommand,
 } from "@/vendor/genoffice/docs/src/shared/ipc";
 import type { PresentedArtifact } from "@/lib/hermes/artifact-types";
+import { gardenFileApi, type GardenFileEntry } from "@/lib/garden-files/types";
 
 interface BridgeOptions {
   artifactId: string;
   conversationId: string;
   initialVersion: number;
   initialTheme: Extract<UiTheme, "light" | "dark">;
+  libraryFile?: { gardenId: string; fileId: string };
 }
 
 const SAVE_COMPLETE_EVENT = "breadboard:genoffice-save-complete";
@@ -61,14 +64,16 @@ export function installGenOfficeBridge({
   conversationId,
   initialVersion,
   initialTheme,
+  libraryFile,
 }: BridgeOptions): DesktopApi {
   const query = new URLSearchParams({ conversationId });
-  const endpoint = `/api/hermes/artifacts/${encodeURIComponent(artifactId)}/genoffice`;
-  const virtualPath = `breadboard-artifact://${artifactId}`;
+  const endpoint = libraryFile ? gardenFileApi(libraryFile.gardenId, libraryFile.fileId) : `/api/hermes/artifacts/${encodeURIComponent(artifactId)}/genoffice`;
+  const virtualPath = libraryFile ? `breadboard-file://${libraryFile.fileId}` : `breadboard-artifact://${artifactId}`;
   let version = initialVersion;
   let pending = true;
   let theme: Extract<UiTheme, "light" | "dark"> = initialTheme;
   const themeHandlers = new Set<(value: UiTheme) => void>();
+  const menuHandlers = new Set<(command: MenuCommand, payload?: string) => void>();
 
   const applyTheme = (value: unknown) => {
     if (value !== "light" && value !== "dark") return;
@@ -77,6 +82,10 @@ export function installGenOfficeBridge({
     for (const handler of themeHandlers) handler(value);
   };
   window.addEventListener("message", (event) => {
+    if (libraryFile && event.source === window.parent && event.origin === window.location.origin && event.data?.type === "breadboard:genoffice-save-copy") {
+      for (const handler of menuHandlers) handler("save-as");
+      return;
+    }
     if (
       event.source !== window.parent ||
       event.origin !== window.location.origin ||
@@ -90,13 +99,13 @@ export function installGenOfficeBridge({
   });
 
   const load = async (): Promise<OpenDocxResult> => {
-    const response = await fetch(`${endpoint}?${query}`, { cache: "no-store" });
+    const response = await fetch(libraryFile ? `${endpoint}/content` : `${endpoint}?${query}`, { cache: "no-store" });
     if (!response.ok) {
       const detail = await response.json().catch(() => null) as { error?: string } | null;
       throw new Error(detail?.error || `The Word document could not be opened (${response.status}).`);
     }
-    version = Number(response.headers.get("X-Breadboard-Artifact-Version") ?? version);
-    const encodedName = response.headers.get("X-Breadboard-Artifact-Filename") ?? "document.docx";
+    version = Number(response.headers.get(libraryFile ? "X-Breadboard-File-Revision" : "X-Breadboard-Artifact-Version") ?? version);
+    const encodedName = response.headers.get(libraryFile ? "X-Breadboard-File-Name" : "X-Breadboard-Artifact-Filename") ?? "document.docx";
     const name = decodeURIComponent(encodedName);
     const data = await response.arrayBuffer();
     const digest = await crypto.subtle.digest("SHA-256", data);
@@ -104,29 +113,31 @@ export function installGenOfficeBridge({
     return { path: virtualPath, name, data, hash };
   };
 
-  const save = async (data: ArrayBuffer) => {
+  const save = async (data: ArrayBuffer, copy = false) => {
     try {
       const params = new URLSearchParams({
         conversationId,
         expectedVersion: String(version),
       });
-      const response = await fetch(`${endpoint}?${params}`, {
+      const response = await fetch(libraryFile ? `${endpoint}/edit` : `${endpoint}?${params}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+        headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ...(libraryFile ? { "x-file-revision": String(version), ...(copy ? { "x-file-copy": "1" } : {}) } : {}) },
         body: data,
       });
       const payload = await response.json().catch(() => null) as {
         artifact?: PresentedArtifact;
+        file?: GardenFileEntry;
         error?: string;
       } | null;
-      if (!response.ok || !payload?.artifact) {
+      if (!response.ok || !(libraryFile ? payload?.file : payload?.artifact)) {
         const result = { ok: false, error: payload?.error || `Save failed (${response.status}).` };
         reportSave(result);
+        if (libraryFile) window.parent.postMessage({ type: "breadboard:genoffice-file-error", fileId: libraryFile.fileId, error: result.error, conflict: response.status === 409 }, window.location.origin);
         return result;
       }
-      version = payload.artifact.version;
+      version = libraryFile ? payload!.file!.revision : payload!.artifact!.version;
       window.parent.postMessage(
-        { type: "breadboard:genoffice-artifact-saved", artifact: payload.artifact },
+        libraryFile ? { type: "breadboard:genoffice-file-saved", sourceFileId: libraryFile.fileId, file: payload!.file } : { type: "breadboard:genoffice-artifact-saved", artifact: payload!.artifact },
         window.location.origin,
       );
       const result = { ok: true };
@@ -165,7 +176,7 @@ export function installGenOfficeBridge({
     saveDocx: async (_path, data) => save(data),
     writeRecoveryCopy: async () => ({ ok: true }),
     onTeardown: noopSubscription,
-    saveDocxAs: async (_name, data) => ({ ...(await save(data)), path: virtualPath }),
+    saveDocxAs: async (_name, data) => ({ ...(await save(data, Boolean(libraryFile))), path: virtualPath }),
     saveDocxNew: async (_name, data) => ({ ...(await save(data)), path: virtualPath }),
     getRecentFiles: async () => [],
     pickImage,
@@ -195,7 +206,7 @@ export function installGenOfficeBridge({
     openNewTab: async () => {},
     listDocsTabs: async () => [{ id: artifactId, title: "Breadboard document", focused: true }],
     focusDocsTab: async () => {},
-    onMenuCommand: noopSubscription,
+    onMenuCommand: handler => { menuHandlers.add(handler); return () => { menuHandlers.delete(handler); }; },
     onCloseCheck: noopSubscription,
     reportCloseCheck: () => {},
     onCloseSaveRequest: noopSubscription,

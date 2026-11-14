@@ -50,7 +50,7 @@ const HARDWARE_BOARDS = new Set([
 const HARDWARE_PROTOTYPES = new Set(["breadboard", "perfboard", "pcb"]);
 const HARDWARE_FIRMWARE = new Set(["arduino", "platformio"]);
 const HARDWARE_ENCLOSURE_PREFERENCES = new Set(["auto", "always", "never"]);
-const HARDWARE_CAD_BACKENDS = new Set(["auto", "cadquery", "solidworks"]);
+const HARDWARE_CAD_BACKENDS = new Set(["auto", "cadquery", "solidworks", "freecad"]);
 const PARAMETRIC_CAD_PROCESSES = new Set(["fdm", "sla", "sls"]);
 const PARAMETRIC_CAD_UNITS = new Set(["mm", "inch"]);
 const WARDROBE_QUALITIES = new Set(["auto", "low", "medium", "high"]);
@@ -1134,7 +1134,8 @@ function parametricCadPrinterBed(value) {
 }
 
 function parametricCadParsedRequest(value) {
-  return exactRecord(value, ["brief", "process", "printerBed", "units", "fresh"]) &&
+  return exactRecord(value, ["brief", "process", "printerBed", "units", "fresh", ...(isRecord(value) && Object.hasOwn(value, "cadBackend") ? ["cadBackend"] : [])]) &&
+    (value.cadBackend === undefined || value.cadBackend === null || HARDWARE_CAD_BACKENDS.has(value.cadBackend)) &&
     boundedText(value.brief, 32 * 1024) &&
     value.brief.length <= 20_000 &&
     (value.process === null || PARAMETRIC_CAD_PROCESSES.has(value.process)) &&

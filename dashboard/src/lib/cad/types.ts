@@ -23,6 +23,8 @@ export type CADExportFormat =
   | "3mf"
   /** The native SolidWorks part. Only ever present on a SolidWorks build. */
   | "sldprt"
+  | "fcstd"
+  | "freecad-source"
   | "source"
   /** The SolidWorks operation program, in place of `source` on that backend. */
   | "operations"

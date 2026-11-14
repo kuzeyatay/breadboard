@@ -1011,19 +1011,14 @@ export function retainLearnBuildWorkspace(
   pruneSupersededLearnBuildWorkspaces({ gardenSlug: workspace.gardenSlug });
 }
 
-/** Retained failed workspaces kept per garden, newest first; the rest are
- * disposed. Each holds a full garden copy (~1 GB), and a later run only ever
- * clones the newest compatible one, so unbounded retention just fills the
- * disk (live 2026-09-16: eight superseded telecom-1 workspaces, 6.4 GB, and
- * a Learn rollback died with ENOSPC). */
+/** Minimum number of recent failed workspaces protected even when an exact
+ * superseding copy can be proved. A count alone never grants deletion. */
 export const RETAINED_LEARN_WORKSPACES_PER_GARDEN = Math.max(
   1,
   Number.parseInt(process.env.LEARN_RETAINED_WORKSPACES_PER_GARDEN ?? "", 10) || 2,
 );
 
-/** Dispose retained failed workspaces of one garden beyond the retention cap,
- * oldest first. Workspaces in `keepJobIds` always survive. Returns the roots
- * that were disposed. Never touches active (in-flight) workspaces. */
+/** Keep recent candidates, then remove only proven superseded copies. */
 export function pruneRetainedLearnBuildWorkspaces(input: {
   gardenSlug: string;
   keepJobIds?: readonly string[];
@@ -1059,17 +1054,17 @@ export function pruneRetainedLearnBuildWorkspaces(input: {
     }
   }
   retained.sort((a, b) => b.retainedAt - a.retainedAt);
-  const disposed: string[] = [];
   let kept = 0;
   for (const { workspace } of retained) {
     if (keep.has(workspace.jobId) || kept < limit) {
+      keep.add(workspace.jobId);
       kept += 1;
       continue;
     }
-    disposeWorkspaceRootBestEffort(workspace.workspaceRoot);
-    disposed.push(workspace.workspaceRoot);
+    // Age/count alone cannot authorize discarding a recoverable draft.
+    // The receipt/lineage sweep below proves that another retained copy wins.
   }
-  return disposed;
+  return pruneSupersededLearnBuildWorkspaces({ gardenSlug: input.gardenSlug, keepJobIds: [...keep] });
 }
 
 /** Resume preference of a retained checkpoint: 0 = deterministically
@@ -1163,7 +1158,30 @@ function gardenWorkspaces(gardenSlug: string): LearnBuildWorkspace[] {
  * So one complete retained copy always survives, and the source of a running
  * resume is kept until that run is retained in turn.
  */
-export function pruneSupersededLearnBuildWorkspaces(input: { gardenSlug: string }): string[] {
+/** A page receipt alone says nothing about unique drafts, images or side files.
+ * A small exact superset can be proved here; large/changed trees stay protected
+ * for an explicit review rather than doing an unbounded foreground scan. */
+function exactWorkspaceCopyExists(ancestor: LearnBuildWorkspace, descendant: LearnBuildWorkspace): boolean {
+  const deadline = Date.now() + 25;
+  let bytes = 0, files = 0;
+  const visit = (relative: string): boolean => {
+    if (Date.now() > deadline || files > 256 || bytes > 2 * 1024 * 1024) return false;
+    const left = path.join(ancestor.workspaceRoot, relative), right = path.join(descendant.workspaceRoot, relative);
+    const a = fs.lstatSync(left), b = fs.lstatSync(right);
+    if (a.isSymbolicLink() || b.isSymbolicLink() || a.isDirectory() !== b.isDirectory()) return false;
+    if (!sameResolvedWorkspacePath(fs.realpathSync(left), left) || !sameResolvedWorkspacePath(fs.realpathSync(right), right)) return false;
+    if (a.isDirectory()) return fs.readdirSync(left).every(name => relative === "" && name === WORKSPACE_DESCRIPTOR || visit(path.join(relative, name)));
+    if (!a.isFile() || !b.isFile() || a.size !== b.size) return false;
+    files++;
+    if (a.dev === b.dev && a.ino === b.ino) return true;
+    bytes += a.size;
+    if (bytes > 2 * 1024 * 1024) return false;
+    return fs.readFileSync(left).equals(fs.readFileSync(right));
+  };
+  try { return visit(""); } catch { return false; }
+}
+
+export function pruneSupersededLearnBuildWorkspaces(input: { gardenSlug: string; keepJobIds?: readonly string[] }): string[] {
   const workspaces = gardenWorkspaces(input.gardenSlug);
   const byJobId = new Map(workspaces.map((workspace) => [workspace.jobId, workspace]));
   const disposable = new Map<string, LearnBuildWorkspace>();
@@ -1180,12 +1198,14 @@ export function pruneSupersededLearnBuildWorkspaces(input: { gardenSlug: string 
       if (!ancestor) break;
       const ancestorPages = acceptedPageKeys(ancestor.stagingGardenDir);
       if (
-        ancestor.lifecycle === "retained_after_failure" &&
+        ancestor.lifecycle === "retained_after_failure" && !input.keepJobIds?.includes(ancestor.jobId) &&
         // A successor the resume picker would rank below the ancestor (e.g. it
         // failed deterministically) does not supersede it: the ancestor is
         // still the preferred checkpoint.
         descendantRank >= retainedCheckpointRank(ancestor) &&
-        [...ancestorPages].every((page) => descendantPages.has(page))
+        [...ancestorPages].every((page) => descendantPages.has(page)) &&
+        !workspaces.some(workspace => workspace.lifecycle === "active" && workspace.resumedFromJobId === ancestor.jobId) &&
+        exactWorkspaceCopyExists(ancestor, descendant)
       ) {
         disposable.set(ancestor.jobId, ancestor);
       }
@@ -1215,24 +1235,9 @@ export function learnWorkspaceGardenSlugs(): string[] {
   return [...slugs];
 }
 
-let hygieneTimer: ReturnType<typeof setInterval> | undefined;
-
-/** Start the routine background sweep once per process: a minute after the
- * worker starts, then every 20 minutes. Timers are unref'd and failures are
- * swallowed, so disk hygiene never keeps a worker alive or affects a run. */
-export function startLearnWorkspaceHygiene(intervalMs = 20 * 60_000): void {
-  if (hygieneTimer) return;
-  const sweep = () => {
-    try {
-      sweepSupersededLearnBuildWorkspaces();
-    } catch {
-      // Disk hygiene never affects the run.
-    }
-  };
-  setTimeout(sweep, 60_000).unref?.();
-  hygieneTimer = setInterval(sweep, intervalMs);
-  hygieneTimer.unref?.();
-}
+/** Compatibility entry point. The desktop storage coordinator now owns the
+ * only housekeeping timer; workers must not each start a permanent loop. */
+export function startLearnWorkspaceHygiene(_intervalMs = 20 * 60_000): void {}
 
 /** Background sweep: dispose superseded retained workspaces in every garden. */
 export function sweepSupersededLearnBuildWorkspaces(): string[] {

@@ -15,6 +15,9 @@ import '@/app/genoffice-docs/genoffice-host.css'
 const params = new URLSearchParams(window.location.search)
 const artifactId = params.get('artifactId')?.trim() ?? ''
 const conversationId = params.get('conversationId')?.trim() ?? ''
+const gardenId = params.get('gardenId')?.trim() ?? ''
+const fileId = params.get('fileId')?.trim() ?? ''
+const libraryFile = gardenId && fileId ? { gardenId, fileId } : undefined
 const version = Number(params.get('version') ?? '0')
 const readOnly = params.get('mode') === 'preview'
 const root = document.getElementById('root')
@@ -23,7 +26,7 @@ const autoSaveDefaultVersion = '1'
 const storedTheme = localStorage.getItem('breadboard:theme')
 const initialTheme = storedTheme === 'dark' ? 'dark' : 'light'
 
-if (!root || !artifactId || !conversationId) {
+if (!root || (!libraryFile && (!artifactId || !conversationId))) {
   document.body.textContent = 'This editor link is missing its artifact conversation.'
 } else {
   document.documentElement.setAttribute('data-theme', initialTheme)
@@ -32,9 +35,10 @@ if (!root || !artifactId || !conversationId) {
     conversationId,
     initialVersion: Number.isInteger(version) ? version : 0,
     initialTheme,
+    libraryFile,
   })
   if (!readOnly) {
-    localStorage.setItem('aidocs.showAi', '1')
+    localStorage.setItem('aidocs.showAi', libraryFile ? '0' : '1')
     if (localStorage.getItem(autoSaveDefaultVersionKey) !== autoSaveDefaultVersion) {
       localStorage.setItem('aidocs.autoSave', '1')
       localStorage.setItem(autoSaveDefaultVersionKey, autoSaveDefaultVersion)
@@ -45,7 +49,9 @@ if (!root || !artifactId || !conversationId) {
   installScreenTips()
   createRoot(root).render(
     <LocaleProvider initial="en">
-      <App readOnly={readOnly} />
+      <App readOnly={readOnly}
+        onDirtyChange={libraryFile ? dirty => window.parent.postMessage({ type: 'breadboard:genoffice-file-dirty', fileId, dirty }, window.location.origin) : undefined}
+        onAskAi={libraryFile ? instruction => window.parent.postMessage({ type: 'breadboard:genoffice-file-chat', fileId, instruction }, window.location.origin) : undefined} />
     </LocaleProvider>,
   )
 }

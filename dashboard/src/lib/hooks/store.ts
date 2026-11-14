@@ -4,6 +4,8 @@
 
 import type DatabaseType from "better-sqlite3";
 
+import { MAX_HOOK_COMMAND_LENGTH } from "./command.ts";
+import { hookMatcherError, isLifecycleHookProvider } from "./natural-language.ts";
 import { pruneHookDeliveries } from "./schema.ts";
 import { SUPPORTED_HOOK_PROVIDERS } from "@/lib/sim/triggers/providers/registry";
 
@@ -20,6 +22,12 @@ export class HookError extends Error {
 }
 
 export type HookMode = "chat" | "workflow";
+/** What a hook does when it fires. "command" is stored as mode "chat" + command. */
+export type HookAction = HookMode | "command";
+
+export function hookAction(hook: Pick<HookRow, "mode" | "command">): HookAction {
+  return hook.command ? "command" : hook.mode;
+}
 
 /** Internal trigger fired after a durable assistant answer completes. */
 export const CHAT_COMPLETED_PROVIDER = "chat_completed";
@@ -39,12 +47,16 @@ export interface HookRow {
   fire_count: number;
   /** The garden this hook belongs to, or null for a dashboard-wide hook. */
   garden_slug: string | null;
+  /** Set for a command hook; see hookAction(). */
+  command: string | null;
+  last_result: string | null;
 }
 
 export interface CreateHookInput {
   name: string;
   provider: string;
-  mode: HookMode;
+  mode: HookAction;
+  command?: string | null;
   workflowId?: string | null;
   chatInstructions?: string | null;
   providerConfig?: Record<string, unknown>;
@@ -89,17 +101,14 @@ function boundedText(value: unknown, max: number, field: string, required = true
 }
 
 function assertProvider(provider: string): void {
-  if (
-    provider !== CHAT_COMPLETED_PROVIDER &&
-    !SUPPORTED_HOOK_PROVIDERS.includes(provider)
-  ) {
+  if (!isLifecycleHookProvider(provider) && !SUPPORTED_HOOK_PROVIDERS.includes(provider)) {
     throw new HookError(400, `Unknown hook provider: ${provider}`);
   }
 }
 
-function assertMode(mode: string): asserts mode is HookMode {
-  if (mode !== "chat" && mode !== "workflow") {
-    throw new HookError(400, "Hook mode must be 'chat' or 'workflow'.");
+function assertMode(mode: string): asserts mode is HookAction {
+  if (mode !== "chat" && mode !== "workflow" && mode !== "command") {
+    throw new HookError(400, "Hook mode must be chat, workflow or command.");
   }
 }
 
@@ -107,6 +116,8 @@ function assertProviderConfig(
   provider: string,
   providerConfig: Record<string, unknown>,
 ): void {
+  const matcherError = hookMatcherError(providerConfig.matcher);
+  if (matcherError) throw new HookError(400, matcherError);
   for (const field of REQUIRED_PROVIDER_FIELDS[provider] ?? []) {
     const value = providerConfig[field.key];
     if (typeof value !== "string" || !value.trim()) {
@@ -127,17 +138,24 @@ export function createHook(userId: number, input: CreateHookInput, db: Db): Hook
   if (input.mode === "chat" && !input.chatInstructions?.trim()) {
     throw new HookError(400, "A chat hook needs instructions for the assistant.");
   }
+  const command = input.mode === "command" ? (input.command ?? "").trim() : "";
+  if (input.mode === "command" && !command) {
+    throw new HookError(400, "A command hook needs a command to run.");
+  }
+  if (command.length > MAX_HOOK_COMMAND_LENGTH) {
+    throw new HookError(400, "This hook command is too long.");
+  }
 
   const id = generateHookId();
   db.prepare(
-    `INSERT INTO hooks (id, user_id, name, provider, mode, workflow_id, chat_instructions, provider_config, enabled, garden_slug)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO hooks (id, user_id, name, provider, mode, workflow_id, chat_instructions, provider_config, enabled, garden_slug, command)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     userId,
     name,
     input.provider,
-    input.mode,
+    input.mode === "command" ? "chat" : input.mode,
     input.mode === "workflow" ? input.workflowId ?? null : null,
     input.mode === "chat"
       ? boundedText(input.chatInstructions, MAX_INSTRUCTIONS_LENGTH, "Chat instructions")
@@ -145,6 +163,7 @@ export function createHook(userId: number, input: CreateHookInput, db: Db): Hook
     JSON.stringify(input.providerConfig ?? {}),
     input.enabled === false ? 0 : 1,
     input.gardenSlug?.trim() || null,
+    command || null,
   );
 
   return getHookByIdForUser(id, userId, db)!;
@@ -183,6 +202,7 @@ export function listEnabledChatCompletionHooks(
   userId: number,
   gardenSlug: string | null,
   db: Db,
+  provider: string = CHAT_COMPLETED_PROVIDER,
 ): HookRow[] {
   const normalizedGardenSlug = gardenSlug?.trim() || null;
   if (normalizedGardenSlug) {
@@ -193,7 +213,7 @@ export function listEnabledChatCompletionHooks(
            AND (garden_slug IS NULL OR garden_slug = ?)
          ORDER BY created_at ASC`,
       )
-      .all(userId, CHAT_COMPLETED_PROVIDER, normalizedGardenSlug) as HookRow[];
+      .all(userId, provider, normalizedGardenSlug) as HookRow[];
   }
   return db
     .prepare(
@@ -202,7 +222,7 @@ export function listEnabledChatCompletionHooks(
          AND garden_slug IS NULL
        ORDER BY created_at ASC`,
     )
-    .all(userId, CHAT_COMPLETED_PROVIDER) as HookRow[];
+    .all(userId, provider) as HookRow[];
 }
 
 export function getHookById(id: string, db: Db): HookRow | null {
@@ -255,6 +275,11 @@ export function recordHookFire(id: string, db: Db): void {
   db.prepare(
     `UPDATE hooks SET last_fired_at = datetime('now'), fire_count = fire_count + 1 WHERE id = ?`,
   ).run(id);
+}
+
+/** The outcome of a command hook's most recent run, shown in the Hooks list. */
+export function recordHookResult(id: string, result: string, db: Db): void {
+  db.prepare(`UPDATE hooks SET last_result = ? WHERE id = ?`).run(result.slice(0, 400), id);
 }
 
 /**

@@ -241,7 +241,6 @@ export default function ScreenTimeScreen() {
         {!timeline.length && <p className={styles.timelineEmpty}>No activity recorded for this period.</p>}
         {timeline.length > timelineCount && <button className={styles.more} onClick={() => setTimelineCount(value => value + 20)}>Show earlier activity <ChevronRight size={14} /></button>}
       </section>
-      <footer className={styles.footer}><span><ShieldCheck size={14} /> Saved on this device. No screenshots or keystrokes in Screen Time.</span><span>Inspired by <a href="https://github.com/ArnoGevorkyan/Screeny" target="_blank" rel="noreferrer">Screeny</a></span></footer>
     </div>
 
     <Dialog.Root open={settingsOpen} onOpenChange={setSettingsOpen}><Dialog.Portal><Dialog.Overlay className={styles.scrim} /><Dialog.Content className={styles.settingsDialog}>

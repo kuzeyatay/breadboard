@@ -498,3 +498,21 @@ it, the generated secrets authorize the management API (and a wrong key gets
 401), Claude returns a `claude.ai` redirect URL, Kimi returns a device code, and
 a `cliproxy/<model>` request travels ChatMock → CLIProxyAPI. Completing an actual
 subscription sign-in requires the user's own credentials and was not performed.
+
+## Free LLM API (free-tier router)
+
+[FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi) (MIT) is vendored at
+`freellmapi/` (commit in `freellmapi/UPSTREAM_COMMIT`). `scripts/start-freellmapi.mjs`
+installs, builds and runs it on `127.0.0.1:3417`; `npm run dev` and the desktop
+app (source checkouts only) both start it. State and the loopback bearer live
+in `.runtime/freellmapi/`. `FREELLMAPI_MODE=disabled` turns it off.
+
+ChatMock reaches it as the `freellmapi` provider, configured only through the
+`FREELLMAPI_BASE_URL` / `FREELLMAPI_API_KEY` the launchers export. The picker
+shows one row, **Auto** (`freellmapi/auto`, its router), in a "Free LLM API"
+section above OpenAI; other ids can be pinned in Settings → Providers.
+
+The launcher enables the providers that need no account (Kilo, OVH, AI Horde),
+so Auto answers on a fresh install. Every other provider needs the user's own
+key, added in FreeLLMAPI's key manager at http://127.0.0.1:3417. Breadboard does
+not create provider accounts on the user's behalf.

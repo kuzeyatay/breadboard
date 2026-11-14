@@ -20,6 +20,8 @@ import { MANIM_SKILL, MANIM_TOOL } from "@/lib/manim/identity.ts";
 import { ManimServiceError, validateManimRequest } from "@/lib/manim/request.ts";
 import { publishManimVideo } from "@/lib/manim/artifact.ts";
 import { ManimRuntimeError, runManimViaRuntime } from "@/lib/runtime-v2/manim-job.ts";
+import { addSoundtrack, validateManimSound } from "@/lib/manim/soundtrack.ts";
+import { synthesizeSpeech } from "@/lib/speech/synthesis";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -71,7 +73,7 @@ export async function POST(request: Request) {
       throw new ApiError(
         403,
         "manim_skill_not_selected",
-        "Select the first-party Manim skill for this turn.",
+        "Select the first-party Math Animation skill for this turn.",
       );
     }
 
@@ -82,6 +84,7 @@ export async function POST(request: Request) {
       ? (body.args as Record<string, unknown>)
       : {};
     const manimRequest = validateManimRequest(args);
+    const sound = validateManimSound(args);
     recordAuditEvent({
       eventType: "manim.render_started",
       runtimeSessionId: session.id,
@@ -94,6 +97,23 @@ export async function POST(request: Request) {
       },
     });
 
+    // Narration is spoken by whatever voice the user set up for read-aloud. It
+    // is made before the render so a missing voice costs seconds, not minutes.
+    const narration: { atSeconds: number; audio: Uint8Array }[] = [];
+    for (const line of sound.narration) {
+      const speech = await synthesizeSpeech({
+        userId: session.user_id,
+        text: line.text,
+        signal: request.signal,
+      }).catch((error: unknown) => {
+        throw new ManimServiceError(
+          "manim_narration_unavailable",
+          `Narration could not be spoken: ${error instanceof Error ? error.message : "speech failed"} Render without narration, or tell the user what to switch on.`,
+        );
+      });
+      narration.push({ atSeconds: line.atSeconds, audio: new Uint8Array(await speech.arrayBuffer()) });
+    }
+
     const result = await runManimViaRuntime({
       scope: {
         userId: session.user_id,
@@ -104,6 +124,15 @@ export async function POST(request: Request) {
       signal: request.signal,
     });
     try {
+      // Manim renders silent; music and the spoken lines are mixed in afterwards.
+      const scored = sound.music || narration.length > 0
+        ? await addSoundtrack({
+            videoPath: result.videoPath,
+            music: sound.music,
+            narration,
+            signal: request.signal,
+          })
+        : null;
       const dispatch = parseRuntimeRunDispatch(run);
       const assistantMessage = dispatch.clientMessageId
         ? (db
@@ -125,7 +154,7 @@ export async function POST(request: Request) {
           assistantMessageId: assistantMessage?.id ?? null,
           toolCallId: typeof body.toolCallId === "string" ? body.toolCallId.slice(0, 200) : null,
         },
-        result,
+        result: scored ? { ...result, videoPath: scored.videoPath } : result,
       });
 
       recordAuditEvent({
@@ -148,6 +177,19 @@ export async function POST(request: Request) {
           quality: result.quality,
           durationSeconds: result.durationSeconds,
           runtimeImage: result.image,
+          ...(scored
+            ? {
+                videoSeconds: scored.videoSeconds,
+                music: scored.audio.music
+                  ? { title: scored.audio.music.title, startSeconds: scored.audio.music.startSeconds }
+                  : null,
+                narration: scored.audio.narration.map(({ atSeconds, durationSeconds }) => ({
+                  atSeconds,
+                  durationSeconds,
+                })),
+                notes: scored.audio.notes,
+              }
+            : {}),
         },
       });
     } finally {
@@ -176,6 +218,8 @@ export async function POST(request: Request) {
         ? 503
         : error.code === "manim_timeout"
           ? 504
+          : error.code === "manim_narration_unavailable"
+            ? 409
           : error.code === "manim_invalid_arguments" || error.code === "manim_invalid_source"
             ? 400
             : 502;

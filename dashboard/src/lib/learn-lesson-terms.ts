@@ -210,6 +210,17 @@ export function lessonTermReviewProblems(parsed: unknown, context?: TeachingRevi
     problems.push({ code: "broken-learning-sequence", hard: true, evidence: [entry.sentence],
       message: `The reader cannot follow this step: ${entry.missingStep}. Repair the transition or use an example built only from meanings already established.` });
   }
+  // Passages the reader could skip and lose nothing. Optional so a review
+  // written before this inspection existed still parses.
+  const cuts = (parsed as { cuts?: unknown }).cuts;
+  if (cuts !== undefined && !Array.isArray(cuts)) return { problems: [], reviewError: 'lesson term review returned a non-array "cuts"' };
+  for (const entry of cuts ?? []) {
+    const passage = typeof entry?.passage === "string" ? entry.passage.trim() : "";
+    const reason = typeof entry?.reason === "string" ? entry.reason.trim() : "";
+    if (!passage || !reason) return { problems: [], reviewError: "lesson term review returned an invalid cut entry" };
+    problems.push({ code: "dead-weight", hard: true, evidence: [passage],
+      message: `the reader loses nothing without this passage (${reason}). Delete it; do not rewrite it or replace it with other text.` });
+  }
   const callouts = (parsed as { callouts?: unknown }).callouts;
   if (callouts !== undefined && !Array.isArray(callouts)) {
     return { problems: [], reviewError: 'lesson term review returned a non-array "callouts"' };

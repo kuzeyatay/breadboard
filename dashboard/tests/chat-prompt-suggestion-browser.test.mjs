@@ -25,6 +25,7 @@ test('ghost suggestions accept, dismiss, preserve keyboard navigation and reject
       import React, {useRef,useState} from 'react';
       import {createRoot} from 'react-dom/client';
       import {usePromptSuggestion} from '@/app/components/use-prompt-suggestion';
+      import {useSentenceCompletion} from '@/app/components/use-sentence-completion';
       import PromptSuggestionOverlay from '@/app/components/prompt-suggestion-overlay';
       import {composerSegments} from '@/lib/composer-links';
       import {splitLeadingCommandTokens} from '@/app/components/hermes/command-text';
@@ -33,6 +34,7 @@ test('ghost suggestions accept, dismiss, preserve keyboard navigation and reject
         const [messages,setMessages]=useState([{role:'user',content:'Explain RLC circuits'},{role:'assistant',content:'Resistor, inductor and capacitor.'}]);
         const compact=state.compact;
         const promptSuggestion=usePromptSuggestion({messages,conversationKey:state.chat,model:'test-model',value,enabled:!state.busy,onChange,personalize:state.personalize});
+        const sentenceCompletion=useSentenceCompletion({messages,conversationKey:state.chat,value,enabled:false,onChange});
         const internalTextareaRef=useRef(null),commandBackdropRef=useRef(null),assignTextareaRef=internalTextareaRef;
         const slashCommandMenuRef=useRef(null),commandHubRef=useRef(null),addMenuRef=useRef(null);
         slashCommandMenuRef.current={handleKeyDown:event=>{if(state.menu&&event.key==='Tab'){event.preventDefault();window.menuAccepted=true;return true;}return false;}};

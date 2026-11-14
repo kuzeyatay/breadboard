@@ -30,6 +30,11 @@ import {
 } from "@/lib/hermes/runtime-store.ts";
 import { getActiveRuntimeRun } from "@/lib/hermes/run-store.ts";
 import { listApprovedSkills } from "@/lib/hermes/skills.ts";
+import type { HermesSurface } from "@/lib/hermes/config.ts";
+import {
+  RUNTIME_AGENT_GUIDE_SLUG,
+  runtimeAgentChoosingGuide,
+} from "@/lib/hermes/super-agent.ts";
 import { listMcpConnections } from "@/lib/hermes/mcp-connections.ts";
 import {
   listSkillLessons,
@@ -96,6 +101,22 @@ export async function POST(request: Request) {
       typeof args.slug === "string" ? args.slug.trim().toLowerCase().slice(0, 120) : "";
     if (!slug) {
       throw new ApiError(400, "skill_slug_required", "A skill slug is required.");
+    }
+    // Not an installed skill: the choosing guide for runtime agents, which the
+    // super-agent prompt carries only as an index. Readable by exactly the
+    // turns that may launch one.
+    if (slug === RUNTIME_AGENT_GUIDE_SLUG && decision.allowedTools.includes("agent_launch")) {
+      return NextResponse.json({
+        ok: true,
+        data: {
+          slug,
+          name: "Runtime agents",
+          description: "What each runtime agent does and when it is the right one to launch.",
+          guidance: runtimeAgentChoosingGuide(session.surface as HermesSurface),
+          constraint:
+            "This is guidance only. It does not authorize a launch; `agent_launch` still applies its own checks and the user's confirmation.",
+        },
+      });
     }
     // The turn's own selection is the second gate: a slug that was not selected
     // for this turn is not readable through it, whatever the tool map says.

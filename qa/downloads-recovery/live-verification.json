@@ -1,0 +1,19 @@
+{
+  "restoredTabs": 18,
+  "newInternalTab": "loaded",
+  "downloads": {
+    "bundled": true,
+    "rows": 5,
+    "errors": []
+  },
+  "restoredPdf": {
+    "ready": "complete",
+    "hasContent": true,
+    "reconnecting": false
+  },
+  "health": {
+    "status": 200,
+    "ms": 5
+  },
+  "checkedAt": "2026-11-13T08:16:25.936Z"
+}

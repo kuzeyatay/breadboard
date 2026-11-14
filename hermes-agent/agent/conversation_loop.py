@@ -43,9 +43,11 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
+    append_turn_context,
     build_turn_context,
     compose_user_api_content,
     reanchor_current_turn_user_idx,
+    split_ephemeral_system_prompt,
 )
 from agent.turn_retry_state import TurnRetryState
 from agent.message_sanitization import (
@@ -710,8 +712,9 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
         return active_system_prompt
     if api_messages and api_messages[0].get("role") == "system":
         effective = sp
-        if agent.ephemeral_system_prompt:
-            effective = (effective + "\n\n" + agent.ephemeral_system_prompt).strip()
+        _stable_ephemeral, _ = split_ephemeral_system_prompt(agent.ephemeral_system_prompt)
+        if _stable_ephemeral:
+            effective = (effective + "\n\n" + _stable_ephemeral).strip()
         api_messages[0]["content"] = effective
     return sp
 
@@ -1224,6 +1227,12 @@ def run_conversation(
                     )
                     if _composed is not None:
                         api_msg["content"] = _composed
+                # The client's per-turn context, kept out of the system
+                # message so that message stays byte-stable across turns.
+                api_msg["content"] = append_turn_context(
+                    api_msg.get("content"),
+                    split_ephemeral_system_prompt(agent.ephemeral_system_prompt)[1],
+                )
             elif (
                 isinstance(_api_content, str)
                 and _api_content
@@ -1300,8 +1309,9 @@ def run_conversation(
         # bytes are byte-stable across turns and upstream prompt caches
         # stay warm.
         effective_system = active_system_prompt or ""
-        if agent.ephemeral_system_prompt:
-            effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        _stable_ephemeral, _ = split_ephemeral_system_prompt(agent.ephemeral_system_prompt)
+        if _stable_ephemeral:
+            effective_system = (effective_system + "\n\n" + _stable_ephemeral).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 

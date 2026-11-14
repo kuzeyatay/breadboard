@@ -49,11 +49,11 @@ test("the CAD backend is a card on the Hardware Blueprint settings, not a switch
   assert.equal(field.flag, "--cad solidworks");
   assert.deepEqual(
     field.options.map((option) => option.value),
-    ["auto", "cadquery", "solidworks"],
+    ["auto", "cadquery", "solidworks", "freecad"],
   );
   assert.deepEqual(
     field.options.map((option) => option.label),
-    ["Let the design decide", "Parametric CAD (CadQuery)", "SolidWorks"],
+    ["Let the design decide", "Parametric CAD (CadQuery)", "SolidWorks", "FreeCAD"],
   );
   assert.equal(field.default, "auto");
 
@@ -77,7 +77,7 @@ test("an upgrading user with no stored backend reads as auto", () => {
   assert.equal(hardwarePreferences(legacy).enclosure, "always");
 
   // Nonsense is repaired to auto rather than trusted.
-  assert.equal(hardwarePreferences({ cadBackend: "freecad" }).cadBackend, "auto");
+  assert.equal(hardwarePreferences({ cadBackend: "unknown" }).cadBackend, "auto");
   assert.equal(hardwarePreferences({}).cadBackend, "auto");
 });
 
@@ -122,6 +122,7 @@ test("--cad is parsed out of the brief for one message", () => {
   for (const [flag, expected] of [
     ["--cad solidworks", "solidworks"],
     ["--cad cadquery", "cadquery"],
+    ["--cad freecad", "freecad"],
     ["--cad auto", "auto"],
     ["--cad=solidworks", "solidworks"],
     ["--CAD SolidWorks", "solidworks"],
@@ -136,9 +137,9 @@ test("--cad is parsed out of the brief for one message", () => {
 
   // An unknown backend is not a backend. It stays in the brief rather than
   // silently selecting something, so the person can see it was not understood.
-  const unknown = parseHardwareBlueprintRequest("a plate --cad freecad");
+  const unknown = parseHardwareBlueprintRequest("a plate --cad unknown");
   assert.equal(unknown.cadBackend, null);
-  assert.match(unknown.brief, /--cad freecad/);
+  assert.match(unknown.brief, /--cad unknown/);
 });
 
 test("--cad is independent of the enclosure flags", () => {
@@ -581,7 +582,7 @@ test("a SolidWorks build is recorded through the same path as a CadQuery one", (
   assert.match(tools, /engine === "solidworks"\s*\?\s*await buildWithSolidWorks/);
   assert.equal(tools.split("buildWithSolidWorks").length - 1, 2, "one import, one call site");
   // The native part and the operation program get their own export slots.
-  assert.match(tools, /engine === "solidworks" \? "operations" : "source"/);
+  assert.match(tools, /engine === "solidworks" \? "operations" : engine === "freecad" \? "freecad-source" : "source"/);
   const store = source("src/lib/cad/blob-store.ts");
   assert.match(store, /sldprt: \{/);
   assert.match(store, /operations: \{/);

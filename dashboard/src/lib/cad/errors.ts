@@ -39,6 +39,26 @@ interface FailureTemplate {
 }
 
 const TEMPLATES: Record<string, FailureTemplate> = {
+  freecad_not_installed: {
+    message: (detail) => detail || "FreeCAD is not installed.",
+    repairHint: "Install FreeCAD or configure BREADBOARD_FREECAD_CMD. Do not switch an explicitly requested backend.",
+    retryable: false,
+  },
+  freecad_mcp_not_installed: {
+    message: (detail) => detail || "The FreeCAD MCP bridge is not set up.",
+    repairHint: "Run npm run setup:freecad once.",
+    retryable: false,
+  },
+  freecad_build_failed: {
+    message: (detail) => detail || "FreeCAD could not build the part.",
+    repairHint: "Correct the FreeCAD program, recompute its features, and return one valid native document object per body from build_model(doc, params).",
+    retryable: true,
+  },
+  freecad_mcp_failed: {
+    message: (detail) => detail || "FreeCAD MCP did not complete the build.",
+    repairHint: "Check the FreeCAD installation and MCP setup. A timed-out build may need simpler geometry.",
+    retryable: true,
+  },
   forbidden_source: {
     message: () =>
       "The generated CAD program used something outside the allowed set and was refused before it ran.",

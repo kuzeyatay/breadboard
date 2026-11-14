@@ -38,6 +38,9 @@ impl DurableRuntimeJobControl {
 }
 
 impl RuntimeJobControl for DurableRuntimeJobControl {
+    fn storage_maintenance(&self) -> Result<breadboard_runtime_core::StorageMaintenanceReport, RuntimeJobControlError> {
+        self.store.storage_maintenance(&self.paths).map_err(|_| RuntimeJobControlError::Internal)
+    }
     fn reserve_job_input(
         &self,
         context: &AuthenticatedJobContext,

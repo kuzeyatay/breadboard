@@ -322,3 +322,36 @@ test("a successful ingestion of the same document retires its retained copy", as
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
+
+test("a record kept by a job that committed its garden write is dropped, not offered", async () => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ingest-recovery-"));
+  try {
+    const { launch, blobPath } = failedLaunch({ dataRoot });
+    const recoveryId = retainIngestRecovery({
+      launch,
+      blobPath,
+      publicMessage: "Runtime job execution failed.",
+      failureKind: "runtime",
+      lastStep: "Finishing document ingestion…",
+    });
+    const store = await storeModule();
+    assert.equal(
+      store.listIngestRecoveries({ gardenId: "electromagnetism-1", dataRoot }).length,
+      1,
+    );
+    fs.writeFileSync(
+      path.join(dataRoot, "runtime", "jobs", launch.identity.jobId, "ingestion-commit.json"),
+      JSON.stringify({ version: 1, transactionId: launch.identity.jobId, state: "committed" }),
+    );
+    assert.deepEqual(
+      store.listIngestRecoveries({ gardenId: "electromagnetism-1", dataRoot }),
+      [],
+    );
+    assert.equal(
+      fs.existsSync(path.join(ingestRecoveryRoot(dataRoot, "electromagnetism-1"), recoveryId)),
+      false,
+    );
+  } finally {
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+});

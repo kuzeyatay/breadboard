@@ -45,6 +45,8 @@ export interface ModelViewerHandle {
 export interface ModelViewerProps {
   /** Authenticated URL for the model file. */
   source: string;
+  /** Resolve companion files through the owning library's access checks. */
+  resourceUrl?: (url: string) => string;
   /** Which loader to use. Defaults to glTF, which is what CAD exports. */
   format?: ModelAttachmentFormat;
   /** Body names to draw. Absent means "all of them". */
@@ -175,79 +177,82 @@ function pointsFromGeometry(geometry: THREE.BufferGeometry): THREE.Object3D {
 async function loadModelObject(
   source: string,
   format: ModelAttachmentFormat,
+  resourceUrl?: (url: string) => string,
 ): Promise<THREE.Object3D> {
+  const manager = new THREE.LoadingManager();
+  if (resourceUrl) manager.setURLModifier(resourceUrl);
   switch (format) {
     case "glb":
     case "gltf": {
-      const gltf = await new GLTFLoader().loadAsync(source);
+      const gltf = await new GLTFLoader(manager).loadAsync(source);
       return gltf.scene;
     }
     case "obj": {
       const { OBJLoader } = await import("three/examples/jsm/loaders/OBJLoader.js");
-      return await new OBJLoader().loadAsync(source);
+      return await new OBJLoader(manager).loadAsync(source);
     }
     case "fbx": {
       const { FBXLoader } = await import("three/examples/jsm/loaders/FBXLoader.js");
-      return await new FBXLoader().loadAsync(source);
+      return await new FBXLoader(manager).loadAsync(source);
     }
     case "3mf": {
       const { ThreeMFLoader } = await import("three/examples/jsm/loaders/3MFLoader.js");
-      return await new ThreeMFLoader().loadAsync(source);
+      return await new ThreeMFLoader(manager).loadAsync(source);
     }
     case "dae": {
       const { ColladaLoader } = await import("three/examples/jsm/loaders/ColladaLoader.js");
-      const collada = await new ColladaLoader().loadAsync(source);
+      const collada = await new ColladaLoader(manager).loadAsync(source);
       if (!collada) throw new Error("The Collada document contained no scene");
       return collada.scene;
     }
     case "kmz": {
       const { KMZLoader } = await import("three/examples/jsm/loaders/KMZLoader.js");
-      return (await new KMZLoader().loadAsync(source)).scene;
+      return (await new KMZLoader(manager).loadAsync(source)).scene;
     }
     case "3ds": {
       const { TDSLoader } = await import("three/examples/jsm/loaders/TDSLoader.js");
-      return await new TDSLoader().loadAsync(source);
+      return await new TDSLoader(manager).loadAsync(source);
     }
     case "amf": {
       const { AMFLoader } = await import("three/examples/jsm/loaders/AMFLoader.js");
-      return await new AMFLoader().loadAsync(source);
+      return await new AMFLoader(manager).loadAsync(source);
     }
     case "wrl": {
       const { VRMLLoader } = await import("three/examples/jsm/loaders/VRMLLoader.js");
-      return await new VRMLLoader().loadAsync(source);
+      return await new VRMLLoader(manager).loadAsync(source);
     }
     case "usdz": {
       const { USDZLoader } = await import("three/examples/jsm/loaders/USDZLoader.js");
-      return await new USDZLoader().loadAsync(source);
+      return await new USDZLoader(manager).loadAsync(source);
     }
     case "lwo": {
       const { LWOLoader } = await import("three/examples/jsm/loaders/LWOLoader.js");
-      return (await new LWOLoader().loadAsync(source)).meshes[0] ?? new THREE.Group();
+      return (await new LWOLoader(manager).loadAsync(source)).meshes[0] ?? new THREE.Group();
     }
     case "vox": {
       const { VOXLoader } = await import("three/examples/jsm/loaders/VOXLoader.js");
-      return (await new VOXLoader().loadAsync(source)).scene;
+      return (await new VOXLoader(manager).loadAsync(source)).scene;
     }
     case "gcode": {
       const { GCodeLoader } = await import("three/examples/jsm/loaders/GCodeLoader.js");
-      return await new GCodeLoader().loadAsync(source);
+      return await new GCodeLoader(manager).loadAsync(source);
     }
     case "pdb": {
       const { PDBLoader } = await import("three/examples/jsm/loaders/PDBLoader.js");
-      const pdb = await new PDBLoader().loadAsync(source);
+      const pdb = await new PDBLoader(manager).loadAsync(source);
       return pointsFromGeometry(pdb.geometryAtoms);
     }
     case "vtk": {
       const { VTKLoader } = await import("three/examples/jsm/loaders/VTKLoader.js");
-      return meshFromGeometry(await new VTKLoader().loadAsync(source));
+      return meshFromGeometry(await new VTKLoader(manager).loadAsync(source));
     }
     case "stl": {
       const { STLLoader } = await import("three/examples/jsm/loaders/STLLoader.js");
-      return meshFromGeometry(await new STLLoader().loadAsync(source));
+      return meshFromGeometry(await new STLLoader(manager).loadAsync(source));
     }
     case "ply": {
       const { PLYLoader } = await import("three/examples/jsm/loaders/PLYLoader.js");
-      const geometry = await new PLYLoader().loadAsync(source);
+      const geometry = await new PLYLoader(manager).loadAsync(source);
       // A PLY with no faces is a scan, not a surface.
       return geometry.getIndex() || geometry.getAttribute("normal")
         ? meshFromGeometry(geometry)
@@ -255,11 +260,11 @@ async function loadModelObject(
     }
     case "pcd": {
       const { PCDLoader } = await import("three/examples/jsm/loaders/PCDLoader.js");
-      return await new PCDLoader().loadAsync(source);
+      return await new PCDLoader(manager).loadAsync(source);
     }
     case "xyz": {
       const { XYZLoader } = await import("three/examples/jsm/loaders/XYZLoader.js");
-      return pointsFromGeometry(await new XYZLoader().loadAsync(source));
+      return pointsFromGeometry(await new XYZLoader(manager).loadAsync(source));
     }
     default:
       // A kernel or unrenderable format never reaches the viewer; the card
@@ -400,6 +405,7 @@ const PROVISIONAL_EXTENT = { x: 100, y: 100, z: 100 } as const;
 
 export default function ModelViewer({
   source,
+  resourceUrl,
   format = "glb",
   visibleBodies,
   wireframe = false,
@@ -703,7 +709,7 @@ export default function ModelViewer({
     setStatus("loading");
     setMessage("");
 
-    void loadModelObject(source, format)
+    void loadModelObject(source, format, resourceUrl)
       .then((group) => {
         if (cancelled || !refs.current) return;
         const current = refs.current;
@@ -758,7 +764,7 @@ export default function ModelViewer({
     // `extent` is read only to decide whether the scene needs re-measuring; a
     // measured caller passes it alongside the source it belongs to.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, format, presentation, upAxis, gridUnit, applyView]);
+  }, [source, format, presentation, upAxis, gridUnit, applyView, resourceUrl]);
 
   // --- display toggles --------------------------------------------------
   useEffect(() => {

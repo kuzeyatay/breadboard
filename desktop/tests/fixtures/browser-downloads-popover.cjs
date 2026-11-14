@@ -140,7 +140,7 @@ app.whenReady().then(async () => {
   assert.equal(await chrome.executeJavaScript("getComputedStyle(document.querySelector('[data-downloading=true] span')).animationName"), "none", "reduced motion keeps a static activity ring");
   await chrome.debugger.sendCommand("Emulation.setEmulatedMedia", { features: [] });
   assert.notEqual(await chrome.executeJavaScript("getComputedStyle(document.querySelector('[data-downloading=true] span')).animationName"), "none");
-  const popupContents = () => webContents.getAllWebContents().find(c => c.getURL() === origin + "/browser/downloads-popover" && !c.isDestroyed());
+  const popupContents = () => webContents.getAllWebContents().find(c => c.getURL().endsWith("/window-shell/downloads.html") && !c.isDestroyed());
   let popup = await until(popupContents, "automatically open popup");
   const body = () => popup.executeJavaScript("document.body.innerText");
   await until(async () => (await body()).includes("Reference library.zip"), "progress row");
@@ -251,7 +251,7 @@ app.whenReady().then(async () => {
   await clickPopup('[aria-label="Load unpacked extension"]');
   await until(async () => (await body()).includes("Fixture extension"), "load action below website boundary works");
   await until(() => manager.stateFor(chrome).extensions.length === 1, "installed extension state updates");
-  await until(() => chrome.executeJavaScript("document.querySelector('.browser-extensions-count')?.textContent === '1'"), "toolbar installed count updates");
+  await until(() => chrome.executeJavaScript("document.querySelector('[aria-label=Extensions]')?.title === 'Extensions (1 installed)'"), "toolbar installed count updates");
   await capture("extensions-installed-dark");
   selectionPath = path.join(dir, "missing-extension");
   await clickPopup('[aria-label="Load unpacked extension"]');
@@ -312,6 +312,17 @@ app.whenReady().then(async () => {
   console.log("Extensions stacking, real load/reload/remove, inline retry, viewport preservation, small windows and dismissal passed.");
   assert.equal(BrowserWindow.getAllWindows().length, 1);
   console.log("Download toolbar, progress, native layering, file actions, full list and Escape passed.");
+  await manager.handleCommand(chrome, { type: "activate", id: browserTabId });
+  await until(() => !manager.stateFor(chrome).navigationPending, "browser selected for offline downloads");
+  server.closeAllConnections();
+  await new Promise(resolve => server.close(resolve));
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(await manager.handleCommand(chrome, { type: "browser-downloads-popover", x: 450, y: 80 }), true);
+  popup = await until(popupContents, "downloads open with the workspace offline");
+  await until(async () => (await body()).includes("Sunset photograph.jpeg"), "offline download history");
+  assert.equal(await popup.executeJavaScript("window.breadboardDesktop.tabs({type:'new'})"), false, "the offline preload cannot create tabs");
+  assert.equal(await popup.executeJavaScript("typeof window.breadboardDesktop.restartApp"), "undefined", "the card has no general desktop authority");
+  console.log("Download history and controls remain available while the workspace is offline.");
   chrome.debugger.detach();
   downloads.prepareForQuit();
   app.exit(0);

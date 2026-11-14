@@ -56,7 +56,7 @@ function callbackUrl(requestOrigin: string): string {
   if (origin.protocol !== "https:" && origin.hostname !== "localhost" && origin.hostname !== "127.0.0.1") {
     throw new ApiError(400, "invalid_callback_origin", "The connection callback origin is invalid.");
   }
-  return new URL("/api/hermes/composio/callback", origin).toString();
+  return new URL("/api/hermes/connections/callback", origin).toString();
 }
 
 function configuredAuthConfig(toolkitSlug: string): string | null {
@@ -71,7 +71,7 @@ function configuredAuthConfig(toolkitSlug: string): string | null {
     throw new ApiError(
       503,
       "invalid_composio_auth_configs",
-      "COMPOSIO_AUTH_CONFIGS_JSON is not valid JSON.",
+      "The saved app connection configuration is not valid.",
     );
   }
 }
@@ -123,7 +123,7 @@ export async function resolveComposioConnection(
     throw new ApiError(
       409,
       "app_connection_required",
-      "That app is not connected through Composio. Connect it from Connections first.",
+      "That app is not connected. Connect it from Connections first.",
     );
   }
   return record;
@@ -153,18 +153,27 @@ export async function beginComposioProviderConnection(
     authConfigId = configs.items.find((item) => item.status === "ENABLED")?.id ?? null;
   }
   if (!authConfigId) {
+    const name = `Breadboard ${integration?.name ?? toolkitSlug}`;
     try {
-      const created = await client.authConfigs.create(toolkitSlug, {
-        type: "use_composio_managed_auth",
-        name: `Breadboard ${integration?.name ?? toolkitSlug}`,
-        isEnabledForToolRouter: true,
-      });
+      // Apps without managed sign-in register themselves (or take the user's
+      // own key on the sign-in page), so they need no stored credentials.
+      const created = await client.authConfigs.create(
+        toolkitSlug,
+        integration?.connectScheme
+          ? {
+              type: "use_custom_auth",
+              authScheme: integration.connectScheme as "DCR_OAUTH",
+              credentials: {},
+              name,
+            }
+          : { type: "use_composio_managed_auth", name, isEnabledForToolRouter: true },
+      );
       authConfigId = created.id;
     } catch {
       throw new ApiError(
         409,
         "composio_auth_config_required",
-        `${integration?.name ?? toolkitSlug} needs an enabled Composio auth configuration. Create it in the Composio project, then try Connect again.`,
+        `${integration?.name ?? toolkitSlug} cannot be connected from here yet.`,
       );
     }
   }
@@ -175,7 +184,7 @@ export async function beginComposioProviderConnection(
     { callbackUrl: callbackUrl(requestOrigin) },
   );
   if (!request.redirectUrl) {
-    throw new ApiError(502, "composio_link_missing", "Composio did not return a sign-in link.");
+    throw new ApiError(502, "composio_link_missing", "The sign-in link could not be created. Try Connect again.");
   }
   return {
     authorizationUrl: request.redirectUrl,
@@ -214,9 +223,9 @@ export async function composioConnectionStatus(
     connectionCount: uniqueConnectionIds.size,
     connectedIntegrations,
     message: !configured
-      ? "Connections need COMPOSIO_API_KEY in dashboard/.env.local."
+      ? "App connections are not set up on this Breadboard install."
       : uniqueConnectionIds.size
-        ? `${uniqueConnectionIds.size} connected app${uniqueConnectionIds.size === 1 ? "" : "s"} available to agents through Composio.`
+        ? `${uniqueConnectionIds.size} connected app${uniqueConnectionIds.size === 1 ? "" : "s"} available to agents.`
         : null,
   };
 }

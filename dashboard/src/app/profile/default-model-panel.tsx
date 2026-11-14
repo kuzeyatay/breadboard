@@ -33,7 +33,8 @@ export function FallbackModelPanel() {
 
 function ModelPreferencePanel({ kind }: { kind: "default" | "fallback" }) {
   const isFallback = kind === "fallback";
-  const title = isFallback ? "Fallback model" : "Default model";
+  const title = isFallback ? "Fallback/Background model" : "Default model";
+  const modelLabel = title.toLowerCase();
   const field = isFallback ? "fallbackModel" : "model";
   const [model, setModel] = useState(DEFAULT_MODEL);
   const { models, modelsLoading } = useAssistantModels({ eager: true });
@@ -65,7 +66,7 @@ function ModelPreferencePanel({ kind }: { kind: "default" | "fallback" }) {
         if (cancelled) return;
         const selected = normalizeAssistantModelId(data?.[field]);
         if (!data || !selected) {
-          throw new Error(`The ${kind} model could not be loaded.`);
+          throw new Error(`The ${modelLabel} could not be loaded.`);
         }
         setModel(selected);
         applySavedAssistantIntelligence(data);
@@ -73,7 +74,7 @@ function ModelPreferencePanel({ kind }: { kind: "default" | "fallback" }) {
       })
       .catch((cause) => {
         if (!cancelled) {
-          setError(cause instanceof Error ? cause.message : `The ${kind} model could not be loaded.`);
+          setError(cause instanceof Error ? cause.message : `The ${modelLabel} could not be loaded.`);
         }
       });
     return () => {
@@ -81,7 +82,7 @@ function ModelPreferencePanel({ kind }: { kind: "default" | "fallback" }) {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener(ASSISTANT_INTELLIGENCE_EVENT, syncSaved);
     };
-  }, [field, isFallback, kind, loadAttempt]);
+  }, [field, isFallback, modelLabel, loadAttempt]);
 
   const options = useMemo(() => {
     const ids = models.includes(model) ? models : [model, ...models];
@@ -100,12 +101,12 @@ function ModelPreferencePanel({ kind }: { kind: "default" | "fallback" }) {
     try {
       const data = await patchAssistantPreferences({ [field]: normalized });
       const selected = normalizeAssistantModelId(data[field]);
-      if (!selected) throw new Error(`The saved ${kind} model could not be read. Please retry.`);
+      if (!selected) throw new Error(`The saved ${modelLabel} could not be read. Please retry.`);
       setModel(selected);
       applySavedAssistantIntelligence(data);
       setSaved(true);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : `The ${kind} model could not be saved.`);
+      setError(cause instanceof Error ? cause.message : `The ${modelLabel} could not be saved.`);
     } finally {
       saveInFlight.current = false;
       setSaving(false);
@@ -118,7 +119,7 @@ function ModelPreferencePanel({ kind }: { kind: "default" | "fallback" }) {
         <h2 className="text-sm font-semibold text-white">{title}</h2>
         <p id={`${kind}-model-description`} className="mt-0.5 text-xs text-gray-500">
           {isFallback
-            ? "Used when a model fails, for background tasks, or when no model is selected. Choose “No fallback model” to turn this off."
+            ? "Used when a model fails, for background tasks, or when no model is selected. Choose “No fallback/background model” to turn this off."
             : "The model selected when Breadboard starts. Changes apply on the next start; your current model selection stays as it is."}
         </p>
       </header>
@@ -133,7 +134,7 @@ function ModelPreferencePanel({ kind }: { kind: "default" | "fallback" }) {
           onChange={(event) => void choose(event.target.value)}
           className="neu-button w-full rounded-xl border border-gray-800 bg-transparent px-3 py-2 text-sm text-gray-200 disabled:opacity-40"
         >
-          <option value={NO_MODEL_SENTINEL}>No {kind} model</option>
+          <option value={NO_MODEL_SENTINEL}>No {modelLabel}</option>
           {options.map((group) => (
             <optgroup key={group.vendorId} label={group.vendorLabel}>
               {group.models.map((id) => (
@@ -146,8 +147,8 @@ function ModelPreferencePanel({ kind }: { kind: "default" | "fallback" }) {
       <p role="status" className="mt-2 text-xs text-gray-400">
         {saving ? "Saving…" : ready
           ? `${saved ? "Saved. " : ""}${model === NO_MODEL_SENTINEL
-            ? isFallback ? "Fallback is disabled." : "No model will be selected at startup."
-            : `${formatAssistantModelName(model)} is your ${kind} model.`}`
+            ? isFallback ? "Fallback/background model is disabled." : "No model will be selected at startup."
+            : `${formatAssistantModelName(model)} is your ${modelLabel}.`}`
           : error ? `${title} unavailable.` : "Loading…"}
       </p>
       {error ? (

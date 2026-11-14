@@ -1456,6 +1456,26 @@ impl RuntimePaths {
         Ok(true)
     }
 
+    /// Only a verified, terminal no-op receipt authorizes this closed set of
+    /// disposable files. Unknown files and nonempty workspaces are retained.
+    pub(crate) fn cleanup_noop_job_directory(&self, job_id: &str, digest: &str) -> Result<bool, PathError> {
+        validate_identifier("jobId", job_id)?;
+        let root = self.resolve_data(&format!("runtime/jobs/{job_id}"))?;
+        if !root.absolute().exists() { return Ok(true); }
+        for (name, hash) in [("result.json",Some(digest)),("input.json",None)] {
+            let file=self.resolve_data(&format!("runtime/jobs/{job_id}/{name}"))?;
+            self.remove_verified_blob_file(&file,Some(1024*1024),hash,false)?;
+        }
+        let workspace=self.resolve_data(&format!("runtime/jobs/{job_id}/workspace"))?;
+        reject_parent_link_components(&self.data_root.canonical,workspace.absolute())?;
+        if let Ok(meta)=fs::symlink_metadata(workspace.absolute()) {
+            if meta.file_type().is_symlink() { return Ok(false); }
+            if fs::remove_dir(workspace.absolute()).is_err() { return Ok(false); }
+        }
+        reject_parent_link_components(&self.data_root.canonical,root.absolute())?;
+        Ok(fs::remove_dir(root.absolute()).is_ok())
+    }
+
     pub(crate) fn read_bounded_job_result(
         &self,
         job_id: &str,
@@ -1622,7 +1642,7 @@ impl RuntimePaths {
         })
     }
 
-    fn pin_existing_data_file(
+    pub(crate) fn pin_existing_data_file(
         &self,
         path: &ResolvedTrustedPath,
     ) -> Result<TrustedFilePin, PathError> {

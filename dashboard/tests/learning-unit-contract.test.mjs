@@ -1331,7 +1331,9 @@ test("a lesson assigned more source artifacts than it can teach must be split", 
   // Live 2026-09-23: 137 artifacts in a ~2,700-word lesson passed every gate.
   const [problem] = learningUnitLoadProblems([unit("U3", 137, 2700)]);
   assert.match(problem, /titled "Lesson U3" carries 137 source figures, formulas, and tables/);
-  assert.match(problem, /\(27 here\)/);
+  // The cap no longer scales with planned words: a short story carries the
+  // items it does not need in the page's appendix.
+  assert.match(problem, /\(40 here\)/);
   assert.doesNotMatch(problem, /\bU3\b(?!")/, "named by title so only a full-contract repair (which can split) handles it");
   assert.deepEqual(learningUnitLoadProblems([unit("U1", 27, 2700), unit("U2", 12, 1400)]), []);
   assert.equal(learningUnitLoadProblems([unit("U4", 45, 20000)]).length, 1, "an inflated word estimate cannot raise the cap past 40");

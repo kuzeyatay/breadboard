@@ -849,7 +849,7 @@ test("a real Runtime V2 ingestion worker handles one staged document and exits",
   }
 });
 
-test("a committed ingestion republishes on a fresh worker after Quartz fails", async () => {
+test("a Quartz failure after the garden commit still completes the upload", async () => {
   const first = fixture();
   try {
     const clusterDir = path.join(
@@ -868,8 +868,19 @@ test("a committed ingestion republishes on a fresh worker after Quartz fails", a
     const failedPublish = await runWorkerProcess(first);
     assert.deepEqual(
       { code: failedPublish.code, signal: failedPublish.signal },
-      { code: 1, signal: null },
+      { code: 0, signal: null },
       failedPublish.stderr,
+    );
+    assert.equal(failedPublish.events.at(-1)?.type, "complete");
+    assert.equal(
+      fs.existsSync(path.join(first.dataRoot, "runtime", "ingest-recovery")),
+      false,
+      "a document that reached the garden must not be kept as a failed upload",
+    );
+    assert.equal(
+      fs.existsSync(path.join(first.dataRoot, "quartz", ".publish-pending", "garden-1")),
+      true,
+      "the unpublished Garden is marked so its next view republishes it",
     );
     const jobRoot = path.join(
       first.dataRoot,
@@ -894,6 +905,11 @@ test("a committed ingestion republishes on a fresh worker after Quartz fails", a
       recovered.stderr,
     );
     assert.equal(recovered.events.at(-1)?.type, "complete");
+    assert.equal(
+      fs.existsSync(path.join(first.dataRoot, "quartz", ".publish-pending", "garden-1")),
+      false,
+      "a successful publication clears the pending marker",
+    );
     assert.equal(
       fs.readFileSync(
         path.join(first.dataRoot, "quartz", "public", "index.html"),

@@ -145,9 +145,35 @@ internal static class DictationNativeHost
             chord.GetType().GetField("ReleaseModifiers", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(chord, (Action)delegate { Call("ReleaseDictationModifiers"); });
             var current = helper.GetField("current", PrivateStatic);
             var targetWindow = new IntPtr(long.Parse(args[2]));
-            object target = null; string operation, rememberedPrefix = null, rememberedSuffix = null;
+            object target = null; string rememberedPrefix = null, rememberedSuffix = null;
             var serializer = new JavaScriptSerializer();
-            while ((operation = Console.ReadLine()) != null) {
+            var operations = new System.Collections.Concurrent.BlockingCollection<string>();
+            if (args.Length > 3 && args[3] == "--renderer") {
+                var output = (System.Collections.Concurrent.BlockingCollection<object>)helper.GetField("output", PrivateStatic).GetValue(null);
+                new Thread(delegate() {
+                    foreach (object notice in output.GetConsumingEnumerable()) {
+                        if ((string)notice.GetType().GetProperty("type").GetValue(notice, null) != "edit") continue;
+                        Console.WriteLine(new JavaScriptSerializer().Serialize(notice)); Console.Out.Flush();
+                    }
+                }) { IsBackground = true }.Start();
+            }
+            // Production reads renderer acknowledgements independently of the
+            // worker waiting for them. Keep that same transport in this probe.
+            new Thread(delegate() {
+                try {
+                    string line;
+                    var reader = new JavaScriptSerializer();
+                    while ((line = Console.ReadLine()) != null) {
+                        if (line.StartsWith("{")) {
+                            var command = reader.Deserialize<System.Collections.Generic.Dictionary<string, object>>(line);
+                            string type = Convert.ToString(command["type"]); int id = Convert.ToInt32(command["id"]);
+                            if (type == "renderer-input") Call("EnableRendererInput", id);
+                            else if (type == "edited") Call("CompleteRendererEdit", id, Convert.ToInt32(command["request"]), (bool)command["applied"]);
+                        } else operations.Add(line);
+                    }
+                } finally { operations.CompleteAdding(); }
+            }) { IsBackground = true }.Start();
+            foreach (string operation in operations.GetConsumingEnumerable()) {
                 if (operation == "quit") break;
                 if (operation == "capture") target = targetType.GetMethod("FromWindow", PrivateStatic | BindingFlags.Public).Invoke(null, new object[] { targetWindow });
                 var flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;

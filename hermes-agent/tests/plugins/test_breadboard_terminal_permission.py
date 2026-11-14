@@ -557,7 +557,7 @@ def test_manim_tool_is_registered_with_artifact_identity_and_render_timeout(monk
         task_id="session-1",
         tool_call_id="call-manim",
     )
-    assert _Connection.timeouts == [320]
+    assert _Connection.timeouts == [130 * 60]
     assert _Connection.bodies == [
         {"action": "manim_create", "args": args, "toolCallId": "call-manim"}
     ]

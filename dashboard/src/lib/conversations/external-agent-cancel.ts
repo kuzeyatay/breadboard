@@ -146,13 +146,12 @@ export function listRunningExternalAgentRuns(
 ): RunningExternalAgentRun[] {
   const rows = database
     .prepare(
-      `SELECT id, client_message_id, metadata FROM conversation_messages
-       WHERE conversation_id = ?
+      `SELECT id, client_message_id, metadata FROM conversation_message_reads WHERE id IN (SELECT id FROM conversation_messages WHERE conversation_id = ?
          AND role = 'assistant'
          AND metadata IS NOT NULL
          AND json_valid(metadata)
          AND json_extract(metadata, '$.externalAgentOutcome') = 'running'
-       ORDER BY order_index ASC`,
+       ORDER BY order_index ASC) ORDER BY order_index ASC`,
     )
     .all(conversationId) as Array<{
       id: number;

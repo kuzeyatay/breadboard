@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AgentRunDefaults from "@/app/components/agents/agent-run-defaults";
 import { announceAgentSettingsChanged } from "@/lib/agent-settings/client";
+import { openAuthorizationUrl } from "@/lib/auth-window";
 
 type ProviderField = {
   key: string;
@@ -200,8 +201,8 @@ export default function SocialsManagerSettingsDialog({ onClose }: { onClose: () 
       });
       const data = (await response.json().catch(() => ({}))) as SettingsResponse & { url?: string };
       if (!response.ok || !data.url) throw new Error(data.error || `${provider.name} could not connect.`);
-      if (!popup) throw new Error("Allow pop-ups for Breadboard to open the social network consent screen.");
-      popup.location.href = data.url;
+      if (!popup && !("breadboardDesktop" in window)) throw new Error("Allow pop-ups for Breadboard to open the social network consent screen.");
+      openAuthorizationUrl(popup, data.url);
       let attempts = 0;
       if (pollRef.current !== null) window.clearInterval(pollRef.current);
       pollRef.current = window.setInterval(() => {
@@ -209,10 +210,10 @@ export default function SocialsManagerSettingsDialog({ onClose }: { onClose: () 
         void load(true).then((fresh) => {
           const connected = fresh?.accounts?.some((account) => !baseline.has(account.id));
           const needsAccountChoice = TWO_STEP_PROVIDERS.has(provider.id);
-          if ((!needsAccountChoice && connected) || popup.closed || attempts >= 120) {
+          if ((!needsAccountChoice && connected) || popup?.closed || attempts >= 120) {
             if (pollRef.current !== null) window.clearInterval(pollRef.current);
             pollRef.current = null;
-            if (connected && !needsAccountChoice) popup.close();
+            if (connected && !needsAccountChoice) popup?.close();
             setBusy(null);
             setNotice(
               connected

@@ -38,12 +38,12 @@ export async function GET(request: Request) {
   return success
     ? page(
         "App connected",
-        "The connection is available to Breadboard agents through Composio. You can close this window.",
+        "The connection is available to Breadboard agents. You can close this window.",
         true,
       )
     : page(
         "Connection not completed",
-        "Composio did not finish this connection. Close this window and try again from Connections.",
+        "This connection did not finish. Close this window and try again from Connections.",
         false,
       );
 }

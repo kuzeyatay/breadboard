@@ -1,4 +1,4 @@
-import { readQuartzMetadata, updateQuartzMetadata } from "@/lib/quartz-document-metadata";
+import { markPageEdit, readQuartzMetadata, updateQuartzMetadata } from "@/lib/quartz-document-metadata";
 import { NextResponse } from "next/server";
 import { quartzDocumentRevision, quartzDocumentParts } from "@/lib/quartz-document-revision";
 import { decodeSlug, normalizeDocumentSlug } from "@/lib/garden-document-path";
@@ -439,6 +439,10 @@ export async function PATCH(
       content = updateFrontmatterArrayValue(content, "semanticHints", tags);
     }
 
+    // The Garden editor is the human writer; agents revise through reviseGardenDocument.
+    if (quartzDocumentParts(content).body !== quartzDocumentParts(previousContent).body) {
+      content = markPageEdit(previousContent, content, "human");
+    }
     if (content === previousContent) return json({ success: true, slug: context.slug, title, flagColor, tags, revision: previousRevision });
     fs.writeFileSync(context.filePath, content, "utf-8");
     refreshClusterIndex(context.contentPath, context.clusterSlug, { migrateSources: false });

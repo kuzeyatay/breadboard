@@ -55,6 +55,8 @@ export interface CadConvertRequest {
   contentBase64: string;
   timeoutMs: number;
   exports: CadExportRequest[];
+  /** Validate generated exchange geometry against the same promises as a build. */
+  expectations?: CadExpectations;
   linearTolerance?: number;
   angularTolerance?: number;
 }

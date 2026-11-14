@@ -16,6 +16,10 @@ mod service_process;
 mod service_store;
 mod state_machine;
 mod store;
+mod storage_maintenance;
+mod storage_compaction;
+pub use storage_compaction::{compact_storage, recover_storage_swaps, CompactionReport};
+pub use storage_maintenance::StorageMaintenanceReport;
 mod system_commit;
 mod worker_launch;
 

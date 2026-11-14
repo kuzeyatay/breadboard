@@ -380,23 +380,8 @@ export async function PUT(
           context.documentSlug,
         );
 
-        db.prepare(
-          `
-        DELETE FROM pdf_document_edit_history
-        WHERE cluster_id = ? AND document_slug = ?
-          AND id NOT IN (
-            SELECT id FROM pdf_document_edit_history
-            WHERE cluster_id = ? AND document_slug = ?
-            ORDER BY id DESC
-            LIMIT 50
-          )
-      `,
-        ).run(
-          context.clusterId,
-          context.documentSlug,
-          context.clusterId,
-          context.documentSlug,
-        );
+        // Immutable revisions are deduplicated by idle storage maintenance.
+        // Saving a new revision must not silently discard an older undo point.
       } catch {
         // History push is best-effort; never block the main save
       }

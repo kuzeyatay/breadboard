@@ -52,6 +52,7 @@ export interface DesktopTabView {
     extensionsOpen?: boolean;
     hls?: { streams: import("../../../desktop/src/shared/ipc-contract").BrowserHlsStream[]; available: boolean };
     adBlock?: { enabled: boolean; available: boolean; site: string | null; siteEnabled: boolean; blocked: number };
+    vpn?: { enabled: boolean; status: "off" | "connecting" | "on" | "error" };
     terminalWidth: number;
     zoomPercent?: number;
     translation?: { status: "original" | "translating" | "translated" | "error"; language: string; translated: number; error?: string };
@@ -100,7 +101,9 @@ export interface DesktopTabsState {
   preparingNewTab?: boolean;
   tabs: DesktopTabView[];
   extensions: DesktopBrowserExtension[];
-  browserPreferences?: { organizationSidebarEnabled?: boolean; notificationsEnabled: boolean; sites: Record<string, "granted" | "denied">; mediaSites?: Record<string, Partial<Record<"microphone" | "camera", "granted" | "denied">>>; translationLanguage: string };
+  browserPreferences?: { organizationSidebarEnabled?: boolean; notificationsEnabled: boolean; sites: Record<string, "granted" | "denied">; mediaSites?: Record<string, Partial<Record<"microphone" | "camera" | "location", "granted" | "denied">>>; translationLanguage: string; appLinks?: Record<string, string[]> };
+  /** Saved website sign-ins: origin and username only, never the password. */
+  savedPasswords?: Array<{ origin: string; username: string }>;
 }
 
 export interface DesktopBrowserExtension {
@@ -132,6 +135,7 @@ export type DesktopTabsCommand = DesktopTabsAction & { targetTabId?: number; gen
 
 type DesktopTabsAction =
   | { type: "browser-adblock-enabled"; enabled: boolean }
+  | { type: "browser-vpn-enabled"; enabled: boolean }
   | { type: "browser-adblock-site-enabled"; enabled: boolean; site: string }
   | { type: "browser-shell-context"; ownerKey: string }
   | { type: "page-loading"; id: number; documentGeneration: number; pending: boolean }
@@ -146,7 +150,9 @@ type DesktopTabsAction =
   | { type: "browser-notifications-enabled"; enabled: boolean }
   | { type: "browser-organization-enabled"; enabled: boolean }
   | { type: "browser-notification-permission"; origin: string; permission: "default" | "granted" | "denied" }
-  | { type: "browser-media-permission"; origin: string; media: ("microphone" | "camera")[]; permission: "default" | "granted" | "denied" }
+  | { type: "browser-media-permission"; origin: string; media: ("microphone" | "camera" | "location")[]; permission: "default" | "granted" | "denied" }
+  | { type: "browser-app-link"; origin: string; scheme: string; allowed: boolean }
+  | { type: "browser-password-delete"; origin: string; username: string }
   | { type: "browser-translation-language"; language: string }
   | { type: "browser-translate"; language: string }
   | { type: "browser-translation-menu" }
@@ -206,6 +212,7 @@ type DesktopTabsAction =
   | { type: "browser-organization-target"; target: import("./browser-annotations").BrowserAnnotationTarget }
   | { type: "browser-organization-markers"; items: Array<{ id: string; target: import("./browser-annotations").BrowserAnnotationTarget }> }
   | { type: "browser-address-suggestions"; open: boolean; bottom?: number }
+  | { type: "browser-toolbar-error"; open: boolean; bottom?: number }
   | { type: "browser-extension-load" }
   | { type: "browser-extension-action"; id: string; menuId?: string }
   | { type: "browser-extension-reload"; id: string }

@@ -19,6 +19,8 @@
     "dev:colpali": "node scripts/start-colpali.mjs",
     "dev:humanizer": "node scripts/start-humanizer.mjs",
     "setup:cad": "node scripts/setup-cad.mjs",
+    "setup:freecad": "node --experimental-strip-types scripts/setup-freecad.mjs",
+    "setup:blender": "node scripts/setup-blender.mjs",
     "setup:multisim": "node scripts/setup-multisim.mjs",
     "test:multisim": "node scripts/test-multisim.mjs",
     "setup:colpali": "node scripts/setup-colpali.mjs",

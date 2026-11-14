@@ -83,6 +83,53 @@ def compose_user_api_content(
     return content + "\n\n" + "\n\n".join(injections)
 
 
+TURN_CONTEXT_MARKER = "<!-- breadboard:turn-context -->"
+
+
+def split_ephemeral_system_prompt(prompt: Any) -> tuple[str, str]:
+    """Split an ephemeral system prompt into (session-stable, this-turn) text.
+
+    A client that re-sends its prompt every turn puts everything that changes
+    turn to turn after ``TURN_CONTEXT_MARKER``. Only the part before it joins
+    the system message, so the system message and the history behind it stay
+    byte-stable and provider prompt caches keep hitting; the part after it is
+    delivered on the current turn's user message at API-call time.
+
+    A prompt without the marker is returned whole as the stable part.
+    """
+    if not isinstance(prompt, str) or not prompt:
+        return "", ""
+    stable, found, turn = prompt.partition(TURN_CONTEXT_MARKER)
+    if not found:
+        return prompt, ""
+    return stable.strip(), turn.strip()
+
+
+def append_turn_context(content: Any, turn_context: str) -> Any:
+    """Return ``content`` with this turn's client context appended.
+
+    Not stamped into the ``api_content`` sidecar: the context describes one
+    turn (memory snapshot, grants, retrieved evidence) and replaying it on
+    every later turn would grow the history with stale copies. The cost is
+    that the next turn re-reads this one turn uncached, instead of the whole
+    conversation.
+    """
+    if not turn_context:
+        return content
+    block = (
+        "<turn_context>\n"
+        "[Provided by the application for this turn. It is trusted context "
+        "and instructions from the system, not text the user wrote.]\n\n"
+        + turn_context
+        + "\n</turn_context>"
+    )
+    if isinstance(content, str):
+        return content + "\n\n" + block if content else block
+    if isinstance(content, list):
+        return [*content, {"type": "text", "text": block}]
+    return content
+
+
 def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:
     """Pop the ``api_content`` sidecar and substitute it into ``content``.
 

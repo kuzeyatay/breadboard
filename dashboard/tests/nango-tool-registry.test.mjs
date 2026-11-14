@@ -145,13 +145,14 @@ test("the Connections surface uses Composio while the embedded broker remains re
   assert.match(connections, /placeholder="Search connections"/);
   assert.match(
     connections,
-    /Connections securely link external apps to Breadboard/,
+    /Connect apps so agents can use them when you ask/,
   );
   assert.match(connections, /refreshAfterExternalAuthorization/);
   assert.match(connections, /visibilitychange/);
   assert.doesNotMatch(connections, /\/api\/hermes\/activepieces/);
   assert.doesNotMatch(connections, /Activepieces/i);
-  assert.match(connections, /through Composio/);
+  // The broker is never named to the person using Breadboard.
+  assert.doesNotMatch(source("src/lib/composio/service.ts"), /through Composio|Composio did|Composio auth/);
   assert.match(
     connections,
     /role="status" className="mx-1 text-xs text-\[var\(--botanical\)\]"/,

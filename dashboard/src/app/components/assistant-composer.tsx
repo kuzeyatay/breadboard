@@ -35,6 +35,7 @@ import { useVoiceChatHost } from '@/app/components/use-voice-chat-host';
 import type { VoiceMessage } from '@/lib/speech/voice-conversation';
 import type { PromptSuggestionMessage } from '@/lib/chat-prompt-suggestion';
 import { usePromptSuggestion } from '@/app/components/use-prompt-suggestion';
+import { useSentenceCompletion } from '@/app/components/use-sentence-completion';
 import PromptSuggestionOverlay from '@/app/components/prompt-suggestion-overlay';
 import UsageLimitsPopover from '@/app/components/usage-limits-popover';
 import ViewportPopover from '@/app/components/viewport-popover';
@@ -130,6 +131,7 @@ import { MONEY_PRINTER_COMMAND } from '@/lib/money-printer/identity.ts';
 import { LEGAL_COMMAND } from '@/lib/legal/identity.ts';
 import { WARDROBE_COMMAND } from '@/lib/wardrobe/identity.ts';
 import { describeDocumentSummary } from '@/lib/document-attachments.ts';
+import ComposerImageEditor from '@/app/components/composer-image-editor';
 import { useDocumentIndexStatus } from '@/app/components/use-document-index-status';
 import { OPENCODE_COMMAND } from '@/lib/opencode/identity.ts';
 import { CODEX_COMMAND } from '@/lib/codex/identity.ts';
@@ -226,6 +228,8 @@ interface Props {
   attachmentUploadError?: string;
   attachments?: ComposerAttachment[];
   onRemoveAttachment?: (index: number) => void;
+  /** Swaps one attachment in place; enables editing in the image preview. */
+  onReplaceAttachment?: (index: number, attachment: ComposerAttachment) => void;
   utilityActions?: ReactNode;
   /** Shown while files are uploading or being read. */
   statusMessage?: string;
@@ -580,6 +584,7 @@ export default function AssistantComposer({
   statusMessage = '',
   attachments = [],
   onRemoveAttachment,
+  onReplaceAttachment,
   utilityActions,
   headerContent,
   className = '',
@@ -967,15 +972,19 @@ export default function AssistantComposer({
     textarea.style.overflowY = 'hidden';
     textarea.style.height = 'auto';
     const natural = textarea.scrollHeight;
+    const backdrop = commandBackdropRef.current;
+    // Ghost text participates in height, so a wrapping prediction stays inside
+    // the composer. The actual draft is still untouched until Tab is pressed.
+    const displayHeight = backdrop?.hasAttribute('data-sentence-completion')
+      ? Math.max(natural, backdrop.firstElementChild?.scrollHeight ?? 0) : natural;
     const lineHeight =
       Number.parseFloat(window.getComputedStyle(textarea).lineHeight) || (compact ? 20 : 24);
     const cap = composerMaxHeight(lineHeight);
-    const capped = natural > cap;
-    textarea.style.height = `${capped ? cap : natural}px`;
+    const capped = displayHeight > cap;
+    textarea.style.height = `${capped ? cap : displayHeight}px`;
     // Uncapped, the class-level `overflow-y-hidden` stays in charge.
     textarea.style.overflowY = capped ? 'auto' : '';
 
-    const backdrop = commandBackdropRef.current;
     if (backdrop) {
       // Centring is what keeps the mirror on a one-line field; once the text is
       // taller than the box it would instead hide the first lines above the top
@@ -1080,6 +1089,8 @@ export default function AssistantComposer({
   useEffect(() => {
     if (lightboxIndex === null) return;
     const handler = (event: globalThis.KeyboardEvent) => {
+      // The image editor's own fields handle their keys.
+      if (event.target instanceof HTMLInputElement) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         setLightboxIndex(null);
@@ -1162,6 +1173,20 @@ export default function AssistantComposer({
   const shortsRequest = shortsAgent ? shortsRequestFrom(shortsForm) : null;
   const formsmithRequest = formsmithAgent ? formsmithRequestFrom(formsmithForm) : null;
   const formAgent = tradingAgentsAgent ?? shortsAgent ?? formsmithAgent ?? null;
+  const suggestionsEnabled = !sessionActionsDisabled && !loading && !isSending && !activeRun && !externalRunActive &&
+    !permissionPending && !clarificationPending && !formAgent && !pendingWorkflow &&
+    !showSlashCommands && !showCommandHub && !menuSearch && !showIntelligence && !voiceOpen &&
+    attachments.length === 0 && !isAddingDocuments && !onSubmitDuringRun;
+  const sentenceCompletion = useSentenceCompletion({
+    messages: suggestionMessages,
+    conversationKey: JSON.stringify([voiceConversationScope, voiceConversationId]),
+    value,
+    enabled: suggestionsEnabled,
+    onChange,
+  });
+  useLayoutEffect(() => {
+    resizeTextarea();
+  }, [resizeTextarea, sentenceCompletion.text]);
   const promptSuggestion = usePromptSuggestion({
     messages: suggestionMessages,
     personalize: personalize && personalizedSuggestions && Boolean(suggestionMessages),
@@ -1169,10 +1194,7 @@ export default function AssistantComposer({
     conversationKey: JSON.stringify([voiceConversationScope, voiceConversationId]),
     model,
     value,
-    enabled: !sessionActionsDisabled && !loading && !isSending && !activeRun && !externalRunActive &&
-      !permissionPending && !clarificationPending && !formAgent && !pendingWorkflow &&
-      !showSlashCommands && !showCommandHub && !menuSearch && !showIntelligence && !voiceOpen &&
-      attachments.length === 0 && !isAddingDocuments && !onSubmitDuringRun,
+    enabled: suggestionsEnabled,
     onChange,
   });
   const formRequestReady = tradingAgentsAgent
@@ -2563,7 +2585,7 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
               const linkBody = commandSplit ? commandSplit.rest : value;
               const bodySegments = composerSegments(linkBody);
               const hasLink = bodySegments.some((segment) => segment.kind === 'link');
-              const mirrored = !menuSearch && (Boolean(commandSplit) || hasLink);
+              const mirrored = !menuSearch && (Boolean(commandSplit) || hasLink || Boolean(sentenceCompletion.text));
               return (
                 <>
                   {/* Keep the mirror centered with a one-line textarea. Once
@@ -2573,6 +2595,7 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                     <div
                       ref={commandBackdropRef}
                       aria-hidden
+                      data-sentence-completion={sentenceCompletion.text ? '' : undefined}
                       // Above the textarea, not behind it, so an anchor can be
                       // clicked. The layer itself passes every event through;
                       // only the anchors take one, so typing, selecting and
@@ -2609,6 +2632,15 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                             </span>
                           ),
                         )}
+                        {sentenceCompletion.text ? (
+                          <>
+                            <wbr />
+                            <span data-sentence-completion-text className="text-[var(--ink-muted)] opacity-70 [overflow-wrap:anywhere]">
+                              {sentenceCompletion.text}
+                            </span>
+                            <kbd className="ml-2 inline-block rounded border border-[var(--line)] px-1.5 py-0.5 align-baseline font-sans text-[10px] leading-none text-[var(--ink-muted)]">Tab</kbd>
+                          </>
+                        ) : null}
                         {'\u200b'}
                       </div>
                     </div>
@@ -2624,6 +2656,7 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                         return;
                       }
                       promptSuggestion.dismiss();
+                      sentenceCompletion.onInput(event.currentTarget);
                       if (pendingWorkflowPrompt !== null && !next.trim()) {
                         setPendingWorkflow(null);
                       }
@@ -2663,6 +2696,7 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                       onKeyDown?.(event);
                       if (event.defaultPrevented) return;
                       if (walkMessageHistory(event)) return;
+                      if (sentenceCompletion.handleKeyDown(event)) return;
                       if (promptSuggestion.handleKeyDown(event)) return;
                       if (
                         event.key !== 'Enter' ||
@@ -2690,6 +2724,11 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                       if (!canSubmit || isSending || disabled) return;
                       submitMessage();
                     }}
+                    onFocus={(event) => sentenceCompletion.onFocus(event.currentTarget)}
+                    onBlur={sentenceCompletion.onBlur}
+                    onSelect={(event) => sentenceCompletion.onSelect(event.currentTarget)}
+                    onCompositionStart={sentenceCompletion.onCompositionStart}
+                    onCompositionEnd={(event) => sentenceCompletion.onCompositionEnd(event.currentTarget)}
                     onPaste={menuSearch ? undefined : handlePaste}
                     onScroll={syncCommandBackdrop}
                     rows={1}
@@ -2697,11 +2736,16 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                     placeholder={menuSearch ? (menuSearch.kind === 'add' ? 'Search additions…' : 'Search capabilities…') : promptSuggestion.text ? '' : placeholder}
                     aria-label={menuSearch ? (menuSearch.kind === 'add' ? 'Search add menu' : 'Search capabilities') : placeholder}
                     aria-controls={menuSearch?.kind === 'add' ? 'composer-add-menu' : showSlashCommands ? 'direct-slash-command-menu' : undefined}
-                    aria-describedby={promptSuggestion.text ? promptSuggestion.descriptionId : undefined}
-                    aria-keyshortcuts={promptSuggestion.text ? 'Tab Escape' : undefined}
+                    aria-describedby={sentenceCompletion.text ? sentenceCompletion.descriptionId : promptSuggestion.text ? promptSuggestion.descriptionId : undefined}
+                    aria-keyshortcuts={sentenceCompletion.text || promptSuggestion.text ? 'Tab Escape' : undefined}
                     className={`block w-full min-w-0 max-w-full resize-none overflow-y-hidden bg-transparent px-1 py-0 caret-[var(--composer-caret)] outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${mirrored ? 'text-transparent' : 'text-[var(--ink)]'} ${compact ? 'min-h-5 text-sm leading-5' : 'min-h-6 text-[15px] leading-6'}`}
                     style={textareaStyle}
                   />
+                  {sentenceCompletion.text ? (
+                    <span id={sentenceCompletion.descriptionId} className="sr-only">
+                      Suggested completion: {sentenceCompletion.text} Press Tab to accept or Escape to dismiss.
+                    </span>
+                  ) : null}
                   {promptSuggestion.text ? (
                     <>
                       <PromptSuggestionOverlay
@@ -3131,12 +3175,32 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
             className="flex max-h-full max-w-full flex-col items-center gap-3"
             onClick={(event) => event.stopPropagation()}
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={activeLightbox.attachment.dataUrl}
-              alt={activeLightbox.attachment.name}
-              className="max-h-[80vh] max-w-full rounded-lg object-contain shadow-2xl"
-            />
+            {onReplaceAttachment ? (
+              <ComposerImageEditor
+                key={activeLightbox.index}
+                src={activeLightbox.attachment.dataUrl}
+                alt={activeLightbox.attachment.name}
+                onChange={(dataUrl) => {
+                  const { attachment, index } = activeLightbox;
+                  if (attachment.type !== 'image') return;
+                  // The edited bytes replace the original, so Send carries the edit.
+                  const extension = dataUrl.startsWith('data:image/png') ? 'png' : 'jpg';
+                  onReplaceAttachment(index, {
+                    ...attachment,
+                    dataUrl,
+                    name: `${attachment.name.replace(/\.[^.]*$/, '')}.${extension}`,
+                    sizeBytes: Math.round((dataUrl.length - dataUrl.indexOf(',') - 1) * 0.75),
+                  });
+                }}
+              />
+            ) : (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                src={activeLightbox.attachment.dataUrl}
+                alt={activeLightbox.attachment.name}
+                className="max-h-[80vh] max-w-full rounded-lg object-contain shadow-2xl"
+              />
+            )}
             <figcaption className="flex items-center gap-2 text-xs text-white/80">
               <span className="max-w-[60vw] truncate">{activeLightbox.attachment.name}</span>
               {hasMultipleImages ? (

@@ -8,7 +8,7 @@
 // `auto` is not an engine. It is the absence of a choice, resolved to one at
 // the moment a build is requested — see `resolveCadEngine`.
 
-export const CAD_ENGINE_IDS = ["cadquery", "solidworks"] as const;
+export const CAD_ENGINE_IDS = ["cadquery", "solidworks", "freecad"] as const;
 
 export type CadEngineId = (typeof CAD_ENGINE_IDS)[number];
 
@@ -31,7 +31,21 @@ export function isCadBackendPreference(value: unknown): value is CadBackendPrefe
 }
 
 export function cadEngineLabel(engine: CadEngineId): string {
-  return engine === "solidworks" ? "SolidWorks" : "Parametric CAD (CadQuery)";
+  return engine === "solidworks" ? "SolidWorks" : engine === "freecad" ? "FreeCAD" : "Parametric CAD (CadQuery)";
+}
+
+/** Keep revisions on their original kernel, including parameter-panel rebuilds. */
+export function cadEngineFromProvenance(json: string): CadEngineId {
+  const engine = JSON.parse(json).engine;
+  if (!isCadEngineId(engine)) throw new Error(`Unsupported CAD engine: ${String(engine)}`);
+  return engine;
+}
+
+export function requestedCadEngine(brief: string): CadEngineId | null {
+  if (/\bfreecad\b|\.fcstd\b/i.test(brief)) return "freecad";
+  if (/\bsolidworks\b|\.sldprt\b/i.test(brief)) return "solidworks";
+  if (/\bcadquery\b/i.test(brief)) return "cadquery";
+  return null;
 }
 
 /**

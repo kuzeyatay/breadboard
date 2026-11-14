@@ -27,7 +27,12 @@ export function withVSCodeTheme(source: string, theme: "light" | "dark", themes 
   // Native menus only run commands in a window Electron considers focused, and
   // a docked child window never is, so Terminal/View/Run did nothing: the
   // custom (HTML) menu bar runs commands inside the workbench instead.
-  for (const [key, next] of Object.entries({ "workbench.colorTheme": colorTheme, "window.autoDetectColorScheme": false, "window.titleBarStyle": "native", "window.menuStyle": "custom" })) {
+  // Every launch opens a fresh Breadboard .code-workspace, so VS Code starts in
+  // Restricted Mode and drops extensions without untrusted support (the Python
+  // extension: "command 'python.execInTerminal-icon' not found"). Seeded only
+  // when absent so a user who turns trust back on in the Code tab keeps it.
+  const seeded = settings?.["security.workspace.trust.enabled"] === undefined ? { "security.workspace.trust.enabled": false } : {};
+  for (const [key, next] of Object.entries({ "workbench.colorTheme": colorTheme, "window.autoDetectColorScheme": false, "window.titleBarStyle": "native", "window.menuStyle": "custom", ...seeded })) {
     if (settings?.[key] === next) continue;
     result = applyEdits(result, modify(result, [key], next, { formattingOptions: { insertSpaces: true, tabSize: 2, eol: source.includes("\r\n") ? "\r\n" : "\n" } }));
   }

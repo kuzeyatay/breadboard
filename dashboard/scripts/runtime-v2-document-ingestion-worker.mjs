@@ -1097,6 +1097,8 @@ function createProgressReporter(launch, events, isStopped) {
   return { note, usage, failed, currentStep };
 }
 
+const INGEST_PUBLISH_TIMEOUT_MS = 5 * 60 * 1000;
+
 function retireIngestRecoveryQuietly(launch) {
   try {
     retireIngestRecovery({ launch });
@@ -1443,6 +1445,12 @@ async function runRuntimeV2DocumentIngestionWorker() {
     );
     const publishCommittedIngestion = async () => {
       process.env.QUARTZ_AUTO_PUBLISH = "1";
+      // A scoped publication takes about a minute. When the renderer changed,
+      // the same call becomes a full-site rebuild that ran past 30 minutes
+      // with the upload stuck on "Finishing…"; bound the wait and let the
+      // Garden's next view finish the job instead.
+      const previousBuildTimeout = process.env.QUARTZ_BUILD_TIMEOUT_MS;
+      process.env.QUARTZ_BUILD_TIMEOUT_MS = String(INGEST_PUBLISH_TIMEOUT_MS);
       try {
         await quartzPublishModule.publishQuartzAfterMutation(
           `ingest knowledge into ${launch.executionScope.gardenId}`,
@@ -1451,7 +1459,30 @@ async function runRuntimeV2DocumentIngestionWorker() {
             gardenSlug: launch.executionScope.gardenId,
           },
         );
+      } catch (error) {
+        // Only ever called after the durable garden commit: the document is
+        // already in the garden, so a failed or timed-out site build must not
+        // report the upload as failed (it used to, leaving an "Upload kept —
+        // processing failed" row for a document that was added). The next
+        // publication of this Garden renders the page.
+        console.warn(
+          `[runtime-v2-ingestion-worker] Quartz publication failed after the garden commit; the upload still completes: ${boundedFailureMessage(error)}`,
+        );
+        try {
+          quartzPublishModule.markQuartzPublicationPending(
+            launch.executionScope.gardenId,
+          );
+        } catch (markerError) {
+          console.warn(
+            `[runtime-v2-ingestion-worker] The pending publication could not be recorded: ${boundedFailureMessage(markerError)}`,
+          );
+        }
       } finally {
+        if (previousBuildTimeout === undefined) {
+          delete process.env.QUARTZ_BUILD_TIMEOUT_MS;
+        } else {
+          process.env.QUARTZ_BUILD_TIMEOUT_MS = previousBuildTimeout;
+        }
         // `writeDocumentKnowledge` must remain unable to publish before the
         // external durable transaction crosses result -> commit -> seal.
         process.env.QUARTZ_AUTO_PUBLISH = "0";
@@ -1718,7 +1749,9 @@ async function runRuntimeV2DocumentIngestionWorker() {
       model: launch.request.model,
     });
     let recoveryId = null;
-    if (openedBlob) {
+    // A committed document is in the garden; offering to resume it would
+    // ingest it a second time.
+    if (openedBlob && knowledgeWriteTransactionOutcome !== "committed") {
       // Before the terminal event: Runtime may delete the staged blob as soon
       // as it learns the job failed.
       try {

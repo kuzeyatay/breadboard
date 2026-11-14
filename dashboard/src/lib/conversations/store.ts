@@ -149,6 +149,24 @@ export function createConversation(
   );
   const id = Number(result.lastInsertRowid);
   database.prepare("INSERT INTO conversation_memory_state(conversation_id) VALUES (?)").run(id);
+  if (database === db && !input.hookId) {
+    // Deferred past the caller's transaction: the hook reads the row back, and
+    // a creation that rolls back must not have announced a chat that never was.
+    setImmediate(() => {
+      void import("../hooks/lifecycle.ts")
+        .then(({ fireLifecycleHooks }) =>
+          fireLifecycleHooks({
+            event: "session_started",
+            conversationId: id,
+            occurrenceId: publicId,
+            matchText: "",
+          }),
+        )
+        .catch((error) => {
+          console.error("[hooks] session hook loader failed", error);
+        });
+    });
+  }
   return getConversationById(id, database)!;
 }
 
@@ -445,7 +463,7 @@ export function listConversationMessages(
   const pendingClause = options.includePending === false ? "AND status <> 'pending'" : "";
   const after = options.afterOrder ?? -1;
   return database.prepare(`
-    SELECT * FROM conversation_messages
+    SELECT * FROM conversation_message_reads
     WHERE conversation_id = ? AND order_index > ? ${pendingClause}
     ORDER BY order_index ASC
     LIMIT ?
@@ -510,7 +528,7 @@ export function listRecentConversationMessages(
   database: Database.Database = db,
 ): ConversationMessageRow[] {
   const rows = database.prepare(`
-    SELECT * FROM conversation_messages
+    SELECT * FROM conversation_message_reads
     WHERE conversation_id = ?
       AND (role = 'user' OR status = 'complete')
     ORDER BY order_index DESC
@@ -817,7 +835,7 @@ export function reserveLegacyGardenAssistantTurn(input: {
     const user = database.prepare(`
       SELECT canonical.*
       FROM chat_messages legacy
-      JOIN conversation_messages canonical
+      JOIN conversation_message_reads canonical
         ON canonical.id = legacy.canonical_message_id
       WHERE legacy.session_id = ?
         AND legacy.role = 'user'
@@ -1045,12 +1063,10 @@ export function cancelLatestConversationTurn(
   excludeInline = false,
 ): ConversationMessageRow | null {
   const latest = database.prepare(`
-    SELECT * FROM conversation_messages
-    WHERE conversation_id = ? AND role = 'assistant'
+    SELECT * FROM conversation_message_reads WHERE id IN (SELECT id FROM conversation_messages WHERE conversation_id = ? AND role = 'assistant'
       AND (? = 0 OR COALESCE(json_extract(metadata, '$.textSelection.mode'), '') <> 'inline')
     ORDER BY order_index DESC
-    LIMIT 1
-  `).get(conversationId, excludeInline ? 1 : 0) as ConversationMessageRow | undefined;
+    LIMIT 1) ORDER BY order_index DESC`).get(conversationId, excludeInline ? 1 : 0) as ConversationMessageRow | undefined;
   if (
     !latest ||
     (latest.status !== "pending" && !isPreDispatchReservedAssistant(latest))
@@ -1163,7 +1179,7 @@ export function failStaleGardenPreDispatchTurns(input: {
   const placeholders = ids.map(() => "?").join(",");
   const candidates = database.prepare(`
     SELECT message.*, conversation.id AS owner_conversation_id
-    FROM conversation_messages message
+    FROM conversation_message_reads message
     JOIN conversations conversation
       ON conversation.id = message.conversation_id
     WHERE conversation.legacy_chat_session_id IN (${placeholders})
@@ -1263,11 +1279,11 @@ export function appendConversationSteerMessage(input: {
     // Never attach it to a newer pending answer in the same conversation.
     const pending = targetClientMessageId
       ? database.prepare(`
-          SELECT * FROM conversation_messages
+          SELECT * FROM conversation_message_reads
           WHERE conversation_id = ? AND role = 'assistant' AND client_message_id = ?
         `).get(input.conversationId, targetClientMessageId) as ConversationMessageRow | undefined
       : database.prepare(`
-      SELECT * FROM conversation_messages
+      SELECT * FROM conversation_message_reads
       WHERE conversation_id = ? AND role = 'assistant' AND status = 'pending'
       ORDER BY order_index LIMIT 1
     `).get(input.conversationId) as ConversationMessageRow | undefined;
@@ -1389,7 +1405,7 @@ export function annotateConversationTurn(input: {
 }, database: Database.Database = db): void {
   const clientMessageId = normalizeClientMessageId(input.clientMessageId);
   const rows = database.prepare(`
-    SELECT id, metadata FROM conversation_messages
+    SELECT id, metadata FROM conversation_message_reads
     WHERE conversation_id = ? AND client_message_id = ?
   `).all(input.conversationId, clientMessageId) as Array<{ id: number; metadata: string | null }>;
   const update = database.prepare("UPDATE conversation_messages SET metadata = ?, updated_at = datetime('now') WHERE id = ?");
@@ -1479,7 +1495,7 @@ export function getConversationMessageById(
   id: number,
   database: Database.Database = db,
 ): ConversationMessageRow | null {
-  return (database.prepare("SELECT * FROM conversation_messages WHERE id = ?").get(id) as ConversationMessageRow | undefined) ?? null;
+  return (database.prepare("SELECT * FROM conversation_message_reads WHERE id = ?").get(id) as ConversationMessageRow | undefined) ?? null;
 }
 
 /** Resolve the durable half of a turn while its browser UUID is still on screen. */
@@ -1511,7 +1527,7 @@ export function getPrecedingUserMessage(
   database: Database.Database = db,
 ): ConversationMessageRow | null {
   return (database.prepare(`
-    SELECT * FROM conversation_messages
+    SELECT * FROM conversation_message_reads
     WHERE conversation_id = ? AND order_index < ? AND role = 'user'
     ORDER BY order_index DESC
     LIMIT 1
@@ -1582,7 +1598,7 @@ function getMessageByClientRole(
   database: Database.Database,
 ): ConversationMessageRow | null {
   return (database.prepare(`
-    SELECT * FROM conversation_messages
+    SELECT * FROM conversation_message_reads
     WHERE conversation_id = ? AND client_message_id = ? AND role = ?
   `).get(conversationId, clientMessageId, role) as ConversationMessageRow | undefined) ?? null;
 }

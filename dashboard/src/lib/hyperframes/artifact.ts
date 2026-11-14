@@ -62,7 +62,7 @@ async function publish(userId: number, runId: string, options: PublishOptions & 
     AND json_extract(metadata_json, '$.hyperframesRunId') = ? LIMIT 1
   `).get(userId, owner.conversation_id, runId) as ArtifactRow | undefined;
   if (saved) {
-    if (!owner.published_artifact_id) database.prepare("UPDATE conversation_messages SET metadata = json_set(metadata, '$.hyperframesArtifactId', ?) WHERE id = ?")
+    if (!owner.published_artifact_id) database.prepare("UPDATE conversation_messages SET metadata = json_set((SELECT metadata FROM conversation_message_reads WHERE id=conversation_messages.id), '$.hyperframesArtifactId', ?) WHERE id = ?")
       .run(saved.id, owner.id);
     return { ...saved, conversation_public_id: owner.public_id };
   }
@@ -94,7 +94,7 @@ async function publish(userId: number, runId: string, options: PublishOptions & 
     // Preserve the exact render whose streams and decode the worker verified.
     scrubProvenance: false, database, storageRoot: options.storageRoot,
   });
-  database.prepare("UPDATE conversation_messages SET metadata = json_set(metadata, '$.hyperframesArtifactId', ?) WHERE id = ?")
+  database.prepare("UPDATE conversation_messages SET metadata = json_set((SELECT metadata FROM conversation_message_reads WHERE id=conversation_messages.id), '$.hyperframesArtifactId', ?) WHERE id = ?")
     .run(artifact.id, owner.id);
   return { ...artifact, conversation_public_id: owner.public_id };
 }

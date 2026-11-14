@@ -219,7 +219,7 @@ export function chatNotificationDeliveryId(database: Database.Database, userId: 
   if (messageId === null) return id;
   const row = database.prepare(`
     SELECT m.id AS message_id, m.metadata, c.public_id AS conversation_public_id
-    FROM conversation_messages m JOIN conversations c ON c.id = m.conversation_id
+    FROM conversation_message_reads m JOIN conversations c ON c.id = m.conversation_id
     WHERE m.id = ? AND c.user_id = ?
   `).get(messageId, userId) as Pick<NotificationRow, "metadata" | "conversation_public_id" | "message_id"> | undefined;
   return row ? notificationIdentity(row) : id;
@@ -287,7 +287,7 @@ export function listRecentChatNotifications(database: Database.Database, userId:
       c.public_id AS conversation_public_id,c.title AS conversation_title,c.surface,
       c.legacy_chat_session_id,g.slug AS garden_slug
     ${NOTIFIABLE_MESSAGES_SQL}
-      AND m.id IN (SELECT recent.id FROM conversation_messages recent
+      AND m.id IN (SELECT recent.id FROM conversation_message_reads recent
         JOIN conversations owner ON owner.id=recent.conversation_id
         WHERE owner.user_id=@userId AND owner.temporary=0 AND owner.buzz_room_id IS NULL
           AND recent.role='assistant' AND recent.status IN ('complete','failed')
@@ -390,7 +390,7 @@ export function dismissChatNotifications(
   `);
   const selectConversationAnswers = database.prepare(`
     SELECT id AS message_id, conversation_id, metadata
-    FROM conversation_messages
+    FROM conversation_message_reads
     WHERE conversation_id = ?
       AND role = 'assistant'
       AND status IN ('complete', 'failed')

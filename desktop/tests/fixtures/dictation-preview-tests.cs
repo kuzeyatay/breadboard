@@ -1,5 +1,6 @@
 using System;
 using System.Reflection;
+using System.Threading;
 
 // Substitute only the accessibility bridge. No hooks or SendInput are invoked;
 // production capture/focus ownership logic runs against delayed editor data.
@@ -36,6 +37,33 @@ internal static class DictationPreviewTests
         return session;
     }
     private static void Check(bool value, string message) { if (!value) throw new Exception(message); }
+    private static void CheckRendererAcknowledgements()
+    {
+        var session = Session(new DictationAccessibleTarget()); Set(session, "Id", 11);
+        Call("EnableRendererInput", 12);
+        Check(!(bool)Get(session, "RendererInput"), "A stale configuration cannot change the current hold");
+        Call("EnableRendererInput", 11);
+        Check((bool)Get(session, "RendererInput"), "The captured editor enables atomic edits");
+        var output = (System.Collections.Concurrent.BlockingCollection<object>)Helper.GetField("output", Static).GetValue(null);
+        int previousRequest = 0;
+        foreach (string outcome in new[] { "applied", "rejected", "cancelled" }) {
+            Exception error = null;
+            var worker = new Thread(delegate() { try { Call("EditRenderer", session, "fixed test text"); } catch (Exception failure) { error = failure.GetBaseException(); } });
+            worker.IsBackground = true; worker.Start();
+            object notice;
+            Check(output.TryTake(out notice, 2000), "The editor receives an edit request");
+            int request = (int)notice.GetType().GetProperty("request").GetValue(notice, null);
+            Check(request > previousRequest, "Every edit has its own acknowledgement identity"); previousRequest = request;
+            Call("CompleteRendererEdit", 12, request, true);
+            Call("CompleteRendererEdit", 11, request - 1, true);
+            Check(!worker.Join(30), "Stale sessions and duplicate acknowledgements cannot complete an edit");
+            if (outcome == "cancelled") Helper.GetField("current", Static).SetValue(null, null);
+            else Call("CompleteRendererEdit", 11, request, outcome == "applied");
+            Check(worker.Join(1000), "Acknowledgement or cancellation releases the waiting worker");
+            Check((error == null) == (outcome == "applied"), "Only a confirmed edit succeeds; no keystroke retry");
+            Check(Get(session, "Edit") == null, "A completed or cancelled request cannot be reused");
+        }
+    }
     private static void Main()
     {
         var original = new DictationAccessibleTarget();
@@ -63,6 +91,7 @@ internal static class DictationPreviewTests
         original.Focused = true;
         DictationAccessibleTarget.Next.Streamable = false;
         Check(!(bool)Call("CapturePreview", session), "An object selection cannot be treated as editable characters");
-        Console.WriteLine("Delayed preview capture checks passed");
+        CheckRendererAcknowledgements();
+        Console.WriteLine("Delayed preview capture checks passed; renderer acknowledgement checks passed");
     }
 }

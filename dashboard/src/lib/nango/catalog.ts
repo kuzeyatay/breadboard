@@ -97,6 +97,8 @@ const SCOPES: Record<string, string[]> = {
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/gmail.send",
+    // Filters and signature. Inbox Zero rides this grant and needs it for rules.
+    "https://www.googleapis.com/auth/gmail.settings.basic",
   ],
   slack: [
     "channels:history",

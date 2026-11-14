@@ -353,7 +353,8 @@ export function loadRuntimeV2OfficeLaunch(
   ));
   if (
     ["command", "export", "document-edit", "pdf-to-docx", "spreadsheet", "artifact-render"].includes(request.operation) &&
-    executionScope.conversationId === null
+    executionScope.conversationId === null &&
+    !(executionScope.gardenId !== null && ["export", "document-edit", "spreadsheet"].includes(request.operation))
   ) {
     fail("The Office artifact operation requires exact conversation authority.");
   }
