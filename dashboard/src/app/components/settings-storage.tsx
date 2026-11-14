@@ -11,6 +11,7 @@ interface StorageStatus {
   lastResult: null | { finishedAt: number; bytesReleased: number; skipped: string[] };
   protected: string[];
   compaction: null | { phase: string; detail?: string; bytesReleased?: number };
+  workspaces?: { files:number; workspaces:number; deduplicatedBytes:number; compressedBytes:number; recoveryCopies:number; archivedWorkspaces:Array<{key:string;files:number}>; skipped:Array<{path:string;reason:string}> };
 }
 const size = (bytes: number) => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GiB`
   : bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(1)} MiB` : `${Math.round(bytes / 1024)} KiB`;
@@ -55,6 +56,8 @@ export default function SettingsStorage({ active = true }: { active?: boolean })
         <dt>Free on the data drive</dt><dd className="text-right tabular-nums">{size(status.freeBytes)}</dd>
         <dt>Measured application files</dt><dd className="text-right tabular-nums">{status.inventory ? size(status.inventory.allocatedBytes) : "Not yet measured"}</dd>
         <dt>Compressed payload savings</dt><dd className="text-right tabular-nums">{size(status.compressedPayloadBytesSaved)}</dd>
+        {status.workspaces && <><dt>Cold workspace input savings</dt><dd className="text-right tabular-nums">{size(status.workspaces.deduplicatedBytes)}</dd>
+          <dt>Workspace compression released</dt><dd className="text-right tabular-nums">{size(status.workspaces.compressedBytes)}</dd></>}
         <dt>Verified disposable files{status.disposables.complete ? "" : " (partial)"}</dt><dd className="text-right tabular-nums">{size(status.disposables.verifiedBytes)}</dd>
         <dt>Reusable inside the database</dt><dd className="text-right tabular-nums">{size(status.database.reusableBytes)}</dd>
       </dl>
@@ -78,6 +81,13 @@ export default function SettingsStorage({ active = true }: { active?: boolean })
         <ul className="mt-2 space-y-2">{status.inventory.largest.map(file => <li key={file.path} className="flex gap-3">
           <span className="min-w-0 flex-1 break-all">{file.path}</span><span className="shrink-0 tabular-nums">{size(file.bytes)}</span></li>)}</ul></details>}
       <p className="text-xs text-[var(--ink-muted)]">Protected: {status.protected.join("; ")}.</p>
+      {status.workspaces && <p className="text-xs text-[var(--ink-muted)]">{status.workspaces.files} cold attachment copies in {status.workspaces.workspaces} workspaces share verified storage. Independent editable copies return when a workspace runs. Other compressed workspace files remain directly readable.</p>}
+      {!!status.workspaces?.recoveryCopies && <p className="text-xs">{status.workspaces.recoveryCopies} additional recovery copies are protected.</p>}
+      {!!status.workspaces?.archivedWorkspaces.length && <details className="text-xs"><summary className="cursor-pointer">Restore archived workspace inputs</summary>
+        {status.workspaces.archivedWorkspaces.map(item=><div key={item.key} className="mt-2 flex items-center gap-2"><span className="min-w-0 flex-1 break-all">{item.key} ({item.files} files)</span>
+          <button disabled={busy} className="shrink-0 underline disabled:opacity-50" onClick={()=>void update("/api/storage/workspaces/restore","POST",{workspaceKey:item.key})}>Restore files</button></div>)}</details>}
+      {!!status.workspaces?.skipped.length && <details className="text-xs"><summary className="cursor-pointer">Workspace files kept unchanged</summary>
+        {status.workspaces.skipped.map(item=><p key={item.path} className="mt-1 break-all">{item.path}: {item.reason}</p>)}</details>}
       {status.lastResult && <div className="space-y-1 text-xs text-[var(--ink-muted)]">
         <p>Last maintenance: {new Date(status.lastResult.finishedAt).toLocaleString()}. Released {size(status.lastResult.bytesReleased)}.</p>
         {status.lastResult.skipped.map(reason => <p key={reason}>{reason}</p>)}

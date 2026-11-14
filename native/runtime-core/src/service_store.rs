@@ -7673,6 +7673,9 @@ impl JobStore {
         now_ms: u64,
     ) -> Result<DurableServiceSnapshot, DurableServiceStoreError> {
         let last_error = service_not_created_message(error);
+        // The durable message is a fixed category; keep the actual cause
+        // (which pin, which check) in the runtime's stderr diagnostics.
+        eprintln!("[runtime-service] start not created: {error} ({error:?})");
         self.finish_durable_service_generation_inner(
             authority,
             ServiceLifecycleState::Failed,

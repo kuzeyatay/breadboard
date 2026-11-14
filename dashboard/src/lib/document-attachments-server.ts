@@ -37,6 +37,7 @@ import { storedFileText } from "./conversations/stored-file-text.ts";
 import { documentContextText, readDocument } from "./document-structure/index.ts";
 import { readStoredDocumentText, storeDocumentText } from "./conversations/document-reading-store.ts";
 import { ApiError } from "./hermes/route-core.ts";
+import { restoreStoredWorkspace } from "./storage/workspace-access.ts";
 
 export interface ResolvedDocument {
   name: string;
@@ -71,6 +72,7 @@ export function stageEditableDocumentAttachments(input: {
   attachments: readonly ChatAttachment[] | undefined;
   workspace: string;
 }): StagedEditableDocuments {
+  restoreStoredWorkspace(input.workspace);
   const candidates = (input.attachments ?? []).filter(
     (attachment) => attachment.type === "document" || attachment.type === "audio" ||
       attachment.type === "video" || (attachment.type === "text" && attachment.blobId),

@@ -2111,12 +2111,11 @@ impl RunningProcessOwner {
                 error,
             };
         }
-        if let Err(error) = launch.persist_service_diagnostic("lifecycle", "launch-start") {
-            return ProcessSpawnAttempt::NotCreated {
-                launch: Box::new(launch),
-                error,
-            };
-        }
+        // The durable service log is evidence, not launch authority. Every
+        // write is an atomic replace, which Windows refuses while any reader
+        // (an editor, `tail -F`, an AV scan) holds the file open; that once
+        // blocked the whole workspace from starting. Never fail a launch on it.
+        let _ = launch.persist_service_diagnostic("lifecycle", "launch-start");
         let environment = match launch.child_environment() {
             Ok(environment) => environment,
             Err(error) => {
@@ -2617,7 +2616,9 @@ impl RunningProcessOwner {
             }
             if is_private_diagnostic_kind(kind) {
                 let data = private_diagnostic_data(&value)?;
-                self.launch.persist_service_diagnostic(kind, data)?;
+                // Best effort for the same reason as launch-start: a reader
+                // holding the service log must not tear down a live service.
+                let _ = self.launch.persist_service_diagnostic(kind, data);
                 if kind == "stderr" {
                     // Worker diagnostics are supporting evidence, not process
                     // authority. A logging I/O failure must not turn a healthy

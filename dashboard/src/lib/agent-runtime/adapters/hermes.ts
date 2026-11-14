@@ -18,6 +18,7 @@ import {
   type HermesModelIdentity,
 } from "../../hermes/model-identity.ts";
 import { resolveWorkspace } from "../../hermes/workspace.ts";
+import { prepareStoredWorkspace } from "../../storage/workspace-access.ts";
 import type {
   AgentRuntime,
   CreateRuntimeSessionInput,
@@ -631,6 +632,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       },
       { create: true },
     );
+    await prepareStoredWorkspace(workspace.runtimeDirectory);
     const modelIdentity = await this.resolveModelIdentity(
       input.model,
       input.model,
@@ -707,6 +709,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
 
   async startRun(input: StartRuntimeRunInput): Promise<void> {
     const session = this.requireSession(input);
+    await prepareStoredWorkspace(session.runtimeDirectory);
     // A submitted turn owns its lease through the normal stream/maintenance
     // lifecycle, including while its provider and attachments are preparing.
     this.clearPreparationLeaseTimer(session);
@@ -829,6 +832,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     input: StartRuntimeRunInput & { clientRequestId: string },
   ): Promise<boolean> {
     const session = this.requireSession(input);
+    await prepareStoredWorkspace(session.runtimeDirectory);
     await this.ensureSessionLease(session);
     // Images belong to this correction, never the session's next-prompt tray.
     const images = (input.attachments ?? []).flatMap((attachment) =>

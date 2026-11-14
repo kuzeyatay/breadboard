@@ -9,6 +9,9 @@ import { allowedToolsForSurface } from "./tool-scopes.ts";
 import { getBrowserTerminalContext } from "./browser-terminal-context.ts";
 import { ApiError } from "./route-core.ts";
 import type { RuntimeKind } from "../agent-runtime/contracts.ts";
+import { restoreStoredWorkspace } from "../storage/workspace-access.ts";
+import { directoryForWorkspaceKey } from "./workspace.ts";
+import { readHermesConfig } from "./config.ts";
 
 function serviceSecret(): string {
   const secret =
@@ -72,6 +75,7 @@ export function capabilityForInternalToolRequest(request: Request): string | nul
       "The agent runtime session was not found.",
     );
   }
+  restoreStoredWorkspace(directoryForWorkspaceKey(readHermesConfig(),row.workspace_key));
   return issueCapabilityToken({
     userId: row.user_id ?? 0,
     conversationId: row.conversation_id ?? undefined,

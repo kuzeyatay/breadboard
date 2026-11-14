@@ -2,6 +2,30 @@ import { WebContentsView, type BrowserWindow, type WebContents } from "electron"
 import { rendererWebPreferences } from "./window-options";
 import { trackTransparentNotificationView } from "./notification-visible-region";
 
+/** Card pages are served by the dashboard. While it restarts (~10 s) the load
+ * fails with a connection reset; cards stay invisible until their page reports
+ * a size, so retry quietly instead of dropping the person's selection. */
+export async function loadCardPage(
+  card: { readonly contents: WebContents; readonly isClosed: boolean; close(): void },
+  url: string,
+  log: (line: string) => void,
+  { deadlineMs = 20_000, retryMs = 1_000 } = {},
+): Promise<void> {
+  const deadline = Date.now() + deadlineMs;
+  for (let attempt = 1; ; attempt++) {
+    try { await card.contents.loadURL(url); return; } catch (error) {
+      if (card.isClosed || card.contents.isDestroyed()) return;
+      if (Date.now() + retryMs > deadline) {
+        log(`Browser card could not load ${new URL(url).pathname} after ${attempt} attempts: ${String(error)}`);
+        card.close();
+        return;
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, retryMs));
+    if (card.isClosed || card.contents.isDestroyed()) return;
+  }
+}
+
 /** A small trusted view above Chromium's website view; CSS z-index cannot
  * cross native views. The website retains its original size and scroll. */
 export class BrowserToolbarPopover {

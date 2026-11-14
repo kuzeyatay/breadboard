@@ -12,11 +12,12 @@ export interface StorageCoordinatorOptions {
 export function startStorageMaintenance(options: StorageCoordinatorOptions): () => void {
   const idleSeconds = options.idleSeconds ?? (() => powerMonitor.getSystemIdleTime());
   const request = options.fetch ?? fetch;
-  let running = false, stopped = false;
+  let running = false, stopped = false, nextTick = Date.now()+15_000;
   let pending: AbortController | null = null;
   const tick = async () => {
     const base = options.dashboardUrl();
-    if (stopped || running || !base || idleSeconds() < 120) return;
+    if (stopped || running || !base || idleSeconds() < 120 || Date.now()<nextTick) return;
+    nextTick=Date.now()+15_000;
     const url = new URL("/api/storage/maintenance", base);
     if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || url.username || url.password) return;
     running = true; pending = new AbortController();
@@ -31,7 +32,8 @@ export function startStorageMaintenance(options: StorageCoordinatorOptions): () 
         body: JSON.stringify({ action: "tick", idleMs: idleSeconds() * 1000 }),
       });
       if (response.ok) {
-        const result = await response.json() as { housekeepingAllowed?: boolean };
+        const result = await response.json() as { housekeepingAllowed?: boolean; continueSoon?:boolean };
+        if (result.housekeepingAllowed && result.continueSoon) nextTick=Date.now()+1000;
         if (idleSeconds() >= 120) await options.afterMaintenance?.({ housekeepingAllowed: result.housekeepingAllowed === true });
       } else await response.body?.cancel();
     } catch { /* The next idle slice retries; diagnostics are bounded server-side. */ }
@@ -39,7 +41,7 @@ export function startStorageMaintenance(options: StorageCoordinatorOptions): () 
   };
   // Startup never waits for a scan or cleanup. The OS idle check is repeated on
   // every tick and during a request, including when the app was opened idle.
-  const timer = setInterval(() => void tick(), 15_000);
+  const timer = setInterval(() => void tick(), 1000);
   timer.unref();
   return () => { stopped = true; clearInterval(timer); pending?.abort(); };
 }

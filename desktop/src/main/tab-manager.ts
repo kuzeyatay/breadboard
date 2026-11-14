@@ -114,7 +114,7 @@ import { browserPageBackgroundColor } from "./browser-theme";
 import { browserNavigationTargetIndex } from "./browser-navigation-history";
 import { BrowserVisitedLinks } from "./browser-visited-links";
 import { BrowserHistory } from "./browser-history";
-import { BrowserToolbarPopover } from "./browser-toolbar-popover";
+import { BrowserToolbarPopover, loadCardPage } from "./browser-toolbar-popover";
 import { BrowserTextHighlights } from "./browser-text-highlights";
 import { BrowserInlineAnswer } from "./browser-inline-answer";
 import { browserTextHighlightsBootstrapScript } from "./browser-text-highlights-dom";
@@ -3581,7 +3581,7 @@ export class TabManager {
       answer.contents.once("destroyed", () => { if (!outside.isDestroyed()) outside.removeListener("focus", dismissOutside); });
     }
     const url = new URL("/browser/inline-answer", browser.shellUrl); url.searchParams.set("theme", this.options.theme());
-    void answer.contents.loadURL(url.href).catch(() => answer.close());
+    void loadCardPage(answer, url.href, line => this.log(line));
     void runInDocument(browser.contents, `window.__breadboardHighlights?.track(${JSON.stringify(selection.reference.id)})`).catch(() => undefined);
   }
 
@@ -3606,7 +3606,7 @@ export class TabManager {
     url.searchParams.set("entry", JSON.stringify(entry));
     if (this.browserOrganizationAllowed(host, tab)) url.searchParams.set("community", "1");
     url.searchParams.set("theme", this.options.theme());
-    void popup.contents.loadURL(url.href).catch(() => popup.close());
+    void loadCardPage(popup, url.href, line => this.log(line));
   }
 
   private toolbarAnchor(tab: Tab, anchor: { x: number; y: number }): { x: number; y: number } {
@@ -5304,8 +5304,12 @@ export class TabManager {
       if (owner && !owner.window.isDestroyed()) {
         const index = tabIndex(owner, tab.id);
         if (index < 0) return; // Explicit close/replacement already removed it.
-        if (browser.scriptOpened) {
-          // Login popups close themselves after messaging their opener.
+        // Login popups close themselves after messaging their opener. Never
+        // as the window's last tab: dropping that closes the window, and the
+        // main window's close quits Breadboard (a website ended the app this
+        // way, 2026-11-14, with only an unattributed close request logged).
+        if (browser.scriptOpened && owner.tabs.length > 1) {
+          this.log(`script-opened browser page ${contents.id} closed itself; dropping tab ${tab.id}`);
           this.dropTab(owner, index);
           return;
         }

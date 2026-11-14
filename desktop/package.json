@@ -1,6 +1,6 @@
 {
   "name": "breadboard-desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Breadboard desktop shell: Electron lifecycle owner and local service supervisor.",
   "main": "dist/main/main.js",

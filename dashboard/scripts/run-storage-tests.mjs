@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 // process's temporary files as well as the explicit fixtures.
 const base=path.resolve(os.tmpdir()),root=fs.mkdtempSync(path.join(base,"breadboard-storage-validation-"));
 const temporary=path.join(root,"temp");fs.mkdirSync(temporary);
-const files=["storage-management","storage-desktop","storage-settings-browser","storage-compaction-boundary","learn-workspace-superseded-prune",
+const files=["storage-management","workspace-storage","storage-desktop","storage-settings-browser","storage-compaction-boundary","learn-workspace-superseded-prune",
   "learn-build-pipeline","artifact-transcript","hermes-artifact-search","source-pdf-response",
   "agent-conversation-context","conversation-branches","conversation-memory","conversation-message-context","hyperframes-delivery"];
 try {

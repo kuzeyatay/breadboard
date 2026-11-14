@@ -57,7 +57,7 @@ test("compaction requests are durable and low space or live leases never stop se
 });
 
 test("one idle coordinator neither starts on launch nor overlaps requests, and aborts on input",async(t)=>{
-  t.mock.timers.enable({apis:["setInterval"]});
+  t.mock.timers.enable({apis:["setInterval","Date"]});
   let idle=119,calls=0,signal,finish;
   const stop=coordinator.startStorageMaintenance({dashboardUrl:()=>"http://127.0.0.1:4444",idleSeconds:()=>idle,
     session:{cookies:{get:async()=>[]}},fetch:async(_url,init)=>{calls++;signal=init.signal;return new Promise(resolve=>{finish=()=>resolve(new Response('{"housekeepingAllowed":false}',{headers:{"content-type":"application/json"}}));});}});

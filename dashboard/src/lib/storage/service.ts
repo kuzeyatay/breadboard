@@ -14,8 +14,10 @@ import { cleanScratch } from "./scratch.ts";
 import { indexAttachmentReferences, attachmentIndexComplete } from "./attachment-references.ts";
 import { learnWorkspaceGardenSlugs, pruneSupersededLearnBuildWorkspaces } from "../learn-build-workspace.ts";
 import { readStorageCompaction, requestStorageCompaction } from "./compaction-state.ts";
+import { WorkspaceStorageWorker, enqueueWorkspaceCandidate, workspaceStorageStatus, collectWorkspaceStorage } from "./workspace-storage.ts";
 
-const state = globalThis as typeof globalThis & { breadboardStorageScanner?: StorageScanner; breadboardImmutableWorker?: ImmutableFileWorker; breadboardColdWorker?: ColdPayloadWorker; breadboardStoragePhase?: number; breadboardStorageGarden?: number };
+const state = globalThis as typeof globalThis & { breadboardStorageScanner?: StorageScanner; breadboardImmutableWorker?: ImmutableFileWorker; breadboardColdWorker?: ColdPayloadWorker; breadboardWorkspaceWorker?: WorkspaceStorageWorker; breadboardStoragePhase?: number; breadboardStorageGarden?: number };
+const workspaceScanState = globalThis as typeof globalThis & { breadboardWorkspaceScanner?: StorageScanner };
 
 function foregroundBusy(): boolean {
   return !!db.prepare(`SELECT 1 FROM conversation_messages WHERE status='pending'
@@ -35,6 +37,7 @@ export async function storageStatus() {
     inventory: settings.inventory ? JSON.parse(settings.inventory) : null,
     lastResult: settings.last_result ? JSON.parse(settings.last_result) : null,
     compressedPayloadBytesSaved: compression.bytes,
+    workspaces: workspaceStorageStatus(db),
     disposables,
     database: sqliteSpace(db),
     protected: ["Chats and attachments", "Workspace outputs and recoverable drafts", "Recall recordings", "Installed models and runtimes"],
@@ -45,7 +48,7 @@ export async function storageStatus() {
 export async function runStorageMaintenance(input: { action: "tick" | "clean" | "scan" | "compact"; idleMs?: number; signal?: AbortSignal }) {
   ensureStorageSchema(db);
   const now = Date.now(), settings = storageSettings(db), holder = randomUUID();
-  const result: StorageMaintenanceResult & { housekeepingAllowed: boolean } = { housekeepingAllowed: false, startedAt: now, finishedAt: now, filesRemoved: 0, bytesReleased: 0, payloadBytesSaved: 0, skipped: [] };
+  const result: StorageMaintenanceResult & { housekeepingAllowed: boolean; continueSoon:boolean } = { housekeepingAllowed: false, continueSoon:false, startedAt: now, finishedAt: now, filesRemoved: 0, bytesReleased: 0, payloadBytesSaved: 0, skipped: [] };
   if (input.action === "compact") return { ...result, compaction: requestStorageCompaction(dashboardDataDir()) };
   if (input.action === "tick" && (!settings.automatic || (input.idleMs ?? 0) < STORAGE_POLICY.idleMs))
     return { ...result, skipped: ["Waiting for an idle period."] };
@@ -82,7 +85,7 @@ export async function runStorageMaintenance(input: { action: "tick" | "clean" | 
       const volume = await fs.promises.statfs(root);
       if (!shouldYield() && volume.bavail * volume.bsize >= STORAGE_POLICY.reserveBytes) {
         state.breadboardColdWorker ??= new ColdPayloadWorker();
-        const phase = (state.breadboardStoragePhase ?? 0) % 4;
+        const phase = state.breadboardWorkspaceWorker?.pending ? 4 : (state.breadboardStoragePhase ?? 0) % 5;
         state.breadboardStoragePhase = phase + 1;
         const compressed = phase === 0 ? await state.breadboardColdWorker.step(db, settings.compression_cursor, shouldYield) : {bytesSaved:0,cursor:settings.compression_cursor};
         result.payloadBytesSaved += compressed.bytesSaved;
@@ -109,6 +112,20 @@ export async function runStorageMaintenance(input: { action: "tick" | "clean" | 
             state.breadboardStorageGarden = index + 1;
           }
         }
+        if (phase === 4 && !shouldYield()) {
+          const workspaces=path.join(root,"runtime","hermes-workspaces");
+          if (fs.existsSync(workspaces)) {
+            if (!workspaceScanState.breadboardWorkspaceScanner || (workspaceScanState.breadboardWorkspaceScanner.result.complete
+              && now-workspaceScanState.breadboardWorkspaceScanner.result.updatedAt>7*DAY_MS))
+              workspaceScanState.breadboardWorkspaceScanner=new StorageScanner(workspaces);
+            if (!workspaceScanState.breadboardWorkspaceScanner.result.complete)
+              await workspaceScanState.breadboardWorkspaceScanner.step(shouldYield,128,(relative,stat)=>enqueueWorkspaceCandidate(db,path.join("runtime","hermes-workspaces",relative),stat));
+          }
+          state.breadboardWorkspaceWorker ??= new WorkspaceStorageWorker();
+          result.bytesReleased+=await state.breadboardWorkspaceWorker.step(db,root,shouldYield,input.signal);
+          result.continueSoon=state.breadboardWorkspaceWorker.pending;
+          if (!shouldYield()) result.bytesReleased+=await collectWorkspaceStorage(db,root,shouldYield);
+        }
       } else if (volume.bavail * volume.bsize < STORAGE_POLICY.reserveBytes) {
         result.skipped.push("Compression is waiting for 2 GiB of free space.");
       }
@@ -122,6 +139,7 @@ export async function runStorageMaintenance(input: { action: "tick" | "clean" | 
     if (!state.breadboardStorageScanner.result.complete && !shouldYield()) {
       const inventory = await state.breadboardStorageScanner.step(shouldYield,128,(relative,stat) => {
         enqueueImmutableCandidate(db,relative,stat,eligibleArtifact(relative));
+        enqueueWorkspaceCandidate(db,relative,stat);
       });
       db.prepare("UPDATE storage_settings SET inventory=? WHERE id=1").run(JSON.stringify(inventory));
     }
