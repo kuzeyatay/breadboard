@@ -8,6 +8,7 @@ import { listOrganizations } from "@/lib/organizations/store.ts";
 import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
 import {
   createRoom,
+  ensureCrumbsRoom,
   ensureSelfMember,
   listMembers,
   listRooms,
@@ -82,13 +83,7 @@ export default async function BuzzPage({
       });
     }
   }
-  // Every organization also has a crumbs room. Archived rooms count, so
-  // archiving it is respected instead of a second one appearing.
-  for (const community of communities) {
-    if (!listRooms(community.id, { includeArchived: true }).some((room) => room.slug === "crumbs")) {
-      createRoom(community.id, userId, { name: "crumbs", topic: "Crumbs your organization leaves around the web." });
-    }
-  }
+  for (const community of communities) ensureCrumbsRoom(community.id, userId);
 
   const readableRooms = listRoomsForUser(userId);
   const unread = unreadCounts(userId);

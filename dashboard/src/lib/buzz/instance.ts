@@ -33,6 +33,16 @@ export type {
 } from "./store.ts";
 
 /** Rooms in one organization. */
+/**
+ * Every organization has a crumbs room: crumbs its members leave on the web
+ * for the organization are posted there. Archived rooms count, so archiving
+ * it is respected instead of a second one appearing.
+ */
+export function ensureCrumbsRoom(organizationId: number, userId: number): void {
+  if (store.listRooms(db, organizationId, { includeArchived: true }).some((room) => room.slug === "crumbs")) return;
+  store.createRoom(db, organizationId, userId, { name: "crumbs", topic: "Crumbs your organization leaves around the web." });
+}
+
 export function listRooms(
   organizationId: number,
   includeArchived = false,
