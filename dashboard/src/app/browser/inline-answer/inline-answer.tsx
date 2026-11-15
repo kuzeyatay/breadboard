@@ -114,6 +114,7 @@ export default function BrowserInlineAnswer() {
         conversationId={content.conversationId} canStar={content.canStar} persistDraft={content.persistDraft}
         note={thread ? undefined : content.note}
         selection={thread?.selection ?? state.selection} anchor={anchor} embedded={embedded.get(id)}
+        suggestionSelection={thread?.selection ?? state.selection} suggestionModel={content.suggestionModel}
         questionDisabled={!content.canAsk} initialEditing={thread ? !thread.question : !state.conversationId}
         deleteDisabled={!content.ownerReady}
         annotations={shown.answerMessageId ? content.annotations?.[shown.answerMessageId] : undefined}

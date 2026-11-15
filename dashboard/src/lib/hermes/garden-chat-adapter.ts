@@ -1030,6 +1030,11 @@ export async function openGardenAgentChat(
     const gardenGrounding = await retrieveTerminalGardenGrounding({
       userId, request: resolved.userText || text, plan: prepared.plan,
       activeGardenSlug: clusterSlug, hasAttachments: Boolean(attachments?.length || selectedSlugs.length),
+      // See turn-service.ts: withheld with Personalize off, in speech, and on
+      // turns that are not a person asking a fresh question.
+      bridge: payload.personalize !== false && payload.voice !== true &&
+        payload.internalAgentContinuation !== true && !payload.textSelection && !payload.selectedText,
+      priorRequests,
     });
     const runSystem = composeHermesSystemPrompt({
       userId,

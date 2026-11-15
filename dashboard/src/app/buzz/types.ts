@@ -61,6 +61,8 @@ export interface BuzzMember {
   conversationId: number | null;
   muted: boolean;
   joinedAt: string;
+  /** Profile photo, from the member's linked account. */
+  avatarUrl?: string | null;
 }
 
 export interface BuzzReaction {
@@ -110,6 +112,8 @@ export interface RoomDetail {
   selfMemberId: number;
   members: BuzzMember[];
   messages: BuzzMessage[];
+  /** A room of an encrypted organization: other members' messages arrive from the store. */
+  linked?: boolean;
 }
 
 /**

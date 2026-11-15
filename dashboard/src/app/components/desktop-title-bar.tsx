@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { ChartNoAxesColumn, Hand } from "lucide-react";
 import VSCodeIcon from "./vscode-icon";
+import CrumbsIcon from "./crumbs-icon";
 import {
   AI_TAB_GROUP_ID,
   TAB_GROUP_COLORS,
@@ -663,6 +664,8 @@ function TabGlyph({ kind, privateBrowsing = false }: { kind: DesktopTabKind; pri
       return <VSCodeIcon />;
     case "gestures":
       return <Hand strokeWidth={2} />;
+    case "crumbs":
+      return <CrumbsIcon strokeWidth={2} />;
     case "screen-time":
       return <ChartNoAxesColumn strokeWidth={2} />;
     case "calendar":

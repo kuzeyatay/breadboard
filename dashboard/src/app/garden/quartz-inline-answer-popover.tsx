@@ -10,6 +10,7 @@ import type { ChatTextAnnotation } from '@/app/components/chat-markdown';
 import type { QuartzInlineAnswerUpdate } from '@/lib/quartz-assistant-selection';
 import type { ChatTextSelectionReference } from '@/lib/chat-text-selection';
 import type { ChatAttachment } from '@/lib/chat-attachments';
+import { promptSuggestionSelection, type PromptSuggestionSelection } from '@/lib/chat-prompt-suggestion';
 
 /**
  * The Assistant's own selection controller. A page answer is a message in its
@@ -32,6 +33,7 @@ export interface QuartzAnswerSelection {
 const NO_ANNOTATIONS: readonly ChatTextAnnotation[] = [];
 
 interface PageAnswer extends QuartzInlineAnswerUpdate {
+  suggestionSelection?: PromptSuggestionSelection | null;
   anchor: FloatingAnchorRect;
   viewportWidth: number;
   viewportHeight: number;
@@ -50,14 +52,15 @@ function pageAnswer(value: unknown): PageAnswer | null {
     !Number.isFinite(data.viewportWidth) || data.viewportWidth <= 0 ||
     !Number.isFinite(data.viewportHeight) || data.viewportHeight <= 0
   ) return null;
-  return data;
+  return { ...data, suggestionSelection: promptSuggestionSelection(data.suggestionSelection) };
 }
 
 /** Page highlights stay in Quartz; their answers use the same UI as chat selections. */
-export default function QuartzInlineAnswerPopover({ iframeRef, quartzOrigin, answerSelection, renderArtifacts }: {
+export default function QuartzInlineAnswerPopover({ iframeRef, quartzOrigin, answerSelection, renderArtifacts, suggestionModel }: {
   iframeRef: RefObject<HTMLIFrameElement | null>;
   quartzOrigin: string;
   answerSelection?: QuartzAnswerSelection;
+  suggestionModel?: string;
   renderArtifacts?: (answerMessageId: string) => ReactNode;
 }) {
   const [answer, setAnswer] = useState<PageAnswer | null>(null);
@@ -156,6 +159,8 @@ export default function QuartzInlineAnswerPopover({ iframeRef, quartzOrigin, ans
     anchor={answer.anchor}
     notificationSelectionId={answer.requestId}
     draftId={answer.highlightId}
+    suggestionSelection={answer.suggestionSelection}
+    suggestionModel={suggestionModel}
     question={answer.question}
     questionAttachments={answerSelection?.attachmentsFor?.(answer.requestId)}
     answer={answer.answer}

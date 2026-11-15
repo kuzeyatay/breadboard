@@ -48,6 +48,7 @@ for (const {surface,pdfChat} of [
       import {ChatSelectionMenu,SelectableAssistantMarkdown,InlineSelectionAnswerPopover} from '@/app/components/chat-text-selection-ui';
       const InlineArtifactCards=()=>null;
       const surface='dashboard_terminal',sessionId='conv_one',activeChatId=1,clusterSlug='fixture',temporaryChat=false;
+      const model='selection-model';
       const conversationLocked=false,chatContentLoading=false,canAskSelection=true,sourceAnswer=undefined,webSelection=undefined;
       const deletedInlineSelectionIds=new Set(),chatSelections=new Map();
       ${declarations.get('messageSelectionSourceId')}
@@ -96,6 +97,11 @@ for (const {surface,pdfChat} of [
     const errors=[];page.on('pageerror',error=>{errors.push(error.message);t.diagnostic(error.message);});
     t.after(()=>assert.deepEqual(errors,[]));
     await page.route('http://localhost:53166/**',route=>route.fulfill({contentType:'text/html',body:'<html data-theme="light"><body><div id="root"></div></body></html>'}));
+    const suggestions=[];
+    await page.route('**/api/chat-prompt-suggestion',route=>{
+      suggestions.push(route.request().postDataJSON());
+      return route.fulfill({json:{suggestion:'How does this passage explain the circuit?'}});
+    });
     await page.goto('http://localhost:53166/');
     await page.addStyleTag({content:css});
     await page.addScriptTag({content:bundle.outputFiles[0].text});
@@ -109,10 +115,20 @@ for (const {surface,pdfChat} of [
     const cards=page.getByRole('dialog',{name:'Answer about highlighted text'});
     const editor=cards.first().getByRole('textbox');
     await expect(editor).toBeFocused();
+    await expect(cards.locator('[data-prompt-suggestion]')).toBeVisible();
+    assert.equal(suggestions.length,1);
+    assert.equal(suggestions[0].model,'selection-model');
+    assert.equal(suggestions[0].selection.quote,'selected passage');
+    assert.match(suggestions[0].selection.suffix,/circuit/);
+    assert.deepEqual(suggestions[0].messages,[]);
     await expect(cards.getByRole('button',{name:'Ask',exact:true})).toBeDisabled();
     await editor.press('Enter');
     await expect(editor).toBeFocused();
     assert.equal(await page.evaluate(()=>requests.length),0);
+    await editor.press('Tab');
+    await expect(editor).toHaveValue('How does this passage explain the circuit?');
+    await expect(editor).toBeFocused();
+    assert.equal(await page.evaluate(()=>requests.length),0,'accepting a suggestion only fills the inline draft');
     await editor.fill('Explain this passage');
     const mark=page.locator('main [data-chat-selection-kind="answer"]').first();
     await page.mouse.click(20,20);

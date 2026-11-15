@@ -29,6 +29,8 @@ interface NotificationRow {
   updated_at: string;
   conversation_public_id: string;
   conversation_title: string;
+  origin_label: string | null;
+  prompt: string | null;
   surface: "dashboard_terminal" | "garden_chat";
   legacy_chat_session_id: number | null;
   garden_slug: string | null;
@@ -225,6 +227,22 @@ export function chatNotificationDeliveryId(database: Database.Database, userId: 
   return row ? notificationIdentity(row) : id;
 }
 
+/**
+ * The open Ask Here popup that shows this answer. Chat Ask Here saves only
+ * `textSelection` (mode "inline"); its id is the popup's notification id.
+ * Deliberately not used for the dismissal grouping: one popup holds many turns.
+ */
+function viewingSelectionId(metadata: string | null): string | null {
+  const direct = inlineSelectionRequestId(metadata);
+  if (direct || !metadata) return direct;
+  try {
+    const selection = (JSON.parse(metadata) as Record<string, unknown>).textSelection as Record<string, unknown> | undefined;
+    return selection?.mode === "inline" && typeof selection.id === "string" && selection.id.trim() ? selection.id.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 function inlineSelectionRequestIdSql(alias: string): string {
   return `COALESCE(
     CASE WHEN json_valid(${alias}.metadata)
@@ -249,6 +267,13 @@ function messageKeys(row: Pick<NotificationRow, 'message_id' | 'client_message_i
     entryId: typeof entryId === 'string' ? entryId : undefined });
 }
 
+/** Messaging chats say which channel; Breadboard chats show the prompt that was answered. */
+function noticeHeading(row: Pick<NotificationRow, "origin_label" | "prompt" | "conversation_title">): string {
+  if (row.origin_label === "Telegram" || row.origin_label === "WhatsApp") return row.origin_label;
+  const prompt = (row.prompt ?? "").replace(/^\s*\/[a-z0-9:_-]+\s*/i, "").replace(/\s+/g, " ").trim();
+  return prompt || row.conversation_title;
+}
+
 function notificationFromRow(row: NotificationRow): ChatNotificationRecord | null {
   const target = row.surface === "garden_chat" && row.legacy_chat_session_id !== null && row.garden_slug
       ? {
@@ -265,7 +290,7 @@ function notificationFromRow(row: NotificationRow): ChatNotificationRecord | nul
 
   const failed = row.status === "failed" || externalAgentFailed(row.metadata);
   const response = row.content.trim() || "The response could not be completed.";
-  const inlineSelectionId = inlineSelectionRequestId(row.metadata);
+  const inlineSelectionId = viewingSelectionId(row.metadata);
   return {
     id: `msg_${row.message_id}`,
     messageKeys: messageKeys(row),
@@ -273,7 +298,7 @@ function notificationFromRow(row: NotificationRow): ChatNotificationRecord | nul
     title: failed ? "Response failed" : "Response ready",
     type: failed ? "error" : "success",
     response,
-    chatTitle: row.conversation_title,
+    chatTitle: noticeHeading(row),
     target,
     updatedAt: row.updated_at,
   };
@@ -284,7 +309,10 @@ function notificationFromRow(row: NotificationRow): ChatNotificationRecord | nul
 export function listRecentChatNotifications(database: Database.Database, userId: number): ChatNotificationRecord[] {
   const rows = database.prepare(`
     SELECT m.id AS message_id,m.client_message_id,m.content,m.status,m.metadata,m.updated_at,
-      c.public_id AS conversation_public_id,c.title AS conversation_title,c.surface,
+      c.public_id AS conversation_public_id,c.title AS conversation_title,c.origin_label,
+      (SELECT substr(u.content, 1, 400) FROM conversation_messages u
+        WHERE u.conversation_id = m.conversation_id AND u.role = 'user' AND u.id < m.id
+        ORDER BY u.id DESC LIMIT 1) AS prompt,c.surface,
       c.legacy_chat_session_id,g.slug AS garden_slug
     ${NOTIFIABLE_MESSAGES_SQL}
       AND m.id IN (SELECT recent.id FROM conversation_message_reads recent
@@ -345,6 +373,10 @@ export function listPendingChatNotifications(
     SELECT m.id AS message_id, m.client_message_id, m.content, m.status, m.metadata, m.updated_at,
            c.public_id AS conversation_public_id,
            c.title AS conversation_title,
+           c.origin_label,
+      (SELECT substr(u.content, 1, 400) FROM conversation_messages u
+        WHERE u.conversation_id = m.conversation_id AND u.role = 'user' AND u.id < m.id
+        ORDER BY u.id DESC LIMIT 1) AS prompt,
            c.surface,
            c.legacy_chat_session_id,
            g.slug AS garden_slug
@@ -491,7 +523,7 @@ export function listUnreadChatMessages(database: Database.Database, userId: numb
   return rows.map(row => ({
     id: `msg_${row.message_id}`,
     messageKeys: messageKeys(row),
-    ...(inlineSelectionRequestId(row.metadata) ? { inlineSelectionId: inlineSelectionRequestId(row.metadata)! } : {}),
+    ...(viewingSelectionId(row.metadata) ? { inlineSelectionId: viewingSelectionId(row.metadata)! } : {}),
     target: row.legacy_chat_session_id !== null && row.garden_slug
       ? { surface: "garden_chat", chatId: String(row.legacy_chat_session_id), gardenSlug: row.garden_slug, conversationId: row.public_id }
       : { surface: "dashboard_terminal", chatId: row.public_id },

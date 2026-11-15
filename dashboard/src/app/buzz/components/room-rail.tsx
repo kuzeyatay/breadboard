@@ -216,7 +216,7 @@ export function RoomRail({
 
         {rooms.length === 0 ? (
           <p className="px-4 py-2 text-xs leading-relaxed text-sidebar-foreground/60">
-            No rooms here yet. Open one and bring in whoever should be in it —
+            No rooms here yet. Open one and bring in whoever should be in it,
             people and agents alike.
           </p>
         ) : null}

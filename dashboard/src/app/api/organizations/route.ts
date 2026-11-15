@@ -33,7 +33,11 @@ export async function POST(request: Request) {
     const name = typeof body.name === "string" ? body.name : "";
     const id = db.transaction(() => {
       const created = createOrganization(userId, name);
-      if (body.createGeneralRoom === true) createRoom(created, userId, { name: "general", topic: "A place for your team and agents." });
+      if (body.createGeneralRoom === true) {
+        // Created first so "general", the more recent of the two, is the room the organization opens on.
+        createRoom(created, userId, { name: "crumbs", topic: "Crumbs your organization leaves around the web." });
+        createRoom(created, userId, { name: "general", topic: "A place for your team and agents." });
+      }
       return created;
     })();
     return NextResponse.json({ id }, { status: 201 });

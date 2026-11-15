@@ -20,6 +20,9 @@ import katex from "katex";
 import { registerInlineSelectionNotificationView } from "@/lib/notification-view-presence";
 import { placeNestedInlineAnswer } from "@/lib/inline-answer-placement";
 import { useInlineQuestionDraft } from "./use-inline-question-draft";
+import { usePromptSuggestion } from "./use-prompt-suggestion";
+import PromptSuggestionOverlay from "./prompt-suggestion-overlay";
+import type { PromptSuggestionSelection } from "@/lib/chat-prompt-suggestion";
 import ActivityPanel from "./hermes/activity-panel";
 import MetalSendButton from "./effects/metal-send-button";
 import InlineQuestionAttachments from "./inline-question-attachments";
@@ -33,6 +36,7 @@ import ChatMarkdown, {
 } from "./chat-markdown";
 import {
   chatTextSelectionDraft,
+  SIDE_CHAT_CONTEXT_SOURCE,
   wholeMessageReply,
   type ChatTextSelectionReference,
 } from "@/lib/chat-text-selection";
@@ -333,7 +337,8 @@ export function ChatSelectionMenu({
     editingNote
       ? 470
       : (onHighlightColor ? (highlighted ? 250 : 220) : 0) +
-        (onAskInChat && onAskHere ? 170 : onAskInChat || onAskHere ? 96 : 0),
+        (onAskInChat && onAskHere ? 170 : onAskInChat || onAskHere ? 96 : 0) +
+        (onComment ? 116 : 0),
     window.innerWidth - 20,
   );
   const left = Math.max(
@@ -431,8 +436,17 @@ export function ChatSelectionMenu({
             </button>
           </>
         ) : null}
+        {onComment ? (
+          <button
+            type="button"
+            onClick={onComment}
+            title="Leave a crumb on this passage"
+            className="ml-1 shrink-0 whitespace-nowrap rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-semibold text-[var(--paper-raised)] transition-[filter,transform] duration-150 ease-out hover:brightness-110 active:scale-[0.97]"
+          >
+            Leave a crumb
+          </button>
+        ) : null}
       </div>
-      {onComment && <button type="button" onClick={onComment} className="w-full border-t border-[var(--line)] px-3 py-2 text-left text-xs font-medium text-[var(--ink-heading)] hover:bg-[var(--paper-strong)]">Comment in Organization</button>}
       {editingNote && onSaveNote ? (
         <div data-enter-submit-scope className="border-t border-[var(--line)] px-2 pb-2 pt-2" role="group" aria-label="Note editor">
           <textarea
@@ -583,8 +597,9 @@ export function SelectionComposerContext({
 export function QuotedChatSelection({
   selection,
 }: {
-  selection: Pick<ChatTextSelectionReference, "quote">;
+  selection: Pick<ChatTextSelectionReference, "quote"> & { sourceMessageId?: string };
 }) {
+  if (selection.sourceMessageId === SIDE_CHAT_CONTEXT_SOURCE) return null;
   return (
     <div className="mb-1 flex max-w-xl items-start gap-2 px-1 text-left text-xs leading-5 text-[var(--ink-muted)]">
       <SelectionArrowIcon className="mt-0.5 h-4 w-4 shrink-0 text-[var(--botanical)]" />
@@ -612,6 +627,8 @@ export function InlineSelectionAnswerPopover({
   notificationSelectionId = selection?.id,
   draftId = selection?.id ?? notificationSelectionId,
   persistDraft = true,
+  suggestionSelection,
+  suggestionModel,
   question,
   questionAttachments,
   answer,
@@ -650,6 +667,9 @@ export function InlineSelectionAnswerPopover({
   draftId?: string;
   /** Temporary chats keep drafts only in memory. */
   persistDraft?: boolean;
+  /** The excerpt being asked about, including page/browser selections. */
+  suggestionSelection?: PromptSuggestionSelection | null;
+  suggestionModel?: string;
   question?: string;
   questionAttachments?: readonly ChatAttachment[];
   answer?: string;
@@ -721,6 +741,16 @@ export function InlineSelectionAnswerPopover({
   const pasteSessionRef = useRef({ generation: 0, pending: 0 });
   const savedAttachments = questionAttachments ?? submittedAttachments;
   const attachedFiles = draftAttachments ?? savedAttachments;
+  const promptSuggestion = usePromptSuggestion({
+    selection: suggestionSelection,
+    conversationKey: JSON.stringify(["ask-here", conversationId, draftId]),
+    model: suggestionModel ?? "",
+    temporary: !persistDraft,
+    value: draft ?? "",
+    enabled: editing && !questionDisabled && !pending && Boolean(onAskAgain) &&
+      attachedFiles.length === 0 && uploadingImages === 0,
+    onChange: setDraft,
+  });
   const canSendQuestion = !questionDisabled && !pending && Boolean(onAskAgain) && uploadingImages === 0 &&
     Boolean((draft ?? "").trim() || attachedFiles.length);
   useEffect(() => {
@@ -1053,9 +1083,18 @@ export function InlineSelectionAnswerPopover({
   useLayoutEffect(() => {
     const editor = editorRef.current;
     if (!editing || !editor) return;
-    editor.style.height = "auto";
-    editor.style.height = `${Math.min(160, Math.max(66, editor.scrollHeight))}px`;
-  }, [draft, editing]);
+    const suggestion = editor.parentElement?.querySelector<HTMLElement>("[data-prompt-suggestion]");
+    const resize = () => {
+      editor.style.height = "auto";
+      editor.style.height = `${Math.min(160, Math.max(66, editor.scrollHeight, suggestion?.scrollHeight ?? 0))}px`;
+    };
+    resize();
+    // Wrapped ghost text sizes the editor just like a real question, including
+    // after the placeholder animation and when a narrow viewport changes.
+    const observer = new ResizeObserver(resize);
+    if (suggestion) observer.observe(suggestion);
+    return () => observer.disconnect();
+  }, [draft, editing, promptSuggestion.text]);
 
   function submitEdit() {
     const next = (draft ?? "").trim() || attachmentOnlyMessageText(attachedFiles);
@@ -1143,22 +1182,34 @@ export function InlineSelectionAnswerPopover({
         {editing ? (
           <div className="bb-inline-answer-question min-w-0 flex-1">
             {attachmentPreviews(attachedFiles, true)}
+            <div className="relative">
               <textarea
                 ref={editorRef}
                 value={draft ?? ""}
-                onChange={(event) => setDraft(event.target.value)}
+                onChange={(event) => { promptSuggestion.dismiss(); setDraft(event.target.value); }}
                 onPaste={event => { void pasteQuestionImages(event); }}
                 onKeyDown={(event) => {
+                  if (promptSuggestion.handleKeyDown(event)) return;
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
                     submitEdit();
                   }
                 }}
                 rows={2}
-                placeholder="Ask a question…"
-                className="w-full resize-none rounded-sm bg-transparent py-1 text-sm leading-[22px] text-[var(--ink-heading)] placeholder:text-[var(--ink-muted)] outline-none"
+                placeholder={promptSuggestion.text ? "" : "Ask a question…"}
+                className="block w-full resize-none rounded-sm bg-transparent py-1 text-sm leading-[22px] text-[var(--ink-heading)] placeholder:text-[var(--ink-muted)] outline-none"
                 aria-label="Edit question about highlighted text"
+                aria-describedby={promptSuggestion.text ? promptSuggestion.descriptionId : undefined}
+                aria-keyshortcuts={promptSuggestion.text ? "Tab Escape" : undefined}
               />
+              {promptSuggestion.text && <>
+                <PromptSuggestionOverlay key={promptSuggestion.text} text={promptSuggestion.text}
+                  placeholder="Ask a question…" compact multiline />
+                <span id={promptSuggestion.descriptionId} className="sr-only">
+                  Suggested question: {promptSuggestion.text} Press Tab to use it or Escape to dismiss.
+                </span>
+              </>}
+            </div>
             {uploadingImages > 0 || attachmentStatus ? <p role="status" className="mt-2 text-xs text-[var(--ink-muted)]">
               {uploadingImages > 0 ? "Adding image…" : attachmentStatus}
             </p> : null}

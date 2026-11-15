@@ -143,10 +143,10 @@ test("a message row keeps Buzz's row anatomy", () => {
   const html = renderRow();
   assert.match(html, /data-testid="message-row"/);
   assert.match(html, /data-testid="message-author"/);
-  // No profile pictures anywhere in Buzz, and no gutter left behind where one
-  // used to sit — the text starts at the row's own edge.
-  assert.doesNotMatch(html, /data-testid="message-avatar/);
-  assert.doesNotMatch(html, /w-9 shrink-0/);
+  // Profile photos are back: the first row of a block carries its author's
+  // face (or initials) in a fixed gutter, so the text column stays aligned.
+  assert.match(html, /data-testid="message-avatar/);
+  assert.match(html, /w-9 shrink-0/);
   // Rows are padded by the conversation variable so the transcript retunes
   // with the type scale.
   assert.match(html, /py-conversation-row/);

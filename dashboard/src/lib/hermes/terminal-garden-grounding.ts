@@ -46,32 +46,35 @@ export interface TerminalGardenGrounding
   context: string;
 }
 
-export function shouldGroundTerminalInGardens(input: {
+interface GardenGroundingRequest {
   request: string;
   plan: TaskPlan;
   hasAttachments?: boolean;
   activeGardenSlug?: string | null;
-}): boolean {
+}
+
+/** Turns that must not be handed Garden material at all, whatever they ask. */
+function gardenMaterialExcluded(input: GardenGroundingRequest): boolean {
   const request = input.request.trim();
-  if (
+  return (
     !request ||
-    (input.hasAttachments && !input.activeGardenSlug) ||
+    Boolean(input.hasAttachments && !input.activeGardenSlug) ||
     preservesLiteralTeachingText(request) ||
     GARDEN_OPT_OUT.test(request) ||
-    (!input.activeGardenSlug && !KNOWLEDGE_SYNTHESIS_INTENT.test(request) &&
-      !PERSONAL_KNOWLEDGE_INTENT.test(request))
-  ) {
-    return false;
-  }
-  if (
     input.plan.requiredResources.some(
       (resource) => resource.kind === "path" || resource.kind === "url",
-    )
-  ) {
-    return false;
-  }
-  return !input.plan.requiredCapabilities.some((capability) =>
-    OPERATIONAL_CAPABILITIES.has(capability));
+    ) ||
+    input.plan.requiredCapabilities.some((capability) =>
+      OPERATIONAL_CAPABILITIES.has(capability))
+  );
+}
+
+export function shouldGroundTerminalInGardens(input: GardenGroundingRequest): boolean {
+  if (gardenMaterialExcluded(input)) return false;
+  const request = input.request.trim();
+  return Boolean(input.activeGardenSlug) ||
+    KNOWLEDGE_SYNTHESIS_INTENT.test(request) ||
+    PERSONAL_KNOWLEDGE_INTENT.test(request);
 }
 
 function sourceFromChunk(chunk: RetrievalChunk): TerminalGardenSource {
@@ -105,8 +108,19 @@ export async function retrieveTerminalGardenGrounding(input: {
   hasAttachments?: boolean;
   /** A Garden conversation reads its own authorized Garden, not every Garden. */
   activeGardenSlug?: string | null;
+  /**
+   * Also look for pages in the user's own Gardens, on any subject, that rest
+   * on the same structure as the question. Off unless the caller asks: it
+   * costs a small model call, and it is personalization, so a caller withholds
+   * it wherever it withholds the user's memories. See garden-bridge.ts.
+   */
+  bridge?: boolean;
+  /** Earlier user messages, so a follow-up's "it" can be resolved. */
+  priorRequests?: readonly string[];
 }): Promise<TerminalGardenGrounding> {
-  if (!shouldGroundTerminalInGardens(input)) {
+  const ground = shouldGroundTerminalInGardens(input);
+  const bridge = input.bridge === true && !gardenMaterialExcluded(input);
+  if (!ground && !bridge) {
     return { attempted: false, sources: [], context: "" };
   }
 
@@ -119,19 +133,34 @@ export async function retrieveTerminalGardenGrounding(input: {
     import("../semantic-retrieval.ts"),
     import("./session-service.ts"),
   ]);
-  const authorized = listAuthorizedGardens(input.userId).filter(garden =>
+  const everyGarden = listAuthorizedGardens(input.userId);
+  const authorized = everyGarden.filter(garden =>
     !input.activeGardenSlug || garden.slug === input.activeGardenSlug);
   const contentRoot = process.env.QUARTZ_CONTENT_PATH?.trim();
   if (!contentRoot) {
     return {
-      attempted: true,
+      attempted: ground,
       sources: [],
       context: "",
-      warning: "Garden storage is not configured.",
+      ...(ground ? { warning: "Garden storage is not configured." } : {}),
     };
   }
-  if (authorized.length === 0) {
-    return { attempted: true, sources: [], context: "" };
+  // Started now and awaited last, so it runs beside the retrieval below and
+  // adds only whatever it takes beyond that. It never rejects. It reads the
+  // Gardens the user owns, every subject, which is the point: the active
+  // Garden's own pages are what the retrieval below already covers.
+  const bridged = bridge
+    ? import("./garden-bridge.ts").then(({ retrieveGardenBridge }) => retrieveGardenBridge({
+        userId: input.userId,
+        request: input.request,
+        priorRequests: input.priorRequests,
+        gardens: everyGarden.filter(garden => garden.isOwner).map(garden => ({
+          slug: garden.slug, name: garden.name, rootPath: path.join(contentRoot, garden.slug),
+        })),
+      })).then(result => result.context, () => "")
+    : Promise.resolve("");
+  if (!ground || authorized.length === 0) {
+    return { attempted: ground, sources: [], context: await bridged };
   }
 
   try {
@@ -178,7 +207,7 @@ export async function retrieveTerminalGardenGrounding(input: {
       ...(retrieval.embeddingWarning
         ? { warning: retrieval.embeddingWarning }
         : {}),
-      context: retrieval.context
+      context: [retrieval.context
         ? [
             "# automatically_retrieved_garden_evidence",
             "Breadboard retrieved the following passages from the user's authorized Gardens for this turn.",
@@ -191,13 +220,13 @@ export async function retrieveTerminalGardenGrounding(input: {
               JSON.stringify(neighborhoods),
             ] : []),
           ].join("\n\n")
-        : "",
+        : "", await bridged].filter(Boolean).join("\n\n"),
     };
   } catch (error) {
     return {
       attempted: true,
       sources: [],
-      context: "",
+      context: await bridged,
       warning:
         error instanceof Error
           ? error.message

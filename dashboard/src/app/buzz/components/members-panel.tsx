@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Plus, UserMinus, X } from "lucide-react";
 
 import { cn } from "@/app/buzz/lib/cn";
+import { UserAvatar } from "@/app/buzz/ui/UserAvatar";
 
 import { BREAD_PERSONA, BREAD_SLUG } from "@/lib/buzz/bread.ts";
 
@@ -188,7 +189,7 @@ export function MembersPanel({ members, personas, roomPublicId, rosterReady, sel
 
           <p className="buzz-panel-label mb-2 px-1 text-xs font-semibold text-muted-foreground">People<span className="tabular-nums">: {people.length}</span></p>
 
-          {people.map(member => <div key={member.id} className="group flex min-h-9 items-center justify-between rounded-lg px-1"><span className="truncate text-xs">{member.displayName}</span>{canManage && member.id !== selfMemberId ? <button disabled={busy} onClick={() => void action(() => onRemove(member.id))} className="flex size-7 items-center justify-center rounded-lg text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-muted hover:text-destructive" aria-label={`Remove ${member.displayName}`}><UserMinus className="size-3.5" /></button> : null}</div>)}
+          {people.map(member => <div key={member.id} className="group flex min-h-9 items-center justify-between rounded-lg px-1"><span className="flex min-w-0 items-center gap-2"><UserAvatar avatarUrl={member.avatarUrl ?? null} displayName={member.displayName} size="sm" /><span className="truncate text-xs">{member.displayName}</span></span>{canManage && member.id !== selfMemberId ? <button disabled={busy} onClick={() => void action(() => onRemove(member.id))} className="flex size-7 items-center justify-center rounded-lg text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-muted hover:text-destructive" aria-label={`Remove ${member.displayName}`}><UserMinus className="size-3.5" /></button> : null}</div>)}
 
         </section>
 

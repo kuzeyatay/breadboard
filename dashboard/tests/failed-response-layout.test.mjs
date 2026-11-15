@@ -45,6 +45,7 @@ const bundle = await esbuild.build({
       const activeRun = running, runInFlight = running, conversationLocked = false;
       const isExternalAgentRunMessage = () => false;
       const onEditAssistantMessage = () => {}, beginAssistantMessageEdit = () => {};
+      const regenerating = null, regenerateInPlace = () => {};
       const editingAssistantMessageId = null, assistantMessageEditId = 'message';
       const inlinedCourseCorrections = {byAssistantIndex: new Map()}, annotationsByMessage = new Map();
       const messageSelectionSourceId = () => 'message', receiveTextSelection = () => {}, openAnnotation = () => {};

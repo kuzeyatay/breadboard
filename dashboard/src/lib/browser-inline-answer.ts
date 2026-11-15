@@ -7,7 +7,7 @@ import type { ChatHighlightColor } from "./chat-highlights";
 
 export type BrowserInlineAnswerContent = Pick<ComponentProps<typeof InlineSelectionAnswerPopover>,
   "question" | "questionAttachments" | "answer" | "reasoning" | "progressNotes" | "pending" | "usage" |
-  "responseDurationMs" | "responseCompletedAt" | "verification" | "startedAt" | "answerMessageId" | "starMessageId" | "conversationId" | "canStar" | "persistDraft"> &
+  "responseDurationMs" | "responseCompletedAt" | "verification" | "startedAt" | "answerMessageId" | "starMessageId" | "conversationId" | "canStar" | "persistDraft" | "suggestionModel"> &
   { canAsk: boolean; artifactMessageId?: string; error?: string; ownerReady?: boolean; note?: string;
     /** Ask-here threads asked inside this answer (recursively), so the card can drill into them. */
     nested?: BrowserInlineNestedThread[];

@@ -43,6 +43,7 @@ const bundle = await build({ bundle: true, write: false, outfile: 'quartz-select
     import {assistantVisibleContent} from '@/lib/hermes/assistant-visible-content';
     import {isClarificationAnswerMessage} from '@/lib/steered-response';
     import {isInlineSelectionNotificationViewed} from '@/lib/notification-view-presence';
+    import {notificationMessageKeys} from '@/lib/chat-notification-visibility';
     window.isInlineViewed=isInlineSelectionNotificationViewed;
     import {uiResourcesForUserRequest} from '@/lib/generative-ui/request-policy';
     import {chatRowKey} from '@/app/components/chat/chat-row-identity';
@@ -574,7 +575,7 @@ test('Garden page Ask here uses the shared popup across the iframe boundary', as
           onSelection:selection=>window.answerSelections.push(selection),onOpenAnnotation:()=>{}};
         function App(){const frame=useRef(null);return <>
           <iframe ref={frame} src="http://localhost:53140/reader" style={{display:'block',marginTop:60,width:'100%',height:'calc(100vh - 60px)',border:0}}/>
-          <QuartzInlineAnswerPopover iframeRef={frame} quartzOrigin="http://localhost:53140" answerSelection={answerSelection}/>
+          <QuartzInlineAnswerPopover iframeRef={frame} quartzOrigin="http://localhost:53140" answerSelection={answerSelection} suggestionModel="page-model"/>
         </>;}createRoot(document.getElementById('root')).render(<App/>);
       `}}),
   ]);
@@ -584,8 +585,13 @@ test('Garden page Ask here uses the shared popup across the iframe boundary', as
   page.on('pageerror', error=>errors.push(error.message));
   t.after(async()=>{await page.close();assert.deepEqual(errors,[]);});
   const stores=new Map();
+  const suggestions=[];
   await page.route('http://localhost:*/**',async route=>{
     const url=new URL(route.request().url());
+    if(url.pathname==='/api/chat-prompt-suggestion'){
+      suggestions.push(route.request().postDataJSON());
+      return route.fulfill({json:{suggestion:'Why does the magnetic force act sideways?'}});
+    }
     if(url.pathname==='/api/extract-text')return route.fulfill({json:{type:'image',dataUrl:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6foAAAAAASUVORK5CYII='}});
     if(url.pathname==='/api/text-highlights'){
       const {key,entries=[],mutations=[]}=route.request().postDataJSON();
@@ -624,6 +630,12 @@ test('Garden page Ask here uses the shared popup across the iframe boundary', as
   const editor=dialog.getByRole('textbox',{name:'Edit question about highlighted text'});
   await expect(editor).toBeFocused();
   assert.equal(await page.evaluate(()=>requests.some(r=>r.type==='second-brain:assistant-ask-here')),false,'Ask here opens a draft without opening the side chat or dispatching a turn');
+  await expect(dialog.locator('[data-prompt-suggestion]')).toBeVisible();
+  assert.equal(suggestions[0].model,'page-model');
+  assert.match(suggestions[0].selection.quote,/magnetic field determines the sideways force/);
+  await editor.press('Tab');
+  await expect(editor).toHaveValue('Why does the magnetic force act sideways?');
+  assert.equal(await page.evaluate(()=>requests.some(r=>r.type==='second-brain:assistant-ask-here')),false);
   await editor.fill('explain');
   await editor.evaluate(el=>{
     const data=new DataTransfer();data.items.add(new File(['image'],'equation.png',{type:'image/png'}));

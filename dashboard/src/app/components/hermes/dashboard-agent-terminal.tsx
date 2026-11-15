@@ -85,6 +85,7 @@ import ProductDetailsPanel, {
 import { useRailResize } from "./use-rail-resize";
 import ChatSearchDialog from "./chat-search-dialog";
 import UploadsPanel from "./uploads-panel";
+import DocumentsPanel, { gardenDocumentFile, gardenDocumentKey, type GardenDocument } from "./documents-panel";
 import TerminalScheduledPanel from "./terminal-scheduled-panel";
 import {
   formatRelativeRunTime,
@@ -8270,34 +8271,29 @@ if (careerOpsAgent) {
     }
   }, [beginAttachmentPreparation]);
 
-  const toggleArtifactAttachment = useCallback(async (
-    artifact: PresentedArtifact,
+  /**
+   * Toggle a remote file (an artifact or a garden document) in the composer.
+   * `sourceId` is the composer identity stored on `sourceArtifactId`.
+   */
+  const toggleRemoteAttachment = useCallback(async (
+    sourceId: string,
+    title: string,
+    loadFile: () => Promise<File>,
   ) => {
-    if (attachedArtifactIds.has(artifact.id)) {
+    if (attachedArtifactIds.has(sourceId)) {
       setChatAttachments((current) =>
-        current.filter((attachment) => attachment.sourceArtifactId !== artifact.id),
+        current.filter((attachment) => attachment.sourceArtifactId !== sourceId),
       );
       return;
     }
-    if (!artifact.downloadAvailable || attachingArtifactIds.size > 0) return;
+    if (attachingArtifactIds.size > 0) return;
 
-    setAttachingArtifactIds(new Set([artifact.id]));
+    setAttachingArtifactIds(new Set([sourceId]));
     const preparation = beginAttachmentPreparation();
     let errors: string[] = [];
-    setAttachmentStatus(`Attaching ${artifact.title}…`);
+    setAttachmentStatus(`Attaching ${title}…`);
     try {
-      const response = await fetch(artifactUrl(artifact, "download"));
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({})) as { error?: unknown };
-        throw new Error(
-          typeof payload.error === "string" ? payload.error : "Could not download the artifact.",
-        );
-      }
-      const blob = await response.blob();
-      const file = new File([blob], artifact.filename, {
-        type: artifact.mimeType || blob.type,
-        lastModified: Date.now(),
-      });
+      const file = await loadFile();
       const result = await extractChatAttachments([file], {
         allowVideo: true,
         onStatus: (status) => { if (preparation.isCurrent()) setAttachmentStatus(status); },
@@ -8306,24 +8302,48 @@ if (careerOpsAgent) {
       if (!preparation.isCurrent()) return;
       const scoped = result.attachments.map((attachment) => ({
         ...attachment,
-        sourceArtifactId: artifact.id,
+        sourceArtifactId: sourceId,
       }));
       if (scoped.length > 0) {
         setChatAttachments((current) => [
-          ...current.filter((attachment) => attachment.sourceArtifactId !== artifact.id),
+          ...current.filter((attachment) => attachment.sourceArtifactId !== sourceId),
           ...scoped,
         ]);
       }
       setAttachmentStatus([...result.errors, ...result.warnings].join(" · "));
       void distillAttachments(scoped).catch(() => undefined);
     } catch (cause) {
-      errors = [cause instanceof Error ? cause.message : `Could not attach ${artifact.title}.`];
+      errors = [cause instanceof Error ? cause.message : `Could not attach ${title}.`];
       if (preparation.isCurrent()) setAttachmentStatus(errors.join(" · "));
     } finally {
       setAttachingArtifactIds(new Set());
       preparation.finish(errors);
     }
   }, [attachedArtifactIds, attachingArtifactIds, beginAttachmentPreparation]);
+
+  const toggleArtifactAttachment = useCallback((artifact: PresentedArtifact) => {
+    if (!attachedArtifactIds.has(artifact.id) && !artifact.downloadAvailable) return;
+    return toggleRemoteAttachment(artifact.id, artifact.title, async () => {
+      const response = await fetch(artifactUrl(artifact, "download"));
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { error?: unknown };
+        throw new Error(
+          typeof payload.error === "string" ? payload.error : "Could not download the artifact.",
+        );
+      }
+      const blob = await response.blob();
+      return new File([blob], artifact.filename, {
+        type: artifact.mimeType || blob.type,
+        lastModified: Date.now(),
+      });
+    });
+  }, [attachedArtifactIds, toggleRemoteAttachment]);
+
+  const toggleGardenDocumentAttachment = useCallback(
+    (doc: GardenDocument) =>
+      void toggleRemoteAttachment(gardenDocumentKey(doc), doc.title || doc.slug, () => gardenDocumentFile(doc)),
+    [toggleRemoteAttachment],
+  );
 
   const handleAttachmentInput = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -9893,6 +9913,8 @@ onClearCareerOps={() => {
                 label={
                   sidePanel === "artifacts"
                     ? "Artifacts"
+                    : sidePanel === "documents"
+                      ? "Documents"
                     : sidePanel === "uploads"
                       ? "Uploads"
                       : sidePanel === "scheduled"
@@ -9915,6 +9937,12 @@ onClearCareerOps={() => {
                     attachedArtifactIds={attachedArtifactIds}
                     attachingArtifactIds={attachingArtifactIds}
                     onToggleArtifactAttachment={toggleArtifactAttachment}
+                  />
+                ) : sidePanel === "documents" ? (
+                  <DocumentsPanel
+                    attachedKeys={attachedArtifactIds}
+                    attachingKeys={attachingArtifactIds}
+                    onToggleAttachment={toggleGardenDocumentAttachment}
                   />
                 ) : sidePanel === "uploads" ? (
                   <UploadsPanel

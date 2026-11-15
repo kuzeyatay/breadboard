@@ -1056,6 +1056,7 @@ test("a spent enrichment budget publishes fallback text and the next build resum
 
   const first = await buildThoughtTopologyInRuntimeWorker(input);
   assert.equal(first.status, "built", "a Garden the model cannot finish in time still publishes");
+  assert.ok(first.unfinishedEnrichment > 0, "the result says the budget left text unwritten, so the next pass is queued");
   const firstArtifact = readThoughtTopology(gardenDir);
   assert.equal(firstArtifact.nodes.length, pages.length);
   assert.ok(firstArtifact.edges.length >= 2, "the fixture selects several connections");
@@ -1078,5 +1079,42 @@ test("a spent enrichment budget publishes fallback text and the next build resum
   assert.ok(secondArtifact.edges.every((edge) => edge.explanation.state === "ready"));
   assert.equal(secondArtifact.garden.summary.state, "ready", "the skipped Garden summary is written too");
   assert.equal(edgeCalls, firstArtifact.edges.length - 1, "only the skipped explanations are regenerated");
+  assert.equal(second.unfinishedEnrichment, 0, "a pass with time to spare ends the chain");
   database.close();
+});
+
+test("a burst of failed model calls is waited out, so the map publishes complete instead of degraded", async () => {
+  const contentRoot = path.join(isolatedRoot, "burst-content");
+  const slug = "burst-fixture";
+  const gardenDir = path.join(contentRoot, slug);
+  fs.mkdirSync(gardenDir, { recursive: true });
+  fs.writeFileSync(path.join(gardenDir, "_index.md"), "---\ntitle: Retry Garden\n---\n");
+  fs.writeFileSync(path.join(gardenDir, "a.md"), markdown("Alpha", "Flux through a surface.", ["b", "c"]));
+  fs.writeFileSync(path.join(gardenDir, "b.md"), markdown("Beta", "Current density.", ["c"]));
+  fs.writeFileSync(path.join(gardenDir, "c.md"), markdown("Gamma", "Electric potential.", []));
+  // Every second call throws, the shape of a provider answering 429 in bursts.
+  let calls = 0;
+  let thrown = 0;
+  const flaky = async (messages) => {
+    calls += 1;
+    if (calls % 2 === 1) { thrown += 1; throw new Error("429 rate limited"); }
+    return readyGenerator(messages);
+  };
+  const build = (dependencies) => buildThoughtTopologyInRuntimeWorker({
+    clusterId: 1, userId: 7, gardenId: slug, revision: 1, contentRoot,
+    database: databaseFixture(slug, 1),
+    dependencies: { embed: async () => { throw new Error("offline fixture"); }, generator: flaky, ...dependencies },
+  });
+  assert.equal((await build({ retryDelaysMs: [0, 0, 0] })).status, "built");
+  const artifact = readThoughtTopology(gardenDir);
+  assert.ok(thrown > 0);
+  assert.ok(artifact.edges.length >= 2);
+  assert.ok(artifact.edges.every((edge) => edge.explanation.state === "ready"), "no connection kept fallback text");
+  assert.equal(artifact.garden.summary.state, "ready");
+
+  // With no time left to wait, the failure still falls back rather than hanging the build.
+  fs.rmSync(path.join(gardenDir, ".breadboard"), { recursive: true, force: true });
+  calls = 0;
+  assert.equal((await build({ retryDelaysMs: [60_000], enrichmentBudgetMs: 1_000 })).status, "built");
+  assert.ok(readThoughtTopology(gardenDir).edges.some((edge) => edge.explanation.state === "degraded"));
 });

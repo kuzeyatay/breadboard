@@ -22,7 +22,7 @@ import LinkContextMenu from "../link-context-menu";
 import { Archive, Star } from "lucide-react";
 import TerminalWorkspaceMenu, { type TerminalWorkspacePicker } from "./terminal-workspace-menu";
 
-export type TerminalPanel = "artifacts" | "uploads" | "scheduled" | "hooks" | "starred" | "archived" | "processes";
+export type TerminalPanel = "artifacts" | "documents" | "uploads" | "scheduled" | "hooks" | "starred" | "archived" | "processes";
 
 /**
  * The rail's own widths, so every surface that mounts it agrees on them —
@@ -45,6 +45,7 @@ export const CHAT_RAIL_RESIZE = {
 /** Reading order of the rail's panel buttons, whichever subset is shown. */
 export const TERMINAL_PANELS: readonly TerminalPanel[] = [
   "artifacts",
+  "documents",
   "uploads",
   "scheduled",
   "hooks",
@@ -180,6 +181,15 @@ function NewChatIcon({ className = "h-[18px] w-[18px]" }: { className?: string }
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} aria-hidden>
       <path strokeLinecap="round" strokeLinejoin="round" d="M16.86 4.49a1.88 1.88 0 1 1 2.65 2.65L8.4 18.25l-3.53.88.88-3.53L16.86 4.49Z" />
+    </svg>
+  );
+}
+
+function DocumentsIcon({ className = "h-[18px] w-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14 3.75H7.5A2.25 2.25 0 0 0 5.25 6v12a2.25 2.25 0 0 0 2.25 2.25h9A2.25 2.25 0 0 0 18.75 18V8.5L14 3.75Z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M13.75 3.75V8.5h5M8.75 12.75h6.5M8.75 16h4.5" />
     </svg>
   );
 }
@@ -1475,6 +1485,15 @@ export default function TerminalSidebar({
               active={openPanel === "artifacts"}
               compact={collapsed}
               onClick={() => onTogglePanel("artifacts")}
+            />
+          ) : null}
+          {panels.includes("documents") ? (
+            <NavButton
+              label="Documents"
+              icon={<DocumentsIcon />}
+              active={openPanel === "documents"}
+              compact={collapsed}
+              onClick={() => onTogglePanel("documents")}
             />
           ) : null}
           {panels.includes("uploads") ? (

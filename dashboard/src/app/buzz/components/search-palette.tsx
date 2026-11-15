@@ -210,8 +210,8 @@ export function SearchPalette({
                   ) : null}
                   <span className="ml-auto flex shrink-0 items-center gap-1.5">
                     {room.archived ? (
-                      <span className="rounded bg-muted px-1 text-3xs uppercase tracking-wide text-muted-foreground">
-                        archived
+                      <span className="rounded bg-muted px-1 text-3xs text-muted-foreground">
+                        Archived
                       </span>
                     ) : null}
                     {room.unread > 0 ? (
@@ -268,7 +268,7 @@ export function SearchPalette({
 
 function GroupLabel({ children }: { children: React.ReactNode }) {
   return (
-    <p className="px-2 pb-1 pt-1.5 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
+    <p className="px-2 pb-1 pt-1.5 text-3xs font-semiboldr text-muted-foreground">
       {children}
     </p>
   );

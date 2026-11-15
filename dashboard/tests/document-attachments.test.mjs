@@ -628,3 +628,37 @@ test("every surface that names an attachment uses the shared linked renderer", (
   assert.match(gardenAssistant, /import ChatMessageAttachments/);
   assert.match(gardenAssistant, /<ChatMessageAttachments[\s\S]*?attachments=\{message\.attachments\}/);
 });
+
+test("only website PDFs left unopened past their lifetime are swept", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "document-blob-test-"));
+  try {
+    const store = await import("../src/lib/conversations/document-blob-store.ts");
+    const write = () => store.writeDocumentBlob({ userId: 7, format: "pdf", body: new Blob(["%PDF-1.4"]).stream(), root });
+    const attached = await write();
+    const stale = await write();
+    const reopened = await write();
+    store.markWebPdfBlob(stale);
+    store.markWebPdfBlob(reopened);
+    const later = Date.now() + store.WEB_PDF_LIFETIME_MS + 60_000;
+    const reopenedAt = new Date(later - 1000);
+    fs.utimesSync(`${reopened.path}.web`, reopenedAt, reopenedAt);
+    assert.equal(store.sweepWebPdfBlobs(7, root, later), 1);
+    assert.ok(store.findDocumentBlob({ userId: 7, blobId: attached.blobId, root }), "chat attachments are never swept");
+    assert.equal(store.findDocumentBlob({ userId: 7, blobId: stale.blobId, root }), null);
+    assert.ok(!fs.existsSync(`${stale.path}.web`));
+    assert.ok(store.findDocumentBlob({ userId: 7, blobId: reopened.blobId, root }));
+
+    // Videos and images opened from a new tab share the same marker and lifetime.
+    const videos = await import("../src/lib/conversations/video-blob-store.ts");
+    const video = await videos.writeVideoBlob({ userId: 7, format: "mp4", body: new Blob(["video"]).stream(), root });
+    const chatVideo = await videos.writeVideoBlob({ userId: 7, format: "mp4", body: new Blob(["video"]).stream(), root });
+    store.markWebPdfBlob(video);
+    assert.equal(store.sweepMarkedBlobs(videos.listVideoBlobs(7, root),
+      blob => videos.removeVideoBlob({ userId: 7, blobId: blob.blobId, root }), later), 1);
+    assert.equal(videos.findVideoBlob({ userId: 7, blobId: video.blobId, root }), null);
+    assert.ok(!fs.existsSync(`${video.path}.web`));
+    assert.ok(videos.findVideoBlob({ userId: 7, blobId: chatVideo.blobId, root }), "chat videos are never swept");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

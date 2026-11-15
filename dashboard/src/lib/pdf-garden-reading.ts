@@ -61,10 +61,28 @@ export function gardenPdfPageReadings(content: string): Record<number, string> {
   return pages;
 }
 
+function sameFileContents(a: string, b: string): boolean {
+  if (fs.statSync(a).size !== fs.statSync(b).size) return false;
+  const fa = fs.openSync(a, "r"), fb = fs.openSync(b, "r");
+  try {
+    const ba = Buffer.allocUnsafe(1 << 20), bb = Buffer.allocUnsafe(1 << 20);
+    for (;;) {
+      const na = fs.readSync(fa, ba, 0, ba.length, null);
+      const nb = fs.readSync(fb, bb, 0, bb.length, null);
+      if (na !== nb || !ba.subarray(0, na).equals(bb.subarray(0, nb))) return false;
+      if (na === 0) return true;
+    }
+  } finally {
+    fs.closeSync(fa); fs.closeSync(fb);
+  }
+}
+
 /** Caller must authorize this Garden. Reuse OCR only for the exact source/twin. */
 export function readGardenPdfPages(input: GardenPdfReference & {
   contentPath: string;
   bytes?: Uint8Array;
+  /** The uploaded PDF on disk; compared in chunks instead of loaded whole. */
+  filePath?: string;
 }): Record<number, string> | null {
   const root = path.resolve(input.contentPath);
   const garden = path.resolve(root, input.clusterSlug);
@@ -82,6 +100,7 @@ export function readGardenPdfPages(input: GardenPdfReference & {
   if (input.bytes && !candidates.some(file =>
     fs.statSync(file).size === input.bytes!.byteLength &&
     fs.readFileSync(file).equals(Buffer.from(input.bytes!.buffer, input.bytes!.byteOffset, input.bytes!.byteLength)))) return null;
+  if (input.filePath && !candidates.some(file => sameFileContents(file, input.filePath!))) return null;
   const pages = gardenPdfPageReadings(content);
   return Object.keys(pages).length ? pages : null;
 }

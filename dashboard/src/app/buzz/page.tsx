@@ -16,6 +16,9 @@ import {
   unreadCounts,
 } from "@/lib/buzz/instance.ts";
 import { buzzThreadNodeId } from "@/lib/profile/brain-graph-ids.ts";
+import { relayOrganizations } from "@/lib/crumbs/service.ts";
+import { getIdentity } from "@/lib/crumbs/store.ts";
+import db from "@/lib/db";
 import BuzzClient, {
   type BuzzCommunity,
   type BuzzPersona,
@@ -48,7 +51,12 @@ export default async function BuzzPage({
     email?: string | null;
   };
   const userId = Number(user.id);
-  const displayName = user.name?.trim() || user.email?.split("@")[0] || "you";
+  const identity = getIdentity(db, userId);
+  const displayName = identity?.displayName || identity?.handle?.split(".")[0] || user.name?.trim() || user.email?.split("@")[0] || "you";
+
+  // Encrypted organizations appear here as communities. Give the exchange a
+  // moment, then draw the page with whatever has arrived.
+  await relayOrganizations(userId, undefined, { waitMs: 4000 });
 
   const organizations = listOrganizations(userId);
   const communities: BuzzCommunity[] = organizations.map((organization) => ({
@@ -72,6 +80,13 @@ export default async function BuzzPage({
         name: "general",
         topic: "Everything that does not have a room yet.",
       });
+    }
+  }
+  // Every organization also has a crumbs room. Archived rooms count, so
+  // archiving it is respected instead of a second one appearing.
+  for (const community of communities) {
+    if (!listRooms(community.id, { includeArchived: true }).some((room) => room.slug === "crumbs")) {
+      createRoom(community.id, userId, { name: "crumbs", topic: "Crumbs your organization leaves around the web." });
     }
   }
 
@@ -144,6 +159,7 @@ export default async function BuzzPage({
       />
       <BuzzClient
         selfUserId={userId}
+        appearanceOwnerKey={(user.email || String(userId)).trim().toLowerCase()}
         communities={communities}
         rooms={rooms}
         personas={personas}

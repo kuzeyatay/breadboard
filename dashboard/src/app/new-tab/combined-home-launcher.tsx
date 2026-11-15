@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ListTodo, Settings, Timer, UsersRound } from "lucide-react";
 import VSCodeIcon from "@/app/components/vscode-icon";
+import CrumbsIcon from "@/app/components/crumbs-icon";
 import BrowserHomeAccessories from "@/app/browser/browser-home-accessories";
 import SavedBrowserBookmarksBar from "@/app/browser/browser-bookmarks-bar";
 import { BrowserQuickLinks } from "@/app/browser/browser-home-widgets";
@@ -129,6 +130,9 @@ export default function CombinedHomeLauncher({ data, navigation }: { data: Combi
               <VoiceShortcut className={controls.destinationButton} errorClassName={controls.browserError} />
               <GestureShortcut className={controls.destinationButton} />
               <ScreenTimeShortcut className={controls.destinationButton} />
+              <NavigationLink href="/crumbs" label="Crumbs" prefetch={false} className={controls.destinationButton}>
+                <CrumbsIcon size={15} aria-hidden="true" />Crumbs
+              </NavigationLink>
             </nav>
             <BrowserQuickLinks navigate={url => void navigate(url)} ownerKey={data.widgetOwnerKey} active={active} />
             {navigationError && <p role="alert" className={controls.browserError}>Couldn’t open this website. <button type="button" onClick={() => void navigate(navigationError)}>Try again</button></p>}

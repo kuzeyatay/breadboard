@@ -25,6 +25,7 @@ export const COMPOSER_SWITCH_KEYS = [
   "currentLocation",
   "learnHumanizerAuto",
   "thoughtTopologyAutoUpdate",
+  "webPdfCleanup",
 ] as const;
 
 export type ComposerSwitchKey = (typeof COMPOSER_SWITCH_KEYS)[number];

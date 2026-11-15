@@ -1,5 +1,7 @@
 "use client";
 
+import AssistantResponseEditor from "@/app/components/chat/assistant-response-editor";
+import { regenerateResponseText } from "@/app/components/chat/regenerate-response";
 import { normalizeUnifiedWorkflowDispatch, parseUnifiedWorkflowCommand } from "@/lib/workflows/unified-command.ts";
 
 import { LearnMarkdownSources } from "@/app/components/learn-markdown-sources";
@@ -752,6 +754,7 @@ const GARDEN_PANELS: readonly TerminalPanel[] = [
 
 const PANEL_TITLES: Record<TerminalPanel, string> = {
   artifacts: "Artifacts",
+  documents: "Documents",
   uploads: "Uploads",
   scheduled: "Scheduled chats",
   hooks: "Hooks",
@@ -1913,6 +1916,10 @@ interface ChatTranscriptProps {
   /** Remove one exchange: this message and the answer it produced. */
   onDeleteMessage: (messageIndex: number) => void;
   onRetryAssistant: (messageIndex: number) => void;
+  /** Index of an earlier answer being regenerated in place. */
+  regeneratingIndex: number | null;
+  /** Save a corrected answer in place; resolves false when it was not saved. */
+  onEditAssistant: (messageIndex: number, text: string) => Promise<boolean>;
   branchGroups: Record<string, ConversationBranchGroup<Message>>;
   onSwitchBranch: (groupId: string, direction: -1 | 1) => void;
   onExternalAgentTerminal: (
@@ -2030,6 +2037,8 @@ const ChatTranscript = memo(function ChatTranscript({
   onEditMessage,
   onDeleteMessage,
   onRetryAssistant,
+  regeneratingIndex,
+  onEditAssistant,
   branchGroups,
   onSwitchBranch,
   onExternalAgentTerminal,
@@ -2050,6 +2059,7 @@ const ChatTranscript = memo(function ChatTranscript({
     connection === "waiting";
   const copiedUserTimerRef = useRef<number | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingAssistantIndex, setEditingAssistantIndex] = useState<number | null>(null);
   const [messageEditText, setMessageEditText] = useState("");
   // Attachments taken off the message being edited; they stay off the resend.
   const [detachedAttachmentNames, setDetachedAttachmentNames] = useState<string[]>([]);
@@ -3526,6 +3536,12 @@ const ChatTranscript = memo(function ChatTranscript({
                                 />
                               ) : null}
                             </div>
+                          ) : editingAssistantIndex === i ? (
+                            <AssistantResponseEditor
+                              content={msg.content}
+                              onSave={(text) => onEditAssistant(i, text)}
+                              onCancel={() => setEditingAssistantIndex(null)}
+                            />
                           ) : visibleAssistantContent ? (
                             <div className="w-full text-sm leading-relaxed text-gray-200">
                               <SelectableAssistantMarkdown
@@ -3587,9 +3603,12 @@ const ChatTranscript = memo(function ChatTranscript({
                                     }
                                   : undefined;
                               })()}
-                              onRetry={
-                                i === lastAssistantIndex
-                                  ? () => onRetryAssistant(i)
+                              // Earlier answers regenerate in place (see handleRetryAssistant).
+                              onRetry={() => onRetryAssistant(i)}
+                              retrying={regeneratingIndex === i}
+                              onEdit={
+                                !isStreaming && msg.content.trim() && editingAssistantIndex !== i
+                                  ? () => setEditingAssistantIndex(i)
                                   : undefined
                               }
                             />
@@ -3939,6 +3958,7 @@ export default function WorkspaceClient({
     groupId: string;
   } | null>(null);
   const savingResponseBranchRef = useRef(false);
+  const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
   const [loadingChats, setLoadingChats] = useState(true);
   useStartupLoading(loadingDocs || linksLoading || loadingChats);
   const [viewPublicChats, setViewPublicChats] = useState(false);
@@ -4336,6 +4356,10 @@ export default function WorkspaceClient({
     selectedUploadTaskIdRef.current = selectedUploadTaskId;
   }, [selectedUploadTaskId]);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [otherGardens, setOtherGardens] = useState<{ slug: string; name: string }[]>([]);
+  const [importGardenSlug, setImportGardenSlug] = useState("");
+  const [importGardenDocs, setImportGardenDocs] = useState<DocInfo[] | null>(null);
+  const [importingDocSlug, setImportingDocSlug] = useState<string | null>(null);
   const [uploadLabel, setUploadLabel] = useState("");
   const [isHandwriting, setIsHandwriting] = useState(false);
   const [parseWithVlm, setParseWithVlm] = useState(false);
@@ -7158,6 +7182,63 @@ export default function WorkspaceClient({
     }
   }
 
+  // ── Copy documents from another garden ──────────────────────────────────────
+  // The copy goes through the normal upload pipeline as a fresh File, so it is
+  // ingested into this garden and merged into Learn when Generate Learning Map is on.
+
+  async function loadOtherGardens() {
+    try {
+      const res = await fetch("/api/clusters", { cache: "no-store" });
+      const data = await res.json();
+      const clusters: { slug: string; name: string }[] = Array.isArray(data.clusters) ? data.clusters : [];
+      setOtherGardens(clusters.filter((c) => c.slug !== clusterSlug).map(({ slug, name }) => ({ slug, name })));
+    } catch {
+      addToast("Could not load your other gardens");
+    }
+  }
+
+  async function selectImportGarden(slug: string) {
+    setImportGardenSlug(slug);
+    setImportGardenDocs(null);
+    if (!slug) return;
+    try {
+      const res = await fetch(`/api/documents?clusterSlug=${encodeURIComponent(slug)}`, { cache: "no-store" });
+      const data = await res.json();
+      const docs: DocInfo[] = Array.isArray(data.documents) ? data.documents : [];
+      setImportGardenDocs(docs.filter((d) => d.type === "source-document" && !d.sourceMedia));
+    } catch {
+      setImportGardenDocs([]);
+      addToast("Could not load that garden's documents");
+    }
+  }
+
+  async function addDocumentFromGarden(doc: DocInfo) {
+    const from = importGardenSlug;
+    setImportingDocSlug(doc.slug);
+    try {
+      const query = `clusterSlug=${encodeURIComponent(from)}`;
+      let file: File;
+      if (doc.sourcePdf) {
+        const res = await fetch(`/api/documents/${encodeURIComponent(doc.slug)}/source-pdf?${query}`);
+        if (!res.ok) throw new Error();
+        const name = doc.sourcePdf.split(/[\\/]/).pop() || `${doc.title || doc.slug}.pdf`;
+        file = new File([await res.blob()], name, { type: "application/pdf" });
+      } else {
+        // No kept original (text/office upload): copy the extracted Markdown.
+        const res = await fetch(`/api/documents/${encodeURIComponent(doc.slug)}?${query}`);
+        const data = await res.json();
+        if (!res.ok || typeof data.content !== "string") throw new Error();
+        const base = (doc.title || doc.slug).replace(/[\\/:*?"<>|]+/g, " ").trim() || doc.slug;
+        file = new File([data.content], `${base}.md`, { type: "text/markdown" });
+      }
+      setUploadFiles((prev) => appendUniqueUploadFiles(prev, [file]));
+    } catch {
+      addToast(`${doc.title || doc.slug}: could not be copied`);
+    } finally {
+      setImportingDocSlug(null);
+    }
+  }
+
   function handleUpload(e: React.FormEvent) {
     e.preventDefault();
     if (uploadFiles.length === 0) return;
@@ -8382,8 +8463,44 @@ export default function WorkspaceClient({
    * of this user message and the new attempt becomes another, so nothing is
    * lost and nothing is duplicated.
    */
+  /** Swap one answer's text in place and save; nothing around it moves. */
+  async function replaceAssistantContent(messageIndex: number, content: string): Promise<boolean> {
+    if (isStreaming || !activeChat || activeChat.isOwn === false) return false;
+    if (messages[messageIndex]?.role !== "assistant") return false;
+    // Evidence describes the old wording.
+    const nextMessages = messages.map((message, index) =>
+      index === messageIndex ? { ...message, content, verification: undefined } : message);
+    updateChatMessages(activeChat.id, nextMessages);
+    return temporaryChat || await persistChatSession(activeChat.id, nextMessages);
+  }
+
+  /**
+   * Regenerate an earlier answer without touching any message after it. The
+   * newest answer still retries through the full send path below.
+   */
+  async function regenerateInPlace(messageIndex: number) {
+    const userIndex = retryTargetUserMessageIndex(messages, messageIndex);
+    if (messages[userIndex]?.role !== "user") return;
+    setRegeneratingIndex(messageIndex);
+    try {
+      const content = await regenerateResponseText(messages.slice(0, userIndex + 1), model);
+      if (!await replaceAssistantContent(messageIndex, content)) {
+        addToast("The regenerated response could not be saved.", "error");
+      }
+    } catch (error) {
+      addToast(error instanceof Error ? error.message : "The response could not be regenerated.", "error");
+    } finally {
+      setRegeneratingIndex(null);
+    }
+  }
+
   async function handleRetryAssistant(messageIndex: number) {
     if (isStreaming || !activeChat || activeChat.isOwn === false || savingResponseBranchRef.current) return;
+    const lastAssistant = messages.findLastIndex((message) => message.role === "assistant");
+    if (messageIndex !== lastAssistant && !messages[messageIndex]?.failed) {
+      if (regeneratingIndex === null) void regenerateInPlace(messageIndex);
+      return;
+    }
     const userIndex = retryTargetUserMessageIndex(messages, messageIndex);
     const previousUser = messages[userIndex];
     if (!previousUser || previousUser.role !== "user") return;
@@ -18574,6 +18691,8 @@ if (careerOpsAgent) {
                 onEditMessage={handleEditUserMessage}
                 onDeleteMessage={handleDeleteUserMessage}
                 onRetryAssistant={handleRetryAssistant}
+                regeneratingIndex={regeneratingIndex}
+                onEditAssistant={replaceAssistantContent}
                 branchGroups={branchGroups}
                 onSwitchBranch={switchBranch}
                 onExternalAgentTerminal={handleExternalAgentTerminal}
@@ -18637,6 +18756,8 @@ if (careerOpsAgent) {
                 key={openAnswer.id}
                 anchor={openAnswer.anchor}
                 selection={thread.selection}
+                suggestionSelection={thread.selection}
+                suggestionModel={model}
                 question={thread.question}
                 questionAttachments={thread.attachments}
                 answer={thread.answer}
@@ -20015,6 +20136,56 @@ onClearCareerOps={() => {
                   </div>
                 )}
               </div>
+
+              {/* Copy from another garden */}
+              {!isViewingUploadTask && !allDoneOrError && (
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1.5">
+                    From another garden{" "}
+                    <span className="text-gray-600">(optional)</span>
+                  </label>
+                  <select
+                    value={importGardenSlug}
+                    onFocus={() => { if (otherGardens.length === 0) void loadOtherGardens(); }}
+                    onChange={(e) => void selectImportGarden(e.target.value)}
+                    className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-gray-600 transition-colors"
+                  >
+                    <option value="">Choose a garden…</option>
+                    {otherGardens.map((g) => (
+                      <option key={g.slug} value={g.slug}>{g.name}</option>
+                    ))}
+                  </select>
+                  {importGardenSlug && (
+                    <div className="mt-2 max-h-40 overflow-y-auto space-y-1">
+                      {importGardenDocs === null ? (
+                        <div className="flex justify-center py-2"><Spinner className="w-4 h-4 text-gray-400" /></div>
+                      ) : importGardenDocs.length === 0 ? (
+                        <p className="text-[11px] text-gray-600">No documents in that garden.</p>
+                      ) : (
+                        importGardenDocs.map((doc) => (
+                          <button
+                            key={doc.slug}
+                            type="button"
+                            disabled={importingDocSlug !== null}
+                            onClick={() => void addDocumentFromGarden(doc)}
+                            className="flex w-full items-center gap-2 rounded-lg bg-gray-800/50 px-3 py-2 text-left text-xs text-gray-300 hover:text-white disabled:opacity-60"
+                          >
+                            <span className="flex-1 truncate">{doc.title || doc.slug}</span>
+                            {importingDocSlug === doc.slug ? (
+                              <Spinner className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                            ) : (
+                              <span className="shrink-0 text-gray-500">+ Add</span>
+                            )}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                  <p className="text-[11px] text-gray-600 mt-1">
+                    Copies the document into this garden. With Generate Learning Map on, it is merged into this garden&apos;s lessons.
+                  </p>
+                </div>
+              )}
 
               <DocumentIngestionVisionError errors={ingestionVisionErrors} />
 

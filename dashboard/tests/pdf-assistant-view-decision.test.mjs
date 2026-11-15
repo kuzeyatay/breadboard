@@ -6,6 +6,7 @@ import * as core from "../src/lib/hermes/route-core.ts";
 import * as models from "../src/lib/ai-models.ts";
 import * as decision from "../src/lib/pdf-assistant-view-decision.ts";
 import * as gardenReading from "../src/lib/pdf-garden-reading.ts";
+import { PROMPT_PDF_VIEW_DECISION } from "../src/lib/system-prompts/feature-defaults.ts";
 
 const source = readFileSync(
   new URL(
@@ -21,6 +22,7 @@ function route({ raw = '{"captureView":false}', authError, modelError, gardenErr
   const calls = [];
   const modules = {
     "next/server": { NextResponse: { json: Response.json } },
+    "../../../../lib/system-prompts/service.ts": { systemPromptText: () => PROMPT_PDF_VIEW_DECISION },
     "@/lib/server-auth": {
       requireReadableCluster: (userId, slug) => {
         assert.equal(userId, 1);

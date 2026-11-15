@@ -32,6 +32,9 @@ import { SearchPalette } from "./components/search-palette";
 import { ThreadPanel } from "./components/thread-panel";
 import { requestJson } from "./lib/message-state";
 import { useRoom } from "./use-room";
+import { usePageAppearance } from "@/app/components/use-page-appearance";
+import SpotifyAmbientBackground from "@/app/components/spotify-ambient-background";
+import { SpotifyAmbientProvider } from "@/app/components/spotify-ambient-context";
 import type {
   BuzzCommunity,
   BuzzInvite,
@@ -60,8 +63,23 @@ async function failureMessage(response: Response, fallback: string) {
   return body?.message ?? fallback;
 }
 
+/**
+ * With Spotify colors or random colors chosen for the Terminal, the same
+ * moving lights sit behind the rails here in place of the still gradient.
+ */
+function BuzzAmbient({ ownerKey }: { ownerKey: string }) {
+  const appearance = usePageAppearance(ownerKey, "new-tab");
+  if (!appearance.ambientBackground) return null;
+  return <SpotifyAmbientProvider ownerKey={ownerKey}>
+    <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10">
+      <SpotifyAmbientBackground theme={appearance.theme} spotifyColors={appearance.spotifyBackground} randomColors={appearance.randomColorsBackground} />
+    </div>
+  </SpotifyAmbientProvider>;
+}
+
 export default function BuzzClient(props: {
   selfUserId: number;
+  appearanceOwnerKey: string;
   communities: BuzzCommunity[];
   rooms: BuzzRoomSummary[];
   personas: BuzzPersona[];
@@ -83,6 +101,7 @@ export default function BuzzClient(props: {
 
 function BuzzWorkspace({
   selfUserId,
+  appearanceOwnerKey,
   communities: initialCommunities,
   rooms: initialRooms,
   personas,
@@ -91,6 +110,7 @@ function BuzzWorkspace({
   initialThreadRootId,
 }: {
   selfUserId: number;
+  appearanceOwnerKey: string;
   communities: BuzzCommunity[];
   rooms: BuzzRoomSummary[];
   personas: BuzzPersona[];
@@ -150,6 +170,17 @@ function BuzzWorkspace({
     } catch (error) { setRailError(error instanceof Error ? error.message : "Rooms could not be refreshed."); }
 
   }, []);
+
+  // A room of an encrypted organization has no push channel: other members'
+  // messages arrive when the transcript is read, so read it on a short beat.
+  const refreshRoom = useRef(room.refresh);
+  useEffect(() => { refreshRoom.current = room.refresh; });
+  const linkedRoom = room.detail?.linked === true;
+  useEffect(() => {
+    if (!linkedRoom) return;
+    const timer = setInterval(() => { if (!document.hidden) void refreshRoom.current(); }, 5000);
+    return () => clearInterval(timer);
+  }, [linkedRoom]);
 
   // Badges have to move for rooms the reader is not looking at, so the rails
   // refresh on their own rather than only when a room is opened.
@@ -452,6 +483,7 @@ function BuzzWorkspace({
           data-buzz-gradient="dark"
         />
       </div>
+      <BuzzAmbient ownerKey={appearanceOwnerKey} />
 
       {communities.length === 0 ? (
         <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">

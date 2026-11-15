@@ -14,6 +14,7 @@ import {
   enrichNodeSummary,
   extractiveNodeSummary,
   mapWithConcurrency,
+  retryingTopologyGenerator,
   type ModelTextGenerator,
 } from "./enrichment.ts";
 import {
@@ -62,6 +63,8 @@ export interface ThoughtTopologyBuildDependencies {
    * build resumes exactly where this one stopped.
    */
   enrichmentBudgetMs?: number;
+  /** Waits between attempts of a failed model call; tests pass zeros. */
+  retryDelaysMs?: readonly number[];
 }
 
 /** Leaves ten minutes of a thirty-minute worker for embedding, layout, and verification. */
@@ -75,6 +78,8 @@ export interface ThoughtTopologyBuildResult {
   edges: number;
   mode: "semantic-vector" | "concept-lexical" | "disabled";
   sourceRevision?: string;
+  /** Summaries and explanations the budget left with fallback text; the next build writes them. */
+  unfinishedEnrichment?: number;
 }
 
 function seededUnit(value: string, offset: number): number {
@@ -375,7 +380,7 @@ export async function buildThoughtTopologyFromProjection(input: {
   onProgress?: (percent: number) => void;
   saveNode?: (node: ThoughtTopologyCacheNode) => void;
   saveEdge?: (edge: ThoughtTopologyCacheEdge) => void;
-}): Promise<{ topology: ThoughtTopology; cache: ThoughtTopologyCache }> {
+}): Promise<{ topology: ThoughtTopology; cache: ThoughtTopologyCache; enrichmentSkipped: number }> {
   return withGardenSystemPromptContext(input.gardenId, async () => {
   const dependencies = input.dependencies ?? {};
   const configuredVersions = dependencies.cacheVersions ?? DEFAULT_TOPOLOGY_CACHE_VERSIONS;
@@ -383,11 +388,18 @@ export async function buildThoughtTopologyFromProjection(input: {
     nodePromptVersion: stableHashText(configuredVersions.nodePromptVersion, scopedSystemPromptText("topology-node-summary")),
     edgePromptVersion: stableHashText(configuredVersions.edgePromptVersion, scopedSystemPromptText("topology-edge-explanation")),
   };
-  const generator = dependencies.generator === undefined
-    ? createDefaultTopologyGenerator(versions.summaryModel, input.signal)
-    : dependencies.generator ?? undefined;
   const clock = () => (dependencies.now?.() ?? new Date()).getTime();
   const enrichmentDeadline = clock() + (dependencies.enrichmentBudgetMs ?? DEFAULT_ENRICHMENT_BUDGET_MS);
+  const baseGenerator = dependencies.generator === undefined
+    ? createDefaultTopologyGenerator(versions.summaryModel, input.signal)
+    : dependencies.generator ?? undefined;
+  // A failed call waits out the failure while the enrichment budget allows,
+  // instead of publishing that page or connection with fallback text.
+  const generator = baseGenerator && retryingTopologyGenerator(baseGenerator, {
+    canWait: (delayMs) => clock() + delayMs <= enrichmentDeadline,
+    delaysMs: dependencies.retryDelaysMs,
+    signal: input.signal,
+  });
   let enrichmentSkipped = 0;
   // Once the budget is spent the model is no longer consulted; the fallback
   // text is deterministic and instant, so the rest of the build is bounded.
@@ -676,7 +688,7 @@ export async function buildThoughtTopologyFromProjection(input: {
     nodes: embedding.records,
     edges: nextEdgeCache,
   };
-  return { topology, cache };
+  return { topology, cache, enrichmentSkipped };
 
   }, undefined);
 }
@@ -802,5 +814,6 @@ export async function buildThoughtTopologyInRuntimeWorker(input: {
     edges: built.topology.edges.length,
     mode: built.topology.build.retrievalMode,
     sourceRevision: built.topology.sourceRevision,
+    unfinishedEnrichment: built.enrichmentSkipped,
   };
 }

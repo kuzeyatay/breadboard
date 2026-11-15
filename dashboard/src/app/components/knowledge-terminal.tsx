@@ -66,6 +66,7 @@ import {
 import { chatTimeSeparatorLabels } from '@/lib/chat-time-separators';
 import { requestChatTitleFromFirstMessage } from '@/lib/chat-session-title';
 import { forgetChatDrafts } from '@/lib/conversations/drafts';
+import AssistantResponseEditor from '@/app/components/chat/assistant-response-editor';
 import { useChatDraft } from '@/app/components/hermes/use-chat-draft';
 import { useTerminalHeaderClickGuard } from '@/app/components/terminal-header-click-guard';
 
@@ -178,6 +179,7 @@ type TranscriptRowProps = {
   /** True only for the newest answer while it is still being written. */
   responding: boolean;
   onRetry?: () => void;
+  onEditAssistant?: (text: string) => boolean;
 };
 
 /**
@@ -190,7 +192,9 @@ const TranscriptRow = memo(function TranscriptRow({
   separatorLabel,
   responding,
   onRetry,
+  onEditAssistant,
 }: TranscriptRowProps) {
+  const [editing, setEditing] = useState(false);
   return (
     <div className={separatorLabel ? 'space-y-3' : undefined}>
       {separatorLabel ? (
@@ -219,7 +223,9 @@ const TranscriptRow = memo(function TranscriptRow({
               usage={message.usage}
               responseDurationMs={message.responseDurationMs}
             />
-            {message.content ? (
+            {editing && onEditAssistant ? (
+              <AssistantResponseEditor content={message.content} onSave={onEditAssistant} onCancel={() => setEditing(false)} />
+            ) : message.content ? (
               <ChatMarkdown content={message.content} compact />
             ) : (
               <span className="text-gray-500">Reading across your gardens...</span>
@@ -231,6 +237,7 @@ const TranscriptRow = memo(function TranscriptRow({
                 responseDurationMs={message.responseDurationMs}
                 responseCompletedAt={message.responseCompletedAt}
                 onRetry={onRetry}
+                onEdit={onEditAssistant && message.content.trim() && !editing ? () => setEditing(true) : undefined}
               />
             ) : null}
           </div>
@@ -522,8 +529,11 @@ export default function KnowledgeTerminal({ scope }: Props) {
     historyOverride?: ChatMessage[],
     attachmentOverride?: readonly ChatAttachment[],
     voice?: import('@/lib/speech/voice-request').VoiceRequestOptions,
+    /** Regenerating an earlier answer: the messages after it stay, and the old answer returns if this fails. */
+    keep?: { original: ChatMessage; tail: ChatMessage[] },
   ) {
     const text = (textOverride ?? input).trim();
+    const tail = keep?.tail ?? [];
     const pendingAttachments = attachmentOverride
       ? [...attachmentOverride]
       : historyOverride
@@ -569,7 +579,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
     setChatAttachments([]);
     setAttachmentStatus('');
     setIsStreaming(true);
-    setMessages([...nextMessages, assistantMessage]);
+    setMessages([...nextMessages, assistantMessage, ...tail]);
     const controller = new AbortController();
     streamControllerRef.current = controller;
 
@@ -602,7 +612,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
       let buffer = '';
 
       const updateAssistant = () => {
-        setMessages([...nextMessages, { ...assistantMessage }]);
+        setMessages([...nextMessages, { ...assistantMessage }, ...tail]);
       };
 
       while (true) {
@@ -668,13 +678,13 @@ export default function KnowledgeTerminal({ scope }: Props) {
         responseDurationMs: Math.round(performance.now() - responseStartedAt),
         responseCompletedAt: new Date().toISOString(),
       };
-      const finalMessages = [...nextMessages, assistantMessage];
+      const finalMessages = [...nextMessages, assistantMessage, ...tail];
       setMessages(finalMessages);
       updateSessionMessages(session.id, finalMessages);
     } catch (error) {
       const aborted = error instanceof Error && error.name === 'AbortError';
       const message = error instanceof Error ? error.message : 'Assistant could not answer right now';
-      const finalMessages: ChatMessage[] = [
+      const finalMessages: ChatMessage[] = keep ? [...nextMessages, keep.original, ...tail] : [
         ...nextMessages,
         {
           role: 'assistant',
@@ -709,7 +719,19 @@ export default function KnowledgeTerminal({ scope }: Props) {
       setAttachmentStatus('Reattach the original document before trying this response again.');
       return;
     }
-    void sendMessage(previousUser.content, messages.slice(0, userIndex));
+    // An earlier answer is regenerated in place: everything after it stays.
+    const keep = messageIndex === messages.length - 1
+      ? undefined
+      : { original: messages[messageIndex], tail: messages.slice(messageIndex + 1) };
+    void sendMessage(previousUser.content, messages.slice(0, userIndex), undefined, undefined, keep);
+  }
+
+  function editAssistantMessage(messageIndex: number, content: string): boolean {
+    if (isStreaming || messages[messageIndex]?.role !== 'assistant') return false;
+    const next = messages.map((message, index) => index === messageIndex ? { ...message, content } : message);
+    setMessages(next);
+    if (activeSession) updateSessionMessages(activeSession.id, next);
+    return true;
   }
 
   const renderTranscriptRow = useCallback(
@@ -726,16 +748,16 @@ export default function KnowledgeTerminal({ scope }: Props) {
           messageKey={chatRowKey(message, index)}
           separatorLabel={timeSeparators[index] ?? null}
           responding={isStreaming && isNewest}
-          onRetry={isNewest ? () => retryAssistantMessage(index) : undefined}
+          onRetry={isStreaming ? undefined : () => retryAssistantMessage(index)}
+          onEditAssistant={isStreaming ? undefined : (text) => editAssistantMessage(index, text)}
         />
         <ChatModelChangeSeparators labels={modelChangesFor(message, index)} visible={!(isStreaming && isNewest)} />
         </>
       );
     },
-    // `retryAssistantMessage` is re-declared every render and is reachable only
-    // from the newest row, which re-renders anyway.
+    // `retryAssistantMessage` and `editAssistantMessage` read `messages`, a dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [messages.length, timeSeparators, isStreaming, revealedAssistantContent, modelChangesFor],
+    [messages, timeSeparators, isStreaming, revealedAssistantContent, modelChangesFor],
   );
 
   async function addAttachmentFiles(files: File[]) {

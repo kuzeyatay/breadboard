@@ -43,6 +43,8 @@ interface ThreadRow { id: string; scope_key: string; room_id: number | null; pag
 function audience(db: Database.Database, userId: number, scope: unknown, write = false) {
   if (!Number.isSafeInteger(userId) || userId <= 0) throw new AnnotationError(401, "Sign in to comment.");
   if (scope === "public") return { key: "public", room: null };
+  // "Only me": kept in this machine's database and never sent anywhere.
+  if (scope === "private") return { key: `private:${userId}`, room: null };
   if (typeof scope !== "string" || !scope.startsWith("room:")) throw new AnnotationError(400, "Choose an audience.");
   const room = getRoomForUser(db, userId, scope.slice(5));
   if (!room) throw new AnnotationError(404, "Room not found.");

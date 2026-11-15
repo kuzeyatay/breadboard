@@ -575,7 +575,12 @@ test("interrupted assistant turns retain their message actions and retry control
   assert.doesNotMatch(runtime, /canRetryResponseState/);
   assert.match(
     runtime,
-    /const retryResponse = onRetryMessage && !activeRun && !conversationLocked && !disabled &&\s*\(message\.interrupted \|\| message\.failed \|\| index === lastAssistantIndex\)/,
+    /const retryResponse = !activeRun && !conversationLocked && !disabled\s*\?\s*onRetryMessage && \(message\.interrupted \|\| message\.failed \|\| index === lastAssistantIndex\)/,
+  );
+  // Earlier answers regenerate in place so the messages after them stay.
+  assert.match(
+    runtime,
+    /: onEditAssistantMessage && message\.clientMessageId\?\.trim\(\) && !message\.pending\s*\?\s*\(\) => void regenerateInPlace\(index\)/,
   );
   assert.match(runtime, /!activeRun/);
   assert.match(runtime, /\(\) => retryAssistantAsBranch\(index\)/);

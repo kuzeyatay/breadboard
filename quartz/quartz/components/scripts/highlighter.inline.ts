@@ -1,5 +1,6 @@
 import { normalizeQuartzChatLink, type QuartzChatLink } from "../../../../dashboard/src/lib/quartz-chat-link"
 import { allowMarkTextSelection } from "../../../../dashboard/src/lib/chat-text-selection"
+import { promptSuggestionSelection, type PromptSuggestionSelection } from "../../../../dashboard/src/lib/chat-prompt-suggestion"
 import { DEFAULT_HIGHLIGHT_COLOR, HighlightColor, isHighlightColor } from "./highlightPalette"
 import { openTextHighlights } from "../../../../dashboard/src/lib/text-highlight-client"
 import { generatedVisualDashboardBaseUrl } from "./generatedVisualHost"
@@ -653,6 +654,7 @@ document.addEventListener("nav", () => {
   let highlights = repaint(normalizeStored(highlightStore.getSnapshot()))
   let inlineAnswers = normalizeInlineAnswers(answerStore.getSnapshot())
   let openAnswerHighlightId: string | null = null
+  let answerSuggestion: { highlightId: string; selection: PromptSuggestionSelection | null } | null = null
   let answerHostOrigin: string | null = null
   let noteTarget: { text: string; span: Span; highlightId?: string } | null = null
   let menuAnchor: DOMRect | null = null
@@ -794,9 +796,22 @@ document.addEventListener("nav", () => {
     if (openAnswerHighlightId !== highlightId) return
     if (answerHostOrigin) {
       answerPopover.hidden = true
+      // Resolve context when opening a mark, not on every scroll or streamed token.
+      if (open || answerSuggestion?.highlightId !== highlightId) {
+        const highlight = highlights.find(candidate => candidate.id === highlightId)
+        const map = highlight ? buildTextMap(root) : undefined
+        const span = map && highlight ? resolveHighlight(map.text, highlight) : undefined
+        answerSuggestion = { highlightId, selection: promptSuggestionSelection(map && span ? {
+          quote: map.text.slice(span.start, span.end),
+          prefix: map.text.slice(Math.max(0, span.start - QUESTION_CONTEXT), span.start),
+          suffix: map.text.slice(span.end, span.end + QUESTION_CONTEXT),
+          sourceTitle: document.title,
+        } : null) }
+      }
       window.parent.postMessage({
         type: "second-brain:assistant-inline-popover", open: true,
         ...answer, anchor: rect.toJSON(),
+        suggestionSelection: answerSuggestion.selection,
         viewportWidth: window.innerWidth, viewportHeight: window.innerHeight,
       }, answerHostOrigin)
       return

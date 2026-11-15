@@ -14,6 +14,7 @@ import {
   postHumanMessage,
   roomPermissions,
   presentRoomMessage,
+  withPhotos,
 } from "@/lib/buzz/route-helpers.ts";
 import { ApiError } from "@/lib/hermes/route-helpers.ts";
 
@@ -35,7 +36,7 @@ export async function GET(
     }
     const reactions = reactionsForRoom(room.id, self.id);
     const messages = (await readRoomThread(room.id, parentId)).map(message => ({ ...presentRoomMessage(message, userId), reactions: reactions.get(message.id) ?? [] }));
-    return NextResponse.json({ room, members, root: presentRoomMessage(root, userId), replies: messages, messages, selfMemberId: self.id, permissions: roomPermissions(userId, room) });
+    return NextResponse.json({ room, members: withPhotos(room.id, members), root: presentRoomMessage(root, userId), replies: messages, messages, selfMemberId: self.id, permissions: roomPermissions(userId, room) });
   } catch (error) {
     return apiErrorResponse(error);
   }

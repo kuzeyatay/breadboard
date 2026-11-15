@@ -9,9 +9,8 @@ import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
 const subscribeHydration = () => () => {};
 const clientSnapshot = () => true;
 const serverSnapshot = () => false;
-// Temporarily hide this entry point while the Organization feature is paused.
-// Keep the shared component and command handler ready to restore later.
-const SHOW_ORGANIZATION_COMMENT_ACTION = false;
+// Comment opens the Crumbs panel on the selected passage.
+const SHOW_ORGANIZATION_COMMENT_ACTION = true;
 
 export default function BrowserSelectionPopover({ entry: rawEntry }: { entry: unknown }) {
   const hydrated = useSyncExternalStore(subscribeHydration, clientSnapshot, serverSnapshot);
@@ -48,7 +47,7 @@ export default function BrowserSelectionPopover({ entry: rawEntry }: { entry: un
       onSaveNote={note => void act("note", note)} onAskInChat={() => void act("chat")}
       onAskHere={() => void act("inline")}
       onComment={SHOW_ORGANIZATION_COMMENT_ACTION && new URLSearchParams(window.location.search).get("community") === "1" ? () => {
-        void sendDesktopTabsCommand({ type: "browser-organization-selection" }).then(ok => { if (!ok) setError("Couldn’t open the discussion. Select the text again."); }).catch(() => setError("Couldn’t open the discussion."));
+        void sendDesktopTabsCommand({ type: "browser-organization-selection" }).then(ok => { if (!ok) setError("Couldn’t open Crumbs. Select the text again."); }).catch(() => setError("Couldn’t open Crumbs."));
       } : undefined} onClose={close} />}
     {error && <p role="alert" className="mt-2 text-xs text-[var(--danger-hover)]">{error}</p>}
   </>;

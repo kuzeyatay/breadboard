@@ -41,6 +41,7 @@ import {
   type ChatAttachment,
 } from "@/lib/chat-attachments";
 import { chatTextSelectionsOverlap, type ChatTextSelectionReference } from "@/lib/chat-text-selection";
+import { MAX_DOCUMENT_ATTACHMENT_BYTES } from "@/lib/document-attachments";
 import {
   DEFAULT_CHAT_HIGHLIGHT_COLOR,
   normalizeChatHighlightNote,
@@ -49,6 +50,7 @@ import {
 import {
   capturePdfViewport,
   normalizePdfHighlights,
+  pdfDocumentExcerpt,
   pdfPageText,
   pdfViewContext,
   type PdfHighlight,
@@ -80,6 +82,8 @@ interface Props {
   containerRef: RefObject<HTMLDivElement | null>;
   pdfDocumentRef: RefObject<PDFDocumentProxy | null>;
   getBytes: () => Promise<Uint8Array>;
+  /** Off the record: the chat stays out of history and highlights live only in memory. */
+  temporary?: boolean;
 }
 
 type SentPdfView = Promise<{ snapshot: PdfViewportSnapshot; error?: never } | { snapshot?: never; error: unknown }>;
@@ -96,6 +100,7 @@ export default function PdfAssistant({
   containerRef,
   pdfDocumentRef,
   getBytes,
+  temporary = false,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [chatQuestionTarget, setChatQuestionTarget] = useState<StarredMessageTarget | null>(null);
@@ -110,9 +115,13 @@ export default function PdfAssistant({
     useState<PdfSelectionCandidate | null>(null);
   const [composerSelection, setComposerSelection] =
     useState<ChatTextSelectionReference | null>(null);
-  const [highlights, setHighlights, highlightSaveError] = useTextHighlights<PdfHighlight>(
-    `breadboard:pdf-highlights:${documentKey}`, normalizePdfHighlights,
+  const savedHighlights = useTextHighlights<PdfHighlight>(
+    temporary ? null : `breadboard:pdf-highlights:${documentKey}`, normalizePdfHighlights,
   );
+  const [memoryHighlights, setMemoryHighlights] = useState<PdfHighlight[]>([]);
+  const [highlights, setHighlights, highlightSaveError] = temporary
+    ? [memoryHighlights, setMemoryHighlights, null] as const
+    : savedHighlights;
   const [openAnswer, setOpenAnswer] = useState<{
     id: string;
     anchor: FloatingAnchorRect;
@@ -140,6 +149,7 @@ export default function PdfAssistant({
     concurrentInline: true,
     pageSlug: documentKey,
     title: `PDF · ${title}`,
+    ...(temporary ? { temporary: true, restoreLastConversation: false } : {}),
   });
   const inlineQuestions = useInlineAgentQuestions({
     sessionId: session.sessionId, messages: session.messages,
@@ -405,7 +415,7 @@ export default function PdfAssistant({
     signal.throwIfAborted();
     // The decision can take time. Only attach the frozen send-time view if
     // requested; scrolling during preparation must not change this turn.
-    const snapshot = decision.captureView
+    let snapshot = decision.captureView
       ? await step("Preparing the sent PDF view", async () => {
           const result = await viewAtSend;
           if (!result.snapshot) throw result.error;
@@ -414,38 +424,60 @@ export default function PdfAssistant({
       : null;
     const bytes = await step("Preparing the PDF file", () => getBytes());
     signal.throwIfAborted();
-    const ownedBytes = new Uint8Array(bytes);
-    const digest = await step("Checking the PDF file", () => crypto.subtle.digest("SHA-256", ownedBytes));
-    const hash = Array.from(new Uint8Array(digest), (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    ).join("");
     const readWholeDocument = decision.readWholeDocument === true;
-    const ocrPages = readWholeDocument ? undefined : snapshot ? [] : [currentPage];
-    const readingKey = `${hash}:${readWholeDocument ? "all" : snapshot ? "view" : currentPage}`;
-    let documentAttachment = documentAttachmentRef.current?.hash === readingKey
-      ? documentAttachmentRef.current.attachment : undefined;
-    if (!documentAttachment) {
-      // Keep every byte and all embedded text, but do not make a page question
-      // wait for OCR of an entire scanned book. A requested screenshot supplies
-      // the visible scan directly; whole-document requests still opt into OCR.
-      const attachment = await step("Uploading and reading the PDF", (stepSignal) =>
-        attachDocumentFile(
-          new File(
-            [ownedBytes],
-            /\.pdf$/i.test(fileName) ? fileName : `${fileName}.pdf`,
-            { type: "application/pdf" },
+    let documentAttachment: ChatAttachment | undefined;
+    if (bytes.byteLength > MAX_DOCUMENT_ATTACHMENT_BYTES) {
+      // An open book can exceed the upload limit. Its size must not block a
+      // question about a passage we can already read. Avoid copying/hashing
+      // the oversized file and keep the model's evidence scope explicit.
+      if (!snapshot && !pageText.trim() && !selection?.quote.trim()) {
+        snapshot = await step("Preparing the sent PDF view", async () => {
+          const result = await viewAtSend;
+          if (!result.snapshot) throw result.error;
+          return result.snapshot;
+        });
+      }
+      if (readWholeDocument) {
+        documentAttachment = {
+          type: "text",
+          name: "PDF text excerpt.txt",
+          text: await step("Reading the PDF text", (stepSignal) =>
+            pdfDocumentExcerpt(pdf, stepSignal), 180_000),
+        };
+      }
+    } else {
+      const ownedBytes = new Uint8Array(bytes);
+      const digest = await step("Checking the PDF file", () => crypto.subtle.digest("SHA-256", ownedBytes));
+      const hash = Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join("");
+      const ocrPages = readWholeDocument ? undefined : snapshot ? [] : [currentPage];
+      const readingKey = `${hash}:${readWholeDocument ? "all" : snapshot ? "view" : currentPage}`;
+      documentAttachment = documentAttachmentRef.current?.hash === readingKey
+        ? documentAttachmentRef.current.attachment : undefined;
+      if (!documentAttachment) {
+        // Keep every byte and all embedded text, but do not make a page question
+        // wait for OCR of an entire scanned book. A requested screenshot supplies
+        // the visible scan directly; whole-document requests still opt into OCR.
+        const attachment = await step("Uploading and reading the PDF", (stepSignal) =>
+          attachDocumentFile(
+            new File(
+              [ownedBytes],
+              /\.pdf$/i.test(fileName) ? fileName : `${fileName}.pdf`,
+              { type: "application/pdf" },
+            ),
+            "pdf",
+            stepSignal,
+            false,
+            ocrPages,
+            sourceUrl,
           ),
-          "pdf",
-          stepSignal,
-          false,
-          ocrPages,
-          sourceUrl,
-        ),
-        readWholeDocument ? Math.max(180_000, pdf.numPages * 95_000) : 180_000,
-      );
-      signal.throwIfAborted();
-      documentAttachmentRef.current = { hash: readingKey, attachment };
-      documentAttachment = attachment;
+          readWholeDocument ? Math.max(180_000, pdf.numPages * 95_000) : 180_000,
+        );
+        signal.throwIfAborted();
+        documentAttachmentRef.current = { hash: readingKey, attachment };
+        documentAttachment = attachment;
+      }
     }
     signal.throwIfAborted();
     return [
@@ -457,8 +489,9 @@ export default function PdfAssistant({
         capturedAt: snapshot?.capturedAt,
         text: pageText,
         selection,
+        documentAttached: documentAttachment?.type === "document",
       }),
-      documentAttachment,
+      ...(documentAttachment ? [documentAttachment] : []),
       ...(snapshot ? [snapshot.attachment] : []),
     ].map((attachment) => ({ ...attachment, context: "pdf" as const }));
   }

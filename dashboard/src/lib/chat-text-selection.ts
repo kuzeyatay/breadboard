@@ -1,5 +1,8 @@
 export type ChatTextSelectionMode = "chat" | "inline";
 
+/** Source id of the main-chat snapshot a side chat starts from: model context, never a visible quote. */
+export const SIDE_CHAT_CONTEXT_SOURCE = "side-chat-context";
+
 export interface ChatTextSelectionReference {
   id: string;
   mode: ChatTextSelectionMode;
@@ -270,6 +273,8 @@ export function chatTextSelectionQuestionPrompt(
       ? "The user is asking about a specific highlighted excerpt from the web page identified in the quoted data below. The excerpt and its surrounding text are the source context for this question."
       : selection.sourceMessageId.startsWith("pdf:")
       ? "The user is asking about a specific highlighted excerpt from the PDF they are reading. Use the attached PDF and current reading context to interpret it."
+      : selection.sourceMessageId === SIDE_CHAT_CONTEXT_SOURCE
+        ? "This is a side chat opened beside the user's main conversation. The highlightedText is the recent main conversation, given as background only; answer the user's question on its own terms."
       : selection.wholeMessage
         ? "The user is replying to the complete earlier assistant message quoted below. Treat the entire message as the context for this reply."
         : "The user is asking about a specific highlighted excerpt from an earlier assistant response.",

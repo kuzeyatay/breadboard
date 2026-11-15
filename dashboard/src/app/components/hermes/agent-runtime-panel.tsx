@@ -42,6 +42,7 @@ import { useTextHighlights } from "@/app/components/use-text-highlights";
 import { TextHighlightSaveStatus } from "@/app/components/text-highlight-save-status";
 import { applyAutoHumanizeOutcome, useAutoHumanize } from "@/app/components/humanizer/use-auto-humanize";
 import { messageRewriteReview } from "@/app/components/humanizer/rewrite-status";
+import { regenerateResponseText } from "@/app/components/chat/regenerate-response";
 import AssistantMessageActions, {
   MessageActionsSlot,
   type AssistantResponseBranch,
@@ -895,6 +896,7 @@ export default function AgentRuntimePanel({
   const [savingAssistantMessageId, setSavingAssistantMessageId] = useState<
     string | null
   >(null);
+  const [regenerating, setRegenerating] = useState<{ index: number; error?: string } | null>(null);
   const [copiedUserId, setCopiedUserId] = useState<string | null>(null);
   const [promptToSave, setPromptToSave] = useState<string | null>(null);
   const {
@@ -1765,6 +1767,29 @@ export default function AgentRuntimePanel({
     });
   }
 
+  /**
+   * Regenerate an answer that is not the newest one without touching anything
+   * after it: the fresh text becomes a new version of that one message (the
+   * version arrows switch back), so later turns stay on screen and in context.
+   */
+  async function regenerateInPlace(assistantMessageIndex: number) {
+    const message = messages[assistantMessageIndex];
+    if (!onEditAssistantMessage || !message || (regenerating && !regenerating.error)) return;
+    const userMessageIndex = retryTargetUserMessageIndex(messages, assistantMessageIndex);
+    if (messages[userMessageIndex]?.role !== "user") return;
+    setRegenerating({ index: assistantMessageIndex });
+    try {
+      const content = await regenerateResponseText(messages.slice(0, userMessageIndex + 1), model);
+      const saved = await onEditAssistantMessage(message, content);
+      setRegenerating(saved ? null : { index: assistantMessageIndex, error: "The regenerated response could not be saved." });
+    } catch (error) {
+      setRegenerating({
+        index: assistantMessageIndex,
+        error: error instanceof Error ? error.message : "The response could not be regenerated.",
+      });
+    }
+  }
+
   function retryAssistantAsBranch(assistantMessageIndex: number) {
     if (!onRetryMessage || activeRun || conversationLocked) return;
     const userMessageIndex = retryTargetUserMessageIndex(
@@ -2317,6 +2342,7 @@ export default function AgentRuntimePanel({
     }));
     return {
     nested, annotations,
+    suggestionModel: model,
     question: webThread.question, questionAttachments: webThread.attachments,
     answer: conversationLoading ? "Loading saved answer…" : webThread.answer,
     reasoning: webThread.reasoning, progressNotes: webThread.progressNotes, pending: webThread.pending,
@@ -2328,7 +2354,7 @@ export default function AgentRuntimePanel({
     canAsk: Boolean(onAskSelection && !webThread.pending && !conversationLocked),
     ...(webHighlightDeleteFailure?.id === webThread.selection.id ? { error: "The highlight could not be deleted. Try deleting it again." } : {}),
     };
-  }, [webThread, inlineSelectionThreads, annotationsByMessage, conversationLoading, sessionId, temporaryChat, sideChat, surface, onAskSelection, conversationLocked, webHighlightDeleteFailure]);
+  }, [webThread, inlineSelectionThreads, annotationsByMessage, conversationLoading, sessionId, temporaryChat, sideChat, surface, onAskSelection, conversationLocked, webHighlightDeleteFailure, model]);
   const nativeWebAnswer = useBrowserInlineAnswer({ selection: webSelection, content: webAnswerContent,
     onAsk: (question, attachments, nested) => {
       if (!webThread) return;
@@ -2599,10 +2625,14 @@ export default function AgentRuntimePanel({
                   partitionCourseCorrections(
                     inlinedCourseCorrections.byAssistantIndex.get(index) ?? [],
                   );
-                const retryResponse = onRetryMessage && !activeRun && !conversationLocked && !disabled &&
-                  (message.interrupted || message.failed || index === lastAssistantIndex)
+                const retryResponse = !activeRun && !conversationLocked && !disabled
+                  ? onRetryMessage && (message.interrupted || message.failed || index === lastAssistantIndex)
                     ? () => retryAssistantAsBranch(index)
-                    : undefined;
+                    // Earlier answers regenerate in place so later messages are untouched.
+                    : onEditAssistantMessage && message.clientMessageId?.trim() && !message.pending
+                      ? () => void regenerateInPlace(index)
+                      : undefined
+                  : undefined;
                 return (
                 <div
                   className={timeSeparators[index] ? "space-y-3" : undefined}
@@ -4061,7 +4091,11 @@ export default function AgentRuntimePanel({
                             : undefined
                         }
                         onRetry={retryResponse}
+                        retrying={regenerating?.index === index && !regenerating.error}
                       />
+                    ) : null}
+                    {regenerating?.index === index && regenerating.error ? (
+                      <p role="alert" className="mt-1 text-xs text-[var(--danger)]">{regenerating.error}</p>
                     ) : null}
                     </MessageActionsSlot>
                     </div>
@@ -4137,6 +4171,8 @@ export default function AgentRuntimePanel({
             key={openAnswer.id}
             anchor={openAnswer.anchor}
             selection={thread.selection}
+            suggestionSelection={thread.selection}
+            suggestionModel={model}
             question={thread.question}
             questionAttachments={thread.attachments}
             answer={thread.answer}

@@ -27,6 +27,7 @@ import VoiceAssistantPanel from "./voice-assistant-panel";
 import UsageLedgerPanel from "./usage-ledger-panel";
 import PlanUsagePanel from "./plan-usage-panel";
 import KeyboardShortcutsPanel from "./keyboard-shortcuts-panel";
+import { CrumbsAccountSection } from "@/app/crumbs/crumbs-client";
 import type { ClapActionSettings } from "@/lib/profile/clap-action";
 import type { Contact } from "@/lib/contacts/types.ts";
 import type { CalendarCollection } from "@/lib/calendar/types.ts";
@@ -687,6 +688,47 @@ function ThoughtTopologyPanel({ initialEnabled }: { initialEnabled: boolean }) {
           </p>
         </div>
         <Switch checked={enabled} label="Auto-update Thought Topology" busy={busy} onChange={toggle} />
+      </div>
+      {error && <p className="mt-4 text-xs text-red-400" role="alert">{error}</p>}
+    </Card>
+  );
+}
+
+function WebPdfCleanupPanel({ initialEnabled }: { initialEnabled: boolean }) {
+  const [enabled, setEnabled] = useState(initialEnabled);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function toggle() {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/assistant-preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ switches: { webPdfCleanup: !enabled } }),
+      });
+      if (!response.ok) throw new Error("save failed");
+      setEnabled(!enabled);
+    } catch {
+      setError("Could not save the PDF cleanup preference. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Website PDFs and opened files" hint="PDFs from links, and PDFs, images and videos you open from a new tab, are kept on this computer so they reopen after a restart.">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-white">Clean up unopened files</p>
+          <p className="mt-0.5 text-xs leading-5 text-gray-500">
+            {enabled
+              ? "Files you have not opened for 30 days are removed."
+              : "These files are kept until you delete them."}
+          </p>
+        </div>
+        <Switch checked={enabled} label="Clean up unopened files" busy={busy} onChange={toggle} />
       </div>
       {error && <p className="mt-4 text-xs text-red-400" role="alert">{error}</p>}
     </Card>
@@ -2413,6 +2455,7 @@ function GardenRow({
 export default function ProfileClient({
   stats,
   initialThoughtTopologyAutoUpdate = true,
+  initialWebPdfCleanup = true,
   initialClapAction,
   initialSnapAction,
   clapActionUserId,
@@ -2424,9 +2467,13 @@ export default function ProfileClient({
   calendarVaultConfigured,
   initialTab,
   initialBrainScope,
+  initialIdentity = null,
 }: {
+  /** The linked Crumbs account. Its photo and name are Breadboard's own. */
+  initialIdentity?: { handle: string | null; displayName: string | null; avatar: string | null } | null;
   stats: ProfileStats;
   initialThoughtTopologyAutoUpdate?: boolean;
+  initialWebPdfCleanup?: boolean;
   initialClapAction: ClapActionSettings;
   initialSnapAction: ClapActionSettings;
   clapActionUserId: string;
@@ -2448,6 +2495,9 @@ export default function ProfileClient({
   // page is about. The username does not disappear — it moves down a line, to
   // sit with the email as the other piece of account plumbing.
   const fullName = [account.firstName, account.lastName].filter(Boolean).join(" ");
+  const [identity, setIdentity] = useState(initialIdentity);
+  const [photoFailed, setPhotoFailed] = useState<string | null>(null);
+  const shownName = identity?.displayName || fullName || account.username;
 
   const surfaceMax = surfaces.reduce((best, entry) => Math.max(best, entry.count), 0);
   const gardenMax = gardens.reduce((best, entry) => Math.max(best, entry.prompts), 0);
@@ -2509,20 +2559,28 @@ export default function ProfileClient({
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
         {/* ------------------------------------------------------ identity */}
         <section className="neu-surface-raised flex flex-wrap items-center gap-5 rounded-2xl border border-gray-800 p-5">
+          {/* The profile photo is the linked Crumbs account's; without one, an initial stands in. */}
+          {identity?.avatar && photoFailed !== identity.avatar ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={identity.avatar} alt="" referrerPolicy="no-referrer" onError={() => setPhotoFailed(identity.avatar)} className="h-16 w-16 shrink-0 rounded-full object-cover" />
+          ) : (
+            <a href="#crumbs" title="Add a photo by signing in to Crumbs" className="grid h-16 w-16 shrink-0 place-items-center rounded-full bg-[color-mix(in_srgb,var(--botanical)_18%,var(--paper-surface))] text-2xl font-bold text-[var(--botanical)] no-underline">
+              {shownName.charAt(0).toUpperCase()}
+            </a>
+          )}
           <div className="min-w-0 flex-1">
             <h2 className="truncate text-xl font-semibold text-white">
-              {fullName || account.username}
+              {shownName}
             </h2>
-            <p className="truncate text-sm text-gray-400">
-              {fullName ? `${account.username} · ${account.email}` : account.email}
+            <p className="flex flex-wrap gap-x-3 text-sm text-gray-400">
+              <span className="truncate">{identity?.handle ? `@${identity.handle.replace(/\.bsky\.social$/i, "")}` : account.username}</span>
+              <span className="truncate">{account.email}</span>
             </p>
             <p className="mt-1 text-xs text-gray-600">
-              Here since {formatLongDate(dateOnly(account.joinedAt))} ·{" "}
-              {account.daysSinceJoined === 0
-                ? "today"
-                : `${formatCount(account.daysSinceJoined)} days`}
+              Here since {formatLongDate(dateOnly(account.joinedAt))}
+              {account.daysSinceJoined > 0 && `, ${formatCount(account.daysSinceJoined)} days`}
               {stats.firstConversation && (
-                <> · first chat was “{stats.firstConversation.title}”</>
+                <>, first chat was “{stats.firstConversation.title}”</>
               )}
             </p>
           </div>
@@ -2550,6 +2608,17 @@ export default function ProfileClient({
             </SignOutButton>
           </div>
         </section>
+
+        {/* --------------------------------------------------- crumbs account */}
+        <div id="crumbs" className="mt-4 scroll-mt-6">
+          <Card title="Crumbs account">
+            <CrumbsAccountSection
+              onStatus={(status) =>
+                setIdentity(status.did ? { handle: status.handle, displayName: status.displayName, avatar: status.avatar } : null)
+              }
+            />
+          </Card>
+        </div>
 
         {/* ---------------------------------------------- optional components */}
         <OptionalComponentsSection />
@@ -2790,6 +2859,10 @@ export default function ProfileClient({
 
           <Packed>
             <DownloadSettingsPanel />
+          </Packed>
+
+          <Packed>
+            <WebPdfCleanupPanel initialEnabled={initialWebPdfCleanup} />
           </Packed>
 
           <Packed>

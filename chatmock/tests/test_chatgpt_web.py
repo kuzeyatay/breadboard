@@ -731,6 +731,30 @@ class TurnTests(IsolatedHome):
         self.assertNotIn("I'll treat the pasted content", content)
         self.assertIn("### Sharing a finite channel pool", content)
 
+    def test_a_streamed_writing_block_never_shows_its_wrapper(self) -> None:
+        answer = (
+            "Here is an introductory paragraph.\n\n"
+            ':::writing{variant="document" id="71849" title="How a machine learns"}\n'
+            "How can a machine learn?\n\nIt compares: prediction and target.\n"
+            ":::\n"
+        )
+        # Fed one character at a time, the cleaned text only ever appends.
+        seen = ""
+        for end in range(1, len(answer) + 1):
+            step = chatgpt_web._strip_writing_markup(answer[:end])
+            self.assertTrue(step.startswith(seen), (seen, step))
+            seen = step
+        final = chatgpt_web._strip_writing_markup(answer, final=True)
+        self.assertTrue(final.startswith(seen))
+        self.assertEqual(
+            final,
+            "Here is an introductory paragraph.\n\nHow can a machine learn?\n\nIt compares: prediction and target.\n",
+        )
+        # No block: untouched, and a held-back last line returns once final.
+        self.assertEqual(chatgpt_web._strip_writing_markup("a\n:::\nb"), "a\n:::\nb")
+        self.assertEqual(chatgpt_web._strip_writing_markup("a\n:"), "a\n")
+        self.assertEqual(chatgpt_web._strip_writing_markup("a\n:", final=True), "a\n:")
+
     def test_the_websocket_answer_wins_over_the_rendered_page(self) -> None:
         # The rendered page's markdown ate the backslashes of `\"`, and Learn
         # could not parse the JSON it was handed. The socket keeps them.
@@ -995,6 +1019,65 @@ class TurnTests(IsolatedHome):
         self.assertGreaterEqual(time.time() - started, 0.3)
         self.assertEqual(lanes, [chatgpt_web.INTERACTIVE_LANE])
         self.assertFalse(interactive.lock.locked())
+
+    def _stream_chat(self, lanes: List[str]):
+        page = FakePage([{"type": "stream", "mode": "sse"}, {"type": "done", "text": "Hello", "reasoning": ""}])
+
+        def begin(model: str, prompt: str, effort: str | None, images: Any = None, **kwargs: Any):
+            lanes.append(kwargs.get("lane"))
+            page.start("turn-1")
+            return page, "turn-1"
+
+        with patch.object(chatgpt_web, "TURN_QUEUE_WAIT_SECONDS", 0.3), patch.object(
+            chatgpt_web, "_begin_turn", side_effect=begin
+        ):
+            credentials = ResolvedCredentials("openaiweb", None, "https://chatgpt.com", True, None)
+            return chatgpt_web.request_chat(
+                credentials, {"messages": [{"role": "user", "content": "hi"}]}, "gpt-5-2", stream=True
+            )
+
+    def test_two_chats_answer_at_once_on_separate_pages(self) -> None:
+        chatgpt_web._lanes_supported = True
+        first = chatgpt_web._lane()
+        first.lock.acquire()  # another chat is mid-answer on the first page
+        self.addCleanup(first.lock.release)
+        chatgpt_web._hold(chatgpt_web.INTERACTIVE_LANE, "another chat message on gpt-6-pro")
+        lanes: List[str] = []
+        with patch.object(chatgpt_web, "CHAT_PAGES", 3):
+            started = time.time()
+            response = self._stream_chat(lanes)
+            self.assertEqual(response.status_code, 200)
+            self.assertLess(time.time() - started, 0.25, "a second chat must not wait for the first")
+            self.assertEqual(lanes, ["interactive-2"])
+            self.assertTrue(chatgpt_web._lane("interactive-2").lock.locked())
+            list(chatgpt_web.relay_stream(response))
+        self.assertFalse(chatgpt_web._lane("interactive-2").lock.locked())
+        self.assertTrue(first.lock.locked())
+
+    def test_a_full_pool_of_chat_pages_says_all_are_busy(self) -> None:
+        chatgpt_web._lanes_supported = True
+        with patch.object(chatgpt_web, "CHAT_PAGES", 2):
+            for name in ("interactive", "interactive-2"):
+                chatgpt_web._lane(name).lock.acquire()
+                self.addCleanup(chatgpt_web._lane(name).lock.release)
+                chatgpt_web._hold(name, "another chat message on gpt-6-pro")
+            lanes: List[str] = []
+            response = self._stream_chat(lanes)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(lanes, [])
+        self.assertIn("All 2 of OpenAI (web)'s chat pages", response.json()["error"]["message"])
+        self.assertFalse(response.fallback_ok)
+
+    def test_chats_share_one_page_when_the_shell_has_only_one(self) -> None:
+        chatgpt_web._lanes_supported = False
+        chatgpt_web._lane().lock.acquire()
+        self.addCleanup(chatgpt_web._lane().lock.release)
+        lanes: List[str] = []
+        with patch.object(chatgpt_web, "CHAT_PAGES", 3):
+            response = self._stream_chat(lanes)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(lanes, [])
+        self.assertIn("chat page is still answering", response.json()["error"]["message"])
 
     def test_the_first_batch_turn_learns_whether_the_shell_keeps_lanes(self) -> None:
         # Learned from the shell's answer to the tab request: a shell that
@@ -1641,6 +1724,43 @@ document.querySelectorAll = (selector) => root.querySelectorAll(selector);
         self.assertTrue(result["hasAssistant"])
         self.assertTrue(result["generating"])
         self.assertEqual(result["text"], "")
+
+
+class SandboxFileTests(unittest.TestCase):
+    ANSWER = (
+        "Here is the diagram.\n\n"
+        "![Block diagram](sandbox:/mnt/data/p.png)\n\n"
+        "[Open the zoomable diagram](sandbox:/mnt/data/p.html) and [the svg](sandbox:/mnt/data/p.svg)\n\n"
+        "Step [1] follows."
+    )
+
+    def test_embedded_images_become_data_urls_and_other_links_keep_their_words(self) -> None:
+        files = {"/mnt/data/p.png": ("image/png", "QUJD")}
+        out = chatgpt_web._sandbox_rewrite(self.ANSWER, files)
+        self.assertIn("![Block diagram](data:image/png;base64,QUJD)", out)
+        self.assertIn("Open the zoomable diagram and the svg", out)
+        self.assertNotIn("sandbox:", out)
+        self.assertEqual(chatgpt_web._sandbox_rewrite(self.ANSWER, {}).count("Block diagram"), 1)
+
+    def test_stream_holds_the_link_until_the_turn_ends(self) -> None:
+        sent: List[str] = []
+        gate = chatgpt_web._SandboxGate(sent.append)
+        for i in range(0, len(self.ANSWER), 3):
+            gate(self.ANSWER[i : i + 3])
+        self.assertEqual("".join(sent), "Here is the diagram.\n\n")
+        self.assertTrue(gate.holding)
+        gate.finish({"/mnt/data/p.png": ("image/png", "QUJD")})
+        self.assertEqual("".join(sent), chatgpt_web._sandbox_rewrite(self.ANSWER, {"/mnt/data/p.png": ("image/png", "QUJD")}))
+
+    def test_plain_answers_stream_unchanged(self) -> None:
+        sent: List[str] = []
+        gate = chatgpt_web._SandboxGate(sent.append)
+        text = "No files here, see [1].\nDone"
+        for ch in text:
+            gate(ch)
+        gate.finish({})
+        self.assertEqual("".join(sent), text)
+        self.assertFalse(gate.holding)
 
 
 if __name__ == "__main__":

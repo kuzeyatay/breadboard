@@ -1,0 +1,33 @@
+/* Community notes on a crumb. Used by the feed and by the browser panel. */
+.notes { margin-top: 8px; font-size: 12.5px; line-height: 1.5; }
+.notes button, .notes input, .notes textarea { font: inherit; }
+.notes button { cursor: pointer; }
+.notes button:disabled { opacity: .5; cursor: default; }
+.notes :is(button, a, input, textarea):focus-visible { outline: 2px solid var(--botanical); outline-offset: 2px; }
+
+.shown { margin-bottom: 6px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--botanical-2, var(--botanical)) 55%, var(--line)); border-radius: 11px; background: color-mix(in srgb, var(--botanical-2, var(--botanical)) 10%, var(--paper-raised, var(--paper))); }
+.shown strong { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--ink); }
+.shown strong svg { color: var(--botanical-2, var(--botanical)); }
+.shown p { margin: 4px 0 0; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.notes a { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; color: var(--ink-muted); font-size: 11.5px; text-decoration: none; }
+.notes a:hover { color: var(--ink); }
+
+.toggle { padding: 0; border: 0; background: transparent; color: var(--ink-muted); font-size: 12px; }
+.toggle:hover, .toggle[aria-expanded="true"] { color: var(--botanical); }
+.panel { margin-top: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--paper-raised, var(--paper)); }
+.note + .note, .note + .form, .note + .signIn { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.note header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.note header strong { font-weight: 600; color: var(--ink); }
+.note header span { color: var(--ink-muted); font-size: 11.5px; }
+.note p { margin: 3px 0 0; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.rate { display: flex; gap: 6px; margin-top: 7px; }
+.rate button { padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--ink-muted); font-size: 11.5px; }
+.rate button:hover:not(:disabled) { border-color: var(--line-strong); color: var(--ink); }
+.rate button[aria-pressed="true"] { border-color: var(--botanical); background: var(--botanical); color: var(--paper-raised, #fff); }
+.form { display: grid; gap: 6px; }
+.form textarea, .form input { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper-surface); color: var(--ink); resize: vertical; }
+.form textarea::placeholder, .form input::placeholder { color: var(--ink-muted); }
+.form button { justify-self: start; padding: 5px 12px; border: 0; border-radius: 999px; background: var(--botanical); color: var(--paper-raised, #fff); font-size: 12px; font-weight: 600; }
+.hint { margin: 0; color: var(--ink-muted); }
+.signIn { margin-top: 0 !important; }
+.error { margin: 0 0 8px; color: var(--danger); }

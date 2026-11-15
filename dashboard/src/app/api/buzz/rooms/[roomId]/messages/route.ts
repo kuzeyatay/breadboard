@@ -19,7 +19,9 @@ import {
   postHumanMessage,
   roomPermissions,
   presentRoomMessage,
+  withPhotos,
 } from "@/lib/buzz/route-helpers.ts";
+import { buzzBridge, relayOrganizations } from "@/lib/crumbs/service.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +46,8 @@ export async function GET(
     if (beforeId !== undefined && (!Number.isSafeInteger(beforeId) || beforeId < 1)) {
       throw new ApiError(400, "invalid_cursor", "Invalid message cursor.");
     }
+    // A room of an encrypted organization first exchanges messages with the other members.
+    await relayOrganizations(userId, room.id, { waitMs: 4000 });
     const page = await readRoomSpine(room.id, 51, beforeId);
     const hasOlder = page.length > 50;
     const messages = hasOlder ? page.slice(1) : page;
@@ -63,7 +67,8 @@ export async function GET(
       permissions: roomPermissions(userId, room),
       hasOlder,
       nextCursor: hasOlder ? messages[0]?.id ?? null : null,
-      members: listMembers(room.id),
+      linked: buzzBridge.isLinked(room.id),
+      members: withPhotos(room.id, listMembers(room.id)),
       messages: messages.map((message) => ({
         ...presentRoomMessage(message, userId),
         reactions: reactions.get(message.id) ?? [],
@@ -95,6 +100,7 @@ export async function POST(
     if (body.parentId != null) throw new ApiError(400, "use_thread", "Post replies through their thread.");
     const message = postHumanMessage(room, self, text, clientMessageId);
     markRoomRead(room.id, userId, message.id);
+    void relayOrganizations(userId, room.id, { force: true });
 
     const responders = resolveResponders(members, text);
     const started = [];

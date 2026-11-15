@@ -8,6 +8,8 @@ import {
 } from "@/lib/video-attachments.ts";
 import { VideoBlobError, writeVideoBlob } from "@/lib/conversations/video-blob-store.ts";
 import { sweepUnreferencedVideoBlobs } from "@/lib/conversations/video-uploads.ts";
+import { markWebPdfBlob } from "@/lib/conversations/document-blob-store.ts";
+import { STORE_ONLY_HEADER, sweepOpenedFiles } from "@/lib/conversations/opened-files.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -58,6 +60,11 @@ export async function POST(request: Request) {
     }
 
     const stored = await writeVideoBlob({ userId, format, body: request.body });
+    // A video opened from a new tab: kept for its viewer under the Settings cleanup switch.
+    if (request.headers.get(STORE_ONLY_HEADER) === "true") {
+      markWebPdfBlob(stored);
+      sweepOpenedFiles(userId);
+    }
 
     try {
       sweepUnreferencedVideoBlobs(userId);

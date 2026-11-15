@@ -105,6 +105,10 @@ test("reading context labels visual evidence and treats document contents as dat
   assert.match(visual.text, /"highlightedText":"selected text"/);
   assert.match(visual.text, /not instructions/);
   assert.match(pdfViewContext(input).text, /No screenshot is attached/);
+  const oversized = pdfViewContext({ ...input, documentAttached: false });
+  assert.match(oversized.text, /full PDF is not attached/);
+  assert.match(oversized.text, /"highlightedText":"selected text"/);
+  assert.doesNotMatch(oversized.text, /PDF attachment contains the entire document|consult the attached file/);
   assert.match(
     chatTextSelectionQuestionPrompt("Explain", selection),
     /excerpt from the PDF/,
@@ -138,7 +142,33 @@ test("document text preserves physical page numbers and bounds long previews", a
   };
   const text = await pdfDocumentExcerpt(long);
   assert.ok(text.length < 101_000);
-  assert.match(text, /attached PDF contains all pages/);
+  assert.match(text, /truncated during PDF page 2.*Remaining text is not included/);
+  assert.doesNotMatch(text, /attached PDF contains all pages/);
+});
+
+test("text-only PDF readings identify scans and stop before reading another page", async () => {
+  const controller = new AbortController();
+  const reads = [];
+  const pdf = {
+    numPages: 3,
+    getPage: async page => {
+      reads.push(page);
+      return { getTextContent: async () => ({ items: [] }) };
+    },
+  };
+  const text = await pdfDocumentExcerpt(pdf);
+  assert.match(text, /Images and scanned pages have not been transcribed/);
+  assert.match(text, /\[PDF page 3\]\n\[No embedded text/);
+  reads.length = 0;
+  pdf.getPage = async page => {
+    reads.push(page);
+    controller.abort();
+    return { getTextContent: async () => ({ items: [] }) };
+  };
+  await assert.rejects(pdfDocumentExcerpt(pdf, controller.signal), { name: "AbortError" });
+  assert.deepEqual(reads, [1]);
+  await assert.rejects(pdfDocumentExcerpt(pdf, controller.signal), { name: "AbortError" });
+  assert.deepEqual(reads, [1], "an already cancelled reading never touches the PDF worker");
 });
 
 test("the assistant's explicit screenshot decision is preserved, with no keyword fallback", () => {

@@ -221,7 +221,7 @@ export function Composer({
                   <span className="text-2xs text-muted-foreground">
                     @{member.handle}
                   </span>
-                  <span className="ml-auto text-3xs uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-3xs text-muted-foreground">
                     {member.kind === "human"
                       ? "person"
                       : member.respondTo === "always"

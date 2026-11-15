@@ -4,7 +4,7 @@ import { requireUserId } from '@/lib/server-auth';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { generatePromptSuggestion } from '@/lib/chat-prompt-suggestion-service';
 import { keptPromptSuggestion } from '@/lib/prompt-suggestion-cache.ts';
-import { SUGGESTION_MAX_MESSAGES, SUGGESTION_MAX_MESSAGE_CHARS, type PromptSuggestionMessage } from '@/lib/chat-prompt-suggestion';
+import { SUGGESTION_MAX_MESSAGES, SUGGESTION_MAX_MESSAGE_CHARS, promptSuggestionSelection, type PromptSuggestionMessage } from '@/lib/chat-prompt-suggestion';
 import { ApiError, apiErrorResponse, readJsonBody, requireString } from '@/lib/hermes/route-helpers';
 
 export async function POST(request: Request) {
@@ -12,6 +12,10 @@ export async function POST(request: Request) {
     const userId = await requireUserId();
     const body = await readJsonBody(request, 64 * 1024);
     const model = requireString(body.model, 'model', 128);
+    const selection = promptSuggestionSelection(body.selection);
+    if (body.selection !== undefined && !selection) {
+      throw new ApiError(400, 'invalid_selection', 'Expected selected text.');
+    }
     if (!Array.isArray(body.messages) || body.messages.length > SUGGESTION_MAX_MESSAGES) {
       throw new ApiError(400, 'invalid_messages', 'Expected a short conversation transcript.');
     }
@@ -29,14 +33,15 @@ export async function POST(request: Request) {
       localTime: typeof body.localTime === 'string' ? body.localTime.slice(0, 5) : undefined,
       timeZone: typeof body.timeZone === 'string' ? body.timeZone.slice(0, 100) : undefined,
     };
-    const evidence = body.personalize === true && body.temporary !== true && body.scope !== 'public'
+    const evidence = !selection && body.personalize === true && body.temporary !== true && body.scope !== 'public'
       ? await (await import('@/lib/recommendations/service')).recommendationEvidence(userId, context).catch(() => []) : [];
-    // One answer per unchanged transcript (see prompt-suggestion-cache.ts). Not
-    // tied to this request's abort signal: another open may be waiting on it.
+    // Cache unchanged transcripts/excerpts; temporary chats never write a
+    // suggestion to disk. Shared cached requests may have other open waiters.
     const key = createHash('sha256').update(JSON.stringify([userId, model, context.gardenSlug, context.localDate,
-      body.personalize === true, messages])).digest('hex');
-    const suggestion = await keptPromptSuggestion(key, () =>
-      generatePromptSuggestion({ userId, messages, model, baseUrl: baseURL, evidence, context }));
+      body.personalize === true, messages, selection])).digest('hex');
+    const generate = () => generatePromptSuggestion({ userId, messages, selection, model, baseUrl: baseURL, evidence, context,
+      signal: body.temporary === true ? request.signal : undefined });
+    const suggestion = body.temporary === true ? await generate() : await keptPromptSuggestion(key, generate);
     return NextResponse.json({ suggestion }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     return apiErrorResponse(error);

@@ -251,7 +251,7 @@ export async function hydrateDocumentAttachments(
         attachment.text = saved;
       } else {
         try {
-          const reading = await readPdfAttachment(fs.readFileSync(blob.path), { signal, userId });
+          const reading = await readPdfAttachment(blob.path, { signal, userId });
           attachment.text = reading.text;
         } catch (error) {
           signal?.throwIfAborted();

@@ -64,11 +64,12 @@ function selectionReference(candidate: ChatTextSelectionCandidate, mode: "chat" 
 }
 
 /** Shared selection controls for assistant surfaces; the host owns turn dispatch. */
-export function useTextSelectionController({ scope, conversationId, canStar, persistDraft = true, renderArtifacts, messages, busy, concurrentInline = false, composerRef, onAsk, onStop, onBeginQuestion, onOpenChatQuestion }: {
+export function useTextSelectionController({ scope, conversationId, canStar, persistDraft = true, suggestionModel, renderArtifacts, messages, busy, concurrentInline = false, composerRef, onAsk, onStop, onBeginQuestion, onOpenChatQuestion }: {
   scope: string | null;
   conversationId?: string;
   canStar?: boolean;
   persistDraft?: boolean;
+  suggestionModel?: string;
   renderArtifacts?: (answerMessageId: string) => ReactNode;
   messages: readonly SelectableChatMessage[];
   busy: boolean;
@@ -265,6 +266,7 @@ export function useTextSelectionController({ scope, conversationId, canStar, per
       if (!thread) return null;
       const pending = concurrentInline ? thread.answer?.pending === true : busy && lastMessage?.textSelection?.id === open.id;
       return <InlineSelectionAnswerPopover key={open.id} anchor={open.anchor} selection={thread.selection} question={thread.question}
+        suggestionSelection={thread.selection} suggestionModel={suggestionModel}
         persistDraft={persistDraft}
         questionAttachments={thread.attachments}
         answer={thread.answer?.content} answerMessageId={thread.answer?.id}

@@ -12,6 +12,13 @@ const PROTOCOL = "breadboard:interactive-visualizer:v1";
 const INITIAL_INLINE_HEIGHT = 420;
 const MIN_INLINE_HEIGHT = 280;
 
+// A virtualized transcript unmounts this embed when it scrolls away and mounts
+// it again on the way back. Starting every remount at 420px and growing to the
+// natural height (often several thousand px) once the iframe reports it moved
+// the whole transcript under the reader. Remembering the reported height makes
+// a remount draw at its real size from the first frame.
+const naturalHeights = new Map<string, number>();
+
 function currentTheme(): "dark" | "light" {
   const explicitTheme = document.documentElement.dataset.theme;
   if (explicitTheme === "light" || explicitTheme === "dark") {
@@ -33,7 +40,8 @@ export default function InlineInteractiveVisualizer({ artifact }: Props) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   // The preview bridge replaces this initial size with the natural content
   // height, including every control below the scene.
-  const [height, setHeight] = useState(INITIAL_INLINE_HEIGHT);
+  const heightKey = `${artifact.id}:${artifact.version}`;
+  const [height, setHeight] = useState(() => naturalHeights.get(heightKey) ?? INITIAL_INLINE_HEIGHT);
   const instanceId = useId();
   const channel = `${artifact.id}:${artifact.version}:${instanceId}`;
   const previewUrl = `${artifactUrl(artifact, "preview")}&channel=${encodeURIComponent(channel)}&presentation=inline`;
@@ -73,7 +81,9 @@ export default function InlineInteractiveVisualizer({ artifact }: Props) {
       if (data.type === "inline-resize") {
         const nextHeight = Number(data.height);
         if (Number.isFinite(nextHeight) && nextHeight > 0) {
-          setHeight(Math.max(MIN_INLINE_HEIGHT, Math.ceil(nextHeight)));
+          const natural = Math.max(MIN_INLINE_HEIGHT, Math.ceil(nextHeight));
+          naturalHeights.set(heightKey, natural);
+          setHeight(natural);
         }
       }
     };
@@ -97,7 +107,7 @@ export default function InlineInteractiveVisualizer({ artifact }: Props) {
         channel,
       }, "*");
     };
-  }, [channel, sendContext]);
+  }, [channel, heightKey, sendContext]);
 
   if (!artifact.previewAvailable || artifact.status !== "ready") {
     return null;

@@ -18,7 +18,9 @@ export function annotationPageUrl(value: unknown): string | null {
   try {
     const url = new URL(value);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
-    url.hash = url.hash.split(":~:text=")[0]!;
+    // A link to a passage (#:~:text=...) is the same page as the bare address.
+    const hash = url.hash.split(":~:text=")[0]!;
+    url.hash = hash === "#" ? "" : hash;
     return url.href;
   } catch { return null; }
 }
@@ -61,6 +63,17 @@ export interface AnnotationMessage {
   source: string | null;
   createdAt: string;
   own: boolean;
+  /** Crumbs: the author's AT Protocol identity, when the message came from the network. */
+  handle?: string | null;
+  avatar?: string | null;
+  did?: string;
+  /** An organization message whose sender signature did not verify. */
+  unverified?: boolean;
+  /** An organization admin may delete other members' messages. */
+  canDelete?: boolean;
+  /** Crumbs: the community note readers found helpful, and how many notes exist. */
+  note?: { uri: string; body: string; source: string | null };
+  noteCount?: number;
 }
 export interface AnnotationThread {
   id: string;
@@ -69,6 +82,8 @@ export interface AnnotationThread {
   rootMessageId: number | null;
   count: number;
   organizationHref?: string;
+  /** The first comment, shown when hovering the marker in the page. */
+  preview?: string;
 }
 export interface AnnotationFlag { id: number; author: string; reason: string; own: boolean; }
 export interface AnnotationResponse {
@@ -76,4 +91,6 @@ export interface AnnotationResponse {
   thread: AnnotationThread | null;
   messages: AnnotationMessage[];
   flags: AnnotationFlag[];
+  /** Something the reader should know about the last action, such as a crumb waiting for review. */
+  notice?: string;
 }

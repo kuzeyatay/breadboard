@@ -14,10 +14,11 @@ function subscribeMotion(changed: () => void) {
 
 /** Mounted only while the empty composer has a valid suggestion. The real
  * draft stays untouched, so typing, Escape and Tab interrupt immediately. */
-export default function PromptSuggestionOverlay({ text, placeholder, compact }: {
+export default function PromptSuggestionOverlay({ text, placeholder, compact, multiline = false }: {
   text: string;
   placeholder: string;
   compact: boolean;
+  multiline?: boolean;
 }) {
   const reducedMotion = useSyncExternalStore(subscribeMotion, reducedMotionSnapshot, serverMotionSnapshot);
   const [phase, setPhase] = useState<'erase' | 'type' | 'ready'>(placeholder ? 'erase' : 'type');
@@ -29,13 +30,14 @@ export default function PromptSuggestionOverlay({ text, placeholder, compact }: 
       aria-hidden
       data-prompt-suggestion
       data-suggestion-phase={visiblePhase}
-      className={`pointer-events-none absolute inset-0 flex min-w-0 select-none items-center gap-2 px-1 text-[var(--ink-muted)] ${compact ? 'text-sm leading-5' : 'text-[15px] leading-6'}`}
+      className={`pointer-events-none absolute flex min-w-0 select-none gap-2 text-[var(--ink-muted)] ${multiline ? 'inset-x-0 top-0 items-start py-1 text-sm leading-[22px]' : `inset-0 items-center px-1 ${compact ? 'text-sm leading-5' : 'text-[15px] leading-6'}`}`}
     >
-      <span className={`min-w-0 flex-1 truncate ${visiblePhase === 'erase' ? '' : 'opacity-70'}`}>
+      <span className={`min-w-0 flex-1 ${multiline ? 'break-words' : 'truncate'} ${visiblePhase === 'erase' ? '' : 'opacity-70'}`}>
         <span
           className="bb-composer-suggestion-text"
           data-text-replacement={visiblePhase === 'ready' ? undefined : visiblePhase}
           style={{
+            ...(multiline ? { whiteSpace: 'normal', overflowWrap: 'anywhere' } : {}),
             '--bb-title-character-count': Math.max(1, Array.from(displayed).length),
             '--bb-title-erase-duration': `${textEraseMs(placeholder)}ms`,
             '--bb-title-type-duration': `${textTypeMs(text)}ms`,
@@ -47,7 +49,7 @@ export default function PromptSuggestionOverlay({ text, placeholder, compact }: 
           }}
         >{displayed}</span>
       </span>
-      <kbd className="shrink-0 rounded border border-[var(--line)] px-1.5 py-0.5 font-sans text-[10px] leading-none">Tab</kbd>
+      <kbd className={`shrink-0 rounded border border-[var(--line)] px-1.5 py-0.5 font-sans text-[10px] leading-none ${multiline ? 'mt-1' : ''}`}>Tab</kbd>
     </div>
   );
 }

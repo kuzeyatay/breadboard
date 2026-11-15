@@ -128,3 +128,9 @@ condition = "AND"
 paths = ['''^freellmapi/(server/src/db/migrate/defaults\.ts|client/src/pages/AnalyticsPage\.tsx|server/src/lib/db-backup\.ts)$''']
 regexTarget = "line"
 regexes = ['''(_FILENAME = '\d{8}_\d{6}_[a-z_]+\.ts'|dataKey="p95|PLACEHOLDER_KEY = 'replace-with-64-char-hex')''']
+
+[[allowlists]]
+description = "Crumbs: fixed test NEXTAUTH secrets and the device-key SQL column list"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = ['''NEXTAUTH_SECRET = 'crumbs-(ui-)?test-secret-0123456789'''', '''INSERT INTO crumbs_devices\(user_id,device_id,keys,published_for\)''']

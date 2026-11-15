@@ -28,8 +28,12 @@ async function transcribePage(dataUrl: string, page: number, signal?: AbortSigna
   return response.choices[0]?.message?.content?.trim() ?? "";
 }
 
-/** Read embedded text first, rasterizing only pages that actually need OCR. */
-export async function readPdfAttachment(buffer: Uint8Array, options: {
+/**
+ * Read embedded text first, rasterizing only pages that actually need OCR.
+ * A file path is read in ranges as pages are visited, so a large book is never
+ * copied whole into memory.
+ */
+export async function readPdfAttachment(source: Uint8Array | string, options: {
   userId?: number;
   handwriting?: boolean;
   /** Reader questions OCR only these pages; [] uses the supplied screenshot.
@@ -44,7 +48,9 @@ export async function readPdfAttachment(buffer: Uint8Array, options: {
   onProgress?: (page: number, total: number) => void;
   transcribe?: typeof transcribePage;
 } = {}): Promise<PdfAttachmentReading> {
-  const parser = new PDFParse({ data: buffer });
+  const parser = new PDFParse(typeof source === "string"
+    ? { url: source }
+    : { data: source });
   const text: string[] = [];
   const warnings: string[] = [];
   const ocrPages: number[] = [];

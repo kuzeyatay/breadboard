@@ -439,9 +439,20 @@ export default function VirtualizedMessageList<T>({
   const scrollToIndex = useCallback(
     (index: number, behavior: ScrollBehavior) => {
       if (index < 0 || index >= itemsRef.current.length) return;
+      // A long smooth glide mounts, measures and re-aims at every row it
+      // passes, which is what made rail jumps stutter. Cut straight to a short
+      // distance from the target and only glide the last stretch.
+      const scroller = scrollRef.current;
+      const target = virtualizer.getOffsetForIndex(index, "start")?.[0];
+      if (behavior === "smooth" && scroller && target !== undefined) {
+        const lead = scroller.clientHeight * 0.5;
+        if (Math.abs(target - scroller.scrollTop) > lead) {
+          virtualizer.scrollToOffset(target + (target < scroller.scrollTop ? lead : -lead));
+        }
+      }
       virtualizer.scrollToIndex(index, { align: "start", behavior });
     },
-    [virtualizer],
+    [scrollRef, virtualizer],
   );
 
   // The scroll position that would bring row N to the top, which for every row

@@ -41,12 +41,15 @@ export interface DesktopTabView {
     address: string;
     /** The native document can cover home. Optional for older desktop shells. */
     pageReady?: boolean;
+    /** A website PDF drawn in Breadboard's viewer in place of the web view (a dashboard path). */
+    pdfViewer?: string;
     uiVisited?: boolean;
     uiKey?: string;
     canGoBack: boolean;
     canGoForward: boolean;
     terminalOpen: boolean;
     organizationOpen?: boolean;
+    organizationWidth?: number;
     annotationTarget?: import("./browser-annotations").BrowserAnnotationTarget;
     downloadsOpen?: boolean;
     extensionsOpen?: boolean;
@@ -207,10 +210,10 @@ type DesktopTabsAction =
   | { type: "browser-extensions-picture-in-picture" }
   | { type: "browser-hls-download"; id: string }
   | { type: "browser-terminal"; open: boolean; width?: number }
-  | { type: "browser-organization"; open: boolean }
+  | { type: "browser-organization"; open: boolean; width?: number }
   | { type: "browser-organization-selection" }
   | { type: "browser-organization-target"; target: import("./browser-annotations").BrowserAnnotationTarget }
-  | { type: "browser-organization-markers"; items: Array<{ id: string; target: import("./browser-annotations").BrowserAnnotationTarget }> }
+  | { type: "browser-organization-markers"; items: Array<{ id: string; target: import("./browser-annotations").BrowserAnnotationTarget; count?: number; preview?: string }> }
   | { type: "browser-address-suggestions"; open: boolean; bottom?: number }
   | { type: "browser-toolbar-error"; open: boolean; bottom?: number }
   | { type: "browser-extension-load" }
@@ -707,6 +710,7 @@ export type DesktopTabKind =
   | "code"
   | "gestures"
   | "screen-time"
+  | "crumbs"
   | "calendar"
   | "gardens"
   | "lessons"
@@ -729,6 +733,7 @@ const ROUTE_LABELS: Record<string, { label: string; kind: DesktopTabKind }> = {
   code: { label: "Code", kind: "code" },
   gestures: { label: "Gestures", kind: "gestures" },
   "screen-time": { label: "Screen Time", kind: "screen-time" },
+  crumbs: { label: "Crumbs", kind: "crumbs" },
   calendar: { label: "Calendar", kind: "calendar" },
   garden: { label: "Gardens", kind: "gardens" },
   gardens: { label: "Gardens", kind: "gardens" },

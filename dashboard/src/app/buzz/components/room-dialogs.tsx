@@ -395,7 +395,7 @@ function RoomSettingsForm({
       <DialogHeader>
         <DialogTitle>Room settings</DialogTitle>
         <DialogDescription>
-          #{room.slug} · {room.memberCount}{" "}
+          #{room.slug}, {room.memberCount}{" "}
           {room.memberCount === 1 ? "member" : "members"}
         </DialogDescription>
       </DialogHeader>

@@ -244,7 +244,25 @@ def _exhaustion_details(
                 f"It should answer again in {wait}."
             ), seconds
 
-    return transport.error_message(response, spec.id), seconds
+    message = transport.error_message(response, spec.id)
+    # A spent Google quota arrives above as `model_cooldown` with a reset time.
+    # The bare RESOURCE_EXHAUSTED with no reset is Google shedding load, and
+    # "check quota" sends the reader after a quota that is not used up.
+    if spec.id == "cliproxy" and seconds is None and "resource has been exhausted" in message.lower():
+        name = public_model.split("/", 1)[-1]
+        if name.startswith("gemini-3.8"):
+            # Measured 2026-11-15: small calls to this model succeeded in the
+            # same seconds that every large chat request was refused.
+            message = (
+                f"Google refused this request because it is too large for the per minute token limit on {name}. "
+                "Your quota is not used up. A shorter chat, waiting a minute, or another model should work."
+            )
+        else:
+            message = (
+                f"Google is under heavy load right now and is throttling requests to {name}. "
+                "Your quota is not used up. Try again in a minute, or switch to another model."
+            )
+    return message, seconds
 
 
 def _subscription_family(model: ResolvedModel) -> str:
@@ -403,6 +421,15 @@ def _attempt(
         client = _client_for_model(spec, resolved.upstream_model)
         credentials = credentials_for(spec)
     except ProviderError as exc:
+        # A signed-out web page needs the person to sign in. Answering with the
+        # fallback model instead hides that and shows that model's errors.
+        web = spec.kind == KIND_CHATGPT_WEB
+        if web:
+            exc = ProviderError(
+                "You are signed out of ChatGPT on the web, so OpenAI (web) cannot answer. "
+                "Sign in again in Settings, Providers, OpenAI (web), then send your message again.",
+                phase="prepare",
+            )
         _record_attempt(
             resolved,
             requested_model=requested_model,
@@ -414,10 +441,10 @@ def _attempt(
             error=str(exc),
             failure_phase="prepare",
             partial_output=False,
-            replay_safe=True,
+            replay_safe=not web,
         )
         return _annotate_response(
-            rejected_response(_error_response(str(exc), 503), replay_safe=not strict_route),
+            rejected_response(_error_response(str(exc), 503), replay_safe=not strict_route and not web),
             resolved,
             requested_model=requested_model,
             request_id=request_id,
@@ -505,6 +532,9 @@ def _attempt(
 
     if response.status_code >= 400:
         status = response.status_code
+        # A provider may say a refusal is not the model failing (the web page
+        # busy with an earlier answer): the configured fallback must not take it.
+        fallback_ok = getattr(response, "fallback_ok", True)
         message, seconds = _exhaustion_details(response, spec, resolved.public_model)
         transport.close_quietly(response)
         if _is_quota_error(status, message):
@@ -532,7 +562,7 @@ def _attempt(
         )
         ledger("failed", status_code=status, error=message)
         return _annotate_response(
-            rejected_response(_error_response(message, status), replay_safe=not strict_route),
+            rejected_response(_error_response(message, status), replay_safe=not strict_route and fallback_ok),
             resolved,
             requested_model=requested_model,
             request_id=request_id,

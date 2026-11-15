@@ -1,0 +1,39 @@
+# Crumbs indexer: `fly launch --copy-config --config fly.indexer.toml --no-deploy`,
+# then `fly volumes create crumbs_index --size 1` and `fly deploy --config fly.indexer.toml`.
+app = "crumbs-indexer"
+primary_region = "ams"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[processes]
+  app = "node indexer.mjs"
+
+[env]
+  PORT = "8080"
+  CRUMBS_INDEXER_DB = "/data/indexer.db"
+  # Set these to the app's public address and, if you own one, the handle domain.
+  # CRUMBS_PUBLIC_URL = "https://crumbs-indexer.fly.dev"
+  # CRUMBS_HANDLE_DOMAIN = "crumbs.social"
+  # CRUMBS_ABUSE_EMAIL = "abuse@example.com"
+
+# The index is a cache that can be rebuilt from the network (`node indexer.mjs --rebuild`),
+# so this volume needs no backups. It only saves a rebuild after a restart.
+[mounts]
+  source = "crumbs_index"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"   # The Jetstream connection must stay open.
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    path = "/health"
+    interval = "30s"
+    timeout = "5s"
+
+[[vm]]
+  memory = "256mb"
+  cpus = 1

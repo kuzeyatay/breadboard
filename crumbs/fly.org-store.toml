@@ -1,0 +1,33 @@
+# Crumbs organization store: `fly launch --copy-config --config fly.org-store.toml --no-deploy`,
+# then `fly secrets set DATABASE_URL=postgres://... CRUMBS_ADMIN_TOKEN=... --config fly.org-store.toml`
+# and `fly deploy --config fly.org-store.toml`.
+# DATABASE_URL should point at managed Postgres with automatic backups (Neon, Supabase):
+# this database holds the only copy of organization content.
+app = "crumbs-org-store"
+primary_region = "ams"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[processes]
+  app = "node org-store.mjs"
+
+[env]
+  PORT = "8080"
+  # CRUMBS_ABUSE_EMAIL = "abuse@example.com"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    path = "/health"
+    interval = "30s"
+    timeout = "5s"
+
+[[vm]]
+  memory = "256mb"
+  cpus = 1

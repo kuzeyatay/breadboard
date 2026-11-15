@@ -1585,6 +1585,12 @@ export async function startConversationTurn(
           plan: prepared.plan,
           hasAttachments: Boolean(input.attachments?.length),
           activeGardenSlug: context.activeGardenSlug ?? session.row.garden_id,
+          // Withheld wherever the user's own material is: Personalize off,
+          // speech (no time for a second model call), and turns that are not
+          // a person asking a fresh question.
+          bridge: input.personalize !== false && !input.voice &&
+            !input.internalAgentContinuation && !input.textSelection,
+          priorRequests,
         })
       : { attempted: false, sources: [], context: "" };
   if (gardenGrounding.attempted) {

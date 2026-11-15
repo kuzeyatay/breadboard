@@ -1,0 +1,23 @@
+{
+  "name": "breadboard-crumbs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hosted services for Breadboard Crumbs: the highlight indexer and the encrypted organization store.",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "indexer": "node indexer.mjs",
+    "org-store": "node org-store.mjs",
+    "dev": "node dev.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.2.17",
+    "ws": "^8.23.0"
+  }
+}

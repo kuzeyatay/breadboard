@@ -34,6 +34,12 @@ test('a Garden scan reuses every saved page without calling OCR, only for matchi
   const pages=readGardenPdfPages(input);assert.equal(Object.keys(pages).length,65);assert.match(pages[39],/39/);
   assert.equal(readGardenPdfPages({...input,bytes:new Uint8Array([1,2,3])}),null,'same filename must not reuse unrelated OCR');
   assert.equal(readGardenPdfPages({...input,clusterSlug:'other'}),null);
+  const upload=path.join(root,'upload.pdf');fs.writeFileSync(upload,bytes);
+  assert.equal(Object.keys(readGardenPdfPages({...input,bytes:undefined,filePath:upload})).length,65,'an uploaded file on disk matches without loading it whole');
+  const altered=Buffer.from(bytes);altered[altered.length-2]^=1;fs.writeFileSync(upload,altered);
+  assert.equal(readGardenPdfPages({...input,bytes:undefined,filePath:upload}),null,'same-size different file must not reuse OCR');
+  const fromPath=await readPdfAttachment(path.join(root,'circuits/assets/original.pdf'),{pageReadings:pages,transcribe:async()=>assert.fail('no OCR')});
+  assert.equal(fromPath.pages,65);
   const result=await readPdfAttachment(bytes,{pageReadings:pages,transcribe:async()=>assert.fail('Saved Garden OCR must not trigger another OCR job')});
   assert.equal(result.pages,65);assert.deepEqual(result.ocrPages,[]);assert.equal(result.warning,'');
   assert.match(result.text,/\[\[Page 39\]\]\nSaved handwritten circuit notes 39/);

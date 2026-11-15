@@ -3621,7 +3621,6 @@
     font-size: calc(var(--buzz-type-rem) * 0.625);
     letter-spacing: 0;
     line-height: 1;
-    text-transform: uppercase;
     transform-origin: top center;
     will-change: opacity, transform;
   }

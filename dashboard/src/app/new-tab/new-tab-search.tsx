@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUpRight, CalendarDays, File, FileText, Hash, LayoutGrid, ListTodo, MessageSquareText, Search, Sprout, X, type LucideIcon } from "lucide-react";
+import { ArrowUpRight, CalendarDays, File, FileText, Hash, LayoutGrid, ListTodo, MessageSquareText, Plus, Search, Sprout, X, type LucideIcon } from "lucide-react";
 import NavigationLink from "@/app/components/navigation-link";
 import { cancelNavigationProgress, startNavigationProgress } from "@/app/components/navigation-progress";
 import { desktopTabsBridge, navigateBrowserFromHome } from "@/lib/desktop-browser-tabs";
@@ -14,6 +14,7 @@ import { SEARCH_LABELS, SEARCH_TYPES, searchPlaces, searchScore, searchTerms, so
   type BreadboardSearchResponse, type BreadboardSearchResult, type SearchFilter, type SearchType } from "@/lib/breadboard-search";
 import type { NewTabGarden } from "@/lib/new-tab-gardens";
 import { newTabSearchSuggestions, webDestinationUrl, type NewTabSuggestion, type SearchHistoryEntry } from "@/lib/new-tab-search-suggestions";
+import { LOCAL_DOCUMENT_ACCEPT, setLocalDocument } from "@/lib/local-document";
 import { useNewTabSearchHistory } from "./use-new-tab-search-history";
 import controls from "./new-tab-controls.module.css";
 import styles from "./new-tab-search.module.css";
@@ -50,6 +51,7 @@ export default function NewTabSearch({ gardens, initialHistory, ownerKey, browse
   const frame = useRef<HTMLDivElement>(null);
   const dropdown = useRef<HTMLDivElement>(null);
   const resultList = useRef<HTMLUListElement>(null);
+  const filePicker = useRef<HTMLInputElement>(null);
   const needle = query.trim();
   const current = state?.query === needle ? state : null;
   const pending = Boolean(needle && !current && active);
@@ -218,6 +220,17 @@ export default function NewTabSearch({ gardens, initialHistory, ownerKey, browse
         {query && <button type="button" onClick={searchWeb} aria-label="Search the web" className={controls.clearSearch}>
           <ArrowUpRight size={18} aria-hidden="true" />
         </button>}
+        <button type="button" onClick={() => filePicker.current?.click()} aria-label="Open a file from this computer"
+          title="Open a PDF, Office file, image or video" className={controls.clearSearch}>
+          <Plus size={18} aria-hidden="true" />
+        </button>
+        <input ref={filePicker} type="file" hidden accept={LOCAL_DOCUMENT_ACCEPT} onChange={event => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (!file) return;
+          setLocalDocument(file);
+          startNavigationProgress(); router.push("/open");
+        }} />
         <BrowserSketchOutline targetRef={frame} index={0} />
         {suggestionsOpen && <BrowserSuggestionList id="new-tab-search-suggestions" dropdownRef={dropdown}
           suggestions={suggestions} highlighted={highlighted} onHighlight={setHighlighted}

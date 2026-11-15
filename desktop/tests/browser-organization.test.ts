@@ -28,8 +28,19 @@ test("Organization commands validate targets and bound marker batches", () => {
   assert.ok(isTabsCommand({type:"browser-organization-target",target}));
   assert.equal(isTabsCommand({type:"browser-organization-target",target:{...target,url:"javascript:alert(1)"}}),false);
   assert.ok(isTabsCommand({type:"browser-organization-markers",items:[{id:"thread-1",target}]}));
+  // Crumbs markers carry how many notes a passage has and a preview of the first.
+  assert.ok(isTabsCommand({type:"browser-organization-markers",items:[{id:"a".repeat(64),target,count:3,preview:"ada: a note"}]}));
+  assert.equal(isTabsCommand({type:"browser-organization-markers",items:[{id:"thread-1",target,count:-1}]}),false);
+  assert.equal(isTabsCommand({type:"browser-organization-markers",items:[{id:"thread-1",target,preview:"x".repeat(201)}]}),false);
   assert.equal(isTabsCommand({type:"browser-organization-markers",items:Array(201).fill({id:"thread-1",target})}),false);
   assert.equal(browserOrganizationWidth(1200),360);
   assert.equal(browserOrganizationWidth(300),251);
   assert.equal(browserOrganizationWidth(40),0);
+  // A resized panel is clamped, and a zoomed chrome reserves the zoomed width so the page never covers the panel.
+  assert.equal(browserOrganizationWidth(1200,520),520);
+  assert.equal(browserOrganizationWidth(1200,90),300);
+  assert.equal(browserOrganizationWidth(2000,5000),720);
+  assert.equal(browserOrganizationWidth(1320,360,1.1),396);
+  assert.ok(isTabsCommand({type:"browser-organization",open:true,width:480}));
+  assert.equal(isTabsCommand({type:"browser-organization",open:true,width:"480"}),false);
 });

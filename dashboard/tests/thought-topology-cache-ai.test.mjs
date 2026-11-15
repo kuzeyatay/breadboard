@@ -34,16 +34,32 @@ test("AI validators reject excess sentences, words, and relation enums", () => {
   assert.equal(enrichment.validateEdgeExplanation(JSON.stringify({ explanation: "Grounded.", relationType: "hallucinated", direction: "undirected" })), null);
 });
 
-test("invalid JSON receives one correction then deterministic degradation", async () => {
+test("an initial in a name does not count as the end of a sentence", () => {
+  const summary = "Excerpts from Calculus by Robert A. Adams and Christopher Essex. It covers vectors. It has exercises.";
+  assert.equal(enrichment.validateNodeSummary(JSON.stringify({ summary })), summary);
+  assert.equal(enrichment.validateNodeSummary(JSON.stringify({ summary: `${summary} A fourth one.` })), null);
+});
+
+test("invalid JSON receives one correction and one fresh request, then deterministic degradation", async () => {
   let calls = 0;
   const result = await enrichment.enrichNodeSummary({
     title: "Gauss law",
     semanticText: "Gauss law relates electric flux through a closed surface to enclosed charge.",
     generator: async () => { calls += 1; return "not-json"; },
   });
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
   assert.equal(result.state, "degraded");
   assert.ok(result.text.length > 0);
+});
+
+test("a correction that repeats the mistake is followed by a fresh request that can still succeed", async () => {
+  const replies = ["not-json", "still-not-json", JSON.stringify({ summary: "Flux through a closed surface measures enclosed charge." })];
+  const result = await enrichment.enrichNodeSummary({
+    title: "Gauss law",
+    semanticText: "Gauss law relates electric flux through a closed surface to enclosed charge.",
+    generator: async () => replies.shift(),
+  });
+  assert.equal(result.state, "ready");
 });
 
 test("valid corrected JSON is accepted on the one corrective attempt", async () => {

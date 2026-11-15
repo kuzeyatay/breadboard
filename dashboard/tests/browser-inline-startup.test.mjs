@@ -7,6 +7,7 @@ import test from 'node:test';
 import ts from 'typescript';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
+import { expect } from '@playwright/test';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const source = fs.readFileSync(path.join(root, 'src/app/browser/browser-client.tsx'), 'utf8');
@@ -48,7 +49,7 @@ test('cold browser highlights send with their chat panel covered and animation f
         const inline=useInlineAgentQuestions({sessionId:'conv_fixture',messages:emptyMessages,ensureConversation:async()=>'conv_fixture'});
         const question=inline.messages.findLast(m=>m.role==='user');
         const answer=inline.messages.findLast(m=>m.role==='assistant');
-        const content=useMemo(()=>({question:question?.content,answer:answer?.content,pending:Boolean(answer?.pending),canAsk:!answer?.pending}),[question,answer]);
+        const content=useMemo(()=>({question:question?.content,answer:answer?.content,pending:Boolean(answer?.pending),canAsk:!answer?.pending,suggestionModel:'browser-model'}),[question,answer]);
         useBrowserInlineAnswer({selection,content,onAsk:(text,attachments)=>void inline.send(text,selection.reference,{model:'fixture',attachments}),onStop:()=>inline.stop(selection.reference.id),onDelete:()=>{},onClose:()=>{}});
         return <div data-owner>Terminal</div>;
       }
@@ -89,8 +90,15 @@ test('cold browser highlights send with their chat panel covered and animation f
       builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: 'export const primeInlineArtifacts=async()=>[]; export const InlineArtifactCardsProvider=({children})=>children; export default()=>null;', loader: 'tsx' }));
     } }] });
   const requests = [];
+  const suggestions = [];
   const server = createServer(async (request, response) => {
     if (request.url === '/bundle.js') { response.setHeader('content-type', 'text/javascript'); response.end(bundle.outputFiles[0].text); return; }
+    if (request.url === '/api/chat-prompt-suggestion') {
+      let body = ''; for await (const chunk of request) body += chunk;
+      suggestions.push(JSON.parse(body));
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({suggestion:'What determines electric flux through a surface?'})); return;
+    }
     if (request.url?.endsWith('/direct')) {
       let body = ''; for await (const chunk of request) body += chunk;
       requests.push(JSON.parse(body));
@@ -118,6 +126,12 @@ test('cold browser highlights send with their chat panel covered and animation f
     await owner.evaluate(() => window.openHighlight());
     await owner.waitForFunction(() => Boolean(document.querySelector('[data-owner]')), null, { polling: 25 });
     const editor = page.locator('textarea');
+    await expect(page.locator('[data-prompt-suggestion]')).toBeVisible();
+    assert.equal(suggestions.at(-1).model,'browser-model');
+    assert.equal(suggestions.at(-1).selection.quote,'electric flux');
+    assert.equal(suggestions.at(-1).selection.sourceTitle,'Lesson');
+    await editor.press('Tab');
+    await expect(editor).toHaveValue('What determines electric flux through a surface?');
     await editor.fill(`Question by Enter in ${theme}`);
     await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Ask' && !button.disabled));
     const beforeEnter = requests.length;

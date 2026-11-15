@@ -135,6 +135,10 @@ interface Props {
   showNavbarFlowers?: boolean;
   /** Enables the cross-page review handoff for an artifact-owned PDF. */
   aiEditArtifact?: ArtifactAiEditTarget;
+  /** Keep highlights and assistant chats in memory only, never saved. */
+  temporary?: boolean;
+  /** A stable same-origin address naming this document when `sourceUrl` is not one (a blob: URL). */
+  documentIdentity?: string;
 }
 
 function Spinner({ className = "h-4 w-4" }: { className?: string }) {
@@ -340,6 +344,8 @@ export default function PdfViewerClient({
   fastRead = false,
   showNavbarFlowers = true,
   aiEditArtifact,
+  temporary = false,
+  documentIdentity,
 }: Props) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -407,6 +413,8 @@ export default function PdfViewerClient({
     return `/api/documents/${encodeURIComponent(documentSlug)}/source-pdf?${params.toString()}`;
   }, [clusterSlug, documentSlug, sourceUrl]);
 
+  const identity = documentIdentity || pdfUrl;
+
   const saveQueue = useMemo(() => pdfSaveQueue(pdfUrl, title, fileRevision), [pdfUrl, title, fileRevision]);
 
   const historyUrl = useMemo(() => {
@@ -429,12 +437,12 @@ export default function PdfViewerClient({
     [browserTitle, clusterSlug, documentSlug, title],
   );
   const readSavedPage = useCallback(
-    () => loadPdfReadingPosition(pdfUrl, pageStorageKey),
-    [pdfUrl, pageStorageKey],
+    () => loadPdfReadingPosition(identity, pageStorageKey),
+    [identity, pageStorageKey],
   );
   const writeSavedPage = useCallback(
-    (page: number) => savePdfReadingPosition(pdfUrl, page),
-    [pdfUrl],
+    (page: number) => savePdfReadingPosition(identity, page),
+    [identity],
   );
 
   useEffect(() => {
@@ -1909,9 +1917,9 @@ export default function PdfViewerClient({
           </div>
         )}
         <PdfAssistant
-          key={pdfUrl}
-          documentKey={pdfAssistantDocumentKey(pdfUrl)}
-          sourceUrl={pdfUrl}
+          key={identity}
+          documentKey={pdfAssistantDocumentKey(identity)}
+          sourceUrl={identity}
           title={documentTitle}
           fileName={editedFileName}
           pageNumber={pageNumber}
@@ -1921,6 +1929,7 @@ export default function PdfViewerClient({
           containerRef={containerRef}
           pdfDocumentRef={pdfDocumentRef}
           getBytes={currentPdfBytes}
+          temporary={temporary}
         />
       </section>
 

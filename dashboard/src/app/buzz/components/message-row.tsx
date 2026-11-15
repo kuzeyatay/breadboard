@@ -20,6 +20,7 @@ import {
   MessageHeaderRow,
   MessageMetaSeparator,
 } from "@/app/buzz/ui/MessageHeader";
+import { UserAvatar } from "@/app/buzz/ui/UserAvatar";
 import { EmojiPicker } from "./emoji-picker";
 import { MessageMarkdown } from "./message-markdown";
 import type { BuzzMember, BuzzMessage } from "../types.ts";
@@ -55,6 +56,7 @@ export interface MessageRowProps {
 
 function MessageRowImpl({
   message,
+  member,
   roomMembers,
   grouped,
   isSelf,
@@ -97,22 +99,30 @@ function MessageRowImpl({
       data-message-id={message.id}
       data-testid="message-row"
       /*
-       * Upstream gives every row a 36px avatar gutter, and swaps the avatar
-       * for a hover clock on a continuation. With no profile pictures that
-       * column is an empty indent down the whole transcript, so it is gone and
-       * the text starts at the row's own edge. A continuation's exact minute
-       * goes here instead of into that column — it is one hover away, and the
-       * block it belongs to already prints the time on its header row.
+       * Every row has a 36px photo gutter: the author's face on the first row
+       * of a block, nothing on its continuations. A continuation's exact
+       * minute is one hover away, and the block it belongs to already prints
+       * the time on its header row.
        */
       title={grouped ? clockTime(message.createdAt) : undefined}
     >
+      {/* The photo gutter: a face on the first row of a block, blank on its continuations. */}
+      <div className="mr-2.5 w-9 shrink-0 pt-0.5">
+        {grouped ? null : (
+          <UserAvatar
+            avatarUrl={member?.avatarUrl ?? (typeof (message.metadata?.crumbs as { avatar?: unknown } | undefined)?.avatar === "string" ? (message.metadata!.crumbs as { avatar: string }).avatar : null)}
+            displayName={message.authorName}
+            testId="message-avatar"
+          />
+        )}
+      </div>
       <div className="flex min-w-0 flex-1 flex-col">
         {grouped ? null : (
           <MessageHeaderRow>
             <MessageAuthorText as="h3">{message.authorName}</MessageAuthorText>
             {message.authorKind === "agent" ? (
-              <span className="rounded bg-muted px-1 text-3xs font-medium uppercase tracking-wide text-muted-foreground">
-                agent
+              <span className="rounded bg-muted px-1 text-3xs font-medium text-muted-foreground">
+                Agent
               </span>
             ) : null}
             <span className="text-xs text-muted-foreground">

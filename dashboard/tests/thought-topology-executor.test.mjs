@@ -8,7 +8,18 @@ import Database from "better-sqlite3";
 process.env.BREADBOARD_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-topology-claim-"));
 await import("../scripts/learn-worker-import-hook.mjs");
 const db = (await import("../src/lib/db.ts")).default;
-const { executeThoughtTopologyRuntimeBuild } = await import("../src/lib/thought-topology/executor.ts");
+const { executeThoughtTopologyRuntimeBuild, topologyContinuation } = await import("../src/lib/thought-topology/executor.ts");
+
+test("a build the budget cut short queues the next pass, and only then", () => {
+  const built = { status: "built", clusterId: 1, revision: 1, nodes: 2, edges: 1, mode: "semantic-vector" };
+  assert.equal(topologyContinuation({ ...built, unfinishedEnrichment: 0 }, "Manual Thought Topology update"), null);
+  assert.equal(topologyContinuation({ ...built, status: "stale", unfinishedEnrichment: 9 }, "Learn"), null);
+  // A manual build keeps going while automatic updates are paused, and so does its continuation.
+  const manual = topologyContinuation({ ...built, unfinishedEnrichment: 9 }, "Manual Thought Topology update");
+  assert.equal(manual.manual, true);
+  assert.equal(topologyContinuation({ ...built, unfinishedEnrichment: 3 }, manual.reason).manual, true);
+  assert.equal(topologyContinuation({ ...built, unfinishedEnrichment: 9 }, "Learn").manual, false);
+});
 const { reconcileThoughtTopologyRuntimeJob } = await import("../src/lib/thought-topology/state.ts");
 const { setHermesUserSettings } = await import("../src/lib/hermes/runtime-store.ts");
 
@@ -36,7 +47,7 @@ test("the worker reserves the write lock before reading its coalesced queue revi
   let competed = false;
   db.prepare = function (sql) {
     const statement = prepare.call(this, sql);
-    if (sql === "SELECT id, cluster_id, revision, status FROM thought_topology_jobs WHERE id = ?") {
+    if (sql === "SELECT id, cluster_id, revision, status, reason FROM thought_topology_jobs WHERE id = ?") {
       const get = statement.get.bind(statement);
       statement.get = (...args) => {
         const row = get(...args);

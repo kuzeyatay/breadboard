@@ -18,7 +18,7 @@
   position: relative;
   display: block;
   width: 44px;
-  height: min(var(--lens-length, 310px), 60vh);
+  height: var(--lens-length, 310px);
   max-height: none;
   padding: 0;
   overflow: hidden;

@@ -208,7 +208,7 @@ export function InboxView({
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <p className="px-2 pb-1 pt-3 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
+    <p className="px-2 pb-1 pt-3 text-3xs font-semiboldr text-muted-foreground">
       {children}
     </p>
   );
@@ -376,7 +376,7 @@ export function AgentsView({
                     {seats[0].member.displayName}
                   </span>
                   <span className="block truncate text-3xs text-muted-foreground">
-                    @{handle} · {seats.length}{" "}
+                    @{handle}, {seats.length}{" "}
                     {seats.length === 1 ? "room" : "rooms"}
                   </span>
                 </span>

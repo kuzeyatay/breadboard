@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { getServerSession } from "next-auth/next";
 import { notFound, redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth-options";
-import { findDocumentBlob } from "@/lib/conversations/document-blob-store.ts";
+import { findDocumentBlob, touchWebPdfBlob } from "@/lib/conversations/document-blob-store.ts";
 import { attachmentDisplayName } from "@/lib/document-attachments.ts";
 import {
   getNavbarFlowers,
@@ -50,6 +50,7 @@ export default async function ChatAttachmentPdfPage({
   const { blobId } = await params;
   const blob = findDocumentBlob({ userId, blobId });
   if (!blob || blob.format !== "pdf") notFound();
+  touchWebPdfBlob(blob);
 
   const { name } = await searchParams;
   const fileName = attachmentDisplayName(name, "pdf", `${blob.blobId}.pdf`);

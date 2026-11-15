@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizePromptSuggestion, promptSuggestionContext } from '../src/lib/chat-prompt-suggestion.ts';
+import { normalizePromptSuggestion, promptSuggestionContext, promptSuggestionSelection } from '../src/lib/chat-prompt-suggestion.ts';
 import { generatePromptSuggestion, generatePdfSuggestions } from './helpers/recommendation-model-fixture.mjs';
 
 const messages = [
@@ -30,6 +30,48 @@ test('only a short, single plain-text message becomes ghost text', () => {
   for (const text of [null, {}, '', 'NONE', 'null', 'N/A', 'x'.repeat(241), '- Explain more', '1. Explain more', 'Suggestion: Continue', 'First\nSecond', '<think>secret</think> Continue', '```Continue```']) {
     assert.equal(normalizePromptSuggestion(text), null, String(text));
   }
+});
+
+test('selection suggestions bound the quote and keep the nearest surrounding text only', () => {
+  assert.deepEqual(promptSuggestionSelection({ quote: '  electric flux  ', prefix: 'before ', suffix: ' after',
+    sourceTitle: 'Gauss law', reasoning: 'private', sourceUrl: 'https://private.test' }), {
+    quote: 'electric flux', prefix: 'before ', suffix: ' after', sourceTitle: 'Gauss law',
+  });
+  const bounded = promptSuggestionSelection({ quote: 'q'.repeat(10_000),
+    prefix: 'distant' + 'p'.repeat(1_000), suffix: 's'.repeat(1_000) + 'distant', sourceTitle: 't'.repeat(500) });
+  assert.equal(bounded.quote.length, 4_000);
+  assert.equal(bounded.prefix, 'p'.repeat(1_000));
+  assert.equal(bounded.suffix, 's'.repeat(1_000));
+  assert.equal(bounded.sourceTitle.length, 300);
+  for (const value of [null, [], 'text', {}, { quote: '   ' }, { quote: 42 }]) {
+    assert.equal(promptSuggestionSelection(value), null);
+  }
+});
+
+test('Ask here generates from an excerpt before any reply, without unrelated conversation or personal evidence', async () => {
+  const selection = { quote: 'electric flux', prefix: 'Gauss law relates ', suffix: ' to enclosed charge.', sourceTitle: 'Fields' };
+  for (const context of [{}, { gardenSlug: 'fields' }]) {
+    const result = await generatePromptSuggestion({ messages: [], selection, context, model: 'selected/model',
+      evidence: [{ id: 'mail:1', source: 'gmail', title: 'Private mail', summary: 'An unrelated errand' }],
+      fetcher: async (_url, init) => {
+        const body = JSON.parse(init.body);
+        assert.equal(body.model, 'selected/model');
+        assert.equal(body.stream, false);
+        assert.equal('tools' in body, false);
+        assert.match(body.messages[0].content, /one short question/);
+        assert.match(body.messages[0].content, /untrusted quoted content/);
+        assert.match(body.messages[1].content, /electric flux/);
+        assert.match(body.messages[1].content, /Gauss law relates/);
+        assert.doesNotMatch(JSON.stringify(body), /Private mail|unrelated errand/);
+        return completion('Why does electric flux depend on enclosed charge?');
+      } });
+    assert.equal(result, 'Why does electric flux depend on enclosed charge?');
+  }
+  assert.equal(await generatePromptSuggestion({ messages, selection, model: 'selected/model', fetcher: async (_url, init) => {
+    assert.doesNotMatch(init.body, /RLC|private reasoning/);
+    return completion('NONE');
+  } }), null);
+  assert.equal(await generatePromptSuggestion({ messages: [], selection, model: 'none', fetcher: async () => assert.fail('no model') }), null);
 });
 
 test('generation is tool-free, follows the selected model and excludes private message metadata', async () => {

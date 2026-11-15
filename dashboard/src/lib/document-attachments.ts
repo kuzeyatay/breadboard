@@ -127,11 +127,11 @@ export const DOCUMENT_ATTACHMENT_ACCEPT = DOCUMENT_ATTACHMENT_EXTENSIONS.map(
 ).join(",");
 
 /**
- * 128 MB. Well above any agreement or board pack and far below a video, which
+ * 512 MB. Well above any agreement, board pack or image-heavy book and below a video, which
  * is the point: this ceiling exists so a mis-typed upload fails fast, not so
  * that large documents are refused.
  */
-export const MAX_DOCUMENT_ATTACHMENT_BYTES = 128 * 1024 * 1024;
+export const MAX_DOCUMENT_ATTACHMENT_BYTES = 512 * 1024 * 1024;
 
 /** The filename travels in a header, so the request body can be the raw file. */
 export const DOCUMENT_FILENAME_HEADER = "x-document-filename";

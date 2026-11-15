@@ -12,7 +12,7 @@ import {
 } from "@/lib/organizations/store.ts";
 import { BREAD_NAME, isBreadSlug } from "@/lib/buzz/bread.ts";
 import { addMember, ensureBreadMember, listMembers } from "@/lib/buzz/instance.ts";
-import { requireBuzzUser, requireRoom, requireRoomManager, requireString } from "@/lib/buzz/route-helpers.ts";
+import { requireBuzzUser, requireRoom, requireRoomManager, requireString, withPhotos } from "@/lib/buzz/route-helpers.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +24,7 @@ export async function GET(
     const { userId } = await requireBuzzUser();
     const { roomId } = await params;
     const room = requireRoom(userId, roomId);
-    return NextResponse.json({ members: listMembers(room.id) });
+    return NextResponse.json({ members: withPhotos(room.id, listMembers(room.id)) });
   } catch (error) {
     return apiErrorResponse(error);
   }

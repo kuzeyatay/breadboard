@@ -146,7 +146,7 @@ export async function writeDocumentBlob(input: {
           new DocumentBlobError(
             413,
             "document_too_large",
-            "That document is larger than 128 MB.",
+            `That document is larger than ${MAX_DOCUMENT_ATTACHMENT_BYTES / (1024 * 1024)} MB.`,
           ),
         );
         return;
@@ -295,6 +295,7 @@ export function removeDocumentBlob(input: {
   try {
     fs.rmSync(blob.path, { force: true });
     fs.rmSync(`${blob.path}.reading.json`, { force: true });
+    fs.rmSync(`${blob.path}${WEB_PDF_MARKER}`, { force: true });
     fs.rmSync(
       documentFiguresDirectory({ userId: input.userId, blobId: input.blobId, root: input.root }),
       { recursive: true, force: true },
@@ -338,4 +339,51 @@ export function listDocumentBlobs(userId: number, root?: string): DocumentBlobFi
       if (!stats?.isFile()) return [];
       return [{ blobId, format, path: filePath, modifiedAt: stats.mtimeMs }];
     });
+}
+
+/**
+ * PDFs the desktop browser opened in Breadboard's viewer instead of Chromium's.
+ * They carry an empty `.web` sidecar whose mtime is the last time the viewer
+ * opened them; one left unopened for 30 days is swept. Chat attachments never
+ * get the sidecar, so the sweep cannot touch them.
+ */
+const WEB_PDF_MARKER = ".web";
+export const WEB_PDF_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function markWebPdfBlob(blob: { path: string }): void {
+  fs.writeFileSync(`${blob.path}${WEB_PDF_MARKER}`, "");
+}
+
+/** Opening a web PDF in the viewer keeps it for another lifetime. */
+export function touchWebPdfBlob(blob: { path: string }): void {
+  const now = new Date();
+  try {
+    fs.utimesSync(`${blob.path}${WEB_PDF_MARKER}`, now, now);
+  } catch {
+    // Not a web PDF, or already swept.
+  }
+}
+
+export function isMarkedWebBlob(blob: { path: string }): boolean {
+  return fs.existsSync(`${blob.path}${WEB_PDF_MARKER}`);
+}
+
+/**
+ * The same lifetime for any store's blobs: images and videos opened from a new
+ * tab carry the marker too, so one Settings switch governs all of them.
+ */
+export function sweepMarkedBlobs<T extends { path: string }>(blobs: T[], remove: (blob: T) => boolean, now = Date.now()): number {
+  let removed = 0;
+  for (const blob of blobs) {
+    const marker = fs.statSync(`${blob.path}${WEB_PDF_MARKER}`, { throwIfNoEntry: false });
+    if (marker && now - marker.mtimeMs > WEB_PDF_LIFETIME_MS && remove(blob)) {
+      fs.rmSync(`${blob.path}${WEB_PDF_MARKER}`, { force: true });
+      removed++;
+    }
+  }
+  return removed;
+}
+
+export function sweepWebPdfBlobs(userId: number, root?: string, now = Date.now()): number {
+  return sweepMarkedBlobs(listDocumentBlobs(userId, root), blob => removeDocumentBlob({ userId, blobId: blob.blobId, root }), now);
 }

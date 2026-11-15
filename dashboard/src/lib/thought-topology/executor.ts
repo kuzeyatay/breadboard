@@ -2,8 +2,32 @@ import db from "../db.ts";
 import { NO_MODEL_SENTINEL, NO_DEFAULT_MODEL_MESSAGE } from "../ai-models.ts";
 import { selectedModelForUser } from "../selected-model.ts";
 import { buildThoughtTopologyInRuntimeWorker, type ThoughtTopologyBuildResult } from "./builder.ts";
+import { invalidateThoughtTopologyAfterMutation } from "./state.ts";
 
-interface QueueRow { id: number; cluster_id: number; revision: number; status: string }
+interface QueueRow { id: number; cluster_id: number; revision: number; status: string; reason: string | null }
+
+/** The reason the Thought Topology route gives a build the user asked for. */
+const MANUAL_REASON = "Manual Thought Topology update";
+
+/**
+ * Whether a finished build should queue the next one. A large Garden needs
+ * more model text than one worker's budget: Electronic Circuits 2 has 6,817
+ * connections and sat with 3,965 fallback explanations because nothing ever
+ * ran the next build (2026-11-15). Each pass writes what the last had no time
+ * for, so the chain ends once the budget stops being the limit; failed model
+ * calls are not counted and never continue it. A build the user asked for
+ * keeps going while automatic updates are paused; any other build obeys them.
+ */
+export function topologyContinuation(
+  result: ThoughtTopologyBuildResult,
+  reason: string | null,
+): { reason: string; manual: boolean } | null {
+  if (result.status !== "built" || !(result.unfinishedEnrichment! > 0)) return null;
+  const manual = reason?.startsWith(MANUAL_REASON) === true;
+  return manual
+    ? { reason: `${MANUAL_REASON}, continued`, manual }
+    : { reason: "Continue model text the last build had no time for", manual };
+}
 
 export async function executeThoughtTopologyRuntimeBuild(input: {
   clusterId: number;
@@ -21,7 +45,7 @@ export async function executeThoughtTopologyRuntimeBuild(input: {
   // that revision instead of reconstructing every intermediate snapshot.
   const row = db.transaction(() => {
     const candidate = db.prepare(
-      "SELECT id, cluster_id, revision, status FROM thought_topology_jobs WHERE id = ?",
+      "SELECT id, cluster_id, revision, status, reason FROM thought_topology_jobs WHERE id = ?",
     ).get(input.queueJobId) as QueueRow | undefined;
     if (
       !candidate ||
@@ -62,6 +86,8 @@ export async function executeThoughtTopologyRuntimeBuild(input: {
           SET status = ?, last_error = NULL, updated_at = datetime('now')
         WHERE id = ?`,
     ).run(result.status === "built" ? "done" : "stale", input.queueJobId);
+    const next = topologyContinuation(result, row.reason);
+    if (next) await invalidateThoughtTopologyAfterMutation(input.gardenId, next.reason, { manual: next.manual }).catch(() => undefined);
     return result;
   } catch (error) {
     const message = (error instanceof Error ? error.message : "build_failed").replace(/\p{Cc}+/gu, " ").slice(0, 500);

@@ -187,6 +187,11 @@ test("the saved account switch keeps missing, outdated, failed, and stranded map
   setHermesUserSettings(owner, { composerSwitches: { currentLocation: true } });
   assert.equal(thoughtTopologyAutoUpdateEnabled(owner), false);
   assert.equal(getHermesUserSettings(owner).composerSwitches.currentLocation, true);
+  const { webPdfCleanupEnabled } = await import("../src/lib/thought-topology/preferences.ts");
+  assert.equal(webPdfCleanupEnabled(owner), true, "web PDF cleanup defaults on");
+  setHermesUserSettings(owner, { composerSwitches: { webPdfCleanup: false } });
+  assert.equal(webPdfCleanupEnabled(owner), false);
+  assert.equal(thoughtTopologyAutoUpdateEnabled(owner), false, "switches stay independent");
   try {
     for (const kind of ['missing', 'outdated', 'failed', 'stranded', 'interrupted-submission', 'current']) {
       const slug = `paused-${kind}`;

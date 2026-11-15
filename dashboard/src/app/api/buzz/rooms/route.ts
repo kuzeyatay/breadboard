@@ -11,6 +11,7 @@ import {
   unreadCounts,
 } from "@/lib/buzz/instance.ts";
 import { requireBuzzUser, requireString } from "@/lib/buzz/route-helpers.ts";
+import { relayOrganizations } from "@/lib/crumbs/service.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,8 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   try {
     const { userId } = await requireBuzzUser();
+    // Encrypted organizations and their rooms arrive in the background; the next refresh shows them.
+    void relayOrganizations(userId);
     const includeArchived =
       new URL(request.url).searchParams.get("archived") === "1";
 

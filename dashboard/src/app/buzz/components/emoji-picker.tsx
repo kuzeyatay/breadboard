@@ -173,7 +173,7 @@ export function EmojiPicker({
           ) : (
             groups.map((group) => (
               <div key={group.name} className="mb-2 last:mb-0">
-                <p className="px-1 pb-1 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
+                <p className="px-1 pb-1 text-3xs font-semiboldr text-muted-foreground">
                   {group.name}
                 </p>
                 <div className="grid grid-cols-8 gap-0.5">

@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { renderSystemPrompt } from "../system-prompts/service.ts";
 import { createChatmockClient } from "../chatmock-client.ts";
 import { GLOBAL_MODEL_SENTINEL } from "../ai-models.ts";
@@ -33,7 +34,9 @@ function wordCount(value: string): number {
 }
 
 function sentenceCount(value: string): number {
-  return compact(value).split(/(?<=[.!?])\s+(?=[A-Z0-9])/).filter(Boolean).length;
+  // An initial is not a sentence end: "Robert A. Adams" counted as two
+  // sentences and failed every summary of the Math 2 textbook (2026-11-15).
+  return compact(value).split(/(?<!\b[A-Z]\.)(?<=[.!?])\s+(?=[A-Z0-9])/).filter(Boolean).length;
 }
 
 function validShortText(value: unknown): value is string {
@@ -143,6 +146,44 @@ export function createDefaultTopologyGenerator(model = GLOBAL_MODEL_SENTINEL, si
   };
 }
 
+/**
+ * Waits between attempts of one failed model call. A failure here is almost
+ * always transient: a burst of 429s from the provider, or a timed-out request.
+ * On 2026-11-15 a Math 2 build had 15 of 141 calls throw inside one minute and
+ * published those 15 connections with fallback text; waiting out the burst
+ * would have kept every one of them.
+ */
+export const TOPOLOGY_RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 30_000, 60_000, 120_000];
+
+/**
+ * Retry a generator that throws, with backoff, for as long as the caller says
+ * it may still wait. An abort of the build is never retried. When the waits
+ * are spent the error is rethrown and the caller's deterministic fallback
+ * applies, exactly as before.
+ */
+export function retryingTopologyGenerator(
+  generator: ModelTextGenerator,
+  options: {
+    canWait: (delayMs: number) => boolean;
+    delaysMs?: readonly number[];
+    signal?: AbortSignal;
+  },
+): ModelTextGenerator {
+  const delays = options.delaysMs ?? TOPOLOGY_RETRY_DELAYS_MS;
+  return async (messages) => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await generator(messages);
+      } catch (error) {
+        options.signal?.throwIfAborted();
+        const delay = delays[attempt];
+        if (delay === undefined || !options.canWait(delay)) throw error;
+        await sleep(delay, undefined, { signal: options.signal });
+      }
+    }
+  };
+}
+
 async function corrected<T>(
   generator: ModelTextGenerator,
   messages: Array<{ role: "system" | "user"; content: string }>,
@@ -155,7 +196,11 @@ async function corrected<T>(
     ...messages,
     { role: "user", content: "Your previous response failed the JSON contract. Return only corrected JSON, with at most 3 sentences and 75 words. Do not add keys." },
   ]);
-  return validate(correction);
+  const repaired = validate(correction);
+  if (repaired !== null) return repaired;
+  // A correction can repeat the mistake it was shown; a fresh request
+  // usually does not. One more call is cheaper than a degraded map.
+  return validate(await generator(messages));
 }
 
 export async function enrichNodeSummary(input: {

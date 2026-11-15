@@ -6,7 +6,10 @@ import * as ContextMenu from "@radix-ui/react-context-menu";
 export interface SideChatRequest {
   conversationId?: string;
   messageId?: string;
+  /** Text the user selected: shown as a quote on the first message. */
   quote?: string;
+  /** Main-chat snapshot: model context only, never shown as a quote. */
+  context?: string;
 }
 
 export const SideChatContext = createContext<((request?: SideChatRequest) => void) | null>(null);

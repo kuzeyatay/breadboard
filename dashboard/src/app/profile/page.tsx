@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 
 import { authOptions } from "@/lib/auth-options";
 import db from "@/lib/db";
+import { getIdentity } from "@/lib/crumbs/store.ts";
 import {
   getNavbarFlowers,
   getNavbarShortcuts,
@@ -14,7 +15,7 @@ import { getCalendarStore } from "@/lib/calendar/instance.ts";
 import { caldavVaultConfigured } from "@/lib/calendar/caldav-credentials.ts";
 import ProfileClient from "./profile-client";
 import { readClapAction } from "@/lib/profile/clap-action-store.ts";
-import { thoughtTopologyAutoUpdateEnabled } from "@/lib/thought-topology/preferences.ts";
+import { thoughtTopologyAutoUpdateEnabled, webPdfCleanupEnabled } from "@/lib/thought-topology/preferences.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +74,7 @@ export default async function ProfilePage({
     <ProfileClient
       stats={stats}
       initialThoughtTopologyAutoUpdate={thoughtTopologyAutoUpdateEnabled(userId)}
+      initialWebPdfCleanup={webPdfCleanupEnabled(userId)}
       initialClapAction={readClapAction(db, userId)}
       initialSnapAction={readClapAction(db, userId, 'snap')}
       clapActionUserId={String(userId)}
@@ -84,6 +86,7 @@ export default async function ProfilePage({
       calendarVaultConfigured={caldavVaultConfigured()}
       initialTab={initialTab}
       initialBrainScope={initialBrainScope}
+      initialIdentity={getIdentity(db, userId)}
     />
   );
 }

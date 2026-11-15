@@ -147,12 +147,15 @@ export interface TabView {
     address: string;
     /** The native document can cover the trusted browser home. */
     pageReady?: boolean;
+    /** A website PDF the trusted chrome draws in Breadboard's viewer (a dashboard path). */
+    pdfViewer?: string;
     uiVisited?: boolean;
     uiKey?: string;
     canGoBack: boolean;
     canGoForward: boolean;
     terminalOpen: boolean;
     organizationOpen?: boolean;
+    organizationWidth?: number;
     annotationTarget?: import("./browser-annotations").BrowserAnnotationTarget;
     downloadsOpen?: boolean;
     extensionsOpen?: boolean;
@@ -438,7 +441,7 @@ export function isDesktopChatNotifications(value: unknown): value is DesktopChat
     const text = (value: unknown, limit: number) => typeof value === 'string' && value.length > 0 && value.length <= limit;
     const rect = card.rect;
     return text(card.id, 256) && text(card.title, 256) && text(card.body, 8192) &&
-      Array.isArray(card.urls) && card.urls.length > 0 && card.urls.length <= 8 && card.urls.every((url: unknown) => text(url, 2048)) &&
+      Array.isArray(card.urls) && (card.urls.length > 0 || card.id.startsWith('website:')) && card.urls.length <= 8 && card.urls.every((url: unknown) => text(url, 2048)) &&
       typeof card.delivered === 'boolean' && typeof card.soundEnabled === 'boolean' &&
       (rect === null || (rect && ['x','y','width','height'].every(key => typeof rect[key] === 'number' && Number.isFinite(rect[key]) && Math.abs(rect[key]) <= 100_000) && rect.width > 0 && rect.height > 0));
   });
@@ -561,10 +564,10 @@ type TabsAction =
   | { type: "browser-extensions-picture-in-picture" }
   | { type: "browser-hls-download"; id: string }
   | { type: "browser-terminal"; open: boolean; width?: number }
-  | { type: "browser-organization"; open: boolean }
+  | { type: "browser-organization"; open: boolean; width?: number }
   | { type: "browser-organization-selection" }
   | { type: "browser-organization-target"; target: import("./browser-annotations").BrowserAnnotationTarget }
-  | { type: "browser-organization-markers"; items: Array<{ id: string; target: import("./browser-annotations").BrowserAnnotationTarget }> }
+  | { type: "browser-organization-markers"; items: Array<{ id: string; target: import("./browser-annotations").BrowserAnnotationTarget; count?: number; preview?: string }> }
   | { type: "browser-address-suggestions"; open: boolean; bottom?: number }
   | { type: "browser-toolbar-error"; open: boolean; bottom?: number }
   | { type: "browser-extension-load" }
@@ -711,14 +714,16 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
       return typeof command.id === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(command.id) &&
         typeof command.url === "string" && command.url.length <= 1800 &&
         typeof command.conversationId === "string" && /^conv_[A-Za-z0-9_-]{1,120}$/.test(command.conversationId);
-    case "browser-organization": return typeof command.open === "boolean";
+    case "browser-organization": return typeof command.open === "boolean" && (command.width === undefined || (typeof command.width === "number" && Number.isFinite(command.width)));
     case "browser-organization-enabled": return typeof command.enabled === "boolean";
     case "browser-organization-selection": return true;
     case "browser-organization-target": return normalizeAnnotationTarget(command.target) !== null;
     case "browser-organization-markers": return Array.isArray(command.items) && command.items.length <= 200 && command.items.every((item: unknown) => {
       if (!item || typeof item !== "object") return false;
-      const value = item as { id?: unknown; target?: unknown };
-      return typeof value.id === "string" && /^[a-zA-Z0-9-]{1,128}$/.test(value.id) && normalizeAnnotationTarget(value.target) !== null;
+      const value = item as { id?: unknown; target?: unknown; count?: unknown; preview?: unknown };
+      return typeof value.id === "string" && /^[a-zA-Z0-9-]{1,128}$/.test(value.id) && normalizeAnnotationTarget(value.target) !== null
+        && (value.count === undefined || (Number.isInteger(value.count) && (value.count as number) >= 0 && (value.count as number) <= 100000))
+        && (value.preview === undefined || (typeof value.preview === "string" && value.preview.length <= 200));
     });
     case "browser-terminal":
       return (

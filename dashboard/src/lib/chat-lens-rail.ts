@@ -103,13 +103,20 @@ export function mountChatLensRail({ root, track, onHover }: {
     buttons = nextButtons;
     if (focusIndex !== null && focusIndex >= buttons.length) focusIndex = null;
     active = clamp(active, 0, Math.max(0, buttons.length - 1));
-    track.style.setProperty('--lens-length', `${Math.min(310, buttons.length * 14 + 22)}px`);
-    height = track.clientHeight || Math.min(310, buttons.length * 14 + 22);
+    applyLength();
     buttons.forEach((button, i) => {
       button.dataset.lensIndex = String(i); button.tabIndex = -1;
       button.style.visibility = 'hidden'; button.setAttribute('aria-hidden', 'true');
     });
     position = target = limit(hadButtons ? position : initialPosition()); lastNotch = Math.round(position); draw();
+  }
+  // The rail grows with the chat: one notch per message, up to most of the
+  // transcript's own height rather than a fixed 310px.
+  function applyLength() {
+    const panel = (root.offsetParent as HTMLElement | null)?.clientHeight || window.innerHeight;
+    const length = Math.min(Math.max(160, panel * .7), buttons.length * 14 + 22);
+    track.style.setProperty('--lens-length', `${Math.round(length)}px`);
+    height = track.clientHeight || length;
   }
   function setActive(index: number) {
     const changed = active !== index;
@@ -182,10 +189,11 @@ export function mountChatLensRail({ root, track, onHover }: {
   }
   function onVisibility() { if (document.hidden) deactivate(); }
   function onResize() {
-    height = track.clientHeight || height; position = target = limit(position); draw();
+    applyLength(); position = target = limit(position); draw();
   }
   const resize = typeof window.ResizeObserver === 'function' ? new window.ResizeObserver(onResize) : null;
   resize?.observe(track);
+  if (root.offsetParent) resize?.observe(root.offsetParent);
   track.addEventListener('wheel', wheel, { passive: false });
   track.addEventListener('pointermove', pointerMove);
   track.addEventListener('pointerleave', pointerLeave);

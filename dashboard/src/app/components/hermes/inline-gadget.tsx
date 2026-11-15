@@ -33,9 +33,14 @@ interface BridgeMessage {
  * The queue is rendered directly under the gadget rather than in a separate
  * panel, because the decision only makes sense next to the thing that asked.
  */
+// Remounts in a virtualized transcript draw at the last reported height, so the
+// rows below do not jump when the frame reports its size again.
+const gadgetHeights = new Map<string, number>();
+
 export default function InlineGadget({ artifact }: Props) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
-  const [height, setHeight] = useState(420);
+  const heightKey = `${artifact.id}:${artifact.version}`;
+  const [height, setHeight] = useState(() => gadgetHeights.get(heightKey) ?? 420);
   const [actions, setActions] = useState<GadgetAction[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -79,7 +84,11 @@ export default function InlineGadget({ artifact }: Props) {
 
       if (data.kind === "ready") {
         const next = Number(data.height);
-        if (Number.isFinite(next)) setHeight(Math.max(200, Math.min(900, next)));
+        if (Number.isFinite(next)) {
+          const clamped = Math.max(200, Math.min(900, next));
+          gadgetHeights.set(heightKey, clamped);
+          setHeight(clamped);
+        }
         return;
       }
       if (data.kind === "log") {
@@ -122,7 +131,7 @@ export default function InlineGadget({ artifact }: Props) {
 
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [artifact.id, artifact.conversationId, refreshActions]);
+  }, [artifact.id, artifact.conversationId, heightKey, refreshActions]);
 
   const decide = useCallback(
     async (actionId: string, decision: "approve" | "reject" | "revert" | "retry") => {

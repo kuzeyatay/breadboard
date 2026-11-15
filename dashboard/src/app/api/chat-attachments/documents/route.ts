@@ -11,6 +11,7 @@ import {
 import {
   DocumentBlobError,
   findDocumentBlob,
+  markWebPdfBlob,
   removeDocumentBlob,
   writeDocumentBlob,
   writeDocumentFigures,
@@ -24,6 +25,7 @@ import {
 import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 import { readPdfAttachment } from "@/lib/pdf-attachment-reader.ts";
 import { storeDocumentText } from "@/lib/conversations/document-reading-store.ts";
+import { STORE_ONLY_HEADER, sweepOpenedFiles } from "@/lib/conversations/opened-files.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -75,7 +77,7 @@ export async function POST(request: Request) {
 
     const declared = Number(request.headers.get("content-length") ?? "");
     if (Number.isFinite(declared) && declared > MAX_DOCUMENT_ATTACHMENT_BYTES) {
-      throw new ApiError(413, "document_too_large", "That document is larger than 128 MB.");
+      throw new ApiError(413, "document_too_large", `That document is larger than ${MAX_DOCUMENT_ATTACHMENT_BYTES / (1024 * 1024)} MB.`);
     }
     if (!request.body) {
       throw new ApiError(400, "document_body_required", "No document was received.");
@@ -94,21 +96,28 @@ export async function POST(request: Request) {
     }
     const stored = await writeDocumentBlob({ userId, format, body: request.body });
 
+    // The desktop browser hands web PDFs to the viewer: it needs the bytes
+    // kept, not read. Reading (and OCR) happens if the PDF is ever attached.
+    if (format === "pdf" && request.headers.get(STORE_ONLY_HEADER) === "true") {
+      markWebPdfBlob(stored);
+      sweepOpenedFiles(userId);
+      return NextResponse.json({ blobId: stored.blobId, format: stored.format, sizeBytes: stored.byteSize });
+    }
+
     if (format === "pdf") {
-      const bytes = fs.readFileSync(stored.path);
       const source = gardenPdfReference(request);
       let pageReadings: Record<number, string> | undefined;
       try {
         if (source && process.env.QUARTZ_CONTENT_PATH) {
           const cluster = requireReadableCluster(userId, source.clusterSlug);
           pageReadings = readGardenPdfPages({ ...source, clusterSlug: cluster.slug,
-            contentPath: process.env.QUARTZ_CONTENT_PATH, bytes }) ?? undefined;
+            contentPath: process.env.QUARTZ_CONTENT_PATH, filePath: stored.path }) ?? undefined;
         }
       } catch (error) {
         removeDocumentBlob({ userId, blobId: stored.blobId });
         throw error;
       }
-      const reading = await readPdfAttachment(bytes, {
+      const reading = await readPdfAttachment(stored.path, {
         userId,
         signal: request.signal,
         handwriting: request.headers.get("x-document-handwriting") === "true",

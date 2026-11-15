@@ -24,8 +24,11 @@ app.whenReady().then(async()=>{
   assert.equal(await manager.handleCommand(page,{type:'browser-organization-target',target}),false,'website cannot issue trusted commands');
   assert.equal(await manager.handleCommand(chrome,{type:'browser-organization-target',target:{...target,url:origin+'/other'}}),false);
   assert.equal(await manager.handleCommand(chrome,{type:'browser-organization-target',target}),true);
-  assert.equal(await manager.handleCommand(chrome,{type:'browser-organization-markers',items:[{id:'thread-1',target}]}),true);
+  // Crumbs markers carry the number of notes on a passage and a preview of the first.
+  assert.equal(await manager.handleCommand(chrome,{type:'browser-organization-markers',items:[{id:'thread-1',target,count:3,preview:'ada: a note'}]}),true);
+  assert.deepEqual([tab.browser.annotationMarkers[0].count,tab.browser.annotationMarkers[0].preview],[3,'ada: a note']);
   await until(()=>page.executeJavaScript('CSS.highlights.get("breadboard-community")?.size === 1'),'shared text marker painted');
+  assert.equal(await page.executeJavaScript('Boolean(document.querySelector("[data-breadboard-selection=community]"))'),true,'marker host is in the page');
   assert.equal(await manager.handleCommand(chrome,{type:'browser-organization-enabled',enabled:false}),true);
   assert.equal(tab.browser.organizationOpen,false);assert.equal(tab.browser.view.getBounds().width,initial.width);
   await until(()=>page.executeJavaScript('!document.querySelector("[data-breadboard-selection=community]")'),'markers removed when disabled');

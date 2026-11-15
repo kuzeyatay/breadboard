@@ -1,0 +1,6 @@
+node_modules
+data
+test
+*.md
+fly.*.toml
+dev.mjs

@@ -625,7 +625,7 @@ function ToastCard({
       <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
         <div className="min-w-0">
           {toast.website ? <span className="mb-1 block break-all text-[11px] text-[var(--ink-muted)]">{toast.website.origin}</span> : null}
-          <h2 className="min-w-0 break-words text-sm font-semibold leading-5 text-[var(--ink-heading)]">
+          <h2 className={`min-w-0 text-sm font-semibold leading-5 text-[var(--ink-heading)] ${isChatNotice ? 'truncate' : 'break-words'}`} title={isChatNotice ? heading : undefined}>
             {heading}
           </h2>
           {progressPercent !== null ? (
@@ -907,7 +907,8 @@ export function Toaster({
       const cards: DesktopChatNotification[] = [];
       for (const [index, toast] of visibleToasts.entries()) {
         const target = toast.target ?? (toast.chatId ? { surface: 'dashboard_terminal' as const, chatId: toast.chatId } : undefined);
-        if (!target || target.surface === 'garden_learn') continue;
+        // Website notices reach Windows the same way; clicking opens their tab.
+        if (!toast.website && (!target || target.surface === 'garden_learn')) continue;
         const node = host?.children[index];
         const bounds = node?.getBoundingClientRect();
         const style = node && getComputedStyle(node);
@@ -918,9 +919,10 @@ export function Toaster({
           const height = Math.min(innerHeight, clip.bottom, bounds.bottom) - y;
           if (width >= Math.min(24,bounds.width) && height >= Math.min(16,bounds.height)) rect = { x, y, width, height };
         }
-        cards.push({ id: toast.id, title: (toast.message || 'Breadboard').slice(0,256),
-          body: (toast.response || toast.title || 'Response ready').slice(0,8192),
-          urls: chatNotificationUrls(target), rect, delivered: receipts.has(toast.id), soundEnabled: getNotificationSoundEnabled() });
+        cards.push({ id: toast.id,
+          title: (toast.website ? toast.title || toast.website.origin : toast.message || 'Breadboard').slice(0,256),
+          body: (toast.website ? toast.message || toast.website.origin : toast.response || toast.title || 'Response ready').slice(0,8192),
+          urls: target && !toast.website ? chatNotificationUrls(target) : [], rect, delivered: receipts.has(toast.id), soundEnabled: getNotificationSoundEnabled() });
       }
       const signature = JSON.stringify(cards);
       if (signature !== last) { last = signature; reportDesktopChatNotifications(cards); }

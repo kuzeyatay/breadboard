@@ -131,7 +131,7 @@ test("workspace side chats send independently, discard on close, and reopen star
   }
   await load();
   await start();
-  await expect(panel.locator("header")).toHaveText("Side chat");
+  await expect(panel.locator("header")).toHaveText("0: Side chat");
   await expect(panel.locator("blockquote")).toHaveCount(0);
   await expect(panel.getByText("User: Parent question", { exact: false })).toHaveCount(0);
   await send();
@@ -139,6 +139,10 @@ test("workspace side chats send independently, discard on close, and reopen star
   assert.equal(creations[0].temporary, true);
   assert.equal(creations[0].restoreLastConversation, false);
   assert.equal(turns[0].textSelection.quote, "User: Parent question\n\nAssistant: Parent answer");
+  assert.equal(turns[0].textSelection.sourceMessageId, "side-chat-context");
+  // The main-chat snapshot is model context, not a quote on the first message.
+  await expect(panel.getByText("Selected text:", { exact: false })).toHaveCount(0);
+  await expect(panel.locator("header")).toHaveText("0: Explain this passage");
   await expect(page.getByLabel("Main chat draft")).toHaveValue("Keep this draft");
   await panel.getByRole("button", { name: "Close side chat" }).click();
   await expect(confirmation).toBeVisible();
@@ -170,9 +174,10 @@ test("workspace side chats send independently, discard on close, and reopen star
   await expect(panel.getByText("A workspace passage to discuss", { exact: true })).toHaveCount(0);
   await send();
   assert.equal(turns.at(-1).textSelection.quote, "A workspace passage to discuss");
+  await expect(panel.getByText("Selected text:", { exact: false })).toHaveCount(1);
   await panel.getByRole("button", { name: "Star message", exact: true }).click();
   await expect(panel.getByRole("button", { name: "Unstar message", exact: true })).toBeEnabled();
-  await expect(panel.locator("header")).toHaveText("Side chat");
+  await expect(panel.locator("header")).toHaveText("0: Explain this passage");
   if (process.env.BREADBOARD_SIDE_CHAT_SCREENSHOT) await page.screenshot({ path: process.env.BREADBOARD_SIDE_CHAT_SCREENSHOT });
   const savedId = stars[0].conversationId;
   assert.equal(await page.evaluate(id => window.isViewed(id), savedId), true);
@@ -226,5 +231,46 @@ test("workspace side chats send independently, discard on close, and reopen star
   await expect(panel).toHaveCount(0);
   release();
   await expect.poll(() => discarded.includes("conv_side_4")).toBe(true);
+
+  // Up to four side chats tile like tmux panes inside one resizable dock.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const panes = page.getByRole("dialog", { name: "Side chat", exact: true });
+  const bar = page.getByRole("navigation", { name: "Side chats" });
+  await start();
+  await page.getByRole("button", { name: "New side chat" }).click();
+  await expect(panes).toHaveCount(2);
+  await expect(bar).toContainText("2/4");
+  await bar.getByRole("button", { name: "New side chat" }).click();
+  await bar.getByRole("button", { name: "New side chat" }).click();
+  await expect(panes).toHaveCount(4);
+  await expect(bar.getByRole("button", { name: "New side chat" })).toBeDisabled();
+  await page.getByRole("region", { name: "Messages", exact: true }).click({ button: "right", position: { x: 8, y: 8 } });
+  await page.getByRole("menuitem", { name: "Start side chat", exact: true }).click();
+  await expect(bar).toContainText("Close one to start another");
+  await expect(panes).toHaveCount(4);
+  const boxes = await Promise.all([0, 1, 2, 3].map(index => panes.nth(index).boundingBox()));
+  assert.ok(Math.abs(boxes[0].y - boxes[1].y) < 2 && boxes[0].x < boxes[1].x, "panes 0 and 1 share the top row");
+  assert.ok(boxes[2].y > boxes[0].y + 50 && Math.abs(boxes[0].x - boxes[2].x) < 2, "pane 2 sits under pane 0");
+  const panesBefore = page.locator("[data-side-chat-pane]");
+  await panes.nth(3).locator("textarea").first().focus();
+  await expect(bar.getByRole("button", { name: /^3:/ })).toHaveAttribute("aria-current", "true");
+  const dock = page.locator("[data-side-chat-dock]");
+  const handle = page.getByRole("separator", { name: "Resize side chat" });
+  const before = await dock.boundingBox();
+  const grip = await handle.boundingBox();
+  await page.mouse.move(grip.x + 2, grip.y + 200);
+  await page.mouse.down();
+  await page.mouse.move(grip.x - 150, grip.y + 200, { steps: 5 });
+  await page.mouse.up();
+  const after = await dock.boundingBox();
+  assert.ok(after.width > before.width + 100, `dock widened from ${before.width} to ${after.width}`);
+  assert.equal(await page.evaluate(() => localStorage.getItem("breadboard:side-chat:width")), String(Math.round(after.width)));
+  await expect(panesBefore).toHaveCount(4);
+  // Empty panes close without a prompt once confirmed; closing one keeps the rest.
+  await panes.nth(1).getByRole("button", { name: "Close side chat" }).click();
+  await confirmClose();
+  await expect(panes).toHaveCount(3);
+  const three = await Promise.all([0, 1, 2].map(index => panes.nth(index).boundingBox()));
+  assert.ok(three[0].height > three[1].height * 1.8, "with three panes the first spans both rows");
   assert.deepEqual(errors, []);
 });

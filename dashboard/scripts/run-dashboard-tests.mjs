@@ -43,6 +43,7 @@ export const SERIAL_BROWSER_TEST_FILES = Object.freeze([
   "composer-layout-browser.test.mjs",
   "browser-terminal-layout-browser.test.mjs",
   "chat-prompt-suggestion-browser.test.mjs",
+  "ask-here-suggestion-browser.test.mjs",
   "sentence-completion-browser.test.mjs",
   "recommendations-browser.test.mjs",
   "composer-add-menu-browser.test.mjs",

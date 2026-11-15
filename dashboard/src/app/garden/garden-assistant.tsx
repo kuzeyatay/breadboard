@@ -31,6 +31,8 @@ import ChatDisclaimer from '@/app/components/chat/chat-disclaimer';
 import AssistantMessageActions, { MessageActionsSlot, type AssistantResponseBranch } from '@/app/components/assistant-message-actions';
 import { messageRewriteReview } from '@/app/components/humanizer/rewrite-status';
 import UserMessageControls from '@/app/components/chat/user-message-controls';
+import AssistantResponseEditor from '@/app/components/chat/assistant-response-editor';
+import { regenerateResponseText } from '@/app/components/chat/regenerate-response';
 import { applyBranchVariant, cloneMessages, createConversationBranch, messageBranchId, previousUserMessageIndex, type ConversationBranchGroup } from '@/app/components/hermes/conversation-branches';
 import { isDirectModeEnabled } from '@/app/components/use-direct-mode';
 import { isPersonalizeEnabled } from '@/app/components/use-personalize';
@@ -80,6 +82,7 @@ import {
   type ChatAttachment,
   type ChatMessageAttachment,
 } from '@/lib/chat-attachments';
+import { MAX_DOCUMENT_ATTACHMENT_BYTES } from '@/lib/document-attachments';
 import { distillAttachments } from '@/lib/document-skills/client';
 import { useAttachmentPreparation } from '@/app/components/use-attachment-preparation';
 import { type ChatTokenUsage, normalizeChatTokenUsage } from '@/lib/chat-token-usage';
@@ -605,6 +608,10 @@ type TranscriptRowProps = {
   /** Withheld while the answer is still being written. */
   showActions: boolean;
   onRetry?: () => void;
+  retrying?: boolean;
+  retryError?: string;
+  /** Save a corrected answer in place; resolves false when it was not saved. */
+  onEditAssistant?: (text: string) => Promise<boolean>;
   branch?: AssistantResponseBranch;
   userActionsDisabled: boolean;
   onEditUserMessage: (message: ChatMessage, text: string) => void;
@@ -647,6 +654,9 @@ const TranscriptRow = memo(function TranscriptRow({
   onClarificationAnswer,
   showActions,
   onRetry,
+  retrying,
+  retryError,
+  onEditAssistant,
   branch,
   userActionsDisabled,
   onEditUserMessage,
@@ -657,6 +667,7 @@ const TranscriptRow = memo(function TranscriptRow({
   onOpenAnnotation,
 }: TranscriptRowProps) {
   const visibleAssistantContent = gardenAssistantVisibleContent(message);
+  const [editingAssistant, setEditingAssistant] = useState(false);
   const uiResources = uiResourcesForUserRequest(message.uiResources, userRequest);
   return (
     <div className={separatorLabel ? 'space-y-3' : undefined}
@@ -707,7 +718,10 @@ const TranscriptRow = memo(function TranscriptRow({
                 message={{ content: visibleAssistantContent, uiResources }}
                 legacyChatSessionId={chatSessionId}
                 onSend={onSend}
-                markdown={<SelectableAssistantMarkdown content={visibleAssistantContent}
+                markdown={editingAssistant && onEditAssistant ? (
+                  <AssistantResponseEditor content={message.content} onSave={onEditAssistant}
+                    onCancel={() => setEditingAssistant(false)} />
+                ) : <SelectableAssistantMarkdown content={visibleAssistantContent}
                   sourceMessageId={sourceMessageId} annotations={annotations}
                   onSelection={onTextSelection} onOpenAnnotation={onOpenAnnotation} />}
               />
@@ -726,8 +740,11 @@ const TranscriptRow = memo(function TranscriptRow({
             responseCompletedAt={message.responseCompletedAt}
             verification={message.verification}
             onRetry={onRetry}
+            retrying={retrying}
+            onEdit={onEditAssistant && message.content.trim() && !editingAssistant ? () => setEditingAssistant(true) : undefined}
             branch={branch}
           />
+          {retryError ? <p role="alert" className="mt-1 text-xs text-[var(--danger)]">{retryError}</p> : null}
           </MessageActionsSlot>
         ) : null}
       </div>
@@ -787,6 +804,7 @@ export default function GardenAssistant({
   const { unreadChats } = useUnreadChats(activeClusterSlug ?? undefined);
   const [isStreaming, setIsStreaming] = useState(false);
   const [updatingMessages, setUpdatingMessages] = useState(false);
+  const [regenerating, setRegenerating] = useState<{ index: number; error?: string } | null>(null);
   const messageMutationPendingRef = useRef(false);
   const activeChat = chatSessions.find((session) => session.id === activeChatId) ?? null;
   const viewingConversationId = activeChat?.conversationId ?? undefined;
@@ -800,6 +818,19 @@ export default function GardenAssistant({
   // The chat this assistant minted out of its own blank state, so an unsent
   // draft can follow it there and nowhere else. See useChatDraft.
   const [createdChatId, setCreatedChatId] = useState<number | null>(null);
+  const {
+    model,
+    setModel,
+    reasoningEffort,
+    setReasoningEffort,
+    intelligenceModes,
+  } = useAssistantIntelligence({
+    scope: `garden_assistant:${activeClusterSlug ?? "none"}`,
+    sessionId: activeChatId,
+    createdSessionId: createdChatId,
+    persist: !temporaryChat,
+    shared: true,
+  });
   // Raised for as long as a turn this tab started owns what is on screen. The
   // transcript is put up before the chat row that will hold it exists, so the
   // empty session arriving must not be allowed to wipe it.
@@ -857,6 +888,7 @@ export default function GardenAssistant({
       gardenSlug={activeClusterSlug} ownerMessageId={ownerMessageId} /> : null;
   }, [messages, activeChatId, activeClusterSlug]);
   const textSelection = useTextSelectionController({
+    suggestionModel: model,
     conversationId: starConversationId,
     canStar,
     persistDraft: !temporaryChat,
@@ -949,19 +981,6 @@ export default function GardenAssistant({
   const [isResizing, setIsResizing] = useState(false);
   const [stats, setStats] = useState<GraphStats>(EMPTY_STATS);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
-  const {
-    model,
-    setModel,
-    reasoningEffort,
-    setReasoningEffort,
-    intelligenceModes,
-  } = useAssistantIntelligence({
-    scope: `garden_assistant:${activeClusterSlug ?? "none"}`,
-    sessionId: activeChatId,
-    createdSessionId: createdChatId,
-    persist: !temporaryChat,
-    shared: true,
-  });
   const { models, modelsLoading, loadModels } = useAssistantModels();
   const { changeModel, labelsFor: modelChangesFor } = useChatModelChanges({
     scope: `garden_chat:${activeClusterSlug}`, sessionId: activeChatId, createdSessionId: createdChatId,
@@ -980,7 +999,7 @@ export default function GardenAssistant({
       if (typeof detail.instruction === 'string' && detail.instruction.length <= 10000) setInput(current => current || detail.instruction!);
       void (async () => {
         try {
-          if (detail.file.size > 128 * 1024 * 1024) throw new Error('Chat attachments must be 128 MB or smaller.');
+          if (detail.file.size > MAX_DOCUMENT_ATTACHMENT_BYTES) throw new Error(`Chat attachments must be ${MAX_DOCUMENT_ATTACHMENT_BYTES / (1024 * 1024)} MB or smaller.`);
           setAttachmentStatus(`Preparing ${detail.file.name}…`);
           const response = await fetch(`/api/gardens/${encodeURIComponent(detail.file.gardenId)}/files/${encodeURIComponent(detail.file.id)}/content?version=${detail.file.version}`);
           if (!response.ok) throw new Error('The file could not be attached. Try again from its file menu.');
@@ -2423,6 +2442,45 @@ export default function GardenAssistant({
     );
   }
 
+  /** Swap one answer's text in place and save; nothing around it moves. */
+  async function replaceAssistantContent(message: ChatMessage, content: string): Promise<boolean> {
+    const index = messages.indexOf(message);
+    if (chatIsStreaming || messageMutationPendingRef.current || !activeChat || activeChat.isOwn === false || index < 0 || message.role !== 'assistant') return false;
+    const nextMessages = messages.map((item, i) => {
+      if (i !== index) return item;
+      // Evidence and humanizer review describe the old wording.
+      const { verification: _verification, humanizerReview: _review, contentVersions: _versions, ...rest } = item;
+      return { ...rest, content };
+    });
+    messageMutationPendingRef.current = true;
+    setUpdatingMessages(true);
+    try {
+      if (!await persistChatSession(activeChat.id, nextMessages, undefined, { updateLocal: false })) return false;
+      updateSessionMessages(activeChat.id, nextMessages);
+      setMessages((current) => current === messages ? nextMessages : current);
+      return true;
+    } finally {
+      messageMutationPendingRef.current = false;
+      setUpdatingMessages(false);
+    }
+  }
+
+  /** Regenerate an earlier answer without touching any message after it. */
+  async function regenerateInPlace(messageIndex: number) {
+    const message = messages[messageIndex];
+    if (!message || (regenerating && !regenerating.error)) return;
+    const userIndex = previousUserMessageIndex(messages, messageIndex);
+    if (userIndex < 0) return;
+    setRegenerating({ index: messageIndex });
+    try {
+      const content = await regenerateResponseText(messages.slice(0, userIndex + 1), model);
+      const saved = await replaceAssistantContent(message, content);
+      setRegenerating(saved ? null : { index: messageIndex, error: 'The regenerated response could not be saved.' });
+    } catch (error) {
+      setRegenerating({ index: messageIndex, error: error instanceof Error ? error.message : 'The response could not be regenerated.' });
+    }
+  }
+
   function editUserMessage(message: ChatMessage, text: string) {
     const index = messages.indexOf(message);
     if (chatIsStreaming || activeChat?.isOwn === false || index < 0 || message.role !== 'user') return;
@@ -2484,8 +2542,8 @@ export default function GardenAssistant({
   const widgetSendRef = useRef(sendMessage);
   useEffect(() => { widgetSendRef.current = sendMessage; });
   const sendWidgetMessage = useCallback((text: string) => { void widgetSendRef.current(text); }, []);
-  const userMessageActionsRef = useRef({ editUserMessage, deleteUserMessage });
-  useEffect(() => { userMessageActionsRef.current = { editUserMessage, deleteUserMessage }; });
+  const userMessageActionsRef = useRef({ editUserMessage, deleteUserMessage, replaceAssistantContent, regenerateInPlace });
+  useEffect(() => { userMessageActionsRef.current = { editUserMessage, deleteUserMessage, replaceAssistantContent, regenerateInPlace }; });
   const handleEditUserMessage = useCallback((message: ChatMessage, text: string) => {
     userMessageActionsRef.current.editUserMessage(message, text);
   }, []);
@@ -2528,7 +2586,14 @@ export default function GardenAssistant({
           pendingClarification={isNewest ? agentActivity.pendingClarification : null}
           onClarificationAnswer={handleClarificationAnswer}
           showActions={!(chatIsStreaming && isNewest)}
-          onRetry={isNewest && storedIndex >= 0 ? () => retryAssistantMessage(storedIndex) : undefined}
+          onRetry={storedIndex < 0 ? undefined : isNewest
+            ? () => retryAssistantMessage(storedIndex)
+            // Earlier answers regenerate in place so later messages are untouched.
+            : () => void userMessageActionsRef.current.regenerateInPlace(storedIndex)}
+          retrying={regenerating?.index === storedIndex && !regenerating.error}
+          retryError={regenerating?.index === storedIndex ? regenerating.error : undefined}
+          onEditAssistant={activeChat?.isOwn === false || storedIndex < 0 ? undefined
+            : (text) => userMessageActionsRef.current.replaceAssistantContent(message, text)}
           userActionsDisabled={chatIsStreaming || updatingMessages || activeChat?.isOwn === false}
           onEditUserMessage={handleEditUserMessage}
           onDeleteUserMessage={handleDeleteUserMessage}
@@ -2548,6 +2613,7 @@ export default function GardenAssistant({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       messages,
+      regenerating,
       modelChangesFor,
       visibleMessages.length,
       naturalRewriteFor,
@@ -3240,6 +3306,7 @@ export default function GardenAssistant({
 
   const quartzAnswerPopover = quartzIframeRef ? (
     <QuartzInlineAnswerPopover
+      suggestionModel={model}
       iframeRef={quartzIframeRef}
       quartzOrigin={quartzOrigin}
       answerSelection={quartzAnswerSelection}

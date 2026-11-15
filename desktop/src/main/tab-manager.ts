@@ -35,6 +35,7 @@ import { BrowserPreferenceStore } from "./browser-preferences";
 import { BrowserPasswords } from "./browser-passwords";
 import { installDevicePickers, installScreenSharePicker, setAppLinkStore, setBrowserDialogTheme } from "./browser-dialogs";
 import { BrowserAdBlocker } from "./browser-adblocker";
+import { installBrowserPdfHandoff, storeBrowserPdf } from "./browser-web-pdf";
 import { BrowserVpn } from "./browser-vpn";
 import { BrowserNotifications } from "./browser-notifications";
 import { BrowserNotificationPages } from "./browser-notification-pages";
@@ -237,8 +238,9 @@ interface BrowserPage extends PageFindState {
   /** The trusted Terminal workspace is revealed beside this page. */
   terminalOpen: boolean;
   organizationOpen?: boolean;
+  organizationWidth?: number;
   annotationTarget?: BrowserAnnotationTarget;
-  annotationMarkers?: Array<{ id: string; target: BrowserAnnotationTarget }>;
+  annotationMarkers?: Array<{ id: string; target: BrowserAnnotationTarget; count?: number; preview?: string }>;
   /** Rail plus drawer width, continuously updated while its edge is dragged. */
   terminalWidth: number;
   /** Raise the transparent trusted chrome over the page while recents is open. */
@@ -249,6 +251,10 @@ interface BrowserPage extends PageFindState {
   homeEntryAvailable: boolean;
   /** The trusted new-tab page is currently shown instead of the web view. */
   showingHome: boolean;
+  /** A website PDF shown in Breadboard's viewer (a dashboard path). The web
+   * view is set aside exactly as for home; the page beneath stays live so Back
+   * returns to it. */
+  pdfViewer?: string;
   /** Chromium index of the first page after the current virtual home entry. */
   homeHistoryIndex: number | null;
   /** A navigation launched from home records its Chromium index on commit. */
@@ -954,6 +960,9 @@ export class TabManager {
   private notificationOverlayUrl: string | null = null;
   private notificationsVisible = false;
   private browserExtensionSession: Session | null = null;
+  private readonly pdfHandoffSessions = new WeakSet<Session>();
+  private readonly webPdfPending = new Set<number>();
+  private readonly webPdfBypass = new Set<string>();
   private googlePipExtension: GooglePipExtension | undefined;
   private privateProfile: { partition: string; session: Session; users: number; translationSites: Map<string, string> } | null = null;
   private browserExtensionsReady: Promise<void> | null = null;
@@ -2673,7 +2682,7 @@ export class TabManager {
         const url = annotationPageUrl(tab.url);
         const items = command.items.flatMap(item => {
           const target = normalizeAnnotationTarget(item.target);
-          return target?.url === url ? [{ id: item.id, target }] : [];
+          return target?.url === url ? [{ id: item.id, target, ...(item.count !== undefined ? { count: item.count } : {}), ...(item.preview ? { preview: item.preview } : {}) }] : [];
         });
         tab.browser.annotationMarkers = items;
         if (tab.browser.contents && !tab.browser.contents.isDestroyed()) void runInDocument(tab.browser.contents, browserAnnotationPaintScript(items)).catch(() => undefined);
@@ -2683,6 +2692,7 @@ export class TabManager {
         const tab = senderTab;
         if (!tab?.browser || !this.browserOrganizationAllowed(host, tab)) return false;
         tab.browser.organizationOpen = command.open;
+        if (typeof command.width === "number") tab.browser.organizationWidth = command.width;
         if (command.open) { tab.browser.terminalOpen = false; tab.browser.addressSuggestionsOpen = false; }
         this.layout(host); this.broadcast(host);
         if (command.open) tab.contents.focus();
@@ -2808,6 +2818,8 @@ export class TabManager {
             if (host.window.isDestroyed() || sender.isDestroyed()) return;
             if (host.window.isMinimized()) host.window.restore();
             host.window.show(); host.window.focus();
+            // A website notice opens its own tab, as clicking the in-app card does.
+            if (card.id.startsWith('website:')) { this.browserNotifications.action(card.id.slice('website:'.length), 'click', host.window); return; }
             void this.handleCommand(sender, { type: 'notification-open', urls: card.urls });
           },
         });
@@ -3358,6 +3370,7 @@ export class TabManager {
         addressSuggestionsOpen: false,
         homeEntryAvailable: browser.homeEntryAvailable,
         showingHome: browser.showingHome,
+        pdfViewer: browser.pdfViewer,
         homeHistoryIndex: null,
         pendingHomeNavigation: false,
         favicon: browser.favicon,
@@ -3591,20 +3604,21 @@ export class TabManager {
     host.selectionPopover?.close(); host.inlineAnswer?.close();
     const bounds = browser.view.getBounds();
     const scale = browser.contents?.getZoomFactor() ?? 1;
-    const width = entry.note ? 490 : 440;
+    const crumbs = this.browserOrganizationAllowed(host, tab);
+    const width = (entry.note ? 490 : 440) + (crumbs ? 116 : 0);
     const popup = new BrowserToolbarPopover(host.window, tab.id,
       { x: bounds.x + anchor.x * scale + width, y: Math.max(bounds.y + 8, bounds.y + anchor.y * scale - 52) },
       this.options.preloadPath, [tab.contents, ...(browser.contents ? [browser.contents] : [])],
       () => {
         this.hostByContents.delete(popup.contents.id);
         if (host.selectionPopover === popup) { host.selectionPopover = undefined; host.selectionCandidate = undefined; }
-      }, 490);
+      }, crumbs ? 606 : 490);
     host.selectionPopover = popup; host.selectionCandidate = { tab, entry, anchor };
     this.hostByContents.set(popup.contents.id, host);
     if (browser.contents) copyPageSelectionFromCard(popup.contents, browser.contents);
     const url = new URL("/browser/selection-popover", browser.shellUrl);
     url.searchParams.set("entry", JSON.stringify(entry));
-    if (this.browserOrganizationAllowed(host, tab)) url.searchParams.set("community", "1");
+    if (crumbs) url.searchParams.set("community", "1");
     url.searchParams.set("theme", this.options.theme());
     void loadCardPage(popup, url.href, line => this.log(line));
   }
@@ -3785,6 +3799,10 @@ export class TabManager {
   private ensureBrowserExtensions(browserSession: Session): Promise<void> {
     this.browserAdBlocker.attachSession(browserSession);
     this.browserVpn.attachSession(browserSession);
+    if (!this.pdfHandoffSessions.has(browserSession)) {
+      this.pdfHandoffSessions.add(browserSession);
+      installBrowserPdfHandoff(browserSession, (id, url) => this.openWebPdf(id, url));
+    }
     if (this.browserExtensionSession === browserSession && this.browserExtensionsReady) {
       return this.browserExtensionsReady;
     }
@@ -4103,16 +4121,19 @@ export class TabManager {
                   ? ""
                   : tab.url,
               pageReady: tab.browser.ready && !tab.browser.showingHome,
+              ...(tab.browser.pdfViewer ? { pdfViewer: tab.browser.pdfViewer } : {}),
               uiVisited: tab.browser.uiVisited,
-              canGoBack:
-                !tab.browser.showingHome &&
+              canGoBack: tab.browser.pdfViewer
+                ? this.browserPdfBackAvailable(tab)
+                : !tab.browser.showingHome &&
                 (tab.browser.homeEntryAvailable ||
                   this.browserNavigationTarget(tab, "back") !== null),
-              canGoForward: tab.browser.showingHome
+              canGoForward: tab.browser.pdfViewer ? false : tab.browser.showingHome
                 ? this.browserHomeForwardAvailable(tab)
                 : this.browserNavigationTarget(tab, "forward") !== null,
               terminalOpen: tab.browser.terminalOpen,
               organizationOpen: tab.browser.organizationOpen === true,
+              organizationWidth: tab.browser.organizationWidth,
               annotationTarget: tab.browser.annotationTarget,
               downloadsOpen: host.downloadsPopover?.ownerId === tab.id,
               extensionsOpen: host.extensionsPopover?.ownerId === tab.id,
@@ -4492,6 +4513,33 @@ export class TabManager {
 
   /** Set a tab's public loading flag. State broadcasting stays with the caller
    * because some browser events update adjacent state in the same notification. */
+  /** A website PDF opens in Breadboard's viewer inside the same browser tab,
+   * with its link in the address bar and Back to the page it came from. */
+  private openWebPdf(webContentsId: number, url: string): boolean {
+    if (this.webPdfBypass.delete(url)) return false;
+    const host = this.hostByContents.get(webContentsId);
+    const tab = host?.tabs.find(candidate => liveBrowserPage(candidate.browser)?.contents.id === webContentsId);
+    const browser = liveBrowserPage(tab?.browser);
+    const dashboardUrl = this.sessionDashboardUrl;
+    if (!host || !tab || !browser || !dashboardUrl || browser.privatePartition || browser.automationRunId) return false;
+    if (this.webPdfPending.has(webContentsId)) return true;
+    this.webPdfPending.add(webContentsId);
+    const contents = browser.contents;
+    this.setTabLoading(tab, true);
+    this.broadcast(host);
+    void storeBrowserPdf(contents.session, url, dashboardUrl).then(({ blobId, name }) => {
+      if (host.window.isDestroyed() || !host.tabs.includes(tab) || contents.isDestroyed()) return;
+      if (liveBrowserPage(tab.browser)?.contents !== contents) return;
+      this.showBrowserPdf(host, tab, url, `/attachments/${encodeURIComponent(blobId)}/pdf?name=${encodeURIComponent(name)}`, name);
+    }).catch(error => {
+      this.log(`web PDF hand-off failed for ${url}, using Chromium's viewer: ${error instanceof Error ? error.message : String(error)}`);
+      if (contents.isDestroyed()) return;
+      this.webPdfBypass.add(url);
+      void contents.loadURL(url).catch(() => {});
+    }).finally(() => this.webPdfPending.delete(webContentsId));
+    return true;
+  }
+
   private setTabLoading(tab: Tab, loading: boolean): void {
     tab.loading = loading;
   }
@@ -5151,6 +5199,7 @@ export class TabManager {
     if (host.inlineAnswer?.ownerId === tab.id) host.inlineAnswer.close();
     const browser = this.ensureBrowserPage(host, tab);
     if (!browser) return false;
+    browser.pdfViewer = undefined;
     if (browser.showingHome) {
       if (host.findBar?.ownerId === tab.id) host.findBar.close();
       browser.showingHome = false;
@@ -6801,7 +6850,7 @@ export class TabManager {
         setViewBounds(browser.view, {
           x: parkedPartner ? Math.max(0, width - 4) : tab === host.pending && !host.pendingAtFront ? Math.max(0, width - 2) : x,
           y: parkedPartner || (tab === host.pending && !host.pendingAtFront) ? this.preparationTop(host, height) + 1 - pageHeight : y,
-          width: Math.max(1, (pane ? pane.x + pane.width : width) - x - (!fullscreen && browser.organizationOpen ? browserOrganizationWidth(pane?.width ?? width) : 0)),
+          width: Math.max(1, (pane ? pane.x + pane.width : width) - x - (!fullscreen && browser.organizationOpen ? browserOrganizationWidth(pane?.width ?? width, browser.organizationWidth, tab.contents.getZoomFactor()) : 0)),
           height: pageHeight,
         });
       }
@@ -6943,7 +6992,7 @@ export class TabManager {
     const owner = host.tabs.find(tab => tab.browser === browser);
     const x = fullscreen ? 0 : (pane?.x ?? 0) + browserContentLeft(pane?.width ?? width, browser.terminalOpen, browser.terminalWidth, owner?.contents.getZoomFactor() ?? 1);
     const y = fullscreen ? 0 : browserContentTop(height);
-    return { x, y, width: Math.max(1, (pane ? pane.x + pane.width : width) - x - (!fullscreen && browser.organizationOpen ? browserOrganizationWidth(pane?.width ?? width) : 0)), height: Math.max(1, height - y) };
+    return { x, y, width: Math.max(1, (pane ? pane.x + pane.width : width) - x - (!fullscreen && browser.organizationOpen ? browserOrganizationWidth(pane?.width ?? width, browser.organizationWidth, owner?.contents.getZoomFactor() ?? 1) : 0)), height: Math.max(1, height - y) };
   }
 
   /**
@@ -7114,6 +7163,50 @@ export class TabManager {
     );
   }
 
+  /** Present a website PDF in Breadboard's viewer inside this browser tab. The
+   * address stays the PDF's link; the website view is set aside like home. */
+  private showBrowserPdf(host: Host, tab: Tab, url: string, viewer: string, name: string): void {
+    const browser = liveBrowserPage(tab.browser);
+    if (!browser) return;
+    if (host.findBar?.ownerId === tab.id) host.findBar.close();
+    if (!browser.showingHome) {
+      browser.homeForwardTitle = tab.title;
+      browser.homeForwardFavicon = browser.favicon;
+    }
+    browser.showingHome = true;
+    browser.pendingHomeNavigation = false;
+    browser.addressSuggestionsOpen = false;
+    browser.pdfViewer = viewer;
+    browser.favicon = undefined;
+    tab.url = url;
+    tab.title = name;
+    if (browser.contents.isLoading()) browser.contents.stop();
+    this.setTabLoading(tab, false);
+    this.detachBrowser(host.window, tab);
+    this.layout(host);
+    this.applyTitle(host);
+    this.broadcast(host);
+    if (!tab.contents.isDestroyed()) tab.contents.focus();
+  }
+
+  private browserPdfBackAvailable(tab: Tab): boolean {
+    const browser = liveBrowserPage(tab.browser);
+    return Boolean(browser && (isSafeBrowserUrl(browser.contents.getURL()) || browser.homeEntryAvailable));
+  }
+
+  /** Back from a PDF: the website it was opened from, else the new-tab home. */
+  private leaveBrowserPdf(host: Host, tab: Tab): void {
+    const browser = liveBrowserPage(tab.browser);
+    if (!browser?.pdfViewer || this.showBrowserPageFromHome(host, tab) || !browser.homeEntryAvailable) return;
+    browser.pdfViewer = undefined;
+    browser.homeForwardTitle = undefined;
+    browser.homeForwardFavicon = undefined;
+    tab.url = "";
+    tab.title = browser.privatePartition ? "Private Tab" : "Browser";
+    this.applyTitle(host);
+    this.broadcast(host);
+  }
+
   /** Reveal the trusted new-tab surface as the entry before the first web page. */
   private showBrowserHome(host: Host, tab: Tab): boolean {
     if (host.findBar?.ownerId === tab.id) host.findBar.close();
@@ -7149,6 +7242,7 @@ export class TabManager {
     const url = browser.contents.getURL();
     if (!isSafeBrowserUrl(url)) return false;
     browser.showingHome = false;
+    browser.pdfViewer = undefined;
     tab.url = url;
     tab.title = browser.homeForwardTitle || browserFallbackTitle(url);
     browser.favicon = browser.homeForwardFavicon;
@@ -7787,6 +7881,10 @@ export class TabManager {
         this.broadcast(host);
         return;
       case "back":
+        if (active?.browser?.pdfViewer) {
+          this.leaveBrowserPdf(host, active);
+          return;
+        }
         if (active) {
           const contents = this.navigationContents(active);
           const target = active.browser
@@ -7805,6 +7903,7 @@ export class TabManager {
         return;
       case "forward":
         if (active) {
+          if (active.browser?.pdfViewer) return;
           if (active.browser?.showingHome) {
             this.showBrowserPageFromHome(host, active);
             return;

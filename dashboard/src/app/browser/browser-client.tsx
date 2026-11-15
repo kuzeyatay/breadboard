@@ -5,6 +5,7 @@ import { Search } from "lucide-react";
 import DashboardAgentTerminal from "@/app/components/hermes/dashboard-agent-terminal";
 import BrowserNavigation from "./browser-navigation";
 import BrowserOrganizationPanel from "./browser-organization-panel";
+import CrumbsIcon from "@/app/components/crumbs-icon";
 import { BROWSER_REVEAL_TERMINAL_EVENT } from "@/lib/browser-inline-answer";
 import {
   useEffect,
@@ -22,7 +23,6 @@ import { useChatGreeting } from "@/app/components/hermes/use-chat-greeting";
 import { ChatSuggestionCards } from '@/app/components/hermes/chat-greeting-empty-state';
 import type { ChatGreetingSignals } from "@/lib/hermes/chat-greeting";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
-import { publishDesktopNotificationToast } from "@/lib/desktop-notification-overlay";
 import BrowserTabPanes from "./browser-tab-panes";
 import { usePageLoading } from "@/app/components/use-page-loading";
 import {
@@ -265,6 +265,7 @@ function BrowserContent({
     visible: false,
   });
   const hasNativePage = Boolean(browser?.address) && (
+    Boolean(browser?.pdfViewer) ||
     tabs?.persistentShell === true ||
     (browser?.pageReady ?? true) ||
     (nativePagePresentation.browserKey === browserKey && nativePagePresentation.visible)
@@ -713,11 +714,12 @@ function BrowserContent({
         {browser && !privateBrowsing && tabs?.browserPreferences?.organizationSidebarEnabled !== false && <button
           type="button"
           className="browser-terminal-launcher"
-          aria-label="Organization"
-          title="Organization — Coming soon"
-          onClick={() => publishDesktopNotificationToast({ message: "Coming soon", type: "success" })}
+          aria-label={browser.organizationOpen ? "Close Crumbs" : "Open Crumbs"}
+          aria-pressed={browser.organizationOpen === true}
+          title="Crumbs"
+          onClick={() => void sendDesktopTabsCommand({ type: "browser-organization", open: !browser.organizationOpen })}
         >
-          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="3" y="3.5" width="14" height="13" rx="3" {...STROKE} /><path d="M12 3.5v13" {...STROKE} /></svg>
+          <CrumbsIcon size={20} strokeWidth={1.6} />
         </button>}
         <button
           type="button"
@@ -772,6 +774,16 @@ function BrowserContent({
         } as CSSProperties : undefined}
       >
         {!hasNativePage && <PageAppearance page="browser" ownerKey={restoreOwnerKey} />}
+        {/* A website PDF: the desktop set the web view aside and the viewer
+            takes its place beside the rail, under the same address bar. */}
+        {browser?.pdfViewer ? (
+          <iframe
+            key={browser.pdfViewer}
+            src={browser.pdfViewer}
+            title={pageTab?.title || "PDF"}
+            style={{ position: "absolute", top: 0, left: 40, zIndex: 1, width: "calc(100% - 40px)", height: "100%", border: 0 }}
+          />
+        ) : null}
         {!hasNativePage ? (
           <div className="browser-start-copy">
             <AnimatedBrowserGreeting greeting={chatGreeting.greeting} />
@@ -804,7 +816,7 @@ function BrowserContent({
       {!showingHome && !privateHome && browserTools}
 
       {browser?.organizationOpen && !browser.private && tabs?.browserPreferences?.organizationSidebarEnabled !== false && <BrowserOrganizationPanel
-        key={pageTab?.id} url={browser.address} title={pageTab?.title ?? ""} target={browser.annotationTarget}
+        key={pageTab?.id} url={browser.address} title={pageTab?.title ?? ""} target={browser.annotationTarget} width={browser.organizationWidth}
         send={sendDesktopTabsCommand} onClose={() => void sendDesktopTabsCommand({ type: "browser-organization", open: false })} />}
 
       {(!showingHome || terminalOpen) && <aside

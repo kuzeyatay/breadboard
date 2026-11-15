@@ -8,10 +8,15 @@ import {
 } from "@/lib/stored-file-attachments.ts";
 import {
   StoredFileBlobError,
+  findStoredFileBlob,
   removeStoredFileBlob,
   writeStoredFileBlob,
 } from "@/lib/conversations/stored-file-blob-store.ts";
 import { sweepUnreferencedStoredFileBlobs } from "@/lib/conversations/stored-file-uploads.ts";
+import { isMarkedWebBlob, markWebPdfBlob, touchWebPdfBlob } from "@/lib/conversations/document-blob-store.ts";
+import { STORE_ONLY_HEADER, sweepOpenedFiles } from "@/lib/conversations/opened-files.ts";
+import { openedImageMimeType } from "@/lib/local-document.ts";
+import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesystem";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -40,6 +45,11 @@ export async function POST(request: Request) {
     if (!request.body) throw new ApiError(400, "file_body_required", "No file was received.");
     const stored = await writeStoredFileBlob({ userId, format, body: request.body });
     sweepUnreferencedStoredFileBlobs(userId);
+    // An image opened from a new tab: kept for its viewer under the Settings cleanup switch.
+    if (request.headers.get(STORE_ONLY_HEADER) === "true") {
+      markWebPdfBlob(stored);
+      sweepOpenedFiles(userId);
+    }
     return NextResponse.json({
       blobId: stored.blobId,
       format: stored.format,
@@ -49,6 +59,29 @@ export async function POST(request: Request) {
     if (error instanceof StoredFileBlobError) {
       return apiErrorResponse(new ApiError(error.status, error.code, error.message));
     }
+    return apiErrorResponse(error);
+  }
+}
+
+/**
+ * GET ?blobId=&name=: an image opened from a new tab. Only marked (opened)
+ * blobs are served, and only as one of the raster image types its name claims,
+ * so a stored chat file can never be replayed here as something else.
+ */
+export async function GET(request: Request) {
+  try {
+    const userId = await requireUserId();
+    const params = new URL(request.url).searchParams;
+    const blob = findStoredFileBlob({ userId, blobId: params.get("blobId") ?? "" });
+    const mimeType = openedImageMimeType(params.get("name") ?? "");
+    if (!blob || !mimeType || !isMarkedWebBlob(blob)) {
+      return NextResponse.json({ error: "file_not_found" }, { status: 404 });
+    }
+    touchWebPdfBlob(blob);
+    return new Response(new Uint8Array(fs.readFileSync(blob.path)), {
+      headers: { "content-type": mimeType, "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff" },
+    });
+  } catch (error) {
     return apiErrorResponse(error);
   }
 }

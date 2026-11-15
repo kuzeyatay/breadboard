@@ -144,8 +144,9 @@ test('PDF sends render immediately, cancel preparation, and publish viewing pres
     stdin: { resolveDir: root, loader: 'tsx', contents: `
       import React,{useRef,useState} from 'react'; import {createRoot} from 'react-dom/client';
       import PdfAssistant from './src/app/components/pdf-assistant';
-      import {isChatNotificationTargetViewed} from './src/lib/chat-notification-inbox';
-      window.isViewed=isChatNotificationTargetViewed;
+      import {sameChatNotificationTarget} from './src/lib/chat-notification-inbox';
+      import {readNotificationViewTargets} from './src/lib/notification-view-presence';
+      window.isViewed=target=>readNotificationViewTargets().some(view=>sameChatNotificationTarget(view,target));
       window.pageReads=[];
       window.readPdfBytes=async()=>new Uint8Array([37,80,68,70]);
       function App(){
@@ -153,7 +154,7 @@ test('PDF sends render immediately, cancel preparation, and publish viewing pres
         const container=useRef(null);
         const pdf=useRef({numPages:65,getPage:async n=>{
           window.pageReads.push(n);
-          return {getTextContent:async()=>({items:window.scanned?[]:[{str:'Lecture 3'}]})};
+          return {getTextContent:async()=>({items:window.scanned?[]:[{str:window.pdfText??'Lecture 3'}]})};
         }});
         return <><div ref={container} style={{width:600,height:400,overflow:'auto'}}><div className="page" data-page-number={currentPage} data-loaded="true" style={{width:600,height:400}}><div className="canvasWrapper"><canvas width={600} height={400}/></div></div></div><PdfAssistant documentKey="pdf:1234abcd" title="Study guide"
           fileName="studyguide.pdf" pageNumber={currentPage} pageCount={65} loading={false} selectionEnabled={false}
@@ -499,6 +500,83 @@ test('PDF sends render immediately, cancel preparation, and publish viewing pres
   await waitUntil(() => turns.length===beforeFallback+2);
   assert.equal(turns.at(-1).attachments.filter(a=>a.type==='image').length, 1);
   finish('Continue when the planning service is unavailable', 'Answered with the PDF and visible page.');
+  await page.waitForFunction(() => window.panel.runState==='completed');
+
+  // A highlighted passage in a book over the upload limit must still reach the
+  // model. Use actual oversized bytes so the old upload path fails this test.
+  const uploadsBeforeLarge = uploads.length;
+  const turnsBeforeLarge = turns.length;
+  await page.evaluate(() => {
+    window.scanned = false;
+    window.pdfText = 'We turn each knob by a predetermined fixed amount called the learning rate.';
+    window.largePdfBytes = new Uint8Array(128 * 1024 * 1024 + 1);
+    window.readPdfBytes = async () => window.largePdfBytes;
+    window.setPdfPage(14);
+    window.largePdfHashes = 0;
+    const digest = crypto.subtle.digest.bind(crypto.subtle);
+    crypto.subtle.digest = (...args) => {
+      if (args[1].byteLength > 128 * 1024 * 1024) window.largePdfHashes++;
+      return digest(...args);
+    };
+  });
+  await page.waitForFunction(() => document.querySelector('.page').dataset.pageNumber==='14');
+  await page.evaluate(() => {
+    const quote = 'a predetermined fixed amount called the learning rate';
+    void window.panel.onAskSelection('What is that?', {
+      id: 'large-passage', mode: 'inline', sourceMessageId: 'pdf:1234abcd:page:14',
+      start: 0, end: quote.length, quote,
+    });
+  });
+  await waitUntil(() => decisions.length===1);
+  await page.evaluate(() => window.setPdfPage(15));
+  decide('What is that?');
+  await waitUntil(() => turns.length===turnsBeforeLarge+1);
+  const passageTurn = turns.at(-1);
+  assert.equal(passageTurn.textSelection.id, 'large-passage');
+  assert.equal(passageTurn.attachments.length, 1, 'the passage question needs neither a full upload nor a document-wide text walk');
+  assert.deepEqual(passageTurn.attachments[0].pdfPage, {title:'Study guide',pageNumber:14});
+  assert.match(passageTurn.attachments[0].text, /learning rate/);
+  assert.match(passageTurn.attachments[0].text, /full PDF is not attached/);
+  assert.doesNotMatch(passageTurn.attachments[0].text, /PDF attachment contains the entire document/);
+  finish('What is that?', 'The learning rate controls the size of each adjustment.');
+  await page.waitForFunction(() => window.panel.messages.some(m=>m.content==='The learning rate controls the size of each adjustment.'&&!m.pending));
+
+  // When an oversized scan has no text to send, preserve the frozen view even
+  // if the planner did not request it and the user scrolls during preparation.
+  await page.evaluate(() => { window.scanned=true; window.setPdfPage(21); });
+  await page.waitForFunction(() => document.querySelector('.page').dataset.pageNumber==='21');
+  await page.getByRole('textbox',{name:'Message'}).fill('Explain this scanned figure');
+  await page.getByRole('button',{name:'Send',exact:true}).click();
+  await waitUntil(() => decisions.length===1);
+  await page.evaluate(() => window.setPdfPage(22));
+  decide('Explain this scanned figure');
+  await waitUntil(() => turns.length===turnsBeforeLarge+2);
+  const scanTurn = turns.at(-1);
+  assert.match(scanTurn.attachments[0].text, /"visiblePages":\[21\]/);
+  assert.match(scanTurn.attachments[0].text, /fresh screenshot/);
+  assert.equal(scanTurn.attachments.filter(a=>a.type==='image').length, 1);
+  assert.equal(scanTurn.attachments.filter(a=>a.type==='document').length, 0);
+  finish('Explain this scanned figure', 'The diagram shows the learning update.');
+  await page.waitForFunction(() => window.panel.runState==='completed');
+
+  // Broader questions receive a bounded embedded-text reading with honest
+  // page/coverage markers instead of failing the same full-file upload again.
+  await page.evaluate(() => { window.scanned=false; window.pdfText='Learning rule. '.repeat(4500); window.pageReads=[]; });
+  await page.getByRole('textbox',{name:'Message'}).fill('Summarize the oversized book');
+  await page.getByRole('button',{name:'Send',exact:true}).click();
+  await waitUntil(() => decisions.length===1);
+  decisions.shift().end('{"captureView":false,"readWholeDocument":true}');
+  await waitUntil(() => turns.length===turnsBeforeLarge+3);
+  const excerpt = turns.at(-1).attachments.find(a=>a.name==='PDF text excerpt.txt');
+  assert.equal(excerpt.type, 'text');
+  assert.equal(excerpt.context, 'pdf');
+  assert.ok(excerpt.text.length < 101_000);
+  assert.match(excerpt.text, /\[PDF page 1\]/);
+  assert.match(excerpt.text, /truncated during PDF page 2.*Remaining text is not included/);
+  assert.deepEqual(await page.evaluate(() => window.pageReads), [22,1,2]);
+  assert.equal(await page.evaluate(() => window.largePdfHashes), 0, 'oversized files are not hashed or copied for an upload');
+  assert.equal(uploads.length, uploadsBeforeLarge, 'oversized files never enter the upload endpoint');
+  finish('Summarize the oversized book', 'Summary of the supplied pages.');
   await page.waitForFunction(() => window.panel.runState==='completed');
   assert.deepEqual(errors, []);
 });

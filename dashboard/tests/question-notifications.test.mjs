@@ -201,3 +201,13 @@ test('temporary chats, Voice, Buzz, and messaging turns keep their existing noti
   }
   for (const id of ['msg_1','question_0','question_-1','question_1junk']) assert.equal(questionNotificationId(id),null);
 });
+
+test('answer notices are headed by the prompt, or by the channel for messaging chats', t => {
+  const db = database(t);
+  const add = db.prepare('INSERT INTO conversation_messages(conversation_id,role,content,updated_at) VALUES(1,?,?,?)');
+  add.run('user', '/research   How do\ntides work?', '2099-01-01 00:00:00');
+  add.run('assistant', 'The moon.', '2099-01-01 00:00:01');
+  assert.equal(listPendingChatNotifications(db,1).at(-1).chatTitle, 'How do tides work?');
+  db.exec("UPDATE conversations SET origin_label='WhatsApp' WHERE id=1");
+  assert.equal(listPendingChatNotifications(db,1).at(-1).chatTitle, 'WhatsApp');
+});

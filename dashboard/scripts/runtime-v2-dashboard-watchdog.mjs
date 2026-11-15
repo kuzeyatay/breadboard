@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import inspector from "node:inspector";
+import path from "node:path";
 import { isMainThread, Worker, workerData } from "node:worker_threads";
 
 /** A live PID is not proof that the workspace can still accept requests.
@@ -40,6 +41,16 @@ function responds(port, timeoutMs) {
 
 const mb = bytes => `${Math.round(bytes / 1048576)} MB`;
 
+// Own append-only file, not stderr: worker stdio is relayed by the stuck main
+// thread, a full stderr pipe blocks writeSync, and services/dashboard.log is
+// atomically rewritten by the runtime.
+function record(text) {
+  const line = `${new Date().toISOString()} pid=${process.pid} ${text}\n`;
+  try {
+    fs.appendFileSync(path.join(process.env.BREADBOARD_DATA_DIR || ".", "logs", "dashboard-watchdog.log"), line);
+  } catch { /* the kill below must still happen */ }
+}
+
 /** What the stalled main thread is doing. Inspector messages reach a busy
  * JS loop through a V8 interrupt; a thread stuck in native code or GC never
  * answers, which is itself the diagnosis. */
@@ -78,22 +89,22 @@ if (!isMainThread && workerData?.port) {
   let stallStart = null;
   while (true) {
     if (await responds(port, timeoutMs)) {
+      if (failures) record(`probe recovered after ${failures} failed probe(s)`);
       ready = true;
       failures = 0;
       stallStart = null;
     } else if (ready) {
       stallStart ??= { at: Date.now(), cpu: process.cpuUsage() };
-      if (++failures >= failureLimit) {
+      if (++failures === 1) record("probe failed; workspace may be stalling");
+      if (failures >= failureLimit) {
         const seconds = (Date.now() - stallStart.at) / 1000;
         const cpu = process.cpuUsage(stallStart.cpu);
         const cpuPercent = Math.round(((cpu.user + cpu.system) / 1e6 / Math.max(seconds, 1)) * 100);
-        const snapshot = await mainThreadSnapshot();
-        // Worker stdio is relayed through the main thread, which is the one
-        // that is stuck; write to the process's stderr fd directly instead.
-        fs.writeSync(2,
-          `[dashboard-watchdog] Workspace stopped accepting HTTP requests for ${Math.round(seconds)} s; exiting for Runtime V2 recovery.\n` +
-          `[dashboard-watchdog] process cpu=${cpuPercent}% of one core during the stall, rss=${mb(process.memoryUsage.rss())}\n` +
-          `[dashboard-watchdog] ${snapshot}\n`);
+        // Header first: a 2026-11-14 stall ran 5+ min with no report at all,
+        // so nothing after this line may be trusted to finish.
+        record(`Workspace stopped accepting HTTP requests for ${Math.round(seconds)} s; exiting for Runtime V2 recovery. ` +
+          `process cpu=${cpuPercent}% of one core during the stall, rss=${mb(process.memoryUsage.rss())}`);
+        record(await mainThreadSnapshot());
         // process.exit in a worker only exits that thread. Terminate this one
         // service process; its existing supervisor reaps it and restarts it.
         process.kill(process.pid, "SIGKILL");

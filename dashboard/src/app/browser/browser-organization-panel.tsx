@@ -1,83 +1,161 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { ArrowUp, ChevronLeft, ExternalLink, Flag, Globe2, MessageSquare, MoreHorizontal, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { ArrowUp, ChevronLeft, ExternalLink, Flag, Globe2, Lock, MoreHorizontal, ShieldCheck, Sparkles, UsersRound, X } from "lucide-react";
+import CrumbsIcon from "@/app/components/crumbs-icon";
+import CrumbNotes from "@/app/crumbs/crumb-notes";
 import { usePageLoading } from "@/app/components/use-page-loading";
-import { annotationPageUrl, annotationTargetKey, type AnnotationResponse, type BrowserAnnotationTarget } from "@/lib/browser-annotations";
+import { annotationPageUrl, annotationTargetKey, type AnnotationMessage, type AnnotationResponse, type BrowserAnnotationTarget } from "@/lib/browser-annotations";
 import type { DesktopTabsCommand } from "@/lib/desktop-browser-tabs";
+import { shortHandle } from "@/lib/crumbs/handle";
 import styles from "./browser-organization-panel.module.css";
 
 type Send = (command: DesktopTabsCommand) => Promise<boolean>;
 type Rooms = { organizations: Array<{ id: number; name: string }>; rooms: Array<{ publicId: string; organizationId: number; name: string; archived: boolean }> };
+type Account = { signedIn: boolean; needsSignIn: boolean; handle: string | null; displayName: string | null; avatar: string | null; defaultVisibility: string };
+type EncryptedOrg = { id: string; name: string; role: "admin" | "member"; ready: boolean };
+type Level = "private" | "org" | "public";
+type Mode = { kind: "comment" } | { kind: "flag" } | { kind: "report"; messageId: string; author: string };
+
 const empty: AnnotationResponse = { threads: [], thread: null, messages: [], flags: [] };
+const signedOut: Account = { signedIn: false, needsSignIn: false, handle: null, displayName: null, avatar: null, defaultVisibility: "private" };
+const levelOf = (scope: string): Level => scope === "private" ? "private" : scope === "public" ? "public" : "org";
 function label(target: BrowserAnnotationTarget) {
   if (target.kind === "text") return target.quote ?? "Selected text";
-  if (target.kind === "video") return `Video${target.time === undefined ? "" : ` · ${Math.floor(target.time / 60)}:${String(target.time % 60).padStart(2, "0")}`}`;
+  if (target.kind === "video") return `Video${target.time === undefined ? "" : ` at ${Math.floor(target.time / 60)}:${String(target.time % 60).padStart(2, "0")}`}`;
   return target.kind === "image" ? "Selected image" : "This page";
 }
 async function responseJson<T>(response: Response): Promise<T> {
-  const data = await response.json();
+  const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(typeof data.error === "string" ? data.error : data.error?.message ?? "Couldn’t load this discussion. Try again.");
   return data as T;
 }
+const crumbsPost = <T,>(body: Record<string, unknown>) => fetch("/api/crumbs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then(responseJson<T>);
+const day = (value: string) => new Date(value.includes("T") ? value : value.replace(" ", "T") + "Z").toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
-export default function BrowserOrganizationPanel({ url, title, target, send, onClose }: {
-  url: string; title: string; target?: BrowserAnnotationTarget; send: Send; onClose: () => void;
+function Avatar({ src, name, size = 36 }: { src?: string | null; name: string; size?: number }) {
+  const box = { width: size, height: size, fontSize: Math.round(size * 0.42) };
+  const [failed, setFailed] = useState<string | null>(null);
+  // Remote avatars are plain images on purpose: they come from the author's own profile.
+  // eslint-disable-next-line @next/next/no-img-element
+  return src && failed !== src ? <img className={styles.avatar} style={box} src={src} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(src)} /> : <span className={styles.avatar} style={box} aria-hidden="true">{name.trim().charAt(0).toUpperCase() || "?"}</span>;
+}
+
+/** The account, its encrypted organizations, and this Breadboard's rooms. */
+async function loadAudiences(signal?: AbortSignal) {
+  const [roomData, status] = await Promise.all([
+    fetch("/api/buzz/rooms", { signal, cache: "no-store" }).then(responseJson<Rooms>).catch((): Rooms => ({ organizations: [], rooms: [] })),
+    fetch("/api/crumbs?view=status", { signal, cache: "no-store" }).then(responseJson<Account>),
+  ]);
+  const encrypted = status.signedIn ? await fetch("/api/crumbs?view=orgs", { signal, cache: "no-store" }).then(responseJson<{ orgs: EncryptedOrg[] }>).then(data => data.orgs).catch((): EncryptedOrg[] => []) : [];
+  return { roomData, status, encrypted };
+}
+
+const PANEL_WIDTH = 360;
+const PANEL_MIN_WIDTH = 300;
+const PANEL_MAX_WIDTH = 720;
+const PANEL_WIDTH_KEY = "breadboard:crumbs-panel-width";
+
+export default function BrowserOrganizationPanel({ url, title, target, width: nativeWidth, send, onClose }: {
+  url: string; title: string; target?: BrowserAnnotationTarget; width?: number; send: Send; onClose: () => void;
 }) {
   const [rooms, setRooms] = useState<Rooms>({ organizations: [], rooms: [] });
+  const [account, setAccount] = useState<Account>(signedOut);
+  const [orgs, setOrgs] = useState<EncryptedOrg[]>([]);
   const [scope, setScope] = useState<string | null>(null);
-  const [view, setView] = useState<{ tab: "page" | "rooms"; selectionKey: string }>({ tab: "page", selectionKey: "" });
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
-  const selectionKey = target ? annotationTargetKey(target) + target.url : "";
-  const tab = view.selectionKey === selectionKey ? view.tab : "page";
-  function setTab(tab: "page" | "rooms") { setView({ tab, selectionKey }); }
   usePageLoading(scope === null && !error);
+
+  const apply = useCallback(({ roomData, status, encrypted }: Awaited<ReturnType<typeof loadAudiences>>) => {
+    setRooms(roomData); setAccount(status); setOrgs(encrypted); setError("");
+    setScope(previous => {
+      if (previous) return previous;
+      const preferred = status.defaultVisibility;
+      return preferred === "public" || (preferred.startsWith("org:") && encrypted.some(org => `org:${org.id}` === preferred)) ? preferred : "private";
+    });
+  }, []);
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/buzz/rooms", { signal: controller.signal, cache: "no-store" }).then(responseJson<Rooms>).then(data => {
-      setRooms(data);
-      setScope(previous => previous ?? (data.rooms.find(room => !room.archived) ? `room:${data.rooms.find(room => !room.archived)!.publicId}` : "public"));
-      setError("");
-    }).catch(error => { if (!controller.signal.aborted) setError(error.message); });
-    return () => controller.abort();
-  }, [retry]);
+    loadAudiences(controller.signal).then(data => { if (!controller.signal.aborted) apply(data); }).catch(error => { if (!controller.signal.aborted) setError(error.message); });
+    // Signing in happens in another tab; pick the account up when the reader comes back.
+    const refresh = () => { if (!document.hidden) loadAudiences().then(data => { if (!controller.signal.aborted) apply(data); }).catch(() => {}); };
+    window.addEventListener("focus", refresh);
+    return () => { controller.abort(); window.removeEventListener("focus", refresh); };
+  }, [apply, retry]);
+
   const pageUrl = annotationPageUrl(url);
   const selected = target && annotationPageUrl(target.url) === pageUrl ? target : { kind: "page" as const, url: pageUrl ?? "", title };
-  const room = rooms.rooms.find(room => `room:${room.publicId}` === scope);
-  const audience = scope === "public" ? "General public" : room?.name ?? "Organization";
-  return <aside className={styles.panel} aria-label="Organization" onKeyDown={event => {
+  const groups = [
+    ...orgs.map(org => ({ value: `org:${org.id}`, name: org.name, detail: "Encrypted for members" })),
+    ...rooms.rooms.filter(room => !room.archived).map(room => ({ value: `room:${room.publicId}`, name: room.name, detail: rooms.organizations.find(org => org.id === room.organizationId)?.name ?? "" })),
+  ];
+  const level = scope ? levelOf(scope) : null;
+  const group = groups.find(item => item.value === scope);
+  const audience = scope === "private" ? "Only me" : scope === "public" ? "Public" : group?.name ?? "Organization";
+  const needsAccount = Boolean(scope && (scope === "public" || scope.startsWith("org:")) && !account.signedIn);
+  function choose(next: Level) {
+    setScope(next === "private" ? "private" : next === "public" ? "public" : groups[0]?.value ?? "org:none");
+  }
+
+  // The desktop shrinks the page beside the panel, so every width change is sent to it.
+  const [width, setWidth] = useState(nativeWidth ?? PANEL_WIDTH);
+  const panel = useRef<HTMLElement>(null);
+  const resize = useCallback((next: number, keep = true) => {
+    const value = Math.max(PANEL_MIN_WIDTH, Math.min(PANEL_MAX_WIDTH, Math.round(next)));
+    setWidth(value);
+    if (keep) try { window.localStorage.setItem(PANEL_WIDTH_KEY, String(value)); } catch { /* the width still applies for this session */ }
+    void send({ type: "browser-organization", open: true, width: value });
+  }, [send]);
+  useEffect(() => {
+    let stored = NaN;
+    try { stored = Number(window.localStorage.getItem(PANEL_WIDTH_KEY)); } catch { /* default width */ }
+    if (stored >= PANEL_MIN_WIDTH && stored !== (nativeWidth ?? PANEL_WIDTH)) resize(stored, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per panel: later widths come from dragging
+  }, []);
+
+  return <aside ref={panel} className={styles.panel} style={{ "--crumbs-width": `${width}px` } as CSSProperties} aria-label="Crumbs" onKeyDown={event => {
     if (event.key !== "Escape") return;
     const menu = event.currentTarget.querySelector<HTMLDetailsElement>("details[open]");
     if (menu) menu.open = false; else onClose();
     event.stopPropagation();
   }} tabIndex={-1}>
-    <header className={styles.header}><h2>Organization</h2><button type="button" className={styles.icon} aria-label="Close Organization" onClick={onClose}><X size={17} /></button></header>
+    <div className={styles.resizer} role="separator" aria-label="Resize Crumbs" aria-orientation="vertical" aria-valuemin={PANEL_MIN_WIDTH} aria-valuemax={PANEL_MAX_WIDTH} aria-valuenow={width} tabIndex={0}
+      onDoubleClick={() => resize(PANEL_WIDTH)}
+      onKeyDown={event => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); event.stopPropagation(); resize(width + (event.key === "ArrowLeft" ? 24 : -24)); } }}
+      onPointerDown={event => { if (event.button === 0) { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); } }}
+      onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId) && panel.current) resize(panel.current.getBoundingClientRect().right - event.clientX); }}
+      onPointerUp={event => event.currentTarget.releasePointerCapture(event.pointerId)} />
+    <header className={styles.header}>
+      <h2><CrumbsIcon size={19} />Crumbs</h2>
+      <a className={styles.account} href="/settings#crumbs" target="_blank" rel="noopener noreferrer" aria-label={account.signedIn ? `Crumbs account, ${shortHandle(account.handle) || "signed in"}` : "Sign in to Crumbs"} title={account.signedIn ? `@${shortHandle(account.handle)}` : "Sign in to Crumbs"}>
+        {account.signedIn ? <Avatar src={account.avatar} name={account.displayName ?? account.handle ?? "?"} size={28} /> : "Sign in"}
+      </a>
+      <button type="button" className={styles.icon} aria-label="Close Crumbs" onClick={onClose}><X size={17} /></button>
+    </header>
+
+    <div className={styles.levels} role="radiogroup" aria-label="Who sees this">
+      {([["private", "Only me", Lock], ["org", "Organization", UsersRound], ["public", "Public", Globe2]] as const).map(([value, name, Icon]) =>
+        <button key={value} type="button" role="radio" aria-checked={level === value} disabled={scope === null} onClick={() => choose(value)}><Icon size={13} />{name}</button>)}
+    </div>
     <div className={styles.audience}>
-      <select aria-label="Discussion audience" value={scope ?? ""} disabled={scope === null} onChange={event => setScope(event.target.value)}>
-        {scope === null && <option value="">Choose an audience</option>}
-        <option value="public">General public</option>
-        {rooms.organizations.map(org => <optgroup key={org.id} label={org.name}>{rooms.rooms.filter(room => room.organizationId === org.id && !room.archived).map(room => <option key={room.publicId} value={`room:${room.publicId}`}>{room.name}</option>)}</optgroup>)}
-      </select>
-      <p>{scope === "public" ? "Everyone on this Breadboard server" : room ? rooms.organizations.find(org => org.id === room.organizationId)?.name : "Your shared conversations"}</p>
+      {level === "org" && groups.length > 1 && <select aria-label="Organization" value={scope ?? ""} onChange={event => setScope(event.target.value)}>
+        {groups.map(item => <option key={item.value} value={item.value}>{item.name}</option>)}
+      </select>}
+      <p>{scope === null ? "" : scope === "private" ? "On this computer only" : scope === "public" ? "Visible to everyone" : group?.detail ?? ""}</p>
     </div>
-    <div className={styles.tabs} role="tablist" aria-label="Organization views">
-      <button type="button" role="tab" aria-selected={tab === "page"} onClick={() => setTab("page")}>This page</button>
-      <button type="button" role="tab" aria-selected={tab === "rooms"} onClick={() => setTab("rooms")}>Rooms</button>
-    </div>
+
     {error && <p className={styles.error} role="alert">{error} <button type="button" onClick={() => { setError(""); setRetry(value => value + 1); }}>Try again</button></p>}
-    {tab === "rooms" ? <div className={styles.scroll} role="tabpanel" aria-label="Rooms">
-      <button type="button" className={styles.room} onClick={() => { setScope("public"); setTab("page"); }}><Globe2 size={16} /><span>General public<small>Conversations about this page</small></span></button>
-      {rooms.organizations.map(org => <section className={styles.roomGroup} key={org.id}><h3>{org.name}</h3>{rooms.rooms.filter(room => room.organizationId === org.id && !room.archived).map(room => <div className={styles.roomRow} key={room.publicId}>
-        <button type="button" className={styles.room} onClick={() => { setScope(`room:${room.publicId}`); setTab("page"); }}><MessageSquare size={15} /><span>{room.name}</span></button>
-        <a className={styles.icon} href={`/buzz?room=${encodeURIComponent(room.publicId)}`} target="_blank" rel="noopener noreferrer" aria-label={`Open ${room.name} in Organization`}><ExternalLink size={14} /></a>
-      </div>)}</section>)}
-      <a className={styles.textLink} href="/buzz" target="_blank" rel="noopener noreferrer">Open Organization <ExternalLink size={13} /></a>
-    </div> : pageUrl && scope ? <Discussion key={`${scope}:${pageUrl}:${annotationTargetKey(selected)}`} scope={scope} audience={audience} target={selected} send={send} /> : <div className={styles.empty}>{scope && "Open a web page to start a conversation."}</div>}
+    {scope === "org:none" ? <div className={styles.card}>
+      <ShieldCheck size={22} strokeWidth={1.4} />
+      <p>No organizations yet</p>
+      <a className={styles.primary} href={account.signedIn ? "/crumbs?tab=organizations" : "/settings#crumbs"} target="_blank" rel="noopener noreferrer">{account.signedIn ? "Create one" : "Sign in"}</a>
+    </div> : pageUrl && scope ? <Discussion key={`${scope}:${pageUrl}:${annotationTargetKey(selected)}:${account.signedIn}`} scope={scope} audience={audience} target={selected} send={send} needsAccount={needsAccount} expired={account.needsSignIn} />
+      : <div className={styles.empty}>{scope && "Open a web page to leave a crumb."}</div>}
   </aside>;
 }
 
-function Discussion({ scope, audience, target: initialTarget, send }: { scope: string; audience: string; target: BrowserAnnotationTarget; send: Send }) {
+function Discussion({ scope, audience, target: initialTarget, send, needsAccount, expired }: { scope: string; audience: string; target: BrowserAnnotationTarget; send: Send; needsAccount: boolean; expired: boolean }) {
   // The parent keys this view by page, audience and selection. Keep the anchor
   // stable across native state broadcasts, which include fresh object copies.
   const [target] = useState(initialTarget);
@@ -85,19 +163,28 @@ function Discussion({ scope, audience, target: initialTarget, send }: { scope: s
   const [body, setBody] = useState("");
   const [source, setSource] = useState("");
   const [showSource, setShowSource] = useState(false);
-  const [mode, setMode] = useState<"comment" | "flag">("comment");
+  const [mode, setMode] = useState<Mode>({ kind: "comment" });
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  const [summary, setSummary] = useState<{ text?: string; error?: string; busy?: boolean } | null>(null);
+  const [checks, setChecks] = useState<Record<string, { text?: string; error?: string; busy?: boolean }>>({});
   const alive = useRef(true);
   const revision = useRef(0);
   const command = useRef(send); command.current = send;
   const operation = useRef({ signature: "", id: "" });
   const input = useRef<HTMLTextAreaElement>(null);
-  usePageLoading(!loaded && !error);
+  const network = scope === "public" || scope.startsWith("org:");
+  const local = scope.startsWith("room:");
+  // An organization cannot be read without the account that holds its keys.
+  const locked = needsAccount && scope.startsWith("org:");
+  usePageLoading(!loaded && !error && !locked);
+  const paint = (result: AnnotationResponse) => void command.current({ type: "browser-organization-markers", items: result.threads.map(thread => ({ id: thread.id, target: thread.target, count: thread.count, ...(thread.preview ? { preview: thread.preview } : {}) })) });
+
   useEffect(() => {
     alive.current = true;
+    if (locked) return;
     const controller = new AbortController();
     let running = false;
     async function refresh() {
@@ -109,10 +196,7 @@ function Discussion({ scope, audience, target: initialTarget, send }: { scope: s
         let result = await fetch(`/api/browser/annotations?${query}`, { signal: controller.signal, cache: "no-store" }).then(responseJson<AnnotationResponse>);
         const thread = result.threads.find(thread => annotationTargetKey(thread.target) === annotationTargetKey(target));
         if (thread) { query.set("thread", thread.id); result = await fetch(`/api/browser/annotations?${query}`, { signal: controller.signal, cache: "no-store" }).then(responseJson<AnnotationResponse>); }
-        if (!controller.signal.aborted && version === revision.current) {
-          setData(result); setLoaded(true); setError("");
-          void command.current({ type: "browser-organization-markers", items: result.threads.map(thread => ({ id: thread.id, target: thread.target })) });
-        }
+        if (!controller.signal.aborted && version === revision.current) { setData(previous => ({ ...result, notice: result.notice ?? previous.notice })); setLoaded(true); setError(""); paint(result); }
       } catch (error) {
         if (!controller.signal.aborted && version === revision.current) { setError(error instanceof Error ? error.message : "Couldn’t load comments."); setLoaded(true); setData(empty); void command.current({ type: "browser-organization-markers", items: [] }); }
       } finally { running = false; }
@@ -121,7 +205,7 @@ function Discussion({ scope, audience, target: initialTarget, send }: { scope: s
     void refresh();
     const timer = window.setInterval(() => void refresh(), 10000);
     return () => { alive.current = false; controller.abort(); clearInterval(timer); void command.current({ type: "browser-organization-markers", items: [] }); };
-  }, [scope, target, retry]);
+  }, [scope, target, retry, locked]);
 
   async function write(action: "comment" | "flag" | "withdraw-flag" | "delete-comment", messageId?: string) {
     if (busy) return;
@@ -132,38 +216,107 @@ function Discussion({ scope, audience, target: initialTarget, send }: { scope: s
     try {
       const result = await fetch("/api/browser/annotations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...payload, operationId: operation.current.id }) }).then(responseJson<AnnotationResponse>);
       if (!alive.current) return;
-      revision.current++; setData(result); setBody(""); setSource(""); setShowSource(false); setMode("comment"); operation.current = { signature: "", id: "" };
-      void command.current({ type: "browser-organization-markers", items: result.threads.map(thread => ({ id: thread.id, target: thread.target })) });
+      revision.current++; setData(result); setBody(""); setSource(""); setShowSource(false); setMode({ kind: "comment" }); operation.current = { signature: "", id: "" };
+      paint(result);
     } catch (error) { if (alive.current) setError(error instanceof Error ? error.message : "Couldn’t save your comment. Try again."); }
     finally { if (alive.current) setBusy(false); }
   }
   function choose(next: BrowserAnnotationTarget) { void send({ type: "browser-organization-target", target: next }); }
-  return <div className={styles.discussion} role="tabpanel" aria-label="This page">
+  async function summarize() {
+    setSummary({ busy: true });
+    try { setSummary(await crumbsPost<{ text: string }>({ action: "ai", mode: "summary", url: target.url, scope })); }
+    catch (error) { setSummary({ error: error instanceof Error ? error.message : "Couldn’t summarize. Try again." }); }
+  }
+  async function check(message: AnnotationMessage) {
+    setChecks(previous => ({ ...previous, [message.id]: { busy: true } }));
+    try {
+      const result = await crumbsPost<{ text: string }>({ action: "ai", mode: "check", url: target.url, claim: message.body, quote: target.kind === "text" ? target.quote : "" });
+      setChecks(previous => ({ ...previous, [message.id]: result }));
+    } catch (error) { setChecks(previous => ({ ...previous, [message.id]: { error: error instanceof Error ? error.message : "Couldn’t check this. Try again." } })); }
+  }
+  function submit() {
+    if (mode.kind === "report") void write("flag", mode.messageId);
+    else void write(mode.kind);
+  }
+  const closeMenu = (element: HTMLElement) => { element.closest("details")!.open = false; };
+  const others = target.kind === "page" ? data.threads.filter(thread => thread.target.kind !== "page") : [];
+  const placeholder = mode.kind === "comment" ? "Leave a crumb" : mode.kind === "flag" ? "What should others know?" : "What is wrong with it?";
+
+  if (locked) return <div className={styles.card}>
+    <ShieldCheck size={22} strokeWidth={1.4} /><p>{expired ? "Sign in again to open this" : "Sign in to open this"}</p>
+    <a className={styles.primary} href="/settings#crumbs" target="_blank" rel="noopener noreferrer">Sign in</a>
+  </div>;
+
+  return <div className={styles.discussion} aria-label="This page">
     <div className={styles.scroll}>
       <div className={styles.pageTitle}><span>{target.title || new URL(target.url).hostname}</span><small>{new URL(target.url).hostname}</small></div>
       {target.kind !== "page" && <div className={styles.selection}>
         <button className={styles.textLink} type="button" onClick={() => choose({ kind: "page", url: target.url, title: target.title })}><ChevronLeft size={13} />This page</button>
         <blockquote>{label(target)}</blockquote>
       </div>}
-      {target.kind === "page" && data.threads.filter(thread => thread.target.kind !== "page").map(thread => <button type="button" key={thread.id} className={styles.thread} onClick={() => choose(thread.target)}><span>{label(thread.target)}</span><small>{thread.count} {thread.count === 1 ? "comment" : "comments"}</small></button>)}
-      {loaded && !data.messages.length && !data.flags.length && <div className={styles.empty}><MessageSquare size={22} strokeWidth={1.4} /><p>Start a conversation</p><small>{target.kind === "page" ? "Comment on this page, or select text and choose Comment. Right-click an image or video to discuss it." : "Add a thought about this selection."}</small></div>}
-      <div aria-live="polite" aria-relevant="additions text">{data.messages.map(message => <article className={styles.message} key={message.id}>
-        <div className={styles.byline}><strong>{message.author}</strong><time dateTime={message.createdAt}>{new Date(message.createdAt.includes("T") ? message.createdAt : message.createdAt.replace(" ", "T") + "Z").toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time>
-          {message.own && <details className={styles.menu}><summary aria-label="Comment options"><MoreHorizontal size={15} /></summary><div><button disabled={busy} type="button" onClick={() => void write("delete-comment", message.id)}>Delete comment</button></div></details>}
-        </div><p>{message.body}</p>{message.source && <a href={message.source} target="_blank" rel="noopener noreferrer" className={styles.textLink}>Source <ExternalLink size={12} /></a>}
-      </article>)}</div>
-      {data.flags.length > 0 && <details className={styles.flags}><summary><Flag size={13} />{data.flags.length} {data.flags.length === 1 ? "flag" : "flags"}</summary>{data.flags.map(flag => <div key={flag.id}><strong>{flag.author}</strong><p>{flag.reason}</p>{flag.own && <button type="button" disabled={busy} onClick={() => void write("withdraw-flag")}>Remove my flag</button>}</div>)}</details>}
+
+      {network && target.kind === "page" && data.threads.length > 0 && <div className={styles.ai}>
+        {!summary && <button type="button" onClick={() => void summarize()}><Sparkles size={13} />Summarize the discussion</button>}
+        {summary?.busy && <p className={styles.thinking}><Sparkles size={13} />Summarizing</p>}
+        {summary?.text && <div className={styles.answer}><strong><Sparkles size={12} />Summary</strong><p>{summary.text}</p><button type="button" className={styles.textLink} onClick={() => setSummary(null)}>Hide</button></div>}
+        {summary?.error && <p className={styles.error} role="alert">{summary.error} <button type="button" onClick={() => void summarize()}>Try again</button></p>}
+      </div>}
+
+      {others.length > 0 && <ul className={styles.threads} aria-label="Passages with crumbs">{others.map(thread => <li key={thread.id}>
+        <button type="button" className={styles.thread} onClick={() => choose(thread.target)}>
+          <span>{label(thread.target)}</span>
+          {thread.preview && <em>{thread.preview}</em>}
+          <small>{thread.count} {thread.count === 1 ? "crumb" : "crumbs"}</small>
+        </button></li>)}</ul>}
+
+      {loaded && !data.messages.length && !data.flags.length && !others.length && <div className={styles.empty}><CrumbsIcon size={24} strokeWidth={1.3} /><p>{target.kind === "page" ? "No crumbs here yet" : "No crumbs on this yet"}</p>{target.kind === "page" && <small>Select text and choose Leave a crumb, or write about the whole page.</small>}</div>}
+
+      <div aria-live="polite" aria-relevant="additions text">{data.messages.map(message => {
+        const result = checks[message.id];
+        const author = shortHandle(message.author);
+        return <article className={styles.message} key={message.id}>
+          {network && <Avatar src={message.avatar} name={author} />}
+          <div className={styles.post}>
+          <div className={styles.byline}>
+            <span className={styles.who}><strong>{author}</strong>{message.handle && <small>@{shortHandle(message.handle)}</small>}</span>
+            <time dateTime={message.createdAt}>{day(message.createdAt)}</time>
+            {(network || message.own) && <details className={styles.menu}><summary aria-label={`Options for ${author}’s crumb`}><MoreHorizontal size={15} /></summary><div>
+              {network && <button type="button" onClick={event => { closeMenu(event.currentTarget); void check(message); }}>Check against the page</button>}
+              {network && !message.own && <button type="button" onClick={event => { closeMenu(event.currentTarget); setMode({ kind: "report", messageId: message.id, author: message.author }); setBody(""); input.current?.focus(); }}>{scope === "public" ? "Report" : "Report to admins"}</button>}
+              {(message.own || message.canDelete) && <button disabled={busy} type="button" onClick={() => void write("delete-comment", message.id)}>Delete</button>}
+            </div></details>}
+          </div>
+          <p>{message.body}</p>
+          {scope === "public" && message.id.startsWith("at://") && message.id.includes("/com.breadboard.highlight/") && <CrumbNotes crumbId={message.id} note={message.note} count={message.noteCount} own={message.own} signedIn={!needsAccount} />}
+          {message.unverified && <small className={styles.warning}>Sender not verified</small>}
+          {message.source && <a href={message.source} target="_blank" rel="noopener noreferrer" className={styles.textLink}>Source <ExternalLink size={12} /></a>}
+          {result?.busy && <p className={styles.thinking}><Sparkles size={13} />Checking</p>}
+          {result?.text && <div className={styles.answer}><strong><Sparkles size={12} />{result.text.split("\n")[0]}</strong><p>{result.text.split("\n").slice(1).join("\n").trim()}</p></div>}
+          {result?.error && <p className={styles.error} role="alert">{result.error}</p>}
+          </div>
+        </article>;
+      })}</div>
+
+      {data.flags.length > 0 && <details className={styles.flags}><summary><Flag size={13} />{data.flags.length} {local ? (data.flags.length === 1 ? "flag" : "flags") : (data.flags.length === 1 ? "report" : "reports")}</summary>{data.flags.map(flag => <div key={flag.id}><strong>{flag.author}</strong><p>{flag.reason}</p>{flag.own && <button type="button" disabled={busy} onClick={() => void write("withdraw-flag")}>Remove my flag</button>}</div>)}</details>}
       {data.thread?.organizationHref && <a className={styles.textLink} href={data.thread.organizationHref} target="_blank" rel="noopener noreferrer">Open thread in Organization <ExternalLink size={12} /></a>}
     </div>
+
+    {data.notice && <p className={styles.notice} role="status">{data.notice}</p>}
     {error && <p role="alert" className={styles.error}>{error} <button type="button" onClick={() => setRetry(value => value + 1)}>Retry loading</button></p>}
-    <form className={styles.composer} onSubmit={event => { event.preventDefault(); void write(mode); }}>
-      {mode === "flag" && <div className={styles.mode}><span><Flag size={13} />Flag this {target.kind === "page" ? "page" : "selection"}</span><button type="button" aria-label="Cancel flag" onClick={() => setMode("comment")}><X size={14} /></button></div>}
-      <textarea ref={input} aria-label={mode === "flag" ? "Reason for flagging" : "Comment"} placeholder={mode === "flag" ? "What should others know?" : "Add a comment…"} value={body} onChange={event => setBody(event.target.value)} rows={3} maxLength={4000} disabled={busy} />
-      {showSource && <input type="url" aria-label="Source link" placeholder="https://source…" value={source} onChange={event => setSource(event.target.value)} disabled={busy} />}
-      <footer><span className={styles.postingTo}>{mode === "flag" ? "Flag visible to " : "Post to "}{audience}</span><details className={styles.menu}><summary aria-label="More comment options"><MoreHorizontal size={18} /></summary><div>
-        <button type="button" onClick={event => { setShowSource(value => !value); event.currentTarget.closest("details")!.open = false; }}>{showSource ? "Remove source" : "Add a source"}</button>
-        <button type="button" onClick={event => { setMode(mode === "flag" ? "comment" : "flag"); event.currentTarget.closest("details")!.open = false; input.current?.focus(); }}>{mode === "flag" ? "Write a comment" : "Flag this content"}</button>
-      </div></details><button className={styles.submit} type="submit" disabled={busy || !loaded || !body.trim()} aria-label={mode === "flag" ? "Submit flag" : "Post comment"}><ArrowUp size={16} /></button></footer>
-    </form>
+    {needsAccount ? <div className={styles.signin}>
+      <p>{expired ? "Sign in again to post" : "Sign in to post publicly"}</p>
+      <a className={styles.primary} href="/settings#crumbs" target="_blank" rel="noopener noreferrer">Sign in</a>
+    </div> : <form className={styles.composer} onSubmit={event => { event.preventDefault(); submit(); }}>
+      {mode.kind !== "comment" && <div className={styles.mode}><span><Flag size={13} />{mode.kind === "flag" ? `Flag this ${target.kind === "page" ? "page" : "selection"}` : `Report ${mode.author}’s crumb`}</span><button type="button" aria-label="Cancel" onClick={() => setMode({ kind: "comment" })}><X size={14} /></button></div>}
+      <textarea ref={input} aria-label={mode.kind === "comment" ? "Comment" : mode.kind === "flag" ? "Reason for flagging" : "Reason for reporting"} placeholder={placeholder} value={body} onChange={event => setBody(event.target.value)}
+        onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && body.trim() && loaded && !busy) { event.preventDefault(); submit(); } }} rows={3} maxLength={mode.kind === "comment" ? 4000 : 1000} disabled={busy} />
+      {showSource && mode.kind === "comment" && <input type="url" aria-label="Source link" placeholder="https://source…" value={source} onChange={event => setSource(event.target.value)} disabled={busy} />}
+      <footer><span className={styles.postingTo}>{mode.kind === "comment" ? "Post to " : mode.kind === "flag" ? "Flag visible to " : scope === "public" ? "Report on " : "Report in "}{audience}</span>
+        {mode.kind !== "report" && <details className={styles.menu}><summary aria-label="More comment options"><MoreHorizontal size={18} /></summary><div>
+          <button type="button" onClick={event => { setShowSource(value => !value); closeMenu(event.currentTarget); }}>{showSource ? "Remove source" : "Add a source"}</button>
+          {local && <button type="button" onClick={event => { setMode(mode.kind === "flag" ? { kind: "comment" } : { kind: "flag" }); closeMenu(event.currentTarget); input.current?.focus(); }}>{mode.kind === "flag" ? "Write a comment" : "Flag this content"}</button>}
+        </div></details>}
+        <button className={styles.submit} type="submit" disabled={busy || !loaded || !body.trim()} aria-label={mode.kind === "comment" ? "Post comment" : mode.kind === "flag" ? "Submit flag" : "Send report"}><ArrowUp size={16} /></button></footer>
+    </form>}
   </div>;
 }

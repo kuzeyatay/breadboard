@@ -16,7 +16,9 @@ export function annotationPageUrl(value: unknown): string | null {
   try {
     const url = new URL(value);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
-    url.hash = url.hash.split(":~:text=")[0]!;
+    // A link to a passage (#:~:text=...) is the same page as the bare address.
+    const hash = url.hash.split(":~:text=")[0]!;
+    url.hash = hash === "#" ? "" : hash;
     return url.href;
   } catch { return null; }
 }
@@ -53,6 +55,8 @@ export function annotationTargetKey(target: BrowserAnnotationTarget): string {
     target.mediaUrl ?? target.selector ?? "", target.time ?? null]);
 }
 
-export function browserOrganizationWidth(viewportWidth: number): number {
-  return Math.max(0, Math.min(360, viewportWidth - 49));
+/** The panel is sized in CSS pixels; native view bounds are DIPs, so the chrome zoom scales it. */
+export function browserOrganizationWidth(viewportWidth: number, preferred = 360, chromeZoom = 1): number {
+  const css = Math.max(0, Math.min(Math.max(300, Math.min(720, Math.round(preferred))), Math.round(viewportWidth / chromeZoom) - 49));
+  return Math.max(0, Math.ceil(css * chromeZoom - 1e-6));
 }

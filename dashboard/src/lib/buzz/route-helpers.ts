@@ -14,6 +14,15 @@ import {
   listMembers,
 } from "./instance.ts";
 import type { BuzzMember, BuzzMessage, BuzzRoom } from "./store.ts";
+import { buzzBridge } from "@/lib/crumbs/service.ts";
+import { getIdentity } from "@/lib/crumbs/store.ts";
+import db from "@/lib/db";
+
+/** Members with their profile photo, when they have linked an account or sent one. */
+export function withPhotos(roomId: number, members: BuzzMember[]): Array<BuzzMember & { avatarUrl: string | null }> {
+  const photos = buzzBridge.memberAvatars(roomId);
+  return members.map(member => ({ ...member, avatarUrl: photos[member.id] ?? null }));
+}
 
 /**
  * The signed-in account and the name it posts under.
@@ -34,9 +43,12 @@ export async function requireBuzzUser(): Promise<{
   if (!Number.isFinite(userId) || userId <= 0) {
     throw new ApiError(401, "unauthorized", "Sign in to use Buzz.");
   }
+  // A linked Crumbs account gives Breadboard its name, so rooms show the same
+  // person here as they do to members on other machines.
+  const identity = getIdentity(db, userId);
   return {
     userId,
-    displayName: user?.name?.trim() || user?.email?.split("@")[0] || "you",
+    displayName: identity?.displayName || identity?.handle?.split(".")[0] || user?.name?.trim() || user?.email?.split("@")[0] || "you",
   };
 }
 

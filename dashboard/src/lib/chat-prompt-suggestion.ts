@@ -13,6 +13,31 @@ export interface PromptSuggestionMessage {
 export const SUGGESTION_MAX_MESSAGES = 6;
 export const SUGGESTION_MAX_MESSAGE_CHARS = 2_000;
 export const SUGGESTION_MAX_CHARS = 240;
+export const SUGGESTION_MAX_SELECTION_CHARS = 4_000;
+export const SUGGESTION_MAX_SELECTION_CONTEXT_CHARS = 1_000;
+
+/** Selected prose and its immediate neighbours, without chat/tool metadata. */
+export interface PromptSuggestionSelection {
+  quote: string;
+  prefix?: string;
+  suffix?: string;
+  sourceTitle?: string;
+}
+
+export function promptSuggestionSelection(value: unknown): PromptSuggestionSelection | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const selection = value as Partial<PromptSuggestionSelection>;
+  if (typeof selection.quote !== 'string' || !selection.quote.trim()) return null;
+  return {
+    quote: selection.quote.trim().slice(0, SUGGESTION_MAX_SELECTION_CHARS),
+    ...(typeof selection.prefix === 'string' && selection.prefix
+      ? { prefix: selection.prefix.slice(-SUGGESTION_MAX_SELECTION_CONTEXT_CHARS) } : {}),
+    ...(typeof selection.suffix === 'string' && selection.suffix
+      ? { suffix: selection.suffix.slice(0, SUGGESTION_MAX_SELECTION_CONTEXT_CHARS) } : {}),
+    ...(typeof selection.sourceTitle === 'string' && selection.sourceTitle
+      ? { sourceTitle: selection.sourceTitle.slice(0, 300) } : {}),
+  };
+}
 
 export function promptSuggestionContext(messages: readonly PromptSuggestionMessage[]) {
   const visible = messages.filter(message => !message.modelChange && !message.internalAgentContinuation);

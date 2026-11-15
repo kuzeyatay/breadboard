@@ -46,7 +46,7 @@ import threading
 from datetime import datetime, timezone
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from urllib import request as urllib_request
 from urllib.parse import quote
 from uuid import uuid4
@@ -144,6 +144,13 @@ LOGIN_TIMEOUT_SECONDS = 15 * 60
 INTERACTIVE_LANE = "interactive"
 BATCH_LANE = "batch"
 LANES = (INTERACTIVE_LANE, BATCH_LANE)
+
+# How many chats may be answered at once. Each is its own hidden page, named
+# "interactive", "interactive-2", ... (chat-on-steroids likewise keeps a tab
+# per chat behind a concurrency cap). Extra pages open only when every open
+# one is busy, and each costs a renderer, hence the cap.
+CHAT_PAGES = max(1, int(_env_seconds("CHATMOCK_CHATGPT_WEB_CHAT_PAGES", 3)))
+CHAT_LANE_POLL_SECONDS = 0.25
 
 # Reasoning depths the site's own picker understands, as chat-on-steroids
 # forwards them in the URL. Anything else is dropped rather than guessed.
@@ -1804,7 +1811,41 @@ _lanes_supported: bool | None = None
 
 
 def _lane(name: str = INTERACTIVE_LANE) -> _Lane:
-    return _lanes[name]
+    slot = _lanes.get(name)
+    if slot is None:
+        slot = _lanes.setdefault(name, _Lane(name))
+    return slot
+
+
+def _chat_lanes() -> List[str]:
+    """The pages a person's chats may use. One unless the shell gives a page per lane."""
+    if CHAT_PAGES == 1 or not _lanes_supported:
+        return [INTERACTIVE_LANE]
+    return [INTERACTIVE_LANE] + [f"{INTERACTIVE_LANE}-{n}" for n in range(2, CHAT_PAGES + 1)]
+
+
+def _acquire_chat_lane(timeout: float) -> str | None:
+    """Take a free chat page, waiting up to ``timeout``; None when all stay busy."""
+    deadline = time.time() + timeout
+    probed = False
+    while True:
+        # Pages already open go first: a new one costs a renderer and a page load.
+        for name in sorted(_chat_lanes(), key=lambda n: _lane(n).page is None):
+            if _lane(name).lock.acquire(blocking=False):
+                return name
+        if _lanes_supported is None and CHAT_PAGES > 1 and not probed:
+            # Learn whether the shell keeps a page per lane before trusting a
+            # second chat lock: an older shell would hand back the busy page.
+            probed = True
+            try:
+                _ensure_page(lane=f"{INTERACTIVE_LANE}-2")
+            except ProviderError:
+                pass
+            continue
+        if time.time() >= deadline:
+            return None
+        # ponytail: polling, a Condition per lane if many chats ever queue at once
+        time.sleep(CHAT_LANE_POLL_SECONDS)
 
 
 def _drop_page(lane: str = INTERACTIVE_LANE) -> None:
@@ -2132,7 +2173,7 @@ def logout() -> Dict[str, Any]:
                 pass
         # The session is a cookie shared by every lane's page: one logout
         # signs them all out, and none is worth keeping attached.
-        for name in LANES:
+        for name in list(_lanes):
             _drop_page(name)
         if _system is not None:
             _system.close()
@@ -2703,9 +2744,163 @@ def _unwrap_writing_block(text: str) -> str:
     return (before + inside + after).rstrip() + ("\n" if text.endswith("\n") else "")
 
 
+_WRITING_HEAD = ":::writing{"
+_WRITING_OPEN_LINE = re.compile(r"^:::writing\{[^\n]*\}[ \t]*(?:\n|\Z)", re.MULTILINE)
+_WRITING_CLOSE_LINE = re.compile(r"^:::[ \t]*(?:\n|\Z)", re.MULTILINE)
+
+
+def _strip_writing_markup(text: str, *, final: bool = False) -> str:
+    """A streaming answer without the writing block's wrapper lines.
+
+    `_unwrap_writing_block` only sees a finished answer, so a streamed one
+    showed `:::writing{variant="document" ...}` in the chat (2026-11-15, the
+    PDF assistant). Each wrapper line goes with its own newline, and a last
+    line that may still become one is held back until it is decided, so the
+    result only ever grows by appending. The commentary before the block was
+    already sent and stays.
+    """
+    if not final:
+        head, sep, last = text.rpartition("\n")
+        probe = last.rstrip(" \t")
+        if probe and (_WRITING_HEAD.startswith(probe) or probe.startswith(_WRITING_HEAD)):
+            text = head + sep
+    opened = _WRITING_OPEN_LINE.search(text)
+    if not opened:
+        return text
+    # ponytail: every bare `:::` line after the opening is dropped, including
+    # one inside the document; track nesting if a model ever writes its own.
+    return text[: opened.start()] + _WRITING_CLOSE_LINE.sub("", text[opened.end() :])
+
+
 def _finished_text(text: str) -> str:
     """A complete answer as the client receives it."""
     return _unwrap_writing_block(_clean_text(text, final=True))
+
+
+# A file the site's own Python tool wrote lives in ChatGPT's sandbox, and the
+# answer links it as `sandbox:/mnt/data/...` - a path only chatgpt.com can
+# open, so the client showed a broken image (2026-11-15, a GPT-6 Pro block
+# diagram). The page fetches each embedded image before it is handed on and
+# the link becomes a data: URL, which the chat renderer accepts as an image.
+SANDBOX_MARK = "sandbox:/mnt/data/"
+SANDBOX_FILE_LIMIT_BYTES = 8 * 1024 * 1024
+_SANDBOX_LINK = re.compile(r"(!?)\[([^\]\n]*)\]\(sandbox:(/mnt/data/[^)\s]+)\)")
+
+
+def _sandbox_rewrite(text: str, files: Dict[str, Tuple[str, str]]) -> str:
+    """Embedded sandbox images become data: URLs; every other sandbox link
+    (and an image the page could not fetch) keeps only its words."""
+
+    def replace(match: "re.Match[str]") -> str:
+        bang, label, path = match.groups()
+        found = files.get(path)
+        if bang and found and found[0].startswith("image/"):
+            return f"![{label}](data:{found[0]};base64,{found[1]})"
+        # ponytail: non-image files (html, csv, links to svg) lose their link;
+        # import them as artifacts if people start asking for them.
+        return label
+
+    return _SANDBOX_LINK.sub(replace, text) if SANDBOX_MARK in text else text
+
+
+_SANDBOX_FETCH_SCRIPT = """
+(async (cid, mid, paths, limit) => {
+  const headers = { accept: 'application/json' };
+  try {
+    const session = await (await fetch('/api/auth/session', { credentials: 'include', headers })).json();
+    if (session && typeof session.accessToken === 'string') headers.authorization = 'Bearer ' + session.accessToken;
+  } catch (_) {}
+  cid = cid || (location.pathname.match(/\\/c\\/([^/?#]+)/) || [])[1];
+  if (!cid) return {};
+  const get = (url) => fetch(url, { credentials: 'include', headers, signal: AbortSignal.timeout(30000) });
+  if (!mid) {
+    try {
+      const body = await (await get('/backend-api/conversation/' + cid)).json();
+      let best = null;
+      for (const node of Object.values((body && body.mapping) || {})) {
+        const m = node && node.message;
+        if (!m || !m.author || m.author.role !== 'assistant') continue;
+        if (!JSON.stringify(m.content || {}).includes(paths[0])) continue;
+        if (!best || (m.create_time || 0) > (best.create_time || 0)) best = m;
+      }
+      mid = best && best.id;
+    } catch (_) {}
+  }
+  if (!mid) return {};
+  const out = {};
+  for (const path of paths) {
+    try {
+      const sandboxPath = decodeURIComponent(path);
+      const found = await (await get('/backend-api/conversation/' + cid + '/interpreter/download?message_id=' + encodeURIComponent(mid) + '&sandbox_path=' + encodeURIComponent(sandboxPath))).json();
+      if (!found || typeof found.download_url !== 'string') continue;
+      const file = await get(found.download_url);
+      if (!file.ok) continue;
+      const blob = await file.blob();
+      if (blob.size > limit) continue;
+      const url = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(blob); });
+      const lower = sandboxPath.toLowerCase();
+      const type = (found.mime_type || blob.type || '').split(';')[0] || (lower.endsWith('.svg') ? 'image/svg+xml' : '');
+      out[path] = [type, url.slice(url.indexOf(',') + 1)];
+    } catch (_) {}
+  }
+  return out;
+})
+"""
+
+
+def _sandbox_files(page: _Page, result: TurnResult) -> Dict[str, Tuple[str, str]]:
+    """Fetch the sandbox images the answer embeds, best effort: path -> (mime, base64)."""
+    paths = sorted({m.group(3) for m in _SANDBOX_LINK.finditer(result.text) if m.group(1)})
+    if not paths:
+        return {}
+    expression = f"{_SANDBOX_FETCH_SCRIPT}({json.dumps(result.conversation_id)}, {json.dumps(result.message_id)}, {json.dumps(paths)}, {SANDBOX_FILE_LIMIT_BYTES})"
+    try:
+        found = page.evaluate(expression, await_promise=True, timeout=120)
+    except ProviderError:
+        return {}
+    if not isinstance(found, dict):
+        return {}
+    return {
+        path: (str(value[0]), str(value[1]))
+        for path, value in found.items()
+        if isinstance(value, list) and len(value) == 2
+    }
+
+
+class _SandboxGate:
+    """Streams text through, except a sandbox link: it is held back (with
+    everything after it) until the turn ends and the link can be rewritten.
+    A line holding `[` waits for its newline, since a link starts there
+    before its `sandbox:` target has streamed."""
+
+    def __init__(self, emit: Callable[[str], None]) -> None:
+        self.emit = emit
+        self.pending = ""
+        self.holding = False
+
+    def _send(self, text: str) -> None:
+        if text:
+            self.emit(text)
+
+    def __call__(self, delta: str) -> None:
+        self.pending += delta
+        if self.holding:
+            return
+        found = self.pending.find(SANDBOX_MARK)
+        if found >= 0:
+            line = self.pending.rfind("\n", 0, found) + 1
+            self._send(self.pending[:line])
+            self.pending = self.pending[line:]
+            self.holding = True
+            return
+        line = self.pending.rfind("\n") + 1
+        cut = line if "[" in self.pending[line:] else len(self.pending)
+        self._send(self.pending[:cut])
+        self.pending = self.pending[cut:]
+
+    def finish(self, files: Dict[str, Tuple[str, str]]) -> None:
+        text, self.pending = self.pending, ""
+        self._send(_sandbox_rewrite(text, files))
 
 
 def _stop_generation(page: _Page) -> None:
@@ -2755,10 +2950,10 @@ def _collect_turn(
     # arriving the page is alive and the rendered-page reader is not needed.
     last_socket_event_at = 0.0
 
-    def push(new_text: str) -> None:
+    def push(new_text: str, *, final: bool = False) -> None:
         nonlocal streamed, latest
         latest = new_text
-        new_text = _clean_text(new_text)
+        new_text = _strip_writing_markup(_clean_text(new_text), final=final)
         if new_text == streamed:
             return
         if on_text is not None:
@@ -2830,7 +3025,7 @@ def _collect_turn(
                 full = event.get("text") if isinstance(event.get("text"), str) else ""
                 text = _finished_text(full)
                 if text:
-                    push(full)
+                    push(full, final=True)
                     result.text = text
                     result.reasoning = str(event.get("reasoning") or "")
                     result.conversation_id = event.get("conversationId") if isinstance(event.get("conversationId"), str) else None
@@ -3014,10 +3209,19 @@ def _elapsed_words(seconds: float) -> str:
     return f"{hours}h {minutes:02d}m"
 
 
-def busy_message(lane: str) -> str:
+def busy_message(lane: str, *, pool: bool = False) -> str:
     """Why the lane's page cannot take a message right now, naming its holder."""
+    chat_lanes = _chat_lanes()
+    if pool and len(chat_lanes) > 1:
+        since = [h["since"] for n in chat_lanes if (h := _lane(n).holder)]
+        oldest = _elapsed_words(time.time() - min(since)) if since else None
+        return (
+            f"All {len(chat_lanes)} of OpenAI (web)'s chat pages are still answering other messages"
+            + (f" (the oldest was sent {oldest} ago)" if oldest else "")
+            + ". Let one finish, or stop it, and send again."
+        )
     holder = _lane(lane).holder
-    page = "chat page" if lane == INTERACTIVE_LANE else "background page"
+    page = "chat page" if lane.startswith(INTERACTIVE_LANE) else "background page"
     if holder:
         return (
             f"OpenAI (web)'s {page} is still answering {holder['label']} "
@@ -3108,10 +3312,21 @@ def request_chat(
     # retry would only meet the same lock. So batch callers queue for as long
     # as one turn may take.
     queue_wait = TURN_QUEUE_WAIT_SECONDS if stream else TURN_TIMEOUT_SECONDS
-    lane = _resolve_lane(stream=stream)
+    if stream:
+        # Chats run side by side, each on its own page (see CHAT_PAGES).
+        chosen = _acquire_chat_lane(queue_wait)
+        lane = chosen or INTERACTIVE_LANE
+        acquired = chosen is not None
+    else:
+        lane = _resolve_lane(stream=stream)
+        acquired = _lane(lane).lock.acquire(timeout=queue_wait)
     turn_lock = _lane(lane).lock
-    if not turn_lock.acquire(timeout=queue_wait):
-        return _WebResponse(503, {"error": {"message": busy_message(lane)}})
+    if not acquired:
+        busy = _WebResponse(503, {"error": {"message": busy_message(lane, pool=stream)}})
+        # The page is taken, not failing: handing this turn to the fallback
+        # model would answer it with a model the person did not pick.
+        busy.fallback_ok = False
+        return busy
     _hold(lane, _describe_caller(payload, upstream_model, stream=stream))
     released = False
     # A client that walks away mid-answer (a retry, a closed tab) must not
@@ -3160,6 +3375,7 @@ def request_chat(
         watcher = _watch_client(client_gone, cancel, watcher_stop)
         try:
             result = _collect_turn(page, turn_id, on_text=None, deadline=deadline, cancel=cancel)
+            result.text = _sandbox_rewrite(result.text, _sandbox_files(page, result))
         except _TurnFailed as exc:
             return _WebResponse(exc.status_code or 502, {"error": {"message": str(exc)}})
         except ProviderError as exc:
@@ -3227,7 +3443,10 @@ def request_chat(
 
         def worker() -> None:
             try:
-                result = _collect_turn(page, turn_id, on_text=emit_text, deadline=deadline, cancel=cancel)
+                gate = _SandboxGate(emit_text)
+                result = _collect_turn(page, turn_id, on_text=gate, deadline=deadline, cancel=cancel)
+                if not (tools_offered and _parse_tool_calls(result.text)):
+                    gate.finish(_sandbox_files(page, result) if gate.holding else {})
                 if result.reasoning:
                     chunks.put(
                         transport.sse_chunk(
@@ -3391,6 +3610,8 @@ def reset_for_tests() -> None:
             slot.page = None
             slot.holder = None
             slot.lock = threading.Lock()
+        for name in [n for n in _lanes if n not in LANES]:
+            del _lanes[name]
         _lanes_supported = None
         _system = None
         _session_cache = None

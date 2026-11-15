@@ -70,6 +70,8 @@ interface Props {
   /** Open the response's inline editor. Saving is owned by the transcript. */
   onEdit?: () => void;
   onRetry?: () => void;
+  /** An earlier answer is being regenerated in place. */
+  retrying?: boolean;
   /** Regenerate this turn as a branch; the standing preference humanizes it. */
   onRewrite?: () => void;
   verification?: VerificationSummary;
@@ -264,6 +266,7 @@ export default function AssistantMessageActions({
   responseCompletedAt,
   onEdit,
   onRetry,
+  retrying = false,
   onRewrite,
   verification,
   humanizerReview,
@@ -744,13 +747,15 @@ export default function AssistantMessageActions({
         <button
           type="button"
           onClick={retryResponse}
+          disabled={retrying}
           className={actionClass}
-          title="Regenerate response"
+          title={retrying ? "Regenerating…" : "Regenerate response"}
           aria-label="Regenerate response"
+          aria-busy={retrying || undefined}
         >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
+          {retrying ? <BreadboardLoader className="h-4 w-4" /> : <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" d="M20 6v5h-5M4 18v-5h5m9.7-3A7 7 0 0 0 6.1 7.1L4 11m16 2-2.1 3.9A7 7 0 0 1 5.3 14" />
-          </svg>
+          </svg>}
         </button>
       ) : null}
       <div ref={menuRef} className="relative">

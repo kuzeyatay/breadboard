@@ -2086,6 +2086,61 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
             15,
         )
 
+    def test_a_bare_google_exhaustion_says_google_is_throttling(self) -> None:
+        self._configure(["gemini-3.6-flash-high"])
+        bare = FakeResponse(
+            status_code=429,
+            body={"error": {"code": 429, "message": "Resource has been exhausted (e.g. check quota).", "status": "RESOURCE_EXHAUSTED"}},
+        )
+        with patch.object(openai_compatible, "request_chat", return_value=bare):
+            response = self._ask("cliproxy/gemini-3.6-flash-high")
+        message = response.get_json()["error"]["message"]
+        self.assertIn("Google is under heavy load", message)
+        self.assertIn("gemini-3.6-flash-high", message)
+        self.assertNotIn("check quota", message)
+        self.assertNotIn("-", message.replace("gemini-3.6-flash-high", ""))
+
+    def test_a_bare_exhaustion_on_gemini_3_8_names_the_per_minute_limit(self) -> None:
+        self._configure(["gemini-3.8-flash-high"])
+        bare = FakeResponse(
+            status_code=429,
+            body={"error": {"code": 429, "message": "Resource has been exhausted (e.g. check quota).", "status": "RESOURCE_EXHAUSTED"}},
+        )
+        with patch.object(openai_compatible, "request_chat", return_value=bare):
+            message = self._ask("cliproxy/gemini-3.8-flash-high").get_json()["error"]["message"]
+        self.assertIn("per minute token limit", message)
+        self.assertNotIn("-", message.replace("gemini-3.8-flash-high", ""))
+
+    def test_a_signed_out_web_page_asks_for_sign_in_instead_of_falling_back(self) -> None:
+        self._configure(["gemini-3.6-flash-high"])
+        with (
+            patch.object(chatgpt_web, "unavailable_reason", return_value="not signed in to chatgpt.com"),
+            patch.object(chatgpt_web, "request_chat") as web,
+            patch.object(openai_compatible, "request_chat") as fallback,
+        ):
+            response = self._ask("openaiweb/gpt-6-pro")
+        self.assertEqual(response.status_code, 503)
+        message = response.get_json()["error"]["message"]
+        self.assertIn("Sign in again", message)
+        self.assertNotIn("-", message)
+        web.assert_not_called()
+        fallback.assert_not_called()
+
+    def test_a_busy_web_page_is_not_handed_to_the_fallback_model(self) -> None:
+        self._configure(["gemini-3.6-flash-high"])
+        busy = chatgpt_web._WebResponse(503, {"error": {"message": "still answering another chat message"}})
+        busy.fallback_ok = False
+        credentials = ResolvedCredentials("openaiweb", None, "https://chatgpt.com", True, None)
+        with (
+            patch.object(dispatch, "credentials_for", return_value=credentials),
+            patch.object(chatgpt_web, "request_chat", return_value=busy),
+            patch.object(openai_compatible, "request_chat") as fallback,
+        ):
+            response = self._ask("openaiweb/gpt-6-pro")
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("still answering", response.get_json()["error"]["message"])
+        fallback.assert_not_called()
+
     def test_a_recovered_gemini_call_clears_only_that_model(self) -> None:
         self._configure(
             [
