@@ -672,6 +672,8 @@ export function normalizeHermesEvent(
         timestamp,
         payload: {
           text: state.assistantText,
+          ...(status === "idle" && payload.answer_used_fallback === true ? { usedFallback: true } : {}),
+          ...(status === "idle" && asString(payload.answer_model) ? { answerModel: payload.answer_model } : {}),
           usage: payload.usage,
           ...(asString(payload.reasoning)
             ? { reasoning: payload.reasoning }

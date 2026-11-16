@@ -296,6 +296,8 @@ export interface AgentMessage {
     activeIndex: number;
     /** True when the version on screen is not the text the model produced. */
     derived: boolean;
+    answerModel?: string;
+    usedFallback?: boolean;
     origins: Array<"original" | "humanizer" | "manual">;
     review?: HumanizerScoreSummary;
   };
@@ -934,6 +936,8 @@ export function normalizeRestoredMessages(value: unknown): AgentMessage[] {
           total: versions.total,
           activeIndex: versions.activeIndex,
           derived: versions.derived === true,
+          ...(versions.answerModel ? { answerModel: versions.answerModel } : {}),
+          ...(versions.usedFallback ? { usedFallback: true } : {}),
           origins: Array.isArray(versions.origins)
             ? versions.origins.map((origin) =>
                 origin === "humanizer" || origin === "manual"
@@ -1443,6 +1447,7 @@ export interface UseAgentSessionResult {
   editAssistantMessage: (
     message: AgentMessage,
     content: string,
+    verification?: VerificationSummary,
   ) => Promise<boolean>;
   respondToPermission: (
     decision: "once" | "always" | "reject",
@@ -3861,6 +3866,8 @@ export function useAgentSession(
           } else if (event.type === "thinking" && typeof event.text === "string") {
             reasoning += event.text;
             assistant = { ...assistant, reasoning };
+          } else if (event.type === "verification") {
+            assistant = { ...assistant, verification: event.verification as VerificationSummary };
           } else if (event.type === "usage") {
             const usage = normalizeChatTokenUsage(event.usage);
             if (usage) assistant = { ...assistant, usage };
@@ -5240,7 +5247,7 @@ export function useAgentSession(
    * original remains reachable through the response version arrows.
    */
   const editAssistantMessage = useCallback(
-    async (message: AgentMessage, content: string): Promise<boolean> => {
+    async (message: AgentMessage, content: string, verification?: VerificationSummary): Promise<boolean> => {
       const target = message.clientMessageId?.trim();
       const activeSessionId = sessionRef.current;
       const edited = content.trim();
@@ -5255,6 +5262,8 @@ export function useAgentSession(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               content: edited,
+              answerModel: verification?.answerModel,
+              usedFallback: verification?.usedFallback,
               expectedContent: message.content,
             }),
           },
@@ -5285,7 +5294,7 @@ export function useAgentSession(
             contentVersions: body.versions,
           };
           // Verification and humanizer review describe an earlier wording.
-          delete next.verification;
+          next.verification = verification;
           delete next.humanizerReview;
           return next;
         });

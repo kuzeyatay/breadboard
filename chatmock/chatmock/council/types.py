@@ -270,6 +270,8 @@ class CouncilRun:
     diagnostics: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=now_iso)
     updated_at: Optional[str] = None
+    # Route of the model whose text was delivered, independent of reviewer calls.
+    answer_route: Dict[str, Any] = field(default_factory=dict, init=False)
     _token_usage: CouncilTokenUsage = field(
         default_factory=CouncilTokenUsage,
         init=False,

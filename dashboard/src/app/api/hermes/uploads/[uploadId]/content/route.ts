@@ -14,6 +14,7 @@ import { findStoredFileBlob } from "@/lib/conversations/stored-file-blob-store.t
 import { STORED_FILE_ATTACHMENT_FORMATS } from "@/lib/stored-file-attachments.ts";
 import { findDocumentBlob } from "@/lib/conversations/document-blob-store.ts";
 import { DOCUMENT_ATTACHMENT_FORMATS } from "@/lib/document-attachments.ts";
+import { markedImageResponse } from "@/lib/hermes/image-marks.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -29,7 +30,11 @@ export async function GET(
 ) {
   try {
     const userId = await requireUserId();
-    requireEnabled();
+    const query = new URL(request.url).searchParams;
+    const marks = query.getAll("mark");
+    // Marked chat replies are also available in direct-provider mode and
+    // only need the owned raster attachment below.
+    if (!marks.length) requireEnabled();
     const { uploadId } = await params;
     const parsed = parseUploadId(uploadId);
     if (!parsed) throw new ApiError(404, "upload_not_found", "Upload not found.");
@@ -47,6 +52,9 @@ export async function GET(
     const attachment = messageAttachments(row.metadata)[parsed.index];
     if (!attachment) {
       throw new ApiError(404, "upload_content_unavailable", "This upload's contents were not kept.");
+    }
+    if (marks.length && attachment.type !== "image") {
+      throw new ApiError(400, "not_an_image", "Image annotations require an image upload.");
     }
 
     // A video is the one upload too large to answer whole: its own route streams
@@ -107,6 +115,7 @@ export async function GET(
         "base64",
       );
       contentType = dataUrlMimeType(attachment.dataUrl);
+      if (marks.length) return markedImageResponse(bytes, marks, query.get("download") === "1");
     } else {
       throw new ApiError(404, "upload_content_unavailable", "This upload cannot be previewed.");
     }

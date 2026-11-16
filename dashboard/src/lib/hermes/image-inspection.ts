@@ -102,8 +102,13 @@ export async function renderInspectionImage(bytes: Buffer, args: Record<string, 
       height: Math.min(height - top, Math.max(1, Math.round((h as number) * height))),
     });
   }
-  const rendered = await pipeline.resize(2048, 2048, { fit: "inside", withoutEnlargement: true })
-    .jpeg({ quality: 95 }).toBuffer();
   return { originalWidth: width, originalHeight: height,
-    screenshot: { dataUrl: `data:image/jpeg;base64,${rendered.toString("base64")}` } };
+    screenshot: await inspectionScreenshot(pipeline) };
+}
+
+/** The runtime accepts a size-bounded JPEG preview of the actual pixels. */
+export async function inspectionScreenshot(pipeline: sharp.Sharp) {
+  const jpeg = await pipeline.resize(2048, 2048, { fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 95 }).toBuffer();
+  return { dataUrl: `data:image/jpeg;base64,${jpeg.toString("base64")}` };
 }

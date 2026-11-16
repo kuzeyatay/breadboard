@@ -11,6 +11,7 @@
 
 import { memo, useState } from "react";
 import { MessageSquareText, Pencil, RotateCcw, SmilePlus, Trash2 } from "lucide-react";
+import { modelVerification } from "@/lib/hermes/evidence";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 
 import { cn } from "@/app/buzz/lib/cn";
@@ -194,7 +195,11 @@ function MessageRowImpl({
           </div>
         ) : null}
         {message.authorKind === "agent" && !live ? (
-          <AssistantMessageActions content={message.body} onRetry={onRegenerate} />
+          <AssistantMessageActions content={message.body} onRetry={onRegenerate}
+            verification={modelVerification(
+              typeof message.metadata?.answerModel === "string" ? message.metadata.answerModel : message.status === "failed" ? null : undefined,
+              message.metadata?.usedFallback === true,
+            )} />
         ) : null}
 
         {message.reactions && message.reactions.length > 0 ? (

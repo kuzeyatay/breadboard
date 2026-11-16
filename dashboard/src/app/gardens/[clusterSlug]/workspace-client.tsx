@@ -2659,6 +2659,7 @@ const ChatTranscript = memo(function ChatTranscript({
                             inline run widgets otherwise stretch to the full
                             virtualized row even though the answer stops at 90%. */}
                         <MessageActionsSlot
+                          verification={msg.verification}
                           branch={!responseStreaming ? (() => {
                             const branch = branchForAssistant(msg, i);
                             return branch ? {
@@ -5688,13 +5689,14 @@ export default function WorkspaceClient({
       const current = byId.get(selection.id) ?? { selection, pending: false };
       if (message.role === "user") {
         current.question = message.content;
-        current.attachments = reusableChatAttachments(message.attachments).filter(item => item.context !== "pdf");
+        current.attachments = reusableChatAttachments(message.attachments).filter(item => !item.context);
         // Pending from the moment the question is sent, not from the moment
         // its answer row exists, so a re-asked question never flashes its
         // predecessor's answer.
         if (isStreaming && messageIndex === messages.length - 1) {
           current.pending = true;
           current.answer = undefined;
+          current.verification = undefined;
           current.reasoning = undefined;
           current.progressNotes = undefined;
           current.usage = undefined;
@@ -8464,12 +8466,12 @@ export default function WorkspaceClient({
    * lost and nothing is duplicated.
    */
   /** Swap one answer's text in place and save; nothing around it moves. */
-  async function replaceAssistantContent(messageIndex: number, content: string): Promise<boolean> {
+  async function replaceAssistantContent(messageIndex: number, content: string, verification?: VerificationSummary): Promise<boolean> {
     if (isStreaming || !activeChat || activeChat.isOwn === false) return false;
     if (messages[messageIndex]?.role !== "assistant") return false;
     // Evidence describes the old wording.
     const nextMessages = messages.map((message, index) =>
-      index === messageIndex ? { ...message, content, verification: undefined } : message);
+      index === messageIndex ? { ...message, content, verification } : message);
     updateChatMessages(activeChat.id, nextMessages);
     return temporaryChat || await persistChatSession(activeChat.id, nextMessages);
   }
@@ -8483,8 +8485,8 @@ export default function WorkspaceClient({
     if (messages[userIndex]?.role !== "user") return;
     setRegeneratingIndex(messageIndex);
     try {
-      const content = await regenerateResponseText(messages.slice(0, userIndex + 1), model);
-      if (!await replaceAssistantContent(messageIndex, content)) {
+      const { content, verification } = await regenerateResponseText(messages.slice(0, userIndex + 1), model);
+      if (!await replaceAssistantContent(messageIndex, content, verification)) {
         addToast("The regenerated response could not be saved.", "error");
       }
     } catch (error) {

@@ -284,6 +284,59 @@ function runNpm(plan, signal, timeoutMs, spawnImpl) {
   });
 }
 
+const RECOVERY_HEADROOM_BYTES = 2 * 1024 ** 3;
+
+export function recallQuarantineMarker(home) {
+  return path.join(home, "data", "db.sqlite.quarantine.json");
+}
+
+/**
+ * After a hard SQLite fault (a full disk is the usual one) the engine marks its
+ * database quarantined and exits on every start until `db recover` has run.
+ * That command repairs and verifies a working copy, then swaps it in; the
+ * faulted original stays beside it. Returns the sentence Settings shows.
+ */
+async function recoverQuarantinedDatabase(plan, signal, timeoutMs, spawnImpl) {
+  const marker = recallQuarantineMarker(plan.home);
+  const dataDir = path.dirname(marker);
+  const size =
+    fs.statSync(path.join(dataDir, "db.sqlite"), { throwIfNoEntry: false })
+      ?.size ?? 0;
+  const volume = fs.statfsSync(dataDir);
+  // The repair holds the original and a rebuilt copy at once. Starting it on a
+  // nearly full disk would repeat the fault that caused the quarantine.
+  if (volume.bavail * volume.bsize < 2 * size + RECOVERY_HEADROOM_BYTES) {
+    return "Recall's history needs a repair, and the disk is too full to do it safely.";
+  }
+  const result = await runNpm(
+    {
+      ...plan,
+      command: plan.binaryPath,
+      args: ["db", "recover"],
+      shell: false,
+      env: {
+        ...plan.env,
+        SCREENPIPE_DATA_DIR: dataDir,
+        SCREENPIPE_DISABLE_TELEMETRY: "1",
+      },
+    },
+    signal,
+    timeoutMs,
+    spawnImpl,
+  );
+  if (result.logTail)
+    process.stderr.write(result.logTail.slice(-MAX_INSTALL_LOG_BYTES));
+  if (result.code === 0 && !fs.existsSync(marker))
+    return "Recall's history was repaired.";
+  // A failed repair leaves its working copy, as large as the database, and
+  // the next attempt makes another. Only that scratch folder is removed.
+  for (const name of fs.readdirSync(dataDir)) {
+    if (/^db-recovery-\d{8}-\d{6}-\d+$/u.test(name))
+      fs.rmSync(path.join(dataDir, name), { recursive: true, force: true });
+  }
+  return "Recall's history could not be repaired. Breadboard will try again later.";
+}
+
 export async function executeRecallInstall({
   dataRoot,
   signal,
@@ -302,26 +355,46 @@ export async function executeRecallInstall({
     writeRecallInstallStatus(plan.statusPath, status);
     onStatus(status);
   };
-  if (installedVersion(plan) === RECALL_CLI_VERSION) {
-    publish("installed", `Capture engine ${RECALL_CLI_VERSION} installed.`);
-    return { installed: true, version: RECALL_CLI_VERSION, changed: false };
-  }
-  const progressMessage = `Downloading the capture engine (${RECALL_CLI_PACKAGE}@${RECALL_CLI_VERSION})…`;
-  publish("installing", progressMessage);
-  const heartbeat = setInterval(
-    () => publish("installing", progressMessage),
-    RECALL_STATUS_HEARTBEAT_MS,
-  );
-  heartbeat.unref?.();
+  // The status file is a heartbeat: Settings reads a quiet one as a dead job.
+  let heartbeat;
+  const working = (message) => {
+    clearInterval(heartbeat);
+    publish("installing", message);
+    heartbeat = setInterval(
+      () => publish("installing", message),
+      RECALL_STATUS_HEARTBEAT_MS,
+    );
+    heartbeat.unref?.();
+  };
   try {
-    const result = await runNpm(plan, signal, timeoutMs, spawnImpl);
-    if (result.logTail)
-      process.stderr.write(result.logTail.slice(-MAX_INSTALL_LOG_BYTES));
-    if (result.code !== 0 || installedVersion(plan) !== RECALL_CLI_VERSION) {
-      fail("The pinned Recall package did not install successfully.");
+    const changed = installedVersion(plan) !== RECALL_CLI_VERSION;
+    if (changed) {
+      working(
+        `Downloading the capture engine (${RECALL_CLI_PACKAGE}@${RECALL_CLI_VERSION})…`,
+      );
+      const result = await runNpm(plan, signal, timeoutMs, spawnImpl);
+      if (result.logTail)
+        process.stderr.write(result.logTail.slice(-MAX_INSTALL_LOG_BYTES));
+      if (result.code !== 0 || installedVersion(plan) !== RECALL_CLI_VERSION) {
+        fail("The pinned Recall package did not install successfully.");
+      }
     }
-    publish("installed", `Capture engine ${RECALL_CLI_VERSION} installed.`);
-    return { installed: true, version: RECALL_CLI_VERSION, changed: true };
+    let repair = null;
+    if (fs.existsSync(recallQuarantineMarker(plan.home))) {
+      working("Repairing Recall's history…");
+      repair = await recoverQuarantinedDatabase(
+        plan,
+        signal,
+        timeoutMs,
+        spawnImpl,
+      );
+    }
+    clearInterval(heartbeat);
+    publish(
+      "installed",
+      repair ?? `Capture engine ${RECALL_CLI_VERSION} installed.`,
+    );
+    return { installed: true, version: RECALL_CLI_VERSION, changed };
   } catch (error) {
     if (signal.aborted) {
       publish("interrupted", "The capture engine install was interrupted.");

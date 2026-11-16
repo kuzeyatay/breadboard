@@ -216,6 +216,41 @@ test("an already-installed pinned binary completes without launching npm", async
   );
 });
 
+test("a quarantined database is repaired by the engine itself, and a failed repair leaves no working copy", async (t) => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-recall-repair-"));
+  t.after(() => fs.rmSync(dataRoot, { recursive: true, force: true }));
+  const plan = installPinnedFixture(dataRoot);
+  const dataDir = path.join(plan.home, "data");
+  const marker = path.join(dataDir, "db.sqlite.quarantine.json");
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, "db.sqlite"), "small");
+  fs.writeFileSync(marker, "{}");
+  const launches = [];
+  const engine = (succeed) => (command, args, options) => {
+    launches.push({ command, args, dataDir: options.env.SCREENPIPE_DATA_DIR });
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    setImmediate(() => {
+      if (succeed) fs.rmSync(marker);
+      else fs.mkdirSync(path.join(dataDir, "db-recovery-20261116-143221-19388", "working-copy"), { recursive: true });
+      child.emit("close", succeed ? 0 : 1);
+    });
+    return child;
+  };
+  const run = (succeed) => executeRecallInstall({ dataRoot, signal: new AbortController().signal, spawnImpl: engine(succeed) });
+  const message = () => JSON.parse(fs.readFileSync(plan.statusPath, "utf8")).message;
+
+  await run(false);
+  assert.match(message(), /could not be repaired/u);
+  assert.deepEqual(fs.readdirSync(dataDir).sort(), ["db.sqlite", "db.sqlite.quarantine.json"]);
+  await run(true);
+  assert.match(message(), /was repaired/u);
+  assert.deepEqual(launches.map((launch) => [launch.command, launch.args, launch.dataDir]),
+    [[plan.binaryPath, ["db", "recover"], dataDir], [plan.binaryPath, ["db", "recover"], dataDir]]);
+});
+
 test("a fresh install launches one attached fixed npm child with a scrubbed environment", async (t) => {
   const dataRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), "breadboard-recall-fresh-"),

@@ -100,15 +100,15 @@ test("reading context labels visual evidence and treats document contents as dat
     ...input,
     capturedAt: "2026-09-06T10:00:00Z",
   });
-  assert.match(visual.text, /fresh screenshot/);
+  assert.match(visual.text, /Breadboard supplied this view automatically/);
   assert.match(visual.text, /"visiblePages":\[3,4\]/);
   assert.match(visual.text, /"highlightedText":"selected text"/);
   assert.match(visual.text, /not instructions/);
-  assert.match(pdfViewContext(input).text, /No screenshot is attached/);
+  assert.match(pdfViewContext(input).text, /current view is unavailable/);
   const oversized = pdfViewContext({ ...input, documentAttached: false });
-  assert.match(oversized.text, /full PDF is not attached/);
+  assert.match(oversized.text, /full PDF exceeds the size limit/);
   assert.match(oversized.text, /"highlightedText":"selected text"/);
-  assert.doesNotMatch(oversized.text, /PDF attachment contains the entire document|consult the attached file/);
+  assert.doesNotMatch(oversized.text, /full PDF is available from the reader/);
   assert.match(
     chatTextSelectionQuestionPrompt("Explain", selection),
     /excerpt from the PDF/,

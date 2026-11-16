@@ -11,6 +11,7 @@ import { getRecallConfig } from '../recall/config.ts';
 import { searchRecall } from '../recall/service.ts';
 import { getCalendarStore } from '../calendar/instance.ts';
 import { agenda } from '../calendar/agent-query.ts';
+import { googleEventInput } from '../calendar/google-sync.ts';
 import { collectRecommendationEvidence } from './collect.ts';
 import { cleanRecommendationText as text, scopedRecommendationEvidence, type RecommendationContext, type RecommendationEvidence } from './types.ts';
 import type { ConnectedAppProxyRequest } from '../connected-apps/types.ts';
@@ -28,6 +29,11 @@ function record(value: unknown): Record<string, unknown> {
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 
 type ConnectedRead = (slug: string, request: ConnectedAppProxyRequest) => Promise<unknown>;
+
+function hasCalendarPart(payload: Record<string, unknown>): boolean {
+  return /^(?:text\/calendar|application\/ics)(?:;|$)/i.test(text(payload.mimeType)) || /\.ics$/i.test(text(payload.filename)) ||
+    array(payload.parts).some(part => hasCalendarPart(record(part)));
+}
 
 async function connectionReader(userId: number, signal: AbortSignal) {
   const [remote, local] = await Promise.allSettled([
@@ -61,16 +67,36 @@ async function connectionReader(userId: number, signal: AbortSignal) {
 }
 
 async function gmail(read: ConnectedRead): Promise<RecommendationEvidence[]> {
-  const list = record(await read('gmail', { method: 'GET', endpoint: '/gmail/v1/users/me/messages',
-    query: { q: 'in:inbox newer_than:7d -category:promotions -category:social', maxResults: 5 } }));
-  const rows = await Promise.allSettled(array(list.messages).slice(0, 5).map(async entry => {
-    const id = text(record(entry).id, 200);
-    if (!id) return null;
-    const message = record(await read('gmail', { method: 'GET', endpoint: `/gmail/v1/users/me/messages/${encodeURIComponent(id)}`, query: { format: 'metadata' } }));
-    const headers = array(record(message.payload).headers).map(record);
+  // Keep a busy inbox or a stream of invitations from crowding out an
+  // archived booking or a personal request. Share the same ten detail reads.
+  const searches = [
+    'newer_than:60d {category:reservations subject:itinerary subject:booking subject:reservation subject:boarding}',
+    'in:inbox category:primary newer_than:14d',
+    'newer_than:60d {filename:ics subject:deadline subject:registration subject:interview subject:invitation subject:appointment subject:agenda subject:rescheduled}',
+    'in:inbox newer_than:14d',
+  ];
+  const lists = await Promise.allSettled(searches.map(q => read('gmail', { method: 'GET', endpoint: '/gmail/v1/users/me/messages',
+    query: { q: `${q} -category:promotions -category:social -in:sent`, maxResults: 5, fields: 'messages(id,threadId)' } })));
+  const groups = lists.map(list => list.status === 'fulfilled' ? array(record(list.value).messages).slice(0, 5).map(record) : []);
+  const threads = new Set<string>();
+  const ids: string[] = [];
+  for (let i = 0; i < 5 && ids.length < 10; i++) {
+    for (const group of groups) {
+      const entry = group[i];
+      const id = text(entry?.id, 200), thread = text(entry?.threadId, 200) || id;
+      if (id && !threads.has(thread)) { threads.add(thread); ids.push(id); }
+      if (ids.length === 10) break;
+    }
+  }
+  const rows = await Promise.allSettled(ids.map(async id => {
+    const message = record(await read('gmail', { method: 'GET', endpoint: `/gmail/v1/users/me/messages/${encodeURIComponent(id)}`,
+      query: { format: 'full', fields: 'snippet,payload(headers,mimeType,filename,parts(mimeType,filename,parts(mimeType,filename)))' } }));
+    const payload = record(message.payload);
+    const headers = array(payload.headers).map(record);
     const header = (name: string) => text(headers.find(item => String(item.name).toLowerCase() === name)?.value, 180);
     return { id: `gmail:${id}`, source: 'gmail' as const, title: header('subject'),
-      summary: `From: ${header('from')}. ${text(message.snippet, 600)}`, timestamp: header('date') };
+      sender: header('from'), summary: text(message.snippet, 600), timestamp: header('date'),
+      calendarAttachment: hasCalendarPart(payload) || undefined };
   }));
   return rows.flatMap(row => row.status === 'fulfilled' && row.value ? [row.value] : []);
 }
@@ -83,34 +109,59 @@ async function outlook(read: ConnectedRead): Promise<RecommendationEvidence[]> {
   } }));
   return array(data.value).slice(0, 5).map(record).filter(item => text(item.id)).map(item => ({
     id: `outlook:${text(item.id)}`, source: 'outlook', title: text(item.subject),
-    summary: `From: ${text(record(record(item.from).emailAddress).name)}. ${text(item.bodyPreview, 600)}`,
+    sender: text(record(record(item.from).emailAddress).address || record(record(item.from).emailAddress).name, 180),
+    summary: text(item.bodyPreview, 600),
     timestamp: text(item.receivedDateTime),
   }));
 }
 
-async function googleCalendar(read: ConnectedRead): Promise<RecommendationEvidence[]> {
-  const data = record(await read('google-calendar', { method: 'GET', endpoint: '/calendar/v3/calendars/primary/events', query: {
-    timeMin: new Date().toISOString(), timeMax: new Date(Date.now() + 3 * 86400_000).toISOString(),
-    maxResults: 5, singleEvents: true, orderBy: 'startTime',
+const CALENDAR_DAYS = 21;
+
+async function googleCalendar(read: ConnectedRead, context: RecommendationContext, calendarId = 'primary'): Promise<RecommendationEvidence[]> {
+  const timeZone = context.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const now = `${context.localDate}T${context.localTime}`;
+  const data = record(await read('google-calendar', { method: 'GET', endpoint: `/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`, query: {
+    timeMin: new Date().toISOString(), timeMax: new Date(Date.now() + CALENDAR_DAYS * 86400_000).toISOString(),
+    maxResults: 100, singleEvents: true, orderBy: 'startTime', timeZone,
+    fields: 'items(id,status,summary,description,location,start,end,eventType,transparency,recurringEventId)',
   } }));
-  return array(data.items).slice(0, 5).map(record).filter(item => item.status !== 'cancelled').map(item => ({
-    id: `google-calendar:${text(item.id)}`, source: 'calendar', title: text(item.summary),
-    summary: `Starts ${text(record(item.start).dateTime || record(item.start).date)}. ${text(item.description, 500)}`,
-    timestamp: text(record(item.start).dateTime || record(item.start).date),
-  }));
+  return array(data.items).slice(0, 100).flatMap((raw): RecommendationEvidence[] => {
+    const item = record(raw);
+    if (!text(item.summary) || item.eventType === 'workingLocation') return [];
+    try {
+      const event = googleEventInput(item, 0, timeZone);
+      if (!event || event.endsAt <= now) return [];
+      return [{ id: `google-calendar:${calendarId === 'primary' ? '' : encodeURIComponent(calendarId) + ':'}${item.id}`, source: 'calendar', title: event.title, timestamp: event.startsAt,
+        summary: text(event.description, 600),
+        calendar: { kind: 'event', start: event.startsAt, end: event.endsAt, allDay: event.allDay,
+          location: text(event.location, 180) || undefined,
+          blocksTime: item.transparency === 'transparent' || item.eventType === 'birthday' ? false :
+            item.transparency === 'opaque' || item.eventType === 'outOfOffice' || item.eventType === 'focusTime' ? true : undefined,
+          seriesId: item.recurringEventId ? `google:${calendarId}:${item.recurringEventId}` : undefined,
+          status: event.startsAt <= now ? 'ongoing' : 'upcoming' } }];
+    } catch { return []; } // One malformed instance must not discard the rest of the agenda.
+  });
 }
 
 function localEvidence(userId: number, context: RecommendationContext): RecommendationEvidence[] {
   const result: RecommendationEvidence[] = [];
   const safeRead = (read: () => RecommendationEvidence[]) => { try { result.push(...read()); } catch { /* Optional store not initialized. */ } };
   safeRead(() => {
-    const rows = db.prepare(`SELECT c.id, c.title, c.updated_at, g.slug,
-      (SELECT substr(m.content, 1, 300) FROM conversation_messages m WHERE m.conversation_id=c.id AND m.role='user' ORDER BY m.order_index DESC LIMIT 1) AS asked,
-      (SELECT substr(m.content, 1, 500) FROM conversation_messages m WHERE m.conversation_id=c.id AND m.role='assistant' AND m.status='complete' ORDER BY m.order_index DESC LIMIT 1) AS excerpt
+    const rows = db.prepare(`SELECT c.id, c.title, c.updated_at, g.slug, substr(u.content, 1, 300) AS asked, substr(a.content, 1, 500) AS excerpt
       FROM conversations c LEFT JOIN clusters g ON g.id=c.default_garden_id
+      JOIN conversation_messages u ON u.rowid=(SELECT m.rowid FROM conversation_messages m
+        WHERE m.conversation_id=c.id AND m.role='user' AND m.status='complete' AND trim(substr(m.content, 1, 300))<>''
+        AND COALESCE(m.client_message_id,'') NOT GLOB 'schedule-*'
+        AND COALESCE(m.client_message_id,'') NOT GLOB 'hook-*'
+        AND json_extract(CASE WHEN json_valid(m.metadata) THEN m.metadata END,'$.scheduledChatReceipt') IS NULL
+        ORDER BY m.order_index DESC LIMIT 1)
+      LEFT JOIN conversation_messages a ON a.conversation_id=c.id AND a.client_message_id=u.client_message_id
+        AND a.role='assistant' AND a.status='complete'
       WHERE c.user_id=? AND c.temporary=0 AND c.title<>'New chat' AND c.updated_at >= datetime('now','-21 days')
-      AND (? IS NULL OR g.slug=?) ORDER BY c.updated_at DESC LIMIT 5`).all(userId, context.gardenSlug ?? null, context.gardenSlug ?? null) as Array<{id:number;title:string;updated_at:string;slug:string;asked:string|null;excerpt:string|null}>;
-    return rows.map(row => ({ id:`chat:${row.id}`,source:'chat',title:row.title,summary:[row.asked&&`Last asked: ${row.asked}`,row.excerpt&&`Last reply: ${row.excerpt}`].filter(Boolean).join(' '),timestamp:row.updated_at,gardenSlug:row.slug }));
+      AND (? IS NULL OR g.slug=?) ORDER BY c.updated_at DESC LIMIT 5`).all(userId, context.gardenSlug ?? null, context.gardenSlug ?? null) as Array<{id:number;title:string;updated_at:string;slug:string;asked:string;excerpt:string|null}>;
+    return rows.map(row => ({ id:`chat:${row.id}`,source:'chat',
+      title:/^(?:Telegram|WhatsApp)\s*[·:]/i.test(row.title) ? row.asked : row.title,
+      summary:[`Last asked: ${row.asked}`,row.excerpt&&`Last reply: ${row.excerpt}`].filter(Boolean).join(' '),timestamp:row.updated_at,gardenSlug:row.slug }));
   });
   if (!context.gardenSlug) safeRead(() => {
     const rows = db.prepare(`SELECT t.id,t.title,t.description,t.due_date,p.name FROM plan_tasks t JOIN plan_projects p ON p.id=t.project_id
@@ -118,10 +169,10 @@ function localEvidence(userId: number, context: RecommendationContext): Recommen
       ORDER BY CASE WHEN t.due_date IS NULL THEN 1 ELSE 0 END,t.due_date,t.updated_at DESC LIMIT 4`).all(userId,userId) as Array<{id:number;title:string;description:string;due_date:string;name:string}>;
     return rows.map(row => ({ id:`task:${row.id}`,source:'task',title:row.title,summary:`Project: ${row.name}. ${row.due_date ? `Due ${row.due_date}.` : ''} ${row.description ?? ''}` }));
   });
-  safeRead(() => {
-    const rows = db.prepare(`SELECT id,name,slug FROM clusters WHERE user_id=? AND (? IS NULL OR slug=?) ORDER BY COALESCE(last_viewed_at,created_at) DESC LIMIT 4`)
-      .all(userId,context.gardenSlug ?? null,context.gardenSlug ?? null) as Array<{id:number;name:string;slug:string}>;
-    return rows.map(row => ({ id:`garden:${row.id}`,source:'garden',title:row.name,summary:'A recently opened garden.',gardenSlug:row.slug }));
+  if (context.gardenSlug) safeRead(() => {
+    const row = db.prepare('SELECT id,name,slug FROM clusters WHERE user_id=? AND slug=?')
+      .get(userId, context.gardenSlug) as {id:number;name:string;slug:string} | undefined;
+    return row ? [{ id:`garden:${row.id}`,source:'garden',title:row.name,summary:'Selected garden.',gardenSlug:row.slug }] : [];
   });
   if (!context.gardenSlug) safeRead(() => activityRecommendationEvidence(db, userId));
   return result;
@@ -136,10 +187,15 @@ export async function readRecommendationEvidence(userId: number, context: Recomm
   ]);
   let calendar: RecommendationEvidence[] = [];
   try {
-    const schedule = agenda(getCalendarStore(), userId, { from: context.localDate, days: 7, limit: 120, includeDescriptions:true });
+    const schedule = agenda(getCalendarStore(), userId, { from: context.localDate, days: CALENDAR_DAYS, limit: 200, includeDescriptions:true });
     calendar = calendarRecommendationEvidence(schedule.occurrences, context, schedule.returned === schedule.total);
   } catch { /* Calendar setup or sync must not prevent other suggestions. */ }
   const signal = AbortSignal.timeout(8_000);
+  const connections = connectionReader(userId, signal);
+  const connected = (slug: string, load: (read: ConnectedRead) => Promise<RecommendationEvidence[]>) => async () => {
+    const { slugs, read } = await connections;
+    return slugs.has(slug) ? load(read) : [];
+  };
   return collectRecommendationEvidence([
     async () => [...calendar, ...localEvidence(userId, context)],
     async () => screenTimeRecommendationEvidence(userId),
@@ -156,18 +212,24 @@ export async function readRecommendationEvidence(userId: number, context: Recomm
       return recallRecommendationEvidence(reads.flatMap(read=>read.status==='fulfilled'?read.value.hits:[]),calendar);
     },
     async () => {
-      const { slugs, apps, read } = await connectionReader(userId, signal);
+      const { apps } = await connections;
       let mcp: Array<{ slug: string; name: string }> = [];
       try {
         mcp = (db.prepare('SELECT slug, display_name FROM hermes_mcp_connections WHERE user_id = ? AND enabled = 1').all(userId) as Array<{ slug: string; display_name: string | null }>)
           .map(row => ({ slug: row.slug, name: row.display_name || connectedAppName(row.slug) }));
       } catch { /* MCP store optional. */ }
-      return collectRecommendationEvidence([
-        async () => connectionRecommendationEvidence([...apps, ...mcp], DEEP_READ_APPS),
-        async () => slugs.has('gmail') ? gmail(read) : [],
-        async () => slugs.has('microsoft-outlook') ? outlook(read) : [],
-        async () => slugs.has('google-calendar') ? googleCalendar(read) : [],
-      ]);
+      return connectionRecommendationEvidence([...apps, ...mcp], DEEP_READ_APPS);
     },
+    connected('gmail', gmail),
+    connected('microsoft-outlook', outlook),
+    connected('google-calendar', read => googleCalendar(read, context)),
+    connected('google-calendar', async read => {
+      const list = record(await read('google-calendar', { method: 'GET', endpoint: '/calendar/v3/users/me/calendarList',
+        query: { minAccessRole: 'reader', fields: 'items(id,primary,selected,hidden,deleted)' } }));
+      const selected = array(list.items).map(record).filter(item =>
+        text(item.id) && item.selected === true && !item.primary && !item.hidden && !item.deleted).slice(0, 3);
+      const calendars = await Promise.allSettled(selected.map(item => googleCalendar(read, context, String(item.id))));
+      return calendars.flatMap(result => result.status === 'fulfilled' ? result.value : []);
+    }),
   ]);
 }

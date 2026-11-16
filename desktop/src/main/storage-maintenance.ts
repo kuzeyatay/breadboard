@@ -33,7 +33,7 @@ export function startStorageMaintenance(options: StorageCoordinatorOptions): () 
       });
       if (response.ok) {
         const result = await response.json() as { housekeepingAllowed?: boolean; continueSoon?:boolean };
-        if (result.housekeepingAllowed && result.continueSoon) nextTick=Date.now()+1000;
+        if (result.continueSoon) nextTick=Date.now()+1000;
         if (idleSeconds() >= 120) await options.afterMaintenance?.({ housekeepingAllowed: result.housekeepingAllowed === true });
       } else await response.body?.cancel();
     } catch { /* The next idle slice retries; diagnostics are bounded server-side. */ }

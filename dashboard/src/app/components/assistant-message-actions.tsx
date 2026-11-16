@@ -70,6 +70,7 @@ interface Props {
   /** Open the response's inline editor. Saving is owned by the transcript. */
   onEdit?: () => void;
   onRetry?: () => void;
+  retryControl?: ReactNode;
   /** An earlier answer is being regenerated in place. */
   retrying?: boolean;
   /** Regenerate this turn as a branch; the standing preference humanizes it. */
@@ -193,6 +194,7 @@ const MessageActionsSlotContext = createContext<{
   canStar?: boolean;
   slot: HTMLElement | null;
   suppressActions: boolean;
+  verification?: VerificationSummary;
   branch?: AssistantResponseBranch;
   responseStartedAt?: string;
   responseDurationMs?: number;
@@ -212,6 +214,7 @@ export function MessageActionsSlot({
   onReply,
   canStar = true,
   suppressActions = false,
+  verification,
   branch,
   responseStartedAt,
   responseDurationMs,
@@ -224,6 +227,7 @@ export function MessageActionsSlot({
   canStar?: boolean;
   /** Keep controls from escaping a visually hidden owner through the portal. */
   suppressActions?: boolean;
+  verification?: VerificationSummary;
   /** Shared by nested run cards so navigation lives in their bottom row. */
   branch?: AssistantResponseBranch;
   /** Timing shared with action rows rendered by nested inline run cards. */
@@ -241,6 +245,7 @@ export function MessageActionsSlot({
         canStar,
         slot,
         suppressActions,
+        verification,
         branch,
         responseStartedAt,
         responseDurationMs,
@@ -266,6 +271,7 @@ export default function AssistantMessageActions({
   responseCompletedAt,
   onEdit,
   onRetry,
+  retryControl,
   retrying = false,
   onRewrite,
   verification,
@@ -298,6 +304,7 @@ export default function AssistantMessageActions({
     onReply,
     canStar = true,
     suppressActions,
+    verification: contextualVerification,
     branch: contextualBranch,
     responseStartedAt: contextualResponseStartedAt,
     responseDurationMs: contextualResponseDurationMs,
@@ -306,7 +313,7 @@ export default function AssistantMessageActions({
   const starConversationId = contextualConversationId ?? conversationId;
   const starMessageId = contextualMessageId ?? messageId;
   const storageKey = useMemo(() => contentKey(content), [content]);
-  const displayedVerification = verification ?? NO_RECORDED_EVIDENCE;
+  const displayedVerification = verification ?? contextualVerification ?? NO_RECORDED_EVIDENCE;
   const responseBranch = branch ?? contextualBranch;
   const completedAt =
     responseCompletedAt ??
@@ -650,6 +657,9 @@ export default function AssistantMessageActions({
 
   const actions = (
     <div className="mt-2 flex flex-wrap items-center gap-0.5" aria-label="Assistant response actions">
+      {displayedVerification.usedFallback && (
+        <p className="mb-1 w-full text-xs text-[var(--ink-muted)]">Answered by the fallback model*</p>
+      )}
       <button
         type="button"
         onClick={() => void copyResponse()}
@@ -743,7 +753,7 @@ export default function AssistantMessageActions({
           </svg>
         </button>
       ) : null}
-      {onRetry ? (
+      {retryControl ?? (onRetry ? (
         <button
           type="button"
           onClick={retryResponse}
@@ -757,7 +767,7 @@ export default function AssistantMessageActions({
             <path strokeLinecap="round" strokeLinejoin="round" d="M20 6v5h-5M4 18v-5h5m9.7-3A7 7 0 0 0 6.1 7.1L4 11m16 2-2.1 3.9A7 7 0 0 1 5.3 14" />
           </svg>}
         </button>
-      ) : null}
+      ) : null)}
       <div ref={menuRef} className="relative">
         <button
           type="button"

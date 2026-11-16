@@ -1,4 +1,5 @@
 import { CodeDockManager } from "./code-dock";
+import { capturePageWithFreshFrame } from "./capture-page";
 import { resolveVSCodeStorage } from "./vscode-installation";
 import type { CodeDockAction, CodeDockState } from "../shared/code-dock";
 import {
@@ -941,6 +942,33 @@ export class TabManager {
     };
     if (!target()) return null;
     return this.browserTerminal.grant(target, { prepareCapture: contents => this.prepareBreadboardUseInput(contents) });
+  }
+
+  /** A one-shot read of the active page beside the question. */
+  async captureWorkspaceView(sender: WebContents): Promise<string | null> {
+    const host = this.hostByContents.get(sender.id);
+    if (!host) return null;
+    const tab = tabById(host, host.activeId);
+    const target = () => {
+      if (!tab || host.activeId !== tab.id || host.pending || sender.isDestroyed() ||
+          host.window.isDestroyed() || !host.window.isVisible() || host.window.isMinimized()) return null;
+      if (tab.contents !== sender && !(tab.sharedChrome && host.browserChrome?.contents === sender)) return null;
+      return this.voiceContextTargets(host.window)?.page ?? null;
+    };
+    const page = target();
+    if (!page) return null;
+    const url = page.getURL();
+    const senderUrl = sender.getURL();
+    const hideDock = page === sender ? await page.insertCSS("[data-side-chat-dock] { opacity: 0 !important; }") : null;
+    try {
+      let image = await capturePageWithFreshFrame(page);
+      if (target() !== page || page.isDestroyed() || page.getURL() !== url || sender.getURL() !== senderUrl) return null;
+      const { width, height } = image.getSize();
+      if (Math.max(width, height) > 1920) image = image.resize(width >= height ? { width: 1920 } : { height: 1920 });
+      return `data:image/jpeg;base64,${image.toJPEG(86).toString("base64")}`;
+    } finally {
+      if (hideDock && !page.isDestroyed()) await page.removeInsertedCSS(hideDock).catch(() => {});
+    }
   }
   private readonly options: TabManagerOptions;
   private readonly hosts = new Map<number, Host>();
@@ -3496,7 +3524,7 @@ export class TabManager {
       source.baseRetired = true;
       this.options.onBaseReplaced?.(source.window);
       movedBase.contents.on("did-fail-load", (_event, code, _description, url, mainFrame) => {
-        if (mainFrame && code !== -3) void this.recover(movedBase, url);
+        if (mainFrame && code !== -3) void this.recover(movedBase, url, false, code);
       });
       installRendererRecovery(movedBase.contents, () => { void this.recover(movedBase, movedBase.url, true); });
     }
@@ -4162,6 +4190,10 @@ export class TabManager {
       presentationRevision: host.presentationRevision,
       presentationStatus: host.presentationStatus,
       persistentShell: host.shellEnabled,
+      // Trusted pages share one origin zoom; the browser chrome divides its
+      // native-pixel toolbar inset by it so its rail meets the website's top.
+      chromeZoom: host.browserChrome && !host.browserChrome.contents.isDestroyed()
+        ? host.browserChrome.contents.getZoomFactor() : 1,
       contentHeight: host.window.getContentSize()[1],
       theme: this.options.theme(),
       browserOwnerKey: host.browserOwnerKey,
@@ -5526,6 +5558,18 @@ export class TabManager {
       const owner = current();
       if (owner) this.broadcast(owner);
     };
+    // A hidden notification receiver has no user to answer a sign-in prompt.
+    // Stop cross-origin login redirects before the identity provider runs.
+    const guardNotificationNavigation = (event: Electron.Event, url: string) => {
+      const retained = this.backgroundNotificationTabs.get(contents);
+      if (!retained || notificationOrigin(url) === retained.origin) return;
+      event.preventDefault();
+      this.destroyNotificationTab(contents);
+    };
+    contents.on("will-navigate", guardNotificationNavigation);
+    contents.on("will-redirect", (event, url, _inPlace, mainFrame) => {
+      if (mainFrame) guardNotificationNavigation(event, url);
+    });
     contents.on("did-navigate", (_event, url) => {
       const retained = this.backgroundNotificationTabs.get(contents);
       if (retained && notificationOrigin(url) !== retained.origin) {
@@ -7759,7 +7803,7 @@ export class TabManager {
           return;
         }
         remember(failedUrl);
-        void this.recover(tab, tab.browser?.shellUrl ?? tab.url);
+        void this.recover(tab, tab.browser?.shellUrl ?? tab.url, false, errorCode);
       });
       installRendererRecovery(contents, () => {
         const owner = current();
@@ -7941,11 +7985,11 @@ export class TabManager {
    * asking for the page back. Retrying the page itself would put Chromium's
    * own error document up between attempts.
    */
-  private recover(tab: Tab, recoveryUrl = tab.url, rendererCrashed = false): Promise<void> {
+  private recover(tab: Tab, recoveryUrl = tab.url, rendererCrashed = false, errorCode?: number): Promise<void> {
     // Startup waits on this promise so restored tabs finish reconnecting
     // behind the loading screen rather than in front of the person.
     if (tab.recovering) return tab.recoveryPromise ?? Promise.resolve();
-    const attempt = this.runRecovery(tab, recoveryUrl, rendererCrashed);
+    const attempt = this.runRecovery(tab, recoveryUrl, rendererCrashed, errorCode);
     tab.recoveryPromise = attempt;
     void attempt.finally(() => {
       if (tab.recoveryPromise === attempt) tab.recoveryPromise = undefined;
@@ -7953,7 +7997,7 @@ export class TabManager {
     return attempt;
   }
 
-  private async runRecovery(tab: Tab, recoveryUrl: string | undefined, rendererCrashed: boolean): Promise<void> {
+  private async runRecovery(tab: Tab, recoveryUrl: string | undefined, rendererCrashed: boolean, errorCode?: number): Promise<void> {
     if (tab.recovering || !recoveryUrl || tab.contents.isDestroyed()) return;
     const directTerminal = rendererCrashed && this.needsTerminalReadiness(tab);
     tab.recovering = true;
@@ -7987,9 +8031,12 @@ export class TabManager {
       }
       this.broadcast(host);
     }
-    this.log(sharedBrowser ? "restoring browser controls; keeping website documents alive"
-      : directTerminal ? "restoring a crashed Terminal directly; waiting for its ready frame"
-      : `page lost in a tab; showing the reconnect scene and waiting for ${recoveryUrl}`);
+    const started = performance.now();
+    const contentsId = tab.contents.id;
+    let retry = 0;
+    let restored = false;
+    const surface = sharedBrowser ? "browser-controls" : directTerminal ? "terminal" : "workspace-tab";
+    this.log(`reconnect started contents=${contentsId} surface=${surface} trigger=${rendererCrashed ? "renderer-gone" : "load-failed"} errorCode=${errorCode ?? "unknown"}`);
     try {
       if (directTerminal) {
         // Renderer failure does not imply a workspace/server outage. Reload
@@ -8001,7 +8048,8 @@ export class TabManager {
         tab.painted = false;
         tab.terminalReady = false;
         tab.terminalReadinessDeadline = undefined;
-        if (await loadRecoveryUrlIfAlive(tab.contents, recoveryUrl)) return;
+        restored = await loadRecoveryUrlIfAlive(tab.contents, recoveryUrl);
+        if (restored) return;
         if (!current()) return;
         // A real navigation failure still needs the existing offline recovery.
         attempt.directTerminal = false;
@@ -8017,7 +8065,6 @@ export class TabManager {
           // The scene is a courtesy; the wait below is what brings the page back.
         }
       }
-      let retry = 0;
       while (current()) {
         const delay = sharedBrowser && retry === 0 ? 0
           : TAB_RECOVERY_DELAYS_MS[Math.min(retry, TAB_RECOVERY_DELAYS_MS.length - 1)] ?? 5_000;
@@ -8030,10 +8077,12 @@ export class TabManager {
           if (!current()) break;
           if (url !== tab.recoveryUrl) continue;
           attempt.expectedUrl = url;
-          if (await loadRecoveryUrlIfAlive(tab.contents, url)) return;
+          restored = await loadRecoveryUrlIfAlive(tab.contents, url);
+          if (restored) return;
         }
       }
     } finally {
+      this.log(`reconnect ended contents=${contentsId} outcome=${restored ? "loaded" : "interrupted"} probes=${retry} elapsedMs=${Math.round(performance.now() - started)}`);
       if (tab.recoveryAttempt === attempt) {
         tab.recoveryAttempt = undefined;
         tab.recovering = false;

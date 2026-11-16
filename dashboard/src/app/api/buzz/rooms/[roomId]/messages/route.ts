@@ -112,6 +112,8 @@ export async function POST(
         clientMessageId: `${clientMessageId}:${responder.handle}`,
         actingUserId: userId,
         request,
+        model: typeof body.model === "string" && body.model.length <= 200 ? body.model : undefined,
+        reasoningEffort: typeof body.reasoningEffort === "string" && body.reasoningEffort.length <= 40 ? body.reasoningEffort : undefined,
       });
       started.push({
         memberId: responder.id,

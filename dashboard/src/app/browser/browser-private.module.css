@@ -34,7 +34,7 @@
   --home-widget-border: rgb(121 82 163 / 14%);
   --home-widget-shadow: 0 14px 34px rgb(55 30 80 / 10%);
   flex: 1 1 auto;
-  height: calc(100dvh - var(--breadboard-titlebar-height, 0px) - 103px);
+  height: calc(100dvh - var(--breadboard-titlebar-height, 0px) - var(--browser-chrome-top, 103px));
   min-height: 0;
   overflow: auto;
   color: var(--ink);

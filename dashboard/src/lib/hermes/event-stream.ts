@@ -121,10 +121,8 @@ function persistAssistantOnce(
     const responseDurationMs = Number.isFinite(startedAt)
       ? Math.max(0, Date.now() - startedAt)
       : undefined;
-    // Which model actually answered, recorded the same way the provider-only
-    // path records it. The run's dispatch is the only place that knows: the
-    // engine was resolved when the turn was sent, and by the time the answer
-    // lands the user may have picked a different model in the composer.
+    // Preserve the dispatched model for older providers that omit response identity.
+    // Only the completion receipt is used for the answering model in View evidence.
     const dispatchedModel = activeRun
       ? (() => {
           const dispatch = parseRuntimeRunDispatch(activeRun);
@@ -140,7 +138,7 @@ function persistAssistantOnce(
       ...(failure?.code ? { errorCode: failure.code } : {}),
       ...(uiResources.length ? { uiResources } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
-      ...(dispatchedModel ? { model: dispatchedModel } : {}),
+      ...((verification.answerModel || dispatchedModel) ? { model: verification.answerModel || dispatchedModel } : {}),
     };
     persistedTokenUsage = persistedTokenUsage
       ? {
@@ -232,6 +230,8 @@ function driveSessionEventPump(
   let runtimeSubscription = new AbortController();
 
   let assistantText = "";
+  let answerModel: string | undefined;
+  let usedFallback = false;
   let reasoning = "";
   // Mid-turn narration segments sealed off the answer buffer (text the model
   // wrote before/between tool calls). They remain durable, user-visible progress
@@ -807,6 +807,8 @@ function driveSessionEventPump(
         // to emit: a delegation the agent asked for in its last breath belongs
         // in this answer's provenance even if the client never saw the event.
         const verification = assessVerification(assistantText, evidence, {
+          usedFallback: status === "idle" && usedFallback,
+          answerModel: status === "idle" ? answerModel : null,
           geographicGroundingRequired: geographicGroundingRequired(),
           webGroundingRequired: webGroundingAppliesToCompletion(),
           externalAgents: externalAgentsForTurn(),
@@ -814,6 +816,10 @@ function driveSessionEventPump(
           researchCoverage: researchCoverageForTurn(),
           capabilities: capabilitiesForTurn(),
         });
+        if (status !== "idle") {
+          emit({ type: "verification.updated", sessionId: session.hermesSessionId,
+            timestamp: new Date().toISOString(), payload: verification });
+        }
         try {
           persistAssistantOnce(
             session,
@@ -1205,6 +1211,8 @@ function driveSessionEventPump(
             ) {
               continue;
             }
+            usedFallback = event.payload.usedFallback === true;
+            answerModel = typeof event.payload.answerModel === "string" ? event.payload.answerModel : undefined;
             if (typeof event.payload.text === "string") {
               assistantText = event.payload.text;
             }
@@ -1392,6 +1400,8 @@ function driveSessionEventPump(
                 sessionId: session.hermesSessionId,
                 timestamp: new Date().toISOString(),
                 payload: assessVerification(assistantText, evidence, {
+                  answerModel,
+                  usedFallback,
                   geographicGroundingRequired: geographicGroundingRequired(),
                   webGroundingRequired: webGroundingAppliesToCompletion(),
                   externalAgents: externalAgentsForTurn(),

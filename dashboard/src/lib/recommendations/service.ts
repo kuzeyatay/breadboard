@@ -31,7 +31,7 @@ const sharedState: RecommendationState = cacheGlobal.breadboardRecommendationsV1
 const { evidenceCache, recommendationCache, generations, recentlyShown, voiceOpeners } = sharedState;
 
 function contextKey(context: RecommendationContext) {
-  return ['garden-scope-v2',context.gardenSlug,context.pageTitle,context.localDate,context.timeZone];
+  return [context.gardenSlug,context.pageTitle,context.localDate,context.timeZone];
 }
 
 function generation(userId: number): object {
@@ -57,7 +57,7 @@ function policy(userId: number) {
   const settings = getHermesUserSettings(userId);
   const recall = getRecallSettings(userId);
   return { enabled: settings.composerSwitches.personalize !== false, model: settings.defaultModel,
-    key: JSON.stringify([settings.composerSwitches.personalize, recall, systemPromptRevision("personal-recommendations", userId)]) };
+    key: JSON.stringify(['personal-suggestions-v4', settings.composerSwitches.personalize, recall, systemPromptRevision("personal-recommendations", userId)]) };
 }
 
 export function invalidateRecommendations(userId: number, {preserveHistory=false}: {preserveHistory?:boolean} = {}) {
@@ -113,7 +113,7 @@ function rememberShown(userId: number, historyKey: string, cards: Recommendation
   if (recentlyShown.size>40) recentlyShown.delete(recentlyShown.keys().next().value!);
   try {
     const store = shownStore();
-    store?.write.run(userId, historyKey, JSON.stringify(cards.map(({ voice: _voice, ...card }) => card)));
+    store?.write.run(userId, historyKey, JSON.stringify(cards, (key, value) => key === 'voice' ? undefined : value));
     store?.sweep.run();
   } catch { /* A board that cannot be saved still works for this process. */ }
 }

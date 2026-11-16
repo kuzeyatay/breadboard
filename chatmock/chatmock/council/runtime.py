@@ -194,6 +194,7 @@ class CouncilRuntime:
         messages: List[Dict[str, Any]],
         council_input: CouncilInput,
         run: CouncilRun,
+        answer_route: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, Optional[str]]:
         """Like _call, but also returns the model's reasoning ("thinking") trace
         when the provider streamed one."""
@@ -246,6 +247,11 @@ class CouncilRuntime:
         if not isinstance(text, str) or not text.strip():
             raise ProviderError(f"model {call_model} returned an empty answer")
         reasoning = call.reasoning_out if isinstance(call.reasoning_out, str) and call.reasoning_out.strip() else None
+        if answer_route is not None:
+            for attempt in reversed(call.model_attempts_out):
+                if attempt.get("outcome") == "succeeded" and attempt.get("resolvedModel"):
+                    answer_route.update(model=attempt["resolvedModel"], fallback=attempt.get("fallback") is True)
+                    break
         return text, reasoning
 
     def _task_text(self, council_input: CouncilInput) -> str:
@@ -309,8 +315,9 @@ class CouncilRuntime:
             if role and role in role_instructions:
                 system += "\n\n" + role_instructions[role]
             try:
+                route: Dict[str, Any] = {}
                 content, reasoning = self._call_with_reasoning(
-                    model, system, council_input.messages, council_input, run
+                    model, system, council_input.messages, council_input, run, route
                 )
                 return (
                     CouncilCandidate(
@@ -318,7 +325,7 @@ class CouncilRuntime:
                         model=model,
                         role=role,
                         content=content,
-                        metadata={"reasoning": reasoning} if reasoning else None,
+                        metadata={**({"reasoning": reasoning} if reasoning else {}), **({"answerRoute": route} if route else {})} or None,
                     ),
                     None,
                 )
@@ -507,6 +514,7 @@ class CouncilRuntime:
                 [{"role": "user", "content": chair_prompt}],
                 council_input,
                 run,
+                run.answer_route,
             )
             run.reasoning_summary = reasoning or ""
             self.ledger.record_event(
@@ -520,6 +528,7 @@ class CouncilRuntime:
             run.diagnostics["synthesisFailure"] = str(exc)
             best = self._best_candidate(candidates, ranking)
             metadata = best.metadata if isinstance(best.metadata, dict) else {}
+            run.answer_route = metadata.get("answerRoute") or {}
             fallback_reasoning = metadata.get("reasoning")
             run.reasoning_summary = fallback_reasoning if isinstance(fallback_reasoning, str) else ""
             self.ledger.record_event(
@@ -555,6 +564,7 @@ class CouncilRuntime:
             council_input.messages,
             council_input,
             run,
+            run.answer_route,
         )
         candidate = CouncilCandidate(
             id=new_id("cand"),

@@ -1,19 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { ArrowUp, ChevronLeft, ExternalLink, Flag, Globe2, Lock, MoreHorizontal, ShieldCheck, Sparkles, UsersRound, X } from "lucide-react";
+import { ArrowUp, ChevronLeft, ExternalLink, Flag, Globe2, Lock, MoreHorizontal, ShieldCheck, Sparkles, Trash2, UsersRound, X } from "lucide-react";
 import CrumbsIcon from "@/app/components/crumbs-icon";
 import CrumbNotes from "@/app/crumbs/crumb-notes";
+import { PostAction, PostCard, PostLabel, PostMenu, PostMenuItem } from "@/app/crumbs/post-card";
 import { usePageLoading } from "@/app/components/use-page-loading";
-import { annotationPageUrl, annotationTargetKey, type AnnotationMessage, type AnnotationResponse, type BrowserAnnotationTarget } from "@/lib/browser-annotations";
+import { annotationPageUrl, annotationTargetKey, looksPrivatePage, type AnnotationMessage, type AnnotationResponse, type BrowserAnnotationTarget } from "@/lib/browser-annotations";
 import type { DesktopTabsCommand } from "@/lib/desktop-browser-tabs";
 import { shortHandle } from "@/lib/crumbs/handle";
 import styles from "./browser-organization-panel.module.css";
 
 type Send = (command: DesktopTabsCommand) => Promise<boolean>;
-type Rooms = { organizations: Array<{ id: number; name: string }>; rooms: Array<{ publicId: string; organizationId: number; name: string; archived: boolean }> };
+type Rooms = { organizations: Array<{ id: number; name: string }>; rooms: Array<{ publicId: string; organizationId: number; slug: string; name: string; archived: boolean }> };
 type Account = { signedIn: boolean; needsSignIn: boolean; handle: string | null; displayName: string | null; avatar: string | null; defaultVisibility: string };
-type EncryptedOrg = { id: string; name: string; role: "admin" | "member"; ready: boolean };
+type EncryptedOrg = { id: string; name: string; role: "admin" | "member"; ready: boolean; crumbsRoom?: string | null };
 type Level = "private" | "org" | "public";
 type Mode = { kind: "comment" } | { kind: "flag" } | { kind: "report"; messageId: string; author: string };
 
@@ -87,8 +88,9 @@ export default function BrowserOrganizationPanel({ url, title, target, width: na
   const pageUrl = annotationPageUrl(url);
   const selected = target && annotationPageUrl(target.url) === pageUrl ? target : { kind: "page" as const, url: pageUrl ?? "", title };
   const groups = [
-    ...orgs.map(org => ({ value: `org:${org.id}`, name: org.name, detail: "Encrypted for members" })),
-    ...rooms.rooms.filter(room => !room.archived).map(room => ({ value: `room:${room.publicId}`, name: room.name, detail: rooms.organizations.find(org => org.id === room.organizationId)?.name ?? "" })),
+    ...orgs.filter(org => !org.crumbsRoom).map(org => ({ value: `org:${org.id}`, name: org.name, detail: "Encrypted for members" })),
+    // An organization's crumbs are posts in its crumbs room, so the choice is the organization, not a room.
+    ...rooms.rooms.filter(room => !room.archived && room.slug === "crumbs").map(room => ({ value: `room:${room.publicId}`, name: rooms.organizations.find(org => org.id === room.organizationId)?.name ?? room.name, detail: "Posted in the crumbs room" })),
   ];
   const level = scope ? levelOf(scope) : null;
   const group = groups.find(item => item.value === scope);
@@ -239,6 +241,11 @@ function Discussion({ scope, audience, target: initialTarget, send, needsAccount
     else void write(mode.kind);
   }
   const closeMenu = (element: HTMLElement) => { element.closest("details")!.open = false; };
+  // A public crumb publishes the page's address and title; on a page that looks private, ask first.
+  const [anyway, setAnyway] = useState(false);
+  const confirmPublic = scope === "public" && mode.kind === "comment" && looksPrivatePage(target.url);
+  const [notesOpen, setNotesOpen] = useState<Record<string, boolean>>({});
+  const [noteCounts, setNoteCounts] = useState<Record<string, number>>({});
   const others = target.kind === "page" ? data.threads.filter(thread => thread.target.kind !== "page") : [];
   const placeholder = mode.kind === "comment" ? "Leave a crumb" : mode.kind === "flag" ? "What should others know?" : "What is wrong with it?";
 
@@ -274,27 +281,29 @@ function Discussion({ scope, audience, target: initialTarget, send, needsAccount
       <div aria-live="polite" aria-relevant="additions text">{data.messages.map(message => {
         const result = checks[message.id];
         const author = shortHandle(message.author);
-        return <article className={styles.message} key={message.id}>
-          {network && <Avatar src={message.avatar} name={author} />}
-          <div className={styles.post}>
-          <div className={styles.byline}>
-            <span className={styles.who}><strong>{author}</strong>{message.handle && <small>@{shortHandle(message.handle)}</small>}</span>
-            <time dateTime={message.createdAt}>{day(message.createdAt)}</time>
-            {(network || message.own) && <details className={styles.menu}><summary aria-label={`Options for ${author}’s crumb`}><MoreHorizontal size={15} /></summary><div>
-              {network && <button type="button" onClick={event => { closeMenu(event.currentTarget); void check(message); }}>Check against the page</button>}
-              {network && !message.own && <button type="button" onClick={event => { closeMenu(event.currentTarget); setMode({ kind: "report", messageId: message.id, author: message.author }); setBody(""); input.current?.focus(); }}>{scope === "public" ? "Report" : "Report to admins"}</button>}
-              {(message.own || message.canDelete) && <button disabled={busy} type="button" onClick={() => void write("delete-comment", message.id)}>Delete</button>}
-            </div></details>}
-          </div>
+        const notable = scope === "public" && message.id.startsWith("at://") && message.id.includes("/com.breadboard.highlight/");
+        const noteCount = noteCounts[message.id] ?? message.noteCount ?? 0;
+        return <PostCard className={styles.message} key={message.id}
+          avatar={<Avatar src={message.avatar} name={author} size={40} />} name={author} handle={message.handle ? shortHandle(message.handle) : null}
+          time={<time dateTime={message.createdAt}>{day(message.createdAt)}</time>}
+          menu={(network || message.own || message.canDelete) ? <PostMenu label={`Options for ${author}’s crumb`}>
+            {network && <PostMenuItem icon={<Sparkles size={18} />} onClick={() => void check(message)}>Check against the page</PostMenuItem>}
+            {network && !message.own && <PostMenuItem icon={<Flag size={18} />} onClick={() => { setMode({ kind: "report", messageId: message.id, author: message.author }); setBody(""); input.current?.focus(); }}>{scope === "public" ? "Report" : "Report to admins"}</PostMenuItem>}
+            {(message.own || message.canDelete) && <PostMenuItem icon={<Trash2 size={18} />} danger disabled={busy} onClick={() => void write("delete-comment", message.id)}>Delete</PostMenuItem>}
+          </PostMenu> : undefined}
+          actions={<>
+            {notable && <PostAction icon={<UsersRound size={18} />} count={noteCount || undefined} aria-expanded={Boolean(notesOpen[message.id])} label={noteCount > 0 ? `${noteCount} ${noteCount === 1 ? "note" : "notes"}` : "Add note"} onClick={() => setNotesOpen(open => ({ ...open, [message.id]: !open[message.id] }))} />}
+            {network && <PostAction icon={<Sparkles size={18} />} label="Check this claim" disabled={result?.busy} onClick={() => void check(message)} />}
+            <PostLabel>{scope === "public" ? <Globe2 size={15} /> : <Lock size={15} />}{audience}</PostLabel>
+          </>}
+          endActions={message.source ? <PostAction icon={<ExternalLink size={18} />} label="Open the source" onClick={() => window.open(message.source!, "_blank", "noopener,noreferrer")} /> : undefined}>
           <p>{message.body}</p>
-          {scope === "public" && message.id.startsWith("at://") && message.id.includes("/com.breadboard.highlight/") && <CrumbNotes crumbId={message.id} note={message.note} count={message.noteCount} own={message.own} signedIn={!needsAccount} />}
+          {notable && <CrumbNotes crumbId={message.id} note={message.note} count={message.noteCount} own={message.own} signedIn={!needsAccount} open={Boolean(notesOpen[message.id])} onCount={count => setNoteCounts(counts => counts[message.id] === count ? counts : { ...counts, [message.id]: count })} />}
           {message.unverified && <small className={styles.warning}>Sender not verified</small>}
-          {message.source && <a href={message.source} target="_blank" rel="noopener noreferrer" className={styles.textLink}>Source <ExternalLink size={12} /></a>}
           {result?.busy && <p className={styles.thinking}><Sparkles size={13} />Checking</p>}
           {result?.text && <div className={styles.answer}><strong><Sparkles size={12} />{result.text.split("\n")[0]}</strong><p>{result.text.split("\n").slice(1).join("\n").trim()}</p></div>}
           {result?.error && <p className={styles.error} role="alert">{result.error}</p>}
-          </div>
-        </article>;
+        </PostCard>;
       })}</div>
 
       {data.flags.length > 0 && <details className={styles.flags}><summary><Flag size={13} />{data.flags.length} {local ? (data.flags.length === 1 ? "flag" : "flags") : (data.flags.length === 1 ? "report" : "reports")}</summary>{data.flags.map(flag => <div key={flag.id}><strong>{flag.author}</strong><p>{flag.reason}</p>{flag.own && <button type="button" disabled={busy} onClick={() => void write("withdraw-flag")}>Remove my flag</button>}</div>)}</details>}
@@ -309,14 +318,16 @@ function Discussion({ scope, audience, target: initialTarget, send, needsAccount
     </div> : <form className={styles.composer} onSubmit={event => { event.preventDefault(); submit(); }}>
       {mode.kind !== "comment" && <div className={styles.mode}><span><Flag size={13} />{mode.kind === "flag" ? `Flag this ${target.kind === "page" ? "page" : "selection"}` : `Report ${mode.author}’s crumb`}</span><button type="button" aria-label="Cancel" onClick={() => setMode({ kind: "comment" })}><X size={14} /></button></div>}
       <textarea ref={input} aria-label={mode.kind === "comment" ? "Comment" : mode.kind === "flag" ? "Reason for flagging" : "Reason for reporting"} placeholder={placeholder} value={body} onChange={event => setBody(event.target.value)}
-        onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && body.trim() && loaded && !busy) { event.preventDefault(); submit(); } }} rows={3} maxLength={mode.kind === "comment" ? 4000 : 1000} disabled={busy} />
+        onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && body.trim() && loaded && !busy && !(confirmPublic && !anyway)) { event.preventDefault(); submit(); } }} rows={3} maxLength={mode.kind === "comment" ? 4000 : 1000} disabled={busy} />
       {showSource && mode.kind === "comment" && <input type="url" aria-label="Source link" placeholder="https://source…" value={source} onChange={event => setSource(event.target.value)} disabled={busy} />}
+      {confirmPublic && <label className={styles.privatePage}><input type="checkbox" checked={anyway} onChange={event => setAnyway(event.target.checked)} />
+        <span>This page looks private. A public crumb shows its address and title to everyone. Post publicly anyway</span></label>}
       <footer><span className={styles.postingTo}>{mode.kind === "comment" ? "Post to " : mode.kind === "flag" ? "Flag visible to " : scope === "public" ? "Report on " : "Report in "}{audience}</span>
         {mode.kind !== "report" && <details className={styles.menu}><summary aria-label="More comment options"><MoreHorizontal size={18} /></summary><div>
           <button type="button" onClick={event => { setShowSource(value => !value); closeMenu(event.currentTarget); }}>{showSource ? "Remove source" : "Add a source"}</button>
           {local && <button type="button" onClick={event => { setMode(mode.kind === "flag" ? { kind: "comment" } : { kind: "flag" }); closeMenu(event.currentTarget); input.current?.focus(); }}>{mode.kind === "flag" ? "Write a comment" : "Flag this content"}</button>}
         </div></details>}
-        <button className={styles.submit} type="submit" disabled={busy || !loaded || !body.trim()} aria-label={mode.kind === "comment" ? "Post comment" : mode.kind === "flag" ? "Submit flag" : "Send report"}><ArrowUp size={16} /></button></footer>
+        <button className={styles.submit} type="submit" disabled={busy || !loaded || !body.trim() || (confirmPublic && !anyway)} aria-label={mode.kind === "comment" ? "Post comment" : mode.kind === "flag" ? "Submit flag" : "Send report"}><ArrowUp size={16} /></button></footer>
     </form>}
   </div>;
 }

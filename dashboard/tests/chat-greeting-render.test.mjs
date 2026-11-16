@@ -69,7 +69,7 @@ const SIGNALS = {
 
 /** The cards come from the person's own evidence now; any four grounded prompts will do here. */
 const CARDS = [
-  "Turn my discussion about \u201cEntropy\u201d into notes with decisions and any follow-ups.",
+  "Walk me through the entropy calculation in my thermodynamics notes.",
   "Quiz me on the key ideas in \u201cThermodynamics\u201d, using my garden notes.",
   "Help me find out why my scheduled task \u201cMorning brief\u201d failed and fix it.",
   "Check my Linear for open items assigned to me and help me pick what to tackle first.",

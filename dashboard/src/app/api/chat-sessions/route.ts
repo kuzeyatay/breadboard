@@ -11,7 +11,7 @@ import {
 import db from "@/lib/db";
 import { readChatRuntimeControl } from "@/lib/hermes/chat-runtime-control.ts";
 import { ensureGardenResponseBranches, projectGardenResponseBranches, readGardenResponseBranches, trimGardenResponseBranchesForTransport } from "@/lib/conversations/garden-response-branches";
-import { trimVerificationForTransport, type VerificationSummary } from "@/lib/hermes/evidence";
+import { modelVerification, trimVerificationForTransport, type VerificationSummary } from "@/lib/hermes/evidence";
 import {
   normalizeChatMessageAttachments,
   type ChatMessageAttachment,
@@ -616,7 +616,8 @@ async function readSessions(
       content: message.content, metadata: message.tool_calls, created_at: message.created_at,
     }) : null;
     const usage = parseTokenUsage(message.token_usage);
-    const verification = parseVerification(message.tool_calls);
+    const verification = parseVerification(message.tool_calls) ?? (message.role === "assistant" &&
+      (message.runtime_status === "failed" || message.runtime_status === "aborted") ? modelVerification(null) : undefined);
     const responseDurationMs = parseResponseDuration(message.tool_calls);
     const responseCompletedAt = parseResponseCompletedAt(message.tool_calls);
     const progressNotes = parseProgressNotes(message.tool_calls);

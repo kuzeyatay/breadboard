@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 
 interface StorageStatus {
   automatic: boolean; freeBytes: number; compressedPayloadBytesSaved: number;
+  chats?: Array<{ folder: string; title: string | null; bytes: number; removableBytes: number; over: boolean }>;
+  budget?: { budgetBytes: number; usedBytes: number; overBytes: number; over: boolean; classes: Record<string, number> };
   disposables: { verifiedBytes: number; verifiedFiles: number; complete: boolean };
   database: { reusableBytes: number };
   inventory: null | { complete: boolean; allocatedBytes: number; hardlinkBytesAvoided: number; skippedEntries: number;
@@ -15,6 +17,13 @@ interface StorageStatus {
 }
 const size = (bytes: number) => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GiB`
   : bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(1)} MiB` : `${Math.round(bytes / 1024)} KiB`;
+
+const CLASS_LABELS: Record<string, string> = {
+  content: "Your chats, files and work (kept)",
+  regenerable: "Built pages, caches and raw dumps Breadboard can make again",
+  redownloadable: "Models, runtimes and source videos that can be fetched again",
+  capture: "Recall recordings",
+};
 
 export default function SettingsStorage({ active = true }: { active?: boolean }) {
   const [status, setStatus] = useState<StorageStatus | null>(null);
@@ -51,6 +60,41 @@ export default function SettingsStorage({ active = true }: { active?: boolean })
           void update("/api/storage", "PATCH", { automatic });
         }} />
     </label>
+    {status?.budget && <section className="space-y-2" aria-label="Storage budget">
+      <label className="flex items-center justify-between gap-4">
+        <span>Storage budget</span>
+        <span className="flex items-center gap-2">
+          <input type="number" min={5} step={5} aria-label="Storage budget in GiB" disabled={busy}
+            className="w-20 rounded-md border border-[var(--border)] bg-transparent px-2 py-1 text-right tabular-nums"
+            defaultValue={Math.round(status.budget.budgetBytes / 1024 ** 3)} key={status.budget.budgetBytes}
+            onBlur={event => {
+              const budgetBytes = Math.round(Number(event.target.value)) * 1024 ** 3;
+              if (budgetBytes !== status.budget?.budgetBytes) void update("/api/storage", "PATCH", { budgetBytes });
+            }} />
+          <span>GiB</span>
+        </span>
+      </label>
+      <progress className="w-full" max={status.budget.budgetBytes} value={Math.min(status.budget.usedBytes, status.budget.budgetBytes)}
+        aria-label="Share of the storage budget in use" />
+      <p role="status" className={status.budget.over ? "text-xs text-red-500" : "text-xs text-[var(--ink-muted)]"}>
+        {status.inventory ? `${size(status.budget.usedBytes)} of ${size(status.budget.budgetBytes)} measured${status.inventory.complete ? "" : " so far"}.` : "Not yet measured."}
+        {status.budget.over && ` Over by ${size(status.budget.overBytes)}: Breadboard is compressing cold workspace files first. Nothing of yours is removed.`}
+      </p>
+      {!!Object.keys(status.budget.classes).length && <table className="w-full text-left"><caption className="pb-2 text-left font-medium">What the space holds</caption>
+        <tbody>{Object.entries(status.budget.classes).sort((a,b) => b[1]-a[1]).map(([name, bytes]) => <tr key={name}>
+          <th className="py-1 font-normal">{CLASS_LABELS[name] ?? name}</th><td className="text-right tabular-nums">{size(bytes)}</td></tr>)}</tbody></table>}
+    </section>}
+    {!!status?.chats?.length && <section className="space-y-2" aria-label="Large chats">
+      <p className="font-medium">Large chats</p>
+      <p className="text-xs text-[var(--ink-muted)]">A chat&rsquo;s text is tiny. What takes space is the files its tools save in its working folder: downloaded videos, simulation output, renders. A chat is flagged above 2 GiB and will say so itself. Removing only deletes downloads and raw dumps that can be fetched or produced again; reports and deliverables stay.</p>
+      <ul className="space-y-2">{status.chats.map(chat => <li key={chat.folder} className="flex items-center gap-3">
+        <span className="min-w-0 flex-1 break-words">{chat.title || chat.folder}{chat.over && <span className="text-red-500"> (over the limit)</span>}</span>
+        <span className="shrink-0 tabular-nums">{size(chat.bytes)}</span>
+        {chat.removableBytes > 0 && <button disabled={busy} className="shrink-0 rounded-md border border-[var(--border)] px-2 py-1 disabled:opacity-50"
+          onClick={() => { if (window.confirm(`Remove ${size(chat.removableBytes)} of downloads and raw dumps from this chat? This cannot be undone.`)) void update("/api/storage/chats/reclaim", "POST", { folder: chat.folder }); }}>
+          Remove {size(chat.removableBytes)}</button>}
+      </li>)}</ul>
+    </section>}
     {status && <>
       <dl className="grid grid-cols-2 gap-2">
         <dt>Free on the data drive</dt><dd className="text-right tabular-nums">{size(status.freeBytes)}</dd>

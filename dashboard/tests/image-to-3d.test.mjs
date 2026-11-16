@@ -8,6 +8,8 @@ import {
 } from "../src/lib/hermes/image-3d-intent.ts";
 import {
   decodeImageAttachment,
+  hasReconstructableAttachment,
+  hasReconstructableImages,
   mergeImages,
   reconstructableFromAttachments,
   reconstructableImages,
@@ -206,6 +208,16 @@ test("a picture stays reachable for follow-up turns, newest first and deduplicat
   assert.deepEqual(merged.map((image) => image.name), ["lamp.png", "chair.png"]);
 });
 
+test("automatic workspace and reader views never select the uploaded picture for a 3D job", () => {
+  for (const context of ["workspace", "pdf", "document-page"]) {
+    const view = { ...attachment("Current view.jpg"), context };
+    assert.equal(hasReconstructableAttachment([view]), false);
+    assert.equal(hasReconstructableImages([userMessage(view)]), false);
+    assert.deepEqual(reconstructableFromAttachments([view]), []);
+    assert.deepEqual(reconstructableImages([userMessage(view)]), []);
+  }
+});
+
 test("the named picture is the one reconstructed, forgivingly matched", () => {
   const images = reconstructableImages([
     userMessage(attachment("chair.png"), attachment("lamp.jpeg")),
@@ -309,8 +321,7 @@ test("the turn wires the selection and the context block to the same skill", () 
     /decision\.selectedConditionalSkills\.includes\(IMAGE_TO_3D_SKILL\)/,
   );
   // An automatic selection must never cost the user their turn.
-  assert.match(turn, /!watchSelection\.automatic &&\s*\n?\s*!imageTo3dSelection\.automatic/);
-  assert.match(turn, /throw error;/);
+  assert.match(turn, /if \([^)]*!imageTo3dSelection\.automatic[^)]*\)\s*\{\s*throw error;/);
 });
 
 test("Garden Chat's own pipeline selects the skill too", () => {
@@ -323,7 +334,7 @@ test("Garden Chat's own pipeline selects the skill too", () => {
     adapter,
     /decision\.selectedConditionalSkills\.includes\(IMAGE_TO_3D_SKILL\)/,
   );
-  assert.match(adapter, /if \(\s*!imageTo3dSelection\.automatic[^)]*\) throw error;/);
+  assert.match(adapter, /if \([^)]*!imageTo3dSelection\.automatic[^)]*\)\s*throw error;/);
   // The context block is conditional, so the joined prompt has to drop the
   // empty string rather than open with a blank line.
   assert.match(adapter, /\]\.filter\(Boolean\)\.join\("\\n\\n"\)/);

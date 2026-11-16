@@ -67,7 +67,7 @@ export function reconstructableFromAttachments(
   attachments: readonly ChatAttachment[] | undefined,
 ): ResolvedImage[] {
   return (attachments ?? []).flatMap((attachment) => {
-    if (attachment.type !== "image") return [];
+    if (attachment.type !== "image" || attachment.context) return [];
     const decoded = decodeImageAttachment({
       type: "image",
       name: attachment.name,
@@ -83,7 +83,7 @@ export function hasReconstructableAttachment(
 ): boolean {
   return (attachments ?? []).some(
     (attachment) =>
-      attachment.type === "image" && isReconstructableAttachment(attachment.dataUrl),
+      attachment.type === "image" && !attachment.context && isReconstructableAttachment(attachment.dataUrl),
   );
 }
 
@@ -115,7 +115,7 @@ export function hasReconstructableImages(
         message.role === "user" &&
         messageAttachments(message.metadata ?? null).some(
           (attachment) =>
-            attachment.type === "image" && isReconstructableAttachment(attachment.dataUrl),
+            attachment.type === "image" && !attachment.context && isReconstructableAttachment(attachment.dataUrl),
         ),
     );
 }
@@ -138,7 +138,7 @@ export function reconstructableImages(
     const message = recent[index]!;
     if (message.role !== "user") continue;
     for (const attachment of messageAttachments(message.metadata ?? null)) {
-      if (attachment.type !== "image") continue;
+      if (attachment.type !== "image" || attachment.context) continue;
       const decoded = decodeImageAttachment(attachment);
       if (!decoded || seen.has(decoded.name)) continue;
       seen.add(decoded.name);

@@ -106,7 +106,7 @@ export function useTextSelectionController({ scope, conversationId, canStar, per
         pending = selection?.mode === "inline" ? selection.id : undefined;
         if (pending && selection && !deleted.includes(pending)) result.set(pending, {
           selection, question: message.content,
-          attachments: reusableChatAttachments(message.attachments).filter(item => item.context !== "pdf"),
+          attachments: reusableChatAttachments(message.attachments).filter(item => !item.context),
         });
       } else {
         const id = selection?.mode === "inline" ? selection.id : pending;

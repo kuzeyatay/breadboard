@@ -27,6 +27,7 @@ import type {
   ResponseCreateParamsStreaming,
   ResponseStreamEvent,
 } from "openai/resources/responses/responses";
+import { modelVerification, providerReplyVerification, type VerificationSummary } from "../hermes/evidence.ts";
 import { selectedModelForUser } from "../selected-model.ts";
 import type { BrowserTerminalAccess } from "../browser-terminal.ts";
 import { chatTextSelectionQuestionPrompt, type ChatTextSelectionReference } from "../chat-text-selection.ts";
@@ -88,6 +89,7 @@ import {
 } from "./memory.ts";
 import { parseChatReferenceCommand } from "./chat-reference.ts";
 import { conversationMessageText } from "./message-context.ts";
+import { imageAnnotationPrompt } from "../image-annotation-prompt.ts";
 import {
   generateAndApplyConversationTitle,
   shouldGenerateConversationTitleForTurn,
@@ -173,6 +175,7 @@ export interface StartDirectTurnInput {
 type DirectStreamEvent =
   | { type: "runtime"; backend: typeof DIRECT_BACKEND; model: string }
   | { type: "delta"; text: string }
+  | { type: "verification"; verification: VerificationSummary }
   | { type: "thinking"; text: string }
   | { type: "usage"; usage: ChatTokenUsage }
   | { type: "error"; message: string };
@@ -265,7 +268,7 @@ function currentUserInput(
   const attachedBlocks = attachments
     .flatMap((attachment) =>
       attachment.type === "text" || attachment.type === "document"
-        ? [`--- Attached file: ${attachment.name} ---\n${attachment.text}`]
+        ? [`--- ${attachment.context ? "Reader context" : "Attached file"}: ${attachment.name} ---\n${attachment.text}`]
         : attachment.type === "product"
           ? [
               `--- Selected product: ${attachment.name} ---\n${productAttachmentPromptText(attachment)}`,
@@ -554,6 +557,11 @@ export async function startDirectProviderTurn(
   const effort = normalizeAssistantReasoningEffort(input.reasoningEffort);
   const startedAtMs = Date.now();
   let reasoning = "";
+  let answerModel: string | undefined;
+  let responseHeaders: Headers | undefined;
+
+  const replyVerification = (complete: boolean) =>
+    complete && responseHeaders ? providerReplyVerification(responseHeaders, answerModel) : modelVerification(null);
 
   const finish = (
     status: "complete" | "failed" | "aborted",
@@ -565,6 +573,7 @@ export async function startDirectProviderTurn(
       backend: DIRECT_BACKEND,
       ...(input.textSelection ? { textSelection: input.textSelection } : {}),
       model,
+      verification: replyVerification(status === "complete"),
       literalTeachingText: preservesLiteralTeachingText(requestText),
       ...(reasoning ? { reasoning } : {}),
       responseDurationMs: Math.max(0, Date.now() - startedAtMs),
@@ -649,6 +658,7 @@ export async function startDirectProviderTurn(
         botPersonalityPrompt(botsStore().forConversation(input.conversation.user_id, input.conversation.public_id)),
         input.conversation.user_id,
       )
+        + (attachments.some(item => item.type === "image") ? "\n\n" + imageAnnotationPrompt(attachments, reservation.userMessage) : "")
         + "\n\n" + await browserTerminalPrompt(input.surface !== "quartz_ai" ? input.browserAccess : undefined, false, { userId: input.conversation.user_id }),
       input: [
         ...history,
@@ -665,9 +675,11 @@ export async function startDirectProviderTurn(
           }
         : {}),
     } satisfies ResponseCreateParamsStreaming;
-    stream = (await client.responses.create(requestBody, {
+    const result = await client.responses.create(requestBody, {
       signal: providerAbort.signal,
-    })) as AsyncIterable<ResponseStreamEvent>;
+    }).withResponse();
+    stream = result.data;
+    responseHeaders = result.response.headers;
   } catch (error) {
     const stopped = activeDirectTurn.stopRequested;
     const message =
@@ -741,6 +753,9 @@ export async function startDirectProviderTurn(
       const thinkingRecovery = createResponseTextRecovery();
       try {
         for await (const event of stream) {
+          if ("response" in event && typeof event.response?.model === "string" && event.response.model.trim()) {
+            answerModel = event.response.model;
+          }
           if (event.type === "response.output_text.delta") {
             answerRecovery.recordStreamed(event.output_index, event.delta);
             emitAnswer(event.delta);
@@ -813,6 +828,7 @@ export async function startDirectProviderTurn(
           },
         });
       }
+      emit({ type: "verification", verification: replyVerification(!failure && !activeDirectTurn.stopRequested) });
       if (failure) emit({ type: "error", message: failure });
       if (!settled) {
         settled = true;

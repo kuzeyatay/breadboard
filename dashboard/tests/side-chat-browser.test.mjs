@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { build } from "esbuild";
 import { chromium, expect } from "@playwright/test";
+import sharp from "sharp";
 import postcss from "postcss";
 import tailwindcss from "@tailwindcss/postcss";
 
@@ -20,11 +21,12 @@ test("workspace side chats send independently, discard on close, and reopen star
       import SideChatSurface from '@/app/components/side-chat-surface';
       import StarredMessagesPanel from '@/app/components/hermes/starred-messages-panel';
       import LinkContextMenu from '@/app/components/link-context-menu';
-      import {isChatNotificationTargetViewed} from '@/lib/chat-notification-inbox';
-      window.isViewed=id=>isChatNotificationTargetViewed({surface:'dashboard_terminal',chatId:id});
+      import {readNotificationViewTargets} from '@/lib/notification-view-presence';
+      window.isViewed=id=>readNotificationViewTargets().some(target=>target.surface==='dashboard_terminal' && target.chatId===id);
       const gardenSlug = new URLSearchParams(location.search).get('garden') || undefined;
       createRoot(document.getElementById('root')).render(<WorkspaceSideChat gardenSlug={gardenSlug} messages={[{role:'user',content:'Parent question'}, {role:'assistant',content:'Parent answer'}]}>
         <main style={{height:'100vh', padding:30}}>
+          <div id="page-pixels" style={{position:'fixed',right:60,top:120,width:30,height:30,background:'rgb(240,0,180)'}} />
           <SideChatSurface>
             <section aria-label="Messages" style={{minHeight:120,padding:20}}>
               <p id="selection">A workspace passage to discuss</p>
@@ -96,7 +98,7 @@ test("workspace side chats send independently, discard on close, and reopen star
       return route.fulfill({ json: { messages: stars } });
     }
     if (url.pathname === "/api/assistant-preferences") return route.fulfill({ json: { model: "gpt-5.6-sol", reasoningEffort: "medium", agentMode: false, superAgent: false } });
-    if (url.pathname.startsWith("/api/")) return route.fulfill({ json: { sessions: [], artifacts: [], highlights: [], bots: [], models: ["gpt-5.6-sol"], capabilities: [], modelsHealth: {} } });
+    if (url.pathname.startsWith("/api/")) return route.fulfill({ json: { sessions: [], artifacts: [], highlights: [], bots: [], groups: { skills: [], mcp: [], prompts: [], agents: [] }, models: ["gpt-5.6-sol"], capabilities: [], modelsHealth: {} } });
     return route.fulfill({ contentType: "text/html", body: '<!doctype html><div id="root"></div>' });
   });
   async function load(query = "") {
@@ -140,6 +142,16 @@ test("workspace side chats send independently, discard on close, and reopen star
   assert.equal(creations[0].restoreLastConversation, false);
   assert.equal(turns[0].textSelection.quote, "User: Parent question\n\nAssistant: Parent answer");
   assert.equal(turns[0].textSelection.sourceMessageId, "side-chat-context");
+  const assertViewPixel = async (turn, expected) => {
+    const view = turn.attachments.find(item => item.context === "workspace");
+    assert.ok(view?.dataUrl.startsWith("data:image/jpeg;base64,"));
+    const pixel = await sharp(Buffer.from(view.dataUrl.split(",")[1], "base64"))
+      .extract({left:1205,top:135,width:1,height:1}).removeAlpha().raw().toBuffer();
+    assert.ok(expected.every((channel, i) => Math.abs(channel - pixel[i]) < 10), `workspace pixel was ${[...pixel]}`);
+  };
+  await assertViewPixel(turns[0], [240, 0, 180]);
+  await expect(page.getByRole("navigation", { name: "Side chats" }).locator('[aria-current="true"]')).toHaveCSS("color", "rgb(255, 255, 255)");
+  await expect(panel.getByText("Current Breadboard view.jpg", {exact:true})).toHaveCount(0);
   // The main-chat snapshot is model context, not a quote on the first message.
   await expect(panel.getByText("Selected text:", { exact: false })).toHaveCount(0);
   await expect(panel.locator("header")).toHaveText("0: Explain this passage");
@@ -170,10 +182,12 @@ test("workspace side chats send independently, discard on close, and reopen star
     window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
   });
   await start(page.locator("#selection"));
+  await page.locator("#page-pixels").evaluate(node => { node.style.backgroundColor = "rgb(15, 140, 70)"; });
   await expect(panel.locator("blockquote")).toHaveCount(0);
   await expect(panel.getByText("A workspace passage to discuss", { exact: true })).toHaveCount(0);
   await send();
   assert.equal(turns.at(-1).textSelection.quote, "A workspace passage to discuss");
+  await assertViewPixel(turns.at(-1), [15, 140, 70]);
   await expect(panel.getByText("Selected text:", { exact: false })).toHaveCount(1);
   await panel.getByRole("button", { name: "Star message", exact: true }).click();
   await expect(panel.getByRole("button", { name: "Unstar message", exact: true })).toBeEnabled();
@@ -206,7 +220,10 @@ test("workspace side chats send independently, discard on close, and reopen star
   assert.ok(!sessions.has(savedId));
   await load("?garden=physics");
   await start();
+  await page.evaluate(() => { window.breadboardDesktop = { captureWorkspaceView: async () => null }; });
   await send();
+  assert.ok(turns.at(-1).attachments.some(item => item.context === "workspace" && item.type === "text" && item.text.includes("unavailable")));
+  await expect(panel.getByText("The workspace view was unavailable for this question.", { exact: true })).toBeVisible();
   assert.equal(creations.at(-1).surface, "garden_chat");
   assert.equal(creations.at(-1).gardenSlug, "physics");
   await panel.getByRole("button", { name: "Star message", exact: true }).click();

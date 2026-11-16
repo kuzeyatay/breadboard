@@ -28,7 +28,7 @@ const bundle = await esbuild.build({
         return answer ? <><ActivityPanel activities={[]} connection={props.active ? "streaming" : "idle"}
           pendingPermission={null} onPermissionDecision={() => {}} answerContent={answer.content}
           responseDurationMs={5000} progressNotes={["I’m explaining charge and fields."]} /><p data-answer>{answer.content}</p>
-          <AssistantMessageActions content={answer.content} humanizerReview={messageRewriteReview(answer)}
+          <AssistantMessageActions verification={answer.verification} content={answer.content} humanizerReview={messageRewriteReview(answer)}
             naturalRewrite={progress(answer)}
             branch={{ current: 1, total: 2, onPrevious() {}, onNext() {} }} /></> : null;
       }
@@ -92,6 +92,20 @@ async function setup(t, { enabled = true, response = candidate, status = 200, ho
   };
   return { page, calls, release, releaseSave, render };
 }
+
+test("a completed fallback is labelled below the answer and its model is visible in View evidence", async t => {
+  const { page, render } = await setup(t, { enabled: false });
+  const verification = { state: "unverified", evidence: [], unsupportedClaims: [], assumptions: [], answerModel: "gemini-test", usedFallback: true };
+  await render(false, [messages[0], { ...messages[1], verification }]);
+  const footer = page.getByText("Answered by the fallback model*", { exact: true });
+  await footer.waitFor();
+  await page.getByRole("button", { name: "More response actions" }).click();
+  await page.getByRole("button", { name: "View evidence" }).click();
+  await page.getByText("Answered by gemini-test", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Close evidence" }).click();
+  await render(false, [messages[0], { ...messages[1], verification: { ...verification, answerModel: "gpt-test", usedFallback: false } }]);
+  assert.equal(await footer.count(), 0);
+});
 
 test("the original stays visible until the rewrite is saved, with separate status beside More actions", async t => {
   const { page, calls, release, releaseSave, render } = await setup(t, { holdSave: true });

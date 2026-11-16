@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import PdfViewerClient from "@/app/gardens/[clusterSlug]/pdf/[slug]/pdf-viewer-client";
 import styles from "@/app/garden/garden-files.module.css";
+import VideoPlayerClient from "@/app/components/video-player-client";
 import { LOCAL_DOCUMENT_ACCEPT, localDocument, localFileKind, setLocalDocument } from "@/lib/local-document";
 import { DOCUMENT_FILENAME_HEADER } from "@/lib/document-attachments.ts";
 import { STORED_FILE_FILENAME_HEADER } from "@/lib/stored-file-attachments.ts";
@@ -45,27 +46,23 @@ function storedUrl(kind: StoredOpenedFile["kind"], blobId: string, name: string)
 
 type Opened = StoredOpenedFile & { hash: string; name: string };
 
-/** The garden file viewer's image and video surfaces, on a file opened from disk. */
-function MediaViewer({ opened }: { opened: Opened }) {
+/** The garden file viewer's image surface, on an image opened from disk. */
+function ImageViewer({ opened }: { opened: Opened }) {
   const [zoom, setZoom] = useState(1);
   const [error, setError] = useState("");
   useEffect(() => { document.title = opened.name; }, [opened.name]);
   return <section className={`${styles.viewer} min-h-0 flex-1`} aria-label={opened.name}>
     {error && <p role="alert" className={styles.error}>{error}</p>}
-    {opened.kind === "image"
-      ? <div className={styles.imageCanvas}>
-          <div className={styles.zoom}>
-            <button onClick={() => setZoom(value => Math.max(.25, value - .25))} aria-label="Zoom out">−</button>
-            <button onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button>
-            <button onClick={() => setZoom(value => Math.min(4, value + .25))} aria-label="Zoom in">+</button>
-          </div>
-          {/* eslint-disable-next-line @next/next/no-img-element -- a local file, not an optimizable asset */}
-          <img src={opened.url} alt={opened.name} style={{ maxWidth: `${zoom * 100}%`, width: zoom > 1 ? `${zoom * 100}%` : undefined }}
-            onError={() => setError("This image could not be displayed.")} />
-        </div>
-      : <div className={styles.media}>
-          <video controls src={opened.url} preload="metadata" onError={() => setError("This video codec cannot be played here.")} />
-        </div>}
+    <div className={styles.imageCanvas}>
+      <div className={styles.zoom}>
+        <button onClick={() => setZoom(value => Math.max(.25, value - .25))} aria-label="Zoom out">−</button>
+        <button onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button>
+        <button onClick={() => setZoom(value => Math.min(4, value + .25))} aria-label="Zoom in">+</button>
+      </div>
+      {/* eslint-disable-next-line @next/next/no-img-element -- a local file, not an optimizable asset */}
+      <img src={opened.url} alt={opened.name} style={{ maxWidth: `${zoom * 100}%`, width: zoom > 1 ? `${zoom * 100}%` : undefined }}
+        onError={() => setError("This image could not be displayed.")} />
+    </div>
   </section>;
 }
 
@@ -128,7 +125,11 @@ export default function LocalDocumentViewer({ stored, fastRead, showNavbarFlower
     return <>{input}<PdfViewerClient key={opened.url} title={opened.name} browserTitle={opened.name} sourceUrl={opened.url} readOnly
       documentIdentity={`/open?doc=${opened.hash}`} fastRead={fastRead} showNavbarFlowers={showNavbarFlowers} /></>;
   }
-  if (opened) return <>{input}<MediaViewer key={opened.url} opened={opened} /></>;
+  // Videos get the artifact video page's player: controls, keyboard, download and exit.
+  if (opened?.kind === "video") {
+    return <>{input}<VideoPlayerClient key={opened.url} title={opened.name} sourceUrl={opened.url} showNavbarFlowers={showNavbarFlowers} /></>;
+  }
+  if (opened) return <>{input}<ImageViewer key={opened.url} opened={opened} /></>;
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">

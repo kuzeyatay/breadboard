@@ -10,10 +10,12 @@ const prelude = `const state = () => globalThis[${JSON.stringify(key)}];`;
 const stubs = {
   "settings.ts": `${prelude}
     export const getRecallSettings = () => state().settings;
+    export const recallDb = null;
     export const updateRecallSettings = (_id, patch) => state().settings = state().patch(state().settings, patch);`,
   "install.ts": `${prelude}
     export const installState = () => ({installed: state().installed, supported: true});
     export const readInstallStatus = () => state().progress;
+    export const recallDatabaseQuarantined = () => !!state().quarantined;
     export const startInstall = async () => { state().installs++; state().progress = {phase: "installing", stalled: false}; };`,
   "runtime-service.ts": `${prelude}
     export const recallRuntimeManaged = () => true;
@@ -49,6 +51,20 @@ function reset(overrides = {}) {
 }
 const unavailableClient = {health: async () => { throw new Error("not running"); }};
 const startup = () => service.autoStartRecallCapture(7, {client: unavailableClient});
+
+test("a quarantined database is repaired before any start, and not again within six hours", async () => {
+  reset({ installed: true, quarantined: true, progress: { phase: "installed", stalled: false, updatedAt: "2026-01-01T00:00:00Z" },
+    runtime: { desiredState: "running", ownedByRequester: true, serviceState: "failed" } });
+  assert.equal((await startup()).outcome, "installing");
+  assert.equal((await startup()).outcome, "installing");
+  assert.equal(state().installs, 1, "one repair job while it is running");
+  state().progress = { phase: "installed", stalled: false, updatedAt: new Date().toISOString() };
+  assert.equal((await startup()).outcome, "install_failed");
+  assert.equal(state().installs, 1, "a repair that left the marker is not retried at once");
+  assert.equal(state().reconciles.length, 0);
+  state().quarantined = false;
+  assert.equal((await startup()).outcome, "already_running");
+});
 
 test("first launch installs once, waits, then starts with the current settings", async () => {
   reset();

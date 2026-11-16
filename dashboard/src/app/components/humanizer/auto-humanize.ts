@@ -49,6 +49,7 @@ export interface AutoHumanizeOutcome {
     total: number;
     activeIndex: number;
     derived: boolean;
+    answerModel?: string;
     origins: Array<"original" | "humanizer">;
     review?: HumanizerScoreSummary;
   };
@@ -146,6 +147,7 @@ export async function autoHumanizeMessage(input: {
     const review = (await rewrite.json()) as {
       rewrittenText?: string;
       unchanged?: boolean;
+      model?: { id?: string };
       scores?: unknown;
       integrity?: { passed?: boolean; issues?: unknown };
     };
@@ -184,6 +186,7 @@ export async function autoHumanizeMessage(input: {
         // The server refuses if the answer moved on since the rewrite began.
         expectedContent: input.content,
         rewrittenText: review.rewrittenText,
+        answerModel: review.model?.id,
       }),
       ...(input.signal ? { signal: input.signal } : {}),
     });

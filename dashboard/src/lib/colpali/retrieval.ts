@@ -147,6 +147,7 @@ export async function retrieveDocumentAttachments(
       if (!base64) continue;
       pageImages.push({
         type: "image",
+        context: "document-page",
         // Named for where it came from, because the model is about to be shown
         // a picture with no other context: "page 12 of supply.pdf" is the
         // difference between a citation and a guess.

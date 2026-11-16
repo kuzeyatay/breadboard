@@ -5,7 +5,7 @@
 // tests drive it against local services.
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { annotationPageUrl, annotationTargetKey, normalizeAnnotationTarget } from "../browser-annotations.ts";
+import { annotationPageUrl, annotationTargetKey, normalizeAnnotationTarget, passageLink } from "../browser-annotations.ts";
 import type { AnnotationMessage, AnnotationResponse, AnnotationThread, BrowserAnnotationTarget } from "../browser-annotations.ts";
 import { OAuthError, dpopFetch, finishAuthorization, isDid, normalizeHandle, refreshTokens, resolveHandle, resolveIdentity, revokeTokens, startAuthorization } from "./atproto-oauth.ts";
 import type { Fetcher } from "./atproto-oauth.ts";
@@ -30,7 +30,8 @@ export interface CrumbsFeedItem { id: string; author: CrumbsPerson; url: string;
 export interface CrumbsNote { uri: string; handle: string | null; displayName: string | null; avatar: string | null; body: string; source: string | null; createdAt: string; helpful: number; unhelpful: number; shown: boolean; myRating: boolean | null; own: boolean }
 export interface CrumbsOrg { id: string; name: string; role: "admin" | "member"; ready: boolean }
 export interface CrumbsRoom { id: string; name: string; own: boolean; fixed: boolean }
-export interface CrumbsChatMessage { id: string; author: string; handle: string | null; avatar: string | null; did: string; body: string; createdAt: string; own: boolean; agent?: boolean; parent?: string; unverified?: boolean }
+export interface CrumbsChatMessage { id: string; author: string; handle: string | null; avatar: string | null; did: string; body: string; createdAt: string; own: boolean; agent?: boolean; parent?: string; unverified?: boolean; /** Set when the message is a crumb: what it is about. */ crumb?: ChatCrumb }
+export interface ChatCrumb { target: BrowserAnnotationTarget; body: string; source: string | null }
 export interface CrumbsStatus {
   signedIn: boolean; needsSignIn: boolean; did: string | null; handle: string | null; displayName: string | null; avatar: string | null;
   defaultVisibility: CrumbsVisibility; servers: { indexer: string; orgStore: string };
@@ -38,16 +39,7 @@ export interface CrumbsStatus {
   publicMode: "records" | "posts";
 }
 
-/** A link that opens the page scrolled to the passage, using the web's text-fragment syntax. */
-export function passageLink(target: BrowserAnnotationTarget): string {
-  if (target.kind !== "text" || !target.quote) return target.url;
-  const words = target.quote.trim().split(/\s+/);
-  const part = (text: string) => encodeURIComponent(text).replace(/-/g, "%2D");
-  const fragment = words.length <= 12 ? part(words.join(" ")) : `${part(words.slice(0, 5).join(" "))},${part(words.slice(-5).join(" "))}`;
-  const url = new URL(target.url);
-  url.hash = `${url.hash.replace(/^#/, "")}:~:text=${fragment}`;
-  return url.href;
-}
+export { passageLink };
 
 interface IndexerItem { uri: string; did: string; handle: string | null; displayName: string | null; avatar: string | null; url: string; target: BrowserAnnotationTarget; targetKey: string; comment: string; source: string | null; createdAt: string; threadCount?: number; state?: string; reason?: string | null; note?: { uri: string; body: string; source: string | null }; noteCount?: number }
 interface OrgDetail { id: string; epoch: number; nameCt: string; role: "admin" | "member"; needsRotation: boolean; members: Array<{ did: string; role: "admin" | "member" }>;
@@ -771,7 +763,7 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
   const ROOMS_CHANNEL = "crumbs:rooms";
   const roomChannel = (roomId: string) => `crumbs:room:${roomId}`;
   const GENERAL: CrumbsRoom = { id: "general", name: "General", own: false, fixed: true };
-  interface ChatPlain { kind: "chat" | "room"; body?: string; name?: string; agent?: boolean; parent?: string; author?: { handle: string | null; displayName: string | null; avatar: string | null } }
+  interface ChatPlain { kind: "chat" | "room"; body?: string; name?: string; agent?: boolean; parent?: string; crumb?: ChatCrumb; author?: { handle: string | null; displayName: string | null; avatar: string | null } }
 
   async function channelMessages(userId: number, orgId: string, keys: Map<number, Buffer>, channel: string, query = "") {
     const indexes = [...keys.values()].map(key => crypto.pageIndex(key, channel));
@@ -822,16 +814,22 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     const opened = await channelMessages(userId, orgId, keys, roomChannel(room), after ? `&after=${encodeURIComponent(after)}` : "&latest=200");
     return { admin: detail.role === "admin", messages: opened.filter(item => item.plain.kind === "chat" && typeof item.plain.body === "string").map(({ message, plain, verified }) => ({
       id: message.id, author: plain.author?.displayName || shortHandle(plain.author?.handle) || "A member", handle: plain.author?.handle ?? null, avatar: plain.author?.avatar ?? null, did: message.sender,
-      body: plain.body!, createdAt: message.createdAt, own: message.sender === me.did, ...(plain.agent ? { agent: true } : {}), ...(typeof plain.parent === "string" ? { parent: plain.parent } : {}), ...(verified ? {} : { unverified: true }) })) };
+      body: plain.body!, createdAt: message.createdAt, own: message.sender === me.did, ...(plain.agent ? { agent: true } : {}), ...(typeof plain.parent === "string" ? { parent: plain.parent } : {}), ...crumbOf(plain.crumb), ...(verified ? {} : { unverified: true }) })) };
   }
-  async function sendChat(userId: number, orgId: string, roomId: unknown, text: unknown, extra: { agent?: boolean; parent?: string; author?: ChatPlain["author"] } = {}) {
+  /** What another member sent is checked like anything typed here. */
+  function crumbOf(value: unknown): { crumb?: ChatCrumb } {
+    const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    const target = normalizeAnnotationTarget(raw.target);
+    return target && typeof raw.body === "string" ? { crumb: { target, body: raw.body.slice(0, 4000), source: annotationPageUrl(raw.source) } } : {};
+  }
+  async function sendChat(userId: number, orgId: string, roomId: unknown, text: unknown, extra: { agent?: boolean; parent?: string; crumb?: ChatCrumb; author?: ChatPlain["author"] } = {}) {
     const body = typeof text === "string" ? text.trim() : "";
     if (!body || body.length > 12000) throw new CrumbsError(400, "Write between 1 and 12,000 characters.");
     const room = String(roomId ?? GENERAL.id);
     if (!/^[a-zA-Z0-9-]{1,64}$/.test(room)) throw new CrumbsError(404, "Room not found.");
     const me = account(userId);
     const { detail, key } = await readyOrg(userId, orgId);
-    return { id: await postToChannel(userId, orgId, detail.epoch, key, roomChannel(room), { kind: "chat", body, author: extra.author ?? { handle: me.handle, displayName: me.displayName, avatar: me.avatar }, ...(extra.agent ? { agent: true } : {}), ...(extra.parent ? { parent: extra.parent } : {}) }) };
+    return { id: await postToChannel(userId, orgId, detail.epoch, key, roomChannel(room), { kind: "chat", body, author: extra.author ?? { handle: me.handle, displayName: me.displayName, avatar: me.avatar }, ...(extra.agent ? { agent: true } : {}), ...(extra.parent ? { parent: extra.parent } : {}), ...(extra.crumb ? { crumb: extra.crumb } : {}) }) };
   }
   async function deleteChat(userId: number, orgId: string, messageId: unknown) { await orgStore(userId, "DELETE", `/orgs/${orgId}/messages/${encodeURIComponent(String(messageId))}`); }
   async function reportChat(userId: number, orgId: string, messageId: unknown, reason: unknown) {

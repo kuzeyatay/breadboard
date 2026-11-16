@@ -31,6 +31,7 @@ import ComposerBorderBeam from "@/app/components/effects/composer-border-beam";
 import { readStored, writeStored } from "../lib/message-state";
 import { Button } from "@/app/buzz/ui/button";
 import { EmojiPicker } from "./emoji-picker";
+import { ComposerIntelligence } from "./composer-intelligence";
 import {
   Tooltip,
   TooltipContent,
@@ -101,12 +102,15 @@ export function Composer({
 
   const applyMention = (handle: string) => {
     const element = inputRef.current;
-    const caret = element?.selectionStart ?? value.length;
-    const before = value
-      .slice(0, caret)
-      .replace(/(?:^|\s)@([a-z0-9-]*)$/i, (whole) =>
-        whole.startsWith("@") ? `@${handle} ` : ` @${handle} `,
-      );
+    const open = /(^|\s)@[a-z0-9-]*$/i;
+    // The caret is stale when the list was opened from the @ button while the
+    // editor was not focused, so look for the open "@" at the caret, then at
+    // the end of the draft, and otherwise add the mention at the end.
+    const caret = [element?.selectionStart ?? value.length, value.length].find((at) => open.test(value.slice(0, at))) ?? value.length;
+    const head = value.slice(0, caret);
+    const before = open.test(head)
+      ? head.replace(open, `$1@${handle} `)
+      : `${head}${head === "" || /\s$/.test(head) ? "" : " "}@${handle} `;
     changeValue(before + value.slice(caret));
     setMentionQuery(null);
     requestAnimationFrame(() => {
@@ -116,9 +120,11 @@ export function Composer({
   };
 
   const insertAt = () => {
-    changeValue(`${value}${value.endsWith(" ") || value === "" ? "" : " "}@`);
+    const next = `${value}${/\s$/.test(value) || value === "" ? "" : " "}@`;
+    changeValue(next);
     requestAnimationFrame(() => {
       inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(next.length, next.length);
       setMentionQuery("");
     });
   };
@@ -211,6 +217,8 @@ export function Composer({
                   role="option"
                   aria-selected={index === highlighted}
                   onMouseEnter={() => setHighlighted(index)}
+                  // Keep focus, and with it the caret, in the editor while a name is clicked.
+                  onMouseDown={(event) => event.preventDefault()}
                   onClick={() => applyMention(member.handle)}
                   className={cn(
                     "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm",
@@ -397,6 +405,8 @@ export function Composer({
               </Tooltip>
             </div>
 
+            <div className="flex items-center gap-2">
+            <ComposerIntelligence disabled={disabled} />
             <MetalSendButton
               variant="circle"
               disabled={disabled || value.trim() === ""}
@@ -415,6 +425,7 @@ export function Composer({
               <ArrowUp aria-hidden />
             </Button>
             </MetalSendButton>
+            </div>
           </div>
         </div>
         </ComposerBorderBeam>

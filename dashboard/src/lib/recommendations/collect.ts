@@ -1,4 +1,5 @@
 import { cleanRecommendationText, type RecommendationEvidence } from './types.ts';
+import { bookingMentionsEventDate, mentionsEvent, planningCalendarOrder } from './planning-context.ts';
 
 /** Independent bounded reads: one disconnected service cannot discard the rest. */
 export async function collectRecommendationEvidence(readers: Array<() => Promise<RecommendationEvidence[]>>, timeoutMs = 10_000) {
@@ -26,6 +27,16 @@ export async function collectRecommendationEvidence(readers: Array<() => Promise
   for (const item of cleaned) {
     const group = groups.get(item.source) ?? [];
     group.push(item); groups.set(item.source, group);
+  }
+  const calendar = groups.get('calendar');
+  if (calendar) {
+    const mail = [...(groups.get('gmail') ?? []), ...(groups.get('outlook') ?? [])];
+    const ordered = planningCalendarOrder(calendar, mail);
+    groups.set('calendar', ordered);
+    const linked = new Set(mail.filter(message => ordered.some(event => mentionsEvent(message, event) || bookingMentionsEventDate(message, event))));
+    for (const source of ['gmail', 'outlook']) {
+      groups.get(source)?.sort((a, b) => Number(linked.has(b)) - Number(linked.has(a)));
+    }
   }
   const mixed: RecommendationEvidence[] = [];
   for (let index = 0; mixed.length < 28; index++) {

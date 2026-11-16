@@ -3,10 +3,7 @@ import test from 'node:test';
 import Database from 'better-sqlite3';
 
 import { activityRecommendationEvidence, connectionRecommendationEvidence } from '../src/lib/recommendations/activity-context.ts';
-import { automationCandidate, connectionPrompt } from '../src/lib/recommendations/quality.ts';
 import { evidenceRecommendations, parseRecommendations, selectRecommendations } from '../src/lib/recommendations/types.ts';
-import { parseExplicitScheduleRequest } from '../src/lib/schedules/natural-language.ts';
-import { parseExplicitHookRequest } from '../src/lib/hooks/natural-language.ts';
 
 function database() {
   const db = new Database(':memory:');
@@ -41,63 +38,42 @@ function database() {
   return db;
 }
 
-test('activity evidence covers memory, broken or fresh automations and repeated questions, for this user only', () => {
-  const evidence = activityRecommendationEvidence(database(), 1);
-  const ids = evidence.map(item => item.id);
-  assert.ok(ids.includes('memory:1') && !ids.includes('memory:2') && !ids.includes('memory:3'));
-  assert.ok(evidence.find(item => item.id === 'schedule:1').summary.includes('Model quota exhausted'));
-  assert.ok(ids.includes('hook:h1') && !ids.includes('hook:h2'));
-  const opener = evidence.find(item => item.id.startsWith('repeat-open:'));
-  const follow = evidence.find(item => item.id.startsWith('repeat-follow:'));
-  assert.equal(opener.title, 'Summarize the latest AI news');
-  assert.equal(follow.title, 'Save the key decisions to my notes');
-  assert.ok(!evidence.some(item => /weather/i.test(item.title) && item.id.startsWith('repeat')), 'already scheduled');
-  assert.doesNotMatch(JSON.stringify(evidence), /Other user secret/);
-});
-
-test('app markers, small talk and one-off questions never become automation cards', () => {
+test('only observed automation failures warrant cards, regardless of repeated chat openers and follow-ups', t => {
   const db = database();
-  for (let id = 10; id <= 12; id++) {
-    db.prepare('INSERT INTO conversations(id,user_id) VALUES(?,1)').run(id);
-    db.prepare("INSERT INTO conversation_messages(conversation_id,role,content,order_index) VALUES(?,'user','(Started a voice conversation)',0),(?,'user','Stop just tell me the answer',3)").run(id, id);
-  }
+  t.after(() => db.close());
   const evidence = activityRecommendationEvidence(db, 1);
-  assert.doesNotMatch(JSON.stringify(evidence), /Started a voice|Stop just tell/);
-  assert.equal(automationCandidate({ id: 'repeat-open:hi', source: 'schedule', title: 'Hi there how is your day going', summary: '' }), null);
+  assert.deepEqual(new Set(evidence.map(item => item.id)), new Set(['memory:1','schedule:1','hook:h1']));
+  assert.match(evidence.find(item => item.id === 'schedule:1').summary, /Model quota exhausted/);
+  assert.doesNotMatch(JSON.stringify(evidence), /Other user secret|Daily weather|Asked by hand/);
+  const cards = evidenceRecommendations(evidence);
+  assert.deepEqual(new Set(cards.flatMap(card => card.sourceIds)), new Set(['schedule:1','hook:h1']));
+  assert.ok(cards.every(card => card.usefulness === 'urgent'));
 });
 
-test('automation cards are phrased so sending them creates the schedule or hook', () => {
-  const schedule = automationCandidate({ id: 'repeat-open:x', source: 'schedule', title: 'Summarize the latest AI news', summary: '' });
-  assert.equal(parseExplicitScheduleRequest(schedule).prompt, 'summarize the latest AI news');
-  const question = automationCandidate({ id: 'repeat-open:y', source: 'schedule', title: "What's the weather in Eindhoven?", summary: '' });
-  assert.ok(parseExplicitScheduleRequest(question));
-  const hook = automationCandidate({ id: 'repeat-follow:z', source: 'hook', title: 'Save the key decisions to my notes', summary: '' });
-  assert.equal(parseExplicitHookRequest(hook).provider, 'chat_completed');
-});
-
-test('any connected app becomes a card naming it, except apps read in depth', () => {
+test('available app tools supply context and cannot fill the board alone', () => {
   const evidence = connectionRecommendationEvidence([{ slug: 'linear', name: 'Linear' }, { slug: 'gmail', name: 'Gmail' },
     { slug: 'some-new-app', name: 'Some New App' }, { slug: 'linear', name: 'Linear' }], new Set(['gmail']));
   assert.deepEqual(evidence.map(item => item.id), ['connection:linear', 'connection:some-new-app']);
-  assert.match(connectionPrompt('linear', 'Linear'), /assigned to me/);
-  assert.match(connectionPrompt('some-new-app', 'Some New App'), /Some New App/);
-  const cards = evidenceRecommendations(evidence);
-  assert.ok(cards.length > 0 && cards.every(card => /Linear|Some New App/.test(card.sourceLabel)));
+  assert.deepEqual(evidenceRecommendations(evidence), []);
+  const chat = {id:'chat:5',source:'chat',title:'Meridian rollout',summary:'Last asked: Which rollout blockers did Jo assign to me in Linear?'};
+  const [proposal] = parseRecommendations([{prompt:'Find the Meridian rollout blockers Jo assigned me in Linear.',sourceIds:[chat.id,evidence[0].id]}],[chat,...evidence]);
+  assert.deepEqual(selectRecommendations([proposal],[chat,...evidence]).map(card=>card.sourceIds),[proposal.sourceIds]);
 });
 
 test('cards stay until they stop applying or something clearly more useful arrives', () => {
   const chat = { id: 'chat:1', source: 'chat', title: 'Op-amp design', summary: 'Last asked: why does it oscillate? Last reply: a long answer about phase margin.' };
-  const linear = { id: 'connection:linear', source: 'connection', title: 'Linear', summary: 'Linear is connected.' };
-  const first = evidenceRecommendations([chat, linear]);
+  const task = { id: 'task:1', source: 'task', title: 'Draft the workshop proposal', summary: 'Address the cost estimate.' };
+  const original = parseRecommendations([{prompt:'Walk me through checking the phase margin of my op-amp design.',sourceIds:[chat.id]}], [chat]);
+  const first = selectRecommendations([...original, ...evidenceRecommendations([task])], [chat, task]);
   assert.equal(first.length, 2);
   // A weaker newcomer does not displace anything: the four slots are not full, so it is added.
   const brokenHook = { id: 'hook:h1', source: 'hook', title: 'Lint on save', summary: 'Hook failed on its last run: Exit 1.' };
-  const next = evidenceRecommendations([chat, linear, brokenHook], first);
+  const next = evidenceRecommendations([chat, task, brokenHook], first);
   assert.deepEqual(next.slice(0, 2).map(card => card.prompt), first.map(card => card.prompt), 'kept cards keep their slot and wording');
   assert.equal(next.find(card => card.sourceIds.includes('hook:h1')).usefulness, 'urgent');
   // A full board: a clearly more useful card replaces the weakest one, in place.
-  const full = [1, 2, 3, 4].map(index => ({ id: `connection:app${index}`, source: 'connection', title: `App ${index}`, summary: '' }));
-  const board = evidenceRecommendations(full);
+  const full = [1, 2, 3, 4].map(index => ({ ...chat, id: `chat:${index}`, title: `Design ${index}` }));
+  const board = selectRecommendations(parseRecommendations(full.map(row => ({ prompt: `Check the phase margin of ${row.title}.`, sourceIds:[row.id] })),full),full);
   assert.equal(board.length, 4);
   const upgraded = evidenceRecommendations([...full, brokenHook], board);
   assert.equal(upgraded.length, 4);

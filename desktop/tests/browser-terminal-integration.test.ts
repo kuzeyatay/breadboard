@@ -5,6 +5,22 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+test("side chat captures the active Breadboard page behind the dock through its preload", async () => {
+  const desktop = path.resolve(__dirname, "../..");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-side-chat-view-"));
+  const env: NodeJS.ProcessEnv = { ...process.env, BB_TEST_WORKSPACE_CAPTURE: "1" };
+  delete env.ELECTRON_RUN_AS_NODE;
+  try {
+    const result = await runElectronFixture(require("electron") as string,
+      [path.join(desktop, "tests/fixtures/browser-terminal.cjs"), dir], desktop, env, 45_000);
+    assert.equal(result.error, undefined, result.output);
+    assert.equal(result.status, 0, result.output);
+  } finally {
+    assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
 test("browser Terminal reads and captures its own live tab through the preload and loopback bridge", async () => {
   const desktop = path.resolve(__dirname, "../..");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-browser-terminal-"));

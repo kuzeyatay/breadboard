@@ -223,6 +223,17 @@ export function installState(
   };
 }
 
+/**
+ * The engine leaves this marker after a hard SQLite fault (a full disk is the
+ * usual one) and exits on every start until its own repair has run. The
+ * install worker runs that repair; see recoverQuarantinedDatabase there.
+ */
+export function recallDatabaseQuarantined(
+  config: RecallConfig = getRecallConfig(),
+): boolean {
+  return fs.existsSync(path.join(config.dataDir, "db.sqlite.quarantine.json"));
+}
+
 const installSubmissionGlobal = globalThis as typeof globalThis & {
   __breadboardRecallInstallSubmission?: Promise<void>;
 };

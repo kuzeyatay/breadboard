@@ -22,6 +22,7 @@
 // Server-only. Called from a route, never from a client component.
 
 import type Database from "better-sqlite3";
+import { modelVerification } from "../hermes/evidence.ts";
 import db from "../db.ts";
 import type { HumanizerScoreSummary } from "../humanizer/review-types.ts";
 import {
@@ -33,6 +34,8 @@ import {
 export type MessageVersionOrigin = "original" | "humanizer" | "manual";
 
 export interface ConversationMessageVersion {
+  answerModel?: string;
+  usedFallback?: boolean;
   content: string;
   origin: MessageVersionOrigin;
   createdAt: string;
@@ -104,6 +107,8 @@ function parseVersions(value: unknown): ConversationMessageVersion[] {
     return [
       {
         content: record.content,
+        ...(typeof record.answerModel === "string" ? { answerModel: record.answerModel } : {}),
+        ...(record.usedFallback === true ? { usedFallback: true } : {}),
         origin,
         createdAt:
           typeof record.createdAt === "string" ? record.createdAt : new Date(0).toISOString(),
@@ -194,7 +199,11 @@ function write(
   // Garden transcripts still read the legacy projection. Updating only the
   // canonical row made a successful rewrite disappear when that chat reloaded.
   const legacyMetadata = { ...metadata };
-  if (state.derived) delete legacyMetadata.verification;
+  if (state.derived) {
+    const version = state.versions[state.activeIndex];
+    if (version.answerModel || version.usedFallback) legacyMetadata.verification = modelVerification(version.answerModel, version.usedFallback);
+    else delete legacyMetadata.verification;
+  }
   database.prepare(`
     UPDATE chat_messages SET content = ?, tool_calls = ?
     WHERE canonical_message_id = ? AND role = 'assistant'
@@ -221,6 +230,8 @@ export function addAssistantContentVersion(
     expectedContent: string;
     content: string;
     origin: Exclude<MessageVersionOrigin, "original">;
+    answerModel?: string;
+    usedFallback?: boolean;
     review?: HumanizerScoreSummary;
   },
   database: Database.Database = db,
@@ -262,6 +273,8 @@ export function addAssistantContentVersion(
       {
         content,
         origin: input.origin,
+        ...(input.answerModel ? { answerModel: input.answerModel } : {}),
+        ...(input.usedFallback ? { usedFallback: true } : {}),
         createdAt: new Date().toISOString(),
         derivedFrom: state.activeIndex,
         ...(input.review ? { review: input.review } : {}),
@@ -310,14 +323,18 @@ export function presentMessageVersions(state: MessageVersionState): {
   activeIndex: number;
   derived: boolean;
   origins: MessageVersionOrigin[];
+  answerModel?: string;
+  usedFallback?: boolean;
   review?: HumanizerScoreSummary;
 } {
-  const activeReview = state.versions[state.activeIndex]?.review;
+  const active = state.versions[state.activeIndex];
   return {
     total: state.versions.length,
     activeIndex: state.activeIndex,
     derived: state.derived,
+    ...(active?.answerModel ? { answerModel: active.answerModel } : {}),
+    ...(active?.usedFallback ? { usedFallback: true } : {}),
     origins: state.versions.map((version) => version.origin),
-    ...(activeReview ? { review: activeReview } : {}),
+    ...(active?.review ? { review: active.review } : {}),
   };
 }

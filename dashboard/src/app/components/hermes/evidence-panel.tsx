@@ -378,6 +378,10 @@ export default function EvidencePanel({
           <h3 className="truncate font-medium text-[var(--ink-heading)]">
             {title}
           </h3>
+          <p className="mt-1 break-words text-[var(--ink-muted)]">
+            {verification.answerModel === null ? "No completed model reply" :
+              verification.answerModel ? `Answered by ${verification.answerModel}` : "Answering model not recorded"}
+          </p>
           {verification.evidence.length ? (
             <p className="mt-0.5 text-[10px] text-[var(--ink-muted)]">
               {verification.evidence.length}{" "}

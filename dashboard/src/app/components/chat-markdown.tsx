@@ -30,6 +30,7 @@ import { allowMarkTextSelection, resolveChatTextSelectionAnchor } from '@/lib/ch
 import { repairDamagedLatex } from '@/lib/markdown-safety';
 import { chatMarkdownHref } from '@/lib/chat-markdown-links';
 import { remarkChatDetails } from '@/lib/chat-markdown-details';
+import { remarkChatDiagrams } from '@/lib/chat-markdown-diagram';
 import { normalizeMathDelimiters, outsideCode } from '@/lib/chat-markdown-math';
 import { containLongChatMarkdown } from '@/lib/chat-markdown-containment';
 
@@ -116,7 +117,7 @@ function normalizeTableCellBreaks(content: string): string {
   return lines.join('\n');
 }
 
-const remarkPlugins = [remarkGfm, remarkMath, remarkChatDetails, remarkLimitImageResults];
+const remarkPlugins = [remarkGfm, remarkMath, remarkChatDiagrams, remarkChatDetails, remarkLimitImageResults];
 const rehypePlugins = [rehypeKatex];
 
 const languageNames: Record<string, string> = {
@@ -436,6 +437,7 @@ function hastText(node: HastNode): string {
  */
 function annotationOpaqueText(node: HastNode): string | null {
   if (node.type !== 'element') return null;
+  if (node.properties?.['data-chat-diagram'] !== undefined) return '';
   if (annotationNodeHasClass(node, 'language-image-results', 'language-weather-results')) {
     return '';
   }

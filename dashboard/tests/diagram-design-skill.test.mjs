@@ -202,7 +202,33 @@ test("a follow-up keeps the guidance the first diagram was drawn with", () => {
   );
 });
 
+test("questions locating something in an existing diagram keep their text reply", () => {
+  const priorMessages = [{ role: "assistant", content: "Here is the AI taxonomy diagram." }];
+  for (const surface of ["garden_chat", "dashboard_terminal"]) {
+    const route = (text) => diagramCommandText({ text, surface, authenticated: true, priorMessages });
+    for (const text of [
+      "in this diagram where does shannons chess bot fit?",
+      "Given the AI taxonomy diagram where would a chess engine belong?",
+      "Looking at the chart how do I read the left branch?",
+      "Show me where the chess bot fits in this diagram.",
+    ]) {
+      assert.deepEqual(route(text), { text, automatic: false }, text);
+    }
+    for (const text of [
+      "Could you diagram where the chess bot fits?",
+      "Explain the search algorithm and then diagram how it chooses a move.",
+      "Show me a diagram of where the chess bot fits.",
+      "Draw another branch in this diagram.",
+      "In this diagram where does the bot fit? Then draw a flowchart of its search.",
+    ]) {
+      assert.deepEqual(route(text), { text: `/${DIAGRAM_IN_CHAT_SKILL} ${text}`, automatic: true }, text);
+    }
+  }
+});
+
 test("selection is scoped to authenticated chat surfaces", () => {
+  const markup = "Draw a box around the search branch on this diagram.";
+  assert.equal(shouldAutoSelectDiagramInChat({ text: markup, surface: "garden_chat", authenticated: true, hasImageAttachment: true }), false);
   const text = "draw me an architecture diagram of the payment service";
   assert.equal(
     shouldAutoSelectDiagramInChat({ text, surface: "quartz_ai", authenticated: true }),

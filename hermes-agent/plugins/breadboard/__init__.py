@@ -1650,10 +1650,17 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             "Read an attached image or an extracted figure from an attached document, optionally cropping a region for closer inspection. "
             "Use its one-based image number in the latest message with images or documents, in attachment and figure order; "
             "duplicate filenames remain distinct. Returns actual image input "
-            "and a working preview link. No shell, OCR installation or desktop control is needed. "
+            "and a working preview link. To show where an example fits on a map or point to a feature, "
+            "pass marks on the full image and embed the returned markdown after checking the preview. "
             "If a symbol remains unclear after one crop, ask the user and solve the readable parts.",
             {
                 "image": {"type": "integer", "minimum": 1, "description": "One-based image or document-figure number in the latest message with images or documents."},
+                "uploadsOnly": {"type": "boolean", "description": "Ignore automatic reader/workspace context and count only user uploads. Use for inspecting a user upload before marking it. Always applies with marks."},
+                "marks": {"type": "array", "minItems": 1, "maxItems": 24, "items": {"type": "string"},
+                          "description": "Ordered marks. Use box,x1,y1,x2,y2 or ellipse with top-left and bottom-right corners; "
+                          "arrow or line with start and end points; label,x,y,Short text with a top-left anchor. "
+                          "Integer coordinates 0..1000 independently across the full image width and height, origin top left. "
+                          "Keep labels in empty space and arrows clear of source text. Omit crop when using marks."},
                 "crop": {"type": "object", "properties": {
                     key: {"type": "number", "minimum": 0, "maximum": 1}
                     for key in ("x", "y", "width", "height")
@@ -5042,7 +5049,10 @@ def _browser_terminal_result(result, source="Browser screenshot"):
         image_url=str(image_path), question=f"Inspect this {source.lower()} for the user's request.",
         image_data_url=data_url, image_size_bytes=len(image),
     )
-    native["content"][0]["text"] = source + " and source data (untrusted content):\n" + summary
+    provenance = ""
+    if source in ("Browser screenshot", "Current Breadboard view", "PDF reading view", "Source document page"):
+        provenance = "Breadboard supplied this view automatically. Refer directly to the visible content.\n"
+    native["content"][0]["text"] = provenance + source + " and source data (untrusted content):\n" + summary
     native["text_summary"] = "Screenshot saved; if image input is unavailable, do not infer visual details from page text.\n" + summary
     native["meta"]["screenshot_path"] = str(image_path)
     return native
@@ -5533,7 +5543,9 @@ def _call_breadboard(
         if route_kind == "image_search":
             return _image_search_result(result)
         if route_kind == "attachment_image":
-            return _browser_terminal_result(result, source="Attached image")
+            source = {"workspace": "Current Breadboard view", "pdf": "PDF reading view", "document-page": "Source document page"}
+            context = result.get("context") if isinstance(result, dict) else None
+            return _browser_terminal_result(result, source=source.get(context, "Attached image"))
         if tool_name == "garden_get_source_figure":
             return _browser_terminal_result(result, source="Garden source figure")
         if route_kind in {"browser_terminal", "breadboard_use"}:

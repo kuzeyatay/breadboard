@@ -95,6 +95,9 @@ export interface ExternalAgentCall {
 }
 
 export interface VerificationSummary {
+  /** Final reply model reported by the provider. Null means no completed answer. */
+  answerModel?: string | null;
+  usedFallback?: boolean;
   /** Coverage review is separate from factual/tool verification. */
   explanationReview?: ExplanationReviewReport;
   state: VerificationState;
@@ -279,6 +282,8 @@ export function evidenceTitleForTool(
 }
 
 export interface VerificationOptions {
+  answerModel?: string | null;
+  usedFallback?: boolean;
   explanationReview?: ExplanationReviewReport;
   /**
    * Breadboard decided before dispatch that this turn needs verified map data.
@@ -562,6 +567,21 @@ export function reportWebGrounding(
       };
 }
 
+export function modelVerification(answerModel?: string | null, usedFallback = false): VerificationSummary {
+  return {
+    state: "unverified", evidence: [], unsupportedClaims: [], assumptions: [],
+    ...(answerModel !== undefined ? { answerModel } : {}),
+    ...(usedFallback ? { usedFallback: true } : {}),
+  };
+}
+
+export function providerReplyVerification(headers: Headers, model?: string): VerificationSummary {
+  return modelVerification(
+    headers.get("x-breadboard-answer-model") || model || headers.get("x-chatmock-resolved-model") || undefined,
+    (headers.get("x-breadboard-answer-fallback") ?? headers.get("x-chatmock-failover")) === "true",
+  );
+}
+
 export function assessVerification(
   text: string,
   evidence: EvidenceRecord[],
@@ -664,6 +684,8 @@ export function assessVerification(
     evidence,
     unsupportedClaims,
     assumptions: [],
+    ...(options.usedFallback ? { usedFallback: true } : {}),
+    ...(options.answerModel !== undefined ? { answerModel: options.answerModel } : {}),
     ...(options.explanationReview ? { explanationReview: options.explanationReview } : {}),
     externalAgents: options.externalAgents ?? [],
     ...(webGrounding.required ? { webGrounding } : {}),

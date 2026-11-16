@@ -9,6 +9,7 @@ import { createCrumbs } from '../src/lib/crumbs/core.ts';
 import { createBuzzBridge } from '../src/lib/crumbs/buzz-bridge.ts';
 import { ensureBuzzSchema } from '../src/lib/buzz/schema.ts';
 import { postMessage } from '../src/lib/buzz/store.ts';
+import { browserAnnotationFeed, browserAnnotationMine, writeBrowserAnnotation } from '../src/lib/browser-annotations-store.ts';
 import { openDatabase } from '../../crumbs/lib/db.mjs';
 import { serve } from '../../crumbs/lib/http.mjs';
 import { createIndexer, settings as indexerSettings } from '../../crumbs/indexer.mjs';
@@ -136,6 +137,31 @@ test('the Organization page: an encrypted organization appears with its rooms, a
   assert.ok(!JSON.stringify(await orgDb.all('SELECT * FROM messages')).includes('hi from finn'), 'relayed messages are ciphertext in the store');
 });
 
+test('a crumb left in a connected organization reaches the other members as a crumb on that page', async () => {
+  const { eve, finn } = people;
+  const room = db => db.prepare("SELECT id, public_id AS publicId FROM buzz_rooms WHERE name='design'").get();
+  const target = { kind: 'text', url: 'https://example.com/paper', title: 'A paper', quote: 'the result held for twelve weeks' };
+  const eveRoom = room(eve.db), finnRoom = room(finn.db);
+  eve.db.prepare("INSERT OR IGNORE INTO organization_members(organization_id, user_id, role) SELECT organization_id, 1, 'owner' FROM buzz_rooms WHERE id=?").run(eveRoom.id);
+  finn.db.prepare("INSERT OR IGNORE INTO organization_members(organization_id, user_id, role) SELECT organization_id, 1, 'owner' FROM buzz_rooms WHERE id=?").run(finnRoom.id);
+  writeBrowserAnnotation(eve.db, 1, 'eve', { scope: `room:${eveRoom.publicId}`, target, action: 'comment', body: 'Worth a second look', source: 'https://example.com/source', operationId: 'op-crumb-1' });
+  await eve.bridge.syncRoom(1, eveRoom.id); await finn.bridge.syncRoom(1, finnRoom.id);
+  const seen = browserAnnotationFeed(finn.db, 1, `room:${finnRoom.publicId}`);
+  assert.deepEqual(seen.map(item => [item.author.displayName, item.comment, item.source, item.target.quote, item.own, item.author.avatar]),
+    [['eve', 'Worth a second look', 'https://example.com/source', target.quote, false, 'https://cdn.test/eve.test.jpg']]);
+  assert.match(seen[0].url, /example\.com\/paper#:~:text=the%20result/);
+
+  // Finn replies on the same passage; it joins Eve's thread instead of starting a second one.
+  writeBrowserAnnotation(finn.db, 1, 'finn', { scope: `room:${finnRoom.publicId}`, target, action: 'comment', body: 'Agreed', operationId: 'op-crumb-2' });
+  await finn.bridge.syncRoom(1, finnRoom.id); await eve.bridge.syncRoom(1, eveRoom.id);
+  const atEve = browserAnnotationFeed(eve.db, 1, `room:${eveRoom.publicId}`);
+  assert.deepEqual(atEve.map(item => [item.comment, item.threadCount, item.own]), [['Worth a second look', 2, true]]);
+  assert.deepEqual(browserAnnotationMine(eve.db, 1).map(item => [item.comment, item.audience, item.scope]), [['Worth a second look', 'Studio', `room:${eveRoom.publicId}`]]);
+  for (let round = 0; round < 2; round++) { await eve.bridge.syncAll(1); await finn.bridge.syncAll(1); }
+  assert.equal(browserAnnotationFeed(eve.db, 1, `room:${eveRoom.publicId}`)[0].threadCount, 2, 'no echoes');
+  assert.ok(!JSON.stringify(await orgDb.all('SELECT * FROM messages')).includes('example.com/paper'), 'the store never sees the page');
+});
+
 test('a Breadboard organization stays local until it is connected, then appears on Crumbs with its rooms', async () => {
   const { eve } = people;
   const org = Number(eve.db.prepare("INSERT INTO organizations(name, created_by_user_id) VALUES('test organization', 1)").run().lastInsertRowid);
@@ -148,6 +174,7 @@ test('a Breadboard organization stays local until it is connected, then appears 
   const remote = (await eve.crumbs.listOrgs(1)).find(item => item.name === 'test organization');
   assert.ok(remote, 'connected organizations are listed on Crumbs');
   assert.ok((await eve.crumbs.listRooms(1, remote.id)).some(room => room.name === 'lab'), 'its rooms are announced');
+  assert.equal(eve.db.prepare('SELECT COUNT(*) AS n FROM buzz_rooms WHERE organization_id=?').get(org).n, 2, 'the general room it comes with is matched by name, not made twice');
   assert.deepEqual(eve.bridge.localOrganizations(1), []);
   await eve.bridge.syncAll(1);
   assert.equal(eve.db.prepare("SELECT COUNT(*) AS n FROM organizations WHERE name='test organization'").get().n, 1, 'no duplicate local twin');

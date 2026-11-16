@@ -89,6 +89,12 @@ function summary(overrides = {}) {
   };
 }
 
+test("answer attribution survives empty evidence and distinguishes legacy and failed replies", () => {
+  assert.match(render(summary({ answerModel: "provider/served-model" })), /Answered by provider\/served-model/);
+  assert.match(render(summary({ answerModel: null })), /No completed model reply/);
+  assert.match(render(summary()), /Answering model not recorded/);
+});
+
 test("a failed lookup names the action, not the tool", () => {
   const markup = render(summary({ evidence: [evidence()] }));
   assert.match(markup, /Searching the web/);

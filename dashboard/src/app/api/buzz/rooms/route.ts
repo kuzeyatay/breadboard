@@ -5,6 +5,7 @@ import { apiErrorResponse, readJsonBody, ApiError } from "@/lib/hermes/route-hel
 import { listOrganizations, memberRole } from "@/lib/organizations/store.ts";
 import {
   createRoom,
+  ensureCrumbsRoom,
   ensureSelfMember,
   listMembers,
   listRoomsForUser,
@@ -32,6 +33,8 @@ export async function GET(request: Request) {
     const includeArchived =
       new URL(request.url).searchParams.get("archived") === "1";
 
+    // The browser panel posts an organization's crumbs to its crumbs room, so the room exists before it is listed.
+    for (const organization of listOrganizations(userId)) ensureCrumbsRoom(organization.id, userId);
     const organizations = listOrganizations(userId).map((organization) => ({
       id: organization.id,
       name: organization.name,

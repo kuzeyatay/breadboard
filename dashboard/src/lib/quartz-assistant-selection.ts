@@ -70,7 +70,7 @@ export function normalizeQuartzAssistantSelection(
   const pageSlug = boundedText(record.pageSlug, 400)?.trim();
   const question = boundedText(record.question, 8_000)?.trim();
   const attachments = reusableChatAttachments(normalizeChatMessageAttachments(record.attachments))
-    .filter(attachment => attachment.type === "image" && attachment.context !== "pdf");
+    .filter(attachment => attachment.type === "image" && !attachment.context);
   const sourceMessageId = boundedText(record.sourceMessageId, 128);
   const sourceResponse = sourceMessageId && OPAQUE_ID.test(sourceMessageId)
     ? boundedText(record.sourceResponse, 20_000) : undefined;

@@ -276,7 +276,7 @@ export function describeLoginExit(code: number | null, output: string): string {
     .filter((line) => /^ERROR:/i.test(line))
     .at(-1);
   if (reported) return reported.replace(/^ERROR:\s*/i, "");
-  return `The ChatMock sign-in exited with code ${code ?? "unknown"} before completing.`;
+  return `The sign-in exited with code ${code ?? "unknown"} before completing.`;
 }
 
 /** Synchronous durable view used by settings payloads and pure unit tests. */
@@ -311,8 +311,8 @@ function snapshotFailure(pointer: LoginPointer, snapshot: RuntimeJobSnapshot): C
     error: snapshot.state === "cancelled"
       ? null
       : snapshot.state === "resource_exhausted"
-        ? "Windows commit headroom is too low to start ChatMock sign-in."
-        : snapshot.failureMessage ?? "The ChatMock sign-in was interrupted.",
+        ? "Windows commit headroom is too low to start sign-in."
+        : snapshot.failureMessage ?? "The sign-in was interrupted.",
   };
 }
 
@@ -380,7 +380,7 @@ async function waitForAuthorization(
     authorizationUrl: null,
     startedAt: pointer?.submittedAt ?? new Date().toISOString(),
     finishedAt: new Date().toISOString(),
-    error: "ChatMock did not report an authorization URL.",
+    error: "Sign-in did not return an authorization URL.",
   };
   if (pointer?.jobId === jobId) writePointer(userId, { ...pointer, terminal: failed });
   return failed;
@@ -392,7 +392,7 @@ async function startChatmockLoginOnce(
 ): Promise<ChatmockLoginState> {
   if (!isRuntimeV2ServiceControlConfigured()) {
     throw new RuntimeAuthorityUnavailableError(
-      "ChatMock sign-in requires the Breadboard Runtime job owner.",
+      "Sign-in requires the Breadboard Runtime job owner.",
     );
   }
   const existing = readPointer(userId);

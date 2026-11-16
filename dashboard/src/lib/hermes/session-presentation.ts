@@ -25,6 +25,7 @@ import {
   summarizeReviewScores,
 } from "../humanizer/review.ts";
 import { normalizeChatTextSelectionReference } from "../chat-text-selection.ts";
+import { modelVerification } from "./evidence.ts";
 import { memoryUpdatedClientMessageIdsForSession } from "./memory-evidence.ts";
 import { getRuntimeSessionByConversation } from "./runtime-store.ts";
 import {
@@ -336,9 +337,14 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
             messages: conversationMessages,
           })
         : [];
-    const verification = contentVersions.derived
-      ? undefined
-      : withCarriedExternalAgents(metadata.verification, carriedDelegations);
+    const version = contentVersions.versions[contentVersions.activeIndex];
+    let verification = withCarriedExternalAgents(metadata.verification, carriedDelegations);
+    if (contentVersions.derived) {
+      verification = version.answerModel || version.usedFallback
+        ? modelVerification(version.answerModel, version.usedFallback) : undefined;
+    } else if (presented.status === "failed" || presented.status === "aborted") {
+      verification = { ...(verification ?? modelVerification()), answerModel: null, usedFallback: false };
+    }
     let externalAgent = externalAgentMessageFields(metadata);
     if (
       presented.role === "assistant" &&

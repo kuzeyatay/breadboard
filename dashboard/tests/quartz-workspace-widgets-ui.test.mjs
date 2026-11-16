@@ -97,6 +97,7 @@ test('Quartz and Workspace preserve streamed widgets, controls, and restored res
           const msg=message,visibleAssistantContent=message.content,chatSessionId=1,i=0;
           const onSend=text=>window.sent.push(text),onGenerativeUiAction=action=>window.sent.push(action.type);
           const activeProductComparison=null,annotationsByMessage=new Map(),EMPTY_CHAT_ANNOTATIONS=[];
+          const editingAssistant=false,sourceMessageId='fixture-answer',annotations=EMPTY_CHAT_ANNOTATIONS;
           const messageSelectionSourceId=()=>'',onTextSelection=()=>{},onOpenAnnotation=()=>{};
           window.answer=(content,uiResources=[])=>setMessage({content,uiResources});
           window.save=()=>sessionStorage.setItem(mode,JSON.stringify(message));
@@ -141,6 +142,8 @@ test('Quartz and Workspace preserve streamed widgets, controls, and restored res
       await page.goto(`http://127.0.0.1:${server.address().port}/?surface=${mode}`);
       await page.waitForFunction(() => typeof window.answer === 'function');
       const response = mode === 'standalone' ? page.frameLocator('iframe') : page;
+      await page.evaluate(content => window.answer(content), read('tests/fixtures/chat-minimax-diagram.md'));
+      await response.locator('[data-chat-diagram] svg text').filter({hasText:'Reply B2'}).waitFor();
       await page.evaluate(content => window.answer(content), weather.slice(0, 75));
       if (mode === 'standalone') await response.locator('#root').waitFor({ state: 'attached' });
       assert.doesNotMatch(await response.locator('body').innerText(), /temperatureC|country|```/);

@@ -800,6 +800,14 @@ fn pinned_supervisor_returns_bounded_post_start_and_pre_start_exit_receipts() {
     let snapshot = store
         .confirm_and_finish_retained_durable_service_exit("dashboard", 1, &terminal, 104)
         .unwrap();
+    let history = fs::read_to_string(data.join("logs/services/dashboard.exits.jsonl")).unwrap();
+    let exit: serde_json::Value = serde_json::from_str(&history).unwrap();
+    assert_eq!(exit["pid"], started["pid"]);
+    assert_eq!(exit["generation"], 1);
+    assert_eq!(exit["classification"], "target-exit");
+    assert!(exit["targetExitCode"].as_u64().unwrap() > 0);
+    assert!(exit["timestampMs"].as_u64().unwrap() > 0);
+    assert!(exit["peakCommitBytes"].as_u64().is_some());
     assert_eq!(snapshot.status.state, RuntimeServiceState::Failed);
     assert_eq!(
         snapshot.status.last_error.as_deref(),
@@ -856,6 +864,11 @@ fn pinned_supervisor_returns_bounded_post_start_and_pre_start_exit_receipts() {
     let snapshot = store
         .confirm_and_finish_retained_durable_service_exit("chatmock", 1, &terminal, 104)
         .unwrap();
+    let history = fs::read_to_string(data.join("logs/services/chatmock.exits.jsonl")).unwrap();
+    let exit: serde_json::Value = serde_json::from_str(&history).unwrap();
+    assert!(exit["pid"].is_null());
+    assert_eq!(exit["failureCode"], "SPAWN_FAILED");
+    assert_eq!(exit["classification"], "supervisor-failure");
     assert_eq!(snapshot.status.state, RuntimeServiceState::Failed);
     assert_eq!(
         snapshot.status.last_error.as_deref(),

@@ -44,6 +44,7 @@ export const applyRewriteSchema = z.object({
    */
   expectedContent: z.string().min(1).max(HUMANIZER_MAX_TEXT_CHARS),
   rewrittenText: z.string().min(1).max(HUMANIZER_MAX_TEXT_CHARS),
+  answerModel: z.string().trim().min(1).max(256).optional(),
 });
 
 export type ApplyRewriteInput = z.infer<typeof applyRewriteSchema>;

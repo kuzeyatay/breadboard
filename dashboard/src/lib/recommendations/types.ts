@@ -9,6 +9,8 @@ export interface RecommendationEvidence {
   source: RecommendationSource;
   title: string;
   summary: string;
+  sender?: string;
+  calendarAttachment?: boolean;
   timestamp?: string;
   gardenSlug?: string;
   calendar?: {
@@ -17,6 +19,9 @@ export interface RecommendationEvidence {
     end: string;
     status?: 'upcoming' | 'ongoing' | 'recently-ended';
     allDay?: boolean;
+    blocksTime?: boolean;
+    location?: string;
+    seriesId?: string;
   };
   /** Explicit topical matches, not an assumption that captured work is unfinished. */
   relatedIds?: string[];
@@ -30,6 +35,8 @@ export interface Recommendation {
   voice?: VoiceOpenerAssessment;
   /** 0-100ish; higher is more useful now. */
   score?: number;
+  /** A provisional card from the offline generator, eligible for replacement when synthesis succeeds. */
+  fallback?: true;
   usefulness?: RecommendationUsefulness;
   /** Fingerprint of the evidence when the card was made; see recommendationBasis. */
   basis?: string;
@@ -105,8 +112,12 @@ export function recommendationUsefulness(score: number): RecommendationUsefulnes
 export function recommendationBasis(card: Pick<Recommendation, 'sourceIds'>, known: ReadonlyMap<string, RecommendationEvidence>): string | null {
   const sources = card.sourceIds.map(id => known.get(id));
   if (!sources.length || sources.some(item => !item)) return null;
-  return JSON.stringify(sources.map(item => [item!.id, item!.title, item!.calendar?.kind, item!.calendar?.status,
-    item!.source === 'task' || item!.source === 'schedule' || item!.source === 'hook' ? item!.summary : '']));
+  // The card API returns this key. Fingerprint content without copying mail
+  // snippets and conversation excerpts into the response or persisted board.
+  const content = JSON.stringify(sources.map(item => [item!.id, item!.title, item!.summary, item!.sender, item!.calendarAttachment, item!.calendar]));
+  let hash = 2166136261;
+  for (let i = 0; i < content.length; i++) hash = Math.imul(hash ^ content.charCodeAt(i), 16777619);
+  return hash.toString(36);
 }
 
 interface ScoredRecommendation { item: Recommendation; family: string; score: number; subjects: string[] }
@@ -115,7 +126,9 @@ function scoreRecommendation(item: Recommendation, known: ReadonlyMap<string, Re
   const sources = item.sourceIds.map(id => known.get(id)!).sort((a, b) => recommendationPriority(b, context) - recommendationPriority(a, context));
   const source = sources[0];
   const family = source.source === 'outlook' ? 'gmail' : source.source === 'calendar' ? (source.calendar?.kind ?? 'event') : source.source;
-  return { item, family, score: recommendationPriority(source, context) + (sources.length > 1 ? 12 : 0), subjects: recommendationSubjects(item, known) };
+  const priority = recommendationPriority(source, context);
+  return { item: { ...item, usefulness: recommendationUsefulness(priority) }, family,
+    score: priority + (sources.length > 1 ? 12 : 0), subjects: recommendationSubjects(item, known) };
 }
 
 /**
@@ -141,6 +154,17 @@ export function selectRecommendations(candidates: readonly Recommendation[], evi
     if (!overlaps(kept, slots)) slots.push(kept);
   }
   const pool = candidates.filter(applies).map(item => scoreRecommendation(item, known, context));
+  // A new email can turn two independent cards already on screen into one
+  // better task. The ordinary one-slot replacement cannot merge those cards.
+  const syntheses = pool.filter(candidate => !candidate.item.fallback && candidate.item.sourceIds.length > 1)
+    .sort((a, b) => b.score - a.score);
+  for (const candidate of syntheses) {
+    const covered = slots.filter(slot => overlaps(candidate, [slot]));
+    if (!covered.length || !covered.every(slot => candidate.score > slot.score &&
+      slot.item.sourceIds.every(id => candidate.item.sourceIds.includes(id)))) continue;
+    slots.splice(slots.indexOf(covered[0]), 1, candidate);
+    for (const slot of covered.slice(1)) slots.splice(slots.indexOf(slot), 1);
+  }
   const best = (others: readonly ScoredRecommendation[]) => pool.filter(item => !overlaps(item, others))
     .map((item, index) => ({ item, index, adjusted: penalty(item, others) }))
     .sort((a, b) => b.adjusted - a.adjusted || a.index - b.index)[0];
@@ -157,7 +181,7 @@ export function selectRecommendations(candidates: readonly Recommendation[], evi
     if (!challenger || challenger.adjusted - slots[weakest].score < RECOMMENDATION_REPLACE_MARGIN) break;
     slots[weakest] = challenger.item;
   }
-  return slots.map(slot => ({ ...slot.item, score: slot.score, usefulness: recommendationUsefulness(slot.score),
+  return slots.map(slot => ({ ...slot.item, score: slot.score,
     basis: recommendationBasis(slot.item, known) ?? undefined }));
 }
 
@@ -165,5 +189,6 @@ export function selectRecommendations(candidates: readonly Recommendation[], evi
 export function evidenceRecommendations(evidence: readonly RecommendationEvidence[], shown: readonly Recommendation[] = [], context:RecommendationContext={}): Recommendation[] {
   evidence = scopedRecommendationEvidence(evidence, context);
   const candidates=evidence.flatMap(item=>recommendationCandidates(item,evidence,context));
-  return selectRecommendations(parseRecommendations(candidates,evidence,candidates.length),evidence,shown,context);
+  const provisional = parseRecommendations(candidates, evidence, candidates.length).map(card => ({ ...card, fallback: true as const }));
+  return selectRecommendations(provisional, evidence, shown, context);
 }

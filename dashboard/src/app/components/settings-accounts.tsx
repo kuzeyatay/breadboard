@@ -1080,7 +1080,7 @@ export default function SettingsAccounts() {
             Waiting for authorization
           </p>
           <p className="mt-1 text-[11px] leading-5 text-[var(--ink-muted)]">
-            Finish signing in in the browser tab. To use a different ChatGPT account, sign out of chatgpt.com first or use a private window.
+            Finish signing in in your browser. Choose the ChatGPT account you want to connect.
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {login?.authorizationUrl ? (
@@ -1152,7 +1152,7 @@ export default function SettingsAccounts() {
       ) : null}
       {error ? (
         <p className="text-xs leading-5 text-[var(--danger)]" role="alert">
-          {error}
+          {error.replace(/\b(?:the )?ChatMock sign-in/gi, "The sign-in")}
         </p>
       ) : null}
 

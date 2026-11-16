@@ -274,6 +274,14 @@ function BrowserContent({
     setNativePagePresentation({ browserKey, visible: hasNativePage });
   }
   const privateBrowsing = browser?.private === true;
+  // The desktop draws the toolbar and places the website in native pixels
+  // (103 below the title bar); this page is zoomed with every Breadboard page.
+  const chromeZoom = tabs?.persistentShell ? tabs.chromeZoom ?? 1 : null;
+  useEffect(() => {
+    const root = document.documentElement;
+    if (chromeZoom) root.style.setProperty("--browser-chrome-top", `${103 / chromeZoom}px`);
+    else root.style.removeProperty("--browser-chrome-top");
+  }, [chromeZoom]);
   const isActive = Boolean(pageTab && pageTab.id === tabs?.activeId);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const searchFrameRef = useRef<HTMLFormElement | null>(null);
@@ -743,10 +751,10 @@ function BrowserContent({
   return (
     <>
       {showingHome ? <div className={homeStyles.browserHome} data-persistent-shell={tabs?.persistentShell || undefined}>
-        {tabs?.persistentShell && <div style={{ height: 103, flexShrink: 0 }} aria-hidden="true" />}
+        {tabs?.persistentShell && <div style={{ height: "var(--browser-chrome-top, 103px)", flexShrink: 0 }} aria-hidden="true" />}
         {home}
       </div> : <>
-      {tabs?.persistentShell ? <div style={{ height: 103, flexShrink: 0 }} aria-hidden="true" /> :
+      {tabs?.persistentShell ? <div style={{ height: "var(--browser-chrome-top, 103px)", flexShrink: 0 }} aria-hidden="true" /> :
         <BrowserNavigation showFlowers={showFlowers} restoreOwnerKey={restoreOwnerKey} onPanel={panel => { setActivePanel(panel); setBrowserPanelOpen(true); }} />}
 
       {!browser && browserRecoveryFailed ? (
@@ -764,7 +772,7 @@ function BrowserContent({
         </PrivateBrowserHome>
       ) : <main
         className="browser-start-page browser-home-widget-surface"
-        data-native-page={hasNativePage}
+        data-native-page={hasNativePage && !browser?.pdfViewer}
         aria-live="polite"
         data-wallpaper-ready={personalization.ready}
         data-has-wallpaper={personalization.hasWallpaper}

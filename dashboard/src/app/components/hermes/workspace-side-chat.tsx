@@ -174,7 +174,7 @@ export default function WorkspaceSideChat({ children, gardenSlug, messages = [] 
               {opened.map((request, index) => (
                 <button key={request.key} type="button" onClick={() => focusPane(request.key)}
                   aria-current={active === request.key ? "true" : undefined}
-                  className={`max-w-[12rem] truncate rounded px-1.5 py-0.5 ${active === request.key ? "bg-[var(--botanical)] text-[var(--paper)]" : "text-[var(--ink-muted)] hover:bg-[var(--paper-raised)]"}`}>
+                  className={`max-w-[12rem] truncate rounded px-1.5 py-0.5 ${active === request.key ? "bg-[#4f6f68] text-[#fff]" : "text-[var(--ink-muted)] hover:bg-[var(--paper-raised)]"}`}>
                   {index}:{titles[request.key] || "side chat"}{active === request.key ? "*" : ""}
                 </button>
               ))}

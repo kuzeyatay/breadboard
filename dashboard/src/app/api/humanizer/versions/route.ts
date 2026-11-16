@@ -1,3 +1,4 @@
+import { trimVerificationForTransport } from "@/lib/hermes/evidence";
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth";
 import {
@@ -111,6 +112,7 @@ export async function POST(request: Request) {
       expectedContent: parsed.value.expectedContent,
       content: parsed.value.rewrittenText,
       origin: "humanizer",
+      answerModel: parsed.value.answerModel,
       review: summarizeReviewScores(
         scoreReview(parsed.value.expectedContent, parsed.value.rewrittenText),
       ),
@@ -140,16 +142,17 @@ export async function PATCH(request: Request) {
     if (!parsed.ok) return noStore(parsed.failure, 422);
 
     const conversation = getConversationForUser(parsed.value.conversationId, userId);
+    const messageId = assistantMessageRowId(conversation.id, parsed.value.messageId);
     const state = selectAssistantContentVersion({
       conversationId: conversation.id,
-      messageId: assistantMessageRowId(
-        conversation.id,
-        parsed.value.messageId,
-      ),
+      messageId,
       index: parsed.value.index,
     });
+    const row = state.derived ? null : getConversationMessageById(messageId);
+    const originalVerification = !state.derived && row?.metadata ? JSON.parse(row.metadata).verification : undefined;
 
     return noStore({
+      verification: originalVerification ? trimVerificationForTransport(originalVerification) : undefined,
       messageId: parsed.value.messageId,
       content: state.versions[state.activeIndex].content,
       versions: presentMessageVersions(state),

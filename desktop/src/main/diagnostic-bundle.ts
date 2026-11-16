@@ -67,14 +67,21 @@ function copyNewest(
   if (!fs.existsSync(sourceDir)) return;
   const now = Date.now();
   const entries = listFiles(sourceDir)
-    .map((file) => ({ file, stat: fs.statSync(file) }))
-    .filter(({ stat }) => now - stat.mtimeMs <= maxAgeMs)
+    .flatMap((file) => {
+      const stat = fs.statSync(file, { throwIfNoEntry: false });
+      return stat && now - stat.mtimeMs <= maxAgeMs ? [{ file, stat }] : [];
+    })
     .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
   let used = 0;
   for (const { file, stat } of entries) {
     if (used + stat.size > budget) continue;
-    used += stat.size;
-    add(file, path.join(targetDir, path.relative(sourceDir, file)));
+    try {
+      add(file, path.join(targetDir, path.relative(sourceDir, file)));
+      used += stat.size;
+    } catch (error) {
+      // Rotation can retire a file after enumeration while the app is live.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || fs.existsSync(file)) throw error;
+    }
   }
 }
 

@@ -14,8 +14,8 @@ test("every chat surface offers retry on earlier answers and edit on assistant a
 
   // Earlier answers are rewritten in place (a new version of that one message),
   // never by re-sending with a history truncated at that turn.
-  assert.match(runtime, /regenerateResponseText\(messages\.slice\(0, userMessageIndex \+ 1\), model\)[\s\S]*?onEditAssistantMessage\(message, content\)/);
-  assert.match(garden, /regenerateResponseText\(messages\.slice\(0, userIndex \+ 1\), model\)[\s\S]*?replaceAssistantContent\(message, content\)/);
+  assert.match(runtime, /regenerateResponseText\(messages\.slice\(0, userMessageIndex \+ 1\), model\)[\s\S]*?onEditAssistantMessage\(message, content, verification\)/);
+  assert.match(garden, /regenerateResponseText\(messages\.slice\(0, userIndex \+ 1\), model\)[\s\S]*?replaceAssistantContent\(message, content, verification\)/);
   assert.match(garden, /\(\) => void userMessageActionsRef\.current\.regenerateInPlace\(storedIndex\)/);
   assert.match(workspace, /messageIndex !== lastAssistant && !messages\[messageIndex\]\?\.failed[\s\S]*?regenerateInPlace\(messageIndex\)/);
   assert.match(workspace, /onRetry=\{\(\) => onRetryAssistant\(i\)\}/);

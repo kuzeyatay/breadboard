@@ -116,6 +116,14 @@ Attach it to a [bug report](https://github.com/kuzeyatay/breadboard/issues/new/c
 If the app does not start, the startup screen's **Copy diagnostics** button
 gives the same information as text.
 
+For repeated workspace reconnects, look for `dashboardCrashHistory` in the
+exported `diagnostics.json`. It lists recent dashboard exits, the last memory
+and request sample available for each process, and fatal errors found in older
+logs. From a source checkout, `npm run crash-report` prints the same history
+while Breadboard is closed or running. The runtime keeps each service's exit
+history in `Data/logs/services/<service>.exits.jsonl`. Dashboard request
+samples use route patterns and omit query strings.
+
 ## Privacy
 
 - All services bind to the local loopback interface with per-install

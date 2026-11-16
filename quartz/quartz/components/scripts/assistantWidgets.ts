@@ -39,7 +39,8 @@ export function createAssistantWidgetHost(dashboard: string, onSend: (text: stri
       for (const prior of frames.keys()) if (!prior.isConnected) frames.delete(prior)
       // Includes incomplete fences: raw display JSON must stay hidden while streaming.
       const rich = message.uiResources.length > 0 || /^\s*(?:`{3,}|~{3,})(?:image-results|weather-results)\b/im.test(message.content)
-      if (!rich) { frames.delete(element); return false }
+      const hasDiagram = /^ {0,3}<(?:svg|box)(?=[\s>])/im.test(message.content) && /<svg[\s>]/i.test(message.content)
+      if (!rich && !hasDiagram) { frames.delete(element); return false }
       let entry = frames.get(element)
       if (!entry) {
         const frame = document.createElement("iframe")

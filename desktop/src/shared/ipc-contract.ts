@@ -36,6 +36,7 @@ export const IPC_CHANNELS = {
   // draws the strip from the state it is sent and asks for changes by command.
   getTabsState: "breadboard:get-tabs-state",
   getBrowserTerminalAccess: "breadboard:get-browser-terminal-access",
+  captureWorkspaceView: "breadboard:capture-workspace-view",
   spotifyRequest: "breadboard:spotify-request",
   readTerminalData: "breadboard:read-terminal-data",
   cancelTerminalData: "breadboard:cancel-terminal-data",
@@ -194,6 +195,8 @@ export interface TabsState {
   presentationRevision?: number;
   presentationStatus?: "pending" | "presented" | "failed";
   persistentShell?: boolean;
+  /** Zoom factor of Breadboard's own pages (shared per origin). */
+  chromeZoom?: number;
   contentHeight?: number;
   theme?: "light" | "dark";
   browserOwnerKey?: string;

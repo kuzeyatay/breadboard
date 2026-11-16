@@ -17,6 +17,46 @@ async function load(file) {
 const chat = await load("chat-payloads.ts"), codec = await load("codec.ts"), files = await load("filesystem.ts"), store = await load("store.ts");
 const pdf=await load("pdf-revisions.ts"), immutable=await load("immutable-files.ts");
 const attachmentReferences=await load("attachment-references.ts");
+const budget=await load("budget.ts");
+
+test("the storage budget classifies by path, defaults safe and only reports over on measured bytes", () => {
+  assert.equal(budget.classifyStoragePath("recall\\data\\db.sqlite"), "capture");
+  assert.equal(budget.classifyStoragePath("quartz/public/ec-2/index.html"), "regenerable");
+  assert.equal(budget.classifyStoragePath("runtime/hermes-workspaces/conversations/c/c/.breadboard/multisim/runs/ab12/data.json"), "regenerable");
+  assert.equal(budget.classifyStoragePath("runtime/hermes-workspaces/conversations/c/c/task/videos/x/source.mp4"), "redownloadable");
+  // The report next to a raw dump, a garden's own media and anything unknown stay the person's.
+  assert.equal(budget.classifyStoragePath("runtime/hermes-workspaces/conversations/c/c/.breadboard/multisim/runs/ab12/report.md"), "content");
+  assert.equal(budget.classifyStoragePath("quartz/content/ec-2/assets/lecture.mp3"), "content");
+  assert.equal(budget.classifyStoragePath("somewhere/new/file.bin"), "content");
+  const db = new Database(":memory:");
+  assert.equal(budget.storageBudget(db, null).over, false);
+  assert.equal(budget.storageBudget(db, { allocatedBytes: budget.DEFAULT_BUDGET_BYTES + 1 }).overBytes, 1);
+  budget.setStorageBudget(db, 60 * 1024 ** 3);
+  assert.equal(budget.storageBudget(db, { allocatedBytes: budget.DEFAULT_BUDGET_BYTES + 1 }).over, false);
+  assert.throws(() => budget.setStorageBudget(db, 1024));
+});
+
+test("a chat over its cap warns in its own turn, and removal on request keeps the person's files", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-chat-cap-")); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const folder = path.join(root, "runtime", "hermes-workspaces", "conversations", "conv_ab", "conv_ab", "task");
+  fs.mkdirSync(path.join(folder, "videos", "x"), { recursive: true });
+  fs.writeFileSync(path.join(folder, "videos", "x", "source.mp4"), "video");
+  fs.writeFileSync(path.join(folder, "report.md"), "mine");
+  const db = new Database(":memory:"); db.exec("CREATE TABLE conversations(id INTEGER PRIMARY KEY,public_id TEXT,title TEXT); INSERT INTO conversations VALUES(1,'conv_AB','Video notes')");
+  const usage = new Map(), GiB = 1024 ** 3;
+  budget.noteChatFile(usage, "runtime\\hermes-workspaces\\conversations\\conv_ab\\conv_ab\\task\\videos\\x\\source.mp4", 3 * GiB);
+  budget.noteChatFile(usage, "runtime/hermes-workspaces/conversations/conv_ab/conv_ab-inline-1/report.md", GiB);
+  budget.noteChatFile(usage, "runtime/hermes-workspaces/conversations/conv_small/conv_small/a.txt", 10);
+  budget.noteChatFile(usage, "quartz/content/a.mp3", 9 * GiB);
+  budget.saveChatUsage(db, usage);
+  assert.deepEqual(budget.largeChats(db).map(chat => [chat.folder, chat.title, chat.bytes, chat.removableBytes, chat.over]), [["conv_ab", "Video notes", 4 * GiB, 3 * GiB, true]]);
+  assert.match(budget.chatWorkspaceNotice(db, "conv_AB"), /4\.0 GiB.*above the 2\.0 GiB limit/u);
+  assert.equal(budget.chatWorkspaceNotice(db, "conv_small"), "");
+  assert.deepEqual(await budget.reclaimChatFolder(db, root, "conv_ab"), { filesRemoved: 1, bytesReleased: 5 });
+  assert.equal(fs.existsSync(path.join(folder, "videos", "x", "source.mp4")), false);
+  assert.equal(fs.readFileSync(path.join(folder, "report.md"), "utf8"), "mine");
+  await assert.rejects(budget.reclaimChatFolder(db, root, "../conv_ab"));
+});
 
 function database() {
   const db = new Database(":memory:"); db.pragma("foreign_keys=ON");

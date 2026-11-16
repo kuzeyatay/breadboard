@@ -1,0 +1,42 @@
+/* A crumb as a post. The host supplies the surface (border, shadow, radius);
+   this file owns everything inside it. Measures follow the familiar timeline
+   post: 16px side padding, a 40px photo, 15/20 type, a 12px gap above actions. */
+.card { display: flex; gap: 10px; padding: 12px 16px; color: var(--ink); font-size: 15px; line-height: 20px; text-align: left; }
+.card button { font: inherit; cursor: pointer; }
+.card button:disabled { opacity: .5; cursor: default; }
+.photo { flex: 0 0 40px; }
+.main { flex: 1; min-width: 0; }
+
+.head { display: flex; align-items: flex-start; gap: 8px; min-height: 20px; }
+.who { display: flex; align-items: baseline; gap: 5px; flex: 1; min-width: 0; }
+.who strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; color: var(--ink-heading, var(--ink)); }
+.who > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-muted); }
+.who time { flex-shrink: 0; color: var(--ink-muted); }
+
+.body > p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* The row along the bottom: counted actions share the width evenly, the rest sit at the far end. */
+.actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; height: 20px; color: var(--ink-muted); }
+.lead { display: flex; flex: 1; min-width: 0; }
+.lead > span { display: flex; flex: 1 1 0; min-width: 0; }
+.tail { display: flex; gap: 12px; }
+.action { display: inline-flex; align-items: center; gap: 1px; padding: 0; border: 0; background: transparent; color: inherit; font-size: 13px; line-height: 16px; transition: color .15s ease; }
+.glyph { display: grid; place-items: center; width: 34px; height: 34px; margin: -7px 0 -7px -8px; border-radius: 50%; transition: background-color .15s ease; }
+.tail .glyph { margin-right: -8px; }
+.action:hover:not(:disabled), .action[aria-expanded="true"], .action[aria-pressed="true"] { color: var(--botanical); }
+.action:hover:not(:disabled) .glyph, .action[aria-expanded="true"] .glyph, .action[aria-pressed="true"] .glyph { background: color-mix(in srgb, var(--botanical) 14%, transparent); }
+.action:focus-visible { outline: none; }
+.action:focus-visible .glyph { outline: 2px solid var(--botanical); outline-offset: -2px; }
+.lead > .label { align-items: center; gap: 5px; overflow: hidden; font-size: 13px; white-space: nowrap; }
+
+.menu { position: relative; flex-shrink: 0; color: var(--ink-muted); }
+.menu summary { display: grid; place-items: center; width: 34px; height: 34px; margin: -7px -8px -7px 0; border-radius: 50%; list-style: none; cursor: pointer; transition: background-color .15s ease, color .15s ease; }
+.menu summary::-webkit-details-marker { display: none; }
+.menu summary:hover, .menu[open] summary { background: color-mix(in srgb, var(--botanical) 14%, transparent); color: var(--botanical); }
+.menu > div { position: absolute; z-index: 6; top: -4px; right: -8px; min-width: 232px; max-width: 300px; padding: 4px 0; overflow: hidden; border: 1px solid var(--neu-border, var(--line)); border-radius: 16px; background: var(--neu-surface-raised, var(--paper-raised)); box-shadow: var(--neu-strong-shadow, 0 10px 30px color-mix(in srgb, var(--ink) 18%, transparent)); }
+.item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 16px; border: 0; background: transparent; color: var(--ink); font-size: 15px; font-weight: 700; line-height: 20px; text-align: left; }
+.item:hover:not(:disabled) { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.item svg { flex-shrink: 0; }
+.item[data-danger] { color: var(--danger); }
+
+@media (prefers-reduced-motion: reduce) { .action, .glyph, .menu summary { transition: none; } }

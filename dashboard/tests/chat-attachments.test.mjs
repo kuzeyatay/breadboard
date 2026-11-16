@@ -10,6 +10,7 @@ import {
   normalizeChatMessageAttachments,
   productAttachmentPromptText,
   reusableChatAttachments,
+  unavailableWorkspaceView,
   unreusableChatAttachmentNames,
   visibleChatMessageText,
   visibleChatMessageAttachments,
@@ -51,6 +52,20 @@ test('older PDF context bundles are hidden while user attachments retain their p
   assert.deepEqual(visibleChatMessageAttachments([attachments[1]], [attachments[1].name]), {
     attachments: [attachments[1]], attachmentNames: [attachments[1].name],
   });
+});
+
+test('workspace views stay with retries and never appear in Uploads, even beside a file with the same name', () => {
+  const upload = { type: 'image', name: 'Current Breadboard view.jpg', dataUrl: 'data:image/jpeg;base64,aGVsbG8=' };
+  const view = { ...upload, context: 'workspace' };
+  const parsed = parseChatAttachments([view, upload]);
+  const saved = normalizeChatMessageAttachments(JSON.parse(JSON.stringify(chatMessageAttachments(parsed))));
+  assert.deepEqual(reusableChatAttachments(saved), [view, upload]);
+  assert.deepEqual(visibleChatMessageAttachments(saved, [view.name, upload.name]),
+    { attachments: [upload], attachmentNames: [upload.name] });
+  const uploads = collectUploads([{ message_id: 10, metadata: JSON.stringify({attachments:saved}) }]);
+  assert.deepEqual(uploads.map(item => item.id), ['10-1']);
+  const unavailable = unavailableWorkspaceView();
+  assert.deepEqual(reusableChatAttachments(chatMessageAttachments([unavailable])), [unavailable]);
 });
 
 test('message attachments retain safe image data and stored source-file pointers', () => {
@@ -113,6 +128,8 @@ test('image previews do not repeat the synthetic attachment filename as message 
     visibleChatMessageText('What is shown here?', [image], [image.name]),
     'What is shown here?',
   );
+  const view = { ...image, context: 'workspace', name: 'Current Breadboard view.jpg' };
+  assert.equal(visibleChatMessageText('Attached: ' + image.name, [image, view], [image.name, view.name]), '');
   assert.equal(
     visibleChatMessageText(
       'Attached: notes.md',
@@ -463,5 +480,6 @@ test('the garden workspace warns before a retry drops files it cannot resend', (
     'utf8',
   );
   assert.match(workspace, /const retryAttachments = reusableChatAttachments\(previousUser\.attachments\);\s*warnAboutUnreusableAttachments\(previousUser\);/);
-  assert.match(workspace, /const editedAttachments = reusableChatAttachments\(previousUser\.attachments\);\s*warnAboutUnreusableAttachments\(previousUser\);/);
+  assert.match(workspace, /warnAboutUnreusableAttachments\(\{\s*\.\.\.previousUser,\s*attachments: keptAttachments,/);
+  assert.match(workspace, /reusableChatAttachments\(keptAttachments\)/);
 });

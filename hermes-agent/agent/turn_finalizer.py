@@ -82,6 +82,8 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    answer_model=None,
+    answer_used_fallback=False,
     _pending_verification_response=None,
     _pending_verification_response_previewed=False,
 ):
@@ -139,6 +141,8 @@ def finalize_turn(
                 f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
                 "— requesting summary..."
             )
+        answer_model = None
+        answer_used_fallback = False
         final_response = agent._handle_max_iterations(messages, api_call_count)
         iteration_limit_fallback = True
 
@@ -574,6 +578,8 @@ def finalize_turn(
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,
+        **({"answer_used_fallback": True} if final_response and not failed and answer_used_fallback else {}),
+        **({"answer_model": answer_model} if final_response and not failed and isinstance(answer_model, str) and answer_model.strip() else {}),
         "last_reasoning": last_reasoning,
         "messages": messages,
         "api_calls": api_call_count,

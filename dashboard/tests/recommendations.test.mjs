@@ -44,17 +44,19 @@ test('busy histories cannot crowd connected apps and Recall out of the evidence 
 
 test('model failure still offers diverse next steps grounded in actual evidence', async () => {
   const suggestions = await generateRecommendations({evidence,context:{},model:'selected',fetcher:async()=>new Response('',{status:503})});
-  assert.equal(suggestions.length,4);
+  assert.equal(suggestions.length,3);
   assert.ok(suggestions.every(item=>item.sourceIds.every(id=>evidence.some(source=>source.id===id))));
-  assert.equal(new Set(suggestions.map(item=>item.sourceLabel)).size,4);
+  assert.deepEqual(new Set(suggestions.map(item=>item.sourceLabel)),new Set(['Gmail','Calendar','Recall']));
   assert.match(suggestions.find(item=>item.sourceLabel==='Recall').prompt,/Transient response notes/);
   assert.deepEqual(evidenceRecommendations([]),[]);
 });
 
 test('garden cards stay with the selected garden instead of unrelated mail, and are not padded', async () => {
-  const suggestions = await generateRecommendations({evidence,context:{gardenSlug:'circuits'},model:'none'});
-  assert.equal(suggestions.length,1);
-  assert.deepEqual(suggestions[0].sourceIds,['garden:4']);
+  for (const model of ['none','selected']) {
+    const suggestions = await generateRecommendations({evidence,context:{gardenSlug:'circuits'},model,
+      fetcher:()=>assert.fail('a garden name alone does not warrant synthesis')});
+    assert.deepEqual(suggestions,[]);
+  }
 });
 
 test('generation sends bounded evidence as untrusted data and never enables tools', async () => {
@@ -106,8 +108,8 @@ test('a garden with no matching evidence shows no cards and never calls the mode
   }
 });
 
-test('a model may decline to invent suggestions; grounded alternatives fill the slots, nothing generic', async () => {
+test('a successful synthesis may leave the board empty and invalid citations cannot fill it', async () => {
   const run = content => generateRecommendations({evidence,context:{},model:'selected',fetcher:async()=>Response.json({choices:[{message:{content}}]})});
-  assert.deepEqual(await run('[]'),evidenceRecommendations(evidence));
-  assert.deepEqual(await run('[{"prompt":"Guess something","sourceIds":["fake"]}]'),evidenceRecommendations(evidence));
+  assert.deepEqual(await run('[]'),[]);
+  assert.deepEqual(await run('[{"prompt":"Guess something","sourceIds":["fake"]}]'),[]);
 });

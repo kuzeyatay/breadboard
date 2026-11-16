@@ -70,7 +70,10 @@ import AssistantResponseEditor from '@/app/components/chat/assistant-response-ed
 import { useChatDraft } from '@/app/components/hermes/use-chat-draft';
 import { useTerminalHeaderClickGuard } from '@/app/components/terminal-header-click-guard';
 
+import { modelVerification, type VerificationSummary } from '@/lib/hermes/evidence';
+
 interface ChatMessage {
+  verification?: VerificationSummary;
   role: 'user' | 'assistant';
   content: string;
   createdAt?: string;
@@ -232,6 +235,7 @@ const TranscriptRow = memo(function TranscriptRow({
             )}
             {!responding ? (
               <AssistantMessageActions
+                verification={message.verification}
                 content={message.content || 'Response unavailable'}
                 responseStartedAt={message.createdAt}
                 responseDurationMs={message.responseDurationMs}
@@ -655,6 +659,10 @@ export default function KnowledgeTerminal({ scope }: Props) {
               assistantMessage = { ...assistantMessage, content: event.text };
               updateAssistant();
             }
+            if (event.type === 'verification') {
+              assistantMessage = { ...assistantMessage, verification: event.verification };
+              updateAssistant();
+            }
             if (event.type === 'usage') {
               const usage = normalizeChatTokenUsage(event.usage);
               if (usage) {
@@ -688,6 +696,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
         ...nextMessages,
         {
           role: 'assistant',
+          verification: modelVerification(null),
           content: aborted
             ? 'The request was stopped.'
             : `I could not reach the knowledge base assistant yet. ${message}`,
@@ -728,7 +737,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
 
   function editAssistantMessage(messageIndex: number, content: string): boolean {
     if (isStreaming || messages[messageIndex]?.role !== 'assistant') return false;
-    const next = messages.map((message, index) => index === messageIndex ? { ...message, content } : message);
+    const next = messages.map((message, index) => index === messageIndex ? { ...message, content, verification: undefined } : message);
     setMessages(next);
     if (activeSession) updateSessionMessages(activeSession.id, next);
     return true;

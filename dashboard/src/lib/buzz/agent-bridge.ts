@@ -24,6 +24,7 @@ import { cancelRunningExternalAgentRuns, cancelExternalAgentRun } from "../conve
 
 import db from "@/lib/db";
 import {
+  cancelLatestConversationTurn,
   createConversation,
   type ConversationRow,
 } from "@/lib/conversations/store.ts";
@@ -170,6 +171,9 @@ export async function startMemberReply(input: {
   request?: Request;
   replaceMessageId?: number;
   confirmedPermissionIds?: string[];
+  /** The sender's composer choice. A member with a model of its own keeps it. */
+  model?: string;
+  reasoningEffort?: string;
 }): Promise<StartMemberReplyResult> {
   const { room, trigger } = input;
   const approvingMessage = input.confirmedPermissionIds?.length && input.replaceMessageId ? getMessage(input.replaceMessageId) : null;
@@ -224,6 +228,13 @@ export async function startMemberReply(input: {
   if (!input.replaceMessageId && placeholder.metadata?.claimId !== claimId) return { message: placeholder, accepted: false, reason: "replayed" };
   updateMessageBody(placeholder.id, "", "pending", metadata);
 
+  // A reply that was stopped, deleted or lost to a restart can leave its turn
+  // open in the member's own conversation, which then refuses every later
+  // turn. Unless the room still shows this member answering, close it.
+  const answering = db.prepare(`SELECT 1 FROM buzz_room_messages WHERE room_id = ? AND id <> ? AND deleted_at IS NULL AND status IN ('pending','streaming')
+    AND json_valid(metadata) AND json_extract(metadata, '$.conversationId') = ?`).get(room.id, placeholder.id, conversation.id);
+  if (!answering) cancelLatestConversationTurn(conversation.id);
+
   try {
     const native = roomRuntime(member.personaSlug);
     if (native) {
@@ -253,7 +264,8 @@ export async function startMemberReply(input: {
       personalize: false,
       confirmedPermissionIds: input.confirmedPermissionIds,
       retry: !!input.confirmedPermissionIds?.length,
-      ...(member.model ? { model: member.model } : {}),
+      ...(member.model ? { model: member.model } : input.model ? { model: input.model } : {}),
+      ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
     });
 
     const current = getMessage(placeholder.id);
@@ -355,11 +367,14 @@ async function reconcileRoom(roomId: number): Promise<void> {
     }
     const answer = db
       .prepare(
-        `SELECT content, status FROM conversation_messages
+        `SELECT content, status,
+          json_extract(metadata, '$.verification.answerModel') AS answerModel,
+          json_extract(metadata, '$.verification.usedFallback') AS usedFallback
+         FROM conversation_messages
          WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'`,
       )
       .get(meta.conversationId, meta.turnClientMessageId) as
-      | { content: string; status: string }
+      | { content: string; status: string; answerModel: string | null; usedFallback: number | null }
       | undefined;
     if (!answer) {
       if (Date.now() - Date.parse(row.updated_at.replace(" ", "T") + "Z") > 300_000) updateMessageBody(row.id, "The response was interrupted before the agent started. Regenerate to try again.", "failed");
@@ -381,7 +396,7 @@ async function reconcileRoom(roomId: number): Promise<void> {
       updateMessageBody(row.id, "(no answer)", "failed");
       continue;
     }
-    updateMessageBody(row.id, answer.content, status);
+    updateMessageBody(row.id, answer.content, status, { ...meta, answerModel: answer.answerModel, usedFallback: answer.usedFallback === 1 });
   }
 }
 
@@ -406,6 +421,7 @@ export async function stopRoomWork(roomId: number, conversationId?: number): Pro
   for (const conversation of conversations) {
     await cancelRunningExternalAgentRuns(conversation.user_id, conversation.id);
     for (const session of listRuntimeSessionsForConversation(conversation.id)) await cancelRuntimeSessionWork(conversation.user_id, session);
+    cancelLatestConversationTurn(conversation.id);
     db.prepare(`UPDATE buzz_room_messages SET status = 'aborted', body = CASE WHEN body = '' THEN 'The agent was stopped.' ELSE body END
       WHERE room_id = ? AND status IN ('pending','streaming') AND json_valid(metadata) AND json_extract(metadata, '$.conversationId') = ?`).run(roomId, conversation.id);
   }

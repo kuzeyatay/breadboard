@@ -6,7 +6,7 @@ import { build } from 'esbuild';
 import { chromium, expect } from '@playwright/test';
 import postcss from 'postcss';
 import tailwindcss from '@tailwindcss/postcss';
-import { evidenceRecommendations } from '../src/lib/recommendations/types.ts';
+import { parseRecommendations, selectRecommendations } from '../src/lib/recommendations/types.ts';
 
   const root=path.resolve(process.env.BREADBOARD_TEST_SOURCE_ROOT ?? path.resolve(import.meta.dirname,'..'));
 test('starter cards refresh, erase and type safely, preserve drafts, and immediately clear private context', {timeout:120_000},async t=>{
@@ -58,8 +58,10 @@ test('starter cards refresh, erase and type safely, preserve drafts, and immedia
   await page.route('http://recommend.test/api/recommendations',async route=>{
     const body=route.request().postDataJSON();requests.push(body);
     if(offline){await route.fulfill({status:503,json:{error:'offline'}});return;}
-    const evidence=body.gardenSlug?[{id:'garden:'+body.gardenSlug,source:'garden',title:body.gardenSlug,summary:'Garden notes',gardenSlug:body.gardenSlug}]:[];
-    const result=body.gardenSlug?evidenceRecommendations(evidence,[],body):items();
+    const evidence=[{id:'chat:calibration',source:'chat',title:'Encoder calibration',
+      summary:'Last asked: How do I compare the encoder readings with the reference angle?',gardenSlug:body.gardenSlug}];
+    const proposal={prompt:`Check the encoder readings against the reference angle in ${body.gardenSlug}.`,sourceIds:['chat:calibration']};
+    const result=body.gardenSlug?selectRecommendations(parseRecommendations([proposal],evidence),evidence,[],body):items();
     if(hold)await new Promise(resolve=>{release=resolve;});
     await route.fulfill({json:{recommendations:result}}).catch(()=>{});
   });
@@ -163,7 +165,7 @@ test('starter cards refresh, erase and type safely, preserve drafts, and immedia
   await expect(cards.filter({hasText:'transient-response'})).toHaveCount(0);
   assert.equal(requests.at(-1).refresh,true);
   await page.evaluate(()=>window.dispatchEvent(new Event('breadboard:auth-changed')));
-  await expect(cards.filter({hasText:'using my garden notes.'})).toHaveCount(0);
+  await expect(cards.filter({hasText:'reference angle'})).toHaveCount(0);
   await page.evaluate(()=>window.dispatchEvent(new Event('focus')));await expect(cards.first()).toBeVisible();
   await page.evaluate(()=>document.documentElement.dataset.theme='dark');
   await page.setViewportSize({width:420,height:800});await expect(cards.first()).toBeVisible();

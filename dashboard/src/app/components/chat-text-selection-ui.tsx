@@ -810,7 +810,7 @@ export function InlineSelectionAnswerPopover({
       let frame = 0; let lastSize = "";
       const measure = () => {
         frame = 0;
-        const expanded = Boolean(popover.querySelector(".bb-inline-artifact-list, .bb-viz-renderer, .bb-viz-placeholder"));
+        const expanded = Boolean(popover.querySelector(".bb-inline-artifact-list, .bb-viz-renderer, .bb-viz-placeholder, [data-chat-diagram]"));
         const left = embedded.left ?? 16, top = embedded.top ?? 16;
         const width = Math.max(1, Math.min(expanded ? 960 : 400, embedded.width - left - 16));
         const maxHeight = Math.max(1, Math.min(expanded ? embedded.height - top - 16 : 520, embedded.height - top - 16));
@@ -859,7 +859,7 @@ export function InlineSelectionAnswerPopover({
       frame = 0;
       // Artifacts may arrive after the answer. ResizeObserver schedules this
       // again when their renderer mounts or the preview reports a new height.
-      const expanded = Boolean(popover.querySelector("[data-inline-visualizer]"));
+      const expanded = Boolean(popover.querySelector("[data-inline-visualizer], [data-chat-diagram]"));
       // A clicked rect is only a snapshot. The actual mark can move when the
       // composer focuses, the chat scrolls, or an earlier answer grows.
       // Scrolling changes rectangles, not the identity of the marked spans.
@@ -1110,6 +1110,20 @@ export function InlineSelectionAnswerPopover({
   }
 
   if (typeof document === "undefined") return null;
+  const retryControl = !editing && !pending && question ? (
+    <button
+      type="button"
+      onClick={() => onAskAgain?.(question, savedAttachments)}
+      disabled={!onAskAgain || questionDisabled}
+      className="bb-inline-answer-control grid h-7 w-7 place-items-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] disabled:cursor-not-allowed disabled:opacity-45"
+      aria-label="Ask this question again"
+      title="Retry"
+    >
+      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M20 6v5h-5M4 18v-5h5m9.7-3A7 7 0 0 0 6.1 7.1L4 11m16 2-2.1 3.9A7 7 0 0 1 5.3 14" />
+      </svg>
+    </button>
+  ) : null;
   return createPortal(
     <div
       ref={popoverRef}
@@ -1263,41 +1277,22 @@ export function InlineSelectionAnswerPopover({
         ) : (
           <div className="min-w-0 flex-1" />
         )}
-        {!editing && <div className="flex shrink-0 items-center gap-1">
-          {/* One slot, two jobs. An "Ask here" turn is stopped from its own
-              popover rather than from the composer - the chat below is not the
-              thing that is working - and once the run is over the same corner
-              becomes the retry for the answer that was stopped. */}
-          {pending ? (
-            <button
-              type="button"
-              onClick={() => {
-                setStopRequested(true);
-                onStop?.();
-              }}
-              disabled={!onStop || stopRequested}
-              className="neu-button-accent flex h-9 w-9 items-center justify-center rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] disabled:cursor-wait disabled:opacity-55"
-              aria-label={stopRequested ? "Stopping this answer" : "Stop this answer"}
-              aria-busy={stopRequested}
-              title={stopRequested ? "Stopping..." : "Stop"}
-            >
-              <span className="block h-3 w-3 rounded-[3px] bg-current" aria-hidden />
-            </button>
-          ) : question ? (
-            <button
-              type="button"
-              onClick={() => onAskAgain?.(question, savedAttachments)}
-              disabled={!onAskAgain || questionDisabled}
-              className="bb-inline-answer-control grid h-7 w-7 place-items-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] disabled:cursor-not-allowed disabled:opacity-45"
-              aria-label="Ask this question again"
-              title="Retry"
-            >
-              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M20 6v5h-5M4 18v-5h5m9.7-3A7 7 0 0 0 6.1 7.1L4 11m16 2-2.1 3.9A7 7 0 0 1 5.3 14" />
-              </svg>
-            </button>
-          ) : null}
-        </div>}
+        {!editing && pending ? (
+          <button
+            type="button"
+            onClick={() => {
+              setStopRequested(true);
+              onStop?.();
+            }}
+            disabled={!onStop || stopRequested}
+            className="neu-button-accent flex h-9 w-9 items-center justify-center rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] disabled:cursor-wait disabled:opacity-55"
+            aria-label={stopRequested ? "Stopping this answer" : "Stop this answer"}
+            aria-busy={stopRequested}
+            title={stopRequested ? "Stopping..." : "Stop"}
+          >
+            <span className="block h-3 w-3 rounded-[3px] bg-current" aria-hidden />
+          </button>
+        ) : null}
       </div>
       {!editing ? attachmentPreviews(savedAttachments, false) : null}
       <div className={`[&:has(.bb-inline-artifact-list)_.bb-inline-answer-empty]:hidden ${question ? "mt-4" : "mt-1"}`}>
@@ -1356,12 +1351,15 @@ export function InlineSelectionAnswerPopover({
         >
           <AssistantMessageActions
             content={answer}
+            retryControl={retryControl}
             responseStartedAt={startedAt}
             responseDurationMs={responseDurationMs}
             responseCompletedAt={responseCompletedAt}
             verification={verification}
           />
         </MessageActionsSlot>
+      ) : retryControl ? (
+        <div className="mt-2 flex items-center">{retryControl}</div>
       ) : null}
       </div>
     </div>,

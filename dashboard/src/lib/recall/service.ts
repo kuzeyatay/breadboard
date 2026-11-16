@@ -27,6 +27,7 @@ import {
 import {
   installState,
   readInstallStatus,
+  recallDatabaseQuarantined,
   startInstall,
   type RecallInstallState,
   type RecallInstallStatus,
@@ -45,7 +46,8 @@ import {
   reconcileRecallRuntime,
   type RecallRuntimeStatus,
 } from "./runtime-service.ts";
-import { getRecallSettings, updateRecallSettings, type RecallSettings } from "./settings.ts";
+import { getRecallSettings, recallDb, updateRecallSettings, type RecallSettings } from "./settings.ts";
+import { recallEarlierDays, storeRecallDailySummaries } from "./daily-summaries.ts";
 
 export interface RecallStatus {
   /** Feature switch — false disables the tab, the routes, and the tools. */
@@ -195,7 +197,28 @@ export async function recallActivitySummary(
     endTime: end,
     appName: args.appName,
   });
-  return { range: { start, end }, summary };
+  const earlierDays = recallEarlierDays(recallDb, start, end);
+  return earlierDays.length
+    ? { range: { start, end }, summary, earlierDays, earlierDaysNote: "Recall keeps full detail for two weeks. For these older days only a stored daily summary exists." }
+    : { range: { start, end }, summary };
+}
+
+const summaryPass = globalThis as typeof globalThis & { __breadboardRecallSummaryPass?: boolean };
+
+/**
+ * Keep a summary of each day before the engine's retention deletes it.
+ * ponytail: a timer in this process, five minutes after the first app open and
+ * hourly after. A day is lost only if Breadboard stays closed for the two
+ * weeks after it; move this to a Runtime schedule if that ever matters.
+ */
+function scheduleDailySummaries(config: RecallConfig): void {
+  if (summaryPass.__breadboardRecallSummaryPass) return;
+  summaryPass.__breadboardRecallSummaryPass = true;
+  const pass = () => {
+    void storeRecallDailySummaries(recallDb, recallClient(config)).catch(() => undefined);
+    setTimeout(pass, 60 * 60_000).unref?.();
+  };
+  setTimeout(pass, 5 * 60_000).unref?.();
 }
 
 export interface RecallMeetingsResult {
@@ -386,6 +409,8 @@ export async function controlRecall(
   }
 }
 
+const RECALL_REPAIR_RETRY_MS = 6 * 60 * 60_000;
+
 export interface RecallAutoStartResult {
   started: boolean;
   outcome:
@@ -419,6 +444,26 @@ export async function autoStartRecallCapture(
   const runtimeStatus = await observedRecallRuntimeStatus(userId);
   const state = projectRecallProcessState(runtimeStatus, managed);
   const install = installState(config);
+  if (config.enabled && settings.captureEnabled) scheduleDailySummaries(config);
+
+  // A quarantined database makes every start exit at once, so repair comes
+  // before any start decision. Each attempt copies the whole database, hence
+  // one attempt per six hours while the marker is still there.
+  if (
+    config.enabled &&
+    settings.captureEnabled &&
+    settings.autoStartCapture &&
+    install.installed &&
+    recallDatabaseQuarantined(config)
+  ) {
+    const last = readInstallStatus(config);
+    const repairing = last?.phase === "installing" && !last.stalled;
+    if (!repairing && last && Date.now() - Date.parse(last.updatedAt) < RECALL_REPAIR_RETRY_MS) {
+      return { started: false, outcome: "install_failed", state };
+    }
+    if (!repairing) await startInstall(userId, config).catch(() => undefined);
+    return { started: false, outcome: "installing", state };
+  }
 
   // A persisted running intent that has failed or is resource-blocked remains
   // native recovery authority. App load must not turn it into an unbounded

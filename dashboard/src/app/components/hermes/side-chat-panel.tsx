@@ -11,7 +11,8 @@ import { useConfirmDialog } from "../confirm-dialog";
 import type { SideChatRequest } from "../side-chat-context";
 import { SIDE_CHAT_CONTEXT_SOURCE, wholeMessageReply, type ChatTextSelectionReference } from "@/lib/chat-text-selection";
 import type { ComposerAttachment } from "../assistant-composer";
-import { CHAT_ATTACHMENT_ACCEPT, extractChatAttachments, reusableChatAttachments } from "@/lib/chat-attachments";
+import { CHAT_ATTACHMENT_ACCEPT, attachmentOnlyMessageText, extractChatAttachments, reusableChatAttachments, unavailableWorkspaceView } from "@/lib/chat-attachments";
+import { captureWorkspaceView } from "@/lib/workspace-view";
 import { useChatNotificationView } from "@/lib/use-chat-notification-view";
 
 async function discardSideChat(id: string, keepalive = false) {
@@ -56,6 +57,8 @@ export default function SideChatPanel({ request, gardenSlug, index = 0, active =
   const activeId = useRef(request.conversationId);
   const disposed = useRef(false);
   const sending = useRef<Promise<void> | null>(null);
+  const queuedViews = useRef(new WeakMap<ComposerAttachment, ReturnType<typeof captureWorkspaceView>>());
+  const [viewUnavailable, setViewUnavailable] = useState(false);
   const closePending = useRef(false);
   const { openSession } = session;
   const firstQuestion = session.messages.find(message => message.role === "user")?.content.trim().replace(/\s+/g, " ") ?? "";
@@ -126,9 +129,20 @@ export default function SideChatPanel({ request, gardenSlug, index = 0, active =
     }
   }, []);
 
+  const withWorkspaceView = useCallback(async (files: readonly ComposerAttachment[]) => {
+    const marker = files.find(file => queuedViews.current.has(file));
+    const view = await (marker ? queuedViews.current.get(marker) : captureWorkspaceView());
+    if (!disposed.current) setViewUnavailable(!view);
+    const uploads = files.filter(file => file !== marker && !file.context);
+    return [...uploads, view ?? unavailableWorkspaceView()];
+  }, []);
+
   const send = useCallback(async (text: string, sentAttachments: readonly ComposerAttachment[] = [], textSelection?: ChatTextSelectionReference, voice?: import('@/lib/speech/voice-request').VoiceRequestOptions) => {
-    if ((!text.trim() && !sentAttachments.length) || sending.current || disposed.current) return;
+    const uploads = sentAttachments.filter(file => !queuedViews.current.has(file) && !file.context);
+    const question = text.trim() || attachmentOnlyMessageText(uploads);
+    if (!question || sending.current || disposed.current) return;
     setError(null);
+    const prepared = withWorkspaceView(sentAttachments);
     const task = (async () => {
       setCreating(true);
       try {
@@ -144,10 +158,10 @@ export default function SideChatPanel({ request, gardenSlug, index = 0, active =
         const selection = textSelection
           ?? (quote ? wholeMessageReply("side-chat-selection", quote) ?? undefined : undefined)
           ?? (context ? wholeMessageReply(SIDE_CHAT_CONTEXT_SOURCE, context) ?? undefined : undefined);
-        await session.send(text, {
+        await session.send(question, {
           model: intelligence.model, reasoningEffort: intelligence.reasoningEffort,
           ...voice,
-          attachments: [...sentAttachments], textSelection: selection,
+          attachments: uploads, textSelection: selection, prepareAttachments: () => prepared,
           onTurnStarted: () => {
             setInput(""); setQuote(""); setContext("");
             setAttachments(current => current.filter(item => !sentAttachments.includes(item)));
@@ -161,15 +175,16 @@ export default function SideChatPanel({ request, gardenSlug, index = 0, active =
     })();
     sending.current = task;
     try { await task; } finally { sending.current = null; }
-  }, [session, intelligence.model, intelligence.reasoningEffort, quote, context]);
+  }, [session, intelligence.model, intelligence.reasoningEffort, quote, context, withWorkspaceView]);
 
   const askSelection = useCallback(async (question: string, selection: ChatTextSelectionReference, selectionAttachments?: readonly ComposerAttachment[], voice?: import("@/lib/speech/voice-request").VoiceRequestOptions) => {
+    const prepared = withWorkspaceView(selectionAttachments ?? []);
     if (session.activeRunId) await session.abort();
     await session.send(question, {
       model: intelligence.model, reasoningEffort: intelligence.reasoningEffort, ...voice,
-      textSelection: selection, attachments: [...(selectionAttachments ?? [])],
+      textSelection: selection, attachments: [...(selectionAttachments ?? [])], prepareAttachments: () => prepared,
     });
-  }, [session, intelligence.model, intelligence.reasoningEffort]);
+  }, [session, intelligence.model, intelligence.reasoningEffort, withWorkspaceView]);
 
   return <section role="dialog" aria-modal="false" aria-label="Side chat" data-side-chat
     className={`flex h-full min-h-0 flex-col overflow-hidden text-[var(--ink)] ${active ? "shadow-[inset_0_2px_0_var(--botanical)]" : ""}`}
@@ -189,6 +204,7 @@ export default function SideChatPanel({ request, gardenSlug, index = 0, active =
       </button>
     </header>
     {error ? <p role="alert" className="px-4 py-2 text-sm">{error}</p> : null}
+    {viewUnavailable ? <p role="status" className="px-4 py-2 text-sm">The workspace view was unavailable for this question.</p> : null}
     <input ref={fileInputRef} type="file" multiple accept={CHAT_ATTACHMENT_ACCEPT} className="hidden" aria-label="Attach files to side chat"
       onChange={event => {
         const files = Array.from(event.target.files ?? []);
@@ -209,15 +225,20 @@ export default function SideChatPanel({ request, gardenSlug, index = 0, active =
       attachments={attachments}
       onRemoveAttachment={position => setAttachments(current => current.filter((_, at) => at !== position))}
       onReplaceAttachment={(position, attachment) => setAttachments(current => current.map((item, at) => at === position ? attachment : item))}
-      onRestoreQueuedAttachments={restored => setAttachments(restored)}
+      captureQueuedAttachments={() => {
+        const marker: ComposerAttachment = { type: "text", context: "workspace", name: "Current Breadboard view", text: "" };
+        queuedViews.current.set(marker, captureWorkspaceView());
+        return [marker];
+      }}
+      onRestoreQueuedAttachments={restored => setAttachments(restored.filter(file => !queuedViews.current.has(file)))}
       onSelectBranch={session.setMessages}
       onEditMessage={(messageIndex, text, branchGroupId, detached = []) => void session.send(text, {
         model: intelligence.model, reasoningEffort: intelligence.reasoningEffort,
         historyOverride: session.messages.slice(0, messageIndex), branchGroupId,
-        attachments: reusableChatAttachments(session.messages[messageIndex]?.attachments?.filter(item => !detached.includes(item.name))),
+        attachments: reusableChatAttachments(session.messages[messageIndex]?.attachments?.filter(item => item.context || !detached.includes(item.name))),
         textSelection: session.messages[messageIndex]?.textSelection,
       })}
-      onSteer={async (text, attachments, textSelection) => session.steer(text, [...attachments], textSelection)}
+      onSteer={async (text, attachments, textSelection) => session.steer(text, await withWorkspaceView(attachments), textSelection)}
       steerableRun={Boolean(session.activeRunId)}
       onAbort={() => void session.abort()} onPermissionDecision={(decision) => void session.respondToPermission(decision)}
       onClarificationAnswer={(answer) => void session.respondToClarification(answer)}
@@ -225,7 +246,8 @@ export default function SideChatPanel({ request, gardenSlug, index = 0, active =
       onRetryMessage={(index, branchGroupId) => {
         const message = session.messages[index];
         if (message) void session.send(message.content, { model: intelligence.model, reasoningEffort: intelligence.reasoningEffort,
-          historyOverride: session.messages.slice(0, index), branchGroupId, textSelection: message.textSelection });
+          historyOverride: session.messages.slice(0, index), branchGroupId, textSelection: message.textSelection,
+          attachments: reusableChatAttachments(message.attachments) });
       }}
       model={intelligence.model} models={models} onModelChange={intelligence.setModel}
       reasoningEffort={intelligence.reasoningEffort} onReasoningEffortChange={intelligence.setReasoningEffort}

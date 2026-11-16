@@ -65,6 +65,7 @@ class OAuthHTTPServer(http.server.HTTPServer):
     def auth_url(self) -> str:
         params = {
             "response_type": "code",
+            "prompt": "select_account",
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
             "scope": "openid profile email offline_access",

@@ -1,6 +1,7 @@
 import type { AgentOccurrence } from '../calendar/agent-query.ts';
 import { parseStamp, toEpochMinutes } from '../calendar/wallclock.ts';
 import { recommendationClock } from './clock.ts';
+import { calendarConflicts } from './planning-context.ts';
 import { cleanRecommendationText as text, type RecommendationContext, type RecommendationEvidence } from './types.ts';
 
 const minutes = (stamp: string) => { const parsed = parseStamp(stamp); return parsed ? toEpochMinutes(parsed) : NaN; };
@@ -17,30 +18,22 @@ export function calendarRecommendationEvidence(events: readonly AgentOccurrence[
   const relevant = valid.filter(event => minutes(event.end) > nowMinute - 120);
   const upcoming = relevant.filter(event => event.end > now);
   const recent = relevant.filter(event => event.end <= now && !event.allDay);
-  const seen = new Set<number>();
-  const selected = [...upcoming, ...recent].filter(event => {
-    const series = event.seriesId ?? event.eventId;
-    if (seen.has(series)) return false;
-    seen.add(series); return true;
-  }).slice(0, 8);
-  const result: RecommendationEvidence[] = selected.map(event => {
+  // Keep instances until collection merges Google calendars and booking mail.
+  // The second occurrence of a weekly class may be the one that conflicts.
+  const result = [...upcoming, ...recent].map((event): RecommendationEvidence => {
     const status = event.end <= now ? 'recently-ended' : event.start <= now ? 'ongoing' : 'upcoming';
     return { id:id(event),source:'calendar',title:text(event.title),timestamp:event.start,
-      calendar:{kind:'event',start:event.start,end:event.end,status,allDay:Boolean(event.allDay)},
+      calendar:{kind:'event',start:event.start,end:event.end,status,allDay:Boolean(event.allDay),location:text(event.location,180) || undefined,seriesId:`local:${event.seriesId ?? event.eventId}`},
       summary:text(`${status}. ${event.allDay ? 'All-day entry.' : ''} Scheduled ${event.start}–${event.end} in ${event.calendar}. ${event.location ? `Location: ${event.location}.` : ''} ${event.description ?? ''} Attendance and completion are unknown.`,800) };
   });
   const timed = upcoming.filter(event => !event.allDay);
   const overlaps: RecommendationEvidence[] = [];
-  for (let i=0; i<timed.length && overlaps.length<2; i++) {
-    for (let j=i+1; j<timed.length && timed[j].start<timed[i].end && overlaps.length<2; j++) {
-      const a=timed[i], b=timed[j];
-      // A local mirror can contain the same appointment more than once.
-      if (a.title === b.title && a.start === b.start && a.end === b.end) continue;
-      const start=a.start>b.start?a.start:b.start, end=a.end<b.end?a.end:b.end;
-      overlaps.push({id:`calendar-overlap:${id(a)}:${id(b)}`,source:'calendar',title:`${text(a.title,70)} / ${text(b.title,70)}`,
-        summary:`These two scheduled entries overlap from ${start} to ${end}. Review options; neither has been moved.`,
-        calendar:{kind:'overlap',start,end},timestamp:start,relatedIds:[id(a),id(b)] });
-    }
+  for (const [a, b] of calendarConflicts(result.filter(item => !item.calendar?.allDay))) {
+    const start = b.calendar.start, end = a.calendar.end < b.calendar.end ? a.calendar.end : b.calendar.end;
+    overlaps.push({id:`calendar-overlap:${a.id}:${b.id}`,source:'calendar',title:`${text(a.title,70)} / ${text(b.title,70)}`,
+      summary:`These two scheduled entries overlap from ${start} to ${end}. Review options; neither has been moved.`,
+      calendar:{kind:'overlap',start,end},timestamp:start,relatedIds:[a.id,b.id] });
+    if (overlaps.length === 2) break;
   }
   // Suggest a real opening today only within a bounded daytime window. This
   // describes the calendar, not the user's availability or working hours.

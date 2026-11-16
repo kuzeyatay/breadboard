@@ -224,6 +224,8 @@ export type NormalizedAgentEvent =
         evidence: unknown[];
         unsupportedClaims: string[];
         assumptions: string[];
+        answerModel?: string | null;
+        usedFallback?: boolean;
         /** Runtime agents (`/agents:*`) this turn delegated work to. */
         externalAgents?: unknown[];
         /** Skills, connections, automations and products this turn used. */

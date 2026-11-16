@@ -2,10 +2,12 @@ import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import { requireSameOrigin } from "@/lib/request-origin.ts";
 import { buzzBridge, crumbs, crumbsErrorResponse } from "@/lib/crumbs/service.ts";
+import { AnnotationError, browserAnnotationFeed, browserAnnotationMine } from "@/lib/browser-annotations-store.ts";
+import db from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 const json = (value: unknown) => Response.json(value, { headers: { "Cache-Control": "no-store" } });
-const failure = (error: unknown) => crumbsErrorResponse(error) ?? apiErrorResponse(error);
+const failure = (error: unknown) => error instanceof AnnotationError ? Response.json({ error: error.message }, { status: error.status }) : crumbsErrorResponse(error) ?? apiErrorResponse(error);
 
 /** The browser-facing origin, so the sign-in redirect comes back to this same server. */
 function requestOrigin(request: Request) {
@@ -21,9 +23,18 @@ export async function GET(request: Request) {
     switch (query.get("view")) {
       case "status": return json(crumbs.status(userId));
       case "typeahead": return json({ people: await crumbs.typeahead(query.get("q")) });
-      case "feed": return json(await crumbs.feed(userId, query.get("scope") ?? "following", query.get("before")));
+      case "feed": {
+        const scope = query.get("scope") ?? "following";
+        // A Breadboard organization's crumbs live in its crumbs room on this machine, not on the network.
+        if (scope.startsWith("room:")) return json({ items: browserAnnotationFeed(db, userId, scope), before: null });
+        const page = await crumbs.feed(userId, scope, query.get("before"));
+        if (scope !== "mine" || query.get("before")) return json(page);
+        // Mine is everything this account wrote, wherever it was left: the network's crumbs, and the ones kept here.
+        const items = [...page.items, ...browserAnnotationMine(db, userId)].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+        return json({ ...page, items });
+      }
       case "follows": return json(await crumbs.follows(userId));
-      case "orgs": return json({ orgs: await crumbs.listOrgs(userId), local: buzzBridge.localOrganizations(userId) });
+      case "orgs": return json({ orgs: (await crumbs.listOrgs(userId)).map(org => ({ ...org, crumbsRoom: buzzBridge.crumbsRoomOf(userId, org.id) })), local: buzzBridge.localOrganizations(userId) });
       case "org": return json(await crumbs.orgDetail(userId, query.get("id") ?? ""));
       case "notes": return json(await crumbs.listNotes(userId, query.get("id")));
       case "rooms": return json({ rooms: await crumbs.listRooms(userId, query.get("id") ?? "") });

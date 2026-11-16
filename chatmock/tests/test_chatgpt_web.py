@@ -1510,6 +1510,36 @@ globalThis.__breadboardChatgptWebEmit = (payload) => emitted.push(JSON.parse(pay
         streamed = "".join(event.get("append", "") for event in result if event["type"] == "text")
         self.assertEqual(streamed, "pong 42")
 
+    def test_a_fetch_stream_beside_the_socket_does_not_repeat_the_answer(self) -> None:
+        # Live 2026-11-16 (GPT-6 Pro): the POST's own stream kept appending the
+        # answer while the socket streamed it too, and the two interleaved:
+        # "Your questionYour question points to... points to...".
+        answer = "Your question points to one of the central debates."
+        assistant = {"v": {"message": {"id": "a", "author": {"role": "assistant"}, "content": {"content_type": "text", "parts": [""]}}}}
+        sse = (
+            "data: " + json.dumps(assistant) + "\n\n"
+            + "data: " + json.dumps({"p": "/message/content/parts/0", "o": "append", "v": answer}) + "\n\n"
+        )
+        user = {"v": {"message": {"id": "u", "author": {"role": "user"}, "content": {"content_type": "text", "parts": ["q"]}}}}
+        wire = [
+            self.socket_wire("conversation-turn-x", data=self.socket_delta(user)),
+            self.socket_wire("conversation-turn-x", data=self.socket_delta(assistant)),
+            self.socket_wire("conversation-turn-x", data=self.socket_delta({"p": "/message/content/parts/0", "o": "append", "v": answer[:13]})),
+        ]
+        result = self.run_node(
+            "window.__breadboardChatgptWeb.setTurn('t1');\n"
+            "const socket = new WebSocket('wss://ws.chatgpt.com/ws/user');\n"
+            "window.fetch('/backend-api/f/conversation', { method: 'POST', body: JSON.stringify({ messages: [{ id: 'u' }] }) })\n"
+            f"  .then(() => {{ for (const data of {json.dumps(wire)}) socket.dispatch(data); }})\n"
+            f"  .then(() => setTimeout(() => {{ socket.dispatch({json.dumps(self.socket_wire('conversation-turn-x', data=self.socket_delta({'v': answer[13:]})))}); socket.dispatch({json.dumps(self.socket_wire('conversation-turn-x', done=True))}); console.log(JSON.stringify(emitted)); }}, 200));",
+            prelude=self.SOCKET_PRELUDE
+            + f"const SSE = {json.dumps(sse)};\n"
+            + "globalThis.fetch = () => Promise.resolve(new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(SSE)); setTimeout(() => c.close(), 400); } }), { headers: { 'content-type': 'text/event-stream' } }));\n",
+        )
+        after_socket = result[next(i for i, e in enumerate(result) if e.get("mode") == "ws"):]
+        streamed = "".join(event.get("append", "") for event in after_socket if event["type"] == "text")
+        self.assertEqual(streamed, answer, result)
+
     def test_a_stream_that_stops_before_its_end_is_not_the_answer(self) -> None:
         # Live 2026-10-05: a tool call came back cut at the end of its first
         # chunk because the body ended without message_stream_complete and the

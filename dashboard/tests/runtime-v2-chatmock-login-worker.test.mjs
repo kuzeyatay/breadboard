@@ -31,7 +31,7 @@ function fixture() {
   const runtimeBin = path.join(root, "runtime", "python");
   fs.mkdirSync(chatmockRoot, { recursive: true });
   fs.mkdirSync(runtimeBin, { recursive: true });
-  fs.writeFileSync(path.join(chatmockRoot, "chatmock.py"), "# fixed entry\n");
+  fs.writeFileSync(path.join(chatmockRoot, "breadboard_runtime.py"), "# fixed entry\n");
   fs.writeFileSync(path.join(runtimeBin, "python.exe"), "runtime python\n");
   return { root, appRoot, runtimeBin };
 }
@@ -140,8 +140,9 @@ test("ChatMock login executor launches only the staged source with fixed argv an
     },
   );
   const result = await resultPromise;
+  assert.equal(describeChatmockLoginExit(1, ""), "The sign-in exited with code 1 before completing.");
   assert.equal(path.basename(launch.command).toLowerCase(), "python.exe");
-  assert.deepEqual(launch.argv, [path.join(appRoot, "chatmock", "chatmock.py"), "login", "--no-browser"]);
+  assert.deepEqual(launch.argv, [path.join(appRoot, "chatmock", "breadboard_runtime.py"), "login", "--no-browser"]);
   assert.equal(launch.options.shell, false);
   assert.equal(launch.options.detached, false);
   assert.equal(launch.options.env.PYTHONIOENCODING, "utf-8");

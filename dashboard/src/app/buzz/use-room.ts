@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { mergeMessages, readStored, requestJson, transcriptKey, writeStored } from "./lib/message-state";
 import { isLive, type BuzzMessage, type RoomDetail } from "./types.ts";
+import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
+import { ORGANIZATION_INTELLIGENCE } from "./components/composer-intelligence";
 
 type Detail = RoomDetail & { root?: BuzzMessage };
 
@@ -12,6 +14,10 @@ export function useRoom(roomPublicId: string | null, userId = 0, parentId: numbe
   const endpoint = roomPublicId ? `/api/buzz/rooms/${roomPublicId}/${parentId === null ? "messages" : `threads/${parentId}`}` : null;
   const currentScope = useRef(scope);
   currentScope.current = scope;
+  // The model and effort chosen in the composer; agents without a model of their own answer with them.
+  const intelligence = useAssistantIntelligence(ORGANIZATION_INTELLIGENCE);
+  const choice = useRef({ model: intelligence.model, reasoningEffort: intelligence.reasoningEffort });
+  choice.current = { model: intelligence.model, reasoningEffort: intelligence.reasoningEffort };
   const [state, setState] = useState<{ scope: string; detail: Detail | null }>({ scope, detail: null });
   const [outgoing, setOutgoing] = useState<{ scope: string; messages: BuzzMessage[] }>({ scope, messages: [] });
   const outbox = useRef(outgoing);
@@ -83,7 +89,7 @@ export function useRoom(roomPublicId: string | null, userId = 0, parentId: numbe
     try {
       const result = await requestJson<{ message: BuzzMessage }>(endpoint, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ body: message.body, clientMessageId: message.clientMessageId }),
+        body: JSON.stringify({ body: message.body, clientMessageId: message.clientMessageId, ...choice.current }),
       });
       saveOutbox(messages => messages.filter(row => row.clientMessageId !== message.clientMessageId));
       if (currentScope.current === scope) {

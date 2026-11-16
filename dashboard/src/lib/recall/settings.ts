@@ -23,6 +23,8 @@ export {
   normalizeExcludedWindows,
 };
 export type { RecallControlMode, RecallSettings };
+/** The database Recall's own tables live in, for daily-summaries.ts. */
+export const recallDb = db;
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS recall_user_settings (

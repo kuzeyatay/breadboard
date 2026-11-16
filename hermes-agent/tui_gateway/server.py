@@ -6083,12 +6083,12 @@ def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
             )
             desc = r.get("analysis", "") if r.get("success") else None
             parts.append(
-                f"[The user attached an image:\n{desc}]\n{hint}"
+                f"[Image description:\n{desc}]\n{hint}"
                 if desc
-                else f"[The user attached an image but analysis failed.]\n{hint}"
+                else f"[Image analysis failed.]\n{hint}"
             )
         except Exception:
-            parts.append(f"[The user attached an image but analysis failed.]\n{hint}")
+            parts.append(f"[Image analysis failed.]\n{hint}")
 
     text = user_text or ""
     prefix = "\n\n".join(parts)
@@ -12023,6 +12023,10 @@ def _run_prompt_submit(
                 "usage": _turn_usage_delta(usage_before, usage_after),
                 "status": status,
             }
+            if isinstance(result, dict) and result.get("answer_used_fallback") is True:
+                payload["answer_used_fallback"] = True
+            if isinstance(result, dict) and result.get("answer_model"):
+                payload["answer_model"] = result["answer_model"]
             guard_failure = guardrail_failure(result) if isinstance(result, dict) else None
             if guard_failure and status != "interrupted":
                 status = payload["status"] = "error"

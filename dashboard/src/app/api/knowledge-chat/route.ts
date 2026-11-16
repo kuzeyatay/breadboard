@@ -1,3 +1,4 @@
+import { modelVerification, providerReplyVerification, type VerificationSummary } from '@/lib/hermes/evidence';
 import { NextResponse } from 'next/server';
 import { voiceReplyWithOpener } from '@/lib/speech/voice-opener-context';
 import OpenAI from 'openai';
@@ -17,6 +18,7 @@ import {
   type ChatTokenUsageStreamEvent,
 } from '@/lib/chat-token-usage';
 import {
+  attachmentOrderManifest,
   productAttachmentPromptText,
   type ChatAttachment,
 } from '@/lib/chat-attachments';
@@ -44,6 +46,7 @@ export const dynamic = 'force-dynamic';
 type JsonRecord = Record<string, unknown>;
 type ChatRequestMessage = { role: 'user' | 'assistant'; content: string };
 type SsePayload =
+  | { type: 'verification'; verification: VerificationSummary }
   | { type: 'sources'; sources: string[] }
   | { type: 'delta'; text: string }
   | { type: 'thinking'; text: string }
@@ -123,8 +126,9 @@ function buildResponsesInput(
         attachment.type === 'product',
     );
     const attachedText = [
+      ...(attachments.some(item => item.context) ? [attachmentOrderManifest(attachments)] : []),
       ...textAttachments.map(
-        (attachment) => `--- Attached file: ${attachment.name} ---\n${attachment.text}`,
+        (attachment) => `--- ${attachment.context ? "Reader context" : "Attached file"}: ${attachment.name} ---\n${attachment.text}`,
       ),
       ...modelAttachments.map(
         (attachment) =>
@@ -326,7 +330,7 @@ export async function POST(request: Request) {
     } satisfies ResponseCreateParamsStreaming;
 
     // Council routing: ChatMock reads and strips these fields.
-    const stream = await client.responses.create(
+    const { data: stream, response: providerResponse } = await client.responses.create(
       withCouncil(responsesRequest, {
         taskType: 'page_assistant_answer',
         sourceContext:
@@ -338,7 +342,7 @@ export async function POST(request: Request) {
               }
             : undefined,
       }, userId),
-    );
+    ).withResponse();
 
     const sourceNames = Array.from(
       new Set(
@@ -382,11 +386,14 @@ export async function POST(request: Request) {
 
         // Providers that deliver the message as a finished item rather than as
         // deltas would otherwise answer with silence. See responses-stream-text.
+        let answerModel: string | undefined;
+        let failed = false;
         const answerRecovery = createResponseTextRecovery();
         const thinkingRecovery = createResponseTextRecovery();
 
         try {
           for await (const event of stream as AsyncIterable<ResponseStreamEvent>) {
+            if ('response' in event && event.response?.model) answerModel = event.response.model;
             if (event.type === 'response.output_text.delta') {
               answerRecovery.recordStreamed(event.output_index, event.delta);
               emitText('delta', event.delta);
@@ -412,6 +419,7 @@ export async function POST(request: Request) {
             } else if (event.type === 'response.incomplete') {
               emitUsageFromResponse(event.response);
             } else if (event.type === 'response.failed') {
+              failed = true;
               const response = event.response as unknown as JsonRecord | undefined;
               const error = response?.error as JsonRecord | undefined;
               if (typeof error?.message === 'string' && error.message.trim()) {
@@ -421,12 +429,14 @@ export async function POST(request: Request) {
             }
           }
         } catch (error) {
+          failed = true;
           const message =
             error instanceof Error ? error.message : 'Something went wrong while streaming the response.';
           emitText('delta', `\n\n${message}`);
         } finally {
           const held = emDash.flush();
           if (held) emit({ type: 'delta', text: held });
+          emit({ type: 'verification', verification: failed ? modelVerification(null) : providerReplyVerification(providerResponse.headers, answerModel) });
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           controller.close();
         }

@@ -5,7 +5,8 @@ import db from "../db.ts";
 import { dashboardDataDir } from "../runtime-paths.ts";
 import { maintainRuntimeStorage } from "../supervisor-control.ts";
 import { ColdPayloadWorker, ensureChatPayloadSchema } from "./chat-payloads.ts";
-import { StorageScanner, cleanDisposableFiles, disposablePreview } from "./filesystem.ts";
+import { StorageScanner, allocatedBytes, cleanDisposableFiles, disposablePreview } from "./filesystem.ts";
+import { classifyStoragePath, largeChats, noteChatFile, saveChatUsage, storageBudget, type ChatUsage } from "./budget.ts";
 import { acquireStorageLease, ensureStorageSchema, sqliteSpace, storageSettings } from "./store.ts";
 import { DAY_MS, STORAGE_POLICY, type StorageMaintenanceResult } from "./policy.ts";
 import { enqueueImmutableCandidate, ensureImmutableFileSchema, ImmutableFileWorker, collectImmutableFiles } from "./immutable-files.ts";
@@ -19,6 +20,8 @@ import { WorkspaceStorageWorker, enqueueWorkspaceCandidate, workspaceStorageStat
 const state = globalThis as typeof globalThis & { breadboardStorageScanner?: StorageScanner; breadboardImmutableWorker?: ImmutableFileWorker; breadboardColdWorker?: ColdPayloadWorker; breadboardWorkspaceWorker?: WorkspaceStorageWorker; breadboardStoragePhase?: number; breadboardStorageGarden?: number };
 const workspaceScanState = globalThis as typeof globalThis & { breadboardWorkspaceScanner?: StorageScanner };
 
+const chatUsage = new WeakMap<StorageScanner, ChatUsage>();
+
 function foregroundBusy(): boolean {
   return !!db.prepare(`SELECT 1 FROM conversation_messages WHERE status='pending'
     AND updated_at>datetime('now','-2 minutes') LIMIT 1`).get();
@@ -31,6 +34,8 @@ export async function storageStatus() {
   const compression = db.prepare("SELECT COALESCE(SUM(p.raw_bytes-length(p.data)-octet_length(CASE p.field WHEN 'metadata' THEN m.metadata ELSE m.sources END)),0) AS bytes FROM storage_message_payloads p JOIN conversation_messages m ON m.id=p.message_id").get() as { bytes: number };
   const disposables = await disposablePreview(db,dashboardDataDir());
   return {
+    budget: storageBudget(db, settings.inventory ? JSON.parse(settings.inventory) : null),
+    chats: largeChats(db),
     automatic: settings.automatic === 1, policy: STORAGE_POLICY,
     compaction: readStorageCompaction(dashboardDataDir()),
     freeBytes: volume.bavail * volume.bsize,
@@ -67,10 +72,15 @@ export async function runStorageMaintenance(input: { action: "tick" | "clean" | 
   let deadline = Date.now() + STORAGE_POLICY.sliceMs;
   const shouldYield = () => !!input.signal?.aborted || Date.now() >= deadline;
   try {
-    if (input.action !== "scan") {
-      const runtime = await maintainRuntimeStorage();
-      if (runtime?.busy) { result.skipped.push("The runtime is busy."); return result; }
+    // The scheduler starts a job every few seconds, so "busy" is the usual
+    // answer. It postpones housekeeping only: returning here also skipped the
+    // measurement below, which is why Settings never showed a finished scan.
+    const runtime = input.action !== "scan" ? await maintainRuntimeStorage() : undefined;
+    if (runtime?.busy) result.skipped.push("The runtime is busy.");
+    if (input.action !== "scan" && !runtime?.busy) {
       result.housekeepingAllowed = true;
+      // The runtime clears a bounded batch per call; while it is finding work, come straight back.
+      if (runtime && runtime.jobsPruned + runtime.directoriesRemoved > 0) result.continueSoon = true;
       if (runtime === null) result.skipped.push("Native runtime retention requires the desktop lifecycle owner.");
       if (runtime?.protected) result.skipped.push("Some runtime records retain recovery or unrecognized result data.");
       deadline = Date.now() + STORAGE_POLICY.sliceMs;
@@ -83,10 +93,17 @@ export async function runStorageMaintenance(input: { action: "tick" | "clean" | 
         result.filesRemoved+=scratch.filesRemoved; result.bytesReleased+=scratch.bytesReleased;
       }
       const volume = await fs.promises.statfs(root);
-      if (!shouldYield() && volume.bavail * volume.bsize >= STORAGE_POLICY.reserveBytes) {
+      const reserved = volume.bavail * volume.bsize >= STORAGE_POLICY.reserveBytes;
+      // Over budget, compressing cold workspace files in place takes every other
+      // turn, and it is the one step that still runs below the reserve: it needs
+      // no scratch copy, and a full disk is when it matters most. Steps that do
+      // copy check the reserve themselves.
+      const over = storageBudget(db, settings.inventory ? JSON.parse(settings.inventory) : null).over;
+      if (!shouldYield() && (reserved || over)) {
         state.breadboardColdWorker ??= new ColdPayloadWorker();
-        const phase = state.breadboardWorkspaceWorker?.pending ? 4 : (state.breadboardStoragePhase ?? 0) % 5;
-        state.breadboardStoragePhase = phase + 1;
+        const turn = state.breadboardStoragePhase ?? 0;
+        const phase = !reserved || state.breadboardWorkspaceWorker?.pending || (over && turn % 2 === 1) ? 4 : turn % 5;
+        state.breadboardStoragePhase = turn + 1;
         const compressed = phase === 0 ? await state.breadboardColdWorker.step(db, settings.compression_cursor, shouldYield) : {bytesSaved:0,cursor:settings.compression_cursor};
         result.payloadBytesSaved += compressed.bytesSaved;
         db.prepare("UPDATE storage_settings SET compression_cursor=? WHERE id=1").run(compressed.cursor);
@@ -123,10 +140,10 @@ export async function runStorageMaintenance(input: { action: "tick" | "clean" | 
           }
           state.breadboardWorkspaceWorker ??= new WorkspaceStorageWorker();
           result.bytesReleased+=await state.breadboardWorkspaceWorker.step(db,root,shouldYield,input.signal);
-          result.continueSoon=state.breadboardWorkspaceWorker.pending;
+          result.continueSoon||=state.breadboardWorkspaceWorker.pending;
           if (!shouldYield()) result.bytesReleased+=await collectWorkspaceStorage(db,root,shouldYield);
         }
-      } else if (volume.bavail * volume.bsize < STORAGE_POLICY.reserveBytes) {
+      } else if (!reserved) {
         result.skipped.push("Compression is waiting for 2 GiB of free space.");
       }
       // Incremental vacuum never upgrades an existing database on startup.
@@ -134,14 +151,28 @@ export async function runStorageMaintenance(input: { action: "tick" | "clean" | 
     }
     if (input.action === "scan" && state.breadboardStorageScanner?.result.complete) state.breadboardStorageScanner = undefined;
     if (!state.breadboardStorageScanner || (state.breadboardStorageScanner.result.complete
-      && now - state.breadboardStorageScanner.result.updatedAt > 7 * DAY_MS))
+      && now - state.breadboardStorageScanner.result.updatedAt > DAY_MS))
       state.breadboardStorageScanner = new StorageScanner(root);
     if (!state.breadboardStorageScanner.result.complete && !shouldYield()) {
-      const inventory = await state.breadboardStorageScanner.step(shouldYield,128,(relative,stat) => {
+      // The 250 ms slice is the bound. 128 entries a pass, one pass every 15 s,
+      // needed weeks of idle time for a million files, and the scan restarts
+      // with the server, so it never finished.
+      deadline = Math.max(deadline, Date.now() + STORAGE_POLICY.sliceMs);
+      const scanner = state.breadboardStorageScanner;
+      if (!chatUsage.has(scanner)) chatUsage.set(scanner, new Map());
+      const chats = chatUsage.get(scanner)!;
+      const inventory = await scanner.step(shouldYield,4096,(relative,stat) => {
+        noteChatFile(chats, relative, allocatedBytes(stat));
+        if (stat.nlink === BigInt(1)) {
+          const classes = scanner.result.classes ??= {}, storageClass = classifyStoragePath(relative);
+          classes[storageClass] = (classes[storageClass] ?? 0) + allocatedBytes(stat);
+        }
         enqueueImmutableCandidate(db,relative,stat,eligibleArtifact(relative));
         enqueueWorkspaceCandidate(db,relative,stat);
       });
       db.prepare("UPDATE storage_settings SET inventory=? WHERE id=1").run(JSON.stringify(inventory));
+      result.continueSoon ||= !inventory.complete;
+      if (inventory.complete) saveChatUsage(db, chats);
     }
     return result;
   } catch (error) {

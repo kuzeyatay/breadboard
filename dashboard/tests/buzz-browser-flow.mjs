@@ -26,6 +26,12 @@ const server=http.createServer(async(req,res)=>{
     const url=new URL(req.url,'http://localhost');const user=Number(req.headers['x-qa-user']||1);
     if(url.pathname==='/app.js'){res.setHeader('content-type','application/javascript');return res.end(js);}
     if(url.pathname==='/app.css'){res.setHeader('content-type','text/css');return res.end(css);}
+    if(url.pathname==='/api/crumbs'&&url.searchParams.get('view')==='feed'){
+      // The crumbs room draws the Crumbs feed; one stored crumb is enough to see it there.
+      res.setHeader('content-type','application/json');
+      return res.end(JSON.stringify({before:null,items:[{id:'room:900',author:{did:'local:1',handle:null,displayName:'ada',avatar:null},url:'https://example.com/a#:~:text=held',title:'A paper',
+        target:{kind:'text',url:'https://example.com/a',title:'A paper',quote:'the result held'},comment:'A crumb in the room',source:null,createdAt:new Date().toISOString(),threadCount:1,own:true,audience:'Product team',scope:url.searchParams.get('scope')}]}));
+    }
     if(url.pathname.startsWith('/api/')){
       const m=url.pathname.match(/^\/api\/buzz\/rooms\/([^/]+)(?:\/(members|messages|threads)(?:\/(\d+))?)?$/);
       let key,params={};
@@ -37,7 +43,7 @@ const server=http.createServer(async(req,res)=>{
       res.statusCode=result.status;res.setHeader('content-type','application/json');return res.end(JSON.stringify(result.body));
     }
     const rails=(await call(user,'rooms')).body;
-    const props={selfUserId:user,communities:rails.organizations,rooms:rails.rooms,personas:[],rosterReady:true,initialRoomId:url.searchParams.get('room')};
+    const props={selfUserId:user,appearanceOwnerKey:String(user),communities:rails.organizations,rooms:rails.rooms,personas:[],rosterReady:true,initialRoomId:url.searchParams.get('room')};
     res.setHeader('content-type','text/html');res.end(`<!doctype html><html data-theme="light"><head><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script>window.PROPS=${JSON.stringify(props).replaceAll('<','\\u003c')};document.documentElement.dataset.theme=localStorage.getItem('breadboard:theme')||'light';</script><script src="/app.js"></script></body></html>`);
   }catch(error){errors.push(error.message);res.statusCode=500;res.end(JSON.stringify({message:error.message}));}
 });
@@ -109,6 +115,28 @@ try {
   await owner.goto(`${origin}/?room=${room.publicId}`);
   await owner.getByText('Native agent answer for account 1',{exact:true}).waitFor();
   await owner.screenshot({path:path.join(output,'light.png')});
+  // The crumbs room is the Crumbs feed, not a transcript; going back and forth leaves one room on screen, never two.
+  const rowsOverlap=()=>owner.evaluate(()=>{const rows=[...document.querySelectorAll('[data-testid="message-row"]')].map(row=>row.getBoundingClientRect()).filter(rect=>rect.height>0).sort((a,b)=>a.top-b.top);return rows.some((rect,index)=>index>0&&rect.top<rows[index-1].bottom-1);});
+  for(let round=0;round<3;round++){
+    await owner.getByRole('button',{name:'crumbs',exact:true}).click();
+    await owner.getByText('A crumb in the room',{exact:true}).waitFor();
+    assert.equal(await owner.locator('[data-testid="message-row"]').count(),0,'no transcript rows in the crumbs room');
+    assert.equal(await owner.getByRole('textbox',{name:/^Message #/}).count(),0,'crumbs are left from the browser, not typed here');
+    if(round===0)await owner.screenshot({path:path.join(output,'crumbs-room.png')});
+    await owner.getByRole('button',{name:round%2?'general':'Launch',exact:true}).click();
+    await owner.getByRole('textbox',{name:round%2?'Message #general':'Message #launch',exact:true}).waitFor();
+    assert.equal(await owner.getByText('A crumb in the room',{exact:true}).count(),0,'the feed is gone when another room opens');
+    assert.equal(await owner.getByText('Native agent answer for account 1',{exact:true}).count(),round%2?0:1,'only the open room is drawn');
+    assert.equal(await rowsOverlap(),false,'rows do not overlap');
+  }
+  await owner.screenshot({path:path.join(output,'after-switching.png')});
+  await owner.evaluate(()=>window.pickTheme('dark'));
+  await owner.getByRole('button',{name:'crumbs',exact:true}).click();
+  await owner.getByText('A crumb in the room',{exact:true}).waitFor();
+  await owner.screenshot({path:path.join(output,'crumbs-room-dark.png')});
+  await owner.evaluate(()=>window.pickTheme('light'));
+  await owner.getByRole('button',{name:'Launch',exact:true}).click();
+  await owner.getByText('Native agent answer for account 1',{exact:true}).waitFor();
   await owner.evaluate(()=>window.pickTheme('dark'));
   await owner.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
   await owner.screenshot({path:path.join(output,'dark.png')});

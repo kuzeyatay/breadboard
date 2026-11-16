@@ -1104,6 +1104,11 @@ PAGE_SCRIPT = r"""
     const decoder = new TextDecoder();
     let buffer = '', sent = '', lastEmit = 0, timer = null;
     const flush = (force) => {
+      // Once the socket carries this turn it is the answer's one voice: the
+      // socket reducer starts from the beginning, and the fetch stream kept
+      // appending the same answer beside it. Seen 2026-11-16 on GPT-6 Pro:
+      // "Your questionYour question points to... points to...".
+      if (socketStreamTurn === turn) return;
       const text = reducer.text();
       if (text === sent && !force) return;
       const now = Date.now();
@@ -2955,6 +2960,11 @@ def _collect_turn(
         latest = new_text
         new_text = _strip_writing_markup(_clean_text(new_text), final=final)
         if new_text == streamed:
+            return
+        # A stream restarting from the beginning (the socket taking over from
+        # a fetch stream) re-sends what the client already has. Catch up
+        # silently instead of repeating it as a rewrite.
+        if not final and streamed.startswith(new_text):
             return
         if on_text is not None:
             if new_text.startswith(streamed):

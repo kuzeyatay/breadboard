@@ -1,18 +1,9 @@
 import type { RecommendationEvidence } from './types.ts';
 import { cleanRecommendationText as text } from './types.ts';
+import { matchesEventTopic, topicWords } from './planning-context.ts';
 
-const COMMON = new Set('the and for with from this that meeting review notes work browser breadboard microsoft chrome google edge new tab home calendar today tomorrow lecture session lesson'.split(' '));
-export function topicWords(value: string): string[] {
-  return [...new Set(value.toLocaleLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])].filter(word => !COMMON.has(word));
-}
 export function recallTopicQuery(title: string): string {
   return topicWords(title).slice(0,4).join(' ');
-}
-function matchesTopic(hit: {title:string;summary:string}, event: RecommendationEvidence) {
-  const wanted=topicWords(event.title);
-  const found=new Set(topicWords(`${hit.title} ${hit.summary}`));
-  const matches=wanted.filter(word=>found.has(word));
-  return matches.length>=2 || matches.some(word=>word.length>=7) || (wanted.length===1 && matches.length===1);
 }
 function fingerprint(value: string) {
   let hash=2166136261;
@@ -30,7 +21,7 @@ export function recallRecommendationEvidence(hits: readonly {frameId?:number|nul
     if(groups.has(key)) continue;
     const summary=text(hit.text,700);
     if(!summary) continue;
-    const relatedIds=calendar.filter(event=>event.calendar?.kind==='event' && event.calendar.status!=='recently-ended' && matchesTopic({title,summary},event)).map(event=>event.id).slice(0,2);
+    const relatedIds=calendar.filter(event=>event.calendar?.kind==='event' && event.calendar.status!=='recently-ended' && matchesEventTopic(event.title,title,summary)).map(event=>event.id).slice(0,2);
     groups.set(key,{id:`recall-topic:${fingerprint(key)}`,source:'recall',title,summary:`Recently viewed, not necessarily unfinished: ${summary}`,
       timestamp:hit.timestamp??undefined,relatedIds});
   }

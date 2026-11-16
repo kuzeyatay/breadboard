@@ -10,7 +10,7 @@ export async function createBuzzFixture() {
   const scratch = fs.mkdtempSync(path.join(root, 'node_modules/.cache/buzz-release-'));
   process.env.BREADBOARD_DATA_DIR = path.join(scratch, 'data');
   const context = new AsyncLocalStorage();
-  globalThis.__buzzQA = { context, calls: [], nativeCalls: [], stopped: [], runs: new Map() };
+  globalThis.__buzzQA = { context, calls: [], nativeCalls: [], stopped: [], settled: [], runs: new Map() };
   const dbImport = JSON.stringify(path.join(root, 'src/lib/db.ts').replaceAll('\\', '/'));
   const save = `
     import db from ${dbImport};
@@ -22,7 +22,7 @@ export async function createBuzzFixture() {
   const stubs = {
     auth: `export const authOptions = {}; export async function getServerSession() { const id = globalThis.__buzzQA.context.getStore(); return id ? { user: { id: String(id), name: ['','anna','ben','chloe'][id] } } : null; }`,
     serverAuth: `export class RouteError extends Error { constructor(status,message) { super(message); this.status=status; } } export async function requireUserId() { const id=globalThis.__buzzQA.context.getStore(); if(!id)throw new RouteError(401,'Sign in.'); return id; } export function routeErrorResponse(error) { return Response.json({message:error.message}, {status:error.status||500}); }`,
-    conversations: `import db from ${dbImport}; import {randomUUID} from 'node:crypto'; export function createConversation(input) { const id = db.prepare('INSERT INTO conversations(public_id,user_id,title,surface,scope_kind) VALUES (?,?,?,?,?)').run('conv_'+randomUUID(),input.userId,input.title,input.surface,input.scopeKind).lastInsertRowid; return db.prepare('SELECT * FROM conversations WHERE id=?').get(id); }`,
+    conversations: `import db from ${dbImport}; import {randomUUID} from 'node:crypto'; export function createConversation(input) { const id = db.prepare('INSERT INTO conversations(public_id,user_id,title,surface,scope_kind) VALUES (?,?,?,?,?)').run('conv_'+randomUUID(),input.userId,input.title,input.surface,input.scopeKind).lastInsertRowid; return db.prepare('SELECT * FROM conversations WHERE id=?').get(id); } export function cancelLatestConversationTurn(id) { globalThis.__buzzQA.settled.push(id); return null; }`,
     turns: `${save}
       export async function startConversationTurn(input) {
         globalThis.__buzzQA.calls.push(input);

@@ -32,6 +32,7 @@ import { SearchPalette } from "./components/search-palette";
 import { ThreadPanel } from "./components/thread-panel";
 import { requestJson } from "./lib/message-state";
 import { useRoom } from "./use-room";
+import { RoomCrumbs } from "@/app/crumbs/crumbs-client";
 import { usePageAppearance } from "@/app/components/use-page-appearance";
 import SpotifyAmbientBackground from "@/app/components/spotify-ambient-background";
 import { SpotifyAmbientProvider } from "@/app/components/spotify-ambient-context";
@@ -568,6 +569,7 @@ function BuzzWorkspace({
                     }}
                   />
 
+                  {activeRoom.slug === "crumbs" ? <RoomCrumbs key={activeRoom.publicId} roomId={activeRoom.publicId} /> : <>
                   <Transcript
                     key={room.scope}
                     controller={room}
@@ -595,6 +597,7 @@ function BuzzWorkspace({
                     placeholder={`Message #${activeRoom.slug}`}
                     onSend={room.send}
                   />
+                  </>}
                 </>
               ) : (
                 <EmptyRoom onCreateRoom={() => setNewRoomOpen(true)} />
@@ -793,7 +796,7 @@ function Transcript({
        * put it under the room header, where it was clipped and unclickable.
        * The padding is the space that bar needs to live in.
        */
-      className="buzz-content-scrollbar min-h-0 flex-1 overflow-y-auto pb-3 pt-5"
+      className="buzz-content-scrollbar min-h-0 flex-1 overflow-y-auto bg-buzz-background pb-3 pt-5"
     >
       {error ? (
         <p className="m-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">

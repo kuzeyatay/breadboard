@@ -929,7 +929,7 @@ export default function GardenAssistant({
     canStar,
     attachmentsFor: (requestId) => {
       const user = messages.findLast(message => message.role === 'user' && message.inlineSelection?.requestId === requestId);
-      return user ? reusableChatAttachments(user.attachments).filter(item => item.context !== 'pdf') : undefined;
+      return user ? reusableChatAttachments(user.attachments).filter(item => !item.context) : undefined;
     },
     annotations: textSelection.annotations,
     onSelection: textSelection.receiveSelection,
@@ -2443,14 +2443,14 @@ export default function GardenAssistant({
   }
 
   /** Swap one answer's text in place and save; nothing around it moves. */
-  async function replaceAssistantContent(message: ChatMessage, content: string): Promise<boolean> {
+  async function replaceAssistantContent(message: ChatMessage, content: string, verification?: VerificationSummary): Promise<boolean> {
     const index = messages.indexOf(message);
     if (chatIsStreaming || messageMutationPendingRef.current || !activeChat || activeChat.isOwn === false || index < 0 || message.role !== 'assistant') return false;
     const nextMessages = messages.map((item, i) => {
       if (i !== index) return item;
       // Evidence and humanizer review describe the old wording.
       const { verification: _verification, humanizerReview: _review, contentVersions: _versions, ...rest } = item;
-      return { ...rest, content };
+      return { ...rest, content, verification };
     });
     messageMutationPendingRef.current = true;
     setUpdatingMessages(true);
@@ -2473,8 +2473,8 @@ export default function GardenAssistant({
     if (userIndex < 0) return;
     setRegenerating({ index: messageIndex });
     try {
-      const content = await regenerateResponseText(messages.slice(0, userIndex + 1), model);
-      const saved = await replaceAssistantContent(message, content);
+      const { content, verification } = await regenerateResponseText(messages.slice(0, userIndex + 1), model);
+      const saved = await replaceAssistantContent(message, content, verification);
       setRegenerating(saved ? null : { index: messageIndex, error: 'The regenerated response could not be saved.' });
     } catch (error) {
       setRegenerating({ index: messageIndex, error: error instanceof Error ? error.message : 'The response could not be regenerated.' });

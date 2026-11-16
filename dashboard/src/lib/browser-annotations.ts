@@ -94,3 +94,31 @@ export interface AnnotationResponse {
   /** Something the reader should know about the last action, such as a crumb waiting for review. */
   notice?: string;
 }
+
+/** A link that opens the page scrolled to the passage, using the web's text-fragment syntax. */
+export function passageLink(target: BrowserAnnotationTarget): string {
+  if (target.kind !== "text" || !target.quote) return target.url;
+  const words = target.quote.trim().split(/\s+/);
+  const part = (text: string) => encodeURIComponent(text).replace(/-/g, "%2D");
+  const fragment = words.length <= 12 ? part(words.join(" ")) : `${part(words.slice(0, 5).join(" "))},${part(words.slice(-5).join(" "))}`;
+  const url = new URL(target.url);
+  url.hash = `${url.hash.replace(/^#/, "")}:~:text=${fragment}`;
+  return url.href;
+}
+
+/**
+ * Whether a page is probably one only its reader can open: mail, an account,
+ * an admin screen, a link carrying a token. A public crumb publishes the
+ * page's address and title, so the panel asks before posting on one.
+ * ponytail: a guess from the address alone. It will miss private pages on
+ * ordinary addresses and flag some public ones; it only asks, never blocks.
+ */
+export function looksPrivatePage(value: string): boolean {
+  let url: URL;
+  try { url = new URL(value); } catch { return false; }
+  const host = url.hostname;
+  return /^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|\[)/.test(host) || !host.includes(".")
+    || /^(mail|webmail|outlook|inbox|accounts?|myaccount|login|auth|sso|admin|drive|docs|calendar|dashboard|portal|console|secure|bank(ing)?|intranet)\./.test(host)
+    || /\/(inbox|mail|messages?|dm|account|settings|preferences|admin|dashboard|billing|checkout|cart|orders?|wp-admin)(\/|$)/i.test(url.pathname)
+    || [...url.searchParams.keys()].some(key => /token|session|sid$|secret|password|auth|signature|api_?key/i.test(key));
+}

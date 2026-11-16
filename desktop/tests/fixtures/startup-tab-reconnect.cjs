@@ -53,6 +53,7 @@ app.whenReady().then(async () => {
   const recovery = path.join(dir, "recovery.html");
   fs.writeFileSync(startup, "<!doctype html><html><body>Loading</body></html>");
   fs.writeFileSync(recovery, "<!doctype html><html><body>Reconnecting</body></html>");
+  const logs = [];
   const manager = new WindowManager({
     startupHtmlPath: startup,
     recoveryHtmlPath: recovery,
@@ -60,6 +61,8 @@ app.whenReady().then(async () => {
     preloadPath: path.resolve(__dirname, "../../dist/preload/preload.js"),
     minimumStartupVisibleMs: 0,
     tabSessionConfigDir: dir,
+    restoreAllTabsAtStartup: true,
+    log: line => logs.push(line),
     // "abandoned" keeps the service down so the bounded wait has to release the
     // loading screen on its own.
     startupPageLoadMaxWaitMs: 20_000,
@@ -89,6 +92,7 @@ app.whenReady().then(async () => {
 
   // The failed tab reaches the reconnect scene, and startup keeps waiting.
   await until(() => restoredContents() !== undefined, "the restored tab shows the reconnect scene");
+  assert.ok(logs.some(line => /reconnect started contents=\d+.*trigger=load-failed errorCode=-\d+/.test(line)), logs.join("\n"));
   await new Promise((resolve) => setTimeout(resolve, 1_200));
   assert.equal(shown, false, "startup must not hand off while a restored tab is reconnecting");
   assert.equal(manager.window, loadingWindow, "the loading screen stays up during reconnection");
@@ -109,6 +113,7 @@ app.whenReady().then(async () => {
       .getAllWebContents()
       .filter((contents) => manager.tabs.windowFor(contents))
       .map((contents) => contents.getURL());
+    assert.ok(logs.some(line => /reconnect ended contents=\d+ outcome=loaded probes=\d+ elapsedMs=\d+/.test(line)), logs.join("\n"));
     assert.ok(
       restored.includes(origin + "/reconnect"),
       "the reconnected page is what the window reveals, not the reconnect scene: " +

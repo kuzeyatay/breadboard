@@ -15,8 +15,6 @@ const until = async probe => {
   throw new Error('Browser fixture did not become ready.');
 };
 app.whenReady().then(async () => {
-  // Exercise the actual dashboard transport and prompt builder against Electron.
-  const { readBrowserTerminal, browserTerminalPrompt } = require(path.join(dir, 'transport.cjs'));
   const server = http.createServer((req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.end(req.url.startsWith('/page')
@@ -34,10 +32,23 @@ app.whenReady().then(async () => {
   manager.setBrowserUrl(origin + '/browser');
   manager.setNewTabUrl(origin + '/new-tab');
   ipcMain.handle(IPC_CHANNELS.getBrowserTerminalAccess, event => event.senderFrame === event.sender.mainFrame ? manager.browserTerminalAccess(event.sender) : null);
+  const testingWorkspace = process.env.BB_TEST_WORKSPACE_CAPTURE === '1';
+  if (testingWorkspace) ipcMain.handle(IPC_CHANNELS.captureWorkspaceView, event =>
+    event.senderFrame === event.sender.mainFrame && new URL(event.senderFrame.url).origin === origin ? manager.captureWorkspaceView(event.sender) : null);
   const window = new BrowserWindow({ show: false, width: 1200, height: 800, webPreferences: { preload: path.resolve(__dirname, '../../dist/preload/preload.js'), contextIsolation: true, sandbox: true } });
   manager.attach(window);
   await window.loadURL(origin + '/dashboard');
   assert.equal(await manager.browserTerminalAccess(window.webContents), null);
+  if (testingWorkspace) {
+    window.showInactive();
+    await window.webContents.executeJavaScript(`document.body.style.background = '#bb3355';
+      document.body.insertAdjacentHTML('beforeend','<aside data-side-chat-dock style="position:fixed;inset:0;background:#fff"></aside>')`);
+    const sideView = await window.webContents.executeJavaScript('window.breadboardDesktop.captureWorkspaceView()');
+    assert.match(sideView, /^data:image\/jpeg;base64,/);
+    const color = nativeImage.createFromDataURL(sideView).resize({ width: 1, height: 1 }).toBitmap();
+    assert.ok(color[2] > color[0] + 75, 'capture shows the workspace behind the dock');
+    assert.equal(await window.webContents.executeJavaScript('getComputedStyle(document.querySelector("aside")).opacity'), '1');
+  }
   await manager.handleCommand(window.webContents, { type: 'browser', url: origin + '/page-one' });
   let chrome, page;
   await until(() => {
@@ -47,11 +58,23 @@ app.whenReady().then(async () => {
   });
   window.showInactive();
   await manager.handleCommand(chrome, { type: 'browser-terminal', open: true });
-  await until(async () => !(await page.capturePage()).isEmpty());
-  const access = await chrome.executeJavaScript('window.breadboardDesktop.getBrowserTerminalAccess()');
-  assert.ok(access.token);
+  await until(() => manager.voiceContextTargets(window)?.page === page);
   assert.equal(await page.executeJavaScript('typeof window.breadboardDesktop'), 'undefined');
   assert.equal(await manager.browserTerminalAccess(page), null);
+  if (testingWorkspace) {
+    assert.equal(await manager.captureWorkspaceView(page), null);
+    assert.equal(await manager.captureWorkspaceView(window.webContents), null, 'a background dashboard cannot capture the active browser');
+    const captured = await chrome.executeJavaScript('window.breadboardDesktop.captureWorkspaceView()');
+    assert.match(captured, /^data:image\/jpeg;base64,/);
+    const pixel = nativeImage.createFromDataURL(captured).resize({ width: 1, height: 1 }).toBitmap();
+    assert.ok(Math.abs(pixel[0] - 239) < 8 && Math.abs(pixel[2] - 171) < 8, 'the browser capture shows the external page');
+    fs.writeFileSync(path.join(dir, 'passed.json'), JSON.stringify({ passed: true }));
+    return;
+  }
+  // Exercise the dashboard transport and prompt builder against Electron.
+  const { readBrowserTerminal, browserTerminalPrompt } = require(path.join(dir, 'transport.cjs'));
+  const access = await chrome.executeJavaScript('window.breadboardDesktop.getBrowserTerminalAccess()');
+  assert.ok(access.token);
   await page.executeJavaScript("const range = document.createRange(); range.selectNodeContents(document.querySelector('#selection')); getSelection().removeAllRanges(); getSelection().addRange(range)");
   const read = await readBrowserTerminal(access);
   assert.match(read.text, /page-one live content/);

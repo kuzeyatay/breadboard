@@ -735,6 +735,20 @@ impl RuntimePaths {
         self.append_bounded_diagnostic_log(&relative, record, maximum_bytes)
     }
 
+    /// Keep generation exits independently of noisy service stdout and stderr.
+    pub(crate) fn append_service_exit(
+        &self,
+        service_id: &str,
+        record: &[u8],
+    ) -> Result<(), PathError> {
+        validate_identifier("serviceId", service_id)?;
+        self.append_bounded_diagnostic_log(
+            &format!("logs/services/{service_id}.exits.jsonl"),
+            record,
+            512 * 1024,
+        )
+    }
+
     /// Appends one already-sanitized worker diagnostic to the exact durable
     /// attempt log selected by Runtime-owned fencing identity. A caller cannot
     /// supply a path or collapse two attempts into the same file.
@@ -1462,6 +1476,45 @@ impl RuntimePaths {
         validate_identifier("jobId", job_id)?;
         let root = self.resolve_data(&format!("runtime/jobs/{job_id}"))?;
         if !root.absolute().exists() { return Ok(true); }
+        // Every run leaves attempts/<n>/<worker>/ holding its launch manifest, its
+        // bounded log and a workspace. Until 2026-11-16 this function did not know
+        // that layout, so the final remove_dir failed for every real job and
+        // 460,000 folders of scheduled no-ops accumulated. Anything other than
+        // those known, bounded files still stops the removal, before the result
+        // is touched.
+        let attempts = root.absolute().join("attempts");
+        if let Ok(meta) = fs::symlink_metadata(&attempts) {
+            if meta.file_type().is_symlink() || !meta.is_dir() { return Ok(false); }
+            reject_parent_link_components(&self.data_root.canonical, &attempts)?;
+            let names = |directory: &Path| -> Option<Vec<String>> {
+                fs::read_dir(directory).ok()?.map(|entry| entry.ok()?.file_name().into_string().ok()).collect()
+            };
+            let Some(attempt_names) = names(&attempts) else { return Ok(false); };
+            for attempt in attempt_names {
+                if attempt.is_empty() || !attempt.bytes().all(|byte| byte.is_ascii_digit()) { return Ok(false); }
+                let attempt_directory = attempts.join(&attempt);
+                let Some(workers) = names(&attempt_directory) else { return Ok(false); };
+                for worker in workers {
+                    if validate_identifier("workerInstanceId", &worker).is_err() { return Ok(false); }
+                    let worker_directory = attempt_directory.join(&worker);
+                    if fs::symlink_metadata(&worker_directory).map_or(true, |meta| meta.file_type().is_symlink() || !meta.is_dir()) { return Ok(false); }
+                    let workspace = worker_directory.join("workspace");
+                    match fs::symlink_metadata(&workspace) {
+                        Ok(meta) if meta.file_type().is_symlink() => return Ok(false),
+                        // Not recursive: a workspace with anything in it is somebody's output.
+                        Ok(_) => if fs::remove_dir(&workspace).is_err() { return Ok(false); },
+                        Err(_) => {}
+                    }
+                    for name in ["diagnostics.log", "start.json"] {
+                        let file = self.resolve_data(&format!("runtime/jobs/{job_id}/attempts/{attempt}/{worker}/{name}"))?;
+                        self.remove_verified_blob_file(&file, Some(1024 * 1024), None, false)?;
+                    }
+                    if fs::remove_dir(&worker_directory).is_err() { return Ok(false); }
+                }
+                if fs::remove_dir(&attempt_directory).is_err() { return Ok(false); }
+            }
+            if fs::remove_dir(&attempts).is_err() { return Ok(false); }
+        }
         for (name, hash) in [("result.json",Some(digest)),("input.json",None)] {
             let file=self.resolve_data(&format!("runtime/jobs/{job_id}/{name}"))?;
             self.remove_verified_blob_file(&file,Some(1024*1024),hash,false)?;
@@ -1474,6 +1527,13 @@ impl RuntimePaths {
         }
         reject_parent_link_components(&self.data_root.canonical,root.absolute())?;
         Ok(fs::remove_dir(root.absolute()).is_ok())
+    }
+
+    /// True when a job has no folder at all, so there is no result left to keep.
+    pub(crate) fn job_directory_absent(&self, job_id: &str) -> bool {
+        validate_identifier("jobId", job_id).is_ok()
+            && self.resolve_data(&format!("runtime/jobs/{job_id}"))
+                .is_ok_and(|root| matches!(fs::symlink_metadata(root.absolute()), Err(error) if error.kind() == io::ErrorKind::NotFound))
     }
 
     pub(crate) fn read_bounded_job_result(

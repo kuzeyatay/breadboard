@@ -14,8 +14,8 @@ test('organization flow: invitations, permissions, delivery, agents, threads and
     const organizationId = created.body.id;
     const rails = (await call(1,'rooms')).body;
     assert.equal(rails.organizations[0].people[0].username,'anna');
-    assert.equal(rails.rooms.length,1);
-    const publicRoom = rails.rooms[0].publicId;
+    assert.deepEqual(rails.rooms.map(room=>room.slug).sort(),['crumbs','general'],'a new organization has general and crumbs');
+    const publicRoom = rails.rooms.find(room=>room.slug==='general').publicId;
     const {body:{room:privateRoom}} = await call(1,'rooms','POST',{organizationId,name:'Private launch',visibility:'private'});
     const params = {roomId:privateRoom.publicId};
     assert.equal((await call(2,'messages','GET',undefined,params)).status,404);
@@ -76,6 +76,7 @@ test('organization flow: invitations, permissions, delivery, agents, threads and
     await call(2,'message','POST',{action:'regenerate'},{...params,messageId:String(failed.id)});
     failed=(await call(2,'messages','GET',undefined,params)).body.messages.find(row=>row.id===failed.id);
     assert.equal(failed.status,'complete');
+    assert.ok(qa.settled.length>0,'a reply closes a turn the room no longer shows as running, so a stopped answer cannot block the next');
 
     await call(2,'messages','POST',{body:'permission-test',clientMessageId:'permission-request'},params);
     const blocked=(await call(2,'messages','GET',undefined,params)).body.messages.at(-1);

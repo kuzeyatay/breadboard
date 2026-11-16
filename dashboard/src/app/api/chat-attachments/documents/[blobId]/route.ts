@@ -3,6 +3,7 @@ import { externalRuntimeFilesystem as fs } from "@/lib/external-runtime-filesyst
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
 import { DOCUMENT_ATTACHMENT_FORMATS } from "@/lib/document-attachments.ts";
+import { markedImageResponse } from "@/lib/hermes/image-marks.ts";
 import {
   findDocumentBlob,
   readDocumentFigure,
@@ -37,6 +38,9 @@ export async function GET(
       if (!figure) {
         return NextResponse.json({ error: "figure_not_found" }, { status: 404 });
       }
+      const params = new URL(request.url).searchParams;
+      const marks = params.getAll("mark");
+      if (marks.length) return markedImageResponse(figure.buffer, marks, params.get("download") === "1");
       const extension = figure.name.split(".").pop()?.toLowerCase() ?? "";
       const mime =
         extension === "png"

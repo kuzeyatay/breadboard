@@ -73,3 +73,11 @@ test('invalid targets and source URLs are rejected before writing',t=>{
   assert.throws(()=>post('public',1,{target:{...target,url:'file:///secret'}}),{status:400});
   assert.throws(()=>post('public',1,{target:{...target,kind:'video',selector:'video',time:-1}}),{status:400});
 });
+
+test('pages that look private are recognised from their address', async () => {
+  const { looksPrivatePage } = await import('../src/lib/browser-annotations.ts');
+  for (const url of ['https://mail.google.com/mail/u/0/#inbox/abc', 'http://localhost:3000/x', 'http://192.168.1.4/', 'https://example.com/account/orders', 'https://example.com/reset?token=abc', 'https://outlook.office.com/mail/'])
+    assert.equal(looksPrivatePage(url), true, url);
+  for (const url of ['https://github.com/', 'https://en.wikipedia.org/wiki/Bread', 'https://example.com/article?id=4', 'https://news.example.com/2026/accounting-rules'])
+    assert.equal(looksPrivatePage(url), false, url);
+});

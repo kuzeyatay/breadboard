@@ -26,6 +26,16 @@ test("incremental usage retains turn identity without completing the assistant",
   assert.equal(events[0].payload.usage.total, 12150);
 });
 
+test("the completed reply carries the provider model and only a successful fallback gets a footer", () => {
+  for (const [status, fallback, expected] of [["complete", true, true], ["complete", false, false], ["error", true, false]]) {
+    const events = normalize({ type: "message.complete", session_id: "live-1",
+      payload: { text: "Response", status, answer_model: "provider/served-model", answer_used_fallback: fallback } });
+    const completion = events.find((event) => event.type === "assistant.completed");
+    assert.equal(completion.payload.answerModel, status === "complete" ? "provider/served-model" : undefined);
+    assert.equal(completion.payload.usedFallback === true, expected);
+  }
+});
+
 test("filters Hermes events to the live session", () => {
   assert.deepEqual(
     normalize({

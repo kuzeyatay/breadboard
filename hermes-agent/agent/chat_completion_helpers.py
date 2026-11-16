@@ -430,6 +430,16 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         # OpenAI client from the virtual runtime metadata.
         return agent.client.chat.completions.create(**api_kwargs)
     request_client = make_client("chat_completion_request")
+    from openai import OpenAI
+    if isinstance(request_client, OpenAI):
+        raw = request_client.chat.completions.with_raw_response.create(**api_kwargs)
+        response = raw.parse()
+        reported = raw.headers.get("x-breadboard-answer-model") or response.model or raw.headers.get("x-chatmock-resolved-model")
+        if reported:
+            response.model = reported
+        if raw.headers.get("x-breadboard-answer-fallback", raw.headers.get("x-chatmock-failover")) == "true":
+            response.breadboard_fallback = True
+        return response
     return request_client.chat.completions.create(**api_kwargs)
 
 
@@ -3140,9 +3150,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             message=mock_message,
             finish_reason=effective_finish_reason,
         )
+        headers = getattr(getattr(stream, "response", None), "headers", {})
         return SimpleNamespace(
             id="stream-" + str(uuid.uuid4()),
-            model=model_name,
+            model=headers.get("x-breadboard-answer-model") or model_name or headers.get("x-chatmock-resolved-model"),
+            breadboard_fallback=headers.get("x-breadboard-answer-fallback", headers.get("x-chatmock-failover")) == "true",
             choices=[mock_choice],
             usage=usage_obj,
         )

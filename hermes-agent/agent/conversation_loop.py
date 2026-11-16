@@ -948,6 +948,8 @@ def run_conversation(
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
     final_response = None
+    answer_model = None
+    answer_used_fallback = False
     interrupted = False
     failed = False
     codex_ack_continuations = 0
@@ -5923,6 +5925,8 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
+                answer_model = getattr(response, "model", None)
+                answer_used_fallback = getattr(response, "breadboard_fallback", False) is True
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
@@ -6599,6 +6603,8 @@ def run_conversation(
     from agent.turn_finalizer import finalize_turn
     return finalize_turn(
         agent,
+        answer_model=answer_model,
+        answer_used_fallback=answer_used_fallback,
         final_response=final_response,
         api_call_count=api_call_count,
         interrupted=interrupted,

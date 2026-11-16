@@ -25,6 +25,7 @@ import { resolveUnifiedWorkflowContinuation } from "../workflows/unified-continu
 import { resolveHermesEngine } from "../hermes/model-selection.ts";
 import { selectedModelForUser } from "../selected-model.ts";
 import db from "../db";
+import { chatWorkspaceNotice } from "../storage/budget.ts";
 import { readVoiceAssistantPreferences } from "../speech/assistant-store.ts";
 import { voiceReasoningEffort } from "../speech/assistant-preferences.ts";
 import {
@@ -1055,6 +1056,7 @@ export async function startConversationTurn(
   // needs Watch to see the clip first. Before messaging, which is an errand.
   const diagramSelection = diagramCommandText({
     text: asciiDiagramSelection.text,
+    hasImageAttachment: input.attachments?.some(attachment => attachment.type === "image"),
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
@@ -1762,6 +1764,7 @@ export async function startConversationTurn(
       connectedApps.systemContext,
     ].filter(Boolean).join("\n\n"),
     additional: [
+      chatWorkspaceNotice(db, input.conversation.public_id),
       superAgentInventory
         ? input.voice
           ? [voiceCapabilitiesContext(superAgentInventory), researchPipeline ? researchPipelineRule(researchPipeline) : ""].filter(Boolean).join("\n\n")

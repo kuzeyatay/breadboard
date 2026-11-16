@@ -1747,6 +1747,22 @@
               "value": "10000"
             },
             {
+              "kind": "literal",
+              "value": "--retention-days"
+            },
+            {
+              "kind": "literal",
+              "value": "14"
+            },
+            {
+              "kind": "literal",
+              "value": "--retention-mode"
+            },
+            {
+              "kind": "literal",
+              "value": "all"
+            },
+            {
               "kind": "runtime-arguments",
               "value": "recall-capture"
             }

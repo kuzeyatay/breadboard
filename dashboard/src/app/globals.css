@@ -6034,7 +6034,7 @@ html[data-theme="dark"] .browser-spotify-cover {
 .browser-side-rail {
   position: absolute;
   z-index: 8;
-  top: calc(var(--breadboard-navbar-height) + 34px);
+  top: var(--browser-chrome-top, calc(var(--breadboard-navbar-height) + 34px));
   bottom: 0;
   left: 0;
   display: flex;
@@ -8498,6 +8498,16 @@ b {
   margin-inline: auto;
 }
 
+.chat-markdown [data-chat-diagram] {
+  margin: 0.75em 0;
+}
+
+.chat-markdown [data-chat-diagram] > svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .chat-markdown-image[role="button"] {
   cursor: zoom-in;
 }
@@ -9312,6 +9322,13 @@ b {
 .bb-inline-answer-question {
   background: transparent;
   overflow-wrap: anywhere;
+}
+
+/* metal-fx hides its host inline until the first GPU frame. Keep Ask usable
+   while the ring starts, and let the popup control visibility when it closes or scrolls away. */
+.bb-inline-answer .bb-metal-send {
+  visibility: inherit !important;
+  opacity: 1 !important;
 }
 
 .bb-inline-answer:has(textarea:focus-visible) {

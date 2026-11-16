@@ -1,21 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode, type MouseEvent, type KeyboardEvent } from "react";
-import { ArrowLeft, ExternalLink, Flag, Globe2, Lock, LogOut, MessageSquare, Plus, ShieldCheck, Trash2, UserPlus, UsersRound, X } from "lucide-react";
+import { ArrowLeft, BookOpen, ExternalLink, Flag, Globe2, Link2, Lock, LogOut, MessageCircle, MessageSquare, Plus, ShieldCheck, Trash2, UserPlus, UsersRound, X } from "lucide-react";
 import CrumbsIcon from "@/app/components/crumbs-icon";
 import { shortHandle } from "@/lib/crumbs/handle";
 import { usePageLoading } from "@/app/components/use-page-loading";
 import { openBrowserInDesktop } from "@/lib/desktop-browser-tabs";
 import { annotationTargetKey, type AnnotationResponse, type BrowserAnnotationTarget } from "@/lib/browser-annotations";
 import CrumbNotes from "./crumb-notes";
+import { PostAction, PostCard, PostLabel, PostMenu, PostMenuItem } from "./post-card";
 import styles from "./crumbs.module.css";
 
 type Tab = "feed" | "organizations";
 interface Person { did: string; handle: string | null; displayName: string | null; avatar: string | null }
 export interface CrumbsStatus { signedIn: boolean; needsSignIn: boolean; did: string | null; handle: string | null; displayName: string | null; avatar: string | null; defaultVisibility: string; servers: { indexer: string; orgStore: string }; publicMode: "records" | "posts" }
 type Status = CrumbsStatus;
-interface FeedItem { id: string; author: Person; url: string; title: string; target: BrowserAnnotationTarget; comment: string; source: string | null; createdAt: string; threadCount: number; own: boolean; audience: string; state?: string; reason?: string | null; note?: { uri: string; body: string; source: string | null }; noteCount?: number }
-interface Org { id: string; name: string; role: "admin" | "member"; ready: boolean }
+interface FeedItem { id: string; author: Person; url: string; title: string; target: BrowserAnnotationTarget; comment: string; source: string | null; createdAt: string; threadCount: number; own: boolean; audience: string; /** Where replies to it go, when that is not the tab it is shown in. */ scope?: string; state?: string; reason?: string | null; note?: { uri: string; body: string; source: string | null }; noteCount?: number }
+interface Org { id: string; name: string; role: "admin" | "member"; ready: boolean; /** Set when it is connected to a Breadboard organization: its crumbs are that organization's crumbs room. */ crumbsRoom?: string | null }
 interface OrgDetail extends Org { members: Array<Person & { role: "admin" | "member"; waitingForKey: boolean }>; reports: Array<{ id: string; messageId: string; reporter: Person; reason: string; createdAt: string }> }
 
 /** Where the Crumbs account lives: a section of Breadboard's own settings. */
@@ -138,7 +139,7 @@ function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen }: { item: Fee
   const [notice, setNotice] = useState("");
   usePageLoading(busy);
   // Replies are crumbs on the same passage, in the same place this one lives.
-  const audience = scope.startsWith("org:") ? scope : "public";
+  const audience = item.scope ?? (scope.startsWith("org:") || scope.startsWith("room:") ? scope : "public");
   const isPublic = audience === "public" && item.audience === "Public";
   async function loadThread() {
     const query = new URLSearchParams({ scope: audience, url: item.target.url });
@@ -180,31 +181,35 @@ function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen }: { item: Fee
     onKeyDown: (event: KeyboardEvent<HTMLElement>) => { if (event.key === "Enter" && event.target === event.currentTarget) onOpen(); },
   } : {};
 
-  return <article className={styles.crumb} data-crumb={item.id} data-detail={detail || undefined} {...openable}>
-    <Avatar person={item.author} size={40} />
-    <div className={styles.crumbBody}>
-      <div className={styles.byline}><strong>{nameOf(item.author)}</strong>{item.author.handle && <span>@{shortHandle(item.author.handle)}</span>}<time dateTime={item.createdAt} title={new Date(item.createdAt).toLocaleString()}>{ago(item.createdAt)}</time></div>
-      {item.state && item.state !== "visible" && <p className={styles.state} data-state={item.state}>{item.state === "rejected" ? `Not shown${item.reason ? `: ${item.reason}` : ""}` : STATES[item.state] ?? "Hidden"}</p>}
-      <p className={styles.comment}>{item.comment}</p>
-      <button type="button" className={styles.source} onClick={() => void openSite(item.url)} title="Open the page at this passage">
-        {item.target.kind === "text" && <q>{item.target.quote}</q>}
-        <span><Globe2 size={13} /><strong>{item.title || host}</strong><small>{host}</small><ExternalLink size={12} /></span>
-      </button>
-      {isPublic && <CrumbNotes crumbId={item.id} note={item.note} count={item.noteCount} own={item.own} signedIn={signedIn} />}
-      <footer>
-        <button type="button" aria-expanded={open && !reporting} aria-label={`Reply, ${count} ${count === 1 ? "crumb" : "crumbs"} on this passage`} onClick={toggle}><MessageSquare size={14} />{count > 1 ? count - 1 : ""}</button>
-        <button type="button" aria-label="Open the page" onClick={() => void openSite(item.url)}><ExternalLink size={14} /></button>
-        {item.source && <a href={item.source} target="_blank" rel="noopener noreferrer">Source</a>}
-        <span className={styles.audience}>{item.audience === "Public" || item.audience === "Bluesky" ? <Globe2 size={12} /> : <Lock size={12} />}{item.audience}</span>
-        {signedIn && !item.own && <button type="button" aria-label="Report this crumb" aria-pressed={reporting} onClick={() => { setOpen(true); setReporting(value => !value); if (!thread) void run(loadThread); }}><Flag size={14} /></button>}
-        {item.own && <button type="button" aria-label="Delete this crumb" disabled={busy} onClick={() => void run(async () => { await act({ action: "delete", id: item.id }).catch(() => write("delete-comment", "", item.id)); onRemoved(); })}><Trash2 size={14} /></button>}
-      </footer>
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [noteCount, setNoteCount] = useState(item.noteCount ?? 0);
+  const name = nameOf(item.author);
+  const report = () => { setOpen(true); setReporting(true); if (!thread) void run(loadThread); };
+  // Crumbs on the network are records; the ones kept on this machine are comments in their thread.
+  const remove = () => void run(async () => { if (item.id.startsWith("at://")) await act({ action: "delete", id: item.id }); else await write("delete-comment", "", item.id); onRemoved(); });
+
+  return <PostCard className={styles.crumb} data-crumb={item.id} data-detail={detail || undefined} {...openable}
+    avatar={<Avatar person={item.author} size={40} />} name={name} handle={shortHandle(item.author.handle) || null}
+    time={<time dateTime={item.createdAt} title={new Date(item.createdAt).toLocaleString()}>{ago(item.createdAt)}</time>}
+    menu={<PostMenu label={`More for ${name}’s crumb`}>
+      <PostMenuItem icon={<Link2 size={18} />} onClick={() => void navigator.clipboard?.writeText(item.url)}>Copy link to passage</PostMenuItem>
+      {item.source && <PostMenuItem icon={<BookOpen size={18} />} onClick={() => void openSite(item.source!)}>Open the source</PostMenuItem>}
+      {signedIn && !item.own && <PostMenuItem icon={<Flag size={18} />} onClick={report}>Report this crumb</PostMenuItem>}
+      {item.own && <PostMenuItem icon={<Trash2 size={18} />} danger disabled={busy} onClick={remove}>Delete</PostMenuItem>}
+    </PostMenu>}
+    actions={<>
+      <PostAction icon={<MessageCircle size={18} />} count={count > 1 ? count - 1 : undefined} aria-expanded={open && !reporting} label={`Reply, ${count} ${count === 1 ? "crumb" : "crumbs"} on this passage`} onClick={toggle} />
+      {isPublic && <PostAction icon={<UsersRound size={18} />} count={noteCount || undefined} aria-expanded={notesOpen} label={noteCount > 0 ? `${noteCount} ${noteCount === 1 ? "note" : "notes"}` : "Add note"} onClick={() => setNotesOpen(value => !value)} />}
+      <PostLabel>{item.audience === "Public" || item.audience === "Bluesky" ? <Globe2 size={15} /> : <Lock size={15} />}{item.audience}</PostLabel>
+    </>}
+    endActions={<PostAction icon={<ExternalLink size={18} />} label="Open the page" onClick={() => void openSite(item.url)} />}
+    after={<>
       {error && <Problem text={error} />}
       {notice && <p className={styles.notice} role="status">{notice}</p>}
       {open && <div className={styles.replies}>
         {detail && thread && replies.length === 0 && <p className={styles.noReplies}>No replies yet</p>}
         {replies.map(reply => <div key={reply.id} className={styles.reply}>
-          <Avatar person={{ did: reply.did ?? reply.id, handle: reply.handle ?? null, displayName: reply.author, avatar: reply.avatar ?? null }} size={26} />
+          <Avatar person={{ did: reply.did ?? reply.id, handle: reply.handle ?? null, displayName: reply.author, avatar: reply.avatar ?? null }} size={32} />
           <div><div className={styles.byline}><strong>{shortHandle(reply.author)}</strong>{reply.handle && <span>@{shortHandle(reply.handle)}</span>}<time dateTime={reply.createdAt}>{ago(reply.createdAt)}</time></div><p>{reply.body}</p></div>
         </div>)}
         {signedIn ? <form className={styles.replyForm} onSubmit={submit}>
@@ -213,14 +218,21 @@ function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen }: { item: Fee
           <button type="submit" className={styles.primary} disabled={busy || !text.trim()}>{reporting ? "Report" : "Reply"}</button>
         </form> : <a className={styles.link} href={ACCOUNT_HREF}>Sign in to reply</a>}
       </div>}
-    </div>
-  </article>;
+    </>}>
+    {item.state && item.state !== "visible" && <p className={styles.state} data-state={item.state}>{item.state === "rejected" ? `Not shown${item.reason ? `: ${item.reason}` : ""}` : STATES[item.state] ?? "Hidden"}</p>}
+    <p className={styles.comment}>{item.comment}</p>
+    <button type="button" className={styles.source} onClick={() => void openSite(item.url)} title="Open the page at this passage">
+      {item.target.kind === "text" && <q>{item.target.quote}</q>}
+      <span><Globe2 size={13} /><strong>{item.title || host}</strong><small>{host}</small><ExternalLink size={12} /></span>
+    </button>
+    {isPublic && <CrumbNotes crumbId={item.id} note={item.note} count={item.noteCount} own={item.own} signedIn={signedIn} open={notesOpen} onCount={setNoteCount} />}
+  </PostCard>;
 }
 
 const STATES: Record<string, string> = { pending: "Waiting for review", reported: "Hidden after reports", hidden: "Hidden by a moderator" };
 
-function Feed({ status, orgs }: { status: Status; orgs: Org[] }) {
-  const [scope, setScope] = useState(status.signedIn ? "following" : "everyone");
+function Feed({ status, orgs, fixedScope }: { status: Status; orgs: Org[]; fixedScope?: string }) {
+  const [scope, setScope] = useState(fixedScope ?? (status.signedIn ? "following" : "everyone"));
   const [items, setItems] = useState<FeedItem[]>([]);
   const [before, setBefore] = useState<string | null>(null);
   const [empty, setEmpty] = useState("");
@@ -239,13 +251,20 @@ function Feed({ status, orgs }: { status: Status; orgs: Org[] }) {
     finally { if (id === request.current) setLoading(false); }
   }, [scope]);
   useEffect(() => { void load(); }, [load]);
+  // A crumb left from another tab shows up when the reader comes back.
+  useEffect(() => {
+    if (!fixedScope) return;
+    const refresh = () => { if (!document.hidden) void load(); };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [fixedScope, load]);
   const [selected, setSelected] = useState<FeedItem | null>(null);
   function back() {
     const id = selected?.id;
     setSelected(null);
     requestAnimationFrame(() => [...document.querySelectorAll<HTMLElement>("[data-crumb]")].find(card => card.dataset.crumb === id)?.scrollIntoView({ block: "center" }));
   }
-  const scopes: Array<[string, string]> = [...(status.signedIn ? [["following", "Following"]] as Array<[string, string]> : []), ["everyone", "Everyone"], ...(status.signedIn ? [["mine", "Mine"]] as Array<[string, string]> : []), ...orgs.map(org => [`org:${org.id}`, org.name] as [string, string])];
+  const scopes: Array<[string, string]> = [...(status.signedIn ? [["following", "Following"]] as Array<[string, string]> : []), ["everyone", "Everyone"], ...(status.signedIn ? [["mine", "Mine"]] as Array<[string, string]> : []), ...orgs.map(org => [org.crumbsRoom ? `room:${org.crumbsRoom}` : `org:${org.id}`, org.name] as [string, string])];
 
   return <section aria-label="Feed" className={styles.timeline}>
     {selected && <div className={styles.post}>
@@ -253,8 +272,8 @@ function Feed({ status, orgs }: { status: Status; orgs: Org[] }) {
       <Crumb key={selected.id} detail item={selected} scope={scope} signedIn={status.signedIn} onRemoved={() => { setItems(previous => previous.filter(other => other.id !== selected.id)); setSelected(null); }} />
     </div>}
     <div hidden={Boolean(selected)}>
-    <div className={styles.scopes} role="tablist" aria-label="Whose crumbs">
-      {scopes.map(([value, name]) => <button key={value} type="button" role="tab" aria-selected={scope === value} onClick={() => { setItems([]); setScope(value); }}>{value.startsWith("org:") && <Lock size={11} />}{name}</button>)}
+    <div className={styles.scopes} role="tablist" aria-label="Whose crumbs" hidden={Boolean(fixedScope)}>
+      {scopes.map(([value, name]) => <button key={value} type="button" role="tab" aria-selected={scope === value} onClick={() => { setItems([]); setScope(value); }}>{(value.startsWith("org:") || value.startsWith("room:")) && <Lock size={11} />}{name}</button>)}
     </div>
     {error && <Problem text={error} retry={() => void load()} />}
     <div className={styles.feed} aria-live="polite">
@@ -263,6 +282,7 @@ function Feed({ status, orgs }: { status: Status; orgs: Org[] }) {
     {!loading && !error && items.length === 0 && <div className={styles.emptyState}>
       <CrumbsIcon size={34} strokeWidth={1.2} />
       <h2>{empty || "No crumbs yet"}</h2>
+      {fixedScope && <p>Open a page in the browser, select a passage and choose Leave a crumb, then pick this organization.</p>}
       {!status.signedIn && scope !== "everyone" && <a className={styles.primary} href={ACCOUNT_HREF}>Sign in</a>}
     </div>}
     {before && !loading && <button type="button" className={styles.more} onClick={() => void load(before)}>Show older</button>}
@@ -388,6 +408,16 @@ function Account({ status, orgs, refresh }: { status: Status; orgs: Org[]; refre
  * The Crumbs account as a section of Breadboard's settings. Signing in here
  * links the account whose photo and name Breadboard then uses as its own.
  */
+/**
+ * One Breadboard organization's crumbs, as the Organization page shows them in
+ * its crumbs room: the same cards, page links and replies as the Crumbs feed.
+ * These are kept on this machine, so no Crumbs account is needed.
+ */
+export function RoomCrumbs({ roomId }: { roomId: string }) {
+  const status: Status = { signedIn: true, needsSignIn: false, did: null, handle: null, displayName: null, avatar: null, defaultVisibility: "private" } as Status;
+  return <div className={`${styles.page} ${styles.inRoom}`}><div><Feed status={status} orgs={[]} fixedScope={`room:${roomId}`} /></div></div>;
+}
+
 export function CrumbsAccountSection({ onStatus }: { onStatus?: (status: CrumbsStatus) => void }) {
   const [state, setState] = useState<{ status: Status; orgs: Org[] } | null>(null);
   const [error, setError] = useState("");
@@ -445,7 +475,7 @@ function Organizations({ status, orgs, localOrgs, refresh }: { status: Status; o
           <a className={styles.secondary} href="/buzz" target="_blank" rel="noopener noreferrer"><MessageSquare size={14} />Messages</a></div>
         {!detail.ready && <p className={styles.notice} role="status">Waiting for a member to share the key with this device</p>}
         <ul className={styles.people}>{detail.members.map(member => <li key={member.did}>
-          <Avatar person={member} size={30} /><span><strong>{nameOf(member)}{member.role === "admin" && <em>Admin</em>}{member.waitingForKey && <em data-tone="waiting">Waiting</em>}</strong><small>@{member.handle ?? member.did}</small></span>
+          <Avatar person={member} size={30} /><span><strong>{nameOf(member)}{member.role === "admin" && <em>Admin</em>}{member.waitingForKey && <em data-tone="waiting">Waiting</em>}</strong><small>@{shortHandle(member.handle) || member.did}</small></span>
           {admin && member.did !== status.did && <button type="button" className={styles.quiet} aria-label={`Remove ${nameOf(member)}`} title="Remove" disabled={Boolean(busy)}
             onClick={() => void run("remove", async () => setDetail(await act({ action: "org-remove", org: detail.id, did: member.did })))}><X size={15} /></button>}
         </li>)}</ul>

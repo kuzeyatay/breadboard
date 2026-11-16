@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isCodeDockAction, isCodeDockPage } from "../shared/code-dock";
 import { writeDiagnosticBundle } from "./diagnostic-bundle";
+import { readDashboardCrashHistory } from "./crash-history";
 import { newerDataRootVersion, recordDataRootVersion } from "./data-root-version";
 import {
   app,
@@ -469,6 +470,16 @@ export class AppLifecycle {
       try {
         supervisorLog.write(`[desktop] renderer gone: contents=${contents.id} reason=${details.reason} exitCode=${details.exitCode}`);
       } catch { /* Diagnostics must not interrupt recovery. */ }
+    });
+    app.on("child-process-gone", (_event, details) => {
+      if (details.reason === "clean-exit") return;
+      try { supervisorLog.write(`[desktop] child gone: type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`); }
+      catch { /* The child can exit during shutdown. */ }
+    });
+    process.on("uncaughtExceptionMonitor", (error, origin) => {
+      try {
+        supervisorLog.write(`[desktop] main process exception: origin=${origin} pid=${process.pid} uptimeSeconds=${Math.round(process.uptime())} rssBytes=${process.memoryUsage.rss()}\n${String(error?.stack ?? error).slice(0, 8000)}`);
+      } catch { /* Keep the original exception and its exit behavior. */ }
     });
     process.on("warning", warning => {
       try { supervisorLog.write(`[desktop] warning: ${warning.stack ?? warning.message}`); }
@@ -1459,6 +1470,11 @@ export class AppLifecycle {
       event.senderFrame === event.sender.mainFrame
         ? this.windows.tabs.browserTerminalAccess(event.sender) : null,
     );
+    ipcMain.handle(IPC_CHANNELS.captureWorkspaceView, (event) => {
+      if (!this.runtimeDashboardUrl || !event.senderFrame || event.senderFrame !== event.sender.mainFrame ||
+          new URL(event.senderFrame.url).origin !== new URL(this.runtimeDashboardUrl).origin) return null;
+      return this.windows.tabs.captureWorkspaceView(event.sender);
+    });
     ipcMain.handle(IPC_CHANNELS.spotifyRequest, async (event, request: unknown) => {
       if (!this.runtimeDashboardUrl || event.senderFrame !== event.sender.mainFrame ||
           !this.windowForSender(event.sender) ||
@@ -1781,6 +1797,7 @@ export class AppLifecycle {
   /** The redacted state behind "Copy diagnostics" and the diagnostic bundle. */
   private diagnosticsReport() {
     return {
+      dashboardCrashHistory: readDashboardCrashHistory(this.logs.directory),
       app: app.getVersion(),
       electron: process.versions.electron,
       mode: this.paths.mode,

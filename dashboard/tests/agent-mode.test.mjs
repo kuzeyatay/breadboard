@@ -12,6 +12,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import { DIRECT_PROVIDER_PROMPT } from "../src/lib/system-prompts/defaults.ts";
 
 const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
@@ -111,7 +112,7 @@ test("a skill named with agent mode off is explained, not silently dropped", () 
   // runtime for the same reason every other skill does, and the direct prompt
   // already owns that explanation — so there is no switch left to couple.
   assert.match(
-    directService,
+    DIRECT_PROVIDER_PROMPT,
     // The window is wide enough to span the `/reference:*` exception sentence
     // that now sits between the naming and the explanation.
     /A message beginning with a `\/token` is a skill[\s\S]{0,400}?needs Agent mode on/,
@@ -150,13 +151,14 @@ test("the direct turn keeps the transcript and claims no tools", () => {
   assert.match(directService, /activeDirectTurn\.stopRequested[\s\S]*?"aborted"/);
   // No runtime, and the prompt says so rather than letting the model imply it.
   assert.doesNotMatch(directService, /startRun|applyCapabilityDecision/);
-  assert.match(directService, /direct_provider_turn/);
-  assert.match(directService, /You have no tools in this turn/);
+  assert.match(directService, /systemPromptText\("direct-provider", userId\)/);
+  assert.match(DIRECT_PROVIDER_PROMPT, /direct_provider_turn/);
+  assert.match(DIRECT_PROVIDER_PROMPT, /You have no tools in this turn/);
   assert.match(
-    directService,
+    DIRECT_PROVIDER_PROMPT,
     /Never claim to have read external files, written, run, saved, sent, or remembered anything through tools\./,
   );
-  assert.match(directService, /You can read the messages supplied in this conversation/);
+  assert.match(DIRECT_PROVIDER_PROMPT, /You can read the messages supplied in this conversation/);
 });
 
 test("a live agent run blocks a direct turn in the same chat", () => {

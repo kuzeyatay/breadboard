@@ -93,6 +93,8 @@ export async function PATCH(
       expectedContent,
       content,
       origin: "manual",
+      answerModel: typeof body.answerModel === "string" ? body.answerModel.trim().slice(0, 256) : undefined,
+      usedFallback: body.usedFallback === true,
     });
 
     // Keep the runtime's next answer grounded in the text now on screen. The

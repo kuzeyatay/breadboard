@@ -3,6 +3,7 @@
 // Simulations are routed first; explicit commands retain the selected skill.
 
 import type { HermesSurface } from "./config.ts";
+import { asksForImageMarks } from "../image-annotation-prompt.ts";
 import { interactiveVisualizerAvailable } from "./interactive-visualizer-config.ts";
 import { DIAGRAM_IN_CHAT_SKILL } from "./interactive-visualizer-skills.ts";
 export { DIAGRAM_IN_CHAT_SKILL } from "./interactive-visualizer-skills.ts";
@@ -28,12 +29,23 @@ const DIAGRAM_NOUN =
  *   "diagram the auth handshake"          the noun used as a verb
  *   "redraw this .drawio at slide size"   an existing diagram source
  */
-const MAKE_VERB =
-  "(?:make|draw|create|generate|build|produce|render|design|sketch|redraw|redo|mock\\s+up|put\\s+together|whip\\s+up|give\\s+me|show\\s+me|i\\s+(?:want|need)|(?:can|could)\\s+you\\s+(?:make|draw|create|generate|build|sketch|show|give|produce|design))";
+const DRAW_VERB =
+  "(?:make|draw|create|generate|build|produce|render|design|sketch|redraw|redo|mock\\s+up|put\\s+together|whip\\s+up)";
+const ASK_VERB =
+  "(?:give\\s+me|show\\s+me|i\\s+(?:want|need)|(?:can|could)\\s+you\\s+(?:show|give))";
+const MAKE_VERB = `(?:${DRAW_VERB}|${ASK_VERB})`;
 
-const VERB_NOUN = new RegExp(
-  `\\b${MAKE_VERB}\\b[^.!?]{0,60}\\b${DIAGRAM_NOUN}\\b`,
-  "i",
+function verbWithDiagramNoun(verb: string): RegExp {
+  return new RegExp(`\\b${verb}\\b[^.!?]{0,60}\\b${DIAGRAM_NOUN}\\b`, "i");
+}
+const DRAW_NOUN = verbWithDiagramNoun(DRAW_VERB);
+const ASK_NOUN = verbWithDiagramNoun(ASK_VERB);
+
+// "In this diagram" locates the subject of a question. Keep that reference
+// available to explicit drawing requests such as "draw a branch in this diagram".
+const DIAGRAM_REFERENCE = new RegExp(
+  `\\b(?:in|on|at|within|from)\\s+(?:this|that|the|my|our|your)\\s+${DIAGRAM_NOUN}\\b`,
+  "gi",
 );
 
 const NOUN_LED = new RegExp(
@@ -44,9 +56,9 @@ const NOUN_LED = new RegExp(
   "i",
 );
 
-/** "diagram the flow", "map out our process", "sketch out how a request lands". */
+/** Match an instruction such as "please diagram where...", including a later clause. */
 const NOUN_AS_VERB =
-  /\b(?:diagram|sketch(?:\s+out)?|map\s+out|draw\s+(?:up|out)|chart|lay\s+out|visuali[sz]e)\s+(?:the|this|that|these|those|our|my|a|an|it|how|what|where|who)\b/i;
+  /(?:^|[.!?;:,\n]|\b(?:please|then|also|and|now|(?:can|could|would|will)\s+you|help\s+me|let['’]s|you\s+to)\b)\s*(?:diagram|sketch(?:\s+out)?|map\s+out|draw\s+(?:up|out)|chart|lay\s+out|visuali[sz]e)\s+(?:the|this|that|these|those|our|my|a|an|it|how|what|where|who)\b/i;
 
 /** A source that is already a diagram: redraw it, whatever the sentence says. */
 const DIAGRAM_SOURCE =
@@ -114,6 +126,7 @@ function drewADiagramRecently(
 
 export interface DiagramIntentInput {
   text: string;
+  hasImageAttachment?: boolean;
   surface: HermesSurface;
   authenticated: boolean;
   priorMessages?: ReadonlyArray<{ role: string; content: string }>;
@@ -127,6 +140,8 @@ export function shouldAutoSelectDiagramInChat(input: DiagramIntentInput): boolea
   const available = interactiveVisualizerAvailable(input.surface, input.authenticated);
   if (!available || !text || text.startsWith("/")) return false;
   const prose = text.replace(ANY_URL, " ");
+  // Keep drawing on a supplied image in the image-annotation tool.
+  if (input.hasImageAttachment && asksForImageMarks(prose)) return false;
   if (
     DISCUSSION_ONLY.test(prose) ||
     MARKUP_REQUEST.test(prose) ||
@@ -135,8 +150,10 @@ export function shouldAutoSelectDiagramInChat(input: DiagramIntentInput): boolea
   ) {
     return false;
   }
+  const withoutReferences = prose.replace(DIAGRAM_REFERENCE, " ");
   const asks =
-    VERB_NOUN.test(prose) ||
+    DRAW_NOUN.test(prose) ||
+    ASK_NOUN.test(withoutReferences) ||
     NOUN_LED.test(prose) ||
     NOUN_AS_VERB.test(prose) ||
     DIAGRAM_SOURCE.test(prose);

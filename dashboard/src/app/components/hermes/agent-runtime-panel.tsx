@@ -42,6 +42,7 @@ import { useTextHighlights } from "@/app/components/use-text-highlights";
 import { TextHighlightSaveStatus } from "@/app/components/text-highlight-save-status";
 import { applyAutoHumanizeOutcome, useAutoHumanize } from "@/app/components/humanizer/use-auto-humanize";
 import { messageRewriteReview } from "@/app/components/humanizer/rewrite-status";
+import { modelVerification } from "@/lib/hermes/evidence";
 import { regenerateResponseText } from "@/app/components/chat/regenerate-response";
 import AssistantMessageActions, {
   MessageActionsSlot,
@@ -335,6 +336,7 @@ interface Props {
   onEditAssistantMessage?: (
     message: AgentMessage,
     content: string,
+    verification?: AgentMessage["verification"],
   ) => Promise<boolean>;
   onSelectBranch?: (messages: AgentMessage[]) => void;
   /**
@@ -1393,7 +1395,7 @@ export default function AgentRuntimePanel({
       };
       if (message.role === "user") {
         current.question = message.content;
-        current.attachments = reusableChatAttachments(message.attachments).filter(item => item.context !== "pdf");
+        current.attachments = reusableChatAttachments(message.attachments).filter(item => !item.context);
         // The turn is pending from the moment the question is sent, not from
         // the moment its answer row exists. Without this, a re-asked question
         // shows a retry — and its predecessor's answer — for the frames before
@@ -1401,6 +1403,7 @@ export default function AgentRuntimePanel({
         if (activeRun && messageIndex === messages.length - 1) {
           current.pending = true;
           current.answer = undefined;
+          current.verification = undefined;
           current.reasoning = undefined;
           current.progressNotes = undefined;
           current.usage = undefined;
@@ -1779,8 +1782,8 @@ export default function AgentRuntimePanel({
     if (messages[userMessageIndex]?.role !== "user") return;
     setRegenerating({ index: assistantMessageIndex });
     try {
-      const content = await regenerateResponseText(messages.slice(0, userMessageIndex + 1), model);
-      const saved = await onEditAssistantMessage(message, content);
+      const { content, verification } = await regenerateResponseText(messages.slice(0, userMessageIndex + 1), model);
+      const saved = await onEditAssistantMessage(message, content, verification);
       setRegenerating(saved ? null : { index: assistantMessageIndex, error: "The regenerated response could not be saved." });
     } catch (error) {
       setRegenerating({
@@ -1910,6 +1913,7 @@ export default function AgentRuntimePanel({
       const body = (await response.json()) as {
         content?: string;
         versions?: AgentMessage["contentVersions"];
+        verification?: AgentMessage["verification"];
       };
       if (typeof body.content !== "string" || !body.versions) return;
       replaceMessage(messageIndex, {
@@ -1925,7 +1929,9 @@ export default function AgentRuntimePanel({
         // Evidence describes the original wording. Selecting a derived version
         // takes it off the row; selecting the original is the only thing that
         // could put it back, and a reload does exactly that.
-        ...(body.versions.derived ? { verification: undefined } : {}),
+        verification: body.versions.derived
+          ? modelVerification(body.versions.answerModel, body.versions.usedFallback)
+          : body.verification,
       });
     } catch {
       // A failed switch leaves the version that is already on screen in place.
@@ -2664,6 +2670,7 @@ export default function AgentRuntimePanel({
                       </div>
                     ) : null}
                     <MessageActionsSlot
+                      verification={message.verification}
                       branch={message.role === "assistant" && !(runInFlight && index === lastAssistantIndex)
                         ? branchNavigationForAssistant(message, index) : undefined}
                       conversationId={surface !== "quartz_ai" ? sessionId : null}

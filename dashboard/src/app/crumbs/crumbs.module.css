@@ -24,9 +24,8 @@
 
 .feed { display: flex; flex-direction: column; gap: 12px; }
 .crumb, .card, .signIn { border: 1px solid var(--neu-border, var(--line)); border-radius: 16px; background: var(--neu-surface, var(--paper-surface)); box-shadow: var(--neu-raised-shadow); }
-.crumb { display: flex; gap: 12px; padding: 16px 18px; animation: crumbIn .24s ease-out both; }
+.crumb { animation: crumbIn .24s ease-out both; }
 @keyframes crumbIn { from { opacity: 0; transform: translateY(6px); } }
-.crumbBody { flex: 1; min-width: 0; }
 .avatar { flex-shrink: 0; display: inline-grid; place-items: center; border-radius: 50%; object-fit: cover; background: color-mix(in srgb, var(--botanical) 18%, var(--paper-surface)); color: var(--botanical); font-weight: 700; }
 .byline { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
 .byline strong { font-weight: 600; white-space: nowrap; }
@@ -35,7 +34,7 @@
 .quiet { display: inline-grid; place-items: center; align-self: center; width: 26px; height: 26px; flex-shrink: 0; border: 0; border-radius: 7px; background: transparent; color: var(--ink-muted); }
 .quiet:hover { background: var(--paper-strong); color: var(--danger); }
 .crumb blockquote { margin: 9px 0 0; padding: 9px 13px; border-left: 3px solid var(--botanical); border-radius: 0 9px 9px 0; background: color-mix(in srgb, var(--botanical) 9%, transparent); font-size: 13.5px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
-.comment { margin: 9px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.comment { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .state { margin: 8px 0 0; padding: 6px 10px; border-radius: 8px; background: color-mix(in srgb, var(--botanical-2, var(--botanical)) 14%, transparent); color: var(--ink); font-size: 12.5px; }
 .state[data-state="rejected"], .state[data-state="reported"], .state[data-state="hidden"] { background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .source { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 12px; padding: 10px 13px; border-radius: 12px; border: 1px solid var(--neu-border, var(--line)); background: var(--neu-surface-pressed, var(--paper-strong)); box-shadow: var(--neu-inset-shadow); color: var(--ink); text-align: left; transition: border-color .15s ease; }
@@ -44,9 +43,6 @@
 .source span { display: flex; flex-direction: column; min-width: 0; margin-right: auto; }
 .source strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
 .source small { color: var(--ink-muted); font-size: 12px; }
-.crumb footer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-top: 10px; color: var(--ink-muted); font-size: 12.5px; }
-.crumb footer span { display: inline-flex; align-items: center; gap: 5px; }
-.crumb footer a { color: inherit; }
 .more { display: block; margin: 16px auto 0; padding: 7px 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper-surface); color: var(--ink); font-size: 13px; }
 .more:hover { border-color: var(--line-strong); }
 
@@ -128,7 +124,7 @@ a.primary, a.secondary { text-decoration: none; }
 .row { display: flex; align-items: center; gap: 8px; }
 .people { margin: 12px 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
 .people li { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
-.people li > span { flex: 1; }
+.people li > span:not(.avatar) { flex: 1; min-width: 0; }
 .people em { margin-left: 7px; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--botanical) 14%, transparent); color: var(--botanical); font-size: 11px; font-style: normal; font-weight: 600; }
 .people em[data-tone="waiting"] { background: var(--paper-strong); color: var(--ink-muted); }
 .orgTitle { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
@@ -167,21 +163,16 @@ a.primary, a.secondary { text-decoration: none; }
 .post { display: flex; flex-direction: column; gap: 12px; }
 .back { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px 6px 9px; border: 0; border-radius: 999px; background: transparent; color: var(--ink-muted); font-size: 13px; font-weight: 550; }
 .back:hover { background: color-mix(in srgb, var(--paper-strong) 55%, transparent); color: var(--ink); }
-.crumb[data-detail] .comment { font-size: 17px; line-height: 1.5; }
+.crumb[data-detail] .comment { font-size: 17px; line-height: 24px; }
 .crumb[data-detail] .source q { -webkit-line-clamp: unset; }
 .crumb[data-detail] .replies { gap: 10px; }
 .crumb[data-detail] .reply { padding: 11px 13px; border-radius: 13px; border: 1px solid var(--neu-border, var(--line)); background: var(--neu-surface-raised, var(--paper-raised)); box-shadow: var(--neu-soft-shadow); }
 .noReplies { margin: 2px 0; color: var(--ink-muted); font-size: 13px; }
-.timeline .comment { margin-top: 2px; font-size: 15px; }
 .source { flex-direction: column; align-items: stretch; gap: 8px; }
 .source q { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; padding-left: 10px; border-left: 3px solid var(--botanical); font-size: 13.5px; quotes: none; overflow-wrap: anywhere; }
 .source > span { flex-direction: row; align-items: center; gap: 7px; margin: 0; color: var(--ink-muted); font-size: 12.5px; }
 .source > span strong { flex: 0 1 auto; }
 .source > span svg { flex-shrink: 0; }
-.crumb footer { gap: 4px 26px; margin-top: 8px; }
-.crumb footer button { display: inline-flex; align-items: center; gap: 5px; min-width: 28px; height: 28px; padding: 0 6px; border: 0; border-radius: 999px; background: transparent; color: var(--ink-muted); font-size: 12.5px; }
-.crumb footer button:hover:not(:disabled), .crumb footer button[aria-expanded="true"], .crumb footer button[aria-pressed="true"] { background: color-mix(in srgb, var(--botanical) 12%, transparent); color: var(--botanical); }
-.crumb footer .audience { margin-left: auto; }
 .replies { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
 .reply { display: flex; gap: 9px; }
 .reply > div { min-width: 0; flex: 1; }
@@ -192,3 +183,8 @@ a.primary, a.secondary { text-decoration: none; }
 .replyForm textarea:focus { outline: none; border-color: var(--botanical); box-shadow: 0 0 0 3px color-mix(in srgb, var(--botanical) 14%, transparent); }
 .timeline .emptyState { padding: 48px 20px; }
 .timeline .more { margin: 14px auto; }
+
+/* The feed inside an Organization room: the room supplies the surface. */
+.inRoom { flex: 1; min-height: 0; overflow-y: auto; background: transparent; padding: 22px 24px 28px; }
+.inRoom > div { max-width: 680px; margin: 0 auto; }
+.inRoom .scopes[hidden] { display: none; }

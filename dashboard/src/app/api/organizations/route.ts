@@ -1,5 +1,5 @@
 import db from "@/lib/db";
-import { createRoom } from "@/lib/buzz/instance.ts";
+import { createRoom, ensureCrumbsRoom } from "@/lib/buzz/instance.ts";
 import { NextResponse } from "next/server";
 import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
 import {
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
       const created = createOrganization(userId, name);
       if (body.createGeneralRoom === true) {
         // Created first so "general", the more recent of the two, is the room the organization opens on.
-        createRoom(created, userId, { name: "crumbs", topic: "Crumbs your organization leaves around the web." });
+        ensureCrumbsRoom(created, userId);
         createRoom(created, userId, { name: "general", topic: "A place for your team and agents." });
       }
       return created;

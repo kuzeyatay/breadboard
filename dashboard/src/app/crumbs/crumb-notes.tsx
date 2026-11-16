@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { ExternalLink, UsersRound } from "lucide-react";
 import { shortHandle } from "@/lib/crumbs/handle";
 import styles from "./crumb-notes.module.css";
@@ -20,8 +20,13 @@ const act = (body: Record<string, unknown>) => fetch("/api/crumbs", { method: "P
  * The note people found helpful is shown on the crumb; the rest wait behind a
  * small control where anyone signed in can rate them or write their own.
  */
-export default function CrumbNotes({ crumbId, note, count = 0, own, signedIn }: { crumbId: string; note?: ShownNote; count?: number; own: boolean; signedIn: boolean }) {
-  const [open, setOpen] = useState(false);
+export default function CrumbNotes({ crumbId, note, count = 0, own, signedIn, open: openFromCard, onCount }: {
+  crumbId: string; note?: ShownNote; count?: number; own: boolean; signedIn: boolean;
+  /** Given by a card whose own action row opens the notes; the built-in control is then left out. */
+  open?: boolean; onCount?: (count: number) => void;
+}) {
+  const [openHere, setOpen] = useState(false);
+  const open = openFromCard ?? openHere;
   const [notes, setNotes] = useState<Note[] | null>(null);
   const [body, setBody] = useState("");
   const [source, setSource] = useState("");
@@ -35,10 +40,11 @@ export default function CrumbNotes({ crumbId, note, count = 0, own, signedIn }: 
     try { setNotes((await work()).notes); after?.(); } catch (error) { setError(error instanceof Error ? error.message : "Something went wrong. Try again."); }
     finally { setBusy(false); }
   }
-  function toggle() {
-    setOpen(value => !value);
-    if (!open && !notes) void run(() => fetch(`/api/crumbs?view=notes&id=${encodeURIComponent(crumbId)}`, { cache: "no-store" }).then(read<{ notes: Note[] }>));
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- load once, the first time the notes are opened
+  useEffect(() => { if (open && !notes) void run(() => fetch(`/api/crumbs?view=notes&id=${encodeURIComponent(crumbId)}`, { cache: "no-store" }).then(read<{ notes: Note[] }>)); }, [open]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- the card only needs the new number
+  useEffect(() => { if (notes) onCount?.(notes.length); }, [notes]);
+  const toggle = () => setOpen(value => !value);
   function submit(event: FormEvent) {
     event.preventDefault();
     void run(() => act({ action: "note-add", id: crumbId, body, source }), () => { setBody(""); setSource(""); });
@@ -51,7 +57,7 @@ export default function CrumbNotes({ crumbId, note, count = 0, own, signedIn }: 
       <p>{shown.body}</p>
       {shown.source && <a href={shown.source} target="_blank" rel="noopener noreferrer">Source <ExternalLink size={11} /></a>}
     </aside>}
-    <button type="button" className={styles.toggle} aria-expanded={open} onClick={toggle}>{total > 0 ? `${total} ${total === 1 ? "note" : "notes"}` : "Add note"}</button>
+    {openFromCard === undefined && <button type="button" className={styles.toggle} aria-expanded={open} onClick={toggle}>{total > 0 ? `${total} ${total === 1 ? "note" : "notes"}` : "Add note"}</button>}
     {open && <div className={styles.panel}>
       {error && <p className={styles.error} role="alert">{error}</p>}
       {notes?.map(item => <article key={item.uri} className={styles.note}>

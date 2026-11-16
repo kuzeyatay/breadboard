@@ -97,7 +97,7 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
             case 'typeahead': return json({ people: await crumbs.typeahead(query.get('q')) });
             case 'feed': return json(await crumbs.feed(1, query.get('scope') ?? 'following', query.get('before')));
             case 'follows': return json(await crumbs.follows(1));
-            case 'orgs': return json({ orgs: await crumbs.listOrgs(1) });
+            case 'orgs': return json({ orgs: await crumbs.listOrgs(1), local: [] });
             case 'org': return json(await crumbs.orgDetail(1, query.get('id') ?? ''));
             case 'notes': return json(await crumbs.listNotes(1, query.get('id')));
             case 'rooms': return json({ rooms: await crumbs.listRooms(1, query.get('id') ?? '') });

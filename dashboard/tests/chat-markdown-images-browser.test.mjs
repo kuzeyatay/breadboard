@@ -6,9 +6,16 @@ import test from "node:test";
 import { build } from "esbuild";
 import { chromium } from "playwright";
 import postcss from "postcss";
+import sharp from "sharp";
+import { inspectAttachedImage } from "../src/lib/hermes/attachment-image.ts";
+import { markedImageResponse } from "../src/lib/hermes/image-marks.ts";
 
 test("restored chat images load while hidden, survive reloads, and stay centered at desktop and mobile widths", { timeout: 60000 }, async () => {
   const root = path.resolve(import.meta.dirname, "..");
+  const original = await sharp({ create: { width: 240, height: 160, channels: 3, background: "white" } }).png().toBuffer();
+  const upload = { name: "map.png", type: "image", dataUrl: `data:image/png;base64,${original.toString("base64")}` };
+  const annotated = await inspectAttachedImage([{ id: 7, metadata: JSON.stringify({ attachments: [upload] }) }],
+    { image: 1, marks: ["box,100,100,300,400", "label,400,100,Search & planning"] });
   const styles = postcss.parse(fs.readFileSync(path.join(root, "src/app/globals.css"), "utf8"));
   const css = styles.nodes.filter(node => node.type === "rule" &&
     node.selector.split(",").some(selector => [".chat-markdown", ".chat-markdown-image", ".chat-markdown img"].includes(selector.trim())))
@@ -19,17 +26,24 @@ test("restored chat images load while hidden, survive reloads, and stay centered
       import {createRoot} from 'react-dom/client';
       import ChatMarkdown from './src/app/components/chat-markdown';
       createRoot(document.getElementById('root')).render(<ChatMarkdown content={
-        '![Garden diagram](/course/assets/diagram.svg)\\n\\n![External diagram](/external.svg)'
+        '![Garden diagram](/course/assets/diagram.svg)\\n\\n![External diagram](/external.svg)\\n\\n' + ${JSON.stringify(annotated.markdown)}
       } />);
     ` },
     bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
     alias: { "@": path.join(root, "src") },
   });
   const requests = [];
-  const server = http.createServer((request, response) => {
+  const server = http.createServer(async (request, response) => {
     if (request.url === "/app.js") {
       response.setHeader("content-type", "text/javascript");
       response.end(bundle.outputFiles[0].text);
+    } else if (request.url === annotated.url) {
+      requests.push(request.url);
+      const marks = new URL(request.url, "http://localhost").searchParams.getAll("mark");
+      const png = await markedImageResponse(original, marks);
+      response.setHeader("content-type", "image/png");
+      response.setHeader("cache-control", "private, no-cache");
+      response.end(Buffer.from(await png.arrayBuffer()));
     } else if (request.url.endsWith(".svg")) {
       requests.push(request.url);
       const width = request.url === "/external.svg" ? 1440 : 240;
@@ -58,9 +72,9 @@ test("restored chat images load while hidden, survive reloads, and stay centered
         // trigger native lazy loading: the images must already be decoded.
         await page.waitForFunction(() => {
           const images = [...document.querySelectorAll(".chat-markdown img")];
-          return images.length === 2 && images.every(image => image.complete && image.naturalWidth > 0);
+          return images.length === 3 && images.every(image => image.complete && image.naturalWidth > 0);
         });
-        assert.equal(requests.length - before, 2);
+        assert.equal(requests.length - before, 3);
         await page.locator("#root").evaluate(element => { element.style.display = "block"; });
         // Already-open chats can still use the previous component bundle.
         // They and messages inserted later must center without migrating each

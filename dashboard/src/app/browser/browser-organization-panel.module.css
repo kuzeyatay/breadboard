@@ -72,16 +72,8 @@
 .primary:hover { background: var(--botanical-hover, var(--botanical)); }
 
 /* Each crumb is a card of its own, so a passage reads as posts and not as a chat. */
-.message { display: flex; gap: 10px; margin-top: 12px; padding: 13px 14px; border-radius: 14px; border: 1px solid var(--neu-border, var(--line)); background: var(--neu-surface-raised, var(--paper-raised)); box-shadow: var(--neu-soft-shadow); }
-.post { flex: 1; min-width: 0; }
-.post > p { margin: 2px 0 0; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-.byline { display: flex; align-items: center; gap: 6px; min-height: 22px; }
+.message { margin-top: 12px; border-radius: 14px; border: 1px solid var(--neu-border, var(--line)); background: var(--neu-surface-raised, var(--paper-raised)); box-shadow: var(--neu-soft-shadow); }
 .avatar { flex-shrink: 0; display: inline-grid; place-items: center; border-radius: 50%; object-fit: cover; background: color-mix(in srgb, var(--botanical) 18%, var(--paper-surface)); color: var(--botanical); font-weight: 700; }
-.who { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
-.who strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 650; }
-.who small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-muted); font-size: 12px; }
-.byline time { flex-shrink: 0; font-size: 12px; color: var(--ink-muted); }
-.byline .menu { margin-left: auto; }
 .warning { display: block; margin-top: 5px; color: var(--danger); font-size: 11px; }
 .textLink { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-muted); font-size: 11px !important; background: transparent; border: 0; padding: 7px 0 0; text-decoration: none; }
 .textLink:hover { color: var(--ink); }
@@ -124,3 +116,6 @@
 .signin { display: flex; flex-direction: column; align-items: flex-start; padding: 13px 14px; }
 .signin p { margin: 0; font-size: 12px; color: var(--ink-muted); }
 .signin .primary { margin-top: 10px; }
+
+.privatePage { display: flex; align-items: flex-start; gap: 8px; padding: 2px 2px 8px; color: var(--danger); font-size: 12px; line-height: 16px; cursor: pointer; }
+.privatePage input { flex-shrink: 0; margin: 2px 0 0; accent-color: var(--danger); }

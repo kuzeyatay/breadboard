@@ -58,6 +58,17 @@ fn occurrence(key: &str) -> Option<(&str, i64)> {
     (due > 0).then_some((schedule, due))
 }
 
+/// Status probes a page starts for the signed-in person: is the Claude account
+/// connected, where is this device, is transcription up. The answer goes back to
+/// the page that asked and is never read again, so a succeeded probe has no
+/// history worth keeping. A closed list of job types, each bound to the key
+/// prefix its own caller uses; anything else a person started is kept.
+fn status_probe(job_type: &str, key: &str) -> bool {
+    (job_type == "claude-account" && key.starts_with("claude-account-status-"))
+        || (job_type == "system-location" && key.starts_with("system-location-v2:"))
+        || (job_type == "scriberr-garden-health" && key.starts_with("scriberr-health-v2:"))
+}
+
 /// Closed result shapes: new output fields require an explicit policy review.
 fn verified_noop(schedule: &str, result: &Value) -> bool {
     let Some(object) = result.as_object() else {
@@ -68,9 +79,13 @@ fn verified_noop(schedule: &str, result: &Value) -> bool {
         "scheduled-chats" => &["dispatched"],
         "caldav-sync" => &["considered", "synced", "failed", "leased"],
         "calendar-reminders" => {
+            // `recipients` counts the people who have reminders switched on, not
+            // work done: with two of them and nothing due, every run reported
+            // recipients=2 and none was ever recognised as a no-op.
             return object.len() == 5
                 && object.get("operation").and_then(Value::as_str) == Some(schedule)
-                && ["recipients", "delivered", "failed"]
+                && object.get("recipients").and_then(Value::as_u64).is_some()
+                && ["delivered", "failed"]
                     .iter()
                     .all(|key| object.get(*key).and_then(Value::as_u64) == Some(0))
                 && object
@@ -151,10 +166,10 @@ impl JobStore {
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let candidates: Vec<(String, String, String, i64, i64)> = {
-            let mut statement = connection.prepare("SELECT job_id,owner_principal,idempotency_key,updated_at,finished_at FROM runtime_jobs
+        let candidates: Vec<(String, String, String, i64, i64, String)> = {
+            let mut statement = connection.prepare("SELECT job_id,owner_principal,idempotency_key,updated_at,finished_at,job_type FROM runtime_jobs
                 WHERE state='succeeded' AND (updated_at,job_id)>(?1,?2)
-                ORDER BY updated_at,job_id LIMIT 32")?;
+                ORDER BY updated_at,job_id LIMIT 256")?;
             let rows = statement.query_map(params![cursor.0, cursor.1], |row| {
                 Ok((
                     row.get(0)?,
@@ -162,6 +177,7 @@ impl JobStore {
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             })?;
             rows.collect::<Result<_, _>>()?
@@ -172,7 +188,7 @@ impl JobStore {
                 [],
             )?;
         }
-        for (job, owner, key, updated, finished) in candidates {
+        for (job, owner, key, updated, finished, job_type) in candidates {
             if started.elapsed() > Duration::from_millis(150) {
                 break;
             }
@@ -184,6 +200,33 @@ impl JobStore {
                 params![updated, job],
             )?;
             if finished >= now - DAY {
+                continue;
+            }
+            if status_probe(&job_type, &key) {
+                if finished >= now - 7 * DAY || !owner.starts_with("user:") {
+                    continue;
+                }
+                // Same evidence as a scheduled no-op: the run is confirmed over and
+                // the result on disk is the one it reported, or the folder is gone.
+                let digest: Option<String> = connection.query_row("SELECT json_extract(payload_json,'$.resultSha256') FROM runtime_job_events
+                    WHERE job_id=?1 AND event_type='completion-confirmed' AND json_extract(payload_json,'$.treeExited')=1
+                    ORDER BY sequence DESC LIMIT 1", [&job], |r|r.get(0)).optional()?.flatten();
+                let Some(digest) = digest else {
+                    report.protected += 1;
+                    continue;
+                };
+                drop(connection);
+                let cleanup = paths.cleanup_noop_job_directory(&job, &digest);
+                connection = self.connection.lock().expect("job store mutex poisoned");
+                if !matches!(cleanup, Ok(true)) {
+                    report.protected += 1;
+                    continue;
+                }
+                report.directories_removed += 1;
+                report.jobs_pruned += connection.execute(
+                    "DELETE FROM runtime_jobs WHERE job_id=?1 AND state='succeeded'",
+                    [&job],
+                )?;
                 continue;
             }
             let Some((schedule, due)) = occurrence(&key) else {
@@ -217,22 +260,34 @@ impl JobStore {
                 drop(connection);
                 let bytes = paths.read_bounded_job_result(&job, 64 * 1024);
                 connection = self.connection.lock().expect("job store mutex poisoned");
-                let Ok(bytes) = bytes else {
-                    report.protected += 1;
-                    continue;
-                };
-                let actual = format!("{:x}", Sha256::digest(&bytes));
-                let result: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-                if actual != digest
-                    || result.pointer("/identity/jobId").and_then(Value::as_str)
-                        != Some(job.as_str())
-                    || !verified_noop(schedule, &result["result"])
-                {
-                    report.protected += 1;
-                    continue;
+                match bytes {
+                    Ok(bytes) => {
+                        let actual = format!("{:x}", Sha256::digest(&bytes));
+                        let result: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+                        if actual != digest
+                            || result.pointer("/identity/jobId").and_then(Value::as_str)
+                                != Some(job.as_str())
+                            || !verified_noop(schedule, &result["result"])
+                        {
+                            report.protected += 1;
+                            continue;
+                        }
+                        connection.execute("INSERT OR IGNORE INTO runtime_storage_proofs(job_id,schedule_id,due_at,result_sha256) VALUES(?1,?2,?3,?4)",params![job,schedule,due,digest])?;
+                        (digest, false)
+                    }
+                    // A scheduled occurrence whose folder is already gone has no
+                    // result left to protect; only its history rows remain. They
+                    // were unreachable before: the unreadable result marked the job
+                    // protected on every pass, for 365,000 rows by 2026-11-16.
+                    Err(_) if paths.job_directory_absent(&job) => {
+                        connection.execute("INSERT OR IGNORE INTO runtime_storage_proofs(job_id,schedule_id,due_at,result_sha256,directory_cleaned) VALUES(?1,?2,?3,?4,1)",params![job,schedule,due,digest])?;
+                        (digest, true)
+                    }
+                    Err(_) => {
+                        report.protected += 1;
+                        continue;
+                    }
                 }
-                connection.execute("INSERT OR IGNORE INTO runtime_storage_proofs(job_id,schedule_id,due_at,result_sha256) VALUES(?1,?2,?3,?4)",params![job,schedule,due,digest])?;
-                (digest, false)
             };
             if !cleaned {
                 drop(connection);
@@ -264,9 +319,13 @@ impl JobStore {
                 continue;
             }
             let prefix = format!("runtime-schedule-{schedule}-");
+            // An uncertain or interrupted occurrence is never settled by anyone, so
+            // without the age bound one such row from September stopped every later
+            // occurrence of its schedule from being pruned. The row itself is kept.
             let unsettled: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_jobs WHERE owner_principal=?1
-                AND state IN ('queued','admitted','starting','running','checkpointing','cancelling','uncertain','interrupted')
-                AND substr(idempotency_key,1,length(?2))=?2 AND CAST(substr(idempotency_key,length(?2)+1) AS INTEGER)<=?3)",params![owner,prefix,due],|r|r.get(0))?;
+                AND (state IN ('queued','admitted','starting','running','checkpointing','cancelling')
+                    OR (state IN ('uncertain','interrupted') AND updated_at>=?4))
+                AND substr(idempotency_key,1,length(?2))=?2 AND CAST(substr(idempotency_key,length(?2)+1) AS INTEGER)<=?3)",params![owner,prefix,due,now-7*DAY],|r|r.get(0))?;
             let referenced: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_schedules WHERE inflight_job_id=?1 OR reconcile_job_id=?1)",[&job],|r|r.get(0))?;
             if unsettled || referenced {
                 report.protected += 1;
@@ -329,7 +388,7 @@ impl JobStore {
         if started.elapsed() < Duration::from_millis(150)
             && connection.query_row("PRAGMA auto_vacuum", [], |r| r.get::<_, i64>(0))? == 2
         {
-            connection.execute_batch("PRAGMA incremental_vacuum(32)")?;
+            connection.execute_batch("PRAGMA incremental_vacuum(1024)")?;
         }
         Ok(report)
     }
@@ -366,6 +425,10 @@ mod tests {
                 .unwrap();
         std::fs::write(directory.join("result.json"), &body).unwrap();
         std::fs::write(directory.join("input.json"), b"{}").unwrap();
+        let worker = directory.join("attempts/1/worker_1");
+        std::fs::create_dir_all(worker.join("workspace")).unwrap();
+        std::fs::write(worker.join("diagnostics.log"), b"started\n").unwrap();
+        std::fs::write(worker.join("start.json"), b"{}").unwrap();
         let db = store.connection.lock().unwrap();
         db.execute("INSERT INTO runtime_jobs(job_id,job_type,worker_kind,resource_class,owner_principal,state,input_manifest_path,workspace_path,checkpoint_path,result_path,created_at,updated_at,finished_at,idempotency_key,request_digest)
             VALUES(?1,'check','check','lightweight','internal:runtime-scheduler',?2,'input.json','workspace','checkpoint.json','result.json',?3,?3,?3,?4,?5)",
@@ -473,6 +536,9 @@ mod tests {
             b"unique user work",
         )
         .unwrap();
+        // Only a recently unsettled occurrence holds back its schedule.
+        store.connection.lock().unwrap().execute(
+            "UPDATE runtime_jobs SET updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE job_id='uncertain'", []).unwrap();
         for _ in 0..4 {
             store.storage_maintenance(&paths).unwrap();
         }
@@ -549,7 +615,59 @@ mod tests {
         );
     }
     #[test]
+    fn history_of_a_job_whose_folder_is_gone_is_pruned_and_unknown_attempt_files_are_kept() {
+        let (_directory, store, paths) = fixture();
+        let noop = serde_json::json!({"operation":"scheduled-chats","dispatched":0});
+        insert_job(&store, &paths, "gone", 1, "succeeded", noop.clone());
+        insert_job(&store, &paths, "kept", 2, "succeeded", noop);
+        std::fs::remove_dir_all(paths.data_root().join("runtime/jobs/gone")).unwrap();
+        let unknown = paths.data_root().join("runtime/jobs/kept/attempts/1/worker_1/output.bin");
+        std::fs::write(&unknown, b"not a known diagnostic").unwrap();
+        for _ in 0..4 {
+            store.storage_maintenance(&paths).unwrap();
+        }
+        let db = store.connection.lock().unwrap();
+        let jobs: Vec<String> = db.prepare("SELECT job_id FROM runtime_jobs ORDER BY job_id").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(jobs, ["kept"]);
+        assert!(unknown.exists());
+        assert!(paths.data_root().join("runtime/jobs/kept/result.json").exists());
+    }
+    #[test]
+    fn old_status_probes_are_removed_and_other_work_a_person_started_is_kept() {
+        let (_directory, store, paths) = fixture();
+        let result = serde_json::json!({"operation":"status","connected":true});
+        for (id, kind, key) in [
+            ("probe", "claude-account", "claude-account-status-0001"),
+            ("place", "system-location", "system-location-v2:0002"),
+            ("research", "max-research-run", "claude-account-status-0003"),
+            ("renamed", "claude-account", "claude-account-login-0004"),
+        ] {
+            insert_job(&store, &paths, id, 1, "succeeded", result.clone());
+            store.connection.lock().unwrap().execute(
+                "UPDATE runtime_jobs SET owner_principal='user:1',job_type=?2,idempotency_key=?3 WHERE job_id=?1",
+                params![id, kind, key]).unwrap();
+        }
+        for _ in 0..4 {
+            store.storage_maintenance(&paths).unwrap();
+        }
+        let db = store.connection.lock().unwrap();
+        let jobs: Vec<String> = db.prepare("SELECT job_id FROM runtime_jobs ORDER BY job_id").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(jobs, ["renamed", "research"]);
+        assert!(!paths.data_root().join("runtime/jobs/probe").exists());
+        assert!(paths.data_root().join("runtime/jobs/research/result.json").exists());
+    }
+    #[test]
     fn classifier_requires_exact_zero_result_contract() {
+        assert!(verified_noop(
+            "calendar-reminders",
+            &serde_json::json!({"operation":"calendar-reminders","recipients":2,"delivered":0,"failed":0,"errors":[]})
+        ));
+        assert!(!verified_noop(
+            "calendar-reminders",
+            &serde_json::json!({"operation":"calendar-reminders","recipients":2,"delivered":1,"failed":0,"errors":[]})
+        ));
         assert!(verified_noop(
             "scheduled-chats",
             &serde_json::json!({"operation":"scheduled-chats","dispatched":0})

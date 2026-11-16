@@ -62,11 +62,21 @@ test("documents count by format — the second pdf is the second .pdf", () => {
   assert.match(manifest, /3\. "b\.pdf" — pdf 2 of 2/);
 });
 
+test("automatic screen and reader context are identified even alone and excluded from upload ordinals", () => {
+  for (const context of ["workspace", "pdf", "document-page"]) {
+    const view = { ...image("current.jpg"), context };
+    assert.match(attachmentOrderManifest([view]), /automatic context/);
+    const manifest = attachmentOrderManifest([image("A.png"), view, image("B.png")]);
+    assert.match(manifest, /"B.png" — image 2 of 2/);
+    assert.doesNotMatch(manifest, /The user attached these files/);
+  }
+});
+
 test("both Hermes pipelines send the manifest", () => {
   // A pipeline that skips the manifest silently regresses to guessing; pin the
   // call the same way the document-text consumers are pinned.
   const consumers = [
-    "src/lib/agent-runtime/adapters/hermes.ts",
+    "src/lib/agent-runtime/hermes-prompt.ts",
     "src/lib/conversations/direct-turn-service.ts",
   ];
   for (const relative of consumers) {

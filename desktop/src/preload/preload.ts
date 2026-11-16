@@ -49,6 +49,7 @@ export const PRELOAD_IPC_CHANNELS = {
   closeTeachController: "breadboard:close-teach-controller",
   getTabsState: "breadboard:get-tabs-state",
   getBrowserTerminalAccess: "breadboard:get-browser-terminal-access",
+  captureWorkspaceView: "breadboard:capture-workspace-view",
   spotifyRequest: "breadboard:spotify-request",
   readTerminalData: "breadboard:read-terminal-data",
   cancelTerminalData: "breadboard:cancel-terminal-data",
@@ -287,6 +288,8 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getTabsState) as Promise<TabsState>,
     getBrowserTerminalAccess: (): Promise<{ port: number; token: string } | null> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getBrowserTerminalAccess) as Promise<{ port: number; token: string } | null>,
+    captureWorkspaceView: (): Promise<string | null> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.captureWorkspaceView) as Promise<string | null>,
     spotifyRequest: (request: Record<string, unknown>): Promise<{ status: number; body: string }> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.spotifyRequest, request) as Promise<{ status: number; body: string }>,
     readTerminalData: (id: string, path: string): Promise<{ status: number; body: string }> =>

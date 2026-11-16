@@ -41,6 +41,8 @@ export function enginePort(config: RecallConfig = getRecallConfig()): number {
  * an exclusion that silently fails to reach the recorder is the one bug in
  * this feature that matters most.
  */
+export const RECALL_RETENTION_DAYS = 14;
+
 export function buildEngineArgs(
   settings: RecallSettings,
   config: RecallConfig = getRecallConfig(),
@@ -52,6 +54,13 @@ export function buildEngineArgs(
     "--data-dir",
     config.dataDir,
   ];
+  // Without this the engine keeps every frame forever (its CLI default is 0),
+  // and its database grows by about 770 MB a day: mostly the position of every
+  // element on screen, not the text. `all` drops recordings and database rows
+  // past the window; daily-summaries.ts keeps a short account of each day.
+  // The Runtime launches from desktop/runtime-v2/manifests/services.json, so
+  // the same four values live there and a test holds the two together.
+  args.push("--retention-days", String(RECALL_RETENTION_DAYS), "--retention-mode", "all");
   if (!settings.captureAudio) args.push("--disable-audio");
   for (const window of settings.excludedWindows) {
     args.push("--ignored-windows", window);

@@ -449,6 +449,11 @@ def _model_routing_summary(run: CouncilRun) -> Dict[str, Any]:
 
 def _with_model_routing(resp: Response, run: CouncilRun) -> Response:
     summary = _model_routing_summary(run)
+    # The aggregate failover flag includes reviewers. Clients displaying an
+    # answer footer need the route of the author of the delivered text.
+    if run.answer_route.get("model"):
+        resp.headers["X-Breadboard-Answer-Model"] = run.answer_route["model"]
+    resp.headers["X-Breadboard-Answer-Fallback"] = "true" if run.answer_route.get("fallback") else "false"
     if isinstance(summary.get("requestedModel"), str):
         resp.headers["X-ChatMock-Requested-Model"] = summary["requestedModel"]
     if isinstance(summary.get("resolvedModel"), str):

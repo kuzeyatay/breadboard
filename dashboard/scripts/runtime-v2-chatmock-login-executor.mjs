@@ -74,7 +74,7 @@ export function describeChatmockLoginExit(code, output) {
     .filter((line) => /^ERROR:/iu.test(line))
     .at(-1);
   if (reported) return reported.replace(/^ERROR:\s*/iu, "").slice(0, 8_000);
-  return `The ChatMock sign-in exited with code ${code ?? "unknown"} before completing.`;
+  return `The sign-in exited with code ${code ?? "unknown"} before completing.`;
 }
 
 export function validateChatmockLoginRequest(value) {
@@ -138,7 +138,7 @@ export async function executeChatmockLogin(request, options) {
   ) {
     fail("The staged ChatMock source is unavailable.", "chatmock_source_unavailable");
   }
-  const entry = directFile(path.join(directory, "chatmock.py"), "The staged ChatMock entrypoint", platform);
+  const entry = directFile(path.join(directory, "breadboard_runtime.py"), "The staged ChatMock entrypoint", platform);
   const python = resolvePythonOnPath(env, platform);
   const startedAt = new Date().toISOString();
   let currentState = loginState("awaiting_authorization", startedAt);
@@ -245,7 +245,7 @@ export async function executeChatmockLogin(request, options) {
 
     urlTimer = setTimeout(() => {
       if (!currentState.authorizationUrl) {
-        forceStop("failed", "ChatMock did not report an authorization URL.");
+        forceStop("failed", "Sign-in did not return an authorization URL.");
       }
     }, urlWaitMs);
     urlTimer.unref?.();

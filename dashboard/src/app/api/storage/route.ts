@@ -3,6 +3,7 @@ import db from "@/lib/db";
 import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
 import { assertStorageOwner } from "@/lib/storage/store";
 import { storageStatus } from "@/lib/storage/service";
+import { setStorageBudget } from "@/lib/storage/budget";
 
 export const dynamic = "force-dynamic";
 export async function GET() {
@@ -13,6 +14,11 @@ export async function PATCH(request: Request) {
   try {
     assertStorageOwner(db, await requireUserId());
     const body = await request.json().catch(() => null);
+    if (body && Object.keys(body).join() === "budgetBytes") {
+      try { setStorageBudget(db, body.budgetBytes); }
+      catch (error) { return NextResponse.json({ error: (error as Error).message }, { status: 400 }); }
+      return NextResponse.json({ budgetBytes: body.budgetBytes });
+    }
     if (!body || typeof body.automatic !== "boolean" || Object.keys(body).some(key => key !== "automatic"))
       return NextResponse.json({ error: "Choose whether automatic housekeeping is enabled." }, { status: 400 });
     db.prepare("UPDATE storage_settings SET automatic=?,updated_at=? WHERE id=1").run(body.automatic ? 1 : 0, Date.now());

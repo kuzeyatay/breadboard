@@ -32,7 +32,8 @@ interface QuartzSessionItem {
     uiResources?: unknown[]
     clientMessageId?: string
     id?: string
-    metadata?: { modelChangeLabels?: string[]; modelChangeLabel?: string }
+    verification?: Record<string, unknown>
+    metadata?: { verification?: Record<string, unknown>; modelChangeLabels?: string[]; modelChangeLabel?: string }
   }>
 }
 
@@ -905,6 +906,15 @@ function setupPanel(root: HTMLElement) {
     el.innerHTML = markdownToHtml(text)
   }
 
+  function renderAnswerAttribution(el: HTMLElement, verification?: Record<string, unknown>) {
+    el.querySelector("[data-fallback-note]")?.remove()
+    if (verification?.usedFallback !== true) return
+    const note = document.createElement("p")
+    note.dataset.fallbackNote = "true"
+    note.textContent = "Answered by the fallback model*"
+    el.appendChild(note)
+  }
+
   function renderTranscript(entries: QuartzSessionItem["messages"]) {
     clearSelectionQuestion()
     messages!.replaceChildren()
@@ -932,8 +942,10 @@ function setupPanel(root: HTMLElement) {
           el.dataset.pending = String(pending)
           renderModelChanges(el)
         }
-        if (role === "assistant" && (content || resources.length))
+        if (role === "assistant" && (content || resources.length)) {
           renderAssistantContent(el, content, resources)
+          renderAnswerAttribution(el, entry.verification ?? entry.metadata?.verification)
+        }
       }
     } finally {
       railSuspended = false
@@ -1295,6 +1307,10 @@ function setupPanel(root: HTMLElement) {
     const stateLabel = document.createElement("p")
     stateLabel.textContent = `Verification: ${String(payload.state || "unverified").replaceAll("_", " ")}`
     evidenceBody.appendChild(stateLabel)
+    const model = document.createElement("p")
+    model.textContent = typeof payload.answerModel === "string" ? `Answered by ${payload.answerModel}`
+      : payload.answerModel === null ? "No completed model reply" : "Answering model not recorded"
+    evidenceBody.appendChild(model)
     const records = Array.isArray(payload.evidence) ? payload.evidence : []
     if (records.length) {
       const list = document.createElement("ul")
@@ -1425,6 +1441,7 @@ function setupPanel(root: HTMLElement) {
           renderActivity()
         } else if (event.type === "verification.updated") {
           renderEvidence(event.payload || {})
+          renderAnswerAttribution(assistantEl, event.payload)
         } else if (event.type === "cancelled") {
           if (activityTitle) activityTitle.textContent = "Cancelled"
           for (const entry of activityEntries.values())

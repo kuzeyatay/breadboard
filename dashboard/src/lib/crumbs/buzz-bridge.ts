@@ -12,8 +12,9 @@
 // encrypted events if people start relying on them across machines.
 import type Database from "better-sqlite3";
 import { addMember, createRoom, listMembers, postMessage } from "../buzz/store.ts";
-import { CrumbsError, type Crumbs } from "./core.ts";
+import { CrumbsError, type ChatCrumb, type Crumbs } from "./core.ts";
 import { ensureCrumbsSchema, getAccount } from "./store.ts";
+import { annotationRootMessage, ensureBrowserAnnotationsSchema } from "../browser-annotations-store.ts";
 import { shortHandle } from "./handle.ts";
 
 const initialized = new WeakSet<Database.Database>();
@@ -40,11 +41,12 @@ function ensureBridgeSchema(db: Database.Database) {
 }
 
 interface RoomLink { room_id: number; user_id: number; org_id: string; channel: string; pulled_at: string; pushed_id: number }
-interface LocalMessage { id: number; member_id: number | null; author_kind: string; author_name: string; author_handle: string; body: string; parent_id: number | null }
+interface LocalMessage { id: number; member_id: number | null; author_kind: string; author_name: string; author_handle: string; body: string; parent_id: number | null; metadata: string | null; target_json: string | null }
 
 export function createBuzzBridge({ db, crumbs }: { db: Database.Database; crumbs: Crumbs }) {
   ensureCrumbsSchema(db);
   ensureBridgeSchema(db);
+  ensureBrowserAnnotationsSchema(db);
   const busy = new Map<string, Promise<void>>();
   /** One run at a time per key; callers that arrive meanwhile share it. */
   function once(key: string, work: () => Promise<void>): Promise<void> {
@@ -75,7 +77,9 @@ export function createBuzzBridge({ db, crumbs }: { db: Database.Database; crumbs
         const links = db.prepare("SELECT * FROM crumbs_buzz_rooms WHERE user_id=? AND org_id=?").all(userId, org.id) as RoomLink[];
         for (const room of remote) {
           if (links.some(link => link.channel === room.id)) continue;
-          const local = createRoom(db, mapped.id, userId, { name: room.name, visibility: "public" });
+          // A room this machine already has under that name is the same room, not a second one.
+          const same = db.prepare("SELECT id FROM buzz_rooms WHERE organization_id=? AND archived_at IS NULL AND lower(name)=lower(?) AND id NOT IN (SELECT room_id FROM crumbs_buzz_rooms)").get(mapped.id, room.name) as { id: number } | undefined;
+          const local = same ?? createRoom(db, mapped.id, userId, { name: room.name, visibility: "public" });
           db.prepare("INSERT INTO crumbs_buzz_rooms(room_id, user_id, org_id, channel) VALUES(?,?,?,?)").run(local.id, userId, org.id, room.id);
         }
         // A room made on the Organization page inside this community is announced to the other members.
@@ -101,14 +105,22 @@ export function createBuzzBridge({ db, crumbs }: { db: Database.Database; crumbs
       const record = db.prepare("INSERT INTO crumbs_buzz_messages(remote_id, room_id, message_id) VALUES(?,?,?) ON CONFLICT(remote_id) DO NOTHING");
 
       // Outbound: finished messages from people and agents that did not come from the store.
-      const outgoing = db.prepare(`SELECT id, member_id, author_kind, author_name, author_handle, body, parent_id FROM buzz_room_messages
-        WHERE room_id=? AND id>? AND deleted_at IS NULL AND status='complete' AND author_kind IN ('human','agent') AND body<>''
-          AND id NOT IN (SELECT message_id FROM crumbs_buzz_messages WHERE room_id=?) ORDER BY id LIMIT 100`).all(roomId, link.pushed_id, roomId) as LocalMessage[];
+      const outgoing = db.prepare(`SELECT m.id, m.member_id, m.author_kind, m.author_name, m.author_handle, m.body, m.parent_id, m.metadata,
+          (SELECT t.target_json FROM browser_annotation_threads t WHERE t.root_message_id=m.parent_id) AS target_json FROM buzz_room_messages m
+        WHERE m.room_id=? AND m.id>? AND m.deleted_at IS NULL AND m.status='complete' AND m.author_kind IN ('human','agent') AND m.body<>''
+          AND m.id NOT IN (SELECT message_id FROM crumbs_buzz_messages WHERE room_id=?) ORDER BY m.id LIMIT 100`).all(roomId, link.pushed_id, roomId) as LocalMessage[];
       for (const message of outgoing) {
         const mine = message.author_kind === "human";
         const parent = message.parent_id ? (remoteOf.get(roomId, message.parent_id) as { remote_id: string } | undefined)?.remote_id : undefined;
+        // A crumb's root post is made on each machine, so the passage travels with every comment on it.
+        let crumb: ChatCrumb | undefined;
+        if (message.target_json) {
+          let meta: Record<string, unknown> = {};
+          try { meta = message.metadata ? JSON.parse(message.metadata) as Record<string, unknown> : {}; } catch { /* a plain reply */ }
+          crumb = { target: JSON.parse(message.target_json) as ChatCrumb["target"], body: typeof meta.annotationBody === "string" ? meta.annotationBody : message.body, source: typeof meta.annotationSource === "string" ? meta.annotationSource : null };
+        }
         const sent = await crumbs.sendChat(userId, link.org_id, link.channel, message.body.slice(0, 12000), {
-          ...(mine ? {} : { agent: true, author: { handle: null, displayName: message.author_name, avatar: null } }), ...(parent ? { parent } : {}) });
+          ...(mine ? {} : { agent: true, author: { handle: null, displayName: message.author_name, avatar: null } }), ...(parent ? { parent } : {}), ...(crumb ? { crumb } : {}) });
         record.run(sent.id, roomId, message.id);
         db.prepare("UPDATE crumbs_buzz_rooms SET pushed_id=? WHERE room_id=?").run(message.id, roomId);
       }
@@ -116,6 +128,7 @@ export function createBuzzBridge({ db, crumbs }: { db: Database.Database; crumbs
       // Inbound: decrypted on this machine, then added to the local transcript.
       const { messages } = await crumbs.readChat(userId, link.org_id, link.channel, link.pulled_at || null);
       const members = listMembers(db, roomId);
+      const room = { id: roomId, publicId: (db.prepare("SELECT public_id FROM buzz_rooms WHERE id=?").get(roomId) as { public_id: string }).public_id };
       for (const message of messages) {
         if (!localOf.get(message.id)) {
           let memberId: number | null = null;
@@ -127,9 +140,11 @@ export function createBuzzBridge({ db, crumbs }: { db: Database.Database; crumbs
               db.prepare("INSERT INTO crumbs_buzz_people(room_id, did, member_id, avatar) VALUES(?,?,?,?) ON CONFLICT(room_id, did) DO UPDATE SET avatar=excluded.avatar").run(roomId, message.did, memberId, message.avatar);
             }
           }
-          const parent = message.parent ? (localOf.get(message.parent) as { message_id: number } | undefined)?.message_id ?? null : null;
+          const parent = message.crumb ? annotationRootMessage(db, room, message.crumb.target)
+            : message.parent ? (localOf.get(message.parent) as { message_id: number } | undefined)?.message_id ?? null : null;
           const local = postMessage(db, roomId, { clientMessageId: `crumbs:${message.id}`, memberId, authorKind: message.agent ? "agent" : "human", authorName: message.author, authorHandle: message.handle ?? "",
-            body: message.body, parentId: parent, metadata: { crumbs: { did: message.did, avatar: message.avatar, ...(message.unverified ? { unverified: true } : {}) } } });
+            body: message.body, parentId: parent, metadata: { crumbs: { did: message.did, avatar: message.avatar, ...(message.unverified ? { unverified: true } : {}) },
+              ...(message.crumb ? { annotationBody: message.crumb.body, annotationSource: message.crumb.source } : {}) } });
           record.run(message.id, roomId, local.id);
         }
         db.prepare("UPDATE crumbs_buzz_rooms SET pulled_at=? WHERE room_id=? AND pulled_at<?").run(message.createdAt, roomId, message.createdAt);
@@ -170,6 +185,13 @@ export function createBuzzBridge({ db, crumbs }: { db: Database.Database; crumbs
     await syncOrganizations(userId);
   }
 
-  return { syncOrganizations, syncRoom, syncAll, memberAvatars, localOrganizations, connectOrganization, isLinked: (roomId: number) => Boolean(linkOf(roomId)) };
+  /** The crumbs room of the Breadboard organization this Crumbs organization is connected to, if it is. */
+  function crumbsRoomOf(userId: number, orgId: string): string | null {
+    const row = db.prepare(`SELECT r.public_id FROM crumbs_buzz_orgs b JOIN buzz_rooms r ON r.organization_id=b.organization_id AND r.slug='crumbs' AND r.archived_at IS NULL
+      WHERE b.user_id=? AND b.org_id=?`).get(userId, orgId) as { public_id: string } | undefined;
+    return row?.public_id ?? null;
+  }
+
+  return { syncOrganizations, syncRoom, syncAll, memberAvatars, localOrganizations, connectOrganization, crumbsRoomOf, isLinked: (roomId: number) => Boolean(linkOf(roomId)) };
 }
 export type BuzzBridge = ReturnType<typeof createBuzzBridge>;

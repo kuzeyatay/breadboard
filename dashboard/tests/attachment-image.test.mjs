@@ -5,12 +5,20 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { attachedImages, inspectAttachedImage } from '../src/lib/hermes/attachment-image.ts';
+import { imageAnnotationPrompt } from '../src/lib/image-annotation-prompt.ts';
+import { drawImageMarks } from '../src/lib/hermes/image-marks.ts';
 import { legacyImageBytes, ownedImageUpload } from '../src/lib/hermes/legacy-image-link.ts';
 import { writeDocumentBlob, writeDocumentFigures, documentFiguresDirectory } from '../src/lib/conversations/document-blob-store.ts';
 
 const photo = async color => ({ type: 'image', name: 'photo.jpg',
   dataUrl: `data:image/png;base64,${(await sharp({ create: { width: 40, height: 20, channels: 3, background: color } }).png().toBuffer()).toString('base64')}` });
 const message = (id, attachments) => ({ id, metadata: JSON.stringify({ attachments }) });
+
+test('an unavailable workspace view prevents inspecting an older view as the current screen', async () => {
+  const previous = message(1, [{ ...await photo('blue'), context: 'workspace' }]);
+  const current = message(2, [{ type: 'file', name: 'Workspace view status', context: 'workspace' }]);
+  assert.deepEqual(attachedImages([current, previous]), []);
+});
 
 test('the latest document exposes all its figures in order instead of an older screenshot', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'attachment-figures-'));
@@ -35,6 +43,10 @@ test('the latest document exposes all its figures in order instead of an older s
   assert.equal(result.name, 'Report.docx');
   assert.equal(result.figure, 'figure-17.png');
   assert.equal(result.url, `/api/chat-attachments/documents/${blob.blobId}?figure=figure-17.png`);
+  const markedFigure = await inspectAttachedImage(messages, { image: 17, marks: ['ellipse,100,100,900,900'] }, owner);
+  const figureParams = new URL(markedFigure.url, 'http://localhost').searchParams;
+  assert.equal(figureParams.get('figure'), 'figure-17.png');
+  assert.deepEqual(figureParams.getAll('mark'), ['ellipse,100,100,900,900']);
   const pixels = Buffer.from(result.screenshot.dataUrl.split(',')[1], 'base64');
   const metadata = await sharp(pixels).metadata();
   assert.equal(metadata.width, 20); assert.equal(metadata.height, 20);
@@ -78,6 +90,35 @@ test('unavailable image numbers, invalid data and out-of-bounds crops fail clear
     await assert.rejects(inspectAttachedImage(messages, { crop }));
   }
   await assert.rejects(inspectAttachedImage([], {}));
+});
+
+test('basic chat binds mark links to the exact vision inputs and their stored upload order', async () => {
+  const blue = await photo('blue'), red = await photo('red');
+  const row = message(18, [{ type: 'file', name: 'notes.txt' }, blue, red]);
+  const guide = imageAnnotationPrompt([blue, red], row);
+  assert.match(guide, /Image 1: \/api\/hermes\/uploads\/18-1\/content/);
+  assert.match(guide, /Image 2: \/api\/hermes\/uploads\/18-2\/content/);
+  assert.equal(imageAnnotationPrompt([red, blue], row), '');
+  assert.equal(imageAnnotationPrompt([blue], null), '');
+  const automatic = { ...red, context: 'workspace' };
+  const mixed = message(19, [automatic, blue]);
+  assert.match(imageAnnotationPrompt([automatic, blue], mixed), /Image 1: \/api\/hermes\/uploads\/19-1\/content \(visual input 2\)/);
+  const marked = await inspectAttachedImage([message(20, [automatic]), mixed], { image: 1, marks: ['box,20,20,940,940'] });
+  assert.ok(marked.url.startsWith('/api/hermes/uploads/19-1/content?'));
+});
+
+test('EXIF rotation precedes coordinate placement and invalid marks produce no view', async () => {
+  const bytes = await sharp({ create: { width: 60, height: 120, channels: 3, background: 'white' } })
+    .jpeg().withMetadata({ orientation: 6 }).toBuffer();
+  const { png, originalWidth, originalHeight } = await drawImageMarks(bytes, ['line,100,250,900,250']);
+  assert.deepEqual([originalWidth, originalHeight], [120, 60]);
+  const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  assert.deepEqual([info.width, info.height], [120, 60]);
+  assert.ok(data[(15 * 120 + 60) * 3] < 200);
+  for (const marks of [[], Array(25).fill('line,0,0,100,100'), ['box,900,900,5,30'],
+    ['arrow,0,0,NaN,450'], ['label,5,5,'], ['path,0,0,100,100']]) {
+    await assert.rejects(drawImageMarks(bytes, marks));
+  }
 });
 
 test('legacy links resolve only retained owned bytes under the runtime image directory', async () => {

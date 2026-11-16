@@ -122,7 +122,7 @@ export function collectUploads(
   for (const row of rows) {
     const attachments = messageAttachments(row.metadata);
     attachments.forEach((attachment, index) => {
-      if (uploads.length >= limit) return;
+      if (uploads.length >= limit || attachment.context) return;
       const hasContent =
         attachment.type === "image" ||
         attachment.type === "model" ||

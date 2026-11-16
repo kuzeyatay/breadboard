@@ -1,3 +1,4 @@
+import { providerReplyVerification } from "@/lib/hermes/evidence.ts";
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
 import { DEFAULT_MODEL, normalizeAssistantModelId } from "@/lib/ai-models.ts";
@@ -55,6 +56,7 @@ export async function POST(request: Request) {
       signal: request.signal,
     });
     const payload = (await response.json().catch(() => null)) as {
+      model?: string;
       choices?: { message?: { content?: unknown } }[];
       error?: { message?: string } | string;
     } | null;
@@ -68,7 +70,8 @@ export async function POST(request: Request) {
         { status: 502 },
       );
     }
-    return NextResponse.json({ content: content.trim() });
+    const { answerModel, usedFallback } = providerReplyVerification(response.headers, payload?.model);
+    return NextResponse.json({ content: content.trim(), answerModel, usedFallback });
   } catch (error) {
     return apiErrorResponse(error);
   }

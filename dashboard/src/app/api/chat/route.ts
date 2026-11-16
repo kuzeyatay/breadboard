@@ -1,3 +1,4 @@
+import { modelVerification, providerReplyVerification, type VerificationSummary } from '@/lib/hermes/evidence';
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import path from 'node:path';
@@ -16,10 +17,13 @@ import {
   type ChatTokenUsageStreamEvent,
 } from '@/lib/chat-token-usage';
 import {
+  attachmentOrderManifest,
   productAttachmentPromptText,
   type ChatAttachment,
 } from '@/lib/chat-attachments';
 import { modelAttachmentPromptText } from '@/lib/model-attachments';
+import db from '@/lib/db';
+import { asksForImageMarks, imageAnnotationPrompt } from '@/lib/image-annotation-prompt.ts';
 import { buildUrlLinkContext } from '@/lib/url-link-context';
 import { scanClusterKnowledgeCooperatively, type KnowledgeNode } from '@/lib/knowledge';
 import { gardenMediaKind } from '@/lib/garden-media-kind.ts';
@@ -60,6 +64,7 @@ type ActiveMarkdownContext = {
   content: string;
 };
 type SsePayload =
+  | { type: 'verification'; verification: VerificationSummary }
   | { type: 'sources'; sources: string[] }
   | { type: 'delta'; text: string }
   | { type: 'thinking'; text: string }
@@ -188,8 +193,9 @@ function buildResponsesInput(
         attachment.type === 'product',
     );
     const attachedText = [
+      ...(attachments.some(item => item.context) ? [attachmentOrderManifest(attachments)] : []),
       ...textAttachments.map(
-        (attachment) => `--- Attached file: ${attachment.name} ---\n${attachment.text}`,
+        (attachment) => `--- ${attachment.context ? "Reader context" : "Attached file"}: ${attachment.name} ---\n${attachment.text}`,
       ),
       ...modelAttachments.map(
         (attachment) =>
@@ -482,10 +488,17 @@ export async function POST(request: Request) {
 
     const selectedModel = typeof model === 'string' && model.trim() ? model.trim() : DEFAULT_MODEL;
     const hasImageAttachments = chatAttachments.some((attachment) => attachment.type === 'image');
+    if (hasImageAttachments && typeof payload.chatSessionId === 'number' && typeof payload.clientMessageId === 'string') {
+      const userTurn = db.prepare(`SELECT m.id, m.metadata FROM conversation_message_reads m
+        JOIN conversations c ON c.id = m.conversation_id
+        WHERE c.user_id = ? AND c.legacy_chat_session_id = ? AND m.client_message_id = ? AND m.role = 'user'`)
+        .get(userId, payload.chatSessionId, payload.clientMessageId) as { id: number; metadata: string | null } | undefined;
+      if (userTurn) systemPrompt += '\n\n' + imageAnnotationPrompt(chatAttachments, userTurn);
+    }
     const shouldEnableImageGeneration = wantsImageGeneration(
       lastUserMessage?.content ?? '',
       hasImageAttachments,
-    );
+    ) && !(hasImageAttachments && asksForImageMarks(lastUserMessage?.content ?? ''));
 
     const responsesRequest = {
       model: selectedModel,
@@ -532,14 +545,14 @@ export async function POST(request: Request) {
           }
         : undefined;
 
-    const stream = await client.responses.create(
+    const { data: stream, response: providerResponse } = await client.responses.create(
       withCouncil(responsesRequest, {
         taskType: 'page_assistant_answer',
         gardenId: clusterSlug,
         ...(activeMarkdownContext?.slug ? { pageId: activeMarkdownContext.slug } : {}),
         sourceContext: councilSourceContext,
       }, userId),
-    );
+    ).withResponse();
 
     const sourceNames = Array.from(
       new Set(
@@ -595,11 +608,14 @@ export async function POST(request: Request) {
 
         // Images were already recovered from the finished item; the answer text
         // beside them was not. See lib/responses-stream-text.ts.
+        let answerModel: string | undefined;
+        let failed = false;
         const answerRecovery = createResponseTextRecovery();
         const thinkingRecovery = createResponseTextRecovery();
 
         try {
           for await (const event of stream as AsyncIterable<ResponseStreamEvent>) {
+            if ('response' in event && event.response?.model) answerModel = event.response.model;
             if (event.type === 'response.output_text.delta') {
               answerRecovery.recordStreamed(event.output_index, event.delta);
               emitText('delta', event.delta);
@@ -627,6 +643,7 @@ export async function POST(request: Request) {
             } else if (event.type === 'response.incomplete') {
               emitUsageFromResponse(event.response);
             } else if (event.type === 'response.failed') {
+              failed = true;
               const response = event.response as unknown as JsonRecord | undefined;
               const error = response?.error as JsonRecord | undefined;
               if (typeof error?.message === 'string' && error.message.trim()) {
@@ -636,12 +653,14 @@ export async function POST(request: Request) {
             }
           }
         } catch (error) {
+          failed = true;
           const message =
             error instanceof Error ? error.message : 'Something went wrong while streaming the response.';
           emitText('delta', `\n\n${message}`);
         } finally {
           const held = emDash.flush();
           if (held) emit({ type: 'delta', text: held });
+          emit({ type: 'verification', verification: failed ? modelVerification(null) : providerReplyVerification(providerResponse.headers, answerModel) });
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           controller.close();
         }

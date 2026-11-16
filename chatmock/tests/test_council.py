@@ -321,6 +321,24 @@ class CouncilRuntimeTests(unittest.TestCase):
         )
         return runtime, router
 
+    def test_final_route_belongs_to_the_chair_or_selected_candidate(self) -> None:
+        for fail_chair in (False, True):
+            runtime, router = self._runtime(fail_chair=fail_chair)
+            original = router.call_model
+
+            def routed(call):
+                text = original(call)
+                chair = "Chair Synthesizer" in (call.system or "")
+                call.model_attempts_out.append({
+                    "outcome": "succeeded", "resolvedModel": "chair" if chair else "alternate",
+                    "fallback": not chair,
+                })
+                return text
+
+            router.call_model = routed
+            result = runtime.run(CouncilInput(messages=[{"role": "user", "content": "revise this paragraph"}], task_type="small_revision"))
+            self.assertEqual(result.answer_route, {"model": "alternate" if fail_chair else "chair", "fallback": fail_chair})
+
     def test_direct_council_returns_final_answer(self) -> None:
         runtime, router = self._runtime()
         run = runtime.run(

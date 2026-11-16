@@ -46,6 +46,8 @@ for (const {surface,pdfChat} of [
       import {reusableChatAttachments} from '@/lib/chat-attachments';
       import {delegatedThinkingUpdates} from '@/lib/hermes/super-agent-activity';
       import {ChatSelectionMenu,SelectableAssistantMarkdown,InlineSelectionAnswerPopover} from '@/app/components/chat-text-selection-ui';
+      import MetalSendButton from '@/app/components/effects/metal-send-button';
+      import {pauseShared} from 'metal-fx';
       const InlineArtifactCards=()=>null;
       const surface='dashboard_terminal',sessionId='conv_one',activeChatId=1,clusterSlug='fixture',temporaryChat=false;
       const model='selection-model';
@@ -53,6 +55,7 @@ for (const {surface,pdfChat} of [
       const deletedInlineSelectionIds=new Set(),chatSelections=new Map();
       ${declarations.get('messageSelectionSourceId')}
       window.requests=[];window.inlineStops=[];window.mainStops=0;
+      window.pauseMetalRenderer=pauseShared;
       function App(){
         const [messages,setMessages]=useState([{id:'source',role:'assistant',content:'A selected passage explains the circuit.'}]);
         const [activeRun,setActiveRun]=useState(true);const isStreaming=activeRun;
@@ -88,10 +91,12 @@ for (const {surface,pdfChat} of [
             onAskInChat={()=>beginSelectionQuestion('chat')} onClose={()=>setSelectionMenu(null)}/>}
           <div className='bb-composer-overlay' style={{position:'fixed',bottom:0}}>
             <textarea aria-label='Main composer' ref={composerTextareaRef} defaultValue='Keep my main draft'/>
+            {${pdfChat}&&<MetalSendButton><button type="button">Send</button></MetalSendButton>}
           </div>{openInlineAnswers.map(${renderAnswer})}</>;
       }createRoot(document.getElementById('root')).render(<App/>);`}});
     const executablePath = [chromium.executablePath(), 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find(existsSync);
-    const browser = await chromium.launch({headless: true, ...(executablePath ? {executablePath} : {})});
+    const browser = await chromium.launch({headless: true, ...(executablePath ? {executablePath} : {}),
+      ...(pdfChat ? {args:['--use-angle=swiftshader','--enable-unsafe-swiftshader']} : {})});
     t.after(() => browser.close());
     const page = await browser.newPage({viewport:{width:1200,height:900}});
     const errors=[];page.on('pageerror',error=>{errors.push(error.message);t.diagnostic(error.message);});
@@ -105,6 +110,11 @@ for (const {surface,pdfChat} of [
     await page.goto('http://localhost:53166/');
     await page.addStyleTag({content:css});
     await page.addScriptTag({content:bundle.outputFiles[0].text});
+    if(pdfChat){
+      // Keep the main composer's renderer mounted but withhold the first GPU frame from each new Ask button.
+      await page.locator('.bb-composer-overlay .metal-fx-root').waitFor({state:'attached',timeout:5000});
+      await page.evaluate(()=>window.pauseMetalRenderer());
+    }
     await page.locator('main [data-chat-selectable-message]').evaluate(element=>{
       const text=document.createTreeWalker(element,NodeFilter.SHOW_TEXT).nextNode();
       const range=document.createRange();range.setStart(text,2);range.setEnd(text,18);
@@ -115,6 +125,11 @@ for (const {surface,pdfChat} of [
     const cards=page.getByRole('dialog',{name:'Answer about highlighted text'});
     const editor=cards.first().getByRole('textbox');
     await expect(editor).toBeFocused();
+    if(pdfChat){
+      const ring=cards.locator('.metal-fx-root');
+      await expect(ring).toHaveCSS('opacity','1');
+      await expect(cards.getByRole('button',{name:'Ask',exact:true})).toBeVisible();
+    }
     await expect(cards.locator('[data-prompt-suggestion]')).toBeVisible();
     assert.equal(suggestions.length,1);
     assert.equal(suggestions[0].model,'selection-model');
@@ -185,6 +200,7 @@ for (const {surface,pdfChat} of [
     await cards.last().getByRole('button',{name:'Edit this question',exact:true}).click();
     await page.setViewportSize({width:390,height:700});
     const retry=cards.last().getByRole('button',{name:'Ask again',exact:true});
+    await expect(retry).toBeInViewport({ratio:1});
     const bounds=await retry.boundingBox();
     assert.ok(bounds.width>=64&&bounds.height>=36&&bounds.x>=0&&bounds.x+bounds.width<=390,JSON.stringify(bounds));
     await cards.last().getByRole('textbox').fill('Explain with an example');

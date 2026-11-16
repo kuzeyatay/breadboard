@@ -100,6 +100,33 @@ test('floating answers recover their own interactive artifacts and expand within
     const card = page.getByRole('dialog',{name:'Answer about highlighted text'});
     const width = () => card.evaluate(node=>node.getBoundingClientRect().width);
     await expect.poll(width).toBe(400);
+    // A saved Garden answer can carry the drawing directly in its response.
+    // Render that same answer before publishing a separate artifact.
+    const gameTree = fs.readFileSync(path.join(root, 'tests/fixtures/chat-minimax-diagram.md'), 'utf8');
+    await page.evaluate(content => window.controls.answer(content), gameTree);
+    const tree = card.locator('figure svg');
+    await expect(tree).toBeVisible();
+    await expect.poll(width).toBe(960);
+    await expect(tree.locator('path')).toHaveCount(3);
+    await expect(tree.locator('rect')).toHaveCount(8);
+    await expect(tree.locator('text').filter({ hasText: 'Black chooses MIN' })).toHaveCount(2);
+    for (const [label, score, x] of [
+      ['Reply A1', '+9', 88], ['Reply A2', '−5', 252],
+      ['Reply B1', '+2', 428], ['Reply B2', '+1', 592],
+    ]) {
+      await expect(tree.locator('text[x="' + x + '"][y="326"]')).toHaveText(label);
+      await expect(tree.locator('text[x="' + x + '"][y="350"]')).toHaveText(score);
+    }
+    await expect(tree.locator('text').filter({hasText:'Best choice'})).toHaveAttribute('x','510');
+    await expect(card.getByText('minimax game tree', {exact:true})).toHaveCount(1);
+    await expect(card.locator('.katex-display')).toHaveCount(1);
+    await expect(card).not.toContainText('{#each');
+    await page.setViewportSize({width:390,height:740});
+    await expect.poll(width).toBe(358);
+    assert.ok(await tree.evaluate(svg => svg.getBoundingClientRect().width <= svg.closest('figure').clientWidth + 1));
+    await page.setViewportSize({width:1073,height:862});
+    await page.evaluate(()=>window.controls.answer('Adjust dx to change the box.'));
+    await expect.poll(width).toBe(400);
     // The artifact arrives independently of the text stream, just as when the
     // response finishes before the final artifact publication event arrives.
     published = true;

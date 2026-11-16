@@ -142,6 +142,8 @@ export interface StorageInventory {
   allocatedBytes: number; logicalBytes: number; hardlinkBytesAvoided: number;
   skippedEntries: number; categories: Record<string, number>;
   largest: Array<{ path: string; bytes: number }>;
+  /** Bytes by what may be done with them (see budget.ts). Hardlinked files are left out. */
+  classes?: Record<string, number>;
 }
 
 /** A bounded DFS retains directory handles rather than materializing a million

@@ -129,6 +129,7 @@ import {
 import { prepareDocumentContext } from "../document-skills/turn.ts";
 import { selectedGardenMediaSources } from "../garden-media-sources.ts";
 import { parseChatAttachments } from "../chat-attachments-request.ts";
+import { chatMessageAttachments } from "../chat-attachments.ts";
 import {
   hydrateDocumentAttachments,
   stageEditableDocumentAttachments,
@@ -275,6 +276,7 @@ export async function openGardenAgentChat(
       : "";
   let reservedClientMessageId: string;
   let reservedUserOrderIndex: number;
+  const submittedAttachments = parseChatAttachments(payload.attachments);
   const textSelection = normalizeChatTextSelectionReference(payload.textSelection);
   if (suppliedClientMessageId) {
     const reserved = reserveConversationTurn({
@@ -283,6 +285,8 @@ export async function openGardenAgentChat(
       surface: "garden_chat",
       content: text,
       metadata: { gardenPreDispatch: true,
+        ...(submittedAttachments.length ? { attachments: chatMessageAttachments(submittedAttachments),
+          attachmentNames: submittedAttachments.map(attachment => attachment.name) } : {}),
         ...(textSelection ? { textSelection } : {}),
         ...(payload.internalAgentContinuation === true ? { internalAgentContinuation: true } : {}) },
     });
@@ -339,7 +343,7 @@ export async function openGardenAgentChat(
       userId,
       await hydrateDocumentAttachments(
         userId,
-        parseChatAttachments(payload.attachments),
+        submittedAttachments,
         signal,
       ),
       text,
@@ -656,6 +660,7 @@ export async function openGardenAgentChat(
     // there.
     const diagramSelection = diagramCommandText({
       text: asciiDiagramSelection.text,
+      hasImageAttachment: attachments.some(attachment => attachment.type === "image"),
       surface: "garden_chat",
       authenticated: true,
       priorMessages: messages,
@@ -1556,6 +1561,8 @@ function legacyGardenEventStream(
       const emit = (value: unknown) =>
         sink.emit(encoder.encode(`data: ${JSON.stringify(value)}\n\n`));
       let assistantText = "";
+      let answerModel: string | undefined;
+      let usedFallback = false;
       let reasoning = "";
       // Mid-turn narration sealed off the answer buffer; the last segment is
       // promoted back if the turn ends with nothing left in the buffer.
@@ -1821,6 +1828,10 @@ function legacyGardenEventStream(
             });
           }
           if (event.type === "assistant.completed" || event.type === "assistant.usage") {
+            if (event.type === "assistant.completed") {
+              usedFallback = event.payload.usedFallback === true;
+              answerModel = typeof event.payload.answerModel === "string" ? event.payload.answerModel : undefined;
+            }
             if (event.type === "assistant.completed" && typeof event.payload.text === "string") {
               assistantText = event.payload.text;
             }
@@ -2010,6 +2021,8 @@ function legacyGardenEventStream(
             if (getRuntimeRun(runId)?.status !== "active") return;
             emit({ type: "replace", text: assistantText });
             const verification = assessVerification(assistantText, evidence, {
+              answerModel,
+              usedFallback,
               webGroundingRequired,
               externalAgents: externalAgentsForRun(runId),
               // Selections were fixed before dispatch — read back off the run
@@ -2103,6 +2116,8 @@ function legacyGardenEventStream(
         revokeCapabilityDecision(session.row.id, "abandoned");
         const failureMessage =
           error instanceof Error ? error.message : "Agent stream failed.";
+        const verification = assessVerification("", evidence, { answerModel: null });
+        emit({ type: "verification", verification });
         if (session.row.conversation_id !== null) {
           failAssistantMessage({
             conversationId: session.row.conversation_id,
@@ -2120,6 +2135,7 @@ function legacyGardenEventStream(
                 : {}),
               runtimeStatus: "failed",
               runtimeError: failureMessage,
+              verification,
             },
             tokenUsage,
           });

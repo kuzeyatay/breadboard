@@ -24,7 +24,7 @@ use std::process::{Child, ChildStdin, ChildStdout, ExitStatus};
 #[cfg(windows)]
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 pub const RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE: u32 = 73;
@@ -35,6 +35,22 @@ const MAX_PRIVATE_DIAGNOSTIC_RECORDS: usize = 16;
 const MAX_PRIVATE_DIAGNOSTIC_BYTES: usize = 256 * 1024;
 const MAX_DURABLE_SERVICE_DIAGNOSTIC_BYTES: usize = 512 * 1024;
 const MAX_DURABLE_WORKER_DIAGNOSTIC_BYTES: usize = 256 * 1024;
+
+fn diagnostic_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn contains_v8_fatal_oom(data: &str) -> bool {
+    data.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix("FATAL ERROR:")
+            .is_some_and(|message| message.to_ascii_lowercase().contains("out of memory"))
+    })
+}
+
 const MAX_SUPERVISOR_FAILURE_CODE_BYTES: usize = 64;
 const MAX_SUPERVISOR_FAILURE_MESSAGE_BYTES: usize = 128;
 const MAX_SUPERVISOR_FAILURE_DIAGNOSTIC_BYTES: usize = "failure-code=".len()
@@ -1166,8 +1182,10 @@ impl TrustedProcessLaunch {
             ));
         };
         let sanitized = redact_service_diagnostic(data, &self.service_diagnostic_redactions);
-        let record =
-            format!("[service={service_id} generation={generation} stream={stream}] {sanitized}");
+        let record = format!(
+            "{} [service={service_id} generation={generation} stream={stream}] {sanitized}",
+            diagnostic_epoch_ms()
+        );
         paths.append_bounded_service_log(
             service_id,
             record.as_bytes(),
@@ -1910,6 +1928,8 @@ fn start_supervisor_reader(stdout: ChildStdout) -> io::Result<Receiver<Superviso
 /// can mint one guarded tree-exit receipt; transient confirmation failures do
 /// not consume the live owner.
 pub struct RunningProcessOwner {
+    launch_instant: Instant,
+    saw_v8_fatal_oom: bool,
     child: Child,
     control: ChildStdin,
     events: Receiver<SupervisorRead>,
@@ -2268,6 +2288,8 @@ impl RunningProcessOwner {
             ProcessOwnerPurpose::Service { .. } => None,
         };
         ProcessSpawnAttempt::Running(Box::new(Self {
+            launch_instant: Instant::now(),
+            saw_v8_fatal_oom: false,
             child,
             control,
             events,
@@ -2616,6 +2638,12 @@ impl RunningProcessOwner {
             }
             if is_private_diagnostic_kind(kind) {
                 let data = private_diagnostic_data(&value)?;
+                if kind == "stderr"
+                    && !self.saw_v8_fatal_oom
+                    && self.launch.service_diagnostic_paths.is_some()
+                {
+                    self.saw_v8_fatal_oom = contains_v8_fatal_oom(data);
+                }
                 // Best effort for the same reason as launch-start: a reader
                 // holding the service log must not tear down a live service.
                 let _ = self.launch.persist_service_diagnostic(kind, data);
@@ -2720,6 +2748,12 @@ impl RunningProcessOwner {
                         self.launch.purpose.clone(),
                     ));
                     self.started_boundary_accepted = true;
+                    if self.launch.service_diagnostic_paths.is_some() {
+                        let _ = self.launch.persist_service_diagnostic(
+                            "lifecycle",
+                            &format!("started pid={pid} supervisorPid={}", self.supervisor_pid),
+                        );
+                    }
                     Ok(ProcessOwnerEvent::Lifecycle(value))
                 }
                 "exit" => {
@@ -2934,6 +2968,7 @@ impl RunningProcessOwner {
             cleanup_error_count: terminal.cleanup_error_count,
             worker_protocol_fault: self.worker_protocol_fault,
         };
+        self.persist_service_exit(&receipt, status);
         self.exit_confirmation_minted = true;
         Ok(receipt)
     }
@@ -3015,8 +3050,49 @@ impl RunningProcessOwner {
             cleanup_error_count: 0,
             worker_protocol_fault: self.worker_protocol_fault,
         };
+        self.persist_service_exit(&receipt, status);
         self.exit_confirmation_minted = true;
         Ok(receipt)
+    }
+
+    fn persist_service_exit(&self, exit: &ProcessTreeExit, status: ExitStatus) {
+        let (
+            Some(paths),
+            ProcessOwnerPurpose::Service {
+                service_id,
+                generation,
+            },
+        ) = (&self.launch.service_diagnostic_paths, &exit.purpose)
+        else {
+            return;
+        };
+        let guard = exit.system_commit_guard;
+        let record = serde_json::json!({
+            "timestampMs": diagnostic_epoch_ms(),
+            "service": service_id,
+            "generation": generation,
+            "uptimeMs": self.launch_instant.elapsed().as_millis() as u64,
+            "pid": exit.root_pid,
+            "supervisorPid": exit.supervisor_pid,
+            "classification": exit.classification,
+            "targetExitCode": exit.root_exit_code,
+            "supervisorExitCode": status.code().map(|code| code as u32),
+            "stopOutcome": exit.stop_outcome,
+            "failureCode": exit.failure.as_ref().map(ProcessSupervisorFailure::code),
+            "v8FatalOomObserved": self.saw_v8_fatal_oom,
+            "peakCommitBytes": exit.accounting.peak_private_commit_bytes,
+            "accountingComplete": exit.accounting.complete,
+            "configuredHardLimitBytes": self.launch.limits.hard_commit_bytes,
+            "effectiveHardLimitBytes": guard.map(|g| g.effective_hard_limit_bytes),
+            "minFreeSystemCommitBytes": guard.map(|g| g.minimum_observed_free_commit_bytes),
+            "guardTerminationReason": guard.and_then(|g| g.termination_reason),
+            "supervisorErrors": exit.supervisor_error_count,
+            "cleanupErrors": exit.cleanup_error_count,
+        })
+        .to_string();
+        // Logging is best effort. Neither file is required to release the tree.
+        let _ = paths.append_service_exit(service_id, record.as_bytes());
+        let _ = self.launch.persist_service_diagnostic("lifecycle", &record);
     }
 
     /// Bounded private evidence only, exactly like
@@ -3372,7 +3448,8 @@ fn classify_process_exit(
 /// An opaque parsed terminal record. It is not itself tree-exit authority:
 /// `RunningProcessOwner::confirm_exit` must additionally observe the pinned
 /// supervisor process exit and pass its internal one-mint guard.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ProcessSystemCommitGuardTerminationReason {
     ExpectedCommitDoesNotFit,
     EffectiveJobLimit,
@@ -4051,7 +4128,8 @@ impl fmt::Debug for ProcessSupervisorFailure {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ProcessStopOutcome {
     Graceful,
     Forced,
@@ -4069,7 +4147,8 @@ impl ProcessSupervisorFailure {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ProcessExitClassification {
     TargetExit,
     Stopped,
@@ -5280,6 +5359,14 @@ mod tests {
             }
             assert!(!diagnostic.contains(raw));
         }
+    }
+
+    #[test]
+    fn v8_oom_marker_requires_a_fatal_diagnostic_line() {
+        assert!(contains_v8_fatal_oom("header\n FATAL ERROR: Zone Allocation failed - process out of memory"));
+        assert!(contains_v8_fatal_oom("FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"));
+        assert!(!contains_v8_fatal_oom("warning: out of memory"));
+        assert!(!contains_v8_fatal_oom("FATAL ERROR: unrelated"));
     }
 
     #[test]

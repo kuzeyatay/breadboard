@@ -301,4 +301,4 @@
 }
 
 .browserHome { min-height: 0; overflow: auto; flex: 1; }
-.browserHome[data-persistent-shell] { --home-browser-toolbar-inset: 103px; }
+.browserHome[data-persistent-shell] { --home-browser-toolbar-inset: var(--browser-chrome-top, 103px); }

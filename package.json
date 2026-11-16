@@ -6,6 +6,7 @@
     "node": "^22.15.0 || >=23.5.0"
   },
   "scripts": {
+    "crash-report": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/crash-report.mjs",
     "dev": "npm run desktop:dev:hot",
     "dev:dashboard": "npm --prefix dashboard run dev",
     "dev:quartz": "node scripts/start-quartz.mjs",

@@ -93,6 +93,8 @@ export interface DesktopTabsState {
   presentationRevision?: number;
   presentationStatus?: "pending" | "presented" | "failed";
   persistentShell?: boolean;
+  /** Zoom factor of Breadboard's own pages (shared per origin). */
+  chromeZoom?: number;
   contentHeight?: number;
   theme?: "light" | "dark";
   browserOwnerKey?: string;

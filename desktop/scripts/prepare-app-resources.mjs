@@ -2253,6 +2253,7 @@ for (const entry of [
   "api-anything-mcp.mjs",
   "runtime-v2-dashboard.mjs",
   "runtime-v2-dashboard-watchdog.mjs",
+  "runtime-v2-dashboard-diagnostics.mjs",
   "runtime-v2-learn-worker.mjs",
   "runtime-v2-document-ingestion-worker.mjs",
   "runtime-v2-anydoc-pdf-worker.mjs",

@@ -474,10 +474,10 @@ export function useQueuedFollowUps({
               (
                 attachment,
               ): attachment is Extract<ChatAttachment, { type: "image" }> =>
-                attachment.type === "image",
+                attachment.type === "image" && !attachment.context,
             );
             const fileNames = item.attachments
-              .filter((attachment) => attachment.type !== "image")
+              .filter((attachment) => attachment.type !== "image" && (!attachment.context || attachment.pdfPage))
               .map((attachment) => attachment.pdfPage
                 ? `Viewing page ${attachment.pdfPage.pageNumber}` : attachment.name);
             const itemDescription =

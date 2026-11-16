@@ -2,8 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { buzzThreadNodeId } from "./profile/brain-graph-ids.ts";
 import { addMember, getRoomForUser, getMessage, listMembers, listThreadMessages, postMessage } from "./buzz/store.ts";
+import { passageLink } from "./browser-annotations.ts";
 import { annotationPageUrl, annotationTargetKey, normalizeAnnotationTarget } from "./browser-annotations.ts";
-import type { AnnotationResponse, AnnotationThread } from "./browser-annotations.ts";
+import type { AnnotationResponse, AnnotationThread, BrowserAnnotationTarget } from "./browser-annotations.ts";
 
 export class AnnotationError extends Error {
   status: number;
@@ -59,6 +60,51 @@ function threadView(db: Database.Database, row: ThreadRow, roomPublicId: string 
     ...(roomPublicId && row.root_message_id ? { organizationHref: `/buzz?room=${encodeURIComponent(roomPublicId)}&thread=${encodeURIComponent(buzzThreadNodeId(roomPublicId, row.root_message_id))}` } : {}) };
 }
 
+// The room stores UTC without a zone; say so, or the feed reads it as local time.
+const utc = (stamp: string) => /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(stamp) ? `${stamp.replace(" ", "T")}Z` : stamp;
+interface LocalCrumbRow { id: number; member_id: number | null; author: string; body: string; metadata: string | null; source: string | null; created_at: string; target_json: string; n: number; mine: number; audience: string; room: string | null }
+/** One comment in the shape the Crumbs feed draws. `scope` is where its replies go. */
+function feedItem(row: LocalCrumbRow) {
+  const target = JSON.parse(row.target_json) as BrowserAnnotationTarget;
+  let meta: Record<string, unknown> = {};
+  try { meta = row.metadata ? JSON.parse(row.metadata) as Record<string, unknown> : {}; } catch { /* a plain message */ }
+  const from = (meta.crumbs && typeof meta.crumbs === "object" ? meta.crumbs : {}) as { avatar?: unknown };
+  return { id: `${row.room ? "room" : "public"}:${row.id}`, author: { did: `local:${row.member_id ?? row.author}`, handle: null, displayName: row.author, avatar: typeof from.avatar === "string" ? from.avatar : null },
+    url: passageLink(target), title: target.title ?? "", target, comment: typeof meta.annotationBody === "string" ? meta.annotationBody : row.body,
+    source: annotationPageUrl(row.source ?? meta.annotationSource), createdAt: utc(row.created_at), threadCount: row.n, own: row.mine === 1,
+    audience: row.audience, scope: row.room ? `room:${row.room}` : "private" };
+}
+const ROOM_CRUMBS = `SELECT m.id, m.member_id, m.author_name AS author, m.body, m.metadata, NULL AS source, m.created_at, t.target_json, r.public_id AS room, o.name AS audience,
+    (SELECT count(*) FROM buzz_room_messages c WHERE c.parent_id=t.root_message_id AND c.deleted_at IS NULL AND c.author_kind!='system') AS n,
+    EXISTS (SELECT 1 FROM buzz_room_members bm WHERE bm.id=m.member_id AND bm.user_id=@user) AS mine
+  FROM browser_annotation_threads t JOIN buzz_room_messages root ON root.id=t.root_message_id AND root.deleted_at IS NULL
+  JOIN buzz_room_messages m ON m.parent_id=root.id AND m.deleted_at IS NULL AND m.author_kind!='system'
+  JOIN buzz_rooms r ON r.id=m.room_id JOIN organizations o ON o.id=r.organization_id`;
+
+/**
+ * A room's crumbs, newest first, each shown by its first comment: the shape the
+ * Crumbs feed draws. The rest of a passage's comments are its replies.
+ */
+export function browserAnnotationFeed(db: Database.Database, userId: number, scope: unknown) {
+  ensureBrowserAnnotationsSchema(db);
+  const access = audience(db, userId, scope);
+  if (!access.room) throw new AnnotationError(400, "Choose a room.");
+  return (db.prepare(`${ROOM_CRUMBS} WHERE t.scope_key=@scope AND m.id=(SELECT min(f.id) FROM buzz_room_messages f WHERE f.parent_id=root.id AND f.deleted_at IS NULL AND f.author_kind!='system')
+    ORDER BY m.id DESC LIMIT 100`).all({ user: userId, scope: access.key }) as LocalCrumbRow[]).map(feedItem);
+}
+
+/** Crumbs this account left that never went to the network: in its organizations' rooms, and "Only me". */
+export function browserAnnotationMine(db: Database.Database, userId: number) {
+  ensureBrowserAnnotationsSchema(db);
+  const rooms = db.prepare(`${ROOM_CRUMBS} WHERE m.author_kind='human' AND EXISTS (SELECT 1 FROM buzz_room_members bm WHERE bm.id=m.member_id AND bm.user_id=@user)
+    ORDER BY m.id DESC LIMIT 100`).all({ user: userId }) as LocalCrumbRow[];
+  const own = db.prepare(`SELECT c.id, NULL AS member_id, c.author, c.body, NULL AS metadata, c.source, c.created_at, t.target_json, NULL AS room, 'Only me' AS audience,
+      (SELECT count(*) FROM browser_annotation_comments x WHERE x.thread_id=t.id) AS n, 1 AS mine
+    FROM browser_annotation_comments c JOIN browser_annotation_threads t ON t.id=c.thread_id
+    WHERE c.user_id=? AND t.scope_key=? ORDER BY c.id DESC LIMIT 100`).all(userId, `private:${userId}`) as LocalCrumbRow[];
+  return [...rooms, ...own].map(feedItem);
+}
+
 export function readBrowserAnnotations(db: Database.Database, userId: number, scope: unknown, pageUrl: unknown, threadId?: string | null): AnnotationResponse {
   ensureBrowserAnnotationsSchema(db);
   const access = audience(db, userId, scope);
@@ -82,6 +128,38 @@ export function readBrowserAnnotations(db: Database.Database, userId: number, sc
     }));
   const flags = (db.prepare("SELECT id,user_id,author,reason FROM browser_annotation_flags WHERE thread_id=? ORDER BY id LIMIT 100").all(row.id) as Array<{id: number; user_id: number; author: string; reason: string}>).map(flag => ({ id: flag.id, author: flag.author, reason: flag.reason, own: flag.user_id === userId }));
   return { threads, thread: threads.find(thread => thread.id === row.id)!, messages, flags };
+}
+
+/** The post a passage's comments hang under in its room. */
+function postRoot(db: Database.Database, roomId: number, row: ThreadRow, target: BrowserAnnotationTarget) {
+  const root = postMessage(db, roomId, { clientMessageId: `annotation:${row.id}`, memberId: null, authorKind: "system", authorName: "Crumb",
+    body: `${target.title}\n${passageLink(target)}${target.quote ? `\n\n> ${target.quote.replace(/\n/g, "\n> ")}` : `\n\n${target.kind === "video" ? `Video${target.time !== undefined ? ` at ${target.time}s` : ""}` : target.kind === "image" ? "Image" : "Page"}`}`,
+    metadata: { browserAnnotation: { threadId: row.id, target } } });
+  row.root_message_id = root.id;
+  db.prepare("UPDATE browser_annotation_threads SET root_message_id=? WHERE id=?").run(root.id, row.id);
+}
+
+/**
+ * The root post for a passage in a room, made if this machine has not seen the
+ * passage yet. A crumb another member left arrives through here, so it lands in
+ * the same thread a crumb written on this machine would.
+ */
+export function annotationRootMessage(db: Database.Database, room: { id: number; publicId: string }, input: unknown): number | null {
+  ensureBrowserAnnotationsSchema(db);
+  const target = normalizeAnnotationTarget(input);
+  if (!target) return null;
+  const scope = `room:${room.publicId}`;
+  const digest = createHash("sha256").update(annotationTargetKey(target)).digest("hex");
+  return db.transaction(() => {
+    let row = db.prepare("SELECT * FROM browser_annotation_threads WHERE scope_key=? AND page_url=? AND target_key=?").get(scope, target.url, digest) as ThreadRow | undefined;
+    if (!row) {
+      const id = randomUUID();
+      db.prepare("INSERT INTO browser_annotation_threads(id,scope_key,room_id,page_url,target_key,target_json) VALUES(?,?,?,?,?,?)").run(id, scope, room.id, target.url, digest, JSON.stringify(target));
+      row = db.prepare("SELECT * FROM browser_annotation_threads WHERE id=?").get(id) as ThreadRow;
+    }
+    if (!row.root_message_id) postRoot(db, room.id, row, target);
+    return row.root_message_id;
+  })();
 }
 
 export function writeBrowserAnnotation(db: Database.Database, userId: number, displayName: string, input: Record<string, unknown>): AnnotationResponse {
@@ -118,11 +196,7 @@ export function writeBrowserAnnotation(db: Database.Database, userId: number, di
     }
     if (row.root_message_id && getMessage(db, row.root_message_id)?.deletedAt) throw new AnnotationError(409, "This discussion was removed in Organization.");
     if (access.room && !row.root_message_id && (action === "comment" || action === "flag")) {
-      const root = postMessage(db, access.room.id, { clientMessageId: `annotation:${row.id}`, memberId: null, authorKind: "system", authorName: "Page discussion",
-        body: `${target.title}\n${target.url}${target.quote ? `\n\n> ${target.quote.replace(/\n/g, "\n> ")}` : `\n\n${target.kind === "video" ? `Video${target.time !== undefined ? ` at ${target.time}s` : ""}` : target.kind === "image" ? "Image" : "Page"}`}`,
-        metadata: { browserAnnotation: { threadId: row.id, target } } });
-      row.root_message_id = root.id;
-      db.prepare("UPDATE browser_annotation_threads SET root_message_id=? WHERE id=?").run(root.id, row.id);
+      postRoot(db, access.room.id, row, target);
     }
     if (action === "comment") {
       if (access.room) {

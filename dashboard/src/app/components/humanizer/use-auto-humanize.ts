@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { modelVerification } from "../../../lib/hermes/evidence.ts";
 import { useHumanizerMode } from "../use-humanizer-mode";
 import { autoHumanizeMessage, type AutoHumanizeOutcome, type AutoHumanizeProgress } from "./auto-humanize";
 
@@ -37,7 +38,7 @@ export function applyAutoHumanizeOutcome<T extends RewriteMessage>(
           ...message,
           content: outcome.content,
           humanizerReview: outcome.review,
-          ...(outcome.adopted ? { contentVersions: outcome.versions, verification: undefined } : {}),
+          ...(outcome.adopted ? { contentVersions: outcome.versions, verification: outcome.versions?.answerModel ? modelVerification(outcome.versions.answerModel) : undefined } : {}),
         }
       : message,
   );

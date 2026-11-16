@@ -233,7 +233,12 @@ export function hardenWebContents(
   handlers: LocalOpenHandlers = {},
 ): void {
   const openExternal = (url: string, background: boolean) => {
-    if (isSafeBrowserUrl(url) && handlers.onOpenExternalTab) {
+    // The account-linking flow returns through a localhost callback. Start
+    // it in the system browser so federated sign-in uses that browser session.
+    const target = new URL(url);
+    const accountLogin = target.origin === "https://auth.openai.com" &&
+      target.pathname === "/oauth/authorize" && !target.username && !target.password;
+    if (!accountLogin && isSafeBrowserUrl(url) && handlers.onOpenExternalTab) {
       handlers.onOpenExternalTab(url, background);
       return;
     }
