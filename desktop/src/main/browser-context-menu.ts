@@ -144,7 +144,7 @@ export function browserContextMenuTemplate(
       item("Copy Page Link", "copy-page-link"),
     ]);
   }
-  if (navigation.annotationsEnabled && !params.isEditable && params.formControlType !== "input-password") groups.push([item("Comment in Organization", "comment")]);
+  if (navigation.annotationsEnabled && !params.isEditable && params.formControlType !== "input-password") groups.push([item("Leave a crumb", "comment")]);
   groups.push([item("Inspect", "inspect")]);
   return groups.filter(group => group.length).flatMap((group, index) => index ? [{ type: "separator" as const }, ...group] : group);
 }
