@@ -30,6 +30,16 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { repo: { type: "string", description: "owner/name" } }, required: ["repo"] },
   },
   {
+    name: "find_app",
+    description: "Check whether a desktop program is installed on this computer (installed programs, Start menu, PATH) and list matching winget packages that could install it.",
+    inputSchema: { type: "object", properties: { name: { type: "string", description: "Program name, e.g. FreeCAD" } }, required: ["name"] },
+  },
+  {
+    name: "install_app",
+    description: "Install a desktop program with winget by its exact package Id from find_app. Asks the user to approve unless YOLO mode is on.",
+    inputSchema: { type: "object", properties: { wingetId: { type: "string", description: "Exact winget Id, e.g. FreeCAD.FreeCAD" } }, required: ["wingetId"] },
+  },
+  {
     name: "install",
     description: "Add the MCP server to Breadboard after the user approves the exact command, connect it and list its tools.",
     inputSchema: {
@@ -94,12 +104,15 @@ async function published(url: string, signal?: AbortSignal): Promise<boolean> {
 async function search(args: Record<string, unknown>, signal?: AbortSignal) {
   // Filler words ("server", "GitHub") make GitHub's AND search miss the real repos.
   const raw = str(args.query, "query", 200);
-  const query = raw
+  // A repository the user named outright ("owner/name") comes first, unfiltered.
+  const named = /\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/.exec(raw)?.[1];
+  const exact = named && REPO.test(named) ? await github(`/repos/${named}`, signal).catch(() => null) : null;
+  const query = (named ? raw.replace(named, " ") : raw)
     .replace(/\b(?:mcp|model context protocol|servers?|github|repo(?:sitory)?|install|pypi|npm|for|the|an?)\b/gi, " ")
     .replace(/\s+/g, " ").trim() || raw;
   const q = encodeURIComponent(`${query} mcp`);
   const data = await github(`/search/repositories?q=${q}&sort=stars&order=desc&per_page=10`, signal);
-  const candidates = (data?.items ?? []).map((item: any) => ({
+  const candidates = [...(exact ? [exact] : []), ...(data?.items ?? []).filter((item: any) => item.full_name !== exact?.full_name)].map((item: any) => ({
     repo: item.full_name,
     description: String(item.description ?? "").slice(0, 300),
     stars: item.stargazers_count,
@@ -151,6 +164,7 @@ function which(name: string): string {
     path.join(os.homedir(), ".local", "bin"),
     process.env.APPDATA ? path.join(process.env.APPDATA, "npm") : "",
     process.env.ProgramFiles ? path.join(process.env.ProgramFiles, "nodejs") : "",
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Microsoft", "WindowsApps") : "",
   ].filter(Boolean);
   const extensions = process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
   for (const directory of directories) {
@@ -184,16 +198,76 @@ function launcher(name: string): { executable: string; prefix: string[] } {
   return { executable: which(name), prefix: [] };
 }
 
-function run(executable: string, args: string[], cwd: string | undefined, signal?: AbortSignal): Promise<void> {
+function run(executable: string, args: string[], cwd: string | undefined, signal?: AbortSignal, env?: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd, signal, windowsHide: true, timeout: 10 * 60_000 });
+    const child = spawn(executable, args, { cwd, signal, env: env ?? process.env, windowsHide: true, timeout: 10 * 60_000 });
     let tail = "";
-    const keep = (chunk: Buffer) => { tail = (tail + chunk.toString()).slice(-1_500); };
+    const keep = (chunk: Buffer) => { tail = (tail + chunk.toString()).slice(-6_000); };
     child.stdout?.on("data", keep);
     child.stderr?.on("data", keep);
     child.on("error", reject);
-    child.on("close", (code) => code === 0 ? resolve() : reject(new ApiError(502, "mcp_setup_failed", `${path.basename(executable)} ${args.slice(0, 2).join(" ")} failed: ${tail.trim()}`)));
+    child.on("close", (code) => code === 0 ? resolve(tail) : reject(new ApiError(502, "mcp_setup_failed", `${path.basename(executable)} ${args.slice(0, 2).join(" ")} failed: ${tail.trim()}`)));
   });
+}
+
+// Program name arrives through the environment, never inside the script text.
+const FIND_APP_SCRIPT = String.raw`$n = $env:BB_APP_NAME
+$keys = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
+$installed = @(Get-ItemProperty $keys -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -and $_.DisplayName -like "*$n*" } | Select-Object -First 10 DisplayName, DisplayVersion, InstallLocation, DisplayIcon)
+$menus = @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs")
+$shortcuts = @(Get-ChildItem $menus -Recurse -Filter *.lnk -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -like "*$n*" } | Select-Object -First 10 -ExpandProperty FullName)
+$commands = @(Get-Command "$n*" -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 5 -ExpandProperty Source)
+[pscustomobject]@{ installed = $installed; shortcuts = $shortcuts; commands = $commands } | ConvertTo-Json -Depth 4 -Compress`;
+
+async function findApp(args: Record<string, unknown>, signal?: AbortSignal) {
+  const name = str(args.name, "name", 100).replace(/[*?\[\]`$"']/g, "");
+  if (process.platform !== "win32") throw new ApiError(501, "find_app_unsupported", "Program detection is only implemented on Windows.");
+  const powershell = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const local = JSON.parse((await run(powershell, ["-NoProfile", "-NonInteractive", "-Command", FIND_APP_SCRIPT], undefined, signal, { ...process.env, BB_APP_NAME: name })).trim() || "{}");
+  const list = (value: unknown) => value == null ? [] : Array.isArray(value) ? value : [value];
+  let wingetPackages: string[] = [];
+  try {
+    const out = await run(which("winget"), ["search", "--name", name, "--accept-source-agreements", "--disable-interactivity"], undefined, signal);
+    // Table rows after the dashed header line: "Name  Id  Version  Source".
+    const lines = out.split(/\r?\n/);
+    const header = lines.findIndex((line) => /^-{5,}/.test(line.trim()));
+    wingetPackages = (header >= 0 ? lines.slice(header + 1) : []).map((line) => line.trim()).filter(Boolean).slice(0, 10);
+  } catch { /* winget missing or no match: still report the local result. */ }
+  const installed = list(local.installed);
+  const shortcuts = list(local.shortcuts);
+  const commands = list(local.commands);
+  return {
+    name,
+    found: installed.length + shortcuts.length + commands.length > 0,
+    installed, shortcuts, commands,
+    wingetPackages,
+    next: installed.length + shortcuts.length + commands.length > 0
+      ? "The program is installed."
+      : wingetPackages.length
+        ? "Not installed. Install it with install_app using the exact Id column of the right row."
+        : "Not installed and not in winget: it is likely licensed or vendor-distributed; tell the user where to get it.",
+  };
+}
+
+const WINGET_ID = /^[A-Za-z0-9][A-Za-z0-9._+-]{1,120}$/;
+
+async function installApp(args: Record<string, unknown>, permissionGranted: boolean, signal?: AbortSignal) {
+  const id = str(args.wingetId, "wingetId", 121);
+  if (!WINGET_ID.test(id)) throw new ApiError(400, "invalid_winget_id", "wingetId must be the exact Id from find_app, e.g. FreeCAD.FreeCAD.");
+  const argv = ["install", "--id", id, "--exact", "--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"];
+  if (!permissionGranted) {
+    throw new ApiError(428, "connected_app_permission_required", `Install the program ${id} on this computer? This runs: winget ${argv.join(" ")}`);
+  }
+  try {
+    const out = await run(which("winget"), argv, undefined, signal);
+    return { installed: true, wingetId: id, output: out.trim().split(/\r?\n/).slice(-6).join("\n"), next: "Installed. Continue: set up its MCP connection, then do the user's task." };
+  } catch (error) {
+    // winget exits non-zero when the package is already installed.
+    if (error instanceof ApiError && /already installed|No available upgrade/i.test(error.message)) {
+      return { installed: true, wingetId: id, alreadyInstalled: true };
+    }
+    throw error;
+  }
 }
 
 function strings(value: unknown, max = 30): string[] {
@@ -202,7 +276,11 @@ function strings(value: unknown, max = 30): string[] {
 
 function plan(args: Record<string, unknown>) {
   const repo = repoName(args.repo);
-  const launch = args.launch as typeof LAUNCHES[number];
+  // Models often write the whole command into launch ("uvx freecad-mcp"):
+  // take the launcher word, and the first non-flag word as the package.
+  const words = typeof args.launch === "string" ? args.launch.trim().split(/\s+/) : [];
+  if (words.length > 1 && !args.package) args = { ...args, package: words.slice(1).find((word) => !word.startsWith("-")) };
+  const launch = words[0] as typeof LAUNCHES[number];
   if (!LAUNCHES.includes(launch)) throw new ApiError(400, "invalid_mcp_launch", `launch must be exactly one of ${LAUNCHES.join(", ")}; put the package name in package and server arguments in args.`);
   const displayName = typeof args.name === "string" && args.name.trim() ? args.name.trim().slice(0, 100) : repo.split("/")[1];
   const slug = mcpSlug(displayName);
@@ -305,9 +383,11 @@ export async function callMcpInstaller(input: {
   if (input.tool === "__breadboard_list_tools") return { data: { tools: TOOLS } };
   if (input.tool === "search") return { data: await search(input.args, input.signal) };
   if (input.tool === "inspect") return { data: await inspect(input.args, input.signal) };
+  if (input.tool === "find_app") return { data: await findApp(input.args, input.signal) };
+  if (input.tool === "install_app") return { data: await installApp(input.args, input.permissionGranted, input.signal) };
   if (input.tool === "install") {
     const result = await install(input.userId, input.args, input.permissionGranted, input.signal);
     return { data: result, installedSlug: result.connection };
   }
-  throw new ApiError(403, "mcp_tool_denied", "The MCP installer offers search, inspect and install.");
+  throw new ApiError(403, "mcp_tool_denied", "The MCP installer offers find_app, install_app, search, inspect and install.");
 }

@@ -211,8 +211,11 @@ export async function POST(request: Request) {
     }
 
     if (slug === MCP_INSTALLER_CONNECTION) {
+      // YOLO (teamApproval, resolved server-side for this run) is the user's
+      // standing approval: installs then run without a prompt.
       const result = await callMcpInstaller({
-        userId: session.user_id, tool, args, permissionGranted, signal: request.signal,
+        userId: session.user_id, tool, args, signal: request.signal,
+        permissionGranted: permissionGranted || parseRuntimeRunDispatch(run).teamApproval === true,
       });
       if (result.installedSlug) {
         // Usable in this same turn; later turns pick it up from the saved row.

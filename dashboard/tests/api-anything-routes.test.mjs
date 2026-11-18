@@ -58,7 +58,7 @@ test("chat API tools enforce capability, account, active run, connection and nat
   process.env.API_ANYTHING_KEY = "route-test-key-only";
   const state = globalThis.__apiAnythingRoute = {
     token: null, session: { id: 33, user_id: 7, conversation_id: 44 },
-    run: { id: "run-one" }, decision: { selectedConnections: ["api-anything"] }, events: [],
+    run: { id: "run-one" }, decision: { selectedConnections: ["api-anything"] }, events: [], installs: [],
   };
   t.after(() => {
     for (const key of ["BREADBOARD_REPO_ROOT", "BREADBOARD_DATA_DIR", "API_ANYTHING_KEY"]) {
@@ -76,7 +76,7 @@ test("chat API tools enforce capability, account, active run, connection and nat
       export const getActiveCapabilityDecision = () => globalThis.__apiAnythingRoute.decision;
       export const persistCapabilityDecision = () => { throw new Error("Unexpected connector: persistCapabilityDecision"); };
       export const recordAuditEvent = event => globalThis.__apiAnythingRoute.events.push(event);`,
-    "@/lib/hermes/run-store.ts": "export const getActiveRuntimeRun = () => globalThis.__apiAnythingRoute.run; export const parseRuntimeRunDispatch = () => ({});",
+    "@/lib/hermes/run-store.ts": "export const getActiveRuntimeRun = () => globalThis.__apiAnythingRoute.run; export const parseRuntimeRunDispatch = run => run.dispatch ?? {};",
     "@/lib/hermes/route-helpers.ts": `export class ApiError extends Error { constructor(status, code, message) { super(message); this.status = status; this.code = code; } }
       export const requireEnabled = () => {};
       export const readJsonBody = req => req.json();
@@ -95,7 +95,8 @@ test("chat API tools enforce capability, account, active run, connection and nat
     "@/lib/code-index/repository-digest.ts": unexpected(["isCodeIndexConnectionSlug"]),
     "@/lib/conversations/store.ts": unexpected(["getConversationById"]),
     "@/lib/hermes/artifact-completion.ts": unexpected(["missingRunArtifact"]),
-    "@/lib/hermes/mcp-installer.ts": 'export const MCP_INSTALLER_CONNECTION = "mcp-installer";' + unexpected(["callMcpInstaller"]),
+    "@/lib/hermes/mcp-installer.ts": `export const MCP_INSTALLER_CONNECTION = "mcp-installer";
+      export const callMcpInstaller = async input => { globalThis.__apiAnythingRoute.installs.push(input); return { data: { ok: true } }; };`,
   };
   const { POST } = await compileApiRoute("src/app/api/hermes/tools/mcp/route.ts", stubs);
   const call = (tool = "status", args = {}, extra = {}) => POST(new Request("http://localhost/api/hermes/tools/mcp", {
@@ -148,4 +149,18 @@ test("chat API tools enforce capability, account, active run, connection and nat
   assert.deepEqual(writes, [{ title: "native approval" }]);
   assert.ok(state.events.some(event => event.payload.provider === "api-anything"));
   assert.ok(state.events.every(event => !JSON.stringify(event.payload).includes("native approval")), "audit events exclude action payloads");
+
+  // MCP installer: YOLO (the run's server-resolved teamApproval) is the user's
+  // standing approval, so installs skip the prompt; otherwise only an answered
+  // native prompt grants it.
+  const install = extra => POST(new Request("http://localhost/api/hermes/tools/mcp", {
+    method: "POST", body: JSON.stringify({ connection: "mcp-installer", tool: "install_app", args: { wingetId: "FreeCAD.FreeCAD" }, ...extra }),
+  }));
+  state.decision.selectedConnections = ["mcp-installer"];
+  await install();
+  state.run = { id: "run-one", dispatch: { teamApproval: true } };
+  await install();
+  state.run = { id: "run-one", dispatch: { teamApproval: false } };
+  await install({ permissionGranted: true });
+  assert.deepEqual(state.installs.map(input => input.permissionGranted), [false, true, true]);
 });

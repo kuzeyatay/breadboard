@@ -1225,6 +1225,7 @@ export async function openGardenAgentChat(
         runtimeSessionId: session.row.id,
         instruction: text,
         dispatch: {
+          teamApproval: yoloMode,
           ...(resolved.workflowSelection ? { workflowSelection: resolved.workflowSelection } : {}),
           ...(resolved.workflowCompletedWork ? { workflowCompletedWork: resolved.workflowCompletedWork } : {}),
           conversationPublicId: conversation.public_id,

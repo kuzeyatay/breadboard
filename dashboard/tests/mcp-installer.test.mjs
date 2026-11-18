@@ -76,3 +76,21 @@ test("invalid repositories and launches are refused", async () => {
   await assert.rejects(callMcpInstaller({ userId: 1, tool: "install", args: { repo: "a/b", launch: "curl" }, permissionGranted: true }), /launch must be/);
   await assert.rejects(callMcpInstaller({ userId: 1, tool: "install", args: { repo: "a/b", launch: "clone" }, permissionGranted: true }), /clone needs command/);
 });
+
+test("install_app asks before winget runs and refuses anything but an exact package Id", async () => {
+  await assert.rejects(
+    callMcpInstaller({ userId: 1, tool: "install_app", args: { wingetId: "FreeCAD.FreeCAD" }, permissionGranted: false }),
+    error => error.status === 428 && error.message.includes("winget install --id FreeCAD.FreeCAD --exact --silent"),
+  );
+  await assert.rejects(
+    callMcpInstaller({ userId: 1, tool: "install_app", args: { wingetId: "x & calc" }, permissionGranted: true }),
+    error => error.code === "invalid_winget_id",
+  );
+});
+
+test("a whole command written into launch is read as launcher plus package", async () => {
+  await assert.rejects(
+    callMcpInstaller({ userId: 1, tool: "install", args: { repo: "neka-nat/freecad-mcp", name: "FreeCAD", launch: "uvx freecad-mcp" }, permissionGranted: false }),
+    error => error.status === 428 && error.message.endsWith("uvx freecad-mcp"),
+  );
+});
