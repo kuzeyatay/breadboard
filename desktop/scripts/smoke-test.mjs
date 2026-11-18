@@ -484,52 +484,23 @@ async function main() {
   // below). Gated on GBrain being enabled — records an explicit skip otherwise.
   const gbrainEnabled = await gbrainInitialChecks(urls);
 
-  // Auth: registration is invite-only; the desktop seeds an initial invite
-  // code recorded in its config file.
-  let inviteCode = null;
-  try {
-    const config = JSON.parse(
-      fs.readFileSync(path.join(userData, "Data", "config", "desktop-config.json"), "utf8"),
-    );
-    inviteCode = config.initialInviteCode ?? null;
-  } catch {
-    inviteCode = null;
-  }
-  record("initial invite code exists in desktop config", inviteCode !== null);
-  // A fresh install sends the sign-in page to account creation (no invite
-  // needed for the first account); an install with accounts shows sign-in.
-  const firstLogin = await fetchOk(`${base}/auth/login`, { redirect: "manual" });
-  const firstLoginTarget = firstLogin?.headers.get("location") ?? "";
-  record(
-    "sign-in page either creates the first account or signs in",
-    firstLogin !== null &&
-      ((firstLogin.status >= 300 && firstLogin.status < 400 && firstLoginTarget.includes("/auth/register")) ||
-        firstLogin.status === 200),
-    `status ${firstLogin?.status}${firstLoginTarget ? ` -> ${firstLoginTarget}` : ""}`,
-  );
-  const username = `smoke${Date.now().toString(36)}`;
-  const email = `${username}@local.test`;
+  // Auth: a fresh install sets up its one account from the sign-in page, with
+  // a name and a password or PIN. After that there is no second account.
+  const firstLogin = await fetchOk(`${base}/auth/login`);
+  record("sign-in page shows first-time setup", firstLogin?.status === 200, `status ${firstLogin?.status}`);
   const password = "Smoke-test-1234";
   const register = await fetchOk(`${base}/api/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password, email, inviteCode }),
+    body: JSON.stringify({ name: "Smoke Test", password }),
   });
-  record(
-    "account registration succeeds with the seeded invite code",
-    register !== null && register.ok,
-    `status ${register?.status}`,
-  );
-  // With an account on the install, the open first account is closed again:
-  // sign-in no longer redirects and a second registration needs the code.
-  const laterLogin = await fetchOk(`${base}/auth/login`, { redirect: "manual" });
-  record("sign-in page stays put once an account exists", laterLogin?.status === 200, `status ${laterLogin?.status}`);
-  const uninvited = await fetchOk(`${base}/api/register`, {
+  record("first-time setup creates the account", register !== null && register.ok, `status ${register?.status}`);
+  const second = await fetchOk(`${base}/api/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: `${username}b`, password, email: `b-${email}` }),
+    body: JSON.stringify({ name: "Someone Else", password }),
   });
-  record("a second account still needs an invite code", uninvited?.status === 400, `status ${uninvited?.status}`);
+  record("a second account is refused", second?.status === 409, `status ${second?.status}`);
 
   // NextAuth credentials sign-in (CSRF + callback), collecting cookies.
   const jar = new Map();
@@ -554,7 +525,7 @@ async function main() {
         "Content-Type": "application/x-www-form-urlencoded",
         Cookie: cookieHeader(),
       },
-      body: new URLSearchParams({ csrfToken: csrf, email, password, json: "true" }).toString(),
+      body: new URLSearchParams({ csrfToken: csrf, password, json: "true" }).toString(),
       redirect: "manual",
     });
     collect(login);
@@ -694,7 +665,7 @@ async function main() {
           "Content-Type": "application/x-www-form-urlencoded",
           Cookie: [...jar2.entries()].map(([k, v]) => `${k}=${v}`).join("; "),
         },
-        body: new URLSearchParams({ csrfToken: csrf2, email, password, json: "true" }).toString(),
+        body: new URLSearchParams({ csrfToken: csrf2, password, json: "true" }).toString(),
         redirect: "manual",
       });
       collect2(login2);

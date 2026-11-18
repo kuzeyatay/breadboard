@@ -1059,16 +1059,5 @@ ensureVideoTranscriptionSchema(db);
 // that keeps a member's private thinking out of the chat sidebar.
 ensureBuzzSchema(db);
 
-const initialInviteCode = process.env.SECOND_BRAIN_INITIAL_INVITE_CODE?.replace(
-  /[^a-z0-9]/gi,
-  "",
-).toUpperCase();
-
-if (initialInviteCode) {
-  db.prepare(
-    "INSERT OR IGNORE INTO invite_codes (code, created_at) VALUES (?, ?)",
-  ).run(initialInviteCode, new Date().toISOString());
-}
-
 ensurePdfObjectSchema(db);
 export default db;

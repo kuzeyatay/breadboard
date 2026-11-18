@@ -23,7 +23,7 @@ import { LogManager } from "./log-manager";
 import { startStorageMaintenance } from "./storage-maintenance";
 import { runRequestedStorageCompaction } from "./storage-compaction";
 import { cleanReleasedInstallationDownloads } from "../shared/released-downloads";
-import { initializeAppSession } from "./app-session";
+import { initializeAppSession, signOutDashboard } from "./app-session";
 import { installAppAssetTransport } from "./app-assets";
 import { sendSpotifyRequest } from "./spotify-control";
 import { registerTextHighlightHandler } from "./text-highlight-transport";
@@ -410,7 +410,9 @@ export class AppLifecycle {
     });
 
     await app.whenReady();
-    initializeAppSession();
+    // Every launch starts signed out: the dashboard shows the lock screen, or
+    // signs straight back in when the owner turned the startup password off.
+    await signOutDashboard(initializeAppSession());
     const stopStorageMaintenance = startStorageMaintenance({
       dashboardUrl: () => this.runtimeDashboardUrl,
       session: session.defaultSession,
@@ -1904,17 +1906,6 @@ export class AppLifecycle {
           {
             label: `Breadboard ${app.getVersion()} (local, offline-first)`,
             enabled: false,
-          },
-          {
-            label: "Show invite code for another account",
-            click: () => {
-              void dialog.showMessageBox({
-                type: "info",
-                title: "Breadboard invite code",
-                message: "Use this invite code to add another local account:",
-                detail: this.persistentConfig.initialInviteCode,
-              });
-            },
           },
           {
             label: "Service status (diagnostics to clipboard)",

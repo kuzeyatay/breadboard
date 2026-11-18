@@ -1,113 +1,32 @@
 import { NextResponse } from 'next/server';
 import bcrypt from 'bcrypt';
 import db from '@/lib/db';
-import { normalizeInviteCode } from '@/lib/invites';
-import { countUsers, firstAccountOpen } from '@/lib/first-account';
+import { countUsers } from '@/lib/first-account';
+import { normalizeName } from '@/lib/profile/identity-store';
 
-interface InviteRow {
-  id: number;
-  used_at: string | null;
-}
-
+/** Creates the computer's one account the first time Breadboard opens. */
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const { username, email, password, inviteCode } = body as {
-      username?: unknown;
-      email?: unknown;
-      password?: unknown;
-      inviteCode?: unknown;
-    };
-
-    if (typeof username !== 'string' || !username.trim()) {
-      return NextResponse.json({ error: 'Username is required' }, { status: 400 });
+    const { name, password } = await request.json() as { name?: unknown; password?: unknown };
+    const cleanName = normalizeName(name);
+    if (!cleanName) return NextResponse.json({ error: 'Enter your name.' }, { status: 400 });
+    if (typeof password !== 'string' || password.length < 4) {
+      return NextResponse.json({ error: 'Use at least 4 characters.' }, { status: 400 });
     }
-    const cleanUsername = username.trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9_-]{2,29}$/.test(cleanUsername)) {
-      return NextResponse.json(
-        { error: 'Username must be 3-30 characters and use letters, numbers, hyphens, or underscores' },
-        { status: 400 },
-      );
-    }
-    if (typeof email !== 'string' || !email.trim()) {
-      return NextResponse.json({ error: 'Email is required' }, { status: 400 });
-    }
-    if (typeof password !== 'string' || password.length < 8) {
-      return NextResponse.json(
-        { error: 'Password must be at least 8 characters' },
-        { status: 400 },
-      );
-    }
-
-    const normalizedInviteCode =
-      typeof inviteCode === 'string' ? normalizeInviteCode(inviteCode) : '';
-
-    // A fresh desktop install has nobody who could hand out an invite yet.
-    const openFirstAccount = !normalizedInviteCode && firstAccountOpen();
-    if (!normalizedInviteCode && !openFirstAccount) {
-      return NextResponse.json({ error: 'Invite code is required' }, { status: 400 });
-    }
-
-    const invite = normalizedInviteCode
-      ? (db
-          .prepare('SELECT id, used_at FROM invite_codes WHERE code = ?')
-          .get(normalizedInviteCode) as InviteRow | undefined)
-      : undefined;
-
-    if (normalizedInviteCode && (!invite || invite.used_at)) {
-      return NextResponse.json({ error: 'Invite code is invalid or already used' }, { status: 403 });
-    }
-
+    // Usernames and emails are internal keys now; nobody types them.
+    const username = cleanName.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'me';
     const passwordHash = await bcrypt.hash(password, 12);
 
-    try {
-      const createUser = db.transaction(() => {
-        if (openFirstAccount && countUsers() > 0) {
-          throw new Error('Invite code is required');
-        }
-        const result = db.prepare(
-          'INSERT INTO users (username, email, password_hash, created_at) VALUES (?, ?, ?, ?)',
-        ).run(cleanUsername, email.toLowerCase().trim(), passwordHash, new Date().toISOString());
-
-        const userId = Number(result.lastInsertRowid);
-
-        if (invite) {
-          const inviteUpdate = db.prepare(
-            'UPDATE invite_codes SET used_by_user_id = ?, used_at = ? WHERE id = ? AND used_at IS NULL',
-          ).run(userId, new Date().toISOString(), invite.id);
-
-          if (inviteUpdate.changes !== 1) {
-            throw new Error('Invite code is invalid or already used');
-          }
-        }
-      });
-
-      createUser();
-    } catch (err: unknown) {
-      if (
-        err instanceof Error &&
-        'code' in err &&
-        (err as { code: string }).code === 'SQLITE_CONSTRAINT_UNIQUE'
-      ) {
-        const existingEmail = db
-          .prepare('SELECT 1 FROM users WHERE email = ?')
-          .get(email.toLowerCase().trim());
-        return NextResponse.json(
-          { error: existingEmail ? 'Email already in use' : 'Username already in use' },
-          { status: 409 },
-        );
-      }
-      if (err instanceof Error && err.message === 'Invite code is invalid or already used') {
-        return NextResponse.json({ error: err.message }, { status: 403 });
-      }
-      if (err instanceof Error && err.message === 'Invite code is required') {
-        return NextResponse.json({ error: err.message }, { status: 400 });
-      }
-      throw err;
-    }
-
+    const created = db.transaction(() => {
+      if (countUsers() > 0) return false;
+      db.prepare(
+        'INSERT INTO users (username, email, password_hash, first_name, created_at) VALUES (?, ?, ?, ?, ?)',
+      ).run(username, `${username}@breadboard.local`, passwordHash, cleanName, new Date().toISOString());
+      return true;
+    })();
+    if (!created) return NextResponse.json({ error: 'This computer already has an account.' }, { status: 409 });
     return NextResponse.json({ success: true }, { status: 201 });
   } catch {
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error: 'Something went wrong. Try again.' }, { status: 500 });
   }
 }

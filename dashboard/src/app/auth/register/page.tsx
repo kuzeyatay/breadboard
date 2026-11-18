@@ -1,8 +1,5 @@
-import { firstAccountOpen } from '@/lib/first-account';
-import RegisterForm from './register-form';
-
-export const dynamic = 'force-dynamic';
+import { redirect } from 'next/navigation';
 
 export default function RegisterPage() {
-  return <RegisterForm firstAccount={firstAccountOpen()} />;
+  redirect('/auth/login');
 }

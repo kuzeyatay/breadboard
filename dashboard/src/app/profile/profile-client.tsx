@@ -108,13 +108,6 @@ import {
   type BreadboardDiagnosticsControl,
 } from "@/lib/desktop-diagnostics.ts";
 
-interface Invite {
-  id: number;
-  code: string;
-  created_at: string;
-  used_at: string | null;
-}
-
 const numbers = new Intl.NumberFormat("en-US");
 
 function formatCount(value: number): string {
@@ -1826,133 +1819,42 @@ function NavbarPanel({
   );
 }
 
-// ------------------------------------------------------------------- invites
+// ------------------------------------------------------------------- sign in
 
-function InvitePanel({ initial }: { initial: { created: number; redeemed: number; open: number } }) {
-  const [invites, setInvites] = useState<Invite[] | null>(null);
-  const [creating, setCreating] = useState(false);
+function StartupPasswordPanel({ initialEnabled }: { initialEnabled: boolean }) {
+  const [enabled, setEnabled] = useState(initialEnabled);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const response = await fetch("/api/invites");
-      const data = (await response.json().catch(() => ({}))) as {
-        invites?: Invite[];
-        error?: string;
-      };
-      if (!response.ok) throw new Error(data.error || "Could not load invites");
-      setInvites(data.invites ?? []);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not load invites");
-      setInvites([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  async function createInvite() {
-    setCreating(true);
+  async function toggle() {
+    setBusy(true);
     setError(null);
     try {
-      const response = await fetch("/api/invites", { method: "POST" });
-      const data = (await response.json().catch(() => ({}))) as { code?: string; error?: string };
-      if (!response.ok || typeof data.code !== "string") {
-        throw new Error(data.error || "Could not create invite");
-      }
-      await load();
-      setCopied(null);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not create invite");
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  async function copy(code: string) {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCopied(code);
-      window.setTimeout(() => setCopied((current) => (current === code ? null : current)), 1800);
+      const response = await fetch("/api/assistant-preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ switches: { askPasswordAtStartup: !enabled } }),
+      });
+      if (!response.ok) throw new Error("save failed");
+      setEnabled(!enabled);
     } catch {
-      setError("Could not copy invite");
+      setError("Could not save. Try again.");
+    } finally {
+      setBusy(false);
     }
   }
-
-  const total = invites?.length ?? initial.created;
-  const open = invites ? invites.filter((invite) => !invite.used_at).length : initial.open;
 
   return (
-    <Card
-      title="Invites"
-      hint={
-        total === 0
-          ? "A one-time code is the only way onto this breadboard."
-          : `${formatCount(total)} created · ${formatCount(open)} still open`
-      }
-    >
-      <button
-        type="button"
-        onClick={createInvite}
-        disabled={creating}
-        className="neu-button-primary w-full rounded-lg bg-white py-2.5 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:opacity-50"
-      >
-        {creating ? "Creating…" : "Create an invite code"}
-      </button>
-
-      {error && <p className="mt-3 text-xs text-red-400">{error}</p>}
-
-      {invites === null ? (
-        <p className="mt-4 text-xs text-gray-600">Loading…</p>
-      ) : invites.length === 0 ? (
-        <p className="mt-4 text-xs text-gray-600">
-          No invitations yet.
-        </p>
-      ) : (
-        <ul className="mt-4 space-y-1.5">
-          {invites.map((invite) => (
-            <li
-              key={invite.id}
-              className="neu-surface flex items-center gap-3 rounded-lg border border-gray-800 px-3 py-2"
-            >
-              <code className="flex-1 truncate font-mono text-xs text-white">{invite.code}</code>
-              {invite.used_at ? (
-                <span className="shrink-0 text-[11px] text-gray-600">
-                  Redeemed {formatShortDate(dateOnly(invite.used_at))}
-                </span>
-              ) : (
-                <>
-                  <span className="shrink-0 text-[11px] text-[var(--botanical)]">Open</span>
-                  <button
-                    type="button"
-                    onClick={() => copy(invite.code)}
-                    className="neu-button shrink-0 rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-400 transition-colors hover:text-white"
-                  >
-                    {copied === invite.code ? "Copied" : "Copy"}
-                  </button>
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
+    <Card title="Sign in">
+      <div className="flex items-center justify-between gap-4">
+        <p className="text-sm font-medium text-white">Ask for password at startup</p>
+        <Switch checked={enabled} label="Ask for password at startup" busy={busy} onChange={toggle} />
+      </div>
+      {error && <p className="mt-4 text-xs text-red-400" role="alert">{error}</p>}
     </Card>
   );
 }
 
-// ------------------------------------------------------------------- models
-
-/**
- * Which models actually answered you, and what they cost.
- *
- * The money is bounded rather than exact and the card says so plainly: only
- * models with a published rate are priced, cached-token discounts are not
- * modelled, and replies from before the model was recorded are named as such.
- * The alternative — one confident-looking figure quietly built on zeroes for
- * everything unpriced — would be a worse number wearing better clothes.
- */
 function ModelPanel({ cost }: { cost: ProfileCost }) {
   const max = cost.models.reduce((best, entry) => Math.max(best, entry.replies), 0);
   const compression = cost.compression;
@@ -2456,6 +2358,7 @@ export default function ProfileClient({
   stats,
   initialThoughtTopologyAutoUpdate = true,
   initialWebPdfCleanup = true,
+  initialAskPasswordAtStartup = true,
   initialClapAction,
   initialSnapAction,
   clapActionUserId,
@@ -2474,6 +2377,7 @@ export default function ProfileClient({
   stats: ProfileStats;
   initialThoughtTopologyAutoUpdate?: boolean;
   initialWebPdfCleanup?: boolean;
+  initialAskPasswordAtStartup?: boolean;
   initialClapAction: ClapActionSettings;
   initialSnapAction: ClapActionSettings;
   clapActionUserId: string;
@@ -2814,7 +2718,7 @@ export default function ProfileClient({
           </Packed>
 
           <Packed>
-            <InvitePanel initial={stats.invites} />
+            <StartupPasswordPanel initialEnabled={initialAskPasswordAtStartup} />
           </Packed>
 
           <Packed>

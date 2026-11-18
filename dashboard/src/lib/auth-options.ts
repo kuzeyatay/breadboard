@@ -3,31 +3,28 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 import bcrypt from 'bcrypt';
 import { createHash } from 'node:crypto';
 import db from '@/lib/db';
+import { askPasswordAtStartup, localOwner } from '@/lib/first-account';
 
 export const authOptions: NextAuthOptions = {
   providers: [
     CredentialsProvider({
       name: 'Credentials',
       credentials: {
-        email: { label: 'Email', type: 'email' },
         password: { label: 'Password', type: 'password' },
+        auto: { label: 'Auto', type: 'text' },
       },
       async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) return null;
-
-        const user = db
-          .prepare('SELECT * FROM users WHERE email = ?')
-          .get(credentials.email.toLowerCase().trim()) as
-          | { id: number; username: string | null; email: string; password_hash: string; created_at: string }
-          | undefined;
-
+        const user = localOwner();
         if (!user) return null;
-
-        const valid = await bcrypt.compare(credentials.password, user.password_hash);
-        if (!valid) return null;
+        if (credentials?.auto === '1') {
+          // Only when the owner chose not to be asked for a password at startup.
+          if (askPasswordAtStartup(user.id)) return null;
+        } else if (!credentials?.password || !await bcrypt.compare(credentials.password, user.password_hash)) {
+          return null;
+        }
 
         return {
-          id: String(user.id), email: user.email, name: user.username ?? user.email,
+          id: String(user.id), email: user.email, name: user.name,
           passwordVersion: createHash('sha256').update(user.password_hash).digest('hex'),
         };
       },

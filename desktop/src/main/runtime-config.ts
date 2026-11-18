@@ -20,12 +20,6 @@ export interface PersistentDesktopConfig {
   hermesToolSecret: string;
   /** Secret for signing short-lived Hermes capability tokens. */
   hermesCapabilitySecret: string;
-  /**
-   * Seed invite code for the invite-only registration flow (the dashboard
-   * consumes it via SECOND_BRAIN_INITIAL_INVITE_CODE). Shown to the user from
-   * the Help menu so the first local account can be created.
-   */
-  initialInviteCode: string;
   /** GBrain garden-knowledge retrieval mode. Additive; default preferred. */
   gbrainMode: "disabled" | "preferred" | "required";
   /** Per-install secret for the loopback GBrain adapter (never logged). */
@@ -178,7 +172,6 @@ export function defaultPersistentConfig(): PersistentDesktopConfig {
     humanizerDevice: "auto",
     humanizerServiceSecret: randomSecret(24),
     cliproxyMode: "optional",
-    initialInviteCode: `BREAD${crypto.randomBytes(5).toString("hex").toUpperCase()}`,
     scriberrEnabled: true,
     scriberrBaseUrl: null,
     scriberrUsername: "breadboard",
@@ -316,12 +309,6 @@ export function validatePersistentConfig(
       record["cliproxyMode"] === "required"
         ? (record["cliproxyMode"] as "disabled" | "required")
         : "optional",
-    // Backfilled for configs written before the field existed.
-    initialInviteCode:
-      typeof record["initialInviteCode"] === "string" &&
-      record["initialInviteCode"].length > 0
-        ? (record["initialInviteCode"] as string)
-        : `BREAD${crypto.randomBytes(5).toString("hex").toUpperCase()}`,
     scriberrEnabled: record["scriberrEnabled"] === true,
     scriberrBaseUrl:
       typeof record["scriberrBaseUrl"] === "string" &&

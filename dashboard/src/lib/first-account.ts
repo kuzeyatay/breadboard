@@ -1,19 +1,37 @@
 import db from '@/lib/db';
+import { parseComposerSwitches } from '@/lib/hermes/composer-switches';
+
+export interface LocalOwner {
+  id: number;
+  email: string;
+  password_hash: string;
+  name: string;
+}
 
 /**
- * A desktop install serves the dashboard on loopback only, and nobody can hand
- * the person an invite code before they have an account to read it from. While
- * such an install has no users yet, the first account is created without one;
- * the invite code in the desktop Help menu stays the way to add a second.
- *
- * Hosted deployments never set the flag and keep the invite-only flow.
+ * Breadboard has one account per computer: the first one made on it. Older
+ * installs can hold more rows; only the first one signs in.
  */
-export function firstAccountOpen(): boolean {
-  if (process.env.BREADBOARD_OPEN_FIRST_ACCOUNT !== '1') return false;
-  return countUsers() === 0;
+export function localOwner(): LocalOwner | undefined {
+  return db.prepare(
+    `SELECT id, email, password_hash,
+            COALESCE(NULLIF(nickname, ''), NULLIF(first_name, ''), username) AS name
+       FROM users ORDER BY id LIMIT 1`,
+  ).get() as LocalOwner | undefined;
 }
 
 export function countUsers(): number {
   const row = db.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number };
   return row.count;
+}
+
+/**
+ * On unless the owner turned it off in Settings. Only the desktop app, which
+ * serves the dashboard on loopback, may skip it; a hosted server always asks.
+ */
+export function askPasswordAtStartup(userId: number): boolean {
+  if (process.env.BREADBOARD_LOCAL_ACCOUNT !== '1') return true;
+  const row = db.prepare('SELECT composer_switches FROM hermes_user_settings WHERE user_id = ?')
+    .get(userId) as { composer_switches: string | null } | undefined;
+  return parseComposerSwitches(row?.composer_switches).askPasswordAtStartup !== false;
 }

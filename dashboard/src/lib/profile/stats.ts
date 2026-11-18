@@ -155,12 +155,6 @@ export interface AgentUse {
   failed: number;
 }
 
-export interface InviteTotals {
-  created: number;
-  redeemed: number;
-  open: number;
-}
-
 export interface ModelUse {
   /** The id exactly as the turn recorded it, routing prefix and all. */
   model: string;
@@ -260,7 +254,6 @@ export interface ProfileStats {
   gardens: GardenUse[];
   artifactKinds: ArtifactKindUse[];
   agents: AgentUse[];
-  invites: InviteTotals;
   cost: ProfileCost;
   reliability: ProfileReliability;
   latency: ProfileLatency;
@@ -493,7 +486,6 @@ export function readProfileStats(
     gardens: readGardenUse(database, userId),
     artifactKinds: readArtifactKinds(database, userId),
     agents,
-    invites: readInvites(database, userId),
     cost: readCost(database, userId),
     reliability: readReliability(database, userId, agents),
     latency: readLatency(database, userId),
@@ -1553,21 +1545,6 @@ function readAuditFeed(database: Database.Database, userId: number): AuditEntry[
   return entries
     .sort((a, b) => sortableStamp(b.at).localeCompare(sortableStamp(a.at)))
     .slice(0, AUDIT_FEED_LIMIT);
-}
-
-function readInvites(database: Database.Database, userId: number): InviteTotals {
-  const row = database
-    .prepare(
-      `SELECT COUNT(*) AS created,
-              COALESCE(SUM(CASE WHEN used_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS redeemed
-       FROM invite_codes
-       WHERE created_by_user_id = ?`,
-    )
-    .get(userId) as { created: number; redeemed: number };
-
-  const created = Number(row.created);
-  const redeemed = Number(row.redeemed);
-  return { created, redeemed, open: created - redeemed };
 }
 
 function readFirstConversation(

@@ -962,11 +962,9 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       // --- Auth ---
       NEXTAUTH_SECRET: persistent.nextAuthSecret,
       NEXTAUTH_URL: urls.dashboard,
-      // The dashboard listens on loopback only, so the first account is
-      // created without an invite. The seeded code (Help menu) is for adding
-      // further accounts on this install.
-      BREADBOARD_OPEN_FIRST_ACCOUNT: "1",
-      SECOND_BRAIN_INITIAL_INVITE_CODE: persistent.initialInviteCode,
+      // The dashboard listens on loopback only, so the owner may choose to
+      // skip the password at startup (Settings).
+      BREADBOARD_LOCAL_ACCOUNT: "1",
       // --- Generation pipeline (ChatMock, unchanged contract) ---
       OPENAI_BASE_URL: urls.chatmockV1,
       OPENAI_API_KEY: "local",

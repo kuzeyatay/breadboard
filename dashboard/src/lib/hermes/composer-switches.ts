@@ -26,6 +26,7 @@ export const COMPOSER_SWITCH_KEYS = [
   "learnHumanizerAuto",
   "thoughtTopologyAutoUpdate",
   "webPdfCleanup",
+  "askPasswordAtStartup",
 ] as const;
 
 export type ComposerSwitchKey = (typeof COMPOSER_SWITCH_KEYS)[number];

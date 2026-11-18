@@ -154,7 +154,6 @@ test("totals count only the signed-in user's own rows", () => {
   db.prepare("INSERT INTO hermes_artifacts (id, user_id, kind, status) VALUES ('b', 1, 'pdf', 'archived')").run();
   db.prepare("INSERT INTO hermes_artifacts (id, user_id, kind, status) VALUES ('c', 2, 'pdf', 'ready')").run();
   db.prepare("INSERT INTO durable_memories (id, user_id, state) VALUES (1, 1, 'confirmed'), (2, 1, 'superseded')").run();
-  db.prepare("INSERT INTO invite_codes (id, created_by_user_id, used_at) VALUES (1, 1, NULL), (2, 1, '2026-06-02'), (3, 2, NULL)").run();
 
   const stats = readProfileStats(db, 1, { today: "2026-06-02" });
 
@@ -167,7 +166,6 @@ test("totals count only the signed-in user's own rows", () => {
   assert.equal(stats.totals.tokens, 500);
   assert.equal(stats.totals.thinkingMs, 90_000);
   assert.equal(stats.totals.measuredReplies, 1);
-  assert.deepEqual(stats.invites, { created: 2, redeemed: 1, open: 1 });
 });
 
 test("a temporary chat is not counted or named here either", () => {

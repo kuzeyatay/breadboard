@@ -11,3 +11,10 @@ export function initializeAppSession(): Session {
   // storage. Website tabs use a separate partition and keep normal HTTP caching.
   return session.fromPartition("", { cache: false });
 }
+
+/** Drop the dashboard's sign-in cookie so the next page load asks again. */
+export async function signOutDashboard(appSession: Session): Promise<void> {
+  const cookies = await appSession.cookies.get({}).catch(() => []);
+  await Promise.all(cookies.filter(cookie => cookie.name.includes("next-auth.session-token")).map(cookie =>
+    appSession.cookies.remove(`http${cookie.secure ? "s" : ""}://${(cookie.domain ?? "localhost").replace(/^\./, "")}${cookie.path ?? "/"}`, cookie.name).catch(() => {})));
+}
