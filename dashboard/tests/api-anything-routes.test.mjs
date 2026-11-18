@@ -42,7 +42,7 @@ test("every shared chat registry includes website APIs even when other connector
   };
   for (const deferMcpConnections of [false, true]) {
     const registry = await connectedAppRegistryForTurn({ runtime, userId: 7, directory: root, mode: "research", deferMcpConnections });
-    assert.deepEqual(registry.connectionNames, ["api-anything"]);
+    assert.deepEqual(registry.connectionNames, ["api-anything", "mcp-installer"]);
     assert.equal(registry.tools.mcp_call, true);
     assert.equal(registry.toolCount, 4);
     assert.match(registry.systemContext, /prefer Breadboard's embedded API Anything/);
@@ -74,6 +74,7 @@ test("chat API tools enforce capability, account, active run, connection and nat
     "@/lib/hermes/runtime-store.ts": `export const getRuntimeSessionById = () => globalThis.__apiAnythingRoute.session;
       export const runtimeExternalSessionId = () => "runtime";
       export const getActiveCapabilityDecision = () => globalThis.__apiAnythingRoute.decision;
+      export const persistCapabilityDecision = () => { throw new Error("Unexpected connector: persistCapabilityDecision"); };
       export const recordAuditEvent = event => globalThis.__apiAnythingRoute.events.push(event);`,
     "@/lib/hermes/run-store.ts": "export const getActiveRuntimeRun = () => globalThis.__apiAnythingRoute.run; export const parseRuntimeRunDispatch = () => ({});",
     "@/lib/hermes/route-helpers.ts": `export class ApiError extends Error { constructor(status, code, message) { super(message); this.status = status; this.code = code; } }
@@ -94,6 +95,7 @@ test("chat API tools enforce capability, account, active run, connection and nat
     "@/lib/code-index/repository-digest.ts": unexpected(["isCodeIndexConnectionSlug"]),
     "@/lib/conversations/store.ts": unexpected(["getConversationById"]),
     "@/lib/hermes/artifact-completion.ts": unexpected(["missingRunArtifact"]),
+    "@/lib/hermes/mcp-installer.ts": 'export const MCP_INSTALLER_CONNECTION = "mcp-installer";' + unexpected(["callMcpInstaller"]),
   };
   const { POST } = await compileApiRoute("src/app/api/hermes/tools/mcp/route.ts", stubs);
   const call = (tool = "status", args = {}, extra = {}) => POST(new Request("http://localhost/api/hermes/tools/mcp", {

@@ -16,6 +16,7 @@ import {
   listMcpConnections,
   runtimeMcpConfig,
 } from "./mcp-connections.ts";
+import { MCP_INSTALLER_CONNECTION, MCP_INSTALLER_CONTEXT } from "./mcp-installer-context.ts";
 
 export interface ConnectedAppTurnRegistry {
   connectionNames: string[];
@@ -76,8 +77,10 @@ export async function connectedAppRegistryForTurn(input: {
 
   const websiteApis = apiAnythingRegistry(input.userId);
   const tools: Record<string, boolean> = { ...websiteApis.tools };
-  const connectionNames: string[] = [...websiteApis.connectionNames];
-  const contextLines: string[] = [websiteApis.systemContext];
+  // The MCP installer is always on the table: "add an MCP for X" can come up in any chat.
+  tools.mcp_call = true;
+  const connectionNames: string[] = [...websiteApis.connectionNames, MCP_INSTALLER_CONNECTION];
+  const contextLines: string[] = [websiteApis.systemContext, MCP_INSTALLER_CONTEXT];
   let toolCount = websiteApis.toolCount;
 
   try {

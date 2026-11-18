@@ -5337,6 +5337,9 @@ def _call_breadboard(
             # Returning early here can hide a submitted, credit-spending job.
             else 145
             if route_kind == "mcp" and args.get("connection") == "google-flow"
+            # Install clones a repo, installs its dependencies and starts it once.
+            else 660
+            if route_kind == "mcp" and args.get("connection") == "mcp-installer"
             else _DEFAULT_REQUEST_TIMEOUT_SECONDS
         )
         response_limit = (32 * 1024 * 1024 if tool_name in {"garden_get_page", "garden_get_source_excerpt", "document_skill_read"}

@@ -27,6 +27,7 @@ import {
 import {
   getActiveCapabilityDecision,
   getRuntimeSessionById,
+  persistCapabilityDecision,
   recordAuditEvent,
   runtimeExternalSessionId,
 } from "@/lib/hermes/runtime-store.ts";
@@ -50,6 +51,7 @@ import { codeIndexConnectionForSession } from "@/lib/code-index/chat-turn.ts";
 import { isCodeIndexConnectionSlug } from "@/lib/code-index/repository-digest.ts";
 import { getConversationById } from "@/lib/conversations/store.ts";
 import { missingRunArtifact } from "@/lib/hermes/artifact-completion.ts";
+import { callMcpInstaller, MCP_INSTALLER_CONNECTION } from "@/lib/hermes/mcp-installer.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -206,6 +208,26 @@ export async function POST(request: Request) {
         "mcp_connection_denied",
         "That connection was not selected for this turn.",
       );
+    }
+
+    if (slug === MCP_INSTALLER_CONNECTION) {
+      const result = await callMcpInstaller({
+        userId: session.user_id, tool, args, permissionGranted, signal: request.signal,
+      });
+      if (result.installedSlug) {
+        // Usable in this same turn; later turns pick it up from the saved row.
+        persistCapabilityDecision(session.id, {
+          ...decision,
+          selectedConnections: [...new Set([...decision.selectedConnections, result.installedSlug])],
+          createdAt: new Date().toISOString(),
+        });
+        recordAuditEvent({
+          eventType: "mcp.installed_from_chat", runtimeSessionId: session.id,
+          userId: session.user_id, gardenId: session.garden_id,
+          payload: { runId: run.id, slug: result.installedSlug, repo: String(args.repo ?? "") },
+        });
+      }
+      return NextResponse.json({ ok: true, data: result.data });
     }
 
     if (slug === API_ANYTHING_CONNECTION) {

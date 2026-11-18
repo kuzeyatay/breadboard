@@ -89,6 +89,7 @@ const RESERVED_MCP_SLUGS = new Set([
   "garden",
   "list",
   "read",
+  "mcp-installer",
 ]);
 
 export function mcpSlug(value: string): string {
