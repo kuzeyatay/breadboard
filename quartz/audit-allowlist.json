@@ -1,0 +1,6 @@
+{
+  "GHSA-fc5q-39xc-vjpf": {
+    "reason": "picomatch ReDoS with no patched release (all versions <= 4.0.7). Quartz matches only patterns from its own build configuration and from .gitignore files inside the user's own garden on their own machine, so the worst case is a user slowing their own site build. Accepted by the repository owner on 2026-11-18. Remove once picomatch ships a fix.",
+    "until": "2026-12-18"
+  }
+}
