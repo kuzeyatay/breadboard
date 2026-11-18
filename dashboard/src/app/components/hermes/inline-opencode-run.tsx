@@ -139,8 +139,8 @@ export default function InlineOpenCodeRun({
     edits?: ExternalAgentEdits;
   }) => void;
   onRetry?: () => void;
-  agentName?: "OpenCode" | "Codex";
-  apiSlug?: "opencode" | "codex";
+  agentName?: "OpenCode" | "Codex" | "Claude Code";
+  apiSlug?: "opencode" | "codex" | "claude-code";
 }) {
   const [status, setStatus] = useState(
     persistedOutcome && persistedOutcome !== "running"

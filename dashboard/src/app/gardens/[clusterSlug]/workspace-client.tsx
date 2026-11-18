@@ -225,6 +225,7 @@ import InlineDeepResearchRun from "@/app/components/hermes/inline-deep-research-
 import InlineMaxResearchRun from "@/app/components/hermes/inline-max-research-run";
 import { useMaxResearchProgress } from "@/app/components/hermes/use-max-research-progress";
 import InlineOpenCodeRun from "@/app/components/hermes/inline-opencode-run";
+import { claudeCodeUserMessage, taskFromClaudeCodeCommand } from "@/lib/claude-code-agent/identity.ts";
 import InlineRufloRun from "@/app/components/hermes/inline-ruflo-run";
 import InlineAgentReachRun from "@/app/components/hermes/inline-agent-reach-run";
 import InlineGetDocRun from "@/app/components/hermes/inline-get-doc-run";
@@ -659,6 +660,7 @@ interface Message {
     gardenSlug: string;
     repository: string;
   };
+  claudeCodeRun?: { runId: string; task: string };
   openPlanterRun?: { runId: string; task: string };
   agentReachRun?: { runId: string; task: string };
   getDocRun?: { runId: string; query: string };
@@ -1834,6 +1836,7 @@ function hasRunningExternalAgent(message: Message): boolean {
       message.deepResearchRun ||
       message.maxResearchRun ||
       message.codexRun ||
+      message.claudeCodeRun ||
       message.openCodeRun ||
       message.openPlanterRun ||
       message.agentReachRun ||
@@ -2266,6 +2269,7 @@ const ChatTranscript = memo(function ChatTranscript({
                 msg.deepResearchRun ??
                 msg.maxResearchRun ??
                 msg.codexRun ??
+                msg.claudeCodeRun ??
                 msg.openCodeRun ??
                 msg.openPlanterRun ??
                 msg.agentReachRun ??
@@ -2883,6 +2887,29 @@ const ChatTranscript = memo(function ChatTranscript({
                                   onTerminal={(result) =>
                                     onExternalAgentTerminal(
                                       msg.codexRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.claudeCodeRun ? (
+                                <InlineOpenCodeRun
+                                  runId={msg.claudeCodeRun.runId}
+                                  task={msg.claudeCodeRun.task}
+                                  agentName="Claude Code"
+                                  apiSlug="claude-code"
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedActivity={msg.externalAgentActivity}
+                                  persistedEdits={msg.externalAgentEdits}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.claudeCodeRun!.runId,
                                       result,
                                     )
                                   }
@@ -4062,6 +4089,7 @@ export default function WorkspaceClient({
     | "deep-research"
     | "max-research"
     | "codex"
+    | "claude-code"
     | "opencode"
     | "openplanter"
     | "agent-reach"
@@ -4104,6 +4132,7 @@ export default function WorkspaceClient({
     | "deep-research"
     | "max-research"
     | "codex"
+    | "claude-code"
     | "opencode"
     | "openplanter"
     | "agent-reach"
@@ -6281,6 +6310,9 @@ export default function WorkspaceClient({
     setDelegatedAgentLaunching(true);
     try {
       switch (request.agentId) {
+        case "claude-code":
+          await launchClaudeCode(request.brief);
+          return;
         case "codex":
           await selectCodex();
           await launchCodex(request.brief);
@@ -13031,6 +13063,85 @@ async function launchCareerOps(task: string) {
     }
   }
 
+  async function launchClaudeCode(
+    task: string,
+    attachments: readonly ChatAttachment[] = [],
+  ) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Say what Claude Code should do.");
+      return;
+    }
+    externalAgentLaunchRef.current = "claude-code";
+    setLaunchingExternalAgent("claude-code");
+    setExternalAgentStatus("");
+    const userContent = claudeCodeUserMessage(task);
+    const delegatedRequest = delegatedAgentLaunchRef.current;
+    const clientMessageId = delegatedRequest
+      ? agentLaunchWorkerClientMessageId(delegatedRequest)
+      : crypto.randomUUID();
+    const persistedAttachments = chatMessageAttachments(attachments);
+    const userMessageFields = persistedAttachments.length
+      ? { attachmentNames: persistedAttachments.map((attachment) => attachment.name), attachments: persistedAttachments }
+      : {};
+    const prepared = await prepareExternalAgentSession(userContent, userMessageFields, { serverNamesTheChat: true });
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/claude-code/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task,
+          model,
+          gardenSlug: clusterSlug,
+          chatSessionId: prepared.session.id,
+          clientMessageId,
+          attachToExistingTurn: Boolean(delegatedRequest && !delegatedRequest.workerClientMessageId),
+          delegatedAgentRun: Boolean(delegatedRequest?.workerClientMessageId),
+          attachments: attachments.filter((attachment) => attachment.type === "image"),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(data?.message ?? data?.error ?? "The Claude Code task could not start.");
+      }
+      const assistantMessage: Message = {
+        role: "assistant",
+        content: "",
+        claudeCodeRun: { runId: String(data.run.runId), task },
+        externalAgentOutcome: "running",
+      };
+      setChatStreaming(prepared.session.id, true);
+      if (delegatedRequest) {
+        await commitExternalAgentTurn(prepared.session, userContent, assistantMessage, prepared.title, userMessageFields);
+      } else {
+        const createdAt = new Date().toISOString();
+        settleExternalTurnActivity();
+        updateChatMessages(prepared.session.id, [
+          ...transcriptForRetriedTurn(prepared.session),
+          { role: "user", content: userContent, createdAt, ...userMessageFields },
+          { ...assistantMessage, createdAt },
+        ]);
+      }
+      void fetchChatSessions();
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        { role: "assistant", content: `The Claude Code task could not start: ${error instanceof Error ? error.message : "unknown error"}` },
+        prepared.title,
+        userMessageFields,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
   async function launchOpenCode(
     task: string,
     attachments: readonly ChatAttachment[] = [],
@@ -13443,6 +13554,18 @@ async function launchCareerOps(task: string) {
       setInput("");
       setChatAttachments([]);
       await launchMaxResearch(maxResearch.question, text);
+      return;
+    }
+
+    const claudeCodeTask = taskFromClaudeCodeCommand(text);
+    if (claudeCodeTask !== null) {
+      const claudeCodeAttachments = pendingAttachments;
+      setInput("");
+      setChatAttachments([]);
+      void launchClaudeCode(
+        claudeCodeTask || (claudeCodeAttachments.length ? "Look at the attached image and do what it asks." : ""),
+        claudeCodeAttachments,
+      );
       return;
     }
 

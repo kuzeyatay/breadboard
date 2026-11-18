@@ -337,6 +337,8 @@ import { useDeepResearchAgent } from "./use-deep-research-agent";
 import { useOpenCodeAgent } from "./use-opencode-agent";
 import { taskFromOpenCodeCommand } from "@/lib/opencode/identity.ts";
 import { useCodexAgent } from "./use-codex-agent";
+import { useClaudeCodeAgent } from "./use-claude-code-agent";
+import { taskFromClaudeCodeCommand } from "@/lib/claude-code-agent/identity.ts";
 import { taskFromCodexCommand } from "@/lib/codex/identity.ts";
 import { useRufloAgent } from "./use-ruflo-agent";
 import { taskFromRufloCommand } from "@/lib/ruflo/identity.ts";
@@ -1660,6 +1662,7 @@ function RuntimeTerminal({
     select: selectCodexRuntime,
   } = codex;
   const ruflo = useRufloAgent(session, null, setAttachmentStatus);
+  const claudeCode = useClaudeCodeAgent(session, model, null, setAttachmentStatus);
   const {
     clear: clearRuflo,
     launch: launchRufloRun,
@@ -1712,6 +1715,7 @@ function RuntimeTerminal({
     launchingInboxZeroRun ||
     deepResearch.launching ||
     codex.launching ||
+    claudeCode.launching ||
     openCode.launching ||
     ruflo.launching;
   const currentChatActive =
@@ -6763,6 +6767,20 @@ const launchCareerOpsRun = useCallback(
       // A workflow has its own planner; a previously selected specialist must
       // not consume its request or files before it reaches that planner.
       if (!workflowPlanning) {
+      const claudeCodeTask = taskFromClaudeCodeCommand(text);
+      if (claudeCodeTask !== null) {
+        if (claudeCode.launching) return;
+        if (!claudeCodeTask && chatAttachments.length === 0) {
+          setAttachmentStatus("Say what Claude Code should do.");
+          return;
+        }
+        const pendingAttachments = chatAttachments;
+        setInput("");
+        setChatAttachments([]);
+        setAttachmentStatus("");
+        void claudeCode.launch(claudeCodeTask || "Look at the attached image and do what it asks.", pendingAttachments);
+        return;
+      }
       const codexTask = taskFromCodexCommand(text);
       if (codexTask !== null) {
         if (codex.launching) return;
@@ -7376,6 +7394,7 @@ if (careerOpsAgent) {
       launchCareerOpsRun,
       launchOpenExecutiveRun,
       launchCodexRun,
+      claudeCode,
       launchOpenCodeRun,
       launchRufloRun,
       launchingBrowserRun,
@@ -7565,6 +7584,10 @@ if (careerOpsAgent) {
     setDelegatedAgentLaunching(true);
     try {
       switch (request.agentId) {
+        case "claude-code":
+          // Like Deep Research: the launcher needs no composer chip.
+          await claudeCode.launch(request.brief);
+          return;
         case "codex": {
           const selected = codex.agent ?? (await selectCodex());
           if (selected) await launchCodexRun(request.brief);

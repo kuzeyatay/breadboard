@@ -90,6 +90,7 @@ import { UnifiedWorkflowsPanel } from "./unified-workflows-panel";
 import { AgentManagerPanel } from "./agent-manager-panel";
 import { TRADINGAGENTS_COMMAND } from "@/lib/tradingagents/identity.ts";
 import { VIDEO_USE_COMMAND } from "@/lib/video-use/identity.ts";
+import { CLAUDE_CODE_COMMAND } from "@/lib/claude-code-agent/identity.ts";
 import ReferenceChatsPanel from "./reference-chats-panel";
 import BotsPanel from "../bots/bots-panel";
 import LoadingRows from "./loading-rows";
@@ -1117,6 +1118,7 @@ const showCareerOps =
         "globe earth satellite satellites aircraft flights ships vessels earthquakes fires cameras cctv osint world map live tracking thermal night vision spy view",
       );
     const hasVisibleAgents =
+      (surface === "dashboard_terminal" && matchesAgentSearch("Claude Code", CLAUDE_CODE_COMMAND, "claude anthropic code coding terminal")) ||
       (surface === "dashboard_terminal" && matchesAgentSearch("Video Use", VIDEO_USE_COMMAND, "edit video clips subtitles")) ||
       showPraxist ||
       showTradingAgents ||
@@ -1682,6 +1684,14 @@ const showCareerOps =
                     <p className="mb-2 px-3 text-xs text-[var(--ink-muted)]">Choose a specialist directly for a specific task.</p>
                     <ul role="listbox" aria-label="Specialist agents" className="divide-y divide-[var(--line)]">
                     {[
+                    ...(surface === "dashboard_terminal" && matchesAgentSearch("Claude Code", CLAUDE_CODE_COMMAND, "claude anthropic code coding terminal") ? [{ name: "Claude Code", node: (
+                      <li key="agent-claude-code" className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]">
+                        <button id="claude-code-entry" type="button" onClick={() => choose({ id: "runtime-agent:claude-code", kind: "agent", slug: "agents:claude-code", token: "agents:claude-code", name: "Claude Code", description: "Claude Code with Breadboard's tools.", installed: true, enabled: true, healthy: true })} className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]">
+                          <span className="block font-mono text-sm font-medium text-[var(--ink-heading)]">{CLAUDE_CODE_COMMAND}</span>
+                          <span className="mt-0.5 block text-xs text-[var(--ink)]">Hand a task to Claude Code. It uses Breadboard's tools and follows your permission settings.</span>
+                        </button>
+                      </li>
+                    ) }] : []),
                     ...(surface === "dashboard_terminal" && matchesAgentSearch("Video Use", VIDEO_USE_COMMAND, "edit video clips subtitles") ? [{ name: "Video Use", node: (
                       <li key="agent-video-use" className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]">
                         <button id="video-use-entry" type="button" onClick={() => choose({ id: "runtime-agent:video-use", kind: "agent", slug: "agents:video-use", token: "agents:video-use", name: "Video Use", description: "Edit an attached video.", installed: true, enabled: true, healthy: true })} className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]">

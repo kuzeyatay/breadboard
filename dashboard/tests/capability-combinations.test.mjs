@@ -30,6 +30,7 @@ function routeSource(...segments) {
 const RUN_ROUTES = {
   "music-producer": ["music-producer", "runs"],
   codex: ["codex", "runs"],
+  "claude-code": ["claude-code", "runs"],
   opencode: ["opencode", "runs"],
   ruflo: ["ruflo", "runs"],
   "deep-research": ["deep-research", "runs"],
@@ -170,7 +171,7 @@ test("acceptsAttachments matches which run routes actually take files", () => {
   // launch it with nothing but a sentence.
   assert.deepEqual(
     attachmentRuntimeAgents().map((agent) => agent.id),
-    ["codex", "opencode", "ruflo", "meeting-notes", "video-use", "legal", "wardrobe", "classroom"],
+    ["codex", "opencode", "ruflo", "meeting-notes", "claude-code", "video-use", "legal", "wardrobe", "classroom"],
   );
 });
 
@@ -264,7 +265,7 @@ test("attachments are allowed only for the agents whose route forwards them", ()
     assert.match(conflict.message, /Remove the 2 attached files/);
     assert.match(
       conflict.message,
-      /Codex, OpenCode, Ruflo, Meeting Notes, Video Use, Legal Agent, Wardrobe, and Classroom/,
+      /Codex, OpenCode, Ruflo, Meeting Notes, Claude Code, Video Use, Legal Agent, Wardrobe, and Classroom/,
     );
   }
 });

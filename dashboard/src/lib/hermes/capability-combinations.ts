@@ -31,6 +31,7 @@ import {
 } from "../openexecutive/identity.ts";
 import { TRADINGAGENTS_COMMAND } from "../tradingagents/identity.ts";
 import { CODEX_COMMAND } from "../codex/identity.ts";
+import { CLAUDE_CODE_COMMAND } from "../claude-code-agent/identity.ts";
 import { DEEP_RESEARCH_SLASH_COMMAND } from "../deep-research/identity.ts";
 import { DEER_FLOW_COMMAND } from "../deer-flow/identity.ts";
 import { DEEP_TUTOR_COMMAND } from "../deep-tutor/identity.ts";
@@ -287,6 +288,11 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   // A model cannot launch it for the same reason Shorts cannot be launched:
   // there is no way for one to attach a video, so a delegated launch could only
   // ever fail.
+  // Claude Code reaches Breadboard's tools through its own MCP server, so
+  // nothing is stacked onto the message; images ride along as attachments.
+  profile("claude-code", CLAUDE_CODE_COMMAND, "Claude Code", {
+    acceptsAttachments: true,
+  }),
   profile("video-use", VIDEO_USE_COMMAND, "Video Use", {
     acceptsAttachments: true,
     launchableByModel: false,
@@ -539,7 +545,9 @@ export function findCapabilityConflict(
     };
   }
 
-  const stacked = tokens.filter((item) => item.kind === "capability");
+  // Claude Code turns a stacked /goal into its own /goal, so that one rides along.
+  const stacked = tokens.filter((item) =>
+    item.kind === "capability" && !(agent.id === "claude-code" && item.raw.toLowerCase() === "/goal"));
   if (stacked.length && !agent.stacksCapabilities) {
     const carriers = list(stackingRuntimeAgents().map((item) => item.name));
     return {

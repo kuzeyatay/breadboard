@@ -40,6 +40,7 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "bolt_slides",
   "classroom",
   "gods_eye",
+  "claude_code",
 ] as const;
 
 export type ExternalAgentRunKind = (typeof EXTERNAL_AGENT_RUN_KINDS)[number];
@@ -68,6 +69,7 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   openscience: "OpenScience",
   inbox_zero: "Inbox Zero",
   codex: "Codex",
+  claude_code: "Claude Code",
   opencode: "OpenCode",
   ruflo: "Ruflo",
   socials_manager: "Socials Manager",
@@ -122,6 +124,7 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   openscience: "openscience",
   inbox_zero: "inbox-zero",
   codex: "codex",
+  claude_code: "claude-code",
   opencode: "opencode",
   ruflo: "ruflo",
   socials_manager: "socials-manager",
@@ -591,6 +594,11 @@ export type ExternalAgentRun =
       quiet?: boolean;
     }
   | {
+      kind: "claude_code";
+      runId: string;
+      task: string;
+    }
+  | {
       kind: "codex";
       runId: string;
       task: string;
@@ -891,6 +899,11 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     };
   }
 
+  if (candidate.kind === "claude_code") {
+    const task = boundedString(candidate.task, MAX_TASK_LENGTH);
+    return task ? { kind: "claude_code", runId, task } : null;
+  }
+
   if (
     candidate.kind === "codex" ||
     candidate.kind === "opencode" ||
@@ -954,6 +967,7 @@ interface ExternalAgentRunFields {
   godsEyeRun?: { runId: string; quiet?: boolean } | null;
   openCodeRun?: { runId: string } | null;
   codexRun?: { runId: string } | null;
+  claudeCodeRun?: { runId: string } | null;
   rufloRun?: { runId: string } | null;
 }
 
@@ -992,6 +1006,7 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   openscience: "openscienceRun",
   inbox_zero: "inboxZeroRun",
   codex: "codexRun",
+  claude_code: "claudeCodeRun",
   opencode: "openCodeRun",
   ruflo: "rufloRun",
   socials_manager: "socialsManagerRun",
@@ -1148,6 +1163,7 @@ export function externalAgentMessageFields(
     gardenSlug: string;
     repository: string;
   };
+  claudeCodeRun?: { runId: string; task: string };
   rufloRun?: {
     runId: string;
     task: string;
@@ -1459,6 +1475,9 @@ export function externalAgentMessageFields(
       },
       ...outcomeField,
     };
+  }
+  if (run.kind === "claude_code") {
+    return { claudeCodeRun: { runId: run.runId, task: run.task }, ...outcomeField };
   }
   const repositoryRun = {
     runId: run.runId,

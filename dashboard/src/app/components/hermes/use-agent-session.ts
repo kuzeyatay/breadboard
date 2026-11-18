@@ -519,6 +519,8 @@ export interface AgentMessage {
     gardenSlug: string;
     repository: string;
   };
+  /** Claude Code with Breadboard's tools, in the chat it was started from. */
+  claudeCodeRun?: { runId: string; task: string };
   /** Codex coding task running against the repository linked to a Garden. */
   codexRun?: {
     runId: string;
@@ -1226,6 +1228,7 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
   ["inboxZeroRun", "inbox_zero"],
   ["openCodeRun", "opencode"],
   ["codexRun", "codex"],
+  ["claudeCodeRun", "claude_code"],
   ["rufloRun", "ruflo"],
 ] as const satisfies ReadonlyArray<
   readonly [keyof AgentMessage, ExternalAgentRunKind]

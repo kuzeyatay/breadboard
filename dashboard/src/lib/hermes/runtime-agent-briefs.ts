@@ -77,6 +77,12 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
     choose:
       "Choose it for features, fixes, refactors, test runs, command execution, or when the user explicitly requests Codex. An ordinary code explanation does not need a worker unless the user selects this engine. The launch route validates the repository; missing Garden context in Terminal does not prove that no repository is connected.",
   },
+  "claude-code": {
+    group: "code",
+    does: "Runs Claude Code on this computer with Breadboard's own tools (gardens, notes, memory, calendar, browser and the rest) and the user's permission settings: with YOLO off it can only read, with YOLO on it can edit files and, when fully autonomous, run commands. It works in the chat's workspace folder.",
+    choose:
+      "Choose it when the user asks for Claude Code by name, or for a long multi-step task that mixes Breadboard data with local files and needs no connected repository. Work on a connected Garden repository belongs with Codex.",
+  },
   opencode: {
     group: "code",
     does: "The same job as Codex in a connected repository, through a different engine, including Terminal when one repository is unambiguous. It can carry a stacked skill, prompt, or connection into the run.",
