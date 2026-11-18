@@ -10,7 +10,10 @@ import {
   deleteWebhook,
   getUpdates,
   sendChatAction,
+  sendMedia,
   sendMessage,
+  sendPhotoUrl,
+  type TelegramOutboundFile,
   TelegramApiError,
 } from "./client.ts";
 import { telegramTimings } from "./config.ts";
@@ -272,9 +275,9 @@ export class TelegramGateway {
     return ready;
   }
 
-  async sendTyping(chatId: string): Promise<void> {
+  async sendTyping(chatId: string, action = "typing"): Promise<void> {
     if (!this.token) return;
-    await sendChatAction(this.token, chatId).catch(() => {
+    await sendChatAction(this.token, chatId, action).catch(() => {
       // Cosmetic only; a failed typing indicator must not stop the reply.
     });
   }
@@ -282,6 +285,16 @@ export class TelegramGateway {
   async sendMessage(chatId: string, text: string): Promise<void> {
     if (!this.token) throw new Error("Telegram is not connected.");
     await sendMessage(this.token, chatId, text);
+  }
+
+  async sendMedia(chatId: string, file: TelegramOutboundFile, caption?: string): Promise<void> {
+    if (!this.token) throw new Error("Telegram is not connected.");
+    await sendMedia(this.token, chatId, file, caption);
+  }
+
+  async sendPhotoUrl(chatId: string, url: string): Promise<void> {
+    if (!this.token) throw new Error("Telegram is not connected.");
+    await sendPhotoUrl(this.token, chatId, url);
   }
 
   /**

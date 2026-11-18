@@ -2624,8 +2624,22 @@ impl ServiceController {
             if held.claim.expires_at_ms().saturating_sub(now_ms) > renewal_lead_ms {
                 continue;
             }
-            self.store
-                .renew_durable_service_lease(&mut held.claim, now_ms)?;
+            match self.store.renew_durable_service_lease(&mut held.claim, now_ms) {
+                Ok(_) => {}
+                // The ledger already released it (its process exited). A
+                // released lease is not renewable, and treating that as fatal
+                // shut the whole runtime down (exit 70) three times on
+                // 2026-11-18. Drop it; the owner's reconcile re-acquires.
+                Err(DurableServiceStoreError::LeaseNotFound(_)) => {
+                    if let Some(mut held) = self.held_leases.remove(&lease_id) {
+                        if let Some(reply) = held.pending_reply.take() {
+                            let _ = reply.send_control(Err(RuntimeServiceControlError::Unavailable));
+                        }
+                    }
+                    self.remember_release(lease_id, now_ms);
+                }
+                Err(error) => return Err(error.into()),
+            }
         }
         Ok(())
     }
@@ -3503,11 +3517,7 @@ impl ServiceController {
                 // receipt. Dashboard lifecycle can never revoke this lease.
                 HeldLeaseOwner::WorkerInstance { .. } => true,
             };
-            let service_is_live = service_generation_can_own_lease(
-                snapshot.generation,
-                snapshot.status.state,
-                service_generation,
-            );
+            let service_is_live = held_lease_generation_is_live(snapshot, service_generation);
 
             if pending_deadline_expired || !owner_is_current {
                 self.revoke_held_lease(&lease_id, now_ms)?;
@@ -4145,6 +4155,16 @@ fn service_generation_can_own_lease(
             service_state,
             RuntimeServiceState::Starting | RuntimeServiceState::Ready | RuntimeServiceState::Busy
         )
+}
+
+/// A crashed generation with a bounded restart still owed is projected as
+/// `starting` for the public status, but its process is gone. Treating that
+/// projection as live kept the dead lease held, so a scheduled gateway (or an
+/// on-demand dependency) was never re-acquired and stayed down until the whole
+/// runtime restarted: Telegram sat dark for hours on 2026-11-18.
+fn held_lease_generation_is_live(snapshot: &DurableServiceSnapshot, lease_generation: u64) -> bool {
+    service_generation_can_own_lease(snapshot.generation, snapshot.status.state, lease_generation)
+        && !snapshot_awaits_bounded_restart(snapshot)
 }
 
 fn service_state_requires_endpoint_reservation(state: RuntimeServiceState) -> bool {
@@ -4945,6 +4965,32 @@ mod tests {
             RuntimeServiceState::Failed,
             7
         ));
+    }
+
+    #[test]
+    fn a_crashed_generation_awaiting_restart_releases_its_held_lease() {
+        let schedule = DurableServiceRestartSchedule {
+            eligible_at_ms: 110,
+            window_ends_at_ms: 1_100,
+            attempts_in_window: 1,
+            maximum_restarts: 2,
+            window_exhausted: false,
+        };
+        // The store projects this exact shape as `starting`.
+        let mut crashed = failed_service_snapshot(7, schedule);
+        crashed.status.state = RuntimeServiceState::Starting;
+        assert!(!held_lease_generation_is_live(&crashed, 7));
+
+        let mut running = crashed.clone();
+        running.restart = DurableServiceRestartStatus::Idle {
+            attempts_in_window: 1,
+            window_ends_at_ms: Some(1_100),
+        };
+        for state in [RuntimeServiceState::Starting, RuntimeServiceState::Ready, RuntimeServiceState::Busy] {
+            running.status.state = state;
+            assert!(held_lease_generation_is_live(&running, 7));
+        }
+        assert!(!held_lease_generation_is_live(&running, 6));
     }
 
     #[test]

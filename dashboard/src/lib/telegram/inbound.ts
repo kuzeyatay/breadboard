@@ -32,7 +32,19 @@ import { startConversationTurn } from "../conversations/turn-service.ts";
 import { startSessionEventPump } from "../hermes/event-stream.ts";
 import { requireEnabled } from "../hermes/route-core.ts";
 import { getHermesUserSettings } from "../hermes/runtime-store.ts";
-import { resolveConversationRuntime } from "../hermes/session-service.ts";
+import { authorizeRuntimeReference, resolveConversationRuntime } from "../hermes/session-service.ts";
+import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
+import { hermesMessageId } from "../hermes/message-id.ts";
+import {
+  acceptSteerRequest,
+  failSteerRequest,
+  getActiveRuntimeRun,
+  parseRuntimeRunDispatch,
+  reserveSteerRequest,
+} from "../hermes/run-store.ts";
+import { artifactDeliveryFile, getArtifactById } from "../hermes/artifact-store.ts";
+import { appendConversationSteerMessage } from "../conversations/store.ts";
+import { telegramImageUrls } from "./format.ts";
 import { getScheduledChatJobStore } from "../schedules/instance.ts";
 import { parseExplicitScheduleRequest } from "../schedules/natural-language.ts";
 import { presentScheduledChatJob } from "../schedules/store.ts";
@@ -64,6 +76,8 @@ export type TelegramRouteOutcome =
       reply: string;
       conversationId: string;
       delegatedFollowUp?: TelegramDelegatedFollowUp;
+      /** The agent turn behind this reply, so its files can follow the text. */
+      turn?: TelegramTurnRef;
     }
   | { status: "ignored"; reason: string }
   | { status: "failed"; reply: string; reason: string; lateReply?: TelegramLateReply };
@@ -73,9 +87,16 @@ export interface TelegramLateReply {
   clientMessageId: string;
 }
 
+export interface TelegramTurnRef {
+  conversationId: number;
+  clientMessageId: string;
+}
+
 export interface RouteDependencies {
   store: TelegramStore;
   now?: () => Date;
+  /** Called once the agent run is live, so later texts can steer it. */
+  onTurnStarted?: (conversation: ConversationRow) => void;
 }
 
 /**
@@ -317,6 +338,7 @@ export async function routeTelegramMessage(
       };
     }
 
+    deps.onTurnStarted?.(conversation);
     const reply = await awaitAssistantReply(
       conversation.id,
       clientMessageId,
@@ -328,6 +350,7 @@ export async function routeTelegramMessage(
         status: "replied",
         reply: reply.content.trim(),
         conversationId: conversation.public_id,
+        turn: { conversationId: conversation.id, clientMessageId },
         ...(reply.orderIndex !== undefined &&
         telegramDelegatedWorkers(
           listConversationMessages(conversation.id, { limit: 500 }).map(
@@ -472,4 +495,140 @@ export async function deliverTelegramFollowUps(
     // for up to two hours; its own runtime still owns cancellation and failure.
     maxWaitMs: 2 * 60 * 60 * 1_000,
   });
+}
+
+/**
+ * Fold a text that arrives mid-answer into the running turn, the way the
+ * Terminal's steer button does, so a double text changes the answer instead
+ * of waiting behind it. Returns false when there is nothing to steer (the
+ * turn already finished, or Hermes refused), and the caller queues the text.
+ */
+export async function steerTelegramTurn(
+  conversation: ConversationRow,
+  message: TelegramInboundMessage,
+): Promise<boolean> {
+  const text = messageText(message).trim();
+  // Files need the full attachment pipeline, and commands are not prose.
+  if (!text || message.hasMedia || text.startsWith("/")) return false;
+  let session;
+  try {
+    session = authorizeRuntimeReference(conversation.user_id, conversation.public_id);
+  } catch {
+    return false;
+  }
+  const run = getActiveRuntimeRun(session.row.id);
+  if (!run) return false;
+  const dispatch = parseRuntimeRunDispatch(run);
+  const clientRequestId = `telegram-steer-${message.messageId}`.slice(0, 200);
+  const reserved = reserveSteerRequest({
+    runtimeSessionId: session.row.id,
+    runId: run.id,
+    clientRequestId,
+    content: text,
+  });
+  if (!reserved.created) return reserved.request.status === "accepted";
+  try {
+    const accepted = await getAgentRuntimeByKind(session.runtimeKind).steerRun({
+      externalSessionId: session.externalSessionId,
+      liveSessionId: session.liveSessionId,
+      workspaceKey: session.workspaceKey,
+      directory: session.activeDirectory,
+      agentName: session.agentName,
+      text,
+      model: dispatch.model,
+      variant: dispatch.variant,
+      tools: dispatch.tools,
+      system: dispatch.system,
+      clientRequestId,
+      messageId: dispatch.clientMessageId ? hermesMessageId(dispatch.clientMessageId) : undefined,
+    });
+    if (!accepted) {
+      failSteerRequest(reserved.request.id, "steer_unavailable");
+      return false;
+    }
+  } catch {
+    failSteerRequest(reserved.request.id, "steer_dispatch_failed");
+    return false;
+  }
+  acceptSteerRequest({
+    requestId: reserved.request.id,
+    runtimeSessionId: session.row.id,
+    chatSessionId: session.row.chat_session_id,
+    content: text,
+    resultRunId: run.id,
+    resultMode: "steer",
+  });
+  try {
+    const pending = dispatch.clientMessageId
+      ? listConversationMessages(conversation.id, { limit: 500, includePending: true })
+        .map(presentConversationMessage)
+        .find((row) => row.role === "assistant" && row.clientMessageId === dispatch.clientMessageId)
+      : undefined;
+    appendConversationSteerMessage({
+      conversationId: conversation.id,
+      clientMessageId: `steer:${clientRequestId}`,
+      surface: "dashboard_terminal",
+      content: text,
+      targetClientMessageId: dispatch.clientMessageId,
+      assistantContentOffset: pending?.content.length ?? 0,
+    });
+  } catch {
+    // The correction already reached the run; the transcript row is cosmetic.
+  }
+  return true;
+}
+
+export interface TelegramReplyFile {
+  artifactId: string;
+  absolutePath: string;
+  filename: string;
+  mimeType: string;
+  byteSize: number;
+}
+
+/** What a phone can usefully open; HTML pages, gadgets and folders stay in the app. */
+const SENDABLE_KINDS = new Set(["image", "video", "audio", "pdf", "document", "presentation", "spreadsheet", "model"]);
+/** The hosted Bot API refuses uploads above 50 MB. */
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+function sqliteTimeToIso(value: string): string {
+  const parsed = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(" ", "T")}Z`);
+  return Number.isNaN(parsed.getTime()) ? new Date(0).toISOString() : parsed.toISOString();
+}
+
+/**
+ * Files the turn produced (generated images, rendered videos, documents) plus
+ * web images its answer embeds. `exclude` holds artifact ids already sent, so
+ * a later call after delegated follow-ups only adds what is new.
+ */
+export function telegramTurnMedia(
+  turn: TelegramTurnRef,
+  content: string,
+  exclude: ReadonlySet<string> = new Set(),
+): { files: TelegramReplyFile[]; imageUrls: string[] } {
+  const imageUrls = telegramImageUrls(content);
+  const userMessage = listConversationMessages(turn.conversationId, { limit: 500 })
+    .find((row) => row.role === "user" && presentConversationMessage(row).clientMessageId === turn.clientMessageId);
+  if (!userMessage) return { files: [], imageUrls };
+  const rows = db.prepare(
+    `SELECT id, kind FROM hermes_artifacts
+     WHERE conversation_id = ? AND created_at >= ? AND status = 'ready'
+     ORDER BY created_at ASC LIMIT 40`,
+  ).all(turn.conversationId, sqliteTimeToIso(userMessage.created_at)) as Array<{ id: string; kind: string }>;
+  const files: TelegramReplyFile[] = [];
+  for (const row of rows) {
+    if (files.length >= 10) break;
+    if (exclude.has(row.id) || !SENDABLE_KINDS.has(row.kind)) continue;
+    const artifact = getArtifactById(row.id);
+    if (!artifact) continue;
+    try {
+      const file = artifactDeliveryFile(artifact);
+      if (file.byteSize > 0 && file.byteSize <= MAX_UPLOAD_BYTES) {
+        files.push({ artifactId: row.id, ...file });
+      }
+    } catch {
+      // A card whose file is gone is still in the app; nothing to send.
+    }
+  }
+  return { files, imageUrls };
 }

@@ -36,6 +36,18 @@ function positiveUserId(value) {
   return value;
 }
 
+// One bad message must not take the bot offline. On 2026-11-18 a turn whose
+// source module failed to import rejected unhandled, Node exited, and Telegram
+// stayed dark for hours. Long-poll state lives in this process, so log and
+// keep serving; a truly broken process still fails its own startup below.
+let started = false;
+const survive = (kind) => (error) => {
+  process.stderr.write(`[runtime-v2-telegram-gateway] ${kind}: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+  if (!started) process.exit(1);
+};
+process.on("unhandledRejection", survive("unhandled rejection"));
+process.on("uncaughtException", survive("uncaught exception"));
+
 async function main() {
   const { sourceRoot } = sourceLayout();
   await import(pathToFileURL(path.join(path.dirname(ENTRYPOINT), "learn-worker-import-hook.mjs")).href);
@@ -94,6 +106,7 @@ async function main() {
     tokenEnvironmentName: "BREADBOARD_TELEGRAM_GATEWAY_TOKEN",
     route,
     onStarted: async () => {
+      started = true;
       const settings = store.settings();
       if (telegramFeatureEnabled() && settings.autostart && settings.ownerUserId !== null && credentials.hasBotToken()) {
         await service.startTelegramGateway().catch(() => undefined);

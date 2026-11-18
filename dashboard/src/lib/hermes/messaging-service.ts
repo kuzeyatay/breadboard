@@ -599,10 +599,10 @@ async function deliverTelegram(
   attachment: ResolvedAttachment | null,
 ): Promise<DeliveredOwnerTarget> {
   const { target, token } = await telegramTarget(userId);
-  const { sendDocument, sendMessage } = await import("../telegram/client.ts");
+  const { sendMedia, sendMessage } = await import("../telegram/client.ts");
   try {
     if (attachment) {
-      await sendDocument(
+      await sendMedia(
         token,
         target.chatId,
         {

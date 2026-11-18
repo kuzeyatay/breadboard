@@ -24,6 +24,7 @@ export interface TelegramSettingsRow {
   owner_user_id: number | null;
   allowed_users: string;
   autostart: number;
+  attention_alerts: number;
   bot_id: string | null;
   bot_username: string | null;
   bot_name: string | null;
@@ -36,6 +37,8 @@ export interface TelegramSettings {
   ownerUserId: number | null;
   allowedUsers: string[];
   autostart: boolean;
+  /** Breadboard may message the owner when unattended work needs them. */
+  attentionAlerts: boolean;
   botId: string | null;
   botUsername: string | null;
   botName: string | null;
@@ -61,6 +64,7 @@ export function presentTelegramSettings(row: TelegramSettingsRow): TelegramSetti
     ownerUserId: row.owner_user_id,
     allowedUsers: parseAllowedUsers(row.allowed_users),
     autostart: row.autostart === 1,
+    attentionAlerts: row.attention_alerts !== 0,
     botId: row.bot_id,
     botUsername: row.bot_username,
     botName: row.bot_name,
@@ -109,7 +113,7 @@ export class TelegramStore {
     return this.settings();
   }
 
-  updateSettings(input: { allowedUsers?: unknown; autostart?: unknown }): TelegramSettings {
+  updateSettings(input: { allowedUsers?: unknown; autostart?: unknown; attentionAlerts?: unknown }): TelegramSettings {
     const current = this.settings();
     const allowed =
       input.allowedUsers === undefined
@@ -121,13 +125,15 @@ export class TelegramStore {
           );
     const autostart =
       input.autostart === undefined ? current.autostart : input.autostart !== false;
+    const attentionAlerts =
+      input.attentionAlerts === undefined ? current.attentionAlerts : input.attentionAlerts !== false;
     this.db
       .prepare(
         `UPDATE telegram_settings
-            SET allowed_users = ?, autostart = ?, updated_at = datetime('now')
+            SET allowed_users = ?, autostart = ?, attention_alerts = ?, updated_at = datetime('now')
           WHERE id = 1`,
       )
-      .run(formatAllowedUsers(allowed), autostart ? 1 : 0);
+      .run(formatAllowedUsers(allowed), autostart ? 1 : 0, attentionAlerts ? 1 : 0);
     return this.settings();
   }
 

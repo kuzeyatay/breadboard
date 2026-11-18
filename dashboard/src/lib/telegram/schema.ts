@@ -54,4 +54,10 @@ export function ensureTelegramSchema(db: Db): void {
       seen_at    TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
+  // Breadboard may text the owner when unattended work needs them. On by
+  // default; added after the table shipped, so existing databases migrate.
+  const columns = db.prepare("PRAGMA table_info(telegram_settings)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "attention_alerts")) {
+    db.exec("ALTER TABLE telegram_settings ADD COLUMN attention_alerts INTEGER NOT NULL DEFAULT 1");
+  }
 }

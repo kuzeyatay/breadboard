@@ -239,37 +239,33 @@ export async function sendMessage(token: string, chatId: string, text: string): 
   }
 }
 
-/**
- * Send a file as a document.
- *
- * This is the one call that cannot go through `callTelegram`: Telegram takes an
- * upload as `multipart/form-data`, not JSON. The token discipline is the same —
- * the URL is built here and never appears in a thrown message — and the caption
- * is capped at Telegram's 1024-character limit for captions, which is much
- * shorter than the message limit above.
- */
-export async function sendDocument(
-  token: string,
-  chatId: string,
-  file: { bytes: Uint8Array; filename: string; mimeType: string },
-  caption?: string,
-): Promise<void> {
-  const form = new FormData();
-  form.append("chat_id", chatId);
-  if (caption?.trim()) form.append("caption", applyOutboundGuardrails(caption.trim()).slice(0, 1_024));
-  // Copied into a plain ArrayBuffer-backed view: a Node `Buffer` is backed by a
-  // shared pool, which is not a `BlobPart`.
-  const bytes = new Uint8Array(file.bytes.byteLength);
-  bytes.set(file.bytes);
-  form.append(
-    "document",
-    new Blob([bytes], { type: file.mimeType || "application/octet-stream" }),
-    file.filename,
-  );
+export interface TelegramOutboundFile {
+  bytes: Uint8Array;
+  filename: string;
+  mimeType: string;
+}
 
+/** Telegram's per-method upload ceilings for bots; anything bigger goes as a document. */
+const PHOTO_LIMIT = 10 * 1024 * 1024;
+const MEDIA_LIMIT = 50 * 1024 * 1024;
+
+/** Which Bot API method shows this file the way a person would send it. */
+export function telegramMediaMethod(mimeType: string, byteSize: number): {
+  method: string;
+  field: string;
+} {
+  const mime = mimeType.toLowerCase().split(";")[0].trim();
+  if (byteSize <= PHOTO_LIMIT && ["image/jpeg", "image/jpg", "image/png", "image/webp"].includes(mime)) return { method: "sendPhoto", field: "photo" };
+  if (byteSize <= MEDIA_LIMIT && mime === "image/gif") return { method: "sendAnimation", field: "animation" };
+  if (byteSize <= MEDIA_LIMIT && ["video/mp4", "video/quicktime", "video/webm"].includes(mime)) return { method: "sendVideo", field: "video" };
+  if (byteSize <= MEDIA_LIMIT && ["audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a", "audio/x-m4a", "audio/aac", "audio/ogg", "audio/wav", "audio/x-wav"].includes(mime)) return { method: "sendAudio", field: "audio" };
+  return { method: "sendDocument", field: "document" };
+}
+
+async function uploadTelegram(token: string, method: string, form: FormData): Promise<void> {
   let response: Response;
   try {
-    response = await fetch(`${telegramApiBase()}/bot${token}/sendDocument`, {
+    response = await fetch(`${telegramApiBase()}/bot${token}/${method}`, {
       method: "POST",
       body: form,
       signal: AbortSignal.timeout(telegramTimings().requestTimeoutMs * 4),
@@ -283,7 +279,6 @@ export async function sendDocument(
         : "Breadboard could not reach Telegram to upload the file.",
     );
   }
-
   const envelope = (await response.json().catch(() => null)) as TelegramEnvelope<unknown> | null;
   if (!response.ok || !envelope?.ok) {
     const description = envelope?.description?.trim();
@@ -293,4 +288,61 @@ export async function sendDocument(
       typeof envelope?.error_code === "number" ? envelope.error_code : null,
     );
   }
+}
+
+function captionFields(caption?: string): Record<string, string> {
+  if (!caption?.trim()) return {};
+  // Rendered like a message, so a caption never shows raw Markdown either.
+  const formatted = formatTelegramText(applyOutboundGuardrails(caption.trim()));
+  const [first] = splitTelegramText(formatted, 1_024);
+  if (!first) return {};
+  return {
+    caption: first.text,
+    ...(first.entities.length ? { caption_entities: JSON.stringify(first.entities) } : {}),
+  };
+}
+
+/**
+ * Send a file the way a person would: photos as photos, videos as playable
+ * videos, everything else as a document. Upload is multipart, so it cannot go
+ * through `callTelegram`; the token discipline is the same.
+ */
+export async function sendMedia(
+  token: string,
+  chatId: string,
+  file: TelegramOutboundFile,
+  caption?: string,
+): Promise<void> {
+  const { method, field } = telegramMediaMethod(file.mimeType, file.bytes.byteLength);
+  const form = new FormData();
+  form.append("chat_id", chatId);
+  for (const [key, value] of Object.entries(captionFields(caption))) form.append(key, value);
+  if (method === "sendVideo") form.append("supports_streaming", "true");
+  // Copied into a plain ArrayBuffer-backed view: a Node `Buffer` is backed by a
+  // shared pool, which is not a `BlobPart`.
+  const bytes = new Uint8Array(file.bytes.byteLength);
+  bytes.set(file.bytes);
+  form.append(field, new Blob([bytes], { type: file.mimeType || "application/octet-stream" }), file.filename);
+  await uploadTelegram(token, method, form);
+}
+
+/** Send a web image by URL; Telegram fetches it itself. */
+export async function sendPhotoUrl(token: string, chatId: string, url: string): Promise<void> {
+  await callTelegram<unknown>(token, "sendPhoto", { chat_id: chatId, photo: url }, telegramTimings().requestTimeoutMs * 2);
+}
+
+/** Send a file as a document (owner-initiated sends keep the original file). */
+export async function sendDocument(
+  token: string,
+  chatId: string,
+  file: TelegramOutboundFile,
+  caption?: string,
+): Promise<void> {
+  const form = new FormData();
+  form.append("chat_id", chatId);
+  for (const [key, value] of Object.entries(captionFields(caption))) form.append(key, value);
+  const bytes = new Uint8Array(file.bytes.byteLength);
+  bytes.set(file.bytes);
+  form.append("document", new Blob([bytes], { type: file.mimeType || "application/octet-stream" }), file.filename);
+  await uploadTelegram(token, "sendDocument", form);
 }

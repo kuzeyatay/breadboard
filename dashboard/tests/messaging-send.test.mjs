@@ -303,7 +303,7 @@ test("both transports can carry a file", () => {
   assert.match(telegramClient, /export async function sendDocument\(/);
   // Telegram caps captions far below its message limit; the overflow is sent
   // rather than silently dropped.
-  assert.match(telegramClient, /slice\(0, 1_024\)/);
+  assert.match(telegramClient, /splitTelegramText\(formatted, 1_024\)/);
   assert.match(service, /text\.length > 1_024/);
 });
 

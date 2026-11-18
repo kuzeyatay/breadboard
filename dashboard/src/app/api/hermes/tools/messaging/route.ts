@@ -23,6 +23,7 @@ import {
   sendOwnerMessage,
   statusForMessagingError,
 } from "@/lib/hermes/messaging-service.ts";
+import { telegramAttentionAlertsOn } from "@/lib/telegram/attention.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -85,6 +86,16 @@ export async function POST(request: Request) {
     // Normalized up front so the audit trail records the channel even when the
     // send itself is refused further down.
     const channel = normalizeChannel(args.channel);
+    // An unprompted alert is the user's standing permission, not a request in
+    // this turn, so it is honored only while they keep it switched on.
+    const attention = args.reason === "attention";
+    if (attention && (channel !== "telegram" || !telegramAttentionAlertsOn(session.user_id))) {
+      throw new ApiError(
+        403,
+        "attention_alerts_off",
+        "Telegram attention alerts are switched off in Settings, so do not message the user unprompted.",
+      );
+    }
 
     recordAuditEvent({
       eventType: "messaging.send_started",
@@ -94,6 +105,7 @@ export async function POST(request: Request) {
       payload: {
         runId: run.id,
         channel,
+        attention,
         hasAttachment: Boolean(args.artifactId),
       },
     });

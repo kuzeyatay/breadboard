@@ -43,6 +43,7 @@ export interface TelegramStatus {
   linkedAt: string | null;
   allowedUsers: string[];
   autostart: boolean;
+  attentionAlerts?: boolean;
   managedByAnotherUser: boolean;
   blocked: TelegramBlockedSender[];
   chats: TelegramChatSummary[];
@@ -403,6 +404,16 @@ export default function SettingsTelegram({
             disabled={busy !== null}
           />
           Reconnect automatically when Breadboard starts
+        </label>
+
+        <label className="flex items-center gap-2 text-xs text-[var(--ink-muted)]">
+          <input
+            type="checkbox"
+            checked={status.attentionAlerts !== false}
+            onChange={(event) => void saveSettings({ attentionAlerts: event.target.checked }, "attentionAlerts")}
+            disabled={busy !== null}
+          />
+          Text me here when something running while I am away needs my attention
         </label>
       </div>
 

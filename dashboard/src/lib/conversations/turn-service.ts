@@ -1,4 +1,5 @@
 import { botsStore } from "../bots/server.ts";
+import { telegramAttentionAlertsOn } from "../telegram/attention.ts";
 import { voiceReplyWithOpener } from "../speech/voice-opener-context.ts";
 import { conversationPersonalityPrompt } from "../bots/types.ts";
 import { hermesPromptText } from "../agent-runtime/hermes-prompt.ts";
@@ -1148,6 +1149,13 @@ export async function startConversationTurn(
     input.conversation.user_id,
     goalSelection.text,
     session.activeDirectory,
+  // Work that runs while the user is away (a schedule, a recovery, a goal or
+  // task continuation) may text them on Telegram when it needs them.
+  const attentionAlerts =
+    input.surface !== "quartz_ai" &&
+    !input.surfaceContext?.deliveryChannel &&
+    Boolean(input.internalAgentContinuation || input.goalContinuation || input.taskContinuation || input.scheduledChatReceipt) &&
+    telegramAttentionAlertsOn(input.conversation.user_id);
     commandContext,
   ).catch(async (error: unknown) => {
     if (
@@ -1883,6 +1891,7 @@ export async function startConversationTurn(
   installTurnMarket(session.row.id);
   // The same coarse fix, put where the map tools can reach it. Without this,
   // "what's near me" has no anchor unless the /map page happens to be open —
+      attentionAlerts ? renderAttentionAlerts() : "",
   // and an agent with no anchor and a geographic question is exactly the
   // situation this whole feature exists to prevent. It is written only when
   // the user enabled device context and map tools are available. The next fix
@@ -2062,6 +2071,9 @@ export async function startConversationTurn(
           messages: currentConversationMessages,
           launchCalls: externalAgentCallsForRun(
             getLatestRuntimeRun(session.row.id)?.id,
+      ...(attentionAlerts && !messagingSelection.automatic
+        ? [{ slug: "send-to-my-phone", reason: "Work running while the user is away may need them; Telegram attention alerts are on." }]
+        : []),
           ),
         }),
         {
@@ -2402,7 +2414,7 @@ function renderDeliveryChannel(channel: DeliveryChannel | undefined, yoloMode = 
   const formatting =
     channel === "whatsapp"
       ? "WhatsApp understands *bold*, _italic_, ~strikethrough~ and ```code```. It has no headings, tables, bullet syntax or links, so write those as plain sentences."
-      : "Telegram understands *bold*, _italic_ and `code`. It has no headings or tables, so write those as plain sentences.";
+      : "Write like a person texting a friend: plain conversational sentences in short paragraphs, no headings, tables, horizontal rules or LaTeX. Use **bold** at most for the odd key word. Write math in plain Unicode (x², √x, a/b, ≤, π) rather than $...$.";
   return [
     "# delivery_channel",
     `This answer is sent to the person as a ${app} message on their phone. It is not shown in the Breadboard window.`,
@@ -2414,8 +2426,13 @@ function renderDeliveryChannel(channel: DeliveryChannel | undefined, yoloMode = 
       ? "The owner's saved act-without-asking setting applies here. Use the available PC, terminal, browser and connected-app tools to carry out their request. This phone channel does not remove access to the Windows PC running Breadboard."
       : "You cannot ask for a permission decision here. Actions requiring approval need the owner's act-without-asking setting or approval in Breadboard.",
     "For PC actions, discover and invoke the appropriate tool and verify its result. An acknowledgement or emoji does not perform an action. Never claim success without evidence, or claim the PC is inaccessible without checking the available tools.",
-    "The same chat is open in the Breadboard app, so anything genuinely long or visual belongs there; say so rather than trying to fit it into a message.",
-  ].join("\n");
+    channel === "telegram"
+      ? "Images, videos, audio, PDFs and documents you create or import as artifacts in this turn are sent into the Telegram chat right after your text, as real photos, videos and files. So when the person asks for a picture, video or file, produce it with the usual tools and refer to it naturally (\"here it is\"); do not paste file paths, artifact ids or Breadboard links. A web image embedded as ![](https://...) is sent as a photo too."
+      : "The same chat is open in the Breadboard app, so anything genuinely long or visual belongs there; say so rather than trying to fit it into a message.",
+    channel === "telegram"
+      ? "The person may send several texts in a row, or a follow-up while you are still working. Those arrive together or are folded into this turn; answer them as one natural reply, not one by one."
+      : "",
+  ].filter(Boolean).join("\n");
 }
 
 function authorizedGardenContext(userId: number, activeGardenSlug: string | null): string {
@@ -2438,6 +2455,13 @@ function parseAllowedGardenIds(value: string): number[] {
     return [];
   }
 }
+function renderAttentionAlerts(): string {
+  return [
+    "# attention_alerts",
+    "This turn runs while the user is away from Breadboard. If its outcome genuinely needs them (a decision only they can make, a failure they must fix, a deadline, an approval that is waiting, or something they asked to be told about), call messaging_send with channel \"telegram\" and reason \"attention\": one or two short plain sentences saying what needs them and why, like a colleague texting. Do not text for routine progress or a task that simply finished fine.",
+  ].join("\n");
+}
+
 
 function bounded(value: unknown, max: number): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, max) : undefined;

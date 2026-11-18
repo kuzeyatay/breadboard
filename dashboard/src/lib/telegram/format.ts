@@ -84,8 +84,101 @@ function link(label: TelegramText, href: string): TelegramText {
       // nested inside links, so retain the destination and drop that styling.
       return styled({ ...label, entities: label.entities.filter((entity) => entity.type !== "code") }, "text_link", { url });
     }
-  } catch { /* Relative Breadboard links remain readable as text. */ }
+  } catch { /* A relative Breadboard path means nothing on a phone: keep the label. */ }
+  if (!/^[a-z][a-z\d+.-]*:/i.test(url)) return label;
   return join([label, plain(label.text === url ? "" : ` (${url})`)]);
+}
+
+// Math and stray emphasis are what leak "weird symbols" into a phone chat:
+// Telegram renders neither LaTeX nor an unclosed `**`. Math spans are lifted
+// out before Markdown parsing (which would eat their backslashes) and come
+// back as plain Unicode; leftover `**` pairs become bold, lone ones vanish.
+const MATH_OPEN = String.fromCharCode(0xe000);
+const MATH_CLOSE = String.fromCharCode(0xe001);
+const MATH_SPAN = new RegExp(`${MATH_OPEN}([^${MATH_CLOSE}]*)${MATH_CLOSE}`, "g");
+
+const LATEX_SYMBOLS: Record<string, string> = {
+  alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε", varepsilon: "ε", zeta: "ζ", eta: "η",
+  theta: "θ", vartheta: "θ", iota: "ι", kappa: "κ", lambda: "λ", mu: "μ", nu: "ν", xi: "ξ", pi: "π",
+  rho: "ρ", sigma: "σ", tau: "τ", phi: "φ", varphi: "φ", chi: "χ", psi: "ψ", omega: "ω",
+  Gamma: "Γ", Delta: "Δ", Theta: "Θ", Lambda: "Λ", Xi: "Ξ", Pi: "Π", Sigma: "Σ", Phi: "Φ", Psi: "Ψ", Omega: "Ω",
+  times: "×", cdot: "·", div: "÷", pm: "±", mp: "∓", le: "≤", leq: "≤", ge: "≥", geq: "≥", ne: "≠", neq: "≠",
+  approx: "≈", equiv: "≡", sim: "∼", simeq: "≃", propto: "∝", infty: "∞", partial: "∂", nabla: "∇",
+  int: "∫", iint: "∬", oint: "∮", sum: "∑", prod: "∏", to: "→", rightarrow: "→", leftarrow: "←",
+  Rightarrow: "⇒", Leftarrow: "⇐", Leftrightarrow: "⇔", leftrightarrow: "↔", implies: "⇒", iff: "⇔",
+  mapsto: "↦", in: "∈", notin: "∉", subset: "⊂", subseteq: "⊆", cup: "∪", cap: "∩", emptyset: "∅",
+  forall: "∀", exists: "∃", neg: "¬", land: "∧", lor: "∨", angle: "∠", circ: "∘", degree: "°",
+  ldots: "…", cdots: "⋯", dots: "…", hbar: "ħ", ell: "ℓ", star: "⋆", perp: "⊥", parallel: "∥",
+  langle: "⟨", rangle: "⟩", lfloor: "⌊", rfloor: "⌋", lceil: "⌈", rceil: "⌉", prime: "′",
+  quad: " ", qquad: "  ", ",": " ", ";": " ", ":": " ", "!": "", " ": " ", "%": "%", "$": "$",
+  "{": "{", "}": "}", "&": "&", "#": "#", "_": "_", "|": "‖",
+};
+const SUPERSCRIPT: Record<string, string> = Object.fromEntries(
+  [..."0123456789+-=()niT"].map((c, i) => [c, [..."⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱᵀ"][i]]),
+);
+const SUBSCRIPT: Record<string, string> = Object.fromEntries(
+  [..."0123456789+-=()aeoxijknmtprs"].map((c, i) => [c, [..."₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₒₓᵢⱼₖₙₘₜₚᵣₛ"][i]]),
+);
+
+function script(body: string, table: Record<string, string>, marker: string): string {
+  const chars = [...body];
+  if (chars.length && chars.every((c) => table[c])) return chars.map((c) => table[c]).join("");
+  return /^[\p{L}\p{N}]+$/u.test(body) ? `${marker}${body}` : `${marker}(${body})`;
+}
+
+const group = (inner: string) => (/^[\p{L}\p{N}.√]+$/u.test(inner) || /^\(.*\)$/.test(inner) ? inner : `(${inner})`);
+
+/** Render a LaTeX fragment as readable Unicode (x², √x, a/b, α ≤ β). */
+export function latexToText(latex: string): string {
+  let text = latex
+    .replace(/\\(?:begin|end)\{[^{}]*\}/g, " ")
+    .replace(/\\(?:left|right|big|Big|bigg|Bigg)(?![a-zA-Z])/g, "")
+    .replace(/\\\\/g, "; ")
+    .replace(/&/g, " ");
+  // Innermost-first: each pass resolves the groups that contain no braces.
+  for (let pass = 0; pass < 12; pass += 1) {
+    const before = text;
+    text = text
+      .replace(/\\(?:mathrm|mathbf|mathit|mathsf|mathcal|mathbb|boldsymbol|text|textbf|textit|textrm|operatorname|mbox|vec|hat|bar|overline|tilde|dot)\s*\{([^{}]*)\}/g, "$1")
+      .replace(/\\[dt]?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, (_, a: string, b: string) => `${group(a.trim())}/${group(b.trim())}`)
+      // Brace-less shorthand: \frac12, \frac1n, \frac{a}b, \frac a{b}.
+      .replace(/\\[dt]?frac\s*(?:\{([^{}]*)\}|([A-Za-z0-9]))\s*(?:\{([^{}]*)\}|([A-Za-z0-9]))/g,
+        (_, a1?: string, a2?: string, b1?: string, b2?: string) =>
+          `${group((a1 ?? a2 ?? "").trim())}/${group((b1 ?? b2 ?? "").trim())}`)
+      .replace(/\\sqrt\s*\[([^{}\]]*)\]\s*\{([^{}]*)\}/g, (_, n: string, x: string) => `${script(n, SUPERSCRIPT, "^")}√${group(x.trim())}`)
+      .replace(/\\sqrt\s*\{([^{}]*)\}/g, (_, x: string) => `√${group(x.trim())}`)
+      .replace(/\^\s*\{([^{}]*)\}/g, (_, x: string) => script(x.trim(), SUPERSCRIPT, "^"))
+      .replace(/_\s*\{([^{}]*)\}/g, (_, x: string) => script(x.trim(), SUBSCRIPT, "_"));
+    // Bare grouping braces go last, or `\frac{1}{\sqrt{x}}` would lose its own.
+    if (text === before) text = text.replace(/(?<!\\)\{([^{}]*)\}/g, "$1");
+    if (text === before) break;
+  }
+  return text
+    .replace(/\\([a-zA-Z]+|.)/g, (whole, name: string) => LATEX_SYMBOLS[name] ?? (/^[a-zA-Z]+$/.test(name) ? name : whole))
+    .replace(/\^([\p{L}\p{N}+-])(?![A-Za-z0-9])/gu, (_, x: string) => script(x, SUPERSCRIPT, "^"))
+    .replace(/_([\p{L}\p{N}])(?![A-Za-z0-9])/gu, (_, x: string) => script(x, SUBSCRIPT, "_"))
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+/** Lift math out of prose (never out of code) so the Markdown lexer cannot mangle it. */
+function liftMath(markdown: string): string {
+  return markdown.split(/(```[\s\S]*?(?:```|$)|`[^`\n]+`)/).map((part, index) => index % 2 ? part : part
+    .replace(/\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]/g, (_, a?: string, b?: string) =>
+      `\n\n${MATH_OPEN}${latexToText(a ?? b ?? "")}${MATH_CLOSE}\n\n`)
+    .replace(/\\\((.+?)\\\)/g, (_, a: string) => `${MATH_OPEN}${latexToText(a)}${MATH_CLOSE}`)
+    // Pandoc's rule keeps prices literal: no space just inside either dollar,
+    // and no digit straight after the closing one ("$5 and $10" is money).
+    .replace(/(^|[^\\$\w])\$(?=[^\s$])([^$\n]+?)(?<=[^\s\\])\$(?![\d$])/g, (whole, lead: string, body: string) =>
+      /[\\^_=]|^[a-zA-Z]$/.test(body) ? `${lead}${MATH_OPEN}${latexToText(body)}${MATH_CLOSE}` : whole),
+  ).join("");
+}
+
+/** Plain text from the lexer: restore math, turn surviving `**x**` into bold, drop stray `**`. */
+function prose(text: string): TelegramText {
+  const restored = text.replace(MATH_SPAN, "$1");
+  return join(restored.split(/\*\*([^*\n]+?)\*\*/).map((part, index) =>
+    index % 2 ? styled(plain(part), "bold") : plain(part.replace(/\*\*+/g, ""))));
 }
 
 function render(tokens: Token[], listDepth = 0): TelegramText {
@@ -107,7 +200,8 @@ function render(tokens: Token[], listDepth = 0): TelegramText {
       case "hr": return plain("────\n\n");
       case "blockquote": return join([styled(trim(children()), "blockquote"), plain("\n\n")]);
       case "link": return link(children(), token.href);
-      case "image": return link(children().text ? children() : plain("Image"), token.href);
+      // Images are sent as real photos by the caller (`telegramImageUrls`).
+      case "image": return plain("");
       case "list": return join([
         plain(listDepth ? "\n" : ""),
         ...token.items.map((item: Tokens.ListItem, index: number) => join([
@@ -128,7 +222,7 @@ function render(tokens: Token[], listDepth = 0): TelegramText {
       // guardrail placeholders such as <EMAIL_ADDRESS> and mathematical < signs.
       case "html": return plain(token.raw);
       case "escape": return plain(token.text);
-      case "text": return token.tokens ? children() : plain(decodeText(token.text));
+      case "text": return token.tokens ? children() : prose(decodeText(token.text));
       default: return "tokens" in token ? children() : plain(token.raw);
     }
   }));
@@ -136,9 +230,23 @@ function render(tokens: Token[], listDepth = 0): TelegramText {
 
 /** Parse ordinary assistant Markdown locally; never ask Telegram to parse it. */
 export function formatTelegramText(markdown: string): TelegramText {
-  const result = trim(render(Lexer.lex(markdown, { gfm: true })));
+  const result = trim(render(Lexer.lex(liftMath(markdown), { gfm: true })));
   result.entities.sort((a, b) => a.offset - b.offset || b.length - a.length);
   return result;
+}
+
+/** Web images the answer embeds; the sender delivers them as photos. */
+export function telegramImageUrls(markdown: string): string[] {
+  const urls: string[] = [];
+  const walk = (tokens: Token[]) => {
+    for (const token of tokens) {
+      if (token.type === "image" && /^https?:\/\//i.test(token.href)) urls.push(decodeText(token.href));
+      if ("tokens" in token && token.tokens) walk(token.tokens);
+      if (token.type === "list") for (const item of token.items) walk(item.tokens ?? []);
+    }
+  };
+  walk(Lexer.lex(markdown, { gfm: true }));
+  return [...new Set(urls)].slice(0, 10);
 }
 
 export function splitTelegramText(message: TelegramText, limit = TELEGRAM_MESSAGE_LIMIT): TelegramText[] {

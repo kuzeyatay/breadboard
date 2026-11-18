@@ -169,3 +169,24 @@ test("deleting a conversation drops the binding but keeps the contact", () => {
   assert.notEqual(chat, null);
   assert.equal(chat.conversation_id, null);
 });
+
+test("attention alerts are on by default, can be switched off, and older databases migrate", () => {
+  const { store } = freshStore();
+  assert.equal(store.settings().attentionAlerts, true);
+  assert.equal(store.updateSettings({ attentionAlerts: false }).attentionAlerts, false);
+  // Other settings writes leave it alone.
+  assert.equal(store.updateSettings({ autostart: false }).attentionAlerts, false);
+  assert.equal(store.updateSettings({ attentionAlerts: true }).attentionAlerts, true);
+
+  const legacy = new Database(":memory:");
+  legacy.exec(`
+    CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT);
+    CREATE TABLE conversations (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER);
+    CREATE TABLE telegram_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1), owner_user_id INTEGER, allowed_users TEXT NOT NULL DEFAULT '',
+      autostart INTEGER NOT NULL DEFAULT 1, bot_id TEXT, bot_username TEXT, bot_name TEXT, linked_at TEXT,
+      last_update_id INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+    INSERT INTO telegram_settings (id) VALUES (1);
+  `);
+  assert.equal(new TelegramStore(legacy).settings().attentionAlerts, true);
+});

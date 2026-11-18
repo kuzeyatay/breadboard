@@ -37,6 +37,7 @@ export interface TelegramStatus {
   linkedAt: string | null;
   allowedUsers: string[];
   autostart: boolean;
+  attentionAlerts: boolean;
   /** True when another Breadboard account owns the linked bot. */
   managedByAnotherUser: boolean;
   /** Senders the allowlist turned away, newest first. */
@@ -88,6 +89,7 @@ export function telegramStatus(
     linkedAt: settings.linkedAt,
     allowedUsers: owned ? settings.allowedUsers : [],
     autostart: settings.autostart,
+    attentionAlerts: settings.attentionAlerts,
     managedByAnotherUser: !owned,
     blocked: owned ? snapshot.blocked : [],
     chats: owned ? store.listChats(userId).map(presentChat) : [],

@@ -38,6 +38,7 @@ export async function PATCH(request: Request) {
     store.updateSettings({
       allowedUsers: body.allowedUsers,
       autostart: body.autostart,
+      attentionAlerts: body.attentionAlerts,
     });
     return NextResponse.json({ status: await currentStatus(userId) });
   } catch (error) {

@@ -2753,7 +2753,10 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 "phone message with no Markdown headings, tables, or code "
                 "fences, and keep it short enough to read on a phone. "
                 "Optionally attach one artifact from this same conversation by "
-                "its id. Never call this to announce your own progress."
+                "its id. Never call this to announce your own progress. "
+                "When an attention_alerts section says this turn runs while "
+                "the user is away, you may also call it unprompted with "
+                "reason \"attention\" if the outcome genuinely needs them."
             ),
             {
                 "channel": {
@@ -2802,6 +2805,16 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 },
                 "args": {
                     "type": "object",
+                "reason": {
+                    "type": "string",
+                    "enum": ["requested", "attention"],
+                    "description": (
+                        "\"requested\" when the user asked for this send; "
+                        "\"attention\" for an unprompted alert that something "
+                        "needs them (Telegram only, honored only while the user "
+                        "keeps attention alerts on)."
+                    ),
+                },
                     "additionalProperties": True,
                 },
             },

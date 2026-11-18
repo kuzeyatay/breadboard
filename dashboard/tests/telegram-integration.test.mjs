@@ -195,9 +195,11 @@ test("a turn that outlives the inbound wait still delivers its answer late", asy
 
 test("a replayed update never produces a second turn or a second reply", () => {
   assert.match(service, /claimMessage\(message\.messageId\)/);
-  // Per-chat serialization: a burst cannot open two turns on one conversation.
-  assert.match(service, /function serialize\(/);
-  assert.match(service, /serialize\(message\.chatId, \(\) => handleMessage\(message\)\)/);
+  // Per-chat mailbox: a burst is merged into one turn and turns drain one at
+  // a time, so a burst cannot open two turns on one conversation.
+  assert.match(service, /function drainMailbox\(/);
+  assert.match(service, /if \(box\.running\) return;\s+box\.running = true;/);
+  assert.match(service, /await handleMessage\(message, box\)/);
   // Telegram replays everything until it is acknowledged by offset, so the
   // offset has to be persisted as it advances rather than at shutdown.
   assert.match(service, /onOffset: \(offset\) => \{/);
