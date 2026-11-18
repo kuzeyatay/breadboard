@@ -275,6 +275,11 @@ jobs:
       - name: Stage transcription tools
         shell: pwsh
         run: npm --prefix desktop run prepare:transcription
+      - name: Download the Electron binary
+        # Electron fetches its binary on first require; parallel test files
+        # doing that at once collide on the cache zip (EBUSY). Fetch it once here.
+        shell: pwsh
+        run: node -e "require('./desktop/node_modules/electron')"
       - name: Desktop test suite
         # The hosted runner has no interactive desktop; Electron fixtures and
         # screen lanes run only on a developer machine.
