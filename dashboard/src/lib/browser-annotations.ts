@@ -108,10 +108,11 @@ export function passageLink(target: BrowserAnnotationTarget): string {
 
 /**
  * Whether a page is probably one only its reader can open: mail, an account,
- * an admin screen, a link carrying a token. A public crumb publishes the
- * page's address and title, so the panel asks before posting on one.
+ * an admin screen, a link carrying a token. A crumb carries the page's address
+ * and title, so no crumbs are left on one: the panel says why and the server
+ * refuses the write.
  * ponytail: a guess from the address alone. It will miss private pages on
- * ordinary addresses and flag some public ones; it only asks, never blocks.
+ * ordinary addresses and block some public ones; widen or narrow the lists here.
  */
 export function looksPrivatePage(value: string): boolean {
   let url: URL;

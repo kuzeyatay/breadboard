@@ -1,50 +1,100 @@
-/* The Crumbs page: feed, account and organizations. Paper cards on the pale
-   green canvas, botanical accent, generous reading measure. */
-.page { flex: 1; min-height: 0; overflow-y: auto; background: var(--paper-bg); color: var(--ink); font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; scrollbar-gutter: stable; }
-.column { width: min(680px, 100% - 32px); margin: 0 auto; padding: 36px 0 72px; }
-.page :is(button, a, input, summary):focus-visible { outline: 2px solid var(--botanical); outline-offset: 2px; }
+/* The Crumbs page, after Bluesky's web timeline: one 600px column between
+   hairlines, a sticky blurred header with the title and underlined feed tabs,
+   posts as flat rows split by hairlines, a hover tint instead of cards. */
+.page { flex: 1; min-height: 0; overflow-y: auto; background: var(--paper-bg); color: var(--ink); font: 15px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; scrollbar-gutter: stable; }
+.column { width: min(600px, 100%); min-height: 100%; margin: 0 auto; border-inline: 1px solid var(--line); }
+.page :is(button, a, input, textarea, summary):focus-visible { outline: 2px solid var(--botanical); outline-offset: 2px; }
 .page button { font: inherit; cursor: pointer; }
 .page button:disabled { opacity: .5; cursor: default; }
 
-.header h1 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 28px; font-weight: 650; letter-spacing: -.03em; color: var(--ink-heading, var(--ink)); }
-.header h1 svg { color: var(--botanical); }
-.bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0 22px; }
-.accountLink { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 14px 0 5px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper-surface); color: var(--ink); font-size: 13px; font-weight: 550; text-decoration: none; }
-.accountLink:not(:has(.avatar)) { padding: 0 14px; }
-.accountLink:hover { border-color: var(--line-strong); }
-.tabs { display: inline-flex; gap: 3px; padding: 4px; border-radius: 13px; border: 1px solid var(--neu-border, var(--line)); background: var(--neu-surface-pressed, var(--paper-strong)); box-shadow: var(--neu-inset-shadow); }
-.tabs button { padding: 6px 16px; border: 0; border-radius: 9px; background: transparent; color: var(--ink-muted); font-size: 13px; font-weight: 550; transition: background-color .15s ease, color .15s ease; }
-.tabs button:hover { color: var(--ink); }
-.tabs button[aria-selected="true"] { background: var(--neu-surface-raised, var(--paper-raised)); color: var(--ink); box-shadow: var(--neu-soft-shadow); }
+.top { position: sticky; top: 0; z-index: 10; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--paper-bg) 86%, transparent); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.bar { display: flex; align-items: center; gap: 8px; height: 54px; padding: 0 16px; }
+.bar h1 { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; margin: 0; overflow: hidden; font-size: 19px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; text-overflow: ellipsis; color: var(--ink-heading, var(--ink)); }
+.bar h1 svg { flex-shrink: 0; color: var(--botanical); }
+.back { display: grid; place-items: center; width: 34px; height: 34px; margin-left: -8px; border: 0; border-radius: 999px; background: transparent; color: var(--ink); }
+.back:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.me { display: grid; padding: 0; border: 0; border-radius: 999px; background: transparent; }
+.me:hover { opacity: .85; }
+
+/* Feed tabs: each one as wide as it needs, the label underlined when chosen. */
+.tabs { display: flex; overflow-x: auto; scrollbar-width: none; }
+.tabs button { flex: 1 0 auto; display: flex; justify-content: center; padding: 12px 14px 0; border: 0; background: transparent; color: var(--ink-muted); font-size: 15px; font-weight: 600; transition: background-color .15s ease, color .15s ease; }
+.tabs button:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.tabs button span { position: relative; display: inline-flex; align-items: center; gap: 5px; padding-bottom: 13px; white-space: nowrap; }
+.tabs button[aria-selected="true"] { color: var(--ink-heading, var(--ink)); }
+.tabs button[aria-selected="true"] span::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; border-radius: 999px; background: var(--botanical); }
+
+/* Posts: flat rows, a hairline between them, a faint tint under the pointer. */
+.crumb { position: relative; border-bottom: 1px solid var(--line); }
+/* A reply under the crumb it answers: no hairline between them, a line joining the two photos. */
+.slice { border-bottom: 1px solid var(--line); }
+.slice > .crumb { border-bottom: 0; }
+.crumb[data-thread="parent"]::before, .crumb[data-thread="child"]::before { content: ""; position: absolute; left: 36px; width: 2px; border-radius: 1px; background: var(--line-strong); }
+.crumb[data-thread="parent"]::before { top: 56px; bottom: 0; }
+.crumb[data-thread="parent"]:has(> p:first-child)::before { top: 76px; }
+.crumb[data-thread="child"]::before { top: 0; height: 6px; }
+.crumb[data-openable] { cursor: pointer; transition: background-color .12s ease; }
+.crumb[data-openable]:hover { background: color-mix(in srgb, var(--ink) 3%, transparent); }
+.crumb[data-openable]:focus-visible { outline: 2px solid var(--botanical); outline-offset: -2px; }
+.comment { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.crumb[data-detail] { padding-top: 14px; }
+.crumb[data-detail] .comment { margin-top: 6px; font-size: 18px; line-height: 25px; }
+.when { margin: 12px 0 2px; color: var(--ink-muted); font-size: 14px; }
+
+/* The page a crumb is about, drawn like a link card: title, the passage, the site. */
+.source { display: flex; flex-direction: column; gap: 3px; width: 100%; margin: 8px 0 4px; padding: 10px 14px 9px; border: 1px solid var(--line); border-radius: 12px; background: transparent; color: var(--ink); text-align: left; transition: border-color .15s ease; }
+.source:hover { border-color: var(--line-strong); }
+.source strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 15px; font-weight: 600; line-height: 20px; overflow-wrap: anywhere; }
+.source q { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-top: 2px; padding-left: 9px; border-left: 2px solid var(--botanical); color: var(--ink); font-size: 14px; line-height: 19px; quotes: none; overflow-wrap: anywhere; }
+.crumb[data-detail] .source q { -webkit-line-clamp: unset; }
+.source small { display: flex; align-items: center; gap: 4px; margin-top: 4px; color: var(--ink-muted); font-size: 12px; line-height: 16px; }
+
+/* The post view: the reply box under the post, then the replies as rows. */
+.composer { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.composer > .link { font-size: 14px; }
+.replyForm { display: flex; align-items: flex-end; gap: 8px; margin-top: 8px; }
+.composer .replyForm { margin-top: 0; }
+.replyForm textarea { flex: 1; min-height: 38px; max-height: 200px; padding: 9px 12px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--paper-raised); color: var(--ink); font: inherit; resize: vertical; }
+.replyForm textarea::placeholder { color: var(--ink-muted); }
+.replyForm textarea:focus { outline: none; border-color: var(--botanical); box-shadow: 0 0 0 3px color-mix(in srgb, var(--botanical) 14%, transparent); }
+/* Under the Organizations tab: which organization to read. */
+.orgPicker { display: flex; gap: 8px; padding: 10px 16px; overflow-x: auto; border-top: 1px solid var(--line); scrollbar-width: none; }
+.orgPicker button { flex-shrink: 0; padding: 6px 14px; border: 1px solid var(--line-strong); border-radius: 999px; background: transparent; color: var(--ink); font-size: 14px; font-weight: 600; white-space: nowrap; transition: background-color .15s ease, border-color .15s ease; }
+.orgPicker button:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.orgPicker button[aria-checked="true"] { border-color: var(--botanical); background: var(--botanical); color: var(--paper-raised); }
+.noReplies { margin: 0; padding: 22px 16px; color: var(--ink-muted); font-size: 14px; text-align: center; }
+
+/* Your profile, above your crumbs. */
+.profile { display: grid; grid-template-columns: 1fr auto; align-items: end; padding: 18px 16px 14px; border-bottom: 1px solid var(--line); }
+.profile > :first-child { grid-row: 1; }
+.profile > a { grid-row: 1; align-self: center; text-decoration: none; }
+.profile h2 { grid-column: 1 / -1; margin: 12px 0 0; font-size: 24px; font-weight: 700; letter-spacing: -.02em; line-height: 1.2; }
+.profile p { grid-column: 1 / -1; margin: 2px 0 0; color: var(--ink-muted); }
+.welcome { padding: 16px; border-bottom: 1px solid var(--line); }
+.welcome p { margin: 0 0 12px; color: var(--ink-muted); line-height: 1.45; }
+.welcome strong { color: var(--ink); font-weight: 600; }
+
+.more { display: block; margin: 16px auto; padding: 7px 16px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--ink); font-size: 14px; }
+.more:hover { border-color: var(--line-strong); }
+.timeline .error, .column > .error { margin: 12px 16px; }
+.crumb .error, .crumb .notice { margin: 8px 0 4px; }
+.orgSection { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.orgSection > h3 { margin: 0 0 4px; font-size: 14.5px; font-weight: 600; }
+.orgSection > .hint { margin: 0 0 12px; color: var(--ink-muted); font-size: 13px; }
+
+
 
 .scopes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
 .scopes button { display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--ink-muted); font-size: 12.5px; font-weight: 500; transition: border-color .15s ease, background-color .15s ease, color .15s ease; }
 .scopes button:hover { border-color: var(--line-strong); color: var(--ink); }
 .scopes button[aria-checked="true"] { border-color: var(--botanical); background: var(--botanical); color: var(--paper-raised); }
 
-.feed { display: flex; flex-direction: column; gap: 12px; }
-.crumb, .card, .signIn { border: 1px solid var(--neu-border, var(--line)); border-radius: 16px; background: var(--neu-surface, var(--paper-surface)); box-shadow: var(--neu-raised-shadow); }
-.crumb { animation: crumbIn .24s ease-out both; }
-@keyframes crumbIn { from { opacity: 0; transform: translateY(6px); } }
 .avatar { flex-shrink: 0; display: inline-grid; place-items: center; border-radius: 50%; object-fit: cover; background: color-mix(in srgb, var(--botanical) 18%, var(--paper-surface)); color: var(--botanical); font-weight: 700; }
-.byline { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
-.byline strong { font-weight: 600; white-space: nowrap; }
-.byline span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-muted); font-size: 13px; }
-.byline time { flex-shrink: 0; color: var(--ink-muted); font-size: 13px; }
 .quiet { display: inline-grid; place-items: center; align-self: center; width: 26px; height: 26px; flex-shrink: 0; border: 0; border-radius: 7px; background: transparent; color: var(--ink-muted); }
 .quiet:hover { background: var(--paper-strong); color: var(--danger); }
-.crumb blockquote { margin: 9px 0 0; padding: 9px 13px; border-left: 3px solid var(--botanical); border-radius: 0 9px 9px 0; background: color-mix(in srgb, var(--botanical) 9%, transparent); font-size: 13.5px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
 .comment { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .state { margin: 8px 0 0; padding: 6px 10px; border-radius: 8px; background: color-mix(in srgb, var(--botanical-2, var(--botanical)) 14%, transparent); color: var(--ink); font-size: 12.5px; }
 .state[data-state="rejected"], .state[data-state="reported"], .state[data-state="hidden"] { background: color-mix(in srgb, var(--danger) 12%, transparent); }
-.source { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 12px; padding: 10px 13px; border-radius: 12px; border: 1px solid var(--neu-border, var(--line)); background: var(--neu-surface-pressed, var(--paper-strong)); box-shadow: var(--neu-inset-shadow); color: var(--ink); text-align: left; transition: border-color .15s ease; }
-.source:hover { border-color: var(--botanical); }
-.source > svg { flex-shrink: 0; color: var(--ink-muted); }
-.source span { display: flex; flex-direction: column; min-width: 0; margin-right: auto; }
-.source strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
-.source small { color: var(--ink-muted); font-size: 12px; }
-.more { display: block; margin: 16px auto 0; padding: 7px 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper-surface); color: var(--ink); font-size: 13px; }
-.more:hover { border-color: var(--line-strong); }
 
 .emptyState { display: flex; flex-direction: column; align-items: center; padding: 56px 20px; text-align: center; color: var(--ink-muted); }
 .emptyState svg { color: var(--botanical); }
@@ -62,6 +112,7 @@
 :is(.primary, .secondary, .danger):not(:disabled):active { transform: scale(.97); }
 .link { padding: 0; border: 0; background: transparent; color: var(--botanical); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
 
+.card, .signIn { border: 1px solid var(--neu-border, var(--line)); border-radius: 16px; background: var(--neu-surface, var(--paper-surface)); box-shadow: var(--neu-raised-shadow); }
 .signIn { display: flex; flex-direction: column; align-items: center; max-width: 440px; margin: 8px auto 0; padding: 34px 32px 26px; text-align: center; }
 .signIn > svg { color: var(--botanical); }
 .signIn h2 { margin: 14px 0 6px; font-size: 20px; font-weight: 650; letter-spacing: -.02em; }
@@ -109,10 +160,10 @@ a.primary, a.secondary { text-decoration: none; }
 .card summary h3::after { content: "Show"; margin-left: 10px; color: var(--botanical); font-size: 12px; font-weight: 500; }
 .card[open] summary h3::after { content: "Hide"; }
 .card[open] summary { margin-bottom: 12px; }
-.profile { display: flex; align-items: center; gap: 15px; }
-.profile > div { flex: 1; min-width: 0; }
-.profile h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
-.profile p { margin: 0; color: var(--ink-muted); }
+.accountRow { display: flex; align-items: center; gap: 15px; }
+.accountRow > div { flex: 1; min-width: 0; }
+.accountRow h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
+.accountRow p { margin: 0; color: var(--ink-muted); }
 .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
 .choices button { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper-raised); color: var(--ink); text-align: left; transition: border-color .15s ease, background-color .15s ease; }
 .choices button > svg { flex-shrink: 0; color: var(--ink-muted); }
@@ -145,46 +196,9 @@ a.primary, a.secondary { text-decoration: none; }
 .error button { border: 0; background: transparent; color: inherit; text-decoration: underline; padding: 0; }
 
 @media (max-width: 520px) {
-  .profile { flex-wrap: wrap; }
+  .accountRow { flex-wrap: wrap; }
   .row { flex-wrap: wrap; }
-  .crumb { padding: 14px; }
 }
-@media (prefers-reduced-motion: reduce) { .crumb { animation: none; } .page * { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { .page * { transition: none !important; } }
 
-/* The timeline: one quiet column of posts. */
-.timeline .scopes { flex-wrap: nowrap; gap: 0; margin: 0 0 14px; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: none; }
-.timeline .scopes button { flex: 1 0 auto; justify-content: center; padding: 13px 18px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--ink-muted); font-size: 13.5px; font-weight: 550; }
-.timeline .scopes button:hover { background: color-mix(in srgb, var(--paper-strong) 45%, transparent); color: var(--ink); }
-.timeline .scopes button[aria-selected="true"] { border-bottom-color: var(--botanical); background: transparent; color: var(--ink); font-weight: 650; }
-/* Every crumb is its own card: a post, not a line in a conversation. */
-.crumb[data-openable] { cursor: pointer; transition: box-shadow var(--neu-duration, .16s) ease; }
-.crumb[data-openable]:hover { box-shadow: var(--neu-strong-shadow); }
-.crumb[data-openable]:focus-visible { outline: 2px solid var(--botanical); outline-offset: 2px; }
-.post { display: flex; flex-direction: column; gap: 12px; }
-.back { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px 6px 9px; border: 0; border-radius: 999px; background: transparent; color: var(--ink-muted); font-size: 13px; font-weight: 550; }
-.back:hover { background: color-mix(in srgb, var(--paper-strong) 55%, transparent); color: var(--ink); }
-.crumb[data-detail] .comment { font-size: 17px; line-height: 24px; }
-.crumb[data-detail] .source q { -webkit-line-clamp: unset; }
-.crumb[data-detail] .replies { gap: 10px; }
-.crumb[data-detail] .reply { padding: 11px 13px; border-radius: 13px; border: 1px solid var(--neu-border, var(--line)); background: var(--neu-surface-raised, var(--paper-raised)); box-shadow: var(--neu-soft-shadow); }
-.noReplies { margin: 2px 0; color: var(--ink-muted); font-size: 13px; }
-.source { flex-direction: column; align-items: stretch; gap: 8px; }
-.source q { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; padding-left: 10px; border-left: 3px solid var(--botanical); font-size: 13.5px; quotes: none; overflow-wrap: anywhere; }
-.source > span { flex-direction: row; align-items: center; gap: 7px; margin: 0; color: var(--ink-muted); font-size: 12.5px; }
-.source > span strong { flex: 0 1 auto; }
-.source > span svg { flex-shrink: 0; }
-.replies { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
-.reply { display: flex; gap: 9px; }
-.reply > div { min-width: 0; flex: 1; }
-.reply p { margin: 1px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.replyForm { display: flex; align-items: flex-end; gap: 8px; }
-.replyForm textarea { flex: 1; min-height: 38px; max-height: 160px; padding: 8px 12px; border: 1px solid var(--neu-border, var(--line-strong)); border-radius: 12px; background: var(--neu-surface-pressed, var(--paper-raised)); box-shadow: var(--neu-inset-shadow); color: var(--ink); font: inherit; resize: vertical; }
-.replyForm textarea::placeholder { color: var(--ink-muted); }
-.replyForm textarea:focus { outline: none; border-color: var(--botanical); box-shadow: 0 0 0 3px color-mix(in srgb, var(--botanical) 14%, transparent); }
-.timeline .emptyState { padding: 48px 20px; }
-.timeline .more { margin: 14px auto; }
 
-/* The feed inside an Organization room: the room supplies the surface. */
-.inRoom { flex: 1; min-height: 0; overflow-y: auto; background: transparent; padding: 22px 24px 28px; }
-.inRoom > div { max-width: 680px; margin: 0 auto; }
-.inRoom .scopes[hidden] { display: none; }

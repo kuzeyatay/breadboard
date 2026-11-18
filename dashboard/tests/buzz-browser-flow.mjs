@@ -115,25 +115,15 @@ try {
   await owner.goto(`${origin}/?room=${room.publicId}`);
   await owner.getByText('Native agent answer for account 1',{exact:true}).waitFor();
   await owner.screenshot({path:path.join(output,'light.png')});
-  // The crumbs room is the Crumbs feed, not a transcript; going back and forth leaves one room on screen, never two.
-  const rowsOverlap=()=>owner.evaluate(()=>{const rows=[...document.querySelectorAll('[data-testid="message-row"]')].map(row=>row.getBoundingClientRect()).filter(rect=>rect.height>0).sort((a,b)=>a.top-b.top);return rows.some((rect,index)=>index>0&&rect.top<rows[index-1].bottom-1);});
-  for(let round=0;round<3;round++){
-    await owner.getByRole('button',{name:'crumbs',exact:true}).click();
-    await owner.getByText('A crumb in the room',{exact:true}).waitFor();
-    assert.equal(await owner.locator('[data-testid="message-row"]').count(),0,'no transcript rows in the crumbs room');
-    assert.equal(await owner.getByRole('textbox',{name:/^Message #/}).count(),0,'crumbs are left from the browser, not typed here');
-    if(round===0)await owner.screenshot({path:path.join(output,'crumbs-room.png')});
-    await owner.getByRole('button',{name:round%2?'general':'Launch',exact:true}).click();
-    await owner.getByRole('textbox',{name:round%2?'Message #general':'Message #launch',exact:true}).waitFor();
-    assert.equal(await owner.getByText('A crumb in the room',{exact:true}).count(),0,'the feed is gone when another room opens');
-    assert.equal(await owner.getByText('Native agent answer for account 1',{exact:true}).count(),round%2?0:1,'only the open room is drawn');
-    assert.equal(await rowsOverlap(),false,'rows do not overlap');
-  }
+  // The crumbs channel wears the Crumbs mark and opens the Crumbs page at this organization; no feed is drawn here.
+  const crumbsRow=owner.getByRole('button',{name:'crumbs',exact:true});
+  assert.equal(await crumbsRow.locator('svg circle').count(),3,'the crumbs channel shows the Crumbs mark, not a hash');
+  await owner.screenshot({path:path.join(output,'crumbs-channel.png')});
+  await Promise.all([owner.waitForURL(/\/crumbs\?tab=organizations&org=room%3A/),crumbsRow.click()]);
+  await owner.goto(`${origin}/?room=${room.publicId}`);
+  await owner.getByText('Native agent answer for account 1',{exact:true}).waitFor();
   await owner.screenshot({path:path.join(output,'after-switching.png')});
   await owner.evaluate(()=>window.pickTheme('dark'));
-  await owner.getByRole('button',{name:'crumbs',exact:true}).click();
-  await owner.getByText('A crumb in the room',{exact:true}).waitFor();
-  await owner.screenshot({path:path.join(output,'crumbs-room-dark.png')});
   await owner.evaluate(()=>window.pickTheme('light'));
   await owner.getByRole('button',{name:'Launch',exact:true}).click();
   await owner.getByText('Native agent answer for account 1',{exact:true}).waitFor();

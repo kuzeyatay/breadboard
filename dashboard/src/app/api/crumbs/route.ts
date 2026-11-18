@@ -33,6 +33,13 @@ export async function GET(request: Request) {
         const items = [...page.items, ...browserAnnotationMine(db, userId)].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
         return json({ ...page, items });
       }
+      case "organizations": {
+        const local = db.prepare(`SELECT o.name, 'room:' || r.public_id AS scope FROM organizations o JOIN organization_members m ON m.organization_id=o.id AND m.user_id=?
+          JOIN buzz_rooms r ON r.organization_id=o.id AND r.slug='crumbs' AND r.archived_at IS NULL ORDER BY o.name COLLATE NOCASE`).all(userId) as Array<{ name: string; scope: string }>;
+        const remote = crumbs.status(userId).signedIn ? await crumbs.listOrgs(userId).catch(() => []) : [];
+        const unconnected = remote.filter(org => !buzzBridge.crumbsRoomOf(userId, org.id)).map(org => ({ name: org.name, scope: `org:${org.id}` }));
+        return json({ organizations: [...local, ...unconnected] });
+      }
       case "follows": return json(await crumbs.follows(userId));
       case "orgs": return json({ orgs: (await crumbs.listOrgs(userId)).map(org => ({ ...org, crumbsRoom: buzzBridge.crumbsRoomOf(userId, org.id) })), local: buzzBridge.localOrganizations(userId) });
       case "org": return json(await crumbs.orgDetail(userId, query.get("id") ?? ""));

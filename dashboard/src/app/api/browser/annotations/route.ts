@@ -4,6 +4,7 @@ import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import { requireSameOrigin } from "@/lib/request-origin.ts";
 import { AnnotationError, readBrowserAnnotations, writeBrowserAnnotation } from "@/lib/browser-annotations-store.ts";
 import { crumbs, crumbsErrorResponse } from "@/lib/crumbs/service.ts";
+import { looksPrivatePage } from "@/lib/browser-annotations.ts";
 
 export const dynamic = "force-dynamic";
 // Three places a discussion can live: this machine ("private" and rooms),
@@ -34,6 +35,8 @@ export async function POST(request: Request) {
     const { userId, displayName } = await requireBuzzUser();
     const body = await readJsonBody(request, 32000);
     const org = ORG_SCOPE.exec(String(body.scope ?? ""));
+    const page = body.target && typeof body.target === "object" ? String((body.target as { url?: unknown }).url ?? "") : "";
+    if (!String(body.action ?? "").startsWith("delete") && looksPrivatePage(page)) throw new AnnotationError(403, "Crumbs can’t be left on pages that look private, like an inbox or an account page.");
     const result = body.scope === "public" ? await crumbs.writePublic(userId, body)
       : org ? await crumbs.writeOrg(userId, org[1]!, body)
       : writeBrowserAnnotation(db, userId, displayName, body);

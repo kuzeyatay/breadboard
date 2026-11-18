@@ -14,6 +14,7 @@
 import { useSyncExternalStore } from "react";
 import { Bot, Hash, Inbox, Lock, Plus, Search } from "lucide-react";
 
+import CrumbsIcon from "@/app/components/crumbs-icon";
 import { cn } from "@/app/buzz/lib/cn";
 import { isMacPlatform } from "@/app/buzz/lib/platform";
 import {
@@ -76,7 +77,8 @@ export function RoomRail({
   const roomRow = (room: BuzzRoomSummary) => {
     const active = view === "room" && room.publicId === activeRoomId;
     const unread = room.unread > 0;
-    const Icon = room.visibility === "private" ? Lock : Hash;
+    // The crumbs channel opens the Crumbs page, so it wears the Crumbs mark.
+    const Icon = room.slug === "crumbs" ? CrumbsIcon : room.visibility === "private" ? Lock : Hash;
 
     // Upstream's three-state weighting, which is what gives the rail its
     // rhythm: a room with something waiting is bold at full strength, an open

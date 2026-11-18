@@ -11,11 +11,10 @@ import CrumbNotes from "./crumb-notes";
 import { PostAction, PostCard, PostLabel, PostMenu, PostMenuItem } from "./post-card";
 import styles from "./crumbs.module.css";
 
-type Tab = "feed" | "organizations";
 interface Person { did: string; handle: string | null; displayName: string | null; avatar: string | null }
 export interface CrumbsStatus { signedIn: boolean; needsSignIn: boolean; did: string | null; handle: string | null; displayName: string | null; avatar: string | null; defaultVisibility: string; servers: { indexer: string; orgStore: string }; publicMode: "records" | "posts" }
 type Status = CrumbsStatus;
-interface FeedItem { id: string; author: Person; url: string; title: string; target: BrowserAnnotationTarget; comment: string; source: string | null; createdAt: string; threadCount: number; own: boolean; audience: string; /** Where replies to it go, when that is not the tab it is shown in. */ scope?: string; state?: string; reason?: string | null; note?: { uri: string; body: string; source: string | null }; noteCount?: number }
+interface FeedItem { id: string; author: Person; url: string; title: string; target: BrowserAnnotationTarget; comment: string; source: string | null; createdAt: string; threadCount: number; own: boolean; audience: string; /** Where replies to it go, when that is not the tab it is shown in. */ scope?: string; state?: string; reason?: string | null; note?: { uri: string; body: string; source: string | null }; noteCount?: number; /** The crumb that started the thread, when this one is a reply. */ parent?: FeedItem }
 interface Org { id: string; name: string; role: "admin" | "member"; ready: boolean; /** Set when it is connected to a Breadboard organization: its crumbs are that organization's crumbs room. */ crumbsRoom?: string | null }
 interface OrgDetail extends Org { members: Array<Person & { role: "admin" | "member"; waitingForKey: boolean }>; reports: Array<{ id: string; messageId: string; reporter: Person; reason: string; createdAt: string }> }
 
@@ -90,14 +89,24 @@ function HandleField({ value, onChange, placeholder, label }: { value: string; o
   </div>;
 }
 
-export default function CrumbsClient({ initialTab }: { initialTab: Tab }) {
-  const [tab, setTab] = useState<Tab>(initialTab);
+/**
+ * The Crumbs page, laid out like a familiar timeline: one column, a sticky
+ * header with the feed tabs, posts as flat rows. Your own crumbs live on your
+ * profile (the photo at the top right), not in a tab. Organizations are run
+ * from Settings and the Organization page; here they are only feeds.
+ */
+/** An organization whose crumbs can be read here, by the feed scope that reads them. */
+interface OrgFeed { name: string; scope: string }
+
+export default function CrumbsClient({ initialTab, initialOrg }: { initialTab?: "organizations"; initialOrg?: string }) {
   const [status, setStatus] = useState<Status | null>(null);
   const [orgs, setOrgs] = useState<Org[]>([]);
-  const [localOrgs, setLocalOrgs] = useState<LocalOrg[]>([]);
+  const [organizations, setOrganizations] = useState<OrgFeed[]>([]);
+  const [profile, setProfile] = useState(false);
+  useEffect(() => { void view<{ organizations: OrgFeed[] }>("view=organizations").then(data => setOrganizations(data.organizations)).catch(() => {}); }, [status?.signedIn]);
   const [error, setError] = useState("");
   usePageLoading(!status && !error);
-  const apply = useCallback((data: Awaited<ReturnType<typeof loadAccount>>) => { setStatus(data.status); setOrgs(data.orgs); setLocalOrgs(data.local); setError(""); return data.status; }, []);
+  const apply = useCallback((data: Awaited<ReturnType<typeof loadAccount>>) => { setStatus(data.status); setOrgs(data.orgs); setError(""); return data.status; }, []);
   const refresh = useCallback(() => loadAccount().then(apply), [apply]);
   useEffect(() => {
     let alive = true;
@@ -106,37 +115,49 @@ export default function CrumbsClient({ initialTab }: { initialTab: Tab }) {
     window.addEventListener("focus", onFocus);
     return () => { alive = false; window.removeEventListener("focus", onFocus); };
   }, [apply]);
-  function choose(next: Tab) { setTab(next); window.history.replaceState(null, "", next === "feed" ? "/crumbs" : `/crumbs?tab=${next}`); }
+  const me: Person | null = status?.signedIn ? { did: status.did!, handle: status.handle, displayName: status.displayName, avatar: status.avatar } : null;
+  const accountButton = me && <button type="button" className={styles.me} aria-label="Your profile" title="Your profile" onClick={() => setProfile(true)}><Avatar person={me} size={32} /></button>;
 
   return <main className={styles.page}>
     <div className={styles.column}>
-      <header className={styles.header}>
-        <h1><CrumbsIcon size={30} strokeWidth={1.6} />Crumbs</h1>
-        <div className={styles.bar}>
-          <nav className={styles.tabs} role="tablist" aria-label="Crumbs sections">
-            {(["feed", "organizations"] as const).map(value => <button key={value} type="button" role="tab" aria-selected={tab === value} onClick={() => choose(value)}>{value === "feed" ? "Feed" : "Organizations"}</button>)}
-          </nav>
-          {status && <a className={styles.accountLink} href={ACCOUNT_HREF}>
-            {status.signedIn ? <><Avatar person={{ did: status.did!, handle: status.handle, displayName: status.displayName, avatar: status.avatar }} size={24} />{status.displayName || shortHandle(status.handle)}</> : "Sign in"}
-          </a>}
-        </div>
-      </header>
-      {error && <Problem text={error} retry={() => void refresh().catch(error => setError(message(error)))} />}
-      {status && tab === "feed" && <Feed status={status} orgs={orgs} />}
-      {status && tab === "organizations" && <Organizations status={status} orgs={orgs} localOrgs={localOrgs} refresh={refresh} />}
+      {error && <><Bar title={<><CrumbsIcon size={22} strokeWidth={1.7} />Crumbs</>} /><Problem text={error} retry={() => void refresh().catch(error => setError(message(error)))} /></>}
+      {status && me && profile && <Feed key="mine" status={status} orgs={orgs} fixedScope="mine" title={nameOf(me)} onBack={() => setProfile(false)}
+        intro={<div className={styles.profile}>
+          <Avatar person={me} size={76} />
+          <a className={styles.secondary} href={ACCOUNT_HREF}>Edit profile</a>
+          <h2>{nameOf(me)}</h2>
+          <p>@{shortHandle(me.handle)}</p>
+        </div>} />}
+      {status && !(me && profile) && <Feed key="home" status={status} orgs={orgs} organizations={organizations} initialTab={initialTab} initialOrg={initialOrg} title={<><CrumbsIcon size={22} strokeWidth={1.7} />Crumbs</>} right={accountButton}
+        intro={!status.signedIn && <div className={styles.welcome}>
+          <p><strong>Crumbs are notes people leave on the web,</strong> anchored to the passage they are about. Sign in with your Bluesky account to post, reply and follow.</p>
+          <a className={styles.primary} href={ACCOUNT_HREF}>Sign in</a>
+        </div>} />}
     </div>
   </main>;
 }
 
-/** One crumb in the timeline: who, the passage, what they said, and what you can do with it. */
-function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen }: { item: FeedItem; scope: string; signedIn: boolean; onRemoved: () => void; detail?: boolean; onOpen?: () => void }) {
-  const [open, setOpen] = useState(Boolean(detail));
+/** The sticky top of the column: back arrow or title on the left, one control on the right. */
+function Bar({ title, onBack, right, children }: { title: ReactNode; onBack?: () => void; right?: ReactNode; children?: ReactNode }) {
+  return <header className={styles.top}>
+    <div className={styles.bar}>
+      {onBack && <button type="button" className={styles.back} aria-label="Back" title="Back" onClick={onBack}><ArrowLeft size={20} /></button>}
+      <h1>{title}</h1>
+      {right}
+    </div>
+    {children}
+  </header>;
+}
+
+/** One crumb in the timeline: who, what they said, the passage it is about, and what you can do with it. */
+function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen, thread: line }: { item: FeedItem; scope: string; signedIn: boolean; onRemoved: () => void; detail?: boolean; onOpen?: () => void; /** Where it sits in a reply shown under the crumb it answers. */ thread?: "parent" | "child" }) {
   const [thread, setThread] = useState<AnnotationResponse | null>(null);
   const [text, setText] = useState("");
   const [reporting, setReporting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const field = useRef<HTMLTextAreaElement>(null);
   usePageLoading(busy);
   // Replies are crumbs on the same passage, in the same place this one lives.
   const audience = item.scope ?? (scope.startsWith("org:") || scope.startsWith("room:") ? scope : "public");
@@ -158,10 +179,6 @@ function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen }: { item: Fee
   }
   const write = (action: string, body: string, messageId?: string) => fetch("/api/browser/annotations", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ scope: audience, target: item.target, action, body, messageId, operationId: crypto.randomUUID() }) }).then(read<AnnotationResponse>);
-  function toggle() {
-    setOpen(value => !value); setReporting(false);
-    if (!open && !thread) void run(loadThread);
-  }
   function submit(event: FormEvent) {
     event.preventDefault();
     if (reporting) void run(async () => { const result = await write("flag", text, item.id); setText(""); setReporting(false); return result; });
@@ -172,25 +189,37 @@ function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen }: { item: Fee
   useEffect(() => { if (detail) void run(loadThread); }, []);
   const replies = (thread?.messages ?? []).filter(reply => reply.id !== item.id);
   const count = thread ? thread.messages.length : item.threadCount;
-  const host = new URL(item.target.url).hostname;
+  const host = new URL(item.target.url).hostname.replace(/^www\./, "");
 
-  // Anywhere on the card that is not itself a control opens the post, as on any timeline.
+  // Anywhere on the row that is not itself a control opens the post, as on any timeline.
   const openable = !detail && onOpen ? {
     tabIndex: 0, "data-openable": true, "aria-label": `Crumb by ${nameOf(item.author)}`,
-    onClick: (event: MouseEvent<HTMLElement>) => { if (!(event.target as HTMLElement).closest("button, a, textarea, input, form") && !window.getSelection()?.toString()) onOpen(); },
+    onClick: (event: MouseEvent<HTMLElement>) => { if (!(event.target as HTMLElement).closest("button, a, textarea, input, form, details") && !window.getSelection()?.toString()) onOpen(); },
     onKeyDown: (event: KeyboardEvent<HTMLElement>) => { if (event.key === "Enter" && event.target === event.currentTarget) onOpen(); },
   } : {};
 
   const [notesOpen, setNotesOpen] = useState(false);
   const [noteCount, setNoteCount] = useState(item.noteCount ?? 0);
   const name = nameOf(item.author);
-  const report = () => { setOpen(true); setReporting(true); if (!thread) void run(loadThread); };
+  const report = () => { setReporting(true); if (detail) requestAnimationFrame(() => field.current?.focus()); };
   // Crumbs on the network are records; the ones kept on this machine are comments in their thread.
   const remove = () => void run(async () => { if (item.id.startsWith("at://")) await act({ action: "delete", id: item.id }); else await write("delete-comment", "", item.id); onRemoved(); });
+  // Where a crumb lives is only worth saying when the tab does not say it already.
+  const where = line !== "child" && item.audience !== "Public" && item.audience !== "Bluesky" && !scope.startsWith("org:") && !scope.startsWith("room:") ? item.audience : null;
+  // A reply is about the crumb above it; only the crumb that started the thread carries the page.
+  const reply = Boolean(item.parent);
 
-  return <PostCard className={styles.crumb} data-crumb={item.id} data-detail={detail || undefined} {...openable}
-    avatar={<Avatar person={item.author} size={40} />} name={name} handle={shortHandle(item.author.handle) || null}
-    time={<time dateTime={item.createdAt} title={new Date(item.createdAt).toLocaleString()}>{ago(item.createdAt)}</time>}
+  const form = signedIn ? <form className={styles.replyForm} onSubmit={submit}>
+    <textarea ref={field} aria-label={reporting ? "Reason for reporting" : "Reply"} placeholder={reporting ? "What is wrong with it?" : "Write your reply"} rows={detail ? 2 : 1} maxLength={reporting ? 1000 : 4000} value={text} disabled={busy}
+      onChange={event => setText(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && text.trim()) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
+    {reporting && <button type="button" className={styles.secondary} onClick={() => { setReporting(false); setText(""); }}>Cancel</button>}
+    <button type="submit" className={styles.primary} disabled={busy || !text.trim()}>{reporting ? "Report" : "Reply"}</button>
+  </form> : <a className={styles.link} href={ACCOUNT_HREF}>Sign in to reply</a>;
+
+  const post = <PostCard className={styles.crumb} data-crumb={item.id} data-detail={detail || undefined} data-thread={line} {...openable}
+    context={where ? <><Lock size={12} strokeWidth={2.4} />{item.audience}</> : undefined}
+    avatar={<Avatar person={item.author} size={42} />} name={name} handle={shortHandle(item.author.handle) || null}
+    time={detail ? undefined : <time dateTime={item.createdAt} title={new Date(item.createdAt).toLocaleString()}>{ago(item.createdAt)}</time>}
     menu={<PostMenu label={`More for ${name}’s crumb`}>
       <PostMenuItem icon={<Link2 size={18} />} onClick={() => void navigator.clipboard?.writeText(item.url)}>Copy link to passage</PostMenuItem>
       {item.source && <PostMenuItem icon={<BookOpen size={18} />} onClick={() => void openSite(item.source!)}>Open the source</PostMenuItem>}
@@ -198,41 +227,66 @@ function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen }: { item: Fee
       {item.own && <PostMenuItem icon={<Trash2 size={18} />} danger disabled={busy} onClick={remove}>Delete</PostMenuItem>}
     </PostMenu>}
     actions={<>
-      <PostAction icon={<MessageCircle size={18} />} count={count > 1 ? count - 1 : undefined} aria-expanded={open && !reporting} label={`Reply, ${count} ${count === 1 ? "crumb" : "crumbs"} on this passage`} onClick={toggle} />
-      {isPublic && <PostAction icon={<UsersRound size={18} />} count={noteCount || undefined} aria-expanded={notesOpen} label={noteCount > 0 ? `${noteCount} ${noteCount === 1 ? "note" : "notes"}` : "Add note"} onClick={() => setNotesOpen(value => !value)} />}
-      <PostLabel>{item.audience === "Public" || item.audience === "Bluesky" ? <Globe2 size={15} /> : <Lock size={15} />}{item.audience}</PostLabel>
+      <PostAction icon={<MessageCircle size={detail ? 20 : 18} />} count={!reply && count > 1 ? count - 1 : undefined} label={`Reply, ${count} ${count === 1 ? "crumb" : "crumbs"} on this passage`}
+        onClick={() => { setReporting(false); if (detail) field.current?.focus(); else onOpen?.(); }} />
+      {isPublic && <PostAction icon={<UsersRound size={detail ? 20 : 18} />} count={noteCount || undefined} aria-expanded={notesOpen} label={noteCount > 0 ? `${noteCount} ${noteCount === 1 ? "note" : "notes"}` : "Add note"} onClick={() => setNotesOpen(value => !value)} />}
     </>}
-    endActions={<PostAction icon={<ExternalLink size={18} />} label="Open the page" onClick={() => void openSite(item.url)} />}
+    endActions={<PostAction icon={<ExternalLink size={detail ? 20 : 18} />} label="Open the page" onClick={() => void openSite(item.url)} />}
     after={<>
       {error && <Problem text={error} />}
       {notice && <p className={styles.notice} role="status">{notice}</p>}
-      {open && <div className={styles.replies}>
-        {detail && thread && replies.length === 0 && <p className={styles.noReplies}>No replies yet</p>}
-        {replies.map(reply => <div key={reply.id} className={styles.reply}>
-          <Avatar person={{ did: reply.did ?? reply.id, handle: reply.handle ?? null, displayName: reply.author, avatar: reply.avatar ?? null }} size={32} />
-          <div><div className={styles.byline}><strong>{shortHandle(reply.author)}</strong>{reply.handle && <span>@{shortHandle(reply.handle)}</span>}<time dateTime={reply.createdAt}>{ago(reply.createdAt)}</time></div><p>{reply.body}</p></div>
-        </div>)}
-        {signedIn ? <form className={styles.replyForm} onSubmit={submit}>
-          <textarea aria-label={reporting ? "Reason for reporting" : "Reply"} placeholder={reporting ? "What is wrong with it?" : "Reply with a crumb"} rows={1} maxLength={reporting ? 1000 : 4000} value={text} disabled={busy}
-            onChange={event => setText(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && text.trim()) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
-          <button type="submit" className={styles.primary} disabled={busy || !text.trim()}>{reporting ? "Report" : "Reply"}</button>
-        </form> : <a className={styles.link} href={ACCOUNT_HREF}>Sign in to reply</a>}
-      </div>}
+      {!detail && reporting && form}
     </>}>
     {item.state && item.state !== "visible" && <p className={styles.state} data-state={item.state}>{item.state === "rejected" ? `Not shown${item.reason ? `: ${item.reason}` : ""}` : STATES[item.state] ?? "Hidden"}</p>}
-    <p className={styles.comment}>{item.comment}</p>
-    <button type="button" className={styles.source} onClick={() => void openSite(item.url)} title="Open the page at this passage">
-      {item.target.kind === "text" && <q>{item.target.quote}</q>}
-      <span><Globe2 size={13} /><strong>{item.title || host}</strong><small>{host}</small><ExternalLink size={12} /></span>
-    </button>
+    {item.comment && <p className={styles.comment}>{item.comment}</p>}
+    {!reply && <button type="button" className={styles.source} onClick={() => void openSite(item.url)} title="Open the page at this passage">
+      <strong>{item.title || host}</strong>
+      {item.target.kind === "text" && item.target.quote && <q>{item.target.quote}</q>}
+      <small><Globe2 size={12} />{host}</small>
+    </button>}
     {isPublic && <CrumbNotes crumbId={item.id} note={item.note} count={item.noteCount} own={item.own} signedIn={signedIn} open={notesOpen} onCount={setNoteCount} />}
+    {detail && <p className={styles.when}>{new Date(item.createdAt).toLocaleString(undefined, { dateStyle: "long", timeStyle: "short" })}</p>}
   </PostCard>;
+
+  if (!detail) return post;
+  return <>
+    {post}
+    <div className={styles.composer}>{form}</div>
+    {replies.map(reply => <PostCard key={reply.id} className={styles.crumb}
+      avatar={<Avatar person={{ did: reply.did ?? reply.id, handle: reply.handle ?? null, displayName: reply.author, avatar: reply.avatar ?? null }} size={42} />}
+      name={shortHandle(reply.author) || "Someone"} handle={reply.handle ? shortHandle(reply.handle) : null}
+      time={<time dateTime={reply.createdAt} title={new Date(reply.createdAt).toLocaleString()}>{ago(reply.createdAt)}</time>}>
+      <p className={styles.comment}>{reply.body}</p>
+    </PostCard>)}
+    {thread && replies.length === 0 && <p className={styles.noReplies}>No replies yet</p>}
+  </>;
+}
+
+/**
+ * The feed as threads, newest first: a reply is shown under the crumb it
+ * answers, and each thread appears once, by its newest crumb on the page.
+ */
+function threads(items: FeedItem[]): Array<[FeedItem, FeedItem?]> {
+  const seen = new Set<string>();
+  const out: Array<[FeedItem, FeedItem?]> = [];
+  for (const item of items) {
+    const root = item.parent;
+    const key = root?.id ?? item.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(root ? [root, item] : [item]);
+  }
+  return out;
 }
 
 const STATES: Record<string, string> = { pending: "Waiting for review", reported: "Hidden after reports", hidden: "Hidden by a moderator" };
 
-function Feed({ status, orgs, fixedScope }: { status: Status; orgs: Org[]; fixedScope?: string }) {
-  const [scope, setScope] = useState(fixedScope ?? (status.signedIn ? "following" : "everyone"));
+function Feed({ status, fixedScope, title, onBack, right, intro, organizations = [], initialTab, initialOrg }: { status: Status; orgs: Org[]; fixedScope?: string; title?: ReactNode; onBack?: () => void; right?: ReactNode; intro?: ReactNode; organizations?: OrgFeed[]; initialTab?: "organizations"; initialOrg?: string }) {
+  const [tab, setTab] = useState(fixedScope ?? initialTab ?? (status.signedIn ? "following" : "everyone"));
+  const [org, setOrg] = useState(initialOrg ?? "");
+  // The organization picked, else the first one there is; nothing to read until there is one.
+  const chosenOrg = organizations.some(item => item.scope === org) ? org : organizations[0]?.scope ?? "";
+  const scope = tab === "organizations" ? chosenOrg : tab;
   const [items, setItems] = useState<FeedItem[]>([]);
   const [before, setBefore] = useState<string | null>(null);
   const [empty, setEmpty] = useState("");
@@ -242,6 +296,7 @@ function Feed({ status, orgs, fixedScope }: { status: Status; orgs: Org[]; fixed
   usePageLoading(loading);
   const load = useCallback(async (more?: string | null) => {
     const id = ++request.current;
+    if (!scope) { setItems([]); setBefore(null); setEmpty(tab === "organizations" ? "You are not in any organization yet" : ""); setLoading(false); return; }
     setLoading(true); setError("");
     try {
       const page = await view<{ items: FeedItem[]; before: string | null; empty?: string }>(`view=feed&scope=${encodeURIComponent(scope)}${more ? `&before=${encodeURIComponent(more)}` : ""}`);
@@ -249,8 +304,16 @@ function Feed({ status, orgs, fixedScope }: { status: Status; orgs: Org[]; fixed
       setItems(previous => more ? [...previous, ...page.items] : page.items); setBefore(page.before); setEmpty(page.empty ?? "");
     } catch (error) { if (id === request.current) setError(message(error)); }
     finally { if (id === request.current) setLoading(false); }
-  }, [scope]);
+  }, [scope, tab]);
   useEffect(() => { void load(); }, [load]);
+  function choose(nextTab: string, nextOrg = org) {
+    if (nextTab === tab && nextOrg === org) return;
+    const nextScope = nextTab === "organizations" ? (organizations.some(item => item.scope === nextOrg) ? nextOrg : organizations[0]?.scope ?? "") : nextTab;
+    if (nextScope !== scope) setItems([]);
+    setTab(nextTab); setOrg(nextOrg);
+    const query = nextTab === "organizations" ? `?tab=organizations${nextOrg ? `&org=${encodeURIComponent(nextOrg)}` : ""}` : "";
+    window.history.replaceState(null, "", `/crumbs${query}`);
+  }
   // A crumb left from another tab shows up when the reader comes back.
   useEffect(() => {
     if (!fixedScope) return;
@@ -259,33 +322,51 @@ function Feed({ status, orgs, fixedScope }: { status: Status; orgs: Org[]; fixed
     return () => window.removeEventListener("focus", refresh);
   }, [fixedScope, load]);
   const [selected, setSelected] = useState<FeedItem | null>(null);
+  const list = useRef<HTMLElement>(null);
+  function open(item: FeedItem) { setSelected(item); requestAnimationFrame(() => list.current?.scrollIntoView({ block: "start" })); }
   function back() {
     const id = selected?.id;
     setSelected(null);
     requestAnimationFrame(() => [...document.querySelectorAll<HTMLElement>("[data-crumb]")].find(card => card.dataset.crumb === id)?.scrollIntoView({ block: "center" }));
   }
-  const scopes: Array<[string, string]> = [...(status.signedIn ? [["following", "Following"]] as Array<[string, string]> : []), ["everyone", "Everyone"], ...(status.signedIn ? [["mine", "Mine"]] as Array<[string, string]> : []), ...orgs.map(org => [org.crumbsRoom ? `room:${org.crumbsRoom}` : `org:${org.id}`, org.name] as [string, string])];
+  const tabs: Array<[string, string]> = [...(status.signedIn ? [["following", "Following"]] as Array<[string, string]> : []), ["everyone", "Everyone"], ["organizations", "Organizations"]];
+  // Inside an Organization room the room is the header.
+  const header = title === undefined ? null : selected
+    ? <Bar title="Crumb" onBack={back} />
+    : <Bar title={title} onBack={onBack} right={right}>
+      {!fixedScope && <nav className={styles.tabs} role="tablist" aria-label="Feeds">
+        {tabs.map(([value, name]) => <button key={value} type="button" role="tab" aria-selected={tab === value} onClick={() => choose(value)}><span>{name}</span></button>)}
+      </nav>}
+      {!fixedScope && tab === "organizations" && organizations.length > 0 && <div className={styles.orgPicker} role="radiogroup" aria-label="Organization">
+        {organizations.map(item => <button key={item.scope} type="button" role="radio" aria-checked={item.scope === chosenOrg} onClick={() => choose("organizations", item.scope)}>{item.name}</button>)}
+      </div>}
+    </Bar>;
 
-  return <section aria-label="Feed" className={styles.timeline}>
-    {selected && <div className={styles.post}>
-      <button type="button" className={styles.back} onClick={back}><ArrowLeft size={15} />Back</button>
-      <Crumb key={selected.id} detail item={selected} scope={scope} signedIn={status.signedIn} onRemoved={() => { setItems(previous => previous.filter(other => other.id !== selected.id)); setSelected(null); }} />
-    </div>}
+  return <section aria-label="Feed" className={styles.timeline} ref={list}>
+    {header}
+    {selected && <Crumb key={selected.id} detail item={selected} scope={scope} signedIn={status.signedIn} onRemoved={() => { setItems(previous => previous.filter(other => other.id !== selected.id)); setSelected(null); }} />}
     <div hidden={Boolean(selected)}>
-    <div className={styles.scopes} role="tablist" aria-label="Whose crumbs" hidden={Boolean(fixedScope)}>
-      {scopes.map(([value, name]) => <button key={value} type="button" role="tab" aria-selected={scope === value} onClick={() => { setItems([]); setScope(value); }}>{(value.startsWith("org:") || value.startsWith("room:")) && <Lock size={11} />}{name}</button>)}
-    </div>
-    {error && <Problem text={error} retry={() => void load()} />}
-    <div className={styles.feed} aria-live="polite">
-      {items.map(item => <Crumb key={item.id} item={item} scope={scope} signedIn={status.signedIn} onOpen={() => { setSelected(item); requestAnimationFrame(() => document.querySelector("[data-detail]")?.closest("section")?.scrollIntoView({ block: "start" })); }} onRemoved={() => setItems(previous => previous.filter(other => other.id !== item.id))} />)}
-    </div>
-    {!loading && !error && items.length === 0 && <div className={styles.emptyState}>
-      <CrumbsIcon size={34} strokeWidth={1.2} />
-      <h2>{empty || "No crumbs yet"}</h2>
-      {fixedScope && <p>Open a page in the browser, select a passage and choose Leave a crumb, then pick this organization.</p>}
-      {!status.signedIn && scope !== "everyone" && <a className={styles.primary} href={ACCOUNT_HREF}>Sign in</a>}
-    </div>}
-    {before && !loading && <button type="button" className={styles.more} onClick={() => void load(before)}>Show older</button>}
+      {intro}
+      {error && <Problem text={error} retry={() => void load()} />}
+      <div className={styles.feed} aria-live="polite">
+        {threads(items).map(([first, latest]) => {
+          const remove = (id: string) => () => setItems(previous => previous.filter(other => other.id !== id));
+          // Either row opens the whole thread: the crumb that started it, with its replies below.
+          return latest
+            ? <div key={latest.id} className={styles.slice}>
+              <Crumb item={first} thread="parent" scope={scope} signedIn={status.signedIn} onOpen={() => open(first)} onRemoved={remove(first.id)} />
+              <Crumb item={latest} thread="child" scope={scope} signedIn={status.signedIn} onOpen={() => open(first)} onRemoved={remove(latest.id)} />
+            </div>
+            : <Crumb key={first.id} item={first} scope={scope} signedIn={status.signedIn} onOpen={() => open(first)} onRemoved={remove(first.id)} />;
+        })}
+      </div>
+      {!loading && !error && items.length === 0 && <div className={styles.emptyState}>
+        <CrumbsIcon size={34} strokeWidth={1.2} />
+        <h2>{empty || "No crumbs yet"}</h2>
+        <p>{tab === "organizations" ? (scope ? "Select a passage on any page in the browser, choose Leave a crumb, then pick this organization." : "Create or join one on the Organization page.")
+          : "Select a passage on any page in the browser and choose Leave a crumb."}</p>
+      </div>}
+      {before && !loading && <button type="button" className={styles.more} onClick={() => void load(before)}>Show older</button>}
     </div>
   </section>;
 }
@@ -349,7 +430,7 @@ function Account({ status, orgs, refresh }: { status: Status; orgs: Org[]; refre
   return <section className={styles.stack} aria-label="Crumbs account">
     {error && <Problem text={error} />}
     <div className={styles.card}>
-      <div className={styles.profile}>
+      <div className={styles.accountRow}>
         <Avatar person={me} size={48} />
         <div><h2>{nameOf(me)}</h2><p>@{shortHandle(status.handle)}</p></div>
         <button type="button" className={styles.secondary} disabled={Boolean(busy)} onClick={() => void run("out", async () => { await act({ action: "sign-out" }); await refresh(); })}><LogOut size={14} />Sign out</button>
@@ -408,18 +489,8 @@ function Account({ status, orgs, refresh }: { status: Status; orgs: Org[]; refre
  * The Crumbs account as a section of Breadboard's settings. Signing in here
  * links the account whose photo and name Breadboard then uses as its own.
  */
-/**
- * One Breadboard organization's crumbs, as the Organization page shows them in
- * its crumbs room: the same cards, page links and replies as the Crumbs feed.
- * These are kept on this machine, so no Crumbs account is needed.
- */
-export function RoomCrumbs({ roomId }: { roomId: string }) {
-  const status: Status = { signedIn: true, needsSignIn: false, did: null, handle: null, displayName: null, avatar: null, defaultVisibility: "private" } as Status;
-  return <div className={`${styles.page} ${styles.inRoom}`}><div><Feed status={status} orgs={[]} fixedScope={`room:${roomId}`} /></div></div>;
-}
-
 export function CrumbsAccountSection({ onStatus }: { onStatus?: (status: CrumbsStatus) => void }) {
-  const [state, setState] = useState<{ status: Status; orgs: Org[] } | null>(null);
+  const [state, setState] = useState<Awaited<ReturnType<typeof loadAccount>> | null>(null);
   const [error, setError] = useState("");
   const report = useRef(onStatus);
   useEffect(() => { report.current = onStatus; }, [onStatus]);
@@ -435,6 +506,11 @@ export function CrumbsAccountSection({ onStatus }: { onStatus?: (status: CrumbsS
   return <div className={styles.embedded}>
     {error && <Problem text={error} retry={() => void refresh().catch(error => setError(message(error)))} />}
     {state && <Account status={state.status} orgs={state.orgs} refresh={refresh} />}
+    {state?.status.signedIn && <div className={styles.orgSection}>
+      <h3>Organizations</h3>
+      <p className={styles.hint}>Encrypted groups whose crumbs only members can read. Each one shows up as a feed on the Crumbs page.</p>
+      <Organizations status={state.status} orgs={state.orgs} localOrgs={state.local} refresh={refresh} />
+    </div>}
   </div>;
 }
 

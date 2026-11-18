@@ -62,9 +62,12 @@ function threadView(db: Database.Database, row: ThreadRow, roomPublicId: string 
 
 // The room stores UTC without a zone; say so, or the feed reads it as local time.
 const utc = (stamp: string) => /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(stamp) ? `${stamp.replace(" ", "T")}Z` : stamp;
-interface LocalCrumbRow { id: number; member_id: number | null; author: string; body: string; metadata: string | null; source: string | null; created_at: string; target_json: string; n: number; mine: number; audience: string; room: string | null }
+interface LocalCrumbRow { id: number; member_id: number | null; author: string; body: string; metadata: string | null; source: string | null; created_at: string; target_json: string; n: number; mine: number; audience: string; room: string | null; first: number }
 /** One comment in the shape the Crumbs feed draws. `scope` is where its replies go. */
-function feedItem(row: LocalCrumbRow) {
+function feedItem(row: LocalCrumbRow, parent?: LocalCrumbRow): ReturnType<typeof localItem> & { parent?: ReturnType<typeof localItem> } {
+  return { ...localItem(row), ...(parent ? { parent: localItem(parent) } : {}) };
+}
+function localItem(row: LocalCrumbRow) {
   const target = JSON.parse(row.target_json) as BrowserAnnotationTarget;
   let meta: Record<string, unknown> = {};
   try { meta = row.metadata ? JSON.parse(row.metadata) as Record<string, unknown> : {}; } catch { /* a plain message */ }
@@ -76,7 +79,8 @@ function feedItem(row: LocalCrumbRow) {
 }
 const ROOM_CRUMBS = `SELECT m.id, m.member_id, m.author_name AS author, m.body, m.metadata, NULL AS source, m.created_at, t.target_json, r.public_id AS room, o.name AS audience,
     (SELECT count(*) FROM buzz_room_messages c WHERE c.parent_id=t.root_message_id AND c.deleted_at IS NULL AND c.author_kind!='system') AS n,
-    EXISTS (SELECT 1 FROM buzz_room_members bm WHERE bm.id=m.member_id AND bm.user_id=@user) AS mine
+    EXISTS (SELECT 1 FROM buzz_room_members bm WHERE bm.id=m.member_id AND bm.user_id=@user) AS mine,
+    (SELECT min(f.id) FROM buzz_room_messages f WHERE f.parent_id=root.id AND f.deleted_at IS NULL AND f.author_kind!='system') AS first
   FROM browser_annotation_threads t JOIN buzz_room_messages root ON root.id=t.root_message_id AND root.deleted_at IS NULL
   JOIN buzz_room_messages m ON m.parent_id=root.id AND m.deleted_at IS NULL AND m.author_kind!='system'
   JOIN buzz_rooms r ON r.id=m.room_id JOIN organizations o ON o.id=r.organization_id`;
@@ -90,7 +94,7 @@ export function browserAnnotationFeed(db: Database.Database, userId: number, sco
   const access = audience(db, userId, scope);
   if (!access.room) throw new AnnotationError(400, "Choose a room.");
   return (db.prepare(`${ROOM_CRUMBS} WHERE t.scope_key=@scope AND m.id=(SELECT min(f.id) FROM buzz_room_messages f WHERE f.parent_id=root.id AND f.deleted_at IS NULL AND f.author_kind!='system')
-    ORDER BY m.id DESC LIMIT 100`).all({ user: userId, scope: access.key }) as LocalCrumbRow[]).map(feedItem);
+    ORDER BY m.id DESC LIMIT 100`).all({ user: userId, scope: access.key }) as LocalCrumbRow[]).map(row => feedItem(row));
 }
 
 /** Crumbs this account left that never went to the network: in its organizations' rooms, and "Only me". */
@@ -98,11 +102,13 @@ export function browserAnnotationMine(db: Database.Database, userId: number) {
   ensureBrowserAnnotationsSchema(db);
   const rooms = db.prepare(`${ROOM_CRUMBS} WHERE m.author_kind='human' AND EXISTS (SELECT 1 FROM buzz_room_members bm WHERE bm.id=m.member_id AND bm.user_id=@user)
     ORDER BY m.id DESC LIMIT 100`).all({ user: userId }) as LocalCrumbRow[];
-  const own = db.prepare(`SELECT c.id, NULL AS member_id, c.author, c.body, NULL AS metadata, c.source, c.created_at, t.target_json, NULL AS room, 'Only me' AS audience,
-      (SELECT count(*) FROM browser_annotation_comments x WHERE x.thread_id=t.id) AS n, 1 AS mine
-    FROM browser_annotation_comments c JOIN browser_annotation_threads t ON t.id=c.thread_id
-    WHERE c.user_id=? AND t.scope_key=? ORDER BY c.id DESC LIMIT 100`).all(userId, `private:${userId}`) as LocalCrumbRow[];
-  return [...rooms, ...own].map(feedItem);
+  const PRIVATE = `SELECT c.id, NULL AS member_id, c.author, c.body, NULL AS metadata, c.source, c.created_at, t.target_json, NULL AS room, 'Only me' AS audience,
+      (SELECT count(*) FROM browser_annotation_comments x WHERE x.thread_id=t.id) AS n, 1 AS mine, (SELECT min(x.id) FROM browser_annotation_comments x WHERE x.thread_id=t.id) AS first
+    FROM browser_annotation_comments c JOIN browser_annotation_threads t ON t.id=c.thread_id`;
+  const own = db.prepare(`${PRIVATE} WHERE c.user_id=@user AND t.scope_key=@scope ORDER BY c.id DESC LIMIT 100`).all({ user: userId, scope: `private:${userId}` }) as LocalCrumbRow[];
+  const roomRoot = db.prepare(`${ROOM_CRUMBS} WHERE m.id=@id`), privateRoot = db.prepare(`${PRIVATE} WHERE c.id=@id`);
+  const parent = (row: LocalCrumbRow, query: typeof roomRoot) => row.first && row.first !== row.id ? query.get({ user: userId, id: row.first }) as LocalCrumbRow | undefined : undefined;
+  return [...rooms.map(row => feedItem(row, parent(row, roomRoot))), ...own.map(row => feedItem(row, parent(row, privateRoot)))];
 }
 
 export function readBrowserAnnotations(db: Database.Database, userId: number, scope: unknown, pageUrl: unknown, threadId?: string | null): AnnotationResponse {

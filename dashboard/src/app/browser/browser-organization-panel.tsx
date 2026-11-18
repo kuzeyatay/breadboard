@@ -86,6 +86,8 @@ export default function BrowserOrganizationPanel({ url, title, target, width: na
   }, [apply, retry]);
 
   const pageUrl = annotationPageUrl(url);
+  // A crumb carries its page's address and title, which on a private page can give away who you are or what is in it.
+  const privatePage = looksPrivatePage(url);
   const selected = target && annotationPageUrl(target.url) === pageUrl ? target : { kind: "page" as const, url: pageUrl ?? "", title };
   const groups = [
     ...orgs.filter(org => !org.crumbsRoom).map(org => ({ value: `org:${org.id}`, name: org.name, detail: "Encrypted for members" })),
@@ -136,6 +138,11 @@ export default function BrowserOrganizationPanel({ url, title, target, width: na
       <button type="button" className={styles.icon} aria-label="Close Crumbs" onClick={onClose}><X size={17} /></button>
     </header>
 
+    {privatePage ? <div className={styles.card} role="status">
+      <Lock size={22} strokeWidth={1.4} />
+      <p><strong>Crumbs can’t be left on this page</strong></p>
+      <p>It looks private, like an inbox, an account, a sign-in screen or a link with a key in it. A crumb is tied to the page’s address and title, and here those could reveal private details, so Crumbs is off on pages like this.</p>
+    </div> : <>
     <div className={styles.levels} role="radiogroup" aria-label="Who sees this">
       {([["private", "Only me", Lock], ["org", "Organization", UsersRound], ["public", "Public", Globe2]] as const).map(([value, name, Icon]) =>
         <button key={value} type="button" role="radio" aria-checked={level === value} disabled={scope === null} onClick={() => choose(value)}><Icon size={13} />{name}</button>)}
@@ -151,9 +158,10 @@ export default function BrowserOrganizationPanel({ url, title, target, width: na
     {scope === "org:none" ? <div className={styles.card}>
       <ShieldCheck size={22} strokeWidth={1.4} />
       <p>No organizations yet</p>
-      <a className={styles.primary} href={account.signedIn ? "/crumbs?tab=organizations" : "/settings#crumbs"} target="_blank" rel="noopener noreferrer">{account.signedIn ? "Create one" : "Sign in"}</a>
+      <a className={styles.primary} href="/settings#crumbs" target="_blank" rel="noopener noreferrer">{account.signedIn ? "Create one" : "Sign in"}</a>
     </div> : pageUrl && scope ? <Discussion key={`${scope}:${pageUrl}:${annotationTargetKey(selected)}:${account.signedIn}`} scope={scope} audience={audience} target={selected} send={send} needsAccount={needsAccount} expired={account.needsSignIn} />
       : <div className={styles.empty}>{scope && "Open a web page to leave a crumb."}</div>}
+    </>}
   </aside>;
 }
 
@@ -241,9 +249,6 @@ function Discussion({ scope, audience, target: initialTarget, send, needsAccount
     else void write(mode.kind);
   }
   const closeMenu = (element: HTMLElement) => { element.closest("details")!.open = false; };
-  // A public crumb publishes the page's address and title; on a page that looks private, ask first.
-  const [anyway, setAnyway] = useState(false);
-  const confirmPublic = scope === "public" && mode.kind === "comment" && looksPrivatePage(target.url);
   const [notesOpen, setNotesOpen] = useState<Record<string, boolean>>({});
   const [noteCounts, setNoteCounts] = useState<Record<string, number>>({});
   const others = target.kind === "page" ? data.threads.filter(thread => thread.target.kind !== "page") : [];
@@ -318,16 +323,14 @@ function Discussion({ scope, audience, target: initialTarget, send, needsAccount
     </div> : <form className={styles.composer} onSubmit={event => { event.preventDefault(); submit(); }}>
       {mode.kind !== "comment" && <div className={styles.mode}><span><Flag size={13} />{mode.kind === "flag" ? `Flag this ${target.kind === "page" ? "page" : "selection"}` : `Report ${mode.author}’s crumb`}</span><button type="button" aria-label="Cancel" onClick={() => setMode({ kind: "comment" })}><X size={14} /></button></div>}
       <textarea ref={input} aria-label={mode.kind === "comment" ? "Comment" : mode.kind === "flag" ? "Reason for flagging" : "Reason for reporting"} placeholder={placeholder} value={body} onChange={event => setBody(event.target.value)}
-        onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && body.trim() && loaded && !busy && !(confirmPublic && !anyway)) { event.preventDefault(); submit(); } }} rows={3} maxLength={mode.kind === "comment" ? 4000 : 1000} disabled={busy} />
+        onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && body.trim() && loaded && !busy) { event.preventDefault(); submit(); } }} rows={3} maxLength={mode.kind === "comment" ? 4000 : 1000} disabled={busy} />
       {showSource && mode.kind === "comment" && <input type="url" aria-label="Source link" placeholder="https://source…" value={source} onChange={event => setSource(event.target.value)} disabled={busy} />}
-      {confirmPublic && <label className={styles.privatePage}><input type="checkbox" checked={anyway} onChange={event => setAnyway(event.target.checked)} />
-        <span>This page looks private. A public crumb shows its address and title to everyone. Post publicly anyway</span></label>}
       <footer><span className={styles.postingTo}>{mode.kind === "comment" ? "Post to " : mode.kind === "flag" ? "Flag visible to " : scope === "public" ? "Report on " : "Report in "}{audience}</span>
         {mode.kind !== "report" && <details className={styles.menu}><summary aria-label="More comment options"><MoreHorizontal size={18} /></summary><div>
           <button type="button" onClick={event => { setShowSource(value => !value); closeMenu(event.currentTarget); }}>{showSource ? "Remove source" : "Add a source"}</button>
           {local && <button type="button" onClick={event => { setMode(mode.kind === "flag" ? { kind: "comment" } : { kind: "flag" }); closeMenu(event.currentTarget); input.current?.focus(); }}>{mode.kind === "flag" ? "Write a comment" : "Flag this content"}</button>}
         </div></details>}
-        <button className={styles.submit} type="submit" disabled={busy || !loaded || !body.trim() || (confirmPublic && !anyway)} aria-label={mode.kind === "comment" ? "Post comment" : mode.kind === "flag" ? "Submit flag" : "Send report"}><ArrowUp size={16} /></button></footer>
+        <button className={styles.submit} type="submit" disabled={busy || !loaded || !body.trim()} aria-label={mode.kind === "comment" ? "Post comment" : mode.kind === "flag" ? "Submit flag" : "Send report"}><ArrowUp size={16} /></button></footer>
     </form>}
   </div>;
 }

@@ -3,7 +3,7 @@
 # and `fly deploy --config fly.org-store.toml`.
 # DATABASE_URL should point at managed Postgres with automatic backups (Neon, Supabase):
 # this database holds the only copy of organization content.
-app = "crumbs-org-store"
+app = "breadboard-crumbs-orgs"
 primary_region = "ams"
 
 [build]
@@ -14,10 +14,18 @@ primary_region = "ams"
 
 [env]
   PORT = "8080"
+  # Without DATABASE_URL the store keeps SQLite on the volume below. Fly snapshots
+  # the volume daily (5 kept). Setting DATABASE_URL as a secret switches to Postgres.
+  CRUMBS_ORG_DB = "/data/org-store.db"
   # CRUMBS_ABUSE_EMAIL = "abuse@example.com"
+
+[mounts]
+  source = "crumbs_orgs"
+  destination = "/data"
 
 [http_service]
   internal_port = 8080
+  processes = ["app"]
   force_https = true
   auto_stop_machines = "stop"
   auto_start_machines = true

@@ -26,7 +26,7 @@ const env = (name: string) => process.env[name]?.replace(/\/+$/, "");
 const appview = () => env("CRUMBS_APPVIEW_URL") ?? "https://public.api.bsky.app";
 
 export interface CrumbsPerson { did: string; handle: string | null; displayName: string | null; avatar: string | null }
-export interface CrumbsFeedItem { id: string; author: CrumbsPerson; url: string; title: string; target: BrowserAnnotationTarget; comment: string; source: string | null; createdAt: string; threadCount: number; own: boolean; audience: string; state?: string; reason?: string | null; note?: { uri: string; body: string; source: string | null }; noteCount?: number }
+export interface CrumbsFeedItem { id: string; author: CrumbsPerson; url: string; title: string; target: BrowserAnnotationTarget; comment: string; source: string | null; createdAt: string; threadCount: number; own: boolean; audience: string; state?: string; reason?: string | null; note?: { uri: string; body: string; source: string | null }; noteCount?: number; /** The crumb that started the thread, when this one is a reply. */ parent?: CrumbsFeedItem }
 export interface CrumbsNote { uri: string; handle: string | null; displayName: string | null; avatar: string | null; body: string; source: string | null; createdAt: string; helpful: number; unhelpful: number; shown: boolean; myRating: boolean | null; own: boolean }
 export interface CrumbsOrg { id: string; name: string; role: "admin" | "member"; ready: boolean }
 export interface CrumbsRoom { id: string; name: string; own: boolean; fixed: boolean }
@@ -41,7 +41,7 @@ export interface CrumbsStatus {
 
 export { passageLink };
 
-interface IndexerItem { uri: string; did: string; handle: string | null; displayName: string | null; avatar: string | null; url: string; target: BrowserAnnotationTarget; targetKey: string; comment: string; source: string | null; createdAt: string; threadCount?: number; state?: string; reason?: string | null; note?: { uri: string; body: string; source: string | null }; noteCount?: number }
+interface IndexerItem { uri: string; did: string; handle: string | null; displayName: string | null; avatar: string | null; url: string; target: BrowserAnnotationTarget; targetKey: string; comment: string; source: string | null; createdAt: string; threadCount?: number; state?: string; reason?: string | null; note?: { uri: string; body: string; source: string | null }; noteCount?: number; parent?: IndexerItem }
 interface OrgDetail { id: string; epoch: number; nameCt: string; role: "admin" | "member"; needsRotation: boolean; members: Array<{ did: string; role: "admin" | "member" }>;
   envelopeIndex: Array<{ epoch: number; did: string; device: string }>; keyRequests: Array<{ did: string; device: string }> }
 interface OrgMessage { id: string; epoch: number; sender: string; device: string; ciphertext: string; sig: string; createdAt: string }
@@ -54,9 +54,12 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
   /** A plain chat completion on the user's own model. */
   complete?: (userId: number, system: string, prompt: string) => Promise<string>;
 }) {
+  // Everyone shares the hosted servers by default (crumbs/fly.*.toml). A developer points
+  // Breadboard at local ones with CRUMBS_INDEXER_URL / CRUMBS_ORG_STORE_URL or the Servers
+  // setting; http://127.0.0.1 addresses start crumbs/dev.mjs in a source checkout.
   const servers = () => ({
-    indexer: env("CRUMBS_INDEXER_URL") ?? store.getSetting(db, "indexer_url") ?? "http://127.0.0.1:8787",
-    orgStore: env("CRUMBS_ORG_STORE_URL") ?? store.getSetting(db, "org_store_url") ?? "http://127.0.0.1:8788",
+    indexer: env("CRUMBS_INDEXER_URL") ?? store.getSetting(db, "indexer_url") ?? "https://breadboard-crumbs-indexer.fly.dev",
+    orgStore: env("CRUMBS_ORG_STORE_URL") ?? store.getSetting(db, "org_store_url") ?? "https://breadboard-crumbs-orgs.fly.dev",
   });
   const cache = new Map<string, { value: unknown; expires: number }>();
   async function cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
@@ -113,6 +116,12 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     return people;
   }
 
+  // A hosted indexer publishes the app's sign-in identity ("Breadboard Crumbs"); a local one has
+  // none, so sign-in falls back to the unnamed loopback client meant for development.
+  function hostedClientId() {
+    const indexer = servers().indexer;
+    return indexer.startsWith("https://") ? `${indexer.replace(/\/$/, "")}/client-metadata.json` : undefined;
+  }
   async function startSignIn(userId: number, input: { handle?: unknown; signup?: boolean; origin: string; returnTo?: unknown }) {
     const handle = input.signup ? undefined : normalizeHandle(input.handle);
     if (!input.signup && !handle) throw new CrumbsError(400, "Enter your handle, like name.bsky.social.");
@@ -121,7 +130,7 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     const redirectUri = `http://127.0.0.1:${origin.port || "80"}/api/crumbs/oauth/callback`;
     const returnTo = typeof input.returnTo === "string" && /^\/(?!\/)/.test(input.returnTo) ? input.returnTo : "/crumbs";
     try {
-      const { url, pending } = await startAuthorization(fetcher, { handle: handle ?? undefined, redirectUri, clientId: env("CRUMBS_CLIENT_ID") ?? store.getSetting(db, "client_id") ?? undefined });
+      const { url, pending } = await startAuthorization(fetcher, { handle: handle ?? undefined, redirectUri, clientId: env("CRUMBS_CLIENT_ID") ?? store.getSetting(db, "client_id") ?? hostedClientId() });
       store.savePending(db, userId, pending, `${origin.origin}${returnTo}`);
       return { url };
     } catch (error) { throw error instanceof OAuthError ? new CrumbsError(error.status, error.message) : error; }
@@ -434,7 +443,8 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
 
   const feedItem = (item: IndexerItem, me: string | null, audience: string): CrumbsFeedItem => ({ id: item.uri, author: { did: item.did, handle: item.handle, displayName: item.displayName, avatar: item.avatar },
     url: passageLink(item.target), title: item.target.title, target: item.target, comment: item.comment, source: item.source, createdAt: item.createdAt, threadCount: item.threadCount ?? 1,
-    own: item.did === me, audience, noteCount: item.noteCount ?? 0, ...(item.note ? { note: item.note } : {}), ...(item.state ? { state: item.state, reason: item.reason ?? null } : {}) });
+    own: item.did === me, audience, noteCount: item.noteCount ?? 0, ...(item.note ? { note: item.note } : {}), ...(item.state ? { state: item.state, reason: item.reason ?? null } : {}),
+    ...(item.parent ? { parent: feedItem({ ...item.parent, threadCount: item.threadCount }, me, audience) } : {}) });
 
   /** `following` (people you follow, and you), `everyone`, `mine`, or `org:<id>`. Reading needs no account. */
   async function feed(userId: number, scope: string, before?: string | null): Promise<{ items: CrumbsFeedItem[]; before: string | null; empty?: string }> {
@@ -904,9 +914,17 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     if (!ready) return { items: [], before: null, empty: "Waiting for a member to share the key with this device" };
     const { messages } = await orgStore<{ messages: OrgMessage[] }>(userId, "GET", `/orgs/${orgId}/messages${before ? `?before=${encodeURIComponent(before)}` : ""}`);
     const readable = await decryptMessages(orgId, keys, messages);
-    return { before: messages.length === 50 ? messages[messages.length - 1]!.createdAt : null,
-      items: readable.map(({ message, plain }) => ({ id: `org:${message.id}`, author: { did: message.sender, handle: plain.author?.handle ?? null, displayName: plain.author?.displayName ?? null, avatar: plain.author?.avatar ?? null },
-        url: passageLink(plain.target), title: plain.target.title, target: plain.target, comment: plain.body, source: plain.source ?? null, createdAt: message.createdAt, threadCount: 1, own: message.sender === me.did, audience: name })) };
+    const items: CrumbsFeedItem[] = readable.map(({ message, plain }) => ({ id: `org:${message.id}`, author: { did: message.sender, handle: plain.author?.handle ?? null, displayName: plain.author?.displayName ?? null, avatar: plain.author?.avatar ?? null },
+      url: passageLink(plain.target), title: plain.target.title, target: plain.target, comment: plain.body, source: plain.source ?? null, createdAt: message.createdAt, threadCount: 1, own: message.sender === me.did, audience: name }));
+    // Crumbs on one passage are one thread: the earliest starts it, the rest reply to it.
+    // ponytail: threads only within this page of messages; a root on an older page leaves its replies standing alone.
+    const threads = new Map<string, CrumbsFeedItem[]>();
+    for (const item of items) { const key = annotationTargetKey(item.target); threads.set(key, [...threads.get(key) ?? [], item]); }
+    for (const group of threads.values()) {
+      const first = group.reduce((a, b) => Date.parse(b.createdAt) < Date.parse(a.createdAt) ? b : a);
+      for (const item of group) { item.threadCount = group.length; if (item !== first) item.parent = { ...first }; }
+    }
+    return { before: messages.length === 50 ? messages[messages.length - 1]!.createdAt : null, items };
   }
 
   // ---- AI on top -----------------------------------------------------------

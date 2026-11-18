@@ -5,10 +5,10 @@ import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.
 import { externalRuntimePath as path } from "../external-runtime-path.ts";
 import { dashboardDataDir, repositoryRoot } from "../runtime-paths.ts";
 
-// In a source checkout nothing hosts Crumbs for you, so Breadboard starts the
-// two services itself the first time Crumbs is used and they stop with the
-// app. A build that points at hosted servers (CRUMBS_INDEXER_URL, or the
-// Servers setting on the account page) never reaches this code.
+// Breadboard uses the hosted Crumbs servers by default. When a developer points
+// it at local ones (http://127.0.0.1 addresses, through CRUMBS_INDEXER_URL or the
+// Servers setting), it starts the two services from crumbs/dev.mjs the first time
+// Crumbs is used, and they stop with the app.
 let starting: Promise<void> | null = null;
 let lastAttempt = 0;
 

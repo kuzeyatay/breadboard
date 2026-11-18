@@ -261,6 +261,13 @@ export async function createIndexer({ db, config = settings(), gate = text => mo
       }
       return { url, threads: [...threads.values()].slice(0, 200) };
     }
+    /** A crumb's thread: how many crumbs are on its passage, and the first of them when this one is a reply. */
+    async function thread(row) {
+      const replies = await db.get(`SELECT count(*) AS n FROM highlights h JOIN accounts a ON a.did=h.did WHERE h.page_url=? AND h.target_key=? AND ${visible}`, [row.page_url, row.target_key]);
+      const first = await db.get(`${select} WHERE h.page_url=? AND h.target_key=? AND ${visible} ORDER BY h.created_at, h.rowid LIMIT 1`, [row.page_url, row.target_key]);
+      // Only an older crumb can be the one this replies to (a hidden first crumb is not replaced by a later one).
+      return { threadCount: Number(replies.n), ...(first && first.uri !== row.uri && first.created_at < row.created_at ? { parent: await withNote(view(first)) } : {}) };
+    }
     if (method === "POST" && path === "/feed") {
       const actors = dids(body.actors);
       const before = typeof body.before === "string" && !Number.isNaN(Date.parse(body.before)) ? body.before : "9999";
@@ -268,10 +275,7 @@ export async function createIndexer({ db, config = settings(), gate = text => mo
       const scope = actors.length ? `h.did IN (${actors.map(() => "?").join(",")}) AND` : "";
       const rows = await db.all(`${select} WHERE ${scope} h.created_at<? AND ${visible} ORDER BY h.created_at DESC, h.rowid DESC LIMIT ${limit}`, [...actors, before]);
       const items = [];
-      for (const row of rows) {
-        const replies = await db.get(`SELECT count(*) AS n FROM highlights h JOIN accounts a ON a.did=h.did WHERE h.page_url=? AND h.target_key=? AND ${visible}`, [row.page_url, row.target_key]);
-        items.push({ ...(await withNote(view(row))), threadCount: Number(replies.n) });
-      }
+      for (const row of rows) items.push({ ...(await withNote(view(row))), ...(await thread(row)) });
       return { items, before: rows.length === limit ? rows[rows.length - 1].created_at : null };
     }
     if (method === "GET" && path === "/actor") {
@@ -284,7 +288,7 @@ export async function createIndexer({ db, config = settings(), gate = text => mo
       for (const row of rows) {
         const reports = await db.get("SELECT count(DISTINCT did) AS n FROM reports WHERE subject=? AND did<>?", [row.uri, did]);
         const state = row.admin_state === "hidden" ? "hidden" : row.admin_state === "approved" ? "visible" : row.status !== "visible" ? row.status : Number(reports.n) >= config.reportThreshold ? "reported" : "visible";
-        items.push({ ...(await withNote(view(row))), state, reason: state === "rejected" ? row.reason : null });
+        items.push({ ...(await withNote(view(row))), ...(await thread(row)), state, reason: state === "rejected" ? row.reason : null });
       }
       const follows = await db.all("SELECT f.subject AS did, f.uri, a.handle, a.display_name AS \"displayName\", a.avatar FROM follows f LEFT JOIN accounts a ON a.did=f.subject WHERE f.did=? LIMIT 2000", [did]);
       const followers = await db.get("SELECT count(*) AS n FROM follows WHERE subject=?", [did]);

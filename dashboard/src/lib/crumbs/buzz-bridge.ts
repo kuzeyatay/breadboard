@@ -60,7 +60,19 @@ export function createBuzzBridge({ db, crumbs }: { db: Database.Database; crumbs
   function syncOrganizations(userId: number): Promise<void> {
     return once(`orgs:${userId}`, async () => {
       if (!crumbs.status(userId).signedIn) return;
-      for (const org of await crumbs.listOrgs(userId)) {
+      const orgs = await crumbs.listOrgs(userId);
+      // A link to an organization the store no longer lists (you left, it was deleted, or Breadboard moved to
+      // other servers) is dropped. The Breadboard organization and its rooms stay, and it can be connected again.
+      const current = new Set(orgs.map(org => org.id));
+      for (const { org_id: gone } of db.prepare("SELECT org_id FROM crumbs_buzz_orgs WHERE user_id=?").all(userId) as Array<{ org_id: string }>) {
+        if (current.has(gone)) continue;
+        db.transaction(() => {
+          db.prepare("DELETE FROM crumbs_buzz_messages WHERE room_id IN (SELECT room_id FROM crumbs_buzz_rooms WHERE user_id=? AND org_id=?)").run(userId, gone);
+          db.prepare("DELETE FROM crumbs_buzz_rooms WHERE user_id=? AND org_id=?").run(userId, gone);
+          db.prepare("DELETE FROM crumbs_buzz_orgs WHERE user_id=? AND org_id=?").run(userId, gone);
+        })();
+      }
+      for (const org of orgs) {
         if (!org.ready) continue;
         let mapped = db.prepare("SELECT o.id, o.name FROM crumbs_buzz_orgs m JOIN organizations o ON o.id=m.organization_id WHERE m.user_id=? AND m.org_id=?").get(userId, org.id) as { id: number; name: string } | undefined;
         if (!mapped) {

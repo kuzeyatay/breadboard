@@ -1,6 +1,6 @@
 # Crumbs indexer: `fly launch --copy-config --config fly.indexer.toml --no-deploy`,
 # then `fly volumes create crumbs_index --size 1` and `fly deploy --config fly.indexer.toml`.
-app = "crumbs-indexer"
+app = "breadboard-crumbs-indexer"
 primary_region = "ams"
 
 [build]
@@ -13,7 +13,7 @@ primary_region = "ams"
   PORT = "8080"
   CRUMBS_INDEXER_DB = "/data/indexer.db"
   # Set these to the app's public address and, if you own one, the handle domain.
-  # CRUMBS_PUBLIC_URL = "https://crumbs-indexer.fly.dev"
+  CRUMBS_PUBLIC_URL = "https://breadboard-crumbs-indexer.fly.dev"
   # CRUMBS_HANDLE_DOMAIN = "crumbs.social"
   # CRUMBS_ABUSE_EMAIL = "abuse@example.com"
 
@@ -25,6 +25,7 @@ primary_region = "ams"
 
 [http_service]
   internal_port = 8080
+  processes = ["app"]
   force_https = true
   auto_stop_machines = "off"   # The Jetstream connection must stay open.
   min_machines_running = 1

@@ -180,6 +180,13 @@ test('a Breadboard organization stays local until it is connected, then appears 
   assert.equal(eve.db.prepare("SELECT COUNT(*) AS n FROM organizations WHERE name='test organization'").get().n, 1, 'no duplicate local twin');
   await assert.rejects(eve.bridge.connectOrganization(1, org), { status: 404 });
   await assert.rejects(people.finn.bridge.connectOrganization(1, org), { status: 404 }, 'only an owner or admin connects');
+  // When the store no longer has it (here: deleted; in life also a move to other servers), the link goes and it can be connected again.
+  await eve.crumbs.deleteOrg(1, remote.id);
+  await eve.bridge.syncAll(1);
+  assert.deepEqual(eve.bridge.localOrganizations(1).map(item => item.name), ['test organization'], 'a stale link is dropped, the organization stays');
+  assert.equal(eve.db.prepare('SELECT COUNT(*) AS n FROM buzz_rooms WHERE organization_id=?').get(org).n, 2, 'its rooms stay');
+  await eve.bridge.connectOrganization(1, org);
+  assert.ok((await eve.crumbs.listOrgs(1)).some(item => item.name === 'test organization'), 'and it connects again');
 });
 
 test('fallback mode: a crumb is a normal post with a passage link, read back through Bluesky search', async () => {

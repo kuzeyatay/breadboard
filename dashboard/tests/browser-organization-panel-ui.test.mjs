@@ -39,10 +39,10 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
       function App(){const [target,setTarget]=useState(); const [open,setOpen]=useState(true);
         window.selectPassage=()=>setTarget({kind:'text',url:${JSON.stringify(PAGE)},title:'A quieter internet',quote:${JSON.stringify(QUOTE)},prefix:'',suffix:''});
         const send=async command=>{window.commands.push(command);if(command.type==='browser-organization-target')setTarget(command.target);return true;};
-        return open?<Panel url={${JSON.stringify(PAGE)}} title="A quieter internet" target={target} send={send} onClose={()=>setOpen(false)}/>:<button onClick={()=>setOpen(true)}>Open Crumbs</button>;
+        return open?<Panel url={new URLSearchParams(location.search).get('url')||${JSON.stringify(PAGE)}} title="A quieter internet" target={target} send={send} onClose={()=>setOpen(false)}/>:<button onClick={()=>setOpen(true)}>Open Crumbs</button>;
       } window.commands=[];createRoot(document.getElementById('root')).render(<App/>);`),
     bundle(`import React from 'react'; import {createRoot} from 'react-dom/client'; import Client from './src/app/crumbs/crumbs-client';
-      createRoot(document.getElementById('root')).render(<div style={{height:'100vh',display:'flex',flexDirection:'column'}}><Client initialTab={new URLSearchParams(location.search).get('tab')||'feed'}/></div>);`),
+      createRoot(document.getElementById('root')).render(<div style={{height:'100vh',display:'flex',flexDirection:'column'}}><Client initialTab={new URLSearchParams(location.search).get('tab')==='organizations'?'organizations':undefined} initialOrg={new URLSearchParams(location.search).get('org')??undefined}/></div>);`),
     bundle(`import React from 'react'; import {createRoot} from 'react-dom/client'; import {CrumbsAccountSection} from './src/app/crumbs/crumbs-client';
       createRoot(document.getElementById('root')).render(<main style={{maxWidth:760,margin:'40px auto',padding:24,background:'var(--paper-surface)',border:'1px solid var(--line)',borderRadius:16}}><h2 style={{margin:'0 0 16px',fontSize:14}}>Crumbs account</h2><CrumbsAccountSection onStatus={status=>{window.identity=status;}}/></main>);`),
   ]);
@@ -98,6 +98,7 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
             case 'feed': return json(await crumbs.feed(1, query.get('scope') ?? 'following', query.get('before')));
             case 'follows': return json(await crumbs.follows(1));
             case 'orgs': return json({ orgs: await crumbs.listOrgs(1), local: [] });
+            case 'organizations': return json({ organizations: crumbs.status(1).signedIn ? (await crumbs.listOrgs(1)).map(org => ({ name: org.name, scope: `org:${org.id}` })) : [] });
             case 'org': return json(await crumbs.orgDetail(1, query.get('id') ?? ''));
             case 'notes': return json(await crumbs.listNotes(1, query.get('id')));
             case 'rooms': return json({ rooms: await crumbs.listRooms(1, query.get('id') ?? '') });
@@ -186,6 +187,12 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
   await guestPanel.getByText('Sign in to post publicly').waitFor();
   await shot(guestPanel, '1-panel-signed-out');
   await guestPanel.close();
+  // On a page that looks private, Crumbs says why it is off and offers nothing to post with.
+  const inbox = await a.open(`/panel?url=${encodeURIComponent('https://mail.google.com/mail/u/0/#inbox')}`);
+  await inbox.getByText('Crumbs can’t be left on this page').waitFor();
+  assert.equal(await inbox.getByRole('textbox', { name: 'Comment', exact: true }).count(), 0, 'no composer on a private page');
+  await shot(inbox, '1b-panel-private-page');
+  await inbox.close();
 
   // 2. Sign in with a handle; the suggestion list shows avatars.
   await feedA.close();
@@ -284,7 +291,7 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
   assert.equal(await panelB.getByText('The study ran for twelve weeks.', { exact: true }).count(), 0, 'a reported crumb is hidden');
 
   // 5. An encrypted organization: created, a member invited, content readable by members only.
-  const orgsA = await a.open('/crumbs?tab=organizations');
+  const orgsA = await a.open('/settings'); // Organizations are managed beside the account.
   await orgsA.getByRole('textbox', { name: 'Organization name' }).fill('Research lab');
   await orgsA.getByRole('button', { name: 'Create' }).click();
   await orgsA.getByRole('heading', { name: 'Research lab' }).waitFor();
@@ -328,20 +335,24 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
   await feedPage.getByText('I have a reservation about this.', { exact: true }).waitFor();
   assert.equal(await feedPage.locator('article q').first().innerText(), QUOTE);
   const bobsCrumb = feedPage.locator('article').filter({ hasText: 'I have a reservation about this.' });
+  // Reply opens the crumb as a post, with the reply box under it; Back returns to the feed.
   await bobsCrumb.getByRole('button', { name: /^Reply,/ }).click();
-  await bobsCrumb.getByRole('textbox', { name: 'Reply' }).fill('Fair point, thanks.');
-  await bobsCrumb.getByRole('button', { name: 'Reply', exact: true }).click();
-  await bobsCrumb.getByText('Fair point, thanks.', { exact: true }).waitFor();
-  assert.ok([...net.state.records.values()].some(record => record.comment === 'Fair point, thanks.'), 'a reply is a crumb on the same passage');
-  // Clicking a crumb opens it as a post with its replies; Back returns to the feed.
-  await bobsCrumb.getByText('I have a reservation about this.', { exact: true }).click();
   const post = feedPage.locator('article[data-detail]');
-  await post.getByText('Fair point, thanks.', { exact: true }).waitFor();
+  await post.waitFor();
   assert.equal(await feedPage.getByRole('tab', { name: 'Everyone' }).isVisible(), false, 'the feed steps aside for the post');
+  await feedPage.getByRole('textbox', { name: 'Reply' }).fill('Fair point, thanks.');
+  await feedPage.getByRole('button', { name: 'Reply', exact: true }).click();
+  await feedPage.getByText('Fair point, thanks.', { exact: true }).waitFor();
+  assert.ok([...net.state.records.values()].some(record => record.comment === 'Fair point, thanks.'), 'a reply is a crumb on the same passage');
   await shot(feedPage, '5c-post-view');
   await feedPage.getByRole('button', { name: 'Back' }).click();
   await feedPage.getByRole('tab', { name: 'Everyone' }).waitFor();
-  assert.equal(await feedPage.getByRole('link', { name: 'alice' }).getAttribute('href'), '/settings#crumbs');
+  // Clicking anywhere on a crumb opens it too.
+  await bobsCrumb.getByText('I have a reservation about this.', { exact: true }).click();
+  await post.waitFor();
+  await feedPage.getByRole('button', { name: 'Back' }).click();
+  await feedPage.getByRole('tab', { name: 'Everyone' }).waitFor();
+  assert.deepEqual(await feedPage.getByRole('tab').allInnerTexts(), ['Following', 'Everyone', 'Organizations'], 'no Mine tab; organizations share one tab');
   await feedPage.waitForTimeout(400);
   await shot(feedPage, '9-feed');
   const opened = a.context.waitForEvent('page');
@@ -349,10 +360,20 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
   const passage = await opened;
   assert.equal(passage.url(), 'https://example.com/article#:~:text=A%20more%20considered%20way%20to%20browse');
   await passage.close();
-  await feedPage.getByRole('tab', { name: 'Mine' }).click();
+  // Your own crumbs are on your profile, behind your photo.
+  await feedPage.getByRole('button', { name: 'Your profile' }).click();
+  await feedPage.getByRole('heading', { name: 'alice', exact: true, level: 2 }).waitFor();
   await feedPage.getByText('Hidden after reports').waitFor();
-  await feedPage.getByRole('tab', { name: 'Research lab' }).click();
+  await shot(feedPage, '9b-profile');
+  await feedPage.getByRole('button', { name: 'Back' }).click();
+  await feedPage.getByRole('tab', { name: 'Organizations' }).click();
+  await feedPage.getByRole('radio', { name: 'Research lab' }).click();
   await feedPage.getByText('Our launch notes are in here.', { exact: true }).waitFor();
+  await shot(feedPage, '9c-organizations');
+  // A link from the Organization page lands on the organization it names.
+  const linked = await a.open(`/crumbs?tab=organizations&org=${encodeURIComponent(await feedPage.evaluate(() => new URLSearchParams(location.search).get('org')))}`);
+  await linked.getByText('Our launch notes are in here.', { exact: true }).waitFor();
+  await linked.close();
   // The default visibility chosen above now opens the panel on Public.
   await panelA.reload();
   await panelA.getByRole('radio', { name: 'Public' }).waitFor();

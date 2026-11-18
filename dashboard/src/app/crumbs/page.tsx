@@ -11,18 +11,17 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Crumbs", description: "Notes people leave on the web, anchored to the passage they are about." };
 
 /** Crumbs opens in its own tab, so like Plan and Organization it renders its own shell. */
-export default async function CrumbsPage({ searchParams }: { searchParams: Promise<{ tab?: string | string[] }> }) {
+export default async function CrumbsPage({ searchParams }: { searchParams: Promise<{ tab?: string | string[]; org?: string | string[] }> }) {
   const session = await getServerSession(authOptions);
   if (!session?.user) redirect("/auth/login?callbackUrl=/crumbs");
   const user = session.user as { id?: string; name?: string | null; email?: string | null };
-  const tab = (await searchParams).tab;
+  const { tab, org } = await searchParams;
   // The Crumbs account is part of Breadboard's settings now; old links still land on it.
   if (tab === "account") redirect("/settings#crumbs");
-  const initial = tab === "organizations" ? tab : "feed";
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <NavBar email={user.email ?? ""} username={user.name} showFlowers={getNavbarFlowers(Number(user.id))} showActions={false} />
-      <CrumbsClient initialTab={initial} />
+      <CrumbsClient initialTab={tab === "organizations" || typeof org === "string" ? "organizations" : undefined} initialOrg={typeof org === "string" ? org : undefined} />
     </div>
   );
 }

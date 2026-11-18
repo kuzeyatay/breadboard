@@ -32,7 +32,8 @@ import { SearchPalette } from "./components/search-palette";
 import { ThreadPanel } from "./components/thread-panel";
 import { requestJson } from "./lib/message-state";
 import { useRoom } from "./use-room";
-import { RoomCrumbs } from "@/app/crumbs/crumbs-client";
+import CrumbsIcon from "@/app/components/crumbs-icon";
+import { openInDesktopTab } from "@/lib/desktop-browser-tabs";
 import { usePageAppearance } from "@/app/components/use-page-appearance";
 import SpotifyAmbientBackground from "@/app/components/spotify-ambient-background";
 import { SpotifyAmbientProvider } from "@/app/components/spotify-ambient-context";
@@ -227,6 +228,12 @@ function BuzzWorkspace({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+/** An organization's crumbs are read on the Crumbs page, in its Organizations tab. */
+function openCrumbs(roomPublicId: string) {
+  const href = `/crumbs?tab=organizations&org=${encodeURIComponent(`room:${roomPublicId}`)}`;
+  void openInDesktopTab(href).then(opened => { if (!opened) window.location.assign(href); });
+}
 
   /** Open a room by id, following it into its community if need be. */
   const openRoom = useCallback(
@@ -516,7 +523,7 @@ function BuzzWorkspace({
                 communityRooms.flatMap((entry) => entry.agentHandles),
               ).size
             }
-            onSelect={(next) => openRoom(next)}
+            onSelect={(next) => communityRooms.find((entry) => entry.publicId === next)?.slug === "crumbs" ? openCrumbs(next) : openRoom(next)}
             onCreateRoom={() => {
               setDialogError(null);
               setNewRoomOpen(true);
@@ -569,7 +576,11 @@ function BuzzWorkspace({
                     }}
                   />
 
-                  {activeRoom.slug === "crumbs" ? <RoomCrumbs key={activeRoom.publicId} roomId={activeRoom.publicId} /> : <>
+                  {activeRoom.slug === "crumbs" ? <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-muted-foreground">
+                    <CrumbsIcon size={34} strokeWidth={1.3} />
+                    <p className="max-w-xs text-sm">This organization&apos;s crumbs are on the Crumbs page.</p>
+                    <button type="button" className="rounded-full bg-primary px-4 py-1.5 text-sm font-semibold text-primary-foreground" onClick={() => openCrumbs(activeRoom.publicId)}>Open Crumbs</button>
+                  </div> : <>
                   <Transcript
                     key={room.scope}
                     controller={room}
@@ -700,7 +711,7 @@ function RoomHeader({
   onOpenSettings: () => void;
 }) {
   const Icon =
-    room.kind === "dm" ? MessagesSquare : room.visibility === "private" ? Lock : Hash;
+    room.kind === "dm" ? MessagesSquare : room.slug === "crumbs" ? CrumbsIcon : room.visibility === "private" ? Lock : Hash;
   return (
     <header className="buzz-room-header flex h-14 shrink-0 items-center gap-3 border-b border-border/40 px-4">
       <Icon className="size-4 shrink-0 text-muted-foreground" />
