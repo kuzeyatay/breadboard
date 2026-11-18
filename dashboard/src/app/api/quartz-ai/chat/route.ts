@@ -32,7 +32,7 @@ import {
   type QuartzGraphInput,
 } from "@/lib/hermes/quartz-support.ts";
 import { resolveCommandMessage } from "@/lib/hermes/commands.ts";
-import { resolveHermesEngine } from "@/lib/hermes/model-selection.ts";
+import { resolveAvailableHermesEngine } from "@/lib/hermes/model-selection.ts";
 import { prepareTurn, mergeSelectedTools } from "@/lib/hermes/dispatch-core.ts";
 import { listFilesystemGrants } from "@/lib/hermes/filesystem-grant-store.ts";
 import { composeHermesSystemPrompt } from "@/lib/hermes/system-prompts.ts";
@@ -103,17 +103,53 @@ export async function POST(request: Request) {
       gardenId?: string;
       pageSlug?: string;
       pageTitle?: string;
+      visiblePageContent?: string;
       selectedText?: string;
       graph?: QuartzGraphInput;
     };
     const gardenId = requireString(context.gardenId, "context.gardenId", 200);
     const pageSlug = requireString(context.pageSlug, "context.pageSlug", 400);
+    if (body.suggestionsOnly === true) {
+      const headers={...cors,"Cache-Control":"private, no-store"};
+      const {isOwner}=authorizeQuartzAccess(gardenId,userId);
+      if (!userId || !isOwner || body.temporary === true) return NextResponse.json({prompts:[]},{headers});
+      const {getHermesUserSettings}=await import("@/lib/hermes/runtime-store.ts");
+      const personalize=getHermesUserSettings(userId).composerSwitches.personalize !== false;
+      const {learnedEvidence}=await import("@/lib/personal-context/suggestions.ts");
+      const {focusEvidence}=await import("@/lib/personal-context/rank.ts");
+      const focus=String(context.pageTitle || pageSlug).slice(0,180);
+      const records=personalize ? focusEvidence(await learnedEvidence(userId,gardenId),focus).slice(0,3) : [];
+      const learned=records.map(r=>r.title+" — "+r.summary);
+      // The page being read grounds both the openers and the completions.
+      const pageText=typeof context.visiblePageContent==="string" ? context.visiblePageContent.replace(/\s+/gu," ").trim().slice(0,8_000) : "";
+      const page=pageText ? {title:focus,text:pageText} : null;
+      const draft=typeof body.draft==="string"?body.draft.slice(0,2000):"";
+      if (draft) {
+        if (!page && !records.length) return NextResponse.json({completion:null},{headers});
+        const {generateSentenceCompletion}=await import("@/lib/sentence-completion-service.ts");
+        const completion=await generateSentenceCompletion({userId,draft,messages:[],learned,page,signal:request.signal});
+        return NextResponse.json({completion},{headers});
+      }
+      if (page) {
+        const {generatePdfSuggestions}=await import("@/lib/chat-prompt-suggestion-service.ts");
+        const {keptPromptSuggestion}=await import("@/lib/prompt-suggestion-cache.ts");
+        const {createHash}=await import("node:crypto");
+        const model=selectedModelForUser(userId);
+        const key=createHash("sha256").update(JSON.stringify(["quartz-page-v1",userId,model,focus,pageText,learned])).digest("hex");
+        const kept=await keptPromptSuggestion(key,async()=>{
+          const questions=await generatePdfSuggestions({kind:"web",title:focus,pageNumber:1,pageText,model,learned});
+          return questions.length ? JSON.stringify(questions) : null;
+        });
+        if (kept) return NextResponse.json({prompts:JSON.parse(kept)},{headers});
+      }
+      return NextResponse.json({prompts:records.map(r=>r.suggestedPrompt).filter(Boolean)},{headers});
+    }
     const text = requireString(body.text, "text", 20_000);
     const prepareOnly = body.prepareOnly === true;
     // Same server-owned engine resolution as the terminal: the provider is
     // fixed and unknown model/effort values are rejected with a 400.
     const model = body.model ?? selectedModelForUser(userId);
-    const engine = resolveHermesEngine(model, body.reasoningEffort);
+    const engine = await resolveAvailableHermesEngine(model, body.reasoningEffort);
 
     // Access control + rate limiting (public readers).
     const { cluster } = authorizeQuartzAccess(gardenId, userId);
@@ -198,6 +234,7 @@ export async function POST(request: Request) {
           graphContext: context.graph,
           authorizedContext: systemContext,
         },
+        personalize: body.personalize !== false && cluster.user_id === userId,
         model,
         reasoningEffort: body.reasoningEffort,
         retry: body.retry === true,

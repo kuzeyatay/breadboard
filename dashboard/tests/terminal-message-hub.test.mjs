@@ -58,6 +58,7 @@ function route(relative, overrides = {}) {
       apiErrorResponse(error) { return Response.json({ error: error.message }, { status: error.status ?? 500 }); },
     },
     "@/lib/max-research/conversation-persistence.ts": { reconcileMaxResearchConversation: async () => {} },
+    "@/lib/vibe-trading/conversation-persistence.ts": { reconcileVibeTradingConversation: async () => {} },
     ...overrides,
   };
   const source = fs.readFileSync(new URL(`../src/app/api/hermes/sessions/${relative}`, import.meta.url), "utf8");
@@ -216,6 +217,13 @@ test("terminal opens another surface's exact transcript while enforcing ownershi
   assert.equal((await api.GET(new Request("http://localhost/chat?surface=quartz_ai"), params)).status, 404);
   const other = store.createConversation({ userId: 2 });
   assert.equal((await api.GET(new Request("http://localhost/chat?surface=dashboard_terminal"), { params: Promise.resolve({ sessionId: other.public_id }) })).status, 404);
+  const offline = route("[sessionId]/route.ts", {
+    "@/lib/hermes/route-helpers.ts": { ...core, requireEnabled() { throw new Error("Runtime disabled"); },
+      apiErrorResponse: error => Response.json({}, { status: error.status ?? 503 }) },
+  });
+  const saved = await offline.GET(new Request("http://localhost/chat?surface=dashboard_terminal"), params);
+  assert.deepEqual((await saved.json()).session.messages.map(message => message.content), ["Explain resonance", "Resonance explained"]);
+  assert.equal((await offline.GET(new Request("http://localhost/chat?surface=dashboard_terminal"), { params: Promise.resolve({ sessionId: other.public_id }) })).status, 404);
 });
 
 test("PDF conversations restore document scope and inline answers without a runtime", () => {

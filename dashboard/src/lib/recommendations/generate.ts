@@ -36,6 +36,6 @@ export async function generateRecommendations(input: {
     const parsed = JSON.parse(raw.trim().replace(/^```(?:json)?\s*|\s*```$/g, ''));
     if (!Array.isArray(parsed)) return fallback;
     const suggestions = parseRecommendations(parsed, focused, 8);
-    return selectRecommendations(suggestions, focused, reviewed, input.context);
+    return selectRecommendations([...suggestions,...fallback.filter(card=>card.lesson)], focused, reviewed, input.context);
   } catch { return fallback; }
 }

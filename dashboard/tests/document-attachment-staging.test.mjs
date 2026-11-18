@@ -81,3 +81,11 @@ for (const segment of [".breadboard", ".breadboard/attachments"]) {
     assert.deepEqual(fs.readdirSync(outside), []);
   });
 }
+
+test("a quick question's own workspace gets no copy of the attachment", async (t) => {
+  const { root, attachment } = await fixture(t);
+  const workspace = path.join(root, "conv_abc-inline-034e4c59");
+  fs.mkdirSync(workspace);
+  assert.deepEqual(stageEditableDocumentAttachments({ userId: 7, attachments: [attachment], workspace }), { context: "", paths: [] });
+  assert.deepEqual(fs.readdirSync(workspace), []);
+});

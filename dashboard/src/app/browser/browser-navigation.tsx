@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
-import { browserBookmarksControl, sendDesktopTabsCommand as sendTabsCommand, type DesktopTabsCommand } from "@/lib/desktop-browser-tabs";
+import { browserBookmarksControl, sendDesktopTabsCommand as sendTabsCommand, type DesktopTabsCommand, type DesktopTabView } from "@/lib/desktop-browser-tabs";
 import { BrowserSiteIcon, GoogleGlyph } from "./browser-site-icon";
 import { looksLikeBrowserAddress, searchSuggestions, type SearchSuggestion } from "./browser-recent-searches";
 import { browserAddressDisplayValue } from "./browser-address-display";
@@ -97,12 +97,13 @@ function useGoogleSuggestions(query: string): string[] {
 
 
 /** Shared by web pages and the independent, locally bundled desktop shell. */
-export default function BrowserNavigation({ showFlowers, restoreOwnerKey, onPanel }: {
+export default function BrowserNavigation({ tab, showFlowers, restoreOwnerKey, onPanel }: {
+  tab?: DesktopTabView;
   showFlowers: boolean; restoreOwnerKey: string;
   onPanel: (panel: "history" | "visited-pages" | "starred" | "downloads") => void;
 }) {
   const tabs = useDesktopTabs();
-  const pageTab = tabs?.tabs.find(tab => tab.id === (tabs.selfId === undefined ? tabs.activeId : tabs.selfId));
+  const pageTab = tab ?? tabs?.tabs.find(tab => tab.id === (tabs.selfId === undefined ? tabs.activeId : tabs.selfId));
   const browser = pageTab?.browser;
   const privateBrowsing = browser?.private === true;
   const isActive = pageTab?.id === tabs?.activeId;

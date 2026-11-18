@@ -29,6 +29,8 @@ export const CHATMOCK_PROVIDER = 'chatmock';
 
 /** Models shown when ChatMock's model endpoint is unavailable or incomplete. */
 export const DEFAULT_ASSISTANT_MODELS: readonly string[] = [
+  'gpt-6.2-astra',
+  'gpt-6.2-sol',
   'gpt-6.1-sol',
   'gpt-6.1-terra',
   'gpt-6-astra',
@@ -303,6 +305,8 @@ export function formatAssistantModelName(modelId: string): string {
   const withPrefix = slash < 0 ? modelId : modelId.slice(slash + 1);
   const bare = withPrefix.replace(RELEASE_DATE_SUFFIX, '') || withPrefix;
 
+  if (bare === 'gpt-6.2-astra') return 'GPT-6.2 Astra';
+  if (bare === 'gpt-6.2-sol') return 'GPT-6.2 Sol';
   if (bare === 'gpt-6.1-sol') return 'GPT-6.1 Sol';
   if (bare === 'gpt-6.1-terra') return 'GPT-6.1 Terra';
   if (bare === 'gpt-6-astra') return 'GPT-6 Astra';
@@ -325,7 +329,8 @@ export function formatAssistantModelName(modelId: string): string {
   // the raw id made Google the odd section out (`google/gemini-3.7-flash-high`)
   // while Anthropic and OpenAI already had readable names.
   if (/^gemini-/i.test(bare)) return formatClaudeModelName(bare);
-  return bare.replace(/^gpt-/i, 'GPT-');
+  if (/^gpt-/i.test(bare)) return formatChatgptWebModelName(bare);
+  return bare;
 }
 
 /**

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { textEraseMs, textTypeMs } from '@/lib/text-replacement-motion';
+import type { SuggestionDetail } from './use-chat-greeting';
 
 const media = '(prefers-reduced-motion: reduce)';
 const snapshot = () => window.matchMedia(media).matches;
@@ -11,16 +12,20 @@ function subscribe(changed: () => void) {
 }
 const serverSnapshot=()=>true;
 const characters=(text:string)=>Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(text),part=>part.segment);
-type Start = { from: string; text: string; target: string };
+export type SuggestionCardContent = { prompt: string; detail?: SuggestionDetail };
+type Start = { from: SuggestionCardContent; text: string; target: string };
 type Phase = 'erase' | 'type' | 'ready';
 
 /** Real characters preserve reading order on cards that wrap to several lines. */
-export function useSuggestionCardText(prompt: string, paused: boolean) {
+export function useSuggestionCardText(card: SuggestionCardContent, paused: boolean) {
+  const { prompt } = card;
   const reduced=useSyncExternalStore(subscribe,snapshot,serverSnapshot);
-  const [state,setState]=useState<{target:string;displayed:string;phase:Phase;start:Start|null}>({target:prompt,displayed:prompt,phase:'ready',start:null});
-  if(state.target!==prompt) {
+  const [state,setState]=useState<{target:SuggestionCardContent;displayed:string;phase:Phase;start:Start|null}>({target:card,displayed:prompt,phase:'ready',start:null});
+  if(state.target.prompt!==prompt) {
     const from=state.phase==='erase' && state.start ? state.start.from : state.target;
-    setState({target:prompt,displayed:reduced?prompt:state.displayed,phase:reduced?'ready':'erase',start:{from,text:state.displayed,target:prompt}});
+    setState({target:card,displayed:reduced?prompt:state.displayed,phase:reduced?'ready':'erase',start:{from,text:state.displayed,target:prompt}});
+  } else if (state.target.detail !== card.detail) {
+    setState({ ...state, target: card });
   }
   const start=state.start;
   const progress=useRef<{start:Start|null;elapsed:number}>({start:null,elapsed:0});
@@ -48,5 +53,5 @@ export function useSuggestionCardText(prompt: string, paused: boolean) {
     return ()=>cancelAnimationFrame(frame);
   },[start,reduced,paused]);
   return {displayed:reduced?prompt:state.displayed,phase:reduced?'ready':state.phase,reduced,
-    previous:state.start?.from ?? prompt,actionable:!reduced && state.phase==='erase' && state.start ? state.start.from : prompt};
+    previous:state.start?.from.prompt ?? prompt,actionable:!reduced && state.phase==='erase' && state.start ? state.start.from : card};
 }

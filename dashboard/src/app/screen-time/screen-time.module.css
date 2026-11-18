@@ -155,15 +155,72 @@
 .suggestionToggle { display: flex; align-items: center; justify-content: space-between; gap: 18px; font-size: 13px; font-weight: 550; margin-top: 20px; }
 .suggestionToggle input { width: 17px; height: 17px; accent-color: var(--accent); flex-shrink: 0; }
 .primaryButton { width: 100%; padding: 10px 16px; border: 0; background: var(--accent); color: var(--background); border-radius: 10px; font-size: 14px !important; font-weight: 550 !important; }
-.recallDialog { inset: 12px 12px 12px auto; width: min(510px, calc(100vw - 24px)); border-radius: 20px; padding: 30px; }
-.recallDialog > .eyebrow { display: block; margin-top: 8px; }
-.recallDialog h2 { margin-top: 9px; }
-.recallDialog > .error { margin-top: 18px; }
-.recallResults { margin: 24px 0 18px; min-height: 130px; }
-.recallHit { border-top: 1px solid var(--border); padding: 18px 0; }
-.recallHit > div { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; color: var(--muted); }
-.recallHit h3 { font-size: 14px; margin: 7px 0 9px; font-weight: 550; }
-.recallHit p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.65; color: var(--muted); margin: 0; }
+.recallDialog { inset: 12px 12px 12px auto; width: min(480px, calc(100vw - 24px)); border-radius: 20px; padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.recallHeader { position: relative; padding: 24px 28px 20px; border-bottom: 1px solid var(--border); }
+.recallHeader .close { top: 18px; right: 18px; }
+.recallHeader .eyebrow { display: inline-flex; align-items: center; gap: 6px; color: #8b81ab; }
+.recallHeader h2 { font-family: var(--font-schibsted), system-ui, sans-serif; font-size: 21px; line-height: 1.3; font-weight: 550; letter-spacing: -.5px; margin: 8px 40px 4px 0; overflow-wrap: anywhere; }
+.recallHeader > p { color: var(--muted); font-size: 13px; margin: 0; }
+.recallHeader .primaryLink { margin-top: 14px; }
+.recallBody { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 28px 20px; overscroll-behavior: contain; }
+.recallFooter { padding: 14px 28px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--muted) 3%, var(--surface)); }
+.recallCount { font-size: 12px; color: var(--muted); margin: 12px 0 2px; }
+.recallHit { border-bottom: 1px solid var(--border); padding: 16px 0; }
+.recallHit:last-of-type { border-bottom: 0; }
+.recallHit > div { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.recallApp { padding: 2px 8px; border-radius: 99px; background: color-mix(in srgb, #a798c4 13%, var(--surface)); color: color-mix(in srgb, #8b81ab 80%, var(--foreground)); font-weight: 550; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recallHit h3 { font-size: 14px; line-height: 1.4; margin: 9px 0 6px; font-weight: 550; overflow-wrap: anywhere; }
+.recallHit p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; color: var(--muted); margin: 0 0 4px; }
+.recallHit p[data-open="false"] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; overflow: hidden; }
+.recallState { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 56px 12px 24px; }
+.recallState > span { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; color: #8b81ab; background: color-mix(in srgb, #a798c4 12%, var(--surface)); }
+.recallState > span[data-tone="warn"] { color: #b0764f; background: color-mix(in srgb, #c98f67 13%, var(--surface)); }
+.recallState h3 { font-size: 16px; font-weight: 550; margin: 16px 0 6px; }
+.recallState p { font-size: 13px; line-height: 1.6; color: var(--muted); max-width: 330px; margin: 0; }
+.recallState > div { display: flex; align-items: center; gap: 16px; margin-top: 20px; }
+.secondaryButton { border: 1px solid var(--border); background: var(--surface); color: var(--foreground); border-radius: 9px; padding: 7px 14px; font-size: 13px !important; font-weight: 550 !important; }
+.secondaryButton:hover { background: color-mix(in srgb, var(--muted) 7%, var(--surface)); }
+.recallSkeleton > div { padding: 18px 0; border-bottom: 1px solid var(--border); }
+.recallSkeleton i { display: block; height: 10px; border-radius: 5px; margin-bottom: 10px; background: linear-gradient(90deg, color-mix(in srgb, var(--muted) 9%, transparent) 30%, color-mix(in srgb, var(--muted) 17%, transparent) 50%, color-mix(in srgb, var(--muted) 9%, transparent) 70%) 0 0 / 300% 100%; animation: recallShimmer 1.4s linear infinite; }
+.recallSkeleton i:nth-child(1) { width: 30%; }
+.recallSkeleton i:nth-child(2) { width: 65%; height: 13px; }
+.recallSkeleton i:nth-child(3) { width: 90%; margin-bottom: 0; }
+.locksCard { padding: 20px 22px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); box-shadow: var(--st-shadow); }
+.locksCard > p { font-size: 13px; color: var(--muted); line-height: 1.55; margin: 0 0 14px; }
+.locksCard .secondaryButton { display: inline-flex; align-items: center; gap: 7px; }
+.locksHeading { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--accent); }
+.locksHeading h2 { flex: 1; color: var(--foreground); font-family: var(--font-schibsted), system-ui, sans-serif; font-size: 16px; font-weight: 550; letter-spacing: -.3px; margin: 0; }
+.locksHeading .iconButton { height: 30px; width: 30px; }
+.lockList { list-style: none; margin: 0 0 10px; padding: 0; }
+.lockList li { display: flex; align-items: center; gap: 10px; padding: 11px 0; border-top: 1px solid var(--border); }
+.lockList li > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.lockList strong { font-size: 14px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lockList span { font-size: 12px; color: var(--muted); }
+.lockList li[data-state="locked"] span:not(.lockMeter) { color: #b0764f; }
+.lockList li[data-state="open"] span { color: var(--accent); }
+.lockList .iconButton { height: 30px; width: 30px; }
+.lockMeter { display: block; height: 4px; border-radius: 4px; background: color-mix(in srgb, var(--muted) 12%, transparent); overflow: hidden; margin-top: 3px; }
+.lockMeter i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.lockList li[data-state="locked"] .lockMeter i { background: #c98f67; }
+.lockError { color: #b0764f; font-size: 13px !important; margin: 0 0 10px; }
+.lockForm { display: grid; gap: 18px; margin-top: 22px; }
+.lockForm .settingsNote { margin: 0; }
+.field { display: block; border: 0; padding: 0; margin: 0; font-size: 13px; font-weight: 550; min-width: 0; }
+.field legend { padding: 0; margin-bottom: 8px; }
+.field > input { display: block; width: 100%; margin-top: 7px; background: var(--background); border: 1px solid var(--border); border-radius: 9px; padding: 9px 12px; color: var(--foreground); font: inherit; font-size: 14px; font-weight: 400; }
+.field > input:focus-visible, .minuteRow input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.field small { display: block; margin-top: 8px; font-size: 12px; font-weight: 400; color: var(--muted); }
+.lockModes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.lockModes button { display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 11px 12px; border-radius: 11px; border: 1px solid var(--border); background: transparent; color: var(--foreground); }
+.lockModes strong { font-size: 13px; font-weight: 550; }
+.lockModes span { font-size: 12px; font-weight: 400; color: var(--muted); line-height: 1.4; }
+.lockModes button[aria-pressed="true"], .minuteRow button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); box-shadow: inset 0 0 0 1px var(--accent); }
+.minuteRow { display: flex; flex-wrap: wrap; gap: 6px; }
+.minuteRow button { border: 1px solid var(--border); background: transparent; color: var(--foreground); border-radius: 8px; padding: 7px 11px; font-size: 13px !important; font-weight: 500; }
+.minuteRow input { width: 76px; background: var(--background); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; color: var(--foreground); font: inherit; font-size: 13px; }
+.primaryButton[data-tone="danger"] { background: #b0613f; }
+.settingsDialog form button:active:not(:disabled) { transform: scale(.98); }
+@keyframes recallShimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
 @keyframes screenTimeFade { from { opacity: 0; } to { opacity: 1; } }
 @media (max-width: 900px) {
   .container { padding: 22px; }
@@ -197,7 +254,8 @@
   .timelineRow { gap: 10px; }
   .timelineDot { width: 20px; height: 20px; }
   .timelineName strong { font-size: 12px; }
-  .settingsDialog, .recallDialog { padding: 25px; }
+  .settingsDialog { padding: 25px; }
+  .recallHeader, .recallBody, .recallFooter { padding-inline: 20px; }
 }
 @media (max-width: 400px) {
   .overviewTop { flex-wrap: wrap; gap: 14px; }
@@ -208,6 +266,6 @@
   .legend strong { display: none; }
   .timelineDot { display: none; }
 }
-@media (prefers-reduced-motion: reduce) { .scrim, .settingsDialog, .recallDialog { animation: none; } .page button:active:not(:disabled) { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .scrim, .settingsDialog, .recallDialog, .recallSkeleton i { animation: none; } .page button:active:not(:disabled) { transform: none; } }
 @media (prefers-reduced-transparency: reduce) { .scrim { backdrop-filter: none; background: rgb(10 19 14 / .65); } }
 @media (prefers-contrast: more) { .overview, .usagePanel, .timelinePanel, .insights, .settingsDialog, .recallDialog { border-color: var(--foreground); } .gridLines i { border-color: var(--muted); } }

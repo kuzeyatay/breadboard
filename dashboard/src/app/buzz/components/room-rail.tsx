@@ -27,7 +27,9 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarSeparator,
 } from "@/app/buzz/ui/sidebar";
+import DefaultAvatar from "@/app/components/default-avatar";
 import { SidebarMenuLabel } from "@/app/buzz/ui/sidebar-menu-label";
 import type { BuzzCommunity, BuzzRoomSummary } from "../types.ts";
 
@@ -47,6 +49,7 @@ export function RoomRail({
   onCreateRoom,
   onSearch,
   onOpenView,
+  onOpenWorkspace,
 }: {
   community: BuzzCommunity | null;
   rooms: BuzzRoomSummary[];
@@ -59,6 +62,8 @@ export function RoomRail({
   onCreateRoom: () => void;
   onSearch: () => void;
   onOpenView: (view: Exclude<RailView, "room">) => void;
+  /** Open a Garden shared with this organization in its own workspace screen. */
+  onOpenWorkspace: (slug: string) => void;
 }) {
   // The server has no platform to read, so it renders the Windows label and
   // the client corrects it after hydration. `useSyncExternalStore` is what
@@ -214,6 +219,33 @@ export function RoomRail({
             <SidebarGroupLabel>Direct messages</SidebarGroupLabel>
             <SidebarMenu>{directs.map(roomRow)}</SidebarMenu>
           </SidebarGroup>
+        ) : null}
+
+        {community?.workspaces?.length ? (
+          <>
+            <SidebarSeparator className="mx-3 my-1" />
+            <SidebarGroup>
+              <SidebarGroupLabel>Workspaces</SidebarGroupLabel>
+              <SidebarMenu>
+                {community.workspaces.map((workspace) => (
+                  <SidebarMenuItem key={workspace.slug}>
+                    <SidebarMenuButton
+                      type="button"
+                      tooltip={workspace.name}
+                      onClick={() => onOpenWorkspace(workspace.slug)}
+                      className="group-hover/menu-item:bg-sidebar-accent group-hover/menu-item:text-sidebar-foreground"
+                      data-testid={`workspace-${workspace.slug}`}
+                    >
+                      <DefaultAvatar size={18} shape="rounded" />
+                      <span className="min-w-0 flex-1 truncate opacity-80" data-sidebar-row-label>
+                        {workspace.name}
+                      </span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroup>
+          </>
         ) : null}
 
         {rooms.length === 0 ? (

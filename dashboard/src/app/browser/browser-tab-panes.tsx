@@ -16,7 +16,8 @@ export default function BrowserTabPanes({ state, children }: {
   const group = state.groups?.find(group => group.split && !group.collapsed && state.tabs.find(tab => tab.id === visibleId)?.groupId === group.id);
   const members = group ? state.tabs.filter(tab => tab.groupId === group.id) : [];
   const split = members.length === 2 ? members : [];
-  return <>{state.tabs.filter(tab => tab.browser && (tab.browser.uiVisited || tab.id === state.activeId || tab.id === visibleId || split.includes(tab))).map(tab => {
+  const panes = state.retainedBrowserTab ? [...state.tabs, state.retainedBrowserTab] : state.tabs;
+  return <>{panes.filter(tab => tab.browser && (tab.browser.uiVisited || tab.id === state.activeId || tab.id === visibleId || split.includes(tab))).map(tab => {
     const pane = split.indexOf(tab);
     const visible = split.length ? pane >= 0 : tab.id === visibleId;
     return <DesktopTabIdentityContext.Provider key={tab.browser?.uiKey ?? tab.id} value={tab.id}>

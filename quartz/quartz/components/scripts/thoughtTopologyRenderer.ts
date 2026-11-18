@@ -23,7 +23,7 @@ import katex from "katex"
 import { Application, Circle, Container, Graphics, Text } from "pixi.js"
 import { FullSlug, SimpleSlug, resolveRelative } from "../../util/path"
 import type { D3Config } from "../Graph"
-import { TOPOLOGY_SOURCE_COLORS } from "./sourceNodeVisual"
+import { openTopologyChat, TOPOLOGY_SOURCE_COLORS, topologySourceLabel } from "./sourceNodeVisual"
 import { RenderSlot } from "./renderSlot"
 import {
   affinityLabel,
@@ -1817,7 +1817,7 @@ async function mountThoughtTopologyScene(
       )
       const concepts = node.concepts.slice(0, 4).join(" · ")
       const sourceType = node.sourceKind
-        ? `${node.sourceKind === "pdf" ? "PDF" : node.sourceKind[0].toUpperCase() + node.sourceKind.slice(1)} source`
+        ? topologySourceLabel(node.sourceKind)
         : ""
       calloutText(
         "thought-callout-meta",
@@ -2246,6 +2246,7 @@ async function mountThoughtTopologyScene(
   let lastRightClick: { nodeId: string; at: number } | null = null
 
   function openNode(view: NodeView) {
+    if (openTopologyChat(view.node.id, view.node.navigateSlug)) return
     const rawSlug =
       view.node.navigateSlug ??
       (view.node.kind === "garden" || view.node.folderPath === ""

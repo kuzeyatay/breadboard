@@ -28,6 +28,14 @@ export function ensureCrumbsSchema(db: Database.Database) {
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, org_id TEXT NOT NULL, epoch INTEGER NOT NULL, key TEXT NOT NULL, PRIMARY KEY(user_id, org_id, epoch)
     );
     CREATE TABLE IF NOT EXISTS crumbs_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS crumbs_feed_preferences (
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, enabled INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS crumbs_feed_feedback (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, subject TEXT NOT NULL,
+      kind TEXT NOT NULL, features TEXT NOT NULL, observed INTEGER NOT NULL, PRIMARY KEY(user_id, subject, kind)
+    );
+    CREATE INDEX IF NOT EXISTS crumbs_feedback_recent ON crumbs_feed_feedback(user_id, observed DESC);
   `);
   initialized.add(db);
 }

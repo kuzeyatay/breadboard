@@ -18,11 +18,14 @@ import {
 import { categoryForTags } from "../categories.ts";
 import type { MapAddress, MapBounds, MapPlace, MapPlaceDetails } from "../types.ts";
 import { requestProviderJson } from "./http.ts";
+import { foldName, haversineMeters } from "./overpass.ts";
 import type {
   GeocodeReverseInput,
   GeocodeSearchInput,
   GeocodingProvider,
+  NearbyProviderInput,
   PlaceDetailsProvider,
+  POIProvider,
 } from "./types.ts";
 
 interface NominatimPlace {
@@ -166,7 +169,7 @@ function categoryFromTags(tags: Record<string, string>): { category?: string } {
   return category ? { category } : {};
 }
 
-export class NominatimGeocoder implements GeocodingProvider, PlaceDetailsProvider {
+export class NominatimGeocoder implements GeocodingProvider, PlaceDetailsProvider, POIProvider {
   readonly name = "OpenStreetMap/Nominatim";
 
   private readonly options: {
@@ -199,6 +202,57 @@ export class NominatimGeocoder implements GeocodingProvider, PlaceDetailsProvide
     return (Array.isArray(response) ? response : [])
       .map((place) => nominatimPlaceToMapPlace(place, retrievedAt))
       .filter((place): place is MapPlace => place !== null);
+  }
+
+  /**
+   * Nearby lookup for when Overpass is unavailable (its public servers are
+   * often at capacity). Same OSM objects, found by tag value inside the radius's
+   * bounding box, kept only when their OSM key=value matches a selector.
+   */
+  async nearby(input: NearbyProviderInput): Promise<MapPlace[]> {
+    const tags = input.selectors.flatMap((selector) => {
+      const match = /^\["([^"]+)"="([^"]+)"\]$/.exec(selector);
+      return match ? [{ key: match[1], value: match[2] }] : [];
+    });
+    const dLat = input.radiusMeters / 111_320;
+    const dLon = dLat / Math.max(0.01, Math.cos((input.center.lat * Math.PI) / 180));
+    const viewbox = [input.center.lon - dLon, input.center.lat + dLat, input.center.lon + dLon, input.center.lat - dLat].join(",");
+    const terms = tags.length ? [...new Set(tags.map((tag) => tag.value))] : [input.query ?? ""];
+    const retrievedAt = new Date().toISOString();
+    const needle = input.query ? foldName(input.query) : "";
+    const seen = new Set<string>();
+    const places: { place: MapPlace; distance: number }[] = [];
+    for (const term of terms) {
+      const url = new URL(`${this.options.baseUrl}/search`);
+      url.searchParams.set("q", term);
+      url.searchParams.set("format", "jsonv2");
+      url.searchParams.set("addressdetails", "1");
+      url.searchParams.set("bounded", "1");
+      url.searchParams.set("viewbox", viewbox);
+      url.searchParams.set("limit", "40");
+      const response = await requestProviderJson<NominatimPlace[]>({
+        url: url.toString(),
+        provider: this.name,
+        failureCode: "map_nearby_failed",
+        failureMessage: "I couldn't retrieve nearby places from the map data.",
+        timeoutMs: this.options.timeoutMs,
+        userAgent: this.options.userAgent,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+      for (const raw of Array.isArray(response) ? response : []) {
+        const key = text(raw.category ?? raw.class);
+        if (tags.length && !tags.some((tag) => tag.key === key && tag.value === text(raw.type))) continue;
+        const place = nominatimPlaceToMapPlace(raw, retrievedAt);
+        if (!place || seen.has(place.id)) continue;
+        if (needle && !foldName(place.displayName).includes(needle)) continue;
+        const distance = haversineMeters(input.center, place);
+        if (distance > input.radiusMeters) continue;
+        seen.add(place.id);
+        places.push({ place, distance });
+      }
+    }
+    places.sort((left, right) => left.distance - right.distance);
+    return places.slice(0, input.limit).map((entry) => entry.place);
   }
 
   async reverse(input: GeocodeReverseInput): Promise<MapPlace | null> {

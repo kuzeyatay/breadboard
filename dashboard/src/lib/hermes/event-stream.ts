@@ -668,6 +668,7 @@ function driveSessionEventPump(
           toolName: event.payload.toolName,
           success: event.payload.success,
           summary: event.payload.summary,
+          spotifyPlaybackPrepared: event.payload.spotifyPlaybackPrepared,
           ...(event.payload.success ? {} : { failure: recoveryToolFailure(event.payload) }),
           completedAt: event.timestamp,
         });

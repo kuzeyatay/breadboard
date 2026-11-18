@@ -3,7 +3,6 @@
 import { useState, useSyncExternalStore } from "react";
 import { gardenFileApi, type GardenFileEntry } from "@/lib/garden-files/types";
 import { gardenUploadFileKey, gardenUploadTasksSnapshot, gardenUploadTasksServerSnapshot, subscribeGardenUploads, startGardenUploadTask, cancelGardenUploadTask } from "@/lib/garden-upload-store";
-import { ANYDOC_PARSE_FILE_RE } from "@/lib/anydoc/formats";
 import { usePageLoading } from "@/app/components/use-page-loading";
 import styles from "./garden-files.module.css";
 
@@ -20,7 +19,7 @@ export default function GardenFileKnowledge({ file, onClose }: { file: GardenFil
       const response = await fetch(`${gardenFileApi(file.gardenId, file.id)}/content?version=${file.version}`);
       if (!response.ok) throw new Error("The original file could not be read. Try again.");
       const original = new File([await response.blob()], file.name, { type: file.mimeType });
-      setTaskId(startGardenUploadTask({ clusterSlug: file.gardenId, files: [original], options: { label: file.name, handwriting: false, parseWithVlm: false, parseWithAnydoc: ANYDOC_PARSE_FILE_RE.test(file.name), generateMap: false } }));
+      setTaskId(startGardenUploadTask({ clusterSlug: file.gardenId, files: [original], options: { label: file.name, handwriting: false, parseWithVlm: false, generateMap: false } }));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "The file could not be added to knowledge."); }
     finally { setPreparing(false); }
   };

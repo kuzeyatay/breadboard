@@ -33,6 +33,7 @@ import { systemPromptText } from '@/lib/system-prompts/service.ts';
 import { chatCorePrompt } from '@/lib/hermes/system-prompts.ts';
 import { parseBrowserTerminalAccess } from '@/lib/browser-terminal.ts';
 import { browserTerminalPrompt } from '@/lib/hermes/browser-terminal-context.ts';
+import { personalTurnPrompt } from '@/lib/personal-context/resolve.ts';
 import { createEmDashFilter } from '@/lib/prose-punctuation.ts';
 import {
   assistantTextFromOutputItem,
@@ -162,7 +163,7 @@ export async function POST(request: Request) {
   try {
     const { baseURL } = resolveChatmockBaseUrl(request);
     const userId = await requireUserId();
-    const { messages, model, thinking, reasoningEffort, attachments, scope, adhdMode, browserAccess, voice, voiceOpener, personalize } =
+    const { messages, model, thinking, reasoningEffort, attachments, scope, adhdMode, browserAccess, voice, voiceOpener, personalize, pageTitle, temporary } =
       await request.json();
 
     if (!Array.isArray(messages)) {
@@ -289,6 +290,10 @@ export async function POST(request: Request) {
       `${gardenContext}\n\nGraphRAG-lite retrieved evidence (BM25, aliases, optional embeddings, and bounded one-hop relationships):\n\n${notesContext}`;
 
     const urlLinkContext = await buildUrlLinkContext(chatMessages);
+    if (!publicScope && personalize !== false && temporary !== true) {
+      systemPrompt += "\n" + await personalTurnPrompt({userId,conversationId:0,surface:"dashboard_terminal",
+        query:lastUserMessage?.content ?? "",focus:typeof pageTitle === "string" ? pageTitle.slice(0,180) : undefined});
+    }
     if (urlLinkContext.context) {
       systemPrompt +=
         '\n\nWeb link context fetched by the Breadboard server. ' +

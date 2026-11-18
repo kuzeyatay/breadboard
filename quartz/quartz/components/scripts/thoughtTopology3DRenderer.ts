@@ -26,7 +26,7 @@ import katex from "katex"
 import { Application, Circle, Container, Graphics, Text } from "pixi.js"
 import { FullSlug, SimpleSlug, resolveRelative } from "../../util/path"
 import type { D3Config } from "../Graph"
-import { TOPOLOGY_SOURCE_COLORS } from "./sourceNodeVisual"
+import { openTopologyChat, TOPOLOGY_SOURCE_COLORS, topologySourceLabel } from "./sourceNodeVisual"
 import { RenderSlot } from "./renderSlot"
 import { GraphRenderLoop } from "./graphRenderLoop"
 import {
@@ -43,6 +43,7 @@ import {
   pageLabelSides,
   placeLabels,
   planThoughtTopology,
+  placeChatsBesidePages,
   readableSummary,
   relationLabel,
   shouldShowTopologyNodeLabel,
@@ -753,6 +754,8 @@ async function mountThoughtTopologyScene(
       : plan.nodes,
     gardenSpheres,
   )
+  // Chats join the sphere beside the pages they cited or asked about.
+  placeChatsBesidePages(plan.nodes, plan.edges, plannedHomes)
   await yieldIfNeeded()
   const depthSpread = [...plannedHomes.values()].reduce(
     (extent, point) => Math.max(extent, Math.hypot(point.x, point.y, point.z)),
@@ -1996,7 +1999,7 @@ async function mountThoughtTopologyScene(
       )
       const concepts = node.concepts.slice(0, 4).join(" · ")
       const sourceType = node.sourceKind
-        ? `${node.sourceKind === "pdf" ? "PDF" : node.sourceKind[0].toUpperCase() + node.sourceKind.slice(1)} source`
+        ? topologySourceLabel(node.sourceKind)
         : ""
       calloutText(
         "thought-callout-meta",
@@ -2440,6 +2443,7 @@ async function mountThoughtTopologyScene(
   let lastRightClick: { nodeId: string; at: number } | null = null
 
   function openNode(view: NodeView) {
+    if (openTopologyChat(view.node.id, view.node.navigateSlug)) return
     const rawSlug =
       view.node.navigateSlug ??
       (view.node.kind === "garden" || view.node.folderPath === ""

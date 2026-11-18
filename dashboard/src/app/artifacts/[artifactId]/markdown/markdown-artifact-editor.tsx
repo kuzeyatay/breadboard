@@ -99,7 +99,7 @@ export default function MarkdownArtifactEditor({
     reasoningEffort,
     setReasoningEffort,
     intelligenceModes,
-  } = useAssistantIntelligence();
+  } = useAssistantIntelligence({ scope: "markdown_artifact", sessionId: initialArtifact.id, shared: true });
   const { models, modelsLoading, loadModels } = useAssistantModels({ eager: true });
   const { changeModel, labelsFor: modelChangesFor } = useChatModelChanges({
     scope: "markdown-assistant", sessionId: initialArtifact.id, messages: chat, model, onModelChange: setModel,
@@ -512,6 +512,9 @@ export default function MarkdownArtifactEditor({
           </div>
           <div className="shrink-0 p-3">
             <AssistantComposer
+              suggestionPageTitle={artifact.title}
+              documentConversationId={artifact.conversationId}
+              suggestionMessages={chat.map(entry=>({role:entry.role,content:entry.text}))}
               value={prompt}
               onChange={setPrompt}
               onSubmit={() => void askBread()}

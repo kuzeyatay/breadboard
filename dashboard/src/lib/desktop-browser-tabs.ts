@@ -82,6 +82,7 @@ export interface DesktopTabsState {
   presentedId?: number | null;
   /** Native content currently in front, including an outgoing page during preparation. */
   visibleId?: number | null;
+  retainedBrowserTab?: DesktopTabView;
   /** All physically presented panes, including an unfocused split partner. */
   visibleIds?: number[];
   /** Visibility of a native answer surface that does not own a tab. */
@@ -206,8 +207,7 @@ type DesktopTabsAction =
   | { type: "browser-answer-ready" }
   | { type: "browser-answer-state"; state: import("./browser-inline-answer").BrowserInlineAnswerState }
   | { type: "browser-answer-action"; action: import("./browser-inline-answer").BrowserInlineAnswerAction }
-  | { type: "browser-answer-resize"; width: number; height: number }
-  | { type: "browser-answer-move"; dx: number; dy: number }
+  | { type: "browser-answer-resize"; width: number; height: number; frame: { x: number; y: number; width: number; height: number } }
   | { type: "browser-extensions-close" }
   | { type: "browser-extensions-picture-in-picture" }
   | { type: "browser-hls-download"; id: string }
@@ -227,7 +227,8 @@ export interface DesktopTabsBridge {
   getTabsState: () => Promise<DesktopTabsState>;
   onTabsState: (listener: (state: DesktopTabsState) => void) => () => void;
   tabs: (command: DesktopTabsCommand) => Promise<boolean>;
-  onBrowserInlineAnswerState?: (listener: (state: import("./browser-inline-answer").BrowserInlineAnswerViewState) => void) => () => void;
+  /** Full card state, or `{ home }`: where the root card's home sits on the webpage (CSS px). */
+  onBrowserInlineAnswerState?: (listener: (state: import("./browser-inline-answer").BrowserInlineAnswerViewState | { home: { x: number; y: number } }) => void) => () => void;
   onBrowserInlineAnswerAction?: (listener: (action: import("./browser-inline-answer").BrowserInlineAnswerAction) => void) => () => void;
 }
 
@@ -321,7 +322,7 @@ export interface DesktopBrowserHistorySnapshot {
   error: string | null;
 }
 
-export type DesktopBrowserHistoryCommand = { type: "clear" } | { type: "remove"; url: string };
+export type DesktopBrowserHistoryCommand = { type: "clear" | "import-personal" } | { type: "remove"; url: string };
 
 export function browserHistoryControl() {
   const desktop = bridge();

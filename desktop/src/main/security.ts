@@ -1,5 +1,7 @@
 import {
   app,
+  BrowserWindow as ElectronBrowserWindow,
+  dialog,
   shell,
   session,
   type BrowserWindow,
@@ -11,7 +13,7 @@ import {
 } from "electron";
 import {
   confirmOpenApp, handleBeforeUnload, handleBluetoothPicker, handleBrowserLogin, handleBrowserPrompt,
-  handleCertificateErrors, isAppLaunchUrl,
+  handleCertificateErrors, installScreenSharePicker, isAppLaunchUrl,
 } from "./browser-dialogs";
 
 /**
@@ -284,11 +286,75 @@ export function hardenWindow(
   });
 }
 
+/**
+ * Voice mode can let the assistant see the camera. The microphone grant above
+ * stays audio-only; the camera is a separate, explicit grant: an owned page
+ * asking for video, answered by the person in a native dialog (never by the
+ * page itself), and remembered only until the app quits.
+ */
+export function isRendererCameraRequest(
+  allowed: AllowedOrigins,
+  permission: string,
+  requestingUrl: string | undefined,
+  mediaTypes: readonly string[],
+): boolean {
+  if (permission !== "media" || !mediaTypes.includes("video")) return false;
+  if (!mediaTypes.every((type) => type === "audio" || type === "video")) return false;
+  try {
+    return Boolean(requestingUrl) && allowed.origins.has(new URL(requestingUrl!).origin);
+  } catch {
+    return false;
+  }
+}
+
+/** getDisplayMedia's pre-check carries no device types; its picker is the consent. */
+export function isRendererDisplayMediaRequest(
+  allowed: AllowedOrigins,
+  permission: string,
+  requestingUrl: string | undefined,
+  mediaTypes: readonly string[] | undefined,
+): boolean {
+  if (permission !== "media" || !mediaTypes || mediaTypes.length) return false;
+  try {
+    return Boolean(requestingUrl) && allowed.origins.has(new URL(requestingUrl!).origin);
+  } catch {
+    return false;
+  }
+}
+
+let cameraGrantedThisRun = false;
+let cameraPrompt: Promise<boolean> | null = null;
+
+function askForCamera(webContents: WebContents): Promise<boolean> {
+  if (cameraGrantedThisRun) return Promise.resolve(true);
+  const owner = ElectronBrowserWindow.fromWebContents(webContents);
+  const options: Electron.MessageBoxOptions = {
+    type: "question",
+    buttons: ["Allow camera", "Don't allow"],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+    message: "Let Breadboard's voice mode see your camera?",
+    detail: "While the camera is on in voice mode, a still from it is sent with each thing you say. You can turn it off from voice mode at any time; Breadboard asks again after it restarts.",
+  };
+  cameraPrompt ??= (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options)).then((answer) => {
+    cameraGrantedThisRun = answer.response === 0;
+    return cameraGrantedThisRun;
+  }, () => false).finally(() => { cameraPrompt = null; });
+  return cameraPrompt;
+}
+
 export function hardenSession(targetSession: Session, allowed: AllowedOrigins): void {
+  const ownedPage = (contents: WebContents) => {
+    try { return allowed.origins.has(new URL(contents.getURL()).origin); } catch { return false; }
+  };
+  installScreenSharePicker(targetSession, ownedPage);
   targetSession.setPermissionCheckHandler(
     (_webContents, permission, requestingOrigin, details) => {
       const mediaTypes =
         permission === "media" && details.mediaType ? [details.mediaType] : [];
+      const url = details.requestingUrl ?? details.securityOrigin ?? requestingOrigin;
+      if (cameraGrantedThisRun && isRendererCameraRequest(allowed, permission, url, mediaTypes)) return true;
       return isRendererPermissionAllowed(
         allowed,
         permission,
@@ -311,6 +377,14 @@ export function hardenSession(targetSession: Session, allowed: AllowedOrigins): 
       permission === "media" && "securityOrigin" in details
         ? details.securityOrigin
         : undefined;
+    const url = details.requestingUrl || securityOrigin || webContents.getURL();
+    if (isRendererDisplayMediaRequest(allowed, permission, url, permission === "media" && "mediaTypes" in details ? details.mediaTypes : undefined)) {
+      return callback(true);
+    }
+    if (isRendererCameraRequest(allowed, permission, url, mediaTypes)) {
+      void askForCamera(webContents).then(callback, () => callback(false));
+      return;
+    }
     callback(
       isRendererPermissionAllowed(
         allowed,

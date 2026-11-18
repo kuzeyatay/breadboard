@@ -67,7 +67,14 @@ test("pointer splits, cancellation and shared browser pane containment", { timeo
     });
     await page.locator('[data-tab-id="4"][aria-selected="true"]').waitFor();
     assert.equal(await page.locator('[data-browser-content-id="1"] .pane-rail').isVisible(), true, 'outgoing browser rail covers the green background');
-    await page.evaluate(() => { window.state.visibleId = 4; window.publish(); });
+    await page.evaluate(() => {
+      window.state.retainedBrowserTab = window.state.tabs.find(tab => tab.id === 1);
+      window.state.tabs = window.state.tabs.filter(tab => tab.id !== 1);
+      window.publish();
+    });
+    await page.locator('[data-tab-id="1"]').waitFor({ state: 'detached' });
+    assert.equal(await page.locator('[data-browser-content-id="1"] .pane-rail').isVisible(), true, 'the rail stays with a closed website until the replacement covers it');
+    await page.evaluate(() => { delete window.state.retainedBrowserTab; window.state.visibleId = 4; window.publish(); });
     await page.locator('[data-browser-content-id="1"]').waitFor({ state: 'hidden' });
     // Ordinary native browser selection is immediate even before first paint.
     await page.evaluate(() => { Object.assign(window.state, { activeId: 2, visibleId: 2 }); window.publish(); });

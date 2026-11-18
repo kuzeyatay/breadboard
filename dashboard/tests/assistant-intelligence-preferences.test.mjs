@@ -99,11 +99,13 @@ test("the picker is handed the whole per-model record, not just the active pair"
   assert.doesNotMatch(hook, /patchAssistantPreferences/);
 });
 
-test("every dashboard chat surface scopes its override to its active chat", () => {
+test("dashboard chat surfaces share the active picker", () => {
   for (const file of [
     "../src/app/components/hermes/dashboard-agent-terminal.tsx",
     "../src/app/components/hermes/garden-agent-chat.tsx",
     "../src/app/components/knowledge-terminal.tsx",
+    "../src/app/components/pdf-assistant.tsx",
+    "../src/app/artifacts/[artifactId]/markdown/markdown-artifact-editor.tsx",
     "../src/app/garden/garden-assistant.tsx",
     "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
   ]) {
@@ -111,7 +113,7 @@ test("every dashboard chat surface scopes its override to its active chat", () =
     assert.match(contents, /useAssistantIntelligence\(\{[\s\S]*?sessionId:/s, file);
     // ...and shares the pick itself, so a model chosen on one chat surface is
     // the model the next one opens with.
-    assert.match(contents, /shared: true/, file);
+    assert.match(contents, /shared: (?:true|!voicePresentation)/, file);
     assert.doesNotMatch(contents, /useState(?:<[^>]+>)?\(DEFAULT_MODEL\)/, file);
     assert.doesNotMatch(contents, /useState(?:<[^>]+>)?\(DEFAULT_ASSISTANT_REASONING_EFFORT\)/, file);
   }

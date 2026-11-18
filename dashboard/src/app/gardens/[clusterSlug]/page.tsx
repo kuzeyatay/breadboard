@@ -69,7 +69,7 @@ const getWorkspacePageData = cache(async (clusterSlug: string) => {
     isOwner = false;
   }
 
-  return { userId, cluster, isOwner };
+  return { userId, cluster, isOwner, author: session.user.name ?? session.user.email ?? null };
 });
 
 export async function generateMetadata({
@@ -90,7 +90,7 @@ export default async function WorkspacePage({
   searchParams: Promise<{ chat?: string | string[]; learn?: string | string[] }>;
 }) {
   const { clusterSlug } = await params;
-  const { userId, cluster, isOwner } = await getWorkspacePageData(clusterSlug);
+  const { userId, cluster, isOwner, author } = await getWorkspacePageData(clusterSlug);
   // Start an idle external drive turning before a recording is clicked.
   wakeGardenMediaDrive(cluster.id, userId);
   const requested = await searchParams;
@@ -112,6 +112,7 @@ export default async function WorkspacePage({
       initialLearnPanelOpen={initialLearnPanelOpen}
       isOwner={isOwner}
       clusterVisibility={cluster.visibility}
+      sharedAuthor={cluster.visibility === "organization" ? author : null}
       chatAccessible={cluster.chat_accessible}
       forkAllowed={cluster.fork_allowed}
       showNavbarFlowers={getNavbarFlowers(userId)}

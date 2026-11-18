@@ -32,7 +32,8 @@ export class BrowserTextHighlights {
 
   private paint(revision: number) {
     if (revision !== this.revision || this.page.isDestroyed()) return Promise.resolve();
-    const anchors = this.entries.map(({ note: _note, conversationId: _conversationId, ...entry }) => entry);
+    // The note stays out of the page (its scripts can read what we hand it); a flag draws the dotted underline.
+    const anchors = this.entries.map(({ note, conversationId: _conversationId, ...entry }) => note ? { ...entry, noted: true as const } : entry);
     return this.page.executeJavaScript(browserTextHighlightsUpdateScript(anchors)).then(() => undefined).catch(() => undefined);
   }
 

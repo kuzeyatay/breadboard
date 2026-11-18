@@ -27,11 +27,17 @@ interface Options {
   garden?: ChatGreetingGarden | null;
   /** The browser drawer opens with questions about the current page. */
   browser?: boolean;
+  pageTitle?: string | null;
   /** Server-read signals let first paint avoid a second request. */
   initialSignals?: ChatGreetingSignals | null;
 }
 
-export interface SuggestionDetail { label: string; usefulness?: RecommendationUsefulness }
+export interface SuggestionDetail {
+  label: string;
+  usefulness?: RecommendationUsefulness;
+  conversationId?: string;
+  lesson?: import("@/lib/personal-context/suggestions").SuggestionLesson;
+}
 
 export interface ChatGreetingState {
   /** False until the clock has been read on the client and the signals have landed. */
@@ -106,10 +112,10 @@ function normalizeSignals(value: unknown): ChatGreetingSignals {
  * what hour it is. A timer sleeping to the top of the hour then steps the
  * pools forward and re-reads the activity signals behind them.
  */
-export function useChatGreeting({ scope, temporary, garden, browser = false, initialSignals = null, enabled = true }: Options): ChatGreetingState {
+export function useChatGreeting({ scope, temporary, garden, browser = false, pageTitle, initialSignals = null, enabled = true }: Options): ChatGreetingState {
   const [personalize] = usePersonalize();
   const allowPersonalContext = enabled && personalize && scope !== 'public' && !temporary;
-  const recommendations = useRecommendations({ scope, temporary, gardenSlug: garden?.slug, enabled });
+  const recommendations = useRecommendations({ scope, temporary, gardenSlug: garden?.slug, pageTitle, enabled });
   const initialSignalsRef = useRef(initialSignals);
   const [now, setNow] = useState<Date | null>(null);
   const [signals, setSignals] = useState<ChatGreetingSignals | null>(initialSignals);
@@ -185,7 +191,7 @@ export function useChatGreeting({ scope, temporary, garden, browser = false, ini
   const gardenName = garden?.name ?? null;
   const gardenSlug = garden?.slug ?? null;
   return useMemo(() => {
-    const suggestionScopeKey=JSON.stringify([scope,temporary,gardenSlug,browser,allowPersonalContext]);
+    const suggestionScopeKey=JSON.stringify([scope,temporary,gardenSlug,pageTitle,browser,allowPersonalContext]);
     if (now === null || (allowPersonalContext && signals === null)) return {...NOT_READY,suggestionScopeKey};
     const input = {
       signals: allowPersonalContext && signals ? signals : EMPTY_CHAT_GREETING_SIGNALS,
@@ -201,8 +207,10 @@ export function useChatGreeting({ scope, temporary, garden, browser = false, ini
       // Only cards grounded in the person's own evidence; no generic openers.
       suggestions: completeRecommendationPrompts(recommendations.map(item => item.prompt)),
       suggestionSources: Object.fromEntries(recommendations.map(item => [item.prompt, item.sourceLabel])),
-      suggestionDetails: Object.fromEntries(recommendations.map(item => [item.prompt, { label: item.sourceLabel, usefulness: item.usefulness }])),
+      suggestionDetails: Object.fromEntries(recommendations.map(item => [item.prompt, {
+        label: item.sourceLabel, usefulness: item.usefulness, lesson: item.lesson, conversationId: item.conversationId,
+      }])),
       suggestionScopeKey,
     };
-  }, [now, scope, signals, temporary, gardenName, gardenSlug, browser, recommendations, allowPersonalContext]);
+  }, [now, scope, signals, temporary, gardenName, gardenSlug, pageTitle, browser, recommendations, allowPersonalContext]);
 }

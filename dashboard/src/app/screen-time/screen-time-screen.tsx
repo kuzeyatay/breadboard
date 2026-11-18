@@ -12,6 +12,7 @@ import { AUTH_CHANGED_EVENT } from "@/lib/auth-events";
 import { CATEGORIES, formatDuration, localDate, screenTimeRange, usageCategory,
   type ActivityCategory, type ScreenTimePeriod, type ScreenTimeResponse, type ScreenTimeSettings, type UsageItem } from "@/lib/screen-time/model";
 import type { ShapedSearch } from "@/lib/recall/policy";
+import SiteLocksCard from "./site-locks-card";
 import styles from "./screen-time.module.css";
 
 type View = "apps" | "tabs" | "websites";
@@ -223,6 +224,7 @@ export default function ScreenTimeScreen() {
             <div className={styles.focusNudge}><Timer size={19} /><div><strong>Focus timer</strong><span>Set a timer for your next task.</span></div></div>
             <NavigationLink href="/pomodoro" label="Focus timer" className={styles.textButton}>Open focus timer <ArrowUpRight size={14} /></NavigationLink>
           </section>
+          <SiteLocksCard />
           <section className={styles.recallCard}><span className={styles.recallIcon}><History size={21} /></span><h3>Recall</h3><p>Find saved screen content from an app, tab or time.</p>
             <button className={styles.textButton} disabled={!total} onClick={() => setDetail({ name: `${rangeLabel} in Recall`, start: range.start, end: Math.min(range.end, Date.now()) })}>View {period} in Recall <ArrowUpRight size={14} /></button>
           </section>
@@ -277,17 +279,44 @@ function RecallDetail({ detail, close }: { detail: Detail | null; close: () => v
     return () => controller.abort();
   }, [detail, attempt]);
   usePageLoading(pending);
+  const hits = result?.hits ?? [];
   return <Dialog.Root open={Boolean(detail)} onOpenChange={open => { if (!open) close(); }}><Dialog.Portal><Dialog.Overlay className={styles.scrim} /><Dialog.Content className={styles.recallDialog}>
-    <Dialog.Close className={styles.close} aria-label="Close Recall"><X size={18} /></Dialog.Close><span className={styles.recallIcon}><History size={24} /></span>
-    <span className={styles.eyebrow}>Recall</span><Dialog.Title>{detail?.name}</Dialog.Title>
-    <Dialog.Description>{detail && `${new Date(detail.start).toLocaleDateString([], { month: "short", day: "numeric" })} · ${clock(detail.start)} – ${clock(detail.end)}`}</Dialog.Description>
-    {detail?.url && <NavigationLink href={detail.url} label={detail.name} newTab className={styles.primaryLink}>Return to this page <ArrowUpRight size={15} /></NavigationLink>}
-    {error && <div className={styles.error} role="alert">{error}<button onClick={() => setAttempt(value => value + 1)}>Try again</button></div>}
-    <div className={styles.recallResults} aria-busy={pending}>
-      {result?.hits.map((hit, index) => <article key={`${hit.frameId}-${index}`} className={styles.recallHit}><div><span>{hit.app || "Captured screen"}</span><time>{hit.timestamp ? clock(Date.parse(hit.timestamp)) : ""}</time></div><h3>{hit.window || "Screen context"}</h3><p>{hit.text}</p></article>)}
-      {!pending && !error && result && !result.hits.length && <div className={styles.empty}><History size={27} /><h3>No Recall results</h3><p>Recall needs to be recording at the time to show results.</p></div>}
-      {result?.truncated && <p className={styles.settingsNote}>Showing the first matches within your Recall result limit.</p>}
+    <header className={styles.recallHeader}>
+      <Dialog.Close className={styles.close} aria-label="Close Recall"><X size={18} /></Dialog.Close>
+      <span className={styles.eyebrow}><History size={14} /> Recall</span>
+      <Dialog.Title>{detail?.name}</Dialog.Title>
+      <Dialog.Description>{detail && `${new Date(detail.start).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}, ${clock(detail.start)} to ${clock(detail.end)}`}</Dialog.Description>
+      {detail?.url && <NavigationLink href={detail.url} label={detail.name} newTab className={styles.primaryLink}>Return to this page <ArrowUpRight size={15} /></NavigationLink>}
+    </header>
+    <div className={styles.recallBody} aria-busy={pending} aria-live="polite">
+      {pending && <div className={styles.recallSkeleton} aria-label="Loading Recall history">{[0, 1, 2].map(item => <div key={item}><i /><i /><i /></div>)}</div>}
+      {!pending && error && <div className={styles.recallState} role="alert">
+        <span data-tone="warn"><History size={24} /></span><h3>Recall can’t show this right now</h3><p>{error}</p>
+        <div><button className={styles.secondaryButton} onClick={() => setAttempt(value => value + 1)}>Try again</button>
+          <NavigationLink href="/settings?tab=recall" label="Recall settings" className={styles.textButton}>Open Recall settings <ArrowUpRight size={14} /></NavigationLink></div>
+      </div>}
+      {!pending && !error && result && !hits.length && <div className={styles.recallState}>
+        <span><History size={24} /></span><h3>Nothing captured in this window</h3><p>Recall only has history for times it was recording. Try a wider time range from the chart.</p>
+      </div>}
+      {!pending && hits.length > 0 && <>
+        <p className={styles.recallCount}>{hits.length} {hits.length === 1 ? "moment" : "moments"} captured</p>
+        {hits.map((hit, index) => <RecallHit key={`${hit.frameId}-${index}`} hit={hit} />)}
+        {result?.truncated && <p className={styles.settingsNote}>Showing the first matches within your Recall result limit.</p>}
+      </>}
     </div>
-    <NavigationLink href="/settings" label="Recall settings" className={styles.textButton}>Manage Recall in Settings <ArrowUpRight size={14} /></NavigationLink>
+    <footer className={styles.recallFooter}>
+      <NavigationLink href="/settings?tab=recall" label="Recall settings" className={styles.textButton}>Manage Recall in Settings <ArrowUpRight size={14} /></NavigationLink>
+    </footer>
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
+}
+
+function RecallHit({ hit }: { hit: ShapedSearch["hits"][number] }) {
+  const [open, setOpen] = useState(false);
+  const long = hit.text.length > 280;
+  return <article className={styles.recallHit}>
+    <div><span className={styles.recallApp}>{hit.app || "Captured screen"}</span><time>{hit.timestamp ? clock(Date.parse(hit.timestamp)) : ""}</time></div>
+    <h3>{hit.window || "Screen context"}</h3>
+    <p data-open={open || !long}>{hit.text}</p>
+    {long && <button className={styles.textButton} onClick={() => setOpen(value => !value)}>{open ? "Show less" : "Show more"}</button>}
+  </article>;
 }

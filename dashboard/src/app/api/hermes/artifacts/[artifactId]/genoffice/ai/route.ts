@@ -22,6 +22,7 @@ import {
 import { apiErrorResponse, ApiError, requireEnabled } from "@/lib/hermes/route-helpers.ts";
 import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 import { requireUserId } from "@/lib/server-auth.ts";
+import { documentContext as learnedDocumentContext } from "@/lib/personal-context/suggestions.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -93,6 +94,7 @@ export async function POST(
         role: "system",
         content: [
           systemPromptText("word-assistant", userId),
+          body.personalize === false ? "" : await learnedDocumentContext(userId, conversationId, prompt, artifact.title),
           renderGenOfficeWritingSkillsDirective(writingSkills),
         ].join("\n\n"),
       },

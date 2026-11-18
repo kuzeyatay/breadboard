@@ -300,12 +300,16 @@ def model_entries(chatgpt_model_ids: List[str]) -> List[Dict[str, Any]]:
     Each row carries `reasoning_efforts` so a client can offer exactly the
     intelligence modes that model supports, instead of a fixed GPT-shaped ladder.
     """
+    from ..chatgpt_models import discovered_models
+
+    names = {model["id"]: model.get("name", model["id"]) for model in discovered_models()}
     entries: List[Dict[str, Any]] = [
         {
             "id": mid,
             "object": "model",
             "owned_by": CHATGPT_PROVIDER_ID,
             "reasoning_efforts": reasoning_efforts_for(mid),
+            **({"name": names[mid]} if mid in names else {}),
         }
         for mid in chatgpt_model_ids
     ]

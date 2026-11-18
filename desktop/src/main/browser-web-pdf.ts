@@ -1,66 +1,97 @@
-import { session as electronSession, type Session } from "electron";
+import { randomUUID } from "node:crypto";
+import { openAsBlob } from "node:fs";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { session, type DownloadItem, type Session } from "electron";
+import { BROWSER_SOURCE_MAX_BYTES, BROWSER_SOURCE_TIMEOUT_MS, browserSourceFilename } from "./browser-source-download";
 import { isInlinePdfResponse } from "./pdf-viewer-redirect";
-import { BROWSER_SOURCE_TIMEOUT_MS, fetchBrowserSource } from "./browser-source-download";
 
-/**
- * Website PDFs open in Breadboard's own viewer, not Chromium's PDF plugin
- * (which goes blank when its view is detached on a tab switch and has none of
- * the viewer's tools). The main-frame response is answered with 204, which
- * leaves the tab on whatever page it showed; `open` then fetches the file with
- * the browser's cookies and opens the viewer. `open` returns false to let the
- * plugin have it (private tabs, agent tabs, a fallback after a failed hand-off).
- *
- * Electron keeps ONE onHeadersReceived listener per session: this is the
- * website session's.
- */
+export interface BrowserPdfOpen {
+  dashboardUrl: string;
+  signal: AbortSignal;
+  complete(blobId: string, name: string): void;
+  fail(error: unknown): void;
+}
+
+const viewerDownloads = new WeakSet<DownloadItem>();
+export function isBrowserPdfHandoff(item: DownloadItem): boolean {
+  return viewerDownloads.has(item);
+}
+
+async function storeDownload(item: DownloadItem, open: BrowserPdfOpen, name: string): Promise<void> {
+  const file = join(tmpdir(), `breadboard-pdf-${randomUUID()}.pdf`);
+  const signal = AbortSignal.any([open.signal, AbortSignal.timeout(BROWSER_SOURCE_TIMEOUT_MS)]);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const cancel = () => item.cancel();
+      item.setSavePath(file);
+      item.once("done", (_event, state) => {
+        signal.removeEventListener("abort", cancel);
+        if (state === "completed" && item.getReceivedBytes() <= BROWSER_SOURCE_MAX_BYTES) resolve();
+        else reject(new Error(`PDF transfer ${state}.`));
+      });
+      item.on("updated", () => { if (item.getReceivedBytes() > BROWSER_SOURCE_MAX_BYTES) cancel(); });
+      signal.addEventListener("abort", cancel, { once: true });
+      if (signal.aborted) cancel();
+    });
+    signal.throwIfAborted();
+    const body = await openAsBlob(file, { type: "application/pdf" });
+    const response = await session.defaultSession.fetch(new URL("/api/chat-attachments/documents", open.dashboardUrl).href, {
+      method: "POST", body, credentials: "include", redirect: "error", signal,
+      headers: { "x-document-filename": encodeURIComponent(name), "x-document-store-only": "true" },
+    });
+    const result = await response.json() as { blobId?: unknown };
+    if (!response.ok || typeof result.blobId !== "string") throw new Error(`Could not store PDF (${response.status}).`);
+    open.complete(result.blobId, name);
+  } catch (error) {
+    open.fail(error);
+  } finally {
+    await rm(file, { force: true }).catch(() => {});
+  }
+}
+
+/** Let Chromium finish the original navigation's authenticated response once.
+ * A unique suggested filename pairs it with its DownloadItem even when several
+ * tabs open the same URL. Ordinary downloads keep their settings and history. */
 export function installBrowserPdfHandoff(
-  target: Session,
-  open: (webContentsId: number, url: string) => boolean,
+  target: Session, begin: (webContentsId: number, url: string) => BrowserPdfOpen | null,
 ): void {
+  const pending = new Map<string, { open: BrowserPdfOpen; name: string; timer: NodeJS.Timeout }>();
+  target.prependListener("will-download", (_event, item: DownloadItem) => {
+    const key = item.getFilename();
+    const entry = pending.get(key);
+    if (!entry) return;
+    pending.delete(key);
+    clearTimeout(entry.timer);
+    viewerDownloads.add(item);
+    void storeDownload(item, entry.open, entry.name);
+  });
   target.webRequest.onHeadersReceived(
     { urls: ["http://*/*", "https://*/*"], types: ["mainFrame"] },
     (details, callback) => {
-      if (
-        details.method !== "GET" || details.statusCode < 200 || details.statusCode >= 300 ||
-        details.webContentsId === undefined || !isInlinePdfResponse(details.responseHeaders) ||
-        !open(details.webContentsId, details.url)
-      ) {
+      if (details.resourceType !== "mainFrame" || details.method !== "GET" || details.statusCode !== 200 ||
+          details.webContentsId === undefined || !isInlinePdfResponse(details.responseHeaders)) {
         callback({});
         return;
       }
-      callback({ statusLine: "HTTP/1.1 204 No Content", responseHeaders: {} });
+      const headers = { ...details.responseHeaders };
+      const length = Object.keys(headers).find(key => key.toLowerCase() === "content-length");
+      if (length && Number(headers[length]) > BROWSER_SOURCE_MAX_BYTES) { callback({}); return; }
+      const open = begin(details.webContentsId, details.url);
+      if (!open) { callback({}); return; }
+      const disposition = Object.keys(headers).find(key => key.toLowerCase() === "content-disposition");
+      const filename = browserSourceFilename(disposition ? headers[disposition]?.[0] ?? null : null, new URL(details.url));
+      if (disposition) delete headers[disposition];
+      const key = `breadboard-${randomUUID()}.pdf`;
+      const timer = setTimeout(() => {
+        pending.delete(key);
+        open.fail(new Error("PDF transfer did not start."));
+      }, BROWSER_SOURCE_TIMEOUT_MS);
+      timer.unref();
+      pending.set(key, { open, name: /\.pdf$/i.test(filename) ? filename : `${filename}.pdf`, timer });
+      headers["Content-Disposition"] = [`attachment; filename="${key}"`];
+      callback({ responseHeaders: headers });
     },
   );
-}
-
-/** Download a website PDF with the browser's cookies and keep it as a document blob. */
-export async function storeBrowserPdf(
-  browserSession: Session,
-  url: string,
-  dashboardUrl: string,
-): Promise<{ blobId: string; name: string }> {
-  const signal = AbortSignal.timeout(BROWSER_SOURCE_TIMEOUT_MS);
-  const { response, filename } = await fetchBrowserSource(browserSession, url, url, signal, () => {});
-  const bytes = await response.arrayBuffer();
-  if (!bytes.byteLength) throw new Error("The website returned an empty PDF.");
-  const name = /\.pdf$/i.test(filename) ? filename : `${filename}.pdf`;
-  const upload = await electronSession.defaultSession.fetch(
-    new URL("/api/chat-attachments/documents", dashboardUrl).href,
-    {
-      method: "POST",
-      body: bytes,
-      credentials: "include",
-      signal,
-      headers: {
-        "content-type": "application/pdf",
-        "x-document-filename": encodeURIComponent(name),
-        "x-document-store-only": "true",
-      },
-    },
-  );
-  const result = (await upload.json().catch(() => null)) as { blobId?: unknown } | null;
-  if (!upload.ok || typeof result?.blobId !== "string") {
-    throw new Error(`Breadboard could not keep the PDF (${upload.status}).`);
-  }
-  return { blobId: result.blobId, name };
 }

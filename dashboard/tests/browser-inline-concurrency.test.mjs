@@ -44,8 +44,9 @@ test('web Ask here and main chat run independently, stop separately, and restore
       import {useAgentSession} from './src/app/components/hermes/use-agent-session';
       import {useInlineAgentQuestions} from './src/app/components/hermes/use-inline-agent-questions';
       function App(){
-        const temporaryChat=false,drawerPresentation=true,newChatWorkspace=null;
-        const runtimeUnavailable=false,model='fixture',reasoningEffort='high';
+        const temporaryChat=false,presentation='drawer',voicePresentation=false,newChatWorkspace=null;
+        const runtimeUnavailable=false, model='previous-main-model';
+        const selectedModel='gpt-6.1-sol', selectedReasoningEffort='max';
         const [chatAttachments,setChatAttachments]=useState([]),[,setAttachmentStatus]=useState('');
         ${names.slice(0, 4).map(name => declarations.get(name)).join('\n')}
         const busy=['connecting','streaming','waiting'].includes(session.connection);
@@ -143,6 +144,8 @@ test('web Ask here and main chat run independently, stop separately, and restore
   await waitUntil(() => turns.length === 3);
   await ask('second');
   await waitUntil(() => turns.length === 4);
+  assert.equal(turns[3].model, 'gpt-6.1-sol');
+  assert.equal(turns[3].reasoningEffort, 'max');
   assert.equal(stops.length, 0);
   const secondId = turns[3].clientMessageId;
   await page.evaluate(() => window.control.stopInline('second'));

@@ -5,6 +5,10 @@ export type RecommendationSource = 'gmail' | 'outlook' | 'calendar' | 'recall' |
   | 'memory' | 'schedule' | 'hook' | 'connection';
 
 export interface RecommendationEvidence {
+  conversationId?: string;
+  lesson?: import("../personal-context/suggestions.ts").SuggestionLesson;
+  suggestedPrompt?: string;
+  learnedPriority?: number;
   id: string;
   source: RecommendationSource;
   title: string;
@@ -28,6 +32,8 @@ export interface RecommendationEvidence {
 }
 
 export interface Recommendation {
+  conversationId?: string;
+  lesson?: import("../personal-context/suggestions.ts").SuggestionLesson;
   id: string;
   prompt: string;
   sourceLabel: string;
@@ -43,6 +49,7 @@ export interface Recommendation {
 }
 
 export interface RecommendationContext {
+  documentConversationId?:string;
   gardenSlug?: string;
   pageTitle?: string;
   localDate?: string;
@@ -127,7 +134,7 @@ function scoreRecommendation(item: Recommendation, known: ReadonlyMap<string, Re
   const source = sources[0];
   const family = source.source === 'outlook' ? 'gmail' : source.source === 'calendar' ? (source.calendar?.kind ?? 'event') : source.source;
   const priority = recommendationPriority(source, context);
-  return { item: { ...item, usefulness: recommendationUsefulness(priority) }, family,
+  return { item: { ...item, ...(source.lesson ? {lesson:source.lesson}:{}), usefulness: recommendationUsefulness(priority) }, family,
     score: priority + (sources.length > 1 ? 12 : 0), subjects: recommendationSubjects(item, known) };
 }
 
@@ -182,6 +189,7 @@ export function selectRecommendations(candidates: readonly Recommendation[], evi
     slots[weakest] = challenger.item;
   }
   return slots.map(slot => ({ ...slot.item, score: slot.score,
+    conversationId: slot.item.sourceIds.map(id => known.get(id)).find(source => source?.source === 'chat')?.conversationId,
     basis: recommendationBasis(slot.item, known) ?? undefined }));
 }
 

@@ -5,7 +5,8 @@ import { gardenDirectory } from "../garden-directory.ts";
 import { withoutDetachedVisualPayloads } from "../garden-detached-visual.ts";
 import type { KnowledgeNode } from "../knowledge.ts";
 import { gardenDocumentHref } from "../chat-markdown-links.ts";
-import { parseSemanticMarkdown, semanticFrontmatterArray } from "../garden-semantics.ts";
+import { CLAIM_STORE_REL_PATH, CONCEPT_REGISTRY_REL_PATH, parseSemanticMarkdown, semanticFrontmatterArray } from "../garden-semantics.ts";
+import { createHash } from "node:crypto";
 
 export interface GardenReadEntry { slug: string; folder: string; relPath: string }
 
@@ -185,6 +186,35 @@ export function boundedGardenFileList(entries: GardenReadEntry[], args: Record<s
       hint: "The query filters filenames, not note contents. These files may contain the requested topic. Read an exact relPath with garden_get_page and query, or use garden_search in this Garden.",
       availablePages: inFolder.slice(0, Math.min(limit, 12)),
     } : {}),
+  };
+}
+
+/**
+ * Every page's path, size and modification time, plus the concept and claim
+ * stores the chunks are built from. Stat calls only, so it costs a fraction
+ * of reading the pages, and it changes whenever a re-index could.
+ */
+export async function gardenRetrievalFingerprint(contentPath: string, gardenSlug: string): Promise<string> {
+  const entries = await gardenReadEntries(contentPath, gardenSlug);
+  const root = gardenDirectory(gardenSlug, contentPath);
+  const files = [...entries.map((entry) => entry.relPath), CONCEPT_REGISTRY_REL_PATH, CLAIM_STORE_REL_PATH];
+  const hash = createHash("sha256");
+  for (let start = 0; start < files.length; start += 64) {
+    const stats = await Promise.all(files.slice(start, start + 64).map((file) =>
+      fs.promises.stat(path.join(root, file)).then((stat) => `${stat.size}:${stat.mtimeMs}`, () => "-")));
+    stats.forEach((stat, index) => hash.update(`${files[start + index]}\0${stat}\n`));
+  }
+  return hash.digest("hex");
+}
+
+/** A Garden for retrieveGraphRag that reads its pages only if they changed since the last index. */
+export async function lazyRetrievalGarden(contentPath: string, garden: { slug: string; name: string }) {
+  return {
+    slug: garden.slug,
+    name: garden.name,
+    rootPath: path.join(contentPath, garden.slug),
+    fingerprint: await gardenRetrievalFingerprint(contentPath, garden.slug),
+    loadNodes: () => readGardenRetrievalNodes(contentPath, garden.slug),
   };
 }
 

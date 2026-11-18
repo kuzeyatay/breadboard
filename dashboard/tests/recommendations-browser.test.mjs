@@ -12,23 +12,36 @@ import { parseRecommendations, selectRecommendations } from '../src/lib/recommen
 test('starter cards refresh, erase and type safely, preserve drafts, and immediately clear private context', {timeout:120_000},async t=>{
   const bundle=await build({bundle:true,write:false,platform:'browser',format:'iife',jsx:'automatic',alias:{'@':path.join(root,'src')},
     stdin:{resolveDir:root,loader:'tsx',contents:`
-      import React,{useState}from'react';import{createRoot}from'react-dom/client';
+      import React,{useState,useRef}from'react';import{createRoot}from'react-dom/client';
       import{useChatGreeting}from'@/app/components/hermes/use-chat-greeting';
       import{usePersonalize}from'@/app/components/use-personalize';
       import ChatGreetingEmptyState from'@/app/components/hermes/chat-greeting-empty-state';
+      import {useTerminalSuggestion} from '@/app/components/hermes/use-terminal-suggestion';
+      import {useChatDraft} from '@/app/components/hermes/use-chat-draft';
+      import {chatDraftKey,writeChatDraft,readChatDraft} from '@/lib/conversations/drafts';
       function App(){
         const [config,setConfig]=useState({temporary:false,scope:'mine',gardenSlug:window.initialGardenSlug??null});
         const [draft,setDraft]=useState('');const [,personalize]=usePersonalize();
+        const [sessionId,setSessionId]=useState(null),[loading,setLoading]=useState(false);
+        const [external,setExternal]=useState(null),textarea=useRef(null);
+        useChatDraft({surface:'dashboard_terminal',sessionId,value:draft,onRestore:setDraft});
+        const select=useTerminalSuggestion({sessionId,loading,setInput:setDraft,textarea,suggestion:external,onSuggestionHandled:()=>setExternal(null),
+          openSession:id=>{window.opened.push(id);setSessionId(id);setLoading(true);}});
+        window.finishOpen=()=>setLoading(false);
+        window.openAnother=id=>setSessionId(id);
+        window.pickExternal=setExternal;
+        window.seed=(id,text)=>writeChatDraft(localStorage,chatDraftKey('dashboard_terminal',id),text);
+        window.saved=id=>readChatDraft(localStorage,chatDraftKey('dashboard_terminal',id));
         const greeting=useChatGreeting({scope:config.scope,temporary:config.temporary,garden:config.gardenSlug?{slug:config.gardenSlug,name:config.gardenSlug}:null});
         window.configure=next=>setConfig(old=>({...old,...next}));window.personalize=personalize;
         return <main className="neu-surface min-h-screen px-6 py-10" style={{background:'var(--paper-surface)',color:'var(--ink)'}}>
           <ChatGreetingEmptyState greeting={greeting.greeting}
             suggestions={greeting.suggestions} suggestionScopeKey={greeting.suggestionScopeKey} suggestionDetails={greeting.suggestionDetails}
-            onSelectSuggestion={setDraft}/>
-          <div className="mx-auto max-w-xl"><textarea aria-label="Draft" className="neu-composer w-full rounded-2xl p-4" value={draft} onChange={event=>setDraft(event.target.value)}/>
+            onSelectSuggestion={select}/>
+          <div className="mx-auto max-w-xl"><textarea ref={textarea} aria-label="Draft" className="neu-composer w-full rounded-2xl p-4" value={draft} onChange={event=>setDraft(event.target.value)}/>
           <button id="send" onClick={()=>window.sent.push(draft)}>Send</button></div>
         </main>;
-      }window.sent=[];createRoot(document.getElementById('root')).render(<App/>);
+      }window.sent=[];window.opened=[];createRoot(document.getElementById('root')).render(<App/>);
     `}});
   const stylesheet=path.join(root,'src/app/globals.css');
   const css=(await postcss([tailwindcss({base:root})]).process(fs.readFileSync(stylesheet,'utf8'),{from:stylesheet})).css;
@@ -50,7 +63,8 @@ test('starter cards refresh, erase and type safely, preserve drafts, and immedia
     'Plan 25 minutes of circuit simulation in my afternoon calendar opening.',
   ];
   const items=()=>[
-    {id:'mail',prompt:account===1?prompts[rotation]:'Review the design meeting agenda.',sourceLabel:'Gmail',sourceIds:['gmail:1']},
+    {id:'first',prompt:account===1?prompts[rotation]:'Review the design meeting agenda.',
+      ...(rotation ? {sourceLabel:'Recent chat',sourceIds:[`chat:${rotation}`],conversationId:`conv_${rotation}`} : {sourceLabel:'Gmail',sourceIds:['gmail:1']})},
     {id:'event',prompt:rotation>=2?'Review the measurement checklist for tomorrow’s circuits lab.':'Help me prepare for tomorrow’s circuits lab meeting.',sourceLabel:'Calendar · Gmail',sourceIds:['calendar:1','gmail:1']},
     ...(recall?[{id:'recall',prompt:'Pick up the transient-response derivation I was reading.',sourceLabel:'Recall',sourceIds:['recall:1']}]:[]),
     {id:'task',prompt:'Break my unfinished circuit simulation into next steps.',sourceLabel:'Plan · Your garden',sourceIds:['task:1','garden:1']},
@@ -102,6 +116,7 @@ test('starter cards refresh, erase and type safely, preserve drafts, and immedia
   await page.clock.fastForward(1000);
   await expect(visibleText).toHaveText(erasing);
   await cards.first().click();await expect(draft).toHaveValue(prompts[0]);
+  assert.deepEqual(await page.evaluate(()=>window.opened), [], 'the outgoing Gmail card must not open the incoming chat');
   await draft.focus();await page.mouse.move(0,0);
   await page.clock.runFor(800);
   await expect(phase).toHaveAttribute('data-card-suggestion-phase','type');
@@ -119,8 +134,24 @@ test('starter cards refresh, erase and type safely, preserve drafts, and immedia
   await expect.poll(()=>requests.length).toBe(3);assert.equal(requests.at(-1).refresh,true);
   await page.clock.runFor(2500);await expect(visibleText).toHaveText(prompts[1]);
   await expect(cards.nth(1).locator('.bb-card-suggestion-text')).toHaveText('Review the measurement checklist for tomorrow’s circuits lab.');
-  await page.keyboard.press('Enter');await expect(draft).toHaveValue(prompts[1]);
+  await page.evaluate(()=>window.seed('conv_1','My unfinished note.'));
+  await page.keyboard.press('Enter');
+  await expect.poll(()=>page.evaluate(()=>window.opened)).toEqual(['conv_1']);
+  await expect(draft).toHaveValue('My unfinished note.');
+  await page.evaluate(()=>window.finishOpen());
+  const combined = 'My unfinished note.\n\n' + prompts[1];
+  await expect(draft).toHaveValue(combined);
+  await page.clock.runFor(30);
+  await expect(draft).toBeFocused();
+  assert.equal(await draft.evaluate(el=>el.selectionStart), combined.length);
+  assert.equal(await page.evaluate(()=>window.saved(null)), prompts[0]);
+  assert.deepEqual(await page.evaluate(()=>window.sent), []);
   await draft.focus();await page.clock.runFor(2500);await expect(visibleText).toHaveText(prompts[2]);
+  await cards.first().click();
+  await expect.poll(()=>page.evaluate(()=>window.opened.at(-1))).toBe('conv_2');
+  await page.evaluate(()=>window.finishOpen());
+  await expect(draft).toHaveValue(prompts[2]);
+  await draft.focus();await page.mouse.move(0,0);
 
   // A provider outage preserves the useful cards and retries; reduced motion
   // replaces the text without replaying character animation.
@@ -171,6 +202,17 @@ test('starter cards refresh, erase and type safely, preserve drafts, and immedia
   await page.setViewportSize({width:420,height:800});await expect(cards.first()).toBeVisible();
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
   await page.locator('main > div').first().screenshot({path:path.join(screenshotDir,'dark-narrow.png')});
+
+  // A browser-home card can arrive while the drawer is already on a chat.
+  await page.evaluate(()=>window.pickExternal({text:'Continue the measurement.',conversationId:'conv_browser'}));
+  await expect.poll(()=>page.evaluate(()=>window.opened.at(-1))).toBe('conv_browser');
+  await page.evaluate(()=>window.finishOpen());
+  await expect(draft).toHaveValue('Continue the measurement.');
+  // Switching chats before a slower transcript lands cancels the pending paste.
+  await page.evaluate(()=>window.pickExternal({text:'For the slow chat.',conversationId:'conv_slow'}));
+  await expect.poll(()=>page.evaluate(()=>window.opened.at(-1))).toBe('conv_slow');
+  await page.evaluate(()=>{window.openAnother('conv_elsewhere');window.finishOpen();});
+  await expect(draft).toHaveValue('');
 
   // Cold garden load with every provider down: nothing grounded exists, so
   // no cards at all. Temporary mode and disabled personalization never

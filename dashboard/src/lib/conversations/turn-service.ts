@@ -23,7 +23,7 @@ import {
 import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import { hermesMessageId } from "../hermes/message-id.ts";
 import { resolveUnifiedWorkflowContinuation } from "../workflows/unified-continuation.ts";
-import { resolveHermesEngine } from "../hermes/model-selection.ts";
+import { resolveAvailableHermesEngine } from "../hermes/model-selection.ts";
 import { selectedModelForUser } from "../selected-model.ts";
 import db from "../db";
 import { chatWorkspaceNotice } from "../storage/budget.ts";
@@ -98,6 +98,8 @@ import {
 import { parseChatReferenceCommand } from "./chat-reference.ts";
 import { scheduleMemoryProfileSynthesisForConversation } from "./memory-profile.ts";
 import { loadConversationMemoryBundle } from "./memory.ts";
+import { personalTurnPrompt } from "../personal-context/resolve.ts";
+import { recallEarlierConversations } from "./earlier-chats.ts";
 import {
   findAgencyAgent,
   renderAgencyAgentPersona,
@@ -380,6 +382,30 @@ export type StartConversationTurnResult =
       run: RuntimeRunRow | null;
     };
 
+/**
+ * A background task-recovery continuation (`recovery:<runId>`) is not
+ * something the user is waiting on. When they speak while it runs, stop it
+ * the way Stop does and take the turn: the voice client otherwise gets 409
+ * conversation_turn_active and the spoken words are lost.
+ */
+async function yieldTaskRecoveryToSpokenInput(conversationId: number, userId: number): Promise<void> {
+  const active = db.prepare(`SELECT client_message_id FROM conversation_messages
+    WHERE conversation_id=? AND role='assistant' AND status='pending'
+      AND client_message_id LIKE 'recovery:%' LIMIT 1`).get(conversationId) as { client_message_id: string } | undefined;
+  if (!active) return;
+  const [{ cancelTaskRecovery }, { cancelRuntimeSessionWork }, { listRuntimeSessionsForConversation }] = await Promise.all([
+    import("../hermes/task-recovery.ts"), import("../hermes/session-cancel.ts"), import("../hermes/runtime-store.ts"),
+  ]);
+  cancelTaskRecovery(conversationId);
+  failAssistantMessage({ conversationId, clientMessageId: active.client_message_id, status: "aborted", error: "superseded_by_spoken_input" });
+  // Only the session actually running the recovery is stopped.
+  const sessions = listRuntimeSessionsForConversation(conversationId).filter(row => {
+    const run = getActiveRuntimeRun(row.id);
+    return !!run && parseRuntimeRunDispatch(run).clientMessageId === active.client_message_id;
+  });
+  await Promise.all(sessions.map(row => cancelRuntimeSessionWork(userId, row).catch(() => null)));
+}
+
 /** Shared authenticated turn pipeline for Terminal, Garden Chat, and Quartz. */
 export async function startConversationTurn(
   input: StartConversationTurnInput,
@@ -406,6 +432,14 @@ export async function startConversationTurn(
   assertGoalContinuationCurrent();
   if (!input.internalAgentContinuation && !input.chatCoordination) cancelConversationSourceRepairs(input.conversation.id);
   if (!input.internalAgentContinuation && !input.chatCoordination) clearGoalContinuationDeferral(input.conversation.public_id);
+  // Before this turn prepares its own session: stopping the recovery run
+  // revokes that session's grants and retires its event stream.
+  // A text from a messaging app is the same: a person is talking, and after a
+  // runtime restart the orphaned recovery otherwise blocks their chat for good.
+  const personSpeaking = input.voice || DELIVERY_CHANNELS.some(channel => input.surfaceContext?.deliveryChannel === channel);
+  if (personSpeaking && !input.internalAgentContinuation && !input.chatCoordination) {
+    await yieldTaskRecoveryToSpokenInput(input.conversation.id, input.conversation.user_id);
+  }
   if (input.surface !== input.conversation.surface) {
     throw new ApiError(
       403,
@@ -636,6 +670,7 @@ export async function startConversationTurn(
     clientMessageId: input.clientMessageId,
     metadata: {
       activeGardenId: session.row.cluster_id,
+      personalContextAllowed: input.personalize !== false && !input.internalAgentContinuation && !input.chatCoordination && !input.conversation.temporary && input.surface !== "quartz_ai",
       activeGardenSlug: session.row.garden_id,
       activePageSlug: session.row.page_slug,
       ...(explicitChatReference
@@ -1114,6 +1149,13 @@ export async function startConversationTurn(
     authenticated: true,
     priorMessages: currentConversationMessages,
   });
+  // Work that runs while the user is away (a schedule, a recovery, a goal or
+  // task continuation) may text them on Telegram when it needs them.
+  const attentionAlerts =
+    input.surface !== "quartz_ai" &&
+    !input.surfaceContext?.deliveryChannel &&
+    Boolean(input.internalAgentContinuation || input.goalContinuation || input.taskContinuation || input.scheduledChatReceipt) &&
+    telegramAttentionAlertsOn(input.conversation.user_id);
   // Whatever goal this conversation is already under, read before anything is
   // selected: it decides both whether the Goal skill has anything to do this
   // turn and whether the goal tools travel on the run at all.
@@ -1149,13 +1191,6 @@ export async function startConversationTurn(
     input.conversation.user_id,
     goalSelection.text,
     session.activeDirectory,
-  // Work that runs while the user is away (a schedule, a recovery, a goal or
-  // task continuation) may text them on Telegram when it needs them.
-  const attentionAlerts =
-    input.surface !== "quartz_ai" &&
-    !input.surfaceContext?.deliveryChannel &&
-    Boolean(input.internalAgentContinuation || input.goalContinuation || input.taskContinuation || input.scheduledChatReceipt) &&
-    telegramAttentionAlertsOn(input.conversation.user_id);
     commandContext,
   ).catch(async (error: unknown) => {
     if (
@@ -1439,7 +1474,7 @@ export async function startConversationTurn(
   const voicePreferences = input.voice === true && (input.reasoningEffort === undefined || input.reasoningEffort === null || input.reasoningEffort === "")
     ? readVoiceAssistantPreferences(db, input.conversation.user_id) : null;
   const reasoningEffort = voicePreferences ? voiceReasoningEffort(voicePreferences) : input.reasoningEffort;
-  const engine = resolveHermesEngine(input.model, reasoningEffort, selectedModelForUser(input.conversation.user_id));
+  const engine = await resolveAvailableHermesEngine(input.model, reasoningEffort, selectedModelForUser(input.conversation.user_id));
   const runtime = getAgentRuntimeByKind(session.runtimeKind);
   const connectedApps =
     input.surface === "quartz_ai"
@@ -1772,7 +1807,14 @@ export async function startConversationTurn(
       connectedApps.systemContext,
     ].filter(Boolean).join("\n\n"),
     additional: [
-      chatWorkspaceNotice(db, input.conversation.public_id),
+      await personalTurnPrompt({ userId: input.conversation.user_id, conversationId: input.conversation.id, query: input.text,
+        focus:context.pageTitle || input.textSelection?.sourceTitle,
+        gardenId: session.row.cluster_id, surface: input.surface, temporary: input.conversation.temporary, personalize: input.personalize, internal: Boolean(input.internalAgentContinuation || input.chatCoordination) }),
+      // "We talked about X before": the earlier chat may be on any surface.
+      recallEarlierConversations({ userId: input.conversation.user_id, conversationId: input.conversation.id, query: resolved.userText || input.text,
+        gardenId: session.row.cluster_id, surface: input.surface, temporary: input.conversation.temporary, personalize: input.personalize, internal: Boolean(input.internalAgentContinuation || input.chatCoordination) }),
+      // Not on a quick question about a selection: the answer there is a few lines in a popover.
+      input.textSelection?.mode === "inline" ? "" : chatWorkspaceNotice(db, input.conversation.public_id),
       superAgentInventory
         ? input.voice
           ? [voiceCapabilitiesContext(superAgentInventory), researchPipeline ? researchPipelineRule(researchPipeline) : ""].filter(Boolean).join("\n\n")
@@ -1849,6 +1891,7 @@ export async function startConversationTurn(
       authorizedGardenContext(input.conversation.user_id, session.row.garden_id),
       renderSurfaceContext(input.surface, context),
       renderDeliveryChannel(context.deliveryChannel, approvalPolicy.yoloMode),
+      attentionAlerts ? renderAttentionAlerts() : "",
     ].filter(Boolean).join("\n\n"),
     persona: conversationPersonalityPrompt(
       botsStore().forConversation(input.conversation.user_id, input.conversation.public_id),
@@ -1891,7 +1934,6 @@ export async function startConversationTurn(
   installTurnMarket(session.row.id);
   // The same coarse fix, put where the map tools can reach it. Without this,
   // "what's near me" has no anchor unless the /map page happens to be open —
-      attentionAlerts ? renderAttentionAlerts() : "",
   // and an agent with no anchor and a geographic question is exactly the
   // situation this whole feature exists to prevent. It is written only when
   // the user enabled device context and map tools are available. The next fix
@@ -2029,6 +2071,9 @@ export async function startConversationTurn(
       ...(premortemSelection.automatic ? [{ slug: "premortem" }] : []),
       ...(factcheckSelection.automatic ? [{ slug: "bullshit-detector" }] : []),
       ...(messagingSelection.automatic ? [{ slug: "send-to-my-phone" }] : []),
+      ...(attentionAlerts && !messagingSelection.automatic
+        ? [{ slug: "send-to-my-phone", reason: "Work running while the user is away may need them; Telegram attention alerts are on." }]
+        : []),
       ...(agentLoopSelection.automatic
         ? [{ slug: "agent-loop-engineering" }]
         : []),
@@ -2071,9 +2116,6 @@ export async function startConversationTurn(
           messages: currentConversationMessages,
           launchCalls: externalAgentCallsForRun(
             getLatestRuntimeRun(session.row.id)?.id,
-      ...(attentionAlerts && !messagingSelection.automatic
-        ? [{ slug: "send-to-my-phone", reason: "Work running while the user is away may need them; Telegram attention alerts are on." }]
-        : []),
           ),
         }),
         {
@@ -2408,6 +2450,13 @@ function renderSurfaceContext(surface: HermesSurface, context: ConversationSurfa
  * capability question — the constraints are entirely about where the text
  * lands, so they are stated as fact and kept out of the capability grant.
  */
+function renderAttentionAlerts(): string {
+  return [
+    "# attention_alerts",
+    "This turn runs while the user is away from Breadboard. If its outcome genuinely needs them (a decision only they can make, a failure they must fix, a deadline, an approval that is waiting, or something they asked to be told about), call messaging_send with channel \"telegram\" and reason \"attention\": one or two short plain sentences saying what needs them and why, like a colleague texting. Do not text for routine progress or a task that simply finished fine.",
+  ].join("\n");
+}
+
 function renderDeliveryChannel(channel: DeliveryChannel | undefined, yoloMode = false): string {
   if (!channel) return "";
   const app = channel === "whatsapp" ? "WhatsApp" : "Telegram";
@@ -2455,13 +2504,6 @@ function parseAllowedGardenIds(value: string): number[] {
     return [];
   }
 }
-function renderAttentionAlerts(): string {
-  return [
-    "# attention_alerts",
-    "This turn runs while the user is away from Breadboard. If its outcome genuinely needs them (a decision only they can make, a failure they must fix, a deadline, an approval that is waiting, or something they asked to be told about), call messaging_send with channel \"telegram\" and reason \"attention\": one or two short plain sentences saying what needs them and why, like a colleague texting. Do not text for routine progress or a task that simply finished fine.",
-  ].join("\n");
-}
-
 
 function bounded(value: unknown, max: number): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, max) : undefined;

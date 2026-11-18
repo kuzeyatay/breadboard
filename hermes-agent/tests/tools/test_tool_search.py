@@ -254,6 +254,18 @@ class TestAssembly:
         assert "not_authorized" not in names
         assert result.activated and result.deferred_count == 1
 
+    def test_everyday_assistant_tools_stay_visible_without_widening_the_catalog(self, monkeypatch):
+        from tools import tool_search
+        monkeypatch.setattr(tool_search, "is_deferrable_tool_name", lambda name: True)
+        config = tool_search.ToolSearchConfig.from_raw({"enabled": "on"})
+        definitions = [_td("calendar_agenda"), _td("notifications_read"), _td("specialist")]
+        result = tool_search.assemble_tool_defs(definitions, config=config)
+        names = {td["function"]["name"] for td in result.tool_defs}
+        assert {"calendar_agenda", "notifications_read"} <= names
+        assert "specialist" not in names
+        # Pinned names absent from the session's own list are never added.
+        assert "map_route" not in names and "save_memory" not in names
+
     def test_no_deferrable_returns_unchanged(self):
         """Pure-core toolset: pass-through, no bridge tools added."""
         from tools.tool_search import assemble_tool_defs, ToolSearchConfig

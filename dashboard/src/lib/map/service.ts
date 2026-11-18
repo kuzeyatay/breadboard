@@ -36,6 +36,8 @@ export interface MapProviders {
   reverseGeocoder: GeocodingProvider;
   router: RoutingProvider;
   poi: POIProvider;
+  /** Tried when `poi` fails: public Overpass servers are often at capacity. */
+  poiFallback?: POIProvider;
   details: PlaceDetailsProvider;
 }
 
@@ -76,6 +78,7 @@ export function defaultMapProviders(
       userAgent: config.userAgent,
       timeoutMs: config.overpassTimeoutMs,
     }),
+    poiFallback: nominatim,
     details: nominatim,
   };
 }
@@ -215,14 +218,23 @@ export async function mapNearby(
       { status: 400 },
     );
   }
-  const places = await providers.poi.nearby({
+  const request = {
     center: input.center,
     selectors: category?.selectors ?? [],
     ...(input.query ? { query: input.query } : {}),
     radiusMeters: input.radiusMeters,
     limit: input.limit ?? 12,
     ...(input.signal ? { signal: input.signal } : {}),
-  });
+  };
+  let provider = providers.poi;
+  let places: MapPlace[];
+  try {
+    places = await provider.nearby(request);
+  } catch (error) {
+    if (!providers.poiFallback || input.signal?.aborted) throw error;
+    provider = providers.poiFallback;
+    places = await provider.nearby(request);
+  }
   return {
     center: input.center,
     ...(category ? { category: category.id } : {}),
@@ -230,7 +242,7 @@ export async function mapNearby(
     radiusMeters: input.radiusMeters,
     places,
     provenance: {
-      provider: providers.poi.name,
+      provider: provider.name,
       retrievedAt: places[0]?.provenance.retrievedAt ?? new Date().toISOString(),
     },
   };

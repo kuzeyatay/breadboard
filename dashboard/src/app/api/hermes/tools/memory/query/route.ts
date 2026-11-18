@@ -9,6 +9,7 @@ import { capabilityForInternalToolRequest } from "@/lib/hermes/tool-service-auth
 import { tokenAllows, verifyCapabilityToken } from "@/lib/hermes/capability-token.ts";
 import {
   getRuntimeSessionById,
+  getHermesUserSettings,
   recordAuditEvent,
   runtimeExternalSessionId,
 } from "@/lib/hermes/runtime-store.ts";
@@ -17,6 +18,10 @@ import {
   getConversationById,
 } from "@/lib/conversations/store.ts";
 import { memoryQuery, type MemoryQueryMode } from "@/lib/memory-tree/query.ts";
+import db from "@/lib/db";
+import { getActiveRuntimeRun, parseRuntimeRunDispatch } from "@/lib/hermes/run-store.ts";
+import { resolvePersonalContext } from "@/lib/personal-context/resolve.ts";
+import { secondaryContext } from "@/lib/personal-context/secondary.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -80,6 +85,12 @@ export async function POST(request: Request) {
         : {};
 
     const requestedMode = typeof args.mode === "string" ? args.mode : "search";
+    const run = getActiveRuntimeRun(session.id);
+    const turn = run && db.prepare("SELECT json_extract(metadata,'$.personalContextAllowed') AS allowed FROM conversation_message_reads WHERE conversation_id=? AND client_message_id=? AND role='user'")
+      .get(session.conversation_id,parseRuntimeRunDispatch(run).clientMessageId ?? "") as {allowed:number|null}|undefined;
+    if (turn?.allowed === 0 || getHermesUserSettings(session.user_id).composerSwitches.personalize === false) {
+      return NextResponse.json({ok:true,data:{mode:requestedMode,hits:[],context:[],note:"Personalization is off for this turn."}});
+    }
     const mode: MemoryQueryMode = MODES.has(requestedMode as MemoryQueryMode)
       ? (requestedMode as MemoryQueryMode)
       : "search";
@@ -103,7 +114,10 @@ export async function POST(request: Request) {
       payload: { mode, ranking: result.ranking, hits: result.hits.length },
     });
 
-    return NextResponse.json({ ok: true, data: result });
+    const context = turn?.allowed === 1 && mode === "search" && typeof args.query === "string"
+      ? await resolvePersonalContext({query:args.query,userId:session.user_id,conversationId:session.conversation_id,gardenId:session.cluster_id,surface:session.surface},
+        {followup:true,expand:secondaryContext}) : [];
+    return NextResponse.json({ ok: true, data: { ...result, context } });
   } catch (error) {
     return apiErrorResponse(error);
   }

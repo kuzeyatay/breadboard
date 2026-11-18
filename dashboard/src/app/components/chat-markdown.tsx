@@ -631,7 +631,7 @@ type NoteBubbleAnchor = {
   rect: DOMRect;
 };
 
-function NoteBubble({
+export function NoteBubble({
   id,
   text,
   anchor,

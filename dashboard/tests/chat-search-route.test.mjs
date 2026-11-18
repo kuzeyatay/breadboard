@@ -9,11 +9,11 @@ import { issueCapabilityToken } from "../src/lib/hermes/capability-token.ts";
 // projection. Only the service/session boundary uses an isolated test fixture.
 const db = new Database(":memory:");
 db.exec(`
-  CREATE TABLE clusters (id INTEGER PRIMARY KEY, slug TEXT);
+  CREATE TABLE clusters (id INTEGER PRIMARY KEY, slug TEXT, user_id INTEGER, memory_scope TEXT);
   CREATE TABLE conversations (
     id INTEGER PRIMARY KEY, public_id TEXT, user_id INTEGER, title TEXT,
     updated_at TEXT, pinned_at TEXT, legacy_chat_session_id INTEGER,
-    temporary INTEGER, surface TEXT, default_garden_id INTEGER
+    temporary INTEGER, surface TEXT, default_garden_id INTEGER, buzz_room_id INTEGER
   );
   CREATE TABLE conversation_messages (
     conversation_id INTEGER, role TEXT, content TEXT, created_at TEXT,
@@ -69,9 +69,9 @@ function call(args = {}) {
 
 beforeEach(() => {
   db.exec(`DELETE FROM clusters; DELETE FROM conversations; DELETE FROM conversation_messages;
-    INSERT INTO clusters VALUES (3028, 'electromagnetism-1'), (3029, 'telecom-1');`);
-  const insert = db.prepare("INSERT INTO conversations VALUES (?, ?, ?, ?, '2026-11-06T10:00:00Z', NULL, ?, ?, ?, ?)");
-  for (const [id, publicId, userId, legacyId, temporary, surface, garden] of [
+    INSERT INTO clusters VALUES (3028, 'electromagnetism-1', 7, NULL), (3029, 'telecom-1', 7, NULL), (3030, 'diary', 7, 'garden_only');`);
+  const insert = db.prepare("INSERT INTO conversations VALUES (?, ?, ?, ?, '2026-11-06T10:00:00Z', NULL, ?, ?, ?, ?, ?)");
+  for (const [id, publicId, userId, legacyId, temporary, surface, garden, room] of [
     [44, "conv_current", 7, 1081, 0, "garden_chat", 3028],
     [45, "conv_exam", 7, 1080, 0, "garden_chat", 3028],
     [46, "conv_foreign", 8, 1082, 0, "garden_chat", 3028],
@@ -79,8 +79,10 @@ beforeEach(() => {
     [48, "conv_temporary", 7, 1084, 1, "garden_chat", 3028],
     [49, "conv_terminal", 7, null, 0, "dashboard_terminal", null],
     [50, "conv_unlinked", 7, null, 0, "garden_chat", 3028],
+    [51, "conv_sealed", 7, 1085, 0, "garden_chat", 3030],
+    [52, "conv_room_agent", 7, null, 0, "dashboard_terminal", null, 1],
   ]) {
-    insert.run(id, publicId, userId, "EM 1 exam: Coulomb integral in spherical coordinates", legacyId, temporary, surface, garden);
+    insert.run(id, publicId, userId, "EM 1 exam: Coulomb integral in spherical coordinates", legacyId, temporary, surface, garden, room ?? null);
     db.prepare("INSERT INTO conversation_messages VALUES (?, 'assistant', ?, '2026-11-06T10:00:00Z', 'complete', 1)")
       .run(id, `Source ${publicId}: with origin (0,0,h), the perpendicular distance is r sin(theta).`);
   }
@@ -97,11 +99,17 @@ test("Garden search uses its numeric cluster ID and reads the selected exam tran
   const response = await call();
   const body = await response.json();
   assert.equal(response.status, 200, JSON.stringify(body));
-  assert.deepEqual(body.data.results.map(hit => hit.referenceId), ["conv_exam"]);
-  assert.equal(body.data.results[0].id, "1080");
+  // Every surface's chats (a Terminal or browser question often points back at
+  // a Garden chat), but never a "garden only" Garden's from outside it.
+  assert.deepEqual(body.data.results.map(hit => hit.referenceId).sort(), ["conv_exam", "conv_other_garden", "conv_terminal"]);
+  const exam = body.data.results.find(hit => hit.referenceId === "conv_exam");
+  assert.equal(exam.id, "1080");
   assert.equal(body.data.uiResources[0].data.gardenSlug, "electromagnetism-1");
+  const opens = Object.fromEntries(body.data.uiResources[0].data.chats.map(chat => [chat.id, [chat.surface, chat.gardenSlug]]));
+  assert.deepEqual(opens["1083"], ["garden_chat", "telecom-1"]);
+  assert.deepEqual(opens[body.data.results.find(hit => hit.referenceId === "conv_terminal").id], ["dashboard_terminal", undefined]);
 
-  const referenceResponse = await call({ reference_ids: [body.data.results[0].referenceId] });
+  const referenceResponse = await call({ reference_ids: [exam.referenceId] });
   const referenceBody = await referenceResponse.json();
   assert.equal(referenceResponse.status, 200, JSON.stringify(referenceBody));
   assert.equal(referenceBody.data.referencesReturned, 1);
@@ -110,12 +118,26 @@ test("Garden search uses its numeric cluster ID and reads the selected exam tran
   assert.equal(state.audit.at(-1).payload.referencesReturned, 1);
 });
 
-test("Garden references cannot read another user, another Garden, temporary or excluded chats", async () => {
-  for (const referenceId of ["conv_foreign", "conv_other_garden", "conv_temporary", "conv_current", "conv_terminal", "conv_unlinked"]) {
+test("references cannot read another user's, temporary, garden-only or excluded chats", async () => {
+  for (const referenceId of ["conv_foreign", "conv_temporary", "conv_current", "conv_unlinked", "conv_sealed", "conv_room_agent"]) {
     const response = await call({ reference_ids: [referenceId] });
     assert.equal(response.status, 404, referenceId);
     assert.equal((await response.json()).code, "chat_search_reference_not_found");
   }
+});
+
+test("a room agent cannot search the acting member's private chats", async () => {
+  db.prepare("UPDATE conversations SET buzz_room_id = 1 WHERE id = 44").run();
+  const response = await call();
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).code, "chat_search_shared_room");
+});
+
+test("a garden-only Garden's chat searches only its own Garden", async () => {
+  state.session.cluster_id = 3030;
+  state.session.garden_id = "diary";
+  const body = await (await call()).json();
+  assert.deepEqual(body.data.results.map(hit => hit.referenceId), ["conv_sealed"]);
 });
 
 test("Garden search rejects missing numeric scope and deleted Gardens", async () => {
@@ -138,7 +160,7 @@ test("Terminal search remains available without a Garden and reads its own resul
   const response = await call();
   const body = await response.json();
   assert.equal(response.status, 200, JSON.stringify(body));
-  assert.deepEqual(body.data.results.map(hit => hit.referenceId), ["conv_terminal"]);
+  assert.deepEqual(body.data.results.map(hit => hit.referenceId).sort(), ["conv_exam", "conv_other_garden", "conv_terminal"]);
   assert.equal(body.data.uiResources[0].data.surface, "dashboard_terminal");
   assert.equal((await call({ reference_ids: ["conv_terminal"] })).status, 200);
 });

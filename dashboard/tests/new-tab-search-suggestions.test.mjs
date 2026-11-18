@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { normalizeSearchHistory, newTabSearchSuggestions, webSearchUrl, webDestinationUrl } from "../src/lib/new-tab-search-suggestions.ts";
+import { inlineCompletion, normalizeSearchHistory, newTabSearchSuggestions, visitedHost, webSearchUrl, webDestinationUrl } from "../src/lib/new-tab-search-suggestions.ts";
 import { readSearchHistory, updateSearchHistory } from "../src/lib/new-tab-search-history.ts";
 
 test("history preserves search destinations and filenames, while bounding and cleaning entries", () => {
@@ -25,7 +25,7 @@ test("suggestions show recent searches first and always offer both Breadboard an
   assert.equal(suggestions[5].detail, "Search the web");
   assert.equal(suggestions[5].scope, "web");
   assert.equal(suggestions[6].result.href, "/note/0");
-  assert.equal(newTabSearchSuggestions("", history, results).length, 4);
+  assert.equal(newTabSearchSuggestions("", history, results).length, 25, "an empty box lists the past 25 searches");
   assert.deepEqual(newTabSearchSuggestions("", [], results), []);
   assert.equal(newTabSearchSuggestions("nonmatching", history, []).length, 2);
   const url = new URL(webSearchUrl("  example.com & Fourier + π?  "));
@@ -66,5 +66,20 @@ test("Terminal restores search terms using the standalone browser's search clean
   assert.equal(webDestinationUrl("physics formulas"), webSearchUrl("physics formulas"));
   assert.equal(newTabSearchSuggestions("", history, [], searches).length, 2);
   assert.equal(searches.length, 5, "reading suggestions does not rewrite saved data");
-  assert.deepEqual(newTabSearchSuggestions("", [], [], ["one", "two", "three", "four", "five"]).map(item => item.value), ["one", "two", "three", "four"]);
+  assert.deepEqual(newTabSearchSuggestions("", [], [], ["one", "two", "three", "four", "five"]).map(item => item.value), ["one", "two", "three", "four", "five"]);
+});
+
+test("inline completion picks the more important scope from past activity", () => {
+  const visits = ["https://www.github.com/a", "https://github.com/b", "https://github.com/c"].map(visitedHost);
+  assert.deepEqual(inlineCompletion("Gi", [
+    { scope: "breadboard", values: ["git notes"] },
+    { scope: "web", values: visits },
+  ]), { value: "Github.com", rest: "thub.com", scope: "web" }, "a site visited three times beats one old note search");
+  assert.equal(inlineCompletion("fou", [
+    { scope: "breadboard", values: ["Fourier series", "fourier series"] },
+    { scope: "web", values: ["x", "y", "fourth of july"] },
+  ]).scope, "breadboard");
+  assert.equal(inlineCompletion("", [{ scope: "web", values: ["a"] }]), null);
+  assert.equal(inlineCompletion("dhl", [{ scope: "web", values: ["dhl", "amazon"] }]), null, "no completion when nothing longer matches");
+  assert.equal(visitedHost("file:///C:/x.pdf"), null);
 });

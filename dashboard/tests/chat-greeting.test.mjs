@@ -525,10 +525,9 @@ test("the garden workspace greets the same way, told which garden it is in", () 
 test("picking an opener fills the composer instead of sending it", () => {
   for (const terminal of [runtimeTerminal, legacyTerminal]) {
     assert.match(terminal, /onSelectSuggestion=\{fillComposerWithPrompt\}/);
-    // The text lands in the field and the caret follows it there.
-    assert.match(terminal, /setInput\((?:text|prompt)\);\s*\n\s*window\.setTimeout/);
-    assert.match(terminal, /composer\.setSelectionRange\(composer\.value\.length, composer\.value\.length\)/);
   }
+  assert.match(runtimeTerminal, /const fillComposerWithPrompt = useTerminalSuggestion\(/);
+  assert.match(legacyTerminal, /onOpenRecentChat\(prompt, conversationId\)/);
   // Nothing on this path reaches the runtime any more.
   assert.doesNotMatch(runtimeTerminal, /sendSuggestedPrompt/);
   assert.doesNotMatch(emptyState, /session\.send|sendMessage/);

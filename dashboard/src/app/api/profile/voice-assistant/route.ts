@@ -6,12 +6,15 @@ import { parseVoiceAssistantPreferences } from '@/lib/speech/assistant-preferenc
 import { readVoiceAssistantPreferences, writeVoiceAssistantPreferences } from '@/lib/speech/assistant-store';
 import { getHermesUserSettings } from '@/lib/hermes/runtime-store';
 import { GLOBAL_MODEL_SENTINEL } from '@/lib/ai-models';
+import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
+import { voiceModelWithQuotaFallback } from '@/lib/speech/voice-quota-fallback';
 export const dynamic = 'force-dynamic';
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const userId = await requireUserId();
     const preferences = readVoiceAssistantPreferences(db, userId);
-    const effectiveVoiceModel = preferences.voiceModel === GLOBAL_MODEL_SENTINEL ? getHermesUserSettings(userId).fallbackModel : preferences.voiceModel;
+    const chosen = preferences.voiceModel === GLOBAL_MODEL_SENTINEL ? getHermesUserSettings(userId).fallbackModel : preferences.voiceModel;
+    const effectiveVoiceModel = await voiceModelWithQuotaFallback(chosen, resolveChatmockBaseUrl(request).baseURL);
     return Response.json({ userId: String(userId), preferences, effectiveVoiceModel }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) { return routeErrorResponse(error); }
 }

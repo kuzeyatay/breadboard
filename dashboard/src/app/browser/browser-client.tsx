@@ -24,6 +24,7 @@ import { ChatSuggestionCards } from '@/app/components/hermes/chat-greeting-empty
 import type { ChatGreetingSignals } from "@/lib/hermes/chat-greeting";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
 import BrowserTabPanes from "./browser-tab-panes";
+import BrowserPdfFrame from "./browser-pdf-frame";
 import { usePageLoading } from "@/app/components/use-page-loading";
 import {
   browserBookmarksControl,
@@ -31,6 +32,7 @@ import {
   refreshDesktopTabsState,
   sendDesktopTabsCommand as sendTabsCommand,
   type DesktopTabsCommand,
+  type DesktopTabView,
 } from "@/lib/desktop-browser-tabs";
 import {
   AnimatedBrowserGreeting,
@@ -220,16 +222,21 @@ type BrowserClientProps = { showFlowers: boolean; restoreOwnerKey: string; initi
 
 export default function BrowserClient(props: BrowserClientProps) {
   const tabs = useDesktopTabs();
-  if (!tabs?.persistentShell) return <BrowserContent {...props} />;
-  return <BrowserTabPanes state={tabs}>{() => <BrowserContent {...props} />}</BrowserTabPanes>;
+  if (!tabs?.persistentShell) {
+    const retained = tabs?.retainedBrowserTab;
+    return <BrowserContent {...props} tab={retained?.id === tabs?.selfId ? retained : undefined} />;
+  }
+  return <BrowserTabPanes state={tabs}>{tab => <BrowserContent {...props} tab={tab} />}</BrowserTabPanes>;
 }
 
 function BrowserContent({
+  tab,
   showFlowers,
   restoreOwnerKey,
   initialGreetingSignals,
   home,
 }: {
+  tab?: DesktopTabView;
   showFlowers: boolean;
   restoreOwnerKey: string;
   initialGreetingSignals: ChatGreetingSignals;
@@ -238,7 +245,7 @@ function BrowserContent({
   const tabs = useDesktopTabs();
   // The outgoing page stays visible while a cold tab loads. Its navbar must
   // keep describing this page, not the newly selected (possibly non-browser) tab.
-  const pageTab = tabs?.tabs.find((tab) => tab.id === (
+  const pageTab = tab ?? tabs?.tabs.find((tab) => tab.id === (
     tabs.selfId === undefined ? tabs.activeId : tabs.selfId
   ));
   const browser = pageTab?.browser;
@@ -319,7 +326,7 @@ function BrowserContent({
   // Opening Terminal must not wait for another chunk behind background requests,
   // and unopened browser tabs must not start chat sessions or their polling.
   const [terminalLoaded, setTerminalLoaded] = useState(false);
-  const [recommendationDraft, setRecommendationDraft] = useState<{ text: string; selectionKey: string; key: number } | null>(null);
+  const [recommendationDraft, setRecommendationDraft] = useState<{ text: string; selectionKey: string; conversationId?: string } | null>(null);
   const [browserRecoveryFailed, setBrowserRecoveryFailed] = useState(false);
   usePageLoading(isActive && (submittedAddress !== null || (browser ? pageTab?.loading === true || browser.translation?.status === "translating" : !browserRecoveryFailed)));
   const chatGreeting = useChatGreeting({
@@ -755,7 +762,7 @@ function BrowserContent({
         {home}
       </div> : <>
       {tabs?.persistentShell ? <div style={{ height: "var(--browser-chrome-top, 103px)", flexShrink: 0 }} aria-hidden="true" /> :
-        <BrowserNavigation showFlowers={showFlowers} restoreOwnerKey={restoreOwnerKey} onPanel={panel => { setActivePanel(panel); setBrowserPanelOpen(true); }} />}
+        <BrowserNavigation tab={pageTab} showFlowers={showFlowers} restoreOwnerKey={restoreOwnerKey} onPanel={panel => { setActivePanel(panel); setBrowserPanelOpen(true); }} />}
 
       {!browser && browserRecoveryFailed ? (
         <div className="browser-recovery-error" role="alert">
@@ -770,9 +777,15 @@ function BrowserContent({
           {startSearch}
           {browserTools}
         </PrivateBrowserHome>
+      ) : browser?.pdfViewer ? (
+        <BrowserPdfFrame key={browser.pdfViewer} viewer={browser.pdfViewer} title={pageTab?.title || "PDF"} active={isActive} temporary={privateBrowsing}
+          style={{
+            left: terminalOpen ? `min(${terminalWidth}px, max(40px, 100% - 320px))` : undefined,
+            right: browser.organizationOpen ? `min(${browser.organizationWidth ?? 360}px, 100% - 49px)` : undefined,
+          }} />
       ) : <main
         className="browser-start-page browser-home-widget-surface"
-        data-native-page={hasNativePage && !browser?.pdfViewer}
+        data-native-page={hasNativePage}
         aria-live="polite"
         data-wallpaper-ready={personalization.ready}
         data-has-wallpaper={personalization.hasWallpaper}
@@ -782,16 +795,6 @@ function BrowserContent({
         } as CSSProperties : undefined}
       >
         {!hasNativePage && <PageAppearance page="browser" ownerKey={restoreOwnerKey} />}
-        {/* A website PDF: the desktop set the web view aside and the viewer
-            takes its place beside the rail, under the same address bar. */}
-        {browser?.pdfViewer ? (
-          <iframe
-            key={browser.pdfViewer}
-            src={browser.pdfViewer}
-            title={pageTab?.title || "PDF"}
-            style={{ position: "absolute", top: 0, left: 40, zIndex: 1, width: "calc(100% - 40px)", height: "100%", border: 0 }}
-          />
-        ) : null}
         {!hasNativePage ? (
           <div className="browser-start-copy">
             <AnimatedBrowserGreeting greeting={chatGreeting.greeting} />
@@ -801,8 +804,8 @@ function BrowserContent({
                 <ChatSuggestionCards suggestions={chatGreeting.suggestions}
                   suggestionScopeKey={chatGreeting.suggestionScopeKey}
                   suggestionDetails={chatGreeting.suggestionDetails}
-                  onSelectSuggestion={prompt => {
-                    setRecommendationDraft(previous => ({ text: prompt, selectionKey, key: (previous?.key ?? 0) + 1 }));
+                  onSelectSuggestion={(text, conversationId) => {
+                    setRecommendationDraft({ text, conversationId, selectionKey });
                     setTerminalLoaded(true);
                     setActivePanel('terminal');
                     setBrowserPanelOpen(true);
@@ -843,12 +846,14 @@ function BrowserContent({
               that normally finishes lazy mounting the visible panel. */}
           {terminalLoaded || browser?.selection?.reference?.mode === "inline" ? (
             <DashboardAgentTerminal
+              privateBrowser={privateBrowsing}
               scope="mine"
               restoreOwnerKey={restoreOwnerKey}
               presentation="drawer"
               drawerSidebarExpanded={terminalWidth >= TERMINAL_SIDEBAR_EXPAND_WIDTH}
-              initialDraft={recommendationDraft?.selectionKey === selectionKey ? recommendationDraft.text : selectionDraft}
-              initialDraftKey={recommendationDraft?.selectionKey === selectionKey ? recommendationDraft.key : undefined}
+              initialDraft={selectionDraft}
+              suggestion={recommendationDraft?.selectionKey === selectionKey ? recommendationDraft : null}
+              onSuggestionHandled={card => setRecommendationDraft(current => current === card ? null : current)}
               initialChatId={browser?.selection?.conversationId}
               webSelection={browser?.selection?.requestId && browser.selection.reference ? {
                 requestId: browser.selection.requestId, reference: browser.selection.reference,

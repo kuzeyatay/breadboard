@@ -72,6 +72,7 @@ export default function ChatMessageAttachments({
   );
   const [openImageIndex, setOpenImageIndex] = useState<number | null>(null);
   const pdfPage = allAttachments?.find(attachment => attachment.context === "pdf" && attachment.pdfPage)?.pdfPage;
+  const webPage = allAttachments?.find(attachment => attachment.context === "web" && attachment.webPage)?.webPage;
   const images = useMemo(
     () => attachments.filter(
       (attachment): attachment is Extract<ChatMessageAttachment, { type: "image" }> =>
@@ -196,6 +197,7 @@ export default function ChatMessageAttachments({
     tracks.length === 0 &&
     products.length === 0 &&
     !pdfPage &&
+    !webPage &&
     sourceAttachments.length === 0 &&
     fileEntries.length === 0
   ) {
@@ -215,6 +217,13 @@ export default function ChatMessageAttachments({
             <span className="shrink-0">Viewing page {pdfPage.pageNumber}</span>
             <span aria-hidden>·</span>
             <span className="truncate">{pdfPage.title}</span>
+          </span>
+        ) : null}
+        {webPage ? (
+          <span className={FILE_CHIP_CLASS} title={`${webPage.title} at send time`} data-testid="web-page-attachment">
+            <PaperclipIcon />
+            <span className="shrink-0">Viewing</span>
+            <span className="truncate">{webPage.title}</span>
           </span>
         ) : null}
         {images.length ? (

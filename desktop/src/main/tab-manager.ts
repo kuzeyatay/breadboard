@@ -1,4 +1,5 @@
 import { CodeDockManager } from "./code-dock";
+import { SITE_LOCK_PAGE_PREFIX, siteLockPage, type SiteLocks } from "./site-locks";
 import { capturePageWithFreshFrame } from "./capture-page";
 import { resolveVSCodeStorage } from "./vscode-installation";
 import type { CodeDockAction, CodeDockState } from "../shared/code-dock";
@@ -36,11 +37,12 @@ import { BrowserPreferenceStore } from "./browser-preferences";
 import { BrowserPasswords } from "./browser-passwords";
 import { installDevicePickers, installScreenSharePicker, setAppLinkStore, setBrowserDialogTheme } from "./browser-dialogs";
 import { BrowserAdBlocker } from "./browser-adblocker";
-import { installBrowserPdfHandoff, storeBrowserPdf } from "./browser-web-pdf";
+import { installBrowserPdfHandoff, type BrowserPdfOpen } from "./browser-web-pdf";
 import { BrowserVpn } from "./browser-vpn";
 import { BrowserNotifications } from "./browser-notifications";
 import { BrowserNotificationPages } from "./browser-notification-pages";
 import { browserUserAgent } from "./browser-user-agent";
+import { attachGoogleSignInPage, attachGoogleSignInSession } from "./browser-google-signin";
 import { toggleBrowserPictureInPicture } from "./browser-picture-in-picture";
 import { GooglePipExtension, GOOGLE_PIP_EXTENSION_ID } from "./google-pip-extension";
 import { BrowserHlsDownloads } from "./browser-hls-downloads";
@@ -256,6 +258,8 @@ interface BrowserPage extends PageFindState {
    * view is set aside exactly as for home; the page beneath stays live so Back
    * returns to it. */
   pdfViewer?: string;
+  pdfTransfer?: AbortController;
+  pdfFallbackUrl?: string;
   /** Chromium index of the first page after the current virtual home entry. */
   homeHistoryIndex: number | null;
   /** A navigation launched from home records its Chromium index on commit. */
@@ -841,6 +845,18 @@ function copyPageSelectionFromCard(card: WebContents, page: WebContents): void {
 }
 export class TabManager {
   readonly codeDock: CodeDockManager;
+  siteLocks: SiteLocks | null = null;
+
+  /** Put the lock page over every browser tab whose site just became locked. */
+  enforceSiteLocks(): void {
+    for (const host of this.hosts.values()) for (const tab of host.tabs) {
+      const browser = liveBrowserPage(tab.browser);
+      if (!browser || browser.showingHome) continue;
+      const url = browser.contents.getURL();
+      const verdict = this.siteLocks?.verdict(url);
+      if (verdict) void browser.contents.loadURL(siteLockPage(verdict, url)).catch(() => undefined);
+    }
+  }
 
   codeDockRequest(sender: WebContents, action: CodeDockAction): CodeDockState {
     const host = this.hostByContents.get(sender.id);
@@ -856,7 +872,8 @@ export class TabManager {
 
   private syncCodeDocks(host: Host): void {
     if (host.window.isDestroyed()) return;
-    const members = splitMembers(host);
+    const visible = this.visibleTab(host);
+    const members = this.visibleSplitMembers(host, visible);
     const [width = 1, height = 1] = host.window.getContentSize();
     for (const tab of host.tabs) {
       if (!this.codeDock.has(tab.contents.id)) continue;
@@ -864,7 +881,7 @@ export class TabManager {
       const top = Math.min(bounds.y + bounds.height - 1, Math.max(BREADBOARD_TITLE_BAR.height,
         bounds.y + Math.ceil(this.codeDock.contentTop(tab.contents.id) * tab.contents.getZoomFactor())));
       this.codeDock.sync(tab.contents.id, host.window, { ...bounds, y: top, height: Math.max(1, bounds.height - (top - bounds.y)) },
-        (host.activeId === tab.id || members.includes(tab)) && !host.tabDragPreview && !host.window.isMinimized() && host.window.isVisible(), host.activeId === tab.id);
+        (visible === tab || members.includes(tab)) && !host.tabDragPreview && !host.window.isMinimized() && host.window.isVisible(), host.activeId === tab.id);
     }
   }
   private readonly browserTerminal = new BrowserTerminalBridge();
@@ -989,8 +1006,6 @@ export class TabManager {
   private notificationsVisible = false;
   private browserExtensionSession: Session | null = null;
   private readonly pdfHandoffSessions = new WeakSet<Session>();
-  private readonly webPdfPending = new Set<number>();
-  private readonly webPdfBypass = new Set<string>();
   private googlePipExtension: GooglePipExtension | undefined;
   private privateProfile: { partition: string; session: Session; users: number; translationSites: Map<string, string> } | null = null;
   private browserExtensionsReady: Promise<void> | null = null;
@@ -1108,7 +1123,7 @@ export class TabManager {
           } catch { /* Tab closed during navigation; restored pages read the current history. */ }
         }
       }
-    });
+    }, () => this.sessionFrozen ? null : this.authenticatedUser ?? null);
     this.browserNotificationPages = new BrowserNotificationPages(
       options.browserPreferencesConfigDir ?? options.browserExtensionsConfigDir ?? app.getPath("userData"),
       this.browserPreferences.snapshot().sites, this.browserHistory.snapshot().items, message => this.log(message),
@@ -1196,6 +1211,7 @@ export class TabManager {
     if (this.sessionFrozen) return false;
     if (userId === this.authenticatedUser) {
       if (userId) {
+        this.browserHistory.restorePersonalHistory();
         for (const host of this.hosts.values()) for (const tab of host.tabs) {
           if (tab.contents.isDestroyed() || !isAuthenticationUrl(tab.contents.getURL(), this.authenticationUrl!)) continue;
           const current = new URL(tab.contents.getURL());
@@ -1383,6 +1399,7 @@ export class TabManager {
     }
     if (window.isDestroyed() || this.sessionFrozen || this.sessionRestored) return;
     this.sessionDashboardUrl = dashboardUrl;
+    if (this.authenticatedUser) this.browserHistory.restorePersonalHistory();
     host.sessionMain = true;
     if (this.authenticatedUser && this.notificationOverlayUrl && !host.notificationOverlay) {
       this.createNotificationOverlay(host, this.notificationOverlayUrl);
@@ -2109,13 +2126,22 @@ export class TabManager {
   }
 
   private visibleTab(host: Host): Tab | undefined {
-    return (host.pending && !host.pendingAtFront ? tabById(host, host.presentedId ?? -1) : undefined)
-      ?? tabById(host, host.activeId);
+    if (host.pending && !host.pendingAtFront && host.presentedId !== null) {
+      const outgoing = tabById(host, host.presentedId)
+        ?? [...host.retainedTabControls].find(tab => tab.id === host.presentedId);
+      if (outgoing) return outgoing;
+    }
+    return tabById(host, host.activeId);
+  }
+
+  private visibleSplitMembers(host: Host, visible = this.visibleTab(host)): Tab[] {
+    if (!visible || visible.voiceOverlay || host.browserFullscreen) return [];
+    return splitMembers({ tabs: host.tabs, groups: host.groups, activeId: visible.id });
   }
 
   private toolbarTab(host: Host): Tab | undefined {
     const visible = this.visibleTab(host);
-    return visible?.browser ? visible : splitMembers({ ...host, activeId: visible?.id ?? host.activeId }).find(tab => tab.browser);
+    return visible?.browser ? visible : this.visibleSplitMembers(host, visible).find(tab => tab.browser);
   }
 
   private shellState(host: Host, state = this.state(host)): TabsState {
@@ -2484,6 +2510,7 @@ export class TabManager {
         const tab = senderTab;
         const browser = liveBrowserPage(tab?.browser);
         if (!browser) return false;
+        if (tab) this.cancelBrowserPdfOpen(host, tab);
         browser.contents.stop();
         return true;
       }
@@ -2586,11 +2613,7 @@ export class TabManager {
       }
       case "browser-answer-resize": {
         if (host.inlineAnswer?.contents !== sender) return false;
-        host.inlineAnswer.resize(command.width, command.height); return true;
-      }
-      case "browser-answer-move": {
-        if (host.inlineAnswer?.contents !== sender) return false;
-        host.inlineAnswer.move(command.dx, command.dy); return true;
+        host.inlineAnswer.resize(command.width, command.height, command.frame); return true;
       }
       case "browser-answer-action": {
         const answer = host.inlineAnswer;
@@ -4110,7 +4133,7 @@ export class TabManager {
   // ------------------------------------------------------------------ state
 
   private state(host: Host): TabsState {
-    const tabs: TabView[] = host.tabs.map((tab) => ({
+    const tabView = (tab: Tab): TabView => ({
       id: tab.id,
       generation: tab.generation,
       anchored: tab.anchored,
@@ -4151,7 +4174,7 @@ export class TabManager {
               pageReady: tab.browser.ready && !tab.browser.showingHome,
               ...(tab.browser.pdfViewer ? { pdfViewer: tab.browser.pdfViewer } : {}),
               uiVisited: tab.browser.uiVisited,
-              canGoBack: tab.browser.pdfViewer
+              canGoBack: tab.browser.pdfViewer || tab.browser.pdfTransfer
                 ? this.browserPdfBackAvailable(tab)
                 : !tab.browser.showingHome &&
                 (tab.browser.homeEntryAvailable ||
@@ -4174,18 +4197,21 @@ export class TabManager {
             },
           }
         : {}),
-    }));
+    });
+    const tabs = host.tabs.map(tabView);
+    const visible = this.visibleTab(host);
     return {
       enabled: this.enabled && !(this.authenticationUrl && !this.authenticatedUser),
       windowFocused: host.window.isFocused() && host.window.isVisible() && !host.window.isMinimized(),
       activeId: host.activeId,
       presentedId: host.presentedId,
-      visibleId: this.visibleTab(host)?.id ?? null,
+      visibleId: visible?.id ?? null,
+      ...(visible?.browser && host.retainedTabControls.has(visible) && !host.tabs.includes(visible)
+        ? { retainedBrowserTab: tabView(visible) } : {}),
       visibleIds: [...new Set([
-        this.visibleTab(host)?.id,
-        ...(!host.browserFullscreen && !tabById(host, host.activeId)?.voiceOverlay
-          ? splitMembers(host).filter(tab => tab.attached && tab.painted && !tab.splitPreparation &&
-            !(host.pending && !host.pendingAtFront)).map(tab => tab.id) : []),
+        visible?.id,
+        ...this.visibleSplitMembers(host, visible).filter(tab => tab.attached && tab.painted && !tab.splitPreparation &&
+          !(host.pending === tab && !host.pendingAtFront)).map(tab => tab.id),
       ].filter((id): id is number => id !== undefined))],
       presentationRevision: host.presentationRevision,
       presentationStatus: host.presentationStatus,
@@ -4212,7 +4238,7 @@ export class TabManager {
     ensureAiTabGroup(host);
     if (this.restoringSession) positionAiTabGroup(host);
     else normalizeTabGroups(host);
-    const splitKey = splitMembers(host).map(tab => tab.id).join(":");
+    const splitKey = this.visibleSplitMembers(host).map(tab => tab.id).join(":");
     if (host.splitLayoutKey !== splitKey) {
       host.splitLayoutKey = splitKey;
       this.layout(host);
@@ -4259,7 +4285,7 @@ export class TabManager {
   private stateForTab(host: Host, tab: Tab | undefined, state = this.state(host)): TabsState {
     if (tab?.sharedChrome) return { ...state, selfId: host.activeId };
     if (tab && host.retainedTabControls.has(tab)) {
-      return { ...state, selfId: null, navigationPending: host.pending !== null };
+      return { ...state, selfId: state.retainedBrowserTab?.id === tab.id ? tab.id : null, navigationPending: host.pending !== null };
     }
     // A reveal belongs to the outgoing page and its destination. Starting the
     // bar in every background renderer leaves a completion animation waiting
@@ -4543,33 +4569,41 @@ export class TabManager {
     return tab;
   }
 
-  /** Set a tab's public loading flag. State broadcasting stays with the caller
-   * because some browser events update adjacent state in the same notification. */
   /** A website PDF opens in Breadboard's viewer inside the same browser tab,
    * with its link in the address bar and Back to the page it came from. */
-  private openWebPdf(webContentsId: number, url: string): boolean {
-    if (this.webPdfBypass.delete(url)) return false;
+  private openWebPdf(webContentsId: number, url: string): BrowserPdfOpen | null {
     const host = this.hostByContents.get(webContentsId);
     const tab = host?.tabs.find(candidate => liveBrowserPage(candidate.browser)?.contents.id === webContentsId);
     const browser = liveBrowserPage(tab?.browser);
     const dashboardUrl = this.sessionDashboardUrl;
-    if (!host || !tab || !browser || !dashboardUrl || browser.privatePartition || browser.automationRunId) return false;
-    if (this.webPdfPending.has(webContentsId)) return true;
-    this.webPdfPending.add(webContentsId);
+    if (!host || !tab || !browser || !dashboardUrl || browser.privatePartition || browser.automationRunId) return null;
+    if (browser.pdfFallbackUrl === url) {
+      browser.pdfFallbackUrl = undefined;
+      return null;
+    }
+    browser.pdfTransfer?.abort();
+    const transfer = new AbortController();
+    browser.pdfTransfer = transfer;
     const contents = browser.contents;
+    const current = () => !transfer.signal.aborted && !host.window.isDestroyed() &&
+      host.tabs.includes(tab) && !contents.isDestroyed() && liveBrowserPage(tab.browser)?.contents === contents;
     this.setTabLoading(tab, true);
     this.broadcast(host);
-    void storeBrowserPdf(contents.session, url, dashboardUrl).then(({ blobId, name }) => {
-      if (host.window.isDestroyed() || !host.tabs.includes(tab) || contents.isDestroyed()) return;
-      if (liveBrowserPage(tab.browser)?.contents !== contents) return;
-      this.showBrowserPdf(host, tab, url, `/attachments/${encodeURIComponent(blobId)}/pdf?name=${encodeURIComponent(name)}`, name);
-    }).catch(error => {
-      this.log(`web PDF hand-off failed for ${url}, using Chromium's viewer: ${error instanceof Error ? error.message : String(error)}`);
-      if (contents.isDestroyed()) return;
-      this.webPdfBypass.add(url);
-      void contents.loadURL(url).catch(() => {});
-    }).finally(() => this.webPdfPending.delete(webContentsId));
-    return true;
+    return {
+      dashboardUrl, signal: transfer.signal,
+      complete: (blobId, name) => {
+        if (!current()) return;
+        browser.pdfTransfer = undefined;
+        this.showBrowserPdf(host, tab, url, `/attachments/${encodeURIComponent(blobId)}/pdf?name=${encodeURIComponent(name)}`, name);
+      },
+      fail: error => {
+        if (!current()) return;
+        browser.pdfTransfer = undefined;
+        this.log(`web PDF hand-off failed, using Chromium's viewer: ${String(error)}`);
+        browser.pdfFallbackUrl = url;
+        void contents.loadURL(url).catch(() => {});
+      },
+    };
   }
 
   private setTabLoading(tab: Tab, loading: boolean): void {
@@ -4830,6 +4864,7 @@ export class TabManager {
     const browserSession = session.fromPartition(browser.privatePartition ?? BROWSER_SESSION_PARTITION);
     const userAgent = browserUserAgent(browserSession.getUserAgent());
     browserSession.setUserAgent(userAgent);
+    attachGoogleSignInSession(browserSession);
     // Chromium-owned window.open navigations ignore per-page overrides in
     // Electron 33 (electron/electron#45897). They use the process fallback.
     // Pin the product session's identity before changing that fallback.
@@ -4851,6 +4886,7 @@ export class TabManager {
     });
     // Adopted popup contents already exist; a session change alone cannot update them.
     view.webContents.setUserAgent(userAgent);
+    attachGoogleSignInPage(view.webContents, userAgent);
     view.setBackgroundColor(browserPageBackgroundColor(this.options.theme()));
     // Background automation still needs a real viewport for layout and input.
     // Size the unattached view without putting it in front of the user's page.
@@ -5065,6 +5101,7 @@ export class TabManager {
     const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
     const userAgent = browserUserAgent(browserSession.getUserAgent());
     browserSession.setUserAgent(userAgent);
+    attachGoogleSignInSession(browserSession);
     const view = new WebContentsView({
       webPreferences: {
         ...BROWSER_WEB_PREFERENCES,
@@ -5077,6 +5114,7 @@ export class TabManager {
     });
     const contents = view.webContents;
     contents.setUserAgent(userAgent);
+    attachGoogleSignInPage(contents, userAgent);
     view.setBackgroundColor(browserPageBackgroundColor(this.options.theme()));
     const window = new BrowserWindow({
       ...CHATGPT_WEB_PAGE_SIZE,
@@ -5231,6 +5269,8 @@ export class TabManager {
     if (host.inlineAnswer?.ownerId === tab.id) host.inlineAnswer.close();
     const browser = this.ensureBrowserPage(host, tab);
     if (!browser) return false;
+    browser.pdfTransfer?.abort();
+    browser.pdfTransfer = undefined;
     browser.pdfViewer = undefined;
     if (browser.showingHome) {
       if (host.findBar?.ownerId === tab.id) host.findBar.close();
@@ -5251,6 +5291,7 @@ export class TabManager {
       const owner = this.hostByContents.get(contents.id);
       const currentBrowser = liveBrowserPage(tab.browser);
       if (!owner || currentBrowser?.contents !== contents) return;
+      if (browser.pdfTransfer || browser.pdfViewer || tab.url !== url) return;
       // Replacing a pending URL rejects its loadURL promise. The successor
       // still owns the loading bar until Chromium reports that it has stopped.
       if (error?.errno === -3 || error?.code === "ERR_ABORTED") return;
@@ -5364,6 +5405,7 @@ export class TabManager {
     });
     contents.once("destroyed", () => {
       releaseReady();
+      browser.pdfTransfer?.abort();
       const owner = current();
       this.destroyNotificationTab(contents);
       if (owner?.browserFullscreen?.contents === contents) this.exitBrowserFullscreen(owner, false);
@@ -5502,6 +5544,9 @@ export class TabManager {
       if (_url.startsWith("breadboard-selection:")) return;
       const owner = current();
       if (isMainFrame && !inPlace) {
+        browser.pdfTransfer?.abort();
+        browser.pdfTransfer = undefined;
+        if (browser.pdfFallbackUrl !== _url) browser.pdfFallbackUrl = undefined;
         owner?.selectionPopover?.close(); owner?.inlineAnswer?.close();
         browser.selection = undefined;
         tab.generation += 1;
@@ -5615,6 +5660,7 @@ export class TabManager {
       }
     });
     contents.on("did-stop-loading", () => {
+      if (browser.pdfTransfer) return;
       this.setTabLoading(tab, false);
       if (!browser.automationRunId) this.refreshBrowserStoreInstallButton(browser);
       const owner = current();
@@ -5651,7 +5697,23 @@ export class TabManager {
       }
       this.broadcast(owner);
     });
+    // Parental site locks: swap a locked site for the lock page as it starts
+    // loading. Address-bar loads never fire will-navigate, so this is the hook.
+    contents.on("did-start-navigation", (_event, url, inPlace, isMainFrame) => {
+      if (!isMainFrame || inPlace) return;
+      const verdict = this.siteLocks?.verdict(url);
+      if (verdict) void contents.loadURL(siteLockPage(verdict, url)).catch(() => undefined);
+    });
     contents.on("will-navigate", (event, targetUrl) => {
+      if (targetUrl.startsWith("breadboard-lock:")) {
+        event.preventDefault();
+        if (contents.getURL().startsWith(SITE_LOCK_PAGE_PREFIX)) {
+          void this.siteLocks?.unlock(targetUrl).then(next => {
+            if (next && !contents.isDestroyed()) void contents.loadURL(next).catch(() => undefined);
+          });
+        }
+        return;
+      }
       const extensionId = browserExtensionInstallId(targetUrl);
       if (extensionId) {
         event.preventDefault();
@@ -5706,7 +5768,7 @@ export class TabManager {
       this.askAboutBrowserSelection(owner, tab, browser, text);
     });
     contents.on("did-fail-load", (_event, errorCode, _description, failedUrl, isMainFrame) => {
-      if (!isMainFrame || errorCode === -3) return;
+      if (!isMainFrame || errorCode === -3 || browser.pdfTransfer || browser.pdfViewer) return;
       remember(failedUrl);
       this.setTabLoading(tab, false);
       const owner = current();
@@ -5831,6 +5893,9 @@ export class TabManager {
     if (next && host.activeId === tab.id) this.activate(host, next.id);
     else this.broadcast(host);
 
+    // A removed split partner no longer has a pane. Its native website must
+    // leave with its rail even if a different tab is still preparing.
+    if (host.pending && this.visibleTab(host) !== tab) this.detach(host.window, tab);
     const retained = this.retainNotificationTab(host, tab);
     // The tab is already closed even if its old pixels must remain until the
     // replacement paints. Permission prompts must not wait for that handoff.
@@ -6092,11 +6157,15 @@ export class TabManager {
     const browserOwners = new Set([host.activeId, host.pending?.id ?? -1, ...splitMembers(host).map(tab => tab.id)]);
     // A legacy/offscreen handoff still displays the outgoing page until the
     // new one is ready. Immediate selection has already covered that page.
-    if (host.pending && !host.pendingAtFront) browserOwners.add(host.presentedId ?? -1);
+    if (host.pending && !host.pendingAtFront) {
+      browserOwners.add(host.presentedId ?? -1);
+      for (const member of this.visibleSplitMembers(host)) browserOwners.add(member.id);
+    }
     for (const tab of host.tabs) {
       if (!browserOwners.has(tab.id)) this.detachBrowser(host.window, tab);
     }
-    for (const id of host.surfaces.trim(new Set([host.activeId, host.presentedId ?? -1, host.pending?.id ?? -1, ...splitMembers(host).map(tab => tab.id)]))) {
+    browserOwners.add(host.presentedId ?? -1);
+    for (const id of host.surfaces.trim(browserOwners)) {
       const tab = tabById(host, id);
       if (tab) this.detach(host.window, tab);
     }
@@ -6272,7 +6341,9 @@ export class TabManager {
   private async reveal(host: Host, tab: Tab, token: number, retainUntilLoaded = false): Promise<void> {
     clearTimeout(host.revealRetry);
     host.revealController?.abort();
-    if (host.shellEnabled && !this.needsTerminalReadiness(tab)) {
+    // Retries follow the actual placement. Readiness can change while a frame
+    // is pending, including when a parked Terminal finishes its widgets.
+    if (host.shellEnabled && host.pendingAtFront) {
       await this.observeSelectedFrame(host, tab, token);
       return;
     }
@@ -6535,7 +6606,7 @@ export class TabManager {
   }
 
   private retainTabControls(host: Host, tab: Tab): void {
-    if (tab === host.base || (tab.attached && host.pending !== tab)) host.retainedTabControls.add(tab);
+    if (tab === host.base || (tab.attached && (host.pending !== tab || host.pendingAtFront))) host.retainedTabControls.add(tab);
   }
 
   private runAfterReveal(host: Host): void {
@@ -6553,8 +6624,14 @@ export class TabManager {
   private detach(window: BrowserWindow, tab: Tab): void {
     this.detachBrowser(window, tab);
     const owner = this.hosts.get(window.id);
-    if (tab.sharedChrome && owner && owner.tabs.some(other => other !== tab && other.view === tab.view &&
-        (other.id === owner.activeId || other.id === owner.presentedId))) { tab.attached = false; return; }
+    if (tab.sharedChrome && owner) {
+      const visible = this.visibleTab(owner);
+      const users = [visible, tabById(owner, owner.activeId), tabById(owner, owner.presentedId ?? -1), ...this.visibleSplitMembers(owner, visible)];
+      if (users.some(other => other && other !== tab && other.view === tab.view)) {
+        tab.attached = false;
+        return;
+      }
+    }
     if (!tab.view || !tab.attached) return;
     tab.attached = false;
     if (window.isDestroyed()) return;
@@ -6703,7 +6780,10 @@ export class TabManager {
     const selected = new Set<WebContents>();
     const active = tabById(host, host.activeId);
     if (host.shellEnabled && active) {
-      for (const tab of new Set([active, ...splitMembers(host)])) {
+      const visible = this.visibleTab(host);
+      const drawing = new Set([active, ...this.visibleSplitMembers(host, visible)]);
+      if (visible) drawing.add(visible);
+      for (const tab of drawing) {
         if (!tab.contents.isDestroyed()) selected.add(tab.contents);
         const browser = liveBrowserPage(tab.browser);
         if (browser && !browser.showingHome && !tab.voiceOverlay) selected.add(browser.contents);
@@ -6842,7 +6922,8 @@ export class TabManager {
     this.syncForegroundFrames(host);
     const inset = host.shellEnabled ? BREADBOARD_TITLE_BAR.height : 0;
     const offscreen = offscreenBounds(width, height - inset, this.preparationTop(host, height));
-    const pair = host.browserFullscreen || tabById(host, host.activeId)?.voiceOverlay ? [] : splitMembers(host);
+    const visible = this.visibleTab(host);
+    const pair = this.visibleSplitMembers(host, visible);
     for (const tab of host.tabs) if (!pair.includes(tab)) {
       tab.splitPreparation?.abort(); tab.splitPreparation = undefined;
       clearTimeout(tab.splitRetry); tab.splitRetry = undefined;
@@ -6858,28 +6939,31 @@ export class TabManager {
       host.window.contentView.removeChildView(host.splitDivider);
     }
     if (host.shellEnabled && host.shell) {
-      const active = tabById(host, host.activeId);
       // Keep the toolbar's native bounds with the website still on screen.
       // Terminal can spend several seconds preparing its initial widgets.
       const toolbar = this.toolbarTab(host);
       const shellHeight = toolbar?.browser ? Math.min(height, Math.max(browserContentTop(height), toolbar.browser.addressSuggestionsOpen ? toolbar.browser.suggestionsBottom ?? 440 : 0, toolbar.browser.toolbarErrorBottom ?? 0)) : inset;
       setViewBounds(host.shell.view, { x: 0, y: 0, width, height: host.tabDragPreview ? height : shellHeight });
       if (!host.window.contentView.children.includes(host.shell.view)) host.window.contentView.addChildView(host.shell.view);
-      setNotificationViewVisible(host.shell.view, !host.browserFullscreen && !active?.voiceOverlay);
+      setNotificationViewVisible(host.shell.view, !host.browserFullscreen && !visible?.voiceOverlay);
     }
     if (host.preparedNewTab?.view) setViewBounds(host.preparedNewTab.view, offscreen);
-    for (const tab of host.tabs) {
-      if (tab.view && (!tab.sharedChrome || tab.id === host.activeId) && (!tab.automationPreparing || tab.id === host.activeId || pair.includes(tab))) {
+    // A closed website can still cover the window until its replacement paints.
+    // Resize its chrome and page together during that interval, too.
+    const layoutTabs = visible && !host.tabs.includes(visible) ? [...host.tabs, visible] : host.tabs;
+    const sharedChromeOwner = visible?.sharedChrome ? visible : pair.find(tab => tab.sharedChrome) ?? host.pending;
+    for (const tab of layoutTabs) {
+      if (tab.view && (!tab.sharedChrome || tab === sharedChromeOwner) && (!tab.automationPreparing || tab === visible || tab.id === host.activeId || pair.includes(tab))) {
         setViewBounds(
           tab.view,
-          pair.includes(tab) && tab.id !== host.activeId && !tab.sharedChrome && ((host.pending && !host.pendingAtFront) || (tab.splitPreparation && !tab.painted)) ? { ...offscreen, x: Math.max(0, width - 3) }
+          pair.includes(tab) && tab.id !== host.activeId && !tab.sharedChrome && tab.splitPreparation && !tab.painted ? { ...offscreen, x: Math.max(0, width - 3) }
             : tab === host.pending && !host.pendingAtFront && !this.sharesPresentedView(host, tab) ? offscreen
             : pair.includes(tab) && !tab.sharedChrome ? splitPaneBounds(width, height, top, pair.indexOf(tab))
             : { x: 0, y: inset, width, height: height - inset },
         );
       }
       const browser = liveBrowserPage(tab.browser);
-      if (browser?.attached && (browser.ready || (host.shellEnabled && host.activeId === tab.id))) {
+      if (browser?.attached && (browser.ready || (host.shellEnabled && (tab === visible || host.activeId === tab.id)))) {
         const pane = pair.includes(tab) ? splitPaneBounds(width, height, top, pair.indexOf(tab)) : null;
         const fullscreen = host.browserFullscreen?.contents === browser.contents;
         const x = fullscreen ? 0 : (pane?.x ?? 0) + browserContentLeft(
@@ -6890,7 +6974,7 @@ export class TabManager {
         );
         const y = fullscreen ? 0 : browserContentTop(height);
         const pageHeight = Math.max(1, height - y);
-        const parkedPartner = pair.includes(tab) && tab.id !== host.activeId && ((host.pending && !host.pendingAtFront) || (tab.splitPreparation && !tab.painted));
+        const parkedPartner = pair.includes(tab) && tab.id !== host.activeId && tab.splitPreparation && !tab.painted;
         setViewBounds(browser.view, {
           x: parkedPartner ? Math.max(0, width - 4) : tab === host.pending && !host.pendingAtFront ? Math.max(0, width - 2) : x,
           y: parkedPartner || (tab === host.pending && !host.pendingAtFront) ? this.preparationTop(host, height) + 1 - pageHeight : y,
@@ -6902,7 +6986,9 @@ export class TabManager {
     const scale = screen.getDisplayMatching(host.window.getBounds()).scaleFactor;
     for (const tab of host.tabs) host.surfaces.resize(tab.id, surfaceReservation(width, height, scale, tab.browser?.attached ? 2 : 1));
     this.trimSurfaces(host);
-    for (const member of pair) if (member.id !== host.activeId) this.prepareSplitPartner(host, member);
+    if (!host.pending || host.pendingAtFront) {
+      for (const member of pair) if (member.id !== host.activeId) this.prepareSplitPartner(host, member);
+    }
     const active = tabById(host, host.activeId);
     this.stackBrowserChrome(host);
     // Pending content stays behind the controls. Otherwise stackBrowserChrome
@@ -7165,7 +7251,7 @@ export class TabManager {
   }
 
   private reloadTab(host: Host, tab: Tab): void {
-    if (tab.browser && !liveBrowserPage(tab.browser) && isSafeBrowserUrl(tab.url)) {
+    if (tab.browser && (tab.browser.pdfViewer || !liveBrowserPage(tab.browser)) && isSafeBrowserUrl(tab.url)) {
       this.navigateBrowser(host, tab, tab.url);
       return;
     }
@@ -7214,7 +7300,7 @@ export class TabManager {
     if (!browser) return;
     if (host.findBar?.ownerId === tab.id) host.findBar.close();
     if (!browser.showingHome) {
-      browser.homeForwardTitle = tab.title;
+      browser.homeForwardTitle = browser.contents.getTitle() || tab.title;
       browser.homeForwardFavicon = browser.favicon;
     }
     browser.showingHome = true;
@@ -7228,14 +7314,36 @@ export class TabManager {
     this.setTabLoading(tab, false);
     this.detachBrowser(host.window, tab);
     this.layout(host);
+    if (host.pending === tab) void this.reveal(host, tab, ++host.revealToken);
+    else if (host.activeId === tab.id) host.presentationStatus = "presented";
     this.applyTitle(host);
     this.broadcast(host);
-    if (!tab.contents.isDestroyed()) tab.contents.focus();
+    if (host.activeId === tab.id && !tab.contents.isDestroyed()) tab.contents.focus();
   }
 
   private browserPdfBackAvailable(tab: Tab): boolean {
     const browser = liveBrowserPage(tab.browser);
     return Boolean(browser && (isSafeBrowserUrl(browser.contents.getURL()) || browser.homeEntryAvailable));
+  }
+
+  private cancelBrowserPdfOpen(host: Host, tab: Tab): boolean {
+    const browser = liveBrowserPage(tab.browser);
+    if (!browser?.pdfTransfer) return false;
+    browser.pdfTransfer.abort();
+    browser.pdfTransfer = undefined;
+    const url = browser.contents.getURL();
+    tab.url = isSafeBrowserUrl(url) ? url : "";
+    tab.title = browser.contents.getTitle() || browserFallbackTitle(tab.url);
+    browser.showingHome = !tab.url;
+    browser.documentCommitted = Boolean(tab.url);
+    this.setTabLoading(tab, false);
+    this.layout(host);
+    if (tab.url) this.prepareBrowserDocument(host, tab);
+    else if (host.pending === tab) void this.reveal(host, tab, ++host.revealToken);
+    else if (host.activeId === tab.id) host.presentationStatus = "presented";
+    this.applyTitle(host);
+    this.broadcast(host);
+    return true;
   }
 
   /** Back from a PDF: the website it was opened from, else the new-tab home. */
@@ -7286,6 +7394,7 @@ export class TabManager {
     const url = browser.contents.getURL();
     if (!isSafeBrowserUrl(url)) return false;
     browser.showingHome = false;
+    if (browser.pdfViewer) browser.documentCommitted = true;
     browser.pdfViewer = undefined;
     tab.url = url;
     tab.title = browser.homeForwardTitle || browserFallbackTitle(url);
@@ -7294,6 +7403,7 @@ export class TabManager {
     browser.homeForwardFavicon = undefined;
     this.setTabLoading(tab, browser.contents.isLoading());
     this.layout(host);
+    this.prepareBrowserDocument(host, tab);
     this.syncBrowser(host);
     this.applyTitle(host);
     this.broadcast(host);
@@ -7925,6 +8035,7 @@ export class TabManager {
         this.broadcast(host);
         return;
       case "back":
+        if (active && this.cancelBrowserPdfOpen(host, active)) return;
         if (active?.browser?.pdfViewer) {
           this.leaveBrowserPdf(host, active);
           return;

@@ -187,6 +187,10 @@ interface Props {
   suggestionMessages?: readonly PromptSuggestionMessage[];
   /** False for public, temporary, or other users' chat surfaces. */
   personalizedSuggestions?: boolean;
+  suggestionPageTitle?: string | null;
+  /** The page beside this chat; grounds completions and the empty-chat suggestion. Memoize it. */
+  suggestionPage?: import('@/lib/browser-terminal').SuggestionPage | null;
+  documentConversationId?: string;
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
   onPasteFiles?: (files: File[]) => void | Promise<void>;
   textareaRef?: Ref<HTMLTextAreaElement>;
@@ -439,6 +443,9 @@ interface Props {
    */
   onVoiceRecord?: (exchange: SpokenExchange) => Promise<void>;
   voiceClarification?: { requestId: string; question: string } | null;
+  /** A tool waiting for permission; voice mode asks it aloud. */
+  voicePermission?: { requestId: string; description: string; allowSession: boolean } | null;
+  onVoicePermission?: (decision: 'once' | 'always' | 'reject') => void | Promise<void>;
   voiceConversationId?: string | number | null;
   voiceCreatedConversationId?: string | number | null;
   voiceConversationScope?: string;
@@ -690,11 +697,16 @@ export default function AssistantComposer({
   voiceMessages,
   suggestionMessages = voiceMessages,
   personalizedSuggestions = true,
+  suggestionPageTitle,
+  suggestionPage,
+  documentConversationId,
   onVoiceRecord,
   voiceConversationId = capabilitySessionId ?? null,
   voiceCreatedConversationId,
   voiceConversationScope = `${capabilitySurface}:${capabilityGardenSlug ?? ''}`,
   voiceClarification,
+  voicePermission = null,
+  onVoicePermission,
 }: Props) {
   const uploadQueueScope = `${voiceConversationScope}:${voiceConversationId ?? ''}`;
   const [uploadQueued, setUploadQueued] = useState<{
@@ -727,6 +739,20 @@ export default function AssistantComposer({
     ),
   );
   const [showIntelligence, setShowIntelligence] = useState(false);
+  const [modelSearch, setModelSearch] = useState('');
+  const modelListRef = useRef<HTMLDivElement>(null);
+  const filteredModelGroups = useMemo(() => {
+    const terms = modelSearch.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    return groupAssistantModels(models)
+      .map((group) => ({
+        ...group,
+        models: group.models.filter((id) => {
+          const text = `${group.vendorLabel} ${formatAssistantModelName(id)} ${id}`.toLowerCase();
+          return terms.every((term) => text.includes(term));
+        }),
+      }))
+      .filter((group) => group.models.length > 0);
+  }, [models, modelSearch]);
   const intelligenceButtonRef = useRef<HTMLButtonElement>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const [intelligencePanel, setIntelligencePanel] = useState<'usage' | 'settings' | null>(null);
@@ -1148,10 +1174,11 @@ export default function AssistantComposer({
     notificationTarget: voiceNotificationTarget,
     personalizedGreeting: personalizedSuggestions && personalize,
     messages: voiceMessages, busy: isSending || runInFlight, clarification: voiceClarification, recordable: Boolean(onVoiceRecord),
-  } : null, [voiceMessages, isSending, runInFlight, voiceClarification, onVoiceRecord, voiceNotificationTarget, personalizedSuggestions, personalize]);
+    permission: onVoicePermission ? voicePermission : null,
+  } : null, [voiceMessages, isSending, runInFlight, voiceClarification, voicePermission, onVoicePermission, onVoiceRecord, voiceNotificationTarget, personalizedSuggestions, personalize]);
   const voiceChatKey = useVoiceChatHost({ identity: voiceConversationId,
     createdIdentity: voiceCreatedConversationId, scope: voiceConversationScope, element: internalTextareaRef,
-    snapshot: voiceSnapshot, onSend: sendSpokenTurn, onInterrupt: interruptSpokenTurn, onRecord: onVoiceRecord });
+    snapshot: voiceSnapshot, onSend: sendSpokenTurn, onInterrupt: interruptSpokenTurn, onRecord: onVoiceRecord, onPermission: onVoicePermission });
   const stopping = runState === 'stopping' || stopPending;
   // Transcript loading holds messages for the same reason as an active run: a
   // direct send would race history restoration and could be overwritten by it.
@@ -1178,7 +1205,12 @@ export default function AssistantComposer({
     !showSlashCommands && !showCommandHub && !menuSearch && !showIntelligence && !voiceOpen &&
     attachments.length === 0 && !isAddingDocuments && !onSubmitDuringRun;
   const sentenceCompletion = useSentenceCompletion({
+    documentConversationId,
     messages: suggestionMessages,
+    personalize: personalize && personalizedSuggestions && Boolean(suggestionMessages) && (capabilitySurface !== "quartz_ai" || Boolean(capabilityGardenSlug)),
+    pageTitle:suggestionPageTitle,
+    page: suggestionPage,
+    gardenSlug: capabilityGardenSlug,
     conversationKey: JSON.stringify([voiceConversationScope, voiceConversationId]),
     value,
     enabled: suggestionsEnabled,
@@ -1188,6 +1220,9 @@ export default function AssistantComposer({
     resizeTextarea();
   }, [resizeTextarea, sentenceCompletion.text]);
   const promptSuggestion = usePromptSuggestion({
+    documentConversationId,
+    pageTitle:suggestionPageTitle,
+    page: suggestionPage,
     messages: suggestionMessages,
     personalize: personalize && personalizedSuggestions && Boolean(suggestionMessages),
     gardenSlug: capabilityGardenSlug,
@@ -1321,12 +1356,14 @@ export default function AssistantComposer({
   function toggleIntelligence() {
     const next = !showIntelligence;
     setShowIntelligence(next);
+    setModelSearch('');
     if (!next) setIntelligencePanel(null);
     if (next) onLoadModels?.();
   }
 
   function closeIntelligence() {
     setShowIntelligence(false);
+    setModelSearch('');
     setIntelligencePanel(null);
   }
 
@@ -2811,8 +2848,28 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                       <span>Model</span>
                       {modelsLoading ? <span>Loading…</span> : null}
                     </div>
-                    <div className="max-h-48 overflow-y-auto overscroll-contain">
-                      {groupAssistantModels(models).map((group) => (
+                    <div className="relative mx-2.5 mb-2 mt-1">
+                      <svg aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <circle cx="10.5" cy="10.5" r="6.5" />
+                        <path strokeLinecap="round" d="m16 16 4.5 4.5" />
+                      </svg>
+                      <input
+                        type="search"
+                        aria-label="Search models"
+                        placeholder="Search models…"
+                        value={modelSearch}
+                        onChange={(event) => {
+                          setModelSearch(event.target.value);
+                          if (modelListRef.current) modelListRef.current.scrollTop = 0;
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') event.preventDefault();
+                        }}
+                        className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] py-1.5 pl-8 pr-2 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)] focus:border-[var(--ink-muted)]"
+                      />
+                    </div>
+                    <div ref={modelListRef} role="group" aria-label="Models" className="max-h-48 overflow-y-auto overscroll-contain">
+                      {filteredModelGroups.map((group) => (
                         <div key={group.vendorId}>
                           <div className="px-2.5 pb-0.5 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-[var(--ink-muted)]">
                             <span className="underline decoration-[var(--line-strong)] underline-offset-4">
@@ -2834,6 +2891,9 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                           ))}
                         </div>
                       ))}
+                      {filteredModelGroups.length === 0 && !modelsLoading ? (
+                        <p role="status" className="px-2.5 py-2 text-xs text-[var(--ink-muted)]">No models found.</p>
+                      ) : null}
                     </div>
 
                     <div className="my-1.5 border-t border-[var(--line)]" />
@@ -3246,6 +3306,8 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
           onRecord={onVoiceRecord}
           messages={voiceMessages}
           clarification={voiceClarification}
+          permission={onVoicePermission ? voicePermission : null}
+          onPermission={onVoicePermission}
           busy={isSending || runInFlight}
         />
       ) : null}

@@ -1,6 +1,7 @@
 import { getServerSession } from "next-auth/next";
 import { notFound, redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth-options";
+import { getConversationById } from "@/lib/conversations/store";
 import {
   ArtifactStoreError,
   getArtifactForUser,
@@ -43,6 +44,8 @@ export default async function ArtifactPdfPage({
     throw error;
   }
   if (artifact.kind !== "pdf" || !artifact.preview_location) notFound();
+  const parent = getConversationById(artifact.conversation_id);
+  const privateReader = !parent || Boolean(parent.temporary || parent.buzz_room_id) || parent.user_id !== userId;
 
   const requestedVersion = Number(query.version);
   const version =
@@ -60,6 +63,8 @@ export default async function ArtifactPdfPage({
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-gray-950 text-gray-100">
       <PdfViewerClient
+        assistantGardenSlug={artifact.garden_slug ?? undefined}
+        temporary={privateReader}
         title={artifact.title}
         browserTitle={artifact.filename}
         sourceUrl={sourceUrl}

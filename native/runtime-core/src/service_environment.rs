@@ -19,7 +19,6 @@ use thiserror::Error;
 const DESKTOP_CONFIG_FILE: &str = "desktop-config.json";
 const MAX_DESKTOP_CONFIG_BYTES: usize = 64 * 1024;
 const MAX_CONFIG_SECRET_BYTES: usize = MAX_CONTROL_TOKEN_BYTES;
-const MAX_INVITE_CODE_BYTES: usize = 256;
 const MAX_ENVIRONMENT_NAME_BYTES: usize = 128;
 const MAX_ENVIRONMENT_VALUE_BYTES: usize = 16 * 1024;
 // Windows CreateProcess environment blocks are limited to 32,767 UTF-16 code
@@ -4521,7 +4520,6 @@ struct RequiredDesktopConfigV2 {
     hermes_session_token: String,
     hermes_tool_secret: String,
     hermes_capability_secret: String,
-    initial_invite_code: String,
     #[serde(default = "default_comfy_ui_mode")]
     comfy_ui_mode: String,
     #[serde(default)]
@@ -4679,7 +4677,6 @@ fn load_required_desktop_config(
     validate_config_secret("hermesSessionToken", &config.hermes_session_token)?;
     validate_config_secret("hermesToolSecret", &config.hermes_tool_secret)?;
     validate_config_secret("hermesCapabilitySecret", &config.hermes_capability_secret)?;
-    validate_invite_code(&config.initial_invite_code)?;
     if !matches!(
         config.comfy_ui_mode.as_str(),
         "disabled" | "managed" | "external"
@@ -4787,19 +4784,6 @@ fn validate_config_secret(
         || !bytes.iter().all(|byte| byte.is_ascii_graphic())
     {
         return Err(TrustedServiceEnvironmentError::InvalidDesktopConfigField { field });
-    }
-    Ok(())
-}
-
-fn validate_invite_code(value: &str) -> Result<(), TrustedServiceEnvironmentError> {
-    let bytes = value.as_bytes();
-    if bytes.is_empty()
-        || bytes.len() > MAX_INVITE_CODE_BYTES
-        || !bytes.iter().all(|byte| byte.is_ascii_graphic())
-    {
-        return Err(TrustedServiceEnvironmentError::InvalidDesktopConfigField {
-            field: "initialInviteCode",
-        });
     }
     Ok(())
 }
@@ -6844,7 +6828,6 @@ fn build_gateway_environment(
                 "COMFYUI_GENERATE_TIMEOUT_MS",
                 "NEXTAUTH_SECRET",
                 "NEXTAUTH_URL",
-                "SECOND_BRAIN_INITIAL_INVITE_CODE",
                 "OPENAI_BASE_URL",
                 "OPENAI_API_KEY",
                 "CHATMOCK_BASE_URL",
@@ -7501,10 +7484,6 @@ fn build_dashboard_environment(
 
     builder.insert("NEXTAUTH_SECRET", config.next_auth_secret.as_str())?;
     builder.insert("NEXTAUTH_URL", dashboard_url.as_str())?;
-    builder.insert(
-        "SECOND_BRAIN_INITIAL_INVITE_CODE",
-        config.initial_invite_code.as_str(),
-    )?;
 
     builder.insert("OPENAI_BASE_URL", chatmock_v1_url.as_str())?;
     builder.insert("OPENAI_API_KEY", "local")?;
@@ -8317,7 +8296,6 @@ mod tests {
                 "hermesSessionToken": HERMES_SESSION_TOKEN,
                 "hermesToolSecret": HERMES_TOOL_SECRET,
                 "hermesCapabilitySecret": HERMES_CAPABILITY_SECRET,
-                "initialInviteCode": "BREAD0123456789",
                 "unrelatedProviderSecret": "must-not-enter-any-environment"
             }))
             .unwrap(),
@@ -10063,7 +10041,6 @@ mod tests {
                 "HERMES_CUA_DRIVER_CMD",
                 "NEXTAUTH_SECRET",
                 "NEXTAUTH_URL",
-                "SECOND_BRAIN_INITIAL_INVITE_CODE",
                 "OPENAI_BASE_URL",
                 "OPENAI_API_KEY",
                 "CHATMOCK_BASE_URL",

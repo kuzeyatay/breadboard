@@ -251,6 +251,24 @@ test("a quarantined database is repaired by the engine itself, and a failed repa
     [[plan.binaryPath, ["db", "recover"], dataDir], [plan.binaryPath, ["db", "recover"], dataDir]]);
 });
 
+test("a full-disk quarantine over an intact database is released without the engine's repair", async (t) => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-recall-full-"));
+  t.after(() => fs.rmSync(dataRoot, { recursive: true, force: true }));
+  const plan = installPinnedFixture(dataRoot);
+  const dataDir = path.join(plan.home, "data");
+  fs.mkdirSync(dataDir, { recursive: true });
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(path.join(dataDir, "db.sqlite"));
+  db.exec("CREATE TABLE frames (id INTEGER PRIMARY KEY); INSERT INTO frames VALUES (1);");
+  db.close();
+  fs.writeFileSync(path.join(dataDir, "db.sqlite.quarantine.json"), JSON.stringify({ sqlite_code: 13 }));
+  await executeRecallInstall({ dataRoot, signal: new AbortController().signal,
+    spawnImpl: () => { throw new Error("db recover must not run for an intact database"); } });
+  assert.match(JSON.parse(fs.readFileSync(plan.statusPath, "utf8")).message, /intact/u);
+  assert.ok(!fs.existsSync(path.join(dataDir, "db.sqlite.quarantine.json")));
+  assert.ok(fs.readdirSync(dataDir).some((name) => name.startsWith("db.sqlite.quarantine.resolved-")));
+});
+
 test("a fresh install launches one attached fixed npm child with a scrubbed environment", async (t) => {
   const dataRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), "breadboard-recall-fresh-"),

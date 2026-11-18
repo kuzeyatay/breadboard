@@ -55,11 +55,6 @@ import {
   useVlmOcrAvailability,
 } from "@/app/components/vlm-parse-option";
 import {
-  ANYDOC_PARSE_FILE_RE,
-  AnydocParseOption,
-  useAnydocAvailability,
-} from "@/app/components/anydoc-parse-option";
-import {
   TRANSFER_ACCEPT,
   describeImport,
   exportClusterFile,
@@ -316,7 +311,6 @@ export default function DashboardClient({
   const [uploadLabel, setUploadLabel] = useState("");
   const [isHandwriting, setIsHandwriting] = useState(false);
   const [parseWithVlm, setParseWithVlm] = useState(false);
-  const [parseWithAnydoc, setParseWithAnydoc] = useState(false);
   const [generateMap, setGenerateMap] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -459,7 +453,8 @@ export default function DashboardClient({
 
   const activeClusters =
     clusterView === "mine"
-      ? myClusters
+      // A Garden shared with an organization lives under the Organization tab.
+      ? myClusters.filter((cluster) => cluster.visibility !== "organization")
       : clusterView === "organization"
         ? organizationClusters
         : publicClusters;
@@ -1974,20 +1969,14 @@ export default function DashboardClient({
       uploadStartedAtRef.current[key] = Date.now();
       setUploadStatuses((prev) => ({ ...prev, [key]: "uploading" }));
 
-      // PDFs can intentionally use both readers: the VLM reads the pixels and
-      // anydoc supplies a text-layer cross-check. Handwriting OCR remains the
-      // fallback when neither reader was selected for the file.
+      // anydoc is always on server-side: files with a text layer are read from
+      // it. The VLM or "Handwriting / model OCR" make the model read pixels.
       const usesVlm =
         parseWithVlm &&
         vlmStatus.available &&
         VLM_PARSE_FILE_RE.test(file.name);
-      const usesAnydoc =
-        parseWithAnydoc &&
-        anydocStatus.available &&
-        ANYDOC_PARSE_FILE_RE.test(file.name);
       const usesHandwriting =
         !usesVlm &&
-        !usesAnydoc &&
         isHandwriting &&
         HANDWRITING_FILE_RE.test(file.name);
       const formData = new FormData();
@@ -1997,7 +1986,6 @@ export default function DashboardClient({
         formData.append("sourceLabel", uploadLabel.trim());
       formData.append("isHandwriting", String(usesHandwriting));
       formData.append("parseWithVlm", String(usesVlm));
-      formData.append("parseWithAnydoc", String(usesAnydoc));
       formData.append("generateMap", String(usesHandwriting || generateMap));
 
       const clearProgress = () =>
@@ -2231,7 +2219,7 @@ export default function DashboardClient({
       if (successCount > 0) {
         const totalDuration = formatDuration(Date.now() - sessionStartedAt);
         addToast(
-          `Added ${successCount} file${successCount > 1 ? "s" : ""} to ${uploadCluster.name}${vlmUploadEnabled ? " with VLM parsing" : anydocUploadEnabled ? " with anydoc conversion" : isHandwriting && hasHandwritingCompatibleFile ? " with handwriting OCR" : ""}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""} in ${totalDuration}`,
+          `Added ${successCount} file${successCount > 1 ? "s" : ""} to ${uploadCluster.name}${vlmUploadEnabled ? " with VLM parsing" : isHandwriting && hasHandwritingCompatibleFile ? " with model OCR" : ""}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""} in ${totalDuration}`,
         );
         // Keep scan findings available for review after a successful import.
         for (const warning of hiddenContentWarnings) {
@@ -2259,13 +2247,6 @@ export default function DashboardClient({
     useVlmOcrAvailability(Boolean(uploadCluster) && hasVlmCompatibleFile);
   const vlmUploadEnabled =
     parseWithVlm && hasVlmCompatibleFile && vlmStatus.available;
-  const hasAnydocCompatibleFile = uploadFiles.some((f) =>
-    ANYDOC_PARSE_FILE_RE.test(f.name),
-  );
-  const { status: anydocStatus, loading: anydocStatusLoading } =
-    useAnydocAvailability(Boolean(uploadCluster) && hasAnydocCompatibleFile);
-  const anydocUploadEnabled =
-    parseWithAnydoc && hasAnydocCompatibleFile && anydocStatus.available;
   const ingestionTokenUsage = sumIngestTokenUsage(
     Object.values(uploadTokenUsage),
   );
@@ -3524,17 +3505,6 @@ export default function DashboardClient({
                 />
               )}
 
-              {hasAnydocCompatibleFile && !allDoneOrError(uploadCluster) && (
-                <AnydocParseOption
-                  checked={parseWithAnydoc}
-                  onChange={setParseWithAnydoc}
-                  disabled={isUploading}
-                  status={anydocStatus}
-                  loading={anydocStatusLoading}
-                  combinedWithVlm={vlmUploadEnabled}
-                />
-              )}
-
               {hasHandwritingCompatibleFile &&
                 !allDoneOrError(uploadCluster) && (
                   <label
@@ -3555,14 +3525,12 @@ export default function DashboardClient({
                     />
                     <span>
                       <span className="block text-sm text-gray-400">
-                        Handwritten or scanned pages
+                        Handwriting / model OCR
                       </span>
                       <span className="block text-[11px] text-gray-600 mt-0.5">
                         {vlmUploadEnabled
                           ? "Not used while Parse using VLM is on — the VLM already reads the pages."
-                          : anydocUploadEnabled
-                            ? "Used for images only while Parse with anydoc is on — anydoc reads the PDFs."
-                            : "Uses vision OCR on each PDF page or image before generating the Learning Map."}
+                          : "The model OCRs every page or image instead of using the file's own text. Use it for handwriting, scans, or text that copies out wrong."}
                       </span>
                     </span>
                   </label>

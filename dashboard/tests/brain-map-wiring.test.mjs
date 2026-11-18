@@ -113,8 +113,8 @@ test("Knowledge mounts the exact Quartz Thought Topology renderer and hierarchy"
     /Generated from \.\.\/quartz\/quartz\/components\/scripts\/thoughtTopologyViewer\.ts/,
   );
   assert.match(rendererSync, /thoughtTopologyViewer\.ts/);
-  assert.match(JSON.parse(packageJson).scripts.predev, /^npm run sync:quartz-topology(?: &&|$)/);
-  assert.match(JSON.parse(packageJson).scripts.prebuild, /^npm run sync:quartz-topology(?: &&|$)/);
+  assert.match(JSON.parse(packageJson).scripts.predev, /(?:^|&& )npm run sync:quartz-topology(?: &&|$)/);
+  assert.match(JSON.parse(packageJson).scripts.prebuild, /(?:^|&& )npm run sync:quartz-topology(?: &&|$)/);
   assert.match(
     topologyAdapter,
     /Quartz's Thought Topology deliberately describes Gardens/,

@@ -23,9 +23,31 @@
   --bb-hl-dot-blue: #8fc3eb;
   --bb-hl-dot-pink: #e99abb;
   --bb-hl-dot-purple: #b79be9;
+
+  /* The dashboard's chat hover and ring colours (globals.css --selection-*). */
+  --bb-hl-hover-yellow: #edda8f;
+  --bb-hl-hover-green: #72c386;
+  --bb-hl-hover-blue: #75b2e0;
+  --bb-hl-hover-pink: #df7fa6;
+  --bb-hl-hover-purple: #a482df;
+  --bb-hl-line-yellow: #d8c275;
+  --bb-hl-line-green: #408153;
+  --bb-hl-line-blue: #3f7eae;
+  --bb-hl-line-pink: #a84e75;
+  --bb-hl-line-purple: #7250a9;
 }
 
 :root[saved-theme="dark"] {
+  --bb-hl-hover-yellow: color-mix(in srgb, var(--bb-hl-yellow) 82%, white);
+  --bb-hl-hover-green: color-mix(in srgb, var(--bb-hl-green) 82%, white);
+  --bb-hl-hover-blue: color-mix(in srgb, var(--bb-hl-blue) 82%, white);
+  --bb-hl-hover-pink: color-mix(in srgb, var(--bb-hl-pink) 82%, white);
+  --bb-hl-hover-purple: color-mix(in srgb, var(--bb-hl-purple) 82%, white);
+  --bb-hl-line-yellow: var(--bb-hl-dot-yellow);
+  --bb-hl-line-green: var(--bb-hl-dot-green);
+  --bb-hl-line-blue: var(--bb-hl-dot-blue);
+  --bb-hl-line-pink: var(--bb-hl-dot-pink);
+  --bb-hl-line-purple: var(--bb-hl-dot-purple);
   --bb-hl-yellow: #6b6038;
   --bb-hl-green: #326b46;
   --bb-hl-blue: #2b5f87;
@@ -70,6 +92,25 @@
     box-shadow: inset 0 -2px 0 var(--bb-hl-dot-yellow);
   }
 
+  /* Hover matches chat marks: a deeper fill and a soft ring in the mark's colour. */
+  &:hover {
+    background-color: var(--bb-hl-hover-yellow);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--bb-hl-line-yellow) 45%, transparent);
+  }
+  @each $name in "green", "blue", "pink", "purple" {
+    &[data-hl-color="#{$name}"]:hover {
+      background-color: var(--bb-hl-hover-#{$name});
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--bb-hl-line-#{$name}) 48%, transparent);
+    }
+  }
+  &[data-hl-chat]:hover,
+  &[data-hl-answer]:hover {
+    background-color: var(--bb-hl-hover-yellow);
+    box-shadow:
+      inset 0 -2px 0 var(--bb-hl-dot-yellow),
+      0 0 0 2px color-mix(in srgb, var(--bb-hl-line-yellow) 45%, transparent);
+  }
+
   &[data-hl-note] {
     text-decoration: underline dotted color-mix(in srgb, currentColor 58%, transparent);
     text-underline-offset: 0.18em;
@@ -80,8 +121,10 @@
     }
   }
 
-  &[data-hl-note-only="true"] {
+  &[data-hl-note-only="true"],
+  &[data-hl-note-only="true"]:hover {
     background-color: transparent;
+    box-shadow: none;
   }
 
   &[data-hl-answer="pending"],

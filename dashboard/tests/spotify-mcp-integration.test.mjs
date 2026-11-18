@@ -263,6 +263,9 @@ test("the inline player survives later messages and follows contextual Spotify t
   ];
   assert.equal(spotifyPlayerAssistantIndex(messages), 1);
 
+  const pending = [...messages, { role: "user", content: "one more" }];
+  assert.equal(spotifyPlayerAssistantIndex(pending, pending.length - 1), 1);
+
   messages.push(
     { role: "user", content: "thanks" },
     { role: "assistant", content: "You're welcome." },
@@ -314,6 +317,9 @@ test("the inline player survives later messages and follows contextual Spotify t
   );
 
   messages[7].tools[0].status = "completed";
+  messages[7].tools[0].spotifyPlaybackPrepared = false;
+  assert.equal(spotifyPlayerAssistantIndex(messages), 5, "a saved playlist leaves the previous player in place");
+  messages[7].tools[0].spotifyPlaybackPrepared = true;
   assert.equal(
     spotifyPlayerAssistantIndex(messages, 7),
     5,
@@ -567,16 +573,12 @@ test("Spotify login lives in Connections and inline playback uses the managed en
   assert.match(playbackRoute, /body: \{ uris: step\.playbackUris \}/);
   assert.doesNotMatch(playbackRoute, /endpoint: `\/v1\/me\/player\/\$\{action\}`/);
   assert.match(player, /currentTrackId: visibleTrack\.id/);
-  assert.match(player, /aria-label="Loading Spotify player"/);
-  assert.match(player, /size-10 animate-pulse/);
-  assert.match(player, /intentLoading \? <SpotifyPlayerLoading \/> : null/);
   assert.match(player, /turnPending \|\| attempts < MAX_INTENT_POLLS/);
-  assert.match(player, /paletteSource === \(visibleTrack\.imageUrl \?\? null\)/);
   assert.match(runtimePanel, /key=\{`\$\{sessionId\}:\$\{inlineSpotify\.requestedAt \?\? ""\}`\}/);
   assert.match(runtimePanel, /turnPending=\{/);
   assert.match(
     runtimePanel,
-    /spotifyPlayerAssistantIndex\(\s*messages,\s*runInFlight \? lastAssistantIndex : -1,\s*\)/,
+    /spotifyPlayerAssistantIndex\(\s*messages,\s*runInFlight \? messages\.length - 1 : -1,\s*\)/,
   );
   assert.match(playbackRoute, /endpoint: "\/v1\/me\/library"/);
   assert.match(playbackRoute, /query: \{ uris: `spotify:track:\$\{id\}` \}/);

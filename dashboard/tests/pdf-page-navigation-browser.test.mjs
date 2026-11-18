@@ -32,7 +32,24 @@ test("PDF navigation restores its page across browser/server restarts and change
     stdin: { resolveDir: root, loader: "tsx", contents: `
       import React from 'react'; import {createRoot} from 'react-dom/client';
       import Viewer from './src/app/gardens/[clusterSlug]/pdf/[slug]/pdf-viewer-client';
-      createRoot(document.getElementById('root')).render(<Viewer title="Navigation test" sourceUrl={new URLSearchParams(location.search).get('source') || '/fixture.pdf'} readOnly showNavbarFlowers={false}/>);
+      import BrowserPdfFrame from './src/app/browser/browser-pdf-frame';
+      import BrowserTabPanes from './src/app/browser/browser-tab-panes';
+      import NavigationProgressBar from './src/app/components/navigation-progress-bar';
+      import {usePageLoadingPending} from './src/app/components/use-page-loading';
+      function BrowserFixture() {
+        const pending = usePageLoadingPending();
+        return <div className="browser-shell" style={{height:'100%', '--browser-chrome-top':'103px'}}>
+          <NavigationProgressBar trackedNavigationPending={pending}/>
+          <BrowserTabPanes state={{persistentShell:true, activeId:1, tabs:[{id:1,browser:{uiVisited:true}}]}}>
+            {() => <><div style={{height:103}}><button>Back</button></div>
+              <BrowserPdfFrame viewer="/?source=/web.pdf" title="Web article" active /></>}
+          </BrowserTabPanes>
+        </div>;
+      }
+      const params = new URLSearchParams(location.search);
+      createRoot(document.getElementById('root')).render(location.pathname === '/browser-fixture' ? <BrowserFixture/> :
+        <Viewer title="Navigation test" sourceUrl={params.get('source') || '/fixture.pdf'}
+          embeddedInBrowser={params.get('embedded') === 'browser'} readOnly showNavbarFlowers={false}/>);
     ` },
     plugins: [{ name: "surrounding-controls", setup(builder) {
       const stubs = {
@@ -57,6 +74,7 @@ test("PDF navigation restores its page across browser/server restarts and change
     '@import "tailwindcss" source(none); @source "../src/app/gardens";',
     { from: path.join(root, "tests/pdf-navigation-fixture.css") },
   )).css;
+  let releaseWebPdf;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
     if (url.pathname === "/api/pdf-reading-position") {
@@ -77,7 +95,8 @@ test("PDF navigation restores its page across browser/server restarts and change
     if (url.pathname === "/bundle.js") {
       response.setHeader("content-type", "text/javascript"); response.end(bundle.outputFiles[0].text); return;
     }
-    if (url.pathname === "/fixture.pdf" || url.pathname === "/other.pdf") {
+    if (url.pathname === "/web.pdf") await new Promise(resolve => { releaseWebPdf = resolve; });
+    if (["/fixture.pdf", "/other.pdf", "/web.pdf"].includes(url.pathname)) {
       response.setHeader("content-type", "application/pdf"); response.end(bytes); return;
     }
     if (url.pathname.startsWith("/api/pdfjs/")) {
@@ -90,7 +109,8 @@ test("PDF navigation restores its page across browser/server restarts and change
     }
     if (url.pathname.startsWith("/api/")) { response.setHeader("content-type", "application/json"); response.end("{}"); return; }
     response.setHeader("content-type", "text/html");
-    response.end(`<!doctype html><style>${css}html,body,#root{height:100%;margin:0}#root{display:flex;flex-direction:column}</style><div id="root"></div><script src="/bundle.js"></script>`);
+    const shellCss = url.pathname === "/browser-fixture" ? readFileSync(path.join(root, "src/app/globals.css"), "utf8") : "";
+    response.end(`<!doctype html><style>${shellCss}\n${css}html,body,#root{height:100%;margin:0}#root{display:flex;flex-direction:column}</style><div id="root"></div><script src="/bundle.js"></script>`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
@@ -229,4 +249,24 @@ test("PDF navigation restores its page across browser/server restarts and change
   await expect.poll(() => reopened.evaluate(() => window.toolReloaded)).toBe(true);
   await expect(reopenedField).toHaveValue("10");
   await expect(reopened.locator('.page[data-page-number="10"] canvas')).toBeVisible();
+
+  await expect(reopened.getByRole("button", { name: "Back", exact: true })).toHaveCount(1);
+  await reopened.goto(origin + "/browser-fixture");
+  const iframe = reopened.locator('iframe[title="Web article"]');
+  const reader = iframe.contentFrame();
+  await expect.poll(() => typeof releaseWebPdf).toBe("function");
+  await expect(reopened.getByRole("progressbar")).toHaveAttribute("aria-busy", "true");
+  await expect(reader.getByText("Opening PDF")).toHaveCount(0);
+  await expect(reader.getByRole("button", { name: "Back", exact: true })).toHaveCount(0);
+  await expect(reopened.getByRole("button", { name: "Back", exact: true })).toHaveCount(1);
+  releaseWebPdf();
+  await expect(reader.locator('.page[data-page-number="1"] canvas')).toBeVisible();
+  await expect(reopened.getByRole("progressbar")).toHaveCount(0);
+  for (const [width, height] of [[1500, 900], [810, 580]]) {
+    await reopened.setViewportSize({ width, height });
+    const box = await iframe.boundingBox();
+    assert.deepEqual(box, { x: 40, y: 103, width: width - 40, height: height - 103 });
+    const scroller = await reader.locator("#viewerContainer").boundingBox();
+    assert.ok(Math.abs(scroller.y + scroller.height - height) < 2, "PDF scrolls to the bottom of its pane");
+  }
 });

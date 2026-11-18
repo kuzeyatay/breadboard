@@ -131,6 +131,7 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
         <Controls name="Learn" scope="fixture-learn"/>
         <Controls name="Shared terminal" scope="fixture-terminal" sessionId="t1" shared/>
         <Controls name="Shared garden" scope="fixture-garden" sessionId="g1" shared/>
+        <Controls name="PDF" scope="fixture-pdf" sessionId="p1" shared/>
         <Controls name="Temporary" scope="fixture-temporary" sessionId="temp" persist={false}/>
         <button onClick={()=>setExtra(true)}>Open another chat</button>
         {extra && <Controls name="Extra" scope="fixture-chat" sessionId="extra"/>}
@@ -296,7 +297,12 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
     assert.equal(await value(name).textContent(), `${model}|${effort}`);
   };
   await expectValue("Chat A", "gpt-5.6-sol", "max");
+  // A browser or PDF chat opened by an older build may have saved an
+  // inherited model. Reopening the chat must follow the Terminal picker.
+  await page.evaluate(() => localStorage.setItem("breadboard:intelligence-override:fixture-pdf:chat:p1",
+    JSON.stringify({ model: "cliproxy/claude-opus-5", reasoningEffort: "high" })));
   await chat.goto(`${base}/scopes`);
+  await chat.getByLabel("PDF value").filter({hasText:"gpt-5.6-sol|max"}).waitFor();
   await chat.getByLabel("Chat B value").filter({hasText:"gpt-5.6-sol|max"}).waitFor();
   // Chat surfaces share one current selection: the model picked in the
   // terminal is the model a garden workspace opens with, in this tab and the
@@ -305,6 +311,7 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   await chat.getByLabel("Shared garden value").filter({hasText:"gpt-5.6-sol|max"}).waitFor();
   await page.getByLabel("Shared terminal picker").selectOption("gpt-6-astra");
   await expectValue("Shared garden", "gpt-6-astra", "max");
+  await chat.getByLabel("PDF value").filter({hasText:"gpt-6-astra|max"}).waitFor();
   await chat.getByLabel("Shared garden value").filter({hasText:"gpt-6-astra|max"}).waitFor();
   await expectValue("Chat A", "gpt-5.6-sol", "max");
   await expectValue("Learn", "gpt-5.6-sol", "max");
@@ -314,6 +321,15 @@ test("profile defaults, chat overrides and Learn selections stay independent acr
   await chat.waitForFunction(() => document.querySelector('[aria-label="Default model"]').value === "cliproxy/claude-opus-5");
   await expectValue("Shared terminal", "gpt-6-astra", "max");
   await expectValue("Shared garden", "gpt-6-astra", "max");
+  // A freshly mounted renderer gets the same startup pair when the shared
+  // pick is reset, even after the future startup setting was edited.
+  const newTab = await context.newPage();
+  await newTab.goto(`${base}/scopes`);
+  await newTab.getByLabel("Shared terminal value").filter({hasText:"gpt-6-astra|max"}).waitFor();
+  await newTab.getByRole("button", {name:"Reset Shared garden", exact:true}).click();
+  await expectValue("Shared terminal", "gpt-5.6-sol", "max");
+  await newTab.getByLabel("PDF value").filter({hasText:"gpt-5.6-sol|max"}).waitFor();
+  await newTab.close();
   await select.selectOption("gpt-5.6-sol");
   await page.getByText("Saved. GPT-5.6 Sol is your default model.", { exact: true }).waitFor();
   // Asking for the default back is an instruction about every chat surface.

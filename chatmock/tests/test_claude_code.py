@@ -236,7 +236,7 @@ class ClaudeCodeBridgeTests(unittest.TestCase):
 
         command = captured["command"]
         self.assertEqual(command[command.index("--tools") + 1], "Read")
-        self.assertEqual(command[command.index("--max-turns") + 1], "6")
+        self.assertEqual(command[command.index("--max-turns") + 1], "8")
         # The decoded pixels were on disk for the CLI's Read tool at run time...
         self.assertEqual(captured["files"], {"attachment-1.png": png})
         # ...and the stdin conversation carries pointers, never base64.

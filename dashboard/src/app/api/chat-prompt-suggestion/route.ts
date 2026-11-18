@@ -28,18 +28,28 @@ export async function POST(request: Request) {
     });
     const { baseURL } = resolveChatmockBaseUrl(request);
     const context = {
+      documentConversationId:typeof body.documentConversationId==="string"?body.documentConversationId.slice(0,160):undefined,
+      pageTitle: typeof body.pageTitle === "string" ? body.pageTitle.trim().slice(0,180) || undefined : undefined,
       gardenSlug: typeof body.gardenSlug === 'string' ? body.gardenSlug.trim().slice(0, 180) || undefined : undefined,
       localDate: typeof body.localDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.localDate) ? body.localDate : undefined,
       localTime: typeof body.localTime === 'string' ? body.localTime.slice(0, 5) : undefined,
       timeZone: typeof body.timeZone === 'string' ? body.timeZone.slice(0, 100) : undefined,
     };
-    const evidence = !selection && body.personalize === true && body.temporary !== true && body.scope !== 'public'
+    let evidence = !selection && body.personalize === true && body.temporary !== true && body.scope !== 'public'
       ? await (await import('@/lib/recommendations/service')).recommendationEvidence(userId, context).catch(() => []) : [];
+    if (selection && typeof body.conversationId === "string" && body.personalize === true && body.temporary !== true && body.scope !== "public") {
+      const {getHermesUserSettings}=await import("@/lib/hermes/runtime-store");
+      if (getHermesUserSettings(userId).composerSwitches.personalize !== false) {
+        const {selectionLessons}=await import("@/lib/personal-context/suggestions");
+        evidence=await selectionLessons(userId,body.conversationId,[selection.sourceTitle,selection.quote].filter(Boolean).join(" ")).catch(()=>[]);
+      }
+    }
     // Cache unchanged transcripts/excerpts; temporary chats never write a
     // suggestion to disk. Shared cached requests may have other open waiters.
-    const key = createHash('sha256').update(JSON.stringify([userId, model, context.gardenSlug, context.localDate,
-      body.personalize === true, messages, selection])).digest('hex');
-    const generate = () => generatePromptSuggestion({ userId, messages, selection, model, baseUrl: baseURL, evidence, context,
+    const page = selection ? null : await (await import('@/lib/web-page-context')).requestViewedPage(body);
+    const key = createHash('sha256').update(JSON.stringify([userId, model, context,
+      body.personalize === true, body.scope, evidence, messages, selection, page])).digest('hex');
+    const generate = () => generatePromptSuggestion({ userId, messages, selection, model, baseUrl: baseURL, evidence, context, page,
       signal: body.temporary === true ? request.signal : undefined });
     const suggestion = body.temporary === true ? await generate() : await keptPromptSuggestion(key, generate);
     return NextResponse.json({ suggestion }, { headers: { 'Cache-Control': 'no-store' } });

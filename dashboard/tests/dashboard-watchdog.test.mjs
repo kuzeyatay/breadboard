@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { appendDiagnostic } from "../scripts/runtime-v2-dashboard-diagnostics.mjs";
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), "watchdog-"));
@@ -15,15 +16,16 @@ fs.writeFileSync(manifestPath, JSON.stringify({ staticRoutes: [{ page: "/api/ear
 
 const watchdogUrl = new URL("../scripts/runtime-v2-dashboard-watchdog.mjs", import.meta.url).href;
 
-function fixture(behavior, env = {}) {
+function fixture(behavior, env = {}, watchdogOptions = "") {
   const source = `
     import http from 'node:http';
     import { startDashboardWatchdog } from ${JSON.stringify(watchdogUrl)};
+    const Database = ${sqliteRequire};
     const server = http.createServer((req, res) => { res.statusCode = 503; res.end('dependency unavailable'); });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const port = server.address().port;
     await new Promise(resolve => server.close(resolve));
-    startDashboardWatchdog({port, intervalMs: 50, timeoutMs: 100, failureLimit: 4, manifestPath: ${JSON.stringify(manifestPath)}});
+    startDashboardWatchdog({port, intervalMs: 50, timeoutMs: 100, failureLimit: 4, manifestPath: ${JSON.stringify(manifestPath)}, ${watchdogOptions}});
     // No startup kill before the first response, even after several probes.
     await new Promise(resolve => setTimeout(resolve, 600));
     await new Promise(resolve => server.listen(port, '127.0.0.1', resolve));
@@ -90,6 +92,29 @@ test("dashboard watchdog ends a service stuck in native code, where no stack can
   assert.equal(exit.recentRequests.at(-1).outcome, "in-flight");
   assert.equal(exit.recentRequests.at(-2).status, 503);
   assert.ok(samples.some(row => row.pid === exit.pid && row.event === "ready"));
+});
+
+const sqliteRequire = `(await import("node:module")).createRequire(${JSON.stringify(fileURLToPath(new URL("../package.json", import.meta.url)))})("better-sqlite3")`;
+
+test("dashboard watchdog names the SQLite statement a stuck main thread is running", async () => {
+  const result = await fixture(`
+    const db = new Database(":memory:");
+    db.prepare("select count(*) from (with recursive slowfinished(x) as (select 1 union all select x + 1 from slowfinished where x < 3000000) select x from slowfinished)").get();
+    console.log('stalling');
+    db.prepare("with recursive stuckquery(x) as (select 1 union all select x + 1 from stuckquery where x < 5000000000) select count(*) from stuckquery").get();
+    console.log('missed-stall'); process.exit(0);
+  `, {}, `sqlite: Database, slowSqliteMs: 50`).catch(error => ({ error }));
+  assert.ok(!result.error, result.error?.message);
+  assert.match(result.output, /stalling/);
+  assert.doesNotMatch(result.output, /missed-stall/);
+  const log = fs.readFileSync(path.join(data, "logs", "dashboard-watchdog.log"), "utf8");
+  assert.match(log, /main thread inside SQLite for \d+\.\d s: with recursive stuckquery/, log);
+  const slow = fs.readFileSync(path.join(data, "logs", "dashboard-slow-sqlite.log"), "utf8");
+  assert.match(slow, /\d+ ms: select count\(\*\) from \(with recursive slowfinished[^\n]*\n\s+at /, slow);
+  const exit = fs.readFileSync(path.join(data, "logs", "dashboard-diagnostics.jsonl"), "utf8").trim().split("\n")
+    .map(line => JSON.parse(line)).filter(row => row.event === "watchdog-restart").at(-1);
+  assert.match(exit.sqlite.sql, /stuckquery/);
+  assert.ok(exit.freeSystemMemoryBytes > 0);
 });
 
 test("the exception observer preserves the fatal exit and its stack", async () => {

@@ -10,9 +10,15 @@ const built = await build({
   bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external',
   alias: { '@': path.join(root, 'src') },
   plugins: [{ name: 'sentence-route-boundaries', setup(builder) {
-    builder.onResolve({ filter: /^@\/lib\/(?:server-auth|sentence-completion-service)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
+    builder.onResolve({filter:/^@\/lib\/(?:db|personal-context\/room)$/},args=>({path:args.path,namespace:'room-test'}));
+    builder.onLoad({filter:/.*/,namespace:'room-test'},({path:name})=>({contents:name.endsWith('/room')?'export const roomLessons=()=>[];':'export default {};'}));
+    builder.onResolve({ filter: /^@\/lib\/(?:server-auth|sentence-completion-service|hermes\/runtime-store|personal-context\/suggestions)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
     builder.onLoad({ filter: /.*/, namespace: 'fixture' }, ({ path: name }) => ({ contents:
-      name.endsWith('server-auth')
+      name.endsWith('runtime-store')
+        ? "export const getHermesUserSettings=()=>({composerSwitches:{personalize:globalThis.__sentenceCompletionRoute.enabled !== false}});"
+        : name.endsWith('suggestions')
+        ? "export const selectionLessons=async(user,id)=>{globalThis.__sentenceCompletionRoute.reads.push([user,id]);return []};export const learnedEvidence=async(user,slug)=>{globalThis.__sentenceCompletionRoute.reads.push([user,slug]);return [{id:'lesson:map',title:'Catchment map',summary:'Draw the watershed first'}]};"
+        : name.endsWith('server-auth')
         ? `export async function requireUserId() {
             const fixture=globalThis.__sentenceCompletionRoute;
             if(fixture.denied) throw Object.assign(new Error('Unauthorized'),{status:401});
@@ -24,6 +30,22 @@ const built = await build({
           }`,
     }));
   } }],
+});
+
+test('typed predictions read lessons only for the requested eligible scope',async t=>{
+  const state=globalThis.__sentenceCompletionRoute={calls:[],reads:[]};
+  t.after(()=>{delete globalThis.__sentenceCompletionRoute;});
+  for(const extra of [{temporary:true},{scope:'public'},{personalize:false},{}]){
+    await POST(request({draft:'Draw a catchment',gardenSlug:'headwater',personalize:true,...extra}));
+  }
+  assert.deepEqual(state.reads,[[42,'headwater']]);
+  assert.match(state.calls.at(-1).learned.join(' '),/watershed/);
+  await POST(request({draft:'Draw a catchment',personalize:true,documentConversationId:'temp-document'}));
+  assert.deepEqual(state.reads.at(-1),[42,'temp-document']);
+  assert.deepEqual(state.calls.at(-1).learned,[]);
+  state.enabled=false;
+  await POST(request({draft:'Draw a catchment',personalize:true}));
+  assert.deepEqual(state.calls.at(-1).learned,[]);
 });
 const module = { exports: {} };
 new Function('module', 'exports', 'require', built.outputFiles[0].text)(module, module.exports, createRequire(import.meta.url));

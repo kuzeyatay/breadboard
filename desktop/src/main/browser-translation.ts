@@ -72,9 +72,15 @@ export class BrowserTranslation {
   }
   private async execute(frame: WebFrameMain, operation: "collect" | "apply" | "restore", payload?: unknown, key = this.key): Promise<unknown> {
     const script = translationDocumentScript(key, operation, payload);
-    return frame === this.contents.mainFrame
-      ? this.contents.executeJavaScriptInIsolatedWorld(1004, [{ code: script }])
-      : frame.executeJavaScript(script);
+    if (frame === this.contents.mainFrame) return this.contents.executeJavaScriptInIsolatedWorld(1004, [{ code: script }]);
+    // Collection is serialized, so an embedded frame that never answers (an ad
+    // replaced mid-call) would otherwise stop the whole page translating.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([frame.executeJavaScript(script), new Promise((_resolve, reject) => {
+        timer = setTimeout(reject, 5000, new Error("The embedded frame did not answer."));
+      })]);
+    } finally { clearTimeout(timer); }
   }
   async restore(): Promise<void> {
     if (!this.contents.isDestroyed()) this.preferences?.remember(this.contents.getURL(), null);
@@ -159,7 +165,9 @@ export class BrowserTranslation {
       }
       if (!live()) return;
       this.publish({ ...this.state, status: "translated" });
-      this.timer = setTimeout(() => { void this.tick(generation); }, 1000);
+      // An idle document answers a poll without touching layout, so poll often
+      // enough that text scrolled into range is picked up straight away.
+      this.timer = setTimeout(() => { void this.tick(generation); }, 300);
       this.timer.unref();
     } catch (error) {
       fail(error);

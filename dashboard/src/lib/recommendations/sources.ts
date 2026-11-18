@@ -26,6 +26,31 @@ const DEEP_READ_APPS = new Set(['gmail', 'microsoft-outlook', 'google-calendar']
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
+
+/** Narrow connected-mail lookup for a personal reference in a chat. */
+export async function connectedContextEvidence(userId: number, query: string): Promise<RecommendationEvidence[]> {
+  const { slugs, read } = await connectionReader(userId, AbortSignal.timeout(950));
+  const terms = query.match(/[\p{L}\p{N}]{3,}/gu)?.filter(term => !/^(get|the|for|from|what|with|this|that|prepare|next|meeting|email|mail|find|about|message)$/i.test(term)).slice(0,5).join(" ") || "";
+  const out: RecommendationEvidence[] = [];
+  if (!terms) return [];
+  await Promise.allSettled([
+    slugs.has("gmail") && (async () => {
+      const list = record(await read("gmail",{method:"GET",endpoint:"/gmail/v1/users/me/messages",query:{q:terms,maxResults:4}}));
+      await Promise.all(array(list.messages).slice(0,4).map(async hit => {
+        const id = text(record(hit).id,100);
+        if (!id) return;
+        const msg = record(await read("gmail",{method:"GET",endpoint:"/gmail/v1/users/me/messages/"+encodeURIComponent(id),query:{format:"metadata",fields:"snippet,payload(headers),internalDate"}}));
+        const headers = array(record(msg.payload).headers).map(record);
+        out.push({source:"gmail",id:"gmail:"+id,title:text(headers.find(h=>h.name==="Subject")?.value,150),summary:text(msg.snippet,250),timestamp:new Date(Number(msg.internalDate)).toISOString()});
+      }));
+    })(),
+    slugs.has("microsoft-outlook") && (async () => {
+      const list=record(await read("microsoft-outlook",{method:"GET",endpoint:"/v1.0/me/messages",query:{$search:'"'+terms+'"',$top:4,$select:"id,subject,bodyPreview,receivedDateTime"}}));
+      for(const row of array(list.value).map(record)) out.push({source:"outlook",id:"outlook:"+text(row.id),title:text(row.subject),summary:text(row.bodyPreview,250),timestamp:text(row.receivedDateTime)});
+    })(),
+  ]);
+  return out;
+}
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 
 type ConnectedRead = (slug: string, request: ConnectedAppProxyRequest) => Promise<unknown>;
@@ -147,7 +172,7 @@ function localEvidence(userId: number, context: RecommendationContext): Recommen
   const result: RecommendationEvidence[] = [];
   const safeRead = (read: () => RecommendationEvidence[]) => { try { result.push(...read()); } catch { /* Optional store not initialized. */ } };
   safeRead(() => {
-    const rows = db.prepare(`SELECT c.id, c.title, c.updated_at, g.slug, substr(u.content, 1, 300) AS asked, substr(a.content, 1, 500) AS excerpt
+    const rows = db.prepare(`SELECT c.id, c.public_id, c.title, c.updated_at, g.slug, substr(u.content, 1, 300) AS asked, substr(a.content, 1, 500) AS excerpt
       FROM conversations c LEFT JOIN clusters g ON g.id=c.default_garden_id
       JOIN conversation_messages u ON u.rowid=(SELECT m.rowid FROM conversation_messages m
         WHERE m.conversation_id=c.id AND m.role='user' AND m.status='complete' AND trim(substr(m.content, 1, 300))<>''
@@ -158,8 +183,8 @@ function localEvidence(userId: number, context: RecommendationContext): Recommen
       LEFT JOIN conversation_messages a ON a.conversation_id=c.id AND a.client_message_id=u.client_message_id
         AND a.role='assistant' AND a.status='complete'
       WHERE c.user_id=? AND c.temporary=0 AND c.title<>'New chat' AND c.updated_at >= datetime('now','-21 days')
-      AND (? IS NULL OR g.slug=?) ORDER BY c.updated_at DESC LIMIT 5`).all(userId, context.gardenSlug ?? null, context.gardenSlug ?? null) as Array<{id:number;title:string;updated_at:string;slug:string;asked:string;excerpt:string|null}>;
-    return rows.map(row => ({ id:`chat:${row.id}`,source:'chat',
+      AND (? IS NULL OR g.slug=?) ORDER BY c.updated_at DESC LIMIT 5`).all(userId, context.gardenSlug ?? null, context.gardenSlug ?? null) as Array<{id:number;public_id:string;title:string;updated_at:string;slug:string;asked:string;excerpt:string|null}>;
+    return rows.map(row => ({ id:`chat:${row.id}`,source:'chat',conversationId:row.public_id,
       title:/^(?:Telegram|WhatsApp)\s*[·:]/i.test(row.title) ? row.asked : row.title,
       summary:[`Last asked: ${row.asked}`,row.excerpt&&`Last reply: ${row.excerpt}`].filter(Boolean).join(' '),timestamp:row.updated_at,gardenSlug:row.slug }));
   });

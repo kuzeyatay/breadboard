@@ -50,6 +50,7 @@
 
 .stage { display: flex; min-height: 0; flex: 1; align-items: center; justify-content: center; padding: 16px; background: #080d0a; }
 .video { height: 100%; max-height: 100%; }
+.audio { width: min(640px, 100%); }
 
 @media (max-width: 600px) {
   .optionalLabel { display: none; }

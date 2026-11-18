@@ -136,6 +136,48 @@ function setupPanel(root: HTMLElement) {
   // next buffered event arrives.
   let viewGeneration = 0
   let disposed = false
+  const suggestions = root.querySelector<HTMLElement>(".breadboard-ai-suggestions")
+  let suggestionRequest: AbortController | undefined
+  let suggestionTimer: number | undefined
+  function clearSuggestions() {
+    window.clearTimeout(suggestionTimer)
+    suggestionRequest?.abort()
+    if (suggestions) { suggestions.replaceChildren(); suggestions.hidden = true }
+  }
+  function refreshSuggestions() {
+    clearSuggestions()
+    if (!suggestions || temporaryChat || panel!.hidden || document.hidden || disposed || activeTextSelection) return
+    const draft = input!.value
+    if (draft ? draft.trim().length < 4 : messages!.childElementCount > 0) return
+    const controller = new AbortController()
+    suggestionRequest = controller
+    suggestionTimer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(dashboard+"/api/quartz-ai/chat",{method:"POST",credentials:"include",signal:controller.signal,
+          headers:{"Content-Type":"application/json"},body:JSON.stringify({suggestionsOnly:true,draft,context:{gardenId,pageSlug,pageTitle,
+            visiblePageContent:(document.querySelector("article")?.textContent || "").slice(0,12000)}})})
+        if (!response.ok) return
+        const data = await response.json()
+        if (controller.signal.aborted || disposed || temporaryChat || panel!.hidden || input!.value!==draft) return
+        const items:unknown[] = draft ? [data.completion] : Array.isArray(data.prompts) ? data.prompts : []
+        for (const item of items) {
+          if (typeof item!=="string" || !item.trim()) continue
+          const button=document.createElement("button")
+          button.type="button"
+          button.textContent=item
+          button.addEventListener("click",()=>{
+            input!.value=draft+item
+            clearSuggestions()
+            input!.focus()
+          })
+          suggestions.append(button)
+        }
+        suggestions.hidden=suggestions.childElementCount===0
+      } catch { /* A suggestion is optional while the page is open. */ }
+    },draft?700:100)
+  }
+  input.addEventListener("input",refreshSuggestions)
+  document.addEventListener("visibilitychange",refreshSuggestions)
   const activityEntries = new Map<string, { label: string; detail?: string; status: string }>()
 
   function loadState(): SessionState {
@@ -169,6 +211,7 @@ function setupPanel(root: HTMLElement) {
   }
 
   function syncTemporaryChrome() {
+    refreshSuggestions()
     if (temporaryChat) root.dataset.temporaryChat = "true"
     else delete root.dataset.temporaryChat
     if (temporaryBanner) temporaryBanner.hidden = !temporaryChat
@@ -188,6 +231,7 @@ function setupPanel(root: HTMLElement) {
 
   function openPanel() {
     panel!.hidden = false
+    refreshSuggestions()
     toggle!.hidden = true
     toggle!.setAttribute("aria-expanded", "true")
     if (!intelligenceLoaded) {
@@ -200,6 +244,7 @@ function setupPanel(root: HTMLElement) {
     input!.focus()
   }
   function closePanel() {
+    clearSuggestions()
     panel!.hidden = true
     toggle!.hidden = false
     toggle!.setAttribute("aria-expanded", "false")
@@ -580,6 +625,13 @@ function setupPanel(root: HTMLElement) {
       // autolinkBareUrls generates, so a pasted link is clickable and nothing
       // the user typed can inject HTML.
       el.innerHTML = autolinkBareUrls(escapeHtml(text))
+      // Chats are page-scoped, so every question was asked about this page;
+      // say so the way the PDF assistant labels its page.
+      const chip = document.createElement("span")
+      chip.className = "breadboard-ai-page-chip"
+      chip.textContent = `Viewing ${pageTitle}`
+      chip.title = pageTitle
+      messages!.appendChild(chip)
     } else {
       el.textContent = text
     }
@@ -1609,6 +1661,10 @@ function setupPanel(root: HTMLElement) {
     void send(value)
   })
   input.addEventListener("keydown", (event) => {
+    if (event.key === "Tab" && !event.shiftKey && !event.isComposing && input.value && !suggestions?.hidden) {
+      const completion = suggestions?.querySelector("button")
+      if (completion) { event.preventDefault(); completion.click(); return }
+    }
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault()
       if (sendBtn.disabled) return
@@ -1655,6 +1711,8 @@ function setupPanel(root: HTMLElement) {
   // every visited page retained a stream closure and its detached DOM tree.
   window.addCleanup(() => {
     disposed = true
+    document.removeEventListener("visibilitychange",refreshSuggestions)
+    clearSuggestions()
     lensRail?.destroy()
     if (railFrame !== null) window.cancelAnimationFrame(railFrame)
     widgetHost.dispose()

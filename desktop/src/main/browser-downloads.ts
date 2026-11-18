@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { DownloadItem, Session } from "electron";
 import type { BrowserDownload, BrowserDownloadCommand, BrowserDownloadsSnapshot } from "../shared/ipc-contract";
 import { atomicWriteFile } from "./runtime-config";
+import { isBrowserPdfHandoff } from "./browser-web-pdf";
 
 export const BROWSER_DOWNLOADS_FILE = "browser-downloads.json";
 
@@ -133,7 +134,9 @@ export class BrowserDownloads {
   attach(browserSession: Session): void {
     if (this.sessions.has(browserSession)) return;
     this.sessions.add(browserSession);
-    browserSession.on("will-download", (_event, item) => this.track(item));
+    browserSession.on("will-download", (_event, item) => {
+      if (!isBrowserPdfHandoff(item)) this.track(item);
+    });
   }
 
   prepareForQuit(): void {

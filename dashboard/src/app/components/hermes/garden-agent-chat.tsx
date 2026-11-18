@@ -621,14 +621,14 @@ export default function GardenAgentChat({
     async (question: string, selection: ChatTextSelectionReference, attachments: readonly ChatAttachment[] = [], voice?: import('@/lib/speech/voice-request').VoiceRequestOptions) => {
       if (busy) await session.abort();
       await session.send(question, {
-        model,
-        reasoningEffort,
+        model: selectedModel,
+        reasoningEffort: selectedReasoningEffort,
         ...voice,
         textSelection: selection,
         attachments: [...attachments],
       });
     },
-    [busy, model, reasoningEffort, session],
+    [busy, selectedModel, selectedReasoningEffort, session],
   );
 
   const steer = useCallback(
@@ -1159,7 +1159,7 @@ export default function GardenAgentChat({
               {/* Grounded garden cards only; an empty garden shows none. */}
               <ChatSuggestionCards
                 suggestions={recommendations.map(item => item.prompt)}
-                suggestionDetails={Object.fromEntries(recommendations.map(item => [item.prompt, { label: item.sourceLabel, usefulness: item.usefulness }]))}
+                suggestionDetails={Object.fromEntries(recommendations.map(item => [item.prompt, { label: item.sourceLabel, usefulness: item.usefulness,lesson:item.lesson }]))}
                 suggestionScopeKey={gardenSlug}
                 disabled={busy}
                 onSelectSuggestion={sendSuggestedPrompt}

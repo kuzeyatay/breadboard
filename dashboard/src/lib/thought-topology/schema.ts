@@ -58,5 +58,15 @@ export function ensureThoughtTopologySchema(db: Database.Database): void {
          SET thought_topology_enabled = 1
        WHERE id = NEW.id;
     END;
+
+    -- One vector per question-and-answer turn of a Garden chat, keyed by the
+    -- question's message. Written when an answer completes (chat-nodes.ts);
+    -- the Thought Topology route only reads them, so a map load never embeds.
+    CREATE TABLE IF NOT EXISTS thought_topology_chat_turn_vectors (
+      message_id INTEGER PRIMARY KEY REFERENCES conversation_messages(id) ON DELETE CASCADE,
+      text_hash  TEXT NOT NULL,
+      model      TEXT NOT NULL,
+      vector     BLOB NOT NULL
+    );
   `);
 }

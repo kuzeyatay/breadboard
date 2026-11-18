@@ -21,6 +21,7 @@ interface SpotifyPlayerPlacementMessage {
   content: string;
   tools?: Array<{
     toolName: string;
+    spotifyPlaybackPrepared?: boolean;
     status?: "running" | "completed" | "failed";
   }>;
 }
@@ -67,7 +68,7 @@ export function isSpotifyToolName(toolName: string): boolean {
 }
 
 function isSpotifyPlaybackToolName(toolName: string): boolean {
-  return /(?:^|__)spotify_(?:play|prepare_playback|create_playlist)(?:__|$)/i.test(
+  return /(?:^|__)spotify_(?:play|prepare_playback)(?:__|$)/i.test(
     toolName.trim(),
   );
 }
@@ -95,8 +96,8 @@ export function spotifyPlayerAssistantIndex(
     if (message.role !== "assistant" || index === excludedAssistantIndex) return;
     const usedSpotify = message.tools?.some(
       (tool) =>
-        tool.status !== "failed" &&
-        isSpotifyPlaybackToolName(tool.toolName),
+        tool.status !== "running" && tool.status !== "failed" &&
+        (tool.spotifyPlaybackPrepared ?? isSpotifyPlaybackToolName(tool.toolName)),
     );
     if (usedSpotify) owner = index;
   });

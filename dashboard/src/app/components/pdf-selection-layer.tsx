@@ -6,6 +6,7 @@ import type {
   ChatTextSelectionCandidate,
   FloatingAnchorRect,
 } from "./chat-text-selection-ui";
+import { NoteBubble } from "./chat-markdown";
 import {
   intersectPdfRects,
   type PdfHighlight,
@@ -61,6 +62,7 @@ export default function PdfSelectionLayer({
   highlights,
   onSelection,
   onOpenHighlight,
+  onMovePin,
 }: {
   containerRef: RefObject<HTMLDivElement | null>;
   documentKey: string;
@@ -71,8 +73,10 @@ export default function PdfSelectionLayer({
     highlight: PdfHighlight,
     anchor: FloatingAnchorRect,
   ) => void;
+  onMovePin: (id: string, rect: PdfHighlightRect) => void;
 }) {
   const [pages, setPages] = useState<HTMLElement[]>([]);
+  const [hover, setHover] = useState<{ id: string; note?: string; rect: DOMRect } | null>(null);
   const interactionRef = useRef({ highlights, onSelection, onOpenHighlight });
   useLayoutEffect(() => {
     interactionRef.current = { highlights, onSelection, onOpenHighlight };
@@ -260,15 +264,7 @@ export default function PdfSelectionLayer({
       }
       // Painted marks are transparent to pointer input. Hit-test only a click,
       // leaving native text selection free to start inside an existing mark.
-      const highlight = [...interactionRef.current.highlights].reverse().find(item => item.rects.some(rect => {
-        const page = container.querySelector<HTMLElement>(`.page[data-page-number="${rect.page}"]`);
-        if (!page) return false;
-        const bounds = pdfPageBounds(page, item.coordinateSpace);
-        return event.clientX >= bounds.left + rect.left * bounds.width &&
-          event.clientX <= bounds.left + (rect.left + rect.width) * bounds.width &&
-          event.clientY >= bounds.top + rect.top * bounds.height &&
-          event.clientY <= bounds.top + (rect.top + rect.height) * bounds.height;
-      }));
+      const highlight = highlightAt(container, interactionRef.current.highlights, event.clientX, event.clientY);
       if (highlight) {
         const anchor = pdfHighlightAnchor(container, highlight);
         if (anchor) interactionRef.current.onOpenHighlight(highlight, anchor);
@@ -288,12 +284,73 @@ export default function PdfSelectionLayer({
     };
   }, [containerRef, documentKey, enabled]);
 
-  return pages.map(page => {
-    const entries = highlightsByPage.get(Number(page.dataset.pageNumber));
-    if (!entries) return null;
-    return <PdfPageHighlights key={`${documentKey}:${page.dataset.pageNumber}`}
-      page={page} entries={entries} enabled={enabled} onOpenHighlight={onOpenHighlight} />;
-  });
+  // Hovering a saved passage behaves as in chat: the mark lights up and a noted
+  // passage shows its note. Marks stay transparent to the pointer so text
+  // selection can still start on them, so the pointer is hit-tested instead.
+  const hasMarks = highlights.some(item => !item.pin);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !hasMarks) return;
+    let frame = 0;
+    const move = (event: PointerEvent) => {
+      if (frame) return;
+      const { clientX, clientY } = event;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const hit = highlightAt(container, interactionRef.current.highlights, clientX, clientY);
+        setHover(current => {
+          if (!hit) return null;
+          if (current?.id === hit.selection.id) return current;
+          const page = container.querySelector<HTMLElement>(`.page[data-page-number="${hit.rects[0].page}"]`);
+          const bounds = page && pdfPageBounds(page, hit.coordinateSpace);
+          if (!bounds) return null;
+          // Under the passage's last line, as chat places the bubble under its text.
+          const left = Math.min(...hit.rects.map(rect => rect.left));
+          const top = Math.min(...hit.rects.map(rect => rect.top));
+          const bottom = Math.max(...hit.rects.map(rect => rect.top + rect.height));
+          return { id: hit.selection.id, ...(hit.note && notedPassage(hit) ? { note: hit.note } : {}), rect: new DOMRect(
+            bounds.left + left * bounds.width, bounds.top + top * bounds.height,
+            1, (bottom - top) * bounds.height) };
+        });
+      });
+    };
+    const clear = () => setHover(null);
+    container.addEventListener("pointermove", move, { passive: true });
+    container.addEventListener("pointerleave", clear);
+    container.addEventListener("pointerdown", clear, true);
+    container.addEventListener("scroll", clear, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      container.removeEventListener("pointermove", move);
+      container.removeEventListener("pointerleave", clear);
+      container.removeEventListener("pointerdown", clear, true);
+      container.removeEventListener("scroll", clear);
+      setHover(null);
+    };
+  }, [containerRef, hasMarks]);
+
+  return <>
+    {pages.map(page => {
+      const entries = highlightsByPage.get(Number(page.dataset.pageNumber));
+      if (!entries) return null;
+      return <PdfPageHighlights key={`${documentKey}:${page.dataset.pageNumber}`}
+        page={page} entries={entries} enabled={enabled} hoveredId={hover?.id} onOpenHighlight={onOpenHighlight} onMovePin={onMovePin} />;
+    })}
+    {hover?.note ? <NoteBubble id={`pdf-note-${hover.id}`} text={hover.note} anchor={hover.rect} /> : null}
+  </>;
+}
+
+/** The topmost saved passage under a point; pins handle their own pointer input. */
+function highlightAt(container: HTMLElement, highlights: readonly PdfHighlight[], x: number, y: number) {
+  return [...highlights].reverse().find(item => !item.pin && item.rects.some(rect => {
+    const page = container.querySelector<HTMLElement>(`.page[data-page-number="${rect.page}"]`);
+    if (!page) return false;
+    const bounds = pdfPageBounds(page, item.coordinateSpace);
+    return x >= bounds.left + rect.left * bounds.width &&
+      x <= bounds.left + (rect.left + rect.width) * bounds.width &&
+      y >= bounds.top + rect.top * bounds.height &&
+      y <= bounds.top + (rect.top + rect.height) * bounds.height;
+  }));
 }
 
 interface PageHighlight {
@@ -302,11 +359,13 @@ interface PageHighlight {
   index: number;
 }
 
-function PdfPageHighlights({ page, entries, enabled, onOpenHighlight }: {
+function PdfPageHighlights({ page, entries, enabled, hoveredId, onOpenHighlight, onMovePin }: {
   page: HTMLElement;
   entries: PageHighlight[];
   enabled: boolean;
+  hoveredId?: string;
   onOpenHighlight: (highlight: PdfHighlight, anchor: FloatingAnchorRect) => void;
+  onMovePin: (id: string, rect: PdfHighlightRect) => void;
 }) {
   const [host, setHost] = useState<HTMLElement | null>(null);
   useEffect(() => {
@@ -353,7 +412,10 @@ function PdfPageHighlights({ page, entries, enabled, onOpenHighlight }: {
       className="pointer-events-none absolute inset-0 z-[4]"
       data-pdf-reader-highlights
     >
-      {entries.map(({ highlight, rect, index }) => (
+      {entries.map(({ highlight, rect, index }) => highlight.pin ? (
+        <PdfPin key={highlight.selection.id} highlight={highlight} rect={rect}
+          onOpen={anchor => onOpenHighlight(highlight, anchor)} onMove={next => onMovePin(highlight.selection.id, next)} />
+      ) : (
         <button
           key={`${highlight.selection.id}:${index}`}
           type="button"
@@ -361,7 +423,8 @@ function PdfPageHighlights({ page, entries, enabled, onOpenHighlight }: {
           data-chat-selection-id={highlight.selection.id}
           data-chat-selection-source={highlight.selection.sourceMessageId}
           tabIndex={enabled && index === 0 ? 0 : -1}
-          className="absolute rounded-sm border-0 p-0 transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+          data-chat-note={notedPassage(highlight) ? "true" : undefined}
+          className={`absolute border-0 p-0 transition-[background-color,box-shadow] duration-100 focus-visible:outline-2 focus-visible:outline-[var(--botanical)] rounded-sm`}
           style={{
             left: highlight.coordinateSpace === "content" ? `${rect.left * 100}%`
               : `calc(${rect.left * 100}% + ${rect.left} * var(--pdf-border-width) - var(--pdf-border-left))`,
@@ -371,7 +434,7 @@ function PdfPageHighlights({ page, entries, enabled, onOpenHighlight }: {
               : `calc(${rect.width * 100}% + ${rect.width} * var(--pdf-border-width))`,
             height: highlight.coordinateSpace === "content" ? `${rect.height * 100}%`
               : `calc(${rect.height * 100}% + ${rect.height} * var(--pdf-border-height))`,
-            backgroundColor: `color-mix(in srgb, ${highlight.selection.mode === "inline" || highlight.chatQuestion || highlight.conversationId ? "var(--selection-yellow)" : `var(--selection-highlight-${highlight.color})`} 45%, transparent)`,
+            ...markStyle(highlight, hoveredId === highlight.selection.id),
             pointerEvents: "none",
           }}
           title={`${
@@ -389,4 +452,130 @@ function PdfPageHighlights({ page, entries, enabled, onOpenHighlight }: {
     </div>,
     host,
   );
+}
+
+/** Where the needle meets the page, inside the 40px pin drawing. */
+const PIN_TIP = { x: 9, y: 37 };
+
+/** A pushpin stuck into the page: drag it anywhere on any page, click it to open its card. */
+function PdfPin({ highlight, rect, onOpen, onMove }: {
+  highlight: PdfHighlight;
+  rect: PdfHighlightRect;
+  onOpen: (anchor: FloatingAnchorRect) => void;
+  onMove: (rect: PdfHighlightRect) => void;
+}) {
+  const drag = useRef<{ id: number; x: number; y: number; moved: boolean } | null>(null);
+  const suppressClick = useRef(false);
+  const [offset, setOffset] = useState<{ x: number; y: number } | null>(null);
+  const id = highlight.selection.id;
+  const color = highlight.color;
+  return (
+    <button
+      type="button"
+      data-pdf-pin={id}
+      data-chat-selection-id={id}
+      data-chat-selection-source={highlight.selection.sourceMessageId}
+      aria-label="Open pin (drag to move)"
+      title={highlight.note ? `Pin: ${highlight.note}` : "Pin: click to open, drag to move"}
+      className="absolute h-[40px] w-[40px] cursor-grab touch-none border-0 bg-transparent p-0 active:cursor-grabbing focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+      style={{
+        left: `${rect.left * 100}%`, top: `${rect.top * 100}%`, pointerEvents: "auto", zIndex: offset ? 6 : 5,
+        transform: `translate(${(offset?.x ?? 0) - PIN_TIP.x}px, ${(offset?.y ?? 0) - PIN_TIP.y}px)`,
+      }}
+      onPointerDown={event => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        drag.current = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={event => {
+        const current = drag.current;
+        if (!current || current.id !== event.pointerId) return;
+        const dx = event.clientX - current.x, dy = event.clientY - current.y;
+        if (!current.moved && Math.hypot(dx, dy) < 4) return;
+        current.moved = true;
+        setOffset({ x: dx, y: dy });
+      }}
+      onPointerUp={event => {
+        const current = drag.current;
+        if (!current || current.id !== event.pointerId) return;
+        drag.current = null;
+        setOffset(null);
+        if (!current.moved) return;
+        suppressClick.current = true;
+        // The needle's tip lands on whichever page is under it; off the pages it springs back.
+        const box = event.currentTarget.getBoundingClientRect();
+        const x = box.left + PIN_TIP.x, y = box.top + PIN_TIP.y;
+        const target = document.elementsFromPoint(x, y)
+          .map(element => element.closest<HTMLElement>(".page[data-page-number]"))
+          .find(Boolean);
+        if (!target) return;
+        const bounds = pdfPageBounds(target, "content");
+        const left = Math.min(0.999, Math.max(0, (x - bounds.left) / bounds.width));
+        const top = Math.min(0.999, Math.max(0, (y - bounds.top) / bounds.height));
+        onMove({ page: Number(target.dataset.pageNumber), left, top, width: 0.001, height: 0.001 });
+      }}
+      onLostPointerCapture={() => { drag.current = null; setOffset(null); }}
+      onClick={event => {
+        event.stopPropagation();
+        if (suppressClick.current) { suppressClick.current = false; return; }
+        onOpen(event.currentTarget.getBoundingClientRect());
+      }}
+    >
+      <svg viewBox="0 0 40 40" className="h-full w-full overflow-visible" aria-hidden>
+        <defs>
+          {/* Cylinder shading, lit from the upper left. */}
+          <linearGradient id={`pin-body-${id}`} x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" style={{ stopColor: `var(--selection-highlight-${color}-line)` }} />
+            <stop offset="30%" stopColor="#fff" stopOpacity={0.9} />
+            <stop offset="45%" style={{ stopColor: `var(--selection-highlight-${color})` }} />
+            <stop offset="100%" style={{ stopColor: `var(--selection-highlight-${color}-line)` }} />
+          </linearGradient>
+          <radialGradient id={`pin-cap-${id}`} cx="40%" cy="35%" r="70%">
+            <stop offset="0%" stopColor="#fff" stopOpacity={0.85} />
+            <stop offset="45%" style={{ stopColor: `var(--selection-highlight-${color})` }} />
+            <stop offset="100%" style={{ stopColor: `var(--selection-highlight-${color}-hover)` }} />
+          </radialGradient>
+          <linearGradient id={`pin-needle-${id}`} x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#8a8f94" />
+            <stop offset="40%" stopColor="#f5f7f8" />
+            <stop offset="100%" stopColor="#5f656b" />
+          </linearGradient>
+        </defs>
+        {/* Shadow cast on the page, falling away from the light. */}
+        <ellipse cx={PIN_TIP.x + 9} cy={PIN_TIP.y - 2} rx="9" ry="3.2" transform={`rotate(-28 ${PIN_TIP.x + 9} ${PIN_TIP.y - 2})`} fill="#000" opacity="0.16" />
+        <ellipse cx={PIN_TIP.x} cy={PIN_TIP.y} rx="2.2" ry="1" fill="#000" opacity="0.32" />
+        {/* An upright pushpin drawn point-down at the origin, then tilted into the page. */}
+        <g transform={`translate(${PIN_TIP.x} ${PIN_TIP.y}) rotate(32)`} strokeWidth="0.7"
+          style={{ stroke: `color-mix(in srgb, var(--selection-highlight-${color}-line) 75%, black)` }}>
+          <path d="M-0.9 -12 L0.9 -12 L0.15 -0.6 L0 0 L-0.15 -0.6 Z" fill={`url(#pin-needle-${id})`} stroke="#4d5358" strokeWidth="0.3" />
+          <path d="M-7 -14.5 L7 -14.5 L7 -12.6 A7 2.2 0 0 1 -7 -12.6 Z" fill={`url(#pin-body-${id})`} />
+          <ellipse cx="0" cy="-14.5" rx="7" ry="2.2" fill={`url(#pin-cap-${id})`} />
+          <path d="M-3.4 -25 L3.4 -25 L4.2 -15 A4.2 1.4 0 0 1 -4.2 -15 Z" fill={`url(#pin-body-${id})`} />
+          <path d="M-8.5 -32 L8.5 -32 L8.5 -26.5 A8.5 2.6 0 0 1 -8.5 -26.5 Z" fill={`url(#pin-body-${id})`} />
+          <ellipse cx="0" cy="-32" rx="8.5" ry="2.6" fill={`url(#pin-cap-${id})`} />
+          <ellipse cx="-2.6" cy="-32.4" rx="3" ry="0.9" fill="#fff" opacity="0.75" stroke="none" />
+        </g>
+      </svg>
+    </button>
+  );
+}
+
+/** As in chat, only a plain highlight carries a note mark; question passages stay yellow. */
+function notedPassage(highlight: PdfHighlight) {
+  return Boolean(highlight.note) && highlight.selection.mode !== "inline" && !highlight.chatQuestion && !highlight.conversationId;
+}
+
+/** Chat's mark look on a PDF: a tint that deepens with a ring on hover; a noted passage is a dotted underline. */
+function markStyle(highlight: PdfHighlight, hovered: boolean) {
+  const question = highlight.selection.mode === "inline" || highlight.chatQuestion || highlight.conversationId;
+  if (notedPassage(highlight)) {
+    return { backgroundColor: "transparent", borderBottom: "1.5px dotted rgb(0 0 0 / 0.75)" };
+  }
+  const tone = question ? "--selection-yellow" : `--selection-highlight-${highlight.color}`;
+  return hovered ? {
+    backgroundColor: `color-mix(in srgb, var(${tone}-hover) 55%, transparent)`,
+    boxShadow: `0 0 0 2px color-mix(in srgb, var(${tone}-line) 48%, transparent)`,
+  } : { backgroundColor: `color-mix(in srgb, var(${tone}) 45%, transparent)` };
 }

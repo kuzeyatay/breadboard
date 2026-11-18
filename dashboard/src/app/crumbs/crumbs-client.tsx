@@ -1,18 +1,21 @@
 "use client";
 
+import DefaultAvatar, { BREAD_AVATAR_SRC } from "@/app/components/default-avatar";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode, type MouseEvent, type KeyboardEvent } from "react";
-import { ArrowLeft, BookOpen, ExternalLink, Flag, Globe2, Link2, Lock, LogOut, MessageCircle, MessageSquare, Plus, ShieldCheck, Trash2, UserPlus, UsersRound, X } from "lucide-react";
+import { ArrowLeft, BookOpen, ExternalLink, Flag, Globe2, Link2, Lock, LogOut, MessageCircle, MessageSquare, MinusCircle, Plus, ShieldCheck, Trash2, UserPlus, UsersRound, X } from "lucide-react";
 import CrumbsIcon from "@/app/components/crumbs-icon";
 import { shortHandle } from "@/lib/crumbs/handle";
+import type { FeedInteraction } from "@/lib/crumbs/feed-ranking";
 import { usePageLoading } from "@/app/components/use-page-loading";
 import { openBrowserInDesktop } from "@/lib/desktop-browser-tabs";
 import { annotationTargetKey, type AnnotationResponse, type BrowserAnnotationTarget } from "@/lib/browser-annotations";
 import CrumbNotes from "./crumb-notes";
-import { PostAction, PostCard, PostLabel, PostMenu, PostMenuItem } from "./post-card";
+import { observeFeedReading } from "./feed-reading";
+import { PostAction, PostCard, PostMenu, PostMenuItem } from "./post-card";
 import styles from "./crumbs.module.css";
 
 interface Person { did: string; handle: string | null; displayName: string | null; avatar: string | null }
-export interface CrumbsStatus { signedIn: boolean; needsSignIn: boolean; did: string | null; handle: string | null; displayName: string | null; avatar: string | null; defaultVisibility: string; servers: { indexer: string; orgStore: string }; publicMode: "records" | "posts" }
+export interface CrumbsStatus { personalizeFeed: boolean; signedIn: boolean; needsSignIn: boolean; did: string | null; handle: string | null; displayName: string | null; avatar: string | null; defaultVisibility: string; servers: { indexer: string; orgStore: string }; publicMode: "records" | "posts" }
 type Status = CrumbsStatus;
 interface FeedItem { id: string; author: Person; url: string; title: string; target: BrowserAnnotationTarget; comment: string; source: string | null; createdAt: string; threadCount: number; own: boolean; audience: string; /** Where replies to it go, when that is not the tab it is shown in. */ scope?: string; state?: string; reason?: string | null; note?: { uri: string; body: string; source: string | null }; noteCount?: number; /** The crumb that started the thread, when this one is a reply. */ parent?: FeedItem }
 interface Org { id: string; name: string; role: "admin" | "member"; ready: boolean; /** Set when it is connected to a Breadboard organization: its crumbs are that organization's crumbs room. */ crumbsRoom?: string | null }
@@ -31,6 +34,11 @@ const act = <T,>(body: Record<string, unknown>) => fetch("/api/crumbs", { method
 const message = (error: unknown) => error instanceof Error ? error.message : "Something went wrong. Try again.";
 const nameOf = (person: Person) => person.displayName || shortHandle(person.handle) || "Someone";
 async function openSite(url: string) { if (!await openBrowserInDesktop({ url })) window.open(url, "_blank", "noopener"); }
+const feedPreferenceEvent = "crumbs-feed-preference";
+function sendActivity(item: FeedItem, kind: FeedInteraction) {
+  return act({ action: "feed-feedback", id: item.id, kind, title: item.title, url: item.target.url,
+    text: ((item.target.quote ?? "").slice(0, 500) + " " + item.comment).slice(0, 1200) });
+}
 function ago(value: string) {
   const minutes = Math.max(0, Math.round((Date.now() - Date.parse(value)) / 60000));
   if (minutes < 1) return "now";
@@ -48,10 +56,10 @@ async function loadAccount() {
 }
 
 function Avatar({ person, size = 36 }: { person: Person; size?: number }) {
-  const [failed, setFailed] = useState<string | null>(null);
-  // eslint-disable-next-line @next/next/no-img-element
-  return person.avatar && failed !== person.avatar ? <img className={styles.avatar} style={{ width: size, height: size }} src={person.avatar} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(person.avatar)} />
-    : <span className={styles.avatar} style={{ width: size, height: size, fontSize: size * 0.42 }} aria-hidden="true">{nameOf(person).charAt(0).toUpperCase()}</span>;
+  // The shared default when there is no photo, as for organizations and their workspaces.
+  // Room agents arrive with no handle; Bread keeps its own picture.
+  const bread = !person.avatar && !person.handle && person.displayName === "Bread";
+  return <DefaultAvatar src={bread ? BREAD_AVATAR_SRC : person.avatar} size={size} className={styles.avatar} />;
 }
 function Problem({ text, retry }: { text: string; retry?: () => void }) {
   return <p className={styles.error} role="alert">{text}{retry && <> <button type="button" onClick={retry}>Try again</button></>}</p>;
@@ -113,7 +121,9 @@ export default function CrumbsClient({ initialTab, initialOrg }: { initialTab?: 
     loadAccount().then(data => { if (alive) apply(data); }).catch(error => { if (alive) setError(message(error)); });
     const onFocus = () => { if (!document.hidden) loadAccount().then(data => { if (alive) apply(data); }).catch(() => {}); };
     window.addEventListener("focus", onFocus);
-    return () => { alive = false; window.removeEventListener("focus", onFocus); };
+    const channel = new BroadcastChannel(feedPreferenceEvent);
+    channel.onmessage = () => { if (alive) void view<Status>("view=status").then(next => { if (alive) setStatus(next); }).catch(() => {}); };
+    return () => { alive = false; channel.close(); window.removeEventListener("focus", onFocus); };
   }, [apply]);
   const me: Person | null = status?.signedIn ? { did: status.did!, handle: status.handle, displayName: status.displayName, avatar: status.avatar } : null;
   const accountButton = me && <button type="button" className={styles.me} aria-label="Your profile" title="Your profile" onClick={() => setProfile(true)}><Avatar person={me} size={32} /></button>;
@@ -150,7 +160,7 @@ function Bar({ title, onBack, right, children }: { title: ReactNode; onBack?: ()
 }
 
 /** One crumb in the timeline: who, what they said, the passage it is about, and what you can do with it. */
-function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen, thread: line }: { item: FeedItem; scope: string; signedIn: boolean; onRemoved: () => void; detail?: boolean; onOpen?: () => void; /** Where it sits in a reply shown under the crumb it answers. */ thread?: "parent" | "child" }) {
+function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen, track, onDismiss, thread: line }: { item: FeedItem; scope: string; signedIn: boolean; onRemoved: () => void; detail?: boolean; onOpen?: () => void; track?: boolean; onDismiss?: (item: FeedItem) => void; /** Where it sits in a reply shown under the crumb it answers. */ thread?: "parent" | "child" }) {
   const [thread, setThread] = useState<AnnotationResponse | null>(null);
   const [text, setText] = useState("");
   const [reporting, setReporting] = useState(false);
@@ -162,6 +172,10 @@ function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen, thread: line 
   // Replies are crumbs on the same passage, in the same place this one lives.
   const audience = item.scope ?? (scope.startsWith("org:") || scope.startsWith("room:") ? scope : "public");
   const isPublic = audience === "public" && item.audience === "Public";
+  function openSource(url: string) {
+    if (track) void sendActivity(item, "source").catch(() => {});
+    void openSite(url);
+  }
   async function loadThread() {
     const query = new URLSearchParams({ scope: audience, url: item.target.url });
     const page = await fetch(`/api/browser/annotations?${query}`, { cache: "no-store" }).then(read<AnnotationResponse>);
@@ -222,7 +236,14 @@ function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen, thread: line 
     time={detail ? undefined : <time dateTime={item.createdAt} title={new Date(item.createdAt).toLocaleString()}>{ago(item.createdAt)}</time>}
     menu={<PostMenu label={`More for ${name}’s crumb`}>
       <PostMenuItem icon={<Link2 size={18} />} onClick={() => void navigator.clipboard?.writeText(item.url)}>Copy link to passage</PostMenuItem>
-      {item.source && <PostMenuItem icon={<BookOpen size={18} />} onClick={() => void openSite(item.source!)}>Open the source</PostMenuItem>}
+      {item.source && <PostMenuItem icon={<BookOpen size={18} />} onClick={() => openSource(item.source!)}>Open the source</PostMenuItem>}
+      {onDismiss && <PostMenuItem icon={<Plus size={18} />} disabled={busy} onClick={() => void run(async () => {
+        await sendActivity(item.parent ?? item, "more"); setNotice("You’ll see more crumbs like this.");
+      })}>Show more like this</PostMenuItem>}
+      {onDismiss && <PostMenuItem icon={<MinusCircle size={18} />} disabled={busy} onClick={() => void run(async () => {
+        const root = item.parent ?? item;
+        await sendActivity(root, "less"); onDismiss(root);
+      })}>Show fewer like this</PostMenuItem>}
       {signedIn && !item.own && <PostMenuItem icon={<Flag size={18} />} onClick={report}>Report this crumb</PostMenuItem>}
       {item.own && <PostMenuItem icon={<Trash2 size={18} />} danger disabled={busy} onClick={remove}>Delete</PostMenuItem>}
     </PostMenu>}
@@ -231,7 +252,7 @@ function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen, thread: line 
         onClick={() => { setReporting(false); if (detail) field.current?.focus(); else onOpen?.(); }} />
       {isPublic && <PostAction icon={<UsersRound size={detail ? 20 : 18} />} count={noteCount || undefined} aria-expanded={notesOpen} label={noteCount > 0 ? `${noteCount} ${noteCount === 1 ? "note" : "notes"}` : "Add note"} onClick={() => setNotesOpen(value => !value)} />}
     </>}
-    endActions={<PostAction icon={<ExternalLink size={detail ? 20 : 18} />} label="Open the page" onClick={() => void openSite(item.url)} />}
+    endActions={<PostAction icon={<ExternalLink size={detail ? 20 : 18} />} label="Open the page" onClick={() => openSource(item.url)} />}
     after={<>
       {error && <Problem text={error} />}
       {notice && <p className={styles.notice} role="status">{notice}</p>}
@@ -239,7 +260,7 @@ function Crumb({ item, scope, signedIn, onRemoved, detail, onOpen, thread: line 
     </>}>
     {item.state && item.state !== "visible" && <p className={styles.state} data-state={item.state}>{item.state === "rejected" ? `Not shown${item.reason ? `: ${item.reason}` : ""}` : STATES[item.state] ?? "Hidden"}</p>}
     {item.comment && <p className={styles.comment}>{item.comment}</p>}
-    {!reply && <button type="button" className={styles.source} onClick={() => void openSite(item.url)} title="Open the page at this passage">
+    {!reply && <button type="button" className={styles.source} onClick={() => openSource(item.url)} title="Open the page at this passage">
       <strong>{item.title || host}</strong>
       {item.target.kind === "text" && item.target.quote && <q>{item.target.quote}</q>}
       <small><Globe2 size={12} />{host}</small>
@@ -282,7 +303,7 @@ function threads(items: FeedItem[]): Array<[FeedItem, FeedItem?]> {
 const STATES: Record<string, string> = { pending: "Waiting for review", reported: "Hidden after reports", hidden: "Hidden by a moderator" };
 
 function Feed({ status, fixedScope, title, onBack, right, intro, organizations = [], initialTab, initialOrg }: { status: Status; orgs: Org[]; fixedScope?: string; title?: ReactNode; onBack?: () => void; right?: ReactNode; intro?: ReactNode; organizations?: OrgFeed[]; initialTab?: "organizations"; initialOrg?: string }) {
-  const [tab, setTab] = useState(fixedScope ?? initialTab ?? (status.signedIn ? "following" : "everyone"));
+  const [tab, setTab] = useState(fixedScope ?? initialTab ?? (status.signedIn && !status.personalizeFeed ? "following" : "everyone"));
   const [org, setOrg] = useState(initialOrg ?? "");
   // The organization picked, else the first one there is; nothing to read until there is one.
   const chosenOrg = organizations.some(item => item.scope === org) ? org : organizations[0]?.scope ?? "";
@@ -305,7 +326,7 @@ function Feed({ status, fixedScope, title, onBack, right, intro, organizations =
     } catch (error) { if (id === request.current) setError(message(error)); }
     finally { if (id === request.current) setLoading(false); }
   }, [scope, tab]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, status.personalizeFeed]);
   function choose(nextTab: string, nextOrg = org) {
     if (nextTab === tab && nextOrg === org) return;
     const nextScope = nextTab === "organizations" ? (organizations.some(item => item.scope === nextOrg) ? nextOrg : organizations[0]?.scope ?? "") : nextTab;
@@ -323,7 +344,28 @@ function Feed({ status, fixedScope, title, onBack, right, intro, organizations =
   }, [fixedScope, load]);
   const [selected, setSelected] = useState<FeedItem | null>(null);
   const list = useRef<HTMLElement>(null);
-  function open(item: FeedItem) { setSelected(item); requestAnimationFrame(() => list.current?.scrollIntoView({ block: "start" })); }
+  const track = status.personalizeFeed && (scope === "everyone" || scope === "following");
+  useEffect(() => {
+    if (!track || !list.current) return;
+    const byId = new Map<string, FeedItem>();
+    for (const item of selected ? [selected] : items) {
+      byId.set(item.id, item);
+      if (item.parent) byId.set(item.parent.id, item.parent);
+    }
+    const cards = [...list.current.querySelectorAll<HTMLElement>(selected ? "[data-crumb][data-detail]" : "[data-crumb]")];
+    return observeFeedReading(cards, (id, kind) => {
+      const item = byId.get(id);
+      if (item) void sendActivity(item, kind).catch(() => {});
+    });
+  }, [items, selected, track]);
+  const onDismiss = track && scope === "everyone" ? (root: FeedItem) => {
+    setItems(current => current.filter(item => (item.parent ?? item).id !== root.id));
+    setSelected(null);
+  } : undefined;
+  function open(item: FeedItem, clicked = item) {
+    if (track) void sendActivity(clicked, "open").catch(() => {});
+    setSelected(item); requestAnimationFrame(() => list.current?.scrollIntoView({ block: "start" }));
+  }
   function back() {
     const id = selected?.id;
     setSelected(null);
@@ -344,7 +386,7 @@ function Feed({ status, fixedScope, title, onBack, right, intro, organizations =
 
   return <section aria-label="Feed" className={styles.timeline} ref={list}>
     {header}
-    {selected && <Crumb key={selected.id} detail item={selected} scope={scope} signedIn={status.signedIn} onRemoved={() => { setItems(previous => previous.filter(other => other.id !== selected.id)); setSelected(null); }} />}
+    {selected && <Crumb key={selected.id} detail item={selected} scope={scope} signedIn={status.signedIn} track={track} onDismiss={onDismiss} onRemoved={() => { setItems(previous => previous.filter(other => other.id !== selected.id)); setSelected(null); }} />}
     <div hidden={Boolean(selected)}>
       {intro}
       {error && <Problem text={error} retry={() => void load()} />}
@@ -354,10 +396,10 @@ function Feed({ status, fixedScope, title, onBack, right, intro, organizations =
           // Either row opens the whole thread: the crumb that started it, with its replies below.
           return latest
             ? <div key={latest.id} className={styles.slice}>
-              <Crumb item={first} thread="parent" scope={scope} signedIn={status.signedIn} onOpen={() => open(first)} onRemoved={remove(first.id)} />
-              <Crumb item={latest} thread="child" scope={scope} signedIn={status.signedIn} onOpen={() => open(first)} onRemoved={remove(latest.id)} />
+              <Crumb item={first} thread="parent" scope={scope} signedIn={status.signedIn} track={track} onDismiss={onDismiss} onOpen={() => open(first)} onRemoved={remove(first.id)} />
+              <Crumb item={latest} thread="child" scope={scope} signedIn={status.signedIn} track={track} onDismiss={onDismiss} onOpen={() => open(first, latest)} onRemoved={remove(latest.id)} />
             </div>
-            : <Crumb key={first.id} item={first} scope={scope} signedIn={status.signedIn} onOpen={() => open(first)} onRemoved={remove(first.id)} />;
+            : <Crumb key={first.id} item={first} scope={scope} signedIn={status.signedIn} track={track} onDismiss={onDismiss} onOpen={() => open(first)} onRemoved={remove(first.id)} />;
         })}
       </div>
       {!loading && !error && items.length === 0 && <div className={styles.emptyState}>
@@ -491,6 +533,8 @@ function Account({ status, orgs, refresh }: { status: Status; orgs: Org[]; refre
  */
 export function CrumbsAccountSection({ onStatus }: { onStatus?: (status: CrumbsStatus) => void }) {
   const [state, setState] = useState<Awaited<ReturnType<typeof loadAccount>> | null>(null);
+  const [pendingFeed, setPendingFeed] = useState<boolean | null>(null);
+  const preferenceRevision = useRef(0);
   const [error, setError] = useState("");
   const report = useRef(onStatus);
   useEffect(() => { report.current = onStatus; }, [onStatus]);
@@ -499,12 +543,31 @@ export function CrumbsAccountSection({ onStatus }: { onStatus?: (status: CrumbsS
   useEffect(() => {
     let alive = true;
     loadAccount().then(data => { if (alive) apply(data); }).catch(error => { if (alive) setError(message(error)); });
-    const onFocus = () => { if (!document.hidden) loadAccount().then(data => { if (alive) apply(data); }).catch(() => {}); };
+    const onFocus = () => {
+      const revision = preferenceRevision.current;
+      if (!document.hidden) loadAccount().then(data => { if (alive && revision === preferenceRevision.current) apply(data); }).catch(() => {});
+    };
     window.addEventListener("focus", onFocus);
     return () => { alive = false; window.removeEventListener("focus", onFocus); };
   }, [apply]);
+  async function changeFeed(enabled: boolean) {
+    preferenceRevision.current++;
+    setPendingFeed(enabled); setError("");
+    try {
+      const status = await act<Status>({ action: "feed-preference", enabled });
+      setState(value => value ? { ...value, status } : value);
+      const channel = new BroadcastChannel(feedPreferenceEvent);
+      channel.postMessage("changed"); channel.close();
+    } catch (error) { setError(message(error)); }
+    finally { preferenceRevision.current++; setPendingFeed(null); }
+  }
   return <div className={styles.embedded}>
     {error && <Problem text={error} retry={() => void refresh().catch(error => setError(message(error)))} />}
+    {state && <div className={styles.card}>
+      <label className={styles.feedSwitch}>Personalize the Everyone feed<input type="checkbox" role="switch" checked={pendingFeed ?? state.status.personalizeFeed} disabled={pendingFeed !== null}
+        aria-describedby="crumbs-feed-description" onChange={event => void changeFeed(event.target.checked)} /></label>
+      <p id="crumbs-feed-description" className={styles.hint}>Uses browser visits, Breadboard chat titles, follows and how you read and respond to public crumbs on this device. Turning it off clears saved feed feedback and shows newest first.</p>
+    </div>}
     {state && <Account status={state.status} orgs={state.orgs} refresh={refresh} />}
     {state?.status.signedIn && <div className={styles.orgSection}>
       <h3>Organizations</h3>

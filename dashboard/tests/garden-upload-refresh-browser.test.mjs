@@ -25,7 +25,7 @@ test("upload rows survive refresh and a new tab, follow progress, and settle wit
         return <section><h2>Documents</h2><RestoredGardenUploadRows uploads={uploads}/>
           <output>{settled}</output>
           {tasks.filter(t => t.clusterSlug === garden && t.state === 'uploading').map(t => <div data-testid="live-upload" key={t.id}>{t.files[0].name}: Uploading…</div>)}
-          <button onClick={() => startGardenUploadTask({clusterSlug:garden,files:[new File(['test'],'lab.pdf')],options:{label:'',handwriting:false,parseWithVlm:false,parseWithAnydoc:false,generateMap:true}})}>Upload</button>
+          <button onClick={() => startGardenUploadTask({clusterSlug:garden,files:[new File(['test'],'lab.pdf')],options:{label:'',handwriting:false,parseWithVlm:false,generateMap:true}})}>Upload</button>
         </section>;
       }
       function App() {

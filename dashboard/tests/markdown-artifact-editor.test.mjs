@@ -42,7 +42,8 @@ test("the editor is user-scoped and reuses Breadboard's chat UI", () => {
 
 test("Bread edits use the open source and reject damaged Markdown", () => {
   assert.match(assistantRoute, /Current Markdown:/);
-  assert.match(assistantRoute, /content is the complete updated Markdown document/);
+  assert.match(assistantRoute, /systemPromptText\("markdown-assistant", userId\)/);
+  assert.match(source("../src/lib/system-prompts/feature-defaults.ts"), /content is the complete updated Markdown document/);
   assert.match(assistantRoute, /normalizeProducedMarkdown\(parsed\.content\)/);
   assert.match(assistantRoute, /markdownIntegrityIssue\(content\)/);
 });

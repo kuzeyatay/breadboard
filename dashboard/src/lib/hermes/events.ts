@@ -5,6 +5,7 @@ import {
 } from "./evidence.ts";
 import {
   generativeUiResourcesFromToolOutput,
+  spotifyPlaybackPrepared,
   type GenerativeUiResource,
 } from "../generative-ui/contracts.ts";
 
@@ -124,6 +125,7 @@ export type NormalizedAgentEvent =
         details?: Record<string, unknown>;
         websites?: EvidenceWebsite[];
         uiResources?: GenerativeUiResource[];
+        spotifyPlaybackPrepared?: boolean;
       };
     }
   | {
@@ -411,6 +413,7 @@ export function normalizeHermesEvent(
         const uiResources = status === "completed"
           ? generativeUiResourcesFromToolOutput(toolName, state?.output)
           : [];
+        const prepared = status === "completed" ? spotifyPlaybackPrepared(toolName, state?.output) : undefined;
         return {
           type: "tool.completed",
           sessionId,
@@ -425,6 +428,7 @@ export function normalizeHermesEvent(
               ? { websites, details: { toolName, websites } }
               : {}),
             ...(uiResources.length > 0 ? { uiResources } : {}),
+            ...(prepared !== undefined ? { spotifyPlaybackPrepared: prepared } : {}),
           },
         };
       }

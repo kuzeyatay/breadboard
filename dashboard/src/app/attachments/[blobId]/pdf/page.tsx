@@ -39,7 +39,7 @@ export default async function ChatAttachmentPdfPage({
   searchParams,
 }: {
   params: Promise<{ blobId: string }>;
-  searchParams: Promise<{ name?: string }>;
+  searchParams: Promise<{ name?: string; embedded?: string; temporary?: string }>;
 }) {
   const session = await getServerSession(authOptions);
   if (!session?.user) redirect("/auth/login");
@@ -52,7 +52,7 @@ export default async function ChatAttachmentPdfPage({
   if (!blob || blob.format !== "pdf") notFound();
   touchWebPdfBlob(blob);
 
-  const { name } = await searchParams;
+  const { name, embedded, temporary } = await searchParams;
   const fileName = attachmentDisplayName(name, "pdf", `${blob.blobId}.pdf`);
 
   return (
@@ -62,6 +62,8 @@ export default async function ChatAttachmentPdfPage({
         browserTitle={fileName}
         sourceUrl={`/api/chat-attachments/documents/${encodeURIComponent(blob.blobId)}`}
         readOnly
+        temporary={temporary === "1"}
+        embeddedInBrowser={embedded === "browser"}
         fastRead={getNavbarShortcuts(userId).fastRead}
         showNavbarFlowers={getNavbarFlowers(userId)}
       />

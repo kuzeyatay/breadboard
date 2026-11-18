@@ -47,9 +47,10 @@ export async function GET(
 ) {
   try {
     const userId = await requireUserId();
-    requireEnabled();
     const { sessionId } = await params;
     const surface = requestedSurface(new URL(request.url).searchParams.get("surface"));
+    // The basic Terminal can reopen saved conversations without a live runtime.
+    if (surface !== "dashboard_terminal") requireEnabled();
     const conversation = getConversationForUser(sessionId, userId);
     if (surface !== "dashboard_terminal" && conversation.surface !== surface) {
       throw new ApiError(404, "session_not_found", "This chat is no longer available.");

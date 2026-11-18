@@ -11,6 +11,8 @@ const built = await build({
   alias: { '@': path.join(root, 'src') },
   plugins: [{ name: 'suggestion-route-boundaries', setup(builder) {
     const stubs = {
+      '@/lib/hermes/runtime-store': 'export const getHermesUserSettings=()=>({composerSwitches:{personalize:true}});',
+      '@/lib/personal-context/suggestions': 'export async function selectionLessons(){return [];}',
       '@/lib/server-auth': `export async function requireUserId() {
         const fixture=globalThis.__promptSuggestionRoute;
         if(fixture.denied) throw Object.assign(new Error('Unauthorized'),{status:401});

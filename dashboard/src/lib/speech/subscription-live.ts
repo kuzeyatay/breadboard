@@ -37,6 +37,8 @@ export interface SubscriptionVoice {
   beginTranscript?(): void;
   transcript(): string;
   stopSpeaking(): void;
+  /** Silence the reading in place (true) or let it be heard again (false). */
+  hold?(held: boolean): void;
   /** Open the muted output reader while the host is preparing an answer. */
   prepareSpeaker(): Promise<void>;
   finishTranscript(options?: { settleFinal?: boolean }): Promise<string>;
@@ -494,7 +496,7 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
           check();
           const stats = await peer.getStats();
           if (epoch !== speechEpoch) return;
-          if (player.paused || player.muted || player.volume === 0 || context.state !== 'running') {
+          if (player.paused || player.muted || (player.volume === 0 && !held) || context.state !== 'running') {
             throw new Error('Voice audio playback stopped. Reopen voice to reconnect.');
           }
           const incoming = meter.receivedAudio(stats);
@@ -573,7 +575,11 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
     }
   }
   // The live track is audible only while a guarded reading is in progress.
-  const setAudible = (audible: boolean) => { if (player) player.volume = audible ? 1 : 0; };
+  // A hold (someone made a sound over the reply) silences it without ending the
+  // reading, so a cough or "mm-hmm" can let it carry on.
+  let held = false;
+  let audibleWanted = false;
+  const setAudible = (audible: boolean) => { audibleWanted = audible; if (player) player.volume = audible && !held ? 1 : 0; };
   peer.ontrack = event => {
     const stream = new MediaStream([event.track]);
     player = new Audio();
@@ -780,6 +786,11 @@ async function openSubscriptionVoice(options: SubscriptionVoiceOptions = {}): Pr
     setCallbacks(value) { callbacks = { onTranscript: value.onTranscript, onDisconnect: value.onDisconnect }; },
     setListening(listening: boolean) { inputGain.gain.value = listening ? 1 : 0; },
     setDuplex(enabled: boolean) { duplex = enabled; },
+    hold(next: boolean) {
+      held = next;
+      reader?.hold?.(next);
+      if (player) player.volume = audibleWanted && !held ? 1 : 0;
+    },
     resetTranscript() {
       partial = ""; completed = []; changedAt = inputActivityAt = 0;
       inputEndMs = completedInputEndMs = -1; lastInputFinal = '';

@@ -32,7 +32,21 @@ export interface RetrievalGarden {
   slug: string;
   name: string;
   rootPath: string;
-  knowledge: Pick<ClusterKnowledge, 'nodes'>;
+  knowledge?: Pick<ClusterKnowledge, 'nodes'>;
+  /**
+   * Identity of the Garden's retrieval input (see gardenRetrievalFingerprint).
+   * With it, an unchanged Garden is not re-read: reading and re-chunking
+   * Telecom 1's 4,387 pages took 10-15 s on every chat turn (2026-11-17).
+   */
+  fingerprint?: string;
+  loadNodes?: () => Promise<KnowledgeNode[]>;
+}
+
+/** The fingerprint a Garden was last indexed at. Stored, so a restart does not re-read every Garden. */
+export function indexedFingerprint(database: SqliteDatabase, gardenSlug: string): string | undefined {
+  ensureSemanticRetrievalSchema(database);
+  return (database.prepare('SELECT fingerprint FROM semantic_garden_fingerprints WHERE garden_slug = ?')
+    .get(gardenSlug) as { fingerprint: string } | undefined)?.fingerprint;
 }
 
 export interface RetrievalChunk {
@@ -123,6 +137,13 @@ function jsonStrings(value: string): string[] {
   }
 }
 
+/** The indexed passages of one page, in index order. */
+export function indexedPageChunks(gardenSlug: string, pageRelPath: string, database: SqliteDatabase = db): RetrievalChunk[] {
+  ensureSemanticRetrievalSchema(database);
+  return (database.prepare('SELECT * FROM semantic_chunks WHERE garden_slug = ? AND page_rel_path = ? ORDER BY rowid')
+    .all(gardenSlug, pageRelPath) as ChunkRow[]).map(chunkFromRow);
+}
+
 function chunkFromRow(row: ChunkRow): RetrievalChunk {
   return {
     id: row.id,
@@ -183,6 +204,10 @@ export function ensureSemanticRetrievalSchema(database: SqliteDatabase = db): vo
       dimensions INTEGER NOT NULL,
       created_at TEXT NOT NULL,
       PRIMARY KEY(content_hash, model)
+    );
+    CREATE TABLE IF NOT EXISTS semantic_garden_fingerprints (
+      garden_slug TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS semantic_chunks_fts USING fts5(
       id UNINDEXED,
@@ -292,6 +317,8 @@ export function clearLearnSemanticChunks(
     for (const relPath of normalizedPaths) {
       deletedChunks += deletePageChunks.run(gardenSlug, relPath).changes;
     }
+    // The index no longer matches the recorded fingerprint; force the next re-read.
+    database.prepare('DELETE FROM semantic_garden_fingerprints WHERE garden_slug = ?').run(gardenSlug);
     return { deletedChunks, deletedFtsRows };
   })();
 }
@@ -561,8 +588,15 @@ export async function indexRetrievalGarden(input: {
 }): Promise<{ indexedChunks: number; changedPages: number; embeddingWarning?: string }> {
   const database = input.database ?? db;
   ensureSemanticRetrievalSchema(database);
+  const { fingerprint } = input.garden;
+  if (fingerprint && !input.embeddingProvider && indexedFingerprint(database, input.garden.slug) === fingerprint) {
+    const { n } = database.prepare('SELECT count(*) AS n FROM semantic_chunks WHERE garden_slug = ?')
+      .get(input.garden.slug) as { n: number };
+    return { indexedChunks: n, changedPages: 0 };
+  }
+  const nodes = input.garden.knowledge?.nodes ?? await input.garden.loadNodes?.() ?? [];
   const { registry, claims } = readGardenSemanticArtifacts(input.garden.rootPath, input.garden.slug);
-  const eligibleNodes = input.garden.knowledge.nodes.filter(
+  const eligibleNodes = nodes.filter(
     (node) =>
       node.internal !== 'true' &&
       node.draft !== 'true' &&
@@ -636,6 +670,10 @@ export async function indexRetrievalGarden(input: {
     }
   })();
   const changedPages = changed.length;
+  if (fingerprint) {
+    database.prepare('INSERT OR REPLACE INTO semantic_garden_fingerprints (garden_slug, fingerprint) VALUES (?, ?)')
+      .run(input.garden.slug, fingerprint);
+  }
 
   let embeddingWarning: string | undefined;
   if (input.embeddingProvider) {
@@ -648,12 +686,54 @@ export async function indexRetrievalGarden(input: {
   return { indexedChunks: chunks.length, changedPages, ...(embeddingWarning ? { embeddingWarning } : {}) };
 }
 
+// How a question is asked, not what it is about. Notes rarely say "what", so
+// rarity alone would make it the query's strongest word.
+const QUESTION_WORDS = new Set([
+  'what', 'whats', 'which', 'who', 'whom', 'whose', 'how', 'why', 'when', 'where',
+  'is', 'are', 'was', 'were', 'be', 'do', 'does', 'did', 'can', 'could', 'would', 'should',
+  'the', 'an', 'of', 'to', 'in', 'on', 'for', 'and', 'or', 'it', 'its', 'this', 'that',
+  'me', 'my', 'i', 'you', 'your', 'please', 'tell', 'explain', 'about', 'recap', 'summarize', 'summarise', 'describe', 'meaning', 'meanings', 'intuition',
+  'have', 'has', 'had', 'get', 'mean', 'means', 'meant', 'use', 'used', 'using', 'make', 'work', 'works',
+  'check', 'pick', 'choose', 'draw', 'sketch', 'find', 'show', 'give', 'know', 'understand', 'again',
+  'with', 'from', 'by', 'as', 'at', 'there', 'their', 'they', 'we', 'our', 'some', 'any', 'way', 'ways',
+]);
+
+export function queryTokens(value: string): string[] {
+  return [...new Set(normalizeLookupText(value).split(' ')
+    .filter((token) => token.length > 1 && !QUESTION_WORDS.has(token)))].slice(0, 24);
+}
+
+/** "hyperplane" and "hyperplanes" are one word to a reader; the index has no stemmer. */
+function wordForms(token: string): string[] {
+  if (token.length < 4 || /\d/.test(token)) return [token];
+  return token.endsWith('s') && !token.endsWith('ss') ? [token, token.slice(0, -1)] : [token, `${token}s`];
+}
+
 function ftsQuery(value: string): string {
-  const tokens = normalizeLookupText(value)
-    .split(' ')
-    .filter((token) => token.length > 1)
-    .slice(0, 24);
-  return [...new Set(tokens)].map((token) => `"${token.replace(/"/g, '')}"`).join(' OR ');
+  return [...new Set(queryTokens(value).flatMap(wordForms))]
+    .map((token) => `"${token.replace(/"/g, '')}"`).join(' OR ');
+}
+
+/**
+ * How much each query word says, by how few passages contain it. Without this
+ * "What's the definition of a hyperplane" ranked eight pages titled
+ * "... Definition ..." above the hyperplane pages (2026-11-17): every word
+ * counted the same, and "definition" is in 87 of Math 1's passages while
+ * "hyperplane" is in 13. A word no passage contains cannot match, so it is
+ * left out rather than allowed to dilute the rest.
+ */
+function queryWordWeights(database: SqliteDatabase, query: string, gardenSlugs: string[]): Map<string, number> {
+  const weights = new Map<string, number>();
+  if (!gardenSlugs.length) return weights;
+  const placeholders = gardenSlugs.map(() => '?').join(', ');
+  const total = (database.prepare(`SELECT count(*) AS n FROM semantic_chunks WHERE garden_slug IN (${placeholders})`)
+    .get(...gardenSlugs) as { n: number }).n;
+  const count = database.prepare(`SELECT count(*) AS n FROM semantic_chunks_fts WHERE semantic_chunks_fts MATCH ? AND garden_slug IN (${placeholders})`);
+  for (const token of queryTokens(query)) {
+    const matching = (count.get(wordForms(token).map((form) => `"${form}"`).join(' OR '), ...gardenSlugs) as { n: number }).n;
+    if (matching > 0) weights.set(token, Math.log(1 + total / matching));
+  }
+  return weights;
 }
 
 function cosineSimilarity(left: number[], right: number[]): number {
@@ -677,12 +757,22 @@ function conceptMatches(chunk: RetrievalChunk, slugs: Set<string>): { primary: n
   };
 }
 
-function tokenOverlap(query: string, value: string): number {
-  const queryTokens = new Set(normalizeLookupText(query).split(' ').filter((token) => token.length > 1));
+/** The query's informative words, rarest first, weighted by how few passages in these Gardens contain them. */
+export function queryTermWeights(query: string, gardenSlugs: string[], database: SqliteDatabase = db): Map<string, number> {
+  ensureSemanticRetrievalSchema(database);
+  return new Map([...queryWordWeights(database, query, gardenSlugs)].sort((left, right) => right[1] - left[1]));
+}
+
+/** The share of the query's weight that `value` contains. */
+export function tokenOverlap(weights: Map<string, number>, value: string): number {
   const valueTokens = new Set(normalizeLookupText(value).split(' ').filter(Boolean));
-  let hits = 0;
-  for (const token of queryTokens) if (valueTokens.has(token)) hits += 1;
-  return queryTokens.size > 0 ? hits / queryTokens.size : 0;
+  let hit = 0;
+  let total = 0;
+  for (const [token, weight] of weights) {
+    total += weight;
+    if (wordForms(token).some((form) => valueTokens.has(form))) hit += weight;
+  }
+  return total > 0 ? hit / total : 0;
 }
 
 function relationNeighbors(
@@ -819,16 +909,19 @@ export async function retrieveGraphRag(input: {
   addRank(lexicalRows, 'lexical');
   addRank(semanticRows, 'semantic');
 
+  const weights = queryWordWeights(database, input.query, gardenSlugs);
   for (const chunk of fused.values()) {
     const matches = conceptMatches(chunk, resolvedSlugs);
     chunk.score += matches.primary * 0.18 + matches.supporting * 0.08;
-    chunk.score += tokenOverlap(input.query, chunk.pageTitle) * 0.14;
-    chunk.score += tokenOverlap(input.query, chunk.claimTexts.join(' ')) * 0.12;
+    chunk.score += tokenOverlap(weights, chunk.pageTitle) * 0.14;
+    chunk.score += tokenOverlap(weights, chunk.claimTexts.join(' ')) * 0.12;
     if (chunk.evidenceAnchors.some((anchor) => normalizeLookupText(input.query).includes(normalizeLookupText(anchor)))) {
       chunk.score += 0.25;
     }
-    if (chunk.evidenceAnchors.length > 0) chunk.score += 0.04;
-    chunk.score += chunk.sourcePriority * 0.01;
+    // Tie-breaks only. A rank-1 and a rank-50 lexical hit differ by 0.007, so
+    // the old flat +0.04 for having anchors outranked the match itself.
+    if (chunk.evidenceAnchors.length > 0) chunk.score += 0.0005;
+    chunk.score += chunk.sourcePriority * 0.0002;
   }
 
   for (const garden of input.gardens) {
@@ -912,8 +1005,23 @@ export async function retrieveGraphRag(input: {
       if (selected.length >= maxChunks) break;
     }
   }
-  const context = selected.map((chunk, index) => [
-    `## Retrieved evidence ${index + 1}: ${chunk.pageTitle}`,
+  const context = formatRetrievedEvidence(selected);
+  const sources = [...new Set(selected.map((chunk) => `${chunk.pageTitle} (${chunk.gardenName})`))];
+  return {
+    chunks: selected,
+    resolvedConceptIds: [...resolvedConceptIds].sort(),
+    context,
+    sources,
+    lexicalUsed: lexicalRows.length > 0,
+    semanticUsed,
+    ...(embeddingWarning ? { embeddingWarning } : {}),
+    indexedChunks,
+  };
+}
+
+export function formatRetrievedEvidence(selected: readonly RankedRetrievalChunk[], firstNumber = 1): string {
+  return selected.map((chunk, index) => [
+    `## Retrieved evidence ${index + firstNumber}: ${chunk.pageTitle}`,
     `Garden: ${chunk.gardenName}`,
     chunk.sectionTitle ? `Section: ${chunk.sectionTitle}` : '',
     chunk.heading ? `Heading: ${chunk.heading}` : '',
@@ -928,17 +1036,6 @@ export async function retrieveGraphRag(input: {
     '',
     chunk.content,
   ].filter((line) => line !== '').join('\n')).join('\n\n---\n\n');
-  const sources = [...new Set(selected.map((chunk) => `${chunk.pageTitle} (${chunk.gardenName})`))];
-  return {
-    chunks: selected,
-    resolvedConceptIds: [...resolvedConceptIds].sort(),
-    context,
-    sources,
-    lexicalUsed: lexicalRows.length > 0,
-    semanticUsed,
-    ...(embeddingWarning ? { embeddingWarning } : {}),
-    indexedChunks,
-  };
 }
 
 export function reciprocalRankFusion<T extends { id: string }>(

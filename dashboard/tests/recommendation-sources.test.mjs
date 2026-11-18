@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 import Database from 'better-sqlite3';
 import { generateRecommendations } from './helpers/recommendation-model-fixture.mjs';
+import { parseRecommendations, selectRecommendations } from '../src/lib/recommendations/types.ts';
 
 const root=path.resolve(import.meta.dirname,'..');
 async function bundle(file,mocks) {
@@ -37,7 +38,7 @@ const sources=await bundle('src/lib/recommendations/sources.ts',{
 function fixture(t) {
   const db=new Database(':memory:');t.after(()=>{db.close();delete globalThis.recFixture;});
   db.exec(`CREATE TABLE clusters(id INTEGER PRIMARY KEY,user_id INTEGER,name TEXT,slug TEXT,last_viewed_at TEXT,created_at TEXT);
-    CREATE TABLE conversations(id INTEGER PRIMARY KEY,user_id INTEGER,title TEXT,default_garden_id INTEGER,temporary INTEGER,updated_at TEXT);
+    CREATE TABLE conversations(id INTEGER PRIMARY KEY,user_id INTEGER,title TEXT,default_garden_id INTEGER,temporary INTEGER,updated_at TEXT,public_id TEXT NOT NULL UNIQUE);
     CREATE TABLE conversation_messages(conversation_id INTEGER,content TEXT,status TEXT,order_index INTEGER,role TEXT NOT NULL DEFAULT 'assistant',client_message_id TEXT,metadata TEXT);
     CREATE TABLE plan_projects(id INTEGER PRIMARY KEY,user_id INTEGER,name TEXT,archived INTEGER);
     CREATE TABLE plan_tasks(id INTEGER PRIMARY KEY,user_id INTEGER,project_id INTEGER,title TEXT,description TEXT,due_date TEXT,completed_at TEXT,updated_at TEXT);
@@ -47,7 +48,7 @@ function fixture(t) {
       (3,1,1,'Completed task','',NULL,datetime('now'),datetime('now')),
       (4,1,3,'Archived task','',NULL,NULL,datetime('now'));
     INSERT INTO clusters VALUES(1,1,'Circuits','circuits',datetime('now'),datetime('now')),(2,2,'Private other garden','secret',datetime('now'),datetime('now'));
-    INSERT INTO conversations VALUES(1,1,'My lab notes',1,0,datetime('now')),(2,2,'Other user secret',2,0,datetime('now')),(3,1,'Temporary secret',1,1,datetime('now'));
+    INSERT INTO conversations VALUES(1,1,'My lab notes',1,0,datetime('now'),'conv_lab'),(2,2,'Other user secret',2,0,datetime('now'),'conv_other'),(3,1,'Temporary secret',1,1,datetime('now'),'conv_temp');
     INSERT INTO conversation_messages VALUES(1,'Can you check my circuit measurements?','complete',0,'user','turn',NULL),
       (1,'Review the transient result','complete',1,'assistant','turn',NULL),(2,'Private body','complete',1,'user','other',NULL),(3,'Off the record','complete',1,'user','temp',NULL);`);
   const calls=[];
@@ -70,6 +71,13 @@ test('real adapters read connected mail/calendar and permitted Recall using only
   const state=fixture(t);
   const evidence=await sources.readRecommendationEvidence(1,{});
   assert.ok(['gmail','outlook','calendar','recall','chat','task'].every(source=>evidence.some(item=>item.source===source)));
+  const chats = evidence.filter(item => item.source === 'chat');
+  assert.deepEqual(chats.map(item => item.conversationId), ['conv_lab']);
+  const proposal = {prompt:'Check the transient result against my circuit measurements.',sourceIds:['chat:1'],conversationId:'conv_other'};
+  const [card] = selectRecommendations(parseRecommendations([proposal], chats), chats);
+  assert.equal(card.conversationId, 'conv_lab');
+  const [restored] = selectRecommendations([], chats, [{...card, conversationId:undefined}]);
+  assert.equal(restored.conversationId, 'conv_lab');
   assert.ok(!evidence.some(item=>item.source==='garden'),'opening a garden is not a home-screen signal');
   assert.ok(state.calls.every(call=>call.connectedAccountId.startsWith('1:')));
   assert.doesNotMatch(JSON.stringify(evidence),/Other user|Temporary secret|Off the record|Private body|Private other|Other task secret|Completed task|Archived task/);
@@ -78,7 +86,7 @@ test('real adapters read connected mail/calendar and permitted Recall using only
 
 test('a reminder-only Telegram transcript is excluded, while an actual exchange in the same thread survives', async t => {
   const state = fixture(t);
-  state.db.exec(`INSERT INTO conversations VALUES(5,1,'Telegram · Alex: ⏰ In 20 minutes: Courses open for registration',1,0,datetime('now'));
+  state.db.exec(`INSERT INTO conversations VALUES(5,1,'Telegram · Alex: ⏰ In 20 minutes: Courses open for registration',1,0,datetime('now'),'conv_telegram');
     INSERT INTO conversation_messages VALUES(5,'⏰ In 20 minutes: Courses open for registration','complete',0,'assistant','external-outbound-telegram-x',NULL),
       (5,'Remind me in 20 minutes','complete',1,'user','receipt','{"scheduledChatReceipt":{}}'),
       (5,'Check tomorrow’s weather in Delft','complete',2,'user','schedule-9-123',NULL),
@@ -267,7 +275,7 @@ test('a Google meeting conflicts with a named Breadboard event; a free mirror an
 test('garden reads stay inside the selected owned garden without querying account-wide providers',async t=>{
   const state=fixture(t);
   state.db.exec(`INSERT INTO clusters VALUES(3,1,'Neuro','neuro',datetime('now'),datetime('now'));
-    INSERT INTO conversations VALUES(4,1,'Neuro room problem',3,0,datetime('now'));
+    INSERT INTO conversations VALUES(4,1,'Neuro room problem',3,0,datetime('now'),'conv_neuro');
     INSERT INTO conversation_messages VALUES(4,'Check the conflicting room numbers','complete',1,'user','neuro',NULL);`);
   state.connections=()=>assert.fail('No account-wide connected apps in a garden');
   state.recall=()=>assert.fail('Unscoped screen captures cannot establish garden membership');
@@ -299,4 +307,14 @@ test('recommendation route enforces authentication and skips private context for
   assert.equal((await route.POST(request({}))).status,401);
   assert.equal(globalThis.recRoute.calls.length,1);
   delete globalThis.recRoute;
+});
+
+test('the PDF assistant scopes personal suggestions to the open document and uses its page for the question cards', async () => {
+  const { readFileSync } = await import('node:fs');
+  const pdf = readFileSync(path.join(root, 'src/app/components/pdf-assistant.tsx'), 'utf8');
+  const panel = pdf.slice(pdf.indexOf('<AgentRuntimePanel'), pdf.indexOf('sessionId={session.sessionId}', pdf.indexOf('<AgentRuntimePanel')));
+  assert.match(panel, /personalizedSuggestions=\{!temporary\}/);
+  assert.match(panel, /suggestionPageTitle=\{title\}/);
+  assert.match(panel, /gardenSlug=\{gardenSlug\}/);
+  assert.match(pdf, /fetch\("\/api\/pdf-suggestions"/);
 });

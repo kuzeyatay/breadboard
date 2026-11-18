@@ -267,7 +267,7 @@ export function updateDurableMemoryContent(
       .get(memoryId, userId) as DurableMemoryRow | undefined;
     if (!memory) return { status: "not_found" };
 
-    const memoryKey = stableMemoryKey(memory.kind, content);
+    const memoryKey = memory.memory_key?.startsWith("convention:") ? memory.memory_key : stableMemoryKey(memory.kind, content);
     const conflict = database
       .prepare(
         `SELECT id FROM durable_memories

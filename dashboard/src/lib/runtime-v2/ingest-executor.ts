@@ -35,6 +35,7 @@ import {
 } from "@/lib/document-safety";
 import {
   ANYDOC_VERSION,
+  anydocAvailability,
   convertWithAnydoc,
 } from "@/lib/anydoc/convert";
 import type {
@@ -2536,46 +2537,140 @@ export async function runIngest({
   // anydoc reads document packages. When it is requested alongside the VLM for
   // a PDF, both readers run: the VLM remains the visual primary and anydoc is
   // retained as a text-layer cross-check in the source note and map input.
-  const anydocFormat = parseWithAnydoc ? anydocFormatForExtension(ext) : null;
+  //
+  // anydoc is always on (the old opt-in flag is ignored) whenever its binary is
+  // installed: a document with a real text layer is read from that text, and
+  // model calls are kept for figures and concept extraction. "Handwriting /
+  // model OCR" opts a PDF or image out so the model transcribes the pixels.
+  void parseWithAnydoc;
+  let modelOcr = isHandwriting;
+  const anydocFormat =
+    (await anydocAvailability()).available
+      ? anydocFormatForExtension(ext)
+      : null;
   const useAnydoc = Boolean(anydocFormat);
   let anydocApplied = false;
-  if (parseWithAnydoc && !anydocFormat) {
-    screenshotWarning = joinWarnings(
-      screenshotWarning,
-      `${filename} is not a format anydoc converts, so it was read directly instead.`,
-    );
+
+  let anydocConversion: AnydocConversion | null = null;
+  if (useAnydoc && !useVlm && !(modelOcr && ext === "pdf")) {
+    throwIfRequestAborted(request.signal);
+    try {
+      anydocConversion = await convertWithAnydoc({
+        bytes: await fileBytes(),
+        ext,
+        saveImage: anydocImageSaver({
+          contentPath,
+          clusterSlug: normalizedClusterSlug,
+          baseName: nameWithoutExt,
+          createdFilePaths,
+          knowledgeWriteTransaction,
+        }),
+        onProgress: emit,
+      });
+    } catch (error) {
+      if (
+        error instanceof UploadAbortedError ||
+        (error instanceof Error && error.name === "AbortError")
+      ) {
+        throw error;
+      }
+      screenshotWarning = joinWarnings(
+        screenshotWarning,
+        `anydoc could not convert ${filename} (${errorMessage(error, "conversion failed")}), so it was read directly instead.`,
+      );
+    }
+    throwIfRequestAborted(request.signal);
+    // No copy-pastable text (a scan, or handwriting saved as PDF): let the
+    // model OCR the pages instead of saving an empty note.
+    if (
+      anydocConversion &&
+      ext === "pdf" &&
+      anydocConversion.sections
+        .map((section) => section.text)
+        .join(" ")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean).length < 30
+    ) {
+      anydocConversion = null;
+      modelOcr = true;
+      emit("No copyable text in this PDF — reading the pages with model OCR…");
+    }
   }
 
-  if (useAnydoc && !useVlm) {
-    throwIfRequestAborted(request.signal);
+  // A VLM pass over the PDF pages that keeps only what it detects as figures:
+  // they are cropped and stored, and the page embeds are returned. Text comes
+  // from elsewhere (the text layer or the model OCR). Never fails the upload.
+  const extractPdfFigures = async (
+    buffer: Buffer,
+    sourceFilePath: string,
+  ): Promise<Array<{ pageNumber: number; text: string }> | null> => {
+    collectReleasedPdfBatchMemory();
+    try {
+      emit("Extracting figures with the VLM…");
+      const config = getVlmOcrConfig();
+      const checkpoint = pdfVlmCheckpointLocation({
+        contentPath,
+        clusterSlug: normalizedClusterSlug,
+        filename: `${filename}-figures`,
+        buffer,
+        config,
+        task: vlmTask,
+      });
+      completedVlmCheckpointPath = checkpoint.filePath;
+      const { vlm } = await parsePdfPagesWithVlm({
+        buffer,
+        sourceFilePath,
+        config,
+        task: vlmTask,
+        signal: request.signal,
+        onProgress: emit,
+        saveFigure: vlmFigureSaver({
+          contentPath,
+          clusterSlug: normalizedClusterSlug,
+          baseName: nameWithoutExt,
+          createdFilePaths,
+          knowledgeWriteTransaction,
+        }),
+        checkpoint,
+      });
+      figureCount += vlm.figureCount;
+      screenshotWarning = joinWarnings(screenshotWarning, vlm.warnings.join(" "));
+      return vlm.pages;
+    } catch (error) {
+      if (
+        error instanceof UploadAbortedError ||
+        (error instanceof Error && error.name === "AbortError")
+      ) {
+        throw error;
+      }
+      screenshotWarning = joinWarnings(
+        screenshotWarning,
+        `Figure extraction could not complete: ${errorMessage(error, "VLM figure extraction failed")}`,
+      );
+      return null;
+    }
+  };
+
+  if (anydocConversion) {
+    const conversion = anydocConversion;
     const buffer = await fileBytes();
     // A PDF keeps its original beside the note: anydoc reads the text layer,
     // not the rendered page, so the source is the only way back to the layout.
+    let sourcePdfFilePath = "";
     if (ext === "pdf") {
-      sourcePdfPath = saveUploadedDocumentAsset({
+      const saved = saveUploadedDocumentAsset({
         contentPath,
         clusterSlug: normalizedClusterSlug,
         baseName: nameWithoutExt,
         buffer,
         createdFilePaths,
         knowledgeWriteTransaction,
-      }).relativePath;
+      });
+      sourcePdfPath = saved.relativePath;
+      sourcePdfFilePath = saved.filePath;
     }
-
-    const conversion = await convertWithAnydoc({
-      bytes: buffer,
-      ext,
-      saveImage: anydocImageSaver({
-        contentPath,
-        clusterSlug: normalizedClusterSlug,
-        baseName: nameWithoutExt,
-        createdFilePaths,
-        knowledgeWriteTransaction,
-      }),
-      onProgress: emit,
-    });
     anydocApplied = true;
-    throwIfRequestAborted(request.signal);
 
     pages =
       conversion.sections.length > 0
@@ -2593,6 +2688,20 @@ export async function runIngest({
       screenshotWarning,
       conversion.warnings.join(" "),
     );
+    // The text layer has no pictures; the VLM finds, crops and stores them.
+    if (ext === "pdf" && generateMap) {
+      const figurePages = await extractPdfFigures(buffer, sourcePdfFilePath);
+      const figureSections = (figurePages ?? [])
+        .map((page) => ({
+          pageNumber: page.pageNumber,
+          embeds: page.text.match(/!\[[^\]]*\]\([^\n)]+\)/g) ?? [],
+        }))
+        .filter((page) => page.embeds.length > 0)
+        .map((page) => `### Page ${page.pageNumber}\n\n${page.embeds.join("\n\n")}`);
+      if (figureSections.length > 0) {
+        markdownText = `${markdownText}\n\n## Figures\n\n${figureSections.join("\n\n")}`;
+      }
+    }
   } else if (isImageExt(ext)) {
     throwIfRequestAborted(request.signal);
     const buffer = await fileBytes();
@@ -2861,7 +2970,7 @@ export async function runIngest({
         pages = extractedPdf.pages;
         screenshotWarning = extractedPdf.warning;
         markdownText = pageMarkdown(pages, { includeImages: false });
-      } else if (isHandwriting) {
+      } else if (modelOcr) {
         emit("Rendering PDF pages to images for OCR…");
         let screenshots: PdfScreenshotPage[] = [];
         try {
@@ -2970,46 +3079,11 @@ export async function runIngest({
             // merge only the figure embeds returned by the VLM.
             screenshots = [];
             collectReleasedPdfBatchMemory();
-            try {
-              emit("Extracting figures with the VLM…");
-              const figureVlmConfig = getVlmOcrConfig();
-              const figureVlmCheckpoint = pdfVlmCheckpointLocation({
-                contentPath,
-                clusterSlug: normalizedClusterSlug,
-                filename: `${filename}-figures`,
-                buffer,
-                config: figureVlmConfig,
-                task: vlmTask,
-              });
-              completedVlmCheckpointPath = figureVlmCheckpoint.filePath;
-              const figureVlm = await parsePdfPagesWithVlm({
-                buffer,
-                sourceFilePath: sourcePdf.filePath,
-                config: figureVlmConfig,
-                task: vlmTask,
-                signal: request.signal,
-                onProgress: emit,
-                saveFigure: vlmFigureSaver({
-                  contentPath,
-                  clusterSlug: normalizedClusterSlug,
-                  baseName: nameWithoutExt,
-                  createdFilePaths,
-                  knowledgeWriteTransaction,
-                }),
-                checkpoint: figureVlmCheckpoint,
-              });
-              figureCount = figureVlm.vlm.figureCount;
-              pages = mergeVlmFigureEmbeds(pages, figureVlm.vlm.pages);
-              screenshotWarning = joinWarnings(
-                screenshotWarning,
-                figureVlm.vlm.warnings.join(" "),
-              );
-            } catch (error) {
-              screenshotWarning = joinWarnings(
-                screenshotWarning,
-                `Figure extraction could not complete: ${errorMessage(error, "VLM figure extraction failed")}`,
-              );
-            }
+            const figurePages = await extractPdfFigures(
+              buffer,
+              sourcePdf.filePath,
+            );
+            if (figurePages) pages = mergeVlmFigureEmbeds(pages, figurePages);
           }
         } else {
           emit("No page images found — extracting embedded text…");
@@ -3043,7 +3117,7 @@ export async function runIngest({
           pages = [
             {
               label: "Scanned PDF",
-              text: "No embedded text was found. Re-upload with handwriting OCR enabled to transcribe the pages.",
+              text: "No embedded text was found. Re-upload with Handwriting / model OCR enabled to transcribe the pages.",
             },
           ];
           plainText = pagePlainText(pages);

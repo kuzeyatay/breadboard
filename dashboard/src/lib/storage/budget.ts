@@ -27,6 +27,8 @@ const RULES: ReadonlyArray<readonly [RegExp, StorageClass]> = [
   [/^(?:quartz\/public|runtime-v2\/temp|runtime\/jobs|cache|runtime\/hermes\/cache)\//u, "regenerable"],
   [/^quartz\/\.breadboard-quartz-publish\.stage-/u, "regenerable"],
   [/^runtime\/hermes-workspaces\/.*\/multisim\/runs\/[^/]+\/(?:data\.(?:json|csv)|result\.raw)$/u, "regenerable"],
+  // Copies made before quick questions stopped staging attachments; the upload store holds the original.
+  [/^runtime\/hermes-workspaces\/.*-inline-[^/]+\/\.breadboard\/attachments\//u, "regenerable"],
   [/^(?:agent-runtime|humanizer\/models|runtime\/scriberr\/models|runtime\/colpali)\//u, "redownloadable"],
   [/^runtime\/hermes-workspaces\/.*\/source\.(?:mp4|webm|mkv|m4a|mp3)$/u, "redownloadable"],
 ];

@@ -408,6 +408,31 @@ function stripSlashes(s, onlyStripPrefix) {
   return s;
 }
 
+// quartz/components/scripts/generatedVisualHost.ts
+function generatedVisualDashboardBaseUrl(href, referrer, ancestorOrigin = "") {
+  try {
+    const current = new URL(href);
+    if (current.pathname.startsWith("/api/quartz-graph-preview")) return current.origin;
+    for (const candidate of [ancestorOrigin, referrer]) {
+      if (!candidate) continue;
+      let host;
+      try {
+        host = new URL(candidate);
+      } catch {
+        continue;
+      }
+      if (/^https?:$/.test(host.protocol) && host.protocol === current.protocol && host.hostname === current.hostname && host.origin !== current.origin)
+        return host.origin;
+    }
+    if (/^garden\./i.test(current.hostname)) return current.origin.replace("//garden.", "//");
+    if (/^(localhost|127(?:\.\d+){3}|0\.0\.0\.0)$/i.test(current.hostname) || current.port === "8081")
+      return `${current.protocol}//${current.hostname}:3000`;
+    return current.origin;
+  } catch {
+    return "";
+  }
+}
+
 // quartz/components/scripts/sourceNodeVisual.ts
 var TOPOLOGY_SOURCE_COLORS = {
   light: {
@@ -415,17 +440,20 @@ var TOPOLOGY_SOURCE_COLORS = {
     link: "#2563eb",
     video: "#b45309",
     audio: "#7e22ce",
-    document: "#15803d"
+    document: "#15803d",
+    chat: "#0f766e"
   },
   dark: {
     pdf: "#fb7185",
     link: "#60a5fa",
     video: "#f59e0b",
     audio: "#c084fc",
-    document: "#4ade80"
+    document: "#4ade80",
+    chat: "#2dd4bf"
   }
 };
 function topologySourceKind(node, folderPath = "") {
+  if (node.kind === "chat") return "chat";
   const isSource = node.kind === "source" || node.knowledgeType === "source-document" || folderPath.replace(/\\/g, "/").split("/").some((part) => part.toLocaleLowerCase() === "sources");
   if (!isSource) return null;
   const sourceType = node.sourceType?.trim().toLocaleLowerCase() ?? "";
@@ -438,6 +466,28 @@ function topologySourceKind(node, folderPath = "") {
     return "link";
   if (sourceType.includes("pdf") || /\.pdf(?:\s|$)/i.test(fallback)) return "pdf";
   return "document";
+}
+var TOPOLOGY_CHATS_FOLDER_ID = "folder:$chats";
+function topologySourceLabel(kind) {
+  if (kind === "chat") return "Your chat";
+  return `${kind === "pdf" ? "PDF" : kind[0].toUpperCase() + kind.slice(1)} source`;
+}
+function openTopologyChat(nodeId, navigateSlug = "") {
+  const chatId = /^chat:(\d+)$/.exec(nodeId)?.[1];
+  if (!chatId) return nodeId === TOPOLOGY_CHATS_FOLDER_ID;
+  const messageId = navigateSlug.split("#")[1] ?? "";
+  const chatLink = messageId ? { chatId, selectionId: "", messageId, surface: "garden" } : { chatId, selectionId: "topology", surface: "garden" };
+  if (window.parent !== window) {
+    const dashboard = generatedVisualDashboardBaseUrl(
+      window.location.href,
+      document.referrer,
+      window.location.ancestorOrigins?.[0]
+    );
+    window.parent.postMessage({ type: "second-brain:assistant-open-chat", chatLink }, dashboard);
+  } else {
+    window.dispatchEvent(new CustomEvent("breadboard:assistant-open-chat", { detail: { chatLink } }));
+  }
+  return true;
 }
 
 // quartz/components/scripts/renderSlot.ts
@@ -742,6 +792,30 @@ function packCluster(items, anchor, outwardAngle) {
 function normalizeAngle(angle) {
   const twoPi = Math.PI * 2;
   return (angle % twoPi + twoPi) % twoPi;
+}
+var CHAT_OFFSET = 26;
+function placeChatsBesidePages(nodes, edges, positions) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const at = (node) => positions?.get(node.id) ?? node;
+  const placed = /* @__PURE__ */ new Set();
+  let order = 0;
+  for (const chat of nodes) {
+    if (chat.contentKind !== "chat") continue;
+    const pages = edges.filter((edge) => edge.source === chat.id || edge.target === chat.id).map((edge) => byId.get(edge.source === chat.id ? edge.target : edge.source)).filter((node) => node?.kind === "page" && node.contentKind !== "chat").map(at);
+    if (pages.length === 0) continue;
+    const mean = (axis) => pages.reduce((sum, page) => sum + (page[axis] ?? 0), 0) / pages.length;
+    const angle = Math.atan2(mean("y"), mean("x")) + order * 2.39996;
+    order += 1;
+    const x = mean("x") + Math.cos(angle) * CHAT_OFFSET;
+    const y = mean("y") + Math.sin(angle) * CHAT_OFFSET;
+    if (positions) positions.set(chat.id, { x, y, z: mean("z") });
+    else {
+      chat.x = x;
+      chat.y = y;
+    }
+    placed.add(chat.id);
+  }
+  return placed;
 }
 function planThoughtTopology(payload, options = {}) {
   const preview = Boolean(options.preview);
@@ -1082,6 +1156,7 @@ function planThoughtTopology(payload, options = {}) {
       node.y = durable.y;
     }
   }
+  const placedChats = placeChatsBesidePages(nodes, payload.edges);
   if (options.positionOverrides) {
     for (const node of nodes) {
       const override = options.positionOverrides[node.id];
@@ -1092,7 +1167,7 @@ function planThoughtTopology(payload, options = {}) {
     }
   }
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
-  const hierarchyEdges = nodes.filter((node) => node.kind !== "garden").map((node) => {
+  const hierarchyEdges = nodes.filter((node) => node.kind !== "garden" && !placedChats.has(node.id)).map((node) => {
     let folderId = node.folderId;
     let parentId = garden.id;
     while (folderId) {
@@ -1804,6 +1879,7 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
     compact || settings.filteredLayout === "cross-section" && settings.excludedFolderIds.length > 0 ? planThoughtTopology(payload, { scopeFolderPath: context.scopeFolderPath }).nodes : plan.nodes,
     gardenSpheres
   );
+  placeChatsBesidePages(plan.nodes, plan.edges, plannedHomes);
   await yieldIfNeeded();
   const depthSpread = [...plannedHomes.values()].reduce(
     (extent, point) => Math.max(extent, Math.hypot(point.x, point.y, point.z)),
@@ -2794,7 +2870,7 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
         (edge) => edge.source === node.id || edge.target === node.id
       );
       const concepts = node.concepts.slice(0, 4).join(" \xB7 ");
-      const sourceType = node.sourceKind ? `${node.sourceKind === "pdf" ? "PDF" : node.sourceKind[0].toUpperCase() + node.sourceKind.slice(1)} source` : "";
+      const sourceType = node.sourceKind ? topologySourceLabel(node.sourceKind) : "";
       calloutText(
         "thought-callout-meta",
         [
@@ -3139,6 +3215,7 @@ async function mountThoughtTopologyScene(graph, fullSlug, config, payload, conte
   });
   let lastRightClick = null;
   function openNode(view) {
+    if (openTopologyChat(view.node.id, view.node.navigateSlug)) return;
     const rawSlug = view.node.navigateSlug ?? (view.node.kind === "garden" || view.node.folderPath === "" ? gardenSlug : view.node.kind === "folder" ? `${gardenSlug}/${view.node.folderPath}` : void 0);
     if (!rawSlug) return;
     const targetSlug = topologyNavigationSlug(rawSlug);

@@ -13,6 +13,23 @@ import {
 } from "../src/main/pdf-viewer-redirect";
 
 const origin = "http://127.0.0.1:52225";
+test("web PDF links reuse the authenticated navigation and retain browser Back and Reload", () => {
+  const desktop = path.resolve(__dirname, "../..");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-web-pdf-"));
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  try {
+    const run = spawnSync(require("electron") as string, [path.join(desktop, "tests/fixtures/browser-web-pdf.cjs"), dir], {
+      cwd: desktop, env, encoding: "utf8", windowsHide: true, timeout: 45_000,
+    });
+    assert.equal(run.error, undefined, run.error?.message);
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+  } finally {
+    assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
 const pdfHeaders = {
   "Content-Type": ["application/pdf"],
   "Content-Disposition": ['inline; filename="book.pdf"'],

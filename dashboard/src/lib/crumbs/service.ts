@@ -6,6 +6,8 @@ import { localChatmockBaseUrl } from "@/lib/chatmock-server";
 import { CrumbsError, createCrumbs } from "./core.ts";
 import { ensureLocalCrumbsServices } from "./local-services.ts";
 import { createBuzzBridge } from "./buzz-bridge.ts";
+import { dashboardDataDir } from "../runtime-paths.ts";
+import { feedHistory } from "./feed-history.ts";
 
 /** Crumbs AI runs on the user's own fallback model, so it costs the service nothing. */
 async function complete(_userId: number, system: string, prompt: string): Promise<string> {
@@ -25,7 +27,7 @@ async function complete(_userId: number, system: string, prompt: string): Promis
   return text;
 }
 
-export const crumbs = createCrumbs({ db, complete, ensureServers: ensureLocalCrumbsServices });
+export const crumbs = createCrumbs({ db, complete, ensureServers: ensureLocalCrumbsServices, readFeedHistory: user => feedHistory(db, dashboardDataDir(), user) });
 export { CrumbsError };
 
 /** Carries encrypted organizations onto the Organization page. */

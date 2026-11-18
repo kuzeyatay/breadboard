@@ -32,6 +32,10 @@ interface ColumnPatch {
  * REFERENCES clause must default to NULL, which every one of these does.
  */
 const COLUMN_PATCHES: readonly ColumnPatch[] = [
+  {table:"calendar_source_links",column:"applied_start",definition:"TEXT"},
+  {table:"calendar_source_links",column:"applied_end",definition:"TEXT"},
+  {table:"calendar_source_links",column:"applied_all_day",definition:"INTEGER"},
+  {table:"calendar_source_links",column:"observed_at",definition:"TEXT"},
   {
     table: "calendar_events",
     column: "notifications_enabled",
@@ -202,6 +206,12 @@ export function ensureCalendarSchema(db: Db): void {
     );
   `);
 
+  db.exec(`CREATE TABLE IF NOT EXISTS calendar_source_links (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source_url TEXT NOT NULL, event_id INTEGER NOT NULL UNIQUE REFERENCES calendar_events(id) ON DELETE CASCADE,
+    observed_start TEXT NOT NULL, observed_end TEXT NOT NULL, observed_all_day INTEGER NOT NULL,
+    dismissed_basis TEXT, PRIMARY KEY(user_id,source_url)
+  )`);
   addMissingColumns(db);
 
   // Created after the patch pass: on an existing database the columns they

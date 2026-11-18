@@ -4,10 +4,20 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 
 import type { PromptSuggestionMessage } from '@/lib/chat-prompt-suggestion';
 import { canCompleteSentence, normalizeSentenceCompletion, sentenceCompletionContext } from '@/lib/sentence-completion';
 import { AUTH_CHANGED_EVENT } from '@/lib/auth-events';
+import { RECOMMENDATION_REFRESH_EVENT } from '@/lib/recommendations/types';
+import { suggestionPageBody, type SuggestionPage } from '@/lib/browser-terminal';
 
 const NO_MESSAGES: readonly PromptSuggestionMessage[] = [];
 
-export function useSentenceCompletion({ messages = NO_MESSAGES, conversationKey, value, enabled, onChange }: {
+export function useSentenceCompletion({ messages = NO_MESSAGES, conversationKey, value, enabled, onChange, personalize=false, gardenSlug, pageTitle, page, roomId, threadId,documentConversationId }: {
+  /** The page beside the chat; completions read draft terms in its sense. */
+  page?: SuggestionPage | null;
+  personalize?: boolean;
+  gardenSlug?: string | null;
+  pageTitle?: string | null;
+  roomId?: string;
+  threadId?: number;
+  documentConversationId?: string;
   messages?: readonly PromptSuggestionMessage[];
   conversationKey: string;
   value: string;
@@ -21,7 +31,7 @@ export function useSentenceCompletion({ messages = NO_MESSAGES, conversationKey,
   const [revision, setRevision] = useState(0);
   const context = useMemo(() => sentenceCompletionContext(messages), [messages]);
   const transcript = JSON.stringify(context);
-  const scope = JSON.stringify([conversationKey, transcript, revision]);
+  const scope = JSON.stringify([conversationKey, transcript, revision,personalize,gardenSlug,pageTitle,page?.title,page?.browser,page?.text?.length,roomId,threadId,documentConversationId]);
   const key = JSON.stringify([scope, value]);
   const [result, setResult] = useState<{ scope: string; draft: string; text: string } | null>(null);
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
@@ -40,7 +50,8 @@ export function useSentenceCompletion({ messages = NO_MESSAGES, conversationKey,
       setRevision(current => current + 1);
     };
     window.addEventListener(AUTH_CHANGED_EVENT, changed);
-    return () => window.removeEventListener(AUTH_CHANGED_EVENT, changed);
+    window.addEventListener(RECOMMENDATION_REFRESH_EVENT, changed);
+    return () => {window.removeEventListener(AUTH_CHANGED_EVENT, changed);window.removeEventListener(RECOMMENDATION_REFRESH_EVENT, changed);};
   }, []);
 
   useEffect(() => {
@@ -54,7 +65,7 @@ export function useSentenceCompletion({ messages = NO_MESSAGES, conversationKey,
         const response = await fetch('/api/sentence-completion', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ draft: value, messages: JSON.parse(transcript) }),
+          body: JSON.stringify({ draft: value, messages: JSON.parse(transcript),personalize,gardenSlug,pageTitle,roomId,threadId,documentConversationId, ...await suggestionPageBody(page) }),
           signal: controller.signal,
         });
         if (!response.ok) return;
@@ -73,7 +84,7 @@ export function useSentenceCompletion({ messages = NO_MESSAGES, conversationKey,
       controller.abort();
       if (pending.current === controller) pending.current = null;
     };
-  }, [eligible, key, scope, transcript, value, text]);
+  }, [eligible, key, scope, transcript, value, text,personalize,gardenSlug,pageTitle,page,roomId,threadId,documentConversationId]);
 
   function trackCursor(input: HTMLTextAreaElement) {
     const atEnd = input.selectionStart === input.value.length && input.selectionEnd === input.value.length;

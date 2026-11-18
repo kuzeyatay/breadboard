@@ -58,6 +58,8 @@ export async function POST(request: Request) {
     const body = await readJsonBody(request, 32_000);
     const org = String(body.org ?? "");
     switch (body.action) {
+      case "feed-preference": crumbs.setFeedPreference(userId, body.enabled); return json(crumbs.status(userId));
+      case "feed-feedback": crumbs.feedFeedback(userId, body); return json({ ok: true });
       case "sign-in": return json(await crumbs.startSignIn(userId, { handle: body.handle, signup: body.signup === true, origin: requestOrigin(request), returnTo: body.returnTo }));
       case "sign-out": await crumbs.signOut(userId); return json(crumbs.status(userId));
       case "visibility": crumbs.setDefaultVisibility(userId, body.value); return json(crumbs.status(userId));

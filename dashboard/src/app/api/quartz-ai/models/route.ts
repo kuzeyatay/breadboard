@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiErrorResponse, requireEnabled } from "@/lib/hermes/route-helpers.ts";
 import { corsHeaders } from "@/lib/hermes/quartz-support.ts";
-import { HERMES_MODEL_IDS } from "@/lib/hermes/model-selection.ts";
+import { getAgentRuntime } from "@/lib/agent-runtime/runtime.ts";
 import { DEFAULT_MODEL } from "@/lib/ai-models.ts";
 import { DEFAULT_ASSISTANT_REASONING_EFFORT } from "@/lib/assistant-reasoning.ts";
 
@@ -20,7 +20,7 @@ export async function OPTIONS(request: Request) {
 
 // GET: the model + reasoning-effort choices for the Quartz page AI panel, so it
 // offers the same intelligence picker as the dashboard terminal. Secret-free and
-// static, but still gated on the runtime being enabled so the panel hides the
+// dynamic, but still gated on the runtime being enabled so the panel hides the
 // picker when Hermes is off.
 export async function GET(request: Request) {
   const cors = corsHeaders(request.headers.get("origin"));
@@ -28,7 +28,7 @@ export async function GET(request: Request) {
     requireEnabled();
     return NextResponse.json(
       {
-        models: [...HERMES_MODEL_IDS],
+        models: (await getAgentRuntime().listModels()).map((model) => model.id),
         defaultModel: DEFAULT_MODEL,
         reasoningEfforts: [...QUARTZ_EFFORT_OPTIONS],
         defaultReasoningEffort: DEFAULT_ASSISTANT_REASONING_EFFORT,

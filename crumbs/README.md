@@ -7,6 +7,8 @@ Crumbs is Breadboard's social layer: notes anchored to passages on the web. This
 | `indexer.mjs` | Follows Jetstream for `com.breadboard.*` records, runs each public highlight through the moderation gate, and answers "what is on this page" and the feed. Also serves Breadboard handles and the OAuth client metadata. | SQLite. A cache: rebuild it with `node indexer.mjs --rebuild`. |
 | `org-store.mjs` | Stores and forwards encrypted organization content: crumbs on pages, chat rooms and their messages. It never holds a key and cannot tell a chat room from a web page. | Postgres when `DATABASE_URL` is set, otherwise SQLite. This is the only copy, so use managed Postgres with backups. |
 
+Breadboard ranks the Everyone feed inside its local dashboard. In records mode it requests up to 50 moderated public crumbs per page. The indexer receives the ordinary candidate request and can serve the public follow graph. Browser visits, Breadboard chat titles, reading time, and interaction feedback stay on the device. Ranking uses CPU and the dashboard’s existing SQLite database. Settings → Crumbs account → Personalize the Everyone feed switches it back to newest first and clears the account’s saved feed feedback.
+
 ## Run locally
 
 In a source checkout Breadboard starts both services by itself the first time Crumbs is used. To run them by hand:

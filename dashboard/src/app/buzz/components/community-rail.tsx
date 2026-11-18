@@ -10,6 +10,7 @@
 import { Plus } from "lucide-react";
 
 import { cn } from "@/app/buzz/lib/cn";
+import DefaultAvatar from "@/app/components/default-avatar";
 import {
   Tooltip,
   TooltipContent,
@@ -17,14 +18,6 @@ import {
   TooltipTrigger,
 } from "@/app/buzz/ui/tooltip";
 import type { BuzzCommunity, BuzzRoomSummary } from "../types.ts";
-
-/** Two letters is enough to tell a handful of communities apart at 40px. */
-function initials(name: string): string {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return "?";
-  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-  return (words[0][0] + words[1][0]).toUpperCase();
-}
 
 export function CommunityRail({
   communities,
@@ -70,7 +63,7 @@ export function CommunityRail({
                   )}
                   aria-current={active ? "true" : undefined}
                 >
-                  {initials(community.name)}
+                  <DefaultAvatar size={active ? 40 : 44} shape="rounded" name={community.name} />
                   {unread > 0 && !active ? (
                     <span
                       className="absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-primary px-1 text-badge font-semibold leading-4 text-primary-foreground"

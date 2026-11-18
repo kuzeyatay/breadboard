@@ -4966,6 +4966,7 @@ log("staging license notices");
 const licensesTarget = path.join(desktopRoot, "build-resources", "licenses");
 fs.mkdirSync(licensesTarget, { recursive: true });
 const licenseSources = [
+  ["cadence", path.join(repoRoot, "dashboard", "src", "vendor", "cadence", "LICENSE")],
   ["agency-agents", path.join(repoRoot, "agency-agents", "LICENSE")],
   ["book-to-skill", path.join(repoRoot, "book-to-skill", "LICENSE.md")],
   ["chatmock", path.join(repoRoot, "chatmock", "LICENSE")],

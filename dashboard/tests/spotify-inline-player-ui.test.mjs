@@ -8,6 +8,79 @@ import test from "node:test";
 import { createSpotifyHistoryStore } from "../src/lib/spotify/history-store.ts";
 import { ensureSpotifySchema } from "../src/lib/spotify/schema.ts";
 import Database from "better-sqlite3";
+import { createHermesEventNormalizationState, normalizeHermesEvent } from "../src/lib/agent-runtime/hermes-events.ts";
+import {
+  generativeUiResourcesFromVerification,
+  normalizeGenerativeUiResources,
+  spotifyPlaybackFromVerification,
+} from "../src/lib/generative-ui/contracts.ts";
+import { spotifyPlayerAssistantIndex } from "../src/lib/hermes/spotify-intent.ts";
+
+const executablePath = ["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe", "/usr/bin/chromium"].find(fs.existsSync);
+
+test("a saved playlist keeps its link when the reply settles and when an older chat reopens", async () => {
+  const playlist = {
+    id: "0123456789abcdefghijAB", uri: "spotify:playlist:0123456789abcdefghijAB",
+    name: "Laid-back Guitar Rock", trackCount: 29, isPublic: false,
+  };
+  const [event] = normalizeHermesEvent({
+    type: "tool.complete", session_id: "live",
+    payload: { name: "spotify_create_playlist", tool_id: "save", result: { playlist, status: "created" } },
+  }, "live", "chat", createHermesEventNormalizationState());
+  const live = event.payload.uiResources;
+  assert.equal(live.length, 1);
+  assert.equal(event.payload.spotifyPlaybackPrepared, false);
+  const verification = { evidence: [event.payload] };
+  const restored = generativeUiResourcesFromVerification(verification);
+  assert.deepEqual(restored, live);
+  assert.deepEqual(normalizeGenerativeUiResources(JSON.parse(JSON.stringify(live))), live);
+  assert.equal(spotifyPlaybackFromVerification(verification).get("save"), false);
+  const messages = [
+    { role: "assistant", tools: [{toolName: "spotify_play", status: "completed", spotifyPlaybackPrepared: true}] },
+    { role: "user", content: "Save the playlist to Spotify" },
+    { role: "assistant", tools: [{ ...event.payload, status: "completed" }] },
+  ];
+  assert.equal(spotifyPlayerAssistantIndex(messages), 0);
+
+  const bundle = await build({
+    stdin: { resolveDir: path.resolve(import.meta.dirname, ".."), loader: "tsx", contents: `
+      import { createRoot } from "react-dom/client";
+      import Renderer from "./src/app/components/hermes/generative-ui-renderer";
+      const root = createRoot(document.getElementById("root"));
+      window.showReply = (resources, text) => root.render(<><Renderer resources={resources} /><p>{text}</p></>);
+      window.showReply(JSON.parse(sessionStorage.getItem("resources") ?? "[]"), "");
+    ` },
+    outfile: "test.js", bundle: true, write: false, platform: "browser", format: "iife",
+    jsx: "automatic", define: { "process.env.NODE_ENV": '"test"' },
+  });
+  const script = bundle.outputFiles.find(file => file.path.endsWith(".js")).text;
+  const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
+  try {
+    const page = await browser.newPage();
+    const requests = [];
+    await page.route("https://widget.test/**", async route => {
+      const url = new URL(route.request().url());
+      if (url.pathname === "/") {
+        return route.fulfill({ contentType: "text/html", body: '<div id="root"></div><script src="/test.js"></script>' });
+      }
+      if (url.pathname === "/test.js") return route.fulfill({ contentType: "text/javascript", body: script });
+      requests.push(url.pathname);
+      return route.abort();
+    });
+    await page.goto("https://widget.test/");
+    await page.evaluate(resources => window.showReply(resources, ""), live);
+    const link = page.getByRole("link", { name: /Laid-back Guitar Rock.*29 tracks.*Open in Spotify/ });
+    await link.waitFor();
+    await page.evaluate(resources => window.showReply(resources, "Added to Spotify."), live);
+    assert.equal(await link.getAttribute("href"), `https://open.spotify.com/playlist/${playlist.id}`);
+    await page.evaluate(resources => sessionStorage.setItem("resources", JSON.stringify(resources)), restored);
+    await page.reload();
+    await link.waitFor();
+    assert.deepEqual(requests, [], "the saved link works without a playback session");
+  } finally {
+    await browser.close();
+  }
+});
 
 test("inline player reflects provider playback, retains its lease, and does not restart on reload", async () => {
   const root = path.resolve(import.meta.dirname, "..");
@@ -22,7 +95,7 @@ test("inline player reflects provider playback, retains its lease, and does not 
     define:{"process.env.NODE_ENV":'"test"'},
   });
   const requests = [];
-  const track = {id:'0123456789abcdefghijAB',uri:'spotify:track:0123456789abcdefghijAB',name:'Shoot to Thrill',artist:'AC/DC',album:'Back In Black',durationMs:317000,imageUrl:null};
+  const track = {id:'0123456789abcdefghijAB',uri:'spotify:track:0123456789abcdefghijAB',name:'Shoot to Thrill',artist:'AC/DC',album:'Back In Black',durationMs:317000,imageUrl:'/cover.jpg'};
   let playing = true;
   let engineError = null;
   let target = "inline";
@@ -49,14 +122,22 @@ test("inline player reflects provider playback, retains its lease, and does not 
     }));
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  const executablePath = ["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe","C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe","/usr/bin/chromium"].find(fs.existsSync);
   let browser;
   try {
     browser = await chromium.launch({headless:true,...(executablePath?{executablePath}:{})});
     const page = await browser.newPage();
     const errors=[];page.on('pageerror',error=>errors.push(error.message));
-    await page.goto(`http://127.0.0.1:${server.address().port}`);
-    await page.getByRole('region',{name:'Spotify player'}).waitFor();
+    const cover = Promise.withResolvers();
+    await page.route("**/cover.jpg", async route => {
+      await cover.promise;
+      await route.abort();
+    });
+    await page.goto(`http://127.0.0.1:${server.address().port}`, { waitUntil: "domcontentloaded" });
+    try {
+      await page.getByRole('region',{name:'Spotify player'}).waitFor({ timeout: 5_000 });
+    } finally {
+      cover.resolve();
+    }
     await page.getByRole('button',{name:'Pause',exact:true}).waitFor();
     assert.match(await page.locator('body').innerText(),/Shoot to Thrill/);
     assert.doesNotMatch(await page.locator('body').innerText(),/phone/);
@@ -159,7 +240,6 @@ test("the dock migrates saved songs and replays all 20 after reload with browser
     res.end(JSON.stringify({connected:true,status:'connected',engine,playback,savedTrack:false,history:history.read(7)}));
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  const executablePath = ["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe","C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe","/usr/bin/chromium"].find(fs.existsSync);
   let browser;
   try {
     browser=await chromium.launch({headless:true,...(executablePath?{executablePath}:{})});

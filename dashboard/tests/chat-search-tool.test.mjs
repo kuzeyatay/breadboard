@@ -156,8 +156,9 @@ test("the chat search tool excludes its current prompt and renders safe app rout
   const renderer = source("../src/app/components/hermes/generative-ui-renderer.tsx");
   const widget = source("../src/app/components/hermes/chat-search-results.tsx");
 
-  assert.match(route, /WHERE user_id = \? AND temporary = 0 AND surface = \? AND id <> \?/);
-  assert.match(route, /default_garden_id = \? AND legacy_chat_session_id IS NOT NULL/);
+  assert.match(route, /WHERE c\.user_id = \? AND c\.temporary = 0 AND c\.id <> \?/);
+  assert.match(route, /c\.surface = 'garden_chat' AND c\.legacy_chat_session_id IS NOT NULL/);
+  assert.match(route, /memory_scope, ''\) <> 'garden_only'/);
   assert.match(route, /tokenAllows\(verified\.token, \{ tool: "chat_search" \}\)/);
   assert.match(route, /reference_ids/);
   assert.match(route, /isSensitiveMemoryText\(message\.content\)/);
@@ -167,6 +168,6 @@ test("the chat search tool excludes its current prompt and renders safe app rout
   assert.match(route, /uiResources: uiResource \? \[uiResource\] : \[\]/);
   assert.match(renderer, /case "chat-search-results"/);
   assert.match(widget, /\/dashboard\?terminalChat=/);
-  assert.match(widget, /\/gardens\/\$\{encodeURIComponent\(resource\.data\.gardenSlug\)\}\?chat=/);
+  assert.match(widget, /\/gardens\/\$\{encodeURIComponent\(gardenSlug\)\}\?chat=/);
   assert.doesNotMatch(widget, /dangerouslySetInnerHTML|eval\(|new Function/);
 });

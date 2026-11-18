@@ -74,6 +74,8 @@ export async function responseTextForSpeech(content: string, options: SpeechOpti
     .replace(/\\\$/g, '$');
   text = speechBlocks(text)
     .replace(/(\*\*|__|\*|_|~~)/g, '')
+    // Prose arithmetic ("391 ÷ 7 = 55.86"); formulas and code are placeholders here.
+    .replace(/\s*÷\s*/g, ' divided by ').replace(/(\d)\s*×\s*(?=\d)/g, '$1 times ').replace(/ = /g, ' equals ')
     .replace(/[^\S\n]+/g, ' ').trim();
 
   if (formulas.length) {

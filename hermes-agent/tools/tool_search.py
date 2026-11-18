@@ -60,6 +60,22 @@ CHARS_PER_TOKEN = 4.0
 # ---------------------------------------------------------------------------
 
 
+# Breadboard's everyday personal-assistant tools stay in the model-facing array
+# whatever the generated config pins. Behind the bridge each one cost two extra
+# model round trips (search, describe) per request: 11-16 s spoken turns for
+# "what's on today" against ~6 s direct, and some models answered "my calendar
+# tools didn't load" instead of searching. ~260 tokens each, prompt-cached.
+# Pinning only selects from tools the session already received.
+EVERYDAY_TOOLS: Tuple[str, ...] = (
+    "calendar_agenda", "calendar_search_events", "calendar_create_event",
+    "calendar_update_event", "calendar_delete_event",
+    "notifications_read", "breadboard_process_status", "breadboard_usage",
+    "map_search", "map_route", "map_nearby", "map_place_details",
+    "save_memory", "memory_query", "agent_launch", "product_search",
+    "weather_forecast", "mcp_call",
+)
+
+
 @dataclass(frozen=True)
 class ToolSearchConfig:
     """Resolved, validated tool-search configuration for a single assembly."""
@@ -559,7 +575,7 @@ def assemble_tool_defs(
 
     # Visibility only selects from the already-authorized input; it never adds
     # a tool to a session or changes the underlying call's permission checks.
-    visible, deferrable = classify_tools(incoming, config.always_visible)
+    visible, deferrable = classify_tools(incoming, (*config.always_visible, *EVERYDAY_TOOLS))
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 

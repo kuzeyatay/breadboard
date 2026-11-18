@@ -236,9 +236,15 @@ test("the stack is started with the profiles its database and Redis live behind"
   assert.match(stack, /"--profile", profile/);
 });
 
-test("email work is routed to Inbox Zero in super agent mode", () => {
+test("email work uses the connected mail account first and Inbox Zero otherwise in super agent mode", () => {
   const superAgent = source("src/lib/hermes/super-agent.ts");
-  assert.match(superAgent, /## Email goes to Inbox Zero — always/);
+  assert.match(superAgent, /## Email: the connected mail account first, Inbox Zero for automation/);
+  // A connected Gmail answers in seconds; launching the Inbox Zero stack for a
+  // read took minutes (and failed) on a spoken "check my latest mail".
+  assert.match(superAgent, /direct actions with mcp_call/);
+  const voice = source("src/lib/speech/voice-capabilities.ts");
+  assert.match(voice, /use the connected mail account directly/);
+  assert.doesNotMatch(voice, /For mailbox work use Inbox Zero/);
   assert.match(superAgent, /agent_launch/);
   assert.match(superAgent, /INBOX_ZERO_AGENT_ID/);
   // The rule is only stated when the agent is actually in the inventory: a

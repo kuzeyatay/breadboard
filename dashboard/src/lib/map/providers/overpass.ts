@@ -49,7 +49,7 @@ export function buildOverpassQuery(input: {
   return `[out:json][timeout:${input.timeoutSeconds}];\n(\n  ${clauses}\n);\nout center tags;`;
 }
 
-function haversineMeters(
+export function haversineMeters(
   from: { lat: number; lon: number },
   to: { lat: number; lon: number },
 ): number {
@@ -65,7 +65,7 @@ function haversineMeters(
   return 2 * radius * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
-function foldName(value: string): string {
+export function foldName(value: string): string {
   return value
     .toLocaleLowerCase("tr")
     .replaceAll("ı", "i")

@@ -22,6 +22,19 @@ import {
 
 export const dynamic = "force-dynamic";
 
+// Each dashboard process serves one Breadboard launch. All of its chat tabs
+// start with the same pair, even if Settings is edited before a tab opens.
+type ChatStartup = { model: string; reasoningEffort: AssistantReasoningEffort };
+const chatStartupByUser = new Map<number, ChatStartup>();
+
+function chatStartup(userId: number, settings: ReturnType<typeof getHermesUserSettings>): ChatStartup {
+  const existing = chatStartupByUser.get(userId);
+  if (existing) return existing;
+  const selection = { model: settings.defaultModel, reasoningEffort: settings.reasoningEffort };
+  chatStartupByUser.set(userId, selection);
+  return selection;
+}
+
 async function optionalUserId(): Promise<number | null> {
   const session = await getServerSession(authOptions);
   const id = Number((session?.user as { id?: string } | undefined)?.id);
@@ -31,6 +44,7 @@ async function optionalUserId(): Promise<number | null> {
 function defaults() {
   return {
     model: DEFAULT_MODEL,
+    chatStartup: { model: DEFAULT_MODEL, reasoningEffort: DEFAULT_ASSISTANT_REASONING_EFFORT },
     fallbackModel: DEFAULT_MODEL,
     reasoningEffort: DEFAULT_ASSISTANT_REASONING_EFFORT,
     reasoningEffortByModel: {} as Record<string, string>,
@@ -45,6 +59,7 @@ function payload(userId: number | null) {
   const settings = getHermesUserSettings(userId);
   return {
     model: settings.defaultModel,
+    chatStartup: chatStartup(userId, settings),
     fallbackModel: settings.fallbackModel,
     reasoningEffort: settings.reasoningEffort,
     // The picker needs the whole map, not just the active pair, so selecting a
@@ -134,6 +149,7 @@ export async function PATCH(request: Request) {
         throw new ApiError(status, "model_unavailable", message);
       }
     }
+    if (model !== undefined || reasoningEffort !== undefined) chatStartup(userId, getHermesUserSettings(userId));
     setHermesUserSettings(userId, {
       ...(model !== undefined ? { defaultModel: model } : {}),
       ...(fallbackModel !== undefined ? { fallbackModel } : {}),

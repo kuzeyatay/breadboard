@@ -6,6 +6,7 @@ import { normalizeUnifiedWorkflowDispatch, parseUnifiedWorkflowCommand } from "@
 
 import { LearnMarkdownSources } from "@/app/components/learn-markdown-sources";
 import WorkspaceSideChat from "@/app/components/hermes/workspace-side-chat";
+import { PersonAvatar, personColor } from "@/app/components/default-avatar";
 import SideChatSurface from "@/app/components/side-chat-surface";
 import { gardenSourceDisplay, isPptxSource } from "@/lib/garden-source-display";
 import { isLearnSelectableSource, toggleLearnSourceSelection } from "@/lib/learn-source-selection";
@@ -204,11 +205,6 @@ import {
   VlmParseOption,
   useVlmOcrAvailability,
 } from "@/app/components/vlm-parse-option";
-import {
-  ANYDOC_PARSE_FILE_RE,
-  AnydocParseOption,
-  useAnydocAvailability,
-} from "@/app/components/anydoc-parse-option";
 import ArtifactPanel, {
   ARTIFACT_BROWSER_EVENT,
   ARTIFACT_AI_EDIT_EVENT,
@@ -1425,6 +1421,8 @@ interface Props {
   initialLearnPanelOpen?: boolean;
   isOwner?: boolean;
   clusterVisibility: "private" | "organization" | "public";
+  /** In a Garden shared with an organization, the name the reader's messages carry. */
+  sharedAuthor?: string | null;
   chatAccessible: boolean;
   forkAllowed: boolean;
   showNavbarFlowers: boolean;
@@ -1879,6 +1877,8 @@ function hasRunningExternalAgent(message: Message): boolean {
 
 interface ChatTranscriptProps {
   onReply: (sourceMessageId: string, content: string) => void;
+  /** Set in an organization's workspace: messages read like a room, named and left-aligned. */
+  sharedAuthor: string | null;
   temporaryChat: boolean;
   modelChangesFor: (message: Message, index: number) => string[];
   naturalRewriteFor: (message: Message) => NaturalRewriteActivity | undefined;
@@ -2011,6 +2011,7 @@ function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
 
 const ChatTranscript = memo(function ChatTranscript({
   onReply,
+  sharedAuthor,
   temporaryChat,
   modelChangesFor,
   naturalRewriteFor,
@@ -2416,10 +2417,10 @@ const ChatTranscript = memo(function ChatTranscript({
                     />
                   ) : null}
                   <div
-                    className={`${msg.role === "user" ? "group " : ""}flex flex-col gap-2 ${msg.role === "user" ? "items-end" : "items-start"}`}
+                    className={`${msg.role === "user" ? "group " : ""}flex flex-col gap-2 ${msg.role === "user" && !sharedAuthor ? "items-end" : "items-start"}`}
                   >
                     {msg.role === "user" ? (
-                      <div className={`flex min-w-0 flex-col items-end gap-1 ${editingMessageId === messageInteractionId ? "w-full" : "max-w-[80%]"}`}>
+                      <div className={`flex min-w-0 flex-col ${sharedAuthor ? "items-start" : "items-end"} gap-1 ${editingMessageId === messageInteractionId ? "w-full" : "max-w-[80%]"}`}>
                         <ChatMessageAttachments
                           attachments={msg.attachments?.filter((attachment) => stillAttached(attachment.name))}
                           sourceAttachments={focusedSourceAttachments.filter((source) => stillAttached(source.name))}
@@ -2505,6 +2506,31 @@ const ChatTranscript = memo(function ChatTranscript({
                                   selection={msg.textSelection}
                                 />
                               ) : null}
+                              {sharedAuthor ? (
+                                // A room row: the sender's disc and name in their colour, then the text.
+                                <div className="flex min-w-0 gap-2.5" data-testid="shared-workspace-message">
+                                  <PersonAvatar name={sharedAuthor} size={36} />
+                                  <div className="min-w-0">
+                                    <div className="flex items-baseline gap-2">
+                                      <span className="text-sm font-semibold" style={{ color: personColor(sharedAuthor) }}>{sharedAuthor}</span>
+                                      {msg.createdAt && !Number.isNaN(Date.parse(msg.createdAt)) ? (
+                                        <time className="text-xs text-[var(--ink-muted)]" dateTime={msg.createdAt}>
+                                          {new Date(msg.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                        </time>
+                                      ) : null}
+                                    </div>
+                                    <div className="text-sm leading-6 text-[var(--ink)]">
+                                      <CollapsibleUserMessage messageKey={messageInteractionId}>
+                                        {splitLeadingCommandTokens(visibleUserContent) ? (
+                                          <UserMessageText content={visibleUserContent} />
+                                        ) : (
+                                          <ChatMarkdown content={visibleUserContent} compact />
+                                        )}
+                                      </CollapsibleUserMessage>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
                               <div className="neu-chat-message neu-chat-message-user w-fit max-w-full rounded-2xl rounded-tr-sm px-4 py-3 text-sm">
                                 <CollapsibleUserMessage
                                   messageKey={messageInteractionId}
@@ -2516,7 +2542,8 @@ const ChatTranscript = memo(function ChatTranscript({
                                   )}
                                 </CollapsibleUserMessage>
                               </div>
-                              <div className="mt-1 flex justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                              )}
+                              <div className={`mt-1 flex ${sharedAuthor ? "pl-[46px]" : "justify-end"} gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100`}>
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -3773,6 +3800,7 @@ export default function WorkspaceClient({
   initialLearnPanelOpen = false,
   isOwner = true,
   clusterVisibility,
+  sharedAuthor = null,
   chatAccessible,
   forkAllowed,
   showNavbarFlowers,
@@ -4364,7 +4392,6 @@ export default function WorkspaceClient({
   const [uploadLabel, setUploadLabel] = useState("");
   const [isHandwriting, setIsHandwriting] = useState(false);
   const [parseWithVlm, setParseWithVlm] = useState(false);
-  const [parseWithAnydoc, setParseWithAnydoc] = useState(false);
   const [generateMap, setGenerateMap] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
   const isUploading = uploadTasks.some((task) => task.state === "uploading");
@@ -7099,7 +7126,6 @@ export default function WorkspaceClient({
     setUploadLabel("");
     setIsHandwriting(false);
     setParseWithVlm(false);
-    setParseWithAnydoc(false);
     setGenerateMap(true);
     setIsDragging(false);
     setShowUpload(true);
@@ -7252,7 +7278,6 @@ export default function WorkspaceClient({
         label: uploadLabel.trim(),
         handwriting: isHandwriting,
         parseWithVlm: parseWithVlm && vlmStatus.available,
-        parseWithAnydoc: parseWithAnydoc && anydocStatus.available,
         generateMap,
       },
     });
@@ -14679,13 +14704,6 @@ if (careerOpsAgent) {
     useVlmOcrAvailability(showUpload && hasVlmCompatibleFile);
   const vlmUploadEnabled =
     parseWithVlm && hasVlmCompatibleFile && vlmStatus.available;
-  const hasAnydocCompatibleFile = uploadFiles.some((f) =>
-    ANYDOC_PARSE_FILE_RE.test(f.name),
-  );
-  const { status: anydocStatus, loading: anydocStatusLoading } =
-    useAnydocAvailability(showUpload && hasAnydocCompatibleFile);
-  const anydocUploadEnabled =
-    parseWithAnydoc && hasAnydocCompatibleFile && anydocStatus.available;
   const selectedUploadTask = selectedUploadTaskId
     ? (uploadTasks.find((task) => task.id === selectedUploadTaskId) ?? null)
     : null;
@@ -18651,6 +18669,7 @@ if (careerOpsAgent) {
                 onRequestRevision={prompt => queueFollowUp(prompt, [])}
               >
               <ChatTranscript
+                sharedAuthor={clusterVisibility === "organization" ? sharedAuthor : null}
                 modelChangesFor={modelChangesFor}
                 naturalRewriteFor={naturalRewriteFor}
                 clusterName={clusterName}
@@ -20214,20 +20233,6 @@ onClearCareerOps={() => {
                 />
               )}
 
-              {/* Parse with anydoc (local document → Markdown converter) */}
-              {!isViewingUploadTask &&
-                hasAnydocCompatibleFile &&
-                !allDoneOrError && (
-                <AnydocParseOption
-                  checked={parseWithAnydoc}
-                  onChange={setParseWithAnydoc}
-                  disabled={false}
-                  status={anydocStatus}
-                  loading={anydocStatusLoading}
-                  combinedWithVlm={vlmUploadEnabled}
-                />
-              )}
-
               {/* Handwriting checkbox */}
               {!isViewingUploadTask &&
                 hasHandwritingCompatibleFile &&
@@ -20249,14 +20254,12 @@ onClearCareerOps={() => {
                   />
                   <span>
                     <span className="block text-sm text-gray-400">
-                      Handwritten or scanned pages
+                      Handwriting / model OCR
                     </span>
                     <span className="block text-[11px] text-gray-600 mt-0.5">
                       {vlmUploadEnabled
                         ? "Not used while Parse using VLM is on — the VLM already reads the pages."
-                        : anydocUploadEnabled
-                          ? "Used for images only while Parse with anydoc is on — anydoc reads the PDFs."
-                          : "Uses vision OCR on each PDF page or image before generating the Learning Map."}
+                        : "The model OCRs every page or image instead of using the file's own text. Use it for handwriting, scans, or text that copies out wrong."}
                     </span>
                   </span>
                 </label>

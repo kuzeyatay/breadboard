@@ -63,7 +63,7 @@ function actualDispatchFixture() {
     setHeard: text => heard.push(text), setLiveHeard: noop, setReply: noop, clarificationRef: ref(null), setQuestions: noop,
     sentMessageCountRef: ref(0), messagesRef: ref([]), sentTurnRef: ref(null), startNarration: noop,
     dispatchedRef: ref(false), awaitingRef: ref(false), enterStage: noop, clearWatchdog: noop,
-    sessionRef: ref(1), beginTurn: noop, watchdogRef: ref(null), DISPATCH_WATCHDOG_MS: 20_000,
+    sessionRef: ref(1), beginTurn: noop, watchdogRef: ref(null), DISPATCH_WATCHDOG_MS: 20_000, captureFrames: () => [],
     window: { setTimeout: () => 1 }, interruptedRunRef: ref(Promise.resolve()),
     onSendRef: ref((text, context) => sent.push({ text, context })),
   };

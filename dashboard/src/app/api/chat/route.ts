@@ -466,6 +466,11 @@ export async function POST(request: Request) {
       `${graphContext}${selectedDocumentContext}${selectedAudioMarkdownContext}${activeMarkdownPromptContext}${highlightedTextPromptContext}\n\nGraphRAG-lite retrieved evidence (BM25, aliases, optional embeddings, and bounded one-hop relationships):\n\n${notesContext}`;
 
     const urlLinkContext = await buildUrlLinkContext(chatMessages);
+    if (cluster.user_id === userId && payload.personalize !== false && payload.temporary !== true) {
+      const { personalTurnPrompt } = await import("@/lib/personal-context/resolve.ts");
+      systemPrompt += "\n"+await personalTurnPrompt({userId,conversationId:0,gardenId:cluster.id,surface:"garden_chat",
+        query:lastUserMessage?.content ?? "",focus:activeMarkdownContext?.title});
+    }
     if (urlLinkContext.context) {
       systemPrompt +=
         '\n\nWeb link context fetched by the Breadboard server. ' +

@@ -13,11 +13,15 @@ import {
   type AssistantReasoningEffort,
 } from "../assistant-reasoning.ts";
 import { ApiError } from "./route-core.ts";
+import { loadChatmockModelCatalog, type ChatmockModel } from "../chatmock-model-catalog.ts";
+import { clampIntelligenceMode, toIntelligenceModes } from "../intelligence-modes.ts";
 
 export const HERMES_CHATMOCK_PROVIDER_ID = "chatmock";
 export const HERMES_MODEL_IDS: readonly string[] = DEFAULT_ASSISTANT_MODELS;
 
 const MAX_REASONING_MODELS = new Set([
+  "gpt-6.2-astra",
+  "gpt-6.2-sol",
   "gpt-6.1-sol",
   "gpt-6.1-terra",
   "gpt-6-astra",
@@ -45,17 +49,12 @@ export interface HermesEngineSelection {
 /**
  * Map the browser's model choice onto an id the runtime can actually name.
  *
- * The runtime addresses models declared in its provider config, which covers
- * the ChatGPT ids. A provider model (`anthropic/claude-opus-4-5`) is not
- * declared there — declaring every model of every provider would mean
- * regenerating that config whenever a key is added. Instead such a choice is
- * sent as the `chat` sentinel: ChatMock expands it to the chat model, and the
- * runtime pins that turn to exactly the model that was picked.
- * So the chat runs on the chosen model without the runtime needing to know
- * its name. The profile fallback provider handles Learn and background
- * work such as Thought Topology; explicit turn and run picks leave it intact.
+ * Built-in and discovered ChatGPT models travel as concrete ids. External
+ * provider choices retain the `chat` sentinel contract; the runtime pins that
+ * turn to the concrete selectedModelID before submitting the prompt. Neither
+ * path changes the profile fallback used for background work.
  */
-function resolveModelId(value: unknown): string {
+function resolveModelId(value: unknown, catalog: readonly ChatmockModel[]): string {
   if (typeof value !== "string") {
     throw new ApiError(400, "invalid_model", "The selected model is invalid.");
   }
@@ -65,6 +64,7 @@ function resolveModelId(value: unknown): string {
   }
   if (
     HERMES_MODEL_IDS.includes(modelId) ||
+    catalog.some((model) => model.id === modelId && model.owned_by === "chatgpt") ||
     modelId === GLOBAL_MODEL_SENTINEL ||
     modelId === CHAT_MODEL_SENTINEL
   ) {
@@ -75,9 +75,8 @@ function resolveModelId(value: unknown): string {
   // runtime can never register per-model. The runtime pins the chat sentinel
   // to the concrete selected model before starting the turn.
   //
-  // A bare id like `gpt-5` is different: ChatMock serves it, but the runtime has
-  // not registered it. Substituting the sentinel there would quietly answer with
-  // some *other* model, so that stays an error the operator can see.
+  // New bare ids must be verified against ChatMock's catalog. Once verified,
+  // they travel as concrete ids, preserving the model selected for this turn.
   if (modelId.includes("/") && normalizeAssistantModelId(modelId)) {
     return CHAT_MODEL_SENTINEL;
   }
@@ -111,12 +110,16 @@ export function resolveHermesEngine(
   modelValue: unknown,
   reasoningEffortValue: unknown,
   defaultModel = DEFAULT_MODEL,
+  catalog: readonly ChatmockModel[] = [],
 ): HermesEngineSelection {
   const requestedModel = modelValue === undefined || modelValue === null || modelValue === ""
     ? defaultModel : modelValue;
-  const modelID = resolveModelId(requestedModel);
+  const modelID = resolveModelId(requestedModel, catalog);
   const requestedReasoningEffort = resolveReasoningEffort(reasoningEffortValue);
-  const variant = requestedReasoningEffort === "max" && !MAX_REASONING_MODELS.has(modelID)
+  const discovered = catalog.find((model) => model.id === modelID && model.owned_by === "chatgpt");
+  const variant = discovered
+    ? clampIntelligenceMode(requestedReasoningEffort, toIntelligenceModes(discovered.reasoning_efforts)) ?? "none"
+    : requestedReasoningEffort === "max" && !MAX_REASONING_MODELS.has(modelID)
     ? "xhigh"
     : requestedReasoningEffort;
 
@@ -135,4 +138,28 @@ export function resolveHermesEngine(
     requestedReasoningEffort,
     adjusted: variant !== requestedReasoningEffort,
   };
+}
+
+/** Validate new native ids on the server before submitting them to Hermes. */
+export async function resolveAvailableHermesEngine(
+  modelValue: unknown,
+  reasoningEffortValue: unknown,
+  defaultModel = DEFAULT_MODEL,
+): Promise<HermesEngineSelection> {
+  try {
+    return resolveHermesEngine(modelValue, reasoningEffortValue, defaultModel);
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.code !== "unsupported_model") throw error;
+    const id = normalizeAssistantModelId(modelValue || defaultModel);
+    if (!id) throw error;
+    // Validate the effort before doing I/O, even for an unrecognised model.
+    resolveReasoningEffort(reasoningEffortValue);
+    let catalog: ChatmockModel[];
+    try {
+      catalog = await loadChatmockModelCatalog();
+    } catch {
+      throw new ApiError(503, "model_catalog_unavailable", "Could not verify the selected model. Try again when ChatGPT is available.");
+    }
+    return resolveHermesEngine(id, reasoningEffortValue, defaultModel, catalog);
+  }
 }

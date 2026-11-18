@@ -1,10 +1,49 @@
+import { diffWordsWithSpace } from "diff";
 import { isMap, parseDocument } from "yaml";
-import { editedPageAuthorship, pageAuthorship } from "./page-authorship.ts";
+import {
+  applyAuthorshipEdit, classifyAuthorship, editedPageAuthorship, formatAuthorshipChars, pageAuthorship,
+  parseAuthorshipChars, seedAuthorshipChars, type AuthorshipEdit,
+} from "./page-authorship.ts";
 
-/** Record an edit of `previous` (now `next`) in the page's `authorship` field. */
-export function markPageEdit(previous: string, next: string, editor: "human" | "ai"): string {
-  const authorship = editedPageAuthorship(pageAuthorship(readQuartzMetadata(previous)), editor);
-  return readQuartzMetadata(next).authorship === authorship ? next : updateQuartzMetadata(next, "authorship", authorship);
+/** What the Garden editor watched the person do since the last save (editor document positions). */
+export interface EditorProvenance { typed: number; pasted: number; removed: number }
+
+export function parseEditorProvenance(value: unknown): EditorProvenance | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const count = (key: string) => {
+    const number = (value as Record<string, unknown>)[key];
+    return typeof number === "number" && Number.isFinite(number) && number >= 0 ? Math.min(number, 10_000_000) : undefined;
+  };
+  const typed = count("typed"), pasted = count("pasted"), removed = count("removed");
+  return typed === undefined || pasted === undefined || removed === undefined ? undefined : { typed, pasted, removed };
+}
+
+const bodyOf = (content: string) => content.slice(frontmatter(content)?.[0].length ?? 0);
+
+/**
+ * Record an edit of `previous` (now `next`): a running tally of typed, pasted
+ * and model characters (`authorship_chars`) decides `authorship`. Human saves
+ * carry the editor's own typed/pasted counts; other edits are measured by diff.
+ */
+export function markPageEdit(previous: string, next: string, editor: "human" | "ai", provenance?: EditorProvenance): string {
+  const metadata = readQuartzMetadata(previous), origin = pageAuthorship(metadata);
+  const previousBody = bodyOf(previous);
+  const before = parseAuthorshipChars(metadata.authorship_chars) ?? seedAuthorshipChars(origin, previousBody.length);
+  let edit: AuthorshipEdit | undefined = provenance && editor === "human" ? provenance : undefined;
+  if (!edit) {
+    let inserted = 0, removed = 0;
+    for (const part of diffWordsWithSpace(previousBody, bodyOf(next))) {
+      if (part.added) inserted += part.value.length; else if (part.removed) removed += part.value.length;
+    }
+    edit = editor === "ai" ? { removed, ai: inserted } : { typed: inserted, pasted: 0, removed };
+  }
+  const chars = applyAuthorshipEdit(before, edit);
+  const authorship = classifyAuthorship(chars) ?? editedPageAuthorship(origin, editor);
+  const current = readQuartzMetadata(next);
+  let result = current.authorship === authorship ? next : updateQuartzMetadata(next, "authorship", authorship);
+  const tally = formatAuthorshipChars(chars);
+  if (current.authorship_chars !== tally) result = updateQuartzMetadata(result, "authorship_chars", tally);
+  return result;
 }
 
 function frontmatter(content: string) {

@@ -61,7 +61,7 @@ export function resolveMapConfig(
       "Breadboard/1.0 (self-hosted; local assistant)",
     ),
     requestTimeoutMs: positiveInteger(env.MAP_REQUEST_TIMEOUT_MS, 12_000),
-    overpassTimeoutMs: positiveInteger(env.MAP_OVERPASS_TIMEOUT_MS, 30_000),
+    overpassTimeoutMs: positiveInteger(env.MAP_OVERPASS_TIMEOUT_MS, 12_000),
     routerTimeoutMs: positiveInteger(env.MAP_ROUTER_TIMEOUT_MS, 25_000),
   };
 }

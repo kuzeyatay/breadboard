@@ -202,3 +202,10 @@ a.primary, a.secondary { text-decoration: none; }
 @media (prefers-reduced-motion: reduce) { .page * { transition: none !important; } }
 
 
+.feedSwitch { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-weight: 600; cursor: pointer; }
+.feedSwitch input { appearance: none; width: 44px; height: 24px; flex: none; border-radius: 12px; background: var(--line-strong); cursor: pointer; }
+.feedSwitch input:checked { background: var(--botanical); }
+.feedSwitch input::before { content: ""; display: block; width: 20px; height: 20px; margin: 2px; border-radius: 50%; background: var(--paper-raised); }
+.feedSwitch input:checked::before { transform: translateX(20px); }
+.card .feedSwitch + p { margin: 6px 0 0; }
+@media (forced-colors: active) { .feedSwitch input { appearance: auto; } .feedSwitch input::before { display: none; } }

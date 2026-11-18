@@ -121,6 +121,15 @@ test("deleting a record removes it, and the feed follows the requested people ne
   assert.ok(everyone.before, "a full page carries a cursor");
   const next = await post("/feed", { limit: 2, before: everyone.before });
   assert.ok(next.items.every(item => item.createdAt < everyone.before));
+  const sameTime = "2026-11-15T12:00:00.000Z";
+  net.put(dave, H, "tied", highlight("Same time as Dave", "another passage", { createdAt: sameTime }));
+  await post("/notify", { uri: `at://${dave}/${H}/tied` });
+  const first = await post("/feed", { actors: [dave], limit: 1 });
+  const second = await post("/feed", { actors: [dave], limit: 1, before: first.before });
+  assert.equal(first.items[0].createdAt, second.items[0].createdAt);
+  assert.notEqual(first.items[0].uri, second.items[0].uri);
+  net.remove(dave, H, "tied");
+  await post("/notify", { uri: `at://${dave}/${H}/tied` });
 });
 
 test("notify indexes straight from the author's server without waiting for the stream", async () => {

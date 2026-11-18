@@ -260,7 +260,7 @@ test("manual update is owner-only and repeated requests share one queued build w
   };
   // Only substitute session lookup and Runtime admission; execute the real route,
   // access policy, preference, database queue and response/status code together.
-  const authModule = `data:text/javascript,${encodeURIComponent('export const {requireReadableClusterFromSlugOrPublic, requireOwnedClusterFromSlug, routeErrorResponse} = globalThis.__topologyRetryTest;')}`;
+  const authModule = `data:text/javascript,${encodeURIComponent('export const {requireReadableClusterFromSlugOrPublic, requireOwnedClusterFromSlug, requireUserId, routeErrorResponse} = globalThis.__topologyRetryTest;')}`;
   const stateModule = `data:text/javascript,${encodeURIComponent('export const {invalidateThoughtTopologyAfterMutation, readPathRepairDelayMs, resubmitQueuedThoughtTopologyJob, reconcileThoughtTopologyRuntimeJob} = globalThis.__topologyRetryTest;')}`;
   const hook = registerHooks({
     resolve(specifier, context, next) {

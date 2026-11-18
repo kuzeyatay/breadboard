@@ -45,8 +45,25 @@ app.whenReady().then(async () => {
     all.push(...batch);
     await translate("apply", batch.map(segment => ({ id: segment.id, text: `English ${segment.text}` })));
   }
-  assert.equal(await run("scans"), 2, "finishing the page does not rescan after every result");
-  assert.equal(all.filter(segment => /^Texto \d+$/.test(segment.text)).length, 160, "offscreen content is also translated");
+  const drain = async () => {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const batch = await translate("collect");
+      if (!batch.length) break;
+      all.push(...batch);
+      await translate("apply", batch.map(segment => ({ id: segment.id, text: `English ${segment.text}` })));
+    }
+  };
+  assert.equal(await run("scans"), 2, "finishing the viewport does not rescan after every result");
+  const near = all.filter(segment => /^Texto \d+$/.test(segment.text) || segment.text === "Actualizado").length;
+  assert.ok(near >= 40 && near < 100, `only text near the viewport is sent, not the whole page (${near})`);
+  assert.equal(await run("fixtureTranslation.idleUntil > Date.now()"), true, "a finished viewport makes later polls free");
+  // Scrolling wakes the collector without a rescan; the rest follows the reader.
+  for (const id of ["p0", "p30", "p130", "inline"]) {
+    await run(`document.getElementById('${id}').scrollIntoView(); new Promise(done => setTimeout(done, 150))`);
+    await drain();
+  }
+  assert.equal(await run("scans"), 2, "scrolling does not rescan the page");
+  assert.equal(all.filter(segment => /^Texto \d+$/.test(segment.text)).length, 160, "offscreen content is translated once scrolled to");
   const fragments = all.filter(segment => ["Visita ", "nuestro sitio", " ahora."].includes(segment.text));
   assert.equal(fragments.length, 3);
   assert.ok(fragments.every(segment => segment.context === "Visita nuestro sitio ahora."), "inline context stays in the source language");

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { LearnedContextSettings } from "./learned-context-controls";
 import { HERMES_SESSIONS_CHANGED_EVENT } from "@/lib/hermes/session-client";
 
 type MemoryKind = "preference" | "project_fact" | "decision" | "working_pattern";
@@ -324,6 +325,7 @@ export default function SettingsAgentMemory() {
 
   return (
     <div className="space-y-4">
+      <LearnedContextSettings />
       <section className="neu-surface-subtle space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4">
         <div className="flex flex-wrap items-start gap-3">
           <div>

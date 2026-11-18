@@ -9,6 +9,14 @@ let releaseClapPlayback: (() => void) | null = null;
 
 export function stopSpeechPlayback(): void { finishSpeechPlayback(); }
 
+/** Pause the reading in place, so a cough or "mm-hmm" over it can let it go on. */
+export function holdSpeechPlayback(held: boolean): void {
+  const audio = activeAudio;
+  if (!audio) return;
+  if (held) { try { audio.pause(); } catch {} return; }
+  if (audio.paused && !audio.ended) void audio.play().catch(() => {});
+}
+
 function finishSpeechPlayback(error?: Error): void {
   releaseClapPlayback?.(); releaseClapPlayback = null;
   const subscriptionStop = activeSubscriptionStop;

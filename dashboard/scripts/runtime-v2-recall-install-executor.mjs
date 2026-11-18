@@ -285,6 +285,31 @@ function runNpm(plan, signal, timeoutMs, spawnImpl) {
 }
 
 const RECOVERY_HEADROOM_BYTES = 2 * 1024 ** 3;
+const IO_FAULT_CODES = new Set([10, 13]);
+
+function quarantineCode(marker) {
+  try {
+    const code = JSON.parse(fs.readFileSync(marker, "utf8")).sqlite_code;
+    return Number.isInteger(code) ? code & 0xff : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read-only PRAGMA quick_check; any failure (or a missing driver) is "not proven intact". */
+export async function databaseIntact(file) {
+  let db;
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    db = new DatabaseSync(file, { readOnly: true });
+    const rows = db.prepare("PRAGMA quick_check").all();
+    return rows.length === 1 && Object.values(rows[0])[0] === "ok";
+  } catch {
+    return false;
+  } finally {
+    try { db?.close(); } catch { /* already closed */ }
+  }
+}
 
 export function recallQuarantineMarker(home) {
   return path.join(home, "data", "db.sqlite.quarantine.json");
@@ -305,7 +330,20 @@ async function recoverQuarantinedDatabase(plan, signal, timeoutMs, spawnImpl) {
   const volume = fs.statfsSync(dataDir);
   // The repair holds the original and a rebuilt copy at once. Starting it on a
   // nearly full disk would repeat the fault that caused the quarantine.
-  if (volume.bavail * volume.bsize < 2 * size + RECOVERY_HEADROOM_BYTES) {
+  const free = volume.bavail * volume.bsize;
+  if (free < RECOVERY_HEADROOM_BYTES) {
+    return "Recall's history needs a repair, and the disk is too full to do it safely.";
+  }
+  // A full disk (SQLITE_FULL 13) or failed write (SQLITE_IOERR 10) is not
+  // corruption: SQLite rolled the write back. Upstream stopped quarantining
+  // these (screenpipe #6967); the pinned engine still does, and its
+  // `db recover` fails on Windows (sync of a read-only handle). So a database
+  // that passes quick_check is released by archiving the marker.
+  if (IO_FAULT_CODES.has(quarantineCode(marker)) && (await databaseIntact(path.join(dataDir, "db.sqlite")))) {
+    fs.renameSync(marker, path.join(dataDir, `db.sqlite.quarantine.resolved-${Date.now()}.json`));
+    return "Recall's history was checked and is intact.";
+  }
+  if (free < 2 * size + RECOVERY_HEADROOM_BYTES) {
     return "Recall's history needs a repair, and the disk is too full to do it safely.";
   }
   const result = await runNpm(

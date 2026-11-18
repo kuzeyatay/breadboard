@@ -30,7 +30,6 @@ import {
   type IngestAutoRetryLedger,
 } from "@/lib/ingest-auto-retry";
 import { VLM_PARSE_FILE_RE } from "@/app/components/vlm-parse-option";
-import { ANYDOC_PARSE_FILE_RE } from "@/lib/anydoc/formats";
 
 const HANDWRITING_FILE_RE = /\.(pdf|jpg|jpeg|png|webp)$/i;
 
@@ -42,7 +41,6 @@ export interface GardenUploadTaskOptions {
   label: string;
   handwriting: boolean;
   parseWithVlm: boolean;
-  parseWithAnydoc: boolean;
   generateMap: boolean;
 }
 
@@ -280,7 +278,6 @@ export function resumeGardenUploadRecovery(input: {
       label: "",
       handwriting: recovery.request.isHandwriting,
       parseWithVlm: recovery.request.parseWithVlm,
-      parseWithAnydoc: recovery.request.parseWithAnydoc,
       generateMap: recovery.request.generateMap,
     },
     { [gardenUploadFileKey(placeholder)]: recovery.recoveryId },
@@ -474,14 +471,9 @@ async function runUploadTask(
     setTaskSteps((current) => ({ ...current, [key]: "Starting…" }));
 
     const usesVlm = options.parseWithVlm && VLM_PARSE_FILE_RE.test(file.name);
-    // PDFs can intentionally use both readers: VLM supplies the visual parse
-    // and anydoc adds a text-layer cross-check. Other formats still select the
-    // one reader that supports them.
-    const usesAnydoc =
-      options.parseWithAnydoc && ANYDOC_PARSE_FILE_RE.test(file.name);
+    // anydoc always runs server-side; model OCR overrides the text layer.
     const usesHandwriting =
       !usesVlm &&
-      !usesAnydoc &&
       options.handwriting &&
       HANDWRITING_FILE_RE.test(file.name);
     const formData = new FormData();
@@ -490,7 +482,6 @@ async function runUploadTask(
     if (options.label) formData.append("sourceLabel", options.label);
     formData.append("isHandwriting", String(usesHandwriting));
     formData.append("parseWithVlm", String(usesVlm));
-    formData.append("parseWithAnydoc", String(usesAnydoc));
     formData.append(
       "generateMap",
       String(usesHandwriting || options.generateMap),
@@ -797,11 +788,9 @@ async function runUploadTask(
     );
     const readerLabel = options.parseWithVlm
       ? "VLM parsing"
-      : options.parseWithAnydoc
-        ? "anydoc conversion"
-        : options.handwriting && hasHandwritingFile
-          ? "handwriting OCR"
-          : "";
+      : options.handwriting && hasHandwritingFile
+        ? "model OCR"
+        : "";
     const generationLabel = !options.generateMap
       ? readerLabel || "no map generation"
       : mapWarnings.length > 0 && mapGeneratedCount === 0

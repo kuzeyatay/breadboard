@@ -7,20 +7,16 @@ import { isPrimaryShortcut } from "@/lib/keyboard-shortcuts";
 import { installPdfFind } from "@/lib/pdf-find";
 import { useRouter } from "next/navigation";
 import { releaseCanvasPixels } from "@/app/components/canvas-resource";
-import FastReadReader from "@/app/components/fastread-reader";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { startNavigationProgress } from "@/app/components/navigation-progress";
-import { useStartupLoading } from "@/app/components/startup-readiness";
+import { usePageLoading } from "@/app/components/use-page-loading";
 import { beginInteraction } from "@/lib/performance/client";
-import PdfToolsPanel, { type PendingStamp } from "@/app/components/pdf-tools-panel";
-import PdfAssistant from "@/app/components/pdf-assistant";
-import PdfPrintPreview from "@/app/components/pdf-print-preview";
+import type { PendingStamp } from "@/app/components/pdf-tools-panel";
 import { currentPdfDocumentBytes } from "@/lib/pdf-preparation";
 import { pdfAssistantDocumentKey } from "@/lib/pdf-assistant";
 import { pdfSaveQueue, PdfSaveSession } from "@/lib/pdf-save-client";
 import { loadPdfReadingPosition, savePdfReadingPosition } from "@/lib/pdf-reading-position-client";
-import { stampImage } from "@/lib/pdf-tools";
 import {
   fetchFastReadNote,
   pdfTextToMarkdown,
@@ -28,6 +24,8 @@ import {
   type PdfTextPageLike,
 } from "@/lib/fastread-source";
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -39,6 +37,11 @@ import {
   queueArtifactAiEdit,
   type ArtifactAiEditTarget,
 } from "@/app/components/hermes/artifact-ai-edit";
+
+const PdfAssistant = lazy(() => import("@/app/components/pdf-assistant"));
+const PdfToolsPanel = lazy(() => import("@/app/components/pdf-tools-panel"));
+const PdfPrintPreview = lazy(() => import("@/app/components/pdf-print-preview"));
+const FastReadReader = lazy(() => import("@/app/components/fastread-reader"));
 
 type PdfJsModule = typeof import("pdfjs-dist");
 type PdfDocumentLoadingTask = ReturnType<PdfJsModule["getDocument"]>;
@@ -122,11 +125,13 @@ const PDFJS_IMAGE_RESOURCES_PATH = "/api/pdfjs/images/";
 interface Props {
   fileRevision?: number;
   clusterSlug?: string;
+  assistantGardenSlug?: string;
   documentSlug?: string;
   title: string;
   browserTitle?: string;
   sourceUrl?: string;
   readOnly?: boolean;
+  embeddedInBrowser?: boolean;
   /**
    * Whether this account asked for the Fast-read seat in its profile. Off is
    * the default, so a page that has not read the setting shows no button.
@@ -336,11 +341,13 @@ function OutlineItem({
 export default function PdfViewerClient({
   fileRevision,
   clusterSlug = "",
+  assistantGardenSlug,
   documentSlug = "",
   title,
   browserTitle,
   sourceUrl,
   readOnly = false,
+  embeddedInBrowser = false,
   fastRead = false,
   showNavbarFlowers = true,
   aiEditArtifact,
@@ -388,7 +395,10 @@ export default function PdfViewerClient({
   const printPreparingRef = useRef(false);
   const printReturnFocusRef = useRef<HTMLElement | null>(null);
   const [error, setError] = useState("");
-  useStartupLoading(!error && (!documentReady || !pageReady));
+  const opening = !error && (!documentReady || !pageReady);
+  usePageLoading(!embeddedInBrowser && opening);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [openFailed, setOpenFailed] = useState(false);
   const [mode, setMode] = useState<PdfViewerMode>("select");
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [lastSavedAt, setLastSavedAt] = useState("");
@@ -400,6 +410,7 @@ export default function PdfViewerClient({
   const [fastReadNote, setFastReadNote] = useState<FastReadNote | null>(null);
   const [fastReadLoading, setFastReadLoading] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [pinRequest, setPinRequest] = useState(0);
   const [pendingStamp, setPendingStamp] = useState<PendingStamp | null>(null);
   const [toolRunning, setToolRunning] = useState(false);
   const [artifactReviewOpen, setArtifactReviewOpen] = useState(false);
@@ -661,6 +672,7 @@ export default function PdfViewerClient({
       setToolRunning(true);
       setPendingStamp(null);
       try {
+        const { stampImage } = await import("@/lib/pdf-tools");
         const stamped = await stampImage(await currentPdfBytes(), pendingStamp.image, {
           pageIndex,
           relX: clamp(
@@ -786,6 +798,7 @@ export default function PdfViewerClient({
     const savedPage = readSavedPage();
 
     setDocumentReady(false);
+    setOpenFailed(false);
     setPageReady(false);
     setHistoryState("unknown");
     // Measured from this load starting to the first page and then to the
@@ -817,17 +830,26 @@ export default function PdfViewerClient({
         (globalThis as typeof globalThis & { pdfjsLib?: PdfJsModule }).pdfjsLib =
           pdfjs;
 
-        const viewerModule = (await import(
-          /* webpackIgnore: true */ new URL(PDFJS_VIEWER_MODULE_URL, window.location.origin).href
-        )) as PdfViewerModule;
-
-        if (cancelled || !containerRef.current || !viewerRef.current) return;
-
+        if (cancelled) return;
         workerBlobUrl = createPdfWorkerSrc(
           new URL(PDFJS_WORKER_URL, window.location.origin).toString(),
         );
         pdfjs.GlobalWorkerOptions.workerSrc = workerBlobUrl;
         pdfjsRef.current = pdfjs;
+
+        const pendingBytes = saveQueue.pendingBytes();
+        const pendingData = pendingBytes ? await pendingBytes : null;
+        if (cancelled) return;
+        // Start the worker and document request while the viewer module loads.
+        loadingTask = pdfjs.getDocument(pendingData
+          ? { data: pendingData }
+          : { url: pdfUrl, withCredentials: true, disableAutoFetch: true });
+        const [viewerModule, loadedDocument] = await Promise.all([
+          import(/* webpackIgnore: true */ new URL(PDFJS_VIEWER_MODULE_URL, window.location.origin).href) as Promise<PdfViewerModule>,
+          loadingTask.promise,
+        ]);
+        pdfDocument = loadedDocument;
+        if (cancelled || !containerRef.current || !viewerRef.current) return;
 
         const eventBus = new viewerModule.EventBus();
         const onViewerEvent = (name: string, listener: (event: Record<string, unknown>) => void) => {
@@ -940,21 +962,6 @@ export default function PdfViewerClient({
           }
         });
 
-        const pendingBytes = saveQueue.pendingBytes();
-        const pendingData = pendingBytes ? await pendingBytes : null;
-        if (cancelled) return;
-        loadingTask = pdfjs.getDocument(pendingData
-          ? { data: pendingData }
-          : {
-              url: pdfUrl,
-              withCredentials: true,
-              // The endpoint serves byte ranges, so fetch the pages someone
-              // is actually reading instead of streaming the whole document
-              // in the background (IO-02). A shelf of textbooks restored
-              // into tabs at startup used to pull every byte of every one.
-              disableAutoFetch: true,
-            });
-        pdfDocument = await loadingTask.promise;
         const storedPage = await savedPage;
         initialPage = citationPageRef.current ?? storedPage;
         if (cancelled) {
@@ -999,6 +1006,7 @@ export default function PdfViewerClient({
         firstPage.end(cancelled ? "cancelled" : "failed");
         requestedPage.end(cancelled ? "cancelled" : "failed");
         if (cancelled) return;
+        setOpenFailed(true);
         setError(
           loadError instanceof Error
             ? loadError.message
@@ -1096,6 +1104,7 @@ export default function PdfViewerClient({
     clearScheduledSave,
     historyUrl,
     loadOutline,
+    loadAttempt,
     pdfUrl,
     readOnly,
     readSavedPage,
@@ -1271,7 +1280,7 @@ export default function PdfViewerClient({
 
   const printEdited = useCallback(
     async () => {
-      if (printPreparingRef.current || printPreviewBytes || exporting || loading || saveState === "saving") return;
+      if (printPreparingRef.current || printPreviewBytes || exporting || loading) return;
       printPreparingRef.current = true;
       printReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       const sourceDocument = pdfDocumentRef.current;
@@ -1283,7 +1292,7 @@ export default function PdfViewerClient({
         }, "Could not prepare the print preview.");
       } finally { printPreparingRef.current = false; }
     },
-    [exportEdited, exporting, loading, printPreviewBytes, saveState],
+    [exportEdited, exporting, loading, printPreviewBytes],
   );
 
   useEffect(() => {
@@ -1345,7 +1354,9 @@ export default function PdfViewerClient({
   }, [clusterSlug, documentSlug, documentTitle, fastReadLoading, title]);
 
   return (
-    <main className="flex min-h-0 flex-1 flex-col">
+    <main className="flex min-h-0 flex-1 flex-col" data-browser-pdf={embeddedInBrowser || undefined} aria-busy={opening}>
+      <link rel="modulepreload" href={PDFJS_MODULE_URL} />
+      <link rel="modulepreload" href={PDFJS_VIEWER_MODULE_URL} />
       <link rel="stylesheet" href={PDFJS_VIEWER_CSS_URL} />
       <style>{`
         :is(.annotationEditorLayer :is(.freeTextEditor,.inkEditor,.stampEditor,.highlightEditor,.signatureEditor),.textLayer) .editToolbar,
@@ -1366,7 +1377,7 @@ export default function PdfViewerClient({
       <header className="breadboard-flower-navbar relative flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
         <NavbarFlowerWind showFlowers={showNavbarFlowers} />
         <div className="relative z-10 flex min-w-0 items-center gap-3">
-          <button
+          {!embeddedInBrowser && <button
             type="button"
             onClick={goBack}
             aria-label="Back"
@@ -1385,7 +1396,7 @@ export default function PdfViewerClient({
             >
               <path d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" />
             </svg>
-          </button>
+          </button>}
           <div className="min-w-0">
             {canEditTitle && editingTitle ? (
               <form
@@ -1560,7 +1571,6 @@ export default function PdfViewerClient({
             disabled={
               loading ||
               exporting ||
-              saveState === "saving" ||
               !pdfDocumentRef.current
             }
             className="rounded-md border border-gray-800 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
@@ -1643,6 +1653,18 @@ export default function PdfViewerClient({
             </svg>
             Tools
           </button>
+          <button
+            type="button"
+            onClick={() => setPinRequest((count) => count + 1)}
+            disabled={loading}
+            title="Pin a question to this page; drag the pin anywhere"
+            className="flex items-center gap-1.5 rounded-md border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 17v5M9 10.8V5h6v5.8l2.4 2.6c.4.4.1 1.1-.5 1.1H7.1c-.6 0-.9-.7-.5-1.1L9 10.8ZM8 2.5h8" />
+            </svg>
+            Pins
+          </button>
           {fastRead && (
             <button
               type="button"
@@ -1702,7 +1724,7 @@ export default function PdfViewerClient({
                 />
                 <span>/ {pageCount}</span>
               </>
-            ) : "Loading"}
+            ) : "— / —"}
           </div>
           <button
             type="button"
@@ -1787,17 +1809,10 @@ export default function PdfViewerClient({
       </div>
 
       <section className="relative flex min-h-0 flex-1 bg-gray-900">
-        {loading && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-900 text-gray-500">
-            <span className="flex items-center gap-2 text-sm">
-              <Spinner />
-              Opening PDF
-            </span>
-          </div>
-        )}
         {error && (
-          <div className="absolute left-1/2 top-4 z-20 max-w-xl -translate-x-1/2 rounded-md border border-red-900 bg-red-950 px-4 py-3 text-sm text-red-200 shadow-lg">
+          <div role="alert" className="absolute left-1/2 top-4 z-20 max-w-xl -translate-x-1/2 rounded-md border border-red-900 bg-red-950 px-4 py-3 text-sm text-red-200 shadow-lg">
             {error}
+            {openFailed && <button type="button" className="ml-3 underline" onClick={() => setLoadAttempt(attempt => attempt + 1)}>Retry</button>}
           </div>
         )}
         {outlineOpen && (
@@ -1834,7 +1849,7 @@ export default function PdfViewerClient({
             </button>
           </div>
           <div className="min-h-0 flex-1 overflow-auto overscroll-contain px-2 py-3">
-            {outlineLoading ? (
+            {opening ? null : outlineLoading ? (
               <div className="flex items-center gap-2 px-2 text-xs text-gray-300">
                 <Spinner className="h-3.5 w-3.5" />
                 Loading outline
@@ -1896,60 +1911,68 @@ export default function PdfViewerClient({
           )}
         </div>
 
-        {toolsOpen && (
-          <div id="pdf-tools-panel" className="flex min-h-0">
-            <PdfToolsPanel
-              pageCount={pageCount}
-              readOnly={readOnly}
-              fileName={editedFileName}
-              getBytes={currentPdfBytes}
-              applyBytes={applyToolBytes}
-              downloadBytes={downloadToolBytes}
-              startPlacement={setPendingStamp}
-              placementArmed={Boolean(pendingStamp)}
-              onCancelPlacement={() => setPendingStamp(null)}
-              onError={setError}
-              onClose={() => {
-                setToolsOpen(false);
-                setPendingStamp(null);
-              }}
-            />
-          </div>
-        )}
-        <PdfAssistant
-          key={identity}
-          documentKey={pdfAssistantDocumentKey(identity)}
-          sourceUrl={identity}
-          title={documentTitle}
-          fileName={editedFileName}
-          pageNumber={pageNumber}
-          pageCount={pageCount}
-          loading={loading}
-          selectionEnabled={mode === "select" && !pendingStamp}
-          containerRef={containerRef}
-          pdfDocumentRef={pdfDocumentRef}
-          getBytes={currentPdfBytes}
-          temporary={temporary}
-        />
+        <Suspense fallback={null}>
+          {toolsOpen && (
+            <div id="pdf-tools-panel" className="flex min-h-0">
+              <PdfToolsPanel
+                pageCount={pageCount}
+                readOnly={readOnly}
+                fileName={editedFileName}
+                getBytes={currentPdfBytes}
+                applyBytes={applyToolBytes}
+                downloadBytes={downloadToolBytes}
+                startPlacement={setPendingStamp}
+                placementArmed={Boolean(pendingStamp)}
+                onCancelPlacement={() => setPendingStamp(null)}
+                onError={setError}
+                onClose={() => {
+                  setToolsOpen(false);
+                  setPendingStamp(null);
+                }}
+              />
+            </div>
+          )}
+        </Suspense>
+        <Suspense fallback={null}>
+          {(!embeddedInBrowser || pageReady) && <PdfAssistant
+            key={identity}
+            documentKey={pdfAssistantDocumentKey(identity)}
+            gardenSlug={assistantGardenSlug || clusterSlug || undefined}
+            sourceUrl={identity}
+            title={documentTitle}
+            fileName={editedFileName}
+            pageNumber={pageNumber}
+            pageCount={pageCount}
+            loading={loading}
+            selectionEnabled={mode === "select" && !pendingStamp}
+            containerRef={containerRef}
+            pdfDocumentRef={pdfDocumentRef}
+            getBytes={currentPdfBytes}
+            temporary={temporary}
+            pinRequest={pinRequest}
+          />}
+        </Suspense>
       </section>
 
-      {fastReadNote && (
-        <FastReadReader
-          title={fastReadNote.title}
-          content={fastReadNote.content}
-          onClose={() => setFastReadNote(null)}
-        />
-      )}
-      {printPreviewBytes && pdfjsRef.current && (
-        <PdfPrintPreview
-          bytes={printPreviewBytes}
-          title={documentTitle}
-          pdfjs={pdfjsRef.current}
-          onPrint={() => printBytes(printPreviewBytes)}
-          onClose={() => setPrintPreviewBytes(null)}
-          returnFocusTo={printReturnFocusRef.current}
-        />
-      )}
+      <Suspense fallback={null}>
+        {fastReadNote && (
+          <FastReadReader
+            title={fastReadNote.title}
+            content={fastReadNote.content}
+            onClose={() => setFastReadNote(null)}
+          />
+        )}
+        {printPreviewBytes && pdfjsRef.current && (
+          <PdfPrintPreview
+            bytes={printPreviewBytes}
+            title={documentTitle}
+            pdfjs={pdfjsRef.current}
+            onPrint={() => printBytes(printPreviewBytes)}
+            onClose={() => setPrintPreviewBytes(null)}
+            returnFocusTo={printReturnFocusRef.current}
+          />
+        )}
+      </Suspense>
     </main>
   );
 }

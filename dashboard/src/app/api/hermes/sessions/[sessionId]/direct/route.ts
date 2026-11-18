@@ -63,6 +63,8 @@ export async function POST(
       text: requireString(body.text, "text", 100_000),
       surface,
       model: body.model,
+      personalize: body.personalize === true,
+      pageTitle: typeof body.pageTitle === "string" ? body.pageTitle.slice(0,180) : undefined,
       reasoningEffort: body.reasoningEffort,
       textSelection: normalizeChatTextSelectionReference(body.textSelection) ?? undefined,
       concurrentInline: body.concurrentInline === true,

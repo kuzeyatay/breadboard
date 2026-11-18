@@ -5,7 +5,7 @@ import {
   isHttpUrl,
   normalizeWebsite,
 } from "../hermes/evidence.ts";
-import { generativeUiResourcesFromToolOutput } from "../generative-ui/contracts.ts";
+import { generativeUiResourcesFromToolOutput, spotifyPlaybackPrepared } from "../generative-ui/contracts.ts";
 import type {
   NormalizedAgentEvent,
   PermissionRisk,
@@ -473,6 +473,7 @@ export function normalizeHermesEvent(
       const uiResources = success
         ? generativeUiResourcesFromToolOutput(toolName, payload.result)
         : [];
+      const prepared = success ? spotifyPlaybackPrepared(toolName, payload.result) : undefined;
       state.activeTools?.delete(toolCallId);
       return [{
         type: "tool.completed",
@@ -488,6 +489,7 @@ export function normalizeHermesEvent(
           location,
           ...(normalizedWebsites.length > 0 ? { websites: normalizedWebsites } : {}),
           ...(uiResources.length > 0 ? { uiResources } : {}),
+          ...(prepared !== undefined ? { spotifyPlaybackPrepared: prepared } : {}),
           details: {
             toolName,
             ...(query ? { query } : {}),

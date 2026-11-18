@@ -1,9 +1,12 @@
 /** Serialized into each document; only Text.data and human-facing attributes change. */
 function translationDocument(key: string, operation: string, payload?: unknown) {
-  type Entry = { node: Node; attribute: string; original: string; applied: string; pending: boolean; done: boolean };
+  // pending is the time a sent segment may be collected again: a lost reply must not strand its text.
+  type Entry = { node: Node; attribute: string; original: string; applied: string; pending: number; done: boolean };
   type State = {
     entries: Map<number, Entry>; nodes: WeakMap<Node, Map<string, number>>; serial: number;
     dirty: boolean; roots: Set<Node>; observer: MutationObserver;
+    /** Nothing near the viewport is waiting; polls return at once until the reader scrolls or the page changes. */
+    idleUntil: number; view: string; wake: () => void;
   };
   const scope = globalThis as unknown as Record<string, State | undefined>;
   let state = scope[key];
@@ -15,6 +18,7 @@ function translationDocument(key: string, operation: string, payload?: unknown) 
   if (operation === "restore") {
     if (state) {
       state.observer.disconnect();
+      removeEventListener("scroll", state.wake, true);
       for (const entry of state.entries.values()) {
         // Live app edits take precedence over our saved original.
         if (entry.node.isConnected && read(entry) === entry.applied) write(entry, entry.original);
@@ -37,7 +41,11 @@ function translationDocument(key: string, operation: string, payload?: unknown) 
         return !entry?.done || read(entry) !== entry.applied;
       });
     });
-    state = { entries: new Map(), nodes: new WeakMap(), serial: 0, dirty: true, roots: new Set(), observer };
+    const wake = () => { const current = scope[key]; if (current) current.idleUntil = 0; };
+    // For nested scrollers and shadow trees, which the window position below
+    // cannot see. Capture is required: scroll does not bubble.
+    addEventListener("scroll", wake, { capture: true, passive: true });
+    state = { entries: new Map(), nodes: new WeakMap(), serial: 0, dirty: true, roots: new Set(), observer, idleUntil: 0, view: "", wake };
     scope[key] = state;
   }
   const current = state;
@@ -47,7 +55,7 @@ function translationDocument(key: string, operation: string, payload?: unknown) 
     for (const value of payload as Array<{ id: number; text: string }>) {
       const entry = current.entries.get(value.id);
       if (!entry || typeof value.text !== "string") continue;
-      entry.pending = false;
+      entry.pending = 0;
       if (!entry.node.isConnected || read(entry) !== entry.original) { current.dirty = true; continue; }
       const whitespace = entry.original.match(/^(\s*)[\s\S]*?(\s*)$/);
       entry.applied = `${whitespace?.[1] ?? ""}${value.text.trim()}${whitespace?.[2] ?? ""}`;
@@ -58,6 +66,11 @@ function translationDocument(key: string, operation: string, payload?: unknown) 
     return applied;
   }
   if (operation !== "collect") return [];
+  const now = Date.now();
+  // Scroll events are delivered with the next frame, which can be late; the
+  // window position is exact now.
+  const view = `${scrollX},${scrollY},${innerWidth},${innerHeight}`;
+  if (!current.dirty && current.idleUntil > now && current.view === view) return [];
   // Identity labels are not prose. Auto-detecting each fragment independently
   // otherwise turns the profile name "Kuzey" into "North" and mangles handles.
   const identities = ".vcard-fullname,.vcard-username,.h-card .p-name,.h-card .p-nickname,.vcard .fn,.vcard .nickname,[itemprop~='givenName'],[itemprop~='familyName'],[itemprop~='additionalName'],[itemtype$='/Person'] [itemprop~='name'],[itemtype$='/Organization'] [itemprop~='name'],[rel~='author']";
@@ -116,23 +129,28 @@ function translationDocument(key: string, operation: string, payload?: unknown) 
       if (!ids) { ids = new Map(); current.nodes.set(node, ids); }
       const old = ids.get(attribute);
       const entry = old === undefined ? undefined : current.entries.get(old);
-      if (entry && (value === entry.applied || (entry.pending && value === entry.original))) return;
+      if (entry && (value === entry.applied || (entry.pending > now && value === entry.original))) return;
       if (old !== undefined) current.entries.delete(old);
       const id = ++current.serial;
       ids.set(attribute, id);
-      current.entries.set(id, { node, attribute, original: value, applied: value, pending: false, done: false });
+      current.entries.set(id, { node, attribute, original: value, applied: value, pending: 0, done: false });
     };
     const walk = (root: Node) => {
       if (!current.roots.has(root)) {
         current.roots.add(root);
         current.observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });
       }
+      const top = root.nodeType === Node.ELEMENT_NODE ? root as Element : null;
+      if (top && (excluded(top) || top.closest("[hidden],[aria-hidden='true']"))) return;
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
         acceptNode(node) {
-          const element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
-          if (!element || excluded(element)) return NodeFilter.FILTER_REJECT;
-          if (element.closest("[hidden],[aria-hidden='true']")) return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
+          // A rejected element takes its subtree with it, so every node that
+          // arrives here has accepted ancestors: test the element itself only.
+          // Climbing with closest() for every node made large pages stall.
+          if (node.nodeType !== Node.ELEMENT_NODE) return NodeFilter.FILTER_ACCEPT;
+          const element = node as Element;
+          return element.matches(skipped) || element.matches("[hidden],[aria-hidden='true']") || identityLink(element)
+            ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
         },
       });
       let node: Node | null;
@@ -158,21 +176,33 @@ function translationDocument(key: string, operation: string, payload?: unknown) 
   const maxSegments = initial ? 8 : 40;
   const maxCharacters = initial ? 2400 : 12000;
   const candidates: Array<{ id: number; entry: Entry; element: Element; visible: boolean }> = [];
-  const visibility = new Map<Element, { rendered: boolean; visible: boolean }>();
+  const visibility = new Map<Element, { near: boolean; visible: boolean }>();
+  // Translate what the reader can see plus two screens either side, and the
+  // rest as they scroll to it. Sending a whole long page took most of a minute
+  // and enough requests for the translation service to start refusing them.
+  const marginX = innerWidth, marginY = innerHeight * 2;
+  let sent = false;
   for (const [id, entry] of current.entries) {
-    if (entry.pending || entry.done || !entry.node.isConnected) continue;
+    if (entry.done || !entry.node.isConnected) continue;
+    if (entry.pending > now) { sent = true; continue; }
     const element = entry.node.nodeType === Node.ELEMENT_NODE ? entry.node as Element : entry.node.parentElement;
-    if (!element || excluded(element) || alreadyInTargetLanguage(element) || element.closest("[hidden],[aria-hidden='true']")) continue;
+    if (!element) continue;
     const layoutElement = element.closest("select") ?? element;
     let layout = visibility.get(layoutElement);
     if (!layout) {
-      const rects = layoutElement.getClientRects();
-      layout = { rendered: rects.length > 0, visible: Array.from(rects).some(rect =>
-        rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth) };
+      const rects = Array.from(layoutElement.getClientRects());
+      layout = {
+        near: rects.some(rect => rect.bottom > -marginY && rect.top < innerHeight + marginY && rect.right > -marginX && rect.left < innerWidth + marginX),
+        visible: rects.some(rect => rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth),
+      };
       visibility.set(layoutElement, layout);
     }
-    if (layout.rendered) candidates.push({ id, entry, element, visible: layout.visible });
+    // Position is the cheap test, so it runs before the ancestor checks.
+    if (!layout.near || excluded(element) || alreadyInTargetLanguage(element) || element.closest("[hidden],[aria-hidden='true']")) continue;
+    candidates.push({ id, entry, element, visible: layout.visible });
   }
+  // Hover and animation reveals fire neither a scroll nor a mutation; look again after two seconds.
+  if (!candidates.length && !sent) { current.idleUntil = now + 2000; current.view = view; }
   // Keep document order within each group, but translate the current viewport
   // first, including after the reader scrolls partway down a long page.
   candidates.sort((a, b) => Number(b.visible) - Number(a.visible));
@@ -200,7 +230,7 @@ function translationDocument(key: string, operation: string, payload?: unknown) 
     if (context === entry.original) context = "";
     const length = entry.original.length + context.length;
     if (batch.length && (size + length > maxCharacters || batch.length >= maxSegments)) break;
-    entry.pending = true;
+    entry.pending = now + 120000;
     size += length;
     batch.push({ id, text: entry.original, context });
   }

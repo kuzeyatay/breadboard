@@ -32,7 +32,7 @@ const highlighterStyles = read(
 test("quartz chat route resolves the engine server-side like the terminal", () => {
   assert.match(
     chatRoute,
-    /resolveHermesEngine\(model, body\.reasoningEffort\)/,
+    /await resolveAvailableHermesEngine\(model, body\.reasoningEffort\)/,
   );
   // Both the first-turn and continuation dispatches carry the resolved engine.
   assert.match(chatRoute, /const model = body\.model \?\? selectedModelForUser\(userId\)/);
@@ -54,7 +54,7 @@ test("quartz chat route resolves the engine server-side like the terminal", () =
 });
 
 test("quartz models route serves the intelligence picker with CORS", () => {
-  assert.match(modelsRoute, /HERMES_MODEL_IDS/);
+  assert.match(modelsRoute, /await getAgentRuntime\(\)\.listModels\(\)/);
   assert.match(modelsRoute, /DEFAULT_ASSISTANT_REASONING_EFFORT/);
   assert.match(modelsRoute, /corsHeaders\(request\.headers\.get\("origin"\)\)/);
   assert.match(modelsRoute, /export async function OPTIONS/);
@@ -218,5 +218,6 @@ test("quartz carries the same rail of sent messages as the dashboard", () => {
   }
 
   assert.match(styles, /\.breadboard-ai-rail-tick/);
-  assert.match(styles, /aria-current="true"/);
+  assert.match(styles, /@use ".*chat-lens-rail\.css"/);
+  assert.match(read("../src/lib/chat-lens-rail.css"), /\[aria-current=["']?true["']?\]/);
 });

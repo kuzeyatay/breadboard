@@ -2,16 +2,20 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 import ts from "typescript";
 import { PDFDocument, StandardFonts } from "@cantoo/pdf-lib";
 import * as blobs from "../src/lib/conversations/document-blob-store.ts";
 import * as readings from "../src/lib/conversations/document-reading-store.ts";
 import * as formats from "../src/lib/document-attachments.ts";
+import * as ranges from "../src/lib/http-range.ts";
 import { readPdfAttachment } from "../src/lib/pdf-attachment-reader.ts";
 import * as gardenReading from "../src/lib/pdf-garden-reading.ts";
 import { ApiError } from "../src/lib/hermes/route-core.ts";
 import { isSpiceNetlistArtifact } from "../src/lib/netlist-viewer/format.ts";
+
+const STORE_ONLY_HEADER = "x-document-store-only";
 
 // Execute production functions with only their external boundaries supplied,
 // following the existing Garden dispatch test harness.
@@ -34,6 +38,47 @@ async function pdf() {
   return document.save();
 }
 
+test("the web reader serves owned PDF byte ranges and defers cleanup until after upload", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "web-pdf-response-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let cleanup, swept = false;
+  const scope = {
+    ...formats, ...ranges, ...blobs, fs, Readable, NextResponse: Response,
+    requireUserId: async () => 1,
+    writeDocumentBlob: args => blobs.writeDocumentBlob({ ...args, root }),
+    findDocumentBlob: args => blobs.findDocumentBlob({ ...args, root }),
+    STORE_ONLY_HEADER, after: fn => { cleanup = fn; },
+    sweepOpenedFiles: () => { swept = true; },
+    apiErrorResponse: error => { throw error; },
+  };
+  const { POST } = functions("app/api/chat-attachments/documents/route.ts", ["POST"], scope);
+  const bytes = await pdf();
+  const upload = await POST(new Request("http://test/documents", {
+    method: "POST", body: bytes, headers: { "x-document-filename": "web.pdf", "x-document-store-only": "true" },
+  }));
+  const stored = await upload.json();
+  assert.equal(upload.status, 200, JSON.stringify(stored));
+  const { blobId } = stored;
+  assert.equal(swept, false);
+  cleanup();
+  assert.equal(swept, true);
+  const route = "app/api/chat-attachments/documents/[blobId]/route.ts";
+  const { GET } = functions(route, ["GET"], scope);
+  const params = { params: Promise.resolve({ blobId }) };
+  const read = headers => GET(new Request("http://test/document", { headers }), params);
+  const whole = await read({});
+  assert.equal(whole.headers.get("accept-ranges"), "bytes");
+  assert.deepEqual(new Uint8Array(await whole.arrayBuffer()), bytes);
+  assert.equal((await read({ "if-none-match": whole.headers.get("etag") })).status, 304);
+  const slice = await read({ range: "bytes=0-4" });
+  assert.equal(slice.status, 206);
+  assert.equal(slice.headers.get("content-length"), "5");
+  assert.equal(await slice.text(), "%PDF-");
+  assert.equal((await read({ range: `bytes=${bytes.length}-` })).status, 416);
+  const other = functions(route, ["GET"], { ...scope, requireUserId: async () => 2 });
+  assert.equal((await other.GET(new Request("http://test/document"), params)).status, 404);
+});
+
 test("the upload handler reads scans, persists the reading, and rejects unreadable uploads", async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pdf-upload-regression-"));
   const previous = process.env.BREADBOARD_CHAT_DOCUMENT_DIR;
@@ -46,7 +91,7 @@ test("the upload handler reads scans, persists the reading, and rejects unreadab
   let unavailable = false;
   const ocr = [];
   const handler = functions("app/api/chat-attachments/documents/route.ts", ["POST", "DELETE"], {
-    ...blobs, ...readings, ...formats, ...gardenReading, fs, ApiError, NextResponse: Response,
+    ...blobs, ...readings, ...formats, ...gardenReading, fs, ApiError, NextResponse: Response, STORE_ONLY_HEADER,
     requireReadableCluster: () => { throw new Error("Unexpected Garden access"); },
     requireUserId: async () => 1,
     apiErrorResponse: error => Response.json({ code: error.code, message: error.message }, { status: error.status ?? 500 }),
@@ -111,7 +156,7 @@ test("Garden uploads authorize the source and reuse saved OCR through the real u
   fs.writeFileSync(path.join(garden, "sources/notes.md"), '---\nsource_pdf: "/circuits/assets/source.pdf"\n---\n## Page 1\nSaved electric field explanation.\n## Page 2\nSaved transient state explanation.');
   let allowed = true;
   const handler = functions("app/api/chat-attachments/documents/route.ts", ["POST"], {
-    ...blobs, ...readings, ...formats, ...gardenReading, fs, ApiError, NextResponse: Response,
+    ...blobs, ...readings, ...formats, ...gardenReading, fs, ApiError, NextResponse: Response, STORE_ONLY_HEADER,
     requireUserId: async () => 1,
     requireReadableCluster: (userId, slug) => {
       assert.equal(userId, 1); assert.equal(slug, "circuits");

@@ -109,7 +109,7 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandRe
     generateAndApplyConversationTitle: async ({firstPrompt}) => { captured.titlePrompts.push(firstPrompt); return conversation; },
     shouldGenerateConversationTitleForTurn,
     resolveSmallTalkReply: () => null,
-    resolveHermesEngine: () => ({ model: { modelID: payload.model }, selectedModelID: payload.model, variant: "max" }),
+    resolveAvailableHermesEngine: async () => ({ model: { modelID: payload.model }, selectedModelID: payload.model, variant: "max" }),
     getRuntimeSessionByChatSession: () => null, resolveConversationRuntime: async () => session,
     listFilesystemGrants: () => [], prepareTurn, mergeSelectedTools, turnCapabilitySelection,
     resolveCommandMessage: async (_user, text, _workspace, context) => {

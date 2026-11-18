@@ -2,6 +2,7 @@ import type { SearchSuggestion } from "../app/browser/browser-recent-searches.ts
 import { SEARCH_LABELS, type BreadboardSearchResult } from "./breadboard-search.ts";
 import { looksLikeBrowserAddress, normalizeRecentSearches } from "../app/browser/browser-recent-searches.ts";
 
+export const RECENT_SEARCH_LIMIT = 25;
 export type SearchScope = "breadboard" | "web";
 export interface SearchHistoryEntry { query: string; scope: SearchScope }
 export interface NewTabSuggestion extends SearchSuggestion {
@@ -41,7 +42,7 @@ export function newTabSearchSuggestions(query: string, history: SearchHistoryEnt
     if (seen.has(key) || !`${entry.label}\n${entry.value}`.toLocaleLowerCase().includes(value.toLocaleLowerCase())) return false;
     seen.add(key);
     return true;
-  }).slice(0, 4);
+  }).slice(0, value ? 4 : RECENT_SEARCH_LIMIT);
   if (!value) return recent;
   return [...recent,
     { value, label: value, detail: "Search Breadboard", source: "breadboard" as const, scope: "breadboard" as const },
@@ -49,6 +50,43 @@ export function newTabSearchSuggestions(query: string, history: SearchHistoryEnt
     ...results.slice(0, 8 - recent.length - 2).map(result => ({ id: result.id, value: result.title, label: result.title,
       detail: `${SEARCH_LABELS[result.type]} · ${result.context}`, source: "breadboard" as const, scope: "breadboard" as const, result })),
   ];
+}
+
+export interface InlineCompletion { value: string; rest: string; scope: SearchScope }
+
+/**
+ * One ghost completion for the search box, picked from past activity. Each
+ * list is most-recent-first; earlier entries and repeats count more, so a
+ * site visited daily beats a search made once. The higher-scoring scope wins.
+ * ponytail: rank-decay heuristic, no timestamps; add visit-time weighting if it guesses wrong.
+ */
+export function inlineCompletion(query: string, lists: ReadonlyArray<{ scope: SearchScope; values: readonly string[] }>): InlineCompletion | null {
+  const needle = query.trimStart().toLocaleLowerCase();
+  if (!needle || query !== query.trimStart()) return null;
+  let best: { score: number; value: string; scope: SearchScope } | null = null;
+  const scores = new Map<string, number>();
+  for (const { scope, values } of lists) {
+    values.slice(0, 500).forEach((candidate, rank) => {
+      const value = candidate.trim();
+      if (value.length <= needle.length || !value.toLocaleLowerCase().startsWith(needle)) return;
+      const key = `${scope}:${value.toLocaleLowerCase()}`;
+      const score = (scores.get(key) ?? 0) + 1 / (1 + rank / 5);
+      scores.set(key, score);
+      if (!best || score > best.score) best = { score, value, scope };
+    });
+  }
+  if (!best) return null;
+  const { value, scope } = best as { value: string; scope: SearchScope };
+  const rest = value.slice(query.length);
+  return { value: query + rest, rest, scope };
+}
+
+/** Hostname without "www.", the part people type to get back to a site. */
+export function visitedHost(url: string): string | null {
+  try {
+    const { protocol, hostname } = new URL(url);
+    return protocol === "https:" || protocol === "http:" ? hostname.replace(/^www\./u, "") : null;
+  } catch { return null; }
 }
 
 export function webDestinationUrl(value: string): string {

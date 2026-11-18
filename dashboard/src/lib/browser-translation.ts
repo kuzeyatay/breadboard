@@ -61,8 +61,11 @@ export async function translateWithGoogle(input: PageTranslationRequest, signal?
 
 /** Fast machine translation first; the configured model only when Google is unreachable. */
 export async function translatePageText(input: PageTranslationRequest, signal?: AbortSignal, fetcher: typeof fetch = fetch, baseUrl = localChatmockBaseUrl(), userId?: number | null) {
-  try { return await translateWithGoogle(input, signal, fetcher); }
-  catch (error) { if (signal?.aborted) throw error; }
+  // One blip must not send a batch to the model, which takes many seconds longer.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { return await translateWithGoogle(input, signal, fetcher); }
+    catch (error) { if (signal?.aborted) throw error; }
+  }
   return translateWithModel(input, signal, fetcher, baseUrl, userId);
 }
 

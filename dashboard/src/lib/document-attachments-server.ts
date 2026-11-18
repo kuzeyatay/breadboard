@@ -78,6 +78,11 @@ export function stageEditableDocumentAttachments(input: {
       attachment.type === "video" || (attachment.type === "text" && attachment.blobId),
   );
   if (candidates.length === 0) return { context: "", paths: [] };
+  // A quick question on a selection gets a workspace of its own (see
+  // conversationWorkspaceIdentity). It reads the document through the turn's
+  // context and never edits it, so a copy there is only disk: eleven questions
+  // on one 205 MB book were 2.3 GB.
+  if (path.basename(path.resolve(input.workspace)).includes("-inline-")) return { context: "", paths: [] };
 
   const workspace = externalRuntimePortableRealpath(path.resolve(input.workspace));
   const stagingRoot = path.join(workspace, ".breadboard");

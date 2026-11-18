@@ -32,7 +32,7 @@ export type TopologyPayloadNode = {
   relPath: string
   folderId: string
   title: string
-  kind?: "markdown" | "source" | "internal-concept"
+  kind?: "markdown" | "source" | "internal-concept" | "chat"
   knowledgeType: string
   sourceType?: string
   summary: TopologyEnrichmentText
@@ -814,6 +814,48 @@ function normalizeAngle(angle: number): number {
   return ((angle % twoPi) + twoPi) % twoPi
 }
 
+/** Distance from the middle of a chat's pages to the chat dot. */
+export const CHAT_OFFSET = 26
+
+/**
+ * Moves each chat node next to the centroid of the pages its lines reach,
+ * nudged outward from the Garden and spread by a golden-angle turn so chats
+ * about the same pages do not stack. With `positions` (the 3D renderer's
+ * sphere homes) it moves those instead of the planned 2D coordinates.
+ * Returns the ids it moved.
+ */
+export function placeChatsBesidePages(
+  nodes: PlannedNode[],
+  edges: readonly Pick<TopologyPayloadEdge, "source" | "target">[],
+  positions?: Map<string, { x: number; y: number; z?: number }>,
+): Set<string> {
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const at = (node: PlannedNode): { x: number; y: number; z?: number } => positions?.get(node.id) ?? node
+  const placed = new Set<string>()
+  let order = 0
+  for (const chat of nodes) {
+    if (chat.contentKind !== "chat") continue
+    const pages = edges
+      .filter((edge) => edge.source === chat.id || edge.target === chat.id)
+      .map((edge) => byId.get(edge.source === chat.id ? edge.target : edge.source))
+      .filter((node): node is PlannedNode => node?.kind === "page" && node.contentKind !== "chat")
+      .map(at)
+    if (pages.length === 0) continue
+    const mean = (axis: "x" | "y" | "z") => pages.reduce((sum, page) => sum + (page[axis] ?? 0), 0) / pages.length
+    const angle = Math.atan2(mean("y"), mean("x")) + order * 2.39996
+    order += 1
+    const x = mean("x") + Math.cos(angle) * CHAT_OFFSET
+    const y = mean("y") + Math.sin(angle) * CHAT_OFFSET
+    if (positions) positions.set(chat.id, { x, y, z: mean("z") })
+    else {
+      chat.x = x
+      chat.y = y
+    }
+    placed.add(chat.id)
+  }
+  return placed
+}
+
 export function planThoughtTopology(
   payload: TopologyPayload,
   options: PlanOptions = {},
@@ -1262,6 +1304,11 @@ export function planThoughtTopology(
     }
   }
 
+  // A chat sits beside the pages it cited or asked about, not in a sector of
+  // its own: one line across the map per chat was unreadable. Chats with no
+  // line stay in the Chats sector. Pinned positions (below) still win.
+  const placedChats = placeChatsBesidePages(nodes, payload.edges)
+
   if (options.positionOverrides) {
     for (const node of nodes) {
       const override = options.positionOverrides[node.id]
@@ -1274,7 +1321,7 @@ export function planThoughtTopology(
 
   const nodeById = new Map(nodes.map((node) => [node.id, node]))
   const hierarchyEdges: PlannedHierarchyEdge[] = nodes
-    .filter((node) => node.kind !== "garden")
+    .filter((node) => node.kind !== "garden" && !placedChats.has(node.id))
     .map((node) => {
       let folderId = node.folderId
       let parentId = garden.id

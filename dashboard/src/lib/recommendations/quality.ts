@@ -90,6 +90,7 @@ export function recommendationSubjects(card: Recommendation, known: ReadonlyMap<
 }
 
 export function recommendationPriority(item: RecommendationEvidence, context: RecommendationContext = {}): number {
+  if (item.lesson && item.learnedPriority !== undefined) return item.learnedPriority;
   let score = { calendar: 40, task: 55, gmail: 65, outlook: 65, recall: 60, 'screen-time': 5, garden: 30, chat: 35,
     memory: 50, schedule: 48, hook: 46, connection: 25 }[item.source];
   // Something the person set up to run without them has broken.
@@ -106,6 +107,7 @@ export function recommendationPriority(item: RecommendationEvidence, context: Re
 export function recommendationCandidates(item: RecommendationEvidence, evidence: readonly RecommendationEvidence[], context: RecommendationContext = {}) {
   const title = clean(item.title);
   const make = (prompt: string, related?: string) => ({ prompt, sourceIds: [item.id, ...(related ? [related] : [])] });
+  if (item.lesson && item.suggestedPrompt) return [make(item.suggestedPrompt)];
   // Times establish a conflict even when neither title looks like an event
   // category. The subject only determines what help to offer.
   if (item.calendar?.kind === 'event') {

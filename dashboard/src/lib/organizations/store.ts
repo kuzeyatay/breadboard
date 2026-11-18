@@ -63,6 +63,19 @@ function requireRole(
 }
 
 /** Every organization the account belongs to, ids only, for garden queries. */
+/**
+ * Gardens shared with each organization the reader belongs to, for the
+ * Organization screen's Workspaces list. The same rule as every other read
+ * path: organizationClusterClause.
+ */
+export function organizationWorkspaces(userId: number): Array<{ organizationId: number; slug: string; name: string }> {
+  const shared = organizationClusterClause(userId, "c");
+  if (shared === "0") return [];
+  return db.prepare(
+    `SELECT c.organization_id AS organizationId, c.slug, c.name FROM clusters c WHERE ${shared} ORDER BY lower(c.name), c.id`,
+  ).all() as Array<{ organizationId: number; slug: string; name: string }>;
+}
+
 export function organizationIdsForUser(userId: number): number[] {
   if (!Number.isFinite(userId) || userId <= 0) return [];
   const rows = db

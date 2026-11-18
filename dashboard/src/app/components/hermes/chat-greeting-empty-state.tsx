@@ -4,12 +4,13 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 
 import type { ChatGreeting } from "@/lib/hermes/chat-greeting";
 import { SKETCH_MARGIN, sketchRectOutlines, type SketchBox } from "@/lib/hermes/sketch-outline";
-import { useSuggestionCardText } from './use-suggestion-card-text';
+import { useSuggestionCardText, type SuggestionCardContent } from './use-suggestion-card-text';
 import { usePersonalize } from '../use-personalize';
 import { AUTH_CHANGED_EVENT } from '@/lib/auth-events';
 import { RECALL_SETTINGS_CHANGED_EVENT } from '../recall-autostart-lifecycle';
 import { completeRecommendationPrompts, RECOMMENDATION_REFRESH_EVENT } from '@/lib/recommendations/types';
 import type { SuggestionDetail } from './use-chat-greeting';
+import { LessonControls, lessonAction } from "../learned-context-controls";
 
 interface Props {
   greeting: ChatGreeting | null;
@@ -22,7 +23,7 @@ interface Props {
    * runtime: these are starting points, and most of them want a subject filled
    * in before they are worth sending.
    */
-  onSelectSuggestion: (prompt: string) => void;
+  onSelectSuggestion: (prompt: string, conversationId?: string) => void;
   disabled?: boolean;
   /**
    * One small line under the openers, for what a surface needs said in its own
@@ -125,7 +126,7 @@ function SuggestionGrid({suggestions,suggestionDetails,disabled=false,onSelectSu
  */
 function SuggestionCard({
   prompt,
-  detail,
+  detail: incomingDetail,
   index,
   disabled,
   onSelect,
@@ -134,13 +135,14 @@ function SuggestionCard({
   detail?: SuggestionDetail;
   index: number;
   disabled: boolean;
-  onSelect: (prompt: string) => void;
+  onSelect: Props['onSelectSuggestion'];
 }) {
   const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const [held,setHeld]=useState<string|null>(null);
+  const [held,setHeld]=useState<SuggestionCardContent|null>(null);
   const pointer=useRef(false),focused=useRef(false);
-  const shown=held??prompt;
+  const shown=held??{prompt, detail: incomingDetail};
   const text = useSuggestionCardText(shown, held!==null);
+  const { detail } = text.actionable;
   const [box, setBox] = useState<SketchBox | null>(null);
 
   useEffect(() => {
@@ -176,15 +178,18 @@ function SuggestionCard({
     : null;
 
   return (
-    <button
+    <div className="grid"><button
       ref={buttonRef}
       type="button"
       onPointerEnter={event=>{if(event.pointerType==='mouse'){pointer.current=true;setHeld(shown);}}}
       onPointerLeave={()=>{pointer.current=false;if(!focused.current)setHeld(null);}}
       onFocus={()=>{focused.current=true;setHeld(shown);}}
       onBlur={()=>{focused.current=false;if(!pointer.current)setHeld(null);}}
-      onClick={() => onSelect(text.actionable)}
-      aria-label={text.actionable}
+      onClick={() => {
+        if (detail?.lesson && text.actionable.prompt === prompt) void lessonAction(detail.lesson,"accept").catch(()=>{});
+        onSelect(text.actionable.prompt, detail?.conversationId);
+      }}
+      aria-label={text.actionable.prompt}
       disabled={disabled}
       className="bb-terminal-suggestion neu-button border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
     >
@@ -212,7 +217,7 @@ function SuggestionCard({
         ) : null}
       </svg>
       <span className="grid" data-card-suggestion-phase={text.phase}>
-        <span aria-hidden className="invisible col-start-1 row-start-1">{shown}</span>
+        <span aria-hidden className="invisible col-start-1 row-start-1">{shown.prompt}</span>
         <span aria-hidden className="invisible col-start-1 row-start-1">{text.previous}</span>
         <span aria-hidden className="bb-card-suggestion-text col-start-1 row-start-1" data-reduced-motion={text.reduced}>{text.displayed || '\u00a0'}</span>
       </span>
@@ -222,6 +227,6 @@ function SuggestionCard({
           {detail.usefulness === 'urgent' ? `Needs attention · ${detail.label}` : detail.label}
         </span>
       ) : null}
-    </button>
+    </button>{detail?.lesson && <LessonControls lesson={detail.lesson}/>}</div>
   );
 }

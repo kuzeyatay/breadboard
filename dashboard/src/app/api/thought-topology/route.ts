@@ -3,8 +3,10 @@ import { externalRuntimePath as path } from "@/lib/external-runtime-path";
 import {
   requireReadableClusterFromSlugOrPublic,
   requireOwnedClusterFromSlug,
+  requireUserId,
   routeErrorResponse,
 } from "@/lib/server-auth";
+import { withViewerChats } from "@/lib/thought-topology/chat-nodes";
 import {
   readThoughtTopology,
   rendererArtifactContainsVector,
@@ -318,7 +320,7 @@ export async function GET(request: Request) {
   try {
     const slug = new URL(request.url).searchParams.get("clusterSlug")?.trim();
     if (!slug) return NextResponse.json({ error: "clusterSlug is required" }, { status: 400 });
-    const { cluster } = await requireReadableClusterFromSlugOrPublic(slug);
+    const { cluster, userId } = await requireReadableClusterFromSlugOrPublic(slug);
 
     // This is intentionally the first feature-state branch. Disabled reads do
     // no filesystem work and cannot create a queue row or Runtime job.
@@ -394,10 +396,19 @@ export async function GET(request: Request) {
     if (rendererArtifactContainsVector(renderer)) {
       throw new Error("Thought Topology renderer payload failed its privacy boundary.");
     }
+    // The viewer's own chats join the map in this response only; a public
+    // Garden's reader is anonymous unless signed in.
+    const viewerId = userId ?? await requireUserId().catch(() => null);
+    const withChats = topology
+      ? withViewerChats(renderer, { userId: viewerId, clusterId: cluster.id, gardenSlug: cluster.slug, gardenDir })
+      : renderer;
+    if (rendererArtifactContainsVector(withChats)) {
+      throw new Error("Thought Topology renderer payload failed its privacy boundary.");
+    }
     return response({
       enabled: true,
       mode: "thought-topology",
-      topology: renderer,
+      topology: withChats,
       autoUpdate: automatic,
       retryAvailable: !automatic && (status?.state === "stale" || status?.state === "failed"),
       ...(!topology || status?.state === "failed" || status?.state === "stale" ? { stale: true } : {}),

@@ -7,11 +7,15 @@ import type {
   ChatSearchResult,
 } from "@/lib/generative-ui/contracts.ts";
 
-function chatHref(resource: ChatSearchResource, chatId: string): string {
-  if (resource.data.surface === "garden_chat" && resource.data.gardenSlug) {
-    return `/gardens/${encodeURIComponent(resource.data.gardenSlug)}?chat=${encodeURIComponent(chatId)}`;
+function chatHref(resource: ChatSearchResource, chat: ChatSearchResult): string {
+  // A hit carries its own surface since search spans every surface; older
+  // saved results fall back to the resource's.
+  const surface = chat.surface ?? resource.data.surface;
+  const gardenSlug = chat.gardenSlug ?? resource.data.gardenSlug;
+  if (surface === "garden_chat" && gardenSlug) {
+    return `/gardens/${encodeURIComponent(gardenSlug)}?chat=${encodeURIComponent(chat.id)}`;
   }
-  return `/dashboard?terminalChat=${encodeURIComponent(chatId)}`;
+  return `/dashboard?terminalChat=${encodeURIComponent(chat.id)}`;
 }
 
 function resultTime(updatedAt: string): string {
@@ -64,7 +68,7 @@ function ResultRow({
 
   return canOpen ? (
     <a
-      href={chatHref(resource, chat.id)}
+      href={chatHref(resource, chat)}
       className="group flex min-w-0 items-start gap-2 rounded-lg px-2.5 py-2 transition-colors duration-150 hover:bg-[var(--paper-strong)]"
       aria-label={`Open chat: ${chat.title}`}
     >

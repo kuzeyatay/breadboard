@@ -5,7 +5,7 @@ import { createVoiceChatHost, type VoiceChatSnapshot } from '@/lib/speech/voice-
 import type { SpokenExchange } from '@/lib/speech/chatgpt-voice';
 import type { VoiceScreenContext } from '@/lib/speech/voice-screen-context';
 
-export function useVoiceChatHost({ identity, createdIdentity, scope, element, snapshot, onSend, onInterrupt, onRecord }: {
+export function useVoiceChatHost({ identity, createdIdentity, scope, element, snapshot, onSend, onInterrupt, onRecord, onPermission }: {
   identity: string | number | null;
   createdIdentity?: string | number | null;
   scope: string;
@@ -15,6 +15,7 @@ export function useVoiceChatHost({ identity, createdIdentity, scope, element, sn
   onInterrupt?: () => void;
   /** Saves a ChatGPT voice exchange from a detached voice view. */
   onRecord?: (exchange: SpokenExchange) => Promise<void>;
+  onPermission?: (decision: 'once' | 'always' | 'reject') => void | Promise<void>;
 }) {
   const host = useRef<ReturnType<typeof createVoiceChatHost> | null>(null);
   const boundIdentity = useRef(identity);
@@ -22,6 +23,7 @@ export function useVoiceChatHost({ identity, createdIdentity, scope, element, sn
   const send = useRef(onSend);
   const interrupt = useRef(onInterrupt);
   const record = useRef(onRecord);
+  const permission = useRef(onPermission);
   const resume = useRef(() => {});
   const [registration] = useState(() => {
     let key: string | undefined;
@@ -41,6 +43,7 @@ export function useVoiceChatHost({ identity, createdIdentity, scope, element, sn
     send.current = onSend;
     interrupt.current = onInterrupt;
     record.current = onRecord;
+    permission.current = onPermission;
     const createdHere = boundIdentity.current === null && identity !== null && identity === createdIdentity;
     if (!snapshot || boundScope.current !== scope || (boundIdentity.current !== identity && !createdHere)) {
       host.current?.close();
@@ -55,13 +58,13 @@ export function useVoiceChatHost({ identity, createdIdentity, scope, element, sn
           async exchange => {
             if (!record.current) throw new Error('This chat cannot save a ChatGPT voice conversation.');
             await record.current(exchange);
-          });
+          }, decision => permission.current?.(decision));
         registration.publish(host.current.key);
       }
     };
     resume.current();
     if (snapshot) host.current?.update(snapshot);
-  }, [identity, createdIdentity, scope, element, snapshot, onSend, onInterrupt, onRecord, registration]);
+  }, [identity, createdIdentity, scope, element, snapshot, onSend, onInterrupt, onRecord, onPermission, registration]);
   useLayoutEffect(() => {
     const close = () => { host.current?.close(); host.current = null; };
     const reopen = () => resume.current();

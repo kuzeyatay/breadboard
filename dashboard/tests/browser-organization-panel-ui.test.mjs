@@ -110,6 +110,8 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
             case 'sign-in': return json(await crumbs.startSignIn(1, { handle: body.handle, signup: body.signup === true, origin: url.origin, returnTo: body.returnTo }));
             case 'sign-out': await crumbs.signOut(1); return json(crumbs.status(1));
             case 'visibility': crumbs.setDefaultVisibility(1, body.value); return json(crumbs.status(1));
+            case 'feed-preference': crumbs.setFeedPreference(1, body.enabled); return json(crumbs.status(1));
+            case 'feed-feedback': crumbs.feedFeedback(1, body); return json({ ok: true });
             case 'servers': crumbs.setServers({ indexer: body.indexer, orgStore: body.orgStore, publicMode: body.publicMode }); return json(crumbs.status(1));
             case 'follow': return json(await crumbs.follow(1, body.who, body.on !== false));
             case 'delete': await crumbs.deleteMine(1, body.id); return json({ deleted: true });
@@ -198,6 +200,7 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
   await feedA.close();
   const signInPage = await a.open('/settings');
   await signInPage.getByRole('heading', { name: 'Sign in to Crumbs' }).waitFor();
+  assert.equal(await signInPage.getByRole('switch', { name: 'Personalize the Everyone feed' }).isChecked(), true);
   await shot(signInPage, '2-sign-in');
   await signInPage.close();
   const accountA = await signIn(a, 'ali', 'alice.test');
@@ -374,6 +377,30 @@ test('Crumbs: sign in, public and encrypted crumbs, moderation, AI, feed and acc
   const linked = await a.open(`/crumbs?tab=organizations&org=${encodeURIComponent(await feedPage.evaluate(() => new URLSearchParams(location.search).get('org')))}`);
   await linked.getByText('Our launch notes are in here.', { exact: true }).waitFor();
   await linked.close();
+  // A preference change in Settings also updates an already open feed.
+  await feedPage.bringToFront();
+  await feedPage.getByRole('tab', { name: 'Everyone' }).click();
+  await bobsCrumb.waitFor();
+  const read = feedPage.waitForResponse(response => response.request().method() === 'POST'
+    && response.url().endsWith('/api/crumbs') && response.request().postDataJSON()?.kind === 'read');
+  await bobsCrumb.scrollIntoViewIfNeeded();
+  await read;
+  await bobsCrumb.locator('summary').click();
+  await bobsCrumb.getByRole('button', { name: 'Show more like this' }).click();
+  await bobsCrumb.getByText('You’ll see more crumbs like this.').waitFor();
+  await bobsCrumb.locator('summary').click();
+  await bobsCrumb.getByRole('button', { name: 'Show fewer like this' }).click();
+  await bobsCrumb.waitFor({ state: 'hidden' });
+  const activity = alice.db.prepare('SELECT DISTINCT kind FROM crumbs_feed_feedback').pluck().all();
+  for (const kind of ['comment','less','open','read','source']) assert.ok(activity.includes(kind), kind);
+  await accountA.bringToFront();
+  const toggle = accountA.getByRole('switch', { name: 'Personalize the Everyone feed' });
+  await toggle.uncheck();
+  await bobsCrumb.waitFor();
+  assert.equal(alice.db.prepare('SELECT count(*) FROM crumbs_feed_feedback').pluck().get(), 0);
+  await accountA.reload();
+  assert.equal(await toggle.isChecked(), false);
+  await toggle.check();
   // The default visibility chosen above now opens the panel on Public.
   await panelA.reload();
   await panelA.getByRole('radio', { name: 'Public' }).waitFor();

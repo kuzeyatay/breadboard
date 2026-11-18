@@ -219,7 +219,7 @@ export default function WorldMonitorClient({ panels }: Props) {
   const [climateError, setClimateError] = useState<string | null>(null);
 
   // Briefs follow the profile default; individual chat picks stay in their chats.
-  const { model: assistantModel, reasoningEffort } = useAssistantIntelligence();
+  const { model: assistantModel, reasoningEffort } = useAssistantIntelligence({ shared: true });
 
   // Read through a ref inside the loaders: picking a different model must not
   // change their identity, or the effect that watches them would refetch every

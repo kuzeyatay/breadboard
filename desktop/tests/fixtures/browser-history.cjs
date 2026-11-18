@@ -49,6 +49,11 @@ app.whenReady().then(async () => {
   const globalCss = fs.readFileSync(path.join(dashboard, "src/app/globals.css"), "utf8");
   const libraryCss = globalCss.slice(globalCss.indexOf(".browser-library-panel"), globalCss.indexOf(".browser-terminal-drawer .bb-terminal-drawer-surface"));
   const shellServer = http.createServer((req, res) => {
+    if (req.url === "/api/auth/session") {
+      res.setHeader("Content-Type","application/json");
+      res.end(JSON.stringify({user:{id:"7"}}));
+      return;
+    }
     res.setHeader("Content-Type", req.url === "/app.js" ? "text/javascript" : "text/html");
     res.end(req.url === "/app.js" ? script : `<!doctype html><style>
       :root { --ink-heading:#e4e8e2; --ink-muted:#969f92; --ink:#d4dccf; --font-source-sans:Arial; }
@@ -72,6 +77,13 @@ app.whenReady().then(async () => {
   const site = await listen(siteServer);
   const scene = path.join(dir, "scene.html");
   fs.writeFileSync(scene, "<!doctype html><body>fixture</body>");
+  const historyFile = path.join(dir, "browser-history.json");
+  if (phase === "restore") {
+    // Simulate a profile written before visits carried an account.
+    const state = JSON.parse(fs.readFileSync(historyFile, "utf8"));
+    state.entries = state.entries.map(({url,title,visitedAt}) => ({url,title,visitedAt}));
+    fs.writeFileSync(historyFile, JSON.stringify(state));
+  }
   const manager = new TabManager({
     allowed: { origins: new Set([origin]) }, preloadPath: path.resolve(__dirname, "../../dist/preload/preload.js"),
     loadingHtmlPath: () => scene, recoveryHtmlPath: () => scene, theme: () => "dark", openWindow: () => {}, browserHistoryConfigDir: dir,
@@ -82,6 +94,13 @@ app.whenReady().then(async () => {
     preload: path.resolve(__dirname, "../../dist/preload/preload.js"), contextIsolation: true, sandbox: true, nodeIntegration: false,
   } });
   manager.attach(window);
+  manager.setAuthenticationUrl(origin);
+  await manager.restoreSession(window, origin, () => { throw Error("unexpected restored window"); });
+  if (phase === "restore") {
+    const entries = JSON.parse(fs.readFileSync(historyFile, "utf8")).entries;
+    assert.ok(entries.length > 0);
+    assert.ok(entries.every(entry => entry.visitsByUser["7"]?.visitedAt === entry.visitedAt));
+  }
   ipcMain.handle(IPC_CHANNELS.getTabsState, event => manager.stateFor(event.sender));
   ipcMain.handle(IPC_CHANNELS.tabsCommand, (event, command) => manager.handleCommand(event.sender, command));
   ipcMain.handle(IPC_CHANNELS.getBrowserHistory, () => manager.browserHistory.snapshot());

@@ -152,11 +152,11 @@ test("the geographic grounding prompt ships with the tools it names", () => {
 
   // Composed only when the tools are actually on the turn, and added to the
   // existing prompt rather than replacing any of it.
-  assert.match(systemPrompts, /decision\.allowedTools\.includes\("map_search"\)/);
-  assert.match(systemPrompts, /readSystemPrompt\("geographic-grounding"\)/);
-  for (const section of ["assistant", "response-style", "meta-prompting"]) {
+  assert.match(systemPrompts, /\["map_search", "geographic-grounding"\]/);
+  assert.match(systemPrompts, /if \(decision\.allowedTools\.includes\(tool\)\) sections\.push\(readSystemPrompt\(/);
+  for (const section of ["chat-core", "response-style", "chat-surface"]) {
     assert.ok(
-      systemPrompts.includes(`readSystemPrompt("${section}")`),
+      systemPrompts.includes(`"${section}"`),
       `the existing ${section} section must still be composed`,
     );
   }

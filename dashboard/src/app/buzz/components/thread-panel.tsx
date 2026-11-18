@@ -91,7 +91,9 @@ export function ThreadPanel({ roomPublicId, rootId, userId, onClose, onChanged }
 
       </div>
 
-      <Composer key={thread.scope} draftKey={thread.scope} members={thread.members} placeholder="Reply in thread…" disabled={!thread.detail?.permissions.canPost} onSend={thread.send} />
+      <Composer key={thread.scope} draftKey={thread.scope} roomId={roomPublicId} threadId={rootId}
+        messages={thread.detail?.root ? [thread.detail.root, ...thread.messages] : thread.messages}
+        members={thread.members} placeholder="Reply in thread…" disabled={!thread.detail?.permissions.canPost} onSend={thread.send} />
 
     </aside>
 

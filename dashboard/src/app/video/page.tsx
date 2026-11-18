@@ -4,19 +4,9 @@ import { notFound, redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth-options";
 import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
 import VideoPlayerClient from "@/app/components/video-player-client";
+import { sameOriginPath } from "@/lib/same-origin-path";
 
 export const dynamic = "force-dynamic";
-
-/**
- * A same-origin address only: the player fetches it with the player's own
- * cookies, so the route that serves the bytes is the one deciding who may read
- * them. A scheme or a protocol-relative host would point it elsewhere.
- */
-function sameOriginPath(value: string | undefined): string | null {
-  const src = value?.trim() ?? "";
-  if (!src.startsWith("/") || src.startsWith("//") || /[\\\p{Cc}]/u.test(src)) return null;
-  return src;
-}
 
 function displayName(name: string | undefined, src: string): string {
   const explicit = name?.trim().replace(/[\p{Cc}]/gu, "") ?? "";

@@ -11,6 +11,7 @@ async function fixture(t) {
   delete globalThis.breadboardRecommendationsV1;
   t.after(() => { delete globalThis.recommendationCacheFixture; delete globalThis.breadboardRecommendationsV1; });
   const mocks = {
+    '../personal-context/suggestions.ts': 'export const learnedEvidence=async()=>globalThis.recommendationCacheFixture.learned ?? [];',
     '../system-prompts/service.ts': 'export const systemPromptRevision=()=>0;',
     'server-only': '',
     // The shown-cards board goes to a real in-memory database when a test

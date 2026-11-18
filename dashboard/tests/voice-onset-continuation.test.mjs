@@ -6,6 +6,7 @@ import ts from 'typescript';
 import {createVoiceBargeIn} from '../src/lib/speech/voice-barge-in.ts';
 import {createSubscriptionInput} from '../src/lib/speech/subscription-input.ts';
 import {initialVoiceTurn,frameLevel,advanceVoiceTurn,voiceTurnVerdict,speechThreshold,VOICE_MIN_SPEECH_MS} from '../src/lib/speech/voice-conversation.ts';
+import {createListeningSounds} from '../src/lib/speech/voice-live-turns.ts';
 
 const filename = process.env.VOICE_ONSET_SOURCE ?? fileURLToPath(new URL('../src/app/components/voice-conversation-overlay.tsx', import.meta.url));
 const source = ts.createSourceFile(filename,fs.readFileSync(filename,'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
@@ -22,7 +23,7 @@ function callback(name) {
   assert.ok(value,`Production callback ${name} exists`);
   return value.getText(source);
 }
-const code = ts.transpileModule(`let fallbackSpeechMs=0,nativeUtterance=false;const fallbackSpeech=createVoiceBargeIn();const beginTurn=${callback('beginTurn')};\nconst speechStarted=${callback('speechStarted')};const processFrame=${callback('processor.onaudioprocess')};`,
+const code = ts.transpileModule(`let fallbackSpeechMs=0,nativeUtterance=false;const fallbackSpeech=createVoiceBargeIn();const beginTurn=${callback('beginTurn')};\nconst holdReply=${callback('holdReply')};const cutReply=${callback('cutReply')};\nconst speechStarted=${callback('speechStarted')};const processFrame=${callback('processor.onaudioprocess')};`,
   {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
 
 function fixture(t,{cloud=true}={}) {
@@ -35,7 +36,9 @@ function fixture(t,{cloud=true}={}) {
     chunksRef:ref([]),preRollRef:ref([]),speechOnsetRef:ref(false),recoveryControllerRef:ref(null),
     subscriptionErrorRef:ref(null),recoverSubscriptionRef:ref(()=>{}),greetingAbortRef:ref(null),
     awaitingRef:ref(false),interruptedRunRef:ref(Promise.resolve()),interruptRef:ref(()=>{interrupts++;}),
-    clarificationRef:ref(null),cloud,initialVoiceTurn,VOICE_MIN_SPEECH_MS,createVoiceBargeIn,
+    clarificationRef:ref(null),permissionRef:ref(null),holdRef:ref(null),pttRef:ref(null),liveHeardRef:ref(''),
+    listeningSoundsRef:ref(createListeningSounds()),HOLD_CUT_MS:1500,holdSpeechPlayback(){},playListeningSound(){},
+    cloud,initialVoiceTurn,VOICE_MIN_SPEECH_MS,createVoiceBargeIn,
     frameLevel,advanceVoiceTurn,voiceTurnVerdict,speechThreshold,VOICE_CONTINUATION_SPEECH_MS:160,
     session:1,sessionRef:ref(1),levelRef:ref(0),context:{sampleRate:48000},detectorRef:ref({ready:true,push(){}}),
     deferredFinishRef:ref(null),finishTurn(){throw Error('Unexpected endpoint during resumed speech');},
@@ -44,7 +47,7 @@ function fixture(t,{cloud=true}={}) {
     subscriptionRef:ref({isHealthy:()=>true,resetTranscript:()=>input.reset(),
       beginTranscript:()=>input.discardBefore(Date.now()-1200),setListening(){},prepareSpeaker:async()=>{}}),
   };
-  const handlers=new Function(...Object.keys(scope),code+'\nreturn {beginTurn,speechStarted,processFrame};')(...Object.values(scope));
+  const handlers=new Function(...Object.keys(scope),code+'\nreturn {beginTurn,speechStarted,processFrame,cutReply};')(...Object.values(scope));
   const append=text=>input.accept({type:'input_transcript.added',start_ms:++segment*200,end_ms:segment*200+200,item:{id:String(segment),text}});
   return {...handlers,scope,input,append,interrupts:()=>interrupts};
 }
@@ -74,8 +77,9 @@ test('a real interruption still discards late words from the previous utterance 
   const h=fixture(t);h.beginTurn();h.speechStarted();h.append('old request');
   t.mock.timers.tick(2000);h.scope.stageRef.current='speaking';h.scope.listeningRef.current=false;
   h.append('New question');h.speechStarted();h.speechStarted();
-  await h.scope.interruptedRunRef.current;
-  assert.equal(h.input.text(),'New question');assert.equal(h.interrupts(),1);
+  assert.ok(h.scope.holdRef.current,'the reply is paused, not yet cut');assert.equal(h.interrupts(),0);
+  h.cutReply();await h.scope.interruptedRunRef.current;
+  assert.equal(h.input.text(),'New question');assert.equal(h.interrupts(),1);assert.equal(h.scope.holdRef.current,null);
   assert.equal(h.scope.stageRef.current,'listening');
 });
 
@@ -135,6 +139,9 @@ function speakingFrames(t,{ready=false,cloud=true}={}){
 for(const cloud of [true,false])test(`brief consonant gaps interrupt delayed speech detection for ${cloud?'streamed':'file'} input`,async t=>{
  const h=speakingFrames(t,{cloud});
  for(const level of [0.08,0.001,0.08,0.08,0.08,0.08,0.08,0.001])h.frame(level);
+ assert.equal(h.scope.stageRef.current,'listening');assert.ok(h.scope.holdRef.current);assert.equal(h.interrupts(),0);
+ // Talking on past 1.5 s is an interruption even before any words arrive.
+ for(let i=0;i<36;i++)h.frame(0.08);
  await h.scope.interruptedRunRef.current;
  assert.equal(h.scope.stageRef.current,'listening');assert.equal(h.interrupts(),1);
  assert.equal(h.scope.speechOnsetRef.current,true);
@@ -144,8 +151,10 @@ test('interruption evidence survives native readiness flapping without overridin
  const h=speakingFrames(t,{ready:true});
  for(let i=0;i<8;i++)h.frame(0.08,true);
  assert.equal(h.scope.stageRef.current,'speaking');assert.equal(h.interrupts(),0);
- h.frame(0.08,false);await h.scope.interruptedRunRef.current;
- assert.equal(h.scope.stageRef.current,'listening');assert.equal(h.interrupts(),1);
+ h.frame(0.08,false);
+ assert.equal(h.scope.stageRef.current,'listening');assert.ok(h.scope.holdRef.current);
+ h.cutReply();await h.scope.interruptedRunRef.current;
+ assert.equal(h.interrupts(),1);
 });
 test('single clicks, sparse repeated clicks, short cues and quiet echo cannot interrupt',t=>{
  const h=speakingFrames(t);

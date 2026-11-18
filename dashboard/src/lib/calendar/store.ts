@@ -600,6 +600,24 @@ export class CalendarStore {
     return this.getEvent(userId, eventId);
   }
 
+  createSourcedEvent(userId: number, input: CalendarEventInput, source: string) {
+    return this.db.transaction(() => {
+      const linked = this.db.prepare("SELECT event_id FROM calendar_source_links WHERE user_id=? AND source_url=?").pluck().get(userId,source) as number | undefined;
+      if (linked) {
+        const event = this.getEvent(userId,linked);
+        const fields = this.normalizeEventFields(userId,input,null);
+        this.db.prepare("UPDATE calendar_source_links SET observed_start=?,observed_end=?,observed_all_day=?,observed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE user_id=? AND source_url=?")
+          .run(fields.startsAt,fields.endsAt,Number(fields.allDay),userId,source);
+        return {created:false,event};
+      }
+      const event = this.createEvent(userId,input);
+      this.db.prepare(`INSERT INTO calendar_source_links(user_id,source_url,event_id,observed_start,observed_end,observed_all_day,applied_start,applied_end,applied_all_day,observed_at)
+        VALUES(@user,@source,@event,@start,@end,@allDay,@start,@end,@allDay,strftime('%Y-%m-%dT%H:%M:%fZ','now'))`)
+        .run({user:userId,source,event:event.id,start:event.startsAt,end:event.endsAt,allDay:Number(event.allDay)});
+      return {created:true,event};
+    }).immediate();
+  }
+
   private writeReminderPreferences(
     userId: number,
     eventId: number,

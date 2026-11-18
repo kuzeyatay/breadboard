@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChatSelectionMenu, InlineSelectionAnswerPopover, type ChatTextSelectionCandidate, type FloatingAnchorRect } from "@/app/components/chat-text-selection-ui";
 import type { ChatTextAnnotation } from "@/app/components/chat-markdown";
 import { desktopTabsBridge, sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
@@ -21,36 +21,56 @@ export default function BrowserInlineAnswer() {
   const [stack, setStack] = useState<Open[]>([]);
   const [drafts, setDrafts] = useState<ChatTextSelectionReference[]>([]);
   const [menu, setMenu] = useState<ChatTextSelectionCandidate | null>(null);
-  const sizes = useRef(new Map<string, { width: number; height: number }>());
+  // Each card's place relative to the root card's home (the root starts at
+  // 16,16), and its own box. Cards move independently; the native view is one
+  // rectangle that covers all of them, so the page draws them inside that frame.
+  const [places, setPlaces] = useState<Record<string, { left: number; top: number }>>({});
+  const [sizes, setSizes] = useState<Record<string, { width: number; height: number }>>({});
+  // Where the root's home sits on the webpage, so dragged cards stop at its edges.
+  const [home, setHome] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => {
     document.documentElement.dataset.breadboardInlineAnswer = "true";
     document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") === "dark" ? "dark" : "light";
     document.body.style.padding = "0";
-    const unsubscribe = desktopTabsBridge()?.onBrowserInlineAnswerState?.(setState);
+    const unsubscribe = desktopTabsBridge()?.onBrowserInlineAnswerState?.(message => {
+      if ("requestId" in message) setState(message); else setHome(message.home);
+    });
     void sendDesktopTabsCommand({ type: "browser-answer-ready" });
     return unsubscribe;
   }, []);
-  // The native view is one rectangle: it must cover every open card.
-  const report = useCallback(() => {
-    let width = 1, height = 1;
-    for (const size of sizes.current.values()) { width = Math.max(width, size.width); height = Math.max(height, size.height); }
-    void sendDesktopTabsCommand({ type: "browser-answer-resize", width, height });
-  }, []);
-  const move = useCallback((dx: number, dy: number) => { void sendDesktopTabsCommand({ type: "browser-answer-move", dx, dy }); }, []);
   const viewWidth = state?.viewport.width ?? 612, viewHeight = state?.viewport.height ?? 600;
   const nested = new Map<string, BrowserInlineNestedThread>(drafts.map(selection => [selection.id, { selection, pending: false }]));
   for (const thread of state?.content.nested ?? []) nested.set(thread.selection.id, thread);
   const open = stack.filter(item => nested.has(item.id));
-  const openKey = open.map(item => `${item.id}:${item.left}:${item.top}`).join("|");
-  const embedded = useMemo(() => new Map([{ id: ROOT, left: 16, top: 16 }, ...open].map(item => [item.id, {
-    width: viewWidth, height: viewHeight, left: item.left, top: item.top, onMove: move,
-    onSize: (width: number, height: number) => { sizes.current.set(item.id, { width, height }); report(); },
-  }])), [openKey, viewWidth, viewHeight, move, report]); // eslint-disable-line react-hooks/exhaustive-deps
+  const keepOnPage = (item: { id: string; left: number; top: number }) => {
+    const size = sizes[item.id];
+    if (!home || !size) return item;
+    const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+    return { ...item, left: clamp(item.left, 16 - home.x, viewWidth - home.x - size.width - 16),
+      top: clamp(item.top, 16 - home.y, viewHeight - home.y - size.height - 16) };
+  };
+  const shown = [{ id: ROOT, ...(places[ROOT] ?? { left: 16, top: 16 }) }, ...open.map(item => ({ ...item, ...places[item.id] }))].map(keepOnPage);
+  const measured = shown.map(item => ({ ...item, ...(sizes[item.id] ?? { width: 1, height: 1 }) }));
+  const frameX = Math.min(...measured.map(item => item.left - 16)), frameY = Math.min(...measured.map(item => item.top - 16));
+  const frameWidth = Math.max(...measured.map(item => item.left + item.width + 16)) - frameX;
+  const frameHeight = Math.max(...measured.map(item => item.top + item.height + 16)) - frameY;
+  const rootSize = sizes[ROOT];
   useEffect(() => {
-    let changed = false;
-    for (const id of sizes.current.keys()) if (!embedded.has(id)) { sizes.current.delete(id); changed = true; }
-    if (changed) report();
-  }, [embedded, report]);
+    if (!rootSize) return;
+    void sendDesktopTabsCommand({ type: "browser-answer-resize", width: rootSize.width + 32, height: rootSize.height + 32,
+      frame: { x: frameX, y: frameY, width: frameWidth, height: frameHeight } });
+  }, [rootSize?.width, rootSize?.height, frameX, frameY, frameWidth, frameHeight]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shownKey = shown.map(item => `${item.id}:${item.left}:${item.top}`).join("|");
+  const embedded = useMemo(() => new Map(shown.map(item => [item.id, {
+    width: viewWidth, height: viewHeight, left: item.left - frameX, top: item.top - frameY,
+    onMove: (dx: number, dy: number) => setPlaces(current => {
+      // Start from the kept place, so a card held at an edge comes straight back.
+      const from = keepOnPage({ ...item, ...current[item.id] });
+      return { ...current, [item.id]: { left: from.left + dx, top: from.top + dy } };
+    }),
+    onSize: (width: number, height: number) => setSizes(current =>
+      current[item.id]?.width === width && current[item.id]?.height === height ? current : { ...current, [item.id]: { width, height } }),
+  }])), [shownKey, frameX, frameY, viewWidth, viewHeight]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function act(action: BrowserInlineAnswerAction["action"], extra: Partial<BrowserInlineAnswerAction> = {}) {
     if (!state) return false; setError(null);
@@ -67,9 +87,9 @@ export default function BrowserInlineAnswer() {
   const openAt = (id: string, sourceMessageId: string, at: FloatingAnchorRect) => {
     setMenu(null); window.getSelection()?.removeAllRanges();
     const parent = open.findIndex(item => answerIdOf(item.id) === sourceMessageId);
-    const left = Math.max(16, Math.min(viewWidth - 416, at.left - 24));
-    const top = Math.max(16, Math.min(viewHeight - 276, at.bottom + 10));
-    setStack([...open.slice(0, parent + 1), { id, left, top }]);
+    // `at` is in this view's coordinates; places are relative to the root's home.
+    setStack([...open.slice(0, parent + 1), { id, left: at.left - 24 + frameX, top: at.bottom + 10 + frameY }]);
+    setPlaces(({ [id]: _dragged, ...rest }) => rest);
   };
   const passageOf = (from: ChatTextSelectionCandidate, mode: "chat" | "inline"): ChatTextSelectionReference => ({
     id: crypto.randomUUID(), mode, sourceMessageId: from.sourceMessageId,

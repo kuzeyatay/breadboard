@@ -8,6 +8,7 @@ import { readRecommendationEvidence } from './sources.ts';
 import { generateRecommendations } from './generate.ts';
 import { scopedRecommendationEvidence, selectRecommendations, RECOMMENDATION_TTL_MS, type Recommendation, type RecommendationContext, type RecommendationEvidence } from './types.ts';
 import { recommendationClock } from './clock.ts';
+import { focusEvidence } from '../personal-context/rank.ts';
 import { usefulVoiceOpeners, type PreparedVoiceOpener } from './voice-opener.ts';
 
 interface Entry<T> { expires: number; value: Promise<T> }
@@ -31,7 +32,7 @@ const sharedState: RecommendationState = cacheGlobal.breadboardRecommendationsV1
 const { evidenceCache, recommendationCache, generations, recentlyShown, voiceOpeners } = sharedState;
 
 function contextKey(context: RecommendationContext) {
-  return [context.gardenSlug,context.pageTitle,context.localDate,context.timeZone];
+  return [context.gardenSlug,context.pageTitle,context.localDate,context.timeZone,context.documentConversationId];
 }
 
 function generation(userId: number): object {
@@ -135,6 +136,11 @@ export async function recommendationEvidence(userId: number, context: Recommenda
   context = recommendationClock(context);
   const access = policy(userId);
   if (!access.enabled) return [];
+  if (context.documentConversationId) {
+    const {selectionLessons}=await import("../personal-context/suggestions.ts");
+    const evidence = await selectionLessons(userId, context.documentConversationId, context.pageTitle || "");
+    return policy(userId).key === access.key ? evidence : [];
+  }
   if (context.gardenSlug && !db.prepare('SELECT 1 FROM clusters WHERE slug=? AND user_id=?').get(context.gardenSlug, userId)) {
     throw new ApiError(403, 'garden_access_denied', 'This garden is not available.');
   }
@@ -142,8 +148,11 @@ export async function recommendationEvidence(userId: number, context: Recommenda
   const current = generation(userId);
   const key = `${userId}:${JSON.stringify([access.key, contextKey(context), Math.floor(Date.now()/RECOMMENDATION_TTL_MS)])}`;
   const evidence = await cached(evidenceCache, key, () => readRecommendationEvidence(userId, context));
+  const learned = await import("../personal-context/suggestions.ts")
+    .then(module => module.learnedEvidence(userId,context.gardenSlug)).catch(() => []);
   // A settings change during a provider read takes effect before anything is shown.
-  return generations.get(userId) === current && policy(userId).key === access.key ? scopedRecommendationEvidence(evidence, context) : [];
+  if (generations.get(userId) !== current || policy(userId).key !== access.key) return [];
+  return focusEvidence(scopedRecommendationEvidence([...focusEvidence(learned,context.pageTitle).slice(0,6),...evidence],context),context.pageTitle);
 }
 
 export async function recommendationsForUser(userId: number, context: RecommendationContext, options: { baseUrl?: string; refresh?: boolean } = {}) {
@@ -154,14 +163,18 @@ export async function recommendationsForUser(userId: number, context: Recommenda
   if (!access.enabled) return [];
   const evidence = await recommendationEvidence(userId, context);
   if (generations.get(userId) !== current || policy(userId).key !== access.key) return [];
-  if (!evidence.length) { voiceOpeners.delete(userId); return []; }
+  const globalSurface = !context.gardenSlug && !context.pageTitle && !context.documentConversationId;
+  if (!evidence.length) {
+    if (globalSurface) voiceOpeners.delete(userId);
+    return [];
+  }
   const historyKey = `${userId}:${JSON.stringify([access.key,contextKey(context)])}`;
   const key = `${historyKey}:${JSON.stringify([access.model,options.baseUrl,Math.floor(Date.now()/RECOMMENDATION_TTL_MS),evidence])}`;
   const generate = () => cached(recommendationCache, key, () => generateRecommendations({ userId, evidence, context, model: access.model, baseUrl: options.baseUrl, shown:shownCards(userId, historyKey) }));
   const settle = (result: Recommendation[]) => {
     if (generations.get(userId) !== current || policy(userId).key !== access.key) return [];
     const expiresAt = recommendationCache.get(key)?.expires ?? Date.now();
-    voiceOpeners.set(userId, { policyKey: access.key, expiresAt,
+    if (globalSurface) voiceOpeners.set(userId, { policyKey: access.key, expiresAt,
       items: usefulVoiceOpeners(result, evidence, context, expiresAt) });
     if (voiceOpeners.size > 40) voiceOpeners.delete(voiceOpeners.keys().next().value!);
     rememberShown(userId, historyKey, result);

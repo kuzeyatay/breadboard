@@ -21,6 +21,7 @@ import {
   normalizeProducedMarkdown,
 } from "@/lib/markdown-safety.ts";
 import { requireUserId } from "@/lib/server-auth.ts";
+import { documentContext } from "@/lib/personal-context/suggestions.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -150,7 +151,7 @@ export async function POST(
       messages: [
         {
           role: "system",
-          content: systemPromptText("markdown-assistant", userId),
+          content: systemPromptText("markdown-assistant", userId)+(body.personalize===false?"":await documentContext(userId,conversationId,prompt,artifact.title)),
         },
         ...history.map((entry) => ({ role: entry.role, content: entry.text } as const)),
         {

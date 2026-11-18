@@ -6,6 +6,8 @@ import {
   hardenExternalBrowserWebContents,
   isExternalBrowserWebContents,
   isNavigationAllowed,
+  isRendererCameraRequest,
+  isRendererDisplayMediaRequest,
   isRendererPermissionAllowed,
   isSafeBrowserUrl,
   isSafeExternalUrl,
@@ -173,4 +175,24 @@ test("app links reach the OS only for ordinary app schemes", async () => {
   for (const url of ["https://x.nl", "javascript:alert(1)", "file:///C:/x", "ms-msdt:/id PCWDiagnostic", "search-ms:query=x", "SHELL:startup", "data:text/html,x", "not a url"]) {
     assert.ok(!isAppLaunchUrl(url), url);
   }
+});
+
+test("the camera is a separate request from an owned page, never part of the microphone grant", () => {
+  const allowed = allowedOriginsFor(["http://127.0.0.1:4300"]);
+  // The audio-only rule is unchanged: video never rides it.
+  assert.ok(!isRendererPermissionAllowed(allowed, "media", "http://127.0.0.1:4300/dashboard", ["video"]));
+  assert.ok(isRendererCameraRequest(allowed, "media", "http://127.0.0.1:4300/dashboard", ["video"]));
+  assert.ok(isRendererCameraRequest(allowed, "media", "http://127.0.0.1:4300/dashboard", ["audio", "video"]));
+  assert.ok(!isRendererCameraRequest(allowed, "media", "http://127.0.0.1:4300/dashboard", ["audio"]));
+  assert.ok(!isRendererCameraRequest(allowed, "media", "https://example.com/", ["video"]));
+  assert.ok(!isRendererCameraRequest(allowed, "geolocation", "http://127.0.0.1:4300/dashboard", ["video"]));
+  assert.ok(!isRendererCameraRequest(allowed, "media", undefined, ["video"]));
+});
+
+test("only an owned page reaches the screen picker", () => {
+  const allowed = allowedOriginsFor(["http://127.0.0.1:4300"]);
+  assert.ok(isRendererDisplayMediaRequest(allowed, "media", "http://127.0.0.1:4300/dashboard", []));
+  assert.ok(!isRendererDisplayMediaRequest(allowed, "media", "https://example.com/", []));
+  assert.ok(!isRendererDisplayMediaRequest(allowed, "media", "http://127.0.0.1:4300/dashboard", ["audio"]));
+  assert.ok(!isRendererDisplayMediaRequest(allowed, "media", "http://127.0.0.1:4300/dashboard", undefined));
 });

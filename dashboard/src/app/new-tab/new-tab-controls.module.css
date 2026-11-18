@@ -460,3 +460,44 @@
     transform: none;
   }
 }
+
+/* Wraps the input so the inline completion can sit under its text. */
+.searchField {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+}
+
+.inlineCompletion {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-size: 15px;
+  white-space: pre;
+  pointer-events: none;
+  opacity: 0.75;
+}
+
+.inlineTyped {
+  color: transparent;
+}
+
+.inlineCompletion kbd {
+  margin-left: 8px;
+  padding: 2px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.inlineCompletion small {
+  margin-left: 6px;
+  font-size: 12px;
+}

@@ -790,6 +790,21 @@ export function maintainDurableMemoryFromUserTurn(input: {
     }, database);
   }
 
+  // An explicit naming convention or standing destination is already a
+  // confirmation. Use the subject as the stable key so a correction replaces it.
+  const convention = input.content.trim().match(/^(?:actually[, ]+|from now on[, ]+)?(?:when I say|by)\s+["“]?(.{2,65}?)["”]?,?\s+I mean\s+(.{2,160}?)[.!]?$/i);
+  const destination = input.content.trim().match(/^(?:actually[, ]+|from now on[, ]+|always\s+)?use (?:my |the )?(.{2,65}?) (calendar|folder|notebook|template|board|format) for (.{2,90}?)[.!]?$/i);
+  if ((convention || destination) && !/[?\n]/.test(input.content) && !/\b(?:just this|this time|today only|once)\b/i.test(input.content)) {
+    const topic = convention ? convention[1] : destination![2] + " for " + destination![3];
+    return saveDurableMemory({
+      userId:input.conversation.user_id, sourceConversationId:input.conversation.id,
+      scope:input.activeGardenId ? "garden" : "project",scopeId:input.activeGardenId ? String(input.activeGardenId) : "breadboard",
+      content:convention ? convention[1] + " means " + convention[2] : "Use the " + destination![1] + " " + destination![2] + " for " + destination![3],
+      kind:convention ? "project_fact" : "preference",state:"confirmed",confidence:1,salience:0.9,
+      memoryKey:"convention:" + topic.normalize("NFKC").toLowerCase().replace(/\W+/g," ").trim(),
+    },database);
+  }
+
   const decision = input.content.match(/(?:we(?:'ve| have)? decided|our stable decision is|for this project,?\s+use)\s+(.{8,280})/i);
   if (decision?.[1]) {
     return saveDurableMemory({

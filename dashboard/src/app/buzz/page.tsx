@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import NavBar from "@/app/components/navbar";
 import { authOptions } from "@/lib/auth-options";
 import { loadAgencyAgentsCatalog } from "@/lib/hermes/agency-agents.ts";
-import { listOrganizations } from "@/lib/organizations/store.ts";
+import { listOrganizations, organizationWorkspaces } from "@/lib/organizations/store.ts";
 import { getNavbarFlowers } from "@/lib/profile/navbar-shortcuts-store.ts";
 import {
   createRoom,
@@ -60,6 +60,7 @@ export default async function BuzzPage({
   await relayOrganizations(userId, undefined, { waitMs: 4000 });
 
   const organizations = listOrganizations(userId);
+  const workspaces = organizationWorkspaces(userId);
   const communities: BuzzCommunity[] = organizations.map((organization) => ({
     id: organization.id,
     name: organization.name,
@@ -68,6 +69,8 @@ export default async function BuzzPage({
       userId: member.userId,
       username: member.username,
     })),
+    workspaces: workspaces.filter((workspace) => workspace.organizationId === organization.id)
+      .map(({ slug, name }) => ({ slug, name })),
   }));
 
   // Without a community there is nowhere for a room to live. The client shows

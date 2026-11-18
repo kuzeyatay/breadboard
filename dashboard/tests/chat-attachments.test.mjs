@@ -483,3 +483,14 @@ test('the garden workspace warns before a retry drops files it cannot resend', (
   assert.match(workspace, /warnAboutUnreusableAttachments\(\{\s*\.\.\.previousUser,\s*attachments: keptAttachments,/);
   assert.match(workspace, /reusableChatAttachments\(keptAttachments\)/);
 });
+
+test('the viewed web page travels as hidden context and keeps its title for the chip', () => {
+  const dataUrl = 'data:image/jpeg;base64,/9j/4AAQ';
+  const [stored] = chatMessageAttachments([
+    { type: 'image', context: 'web', name: 'Current page.jpg', dataUrl, webPage: { title: "Shannon's blueprint" } },
+  ]);
+  assert.equal(stored.context, 'web');
+  assert.deepEqual(stored.webPage, { title: "Shannon's blueprint" });
+  assert.equal(visibleChatMessageAttachments([stored], ['Current page.jpg']).attachments.length, 0);
+  assert.equal(visibleChatMessageText('explain type B', [stored], ['Current page.jpg']), 'explain type B');
+});

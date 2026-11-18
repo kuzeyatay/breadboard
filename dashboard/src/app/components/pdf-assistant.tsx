@@ -22,6 +22,10 @@ import {
 } from "./hermes/use-agent-session";
 import { useAssistantIntelligence } from "./use-assistant-intelligence";
 import { useAssistantModels } from "./use-assistant-models";
+import { usePersonalize } from "./use-personalize";
+import { AUTH_CHANGED_EVENT } from "@/lib/auth-events";
+import { RECOMMENDATION_REFRESH_EVENT } from "@/lib/recommendations/types";
+import { RECALL_SETTINGS_CHANGED_EVENT } from "./recall-autostart-lifecycle";
 import { useChatDraft } from "./hermes/use-chat-draft";
 import {
   ChatSelectionMenu,
@@ -43,6 +47,7 @@ import {
 import { chatTextSelectionsOverlap, type ChatTextSelectionReference } from "@/lib/chat-text-selection";
 import { MAX_DOCUMENT_ATTACHMENT_BYTES } from "@/lib/document-attachments";
 import {
+  CHAT_HIGHLIGHT_COLORS,
   DEFAULT_CHAT_HIGHLIGHT_COLOR,
   normalizeChatHighlightNote,
   type ChatHighlightColor,
@@ -54,6 +59,8 @@ import {
   pdfPageText,
   pdfViewContext,
   type PdfHighlight,
+  type PdfHighlightRect,
+  type PdfPinNote as PdfPinNoteValue,
   type PdfViewportSnapshot,
 } from "@/lib/pdf-assistant";
 import { runPdfPreparationStep } from "@/lib/pdf-preparation";
@@ -69,8 +76,10 @@ import { useTextHighlights } from "./use-text-highlights";
 import { ChatSuggestionCards } from "./hermes/chat-greeting-empty-state";
 import { TextHighlightSaveStatus } from "./text-highlight-save-status";
 import PdfAssistantResizeHandle from "./pdf-assistant-resize-handle";
+import PdfPinNote from "./pdf-pin-note";
 
 interface Props {
+  gardenSlug?: string;
   documentKey: string;
   sourceUrl?: string;
   title: string;
@@ -84,11 +93,14 @@ interface Props {
   getBytes: () => Promise<Uint8Array>;
   /** Off the record: the chat stays out of history and highlights live only in memory. */
   temporary?: boolean;
+  /** Bumped by the toolbar's Pins button: drop a new pin on the page in view. */
+  pinRequest?: number;
 }
 
 type SentPdfView = Promise<{ snapshot: PdfViewportSnapshot; error?: never } | { snapshot?: never; error: unknown }>;
 
 export default function PdfAssistant({
+  gardenSlug,
   documentKey,
   sourceUrl,
   title,
@@ -101,6 +113,7 @@ export default function PdfAssistant({
   pdfDocumentRef,
   getBytes,
   temporary = false,
+  pinRequest = 0,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [chatQuestionTarget, setChatQuestionTarget] = useState<StarredMessageTarget | null>(null);
@@ -122,6 +135,7 @@ export default function PdfAssistant({
   const [highlights, setHighlights, highlightSaveError] = temporary
     ? [memoryHighlights, setMemoryHighlights, null] as const
     : savedHighlights;
+  const [openPinId, setOpenPinId] = useState<string | null>(null);
   const [openAnswer, setOpenAnswer] = useState<{
     id: string;
     anchor: FloatingAnchorRect;
@@ -147,6 +161,7 @@ export default function PdfAssistant({
   } | null>(null);
   const session = useAgentSession("dashboard_terminal", {
     concurrentInline: true,
+    pageTitle:title, gardenSlug,
     pageSlug: documentKey,
     title: `PDF · ${title}`,
     ...(temporary ? { temporary: true, restoreLastConversation: false } : {}),
@@ -163,7 +178,15 @@ export default function PdfAssistant({
     ["connecting", "streaming", "waiting"].includes(session.connection);
   const disabled = loading || session.loadingSession;
   const [pageSuggestions, setPageSuggestions] = useState<{ key: string; items: string[] } | null>(null);
-  const suggestionKey = `${documentKey}:${pageNumber}`;
+  const [personalize] = usePersonalize();
+  const [readerRevision, setReaderRevision] = useState(0);
+  useEffect(() => {
+    const changed = () => setReaderRevision(revision => revision + 1);
+    const events = [AUTH_CHANGED_EVENT, RECOMMENDATION_REFRESH_EVENT, RECALL_SETTINGS_CHANGED_EVENT];
+    for (const event of events) window.addEventListener(event, changed);
+    return () => { for (const event of events) window.removeEventListener(event, changed); };
+  }, []);
+  const suggestionKey = JSON.stringify([documentKey,pageNumber,title,gardenSlug,personalize,temporary,readerRevision]);
   const showSuggestions = open && !loading && messages.length === 0 && Boolean(intelligence.model);
 
   // Questions grounded in the page being read, not generic openers. Waits for
@@ -180,7 +203,7 @@ export default function PdfAssistant({
         const response = await fetch("/api/pdf-suggestions", {
           method: "POST", cache: "no-store", signal: controller.signal,
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: intelligence.model, title, pageNumber, pageText }),
+          body: JSON.stringify({ model: intelligence.model, title, pageNumber, pageText, gardenSlug, personalize, temporary }),
         });
         const payload = response.ok ? await response.json() : null;
         if (!controller.signal.aborted && Array.isArray(payload?.suggestions)) {
@@ -191,7 +214,7 @@ export default function PdfAssistant({
       }
     }, 500);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [showSuggestions, suggestionKey, pageSuggestions?.key, pageNumber, title, intelligence.model, pdfDocumentRef]);
+  }, [showSuggestions, suggestionKey, pageSuggestions?.key, pageNumber, title, gardenSlug, personalize, temporary, intelligence.model, pdfDocumentRef]);
   const viewingChatId = open || openAnswer ? session.sessionId : null;
 
   useChatNotificationView(viewingChatId
@@ -271,7 +294,8 @@ export default function PdfAssistant({
   const activeHighlight = highlights.find(
     (item) =>
       item.selection.id === selectionMenu?.highlightId ||
-      (selectionMenu && item.selection.sourceMessageId === selectionMenu.sourceMessageId &&
+      // Pins hold no text, so they never overlap a passage.
+      (selectionMenu && !item.pin && item.selection.sourceMessageId === selectionMenu.sourceMessageId &&
         chatTextSelectionsOverlap(item.selection, selectionMenu)),
   );
 
@@ -305,7 +329,7 @@ export default function PdfAssistant({
     }
     setHighlights((current) => [
       ...current.filter((item) => item.selection.id !== selection.id &&
-        (item.selection.sourceMessageId !== selection.sourceMessageId ||
+        (item.pin || item.selection.sourceMessageId !== selection.sourceMessageId ||
           !chatTextSelectionsOverlap(item.selection, selection))),
       highlight,
     ]);
@@ -337,7 +361,10 @@ export default function PdfAssistant({
     (highlight: PdfHighlight, anchor: FloatingAnchorRect) => {
       setSelectionMenu(null);
       window.getSelection()?.removeAllRanges();
-      if (highlight.selection.mode === "inline") {
+      if (highlight.pin) {
+        setOpenAnswer(null);
+        setOpenPinId(current => current === highlight.selection.id ? null : highlight.selection.id);
+      } else if (highlight.selection.mode === "inline") {
         setOpenAnswer({ id: highlight.selection.id, anchor });
       } else if (highlight.chatQuestion || highlight.conversationId) {
         setOpenAnswer(null);
@@ -363,8 +390,54 @@ export default function PdfAssistant({
     [session.sessionId, session.openSession],
   );
 
+  function addPin() {
+    const container = containerRef.current;
+    const pageNumber = pageNumberRef.current;
+    const page = container?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    if (!container || !page) return;
+    // Drop it in the middle of the part of the current page that is on screen.
+    const view = container.getBoundingClientRect();
+    const bounds = page.getBoundingClientRect();
+    const x = (Math.max(view.left, bounds.left) + Math.min(view.right, bounds.right)) / 2;
+    const y = (Math.max(view.top, bounds.top) + Math.min(view.bottom, bounds.bottom)) / 2;
+    const quote = pinQuote(pageNumber);
+    const pin: PdfHighlight = {
+      selection: { id: crypto.randomUUID(), mode: "inline", sourceMessageId: `${documentKey}:page:${pageNumber}`,
+        start: 0, end: quote.length, quote, prefix: "", suffix: "" },
+      color: CHAT_HIGHLIGHT_COLORS[Math.floor(Math.random() * CHAT_HIGHLIGHT_COLORS.length)].id,
+      rects: [{ page: pageNumber, width: 0.001, height: 0.001,
+        left: Math.min(0.999, Math.max(0, (x - bounds.left) / bounds.width)),
+        top: Math.min(0.999, Math.max(0, (y - bounds.top) / bounds.height)) }],
+      coordinateSpace: "content",
+      pin: true,
+    };
+    setHighlights(current => [...current, pin]);
+    setSelectionMenu(null);
+    setOpenAnswer(null);
+    setOpenPinId(pin.selection.id);
+  }
+  const addPinRef = useRef(addPin);
+  addPinRef.current = addPin;
+  useEffect(() => {
+    if (pinRequest) addPinRef.current();
+  }, [pinRequest]);
+
+  const openPin = openPinId ? highlights.find(item => item.pin && item.selection.id === openPinId) : undefined;
+  const closePin = useCallback(() => setOpenPinId(null), []);
+  // Takes the pin's id, not the open one: the card's last save runs as it closes.
+  const savePinNote = useCallback((id: string, pinNote: PdfPinNoteValue) => {
+    setHighlights(current => current.map(item => item.selection.id === id ? { ...item, pinNote } : item));
+  }, [setHighlights]);
+
+  const movePin = useCallback((id: string, rect: PdfHighlightRect) => {
+    setHighlights(current => current.map(item => item.selection.id === id ? {
+      ...item, rects: [rect],
+      selection: { ...item.selection, quote: pinQuote(rect.page), end: pinQuote(rect.page).length },
+    } : item));
+  }, [setHighlights]);
+
   const readSelection = useCallback((candidate: PdfSelectionCandidate) => {
-    const answer = highlights.find(item => item.selection.mode === "inline" &&
+    const answer = highlights.find(item => item.selection.mode === "inline" && !item.pin &&
       item.selection.sourceMessageId === candidate.sourceMessageId &&
       chatTextSelectionsOverlap(item.selection, candidate));
     if (answer) {
@@ -686,6 +759,7 @@ export default function PdfAssistant({
         highlights={highlights}
         onSelection={readSelection}
         onOpenHighlight={openHighlight}
+        onMovePin={movePin}
       />
       {!open && (
         <button
@@ -801,6 +875,11 @@ export default function PdfAssistant({
         <AgentRuntimePanel
           compact
           surface="dashboard_terminal"
+          // Page text supplies the question cards. Document-scoped lessons
+          // can also guide the reader's next prompt.
+          personalizedSuggestions={!temporary}
+          suggestionPageTitle={title}
+          gardenSlug={gardenSlug}
           sessionId={session.sessionId}
           starredMessageTarget={chatQuestionTarget}
           createdSessionId={session.createdSessionId}
@@ -933,7 +1012,7 @@ export default function PdfAssistant({
                 Ask about the document, a figure, or what’s on this page.
                 Highlight text to ask in chat or keep an answer beside it.
               </p>
-              {pageSuggestions?.items.length ? (
+              {pageSuggestions?.key === suggestionKey && pageSuggestions.items.length ? (
                 <div className="mt-5 flex justify-center">
                   <ChatSuggestionCards
                     suggestions={pageSuggestions.items}
@@ -951,6 +1030,27 @@ export default function PdfAssistant({
         />
         </StarredPdfSourceContext.Provider>
       </aside>
+      {openPin && (
+        <PdfPinNote
+          key={openPin.selection.id}
+          pin={openPin}
+          containerRef={containerRef}
+          saveError={highlightSaveError ? "Couldn’t save. Keep this tab open." : null}
+          onSave={note => savePinNote(openPin.selection.id, note)}
+          onColor={color => setHighlights(current => current.map(item =>
+            item.selection.id === openPin.selection.id ? { ...item, color } : item))}
+          onDelete={() => {
+            const images = openPin.pinNote?.images ?? [];
+            if (images.length) {
+              const query = new URLSearchParams(images.map(id => ["id", id]));
+              void fetch(`/api/pdf-pin-images?${query}`, { method: "DELETE" }).catch(() => {});
+            }
+            setHighlights(current => current.filter(item => item.selection.id !== openPin.selection.id));
+            setOpenPinId(null);
+          }}
+          onClose={closePin}
+        />
+      )}
       {selectionMenu && (
         <ChatSelectionMenu
           selection={selectionMenu}
@@ -982,4 +1082,9 @@ export default function PdfAssistant({
       )}
     </>
   );
+}
+
+/** A pin has no selected text; this tells the model where the reader put it. */
+function pinQuote(page: number) {
+  return `(a pin placed on page ${page}; no text is selected)`;
 }

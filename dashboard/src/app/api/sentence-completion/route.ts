@@ -23,7 +23,25 @@ export async function POST(request: Request) {
       return { role: message.role, content: requireString(message.content, 'content', COMPLETION_MAX_MESSAGE_CHARS) };
     });
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const completion = await generateSentenceCompletion({ userId, draft, messages, baseUrl: baseURL, signal: request.signal });
+    let learned: string[] = [];
+    const eligible = body.personalize === true && body.temporary !== true && body.scope !== "public" &&
+      (await import("@/lib/hermes/runtime-store")).getHermesUserSettings(userId).composerSwitches.personalize !== false;
+    if (typeof body.roomId === "string" && eligible) {
+      const {roomLessons} = await import("@/lib/personal-context/room");
+      const {default:db} = await import("@/lib/db");
+      learned = roomLessons(db,userId,body.roomId,Number.isSafeInteger(body.threadId)?Number(body.threadId):null,draft).map(item=>item.title);
+    } else if (body.roomId === undefined && eligible) {
+        const { learnedEvidence,selectionLessons } = await import("@/lib/personal-context/suggestions");
+        const { rankContext,focusEvidence } = await import("@/lib/personal-context/rank");
+        const pageTitle=typeof body.pageTitle==="string"?body.pageTitle.trim().slice(0,180):"";
+        const evidence = await (typeof body.documentConversationId==="string"?selectionLessons(userId,body.documentConversationId,pageTitle+" "+draft):
+          learnedEvidence(userId,typeof body.gardenSlug==="string"?body.gardenSlug:undefined)).catch(()=>[]);
+        learned = rankContext(draft+" "+pageTitle,focusEvidence(evidence,pageTitle).map(e=>({source:"pattern",title:e.title,detail:e.summary,ref:e.id,at:0})),Date.now(),3)
+          .map(hit=>hit.title+" — "+hit.detail);
+    }
+    const { requestViewedPage } = await import("@/lib/web-page-context");
+    const page = await requestViewedPage(body);
+    const completion = await generateSentenceCompletion({ userId, draft, messages, learned, page, baseUrl: baseURL, signal: request.signal });
     return NextResponse.json({ completion }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     return apiErrorResponse(error);

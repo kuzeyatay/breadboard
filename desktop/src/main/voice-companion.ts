@@ -122,6 +122,13 @@ export class VoiceCompanion {
     window.on('focus', publishVisibility); window.on('blur', publishVisibility);
     window.on('minimize', publishVisibility); window.on('restore', publishVisibility);
     window.once('closed', stopVisibility);
+    // Windows drops the topmost flag after hide/show and fullscreen toggles, and
+    // the default level loses to other topmost apps. Re-pin it whenever another
+    // window takes focus so it never falls behind (e.g. a Firefox window).
+    const pin = () => { if (!window.isDestroyed() && window.isVisible()) { window.setAlwaysOnTop(true, 'screen-saver'); window.moveTop(); } };
+    pin(); window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    window.on('show', pin); window.on('blur', pin); window.on('restore', pin);
+    window.on('leave-full-screen', pin); window.on('enter-full-screen', pin);
     const guard = (event: Electron.Event, url: string) => { if (url !== this.target) event.preventDefault(); };
     window.webContents.on('will-navigate', guard); window.webContents.on('will-redirect', guard);
     window.on('enter-full-screen', () => { this.fullscreen = true; window.webContents.send('breadboard:voice-fullscreen-changed', true); });

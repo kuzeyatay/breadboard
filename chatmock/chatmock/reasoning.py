@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from .model_registry import DEFAULT_REASONING_EFFORTS, allowed_efforts_for_model, extract_reasoning_from_model_name
+from .model_registry import ALL_REASONING_EFFORTS, DEFAULT_REASONING_EFFORTS, allowed_efforts_for_model, extract_reasoning_from_model_name
 
 
 def request_reasoning_overrides(
@@ -49,7 +49,9 @@ def build_reasoning_param(
     effort = (base_effort or "").strip().lower()
     summary = (base_summary or "").strip().lower()
 
-    valid_efforts = allowed_efforts or DEFAULT_REASONING_EFFORTS
+    valid_efforts = DEFAULT_REASONING_EFFORTS if allowed_efforts is None else allowed_efforts
+    if not valid_efforts:
+        return {}
     valid_summaries = {"auto", "concise", "detailed", "none"}
 
     if isinstance(overrides, dict):
@@ -60,7 +62,10 @@ def build_reasoning_param(
         if o_sum in valid_summaries and o_sum:
             summary = o_sum
     if effort not in valid_efforts:
-        effort = "medium"
+        rank = ALL_REASONING_EFFORTS.index(effort) if effort in ALL_REASONING_EFFORTS else ALL_REASONING_EFFORTS.index("medium")
+        supported = [level for level in ALL_REASONING_EFFORTS if level in valid_efforts]
+        weaker = [level for level in supported if ALL_REASONING_EFFORTS.index(level) <= rank]
+        effort = weaker[-1] if weaker else supported[0]
     if summary not in valid_summaries:
         summary = "auto"
 

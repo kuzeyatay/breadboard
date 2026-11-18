@@ -1042,3 +1042,43 @@ test("a per-page connection cap keeps each page's strongest lines", () => {
   assert.equal(pair.edges.length, 5, "a cap wider than every degree keeps everything");
   assert.equal(single.nodes.length, all.nodes.length, "nodes stay; only lines go");
 });
+
+test("a chat sits beside the pages it links to; an unlinked chat stays in the Chats sector", () => {
+  const payload = fixture();
+  const [first, second] = payload.nodes.filter((node) => node.folderId === "folder:waves");
+  const chat = (id, title) => ({ ...page(id, "folder:$chats", title), slug: id, relPath: `Chats/${title}`, kind: "chat", knowledgeType: "chat" });
+  payload.folders.push({ ...folder("folder:$chats", "Chats", "Chats", 1, 2) });
+  payload.nodes.push(chat("chat:1", "Waves question"), chat("chat:2", "Unlinked chat"));
+  payload.edges.push(edge("edge:chat:1:a", "chat:1", first.id, 0.7), edge("edge:chat:1:b", "chat:1", second.id, 1, "authored"));
+
+  const plan = planThoughtTopology(payload);
+  const at = (id) => plan.nodes.find((node) => node.id === id);
+  const middle = { x: (at(first.id).x + at(second.id).x) / 2, y: (at(first.id).y + at(second.id).y) / 2 };
+  const linked = at("chat:1");
+  assert.equal(linked.sourceKind, "chat");
+  assert.ok(Math.abs(Math.hypot(linked.x - middle.x, linked.y - middle.y) - layout.CHAT_OFFSET) < 1e-6);
+  // Its hierarchy line back to the Chats folder would cross the map; the unlinked chat keeps one.
+  assert.equal(plan.hierarchyEdges.some((edge) => edge.target === "chat:1"), false);
+  assert.equal(plan.hierarchyEdges.some((edge) => edge.target === "chat:2"), true);
+  const chats = at("folder:$chats");
+  assert.ok(Math.hypot(at("chat:2").x - chats.x, at("chat:2").y - chats.y) < Math.hypot(linked.x - chats.x, linked.y - chats.y));
+
+  // A pinned position still wins over the placement.
+  const pinned = planThoughtTopology(payload, { positionOverrides: { "chat:1": { x: 5, y: 6 } } });
+  assert.deepEqual([pinned.nodes.find((node) => node.id === "chat:1").x, pinned.nodes.find((node) => node.id === "chat:1").y], [5, 6]);
+});
+
+test("the 3D renderer's sphere homes get the same chat placement", () => {
+  const nodes = [
+    { id: "page:a", kind: "page", contentKind: "markdown", x: 0, y: 0 },
+    { id: "page:b", kind: "page", contentKind: "markdown", x: 0, y: 0 },
+    { id: "chat:1", kind: "page", contentKind: "chat", x: 0, y: 0 },
+  ];
+  const homes = new Map([["page:a", { x: 100, y: 0, z: 40 }], ["page:b", { x: 300, y: 0, z: -40 }], ["chat:1", { x: -900, y: -900, z: 0 }]]);
+  const placed = layout.placeChatsBesidePages(nodes, [{ source: "chat:1", target: "page:a" }, { source: "chat:1", target: "page:b" }], homes);
+  assert.deepEqual([...placed], ["chat:1"]);
+  const chat = homes.get("chat:1");
+  assert.equal(chat.z, 0);
+  assert.ok(Math.abs(Math.hypot(chat.x - 200, chat.y) - layout.CHAT_OFFSET) < 1e-6);
+  assert.deepEqual([nodes[2].x, nodes[2].y], [0, 0], "the 2D plan is left alone");
+});

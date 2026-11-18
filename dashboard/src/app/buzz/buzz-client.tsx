@@ -530,6 +530,7 @@ function openCrumbs(roomPublicId: string) {
             }}
             onSearch={() => setSearchOpen(true)}
             onOpenView={(next) => { setView(next); setNavigationOpen(false); }}
+            onOpenWorkspace={(slug) => window.location.assign(`/gardens/${encodeURIComponent(slug)}`)}
           /></div>
 
           <div
@@ -582,7 +583,7 @@ function openCrumbs(roomPublicId: string) {
                     <button type="button" className="rounded-full bg-primary px-4 py-1.5 text-sm font-semibold text-primary-foreground" onClick={() => openCrumbs(activeRoom.publicId)}>Open Crumbs</button>
                   </div> : <>
                   <Transcript
-                    key={room.scope}
+                    key={`transcript:${room.scope}`}
                     controller={room}
                     messages={room.messages}
                     members={room.members}
@@ -600,8 +601,10 @@ function openCrumbs(roomPublicId: string) {
                   />
 
                   <Composer
-                    key={room.scope}
+                    key={`composer:${room.scope}`}
                     draftKey={room.scope}
+                    roomId={activeRoom.publicId}
+                    messages={room.messages}
                     disabled={!room.detail?.permissions.canPost}
                     members={room.members}
                     autoFocus

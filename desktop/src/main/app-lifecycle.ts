@@ -33,6 +33,7 @@ import { activeLearnGardens } from "./learn-quit-guard";
 import { isOpenLocalPathRequest, openLocalPath } from "./local-path-opener";
 import { GestureController } from "./gesture-controller";
 import { ScreenTimeTracker } from "./screen-time";
+import { SiteLocks } from "./site-locks";
 import { isGestureControlAction, isGestureControlPage } from "../shared/gesture-control";
 import { restoreBrowserSession, flushBrowserSession } from "./browser-session-persistence";
 import {
@@ -324,6 +325,7 @@ export class AppLifecycle {
   private systemDictation: SystemDictation | null = null;
   private gestureController: GestureController | null = null;
   private screenTime: ScreenTimeTracker | null = null;
+  private siteLocks: SiteLocks | null = null;
   /** Random loopback-only CDP port reserved for visible browser-agent tabs. */
   private browserAgentDebuggingPort: number | null = null;
   /** Decided pre-ready, logged once the log exists. */
@@ -716,6 +718,10 @@ export class AppLifecycle {
     this.screenTime = new ScreenTimeTracker({ dataRoot: this.paths.dataRoot, moduleDir: this.moduleDir,
       context: () => this.windows.tabs.screenTimeContext(), log: line => supervisorLog.write(line) });
     this.screenTime.start();
+    this.siteLocks = new SiteLocks({ dataRoot: this.paths.dataRoot, context: () => this.windows.tabs.screenTimeContext(),
+      enforce: () => this.windows.tabs.enforceSiteLocks() });
+    this.windows.tabs.siteLocks = this.siteLocks;
+    this.siteLocks.start();
     this.breadboardUse = new BreadboardUseBridge({
       tabs: this.windows.tabs, dataRoot: this.paths.dataRoot,
       dashboardUrl: () => this.runtimeDashboardUrl,
@@ -1974,7 +1980,7 @@ export class AppLifecycle {
       this.logs?.forService("desktop").write(`[desktop] quit requested: ${new Error().stack}`);
       this.clearScheduledRuntimeRootRetry();
       this.clearRuntimeRootStabilityTimer();
-      void this.windows.tabs.codeDock.close().then(() => Promise.all([this.breadboardUse?.close(), this.gestureController?.close(), this.screenTime?.close(), this.shutdownRuntime()])).then(() => {
+      void this.windows.tabs.codeDock.close().then(() => Promise.all([this.breadboardUse?.close(), this.gestureController?.close(), this.screenTime?.close(), this.siteLocks?.close(), this.shutdownRuntime()])).then(() => {
         this.runtimeStopped = true;
         app.quit();
       }).catch(error => {

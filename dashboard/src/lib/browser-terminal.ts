@@ -21,3 +21,21 @@ export async function currentBrowserTerminalAccess(): Promise<BrowserTerminalAcc
   // An ordinary Terminal and an older shell keep working without browser access.
   return parseBrowserTerminalAccess(await desktop?.getBrowserTerminalAccess?.());
 }
+
+/** The page a chat sits beside, for grounding suggestions and completions. */
+export interface SuggestionPage {
+  title: string;
+  /** Page text the client already holds (garden and Quartz pages). */
+  text?: string;
+  /** A browser tab: the server reads it live through the browser bridge. */
+  browser?: boolean;
+}
+
+export async function suggestionPageBody(page?: SuggestionPage | null): Promise<Record<string, unknown>> {
+  if (!page?.title) return {};
+  if (page.browser) {
+    const access = await currentBrowserTerminalAccess().catch(() => undefined);
+    return access ? { browserAccess: access } : {};
+  }
+  return { page: { title: page.title, text: (page.text ?? "").slice(0, 8_000) } };
+}

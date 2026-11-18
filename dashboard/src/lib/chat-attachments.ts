@@ -73,9 +73,11 @@ export const TERMINAL_ATTACHMENT_ACCEPT =
 
 interface ChatAttachmentScope {
   /** Automatic reader context, retained for the model but hidden in the chat. */
-  context?: 'pdf' | 'workspace' | 'document-page';
+  context?: 'pdf' | 'workspace' | 'document-page' | 'web';
   /** The page open when Send was pressed, displayed with the saved message. */
   pdfPage?: { title: string; pageNumber: number };
+  /** The web or garden page open when Send was pressed, displayed like pdfPage. */
+  webPage?: { title: string };
   /** The artifact row that placed this file in the current composer, if any. */
   sourceArtifactId?: string;
 }
@@ -184,7 +186,7 @@ export type ChatAttachment = ChatAttachmentScope & (
  * `sizeBytes` is the size of the file the user actually picked, recorded so the
  * Uploads list can report it for files whose contents were never retained.
  */
-export type ChatMessageAttachment = Pick<ChatAttachmentScope, 'context' | 'pdfPage'> & (
+export type ChatMessageAttachment = Pick<ChatAttachmentScope, 'context' | 'pdfPage' | 'webPage'> & (
   | {
       type: 'file';
       name: string;
@@ -243,8 +245,12 @@ export function unavailableWorkspaceView(): ChatAttachment {
   };
 }
 
-export function attachmentContextMetadata(attachment: { context?: unknown; type?: unknown; pdfPage?: unknown }): Pick<ChatAttachmentScope, 'context' | 'pdfPage'> {
+export function attachmentContextMetadata(attachment: { context?: unknown; type?: unknown; pdfPage?: unknown; webPage?: unknown }): Pick<ChatAttachmentScope, 'context' | 'pdfPage' | 'webPage'> {
   if (attachment.context === 'pdf') return { context: 'pdf', ...pdfPageAttachmentMetadata(attachment.pdfPage) };
+  if (attachment.context === 'web' && (attachment.type === 'image' || attachment.type === 'text' || attachment.type === 'file')) {
+    const title = (attachment.webPage as { title?: unknown } | undefined)?.title;
+    return { context: 'web', ...(typeof title === 'string' && title.trim() ? { webPage: { title: title.trim().slice(0, 500) } } : {}) };
+  }
   if (attachment.context === 'workspace' && (attachment.type === 'image' || attachment.type === 'text' || attachment.type === 'file')) {
     return { context: 'workspace' };
   }
@@ -415,6 +421,7 @@ export function attachmentOrderManifest(
     if (attachment.context) {
       const source = attachment.context === 'workspace' ? 'Breadboard workspace at the time of the question'
         : attachment.context === 'document-page' ? 'page from the source document'
+        : attachment.context === 'web' ? 'the page the user is viewing; call it "the page", never a screenshot or attachment'
         : 'open PDF in the reader';
       return `${index + 1}. ${JSON.stringify(attachment.name)} — ${source} (automatic context)`;
     }

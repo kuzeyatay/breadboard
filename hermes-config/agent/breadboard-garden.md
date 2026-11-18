@@ -6,6 +6,7 @@ tools:
   garden_list: true
   "*": false
   garden_search: true
+  garden_grep: true
   garden_discover_sources: true
   garden_import_source: true
   garden_get_page: true

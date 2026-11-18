@@ -32,11 +32,14 @@ test("trusted popup commands validate colors, notes, sizes and conversation bind
   assert.ok(isTabsCommand({ type: "browser-answer-state", state: { requestId: "request", selectionId: "mark", content: { pending: true } } }));
   assert.ok(isTabsCommand({ type: "browser-answer-action", action: { requestId: "request", selectionId: "mark", action: "ask", question: "Explain this" } }));
   assert.ok(isTabsCommand({ type: "browser-selection-conversation", id: "mark", url: "https://example.com/", conversationId: "conv_saved" }));
+  assert.ok(isTabsCommand({ type: "browser-answer-resize", width: 432, height: 300, frame: { x: -40, y: 0, width: 900, height: 700 } }));
   for (const value of [{ type: "browser-selection-action", action: "highlight", value: "orange" },
     { type: "browser-selection-action", action: "note", value: "x".repeat(4001) },
     { type: "browser-selection-resize", height: Infinity },
     { type: "browser-selection-delete", id: "../invalid", url: "https://example.com/" },
     { type: "browser-answer-resize", width: 400, height: NaN },
+    { type: "browser-answer-resize", width: 400, height: 300 },
+    { type: "browser-answer-resize", width: 400, height: 300, frame: { x: NaN, y: 0, width: 400, height: 300 } },
     { type: "browser-answer-state", state: { requestId: "request", selectionId: "mark", content: { pending: "yes" } } },
     { type: "browser-answer-action", action: { requestId: "request", selectionId: "mark", action: "ask", question: "" } },
     { type: "browser-selection-conversation", id: "mark", url: "https://example.com/", conversationId: "other" }]) assert.equal(isTabsCommand(value), false);

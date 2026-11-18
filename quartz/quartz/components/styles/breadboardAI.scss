@@ -9,6 +9,20 @@
   --bb-ai-border: #1f2937;
   --bb-ai-accent: #5f7f8e;
   --bb-ai-muted: #9ca3af;
+  .breadboard-ai-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    button {
+      padding: 0.35rem 0.55rem;
+      color: var(--bb-ai-fg);
+      border: 1px solid var(--bb-ai-border);
+      border-radius: 0.5rem;
+      background: var(--bb-ai-bg);
+      cursor: pointer;
+      text-align: start;
+    }
+  }
   /* Command-token blue; kept lighter than the dashboard's #1e40af because this
      panel is a fixed dark theme and true dark blue is illegible on #1f2937. */
   --bb-ai-command: #6c9ef8;
@@ -373,6 +387,18 @@
       background: #1f2937;
       padding: 0.5rem 0.7rem;
       border-radius: 0.75rem 0.75rem 0.15rem 0.75rem;
+    }
+    .breadboard-ai-page-chip {
+      align-self: flex-end;
+      max-width: 85%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding: 0.2rem 0.6rem;
+      border: 1px solid #374151;
+      border-radius: 999px;
+      color: #9ca3af;
+      font-size: 0.72rem;
     }
     .breadboard-ai-assistant {
       align-self: flex-start;

@@ -144,6 +144,8 @@ test('PDF sends render immediately, cancel preparation, and publish viewing pres
     stdin: { resolveDir: root, loader: 'tsx', contents: `
       import React,{useRef,useState} from 'react'; import {createRoot} from 'react-dom/client';
       import PdfAssistant from './src/app/components/pdf-assistant';
+      import {MAX_DOCUMENT_ATTACHMENT_BYTES} from './src/lib/document-attachments';
+      window.pdfUploadLimit=MAX_DOCUMENT_ATTACHMENT_BYTES;
       import {sameChatNotificationTarget} from './src/lib/chat-notification-inbox';
       import {readNotificationViewTargets} from './src/lib/notification-view-presence';
       window.isViewed=target=>readNotificationViewTargets().some(view=>sameChatNotificationTarget(view,target));
@@ -509,13 +511,13 @@ test('PDF sends render immediately, cancel preparation, and publish viewing pres
   await page.evaluate(() => {
     window.scanned = false;
     window.pdfText = 'We turn each knob by a predetermined fixed amount called the learning rate.';
-    window.largePdfBytes = new Uint8Array(128 * 1024 * 1024 + 1);
+    window.largePdfBytes = new Uint8Array(window.pdfUploadLimit + 1);
     window.readPdfBytes = async () => window.largePdfBytes;
     window.setPdfPage(14);
     window.largePdfHashes = 0;
     const digest = crypto.subtle.digest.bind(crypto.subtle);
     crypto.subtle.digest = (...args) => {
-      if (args[1].byteLength > 128 * 1024 * 1024) window.largePdfHashes++;
+      if (args[1].byteLength > window.pdfUploadLimit) window.largePdfHashes++;
       return digest(...args);
     };
   });
@@ -536,7 +538,7 @@ test('PDF sends render immediately, cancel preparation, and publish viewing pres
   assert.equal(passageTurn.attachments.length, 1, 'the passage question needs neither a full upload nor a document-wide text walk');
   assert.deepEqual(passageTurn.attachments[0].pdfPage, {title:'Study guide',pageNumber:14});
   assert.match(passageTurn.attachments[0].text, /learning rate/);
-  assert.match(passageTurn.attachments[0].text, /full PDF is not attached/);
+  assert.match(passageTurn.attachments[0].text, /full PDF exceeds the size limit/);
   assert.doesNotMatch(passageTurn.attachments[0].text, /PDF attachment contains the entire document/);
   finish('What is that?', 'The learning rate controls the size of each adjustment.');
   await page.waitForFunction(() => window.panel.messages.some(m=>m.content==='The learning rate controls the size of each adjustment.'&&!m.pending));
@@ -553,7 +555,7 @@ test('PDF sends render immediately, cancel preparation, and publish viewing pres
   await waitUntil(() => turns.length===turnsBeforeLarge+2);
   const scanTurn = turns.at(-1);
   assert.match(scanTurn.attachments[0].text, /"visiblePages":\[21\]/);
-  assert.match(scanTurn.attachments[0].text, /fresh screenshot/);
+  assert.match(scanTurn.attachments[0].text, /Current PDF view shows the visible portions/);
   assert.equal(scanTurn.attachments.filter(a=>a.type==='image').length, 1);
   assert.equal(scanTurn.attachments.filter(a=>a.type==='document').length, 0);
   finish('Explain this scanned figure', 'The diagram shows the learning update.');

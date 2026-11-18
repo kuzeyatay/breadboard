@@ -5,10 +5,13 @@ import { normalizePromptSuggestion, promptSuggestionContext, promptSuggestionSel
 import { AUTH_CHANGED_EVENT } from '@/lib/auth-events';
 import { RECALL_SETTINGS_CHANGED_EVENT } from './recall-autostart-lifecycle';
 import { RECOMMENDATION_REFRESH_EVENT } from '@/lib/recommendations/types';
+import { suggestionPageBody, type SuggestionPage } from '@/lib/browser-terminal';
 
 const NO_MESSAGES: readonly PromptSuggestionMessage[] = [];
 
-export function usePromptSuggestion({ messages = NO_MESSAGES, selection, conversationKey, model, value, enabled, onChange, personalize = false, gardenSlug, temporary = false }: {
+export function usePromptSuggestion({ messages = NO_MESSAGES, selection, conversationKey, model, value, enabled, onChange, personalize = false, gardenSlug, pageTitle, page, conversationId, documentConversationId, temporary = false }: {
+  /** The page beside the chat: an empty composer suggests a question about it. */
+  page?: SuggestionPage | null;
   messages?: readonly PromptSuggestionMessage[];
   selection?: PromptSuggestionSelection | null;
   conversationKey: string;
@@ -18,6 +21,9 @@ export function usePromptSuggestion({ messages = NO_MESSAGES, selection, convers
   onChange: (value: string) => void;
   personalize?: boolean;
   gardenSlug?: string | null;
+  pageTitle?: string | null;
+  conversationId?: string | null;
+  documentConversationId?: string;
   temporary?: boolean;
 }) {
   const descriptionId = useId();
@@ -28,7 +34,8 @@ export function usePromptSuggestion({ messages = NO_MESSAGES, selection, convers
   const transcript = JSON.stringify(context);
   const excerpt = JSON.stringify(promptSuggestionSelection(selection));
   const hasSelection = excerpt !== 'null';
-  const key = JSON.stringify([conversationKey, model, messages.at(-1)?.clientMessageId, transcript, excerpt, personalize, gardenSlug, temporary, revision]);
+  const pageKey = page ? JSON.stringify([page.title, page.browser, page.text?.length]) : null;
+  const key = JSON.stringify([conversationKey, documentConversationId, model, messages.at(-1)?.clientMessageId, transcript, excerpt, personalize, gardenSlug, pageTitle, pageKey, temporary, revision]);
   const [result, setResult] = useState<{ key: string; text: string } | null>(null);
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   const attempted = useRef(new Set<string>());
@@ -38,7 +45,7 @@ export function usePromptSuggestion({ messages = NO_MESSAGES, selection, convers
     return () => { for (const event of [AUTH_CHANGED_EVENT, RECALL_SETTINGS_CHANGED_EVENT, RECOMMENDATION_REFRESH_EVENT]) window.removeEventListener(event, changed); };
   }, []);
   const hasContext = hasSelection || context.length > 0;
-  const eligible = enabled && value === '' && (hasContext || (personalize && messages.length === 0)) && Boolean(model) && model !== 'none' && key !== dismissedKey;
+  const eligible = enabled && value === '' && (hasContext || ((personalize || pageKey) && messages.length === 0)) && Boolean(model) && model !== 'none' && key !== dismissedKey;
 
   useEffect(() => {
     if (!eligible || attempted.current.has(key)) return;
@@ -54,15 +61,18 @@ export function usePromptSuggestion({ messages = NO_MESSAGES, selection, convers
         const localDate = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
         const localTime = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
         const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-        const response = await fetch(hasContext ? '/api/chat-prompt-suggestion' : '/api/recommendations', {
+        const pageBody = hasSelection ? {} : await suggestionPageBody(page);
+        // An empty chat beside a page opens with a question about that page.
+        const pageOpener = !hasContext && Object.keys(pageBody).length > 0;
+        const response = await fetch(hasContext ? '/api/chat-prompt-suggestion' : pageOpener ? '/api/pdf-suggestions' : '/api/recommendations', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: JSON.parse(transcript), ...(hasSelection ? { selection: JSON.parse(excerpt) } : {}), model, personalize, gardenSlug, temporary, localDate, localTime, timeZone }),
+          body: JSON.stringify({ messages: JSON.parse(transcript), ...(hasSelection ? { selection: JSON.parse(excerpt),conversationId } : {}), model, personalize, gardenSlug, pageTitle, documentConversationId, temporary, localDate, localTime, timeZone, ...pageBody }),
           signal: controller.signal,
         });
         if (!response.ok) return;
         const payload = await response.json();
-        const text = normalizePromptSuggestion(hasContext ? payload.suggestion : payload.recommendations?.[0]?.prompt);
+        const text = normalizePromptSuggestion(hasContext ? payload.suggestion : pageOpener ? payload.suggestions?.[0] : payload.recommendations?.[0]?.prompt);
         if (!controller.signal.aborted && text) setResult({ key, text });
       } catch {
         // Suggestions are optional; leave the ordinary composer available.
@@ -71,7 +81,7 @@ export function usePromptSuggestion({ messages = NO_MESSAGES, selection, convers
       }
     }, 700);
     return () => { window.clearTimeout(timer); window.clearTimeout(requestTimeout); controller.abort(); };
-  }, [eligible, key, transcript, excerpt, model, hasContext, hasSelection, personalize, gardenSlug, temporary]);
+  }, [eligible, key, transcript, excerpt, model, hasContext, hasSelection, personalize, gardenSlug, pageTitle, page, conversationId, documentConversationId, temporary]);
 
   const text = eligible && result?.key === key ? result.text : null;
   const dismiss = () => setDismissedKey(key);

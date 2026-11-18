@@ -13,6 +13,7 @@ import * as crypto from "./crypto.ts";
 import * as store from "./store.ts";
 import { shortHandle } from "./handle.ts";
 import type { CrumbsAccount, CrumbsVisibility } from "./store.ts";
+import { feedEnabled, isFeedInteraction, rankFeed, recordFeedAction, setFeedEnabled, type InterestSource } from "./feed-ranking.ts";
 
 export class CrumbsError extends Error {
   status: number;
@@ -33,6 +34,7 @@ export interface CrumbsRoom { id: string; name: string; own: boolean; fixed: boo
 export interface CrumbsChatMessage { id: string; author: string; handle: string | null; avatar: string | null; did: string; body: string; createdAt: string; own: boolean; agent?: boolean; parent?: string; unverified?: boolean; /** Set when the message is a crumb: what it is about. */ crumb?: ChatCrumb }
 export interface ChatCrumb { target: BrowserAnnotationTarget; body: string; source: string | null }
 export interface CrumbsStatus {
+  personalizeFeed: boolean;
   signedIn: boolean; needsSignIn: boolean; did: string | null; handle: string | null; displayName: string | null; avatar: string | null;
   defaultVisibility: CrumbsVisibility; servers: { indexer: string; orgStore: string };
   /** "records": Crumbs' own record type through the index. "posts": the fallback, ordinary Bluesky posts. */
@@ -47,8 +49,9 @@ interface OrgDetail { id: string; epoch: number; nameCt: string; role: "admin" |
 interface OrgMessage { id: string; epoch: number; sender: string; device: string; ciphertext: string; sig: string; createdAt: string }
 interface OrgPlaintext { target: BrowserAnnotationTarget; body: string; source: string | null; author: { handle: string | null; displayName: string | null; avatar: string | null } }
 
-export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureServers }: {
+export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureServers, readFeedHistory }: {
   db: Database.Database; fetcher?: Fetcher;
+  readFeedHistory?: (userId: number) => Promise<InterestSource[]>;
   /** Called once when a Crumbs server cannot be reached, before one retry. */
   ensureServers?: (servers: { indexer: string; orgStore: string }) => Promise<void>;
   /** A plain chat completion on the user's own model. */
@@ -93,7 +96,7 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
   }
   function status(userId: number): CrumbsStatus {
     const value = store.getAccount(db, userId);
-    return { signedIn: Boolean(value && !value.needsSignIn), needsSignIn: Boolean(value?.needsSignIn), did: value?.did ?? null, handle: value?.handle ?? null,
+    return { personalizeFeed: feedEnabled(db, userId), signedIn: Boolean(value && !value.needsSignIn), needsSignIn: Boolean(value?.needsSignIn), did: value?.did ?? null, handle: value?.handle ?? null,
       displayName: value?.displayName ?? null, avatar: value?.avatar ?? null, defaultVisibility: value?.defaultVisibility ?? "private", servers: servers(), publicMode: publicMode() };
   }
 
@@ -229,6 +232,20 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
   }
 
   async function writePublic(userId: number, input: Record<string, unknown>): Promise<AnnotationResponse> {
+    const result = await publishPublic(userId, input);
+    if (input.action === "comment" && result.thread && !result.notice) {
+      const { target } = result.thread;
+      const root = result.messages[0];
+      if (root) {
+        try { recordFeedAction(db, userId, { id: root.id, kind: "comment", title: target.title, url: target.url,
+          text: (target.quote ?? "") + " " + root.body, author: root.own ? "" : root.did ?? "" }); }
+        catch { /* A completed public post must never be retried because optional local feedback failed. */ }
+      }
+    }
+    return result;
+  }
+
+  async function publishPublic(userId: number, input: Record<string, unknown>): Promise<AnnotationResponse> {
     const target = normalizeAnnotationTarget(input.target);
     if (!target) throw new CrumbsError(400, "Select content on the current page.");
     const me = account(userId);
@@ -438,6 +455,7 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
     if (on) await putRecord(userId, NS.follow, rkey, { subject: did, createdAt: new Date().toISOString() });
     else await deleteRecord(userId, NS.follow, rkey);
     await indexer("/notify", { uri: `at://${me.did}/${NS.follow}/${rkey}` });
+    cache.delete("ranking-follows:" + servers().indexer + ":" + me.did);
     return follows(userId);
   }
 
@@ -450,7 +468,9 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
   async function feed(userId: number, scope: string, before?: string | null): Promise<{ items: CrumbsFeedItem[]; before: string | null; empty?: string }> {
     const me = store.getAccount(db, userId);
     if (scope.startsWith("org:")) return orgFeed(userId, scope.slice(4), before);
-    if (publicMode() === "posts") return feedPosts(userId, scope);
+    const personalized = scope === "everyone" && feedEnabled(db, userId);
+    const posts = publicMode() === "posts";
+    if (posts && !personalized) return feedPosts(userId, scope);
     if (scope === "mine") {
       const mine = account(userId);
       const actor = await indexer<{ items: IndexerItem[] }>(`/actor?did=${encodeURIComponent(mine.did)}&all=1`);
@@ -462,8 +482,26 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
       const mine = await indexer<{ follows: Array<{ did: string }> }>(`/actor?did=${encodeURIComponent(me.did)}`);
       actors = [...new Set([me.did, ...mine.follows.map(item => item.did), ...(await blueskyFollows(me.did))])];
     }
-    const page = await indexer<{ items: IndexerItem[]; before: string | null }>("/feed", { actors, before: before ?? undefined, limit: 30 });
-    return { items: page.items.map(item => feedItem(item, me?.did ?? null, "Public")), before: page.before };
+    const page = posts ? await feedPosts(userId, scope) : await indexer<{ items: IndexerItem[]; before: string | null }>("/feed",
+      { actors, before: before ?? undefined, limit: personalized ? 50 : 30 }).then(data => ({
+        items: data.items.map(item => feedItem(item, me?.did ?? null, "Public")), before: data.before,
+      }));
+    if (!personalized || !page.items.length || !feedEnabled(db, userId)) return page;
+    const [history, followed] = await Promise.all([
+      readFeedHistory?.(userId).catch(() => []) ?? [],
+      me && !me.needsSignIn ? rankingFollows(me.did, posts) : [],
+    ]);
+    return { ...page, items: rankFeed(db, userId, page.items, history, new Set(followed)) };
+  }
+
+  // A slow optional social graph must not hold up an otherwise ready feed.
+  async function rankingFollows(did: string, posts: boolean): Promise<string[]> {
+    const graph = Promise.all([blueskyFollows(did), posts ? [] : cached("ranking-follows:" + servers().indexer + ":" + did, 600_000,
+      () => indexer<{ follows: Array<{ did: string }> }>(`/actor?did=${encodeURIComponent(did)}&view=follows`).then(data => data.follows.map(row => row.did))).catch(() => [])])
+      .then(([bluesky, local]) => [...bluesky, ...local]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([graph, new Promise<string[]>(resolve => { timer = setTimeout(() => resolve([]), 400); })]); }
+    finally { clearTimeout(timer); }
   }
 
   // ---- Community notes -----------------------------------------------------
@@ -967,6 +1005,18 @@ export function createCrumbs({ db, fetcher = fetch as Fetcher, complete, ensureS
   }
 
   return { status, startSignIn, finishSignIn, signOut, typeahead, readPublic, writePublic, feed, follows, follow, deleteMine, claimHandle,
+    setFeedPreference(userId: number, value: unknown) {
+      if (typeof value !== "boolean") throw new CrumbsError(400, "Choose a feed preference.");
+      setFeedEnabled(db, userId, value);
+    },
+    feedFeedback(userId: number, body: Record<string, unknown>) {
+      const { id, kind, title, url, text } = body;
+      if (typeof id !== "string" || id.length > 700 || !/^at:\/\/(did:[^/]+)\/(com\.breadboard\.highlight|app\.bsky\.feed\.post)\/[^/]+$/.test(id)
+        || !isFeedInteraction(kind)
+        || typeof title !== "string" || typeof text !== "string" || typeof url !== "string" || !annotationPageUrl(url))
+        throw new CrumbsError(400, "Invalid feed activity.");
+      recordFeedAction(db, userId, { id, kind, title: title.slice(0, 300), url, text: text.slice(0, 1200), author: id.split("/")[2]! });
+    },
     listNotes, addNote, deleteNote, rateNote, listRooms, createRoom, deleteRoom, readChat, sendChat, deleteChat, reportChat, listOrgs, createOrg, orgDetail, addOrgMember, removeOrgMember, leaveOrg, deleteOrg, dismissOrgReport, readOrg, writeOrg, ai,
     setDefaultVisibility(userId: number, value: unknown) {
       const visibility = String(value);

@@ -2,6 +2,24 @@
   margin-top: 0;
   color: var(--darkgray);
 
+  .bb-authorship-label,
+  .bb-authorship-score {
+    font-weight: 600;
+  }
+  .bb-authorship[data-state="human-written"] .bb-authorship-label,
+  .bb-authorship[data-state="human-written"] .bb-authorship-score { color: #2e8b47; }
+  .bb-authorship[data-state="ai-edited"] .bb-authorship-label,
+  .bb-authorship[data-state="ai-edited"] .bb-authorship-score { color: #b8860b; }
+  .bb-authorship[data-state="ai-written"] .bb-authorship-label,
+  .bb-authorship[data-state="ai-written"] .bb-authorship-score { color: #c0392b; }
+  .bb-authorship[data-state="unsure"] .bb-authorship-label,
+  .bb-authorship[data-state="unsure"] .bb-authorship-score { color: #8e44ad; }
+  .bb-authorship-score {
+    cursor: help;
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+  }
+
   &[show-comma="true"] {
     > *:not(:last-child) {
       margin-right: 8px;

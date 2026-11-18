@@ -39,8 +39,11 @@ import WorkspaceSideChat from "./workspace-side-chat";
 import ArchivedChatsPanel from "./archived-chats-panel";
 import { initialStarredMessageTarget, type StarredMessageTarget } from "../use-starred-message-jump";
 import ChatGreetingEmptyState from "./chat-greeting-empty-state";
+import { usePageSuggestions } from "../use-page-suggestions";
+import { captureWorkspaceView } from "@/lib/workspace-view";
 import ConnectModelNotice from "./connect-model-notice";
 import { useChatGreeting } from "./use-chat-greeting";
+import { useTerminalSuggestion, type TerminalSuggestion } from "./use-terminal-suggestion";
 import { ArtifactDockHostProvider } from "./artifact-dock-host";
 import ArtifactPanel, { ARTIFACT_AI_EDIT_EVENT } from "./artifact-panel";
 import { artifactUrl } from "./artifact-viewer";
@@ -383,11 +386,12 @@ interface Props {
   drawerSidebarExpanded?: boolean;
   /** A browser text selection can arrive after mount and seed the composer. */
   initialDraft?: string | null;
-  /** Distinguishes two deliberate selections of the same suggested prompt. */
-  initialDraftKey?: number;
+  suggestion?: TerminalSuggestion | null;
+  onSuggestionHandled?: (card: TerminalSuggestion) => void;
   webSelection?: { requestId: string; reference: ChatTextSelectionReference; conversationId?: string } | null;
   /** The website currently displayed beside the browser Terminal. */
   viewingWebsite?: string | null;
+  privateBrowser?: boolean;
 }
 
 interface RuntimeHistorySession {
@@ -709,8 +713,10 @@ export default function DashboardAgentTerminal({
   voiceSurface,
   drawerSidebarExpanded = false,
   initialDraft = null,
-  initialDraftKey,
+  suggestion,
+  onSuggestionHandled,
   webSelection = null,
+  privateBrowser = false,
   viewingWebsite = null,
 }: Props) {
   const [health, setHealth] = useState<HealthState>({
@@ -721,6 +727,11 @@ export default function DashboardAgentTerminal({
   // replace the whole Hermes tree with the legacy terminal. Doing so unmounts
   // the live session and looks exactly like the terminal restarted mid-send.
   const [runtimeSurfaceEngaged, setRuntimeSurfaceEngaged] = useState(false);
+  const [basicChatSuggestion, setBasicChatSuggestion] = useState<TerminalSuggestion | null>(null);
+  const suggestionProps = {
+    suggestion: suggestion ?? basicChatSuggestion,
+    onSuggestionHandled: suggestion ? onSuggestionHandled : () => setBasicChatSuggestion(null),
+  };
   const markRuntimeSurfaceEngaged = useCallback(
     () => setRuntimeSurfaceEngaged(true),
     [],
@@ -803,8 +814,9 @@ export default function DashboardAgentTerminal({
         voiceSurface={voiceSurface}
         drawerSidebarExpanded={drawerSidebarExpanded}
         initialDraft={initialDraft}
-        initialDraftKey={initialDraftKey}
+        {...suggestionProps}
         webSelection={webSelection}
+        privateBrowser={privateBrowser}
         viewingWebsite={viewingWebsite}
         runtimeUnavailable={health.status === "unavailable"}
         onRefreshRuntime={refreshRuntimeHealth}
@@ -832,10 +844,11 @@ export default function DashboardAgentTerminal({
         voiceSurface={voiceSurface}
         drawerSidebarExpanded={drawerSidebarExpanded}
         initialDraft={initialDraft}
-        initialDraftKey={initialDraftKey}
+        {...suggestionProps}
         webSelection={webSelection}
+        privateBrowser={privateBrowser}
         viewingWebsite={viewingWebsite}
-        runtimeUnavailable={health.status === "unavailable"}
+        runtimeUnavailable={health.status === "unavailable" || health.status === "disabled"}
         onRefreshRuntime={refreshRuntimeHealth}
         onConversationEngaged={markRuntimeSurfaceEngaged}
       />
@@ -853,8 +866,9 @@ export default function DashboardAgentTerminal({
         voiceSurface={voiceSurface}
         drawerSidebarExpanded={drawerSidebarExpanded}
         initialDraft={initialDraft}
-        initialDraftKey={initialDraftKey}
+        {...suggestionProps}
         webSelection={webSelection}
+        privateBrowser={privateBrowser}
         viewingWebsite={viewingWebsite}
         runtimeUnavailable
         onRefreshRuntime={refreshRuntimeHealth}
@@ -866,7 +880,10 @@ export default function DashboardAgentTerminal({
   // on Hermes and surfaces unavailability instead of silently falling back.
   return (
     <>
-      <KnowledgeTerminal scope={scope} />
+      <KnowledgeTerminal privateBrowser={privateBrowser} pageTitle={viewingWebsite} scope={scope} onOpenRecentChat={(text, conversationId) => {
+        setBasicChatSuggestion({ text, conversationId });
+        markRuntimeSurfaceEngaged();
+      }} />
       {health.status === "unavailable" ? (
         <div className="pointer-events-none fixed bottom-14 right-3 z-[60] rounded-md border border-amber-700/70 bg-amber-950/80 px-2.5 py-1 text-[11px] text-amber-200 shadow">
           The assistant is unavailable. Switched to basic chat.
@@ -886,8 +903,10 @@ function RuntimeTerminal({
   voiceSurface,
   drawerSidebarExpanded = false,
   initialDraft = null,
-  initialDraftKey,
+  suggestion,
+  onSuggestionHandled,
   webSelection = null,
+  privateBrowser = false,
   viewingWebsite = null,
   runtimeUnavailable = false,
   onRefreshRuntime,
@@ -986,7 +1005,7 @@ function RuntimeTerminal({
     if (!next) return;
     setInput(next);
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
-  }, [initialDraft, initialDraftKey]);
+  }, [initialDraft]);
   // A click or keyboard press on the collapsed bar is an intent to start
   // chatting. Remember it across the render that mounts the textarea so focus
   // can follow the dock open instead of remaining on the header.
@@ -1387,7 +1406,7 @@ function RuntimeTerminal({
   // What a blank chat says, and the four openers under it. Both are drawn from
   // pools that step forward on the hour and narrow to what the reader has been
   // doing, so this is the only thing the empty state needs from up here.
-  const chatGreeting = useChatGreeting({ scope, temporary: temporaryChat, browser: drawerPresentation, enabled: !voicePresentation });
+  const chatGreeting = useChatGreeting({ scope, temporary: temporaryChat || privateBrowser, browser: drawerPresentation, pageTitle:viewingWebsite, enabled: !voicePresentation });
   // The chat to come back to when the reader leaves temporary mode, so the
   // toggle behaves like a detour rather than a reset.
   const chatBeforeTemporary = useRef<string | null>(null);
@@ -1400,12 +1419,14 @@ function RuntimeTerminal({
       title: "New chat",
       temporary: temporaryChat,
       browser: presentation === "drawer",
+      allowPersonalContext:scope !== "public" && !privateBrowser,
+      pageTitle:privateBrowser ? undefined : viewingWebsite || undefined,
       voice: voicePresentation,
       concurrentInline: true,
       workspaceSlug: newChatWorkspace?.slug,
       restoreLastConversation: false,
     }),
-    [temporaryChat, presentation, voicePresentation, newChatWorkspace],
+    [temporaryChat, presentation, voicePresentation, newChatWorkspace, viewingWebsite, privateBrowser, scope],
   );
   const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
   const { begin: beginAttachmentPreparation, busy: extractingAttachments, error: attachmentUploadError } =
@@ -1432,6 +1453,13 @@ function RuntimeTerminal({
     intelligenceModes: typeof selectedIntelligenceModes;
   } | null>(null);
   const model = voiceTurnOptions?.model ?? activeAnswerIntelligence?.model ?? selectedModel;
+  // The browser tab beside the drawer. Openers, completions and every sent
+  // message are about this page, the way the PDF assistant follows its page.
+  const browserPage = useMemo(
+    () => drawerPresentation && viewingWebsite && !voicePresentation ? { title: viewingWebsite, browser: true } : null,
+    [drawerPresentation, viewingWebsite, voicePresentation],
+  );
+  const pageSuggestions = usePageSuggestions({ page: browserPage, model, enabled: !privateBrowser });
   const reasoningEffort =
     voiceTurnOptions?.reasoningEffort ?? activeAnswerIntelligence?.reasoningEffort ?? selectedReasoningEffort;
   const intelligenceModes =
@@ -7254,8 +7282,11 @@ if (careerOpsAgent) {
           ? "Compare the selected products."
           : selectedProductCount === 1
             ? "Tell me about the selected product."
-            : "Please review the attached document(s)."
+            : attachmentOnlyMessageText(pendingAttachments)
       );
+      // Capture the page now, before the reader scrolls or navigates away.
+      const sentPage = browserPage && !voice ? browserPage.title : null;
+      const pageView = sentPage ? captureWorkspaceView() : null;
       const draftSessionId = session.sessionId;
       const draftSubmission = submittedDraftSequence.current + 1;
       submittedDraftSequence.current = draftSubmission;
@@ -7268,7 +7299,18 @@ if (careerOpsAgent) {
         reasoningEffort: voice?.reasoningEffort ?? reasoningEffort,
         browserAccess: voice?.browserAccess,
         voice: voice?.voice,
-        attachments: pendingAttachments,
+        // Camera and screen stills from voice mode ride the spoken turn.
+        attachments: [...(voice?.attachments ?? []), ...pendingAttachments],
+        ...(pageView && sentPage ? {
+          prepareAttachments: async () => {
+            const view = await pageView;
+            const page: ChatAttachment = view
+              ? { ...view, context: "web", name: "Current page.jpg", webPage: { title: sentPage } }
+              : { type: "text", context: "web", name: "Current page", webPage: { title: sentPage },
+                  text: "The page image could not be captured. Use the page text supplied with this turn." };
+            return [page, ...pendingAttachments];
+          },
+        } : {}),
         onTurnPersisted: (persistedSessionId) => {
           setSubmittedDraft((current) =>
             submittedDraftSequence.current === draftSubmission &&
@@ -7292,6 +7334,7 @@ if (careerOpsAgent) {
       });
     },
     [
+      browserPage,
       activeRuntimeAgentId,
       browserAgent,
       agentBrowserAgent,
@@ -7978,8 +8021,8 @@ if (careerOpsAgent) {
       // keep responding while the selected excerpt is answered in its popover.
       if (selection.mode === "inline") {
         await inlineQuestions.send(question, selection, {
-          model,
-          reasoningEffort,
+          model: selectedModel,
+          reasoningEffort: selectedReasoningEffort,
           ...voice,
           attachments: pendingAttachments,
         });
@@ -7987,8 +8030,8 @@ if (careerOpsAgent) {
       }
       if (busy) await session.abort();
       await session.send(question, {
-        model,
-        reasoningEffort,
+        model: selectedModel,
+        reasoningEffort: selectedReasoningEffort,
         ...voice,
         attachments: pendingAttachments,
         textSelection: selection,
@@ -7998,8 +8041,8 @@ if (careerOpsAgent) {
       busy,
       chatAttachments,
       inlineQuestions,
-      model,
-      reasoningEffort,
+      selectedModel,
+      selectedReasoningEffort,
       runtimeUnavailable,
       session,
     ],
@@ -8354,20 +8397,18 @@ if (careerOpsAgent) {
     [addAttachmentFiles],
   );
 
-  // An opener is a starting point, not a message. It lands in the composer with
-  // the caret at the end, so the obvious next move is to finish the sentence
-  // rather than to undo a turn that has already left. Every routing decision
-  // the openers used to make for themselves now happens on the ordinary submit
-  // path, which is the only place that has to be right about it.
-  const fillComposerWithPrompt = useCallback((text: string) => {
-    setInput(text);
-    window.setTimeout(() => {
-      const composer = composerTextareaRef.current;
-      if (!composer) return;
-      composer.focus();
-      composer.setSelectionRange(composer.value.length, composer.value.length);
-    }, 0);
-  }, []);
+  const fillComposerWithPrompt = useTerminalSuggestion({
+    sessionId: session.sessionId,
+    loading: session.loadingSession,
+    openSession: id => {
+      if (!isOpen) setHeight(openHeight(preferredOpenHeightRef.current));
+      openHistorySession(id);
+    },
+    setInput,
+    textarea: composerTextareaRef,
+    suggestion,
+    onSuggestionHandled,
+  });
 
   const retryMessage = useCallback(
     (userMessageIndex: number, branchGroupId: string) => {
@@ -9578,7 +9619,9 @@ if (careerOpsAgent) {
                 </div>
               ) : null}
               <AgentRuntimePanel
-                personalizedSuggestions={scope !== 'public' && !temporaryChat}
+                personalizedSuggestions={scope !== 'public' && !temporaryChat && !privateBrowser}
+                suggestionPageTitle={viewingWebsite}
+                suggestionPage={browserPage}
                 starredMessageTarget={starredMessageTarget}
                 compact={drawerPresentation}
                 sessionId={session.sessionId}
@@ -9886,9 +9929,11 @@ onClearCareerOps={() => {
                     <ConnectModelNotice />
                     <ChatGreetingEmptyState
                       greeting={chatGreeting.greeting}
-                      suggestions={chatGreeting.suggestions}
-                      suggestionScopeKey={chatGreeting.suggestionScopeKey}
-                      suggestionDetails={chatGreeting.suggestionDetails}
+                      suggestions={browserPage ? pageSuggestions ?? [] : chatGreeting.suggestions}
+                      suggestionScopeKey={browserPage ? JSON.stringify(["page", browserPage.title]) : chatGreeting.suggestionScopeKey}
+                      suggestionDetails={browserPage
+                        ? Object.fromEntries((pageSuggestions ?? []).map(prompt => [prompt, { label: "This page" }]))
+                        : chatGreeting.suggestionDetails}
                       onSelectSuggestion={fillComposerWithPrompt}
                       disabled={runtimeUnavailable}
                     />

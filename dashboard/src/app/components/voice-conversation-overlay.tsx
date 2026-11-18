@@ -19,10 +19,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { encodePcm16Wav } from '@/lib/speech/live-dictation';
 import { describeMicrophoneBlock, type MicrophoneFix } from '@/lib/speech/microphone-access';
-import { playSpeechResponse, stopSpeechPlayback } from '@/lib/speech/playback';
+import { holdSpeechPlayback, playSpeechResponse, stopSpeechPlayback } from '@/lib/speech/playback';
 import { playVoicePassages } from '@/lib/speech/voice-playback';
 import { connectLiveKitTurnDetector, type LiveKitTurnDetector } from '@/lib/speech/livekit-turn-client';
-import { playVoiceCue } from '@/lib/speech/voice-cues';
+import { playListeningSound, playVoiceCue, prepareListeningSound } from '@/lib/speech/voice-cues';
+import {
+  createLatencyMeter,
+  createListeningSounds,
+  formatLatency,
+  frameSize,
+  isBackchannel,
+  permissionAnswer,
+  permissionQuestion,
+  type SpokenPermission,
+} from '@/lib/speech/voice-live-turns';
+import type { ChatAttachment } from '@/lib/chat-attachments';
 import { createReadingPosition } from '@/lib/speech/reading-position';
 import { prepareLocalSpeech, speechErrorMessage } from '@/lib/speech/prepare-client';
 import { holdClapWake } from '@/lib/speech/clap-wake';
@@ -89,10 +100,15 @@ interface Props {
   busy: boolean;
   /** Ask-question tools must be spoken before listening for their answer. */
   clarification?: { requestId: string; question: string } | null;
+  /** A tool waiting for permission: voice mode asks it aloud and takes yes/always/no. */
+  permission?: VoicePermission | null;
+  onPermission?: (decision: SpokenPermission) => void | Promise<void>;
   /** Saves a ChatGPT voice exchange into the chat, when "Use ChatGPT voice in
    * voice mode" makes voice mode ChatGPT's own voice. */
   onRecord?: (exchange: SpokenExchange) => Promise<void>;
 }
+
+export interface VoicePermission { requestId: string; description: string; allowSession: boolean }
 
 /**
  * How long a turn has to *reach* the chat — not to be answered. Once the host
@@ -110,6 +126,11 @@ const RING_RADIUS = 62;
  * words do not make it flicker in and out.
  */
 const VOICING_HOLD_MS = 420;
+/**
+ * A sound over a reply only pauses it; the words decide. Talk that runs this
+ * long before any words are in is a real interruption even without them.
+ */
+const HOLD_CUT_MS = 1_500;
 
 function audioContextConstructor(): typeof AudioContext | null {
   if (typeof window === 'undefined') return null;
@@ -142,6 +163,8 @@ function BreadboardVoiceConversation({
   messages,
   busy,
   clarification = null,
+  permission = null,
+  onPermission,
   notificationTarget = null,
 }: Props) {
   const open = visible && !dictationPaused;
@@ -228,9 +251,29 @@ function BreadboardVoiceConversation({
   const onSendRef = useRef(onSend);
   const clarificationRef = useRef(clarification);
 
+  const permissionRef = useRef(permission);
+  const onPermissionRef = useRef(onPermission);
+  const spokenPermissionRef = useRef<string | null>(null);
+  /** A sound over the reply paused it; resolved once its words are known. */
+  const holdRef = useRef<{ from: VoiceStage; at: number; voicedMs?: number; release: () => void; released: Promise<void> } | null>(null);
+  const liveHeardRef = useRef('');
+  const listeningSoundsRef = useRef(createListeningSounds());
+  const latencyRef = useRef(createLatencyMeter());
+  const [latency, setLatency] = useState<number | null>(null);
+  /** Push to talk: Space held. `fromPause` returns to paused after the reply. */
+  const pttRef = useRef<{ fromPause: boolean } | null>(null);
+  const returnToPauseRef = useRef(false);
+  const [vision, setVision] = useState<{ camera: MediaStream | null; screen: MediaStream | null }>({ camera: null, screen: null });
+  const visionRef = useRef(vision);
+  visionRef.current = vision;
+  const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
+
   messagesRef.current = messages;
   onSendRef.current = onSend;
   clarificationRef.current = clarification;
+  permissionRef.current = permission;
+  onPermissionRef.current = onPermission;
 
   const enterStage = useCallback((next: VoiceStage) => {
     stageRef.current = next;
@@ -291,8 +334,10 @@ function BreadboardVoiceConversation({
       return;
     }
     if (stageRef.current === 'opening' || stageRef.current === 'paused') playVoiceCue('enable');
-    stopNarration();
+    // A held reply is still the reply: only its words decide whether it ends.
+    if (!holdRef.current) stopNarration();
     setLiveHeard('');
+    listeningSoundsRef.current.reset();
     chunksRef.current = [];
     turnRef.current = initialVoiceTurn();
     speechOnsetRef.current = false;
@@ -317,11 +362,15 @@ function BreadboardVoiceConversation({
       async speak({ text, kind }, signal) {
         const spoken = await speakableText(text, signal);
         signal.throwIfAborted();
+        // Someone is talking over the reply: the next passage waits for their words.
+        while (holdRef.current) { await holdRef.current.released; signal.throwIfAborted(); }
         if (!spoken) {
           if (kind === 'answer') setReply(text);
           return;
         }
         narrationProgressRef.current = 0;
+        const median = latencyRef.current.finish(performance.now());
+        if (median !== null) setLatency(median);
         setSpokenReply(spoken);
         followTranscriptRef.current = true;
         setReply(text);
@@ -361,10 +410,39 @@ function BreadboardVoiceConversation({
           enterStage('thinking');
           return;
         }
+        if (returnToPauseRef.current) {
+          // A push-to-talk turn from a paused microphone goes back to paused.
+          returnToPauseRef.current = false;
+          stopNarration();
+          subscriptionRef.current?.setListening(false);
+          listeningRef.current = false;
+          chunksRef.current = [];
+          enterStage('paused');
+          return;
+        }
         beginTurn();
       },
     });
   }, [beginTurn, enterStage, stopNarration]);
+
+  /** What the camera and the shared screen show right now, one still each. */
+  const captureFrames = useCallback((): ChatAttachment[] => {
+    const frames: ChatAttachment[] = [];
+    for (const [video, name] of [[cameraVideoRef.current, 'Camera.jpg'], [screenVideoRef.current, 'Screen.jpg']] as const) {
+      if (!video || video.readyState < 2) continue;
+      const size = frameSize(video.videoWidth, video.videoHeight);
+      if (!size.width) continue;
+      const canvas = document.createElement('canvas');
+      canvas.width = size.width;
+      canvas.height = size.height;
+      const context = canvas.getContext('2d');
+      if (!context) continue;
+      context.drawImage(video, 0, 0, size.width, size.height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      frames.push({ type: 'image', name, dataUrl, sizeBytes: Math.round(dataUrl.length * 0.75) });
+    }
+    return frames;
+  }, []);
 
   /** Spoken input and widget follow-ups use the same turn and narration queue. */
   const sendText = useCallback((text: string) => {
@@ -383,6 +461,8 @@ function BreadboardVoiceConversation({
     ));
     sentMessageCountRef.current = messagesRef.current.length;
     sentTurnRef.current = { text, questionId };
+    // Taken now, at the end of what was said, not when the send settles.
+    const frames = captureFrames();
     const continuingIndex = clarificationRef.current
       ? messagesRef.current.findLastIndex(message => message.role === 'assistant') : -1;
     startNarration(continuingIndex < 0 ? undefined : {
@@ -413,11 +493,75 @@ function BreadboardVoiceConversation({
         // consume a newer offer that arrived while interruption was settling.
         const currentOpener = greetingAllowed.current && greetingContext.current === opener ? opener : undefined;
         if (greetingContext.current === opener) greetingContext.current = undefined;
-        return onSendRef.current(text, currentOpener ? { voiceOpener: currentOpener } : undefined);
+        const context = { ...(currentOpener ? { voiceOpener: currentOpener } : {}), ...(frames.length ? { attachments: frames } : {}) };
+        return onSendRef.current(text, Object.keys(context).length ? context : undefined);
       }
     }).catch(deliveryFailed); }
     catch { deliveryFailed(); }
-  }, [beginTurn, clearWatchdog, enterStage, startNarration]);
+  }, [beginTurn, captureFrames, clearWatchdog, enterStage, startNarration]);
+
+  /** Pause the reply where it is: a sound over it is not yet an interruption. */
+  const holdReply = useCallback(() => {
+    if (holdRef.current) return;
+    let release = () => {};
+    const released = new Promise<void>(resolve => { release = resolve; });
+    holdRef.current = { from: stageRef.current, at: performance.now(), release, released };
+    holdSpeechPlayback(true);
+    subscriptionRef.current?.hold?.(true);
+  }, []);
+
+  /** The words were a backchannel, a cough or nothing: carry on from the same place. */
+  const resumeReply = useCallback(() => {
+    const hold = holdRef.current;
+    if (!hold) return false;
+    holdRef.current = null;
+    listeningRef.current = false;
+    chunksRef.current = [];
+    setLiveHeard('');
+    holdSpeechPlayback(false);
+    subscriptionRef.current?.hold?.(false);
+    enterStage(hold.from === 'speaking' && !narrationRef.current?.speaking ? 'thinking' : hold.from);
+    hold.release();
+    return true;
+  }, [enterStage]);
+
+  /** The words were a turn: stop the reply and the run behind it, keep listening. */
+  const cutReply = useCallback(() => {
+    const hold = holdRef.current;
+    holdRef.current = null;
+    hold?.release();
+    holdSpeechPlayback(false);
+    subscriptionRef.current?.hold?.(false);
+    playVoiceCue('stop');
+    awaitingRef.current = false;
+    clearWatchdog();
+    stopNarration();
+    if (!clarificationRef.current && !permissionRef.current) {
+      interruptedRunRef.current = Promise.resolve().then(() => interruptRef.current?.()).catch(() => {});
+    }
+  }, [clearWatchdog, stopNarration]);
+
+  /** A spoken yes/always/no to a waiting permission ask. */
+  const answerPermission = useCallback((text: string) => {
+    const ask = permissionRef.current;
+    if (!ask) return false;
+    const decision = permissionAnswer(text, ask.allowSession);
+    setHeard(text);
+    setLiveHeard('');
+    if (!decision) {
+      startNarration({ startIndex: 0 });
+      narrationRef.current?.update([{ role: 'assistant', content: `Sorry, was that a yes${ask.allowSession ? ', an always' : ''} or a no?` }], false);
+      return true;
+    }
+    setNote(null);
+    const index = messagesRef.current.findLastIndex(message => message.role === 'assistant');
+    startNarration(index < 0 ? undefined : { startIndex: index, initialMessage: messagesRef.current[index] });
+    dispatchedRef.current = true;
+    awaitingRef.current = true;
+    enterStage('thinking');
+    void Promise.resolve(onPermissionRef.current?.(decision)).catch(() => setNote('That answer could not be sent. Use the buttons in the chat.'));
+    return true;
+  }, [enterStage, startNarration]);
 
   /** Transcribe the buffered utterance and hand it to the chat. */
   const finishTurn = useCallback(
@@ -427,6 +571,7 @@ function BreadboardVoiceConversation({
       const voice = subscriptionRef.current;
       chunksRef.current = [];
       if (!capture || (!voice && chunks.length === 0)) return;
+      latencyRef.current.start(performance.now());
       enterStage('transcribing');
 
       const controller = new AbortController();
@@ -467,6 +612,12 @@ function BreadboardVoiceConversation({
         const result = (await response.json()) as { text?: string };
         const text = result.text?.trim() ?? '';
         if (session !== sessionRef.current || controller.signal.aborted) return;
+        if (holdRef.current) {
+          // Over a reply, "mm-hmm", a laugh or a cough carries on; words cut it.
+          if (isBackchannel(text) && !isVoiceExitRequest(text)) { latencyRef.current.cancel(); resumeReply(); return; }
+          cutReply();
+        }
+        if (text && answerPermission(text)) return;
         if (!text) {
           setNote('I did not catch that.');
           beginTurn();
@@ -499,14 +650,14 @@ function BreadboardVoiceConversation({
         requestAbortRef.current.delete(controller);
       }
     },
-    [beginTurn, clearWatchdog, enterStage, releaseMicrophone, sendText, stopNarration],
+    [answerPermission, beginTurn, clearWatchdog, cutReply, enterStage, releaseMicrophone, resumeReply, sendText, stopNarration],
   );
 
   const openSubscription = useCallback((stream: MediaStream, signal: AbortSignal, session: number) =>
     connectSubscriptionVoice({
       mode: 'conversation', microphone: stream, listening: false, signal,
       onTranscript: text => {
-        if (!signal.aborted && session === sessionRef.current && listeningRef.current) setLiveHeard(text);
+        if (!signal.aborted && session === sessionRef.current && listeningRef.current) { liveHeardRef.current = text; setLiveHeard(text); }
       },
       onDisconnect: caught => {
         if (signal.aborted || session !== sessionRef.current) return;
@@ -687,7 +838,12 @@ function BreadboardVoiceConversation({
         }
         const interruptingReply = stageRef.current === 'speaking' || stageRef.current === 'thinking';
         const interrupting = stageRef.current === 'speaking' || stageRef.current === 'thinking' || Boolean(greetingAbortRef.current);
-        if (interrupting) {
+        if (interrupting && interruptingReply && !greetingAbortRef.current) {
+          // A sound over the reply pauses it in place. Its words decide in
+          // finishTurn: a backchannel or cough carries on, anything else cuts.
+          holdReply();
+          beginTurn(true);
+        } else if (interrupting) {
           playVoiceCue('stop');
           awaitingRef.current = false;
           clearWatchdog();
@@ -696,7 +852,7 @@ function BreadboardVoiceConversation({
           setGreeting(null);
           // Stop playout synchronously; stopping model work may take longer.
           beginTurn(true);
-          if (interruptingReply && !clarificationRef.current) {
+          if (interruptingReply && !clarificationRef.current && !permissionRef.current) {
             interruptedRunRef.current = Promise.resolve().then(() => interruptRef.current?.()).catch(() => {});
           }
         }
@@ -724,6 +880,18 @@ function BreadboardVoiceConversation({
         while (preRollRef.current.length > Math.ceil(context.sampleRate * 0.75 / input.length)) preRollRef.current.shift();
         detectorRef.current?.push(input);
         const nativeReady = detectorRef.current && detectorRef.current.ready !== false;
+        const frameMs = input.length / context.sampleRate * 1000;
+        const loud = level >= Math.max(0.04, speechThreshold(turnRef.current.noiseFloor));
+        const hold = holdRef.current;
+        if (hold && stageRef.current === 'listening') {
+          hold.voicedMs = (hold.voicedMs ?? 0) + (loud ? frameMs : 0);
+          // Sustained talk before any words are in is an interruption anyway.
+          if (hold.voicedMs >= HOLD_CUT_MS) cutReply();
+        }
+        if (listeningSoundsRef.current.push(loud, frameMs, {
+          listening: Boolean(nativeReady) && listeningRef.current && stageRef.current === 'listening' && !holdRef.current && !pttRef.current,
+          question: /\?\s*$/.test(liveHeardRef.current),
+        })) playListeningSound();
         const canInterrupt = stageRef.current === 'speaking' || stageRef.current === 'thinking'
           || stageRef.current === 'transcribing' || Boolean(greetingAbortRef.current);
         let resumedThisFrame = false;
@@ -757,7 +925,6 @@ function BreadboardVoiceConversation({
           }
           return;
         }
-        const frameMs = (input.length / context.sampleRate) * 1_000;
         turnRef.current = advanceVoiceTurn(turnRef.current, level, frameMs);
         // Greeting cancellation cannot depend on native inference being ready.
         // Otherwise a slow greeting can keep playing or hold the provider's
@@ -768,7 +935,7 @@ function BreadboardVoiceConversation({
           setGreeting(null);
         }
         const verdict = voiceTurnVerdict(turnRef.current);
-        if (verdict === 'send') {
+        if (verdict === 'send' && !pttRef.current) {
           listeningRef.current = false;
           // Encoding a whole turn takes long enough to stutter the next audio
           // frame, so it happens after this callback returns, not inside it.
@@ -808,7 +975,8 @@ function BreadboardVoiceConversation({
               speechStarted();
             } else {
               nativeUtterance = false;
-              if (listeningRef.current && turnRef.current.heardSpeech) {
+              // Push to talk ends the turn on release, not on a pause.
+              if (listeningRef.current && turnRef.current.heardSpeech && !pttRef.current) {
                 listeningRef.current = false;
                 void finishTurn(session);
               }
@@ -875,7 +1043,7 @@ function BreadboardVoiceConversation({
     } finally {
       if (openingSessionRef.current === session) openingSessionRef.current = null;
     }
-  }, [beginTurn, clearDeferredWork, clearWatchdog, enterStage, finishTurn, openSubscription, releaseMicrophone, stopNarration, greetOnOpen]);
+  }, [beginTurn, clearDeferredWork, clearWatchdog, cutReply, enterStage, finishTurn, holdReply, openSubscription, releaseMicrophone, stopNarration, greetOnOpen]);
 
   /* --- session lifecycle ------------------------------------------------- */
   const resizeFullscreen = useCallback(async (value: boolean) => {
@@ -1035,6 +1203,93 @@ function BreadboardVoiceConversation({
     startNarration({ startIndex: 0 });
     narrationRef.current?.update([{ role: 'assistant', content: clarification.question }], false);
   }, [clarification, clearWatchdog, greeting, open, stage, startNarration]);
+
+  useEffect(() => {
+    if (!open || !permission || !captureRef.current || greeting || stage === 'opening') return;
+    if (spokenPermissionRef.current === permission.requestId) return;
+    spokenPermissionRef.current = permission.requestId;
+    awaitingRef.current = false;
+    clearWatchdog();
+    // The run is waiting on the person, exactly like an ask-question tool: say
+    // the ask once, then the queue hands the microphone back for the answer.
+    startNarration({ startIndex: 0 });
+    narrationRef.current?.update([{ role: 'assistant', content: permissionQuestion(permission.description, permission.allowSession) }], false);
+  }, [permission, clearWatchdog, greeting, open, stage, startNarration]);
+
+  /* --- push to talk: hold Space ------------------------------------------ */
+  useEffect(() => {
+    if (!open) return;
+    const typing = (target: EventTarget | null) => target instanceof HTMLElement &&
+      (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' || typing(event.target) || !captureRef.current) return;
+      event.preventDefault();
+      if (event.repeat || pttRef.current) return;
+      const fromPause = stageRef.current === 'paused';
+      pttRef.current = { fromPause };
+      if (stageRef.current === 'speaking' || stageRef.current === 'thinking') cutReply();
+      setNote(null);
+      beginTurn();
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' || !pttRef.current) return;
+      event.preventDefault();
+      const { fromPause } = pttRef.current;
+      pttRef.current = null;
+      if (stageRef.current !== 'listening') return;
+      listeningRef.current = false;
+      if (!turnRef.current.heardSpeech && !chunksRef.current.length && !subscriptionRef.current?.transcript()) {
+        if (fromPause) { subscriptionRef.current?.setListening(false); enterStage('paused'); }
+        else beginTurn();
+        return;
+      }
+      returnToPauseRef.current = fromPause;
+      void finishTurn(sessionRef.current);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); pttRef.current = null; };
+  }, [open, beginTurn, cutReply, enterStage, finishTurn]);
+
+  /* --- camera and screen: a still of each rides every spoken turn --------- */
+  const toggleVision = useCallback(async (kind: 'camera' | 'screen') => {
+    const current = visionRef.current[kind];
+    if (current) {
+      for (const track of current.getTracks()) track.stop();
+      setVision(state => ({ ...state, [kind]: null }));
+      return;
+    }
+    try {
+      const stream = kind === 'camera'
+        ? await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+        : await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      // The browser's own "Stop sharing" ends the track; follow it.
+      for (const track of stream.getVideoTracks()) track.addEventListener('ended', () => {
+        setVision(state => state[kind] === stream ? { ...state, [kind]: null } : state);
+      }, { once: true });
+      setVision(state => ({ ...state, [kind]: stream }));
+      setNote(null);
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === 'AbortError') return;
+      setNote(kind === 'camera' ? 'The camera could not be opened. Check that Breadboard may use it.' : 'Screen sharing did not start.');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (cameraVideoRef.current) cameraVideoRef.current.srcObject = vision.camera;
+    if (screenVideoRef.current) screenVideoRef.current.srcObject = vision.screen;
+  }, [vision, minimized]);
+
+  useEffect(() => {
+    if (open) { prepareListeningSound(); return; }
+    // Closing voice mode turns the camera and the share off.
+    const { camera, screen } = visionRef.current;
+    for (const stream of [camera, screen]) for (const track of stream?.getTracks() ?? []) track.stop();
+    if (camera || screen) setVision({ camera: null, screen: null });
+    holdRef.current?.release();
+    holdRef.current = null;
+    latencyRef.current.cancel();
+  }, [open]);
 
   useEffect(() => {
     if (!open || !awaitingRef.current) return;
@@ -1244,9 +1499,25 @@ function BreadboardVoiceConversation({
       aria-label="Voice conversation"
     >
       <div className="voice-stage-wash" aria-hidden />
+      {(vision.camera || vision.screen) && !minimized ? <div className="voice-vision" aria-label="What it can see">
+        {vision.screen && <video ref={screenVideoRef} className="voice-vision-screen" autoPlay muted playsInline />}
+        {vision.camera && <video ref={cameraVideoRef} className="voice-vision-camera" autoPlay muted playsInline />}
+      </div> : null}
 
       <header className="voice-stage-header">
         <div className="voice-stage-header-actions">
+          {latency !== null && !compact && <span className="voice-latency" title="Typical time from when you stop talking to when the answer starts (median of recent turns)">
+            {formatLatency(latency)}
+          </span>}
+          {(['camera', 'screen'] as const).map(kind => <button key={kind} type="button"
+            className={compact ? 'voice-widget-close' : 'voice-chip'}
+            onClick={() => void toggleVision(kind)} aria-pressed={Boolean(vision[kind])}
+            aria-label={kind === 'camera' ? (vision.camera ? 'Turn camera off' : 'Let it see your camera') : (vision.screen ? 'Stop sharing your screen' : 'Let it see your screen')}
+            title={kind === 'camera' ? (vision.camera ? 'Camera on: it sees you with every turn' : 'Camera') : (vision.screen ? 'Screen shared: it sees it with every turn' : 'Share screen')}>
+            {kind === 'camera'
+              ? <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden><rect x="1.5" y="4" width="9" height="8" rx="1.5" /><path d="m10.5 7 4-2.2v6.4l-4-2.2" />{!vision.camera && <path d="M2 2.5 14 13.5" />}</svg>
+              : <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden><rect x="1.5" y="2.5" width="13" height="8.5" rx="1.2" /><path d="M5.5 14h5M8 11v3" />{!vision.screen && <path d="M2 1.5 14 12.5" />}</svg>}
+          </button>)}
           {!compact && <button
             type="button"
             className="voice-chip"

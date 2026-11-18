@@ -32,13 +32,15 @@ import { readStored, writeStored } from "../lib/message-state";
 import { Button } from "@/app/buzz/ui/button";
 import { EmojiPicker } from "./emoji-picker";
 import { ComposerIntelligence } from "./composer-intelligence";
+import { useSentenceCompletion } from "@/app/components/use-sentence-completion";
+import { usePersonalize } from "@/app/components/use-personalize";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/app/buzz/ui/tooltip";
-import type { BuzzMember } from "../types.ts";
+import type { BuzzMember, BuzzMessage } from "../types.ts";
 
 export function Composer({
   members,
@@ -47,6 +49,9 @@ export function Composer({
   autoFocus = false,
   onSend,
   draftKey,
+  roomId,
+  threadId,
+  messages,
 }: {
   members: BuzzMember[];
   placeholder: string;
@@ -54,6 +59,9 @@ export function Composer({
   autoFocus?: boolean;
   onSend: (body: string) => boolean | void;
   draftKey?: string;
+  roomId?: string;
+  threadId?: number;
+  messages?: BuzzMessage[];
 }) {
   const { isDark } = useTheme();
   const [value, setValue] = useState("");
@@ -61,6 +69,21 @@ export function Composer({
   const [highlighted, setHighlighted] = useState(0);
   const [showFormatting, setShowFormatting] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [personalize] = usePersonalize();
+  const [roomCards,setRoomCards] = useState<{scope:string;items:string[]}|null>(null);
+  const cardScope = JSON.stringify([roomId,threadId,draftKey, messages?.filter(m =>
+    m.authorKind === "human" && !m.delivery).map(m => [m.id, m.editedAt, m.deletedAt])]);
+  useEffect(()=>{
+    if (!roomId || !personalize || disabled) return;
+    const controller=new AbortController();
+    const params=new URLSearchParams({room:roomId});
+    if (threadId) params.set("thread",String(threadId));
+    fetch("/api/personal-context?"+params,{signal:controller.signal,cache:"no-store"})
+      .then(async r=>r.ok?await r.json() as {prompts?:string[]}:{prompts:[]}).then(data=>{
+        if (!controller.signal.aborted) setRoomCards({scope:cardScope,items:Array.isArray(data.prompts)?data.prompts.slice(0,2):[]});
+      }).catch(()=>{});
+    return ()=>controller.abort();
+  },[roomId,threadId,cardScope,personalize,disabled]);
   const draftReady = useRef(false);
 
   useEffect(() => {
@@ -119,6 +142,8 @@ export function Composer({
     });
   };
 
+  const completion=useSentenceCompletion({conversationKey:cardScope,value,onChange:changeValue,roomId,threadId,
+    enabled:Boolean(roomId) && personalize && !disabled && mentionQuery===null,personalize});
   const insertAt = () => {
     const next = `${value}${/\s$/.test(value) || value === "" ? "" : " "}@`;
     changeValue(next);
@@ -242,6 +267,8 @@ export function Composer({
           </ul>
         ) : null}
 
+        {!value && !disabled && personalize && roomCards?.scope===cardScope && roomCards.items.map(item=>
+          <button key={item} type="button" className="mb-1 mr-2 rounded-md border px-2 py-1 text-left text-xs" onClick={()=>{changeValue(item);inputRef.current?.focus();}}>{item}</button>)}
         <ComposerBorderBeam active={value.trim() === "" && !disabled}>
         <div
           data-buzz-composer
@@ -257,12 +284,20 @@ export function Composer({
             placeholder={placeholder}
             aria-label={placeholder}
             maxLength={12000}
+            aria-describedby={completion.text ? completion.descriptionId : undefined}
+            onFocus={event=>completion.onFocus(event.currentTarget)}
+            onSelect={event=>completion.onSelect(event.currentTarget)}
+            onBlur={completion.onBlur}
+            onCompositionStart={completion.onCompositionStart}
+            onCompositionEnd={event=>completion.onCompositionEnd(event.currentTarget)}
             onChange={(event) => {
+              completion.onInput(event.currentTarget);
               changeValue(event.target.value);
               readMentionQuery(event.target.value, event.target.selectionStart ?? 0);
             }}
             onKeyDown={(event) => {
               if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+              if (!matches.length && completion.handleKeyDown(event)) return;
               if (matches.length > 0) {
                 if (event.key === "ArrowDown") {
                   event.preventDefault();
@@ -314,6 +349,7 @@ export function Composer({
             className="max-h-[220px] min-h-[40px] w-full resize-none bg-transparent px-3 py-2 text-message leading-6 outline-hidden placeholder:text-muted-foreground disabled:opacity-50"
           />
 
+          {completion.text && <div id={completion.descriptionId} className="px-3 pb-1 text-xs text-muted-foreground">{completion.text} <kbd>Tab</kbd></div>}
           {showFormatting ? (
             <div className="mb-1 flex flex-wrap items-center gap-0.5 border-b border-border/40 pb-1">
               {(

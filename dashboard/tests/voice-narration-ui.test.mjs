@@ -88,7 +88,7 @@ test('voice mode speaks thinking updates, queues answers, and cancels late audio
     define: { 'process.env.NODE_ENV': '"production"' },
     plugins: [{ name: 'voice-fixture', setup(build) {
       const stubs = {
-        '@/lib/speech/voice-cues': `export const playVoiceCue=()=>{};`,
+        '@/lib/speech/voice-cues': `export const playVoiceCue=()=>{};export const playListeningSound=()=>{};export const prepareListeningSound=()=>{};`,
         '@/lib/speech/clap/audio-focus': 'export const requestForegroundMicrophone = () => navigator.mediaDevices.getUserMedia(); export function stopForegroundStream(stream) { stream?.getTracks().forEach(track=>track.stop()); } export const holdForegroundAudio = () => () => {};',
         '@/lib/speech/clap-wake': 'export const holdClapWake = () => () => {};',
         '@/lib/speech/microphone-access': 'export const describeMicrophoneBlock = () => null;',

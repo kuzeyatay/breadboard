@@ -12,6 +12,7 @@ import {
   SkipForward,
 } from "lucide-react";
 import BreadboardLoader from "@/app/components/breadboard-loader";
+import { parseChatTimestamp } from "@/lib/chat-time-separators";
 import {
   DEFAULT_PLAYER_PALETTE,
   paletteFromCover,
@@ -74,11 +75,9 @@ const ENGINE_VIEW_HEARTBEAT_MS = 20_000;
 
 function belongsToRequest(intent: PlaybackIntent | null, requestedAt?: string): boolean {
   if (!intent || !requestedAt) return Boolean(intent);
-  const intentTime = Date.parse(intent.requestedAt);
-  const requestTime = Date.parse(requestedAt);
-  return !Number.isFinite(intentTime) || !Number.isFinite(requestTime)
-    ? true
-    : intentTime >= requestTime;
+  const intentTime = parseChatTimestamp(intent.requestedAt);
+  const requestTime = parseChatTimestamp(requestedAt);
+  return intentTime === null || requestTime === null || intentTime >= requestTime;
 }
 
 function formatTime(milliseconds: number): string {
@@ -91,29 +90,6 @@ function responseMessage(payload: unknown, fallback: string): string {
   const record = payload as Record<string, unknown>;
   if (typeof record.message === "string") return record.message;
   return typeof record.error === "string" ? record.error : fallback;
-}
-
-function SpotifyPlayerLoading() {
-  return (
-    <section
-      aria-label="Loading Spotify player"
-      aria-busy="true"
-      className="mb-4 flex min-h-[178px] w-full items-center justify-center rounded-[20px] border shadow-[0_16px_40px_rgba(20,20,20,0.10)]"
-      style={{
-        backgroundColor: DEFAULT_PLAYER_PALETTE.surface,
-        borderColor: DEFAULT_PLAYER_PALETTE.border,
-        color: DEFAULT_PLAYER_PALETTE.foreground,
-      }}
-    >
-      <div
-        role="status"
-        className="grid size-10 animate-pulse place-items-center rounded-full"
-        style={{ backgroundColor: DEFAULT_PLAYER_PALETTE.buttonBackground }}
-      >
-        <span className="sr-only">Loading Spotify player</span>
-      </div>
-    </section>
-  );
 }
 
 export default function InlineSpotifyPlayer({
@@ -136,9 +112,7 @@ export default function InlineSpotifyPlayer({
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [displayPosition, setDisplayPosition] = useState(0);
-  const [palette, setPalette] = useState(DEFAULT_PLAYER_PALETTE);
-  const [paletteSource, setPaletteSource] = useState<string | null>(null);
-  const [intentLoading, setIntentLoading] = useState(true);
+  const [cover, setCover] = useState<{ url: string; palette: typeof DEFAULT_PLAYER_PALETTE } | null>(null);
 
   const intent = belongsToRequest(connection?.intent ?? null, requestedAt)
     ? connection?.intent ?? null
@@ -159,9 +133,8 @@ export default function InlineSpotifyPlayer({
     let cancelled = false;
     let timer: number | null = null;
     let attempts = 0;
-    setIntentLoading(true);
+    let foundIntent = false;
     const load = async () => {
-      let foundIntent = false;
       try {
         const url = new URL(
           "/api/hermes/connections/spotify/playback",
@@ -174,7 +147,6 @@ export default function InlineSpotifyPlayer({
         if (!cancelled) {
           setConnection(payload);
           foundIntent = belongsToRequest(payload.intent, requestedAt);
-          if (foundIntent) setIntentLoading(false);
         }
       } catch {
         // The assistant response remains available if this optional player fails.
@@ -189,8 +161,6 @@ export default function InlineSpotifyPlayer({
           (foundIntent || turnPending || attempts < MAX_INTENT_POLLS)
         ) {
           timer = window.setTimeout(() => void load(), POLL_INTERVAL_MS);
-        } else if (!cancelled) {
-          setIntentLoading(false);
         }
       }
     };
@@ -364,26 +334,12 @@ export default function InlineSpotifyPlayer({
   useEffect(() => {
     let cancelled = false;
     const imageUrl = visibleTrack?.imageUrl;
-    if (!imageUrl) {
-      setPalette(DEFAULT_PLAYER_PALETTE);
-      setPaletteSource(null);
-      return () => {
-        cancelled = true;
-      };
-    }
+    if (!imageUrl) return;
     void paletteFromCover(imageUrl)
       .then((nextPalette) => {
-        if (!cancelled) {
-          setPalette(nextPalette);
-          setPaletteSource(imageUrl);
-        }
+        if (!cancelled) setCover({ url: imageUrl, palette: nextPalette });
       })
-      .catch(() => {
-        if (!cancelled) {
-          setPalette(DEFAULT_PLAYER_PALETTE);
-          setPaletteSource(imageUrl);
-        }
-      });
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
@@ -393,17 +349,8 @@ export default function InlineSpotifyPlayer({
   const isPlaying = managedPlaying;
   useEffect(() => { if (isPlaying) return holdForegroundAudio(); }, [isPlaying]);
   const connectionRequired = connection !== null && !connection.connected;
-  const paletteReady = Boolean(
-    visibleTrack && paletteSource === (visibleTrack.imageUrl ?? null),
-  );
-
-  // Like the inline map, the player appears only when the tool has produced
-  // real provider data. A completed turn with no intent must not leave behind
-  // an indefinite, context-free loading card.
-  if (!intent || !visibleTrack) {
-    return intentLoading ? <SpotifyPlayerLoading /> : null;
-  }
-  if (!paletteReady) return <SpotifyPlayerLoading />;
+  if (!intent || !visibleTrack) return null;
+  const palette = cover && cover.url === visibleTrack.imageUrl ? cover.palette : DEFAULT_PLAYER_PALETTE;
 
   return (
     <section

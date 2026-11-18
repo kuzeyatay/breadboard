@@ -4,6 +4,7 @@ import { readTerminalData } from "./terminal-data-client.ts";
 
 export interface AssistantPreferencesPayload {
   model?: unknown;
+  chatStartup?: { model: string; reasoningEffort: string };
   fallbackModel?: unknown;
   reasoningEffort?: unknown;
   reasoningEffortByModel?: unknown;

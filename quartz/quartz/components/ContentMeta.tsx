@@ -6,6 +6,7 @@ import { classNames } from "../util/lang"
 import { i18n } from "../i18n"
 import { JSX } from "preact"
 import style from "./styles/contentMeta.scss"
+import { pageAuthorshipStatus } from "../../../dashboard/src/lib/page-authorship"
 // @ts-ignore
 import script from "./scripts/contentMeta.inline"
 
@@ -74,6 +75,21 @@ export default ((opts?: Partial<ContentMetaOptions>) => {
           <span title={`Estimated at ${handwritingWordsPerMinute} words per minute`}>
             ~{formatDuration(handwritingMinutes, cfg.locale)} to handwrite
             {isFolder ? " total" : ""}
+          </span>,
+        )
+      }
+
+      if (!isFolder) {
+        const status = pageAuthorshipStatus(fileData.frontmatter as Record<string, unknown>)
+        segments.push(
+          <span class="bb-authorship" data-state={status.state}>
+            Status: <span class="bb-authorship-label">{status.label}</span>
+            {status.score !== undefined && (
+              <span class="bb-authorship-score" title={status.breakdown} tabindex={0}>
+                {" "}
+                {status.score}%
+              </span>
+            )}
           </span>,
         )
       }

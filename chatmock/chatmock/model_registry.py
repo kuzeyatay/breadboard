@@ -22,6 +22,20 @@ class ModelSpec:
 
 _MODEL_SPECS = (
     ModelSpec(
+        public_id="gpt-6.2-astra",
+        upstream_id="gpt-6.2-astra",
+        aliases=("gpt6.2-astra", "gpt-6.2-astra-latest"),
+        allowed_efforts=frozenset(("low", "medium", "high", "xhigh", "max")),
+        variant_efforts=("max", "xhigh", "high", "medium", "low"),
+    ),
+    ModelSpec(
+        public_id="gpt-6.2-sol",
+        upstream_id="gpt-6.2-sol",
+        aliases=("gpt6.2-sol", "gpt-6.2", "gpt6.2", "gpt-6.2-latest", "gpt-6.2-sol-latest"),
+        allowed_efforts=frozenset(("low", "medium", "high", "xhigh", "max")),
+        variant_efforts=("max", "xhigh", "high", "medium", "low"),
+    ),
+    ModelSpec(
         public_id="gpt-6.1-sol",
         upstream_id="gpt-6.1-sol",
         aliases=("gpt6.1-sol", "gpt-6.1", "gpt6.1", "gpt-6.1-latest", "gpt-6.1-sol-latest"),
@@ -207,16 +221,38 @@ for _spec in _MODEL_SPECS:
         _ALIASES[_alias] = _spec.upstream_id
 
 
+def _model_specs(*, refresh: bool = False) -> dict[str, ModelSpec]:
+    from .chatgpt_models import discovered_models
+
+    specs = dict(_SPECS_BY_UPSTREAM)
+    for row in discovered_models(refresh=refresh):
+        upstream = row["id"]
+        previous = specs.get(upstream)
+        efforts = frozenset(e for e in row["reasoning_efforts"] if e in ALL_REASONING_EFFORTS)
+        specs[upstream] = ModelSpec(
+            public_id=previous.public_id if previous else upstream,
+            upstream_id=upstream,
+            aliases=previous.aliases if previous else (),
+            allowed_efforts=efforts,
+            variant_efforts=tuple(e for e in reversed(ALL_REASONING_EFFORTS) if e in efforts),
+            uses_codex_instructions=previous.uses_codex_instructions if previous else "codex" in upstream,
+        )
+    return specs
+
+
 def _strip_model_name(model: str | None) -> tuple[str, str | None]:
     if not isinstance(model, str):
         return "", None
     value = model.strip().lower()
     if not value:
         return "", None
+    specs = _model_specs()
+    # A catalog id ending in an effort-like word is still an exact model id.
+    if _ALIASES.get(value, value) in specs:
+        return value, None
     if ":" in value:
         base, maybe_effort = value.rsplit(":", 1)
-        upstream_id = _ALIASES.get(base)
-        spec = _SPECS_BY_UPSTREAM.get(upstream_id) if upstream_id else None
+        spec = specs.get(_ALIASES.get(base, base))
         if maybe_effort in DEFAULT_REASONING_EFFORTS or (
             maybe_effort == "max" and spec is not None and "max" in spec.allowed_efforts
         ):
@@ -226,8 +262,7 @@ def _strip_model_name(model: str | None) -> tuple[str, str | None]:
             suffix = f"{separator}{effort}"
             if value.endswith(suffix):
                 base = value[: -len(suffix)]
-                upstream_id = _ALIASES.get(base)
-                spec = _SPECS_BY_UPSTREAM.get(upstream_id) if upstream_id else None
+                spec = specs.get(_ALIASES.get(base, base))
                 if effort in DEFAULT_REASONING_EFFORTS or (
                     effort == "max" and spec is not None and "max" in spec.allowed_efforts
                 ):
@@ -237,10 +272,7 @@ def _strip_model_name(model: str | None) -> tuple[str, str | None]:
 
 def model_spec_for_name(model: str | None) -> ModelSpec | None:
     base, _ = _strip_model_name(model)
-    upstream_id = _ALIASES.get(base)
-    if not upstream_id:
-        return None
-    return _SPECS_BY_UPSTREAM.get(upstream_id)
+    return _model_specs().get(_ALIASES.get(base, base))
 
 
 def normalize_model_name(model: str | None, debug_model: str | None = None) -> str:
@@ -276,7 +308,7 @@ def extract_reasoning_from_model_name(model: str | None) -> dict[str, str] | Non
 
 def list_public_models(expose_reasoning_models: bool = False) -> list[str]:
     model_ids: list[str] = []
-    for spec in _MODEL_SPECS:
+    for spec in _model_specs(refresh=True).values():
         model_ids.append(spec.public_id)
         if expose_reasoning_models:
             model_ids.extend(f"{spec.public_id}-{effort}" for effort in spec.variant_efforts)
@@ -284,4 +316,4 @@ def list_public_models(expose_reasoning_models: bool = False) -> list[str]:
 
 
 def iter_public_models() -> Iterable[ModelSpec]:
-    return _MODEL_SPECS
+    return _model_specs().values()

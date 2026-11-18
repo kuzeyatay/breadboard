@@ -60,7 +60,8 @@ app.whenReady().then(async () => {
     const point = await host.shell.contents.executeJavaScript(`(() => {
       const button = document.querySelector('[data-tab-id="${id}"]');
       button.scrollIntoView({inline:'nearest'});
-      const box = button.getBoundingClientRect();
+      // A narrow tab's midpoint can fall on its separate anchor button.
+      const box = button.querySelector('.bb-tab-glyph').getBoundingClientRect();
       return {x:Math.round(box.x+box.width/2),y:Math.round(box.y+box.height/2)};
     })()`);
     host.shell.contents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});
@@ -200,8 +201,10 @@ app.whenReady().then(async () => {
   const setBrowserBounds = browser.browser.view.setBounds.bind(browser.browser.view);
   browser.browser.view.setBounds = bounds => { browserMoves.push(bounds); setBrowserBounds(bounds); };
   await until(() => browser.browser.ready && !host.pending, "browser presented before slow image completed");
-  assert.ok(browserMoves.every(bounds => bounds.x === selectedBounds.x && bounds.y === selectedBounds.y),
-    "first-frame preparation must never move the selected website offscreen and expose terminal home");
+  for (const bounds of browserMoves) {
+    assert.deepEqual([bounds.x, bounds.y], [selectedBounds.x, selectedBounds.y],
+      "first-frame preparation must keep the selected website in place");
+  }
   browser.browser.view.setBounds = setBrowserBounds;
   assert.equal(browser.loading, true);
   command({ type: "browser", url: origin + "/stream" });

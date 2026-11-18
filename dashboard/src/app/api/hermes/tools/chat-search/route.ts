@@ -43,7 +43,13 @@ interface ConversationRow {
   updated_at: string;
   pinned_at: string | null;
   legacy_chat_session_id: number | null;
+  surface: "dashboard_terminal" | "garden_chat";
+  garden_slug: string | null;
 }
+
+// Garden chats open by their legacy session id, Terminal chats by public id.
+const navigationId = (row: ConversationRow) =>
+  row.surface === "garden_chat" ? String(row.legacy_chat_session_id) : row.public_id;
 
 interface ReferenceMessageRow {
   role: "user" | "assistant";
@@ -129,6 +135,16 @@ export async function POST(request: Request) {
         "The chat-search conversation is unavailable.",
       );
     }
+    // A room agent posts into a shared transcript every member reads; the
+    // acting member's private chats must not reach it. The room's own history
+    // reaches the turn through conversations/earlier-chats.ts instead.
+    if (conversation.buzz_room_id) {
+      throw new ApiError(
+        403,
+        "chat_search_shared_room",
+        "Chat search reads private chats, which a shared organization room must not see.",
+      );
+    }
 
     const body = await readJsonBody(request, 16 * 1024);
     const toolName = typeof body.tool === "string" ? body.tool : "";
@@ -172,21 +188,30 @@ export async function POST(request: Request) {
     // The current user request is already durable by the time Hermes calls a
     // tool. Excluding that conversation prevents "find the chat about X" from
     // matching itself merely because the new prompt contains X.
+    //
+    // Every surface's chats, since a Terminal, browser or PDF question often
+    // points back at a Garden chat (2026-11-18). The Garden privacy rule of
+    // personal-context/resolve.ts holds: a Garden whose memory is "garden only"
+    // lends its chats to no other chat, and such a Garden's chat reads only its own.
+    const activeGarden = session.surface === "garden_chat" ? session.cluster_id : null;
+    const sealed = activeGarden !== null &&
+      db.prepare("SELECT memory_scope FROM clusters WHERE id = ?").pluck().get(activeGarden) === "garden_only";
     const conversations = db.prepare(
-      `SELECT id, public_id, title, updated_at, pinned_at, legacy_chat_session_id
-       FROM conversations
-       WHERE user_id = ? AND temporary = 0 AND surface = ? AND id <> ?${
-         session.surface === "garden_chat"
-           ? " AND default_garden_id = ? AND legacy_chat_session_id IS NOT NULL"
-           : ""
-       }
-       ORDER BY updated_at DESC, id DESC
+      `SELECT c.id, c.public_id, c.title, c.updated_at, c.pinned_at, c.legacy_chat_session_id, c.surface, g.slug AS garden_slug
+       FROM conversations c LEFT JOIN clusters g ON g.id = c.default_garden_id
+       WHERE c.user_id = ? AND c.temporary = 0 AND c.id <> ? AND c.buzz_room_id IS NULL
+         AND (c.surface = 'dashboard_terminal' OR (c.surface = 'garden_chat' AND c.legacy_chat_session_id IS NOT NULL AND g.slug IS NOT NULL))
+         AND (g.id IS NULL OR (g.user_id = ? AND (coalesce(g.memory_scope, '') <> 'garden_only' OR g.id = ?)))
+         AND (? = 0 OR g.id = ?)
+       ORDER BY c.updated_at DESC, c.id DESC
        LIMIT ${MAX_CONVERSATIONS}`,
     ).all(
       session.user_id,
-      session.surface,
       session.conversation_id,
-      ...(session.surface === "garden_chat" ? [session.cluster_id] : []),
+      session.user_id,
+      activeGarden,
+      Number(sealed),
+      activeGarden,
     ) as ConversationRow[];
 
     const readMessages = db.prepare(
@@ -197,9 +222,7 @@ export async function POST(request: Request) {
        LIMIT ?`,
     );
     const candidates: ConversationSearchCandidate[] = conversations.map((row) => ({
-      id: session.surface === "garden_chat"
-        ? String(row.legacy_chat_session_id)
-        : row.public_id,
+      id: navigationId(row),
       title: row.title,
       updatedAt: row.updated_at,
       pinned: row.pinned_at !== null,
@@ -213,14 +236,7 @@ export async function POST(request: Request) {
     const results = searchConversations(candidates, query, {
       limit: requestedReferenceIds.length > 0 ? MAX_RESULTS : count,
     });
-    const rowsByNavigationId = new Map(
-      conversations.map((row) => [
-        session.surface === "garden_chat"
-          ? String(row.legacy_chat_session_id)
-          : row.public_id,
-        row,
-      ]),
-    );
+    const rowsByNavigationId = new Map(conversations.map((row) => [navigationId(row), row]));
     const searchResults = results.map((result) => ({
       ...result,
       // Navigation ids differ by surface. This stable id is the only value the
@@ -297,7 +313,11 @@ export async function POST(request: Request) {
           createdAt: new Date().toISOString(),
           surface: session.surface === "garden_chat" ? "garden_chat" : "dashboard_terminal",
           ...(gardenSlug ? { gardenSlug } : {}),
-          hits: results,
+          // Each hit opens on its own surface.
+          hits: results.map((result) => {
+            const row = rowsByNavigationId.get(result.id)!;
+            return { ...result, surface: row.surface, ...(row.garden_slug ? { gardenSlug: row.garden_slug } : {}) };
+          }),
         })
       : null;
 

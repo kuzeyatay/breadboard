@@ -11,6 +11,7 @@
 
 import { useCallback, useRef } from "react";
 import { ArrowLeft, Download, X } from "lucide-react";
+import BreadboardAudioPlayer from "@/app/components/breadboard-audio-player";
 import BreadboardVideoPlayer from "@/app/components/breadboard-video-player";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { sendDesktopTabsCommand } from "@/lib/desktop-browser-tabs";
@@ -25,6 +26,8 @@ interface Props {
   /** Where the back control goes; the browser's own history when absent. */
   backHref?: string;
   showNavbarFlowers?: boolean;
+  /** Play the address with the audio transport instead of the video stage. */
+  audio?: boolean;
 }
 
 export default function VideoPlayerClient({
@@ -32,6 +35,7 @@ export default function VideoPlayerClient({
   sourceUrl,
   backHref,
   showNavbarFlowers = true,
+  audio = false,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const tabs = useDesktopTabs();
@@ -70,7 +74,7 @@ export default function VideoPlayerClient({
           href={sourceUrl}
           download
           className={styles.button}
-          aria-label="Download video"
+          aria-label={audio ? "Download audio" : "Download video"}
         >
           <Download aria-hidden="true" size={18} /><span className={styles.optionalLabel}>Download</span>
         </a>
@@ -80,13 +84,17 @@ export default function VideoPlayerClient({
       </header>
 
       <div className={styles.stage}>
-        <BreadboardVideoPlayer
-          src={sourceUrl}
-          title={title}
-          elementRef={videoRef}
-          ownsKeyboard
-          className={styles.video}
-        />
+        {audio ? (
+          <BreadboardAudioPlayer src={sourceUrl} label={title} className={styles.audio} />
+        ) : (
+          <BreadboardVideoPlayer
+            src={sourceUrl}
+            title={title}
+            elementRef={videoRef}
+            ownsKeyboard
+            className={styles.video}
+          />
+        )}
       </div>
     </div>
   );

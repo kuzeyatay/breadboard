@@ -63,7 +63,7 @@ test("garden adapter opens the event stream before prompting without aborting a 
   assert.doesNotMatch(adapter, /const disconnectSubscription/);
   assert.match(
     adapter,
-    /resolveHermesEngine\(\s*payload\.model,\s*payload\.reasoningEffort/,
+    /await resolveAvailableHermesEngine\(\s*payload\.model,\s*payload\.reasoningEffort/,
   );
   assert.match(
     adapter,
@@ -308,6 +308,8 @@ test("Hermes model provider is environment-driven ChatMock", () => {
     "{env:CHATMOCK_API_KEY}",
   );
   for (const id of [
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     "gpt-6.1-sol",
     "gpt-6.1-terra",
     "gpt-6-astra",
@@ -325,10 +327,12 @@ test("Hermes model provider is environment-driven ChatMock", () => {
       "high",
     );
   }
-  for (const id of ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"]) {
+  for (const id of ["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"]) {
     assert.equal(config.provider.chatmock.models[id].variants.max.reasoningEffort, "max");
   }
   assert.equal(config.provider.chatmock.models["gpt-6-astra"].variants.none, undefined);
+  assert.equal(config.provider.chatmock.models["gpt-6.2-astra"].variants.none, undefined);
+  assert.equal(config.provider.chatmock.models["gpt-6.2-sol"].variants.none, undefined);
   assert.equal(config.provider.chatmock.models["gpt-6.1-sol"].variants.none, undefined);
   assert.equal(config.provider.chatmock.models["gpt-6.1-terra"].variants.none.reasoningEffort, "none");
   assert.equal(

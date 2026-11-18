@@ -148,7 +148,7 @@ test("PDF Print and Ctrl+P preview saved pages before printing; navigation, zoom
   await number.fill("1"); await number.press("Enter");
   await expect(proceed).toBeEnabled();
   await page.keyboard.press("Control+f");
-  assert.equal(await page.getByPlaceholder("Find in PDF").evaluate(input => input === document.activeElement), false);
+  assert.equal(await dialog.evaluate(element => element.contains(document.activeElement)), true);
   if (process.env.BB_PRINT_PREVIEW_SCREENSHOT) await page.screenshot({ path: process.env.BB_PRINT_PREVIEW_SCREENSHOT });
   await page.evaluate(() => { window.failPrint = true; });
   await proceed.click();

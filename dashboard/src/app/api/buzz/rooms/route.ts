@@ -2,7 +2,7 @@ import db from "@/lib/db";
 import { NextResponse } from "next/server";
 
 import { apiErrorResponse, readJsonBody, ApiError } from "@/lib/hermes/route-helpers.ts";
-import { listOrganizations, memberRole } from "@/lib/organizations/store.ts";
+import { listOrganizations, memberRole, organizationWorkspaces } from "@/lib/organizations/store.ts";
 import {
   createRoom,
   ensureCrumbsRoom,
@@ -35,6 +35,7 @@ export async function GET(request: Request) {
 
     // The browser panel posts an organization's crumbs to its crumbs room, so the room exists before it is listed.
     for (const organization of listOrganizations(userId)) ensureCrumbsRoom(organization.id, userId);
+    const workspaces = organizationWorkspaces(userId);
     const organizations = listOrganizations(userId).map((organization) => ({
       id: organization.id,
       name: organization.name,
@@ -43,6 +44,8 @@ export async function GET(request: Request) {
         userId: member.userId,
         username: member.username,
       })),
+      workspaces: workspaces.filter((workspace) => workspace.organizationId === organization.id)
+        .map(({ slug, name }) => ({ slug, name })),
     }));
 
     const unread = unreadCounts(userId);

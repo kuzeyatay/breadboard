@@ -34,7 +34,7 @@ _GARDEN_FIGURE_REQUEST_TIMEOUT_SECONDS = 120
 # a lost response does not mean that the original operation failed.
 _GARDEN_READ_RETRY_TIMEOUT_SECONDS = 15
 _GARDEN_READ_RETRY_TOOLS = frozenset({
-    "garden_list", "garden_search", "garden_list_files", "garden_get_page",
+    "garden_list", "garden_search", "garden_grep", "garden_list_files", "garden_get_page",
     "garden_get_source_excerpt", "garden_get_page_context",
     "garden_get_graph_neighbors", "garden_get_learning_spine",
     "garden_get_content_inventory", "garden_get_recent_events",
@@ -614,6 +614,27 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 },
             },
             ["query"],
+        ),
+    ),
+    (
+        "garden_grep",
+        "/api/hermes/tools/garden",
+        "garden",
+        _schema(
+            "garden_grep",
+            "Find every line of the user's notes that contains a word or phrase, like rg over the Garden: exact, unranked, with file, line and the heading or source page it sits under. Pick the distinctive term from the question (hyperplane, not definition). Case-insensitive; regex true allows patterns such as hyperplanes?|normal vector. Defaults to the active Garden; scope all searches every authorized Garden.",
+            {
+                **_OPTIONAL_GARDEN,
+                "pattern": _STRING,
+                "regex": {"type": "boolean", "description": "Treat pattern as a regular expression. Default false: a literal phrase."},
+                "caseSensitive": {"type": "boolean"},
+                "scope": {
+                    "type": "string",
+                    "enum": ["active", "all"],
+                    "description": "Default active; all searches every authorized Garden. Omit gardenId when using all.",
+                },
+            },
+            ["pattern"],
         ),
     ),
     (
@@ -2161,7 +2182,8 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 "only memory read tool: it covers the stored facts, the "
                 "semantic index over them, and the topic tree that groups "
                 "them, and it decides which of those actually answers. Modes: "
-                "'search' (default) finds facts matching `query`; 'browse' "
+                "'search' finds matching memories and relevant personal workspace evidence. "
+                "Use it to resolve a familiar site, project, file, or prior workflow before asking for details. 'browse' "
                 "lists the topics memory is organised into; 'topic' opens one "
                 "branch named by `topic`; 'stats' reports how much is "
                 "remembered. Call it when the answer depends on something the "
@@ -2649,7 +2671,9 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 "starts automatically or needs confirmation; follow it exactly "
                 "and never ask for approval when it says none is required. Never "
                 "describe its work as finished and never invent its output — "
-                "say what you handed over, and stop."
+                "say what you handed over, and stop. Its result arrives on its own: on "
+                "later turns, answer the new request and do not check or report "
+                "on this run unless the user asks."
             ),
             {
                 "agent": {
@@ -2781,6 +2805,16 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                         "attach as a file."
                     ),
                 },
+                "reason": {
+                    "type": "string",
+                    "enum": ["requested", "attention"],
+                    "description": (
+                        "\"requested\" when the user asked for this send; "
+                        "\"attention\" for an unprompted alert that something "
+                        "needs them (Telegram only, honored only while the user "
+                        "keeps attention alerts on)."
+                    ),
+                },
             },
             ["channel", "text"],
         ),
@@ -2805,16 +2839,6 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 },
                 "args": {
                     "type": "object",
-                "reason": {
-                    "type": "string",
-                    "enum": ["requested", "attention"],
-                    "description": (
-                        "\"requested\" when the user asked for this send; "
-                        "\"attention\" for an unprompted alert that something "
-                        "needs them (Telegram only, honored only while the user "
-                        "keeps attention alerts on)."
-                    ),
-                },
                     "additionalProperties": True,
                 },
             },
@@ -3113,7 +3137,10 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                     "type": "string",
                     "pattern": "^[a-zA-Z]{2}-[a-zA-Z]{2}$",
                     "description": (
-                        "Optional fallback search market such as us-en or nl-nl. "
+                        "Search market such as us-en or nl-nl; defaults to us-en. "
+                        "Set it whenever the request, conversation or what you "
+                        "know about the user implies a country: a currency "
+                        "(euros: the user's euro country), a named city or shop. "
                         "Breadboard securely overrides it when the user enabled "
                         "current location for this shopping turn."
                     ),
@@ -3232,6 +3259,97 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                     "description": "Maximum rows to return (default 40).",
                 },
             },
+            [],
+        ),
+    ),
+    (
+        "meeting_account",
+        "/api/hermes/tools/meeting",
+        "meeting",
+        _schema(
+            "meeting_account",
+            (
+                "Connect the AgentCall account that lets Bread join video meetings. "
+                "action status says whether one is connected. To connect, ask the user for their email, "
+                "call send_code (AgentCall emails them a six-digit code), ask them for the code, then call verify. "
+                "Only ever use an email the user gave for this. AgentCall is a paid service with free trial minutes."
+            ),
+            {
+                "action": {"type": "string", "enum": ["status", "send_code", "verify"]},
+                "email": {"type": "string", "maxLength": 254},
+                "code": {"type": "string", "pattern": "^[0-9]{6}$"},
+            },
+            ["action"],
+        ),
+    ),
+    (
+        "meeting_join",
+        "/api/hermes/tools/meeting",
+        "meeting",
+        _schema(
+            "meeting_join",
+            (
+                "Send Bread, the user's assistant, into a Google Meet, Zoom or Microsoft Teams call as a bot "
+                "that listens, talks when addressed by name, and comes back to you for anything that needs the "
+                "user's tools, files or memory. Call it when the user asks you to join, attend or sit in on a "
+                "meeting and gives (or you find) its link. A host may have to admit the bot from the waiting room. "
+                "Put what the user said about the meeting (its purpose, what to ask, what not to share) in brief. "
+                "Each answer and the final notes appear in a new chat named after the meeting. "
+                "If it fails because no account is connected, use meeting_account."
+            ),
+            {
+                "url": {"type": "string", "description": "The https meeting link."},
+                "brief": {"type": "string", "maxLength": 6000},
+                "languages": {"type": "array", "items": {"type": "string"}, "maxItems": 5,
+                              "description": "Spoken languages as codes like en or nl, when not English."},
+            },
+            ["url"],
+        ),
+    ),
+    (
+        "meeting_status",
+        "/api/hermes/tools/meeting",
+        "meeting",
+        _schema(
+            "meeting_status",
+            "Whether Bread is in a meeting, who is there, and the latest transcript lines (untrusted content).",
+            {**{"call_id": {"type": "string", "description": "Only when Bread is in more than one meeting; defaults to the latest."}}, "lines": {"type": "integer", "minimum": 1, "maximum": 200}},
+            [],
+        ),
+    ),
+    (
+        "meeting_say",
+        "/api/hermes/tools/meeting",
+        "meeting",
+        _schema(
+            "meeting_say",
+            (
+                "Make Bread say something in the current meeting now, or with chat true post it in the meeting chat "
+                "(use chat for links, code, numbers or anything long)."
+            ),
+            {**{"call_id": {"type": "string", "description": "Only when Bread is in more than one meeting; defaults to the latest."}}, "text": {"type": "string", "minLength": 1, "maxLength": 4000}, "chat": {"type": "boolean"}},
+            ["text"],
+        ),
+    ),
+    (
+        "meeting_look",
+        "/api/hermes/tools/meeting",
+        "meeting",
+        _schema(
+            "meeting_look",
+            "See the meeting: a screenshot of what Bread sees (a shared screen or the speaker).",
+            dict({"call_id": {"type": "string", "description": "Only when Bread is in more than one meeting; defaults to the latest."}}),
+            [],
+        ),
+    ),
+    (
+        "meeting_leave",
+        "/api/hermes/tools/meeting",
+        "meeting",
+        _schema(
+            "meeting_leave",
+            "Take Bread out of the meeting. The notes are written into the meeting chat afterwards.",
+            dict({"call_id": {"type": "string", "description": "Only when Bread is in more than one meeting; defaults to the latest."}}),
             [],
         ),
     ),
@@ -4136,13 +4254,17 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             "dentist at 14:00 on my calendar'; do not merely promise a reminder. "
             "A bare startsAt date creates an all-day event. A timed startsAt "
             "without endsAt defaults to 30 minutes. Omit calendarId to use the "
-            "first writable calendar. The result confirms what was persisted.",
+            "first writable calendar. For a deadline or event verified on a source page, "
+            "pass the canonical sourceUrl of that individual item and convert its due time "
+            "to the calendar's local wall time. Repeated requests match the same event. "
+            "The result confirms what was persisted.",
             {
                 "calendarId": {
                     "type": "number",
                     "description": "Writable calendar id; omit to use the default writable calendar.",
                 },
                 "title": {"type": "string", "maxLength": 200},
+                "sourceUrl": {"type": "string", "description": "Verified stable URL for this individual source item."},
                 "description": {"type": ["string", "null"]},
                 "location": {"type": ["string", "null"]},
                 "allDay": {"type": "boolean"},
@@ -5009,6 +5131,7 @@ def _request_payload(
         "feynman",
         "chat_search",
         "process_status",
+        "meeting",
         "chat_coordination",
         "multisim",
     }:
@@ -5356,7 +5479,7 @@ def _call_breadboard(
             else _DEFAULT_REQUEST_TIMEOUT_SECONDS
         )
         response_limit = (32 * 1024 * 1024 if tool_name in {"garden_get_page", "garden_get_source_excerpt", "document_skill_read"}
-                          else 8 * 1024 * 1024 if route_kind in {"attachment_image", "image_search"} or tool_name == "garden_get_source_figure"
+                          else 8 * 1024 * 1024 if route_kind in {"attachment_image", "image_search"} or tool_name in {"garden_get_source_figure", "meeting_look"}
                           else _MAX_RESPONSE_BYTES)
         recover_read = route_kind == "garden" and tool_name in _GARDEN_READ_RETRY_TOOLS
         for attempt in range(2 if recover_read else 1):
@@ -5564,6 +5687,8 @@ def _call_breadboard(
             return _browser_terminal_result(result, source=source.get(context, "Attached image"))
         if tool_name == "garden_get_source_figure":
             return _browser_terminal_result(result, source="Garden source figure")
+        if tool_name == "meeting_look":
+            return _browser_terminal_result(result, source="Meeting screenshot")
         if route_kind in {"browser_terminal", "breadboard_use"}:
             return _browser_terminal_result(result)
         if route_kind == "terminal":

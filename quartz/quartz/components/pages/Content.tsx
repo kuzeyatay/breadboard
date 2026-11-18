@@ -11,14 +11,25 @@ import imageViewerStyle from "../styles/imageViewer.scss"
 import pageUnderstandingScript from "../scripts/pageUnderstanding.inline"
 import pageUnderstandingStyle from "../styles/pageUnderstanding.scss"
 import longDocumentStyle from "../styles/longDocument.scss"
-import { PAGE_AUTHORSHIP_LABELS, pageAuthorship } from "../../../../dashboard/src/lib/page-authorship"
+import { pageAuthorshipStatus } from "../../../../dashboard/src/lib/page-authorship"
 
 const Content: QuartzComponent = ({ fileData, tree }: QuartzComponentProps) => {
   const content = htmlToJsx(fileData.filePath!, deferLongDocumentBlocks(tree)) as ComponentChildren
   const classes: string[] = fileData.frontmatter?.cssclasses ?? []
   const classString = ["popover-hint", ...classes].join(" ")
-  const authorship = PAGE_AUTHORSHIP_LABELS[pageAuthorship(fileData.frontmatter as Record<string, unknown>)]
-  return <article class={classString} data-authorship={authorship}>{content}</article>
+  const authorship = pageAuthorshipStatus(fileData.frontmatter as Record<string, unknown>)
+  // ContentMeta reads these to restore the status line on older scoped publications.
+  return (
+    <article
+      class={classString}
+      data-authorship={authorship.label}
+      data-authorship-state={authorship.state}
+      data-authorship-score={authorship.score}
+      data-authorship-breakdown={authorship.breakdown}
+    >
+      {content}
+    </article>
+  )
 }
 
 Content.afterDOMLoaded = `${sourceVisualsScript}\n${imageViewerScript}\n${pageUnderstandingScript}`

@@ -14,7 +14,9 @@ export class BrowserInlineAnswer {
   private ready = false;
   private revealed = false;
   private size = { width: 612, height: 220 };
-  private manual: { x: number; y: number } | null = null;
+  /** Every open card, relative to the root card's home; the cards move inside it. */
+  private frame = { x: 0, y: 0, width: 612, height: 220 };
+  private home = "";
   private visible = true;
   private viewport: Rectangle;
   private anchor: { x: number; y: number; height?: number };
@@ -43,7 +45,7 @@ export class BrowserInlineAnswer {
       conversationId: this.selection.conversationId,
       viewport: { width: this.viewport.width / this.zoom(), height: this.viewport.height / this.zoom() } });
   }
-  connect() { this.ready = true; this.publish(); }
+  connect() { this.ready = true; this.home = ""; this.publish(); this.layout(); }
   update(state: BrowserInlineAnswerState) { this.state = { ...state, content: { ...state.content, ownerReady: true } }; this.publish(); }
   position(viewport: Rectangle, anchor = this.anchor, visible = this.visible) {
     const changed = viewport.width !== this.viewport.width || viewport.height !== this.viewport.height;
@@ -52,25 +54,34 @@ export class BrowserInlineAnswer {
   }
   /** The card reports CSS pixels; the shared page zoom makes those larger than window pixels. */
   private zoom() { return this.contents.isDestroyed() ? 1 : this.contents.getZoomFactor() || 1; }
-  resize(width: number, height: number) {
+  resize(width: number, height: number, frame: { x: number; y: number; width: number; height: number }) {
     const zoom = this.zoom();
-    this.size = { width: width * zoom, height: height * zoom }; this.layout();
+    this.size = { width: width * zoom, height: height * zoom };
+    this.frame = { x: frame.x * zoom, y: frame.y * zoom, width: frame.width * zoom, height: frame.height * zoom }; this.layout();
     if (!this.revealed && !this.closed && this.visible && !this.contents.isDestroyed()) { this.revealed = true; this.contents.focus(); }
-  }
-  move(dx: number, dy: number) {
-    const current = this.view.getBounds();
-    this.manual = { x: current.x + dx, y: current.y + dy }; this.layout();
   }
   private layout() {
     if (this.closed || this.window.isDestroyed()) return;
     const pane = this.viewport;
-    const width = Math.max(1, Math.min(this.size.width, pane.width));
-    const height = Math.max(1, Math.min(this.size.height, pane.height));
+    const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+    // The root card's home follows its highlight; the view then covers every
+    // open card around it, shifted as a whole to stay on the webpage.
+    const rootWidth = Math.min(this.size.width, pane.width), rootHeight = Math.min(this.size.height, pane.height);
     const below = this.anchor.y + (this.anchor.height ?? 18) + 6;
-    const y = pane.height - below >= height || below < pane.height / 2 ? below : this.anchor.y - height - 6;
+    const y = pane.height - below >= rootHeight || below < pane.height / 2 ? below : this.anchor.y - rootHeight - 6;
+    const homeX = clamp(pane.x + this.anchor.x - 24, pane.x, pane.x + pane.width - rootWidth);
+    const homeY = clamp(pane.y + y, pane.y, pane.y + pane.height - rootHeight);
+    // The card page keeps every card on the webpage from this point.
+    const zoom = this.zoom(), home = { x: (homeX - pane.x) / zoom, y: (homeY - pane.y) / zoom };
+    if (this.ready && !this.contents.isDestroyed() && JSON.stringify(home) !== this.home) {
+      this.home = JSON.stringify(home); this.contents.send(IPC_CHANNELS.browserInlineAnswerState, { home });
+    }
+    // ponytail: a frame wider than the webpage is cut at its right/bottom edge.
+    const width = Math.max(1, Math.min(this.frame.width, pane.width));
+    const height = Math.max(1, Math.min(this.frame.height, pane.height));
     this.view.setBounds({ width: Math.ceil(width), height: Math.ceil(height),
-      x: Math.round(Math.max(pane.x, Math.min(pane.x + pane.width - width, this.manual?.x ?? pane.x + this.anchor.x - 24))),
-      y: Math.round(Math.max(pane.y, Math.min(pane.y + pane.height - height, this.manual?.y ?? pane.y + y))) });
+      x: Math.round(clamp(homeX + this.frame.x, pane.x, pane.x + pane.width - width)),
+      y: Math.round(clamp(homeY + this.frame.y, pane.y, pane.y + pane.height - height)) });
     setNotificationViewVisible(this.view, this.visible);
   }
   close() {

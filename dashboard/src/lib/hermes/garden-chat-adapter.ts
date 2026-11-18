@@ -1,3 +1,4 @@
+import { recallEarlierConversations } from "../conversations/earlier-chats.ts";
 import { isBareProviderError } from "../provider-error.ts";
 import { voiceReplyWithOpener } from "../speech/voice-opener-context.ts";
 import { parseBrowserTerminalAccess } from "../browser-terminal.ts";
@@ -19,7 +20,7 @@ import { recordQuestionNotification, resolveQuestionNotification } from "../chat
 import { normalizeChatTokenUsage } from "../chat-token-usage.ts";
 import { requireUserId } from "../server-auth.ts";
 import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
-import { resolveHermesEngine } from "./model-selection.ts";
+import { resolveAvailableHermesEngine } from "./model-selection.ts";
 import { selectedModelForUser } from "../selected-model.ts";
 import {
   authorizeGardenAccess,
@@ -110,6 +111,7 @@ import { composeMemoryContext } from "../conversations/memory.ts";
 import { deliverCompletedResearch, completedResearchEventStream } from "../conversations/deliver-completed-research.ts";
 import { deliverCompletedHyperframes } from "../conversations/deliver-completed-hyperframes.ts";
 import { loadConversationMemoryBundle } from "../conversations/memory.ts";
+import { personalTurnPrompt } from "../personal-context/resolve.ts";
 import { gardenInstructions } from "../garden-settings.ts";
 import {
   associateArtifactToolCall,
@@ -305,7 +307,7 @@ export async function openGardenAgentChat(
     annotateConversationTurn({
       conversationId: conversation.id,
       clientMessageId: reservedClientMessageId,
-      metadata: { gardenPreDispatch: true },
+      metadata: { gardenPreDispatch: true, personalContextAllowed: payload.personalize !== false && !payload.internalAgentContinuation && !conversation.temporary },
     });
   touchPreDispatch();
   const preDispatchHeartbeat = setInterval(touchPreDispatch, 10_000);
@@ -411,7 +413,7 @@ export async function openGardenAgentChat(
       return smallTalkEventStream(smallTalkReply);
     }
 
-    const engine = resolveHermesEngine(payload.model, payload.reasoningEffort, selectedModelForUser(userId));
+    const engine = await resolveAvailableHermesEngine(payload.model, payload.reasoningEffort, selectedModelForUser(userId));
     const inlineTurnId = textSelection?.mode === "inline" ? reservedClientMessageId : undefined;
     const existing = inlineTurnId ? null : getRuntimeSessionByChatSession(chatSessionId);
     const session = existing
@@ -1070,6 +1072,11 @@ export async function openGardenAgentChat(
         gardenSourceInventory,
         gardenGrounding.context,
         composeMemoryContext(memory, { includeProfile: false, deduplicateRuntimeHistory: true }),
+        await personalTurnPrompt({userId,conversationId:conversation.id,query:text,gardenId:session.row.cluster_id,surface:"garden_chat",
+          focus:page?.title,temporary:conversation.temporary,personalize:payload.personalize !== false,internal:payload.internalAgentContinuation === true}),
+        // "We talked about X before": the earlier chat may be on any surface.
+        recallEarlierConversations({ userId, conversationId: conversation.id, query: resolved.userText || text, gardenId: session.row.cluster_id,
+          surface: "garden_chat", temporary: conversation.temporary, personalize: payload.personalize !== false, internal: payload.internalAgentContinuation === true }),
         // Directly after memory, so the repository reads as something the
         // assistant knows about this Garden rather than a tool it was handed.
         repository?.systemContext ?? "",
@@ -1886,6 +1893,7 @@ function legacyGardenEventStream(
               toolName: event.payload.toolName,
               success: event.payload.success,
               summary: event.payload.summary,
+              spotifyPlaybackPrepared: event.payload.spotifyPlaybackPrepared,
               completedAt: event.timestamp,
               ...(event.payload.uiResources?.length
                 ? { uiResources: event.payload.uiResources }

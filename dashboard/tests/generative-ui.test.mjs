@@ -225,6 +225,7 @@ test("recovers and promotes a historical live product result exactly once", () =
       role TEXT NOT NULL,
       metadata TEXT
     );
+    CREATE VIEW conversation_message_reads AS SELECT * FROM conversation_messages;
   `);
   db.prepare(
     "INSERT INTO conversation_messages(id, role, metadata) VALUES (1, 'assistant', ?)",

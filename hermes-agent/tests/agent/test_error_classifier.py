@@ -371,6 +371,19 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_fallback is True
 
+    def test_429_plan_usage_limit_is_not_retried(self):
+        e = MockAPIError(
+            "The weekly Codex usage limit has been reached for a@b.c; it resets in 2d 19h.",
+            status_code=429,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is False
+        assert result.should_fallback is True
+        # A burst limit with a short wait keeps its retries.
+        burst = classify_api_error(MockAPIError("Rate limit reached, try again in 20s", status_code=429))
+        assert burst.retryable is True
+
     def test_alibaba_rate_increased_too_quickly(self):
         """Alibaba/DashScope returns a unique throttling message.
 

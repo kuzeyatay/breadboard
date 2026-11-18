@@ -8,6 +8,7 @@ provides_tools:
   - terminal_execute_command
   - garden_list
   - garden_search
+  - garden_grep
   - garden_get_page
   - garden_get_page_context
   - garden_get_source_excerpt
@@ -133,6 +134,12 @@ provides_tools:
   - chat_send_message
   - chat_wait
   - breadboard_process_status
+  - meeting_account
+  - meeting_join
+  - meeting_status
+  - meeting_say
+  - meeting_look
+  - meeting_leave
   - breadboard_usage
   - artifact_import
   - artifact_search

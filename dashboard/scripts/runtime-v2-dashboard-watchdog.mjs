@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import http from "node:http";
+import { createRequire } from "node:module";
 import inspector from "node:inspector";
+import os from "node:os";
 import path from "node:path";
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
 import { appendDiagnostic, dashboardLogPath, memorySample, observeDashboardErrors, routeClassifier } from "./runtime-v2-dashboard-diagnostics.mjs";
@@ -9,14 +12,19 @@ import { appendDiagnostic, dashboardLogPath, memorySample, observeDashboardError
  * Run the probe off the server's event loop so a stalled synchronous task
  * cannot also stall recovery. Runtime V2 remains the sole restart owner. */
 export function startDashboardWatchdog({ port, intervalMs = 10_000, timeoutMs = 5_000, failureLimit = 6,
-  manifestPath = path.resolve(".next-desktop", "routes-manifest.json") }) {
+  manifestPath = path.resolve(".next-desktop", "routes-manifest.json"), sqlite = bundledSqlite(), slowSqliteMs = 2_000 }) {
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("Invalid dashboard watchdog port");
   const requests = new SharedArrayBuffer(SLOTS * (12 + SLOT_BYTES));
+  const statement = new SharedArrayBuffer(16 + SQL_BYTES);
   const worker = new Worker(new URL(import.meta.url), {
-    workerData: { port, intervalMs, timeoutMs, failureLimit, requests, manifestPath, initialMemory: memorySample() },
+    workerData: { port, intervalMs, timeoutMs, failureLimit, requests, statement, manifestPath, initialMemory: memorySample() },
     execArgv: [],
   });
   const stopTracing = traceRequests(requests);
+  if (sqlite) {
+    try { traceSqlite(statement, sqlite, slowSqliteMs); }
+    catch (error) { console.error("[dashboard-watchdog] SQLite tracing unavailable:", error?.message ?? error); }
+  }
   const errors = observeDashboardErrors(detail => worker.postMessage({ exception: detail }));
   let previousLoop = performance.eventLoopUtilization();
   const sampler = setInterval(() => {
@@ -34,6 +42,81 @@ export function startDashboardWatchdog({ port, intervalMs = 10_000, timeoutMs = 
   worker.on("error", error => console.error("[dashboard-watchdog] Probe unavailable:", error.message));
   worker.unref();
   return worker;
+}
+
+// Every stall on record (2026-11-14..17) had no request in flight and a main
+// thread that never answered the inspector: native code, most likely a long
+// synchronous better-sqlite3 call from a background job. Each statement notes
+// its SQL in shared memory before it runs, so the watchdog can name it while
+// the thread is still stuck; one that finishes slowly is logged with its stack.
+const SQL_BYTES = 1024;
+// The launcher runs this from the standalone server's folder. The bundle
+// requires better-sqlite3 through Turbopack's hashed alias in
+// .next-desktop/node_modules; require caches by real path, so loading it the
+// same way patches the module instance the server queries with.
+function bundledSqlite() {
+  try {
+    const aliases = path.resolve(".next-desktop", "node_modules");
+    const alias = fs.readdirSync(aliases).find(name => name.startsWith("better-sqlite3"));
+    return alias ? createRequire(path.resolve("server.js"))(path.join(aliases, alias)) : null;
+  } catch {
+    return null;
+  }
+}
+export function traceSqlite(shared, Database, slowMs) {
+  const header = new Int32Array(shared, 0, 2); // [seqlock revision, text length]
+  const startedAt = new Float64Array(shared, 8, 1);
+  const bytes = new Uint8Array(shared, 16, SQL_BYTES);
+  const encoder = new TextEncoder();
+  let depth = 0;
+  const run = (sql, call) => {
+    if (depth++) { try { return call(); } finally { depth--; } }
+    const at = Date.now();
+    Atomics.add(header, 0, 1);
+    startedAt[0] = at;
+    Atomics.store(header, 1, encoder.encodeInto(String(sql).slice(0, SQL_BYTES), bytes).written);
+    Atomics.add(header, 0, 1);
+    try { return call(); } finally {
+      depth--;
+      Atomics.store(header, 1, 0);
+      const ms = Date.now() - at;
+      if (ms >= slowMs) {
+        const stack = new Error().stack.split("\n").slice(3, 15).join("\n");
+        appendDiagnostic(dashboardLogPath("dashboard-slow-sqlite.log"),
+          `${new Date().toISOString()} pid=${process.pid} ${ms} ms: ${String(sql).replace(/\s+/g, " ").slice(0, 600)}\n${stack}\n`);
+      }
+    }
+  };
+  const probe = new Database(":memory:");
+  const Statement = Object.getPrototypeOf(probe.prepare("select 1"));
+  probe.close();
+  for (const name of ["run", "get", "all"]) {
+    const original = Statement[name];
+    Statement[name] = function (...args) { return run(this.source, () => original.apply(this, args)); };
+  }
+  const iterate = Statement.iterate;
+  Statement.iterate = function (...args) {
+    const sql = this.source, iterator = run(sql, () => iterate.apply(this, args));
+    return { next: value => run(sql, () => iterator.next(value)), return: value => iterator.return(value),
+      throw: error => iterator.throw(error), [Symbol.iterator]() { return this; } };
+  };
+  for (const name of ["exec", "pragma"]) {
+    const original = Database.prototype[name];
+    Database.prototype[name] = function (sql, ...args) { return run(name === "pragma" ? `PRAGMA ${sql}` : sql, () => original.call(this, sql, ...args)); };
+  }
+}
+
+function runningStatement(shared) {
+  const header = new Int32Array(shared, 0, 2), startedAt = new Float64Array(shared, 8, 1), bytes = new Uint8Array(shared, 16, SQL_BYTES);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const before = Atomics.load(header, 0);
+    if (before % 2) continue;
+    const length = Atomics.load(header, 1), at = startedAt[0];
+    const sql = new TextDecoder().decode(bytes.slice(0, length));
+    if (before !== Atomics.load(header, 0)) continue;
+    return length ? { runningMs: Date.now() - at, sql: sql.replace(/\s+/g, " ") } : null;
+  }
+  return null;
 }
 
 // A thread stuck in native code (a long synchronous query) cannot be asked what
@@ -172,7 +255,7 @@ export function mainThreadSnapshot(timeoutMs = 5_000) {
 }
 
 if (!isMainThread && workerData?.port) {
-  const { port, intervalMs, timeoutMs, failureLimit, requests, manifestPath } = workerData;
+  const { port, intervalMs, timeoutMs, failureLimit, requests, statement, manifestPath } = workerData;
   const classify = routeClassifier(manifestPath);
   let memory = workerData.initialMemory;
   let exceptions = 0;
@@ -188,6 +271,7 @@ if (!isMainThread && workerData?.port) {
       at: new Date(at).toISOString(), pid: process.pid, event, ready, failedProbes: failures,
       uptimeSeconds: Math.round(process.uptime()), rssBytes: process.memoryUsage.rss(),
       mainMemory: memory, sampleAgeMs: at - memory.at, exceptions, exception, eventLoopUtilization, recentRequests: rows,
+      sqlite: statement ? runningStatement(statement) : null, freeSystemMemoryBytes: os.freemem(),
     }) + "\n");
     lastSampleAt = at;
     return rows;
@@ -225,7 +309,10 @@ if (!isMainThread && workerData?.port) {
         // Header first: a 2026-11-14 stall ran 5+ min with no report at all,
         // so nothing after this line may be trusted to finish.
         record(`Workspace stopped accepting HTTP requests for ${Math.round(seconds)} s; exiting for Runtime V2 recovery. ` +
-          `process cpu=${cpuPercent}% of one core during the stall, rss=${mb(process.memoryUsage.rss())}`);
+          `process cpu=${cpuPercent}% of one core during the stall, rss=${mb(process.memoryUsage.rss())}, free system memory=${mb(os.freemem())}`);
+        const sqlite = statement ? runningStatement(statement) : null;
+        record(sqlite ? `main thread inside SQLite for ${(sqlite.runningMs / 1000).toFixed(1)} s: ${sqlite.sql}`
+          : "no SQLite statement running on the main thread");
         // The first probe waited timeoutMs for its answer, so the server went quiet about that long before stallStart.
         const rows = snapshot("watchdog-restart");
         const stallAt = stallStart.at - timeoutMs;

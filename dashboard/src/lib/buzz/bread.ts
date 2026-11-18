@@ -28,6 +28,9 @@ export const BREAD_NAME = "Bread";
 /** Latte mauve — the accent Breadboard's own assistant uses elsewhere. */
 export const BREAD_ACCENT = "#8839ef";
 
+/** Bread's picture (dashboard/public/avatars/bread.svg), used wherever it has no photo of its own. */
+export const BREAD_AVATAR = "/avatars/bread.svg";
+
 export const BREAD_DESCRIPTION =
   "Breadboard's own assistant — the runtime behind every ordinary reply, with its full tools, memory and skills.";
 

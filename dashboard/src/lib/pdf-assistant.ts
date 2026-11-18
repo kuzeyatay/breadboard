@@ -9,6 +9,7 @@ import {
   normalizeChatTextSelectionReference,
   type ChatTextSelectionReference,
 } from "./chat-text-selection.ts";
+import { NOTE_BODY_LIMIT, NOTE_TITLE_LIMIT } from "./terminal-note.ts";
 
 export interface PdfHighlightRect {
   page: number;
@@ -27,7 +28,30 @@ export interface PdfHighlight {
   conversationId?: string;
   /** Distinguishes an Ask-in-chat passage from an ordinary colored highlight. */
   chatQuestion?: true;
+  /** A pin dropped on the page: a quick note anchored to a point, not to text. */
+  pin?: true;
+  pinNote?: PdfPinNote;
   note?: string;
+}
+
+/** A pin's one quick note. Images live in pdf_pin_images; only their ids are kept here. */
+export interface PdfPinNote {
+  title: string;
+  body: string;
+  images: string[];
+}
+
+function normalizePdfPinNote(value: unknown): PdfPinNote | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const note = value as Record<string, unknown>;
+  const images = Array.isArray(note.images)
+    ? note.images.filter((id): id is string => typeof id === "string" && /^pinimg_[0-9a-f-]{36}$/.test(id)).slice(0, 50)
+    : [];
+  return {
+    title: typeof note.title === "string" ? note.title.slice(0, NOTE_TITLE_LIMIT) : "",
+    body: typeof note.body === "string" ? note.body.slice(0, NOTE_BODY_LIMIT) : "",
+    images,
+  };
 }
 
 /** Document identity is independent of its title, current page and zoom. */
@@ -82,6 +106,8 @@ export function normalizePdfHighlights(value: unknown): PdfHighlight[] {
           : {}),
         ...(note ? { note } : {}),
         ...(item.chatQuestion === true ? { chatQuestion: true as const } : {}),
+        ...(item.pin === true ? { pin: true as const } : {}),
+        ...(item.pin === true && normalizePdfPinNote(item.pinNote) ? { pinNote: normalizePdfPinNote(item.pinNote)! } : {}),
       },
     ];
   });

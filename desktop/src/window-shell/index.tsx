@@ -11,7 +11,7 @@ import "./window-shell.css";
 function WindowShell() {
   const state = useDesktopTabs();
   const active = state?.tabs.find(tab => tab.id === state.activeId);
-  const toolbar = state?.tabs.find(tab => tab.id === state.selfId && tab.browser);
+  const toolbar = state?.retainedBrowserTab ?? state?.tabs.find(tab => tab.id === state.selfId && tab.browser);
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = state?.theme ?? "light";
   }, [state?.theme]);
@@ -27,7 +27,7 @@ function WindowShell() {
   }, [state?.contentHeight]);
   return <>
     <DesktopTitleBar shell />
-    {toolbar && <BrowserNavigation key={toolbar.id} showFlowers
+    {toolbar && <BrowserNavigation key={toolbar.id} tab={toolbar} showFlowers
       restoreOwnerKey={state?.browserOwnerKey ?? ""} onPanel={() => {}} />}
     <NavigationProgressBar trackedNavigationPending={state?.presentationStatus === "pending" || active?.loading === true || active?.pageLoading === true} />
     {state?.presentationStatus === "failed" && <div className="shell-error" role="alert">This page stopped responding. <button onClick={() => void sendDesktopTabsCommand({type:"reload"})}>Reload</button></div>}

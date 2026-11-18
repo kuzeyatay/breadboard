@@ -41,7 +41,9 @@ import { hardwareBlueprintRunCardState } from "../hardware/run-card-state.ts";
 import type { HardwareDesign } from "../hardware/types.ts";
 import {
   generativeUiResourcesFromVerification,
+  isSpotifyQueueTool,
   normalizeGenerativeUiResources,
+  spotifyPlaybackFromVerification,
 } from "../generative-ui/contracts.ts";
 import { uiResourcesForUserRequest } from "../generative-ui/request-policy.ts";
 import { normalizeScheduledChatReceipt } from "../schedules/types.ts";
@@ -276,7 +278,16 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
     const scheduledChatReceipt = normalizeScheduledChatReceipt(
       metadata.scheduledChatReceipt,
     );
-    const persistedUiResources = normalizeGenerativeUiResources(metadata.uiResources);
+    const hasLegacySpotify = calls.some(
+      call => isSpotifyQueueTool(call.toolName) && call.spotifyPlaybackPrepared === undefined,
+    );
+    const legacyPlayback = hasLegacySpotify ? spotifyPlaybackFromVerification(metadata.verification) : undefined;
+    let persistedUiResources = normalizeGenerativeUiResources(metadata.uiResources);
+    if (persistedUiResources.length && hasLegacySpotify) {
+      const playlists = generativeUiResourcesFromVerification(metadata.verification)
+        .filter(resource => resource.kind === "spotify-playlist");
+      persistedUiResources = normalizeGenerativeUiResources([...persistedUiResources, ...playlists]);
+    }
     const uiResources = uiResourcesForUserRequest(
       persistedUiResources.length > 0
         ? persistedUiResources
@@ -387,6 +398,9 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
         toolCallId: String(call.toolCallId ?? `tool-${index}`),
         toolName: String(call.toolName ?? "tool"),
         summary: typeof call.summary === "string" ? call.summary : undefined,
+        spotifyPlaybackPrepared: typeof call.spotifyPlaybackPrepared === "boolean"
+          ? call.spotifyPlaybackPrepared
+          : legacyPlayback?.get(String(call.toolCallId)),
         status: call.success === false ? "failed" : "completed",
       })),
       // Evidence was gathered about the wording the model produced. A version

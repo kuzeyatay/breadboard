@@ -19,6 +19,7 @@
 // them are restricted to what makes that reasoning hold — an authenticated
 // surface, and the garden's own owner.
 
+import fs from "node:fs";
 import path from "node:path";
 import db from "../db.ts";
 import { pageUnderstanding } from "../page-understanding.ts";
@@ -157,7 +158,7 @@ export async function executeGardenTool(input: {
     return { ok: true, tool: input.tool, data: { gardens } };
   }
 
-  if (input.tool === "garden_search" || input.tool === "garden_get_source_figure") {
+  if (input.tool === "garden_search" || input.tool === "garden_grep" || input.tool === "garden_get_source_figure") {
     if (input.tool === "garden_get_source_figure" && (input.args.imagePath !== undefined || input.args.pdfPage !== undefined) &&
         (typeof input.args.slug !== "string" || !input.args.slug.trim() || input.args.scope === "all")) {
       return { ok: false, tool: input.tool, error: "Inspect an image with its exact page slug and Garden; omit scope all." };
@@ -181,6 +182,7 @@ export async function executeGardenTool(input: {
           const { searchGardenSourceFigures } = await import("./garden-source-figures.ts");
           return { ok: true, tool: input.tool, data: await searchGardenSourceFigures(contentPath(), gardens, input.args) };
         }
+        if (input.tool === "garden_grep") return await grepGardens(contentPath(), gardens, input.args);
         return await searchGardens(gardens, input.args);
       } catch (error) {
         return { ok: false, tool: input.tool, error: error instanceof Error ? error.message : "Search failed." };
@@ -211,7 +213,13 @@ export async function executeGardenTool(input: {
       error: "Tool not permitted for this session's scope.",
     };
   }
-  const cluster = loadClusterByIdentifier(requestedGarden);
+  // Spoken requests name a garden the way the user says it ("EM1" for slug
+  // electromagnetism-1, name "EM 1"); accept one unambiguous authorized match.
+  const spoken = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const named = typeof requestedGarden === "string"
+    ? authorizedClusters(token).filter(row => [row.slug, row.name].some(label => spoken(label) === spoken(requestedGarden)))
+    : [];
+  const cluster = loadClusterByIdentifier(requestedGarden) ?? (named.length === 1 ? named[0] : null);
   if (!cluster)
     return { ok: false, tool: input.tool, error: "Garden not found." };
   const permitted = token.allowedGardenIds
@@ -369,6 +377,87 @@ async function searchGardens(
   };
 }
 
+const GREP_MAX_MATCHES = 60;
+const GREP_MAX_PER_FILE = 6;
+
+/**
+ * Exact search over the note text, the way a coding agent runs `rg`: the model
+ * picks the words, every line containing them comes back, nothing is ranked
+ * away. garden_search ranks passages by similarity, which is right for "what
+ * do I have on control loops" and wrong for "how do my notes define a
+ * hyperplane": on 2026-11-17 it put three "... Definition ..." pages above
+ * the Math 1 page that defines it.
+ */
+export async function grepGardens(
+  contentRoot: string,
+  clusters: ReadonlyArray<Pick<ClusterRow, "slug" | "name">>,
+  args: Record<string, unknown>,
+): Promise<GardenToolResult> {
+  const pattern = typeof args.pattern === "string" ? args.pattern.trim().slice(0, 300) : "";
+  if (!pattern) return { ok: false, tool: "garden_grep", error: "Give a pattern: a word or phrase from the question." };
+  let matcher: RegExp;
+  try {
+    const source = args.regex === true ? pattern : pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    matcher = new RegExp(source, args.caseSensitive === true ? "u" : "iu");
+  } catch (error) {
+    return { ok: false, tool: "garden_grep", error: `Invalid regular expression: ${error instanceof Error ? error.message : pattern}` };
+  }
+  const matches: Array<Record<string, unknown>> = [];
+  const moreInFiles: Array<{ gardenId: string; relPath: string; matches: number }> = [];
+  let total = 0;
+  for (const cluster of clusters) {
+    let entries;
+    try { entries = await gardenReadEntries(contentRoot, cluster.slug); } catch { continue; }
+    for (const entry of entries) {
+      let text: string;
+      try { text = await fs.promises.readFile(path.join(contentRoot, cluster.slug, entry.relPath), "utf8"); } catch { continue; }
+      const lines = text.split(/\r?\n/);
+      let title = entry.slug;
+      let body = 0;
+      if (lines[0] === "---") {
+        const end = lines.indexOf("---", 1);
+        for (const line of lines.slice(1, end)) {
+          const found = /^title:\s*["']?(.*?)["']?\s*$/.exec(line);
+          if (found) title = found[1];
+        }
+        body = end + 1; // Frontmatter is metadata (topic lists), not what the note says.
+      }
+      let heading = "";
+      let inFile = 0;
+      for (let index = body; index < lines.length; index += 1) {
+        const line = lines[index];
+        const isHeading = /^#{1,6}\s+(.*)$/.exec(line);
+        if (isHeading) heading = isHeading[1].trim();
+        const at = line.search(matcher);
+        if (at < 0) continue;
+        total += 1;
+        inFile += 1;
+        if (inFile > GREP_MAX_PER_FILE || matches.length >= GREP_MAX_MATCHES) continue;
+        const start = Math.max(0, at - 200);
+        matches.push({
+          gardenId: cluster.slug, gardenName: cluster.name, relPath: entry.relPath, title,
+          href: gardenDocumentHref(cluster.slug, entry.relPath),
+          line: index + 1,
+          ...(heading && !isHeading ? { under: heading } : {}),
+          text: `${start > 0 ? "…" : ""}${line.slice(start, at + 300).trim()}${at + 300 < line.length ? "…" : ""}`,
+        });
+      }
+      if (inFile > GREP_MAX_PER_FILE) moreInFiles.push({ gardenId: cluster.slug, relPath: entry.relPath, matches: inFile });
+    }
+  }
+  return {
+    ok: true,
+    tool: "garden_grep",
+    data: {
+      pattern, totalMatches: total, shown: matches.length, matches,
+      ...(moreInFiles.length ? { moreInFiles: moreInFiles.slice(0, 20) } : {}),
+      hint: total === 0
+        ? "No line contains this. Try a shorter stem, a synonym, the plural, or regex true with alternatives (hyperplanes?|affine set)."
+        : "Read the best match in context with garden_get_page or garden_get_source_excerpt using its gardenId and relPath, with the matched words as query. 'under' is the heading the line sits in; in a source, that is its page.",
+    },
+  };
+}
+
 async function executeReadTool(
   tool: string,
   cluster: ClusterRow,
@@ -447,6 +536,7 @@ async function executeReadTool(
   if (tool === "garden_search") {
     return searchGardens([cluster], args);
   }
+  if (tool === "garden_grep") return grepGardens(contentPath(), [cluster], args);
 
   const { scanClusterKnowledge } = await import("../knowledge.ts");
   const knowledge = scanClusterKnowledge(contentPath(), cluster.slug, { migrateSources: false });

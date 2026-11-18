@@ -35,7 +35,8 @@ export interface TopologyNode {
   relPath: string;
   folderId: string;
   title: string;
-  kind: "markdown" | "source" | "internal-concept";
+  /** "chat": the viewer's own conversation, added per request by chat-nodes.ts, never stored. */
+  kind: "markdown" | "source" | "internal-concept" | "chat";
   knowledgeType: string;
   /** Original source medium from Markdown frontmatter (`source_type`). */
   sourceType?: string;

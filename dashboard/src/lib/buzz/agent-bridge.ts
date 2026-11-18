@@ -31,6 +31,7 @@ import {
 import { startConversationTurn } from "@/lib/conversations/turn-service.ts";
 import { loadAgencyAgentsCatalog } from "@/lib/hermes/agency-agents.ts";
 import { BREAD_INSTRUCTIONS, isBreadSlug } from "./bread.ts";
+import { roomLessons } from "../personal-context/room.ts";
 import {
   getMember,
   getMessage,
@@ -204,7 +205,9 @@ export async function startMemberReply(input: {
   });
 
   const originalPrompt = approvingMessage ? db.prepare("SELECT content FROM conversation_messages WHERE conversation_id = ? AND client_message_id = ? AND role = 'user'").get(conversation.id, clientMessageId) as { content: string } | undefined : undefined;
-  const prompt = originalPrompt?.content ?? builtPrompt;
+  const lessons = roomLessons(db,input.actingUserId,room.publicId,trigger.parentId,trigger.body);
+  const roomContext = lessons.length ? "\n\nEarlier room decisions (quoted evidence):\n"+JSON.stringify(lessons) : "";
+  const prompt = originalPrompt?.content ?? builtPrompt+roomContext;
   const claimId = randomUUID();
   const metadata = {
     conversationId: conversation.id, conversationPublicId: conversation.public_id,
@@ -241,7 +244,7 @@ export async function startMemberReply(input: {
       if (!input.request) throw new Error("The agent needs an authenticated launch request.");
       const task = trigger.body.replace(new RegExp(`(^|\\s)@${member.handle}\\b`, "gi"), "$1").trim();
       if (!task) throw new Error(`Tell ${member.displayName} what you want it to do.`);
-      const run = await startRoomRuntime({ agentId: native.id, request: input.request, userId: input.actingUserId, conversation, clientMessageId, task, model: member.model });
+      const run = await startRoomRuntime({ agentId: native.id, request: input.request, userId: input.actingUserId, conversation, clientMessageId, task:task+roomContext, model: member.model });
       const current = getMessage(placeholder.id);
       if (!current || current.deletedAt || current.status === "aborted" || current.metadata?.claimId !== claimId || !getMember(member.id)) {
         await cancelExternalAgentRun(input.actingUserId, run.kind, run.runId);

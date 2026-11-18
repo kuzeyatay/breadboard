@@ -86,6 +86,21 @@ async function mountDocument(input: MountInput, article: HTMLElement, actions: H
   let sourceDirty = false, formBookmark: ReturnType<EditorState['selection']['getBookmark']> | null = null;
   let applyingSource: Promise<void> | undefined;
   let lastEditAt = -Infinity;
+  // Authorship watcher: characters typed vs pasted since the last save, sent
+  // with it so the page's Human written / Unsure status reflects real input.
+  // ponytail: undo/redo re-inserts count as typed; per-step origin if that skews scores.
+  const provenance = { typed: 0, pasted: 0, removed: 0 };
+  let pasting = false, sourcePasted = false;
+  const watchProvenance = (before: PMNode, tr: Transaction) => {
+    const start = before.content.findDiffStart(tr.doc.content); if (start == null) return;
+    let { a: endA, b: endB } = before.content.findDiffEnd(tr.doc.content)!;
+    const overlap = start - Math.min(endA, endB); if (overlap > 0) { endA += overlap; endB += overlap; }
+    const ui = tr.getMeta('uiEvent');
+    const pasted = pasting || ui === 'paste' || ui === 'drop' || (sourcePasted && tr.getMeta('bb-source-replaced'));
+    provenance.removed += endA - start; provenance[pasted ? 'pasted' : 'typed'] += endB - start;
+  };
+  const takeProvenance = () => { const sent = { ...provenance }; provenance.typed = provenance.pasted = provenance.removed = 0; return sent; };
+  const returnProvenance = (sent: typeof provenance) => { provenance.typed += sent.typed; provenance.pasted += sent.pasted; provenance.removed += sent.removed; };
   let serializeTimer: ReturnType<typeof setTimeout> | undefined;
   let snapshotDeadline: ReturnType<typeof setTimeout> | undefined;
   rollback.push(() => clearSnapshotTimers());
@@ -136,11 +151,13 @@ async function mountDocument(input: MountInput, article: HTMLElement, actions: H
       void persistRecovery().catch(showError); }));
   article.after(sourcePanel);
   sourceInput.addEventListener('input', () => { sourceDirty = true; scheduleSnapshot(); });
+  sourceInput.addEventListener('paste', () => { sourcePasted = true; });
   const conflictPanel = element('section', 'bb-document-conflict'); conflictPanel.hidden = true; conflictPanel.setAttribute('role', 'alert'); toolbar.after(conflictPanel);
   rollback.push(() => { toolbar.remove(); metadata.remove(); sourcePanel.remove(); conflictPanel.remove(); });
   // An acknowledgement for an older rich-text save must never erase a newer
   // source draft (or typing still waiting for the snapshot debounce).
-  const save: SaveSession = new SaveSession(initial, patch => transport.request('save', patch), { write: (value, backup): Promise<void> =>
+  const save: SaveSession = new SaveSession(initial, patch => { const sent = takeProvenance();
+    return transport.request('save', { ...patch, provenance: sent }).catch(error => { returnProvenance(sent); throw error; }); }, { write: (value, backup): Promise<void> =>
     backup ? recovery.write(value, true) : persistRecovery(value?.base) }, (message, error) => {
     status.textContent = !error && sourceDirty ? 'Source changes waiting to apply'
       : !error && serializeTimer ? 'Unsaved changes' : message; retry.hidden = !error;
@@ -245,6 +262,7 @@ async function mountDocument(input: MountInput, article: HTMLElement, actions: H
     dispatchTransaction(tr) {
       if (formBookmark) formBookmark = formBookmark.map(tr.mapping);
       for (const pending of pendingObjects) pending.bookmark = pending.bookmark.map(tr.mapping);
+      if (tr.docChanged) watchProvenance(view.state.doc, tr);
       view.updateState(view.state.apply(tr));
       if (tr.docChanged) { lastEditAt = performance.now(); scheduleSnapshot(); }
       if (isHistoryTransaction(tr) && completedUploads.size) queueMicrotask(restoreUploads);
@@ -265,7 +283,7 @@ async function mountDocument(input: MountInput, article: HTMLElement, actions: H
       const files = Array.from(event.clipboardData?.files ?? []);
       if (files.length) { event.preventDefault(); pasteFiles(files); return true; }
       const markdown = event.clipboardData?.getData('text/x-breadboard-markdown') || event.clipboardData?.getData('text/markdown');
-      if (markdown) { insertMarkdown(markdown); return true; }
+      if (markdown) { pasting = true; try { insertMarkdown(markdown); } finally { pasting = false; } return true; }
       return false;
     },
     handleDrop(_view, event) {
@@ -350,6 +368,7 @@ async function mountDocument(input: MountInput, article: HTMLElement, actions: H
     const next = codec.parse(source);
     view.dispatch(closeHistory(view.state.tr.replaceWith(0, view.state.doc.content.size, next.content).setDocAttribute('sourceContext', next.attrs.sourceContext)
       .setMeta('bb-board-flushed', true).setMeta('bb-source-replaced', true)));
+    sourcePasted = false;
     scheduleSnapshot();
   }
   function insertMarkdown(source: string) {

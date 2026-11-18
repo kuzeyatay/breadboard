@@ -72,6 +72,65 @@ test("an unreadable history file is reported and never overwritten by a visit or
   }
 });
 
+test("personal history isolates shared URLs and ignores a late title after an account switch", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-personal-history-"));
+  const url = "https://example.com/work";
+  const file = path.join(dir,BROWSER_HISTORY_FILE);
+  fs.writeFileSync(file,JSON.stringify({version:1,entries:[{url,title:"Imported title",visitedAt:1700000000000}]}));
+  let owner: string | null = null;
+  const history = new BrowserHistory(dir, () => {}, () => owner);
+  const page = Object.assign(new EventEmitter(), {getURL: () => url, getTitle: () => "New title"});
+  const stored = () => JSON.parse(fs.readFileSync(file,"utf8")).entries[0].visitsByUser;
+  try {
+    assert.equal(history.restorePersonalHistory(),false);
+    assert.equal(stored(),undefined);
+    owner = "1";
+    assert.ok(history.restorePersonalHistory());
+    assert.deepEqual(stored()["1"],{title:"Imported title",visitedAt:1700000000000,days:["2023-11-14"]});
+    history.attach(page as unknown as WebContents);
+    page.emit("did-navigate",{},url);
+    owner = "2";
+    history.visit(url,"Account two");
+    page.emit("page-title-updated",{},"Old account's private title");
+    assert.equal(stored()["1"].title,"Imported title");
+    assert.equal(stored()["2"].title,"Account two");
+    assert.ok(!("visitsByUser" in history.snapshot().items[0]!));
+    owner = null;
+    assert.equal(history.command({type:"import-personal"}),false);
+    history.command({type:"clear"});
+    assert.deepEqual(JSON.parse(fs.readFileSync(file,"utf8")).entries,[]);
+  } finally {
+    fs.rmSync(dir,{recursive:true,force:true});
+  }
+});
+
+test("restart migration preserves signed-out visits and visits owned by another account", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-auto-history-"));
+  const file = path.join(dir, BROWSER_HISTORY_FILE);
+  const visit = {title:"Existing",visitedAt:1700000000000,days:["2023-11-14"]};
+  try {
+    fs.writeFileSync(file, JSON.stringify({version:1,entries:[
+      {url:"https://example.test/older",title:"Older",visitedAt:visit.visitedAt},
+      {url:"https://example.test/signed-out",title:"Signed out",visitedAt:visit.visitedAt,visitsByUser:{}},
+      {url:"https://example.test/owned",title:visit.title,visitedAt:visit.visitedAt,visitsByUser:{"8":visit}},
+    ]}));
+    let writes = 0;
+    const account = (id:string) => new BrowserHistory(dir, () => { writes++; }, () => id);
+    const first = account("7");
+    assert.ok(first.restorePersonalHistory());
+    const after = fs.readFileSync(file, "utf8");
+    assert.deepEqual(JSON.parse(after).entries.map((row:StoredFixture) => Object.keys(row.visitsByUser)), [["7"],[],["8"]]);
+    assert.ok(first.restorePersonalHistory());
+    assert.ok(account("8").restorePersonalHistory());
+    assert.equal(writes, 1);
+    assert.equal(fs.readFileSync(file, "utf8"), after);
+  } finally {
+    fs.rmSync(dir, {recursive:true,force:true});
+  }
+});
+
+interface StoredFixture { visitsByUser: Record<string, unknown> }
+
 test("history preload forwards commands and cleans up change subscriptions", async () => {
   const events = new EventEmitter();
   const calls: unknown[][] = [];

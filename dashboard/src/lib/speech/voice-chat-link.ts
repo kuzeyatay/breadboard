@@ -8,6 +8,8 @@ export interface VoiceChatSnapshot {
   messages: readonly VoiceMessage[];
   busy: boolean;
   clarification?: { requestId: string; question: string } | null;
+  /** A tool waiting for permission, answered by voice. */
+  permission?: { requestId: string; description: string; allowSession: boolean } | null;
   /** The chat can save ChatGPT voice exchanges handed to it. */
   recordable?: boolean;
   /** The originating composer permits personal greeting suggestions. */
@@ -37,7 +39,7 @@ export function activeVoiceChatKey(): string | undefined {
 /** A detached voice view delegates to the originating composer, including for
  * a blank chat whose durable id does not exist until its first spoken turn. */
 export function createVoiceChatHost(initial: VoiceChatSnapshot, send: (text: string, screen?: VoiceScreenContext) => void | Promise<void>, element?: () => HTMLElement | null, interrupt?: () => void,
-  record?: (exchange: SpokenExchange) => Promise<void>) {
+  record?: (exchange: SpokenExchange) => Promise<void>, decide?: (decision: 'once' | 'always' | 'reject') => void | Promise<void>) {
   const key = crypto.randomUUID();
   const channel = new BroadcastChannel(channelName(key));
   let snapshot = initial;
@@ -58,7 +60,14 @@ export function createVoiceChatHost(initial: VoiceChatSnapshot, send: (text: str
     } else if (data.client === client) {
       if (data.type === 'disconnect') { client = null; return; }
       if (data.type === 'ping') post('alive');
-      if (data.type === 'interrupt' && snapshot.busy && !snapshot.clarification) interrupt?.();
+      if (data.type === 'interrupt' && snapshot.busy && !snapshot.clarification && !snapshot.permission) interrupt?.();
+      // Only the ask this chat is showing can be answered, and only once.
+      if (data.type === 'permission' && decide && snapshot.permission && data.requestId === snapshot.permission.requestId &&
+          ['once', 'always', 'reject'].includes(data.decision) && (data.decision !== 'always' || snapshot.permission.allowSession)) {
+        const decision = data.decision as 'once' | 'always' | 'reject';
+        snapshot = { ...snapshot, permission: null };
+        void Promise.resolve().then(() => decide(decision)).catch(error => post('send-error', { message: error instanceof Error ? error.message : 'That answer could not be sent.' }));
+      }
       if (data.type === 'send' && typeof data.id === 'string' && !received.has(data.id) &&
           typeof data.text === 'string' && data.text.trim() && data.text.length <= 20_000) {
         received.add(data.id);
@@ -122,6 +131,7 @@ export function connectVoiceChat(key: string, onSnapshot: (snapshot: VoiceChatSn
   post('connect');
   return {
     interrupt() { if (connected && !closed) post('interrupt'); },
+    permission(requestId: string, decision: 'once' | 'always' | 'reject') { if (connected && !closed) post('permission', { requestId, decision }); },
     send(text: string, screen?: VoiceScreenContext) { if (connected && !closed) post('send', { id: crypto.randomUUID(), text, screen: parseVoiceScreenContext(screen) }); },
     /** Hands a ChatGPT voice exchange to the chat to save. */
     async record(exchange: SpokenExchange) {

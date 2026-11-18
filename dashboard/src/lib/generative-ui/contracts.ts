@@ -126,6 +126,9 @@ export interface ChatSearchResult {
   pinned: boolean;
   matchedOn: "title" | "message";
   snippet: string;
+  /** Where this chat lives, when it differs from the resource's surface. */
+  surface?: ChatSearchSurface;
+  gardenSlug?: string;
 }
 
 export interface ChatSearchResource {
@@ -155,12 +158,22 @@ export interface PrinterJobResource {
   data: { jobId: string; runId: string; conversationPublicId: string; originatingTurnId: string };
 }
 
+export interface SpotifyPlaylistResource {
+  schemaVersion: 1;
+  kind: "spotify-playlist";
+  renderer: "spotify-playlist-card";
+  id: string;
+  title: string;
+  data: { playlistId: string; trackCount: number };
+}
+
 /** Versioned references are display data; the backend is the authority. */
 export type GenerativeUiResource =
   | ProductSearchResource
   | GardenNavigationResource
   | ChatSearchResource
-  | PrinterJobResource;
+  | PrinterJobResource
+  | SpotifyPlaylistResource;
 
 export type GenerativeUiAction =
   | {
@@ -354,6 +367,15 @@ export function normalizeGenerativeUiResource(
 ): GenerativeUiResource | null {
   const candidate = record(value);
   if (!candidate) return null;
+  if (
+    candidate.schemaVersion === 1 &&
+    candidate.kind === "spotify-playlist" &&
+    candidate.renderer === "spotify-playlist-card"
+  ) {
+    const data = record(candidate.data);
+    const resource = spotifyPlaylistCard(data?.playlistId, candidate.title, data?.trackCount);
+    return resource?.id === candidate.id ? resource : null;
+  }
   if (candidate.schemaVersion === 1 && candidate.kind === "printer-job" && candidate.renderer === "bambu-print-card") {
     const data = record(candidate.data);
     const jobId = id(data?.jobId), runId = id(data?.runId), conversationPublicId = id(data?.conversationPublicId), originatingTurnId = id(data?.originatingTurnId);
@@ -584,6 +606,8 @@ function normalizeChatSearchResult(value: unknown): ChatSearchResult | null {
     pinned: candidate.pinned === true,
     matchedOn: candidate.matchedOn,
     snippet: text(candidate.snippet, 500),
+    ...(candidate.surface === "garden_chat" || candidate.surface === "dashboard_terminal" ? { surface: candidate.surface } : {}),
+    ...(typeof candidate.gardenSlug === "string" && /^[a-z0-9][a-z0-9-]{0,127}$/i.test(candidate.gardenSlug) ? { gardenSlug: candidate.gardenSlug } : {}),
   };
 }
 
@@ -690,6 +714,57 @@ function parsedToolOutput(value: unknown): Record<string, unknown> | null {
   return record(value);
 }
 
+function spotifyPlaylistCard(
+  playlistId: unknown,
+  name: unknown,
+  trackCount: unknown,
+): SpotifyPlaylistResource | null {
+  const title = text(name, 100);
+  if (
+    typeof playlistId !== "string" || !/^[A-Za-z0-9]{10,64}$/.test(playlistId) || !title ||
+    typeof trackCount !== "number" || !Number.isSafeInteger(trackCount) || trackCount < 1
+  ) return null;
+  return {
+    schemaVersion: 1,
+    kind: "spotify-playlist",
+    renderer: "spotify-playlist-card",
+    id: `spotify:playlist:${playlistId}`,
+    title,
+    data: { playlistId, trackCount },
+  };
+}
+
+const SPOTIFY_QUEUE_STATUSES = new Set(["ready", "playing", "playback_failed"]);
+
+export function isSpotifyQueueTool(toolName: unknown): boolean {
+  return typeof toolName === "string" && /(?:^|__)spotify_(?:play|create_playlist)$/i.test(toolName.trim());
+}
+
+/** A transport command and a silent save both leave the current queue in place. */
+export function spotifyPlaybackPrepared(toolName: string, output: unknown): boolean | undefined {
+  if (!isSpotifyQueueTool(toolName)) return undefined;
+  const result = parsedToolOutput(output);
+  if (!result) return undefined;
+  const uri = record(result.selected)?.uri;
+  return SPOTIFY_QUEUE_STATUSES.has(String(result.status)) &&
+    typeof uri === "string" && /^spotify:track:[A-Za-z0-9]+$/.test(uri);
+}
+
+/** Older transcripts kept the provider result in verification evidence only. */
+export function spotifyPlaybackFromVerification(value: unknown): Map<string, boolean> {
+  const prepared = new Map<string, boolean>();
+  const evidence = record(value)?.evidence;
+  if (!Array.isArray(evidence)) return prepared;
+  for (const item of evidence) {
+    const entry = record(item);
+    const details = record(entry?.details);
+    if (entry?.success === false || typeof entry?.toolCallId !== "string" || typeof details?.toolName !== "string") continue;
+    const result = spotifyPlaybackPrepared(details.toolName, details.result);
+    if (result !== undefined) prepared.set(entry.toolCallId, result);
+  }
+  return prepared;
+}
+
 /**
  * Project an untrusted completed tool result onto Breadboard's renderer union.
  * The tool name is checked as well as the payload discriminator, so another
@@ -700,6 +775,14 @@ export function generativeUiResourcesFromToolOutput(
   output: unknown,
 ): GenerativeUiResource[] {
   const normalizedTool = toolName.trim().toLowerCase();
+  if (/(?:^|__)spotify_create_playlist$/.test(normalizedTool)) {
+    const result = parsedToolOutput(output);
+    const playlist = record(result?.playlist);
+    if (!playlist || playlist.uri !== `spotify:playlist:${playlist.id}`) return [];
+    if (result?.status !== "created" && !SPOTIFY_QUEUE_STATUSES.has(String(result?.status))) return [];
+    const resource = spotifyPlaylistCard(playlist.id, playlist.name, playlist.trackCount);
+    return resource ? [resource] : [];
+  }
   const expectedKind = normalizedTool === "product_search"
     ? PRODUCT_SEARCH_RESOURCE_KIND
     : normalizedTool === "garden_search"

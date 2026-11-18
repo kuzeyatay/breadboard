@@ -5,6 +5,8 @@ import type { BrowserHistoryEntry, BrowserHistoryCommand, BrowserHistorySnapshot
 import { atomicWriteFile } from "./runtime-config";
 
 export const BROWSER_HISTORY_FILE = "browser-history.json";
+type Visit = { title: string; visitedAt: number; days: string[] };
+type StoredEntry = BrowserHistoryEntry & { visitsByUser?: Record<string, Visit> };
 
 function pageUrl(input: string): string | null {
   try {
@@ -16,14 +18,17 @@ function pageUrl(input: string): string | null {
 /** History belongs to the persistent browser partition, shared by its windows.
  * Only committed top-level pages enter it; renderer caches never replace it. */
 export class BrowserHistory {
-  private entries: BrowserHistoryEntry[] | null = null;
+  private entries: StoredEntry[] | null = null;
   private error: string | null = null;
+  private legacyOwner: string | null = null;
+  private legacyChecked = false;
 
-  constructor(private readonly configDir?: string, private readonly changed = () => {}) {}
+  constructor(private readonly configDir?: string, private readonly changed = () => {},
+    private readonly owner: () => string | null = () => null) {}
 
-  private load(): BrowserHistoryEntry[] {
+  private load(): StoredEntry[] {
     if (this.entries) return this.entries;
-    let entries: BrowserHistoryEntry[] = [];
+    let entries: StoredEntry[] = [];
     if (this.configDir) {
       try {
         const state = JSON.parse(fs.readFileSync(path.join(this.configDir, BROWSER_HISTORY_FILE), "utf8"));
@@ -43,13 +48,13 @@ export class BrowserHistory {
   snapshot(): BrowserHistorySnapshot {
     try {
       const items = this.load();
-      return { items: items.map((entry) => ({ ...entry })), error: this.error };
+      return { items: items.map(({ url, title, visitedAt }) => ({ url, title, visitedAt })), error: this.error };
     } catch {
       return { items: [], error: "Couldn’t read browser history. Your saved file has been preserved." };
     }
   }
 
-  private update(edit: (items: BrowserHistoryEntry[]) => BrowserHistoryEntry[]): boolean {
+  private update(edit: (items: StoredEntry[]) => StoredEntry[]): boolean {
     try {
       const entries = edit(this.load());
       if (this.configDir) {
@@ -69,30 +74,73 @@ export class BrowserHistory {
   visit(input: string, title = ""): void {
     const url = pageUrl(input);
     if (!url) return;
-    this.update((items) => [{
-      url, title: title.trim().slice(0, 1000) || items.find((entry) => entry.url === url)?.title || new URL(url).hostname,
-      visitedAt: Date.now(),
-    }, ...items.filter((entry) => entry.url !== url)]);
+    this.update(items => {
+      const previous = items.find(entry => entry.url === url);
+      const visitedAt = Date.now();
+      const owner = this.owner();
+      const visitsByUser = { ...previous?.visitsByUser };
+      const oldVisit = owner ? visitsByUser[owner] : undefined;
+      const clean = title.trim().slice(0, 1000) || (owner ? oldVisit?.title : previous?.title) || new URL(url).hostname;
+      if (owner) {
+        const day = new Date(visitedAt).toISOString().slice(0, 10);
+        visitsByUser[owner] = { title: clean, visitedAt, days: [...new Set([day, ...(oldVisit?.days ?? [])])].slice(0, 8) };
+      }
+      return [{ url, title: clean, visitedAt, visitsByUser }, ...items.filter(entry => entry.url !== url)];
+    });
   }
 
-  private title(input: string, title: string): void {
+  private title(input: string, title: string, owner: string | null): void {
     const url = pageUrl(input);
     const clean = title.trim().slice(0, 1000);
     // A title event after Clear must never resurrect a removed visit.
-    if (!url || !clean || !this.entries?.some((entry) => entry.url === url && entry.title !== clean)) return;
-    this.update((items) => items.map((entry) => entry.url === url ? { ...entry, title: clean } : entry));
+    if (owner !== this.owner() || !url || !clean || !this.entries?.some(entry => entry.url === url &&
+      (entry.title !== clean || (owner && entry.visitsByUser?.[owner] && entry.visitsByUser[owner].title !== clean)))) return;
+    this.update(items => items.map(entry => {
+      if (entry.url !== url) return entry;
+      const visit = owner && owner === this.owner() ? entry.visitsByUser?.[owner] : null;
+      return { ...entry, title: clean, ...(owner && visit ? { visitsByUser: { ...entry.visitsByUser, [owner]: { ...visit, title: clean } } } : {}) };
+    }));
+  }
+
+  /** Run after the dashboard has identified the account and before tabs restore. */
+  restorePersonalHistory(): boolean {
+    const owner = this.owner();
+    if (!owner) return false;
+    if (this.legacyChecked) return true;
+    // Reserve a failed migration for its authenticated owner if accounts switch.
+    this.legacyOwner ??= owner;
+    if (this.legacyOwner !== owner) return false;
+    try {
+      // An empty map marks a signed-out visit. Pre-account versions omitted the field.
+      if (this.load().some(entry => entry.visitsByUser === undefined)) {
+        const saved = this.update(items => items.map(entry => {
+          if (entry.visitsByUser !== undefined) return entry;
+          const day = new Date(entry.visitedAt).toISOString().slice(0, 10);
+          return { ...entry, visitsByUser: { [owner]: { title: entry.title, visitedAt: entry.visitedAt, days: [day] } } };
+        }));
+        if (!saved) return false;
+      }
+      this.legacyChecked = true;
+      return true;
+    } catch {
+      this.error = "Couldn’t read browser history. Your saved file has been preserved.";
+      return false;
+    }
   }
 
   command(command: BrowserHistoryCommand): boolean {
-    return this.update((items) => command.type === "clear" ? [] : items.filter((entry) => entry.url !== command.url));
+    if (command.type === "remove") return this.update(items => items.filter(entry => entry.url !== command.url));
+    if (command.type === "clear") return this.update(() => []);
+    return command.type === "import-personal" && this.restorePersonalHistory();
   }
 
   attach(contents: WebContents): void {
-    contents.on("did-navigate", (_event, url) => this.visit(url));
+    let visitOwner: string | null = null;
+    contents.on("did-navigate", (_event, url) => { visitOwner = this.owner(); this.visit(url); });
     contents.on("did-navigate-in-page", (_event, url, isMainFrame) => {
-      if (isMainFrame) this.visit(url, contents.getTitle());
+      if (isMainFrame) { visitOwner = this.owner(); this.visit(url, contents.getTitle()); }
     });
-    contents.on("page-title-updated", (_event, title) => this.title(contents.getURL(), title));
-    contents.on("did-finish-load", () => this.title(contents.getURL(), contents.getTitle()));
+    contents.on("page-title-updated", (_event, title) => this.title(contents.getURL(), title, visitOwner));
+    contents.on("did-finish-load", () => this.title(contents.getURL(), contents.getTitle(), visitOwner));
   }
 }

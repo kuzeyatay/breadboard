@@ -399,6 +399,9 @@ export function deleteGardenDatabaseRows(
         .prepare("DELETE FROM semantic_chunks WHERE garden_slug = ?")
         .run(input.gardenSlug).changes;
     }
+    if (tableExists(database, "semantic_garden_fingerprints")) {
+      database.prepare("DELETE FROM semantic_garden_fingerprints WHERE garden_slug = ?").run(input.gardenSlug);
+    }
 
     if (
       tableExists(database, "memory_tree_nodes") &&

@@ -42,15 +42,17 @@ test('cold browser highlights send with their chat panel covered and animation f
       import Answer from '@/app/browser/inline-answer/inline-answer';
       import {useBrowserInlineAnswer} from '@/app/components/hermes/use-browser-inline-answer';
       import {useInlineAgentQuestions} from '@/app/components/hermes/use-inline-agent-questions';
+      import {useAssistantIntelligence} from '@/app/components/use-assistant-intelligence';
       const selection={requestId:'cold-request',reference:{id:'cold-highlight',mode:'inline',sourceMessageId:'web:fixture',start:0,end:13,
         quote:'electric flux',sourceUrl:'https://example.test/lesson',sourceTitle:'Lesson'}};
       const emptyMessages=[];
       function Owner(){
         const inline=useInlineAgentQuestions({sessionId:'conv_fixture',messages:emptyMessages,ensureConversation:async()=>'conv_fixture'});
+        const {model:selectedModel,reasoningEffort:selectedReasoningEffort}=useAssistantIntelligence({scope:'dashboard_terminal',sessionId:'conv_fixture',shared:true});
         const question=inline.messages.findLast(m=>m.role==='user');
         const answer=inline.messages.findLast(m=>m.role==='assistant');
-        const content=useMemo(()=>({question:question?.content,answer:answer?.content,pending:Boolean(answer?.pending),canAsk:!answer?.pending,suggestionModel:'browser-model'}),[question,answer]);
-        useBrowserInlineAnswer({selection,content,onAsk:(text,attachments)=>void inline.send(text,selection.reference,{model:'fixture',attachments}),onStop:()=>inline.stop(selection.reference.id),onDelete:()=>{},onClose:()=>{}});
+        const content=useMemo(()=>({question:question?.content,answer:answer?.content,pending:Boolean(answer?.pending),canAsk:!answer?.pending,suggestionModel:selectedModel}),[question,answer,selectedModel]);
+        useBrowserInlineAnswer({selection,content,onAsk:(text,attachments)=>void inline.send(text,selection.reference,{model:selectedModel,reasoningEffort:selectedReasoningEffort,attachments}),onStop:()=>inline.stop(selection.reference.id),onDelete:()=>{},onClose:()=>{}});
         return <div data-owner>Terminal</div>;
       }
       function BrowserHost(){
@@ -123,11 +125,16 @@ test('cold browser highlights send with their chat panel covered and animation f
     assert.ok(owner);
     await owner.waitForFunction(() => typeof window.openHighlight === 'function', null, { polling: 25 });
     assert.equal(await owner.locator('[data-owner]').count(), 0, 'ordinary browsing stays lazy');
+    await page.evaluate(() => {
+      localStorage.setItem('breadboard:chat-startup-selection', JSON.stringify({model:'gpt-6.1-sol',reasoningEffort:'max'}));
+      localStorage.setItem('breadboard:intelligence-override:dashboard_terminal:chat:conv_fixture',
+        JSON.stringify({model:'cliproxy/gemini-3.8-flash-tiered',reasoningEffort:'high'}));
+    });
     await owner.evaluate(() => window.openHighlight());
     await owner.waitForFunction(() => Boolean(document.querySelector('[data-owner]')), null, { polling: 25 });
     const editor = page.locator('textarea');
     await expect(page.locator('[data-prompt-suggestion]')).toBeVisible();
-    assert.equal(suggestions.at(-1).model,'browser-model');
+    assert.equal(suggestions.at(-1).model,'gpt-6.1-sol');
     assert.equal(suggestions.at(-1).selection.quote,'electric flux');
     assert.equal(suggestions.at(-1).selection.sourceTitle,'Lesson');
     await editor.press('Tab');
@@ -137,6 +144,10 @@ test('cold browser highlights send with their chat panel covered and animation f
     const beforeEnter = requests.length;
     await editor.press('Enter');
     await page.getByText(`Delivered answer ${beforeEnter + 1}`, { exact: true }).waitFor();
+    assert.equal(requests.at(-1).model, 'gpt-6.1-sol');
+    assert.equal(requests.at(-1).reasoningEffort, 'max');
+    await page.evaluate(() => localStorage.setItem('breadboard:assistant-current-selection',
+      JSON.stringify({model:'gpt-6-astra',reasoningEffort:'high',at:Date.now()})));
     await page.getByRole('button', { name: 'Edit this question' }).click();
     await editor.fill(`Question by button in ${theme}`);
     const before = requests.length;
@@ -144,6 +155,8 @@ test('cold browser highlights send with their chat panel covered and animation f
     await page.getByText(`Delivered answer ${before + 1}`, { exact: true }).waitFor();
     assert.equal(requests.at(-1).textSelection.quote, 'electric flux');
     assert.equal(requests.at(-1).concurrentInline, true);
+    assert.equal(requests.at(-1).model, 'gpt-6-astra');
+    assert.equal(requests.at(-1).reasoningEffort, 'high');
     assert.deepEqual(errors, []);
     await page.close();
   }

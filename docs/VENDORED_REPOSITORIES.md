@@ -1,5 +1,11 @@
 # Integrated Upstream Source Snapshots
 
+Breadboard adapts Cadence's normalized delta update and episodic vote in
+`dashboard/src/vendor/cadence/episodic-vote.ts` to rank scoped suggestions
+from accepted and dismissed choices. The port retains the upstream GPL-3.0
+license, which is included with the desktop license notices.
+[Pinned Cadence source](https://github.com/muellerberndt/cadence/tree/3961509cbb18071621e428b4c1f781b5d8a322da)
+
 Music Producer uses separately prepared runtime integrations rather than adding
 another vendored source tree. Its explicit setup downloads MIT ACE-Step source
 at `ca1e85fe9430179831e6bc6be790c332190a3866` and selected model assets from

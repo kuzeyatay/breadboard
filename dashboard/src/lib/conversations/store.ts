@@ -37,6 +37,8 @@ export interface ConversationRow {
   next_order_index: number;
   pinned_at: string | null;
   archived_at: string | null;
+  /** Set for the canonical conversation belonging to a shared Buzz room. */
+  buzz_room_id?: number | null;
   highlight: string | null;
   /** 1 for an off-the-record chat. See `conversationIsTemporary`. */
   temporary: number;
@@ -959,6 +961,13 @@ export function completeAssistantMessage(input: {
       )
       .catch((error) => {
         console.error("[hooks] chat completion hook loader failed", error);
+      });
+    // A Garden chat's new turn gets its Thought Topology vector now, so the
+    // map shows the chat beside its pages without embedding on page load.
+    void import("../thought-topology/chat-nodes.ts")
+      .then(({ embedGardenChatAfterAnswer }) => embedGardenChatAfterAnswer(input.conversationId))
+      .catch((error) => {
+        console.error("[topology-chats] embedding hook loader failed", error);
       });
   }
   return completed;

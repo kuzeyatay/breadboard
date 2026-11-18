@@ -12,7 +12,7 @@ test('typing in the PDF assistant does not parse settled answers again', { timeo
       import React,{useRef} from 'react';
       import {createRoot} from 'react-dom/client';
       import PdfAssistant from './src/app/components/pdf-assistant';
-      window.markdownParses=0;
+      window.markdownParses=0; window.mountedAnswers=new Map(); window.parsedAnswers=[];
       function App(){
         const container=useRef(null),pdf=useRef(null);
         return <><div ref={container}/><PdfAssistant documentKey="pdf:typing" title="Circuit questions"
@@ -35,7 +35,15 @@ test('typing in the PDF assistant does not parse settled answers again', { timeo
       // Observe the real markdown renderer without replacing its memo boundary,
       // annotation handling, or the expensive remark/rehype/KaTeX pipeline.
       builder.onLoad({ filter: /[\\/]chat-markdown\.tsx$/ }, a => ({
-        contents: readFileSync(a.path, 'utf8').replace('}: Props) {', '}: Props) { window.markdownParses++;'),
+        contents: readFileSync(a.path, 'utf8').replace('const noteIdPrefix = useId();', `
+          const noteIdPrefix = useId();
+          window.markdownParses++;
+          window.parsedAnswers.push(content);
+          useLayoutEffect(() => {
+            window.mountedAnswers.set(noteIdPrefix, content);
+            return () => window.mountedAnswers.delete(noteIdPrefix);
+          }, [noteIdPrefix, content]);
+        `),
         loader: 'tsx',
       }));
     } }],
@@ -90,9 +98,18 @@ test('typing in the PDF assistant does not parse settled answers again', { timeo
   assert.equal(await field.inputValue(), question, 'opening the panel preserves the current draft');
   // Reopening may mount virtual rows that were removed while hidden.
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  const beforeClear = await page.evaluate(() => window.markdownParses);
+  // Focus can scroll the reopened panel and mount a different set of rows.
+  await field.focus();
+  const beforeClear = await page.evaluate(() => ({
+    count:window.parsedAnswers.length, mounted:[...window.mountedAnswers.values()],
+  }));
+  assert.ok(beforeClear.mounted.length > 0);
   await field.fill('');
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('breadboard:chat-drafts'))['pdf:typing:conv_typing']), undefined);
-  assert.equal(await page.evaluate(() => window.markdownParses), beforeClear, 'clearing a draft must not parse history either');
+  // Shrinking the composer can expose a previously virtualized answer.
+  // Every answer already mounted before the change must keep its cached parse.
+  const alreadyVisible = await page.evaluate(({count,mounted}) =>
+    window.parsedAnswers.slice(count).filter(text => mounted.includes(text)), beforeClear);
+  assert.deepEqual(alreadyVisible, [], 'clearing a draft must not reparse any mounted answer');
   assert.deepEqual(errors, []);
 });

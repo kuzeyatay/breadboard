@@ -477,9 +477,10 @@ export function useQueuedFollowUps({
                 attachment.type === "image" && !attachment.context,
             );
             const fileNames = item.attachments
-              .filter((attachment) => attachment.type !== "image" && (!attachment.context || attachment.pdfPage))
+              .filter((attachment) => (attachment.type !== "image" || attachment.webPage) && (!attachment.context || attachment.pdfPage || attachment.webPage))
               .map((attachment) => attachment.pdfPage
-                ? `Viewing page ${attachment.pdfPage.pageNumber}` : attachment.name);
+                ? `Viewing page ${attachment.pdfPage.pageNumber}`
+                : attachment.webPage ? `Viewing ${attachment.webPage.title}` : attachment.name);
             const itemDescription =
               item.text ||
               (images.length === 1

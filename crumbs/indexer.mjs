@@ -226,7 +226,7 @@ export async function createIndexer({ db, config = settings(), gate = text => mo
     for (const row of await db.all("SELECT did FROM accounts WHERE checked_at<? ORDER BY checked_at LIMIT 200", [stale])) await ensureAccount(row.did, true).catch(() => {});
   }
 
-  const select = `SELECT h.*, a.handle, a.display_name, a.avatar FROM highlights h JOIN accounts a ON a.did=h.did`;
+  const select = `SELECT h.*, h.rowid AS feed_row, a.handle, a.display_name, a.avatar FROM highlights h JOIN accounts a ON a.did=h.did`;
   const dids = value => (Array.isArray(value) ? value : String(value ?? "").split(",")).filter(isDid).slice(0, 2000);
 
   async function api({ method, path, query, host, ip, body, headers }) {
@@ -270,17 +270,22 @@ export async function createIndexer({ db, config = settings(), gate = text => mo
     }
     if (method === "POST" && path === "/feed") {
       const actors = dids(body.actors);
-      const before = typeof body.before === "string" && !Number.isNaN(Date.parse(body.before)) ? body.before : "9999";
+      // Old clients can continue from a timestamp. Include the row on new cursors so tied timestamps span pages.
+      const [time, row] = typeof body.before === "string" ? body.before.split("|") : [];
+      const before = time && Number.isFinite(Date.parse(time)) ? time : "9999";
+      const boundaryRow = row && /^\d{1,15}$/.test(row) ? Number(row) : 0;
       const limit = Math.min(50, Math.max(1, Number(body.limit) || 30));
       const scope = actors.length ? `h.did IN (${actors.map(() => "?").join(",")}) AND` : "";
-      const rows = await db.all(`${select} WHERE ${scope} h.created_at<? AND ${visible} ORDER BY h.created_at DESC, h.rowid DESC LIMIT ${limit}`, [...actors, before]);
+      const rows = await db.all(`${select} WHERE ${scope} (h.created_at,h.rowid)<(?,?) AND ${visible} ORDER BY h.created_at DESC, h.rowid DESC LIMIT ${limit}`, [...actors, before, boundaryRow]);
       const items = [];
       for (const row of rows) items.push({ ...(await withNote(view(row))), ...(await thread(row)) });
-      return { items, before: rows.length === limit ? rows[rows.length - 1].created_at : null };
+      const last = rows.at(-1);
+      return { items, before: rows.length === limit ? `${last.created_at}|${last.feed_row}` : null };
     }
     if (method === "GET" && path === "/actor") {
       const did = query.get("did");
       if (!isDid(did)) throw new HttpError(400, "Pass a did.");
+      if (query.get("view") === "follows") return { follows: await db.all("SELECT subject AS did FROM follows WHERE did=? LIMIT 2000", [did]) };
       const account = await ensureAccount(did);
       const mine = query.get("all") === "1";
       const rows = await db.all(`${select} WHERE h.did=? ${mine ? "" : `AND ${visible}`} ORDER BY h.created_at DESC, h.rowid DESC LIMIT 200`, [did]);

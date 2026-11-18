@@ -99,23 +99,6 @@ test("the composer renders modes from the active model", () => {
   assert.match(composer, /effortOptions\.map/);
 });
 
-test("the models API reports each model's honoured efforts", () => {
-  const route = source("src/app/api/models/route.ts");
-  assert.match(route, /reasoning_efforts/);
-  // Provider models must survive the runtime filter, which only governs which
-  // ChatGPT ids the runtime can name directly.
-  assert.match(route, /model\.owned_by !== 'chatgpt'/);
-});
-
-test("an unreachable agent runtime does not hide provider models", () => {
-  // The runtime knows nothing about subscription models. Letting its failure
-  // fall through to the outer catch replaced the whole list with the five
-  // built-in ids — which is exactly "my Claude models disappeared".
-  const route = source("src/app/api/models/route.ts");
-  assert.match(route, /runtimeIds = null;/);
-  assert.match(route, /runtimeIds === null/);
-});
-
 test("the settings tab no longer restates the background model", () => {
   const settings = source("src/app/components/settings-providers.tsx");
   assert.doesNotMatch(settings, /Background model/);

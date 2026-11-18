@@ -182,6 +182,7 @@ export interface ToolActivity {
   toolCallId: string;
   toolName: string;
   summary?: string;
+  spotifyPlaybackPrepared?: boolean;
   status: "running" | "completed" | "failed";
 }
 
@@ -1335,6 +1336,8 @@ interface CreateOptions {
   voice?: boolean;
   /** Destination for new terminal chats; existing chats keep their own context. */
   workspaceSlug?: string;
+  allowPersonalContext?: boolean;
+  pageTitle?: string;
   gardenSlug?: string;
   pageSlug?: string;
   title?: string;
@@ -1361,7 +1364,8 @@ function activeConversationStorageKey(
   options?: CreateOptions,
 ): string {
   if (options?.sideChat) return `breadboard-side-chat:${surface}:${options.gardenSlug ?? "global"}`;
-  const context = options?.voice ? 'voice' : options?.gardenSlug ?? options?.pageSlug ?? "global";
+  const context = options?.voice ? 'voice' : surface === "dashboard_terminal" && options?.pageSlug
+    ? options.pageSlug : options?.gardenSlug ?? options?.pageSlug ?? "global";
   return `breadboard-active-conversation:${surface}:${context}`;
 }
 
@@ -2661,6 +2665,9 @@ export function useAgentSession(
                 summary:
                   (payload.summary as string | undefined) ?? existing?.summary,
                 status: payload.success ? "completed" : "failed",
+                ...(typeof payload.spotifyPlaybackPrepared === "boolean"
+                  ? { spotifyPlaybackPrepared: payload.spotifyPlaybackPrepared }
+                  : {}),
               });
               if (payload.success && toolName === "save_memory") {
                 assistant = { ...assistant, memoryUpdated: true };
@@ -3784,6 +3791,7 @@ export function useAgentSession(
             clientMessageId: assistant.clientMessageId,
             text: input.text,
             responseStartedAt: assistant.responseStartedAt,
+            pageTitle:createOptions?.pageTitle,
             surface,
             model: input.options?.model,
             reasoningEffort: input.options?.reasoningEffort,
@@ -3796,7 +3804,7 @@ export function useAgentSession(
               input.options?.scheduledChatReceipt?.id,
             retry: input.retry,
             adhdMode: isDirectModeEnabled(),
-            personalize: isPersonalizeEnabled(),
+            personalize: createOptions?.allowPersonalContext !== false && isPersonalizeEnabled(),
             currentLocation: input.currentLocation,
             browserAccess: input.browserAccess,
           }),
@@ -3927,7 +3935,7 @@ export function useAgentSession(
       }
       stoppedTurnIdsRef.current.delete(clientMessageId);
     },
-    [surface, transition],
+    [surface, transition,createOptions?.pageTitle,createOptions?.allowPersonalContext],
   );
 
   const respondToClarification = useCallback(
@@ -4258,7 +4266,7 @@ export function useAgentSession(
               reasoningEffort: options?.reasoningEffort,
               superAgent: superAgentEnabled,
               adhdMode: isDirectModeEnabled(),
-              personalize: isPersonalizeEnabled(),
+              personalize: createOptions?.allowPersonalContext !== false && isPersonalizeEnabled(),
               yoloMode: isYoloModeEnabled(),
             },
           ),
@@ -4379,6 +4387,7 @@ export function useAgentSession(
                 activeGardenSlug: createOptions?.gardenSlug,
                 activePageSlug: createOptions?.pageSlug,
                 selectedText: options?.textSelection?.quote,
+                pageTitle: createOptions?.pageTitle,
               },
               model: options?.model,
               reasoningEffort: options?.reasoningEffort,
@@ -4399,7 +4408,7 @@ export function useAgentSession(
               // as it stood when this message was sent governs this turn only.
               superAgent: superAgentEnabled,
               adhdMode: isDirectModeEnabled(),
-              personalize: isPersonalizeEnabled(),
+              personalize: createOptions?.allowPersonalContext !== false && isPersonalizeEnabled(),
               yoloMode: isYoloModeEnabled(),
               currentLocation,
               browserAccess,

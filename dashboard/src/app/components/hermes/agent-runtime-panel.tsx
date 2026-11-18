@@ -32,7 +32,7 @@ import SteeredAssistantResponse, {
 } from "@/app/components/steered-assistant-response";
 import ChatModelChangeSeparator from "@/app/components/chat-model-change-separator";
 import ChatMessageAttachments from "@/app/components/chat-message-attachments";
-import { reusableChatAttachments } from "@/lib/chat-attachments";
+import { reusableChatAttachments, visibleChatMessageText } from "@/lib/chat-attachments";
 import ChatVideoLinkEmbeds from "@/app/components/chat-video-link-embed";
 import AssistantComposer, {
   type ComposerAttachment,
@@ -257,6 +257,8 @@ interface Props {
    */
   temporaryChat?: boolean;
   personalizedSuggestions?: boolean;
+  suggestionPageTitle?: string | null;
+  suggestionPage?: import('@/lib/browser-terminal').SuggestionPage | null;
   /** Side chats may retain starred answers while staying out of history. */
   sideChat?: boolean;
   steerError: string | null;
@@ -717,6 +719,8 @@ export default function AgentRuntimePanel({
   delegationInFlight = false,
   temporaryChat = false,
   personalizedSuggestions = true,
+  suggestionPageTitle,
+  suggestionPage,
   sideChat = false,
   steerError,
   error,
@@ -1221,9 +1225,9 @@ export default function AgentRuntimePanel({
     () =>
       spotifyPlayerAssistantIndex(
         messages,
-        runInFlight ? lastAssistantIndex : -1,
+        runInFlight ? messages.length - 1 : -1,
       ),
-    [lastAssistantIndex, messages, runInFlight],
+    [messages, runInFlight],
   );
   const inlinedCourseCorrections = useMemo(() => {
     const byAssistantIndex = new Map<number, CourseCorrectionBoundary[]>();
@@ -2813,6 +2817,8 @@ export default function AgentRuntimePanel({
                           {message.textSelection?.mode === "chat" ? (
                             <QuotedChatSelection selection={message.textSelection} />
                           ) : null}
+                          {/* An image sent on its own is shown by its preview alone. */}
+                          {visibleChatMessageText(message.content, message.attachments, message.attachmentNames) ? (
                           <div className="neu-chat-message neu-chat-message-user w-fit max-w-full rounded-[22px] px-4 py-2.5 text-sm leading-6">
                             <CollapsibleUserMessage
                               messageKey={messageBranchId(message, index)}
@@ -2820,6 +2826,7 @@ export default function AgentRuntimePanel({
                               <UserMessageText content={message.content} />
                             </CollapsibleUserMessage>
                           </div>
+                          ) : null}
                           <div className="mt-1 flex justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                             <button
                               type="button"
@@ -4244,6 +4251,8 @@ export default function AgentRuntimePanel({
         ) : null}
         <AssistantComposer
           personalizedSuggestions={personalizedSuggestions && !temporaryChat}
+          suggestionPageTitle={suggestionPageTitle}
+          suggestionPage={suggestionPage}
           className={`mx-auto w-full ${chatColumnWidthClass}`}
           compact={compact}
           value={input}
@@ -4382,6 +4391,8 @@ onSelectCareerOps={onSelectCareerOps}
           }) : undefined}
           voiceCreatedConversationId={createdSessionId}
           voiceClarification={pendingClarification}
+          voicePermission={pendingPermission ? { requestId: pendingPermission.requestId, description: pendingPermission.description, allowSession: pendingPermission.allowSession } : null}
+          onVoicePermission={onPermissionDecision}
           headerContent={queuedFollowUpsHeader || composerSelection ? (
             <>
               {queuedFollowUpsHeader}

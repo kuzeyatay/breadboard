@@ -24,6 +24,7 @@ import {
 import AssistantComposer from '@/app/components/assistant-composer';
 import { useRecommendations } from '@/app/components/use-recommendations';
 import { ChatSuggestionCards } from '@/app/components/hermes/chat-greeting-empty-state';
+import { usePageSuggestions } from '@/app/components/use-page-suggestions';
 import QuartzInlineAnswerPopover, { type QuartzAnswerSelection } from '@/app/garden/quartz-inline-answer-popover';
 import InlineArtifactCards, { InlineArtifactCardsProvider } from '@/app/components/hermes/inline-artifact-cards';
 import { useComposerInset } from '@/app/components/chat/use-composer-inset';
@@ -76,6 +77,7 @@ import { ChatModelChangeSeparators } from '@/app/components/chat-model-change-se
 import {
   CHAT_ATTACHMENT_ACCEPT,
   attachmentOnlyMessageText,
+  visibleChatMessageText,
   chatMessageAttachments,
   extractChatAttachments,
   reusableChatAttachments,
@@ -691,11 +693,13 @@ const TranscriptRow = memo(function TranscriptRow({
             onEdit={(text) => onEditUserMessage(message, text)}
             onDelete={() => onDeleteUserMessage(message)}
           >
+            {visibleChatMessageText(message.content, message.attachments, message.attachmentNames) ? (
             <div className="neu-chat-message neu-chat-message-user w-fit max-w-full rounded-[22px] px-4 py-2.5 text-sm leading-6">
               <CollapsibleUserMessage messageKey={messageKey}>
                 <UserMessageText content={message.content} />
               </CollapsibleUserMessage>
             </div>
+            ) : null}
           </UserMessageControls>
         ) : (
             <div className="text-sm leading-7 text-gray-200">
@@ -1387,7 +1391,7 @@ export default function GardenAssistant({
       setChatOpen(true);
       setShowHistory(false);
       if (String(activeChatId) === link.chatId) {
-        setChatQuestionTarget({ ...link, messageId: '', requestId: Date.now() });
+        setChatQuestionTarget({ ...link, messageId: link.messageId ?? '', requestId: Date.now() });
         return;
       }
       if (chatIsStreaming) {
@@ -1411,7 +1415,7 @@ export default function GardenAssistant({
       if (selected) {
         setChatSessions(current => current.some(session => session.id === selected!.id) ? current : [...current, selected!]);
         openChatSession(selected);
-        setChatQuestionTarget({ ...link, messageId: '', requestId: Date.now() });
+        setChatQuestionTarget({ ...link, messageId: link.messageId ?? '', requestId: Date.now() });
       } else setAttachmentStatus('This question’s chat is no longer available.');
     };
     window.addEventListener('message', openQuestion);
@@ -1882,7 +1886,7 @@ export default function GardenAssistant({
     }) : null;
     if (branch) saveBranchGroups({ ...branchGroups, [branch.groupId]: branch.group });
     const attachmentNames = pendingAttachments.map((attachment) => attachment.name);
-    const displayText = text || 'Please review the attached document(s).';
+    const displayText = text || attachmentOnlyMessageText(pendingAttachments);
     const turnCreatedAt = new Date().toISOString();
     const clientMessageId = crypto.randomUUID();
     const chatSelection = responseSelection ?? (selectionContext?.mode === 'chat' ? {
@@ -1899,7 +1903,12 @@ export default function GardenAssistant({
       content: displayText,
       createdAt: turnCreatedAt,
       attachmentNames,
-      attachments: chatMessageAttachments(pendingAttachments),
+      // The open page, shown like the PDF assistant's page chip. Its text
+      // already reaches the model as the active page context.
+      attachments: [
+        ...(activeMarkdown?.title ? [{ type: 'file' as const, name: 'Current page', context: 'web' as const, webPage: { title: activeMarkdown.title } }] : []),
+        ...chatMessageAttachments(pendingAttachments),
+      ],
       ...(selectedText ? { selectedText } : {}),
       ...(chatSelection ? { textSelection: chatSelection } : {}),
     };
@@ -2114,7 +2123,7 @@ export default function GardenAssistant({
           browserAccess: voice?.browserAccess,
           voice: voice?.voice,
           voiceOpener: voice?.voiceOpener,
-          attachments: pendingAttachments,
+          attachments: [...(voice?.attachments ?? []), ...pendingAttachments],
           activeMarkdown: activeMarkdownContext,
           selectedText,
           selectedTextContext: selectionContext,
@@ -2710,6 +2719,13 @@ export default function GardenAssistant({
     gardenSlug: activeClusterSlug, pageTitle: activeMarkdown?.title,
     temporary: temporaryChat, enabled: chatOpen && newChatPageSelected && hasActiveCluster,
   });
+  // The open page: openers and completions are about it, like the PDF assistant's.
+  const viewedPage = useMemo(
+    () => activeMarkdown?.title && activeMarkdown.content && !activeMarkdown.loading
+      ? { title: activeMarkdown.title, text: activeMarkdown.content.slice(0, 8_000) } : null,
+    [activeMarkdown?.title, activeMarkdown?.content, activeMarkdown?.loading],
+  );
+  const pageSuggestions = usePageSuggestions({ page: viewedPage, model, enabled: chatOpen && newChatPageSelected });
   const historySessions = chatSessions.filter(
     (session) => session.temporary !== true,
   );
@@ -2871,8 +2887,10 @@ export default function GardenAssistant({
               </div>
               {/* Only cards grounded in this garden; nothing generic when there are none. */}
               <ChatSuggestionCards
-                suggestions={recommendations.map(item => item.prompt)}
-                suggestionDetails={Object.fromEntries(recommendations.map(item => [item.prompt, { label: item.sourceLabel, usefulness: item.usefulness }]))}
+                suggestions={viewedPage ? pageSuggestions ?? [] : recommendations.map(item => item.prompt)}
+                suggestionDetails={viewedPage
+                  ? Object.fromEntries((pageSuggestions ?? []).map(prompt => [prompt, { label: 'This page' }]))
+                  : Object.fromEntries(recommendations.map(item => [item.prompt, { label: item.sourceLabel, usefulness: item.usefulness,lesson:item.lesson }]))}
                 suggestionScopeKey={JSON.stringify([activeClusterSlug,activeMarkdown?.title,temporaryChat])}
                 disabled={chatIsStreaming || !hasActiveCluster}
                 onSelectSuggestion={prompt => { setInput(prompt); composerTextareaRef.current?.focus(); }}
@@ -2978,6 +2996,8 @@ export default function GardenAssistant({
         ) : null}
         <AssistantComposer
           personalizedSuggestions={!temporaryChat && activeChat?.isOwn !== false}
+          suggestionPageTitle={activeMarkdown?.title}
+          suggestionPage={viewedPage}
           viewportBoundedIntelligence
           textareaRef={composerTextareaRef}
           capabilitySurface="garden_chat"

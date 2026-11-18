@@ -42,10 +42,10 @@ test('a failed artifact, delegate or unknown tool is never dismissed as a comple
         'a mixed workflow or successful launch is not proof of completed work: '+toolName);
     }
   }
-  assert.ok(taskRecoveryCheckpoint({status:'idle',completedVoiceAnswer:true,tools:[alternative,failedTool],turn:0}).checkpoint,
-    'a prior successful lookup does not resolve a later failure');
-  assert.ok(taskRecoveryCheckpoint({status:'idle',completedVoiceAnswer:true,tools:[failedTool,{toolName:'artifact_create',success:true}],turn:0}).checkpoint,
-    'an unrelated successful write is not replacement evidence');
+  // Like a typed answer, a finished spoken answer is not rerun for a failed lookup
+  // alone: the rerun changed what was heard and refused the next utterance (409).
+  assert.deepEqual(taskRecoveryCheckpoint({status:'idle',completedVoiceAnswer:true,tools:[alternative,failedTool],turn:0}),{});
+  assert.deepEqual(taskRecoveryCheckpoint({status:'idle',completedVoiceAnswer:true,tools:[failedTool],turn:0}),{});
 });
 
 test('only persisted completed answers suppress an intermediate lookup-error rerun',()=>{

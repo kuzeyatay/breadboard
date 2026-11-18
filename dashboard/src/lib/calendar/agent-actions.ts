@@ -9,6 +9,7 @@
 // recurrence semantics and subscribed-calendar write protection.
 
 import { readEventPatch } from "./payload.ts";
+import { publicPage } from "../personal-context/browser.ts";
 import {
   CalendarError,
   type CalendarStore,
@@ -96,11 +97,19 @@ export function createCalendarEvent(
     }
   }
 
-  const event = store.createEvent(userId, input as CalendarEventInput);
+  let source: string | null = null;
+  if (args.sourceUrl !== undefined) {
+    source = publicPage(args.sourceUrl);
+    if (!source || new URL(source).pathname === "/" || new URL(String(args.sourceUrl)).search) {
+      throw new CalendarError(400,"Supply the canonical item URL with its stable identifier in the path.");
+    }
+  }
+  const result = source ? store.createSourcedEvent(userId,input as CalendarEventInput,source)
+    : { created:true,event:store.createEvent(userId,input as CalendarEventInput) };
+  const calendar = result.event.calendarId === targetCalendar.id ? targetCalendar : store.getCalendar(userId,result.event.calendarId);
   return {
-    created: true as const,
-    event,
-    calendar: { id: targetCalendar.id, name: targetCalendar.name },
+    ...result,
+    calendar: { id: calendar.id, name: calendar.name },
   };
 }
 

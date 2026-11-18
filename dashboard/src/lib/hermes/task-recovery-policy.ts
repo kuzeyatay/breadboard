@@ -13,19 +13,11 @@ export interface RecoveryToolResult { toolName?: unknown; success?: unknown; sum
 const EVIDENCE_LOOKUPS = new Set([
   'web_search', 'web_extract', 'websearch', 'webfetch', 'weather_forecast',
   'map_search', 'map_nearby', 'map_route', 'map_get_selected_place',
-  'garden_search', 'garden_get_page', 'garden_get_page_context',
+  'garden_search', 'garden_grep', 'garden_get_page', 'garden_get_page_context',
   'garden_get_source_excerpt', 'garden_get_source_figure', 'garden_discover_sources',
   'memory_query', 'gbrain_search', 'gbrain_retrieve', 'image_search',
   'browser_terminal', 'tool_search', 'tool_describe', 'capability_search',
 ]);
-
-function recoveredVoiceLookups(tools: readonly RecoveryToolResult[], unresolved: readonly RecoveryToolResult[]): boolean {
-  // A successful launch is not proof that delegated work or its artifact is
-  // finished. Mixed workflow runs retain the full recovery policy.
-  if (!unresolved.length || tools.some(tool => !EVIDENCE_LOOKUPS.has(String(tool.toolName)))) return false;
-  const lastFailure = Math.max(...unresolved.map(tool => tools.lastIndexOf(tool)));
-  return tools.slice(lastFailure + 1).some(tool => tool.success === true && EVIDENCE_LOOKUPS.has(String(tool.toolName)));
-}
 
 /** Preserve actual tool diagnostics even when the display summary is generic. */
 export function recoveryToolFailure(tool: RecoveryToolResult & { details?: Record<string, unknown> }): RecoveryFailure {
@@ -99,15 +91,14 @@ export function taskRecoveryCheckpoint(input: {
   // is a finished conversational turn. Incidental lookup failures are not an
   // unfinished job. Real run failures, writes and missing deliverables retain
   // their recovery checks; the model must resolve lookups before finishing.
-  if (input.completedTextAnswer && !input.failure &&
+  // Voice included: re-running a spoken answer changes it after it was heard
+  // and holds the conversation, so the user's next utterance is refused.
+  // A spoken turn that also launched work or wrote an artifact keeps recovery.
+  const lookupOnlyVoice = input.completedVoiceAnswer === true &&
+    input.tools.every(tool => EVIDENCE_LOOKUPS.has(String(tool.toolName)));
+  if ((input.completedTextAnswer || lookupOnlyVoice) && !input.failure &&
       (input.status === "idle" || input.status === "completed") &&
       unresolved.every(tool => EVIDENCE_LOOKUPS.has(String(tool.toolName)))) return {};
-  // Re-running a delivered spoken answer after a successful alternative lookup
-  // changes the text after it was heard. Scope this to evidence gathering:
-  // failed writes/artifacts/delegates, missing answers and run failures recover.
-  if (input.completedVoiceAnswer && !input.failure &&
-      (input.status === "idle" || input.status === "completed") &&
-      recoveredVoiceLookups(input.tools, unresolved)) return {};
   const failure = input.status === "idle" || input.status === "completed"
     ? unresolved.length ? { code: "task_tool_failed", message: unresolved.map(t => `${t.toolName}: ${t.failure?.message ?? String(t.summary ?? "failed")}`).join("; ") } : undefined
     : input.failure ?? { code: "runtime_interrupted", message: "The runtime ended before completing the task." };

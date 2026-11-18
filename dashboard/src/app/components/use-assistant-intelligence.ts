@@ -13,16 +13,14 @@ export const ASSISTANT_MODEL_STORAGE_KEY = "breadboard:assistant-model";
 export const ASSISTANT_FALLBACK_MODEL_STORAGE_KEY = "breadboard:assistant-fallback-model";
 export const ASSISTANT_EFFORT_STORAGE_KEY = "breadboard:assistant-reasoning-effort";
 export const ASSISTANT_EFFORT_BY_MODEL_STORAGE_KEY = "breadboard:assistant-reasoning-effort-by-model";
-// The last model a person actually picked, wherever they picked it. Every chat
-// surface reads it, so a choice made in the terminal is the choice a garden
-// workspace opens with. A chat the person gave its own model keeps that model:
-// only the pick is shared, not the pinning.
+// The active chat picker and its initial value are shared across renderers.
 export const ASSISTANT_CURRENT_SELECTION_STORAGE_KEY = "breadboard:assistant-current-selection";
+const CHAT_STARTUP_STORAGE_KEY = "breadboard:chat-startup-selection";
 export const ASSISTANT_INTELLIGENCE_EVENT = "breadboard:assistant-intelligence-change";
 const OVERRIDE_PREFIX = "breadboard:intelligence-override:";
 const transientOverrides = new Map<string, string>();
-// Capture the startup choice once per page runtime. Saving a future startup
-// preference must not move an open composer or a newly mounted chat surface.
+const unsavedStorage = new Map<string, string | null>();
+// Independent controls keep the preference they loaded with.
 let startupModel: string | null = null;
 let startupEffort: string | null = null;
 
@@ -36,7 +34,16 @@ function normalizeRememberedEfforts(value: unknown): Record<string, AssistantRea
 }
 
 function readStorage(key: string): string | null {
+  if (unsavedStorage.has(key)) return unsavedStorage.get(key) ?? null;
   try { return window.localStorage.getItem(key); } catch { return null; }
+}
+
+function writeStorage(key: string, value: string | null): void {
+  try {
+    if (value === null) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, value);
+    unsavedStorage.delete(key);
+  } catch { unsavedStorage.set(key, value); }
 }
 
 /** When this record's model was chosen by hand; 0 for one that was inherited. */
@@ -45,17 +52,10 @@ function pickedAt(record: Record<string, unknown>): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function writeCurrentSelection(value: string | null): void {
-  try {
-    if (value === null) window.localStorage.removeItem(ASSISTANT_CURRENT_SELECTION_STORAGE_KEY);
-    else window.localStorage.setItem(ASSISTANT_CURRENT_SELECTION_STORAGE_KEY, value);
-  } catch { /* A private window still gets a working picker, just not a shared one. */ }
-}
-
 /** Forget the shared pick so every surface falls back to the profile default. */
 export function clearCurrentAssistantSelection(): void {
   if (typeof window === "undefined") return;
-  writeCurrentSelection(null);
+  writeStorage(ASSISTANT_CURRENT_SELECTION_STORAGE_KEY, null);
   window.dispatchEvent(new Event(ASSISTANT_INTELLIGENCE_EVENT));
 }
 
@@ -74,11 +74,15 @@ export function applySavedAssistantIntelligence(data: AssistantPreferencesPayloa
     startupModel = model;
     startupEffort = isEffort(data.reasoningEffort) ? data.reasoningEffort : DEFAULT_ASSISTANT_REASONING_EFFORT;
   }
-  window.localStorage.setItem(ASSISTANT_MODEL_STORAGE_KEY, model);
+  const chatStartup = data.chatStartup;
+  if (chatStartup && normalizeAssistantModelId(chatStartup.model) && isEffort(chatStartup.reasoningEffort)) {
+    writeStorage(CHAT_STARTUP_STORAGE_KEY, JSON.stringify(chatStartup));
+  }
+  writeStorage(ASSISTANT_MODEL_STORAGE_KEY, model);
   const fallbackModel = normalizeAssistantModelId(data.fallbackModel);
-  if (fallbackModel) window.localStorage.setItem(ASSISTANT_FALLBACK_MODEL_STORAGE_KEY, fallbackModel);
-  if (isEffort(data.reasoningEffort)) window.localStorage.setItem(ASSISTANT_EFFORT_STORAGE_KEY, data.reasoningEffort);
-  window.localStorage.setItem(ASSISTANT_EFFORT_BY_MODEL_STORAGE_KEY, JSON.stringify(normalizeRememberedEfforts(data.reasoningEffortByModel)));
+  if (fallbackModel) writeStorage(ASSISTANT_FALLBACK_MODEL_STORAGE_KEY, fallbackModel);
+  if (isEffort(data.reasoningEffort)) writeStorage(ASSISTANT_EFFORT_STORAGE_KEY, data.reasoningEffort);
+  writeStorage(ASSISTANT_EFFORT_BY_MODEL_STORAGE_KEY, JSON.stringify(normalizeRememberedEfforts(data.reasoningEffortByModel)));
   window.dispatchEvent(new Event(ASSISTANT_INTELLIGENCE_EVENT));
 }
 
@@ -108,7 +112,7 @@ export interface AssistantIntelligenceScope {
   shared?: boolean;
 }
 
-const SERVER_SNAPSHOT = JSON.stringify([null, null, null, null, null]);
+const SERVER_SNAPSHOT = JSON.stringify([null, null, null, null, null, null]);
 
 export function useAssistantIntelligence(options: AssistantIntelligenceScope = {}) {
   const [instanceId] = useState(() => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
@@ -124,10 +128,7 @@ export function useAssistantIntelligence(options: AssistantIntelligenceScope = {
   const writeOverride = useCallback((target: string, value: string | null) => {
     transientOverrides.delete(target);
     if (persist && target !== draftKey) {
-      try {
-        if (value === null) window.localStorage.removeItem(target);
-        else window.localStorage.setItem(target, value);
-      } catch { if (value !== null) transientOverrides.set(target, value); }
+      writeStorage(target, value);
     } else if (value === null) transientOverrides.delete(target);
     else transientOverrides.set(target, value);
     window.dispatchEvent(new Event(ASSISTANT_INTELLIGENCE_EVENT));
@@ -147,6 +148,8 @@ export function useAssistantIntelligence(options: AssistantIntelligenceScope = {
     window.addEventListener(ASSISTANT_INTELLIGENCE_EVENT, listener);
     const onStorage = (event: StorageEvent) => {
       // A pick in another window reaches this one as a storage event.
+      if (event.key === null) unsavedStorage.clear();
+      else unsavedStorage.delete(event.key);
       if (event.key === null || [ASSISTANT_MODEL_STORAGE_KEY, ASSISTANT_FALLBACK_MODEL_STORAGE_KEY, ASSISTANT_EFFORT_STORAGE_KEY, ASSISTANT_EFFORT_BY_MODEL_STORAGE_KEY].includes(event.key)) invalidateAssistantPreferences();
       listener();
     };
@@ -160,24 +163,23 @@ export function useAssistantIntelligence(options: AssistantIntelligenceScope = {
     startupModel, startupEffort,
     readStorage(ASSISTANT_EFFORT_BY_MODEL_STORAGE_KEY), readOverride(key),
     sharesSelection ? readStorage(ASSISTANT_CURRENT_SELECTION_STORAGE_KEY) : null,
+    sharesSelection ? readStorage(CHAT_STARTUP_STORAGE_KEY) : null,
   ]), [key, readOverride, sharesSelection]);
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, () => SERVER_SNAPSHOT);
-  const [defaultModel, defaultEffort, defaultEffortsRaw, overrideRaw, sharedRaw] = useMemo(() => JSON.parse(snapshot) as (string | null)[], [snapshot]);
+  const [defaultModel, defaultEffort, defaultEffortsRaw, overrideRaw, sharedRaw, chatStartupRaw] = useMemo(() => JSON.parse(snapshot) as (string | null)[], [snapshot]);
   const override = useMemo(() => parseRecord(overrideRaw), [overrideRaw]);
-  // The pick that is current across every surface. A scoped selection outranks
-  // it only while it is the more recent of the two: a chat that merely
-  // inherited its model (never stamped, so older than any pick) follows along,
-  // while a model chosen inside this chat stays put until the person picks
-  // again - here or anywhere else.
   const shared = useMemo(() => parseRecord(sharedRaw), [sharedRaw]);
-  const scopedIsCurrent = pickedAt(override) >= pickedAt(shared);
+  const chatStartup = useMemo(() => parseRecord(chatStartupRaw), [chatStartupRaw]);
+  // A private pick stays in its window. Regular chat surfaces always use
+  // the shared picker, including chats with overrides saved by older builds.
+  const scopedIsCurrent = !sharesSelection || (!persist && pickedAt(override) > 0 && pickedAt(override) >= pickedAt(shared));
   const model = (scopedIsCurrent ? normalizeAssistantModelId(override.model) : null)
     ?? normalizeAssistantModelId(shared.model)
-    ?? normalizeAssistantModelId(override.model)
+    ?? normalizeAssistantModelId(chatStartup.model)
     ?? normalizeAssistantModelId(defaultModel) ?? DEFAULT_MODEL;
   const sharedEffort = isEffort(shared.reasoningEffort) ? shared.reasoningEffort : null;
   const chosenEffort = (scopedIsCurrent && isEffort(override.reasoningEffort)) ? override.reasoningEffort
-    : sharedEffort ?? (isEffort(override.reasoningEffort) ? override.reasoningEffort
+    : sharedEffort ?? (isEffort(chatStartup.reasoningEffort) ? chatStartup.reasoningEffort
       : isEffort(defaultEffort) ? defaultEffort : DEFAULT_ASSISTANT_REASONING_EFFORT);
 
   useEffect(() => {
@@ -209,31 +211,25 @@ export function useAssistantIntelligence(options: AssistantIntelligenceScope = {
   const reasoningEffort = clampIntelligenceMode(chosenEffort, intelligenceModes) ?? chosenEffort;
 
   useLayoutEffect(() => {
-    // An existing chat owns its inherited selection too. Otherwise changing
-    // the profile replaces its model underneath the conversation, and the
-    // next highlight question unexpectedly runs on the new default.
-    // Drafts and standalone controls continue to inherit the startup choice.
-    // Wait for an actual preference instead of saving the hydration fallback.
-    if (options.sessionId == null || !normalizeAssistantModelId(defaultModel)) return;
+    // Only independent conversations keep a copy of their inherited choice.
+    if (sharesSelection || options.sessionId == null || !normalizeAssistantModelId(defaultModel)) return;
     // Read again because the draft-transfer layout effect may have just saved
     // a different choice for this newly created chat.
     const current = parseRecord(readOverride(key));
     if (normalizeAssistantModelId(current.model)) return;
-    // No `picked` stamp: this chat was handed the current selection, it did
-    // not choose one, so a later pick on any surface still reaches it.
     writeOverride(key, JSON.stringify({ ...current, model, reasoningEffort }));
-  }, [defaultModel, key, model, options.sessionId, readOverride, reasoningEffort, writeOverride]);
+  }, [defaultModel, key, model, options.sessionId, readOverride, reasoningEffort, sharesSelection, writeOverride]);
 
   // A pick is published for every other chat surface to open with. Scopes that
   // do not persist - a temporary chat, the profile panel's own preview - keep
   // their choice to themselves.
   const publish = useCallback((chosenModel: string, effort: AssistantReasoningEffort, at: number) => {
     if (!persist || !sharesSelection) return;
-    writeCurrentSelection(JSON.stringify({ model: chosenModel, reasoningEffort: effort, at }));
+    writeStorage(ASSISTANT_CURRENT_SELECTION_STORAGE_KEY, JSON.stringify({ model: chosenModel, reasoningEffort: effort, at }));
   }, [persist, sharesSelection]);
   const resetModel = useCallback(() => {
     // "Use my default" is an instruction about every surface, not just this one.
-    if (persist && sharesSelection) writeCurrentSelection(null);
+    if (persist && sharesSelection) writeStorage(ASSISTANT_CURRENT_SELECTION_STORAGE_KEY, null);
     writeOverride(key, null);
   }, [key, persist, sharesSelection, writeOverride]);
   const setModel = useCallback((value: string) => {

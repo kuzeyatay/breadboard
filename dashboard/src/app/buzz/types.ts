@@ -20,6 +20,8 @@ export interface BuzzCommunity {
   name: string;
   role: string;
   people: Array<{ userId: number; username: string }>;
+  /** Gardens shared with this organization, opened from the room rail. */
+  workspaces?: Array<{ slug: string; name: string }>;
 }
 
 export interface BuzzRoomSummary {

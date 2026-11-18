@@ -29,7 +29,7 @@ test('Quartz menus fit clipped panels while Garden workspace keeps its original 
           <article><p>At every position, the electromagnetic field has values that determine how a charged particle placed there would move.</p></article>
           <footer><AssistantComposer compact={quartz} viewportBoundedIntelligence={quartz}
             capabilitySurface="garden_chat" value={value} onChange={setValue} onSubmit={()=>{}}
-            canSubmit model={model} models={['gpt-5.6-terra','gpt-5.6-luna','gpt-5.5','gpt-5.4','gpt-oss-120b-medium', ...Array.from({length:12},(_,i)=>'cliproxy/gemini-'+i)]}
+            canSubmit model={model} models={['gpt-6.2-astra','gpt-6.2-sol','gpt-5.6-terra','gpt-5.6-luna','gpt-5.5','gpt-5.4','gpt-oss-120b-medium', ...Array.from({length:12},(_,i)=>'cliproxy/gemini-'+i)]}
             reasoningEffort={effort} onModelChange={setModel} onReasoningEffortChange={setEffort}/></footer>
         </aside>;
       }
@@ -89,6 +89,31 @@ test('Quartz menus fit clipped panels while Garden workspace keeps its original 
       }), true);
     };
     await trigger.click();
+    const modelSearch = menu.getByRole('searchbox', {name:'Search models'});
+    const modelList = menu.getByRole('group', {name:'Models',exact:true});
+    await modelSearch.fill('  6.2  ');
+    assert.deepEqual(await modelList.getByRole('button').allTextContents(), ['GPT-6.2 Astra', 'GPT-6.2 Sol']);
+    await modelList.getByRole('button', {name:'GPT-6.2 Astra',exact:true}).click();
+    assert.equal(await page.evaluate(()=>window.selection.model), 'gpt-6.2-astra');
+    await modelSearch.fill('SOL 6.2');
+    assert.deepEqual(await modelList.getByRole('button').allTextContents(), ['GPT-6.2 Sol']);
+    await modelList.getByRole('button', {name:'GPT-6.2 Sol',exact:true}).click();
+    assert.equal(await page.evaluate(()=>window.selection.model), 'gpt-6.2-sol');
+    await modelSearch.fill('google');
+    assert.equal(await modelList.getByRole('button').count(), 12);
+    await modelSearch.fill('cliproxy/gemini-11');
+    assert.deepEqual(await modelList.getByRole('button').allTextContents(), ['Gemini 11']);
+    await modelSearch.fill('no-such-model');
+    await modelList.getByRole('status').filter({hasText:'No models found.'}).waitFor();
+    assert.equal(await modelList.getByRole('button').count(), 0);
+    assert.equal(await page.evaluate(()=>window.selection.model), 'gpt-6.2-sol');
+    await modelSearch.fill('');
+    assert.equal(await modelList.getByRole('button').count(), 19);
+    await modelSearch.fill('astra');
+    await page.keyboard.press('Escape');
+    await menu.waitFor({state:'detached'});
+    await trigger.click();
+    assert.equal(await modelSearch.inputValue(), '');
     for (const viewport of [{width:624,height:934}, {width:390,height:700}, {width:624,height:420}, {width:1282,height:922}, {width:1024,height:768}, {width:1440,height:900}]) {
       await page.setViewportSize(viewport);
       await fits(menu);

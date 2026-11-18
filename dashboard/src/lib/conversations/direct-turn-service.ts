@@ -55,6 +55,7 @@ import {
   reasoningTextFromOutputItem,
 } from "../responses-stream-text.ts";
 import type { HermesSurface } from "../hermes/config.ts";
+import { personalTurnPrompt } from "../personal-context/resolve.ts";
 import { ApiError } from "../hermes/route-core.ts";
 import {
   getRuntimeSessionByConversation,
@@ -168,6 +169,8 @@ export interface StartDirectTurnInput {
    * with Agent mode on would silently stop working when they switched it off.
    */
   adhdMode?: boolean;
+  personalize?: boolean;
+  pageTitle?: string;
   currentLocation?: CurrentLocationSnapshot;
   browserAccess?: BrowserTerminalAccess;
 }
@@ -640,6 +643,12 @@ export async function startDirectProviderTurn(
       baseURL,
       apiKey: process.env.OPENAI_API_KEY || "local",
     });
+    const personalContext = await personalTurnPrompt({
+      userId:input.conversation.user_id, conversationId:input.conversation.id, surface:input.surface,
+      gardenId:input.conversation.default_garden_id, query:requestText, personalize:input.personalize === true,
+      focus:input.pageTitle || input.textSelection?.sourceTitle,
+      temporary:input.conversation.temporary, internal:input.internalAgentContinuation,
+    });
     const requestBody = {
       model,
       instructions: directSystemPrompt(
@@ -658,6 +667,7 @@ export async function startDirectProviderTurn(
         botPersonalityPrompt(botsStore().forConversation(input.conversation.user_id, input.conversation.public_id)),
         input.conversation.user_id,
       )
+        + (personalContext ? "\n\n"+personalContext+"\nThis turn can explain the supplied evidence. It cannot use tools or perform actions." : "")
         + (attachments.some(item => item.type === "image") ? "\n\n" + imageAnnotationPrompt(attachments, reservation.userMessage) : "")
         + "\n\n" + await browserTerminalPrompt(input.surface !== "quartz_ai" ? input.browserAccess : undefined, false, { userId: input.conversation.user_id }),
       input: [

@@ -185,6 +185,8 @@ export interface TabsState {
   presentedId?: number | null;
   /** Native content currently in front, including an outgoing page during preparation. */
   visibleId?: number | null;
+  /** Closed website whose native page is still visible during a handoff. */
+  retainedBrowserTab?: TabView;
   /** Presented panes that can be read, including the inactive split partner. */
   visibleIds?: number[];
   notificationPageVisible?: boolean;
@@ -365,12 +367,12 @@ export interface BrowserHistorySnapshot {
   error: string | null;
 }
 
-export type BrowserHistoryCommand = { type: "clear" } | { type: "remove"; url: string };
+export type BrowserHistoryCommand = { type: "clear" | "import-personal" } | { type: "remove"; url: string };
 
 export function isBrowserHistoryCommand(value: unknown): value is BrowserHistoryCommand {
   if (!value || typeof value !== "object") return false;
   const command = value as Record<string, unknown>;
-  return command.type === "clear" || (command.type === "remove" && typeof command.url === "string");
+  return command.type === "clear" || command.type === "import-personal" || (command.type === "remove" && typeof command.url === "string");
 }
 
 /** Keep the renderer-to-disk bookmark payload small and display-safe. */
@@ -561,8 +563,8 @@ type TabsAction =
   | { type: "browser-answer-ready" }
   | { type: "browser-answer-state"; state: BrowserInlineAnswerState }
   | { type: "browser-answer-action"; action: BrowserInlineAnswerAction }
-  | { type: "browser-answer-resize"; width: number; height: number }
-  | { type: "browser-answer-move"; dx: number; dy: number }
+  /** width/height: the root card's box; frame: every open card, relative to the root's home. */
+  | { type: "browser-answer-resize"; width: number; height: number; frame: { x: number; y: number; width: number; height: number } }
   | { type: "browser-extensions-close" }
   | { type: "browser-extensions-picture-in-picture" }
   | { type: "browser-hls-download"; id: string }
@@ -706,10 +708,13 @@ export function isTabsCommand(value: unknown): value is TabsCommand {
         (command.action !== "highlight" || ["blue", "green", "pink", "purple"].includes(command.value as string));
     case "browser-answer-state": return isBrowserInlineAnswerState(command.state);
     case "browser-answer-action": return isBrowserInlineAnswerAction(command.action);
-    case "browser-answer-resize":
-      return [command.width, command.height].every(value => typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 3000);
-    case "browser-answer-move":
-      return [command.dx, command.dy].every(value => typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 20000);
+    case "browser-answer-resize": {
+      const frame = command.frame as Record<string, unknown> | undefined;
+      return [command.width, command.height].every(value => typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 3000) &&
+        !!frame && typeof frame === "object" &&
+        [frame.width, frame.height].every(value => typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 20000) &&
+        [frame.x, frame.y].every(value => typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 20000);
+    }
     case "browser-selection-delete":
       return typeof command.id === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(command.id) &&
         typeof command.url === "string" && command.url.length <= 1800;

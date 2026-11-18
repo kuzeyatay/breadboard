@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -205,6 +206,16 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "periodic",
     "window",
 ]
+
+_PLAN_LIMIT_RESET = re.compile(r"resets? in (?:\d+\s*d\b|\d+\s*h\b|\d+\s*(?:day|hour)s?\b)")
+
+
+def _is_plan_usage_limit(error_msg: str) -> bool:
+    """A subscription window is spent and resets hours or days from now."""
+    if "usage limit has been reached" not in error_msg and "usage limit reached" not in error_msg:
+        return False
+    return "weekly" in error_msg or bool(_PLAN_LIMIT_RESET.search(error_msg))
+
 
 # Payload-too-large patterns detected from message text (no status_code attr).
 # Proxies and some backends embed the HTTP status in the error message.
@@ -1045,6 +1056,17 @@ def _classify_by_status(
         # wraps upstream errors with the outer message "Provider returned
         # error" — the user's key is healthy, so marking it exhausted / rotating
         # is wrong and burns the key for ~24min. Fall back to a different model.
+        # A plan's usage limit ("weekly ... limit has been reached; it resets
+        # in 2d 19h") is not a burst limit: backing off seconds cannot fix it,
+        # and three retries made a spoken turn wait 13-22 s to say so. Skip
+        # the retry loop; rotation and fallback still run.
+        if _is_plan_usage_limit(error_msg):
+            return result_fn(
+                FailoverReason.rate_limit,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         if _is_openrouter_upstream_error(body, provider):
             upstream_provider = _extract_upstream_provider_name(body)
             ctx = {"upstream_provider": upstream_provider} if upstream_provider else {}

@@ -28,7 +28,7 @@ export function attachedImages(messages: readonly ImageMessage[], uploadsOnly = 
     // unavailable. Never silently substitute screenshots from an older turn.
     if (images.length || attachments.some(attachment => uploadsOnly
       ? attachment.type === "document" && !attachment.context
-      : attachment.type === "document" || attachment.context === "workspace")) return images;
+      : attachment.type === "document" || attachment.context === "workspace" || attachment.context === "web")) return images;
   }
   return [];
 }

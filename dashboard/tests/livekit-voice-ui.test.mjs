@@ -45,7 +45,7 @@ test('continuous voice interrupts greetings and streamed replies for local and s
     loader: { '.css': 'empty', '.module.css': 'empty' }, define: { 'process.env.NODE_ENV': '"production"' },
     plugins: [{ name: 'voice-fixture', setup(build) {
       const stubs = {
-        'voice-cues': `export const playVoiceCue=cue=>window.cues.push(cue);`,
+        'voice-cues': `export const playVoiceCue=cue=>window.cues.push(cue);export const playListeningSound=()=>{};export const prepareListeningSound=()=>{};`,
         'voice-response': `export default function VoiceResponse(){return null;}`,
         'clap/audio-focus': `export const requestForegroundMicrophone=()=>navigator.mediaDevices.getUserMedia();export const stopForegroundStream=s=>s?.getTracks().forEach(t=>t.stop());export const holdForegroundAudio=()=>()=>{};`,
         'clap-wake': `export const holdClapWake=()=>()=>{};`,
@@ -65,7 +65,7 @@ test('continuous voice interrupts greetings and streamed replies for local and s
         'subscription-live': `export const subscriptionSelected=async()=>window.cloud;export async function connectSubscriptionVoice(){let finish;return{
           isHealthy:()=>true,setDuplex:v=>window.duplex=v,setListening:v=>window.listening=v,resetTranscript(){},
           prepareSpeaker:async()=>{window.preparations++;},close:async()=>{},finishTranscript:async()=>window.transcript,
-          stopSpeaking(){window.playbackStoppedAt=performance.now();finish?.();},speak(text){if(!window.duplex)window.listening=false;window.played.push(text);return new Promise(resolve=>{finish=resolve;window.finishAudio=resolve;});}
+          stopSpeaking(){window.playbackStoppedAt=performance.now();finish?.();},hold(held){if(held)window.playbackStoppedAt=performance.now();},speak(text){if(!window.duplex)window.listening=false;window.played.push(text);return new Promise(resolve=>{finish=resolve;window.finishAudio=resolve;});}
         };}`,
       };
       build.onResolve({filter:/.*/},args=>{
@@ -124,9 +124,11 @@ test('continuous voice interrupts greetings and streamed replies for local and s
       assert.ok(interruptionMs>=0 && interruptionMs<100, 'confirmed speech must stop playback synchronously');
       t.diagnostic(`${provider} browser: playback stopped ${interruptionMs.toFixed(1)} ms after simulated LiveKit speech-start.`);
       await page.locator('.voice-stage[data-stage="listening"]').waitFor();
-      await page.waitForFunction(()=>window.stops===1);
+      // Speech over a reply pauses it; the run stops once the words show it was a turn.
+      assert.equal(await page.evaluate(()=>window.stops),0,'a sound alone does not cancel the reply');
       assert.ok(await page.evaluate(()=>window.frames)>0,'mic keeps feeding LiveKit during playback');
       await page.evaluate(()=>{window.transcript='Actually explain the second question';window.frame();window.detect('speech-end');});
+      await page.waitForFunction(()=>window.stops===1);
       await page.waitForFunction(()=>window.sent.length===2);
       assert.equal(await page.evaluate(()=>window.sent[1]),'Actually explain the second question');
       await page.evaluate(()=>window.oldFinish());
@@ -148,10 +150,11 @@ test('continuous voice interrupts greetings and streamed replies for local and s
       assert.equal(await fallback.locator('.voice-stage').getAttribute('data-stage'),'speaking','a click cannot interrupt');
       await fallback.evaluate(()=>{for(let i=0;i<8;i++)window.frame();});
       await fallback.locator('.voice-stage[data-stage="listening"]').waitFor();
-      await fallback.waitForFunction(()=>window.stops===1);
+      assert.equal(await fallback.evaluate(()=>window.stops),0,'the reply is paused until the words decide');
       if(provider==='cloud') assert.equal(await fallback.evaluate(()=>window.listening),true);
-      t.diagnostic(`${provider}: acoustic fallback interrupted after 341 ms of sustained simulated speech, preserving pre-roll.`);
+      t.diagnostic(`${provider}: acoustic fallback paused the reply after 341 ms of sustained simulated speech, preserving pre-roll.`);
       await fallback.evaluate(()=>{window.transcript='Actually, I meant the other one';for(let i=0;i<27;i++)window.frame(0.001);});
+      await fallback.waitForFunction(()=>window.stops===1);
       await fallback.waitForFunction(()=>window.sent.length===2);
       assert.equal(await fallback.evaluate(()=>window.sent[1]),'Actually, I meant the other one');
       await fallback.getByRole('button',{name:'Stop waiting for the answer',exact:true}).click();

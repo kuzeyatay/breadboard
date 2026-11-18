@@ -59,6 +59,7 @@ async function updateContentMeta() {
     }
     const suffix = isFolder ? " total" : ""
     const date = metadata?.querySelector("time")
+    const authorship = metadata?.querySelector<HTMLElement>(".bb-authorship") ?? authorshipStatus()
     if (!metadata) {
       metadata = document.createElement("p")
       metadata.className = "content-meta"
@@ -76,10 +77,33 @@ async function updateContentMeta() {
         `~${formatDuration(handwritingMinutes, locale)} to handwrite${suffix}`,
         `Estimated at ${handwritingWordsPerMinute} words per minute`,
       ),
+      ...(authorship && !isFolder ? [authorship] : []),
     )
   } catch {
     // Keep the build-time metadata if the content index is unavailable.
   }
+}
+
+// Older scoped HTML lacks the status segment; rebuild it from the article's data.
+function authorshipStatus() {
+  const data = document.querySelector<HTMLElement>("article[data-authorship-state]")?.dataset
+  if (!data?.authorshipState || !data.authorship) return null
+  const status = document.createElement("span")
+  status.className = "bb-authorship"
+  status.dataset.state = data.authorshipState
+  const label = document.createElement("span")
+  label.className = "bb-authorship-label"
+  label.textContent = data.authorship
+  status.append("Status: ", label)
+  if (data.authorshipScore) {
+    const score = document.createElement("span")
+    score.className = "bb-authorship-score"
+    score.tabIndex = 0
+    score.title = data.authorshipBreakdown ?? ""
+    score.textContent = ` ${data.authorshipScore}%`
+    status.append(score)
+  }
+  return status
 }
 
 const metadataWindow = window as Window & { __quartzContentMetaInstalled?: boolean }

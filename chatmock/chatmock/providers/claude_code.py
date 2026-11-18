@@ -313,6 +313,9 @@ def _system_prompt(
                 else "Do not use Claude Code's filesystem, shell, web, plugins, skills, or MCP tools; they are disabled."
             ),
             "Select Breadboard functions only from AVAILABLE_FUNCTIONS when they are needed.",
+            # Seen 2026-11-17: the model invoked map_search as a native CLI
+            # tool, got "no such tool", and told the user the maps were down.
+            "AVAILABLE_FUNCTIONS are not tools you can invoke in this session: request one only by listing it in the tool_calls field of your structured output, and Breadboard runs it. Never treat an unavailable-tool error as the function failing; return the call in tool_calls instead.",
             "Return requested functions in tool_calls and never claim a function result before its tool-result message exists.",
             "When no function is needed, return the user-facing answer in content and an empty tool_calls array.",
             "When functions are needed, content may be empty or contain a short lead-in.",
@@ -401,7 +404,7 @@ def _run_cli(payload: Dict[str, Any], model: str) -> Dict[str, Any]:
             # it room to validate/retry without enabling an autonomous tool
             # loop; each attached image costs one more Read round-trip.
             "--max-turns",
-            "6" if image_count else "3",
+            "8" if image_count else "5",
             # Read is the one tool the CLI may use, and only when images were
             # extracted above: it is how the model gets pixels instead of
             # base64 prompt text. cwd is the throwaway temp_dir.

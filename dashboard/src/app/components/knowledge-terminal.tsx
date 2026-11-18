@@ -54,7 +54,9 @@ import { UserMessageText } from '@/app/components/hermes/command-text';
 import CollapsibleUserMessage from '@/app/components/chat/collapsible-user-message';
 import {
   CHAT_ATTACHMENT_ACCEPT,
+  attachmentOnlyMessageText,
   extractChatAttachments,
+  visibleChatMessageText,
   type ChatAttachment,
 } from '@/lib/chat-attachments';
 import { distillAttachments } from '@/lib/document-skills/client';
@@ -95,7 +97,10 @@ interface ChatSession {
 type TerminalScope = 'mine' | 'public';
 
 interface Props {
+  privateBrowser?: boolean;
+  pageTitle?: string | null;
   scope: TerminalScope;
+  onOpenRecentChat: (text: string, conversationId: string) => void;
 }
 
 const HISTORY_KEY = 'breadboard:knowledge-terminal-history';
@@ -252,7 +257,7 @@ const TranscriptRow = memo(function TranscriptRow({
   );
 });
 
-export default function KnowledgeTerminal({ scope }: Props) {
+export default function KnowledgeTerminal({ scope, onOpenRecentChat, privateBrowser = false, pageTitle }: Props) {
   const dockRef = useRef<HTMLElement | null>(null);
   const resizeStartRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
@@ -305,9 +310,13 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const [input, setInput] = useState('');
   // Same greeting engine the runtime terminal uses, so the legacy transport
   // opens on the same words rather than on a heading of its own.
-  const chatGreeting = useChatGreeting({ scope, temporary: false });
+  const chatGreeting = useChatGreeting({ scope, temporary: privateBrowser, pageTitle });
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const fillComposerWithPrompt = useCallback((prompt: string) => {
+  const fillComposerWithPrompt = useCallback((prompt: string, conversationId?: string) => {
+    if (conversationId) {
+      onOpenRecentChat(prompt, conversationId);
+      return;
+    }
     setInput(prompt);
     window.setTimeout(() => {
       const composer = composerTextareaRef.current;
@@ -315,7 +324,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
       composer.focus();
       composer.setSelectionRange(composer.value.length, composer.value.length);
     }, 0);
-  }, []);
+  }, [onOpenRecentChat]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const timeSeparators = useMemo(
     () => chatTimeSeparatorLabels(messages),
@@ -547,7 +556,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
 
     const history = historyOverride ?? messages;
     const attachmentNames = pendingAttachments.map((attachment) => attachment.name);
-    const displayText = text || 'Please review the attached document(s).';
+    const displayText = text || attachmentOnlyMessageText(pendingAttachments);
     let session = activeSession;
     if (!session) {
       session = createSession();
@@ -598,10 +607,11 @@ export default function KnowledgeTerminal({ scope }: Props) {
           browserAccess: voice?.browserAccess,
           voice: voice?.voice,
           voiceOpener: voice?.voiceOpener,
-          attachments: pendingAttachments,
+          attachments: [...(voice?.attachments ?? []), ...pendingAttachments],
           scope,
           adhdMode: isDirectModeEnabled(),
-          personalize: isPersonalizeEnabled(),
+          personalize: !privateBrowser && scope !== "public" && isPersonalizeEnabled(),
+          pageTitle,
         }),
         signal: controller.signal,
       });
@@ -1100,7 +1110,9 @@ export default function KnowledgeTerminal({ scope }: Props) {
               className="hidden"
             />
             <AssistantComposer
-              personalizedSuggestions={scope !== 'public'}
+              personalizedSuggestions={scope !== 'public' && !privateBrowser}
+              suggestionPageTitle={pageTitle}
+              suggestionMessages={messages}
               className="mx-auto w-full max-w-3xl"
               compact
               value={input}

@@ -4508,7 +4508,9 @@ def run_conversation(
                         not classified.retryable
                         and not classified.should_compress
                         and classified.reason not in {
-                            FailoverReason.rate_limit,
+                            # Only a spent plan window (error_classifier
+                            # _is_plan_usage_limit) is a non-retryable
+                            # rate_limit; it aborts after fallback like 402.
                             FailoverReason.overloaded,
                             FailoverReason.context_overflow,
                             FailoverReason.payload_too_large,

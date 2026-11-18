@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generativeUiResourcesFromToolOutput, spotifyPlaybackPrepared } from "../src/lib/generative-ui/contracts.ts";
 import test from "node:test";
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
@@ -201,6 +202,7 @@ test('agent controls default to the inline player', async () => {
   app.reset({phone:true});
   const response = await app.tool(request({tool:'spotify_play',args:{action:'pause'}}));
   assert.equal(response.status,200);
+  assert.equal(spotifyPlaybackPrepared("spotify_play", (await response.json()).data), false);
   assert.equal(app.requests.find(r=>r.endpoint.endsWith('/pause')).query.device_id,'breadboard-device-001');
   assert.equal(app.releases.length,1,'transport commands must release temporary leases immediately');
 });
@@ -208,12 +210,27 @@ test('agent controls default to the inline player', async () => {
 test('playlist creation stays silent unless playback is requested', async () => {
   app.reset();
   const response = await app.tool(request({tool:'spotify_create_playlist',args:{name:'Rock',queries:['AC/DC','rock'],play:false}}));
-  assert.equal((await response.json()).data.status,'created');
+  const saved = (await response.json()).data;
+  assert.equal(saved.status,'created');
+  assert.equal(spotifyPlaybackPrepared("spotify_create_playlist", saved), false);
+  const [card] = generativeUiResourcesFromToolOutput("spotify_create_playlist", saved);
+  assert.equal(card.data.playlistId, saved.playlist.id);
+  assert.equal(card.data.trackCount, saved.playlist.trackCount);
   assert.equal(app.leases.length,0);
   assert.equal(app.getSpotifyPlaybackIntent(7,9),null);
   app.reset();
   const played = await app.tool(request({tool:'spotify_create_playlist',args:{name:'Rock',queries:['AC/DC','rock'],play:true}}));
-  assert.equal((await played.json()).data.status,'playing');
+  const playing = (await played.json()).data;
+  assert.equal(playing.status,'playing');
+  for (const status of ["playing", "playback_failed", "ready"]) {
+    const output = JSON.stringify({ ...playing, status });
+    assert.equal(spotifyPlaybackPrepared("spotify_create_playlist", output), true);
+    assert.equal(generativeUiResourcesFromToolOutput("spotify_create_playlist", output)[0].id, card.id);
+  }
+  assert.deepEqual(generativeUiResourcesFromToolOutput("spotify_search", saved), []);
+  assert.deepEqual(generativeUiResourcesFromToolOutput("spotify_create_playlist", {
+    ...saved, playlist: { ...saved.playlist, id: "../bad" },
+  }), []);
   assert.equal(app.requests.find(r=>r.endpoint.endsWith('/play')).query.device_id,'breadboard-device-001');
 });
 

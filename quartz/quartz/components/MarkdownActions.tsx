@@ -4,12 +4,18 @@ import { classNames } from "../util/lang"
 import documentEditorScript from "./scripts/documentEditor.inline"
 // @ts-ignore -- Compile with Quartz's inline-script loader.
 import pageExportsScript from "./scripts/pageExports.inline"
+// @ts-ignore -- Compile with Quartz's inline-script loader.
+import openSourceScript from "./scripts/openSource.inline"
+import { sourceDocumentTarget } from "./sourceDocumentTarget"
 
 const MarkdownActions: QuartzComponent = ({ fileData, displayClass }: QuartzComponentProps) => {
   const slug = fileData.slug
   if (!slug || slug === "index" || slug.endsWith("/index") || slug.startsWith("tags/")) return null
+  const source = sourceDocumentTarget(slug, fileData.frontmatter as Record<string, unknown> | undefined)
   return <div class={classNames(displayClass, "markdown-actions")} data-note-slug={slug} data-dashboard-url={process.env.DASHBOARD_URL ?? process.env.NEXT_PUBLIC_DASHBOARD_URL ?? ""}>
     <span class="markdown-action-status" aria-live="polite" />
+    {source && <a class="markdown-action-button markdown-open-source" target="_blank" rel="noopener noreferrer"
+      {...("url" in source ? { href: source.url } : { href: "#", "data-source-path": source.path })}>Open document</a>}
     <button class="markdown-action-button markdown-edit-button" type="button" role="switch" aria-checked="false" aria-label="Edit page">Edit</button>
     <button class="markdown-action-button markdown-delete-button" type="button" aria-label="Delete page" title="Delete page">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -18,10 +24,11 @@ const MarkdownActions: QuartzComponent = ({ fileData, displayClass }: QuartzComp
     </button>
   </div>
 }
-MarkdownActions.afterDOMLoaded = `${documentEditorScript}\n${pageExportsScript}`
+MarkdownActions.afterDOMLoaded = `${documentEditorScript}\n${pageExportsScript}\n${openSourceScript}`
 MarkdownActions.css = `
 .markdown-actions{display:flex;align-items:center;gap:.65rem;margin:.45rem 0 .65rem;min-height:1.75rem}
 .markdown-action-button{border:1px solid var(--lightgray);border-radius:8px;background:var(--light);color:var(--secondary);font:inherit;font-size:.85rem;padding:.45rem .75rem;cursor:pointer}
+.markdown-open-source{text-decoration:none}
 .markdown-action-button[aria-checked=true]{background:var(--secondary);color:var(--light)}
 .markdown-action-status{font-size:.8rem;color:var(--gray)}
 .markdown-action-button:focus-visible{outline:2px solid var(--secondary);outline-offset:3px}

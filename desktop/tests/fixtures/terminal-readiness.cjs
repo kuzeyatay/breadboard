@@ -121,7 +121,7 @@ app.whenReady().then(async () => {
   assert.equal(host.activeId, pendingTerminal.id, 'obsolete toolbar actions do not cancel selection');
   assert.equal(await manager.tabs.shellCommand(host, {
     ...navigation, command: { type: 'browser-address-suggestions', open: false },
-  }), false, 'retained toolbar cleanup does not target Terminal');
+  }), true, 'the outgoing toolbar can dismiss its own suggestions');
   assert.equal(host.activeId, pendingTerminal.id);
   assert.equal(await manager.tabs.shellCommand(host, navigation), true);
   assert.equal(host.activeId, browser.id, 'a deliberate toolbar action returns to its visible website');
@@ -130,6 +130,54 @@ app.whenReady().then(async () => {
   await sleep(350);
   assert.equal(host.activeId, browser.id, 'late Terminal readiness cannot reclaim selection');
   assert.equal(host.shell.view.getBounds().height, toolbarHeight);
+
+  const command = value => manager.tabs.handleCommand(base, value);
+  command({ type: 'open', url: origin + '/notes' });
+  const notes = host.tabs.find(tab => tab.id === host.activeId);
+  await until(() => !host.pending, 'notes ready');
+  command({ type: 'split-tabs', id: notes.id, targetId: browser.id, side: 'right' });
+  await until(() => !host.pending && browser.browser.attached && !browser.splitPreparation, 'website beside notes');
+  const sitePane = browser.browser.view.getBounds();
+  const notesPane = notes.view.getBounds();
+  command({ type: 'new' });
+  const nextTerminal = host.pending;
+  assert.ok(nextTerminal);
+  assert.equal(host.pendingAtFront, false);
+  assert.equal(browser.browser.attached, true, 'the visible split website stays attached');
+  assert.deepEqual(browser.browser.view.getBounds(), sitePane, 'the outgoing website keeps its half');
+  assert.deepEqual(notes.view.getBounds(), notesPane, 'the outgoing document keeps its half');
+  assert.deepEqual(new Set(manager.tabs.stateFor(base).visibleIds), new Set([browser.id, notes.id]));
+  command({ type: 'close', id: browser.id });
+  assert.equal(browser.browser.attached, false, 'closing the split partner removes its website with its rail');
+  assert.equal(notes.view.getBounds().width, window.getContentSize()[0], 'the remaining visible pane fills the window');
+  assert.equal(host.shell.view.getBounds().height, 32);
+  command({ type: 'browser', url: origin + '/last-website' });
+  const lastSite = host.tabs.find(tab => tab.id === host.activeId);
+  await until(() => !host.pending && lastSite.browser.ready, 'newer selection cancels the pending Terminal');
+  command({ type: 'activate', id: nextTerminal.id });
+  assert.equal(host.pendingAtFront, false);
+  command({ type: 'close', id: lastSite.id });
+  const retained = manager.tabs.stateFor(host.shell.contents);
+  assert.ok(!retained.tabs.some(tab => tab.id === lastSite.id), 'closed tab leaves the strip immediately');
+  assert.equal(retained.visibleId, lastSite.id, 'retained website owns the visible chrome');
+  assert.equal(retained.selfId, lastSite.id);
+  assert.equal(host.shell.view.getBounds().height, toolbarHeight);
+  await until(() => host.shell.contents.executeJavaScript(`!document.querySelector('[data-tab-id="${lastSite.id}"]') &&
+    document.querySelector('[aria-label="Address and search"]')?.value.includes('/last-website')`), 'closed website keeps its address bar');
+  const originalSize = window.getContentSize();
+  window.setContentSize(1100, 780);
+  await until(() => {
+    const [width, height] = window.getContentSize();
+    const bounds = lastSite.browser.view.getBounds();
+    return (width !== originalSize[0] || height !== originalSize[1]) &&
+      bounds.x + bounds.width === width && bounds.y + bounds.height === height;
+  }, 'retained website fits the resized window');
+  await until(() => nextTerminal.loaded, 'replacement Terminal loaded');
+  await nextTerminal.contents.mainFrame.executeJavaScript('document.documentElement.dataset.breadboardStartup="ready"; document.querySelectorAll("img").forEach(img => img.remove())');
+  await until(() => !host.pending && host.presentedId === nextTerminal.id, 'replacement covers the closed website');
+  assert.equal(lastSite.browser.attached, false);
+  assert.equal(manager.tabs.stateFor(host.shell.contents).retainedBrowserTab, undefined);
+  assert.equal(host.shell.view.getBounds().height, 32);
   window.destroy(); server.closeAllConnections(); server.close();
   fs.writeFileSync(path.join(directory, 'passed.json'), JSON.stringify({ passed: true }));
 }).catch(error => { console.error(error.stack || error); app.exit(1); });

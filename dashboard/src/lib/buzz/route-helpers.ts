@@ -17,11 +17,12 @@ import type { BuzzMember, BuzzMessage, BuzzRoom } from "./store.ts";
 import { buzzBridge } from "@/lib/crumbs/service.ts";
 import { getIdentity } from "@/lib/crumbs/store.ts";
 import db from "@/lib/db";
+import { BREAD_AVATAR, BREAD_SLUG } from "./bread.ts";
 
 /** Members with their profile photo, when they have linked an account or sent one. */
 export function withPhotos(roomId: number, members: BuzzMember[]): Array<BuzzMember & { avatarUrl: string | null }> {
   const photos = buzzBridge.memberAvatars(roomId);
-  return members.map(member => ({ ...member, avatarUrl: photos[member.id] ?? null }));
+  return members.map(member => ({ ...member, avatarUrl: photos[member.id] ?? (member.personaSlug === BREAD_SLUG ? BREAD_AVATAR : null) }));
 }
 
 /**

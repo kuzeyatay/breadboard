@@ -8,6 +8,11 @@ from chatmock.model_registry import DEFAULT_MODEL, allowed_efforts_for_model, li
 
 class ModelRegistryTests(unittest.TestCase):
     def test_normalizes_aliases(self) -> None:
+        self.assertEqual(normalize_model_name("gpt6.2-astra"), "gpt-6.2-astra")
+        self.assertEqual(normalize_model_name("gpt-6.2-astra-latest"), "gpt-6.2-astra")
+        self.assertEqual(normalize_model_name("gpt6.2-sol"), "gpt-6.2-sol")
+        self.assertEqual(normalize_model_name("gpt-6.2-sol-latest"), "gpt-6.2-sol")
+        self.assertEqual(normalize_model_name("gpt-6.2"), "gpt-6.2-sol")
         self.assertEqual(normalize_model_name("gpt6.1-sol"), "gpt-6.1-sol")
         self.assertEqual(normalize_model_name("gpt-6.1-sol-latest"), "gpt-6.1-sol")
         self.assertEqual(normalize_model_name("gpt6.1-terra"), "gpt-6.1-terra")
@@ -37,6 +42,10 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(council.upstream_fallback_model, DEFAULT_MODEL)
 
     def test_strips_reasoning_suffixes(self) -> None:
+        self.assertEqual(normalize_model_name("gpt-6.2-astra:max"), "gpt-6.2-astra")
+        self.assertEqual(normalize_model_name("gpt-6.2-astra-xhigh"), "gpt-6.2-astra")
+        self.assertEqual(normalize_model_name("gpt-6.2-sol:max"), "gpt-6.2-sol")
+        self.assertEqual(normalize_model_name("gpt-6.2-sol-xhigh"), "gpt-6.2-sol")
         self.assertEqual(normalize_model_name("gpt-6.1-sol:max"), "gpt-6.1-sol")
         self.assertEqual(normalize_model_name("gpt-6.1-sol-xhigh"), "gpt-6.1-sol")
         self.assertEqual(normalize_model_name("gpt-6.1-terra:max"), "gpt-6.1-terra")
@@ -54,6 +63,11 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(normalize_model_name("gpt-5.1-codex:high"), "gpt-5.1-codex")
 
     def test_allowed_efforts_follow_registry(self) -> None:
+        for model in ("gpt-6.2-astra", "gpt-6.2-sol"):
+            self.assertEqual(
+                allowed_efforts_for_model(model),
+                frozenset(("low", "medium", "high", "xhigh", "max")),
+            )
         self.assertEqual(
             allowed_efforts_for_model("gpt-6.1-terra"),
             frozenset(("none", "low", "medium", "high", "xhigh", "max")),
@@ -88,7 +102,11 @@ class ModelRegistryTests(unittest.TestCase):
 
     def test_public_models_include_variants(self) -> None:
         model_ids = list_public_models(expose_reasoning_models=True)
-        self.assertEqual(model_ids[0], "gpt-6.1-sol")
+        self.assertEqual(model_ids[0], "gpt-6.2-astra")
+        for model in ("gpt-6.2-astra", "gpt-6.2-sol"):
+            self.assertIn(model, model_ids)
+            self.assertIn(f"{model}-max", model_ids)
+            self.assertNotIn(f"{model}-none", model_ids)
         self.assertIn("gpt-6.1-sol-max", model_ids)
         self.assertNotIn("gpt-6.1-sol-none", model_ids)
         self.assertIn("gpt-6.1-terra", model_ids)

@@ -8,6 +8,8 @@ from .model_registry import normalize_model_name
 
 PRIORITY_SUPPORTED_MODELS = frozenset(
     (
+        "gpt-6.2-astra",
+        "gpt-6.2-sol",
         "gpt-6.1-terra",
         "gpt-6-astra",
         "gpt-5.6-sol",
@@ -39,7 +41,13 @@ def parse_optional_bool(value: Any) -> bool | None:
 
 
 def supports_priority_service_tier(model: str | None) -> bool:
-    return normalize_model_name(model) in PRIORITY_SUPPORTED_MODELS
+    from .chatgpt_models import discovered_models
+
+    normalized = normalize_model_name(model)
+    for row in discovered_models():
+        if row["id"] == normalized:
+            return row.get("priority") is True
+    return normalized in PRIORITY_SUPPORTED_MODELS
 
 
 @dataclass(frozen=True)

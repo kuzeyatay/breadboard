@@ -153,6 +153,7 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
           </details>
         </section>
 
+        <div class="breadboard-ai-suggestions" hidden aria-label="Page suggestions"></div>
         <form class="breadboard-ai-composer">
           <div class="breadboard-ai-selection-context" hidden>
             <span class="breadboard-ai-selection-icon" aria-hidden="true">

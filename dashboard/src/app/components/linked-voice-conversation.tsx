@@ -32,6 +32,10 @@ export default function LinkedVoiceConversation({ conversationKey, compact, onCl
     }
   }, []);
   const interrupt = useCallback(() => connection.current?.interrupt(), []);
+  const permissionId = snapshot?.permission?.requestId;
+  const decide = useCallback((decision: 'once' | 'always' | 'reject') => {
+    if (permissionId) connection.current?.permission(permissionId, decision);
+  }, [permissionId]);
   const record = useCallback(async (exchange: SpokenExchange) => {
     if (!connection.current) throw new Error('The original chat is no longer connected.');
     await connection.current.record(exchange);
@@ -45,5 +49,6 @@ export default function LinkedVoiceConversation({ conversationKey, compact, onCl
     personalizedGreeting={snapshot.personalizedGreeting === true}
     notificationTarget={snapshot.notificationTarget}
     onClose={onClose} onSend={send} onInterrupt={interrupt} onRecord={snapshot.recordable ? record : undefined} messages={snapshot.messages} busy={snapshot.busy} clarification={snapshot.clarification}
+    permission={snapshot.permission} onPermission={decide}
     notice={error ? <p className="voice-note" role="alert">{error}</p> : null} />;
 }

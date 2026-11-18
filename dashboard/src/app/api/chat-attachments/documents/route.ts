@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { requireUserId, requireReadableCluster } from "@/lib/server-auth";
 import { gardenPdfReference, readGardenPdfPages } from "@/lib/pdf-garden-reading.ts";
 import { ApiError, apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
@@ -100,7 +100,7 @@ export async function POST(request: Request) {
     // kept, not read. Reading (and OCR) happens if the PDF is ever attached.
     if (format === "pdf" && request.headers.get(STORE_ONLY_HEADER) === "true") {
       markWebPdfBlob(stored);
-      sweepOpenedFiles(userId);
+      after(() => sweepOpenedFiles(userId));
       return NextResponse.json({ blobId: stored.blobId, format: stored.format, sizeBytes: stored.byteSize });
     }
 

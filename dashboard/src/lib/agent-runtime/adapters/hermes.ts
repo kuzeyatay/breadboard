@@ -11,6 +11,7 @@ import { boundPromptContext, HERMES_SYSTEM_PROMPT_LIMIT } from "../../hermes/pro
 import { hermesPromptText } from "../hermes-prompt.ts";
 import { hermesToolAccess } from "../hermes-tool-access.ts";
 import { readHermesConfig } from "../../hermes/config.ts";
+import { loadChatmockModelCatalog } from "../../chatmock-model-catalog.ts";
 import type { NormalizedAgentEvent } from "../../hermes/events.ts";
 import {
   hermesModelIdentityPrompt,
@@ -509,6 +510,17 @@ export class HermesRuntimeAdapter implements AgentRuntime {
   }
 
   async listModels() {
+    try {
+      const models = await loadChatmockModelCatalog(this.config.chatmockBaseUrl);
+      if (models.length) return models.map((model) => ({
+        id: model.id,
+        name: model.name || formatAssistantModelName(model.id),
+        providerId: CHATMOCK_PROVIDER,
+        variants: Object.fromEntries(model.reasoning_efforts.map((effort) => [effort, { reasoningEffort: effort }])),
+      }));
+    } catch {
+      // A gateway outage must leave the built-in choices available.
+    }
     return DEFAULT_ASSISTANT_MODELS.map((id) => ({
       id,
       name: formatAssistantModelName(id),
@@ -527,6 +539,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "computer_use",
       "garden_list",
       "garden_search",
+      "garden_grep",
       "garden_get_page",
       "garden_get_page_context",
       "garden_get_source_excerpt",

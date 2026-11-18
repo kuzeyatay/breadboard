@@ -1,8 +1,11 @@
 import type { WebTextHighlight } from "../shared/web-text-selection";
 
 /** Runs inside the sandboxed page. No product preload, cookies, network, or DOM wrapping. */
+/** What the page receives: anchors and a has-note flag, never the note's text. */
+type PaintedHighlight = Omit<WebTextHighlight, "note" | "conversationId"> & { noted?: true };
+
 function installBrowserTextHighlights() {
-  type Entry = WebTextHighlight;
+  type Entry = PaintedHighlight;
   type HighlightWindow = Window & typeof globalThis & {
     Highlight: new (...ranges: Range[]) => unknown;
     __breadboardHighlights?: { update: (entries: Entry[], error?: string | null) => void; track: (id: string | null) => void; dispose: () => void };
@@ -16,9 +19,17 @@ function installBrowserTextHighlights() {
   style.setAttribute("data-breadboard-selection", "");
   // Pair the pastel fill with dark ink: a dark website's inherited white text
   // is otherwise almost invisible inside a saved highlight.
+  // Hover deepens the fill as chat marks do; a noted passage is a dotted underline, as in chat.
+  const colors = [["blue", "#8fc3eb", "#75b2e0"], ["green", "#8ed09e", "#72c386"], ["pink", "#e99abb", "#df7fa6"],
+    ["purple", "#b79be9", "#a482df"], ["answer", "#f4e7ad", "#edda8f"]];
   style.textContent = [
-    ["blue", "#8fc3eb"], ["green", "#8ed09e"], ["pink", "#e99abb"], ["purple", "#b79be9"], ["answer", "#f4e7ad"],
-  ].map(([name, color]) => `::highlight(breadboard-web-${name}) { background-color:${color}; color:#13201b; }`).join("\n");
+    ...colors.map(([name, color]) => `::highlight(breadboard-web-${name}) { background-color:${color}; color:#13201b; }`),
+    ...colors.map(([name, , hover]) => `::highlight(breadboard-web-hover-${name}) { background-color:${hover}; color:#13201b; }`),
+    "::highlight(breadboard-web-note) { background-color:transparent; text-decoration:underline dotted 1.5px; text-underline-offset:0.2em; }",
+  ].join("\n");
+  const names = ["blue", "green", "pink", "purple", "answer", "note"];
+  const groupName = (entry: Entry) => entry.mode === "inline" ? "answer" : entry.noted ? "note" : entry.color ?? "blue";
+  let hovered: Entry | null = null;
   document.documentElement.append(style);
   const skip = "script,style,noscript,template,textarea,input,select,[contenteditable]:not([contenteditable='false']),[data-breadboard-selection]";
   let entries: Entry[] = [];
@@ -107,17 +118,42 @@ function installBrowserTextHighlights() {
         const range = rangeAt(start, start + entry.quote.length);
         if (!range) continue;
         located.push({ entry, range, start, end: start + entry.quote.length });
-        const name = entry.mode === "inline" ? "answer" : entry.color ?? "blue";
+        const name = groupName(entry);
         const ranges = groups.get(name) ?? []; ranges.push(range); groups.set(name, ranges);
       }
     }
-    for (const name of ["blue", "green", "pink", "purple", "answer"]) {
+    for (const name of names) {
       const key = "breadboard-web-" + name;
       const ranges = groups.get(name);
       if (ranges?.length) registry.set(key, new page.Highlight(...ranges)); else registry.delete(key);
     }
+    const stillHovered = hovered && located.find(item => item.entry.id === hovered!.id);
+    paintHover(stillHovered);
     reportPosition();
   }
+  function paintHover(item: { entry: Entry; range: Range } | null | undefined) {
+    for (const name of names) registry.delete("breadboard-web-hover-" + name);
+    hovered = item?.entry ?? null;
+    const name = item && groupName(item.entry);
+    // A noted passage keeps its underline on hover, as in chat.
+    if (!item || name === "note") return;
+    const highlight = new page.Highlight(item.range) as { priority: number };
+    highlight.priority = 1;
+    registry.set("breadboard-web-hover-" + name, highlight);
+  }
+  let hoverFrame = 0;
+  document.addEventListener("pointermove", event => {
+    if ((!located.length && !hovered) || hoverFrame) return;
+    const { clientX, clientY } = event;
+    hoverFrame = requestAnimationFrame(() => {
+      hoverFrame = 0;
+      // A caret lands on the nearest text even beside it; require the pointer to be over the passage.
+      const item = located.find(item => Array.from(item.range.getClientRects())
+        .some(rect => clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom));
+      if ((item?.entry.id ?? null) !== (hovered?.id ?? null)) paintHover(item);
+    });
+  }, { passive: true, signal: abort.signal });
+  document.documentElement.addEventListener("pointerleave", () => { if (hovered) paintHover(null); }, { signal: abort.signal });
   function show(entry: Entry, range: Range, action: "select" | "open" = "select") {
     const rect = range.getBoundingClientRect();
     if (!rect.width && !rect.height) return;
@@ -187,8 +223,8 @@ function installBrowserTextHighlights() {
       }
     },
     dispose() {
-      abort.abort(); observer.disconnect(); clearTimeout(timer); clearTimeout(positionTimer); style.remove();
-      for (const name of ["blue", "green", "pink", "purple", "answer"]) registry.delete("breadboard-web-" + name);
+      abort.abort(); observer.disconnect(); clearTimeout(timer); clearTimeout(positionTimer); cancelAnimationFrame(hoverFrame); style.remove();
+      for (const name of names) { registry.delete("breadboard-web-" + name); registry.delete("breadboard-web-hover-" + name); }
     },
   };
 }
@@ -197,6 +233,6 @@ export function browserTextHighlightsBootstrapScript(): string {
   return `(${installBrowserTextHighlights.toString()})()`;
 }
 
-export function browserTextHighlightsUpdateScript(entries: readonly WebTextHighlight[], error: string | null = null): string {
+export function browserTextHighlightsUpdateScript(entries: readonly PaintedHighlight[], error: string | null = null): string {
   return `window.__breadboardHighlights?.update(${JSON.stringify(entries)}, ${JSON.stringify(error)})`;
 }
