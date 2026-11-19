@@ -289,6 +289,8 @@ export const NOTIFICATION_TOOLS = ["notifications_read"] as const;
 // A read over the same job tables the product's own panels poll, scoped to
 // the user (and the active Garden on Garden Chat); it changes nothing.
 export const PROCESS_STATUS_TOOLS = ["breadboard_process_status"] as const;
+/** Create a Git repository and connect it to the open Garden. */
+export const REPOSITORY_TOOLS = ["garden_create_repository"] as const;
 
 // Bread joins Google Meet, Zoom and Teams calls through the AgentCall cloud bot,
 // answers the room with this account’s tools, and writes the notes after.
@@ -540,6 +542,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...CHAT_COORDINATION_TOOLS,
       ...BAMBU_TOOLS,
       ...PROCESS_STATUS_TOOLS,
+      ...REPOSITORY_TOOLS,
       ...MEETING_TOOLS,
       ...USAGE_TOOLS,
       ...MAP_TOOLS,
@@ -596,6 +599,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...CHAT_COORDINATION_TOOLS,
       ...BAMBU_TOOLS,
     ...PROCESS_STATUS_TOOLS,
+    ...REPOSITORY_TOOLS,
     ...MEETING_TOOLS,
     ...USAGE_TOOLS,
     ...NOTIFICATION_TOOLS,

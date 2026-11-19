@@ -81,6 +81,7 @@ interface DockSession {
   layout?: { parent: string; x: number; y: number; width: number; height: number; visible: boolean; active: boolean; focus?: boolean };
   lastLayout?: string;
   contentTop?: number;
+  contentRight?: number;
 }
 export class CodeDockManager {
   private sessions = new Map<number, DockSession>();
@@ -91,6 +92,7 @@ export class CodeDockManager {
   constructor(private readonly storage: VSCodeStorage, private readonly candidates?: string[]) {}
   has(id: number): boolean { return this.sessions.has(id); }
   contentTop(id: number): number { return this.sessions.get(id)?.contentTop ?? 0; }
+  contentRight(id: number): number { return this.sessions.get(id)?.contentRight ?? 0; }
   setTheme(theme: "light" | "dark"): void {
     if (this.theme === theme) return;
     this.theme = theme;
@@ -135,7 +137,7 @@ export class CodeDockManager {
     }
     const current = session;
     current.window = window;
-    if (typeof action === "object") { current.contentTop = action.top; return { ...current.state }; }
+    if (typeof action === "object") { current.contentTop = action.top; current.contentRight = action.right ?? 0; return { ...current.state }; }
     if (action === "status" || current.busy || current.releasing) return { ...current.state };
     if (action === "detach") {
       this.run(current, async () => { await current.helper?.close(); current.helper = undefined; current.state = { ...current.state, phase: "detached" }; });

@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, type ComponentProps } from "react";
-import { Download, FolderOpen, RotateCcw } from "lucide-react";
+import { Download, FolderOpen, PanelRightClose, PanelRightOpen, RotateCcw } from "lucide-react";
+import DashboardAgentTerminal from "@/app/components/hermes/dashboard-agent-terminal";
 import { desktopCodeBridge, type CodeDockAction, type CodeDockState } from "@/lib/desktop-code";
 import NavBar from "@/app/components/navbar";
 import { useDesktopTabs } from "@/app/components/use-desktop-tabs";
@@ -14,21 +15,26 @@ export default function CodeClient(navbar: Partial<ComponentProps<typeof NavBar>
   const [available, setAvailable] = useState(true);
   const tabs = useDesktopTabs();
   const navbarRef = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLElement>(null);
+  const [breadOpen, setBreadOpen] = useState(() => { try { return localStorage.getItem("breadboard:code-bread") !== "closed"; } catch { return true; } });
+  const toggleBread = () => setBreadOpen(open => { try { localStorage.setItem("breadboard:code-bread", open ? "closed" : "open"); } catch { /* per-viewer convenience only */ } return !open; });
   const active = tabs ? tabs.selfId === tabs.activeId || tabs.visibleIds?.includes(tabs.selfId ?? -1) : !desktopTabsBridge();
   useEffect(() => {
     const element = navbarRef.current, bridge = desktopCodeBridge();
     if (!element || !bridge || !active) return;
-    let previous = -1;
+    let previous = "";
     const measure = () => {
       const top = Math.min(512, Math.max(0, element.getBoundingClientRect().bottom));
-      if (top === previous) return;
-      previous = top;
-      void bridge.codeDock({ type: "layout", top }).catch(() => undefined);
+      const right = Math.min(4096, Math.max(0, railRef.current?.getBoundingClientRect().width ?? 0));
+      if (`${top},${right}` === previous) return;
+      previous = `${top},${right}`;
+      void bridge.codeDock({ type: "layout", top, right }).catch(() => undefined);
     };
     const observer = new ResizeObserver(measure);
-    observer.observe(element); window.addEventListener("resize", measure); measure();
+    observer.observe(element); if (railRef.current) observer.observe(railRef.current);
+    window.addEventListener("resize", measure); measure();
     return () => { observer.disconnect(); window.removeEventListener("resize", measure); };
-  }, [active]);
+  }, [active, breadOpen]);
   useEffect(() => {
     if (!active) return;
     const bridge = desktopCodeBridge();
@@ -60,6 +66,7 @@ export default function CodeClient(navbar: Partial<ComponentProps<typeof NavBar>
   usePageLoading(busy);
   return <div className={styles.page}>
     <div ref={navbarRef}><NavBar email="" {...navbar} showActions={false} /></div>
+    <div className={styles.body}>
     {state.phase === "docked" ? <main className={styles.canvas} aria-label="VS Code workspace" /> : launching ? <main className={styles.canvas} aria-label="VS Code" aria-busy="true" /> : <main className={styles.content} aria-label="VS Code">
       <h1>Code</h1>
       {state.phase === "unsupported" ? <p className={styles.message}>{available
@@ -78,5 +85,10 @@ export default function CodeClient(navbar: Partial<ComponentProps<typeof NavBar>
           {(!state.executable || state.canDownloadFallback) && <p className={styles.fine}><a href="https://code.visualstudio.com/license" target="_blank" rel="noreferrer">Microsoft license</a> · <a href="https://privacy.microsoft.com/privacystatement" target="_blank" rel="noreferrer">Privacy</a></p>}
         </>}
     </main>}
+    {breadOpen ? <aside ref={railRef} className={styles.bread} aria-label="Bread">
+      <header><span>Bread</span><button type="button" aria-label="Hide Bread" title="Hide Bread" onClick={toggleBread}><PanelRightClose size={15} /></button></header>
+      <DashboardAgentTerminal scope="mine" restoreOwnerKey="code" presentation="drawer" />
+    </aside> : <button type="button" className={styles.breadToggle} aria-label="Show Bread" title="Show Bread" onClick={toggleBread}><PanelRightOpen size={15} /></button>}
+    </div>
   </div>;
 }

@@ -355,3 +355,24 @@ test("a record kept by a job that committed its garden write is dropped, not off
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
+
+test("a failed job whose garden write committed reports its result", async () => {
+  // The worker commits the document before its Finishing tail (publish,
+  // process exit). A fault there failed the job although the document was in.
+  const { committedFailedIngestionResult } = await storeModule();
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-committed-"));
+  try {
+    const jobId = "job_committed_then_faulted";
+    const jobDir = path.join(dataRoot, "runtime", "jobs", jobId);
+    fs.mkdirSync(jobDir, { recursive: true });
+    const envelope = { protocolVersion: 1, identity: { jobId }, completionSequence: 9, result: { success: true, filename: "book.pdf" } };
+    fs.writeFileSync(path.join(jobDir, "result.json"), JSON.stringify(envelope));
+    assert.equal(committedFailedIngestionResult(jobId, dataRoot), null, "no tombstone, no result");
+    fs.writeFileSync(path.join(jobDir, "ingestion-commit.json"), JSON.stringify({ transactionId: jobId, state: "committed" }));
+    assert.deepEqual(committedFailedIngestionResult(jobId, dataRoot), envelope.result);
+    fs.writeFileSync(path.join(jobDir, "ingestion-commit.json"), JSON.stringify({ transactionId: jobId, state: "active" }));
+    assert.equal(committedFailedIngestionResult(jobId, dataRoot), null, "an uncommitted write is a real failure");
+  } finally {
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+});

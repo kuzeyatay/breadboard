@@ -1788,6 +1788,77 @@ function appendUniqueUploadFiles(current: File[], incoming: File[]): File[] {
   return unique;
 }
 
+/** Latest-ref callback: fixed identity, always calls the newest handler. */
+function useEvent<Args extends unknown[], Result>(
+  handler: (...args: Args) => Result,
+): (...args: Args) => Result {
+  const ref = useRef(handler);
+  useLayoutEffect(() => {
+    ref.current = handler;
+  });
+  return useCallback((...args: Args) => ref.current(...args), []);
+}
+
+// Same reason as UploadElapsedLabel: the Learn run's 1s clock re-rendered the
+// whole page every second.
+function LearnElapsedTimer({ elapsedMs, startedAt, paused, title }: {
+  elapsedMs: number;
+  startedAt?: string;
+  paused: boolean;
+  title: string;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    setNow(Date.now());
+    if (!startedAt) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [startedAt]);
+  const label = formatLearnElapsedTime(currentLearnElapsedMs({ elapsedMs, startedAt }, now));
+  return (
+    <span
+      className="flex items-center gap-1 font-mono tabular-nums text-gray-400"
+      title={title}
+      aria-label={`Learn timer ${label}${paused ? ", paused" : ""}`}
+    >
+      <svg
+        className="h-3 w-3"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.8}
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="13" r="8" />
+        <path strokeLinecap="round" d="M12 9v4l2.5 1.5M9 2h6M12 2v3" />
+      </svg>
+      {label}
+    </span>
+  );
+}
+
+// The 100ms clock lives here, not in the page: a page-level clock re-rendered
+// the whole workspace (and every transcript row) ten times a second while any
+// upload was running, which made the chat lag.
+function UploadElapsedLabel({ live, startedAt, completedAt }: {
+  live: boolean;
+  startedAt: number;
+  completedAt?: number | null;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const id = window.setInterval(() => setNow(Date.now()), 100);
+    return () => window.clearInterval(id);
+  }, [live]);
+  return (
+    <span>
+      {live ? "Elapsed" : "Done in"}{" "}
+      {formatElapsed(Math.max(0, (completedAt ?? now) - startedAt))}
+    </span>
+  );
+}
+
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);
@@ -4424,7 +4495,6 @@ export default function WorkspaceClient({
   const [generateMap, setGenerateMap] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
   const isUploading = uploadTasks.some((task) => task.state === "uploading");
-  const [uploadClock, setUploadClock] = useState(() => Date.now());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Chat attachments (per-message, sent directly to the AI)
@@ -4515,7 +4585,6 @@ export default function WorkspaceClient({
     useState(false);
   const learnUserInstructionButtonRef = useRef<HTMLButtonElement | null>(null);
   const learnUserInstructionInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const [learnTimerNowMs, setLearnTimerNowMs] = useState(() => Date.now());
   const learnSkipManualReviewRef = useRef(false);
   const lastSyncedLearnSelectionRef = useRef<string | null>(null);
   const lastSyncedLearnSyllabusRef = useRef<string | null>(null);
@@ -4998,13 +5067,6 @@ export default function WorkspaceClient({
     learnState?.humanizer?.error,
     learnState?.humanizer?.status,
   ]);
-
-  useEffect(() => {
-    setLearnTimerNowMs(Date.now());
-    if (!learnState?.job?.timerStartedAt) return;
-    const id = window.setInterval(() => setLearnTimerNowMs(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [learnState?.job?.id, learnState?.job?.timerStartedAt]);
 
   const fetchChatSessions = useCallback(async () => {
     const epoch = chatHistoryEpoch.current;
@@ -6851,15 +6913,6 @@ export default function WorkspaceClient({
     // itself would tear down this poll on every transcript delta.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeServerChatKey, canViewPublicChats, clusterSlug, refreshChatSession, viewPublicChats]);
-
-  // One lightweight clock drives elapsed time for every concurrent upload.
-  useEffect(() => {
-    if (!isUploading) return;
-    const id = setInterval(() => {
-      setUploadClock(Date.now());
-    }, 100);
-    return () => clearInterval(id);
-  }, [isUploading]);
 
   useEffect(() => {
     if (!linkImportTasks.some((task) => task.status === "importing")) return;
@@ -14841,7 +14894,7 @@ if (careerOpsAgent) {
   const modalUploadElapsedMs = selectedUploadTask
     ? Math.max(
         0,
-        (selectedUploadTask.completedAt ?? uploadClock) -
+        (selectedUploadTask.completedAt ?? Date.now()) -
           selectedUploadTask.startedAt,
       )
     : 0;
@@ -14879,12 +14932,30 @@ if (careerOpsAgent) {
   const sourceDocuments = documents.filter(
     (doc) => doc.type === "source-document",
   );
-  const gardenSourceAttachments = sourceDocuments.flatMap(
+  const gardenSourceAttachments = useMemo(() => documents.flatMap(
     (doc): GardenChatSourceAttachment[] => {
+      if (doc.type !== "source-document") return [];
       const source = gardenChatSourceAttachment(clusterSlug, doc);
       return source ? [source] : [];
     },
+  ), [documents, clusterSlug]);
+  // ChatTranscript is memoized; plain handler functions are new every render
+  // and broke that memo, so any page re-render re-rendered every mounted row
+  // (markdown tables, artifacts, diagrams, images). Keep their identity fixed.
+  const stableTranscriptPermission = useEvent(
+    (decision: Parameters<typeof agentActivity.respondToPermission>[0]) =>
+      void agentActivity.respondToPermission(decision),
   );
+  const stableTranscriptClarification = useEvent(
+    (answer: Parameters<typeof agentActivity.respondToClarification>[0]) =>
+      void agentActivity.respondToClarification(answer),
+  );
+  const stableEditUserMessage = useEvent(handleEditUserMessage);
+  const stableDeleteUserMessage = useEvent(handleDeleteUserMessage);
+  const stableRetryAssistant = useEvent(handleRetryAssistant);
+  const stableEditAssistant = useEvent(replaceAssistantContent);
+  const stableSwitchBranch = useEvent(switchBranch);
+  const stableExternalAgentTerminal = useEvent(handleExternalAgentTerminal);
   const mediaSourceDocuments = sourceDocuments.filter((doc) => {
     const kind = learnSourceKind(doc);
     return kind === "audio" || kind === "video";
@@ -15357,13 +15428,6 @@ if (careerOpsAgent) {
             : null,
         ].filter((detail): detail is string => Boolean(detail));
     const learnTokenUsage = job?.tokenUsage;
-    const learnElapsedMs = currentLearnElapsedMs(
-      {
-        elapsedMs: job?.elapsedMs ?? 0,
-        startedAt: job?.timerStartedAt,
-      },
-      learnTimerNowMs,
-    );
     const learnTimerPaused = status === "awaiting_confirmation" || paused;
     const hasLearnTokenActivity = (learnTokenUsage?.startedCalls ?? 0) > 0;
     const showLearnTokenUsage = Boolean(
@@ -16412,30 +16476,18 @@ if (careerOpsAgent) {
           <span className="font-medium text-gray-300">Tokens</span>
           {showLearnTokenUsage && learnTokenUsage ? (
             <>
-              <span
-              className="flex items-center gap-1 font-mono tabular-nums text-gray-400"
-              title={
-                learnTimerPaused
-                  ? "Paused while the learning map waits for confirmation"
-                  : job?.timerStartedAt
-                    ? "Learn creation time"
-                    : "Total Learn creation time"
-              }
-              aria-label={`Learn timer ${formatLearnElapsedTime(learnElapsedMs)}${learnTimerPaused ? ", paused" : ""}`}
-            >
-              <svg
-                className="h-3 w-3"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={1.8}
-                aria-hidden="true"
-              >
-                <circle cx="12" cy="13" r="8" />
-                <path strokeLinecap="round" d="M12 9v4l2.5 1.5M9 2h6M12 2v3" />
-              </svg>
-              {formatLearnElapsedTime(learnElapsedMs)}
-            </span>
+              <LearnElapsedTimer
+                elapsedMs={job?.elapsedMs ?? 0}
+                startedAt={job?.timerStartedAt}
+                paused={learnTimerPaused}
+                title={
+                  learnTimerPaused
+                    ? "Paused while the learning map waits for confirmation"
+                    : job?.timerStartedAt
+                      ? "Learn creation time"
+                      : "Total Learn creation time"
+                }
+              />
 
             {learnTokenUsage.reportedCalls > 0 ? (
               <dl className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -18825,21 +18877,17 @@ if (careerOpsAgent) {
                 activities={agentActivity.activities}
                 connection={visibleAgentConnection}
                 pendingPermission={agentActivity.pendingPermission}
-                onPermissionDecision={(decision) =>
-                  void agentActivity.respondToPermission(decision)
-                }
+                onPermissionDecision={stableTranscriptPermission}
                 pendingClarification={agentActivity.pendingClarification}
-                onClarificationAnswer={(answer) =>
-                  void agentActivity.respondToClarification(answer)
-                }
-                onEditMessage={handleEditUserMessage}
-                onDeleteMessage={handleDeleteUserMessage}
-                onRetryAssistant={handleRetryAssistant}
+                onClarificationAnswer={stableTranscriptClarification}
+                onEditMessage={stableEditUserMessage}
+                onDeleteMessage={stableDeleteUserMessage}
+                onRetryAssistant={stableRetryAssistant}
                 regeneratingIndex={regeneratingIndex}
-                onEditAssistant={replaceAssistantContent}
+                onEditAssistant={stableEditAssistant}
                 branchGroups={branchGroups}
-                onSwitchBranch={switchBranch}
-                onExternalAgentTerminal={handleExternalAgentTerminal}
+                onSwitchBranch={stableSwitchBranch}
+                onExternalAgentTerminal={stableExternalAgentTerminal}
                 annotationsByMessage={annotationsByMessage}
                 onTextSelection={receiveTextSelection}
                 onReply={replyToMessage}
@@ -20445,10 +20493,11 @@ onClearCareerOps={() => {
                       d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
                     />
                   </svg>
-                  <span>
-                    {modalIsUploading ? "Elapsed" : "Done in"}{" "}
-                    {formatElapsed(modalUploadElapsedMs)}
-                  </span>
+                  <UploadElapsedLabel
+                    live={modalIsUploading}
+                    startedAt={selectedUploadTask?.startedAt ?? Date.now()}
+                    completedAt={selectedUploadTask?.completedAt}
+                  />
                 </div>
               )}
 

@@ -3,6 +3,7 @@ if (typeof window !== "undefined") {
 }
 
 import { emptyIngestTokenUsage, type IngestTokenUsage } from "@/lib/ingest-token-usage";
+import { committedFailedIngestionResult } from "@/lib/runtime-v2/ingest-recovery-store";
 import {
   RuntimeJobControlError,
   inspectRuntimeJob,
@@ -734,7 +735,19 @@ export function createRuntimeIngestSseResponse(input: {
           );
           send({ type: "result", ...result });
         } else {
-          send(
+          const committed = job.state === "cancelled"
+            ? null
+            : committedFailedIngestionResult(input.job.jobId);
+          let committedResult: Record<string, unknown> | null = null;
+          if (committed !== null) {
+            try {
+              committedResult = parseIngestionResult(committed, resolvedModel);
+            } catch {
+              committedResult = null;
+            }
+          }
+          if (committedResult) send({ type: "result", ...committedResult });
+          else send(
             terminalErrorEvent(
               job,
               tokenUsage,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import AttachmentPreviewDialog, {
@@ -56,11 +56,25 @@ function PaperclipIcon() {
   );
 }
 
+// The transcript passes freshly filtered arrays each render; equal contents
+// should not re-render the image grid.
+function attachmentPropsEqual(previous: Props, next: Props): boolean {
+  const keys = new Set([...Object.keys(previous), ...Object.keys(next)]) as Set<keyof Props>;
+  for (const key of keys) {
+    const a = previous[key];
+    const b = next[key];
+    if (a === b) continue;
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    if (a.some((item, index) => item !== b[index])) return false;
+  }
+  return true;
+}
+
 function isPastedScreenshotName(name: string): boolean {
   return /^pasted-screenshot-\d+\.(?:png|jpe?g|webp|gif)$/i.test(name.trim());
 }
 
-export default function ChatMessageAttachments({
+function ChatMessageAttachments({
   attachments: allAttachments,
   attachmentNames: allAttachmentNames,
   sourceAttachments = [],
@@ -496,3 +510,6 @@ export default function ChatMessageAttachments({
     </>
   );
 }
+
+// Rows re-render on every streamed token; this one only when its own props change.
+export default memo(ChatMessageAttachments, attachmentPropsEqual);

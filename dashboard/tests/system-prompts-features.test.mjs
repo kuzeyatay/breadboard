@@ -373,7 +373,7 @@ test("recommendation edits invalidate cached results and reject an old generatio
   const recommendations = await bundleRoute("src/lib/recommendations/service.ts", {
     "server-only": "",
     "../db.ts": "export default globalThis.__featurePromptFixture.db;",
-    "../hermes/runtime-store.ts": "export function getHermesUserSettings(){return {composerSwitches:{personalize:true},defaultModel:'test'};}",
+    "../hermes/runtime-store.ts": "export function getHermesUserSettings(){return {composerSwitches:{personalize:true},defaultModel:'test',fallbackModel:'test'};}",
     "../recall/settings.ts": "export function getRecallSettings(){return {};}",
     "./sources.ts": "export async function readRecommendationEvidence(){return globalThis.__featurePromptFixture.evidence;}",
     "./generate.ts": "export async function generateRecommendations(input){return globalThis.__featurePromptFixture.generate(input);}",

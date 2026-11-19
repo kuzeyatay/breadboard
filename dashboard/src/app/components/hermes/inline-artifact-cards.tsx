@@ -3,6 +3,7 @@
 import {
   createContext,
   Fragment,
+  memo,
   type ReactNode,
   useCallback,
   useContext,
@@ -707,7 +708,7 @@ function ArtifactCardList({
   );
 }
 
-export default function InlineArtifactCards({
+function InlineArtifactCards({
   conversationId,
   legacyChatSessionId,
   gardenSlug,
@@ -728,3 +729,7 @@ export default function InlineArtifactCards({
     </InlineArtifactCardsProvider>
   );
 }
+
+// Rows re-render on every streamed token; the cards (and the visualizer
+// iframe inside them) only when their own props or the artifact store change.
+export default memo(InlineArtifactCards);

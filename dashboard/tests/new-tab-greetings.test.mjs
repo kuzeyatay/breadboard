@@ -4,6 +4,8 @@ import {
   FAMILIAR_ADDRESSEES, CREATIVE_ADDRESSEES, GREETING_WEATHER_MAX_AGE_MS,
   cachedGreetingWeather, greetingHour, locationAddressees, normalizeGreetingWeather,
   pickNewTabAddressee, timeAddressees, weatherAddressees,
+  weekdayAddressees, seasonAddressees, activityAddressees, greetingCalendar,
+  cachedGreetingActivity, normalizeGreetingActivity, GREETING_ACTIVITY_MAX_AGE_MS,
 } from "../src/app/new-tab/new-tab-greetings.ts";
 
 const draws = (...values) => () => values.shift() ?? 0;
@@ -78,4 +80,32 @@ test("only fresh weather for the active location can affect a greeting", () => {
   for (const invalid of [null, {}, { ...rain, code: 999 }, { ...rain, temperatureC: NaN }, { ...rain, isDay: "yes" }]) {
     assert.equal(normalizeGreetingWeather(invalid), null);
   }
+});
+
+test("day, season and Screen Time activity widen the contextual nicknames", () => {
+  assert.ok(weekdayAddressees(5).includes("friday flyer"));
+  assert.deepEqual(weekdayAddressees(undefined), []);
+  // July is summer up north and winter down south.
+  assert.ok(seasonAddressees(6, 52).includes("summer sailor"));
+  assert.ok(seasonAddressees(6, -33).includes("winter wanderer"));
+  assert.ok(seasonAddressees(10).includes("leaf peeper"));
+  assert.deepEqual(seasonAddressees(12), []);
+  assert.ok(activityAddressees({ category: "learning", focused: true, scattered: false }).includes("deep diver"));
+  assert.ok(activityAddressees({ category: "creating", focused: false, scattered: false }).includes("code wrangler"));
+  assert.deepEqual(activityAddressees(null), []);
+  // Only the activity pool exists here, so a contextual roll must land in it.
+  const pick = pickNewTabAddressee({ activity: { category: "browsing", focused: false, scattered: false } }, [], draws(0.9, 0, 0));
+  assert.ok(activityAddressees({ category: "browsing", focused: false, scattered: false }).includes(pick));
+  assert.ok(FAMILIAR_ADDRESSEES.length >= 30 && CREATIVE_ADDRESSEES.length >= 100);
+});
+
+test("calendar context follows the active zone and activity is only trusted fresh", () => {
+  const now = new Date("2026-09-04T23:30:00Z"); // Friday in UTC, Saturday in Amsterdam
+  assert.deepEqual(greetingCalendar(now, "Europe/Amsterdam"), { day: 6, month: 8 });
+  assert.deepEqual(greetingCalendar(now, "invented/zone"), { day: now.getDay(), month: now.getMonth() });
+  const activity = { category: "learning", focused: false, scattered: true };
+  assert.deepEqual(cachedGreetingActivity({ readAt: 1_000, activity }, 1_001), activity);
+  assert.equal(cachedGreetingActivity({ readAt: 1_000, activity }, 1_000 + GREETING_ACTIVITY_MAX_AGE_MS), null);
+  assert.equal(cachedGreetingActivity({ readAt: 1_000, activity: { category: "other" } }, 1_001), null);
+  assert.equal(normalizeGreetingActivity({ category: "spying" }), null);
 });

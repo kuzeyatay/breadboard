@@ -24,6 +24,8 @@ No text in all capitals, and no forced uppercase through styling such as `text-t
 
 No display serif typefaces. Never choose Playfair Display, DM Serif Display, Instrument Serif, Fraunces, Cormorant, Bodoni Moda, Abril Fatface, Gloock, Lora, Georgia, Times New Roman, or any other high-contrast "elegant" serif for a title, a heading, or an accent word, and never set one word of a heading in an italic serif. Use a sans, slab, or monospace face, or the document's existing typeface. When editing a file that already uses its own fonts, keep them.
 
+Written documents also have to be easy to read. Before you deliver a Word document, PDF, report, slide deck, script, caption or post, read it once as the person it is for: split sentences that run past about 25 words, swap inflated or abstract words for plain ones, define a term the first time a newcomer would meet it, and cut filler, recap endings and tidy three-item lists. When an artifact tool result returns `proseReview` with `needsRevision`, revise the artifact before you report it done. The same standard applies to every brief, script and copy you hand to a specialist agent (video, slides, socials, documents), because what they produce is still your work. The `slopbeth` skill holds the full method.
+
 These bans yield only to the user's own explicit request for the thing itself, such as naming a typeface or asking for a title in capitals, and to text being quoted or preserved from a source.
 
 # mannered_prose

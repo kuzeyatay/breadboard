@@ -79,8 +79,43 @@ function installScriptPopupPolicy() {
   };
 }
 
+/** Chrome keeps three passkey modes quiet: "conditional" get is an autofill
+ * suggestion, "immediate" get shows browser UI only for its own saved passkeys,
+ * and "conditional" create upgrades silently. Electron has none of that UI and
+ * sends all three to Windows Hello, so Google pages pop a passkey modal (for
+ * whichever passkey Windows holds) on load. Answer them the way Chrome does
+ * with nothing to offer. Google also opens a plain modal request on page load;
+ * those need a click first. Explicit passkey buttons keep working.
+ * ponytail: main frame only; subframes would need nodeIntegrationInSubFrames. */
+function installPasskeyAutofillGuard() {
+  const credential = window.PublicKeyCredential;
+  if (!credential || !window.CredentialsContainer) return;
+  credential.isConditionalMediationAvailable = () => Promise.resolve(false);
+  const capabilities = credential.getClientCapabilities;
+  if (capabilities) credential.getClientCapabilities = () => capabilities.call(credential)
+    .then(value => ({ ...value, conditionalGet: false, conditionalCreate: false, immediateGet: false }));
+  const declined = () => Promise.reject(new DOMException("The operation either timed out or was not allowed.", "NotAllowedError"));
+  const nativeGet = CredentialsContainer.prototype.get;
+  CredentialsContainer.prototype.get = function get(options?: CredentialRequestOptions) {
+    const mediation = options?.mediation as string | undefined;
+    if (mediation === "immediate") return declined();
+    // Like Safari: a modal passkey prompt needs a click, not a page load.
+    if (mediation !== "conditional") return options?.publicKey && !navigator.userActivation.isActive ? declined() : nativeGet.call(this, options);
+    // Never shown, so it settles only when the page gives up on it.
+    return new Promise<Credential | null>((_resolve, reject) => {
+      const signal = options?.signal;
+      if (signal?.aborted) reject(signal.reason);
+      signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  };
+  const nativeCreate = CredentialsContainer.prototype.create;
+  CredentialsContainer.prototype.create = function create(options?: CredentialCreationOptions) {
+    return (options as { mediation?: string } | undefined)?.mediation === "conditional" ? declined() : nativeCreate.call(this, options);
+  };
+}
+
 // Install before page scripts run, without synthesizing a user gesture.
-void webFrame.executeJavaScript(`(${installScriptPopupPolicy.toString()})()`);
+void webFrame.executeJavaScript(`(${installScriptPopupPolicy.toString()})(); (${installPasskeyAutofillGuard.toString()})()`);
 
 // Saved passwords. This runs in the preload's isolated world: it reads and
 // fills login fields through the shared DOM, and page scripts never see the

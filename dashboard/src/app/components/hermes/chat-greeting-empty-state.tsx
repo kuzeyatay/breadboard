@@ -178,7 +178,7 @@ function SuggestionCard({
     : null;
 
   return (
-    <div className="grid"><button
+    <div className="relative grid"><button
       ref={buttonRef}
       type="button"
       onPointerEnter={event=>{if(event.pointerType==='mouse'){pointer.current=true;setHeld(shown);}}}
@@ -191,7 +191,7 @@ function SuggestionCard({
       }}
       aria-label={text.actionable.prompt}
       disabled={disabled}
-      className="bb-terminal-suggestion neu-button border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
+      className={`${detail?.lesson ? 'pr-9 ' : ''}bb-terminal-suggestion neu-button border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60`}
     >
       {/* Empty until the card has been measured — the server knows no sizes,
           so this also keeps hydration exact. Width and height are stated in
@@ -227,6 +227,6 @@ function SuggestionCard({
           {detail.usefulness === 'urgent' ? `Needs attention · ${detail.label}` : detail.label}
         </span>
       ) : null}
-    </button>{detail?.lesson && <LessonControls lesson={detail.lesson}/>}</div>
+    </button>{detail?.lesson && <LessonControls lesson={detail.lesson} className="absolute right-1.5 top-1.5 z-10"/>}</div>
   );
 }

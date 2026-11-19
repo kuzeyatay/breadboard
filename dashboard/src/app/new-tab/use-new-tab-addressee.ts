@@ -3,10 +3,14 @@
 import { useEffect, useState } from "react";
 import { getStoredCurrentLocationPreference } from "@/lib/current-location";
 import {
+  cachedGreetingActivity,
   cachedGreetingWeather,
+  greetingCalendar,
   greetingHour,
+  normalizeGreetingActivity,
   normalizeGreetingWeather,
   pickNewTabAddressee,
+  type GreetingActivity,
   type GreetingWeather,
 } from "./new-tab-greetings";
 
@@ -17,6 +21,7 @@ export function useNewTabAddressee(initial: string, ownerKey: string): string {
     const controller = new AbortController();
     const historyKey = `breadboard:new-tab-greetings:${ownerKey}`;
     const weatherKey = `breadboard:new-tab-weather:${ownerKey}`;
+    const activityKey = `breadboard:new-tab-activity:${ownerKey}`;
     const storage = {
       getItem: (key: string) => window.localStorage.getItem(key),
     };
@@ -34,7 +39,29 @@ export function useNewTabAddressee(initial: string, ownerKey: string): string {
         weather = cachedGreetingWeather(JSON.parse(storage.getItem(weatherKey) ?? "null"), location, now.getTime());
       } catch { /* Missing weather simply leaves time and general nicknames. */ }
 
-      const next = pickNewTabAddressee({ hour: greetingHour(now, location?.timeZone), location, weather }, recent);
+      let activity: GreetingActivity | null = null;
+      try {
+        activity = cachedGreetingActivity(JSON.parse(storage.getItem(activityKey) ?? "null"), now.getTime());
+      } catch { /* Activity is an optional flavour. */ }
+      // Like weather, activity read now only flavours the next tab's greeting.
+      if (!activity) {
+        void fetch("/api/new-tab/greeting-activity", {
+          cache: "no-store",
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8_000)]),
+        }).then(async (response) => {
+          if (!response.ok || controller.signal.aborted) return;
+          const body = await response.json() as { activity?: unknown };
+          window.localStorage.setItem(activityKey, JSON.stringify({ readAt: Date.now(), activity: normalizeGreetingActivity(body.activity) }));
+        }).catch(() => { /* Screen Time off or offline: no activity nod. */ });
+      }
+
+      const next = pickNewTabAddressee({
+        hour: greetingHour(now, location?.timeZone),
+        ...greetingCalendar(now, location?.timeZone),
+        location,
+        weather,
+        activity,
+      }, recent);
       setAddressee(next);
       try {
         window.localStorage.setItem(historyKey, JSON.stringify([...recent, next].slice(-8)));

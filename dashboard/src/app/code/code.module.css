@@ -14,3 +14,11 @@
 .message { margin-top:18px; }
 .error { color:#ad342e; overflow-wrap:anywhere; }
 @media(max-width:600px) { .content { padding:36px 20px; } }
+.body { flex:1; min-height:0; display:flex; }
+.body > main { flex:1; min-width:0; }
+.bread { width:400px; flex:none; min-height:0; display:flex; flex-direction:column; border-left:1px solid var(--line,#ddd8cc); background:var(--paper-surface,#faf7ef); }
+.bread header { display:flex; align-items:center; justify-content:space-between; padding:6px 8px 6px 14px; border-bottom:1px solid var(--line,#ddd8cc); font-size:13px; font-weight:500; }
+.bread button, .breadToggle { display:inline-flex; padding:6px; border:0; border-radius:6px; background:transparent; color:inherit; cursor:pointer; }
+.bread button:hover, .breadToggle:hover { background:var(--paper-strong,#efe9dc); }
+.breadToggle { align-self:flex-start; margin:6px; }
+@media(max-width:900px) { .bread { width:320px; } }

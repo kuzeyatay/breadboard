@@ -53,6 +53,8 @@ export default function NewTabSearch({ gardens, initialHistory, ownerKey, browse
   const [state, setState] = useState<{ query: string; data?: BreadboardSearchResponse; error?: string } | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const frame = useRef<HTMLDivElement>(null);
+  const blurTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(blurTimer.current), []);
   const dropdown = useRef<HTMLDivElement>(null);
   const resultList = useRef<HTMLUListElement>(null);
   const filePicker = useRef<HTMLInputElement>(null);
@@ -217,7 +219,18 @@ export default function NewTabSearch({ gardens, initialHistory, ownerKey, browse
   return (
     <>
       <div ref={frame} className={controls.search} role="search"
-        onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) { setFocused(false); setHighlighted(-1); } }}>
+        onFocus={() => window.clearTimeout(blurTimer.current)}
+        onBlur={event => {
+          if (event.currentTarget.contains(event.relatedTarget)) return;
+          // The desktop shell can move focus between its views on a first click
+          // and hand it straight back; closing on that blur made the list open,
+          // close and reopen. Close only once focus has really left.
+          window.clearTimeout(blurTimer.current);
+          blurTimer.current = window.setTimeout(() => {
+            if (document.hasFocus() && frame.current?.contains(document.activeElement)) return;
+            setFocused(false); setHighlighted(-1);
+          }, 120);
+        }}>
         <Search size={19} aria-hidden="true" />
         <span className={controls.searchField}>
         {inline && <span className={controls.inlineCompletion} aria-hidden="true">

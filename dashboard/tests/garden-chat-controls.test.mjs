@@ -122,7 +122,8 @@ test("Garden Chat sent messages match Terminal hover actions", () => {
   assert.match(transcript, /aria-label="Edit message and create a branch"/);
   assert.match(transcript, /<SavePromptDialog/);
   assert.match(transcript, /Save &amp; send/);
-  assert.match(workspace, /onEditMessage=\{handleEditUserMessage\}/);
+  assert.match(workspace, /onEditMessage=\{stableEditUserMessage\}/);
+  assert.match(workspace, /const stableEditUserMessage = useEvent\(handleEditUserMessage\)/);
   assert.match(
     workspace,
     /reusableChatAttachments\(previousUser\.attachments\)/,

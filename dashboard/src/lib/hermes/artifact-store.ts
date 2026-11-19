@@ -25,6 +25,7 @@ import { isChatHighlight } from "../conversations/highlights.ts";
 import { artifactsForTranscript } from "./artifact-transcript.ts";
 import { artifactsForArchive } from "./artifact-archive.ts";
 import { scrubbed } from "../watermarks/scrub-text.ts";
+import { cleanArtifactTypography } from "./artifact-prose-review.ts";
 import { scrubFileInPlaceViaRuntime } from "../watermarks/scrub-file.ts";
 import {
   markdownIntegrityIssue,
@@ -259,7 +260,7 @@ function validateContent(content: unknown, rendererId?: string): string {
       throw new ArtifactStoreError(400, "invalid_markdown_encoding", issue);
     }
   }
-  const clean = scrubbed(normalized);
+  const clean = cleanArtifactTypography(scrubbed(normalized), rendererId);
   if (Buffer.byteLength(clean, "utf8") > MAX_ARTIFACT_CONTENT_BYTES) {
     throw new ArtifactStoreError(413, "artifact_too_large", `Artifact content exceeds ${MAX_ARTIFACT_CONTENT_BYTES} bytes.`);
   }
@@ -2214,6 +2215,15 @@ function insertEvent(
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(artifactId, runId, conversationId, clusterId, assistantMessageId,
     type, status, version, safeJson(payload), new Date().toISOString());
+}
+
+/** Writes so far: 1 for a fresh artifact, +1 per update. Drives the prose review cap. */
+export function countArtifactWrites(artifactId: string, database: Database.Database = db): number {
+  const row = database.prepare(`
+    SELECT COUNT(*) AS n FROM hermes_artifact_events
+    WHERE artifact_id = ? AND event_type IN ('artifact.created', 'artifact.updated')
+  `).get(artifactId) as { n: number };
+  return Math.max(1, row.n);
 }
 
 export function listArtifactEventsAfter(input: {

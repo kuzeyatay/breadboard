@@ -35,12 +35,27 @@ function cleanThinkingText(text: string): string {
 
 /** Older Hermes responses saved an answer preview as reasoning. Keep that
  * preview out of the disclosure without changing the stored conversation. */
+// Every thinking paragraph is compared against the whole answer, on every render
+// of every mounted row. Normalizing a table-heavy answer each time made
+// scrolling such chats lag, so the same string is normalized only once.
+// ponytail: clear-all at 256 entries, an LRU if transcripts outgrow it.
+const normalizedText = new Map<string, string>();
+function normalizeForPreview(value: string): string {
+  let normalized = normalizedText.get(value);
+  if (normalized === undefined) {
+    if (normalizedText.size >= 256) normalizedText.clear();
+    normalized = stripEmDashes(value).replace(/\s+/g, " ").trim();
+    normalizedText.set(value, normalized);
+  }
+  return normalized;
+}
+
 export function isAssistantTextPreview(text: string, content: string): boolean {
   // Answer prose is normalized at the runtime boundary, while the old preview
   // retained the provider's punctuation and line breaks.
-  const normalize = (value: string) => stripEmDashes(value).replace(/\s+/g, " ").trim();
-  const preview = normalize(text);
-  const answer = normalize(content);
+  const preview = normalizeForPreview(text);
+  if (!preview) return false;
+  const answer = normalizeForPreview(content);
   return Boolean(preview && answer && (
     preview === answer || (preview.length >= 80 && answer.startsWith(preview))
   ));

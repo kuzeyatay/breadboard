@@ -42,7 +42,7 @@ import { BrowserVpn } from "./browser-vpn";
 import { BrowserNotifications } from "./browser-notifications";
 import { BrowserNotificationPages } from "./browser-notification-pages";
 import { browserUserAgent } from "./browser-user-agent";
-import { attachGoogleSignInPage, attachGoogleSignInSession } from "./browser-google-signin";
+import { attachGoogleSignInHandoff } from "./browser-google-signin";
 import { toggleBrowserPictureInPicture } from "./browser-picture-in-picture";
 import { GooglePipExtension, GOOGLE_PIP_EXTENSION_ID } from "./google-pip-extension";
 import { BrowserHlsDownloads } from "./browser-hls-downloads";
@@ -880,7 +880,8 @@ export class TabManager {
       const bounds = tab.view?.getBounds() ?? { x: 0, y: 0, width, height };
       const top = Math.min(bounds.y + bounds.height - 1, Math.max(BREADBOARD_TITLE_BAR.height,
         bounds.y + Math.ceil(this.codeDock.contentTop(tab.contents.id) * tab.contents.getZoomFactor())));
-      this.codeDock.sync(tab.contents.id, host.window, { ...bounds, y: top, height: Math.max(1, bounds.height - (top - bounds.y)) },
+      const right = Math.ceil(this.codeDock.contentRight(tab.contents.id) * tab.contents.getZoomFactor());
+      this.codeDock.sync(tab.contents.id, host.window, { ...bounds, y: top, width: Math.max(1, bounds.width - right), height: Math.max(1, bounds.height - (top - bounds.y)) },
         (visible === tab || members.includes(tab)) && !host.tabDragPreview && !host.window.isMinimized() && host.window.isVisible(), host.activeId === tab.id);
     }
   }
@@ -4864,7 +4865,6 @@ export class TabManager {
     const browserSession = session.fromPartition(browser.privatePartition ?? BROWSER_SESSION_PARTITION);
     const userAgent = browserUserAgent(browserSession.getUserAgent());
     browserSession.setUserAgent(userAgent);
-    attachGoogleSignInSession(browserSession);
     // Chromium-owned window.open navigations ignore per-page overrides in
     // Electron 33 (electron/electron#45897). They use the process fallback.
     // Pin the product session's identity before changing that fallback.
@@ -4886,7 +4886,7 @@ export class TabManager {
     });
     // Adopted popup contents already exist; a session change alone cannot update them.
     view.webContents.setUserAgent(userAgent);
-    attachGoogleSignInPage(view.webContents, userAgent);
+    attachGoogleSignInHandoff(view.webContents, browserSession, message => this.log(message));
     view.setBackgroundColor(browserPageBackgroundColor(this.options.theme()));
     // Background automation still needs a real viewport for layout and input.
     // Size the unattached view without putting it in front of the user's page.
@@ -5101,7 +5101,6 @@ export class TabManager {
     const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
     const userAgent = browserUserAgent(browserSession.getUserAgent());
     browserSession.setUserAgent(userAgent);
-    attachGoogleSignInSession(browserSession);
     const view = new WebContentsView({
       webPreferences: {
         ...BROWSER_WEB_PREFERENCES,
@@ -5114,7 +5113,7 @@ export class TabManager {
     });
     const contents = view.webContents;
     contents.setUserAgent(userAgent);
-    attachGoogleSignInPage(contents, userAgent);
+    attachGoogleSignInHandoff(contents, browserSession, message => this.log(message));
     view.setBackgroundColor(browserPageBackgroundColor(this.options.theme()));
     const window = new BrowserWindow({
       ...CHATGPT_WEB_PAGE_SIZE,

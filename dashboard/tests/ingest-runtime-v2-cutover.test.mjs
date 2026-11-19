@@ -1104,7 +1104,7 @@ test("recovery SSE parsing is buffer-bounded and cancels a rejected reader", asy
   let canceled = false;
   const body = new ReadableStream({
     start(controller) {
-      controller.enqueue(new Uint8Array(65 * 1024).fill(0x61));
+      controller.enqueue(new Uint8Array(4 * 1024 * 1024 + 1).fill(0x61));
     },
     cancel() {
       canceled = true;
@@ -1120,4 +1120,25 @@ test("recovery SSE parsing is buffer-bounded and cancels a rejected reader", asy
     /bounded buffer/,
   );
   assert.equal(canceled, true);
+});
+
+test("recovery SSE parsing accepts a book-sized result event", async () => {
+  // A 256 KB result (a textbook's topics) used to overflow a 64 KB cap, so a
+  // reattached upload looped on "Finishing document ingestion…" forever.
+  const recovery = await import(
+    "../src/lib/runtime-v2/ingest-recovery-client.ts"
+  );
+  const topics = "x".repeat(300 * 1024);
+  const frame = `data: ${JSON.stringify({ type: "result", success: true, topics })}
+
+data: [DONE]
+
+`;
+  const outcome = await recovery.readRuntimeIngestEventStream(
+    new Response(frame, {
+      headers: { "X-Breadboard-Runtime-Job-State": "succeeded" },
+    }),
+    () => undefined,
+  );
+  assert.equal(outcome.terminalEvent?.type, "result");
 });

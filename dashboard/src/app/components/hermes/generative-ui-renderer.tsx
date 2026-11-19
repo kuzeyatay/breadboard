@@ -1,4 +1,5 @@
 "use client";
+import { memo } from "react";
 
 import { ArrowUpRight, ListMusic } from "lucide-react";
 import BambuPrintCard from "./bambu-print-card";
@@ -21,7 +22,7 @@ interface Props {
   } | null;
 }
 /** The only component registry. Resource payloads never choose an import. */
-export default function GenerativeUiRenderer({
+function GenerativeUiRenderer({
   resources,
   conversationPublicId,
   legacyChatSessionId,
@@ -71,3 +72,6 @@ export default function GenerativeUiRenderer({
     }
   });
 }
+
+// Rows re-render on every streamed token; this one only when its own props change.
+export default memo(GenerativeUiRenderer);

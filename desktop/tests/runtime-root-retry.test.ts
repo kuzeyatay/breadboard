@@ -143,3 +143,20 @@ test("quitting cancels pending Runtime recovery timers", () => {
     /this\.quitting = true;[\s\S]{0,160}this\.clearScheduledRuntimeRootRetry\(\);\s*this\.clearRuntimeRootStabilityTimer\(\);/,
   );
 });
+
+test("a service failure after the dashboard is shown keeps the open window", async () => {
+  let startupScreens = 0;
+  const lifecycle = Object.assign(Object.create(AppLifecycle.prototype), {
+    dashboardShown: true,
+    lastRuntimeStatusSignature: null,
+    logs: { forService: () => ({ write() {}, readTail: () => [] }) },
+    runtimeServices: () => [],
+    windows: { sendToRenderer() {}, async showStartupScreen() { startupScreens++; } },
+  }) as { applyRuntimeSnapshot(s: unknown): Promise<void>; dashboardShown: boolean };
+  await lifecycle.applyRuntimeSnapshot({
+    acceptingWork: false,
+    services: [{ id: "dashboard", displayName: "Workspace", required: true, startupPolicy: "eager", state: "resource-blocked" }],
+  });
+  assert.equal(startupScreens, 0);
+  assert.equal(lifecycle.dashboardShown, true);
+});

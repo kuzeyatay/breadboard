@@ -126,6 +126,173 @@ const recoveryRequestIds = new Map<string, Set<string>>();
 const retryLedgers = new Map<string, IngestAutoRetryLedger>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+/*
+ * Queued files outlive the app. A File only exists in this page's memory, so
+ * closing the app used to drop every file still waiting its turn, and the one
+ * in flight lost its bytes if the Runtime had not received or finished it.
+ * IndexedDB stores Blobs natively: each file is kept there until its upload
+ * settles, and the next visit to the garden queues whatever is left. A
+ * resubmitted document that did land is skipped by the server's duplicate
+ * check, so replaying is safe.
+ */
+interface QueuedUploadRecord {
+  id: string;
+  clusterSlug: string;
+  file: File;
+  options: GardenUploadTaskOptions;
+  requestId: string | null;
+  attempts: number;
+  createdAt: number;
+}
+
+const QUEUE_DB = "breadboard-garden-upload-queue";
+const QUEUE_STORE = "files";
+const MAX_QUEUED_REPLAYS = 3;
+const fileQueueIds = new WeakMap<File, string>();
+/**
+ * Queue records this page has taken on, kept after they settle: a revisit or a
+ * late follower must never replay a file this page already ran.
+ */
+const liveQueueIds = new Set<string>();
+const liveQueueRecords = new Map<string, QueuedUploadRecord>();
+/** Writes apply in call order, so a late put can never revive a deleted file. */
+let queueChain: Promise<unknown> = Promise.resolve();
+
+function openQueueDb(): Promise<IDBDatabase | null> {
+  return new Promise((resolve) => {
+    try {
+      if (typeof indexedDB === "undefined") return resolve(null);
+      const request = indexedDB.open(QUEUE_DB, 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore(QUEUE_STORE, { keyPath: "id" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+function queueStore<T>(
+  mode: IDBTransactionMode,
+  run: (store: IDBObjectStore) => IDBRequest<T>,
+): Promise<T | null> {
+  const next = queueChain.then(() => runQueueStore(mode, run));
+  queueChain = next.catch(() => undefined);
+  return next;
+}
+
+async function runQueueStore<T>(
+  mode: IDBTransactionMode,
+  run: (store: IDBObjectStore) => IDBRequest<T>,
+): Promise<T | null> {
+  const db = await openQueueDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const request = run(db.transaction(QUEUE_STORE, mode).objectStore(QUEUE_STORE));
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    } finally {
+      db.close();
+    }
+  });
+}
+
+function persistQueuedUpload(record: QueuedUploadRecord): void {
+  void queueStore("readwrite", (store) => store.put(record));
+}
+
+async function readQueuedUploads(): Promise<QueuedUploadRecord[]> {
+  return ((await queueStore("readonly", (store) => store.getAll())) ?? []) as QueuedUploadRecord[];
+}
+
+function dropQueuedUpload(file: File): void {
+  const id = fileQueueIds.get(file);
+  if (!id) return;
+  liveQueueRecords.delete(id);
+  void queueStore("readwrite", (store) => store.delete(id));
+}
+
+function markQueuedUploadRequest(file: File, requestId: string): void {
+  const id = fileQueueIds.get(file);
+  const record = id ? liveQueueRecords.get(id) : undefined;
+  if (!record) return;
+  const next = { ...record, requestId };
+  liveQueueRecords.set(record.id, next);
+  persistQueuedUpload(next);
+}
+
+/** Start the files as one sequential task, keeping each in the durable queue. */
+function startQueuedFiles(
+  clusterSlug: string,
+  records: Array<Pick<QueuedUploadRecord, "id" | "file" | "attempts" | "createdAt">>,
+  options: GardenUploadTaskOptions,
+): string {
+  for (const record of records) {
+    const queued = { ...record, clusterSlug, options, requestId: null };
+    fileQueueIds.set(record.file, record.id);
+    liveQueueIds.add(record.id);
+    liveQueueRecords.set(record.id, queued);
+    persistQueuedUpload(queued);
+  }
+  return startTask(clusterSlug, records.map((record) => record.file), options, {});
+}
+
+/**
+ * Queue again whatever a closed app left behind for this garden: files that
+ * never started, and files whose Runtime job no longer exists. A file whose
+ * job is still known is left to the restored-upload follower, which hands it
+ * back through `settleRestoredGardenUpload`.
+ */
+export async function resumeQueuedGardenUploads(clusterSlug: string): Promise<void> {
+  const leftovers = (await readQueuedUploads())
+    .filter((record) => record.clusterSlug === clusterSlug && !liveQueueIds.has(record.id))
+    .filter((record) => !record.requestId || !runtimeIngestRecoveryRecord(record.requestId))
+    .sort((a, b) => a.createdAt - b.createdAt);
+  const groups = new Map<string, QueuedUploadRecord[]>();
+  for (const record of leftovers) {
+    if (liveQueueIds.has(record.id)) continue;
+    if (record.attempts >= MAX_QUEUED_REPLAYS) {
+      void queueStore("readwrite", (store) => store.delete(record.id));
+      sinkToast(clusterSlug, {
+        message: `${record.file.name} could not be uploaded after ${MAX_QUEUED_REPLAYS} tries. Add it again from Documents.`,
+      });
+      continue;
+    }
+    const key = JSON.stringify(record.options);
+    groups.set(key, [...(groups.get(key) ?? []), { ...record, attempts: record.attempts + 1 }]);
+  }
+  for (const group of groups.values()) {
+    startQueuedFiles(clusterSlug, group, group[0].options);
+  }
+}
+
+/**
+ * A restored upload's job ended. When the app closed under it (the job never
+ * arrived, or the Runtime abandoned it on restart) and the file is still in
+ * the queue, upload it again instead of showing a dead row. Returns whether
+ * it was queued again; otherwise the queued copy is released.
+ */
+export async function settleRestoredGardenUpload(
+  requestId: string,
+  interrupted: boolean,
+): Promise<boolean> {
+  const record = (await readQueuedUploads()).find((item) => item.requestId === requestId);
+  if (!record) return false;
+  // The mount-time resume already queued it again; the row is in hand.
+  if (liveQueueIds.has(record.id)) return true;
+  if (!interrupted || record.attempts >= MAX_QUEUED_REPLAYS) {
+    void queueStore("readwrite", (store) => store.delete(record.id));
+    return false;
+  }
+  startQueuedFiles(record.clusterSlug, [{ ...record, attempts: record.attempts + 1 }], record.options);
+  return true;
+}
+
 export function gardenUploadFileKey(f: File): string {
   return `${f.name}-${f.size}`;
 }
@@ -242,6 +409,7 @@ export function cancelGardenUploadTask(taskId: string): void {
     })().catch(() => undefined);
   }
   runtimeJobIds.get(taskId)?.clear();
+  for (const file of task.files) dropQueuedUpload(file);
   canceledTaskIds.add(taskId);
   abortControllers.get(taskId)?.abort();
 }
@@ -251,7 +419,17 @@ export function startGardenUploadTask(input: {
   files: File[];
   options: GardenUploadTaskOptions;
 }): string {
-  return startTask(input.clusterSlug, [...input.files], input.options, {});
+  const now = Date.now();
+  return startQueuedFiles(
+    input.clusterSlug,
+    input.files.map((file, index) => ({
+      id: crypto.randomUUID(),
+      file,
+      attempts: 0,
+      createdAt: now + index,
+    })),
+    input.options,
+  );
 }
 
 /**
@@ -496,6 +674,7 @@ async function runUploadTask(
       startedAt: Date.now(),
     });
     recoveryRequestIds.get(taskId)?.add(requestId);
+    markQueuedUploadRequest(file, requestId);
     let runtimeJobId: string | null = null;
     let terminalOutcome = false;
     const continueRuntimeRecovery = () => {
@@ -544,6 +723,7 @@ async function runUploadTask(
             return;
           }
           recoveryRequestIds.get(taskId)?.delete(requestId);
+          dropQueuedUpload(file);
           if (runtimeJobId) {
             runtimeJobIds.get(taskId)?.delete(runtimeJobId);
           }
@@ -777,11 +957,13 @@ async function runUploadTask(
       }
       if (terminalOutcome) {
         recoveryRequestIds.get(taskId)?.delete(requestId);
+        dropQueuedUpload(file);
       }
     }
   }
 
   const canceled = canceledTaskIds.has(taskId) || abortController.signal.aborted;
+  if (canceled) for (const file of files) dropQueuedUpload(file);
   if (!canceled && (successCount > 0 || duplicateCount > 0)) {
     const hasHandwritingFile = files.some((file) =>
       HANDWRITING_FILE_RE.test(file.name),

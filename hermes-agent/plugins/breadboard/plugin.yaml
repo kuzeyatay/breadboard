@@ -134,6 +134,7 @@ provides_tools:
   - chat_send_message
   - chat_wait
   - breadboard_process_status
+  - garden_create_repository
   - meeting_account
   - meeting_join
   - meeting_status

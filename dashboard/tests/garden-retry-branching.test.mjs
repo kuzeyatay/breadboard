@@ -37,7 +37,8 @@ test("the branch switcher reaches the Garden transcript's assistant actions", ()
     /onPrevious: \(\) =>\s*onSwitchBranch\(branch\.id, -1\)/,
   );
   assert.match(workspace, /onNext: \(\) =>\s*onSwitchBranch\(branch\.id, 1\)/);
-  assert.match(workspace, /onSwitchBranch=\{switchBranch\}/);
+  assert.match(workspace, /onSwitchBranch=\{stableSwitchBranch\}/);
+  assert.match(workspace, /const stableSwitchBranch = useEvent\(switchBranch\)/);
   // Switching has to write the chosen variant back, since a Garden chat row
   // stores exactly the transcript on screen.
   assert.match(

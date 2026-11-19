@@ -18,6 +18,7 @@ import {
   createImportedArtifact,
   presentArtifact,
   readArtifactSource,
+  countArtifactWrites,
   renderArtifact,
   updateArtifactContent,
   ArtifactStoreError,
@@ -33,6 +34,7 @@ import { ARTIFACT_KINDS, type ArtifactKind } from "@/lib/hermes/artifact-types.t
 import { artifactEditorMode } from "@/lib/hermes/artifact-editor-types.ts";
 import { loadArtifactEditor, saveArtifactEditor, type ArtifactEditorPatch } from "@/lib/hermes/artifact-document-editor.ts";
 import { availableArtifactRenderers } from "@/lib/hermes/artifact-renderers.ts";
+import { reviewArtifactProse } from "@/lib/hermes/artifact-prose-review.ts";
 import { createArtifactFromUpload } from "@/lib/hermes/artifact-upload-import.ts";
 import {
   cancelInteractiveVisualizer,
@@ -390,7 +392,7 @@ export async function POST(request: Request) {
           signal: request.signal,
         });
       }
-      result = { artifact: presentArtifact(artifact) };
+      result = withProseReview({ artifact: presentArtifact(artifact) }, artifact);
     } else {
       const artifact = authorizedArtifact(
         requiredText(args.artifactId, "artifactId", 100),
@@ -444,7 +446,7 @@ export async function POST(request: Request) {
             sourceTool: sourceSkill,
           });
         }
-        result = { artifact: presentArtifact(updated) };
+        result = withProseReview({ artifact: presentArtifact(updated) }, updated);
       } else {
         const rendered = await renderArtifact({
           artifact,
@@ -492,6 +494,27 @@ function generatedImageTitle(prompt: string): string {
 
 function authorizedArtifact(id: string, scope: AgentArtifactScope) {
   return getArtifactInAgentScope(id, scope);
+}
+
+/**
+ * The final anti-slop loop: attach a prose review to create/update results so
+ * the agent revises a machine-sounding or hard-to-follow document before it
+ * reports it done. Best-effort; a review failure never fails the write.
+ */
+function withProseReview<T extends object>(
+  result: T,
+  artifact: Parameters<typeof readArtifactSource>[0],
+): T {
+  try {
+    const review = reviewArtifactProse(
+      readArtifactSource(artifact),
+      artifact.renderer_id,
+      countArtifactWrites(artifact.id),
+    );
+    return review ? { ...result, proseReview: review } : result;
+  } catch {
+    return result;
+  }
 }
 
 function artifactKind(value: unknown): ArtifactKind {

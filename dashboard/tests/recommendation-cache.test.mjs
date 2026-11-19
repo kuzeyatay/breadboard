@@ -22,7 +22,7 @@ async function fixture(t) {
         prepare:sql=>f().shownDb&&/recommendation_shown_cards/.test(sql)?f().shownDb.prepare(sql):({get:()=>f().allowedGarden}),
       };`,
     '../hermes/route-core.ts': 'export class ApiError extends Error {constructor(status,code,message){super(message);this.status=status;}}',
-    '../hermes/runtime-store.ts': 'export const getHermesUserSettings=()=>({composerSwitches:{personalize:globalThis.recommendationCacheFixture.personalize},defaultModel:"test"});',
+    '../hermes/runtime-store.ts': 'export const getHermesUserSettings=()=>({composerSwitches:{personalize:globalThis.recommendationCacheFixture.personalize},defaultModel:"test",fallbackModel:"test"});',
     '../recall/settings.ts': 'export const getRecallSettings=()=>({agentAccess:globalThis.recommendationCacheFixture.recall});',
     './sources.ts': `export const readRecommendationEvidence=async(user,context)=>{
       const s=globalThis.recommendationCacheFixture;s.reads.push({user,context});

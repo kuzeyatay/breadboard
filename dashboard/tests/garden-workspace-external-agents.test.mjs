@@ -50,8 +50,9 @@ test("garden chat renders all specialized run widgets inline", () => {
   assert.match(workspace, /<InlineOpenPlanterRun/);
   assert.match(
     workspace,
-    /onExternalAgentTerminal=\{handleExternalAgentTerminal\}/,
+    /onExternalAgentTerminal=\{stableExternalAgentTerminal\}/,
   );
+  assert.match(workspace, /const stableExternalAgentTerminal = useEvent\(handleExternalAgentTerminal\)/);
 });
 
 test("a finished run only claims the assistant half of its turn", () => {

@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { hasLiveGardenUploadRequest } from "@/lib/garden-upload-store";
+import {
+  hasLiveGardenUploadRequest,
+  resumeQueuedGardenUploads,
+  settleRestoredGardenUpload,
+} from "@/lib/garden-upload-store";
 import {
   cancelPendingRuntimeIngest,
   recoverRuntimeIngest,
@@ -46,7 +50,8 @@ export function useGardenRestoredUploads(clusterSlug: string, callbacks: Recover
       });
     };
 
-    const follow = async (stored: RuntimeIngestRecoveryRecord) => {
+    const MAX_RECONNECTS = 10;
+    const follow = async (stored: RuntimeIngestRecoveryRecord, reconnects = 0) => {
       try {
         let record = runtimeIngestRecoveryRecord(stored.requestId) ?? stored;
         if (record.cancelRequested) {
@@ -69,6 +74,18 @@ export function useGardenRestoredUploads(clusterSlug: string, callbacks: Recover
         }, { signal: controller.signal });
         if (controller.signal.aborted) return;
         const terminal = outcome?.terminalEvent;
+        // The app closed under this upload: the Runtime never got it, or
+        // abandoned the job on restart. Upload the kept copy again rather
+        // than leave a dead row asking the person to find the file.
+        const interrupted = !terminal || (
+          terminal.type === "error" && terminal.canceled !== true && !terminal.recoveryId &&
+          (outcome?.initialState === "uncertain" || outcome?.initialState === "interrupted"));
+        if (await settleRestoredGardenUpload(record.requestId, interrupted)) {
+          update(record.requestId, null);
+          callbacksRef.current.onSettled();
+          return;
+        }
+        if (controller.signal.aborted) return;
         if (!terminal) {
           update(record.requestId, { error: "Upload interrupted before it was received. Upload the file again." });
         } else if (terminal.type === "error" && terminal.canceled !== true && !terminal.recoveryId) {
@@ -79,11 +96,22 @@ export function useGardenRestoredUploads(clusterSlug: string, callbacks: Recover
         callbacksRef.current.onSettled();
       } catch {
         if (controller.signal.aborted) return;
-        // An unavailable status endpoint must not make a running file disappear.
+        // An unavailable status endpoint must not make a running file
+        // disappear, but a job that stays unreachable must not spin forever:
+        // upload the kept copy again, or say what happened.
+        if (reconnects >= MAX_RECONNECTS) {
+          if (await settleRestoredGardenUpload(stored.requestId, true)) {
+            update(stored.requestId, null);
+          } else {
+            update(stored.requestId, { error: "Lost track of this upload. If it is not in Documents, upload the file again." });
+          }
+          if (!controller.signal.aborted) callbacksRef.current.onSettled();
+          return;
+        }
         update(stored.requestId, { step: "Reconnecting to upload…" });
         const timer = setTimeout(() => {
           timers.delete(timer);
-          void follow(stored);
+          void follow(stored, reconnects + 1);
         }, 3_000);
         timers.add(timer);
       }
@@ -100,6 +128,7 @@ export function useGardenRestoredUploads(clusterSlug: string, callbacks: Recover
       setSnapshot({ garden: clusterSlug, uploads });
       if (uploads.length > 0) callbacksRef.current.onRestored?.();
       for (const record of records) void follow(record);
+      void resumeQueuedGardenUploads(clusterSlug);
     });
     return () => {
       controller.abort();

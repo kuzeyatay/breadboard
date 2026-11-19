@@ -47,6 +47,7 @@ import {
   BAMBU_TOOLS,
   NOTIFICATION_TOOLS,
   PROCESS_STATUS_TOOLS,
+  REPOSITORY_TOOLS,
   MEETING_TOOLS,
   USAGE_TOOLS,
   OFFICE_TOOLS,
@@ -267,6 +268,7 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...BAMBU_TOOLS,
       ...NOTIFICATION_TOOLS,
       ...PROCESS_STATUS_TOOLS,
+      ...REPOSITORY_TOOLS,
       ...MEETING_TOOLS,
       ...USAGE_TOOLS,
       ...MAP_TOOLS,
@@ -898,6 +900,11 @@ function buildToolMap(
   for (const tool of PROCESS_STATUS_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  // Creates a folder in the user's home and connects it to their own Garden;
+  // the route refuses when a repository is already connected.
+  for (const tool of REPOSITORY_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   // A meeting is an errand on the person's own AgentCall account, like
   // messaging their phone: signed-in chats only, never anonymous Quartz.
   for (const tool of MEETING_TOOLS) {
@@ -1027,6 +1034,7 @@ function buildToolMap(
     for (const tool of CHAT_COORDINATION_TOOLS) map[tool] = false;
     for (const tool of NOTIFICATION_TOOLS) map[tool] = false;
     for (const tool of PROCESS_STATUS_TOOLS) map[tool] = false;
+    for (const tool of REPOSITORY_TOOLS) map[tool] = false;
     for (const tool of MEETING_TOOLS) map[tool] = false;
     for (const tool of USAGE_TOOLS) map[tool] = false;
     // Geographic state is one signed-in person's map session, and this surface

@@ -65,17 +65,35 @@ function changed(): void {
   for (const listener of listeners) listener();
 }
 
+// Scroll/mutation frames publish ~60x/s. Writing the lease each time fired a
+// `storage` event in every other open tab and re-ran every listener, so a
+// scrolling chat taxed the whole app. Only an actual change (or the
+// heartbeat, which renews the lease) writes and notifies.
+let lastPublished: string | undefined;
+let lastWrittenAt = 0;
+
 function publish(): void {
+  publishLease(false);
+}
+
+function publishLease(heartbeat: boolean): void {
   if (!storageKey) return;
   targetSnapshot = undefined;
   const visibleTargets = currentTargets();
   acknowledgeVisibleChatMessages(visibleTargets);
+  const active = (targets.length > 0 || inlineSelections.size > 0) && isNotificationPageActive();
+  const inlineSelectionIds = active ? currentInlineSelections() : [];
+  const signature = active ? JSON.stringify([visibleTargets, inlineSelectionIds]) : '';
+  const unchanged = signature === lastPublished;
+  if (unchanged && !heartbeat && (!active || Date.now() - lastWrittenAt < HEARTBEAT_MS)) return;
+  lastPublished = signature;
+  lastWrittenAt = Date.now();
   try {
-    if ((targets.length || inlineSelections.size) && isNotificationPageActive()) {
+    if (active) {
       window.localStorage.setItem(storageKey, JSON.stringify({
-        targets: visibleTargets, inlineSelectionIds: currentInlineSelections(), expiresAt: Date.now() + LEASE_MS,
+        targets: visibleTargets, inlineSelectionIds, expiresAt: Date.now() + LEASE_MS,
       } satisfies ViewLease));
-    } else {
+    } else if (!unchanged || heartbeat) {
       window.localStorage.removeItem(storageKey);
     }
   } catch { /* Local suppression still works when storage is unavailable. */ }
@@ -108,7 +126,7 @@ function start(): void {
   window.addEventListener('resize', schedule);
   document.addEventListener('transitionend', schedule, true);
   document.addEventListener('animationend', schedule, true);
-  const timer = window.setInterval(publish, HEARTBEAT_MS);
+  const timer = window.setInterval(() => publishLease(true), HEARTBEAT_MS);
   const hosts = notificationHostWindows();
   for (const host of hosts.slice(1)) {
     host.addEventListener('focus', publish);
@@ -172,6 +190,7 @@ function start(): void {
     desktopState = undefined;
     if (desktopHost) setNotificationVisibleRects(desktopHost, undefined);
     storageKey = undefined;
+    lastPublished = undefined;
     pageHidden = false;
     stop = undefined;
   };

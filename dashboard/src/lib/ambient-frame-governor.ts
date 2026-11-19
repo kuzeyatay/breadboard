@@ -120,9 +120,20 @@ export function startAmbientFrameGovernor(doc: Document = document): () => void 
   const tickTimer = view.setInterval(tick, 1000 / AMBIENT_FRAMES_PER_SECOND);
   const rescanTimer = view.setInterval(rescan, RESCAN_MS);
   // A restarted one-shot is adopted on its first frame, not up to a second later.
-  doc.addEventListener?.("animationstart", rescan, true);
+  // Coalesced: a page load starts dozens of animations at once, and a full
+  // getAnimations() + style read per event stalled the greeting's typing.
+  let rescanFrame = 0;
+  const scheduleRescan = () => {
+    if (rescanFrame) return;
+    rescanFrame = view.requestAnimationFrame(() => {
+      rescanFrame = 0;
+      rescan();
+    });
+  };
+  doc.addEventListener?.("animationstart", scheduleRescan, true);
   return () => {
-    doc.removeEventListener?.("animationstart", rescan, true);
+    doc.removeEventListener?.("animationstart", scheduleRescan, true);
+    if (rescanFrame) view.cancelAnimationFrame(rescanFrame);
     view.clearInterval(tickTimer);
     view.clearInterval(rescanTimer);
     for (const animation of [...governed.keys()]) release(animation);

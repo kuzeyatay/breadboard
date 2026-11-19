@@ -1,3 +1,6 @@
+import { codeWithoutRepositoryDirective, codexDriveDirective, isCodeWritingRequest } from "../hermes/codex-drive.ts";
+import { gardenHasRepository } from "../code-index/create-repository.ts";
+import { modelLaunchableRuntimeAgents } from "../hermes/capability-combinations.ts";
 import { botsStore } from "../bots/server.ts";
 import { telegramAttentionAlertsOn } from "../telegram/attention.ts";
 import { voiceReplyWithOpener } from "../speech/voice-opener-context.ts";
@@ -1351,7 +1354,13 @@ export async function startConversationTurn(
   // continue to use their own validators and authoring workflows.
   const parametricCadSelected = decision.selectedConditionalSkills.includes("cad");
   if (input.swarmCoordinator?.workflowSelection) resolved.workflowSelection = input.swarmCoordinator.workflowSelection;
-  if (parametricCadSelected || resolved.workflowSelection || input.swarmCoordinator) {
+  // Code-writing requests: Codex when the Garden has a repository, code in the
+  // reply (plus an offer to create one) when not. See lib/hermes/codex-drive.ts.
+  const codeGardenSlug = input.surface === "quartz_ai" ? null : context.activeGardenSlug ?? session.row.garden_id;
+  const codingRequest = input.surface !== "quartz_ai" && !input.internalAgentContinuation && !input.voice && isCodeWritingRequest(input.text);
+  const codexDrive = codingRequest && gardenHasRepository(input.conversation.user_id, codeGardenSlug) &&
+    modelLaunchableRuntimeAgents(input.surface).some((agent) => agent.id === "codex");
+  if (parametricCadSelected || resolved.workflowSelection || input.swarmCoordinator || codexDrive) {
     decision.allowedTools = [...new Set([...decision.allowedTools, "agent_launch"])];
     // The workflow command is the explicit delegation selection. Grant only
     // its launch tool; the launch endpoint enforces the saved family scope
@@ -1828,6 +1837,7 @@ export async function startConversationTurn(
           : "",
       // Empty unless this agent-mode turn was offered a shortlist above.
       renderSkillShortlistDirective(skillShortlist),
+      codexDrive ? codexDriveDirective() : codingRequest ? codeWithoutRepositoryDirective(Boolean(codeGardenSlug)) : "",
       composeMemoryContext(
         memory,
         {

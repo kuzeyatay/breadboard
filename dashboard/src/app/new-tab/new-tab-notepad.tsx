@@ -23,6 +23,17 @@ export default function NewTabNotepad({ ownerKey, topAnchorRef }: { ownerKey: st
       titleRef.current?.focus();
     }
   }, [menuOpen, collapsed, note.status, notes.selectedId]);
+  // Enlarging always lands on the most recently edited note (the list is sorted
+  // newest-first). Unsaved typing in the open note makes it the newest already.
+  const { refresh, select } = notes, noteStatus = useRef(note.status);
+  noteStatus.current = note.status;
+  useEffect(() => {
+    if (!enlarged) return;
+    void refresh().then(list => {
+      const latest = list?.[0]?.id;
+      if (latest && noteStatus.current === "saved") select(latest);
+    });
+  }, [enlarged, refresh, select]);
   const showNote = (id: string) => {
     note.flush(); notes.select(id); open(); setMenuOpen(false); focusEditor.current = true;
   };

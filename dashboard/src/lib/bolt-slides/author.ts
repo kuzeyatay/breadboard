@@ -26,6 +26,27 @@ import { externalRuntimeReadUtf8 } from "../external-runtime-filesystem.ts";
 import { humanizeProviderError } from "../provider-error.ts";
 import path from "node:path";
 import { resolveBoltSlidesRoot } from "./runtime.ts";
+import { lintVideoText } from "../remotion/request.ts";
+
+const DISPLAY_SERIFS =
+  /Playfair|DM\+?\s?Serif|Instrument\+?\s?Serif|Fraunces|Cormorant|Bodoni|Abril|Gloock|\bLora\b|Georgia|Times\+?\s?New\+?\s?Roman/i;
+
+/**
+ * The generated_look bans checked on the deck the model submitted: dashes,
+ * forced capitals, middle-dot separators and display serifs. The text rules are
+ * the video agent's; its video-only look rules (scene numbers, accent hues) do
+ * not apply to slides.
+ */
+export function lintDeckLook(deck: { appTsx: string; tokensRoot: string; fontImport?: string }): string[] {
+  const problems = lintVideoText(deck.appTsx.replace(/&mdash;|&ndash;/g, "—"));
+  if (/[A-Za-z][ \t]*(?:·|&middot;|•)[ \t]*[A-Za-z]/.test(deck.appTsx)) {
+    problems.push('Remove the middle dots used as separators between words. Use a comma, "and", or separate lines.');
+  }
+  if (DISPLAY_SERIFS.test(`${deck.fontImport ?? ""}\n${deck.tokensRoot}`)) {
+    problems.push("Do not use a display serif (Playfair Display, DM Serif, Instrument Serif, Fraunces, Cormorant, Georgia, Times and the like). Use a sans, slab or mono face.");
+  }
+  return problems;
+}
 import { kitDigest, renderKitDigest, type KitDigest } from "./kit-digest.ts";
 import {
   deckPlanSchema,
@@ -398,7 +419,11 @@ export async function authorDeck(input: AuthorDeckInput): Promise<{
   ];
   const first = await callTool(input.target, messages, SOURCE_TOOL, SOURCE_TIMEOUT_MS);
   const parsed = parseWithSchema(deckSourceSchema, first, "The deck");
-  if (parsed.ok) return { deck: parsed.value, messages };
+  const lookProblems = parsed.ok ? lintDeckLook(parsed.value) : [];
+  if (parsed.ok && !lookProblems.length) return { deck: parsed.value, messages };
+  const rejection = parsed.ok
+    ? { error: "its copy or type reads machine-made.", issues: lookProblems }
+    : parsed;
 
   const repairMessages: ChatMessage[] = [
     ...messages,
@@ -406,8 +431,8 @@ export async function authorDeck(input: AuthorDeckInput): Promise<{
     {
       role: "user",
       content: [
-        `The deck was rejected: ${parsed.error}`,
-        parsed.issues.length ? `Problems:\n- ${parsed.issues.join("\n- ")}` : "",
+        `The deck was rejected: ${rejection.error}`,
+        rejection.issues.length ? `Problems:\n- ${rejection.issues.join("\n- ")}` : "",
         "Call the tool again with the same deck, corrected.",
       ]
         .filter(Boolean)
@@ -420,6 +445,8 @@ export async function authorDeck(input: AuthorDeckInput): Promise<{
     "The deck",
   );
   if (second.ok) return { deck: second.value, messages: repairMessages };
+  // ponytail: one look-repair round; if the repair itself is unusable, ship the first deck rather than fail the run.
+  if (parsed.ok) return { deck: parsed.value, messages };
   throw new BoltSlidesAuthorError(
     "invalid_deck",
     `${second.error} ${second.issues.slice(0, 3).join("; ")}`.trim(),

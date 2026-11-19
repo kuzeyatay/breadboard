@@ -1,3 +1,6 @@
+import { codeWithoutRepositoryDirective, codexDriveDirective, isCodeWritingRequest } from "./codex-drive.ts";
+import { gardenHasRepository } from "../code-index/create-repository.ts";
+import { modelLaunchableRuntimeAgents } from "./capability-combinations.ts";
 import { recallEarlierConversations } from "../conversations/earlier-chats.ts";
 import { isBareProviderError } from "../provider-error.ts";
 import { voiceReplyWithOpener } from "../speech/voice-opener-context.ts";
@@ -783,7 +786,10 @@ export async function openGardenAgentChat(
       .filter((item) => item.kind === "mcp")
       .map((item) => item.slug);
     const parametricCadSelected = decision.selectedConditionalSkills.includes("cad");
-    if (parametricCadSelected || resolved.workflowSelection) {
+    const codingRequest = payload.internalAgentContinuation !== true && payload.voice !== true && isCodeWritingRequest(text);
+    const codexDrive = codingRequest && gardenHasRepository(userId, clusterSlug) &&
+      modelLaunchableRuntimeAgents("garden_chat").some((agent) => agent.id === "codex");
+    if (parametricCadSelected || resolved.workflowSelection || codexDrive) {
       decision.allowedTools = [
         ...new Set([...decision.allowedTools, "agent_launch"]),
       ];
@@ -1082,6 +1088,7 @@ export async function openGardenAgentChat(
         repository?.systemContext ?? "",
         // Empty unless this turn was offered a shortlist above.
         renderSkillShortlistDirective(skillShortlist),
+        codexDrive ? codexDriveDirective() : codingRequest ? codeWithoutRepositoryDirective(true) : "",
         documents.context,
         renderWatchVideoContext(preparedGardenVideos),
         editableDocuments.context,

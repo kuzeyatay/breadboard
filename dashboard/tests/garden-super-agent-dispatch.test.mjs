@@ -9,7 +9,8 @@ import test from "node:test";
 import ts from "typescript";
 import { prepareTurn, mergeSelectedTools } from "../src/lib/hermes/dispatch-core.ts";
 import { turnCapabilitySelection } from "../src/lib/hermes/capability-usage.ts";
-import { RUNTIME_AGENT_PROFILES } from "../src/lib/hermes/capability-combinations.ts";
+import { RUNTIME_AGENT_PROFILES, modelLaunchableRuntimeAgents } from "../src/lib/hermes/capability-combinations.ts";
+import { codeWithoutRepositoryDirective, codexDriveDirective, isCodeWritingRequest } from "../src/lib/hermes/codex-drive.ts";
 import * as briefs from "../src/lib/hermes/runtime-agent-briefs.ts";
 import * as inbox from "../src/lib/inbox-zero/identity.ts";
 import * as globe from "../src/lib/gods-eye/identity.ts";
@@ -139,7 +140,7 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandRe
     prepareDocumentContext: async () => ({ context: "", inlineAttachments: [] }),
     retrieveTerminalGardenGrounding: async () => ({ context: "" }),
     suppliedEvidenceText: empty, gardenInstructionsContext: empty, gardenSourceInventoryContext: async () => "",
-    composeMemoryContext: empty, renderSkillShortlistDirective, renderWatchVideoContext: empty,
+    composeMemoryContext: empty, renderSkillShortlistDirective, codexDriveDirective, codeWithoutRepositoryDirective, isCodeWritingRequest, gardenHasRepository: () => false, modelLaunchableRuntimeAgents, renderWatchVideoContext: empty,
     gardenTurnContext: empty, ...quartzSelection,
     composeHermesSystemPrompt: ({ stableAdditional, additional }) => [stableAdditional, additional].filter(Boolean).join("\n\n"),
     beginRuntimeRun: (input) => { captured.run = input; return { id: "run_regression" }; },

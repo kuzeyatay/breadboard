@@ -9,6 +9,7 @@ import { watchLegacyDocumentAssistantHistory } from "@/lib/document-assistant-hi
 // streaming events, permissions, tools, persistence, and skill review.
 
 import {
+  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -20,6 +21,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { whenGreetingsSettled } from "@/app/components/use-greeting-typewriter";
 import KnowledgeTerminal from "@/app/components/knowledge-terminal";
 import { registerClapChat } from "@/lib/speech/clap-wake";
 import TerminalDockOutline from "@/app/components/terminal-dock-outline";
@@ -1332,7 +1334,39 @@ function RuntimeTerminal({
   // The body is in the DOM slightly wider than the dock counts as open: a
   // prewarming press mounts it while the finger is still down, so the release
   // has nothing left to build and can start moving on its next frame.
-  const bodyRendered = bodyMounted || glide === "opening";
+  //
+  // Building the body cost ~650ms on the press itself (React mount, the
+  // composer's shader link, style for the whole tree), which is what made the
+  // bar feel stuck. It is now built once while the page is idle and kept: a
+  // resting collapsed dock holds it under `content-visibility: hidden`, so it
+  // costs nothing while hidden and opening only has to reveal it.
+  // "priming" renders it once in the collapsed (zero-height, clipped) dock so
+  // its styles are computed then too, before it is hidden.
+  const [bodyWarm, setBodyWarm] = useState<"cold" | "priming" | "warm">("cold");
+  // It waits for the home greeting to finish typing (a mount mid-word reads as
+  // the greeting stuttering) and renders as a transition, so React slices it.
+  useEffect(() => {
+    if (bodyWarm === "warm") return;
+    const next = bodyWarm === "cold" ? "priming" : "warm";
+    const warm = () => startTransition(() => setBodyWarm(next));
+    let cancelIdle = () => {};
+    const cancelSettled = whenGreetingsSettled(() => {
+      if (typeof window.requestIdleCallback !== "function") {
+        const timer = window.setTimeout(warm, 1_500);
+        cancelIdle = () => window.clearTimeout(timer);
+        return;
+      }
+      const id = window.requestIdleCallback(warm, { timeout: 3_000 });
+      cancelIdle = () => window.cancelIdleCallback(id);
+    });
+    return () => {
+      cancelSettled();
+      cancelIdle();
+    };
+  }, [bodyWarm]);
+  const bodyRendered = bodyMounted || glide === "opening" || bodyWarm !== "cold";
+  const bodyResting = !bodyMounted && glide === null;
+  const bodySkipped = bodyResting && bodyWarm === "warm";
 
   // Keep the header items mounted through their exit animation so they can
   // retract (not just vanish) when the terminal collapses. `headerMounted`
@@ -9486,7 +9520,13 @@ if (careerOpsAgent) {
         // refraction source. The bar samples 20px past its own box, so an
         // unstacked body would land in that margin and get run through
         // html-to-image on every frame of a dock resize.
-        <div data-terminal-body className="relative z-[1] flex min-h-0 flex-1 bg-[var(--terminal-body-surface,var(--paper-surface))]">
+        <div
+          data-terminal-body
+          className="relative z-[1] flex min-h-0 flex-1 bg-[var(--terminal-body-surface,var(--paper-surface))]"
+          style={bodySkipped ? { contentVisibility: "hidden" } : undefined}
+          inert={bodyResting || undefined}
+          aria-hidden={bodyResting || undefined}
+        >
           {/* Everything in the dock shares one lane for opened artifacts: the
               transcript's own cards and the Artifacts archive both file into
               it, so an artifact never leaves the dock it was made in. */}

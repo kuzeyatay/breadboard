@@ -1119,7 +1119,10 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 "`metadata.style` to one of: professional, formal, academic, "
                 "minimal, playful, vibrant; or give explicit tokens in "
                 "`metadata.theme` (accent, headingColor, bodyColor, mutedColor, "
-                "font ['sans'|'serif'], baseFontSize, headingScale, headingRule)."
+                "font ['sans'|'serif'], baseFontSize, headingScale, headingRule). "
+                "The result may carry `proseReview`. When `proseReview.needsRevision` "
+                "is true, follow its `instructions`: rewrite the document with "
+                "artifact_update before telling the user it is done."
             ),
             {
                 "kind": {
@@ -3172,6 +3175,30 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
                 "token usage."
             ),
             {},
+        ),
+    ),
+    (
+        "garden_create_repository",
+        "/api/hermes/tools/repository",
+        # Same {tool, args} payload as process status.
+        "process_status",
+        _schema(
+            "garden_create_repository",
+            (
+                "Create a new local Git repository (with a README and an "
+                "initial commit) and connect it to the Garden open in this "
+                "chat. Call it only after the user agreed to create and "
+                "connect a repository. Fails when the Garden already has one "
+                "or no Garden is open. After it succeeds, code work in this "
+                "Garden is done by Codex inside the new repository."
+            ),
+            {
+                "name": {
+                    "type": "string",
+                    "maxLength": 80,
+                    "description": "Optional project name for the repository folder; defaults to the Garden's slug.",
+                },
+            },
         ),
     ),
     (

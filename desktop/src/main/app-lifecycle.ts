@@ -1106,6 +1106,17 @@ export class AppLifecycle {
     const services = this.runtimeServices(snapshot);
     if (classification.failure) {
       const failed = classification.failure;
+      if (this.dashboardShown) {
+        // A live session keeps its window. Under memory pressure a service can
+        // be briefly failed or resource-blocked; swapping in the startup screen
+        // tore down every tab and replayed the restore on recovery. Pages whose
+        // server is away already show their own reconnect scene and reload.
+        this.logs.forService("desktop").write(
+          `[desktop] ${failed.displayName} unavailable (${failed.state}); keeping the open window while it recovers`,
+        );
+        this.lastRuntimeStatusSignature = signature;
+        return;
+      }
       this.dashboardShown = false;
       this.setStartupState({
         phase: "failed",

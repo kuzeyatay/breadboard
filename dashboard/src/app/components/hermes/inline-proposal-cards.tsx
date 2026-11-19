@@ -4,7 +4,7 @@
 // message that created it. Virtualized rows share review state through the
 // provider, so cards and errors stay with their turn when rows remount.
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { GARDEN_DOCUMENTS_CHANGED_EVENT } from "@/lib/garden-document-events";
 import ChatMarkdown from "../chat-markdown";
 
@@ -256,7 +256,7 @@ function ProposalFailure({ message, onRetry, retryLabel = "Retry", disabled = fa
   );
 }
 
-export default function InlineProposalCards({ ownerMessageId }: { ownerMessageId: string | null }) {
+function InlineProposalCards({ ownerMessageId }: { ownerMessageId: string | null }) {
   const context = useContext(ProposalContext);
   if (!context || !ownerMessageId) return null;
   const { decidingId, decide, requestRevision, requestingRevisionId, requestedRevisions } = context;
@@ -358,3 +358,6 @@ export default function InlineProposalCards({ ownerMessageId }: { ownerMessageId
     </section>
   );
 }
+
+// Rows re-render on every streamed token; this one only when its own props change.
+export default memo(InlineProposalCards);

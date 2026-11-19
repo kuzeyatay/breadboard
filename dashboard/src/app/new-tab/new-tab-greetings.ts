@@ -1,6 +1,9 @@
 export const FAMILIAR_ADDRESSEES = [
   "sailor", "bub", "champ", "chief", "captain", "pal", "skipper", "ace",
   "scout", "buddy", "star", "friend",
+  "boss", "partner", "commander", "navigator", "pilot", "coach", "rockstar",
+  "hotshot", "sport", "legend", "genius", "professor", "doc", "sunshine",
+  "kiddo", "comrade", "chef", "maverick", "wizard", "hero", "sleuth",
 ] as const;
 
 export const CREATIVE_ADDRESSEES = [
@@ -14,7 +17,87 @@ export const CREATIVE_ADDRESSEES = [
   "brainwave", "rambling rose", "sparkplug", "stardust", "rover", "maestro",
   "daydreamer", "wild sprout", "moonbeam", "doodle pilot", "thought explorer",
   "question collector", "mischief maker", "notebook nomad", "waffle wizard",
+  "breadboard baron", "circuit sage", "sourdough scholar", "crumb collector",
+  "loaf legend", "toast whisperer", "knowledge gardener", "seed sower",
+  "root explorer", "branch climber", "pixel poet", "syntax sorcerer",
+  "neuron navigator", "synapse surfer", "brain gardener", "memory keeper",
+  "archive diver", "footnote fanatic", "margin scribbler", "chapter chaser",
+  "thesis tamer", "lecture slayer", "deadline dancer", "focus falcon",
+  "tab tamer", "rabbit-hole ranger", "idea juggler", "thought gardener",
+  "noodle navigator", "biscuit bandit", "pancake pilot", "dumpling duke",
+  "honey badger", "otter admiral", "fox scholar", "owl apprentice",
+  "hedgehog hero", "panda pilot", "koala captain", "penguin pioneer",
+  "galaxy brain", "quasar queen", "nebula knight", "rocket scientist",
+  "meteor maven", "gravity groover", "quantum quokka", "atom wrangler",
+  "jazz hands", "groove master", "rhythm rider", "melody maker",
+  "lucky duck", "golden goose", "sunny side", "good egg", "smart cookie",
+  "bright bulb", "big thinker", "fresh mind", "keen bean", "wise owl",
+  "clockwork kid", "gear grinder", "spark wrangler", "voltage viking",
 ] as const;
+
+/** Day-of-week nods, 0 = Sunday as in Date#getDay. */
+export function weekdayAddressees(day: number | undefined): readonly string[] {
+  switch (day) {
+    case 0: return ["sunday stroller", "lazy-day legend", "brunch baron"];
+    case 1: return ["monday warrior", "fresh-start captain", "week opener"];
+    case 2: return ["tuesday trooper", "momentum maker"];
+    case 3: return ["midweek maverick", "hump-day hero"];
+    case 4: return ["almost-friday ace", "thursday thinker"];
+    case 5: return ["friday flyer", "weekend scout", "TGIF captain"];
+    case 6: return ["saturday sailor", "weekend wanderer", "free-day explorer"];
+    default: return [];
+  }
+}
+
+/** Season by month (0-11), flipped south of the equator when a fix says so. */
+export function seasonAddressees(month: number | undefined, latitude?: number): readonly string[] {
+  if (month === undefined || !Number.isInteger(month) || month < 0 || month > 11) return [];
+  const shifted = latitude !== undefined && Number.isFinite(latitude) && latitude < 0 ? (month + 6) % 12 : month;
+  if (shifted <= 1 || shifted === 11) return ["winter wanderer", "snow globe", "cozy captain", "mitten maestro"];
+  if (shifted <= 4) return ["spring sprout", "blossom scout", "tulip tamer", "bud buddy"];
+  if (shifted <= 7) return ["summer sailor", "sunscreen scout", "beach bum", "solstice surfer"];
+  return ["autumn ranger", "leaf peeper", "pumpkin pilot", "acorn collector"];
+}
+
+/** What Screen Time says the last couple of hours mostly were. Category only, never apps or titles. */
+export interface GreetingActivity {
+  category: "creating" | "learning" | "communication" | "entertainment" | "browsing";
+  /** One unbroken stretch of 45+ minutes. */
+  focused: boolean;
+  /** Many quick context switches. */
+  scattered: boolean;
+}
+
+export function activityAddressees(activity: GreetingActivity | null | undefined): readonly string[] {
+  if (!activity) return [];
+  const extra = activity.focused ? ["deep diver", "flow-state pilot", "focus monk"]
+    : activity.scattered ? ["tab juggler", "multitask maestro", "context hopper"] : [];
+  switch (activity.category) {
+    case "creating": return [...extra, "maker", "builder", "code wrangler", "craftsperson", "creator", "bug squasher", "draft smith"];
+    case "learning": return [...extra, "scholar", "study buddy", "bookworm", "knowledge seeker", "flashcard fiend", "eager learner"];
+    case "communication": return [...extra, "social butterfly", "message maestro", "inbox ranger", "chatterbox", "people person"];
+    case "entertainment": return [...extra, "binge buddy", "couch captain", "playlist pilot", "popcorn pal", "game ace"];
+    case "browsing": return [...extra, "web surfer", "link hopper", "internet explorer", "rabbit-hole diver"];
+    default: return extra;
+  }
+}
+
+export const GREETING_ACTIVITY_MAX_AGE_MS = 15 * 60_000;
+
+export function normalizeGreetingActivity(value: unknown): GreetingActivity | null {
+  if (!value || typeof value !== "object") return null;
+  const activity = value as Record<string, unknown>;
+  if (!["creating", "learning", "communication", "entertainment", "browsing"].includes(activity.category as string)) return null;
+  return { category: activity.category as GreetingActivity["category"], focused: activity.focused === true, scattered: activity.scattered === true };
+}
+
+export function cachedGreetingActivity(value: unknown, now: number): GreetingActivity | null {
+  if (!value || typeof value !== "object") return null;
+  const cached = value as Record<string, unknown>;
+  if (typeof cached.readAt !== "number" || !Number.isFinite(now) || now < cached.readAt ||
+      now - cached.readAt >= GREETING_ACTIVITY_MAX_AGE_MS) return null;
+  return normalizeGreetingActivity(cached.activity);
+}
 
 export interface GreetingWeather {
   code: number;
@@ -30,6 +113,11 @@ export interface GreetingLocation {
 
 export interface GreetingContext {
   hour?: number;
+  /** Date#getDay in the active zone. */
+  day?: number;
+  /** Date#getMonth in the active zone. */
+  month?: number;
+  activity?: GreetingActivity | null;
   weather?: GreetingWeather | null;
   location?: GreetingLocation | null;
 }
@@ -47,11 +135,16 @@ export function cachedGreetingWeather(value: unknown, location: GreetingLocation
 
 export function timeAddressees(hour: number | undefined): readonly string[] {
   if (hour === undefined || !Number.isFinite(hour) || hour < 0 || hour >= 24) return [];
-  if (hour < 5 || hour >= 22) return ["night owl", "moonwalker", "midnight gardener", "night navigator", "after-hours ace", "stargazer"];
-  if (hour < 10) return ["early bird", "sunrise scout", "dew drop", "toast captain", "morning spark", "dawn wanderer"];
-  if (hour < 14) return ["daylight rover", "noon navigator", "lunch legend", "daydreamer"];
-  if (hour < 18) return ["afternoon ace", "tea-time captain", "daylight dreamer", "sunlit scribbler"];
-  return ["dusk wanderer", "evening explorer", "lamplighter", "twilight scout"];
+  if (hour < 5 || hour >= 22) return ["night owl", "moonwalker", "midnight gardener", "night navigator", "after-hours ace", "stargazer",
+    "midnight oil burner", "insomnia ace", "moonlight coder", "nocturnal scholar", "dream catcher"];
+  if (hour < 10) return ["early bird", "sunrise scout", "dew drop", "toast captain", "morning spark", "dawn wanderer",
+    "coffee commander", "rise-and-shiner", "morning glory", "breakfast baron", "first-light pilot"];
+  if (hour < 14) return ["daylight rover", "noon navigator", "lunch legend", "daydreamer",
+    "high-noon hero", "sandwich scout", "midday maverick", "brunch buddy"];
+  if (hour < 18) return ["afternoon ace", "tea-time captain", "daylight dreamer", "sunlit scribbler",
+    "siesta skipper", "golden-hour scout", "snack-break champ", "afternoon alchemist"];
+  return ["dusk wanderer", "evening explorer", "lamplighter", "twilight scout",
+    "sunset chaser", "dinner diplomat", "evening owl", "night-shift navigator"];
 }
 
 export function normalizeGreetingWeather(value: unknown): GreetingWeather | null {
@@ -104,7 +197,11 @@ export function pickNewTabAddressee(
   random: () => number = Math.random,
 ): string {
   const roll = random();
-  const contextual = [timeAddressees(context.hour), weatherAddressees(context.weather), locationAddressees(context.location)]
+  const contextual = [
+    timeAddressees(context.hour), weatherAddressees(context.weather), locationAddressees(context.location),
+    weekdayAddressees(context.day), seasonAddressees(context.month, context.location?.latitude),
+    activityAddressees(context.activity),
+  ]
     .filter((pool) => pool.length > 0);
   let pool: readonly string[] = roll < 0.2 ? FAMILIAR_ADDRESSEES : CREATIVE_ADDRESSEES;
   if (roll >= 0.65 && contextual.length) {
@@ -116,6 +213,21 @@ export function pickNewTabAddressee(
     available = [...CREATIVE_ADDRESSEES, ...FAMILIAR_ADDRESSEES].filter((name) => !seen.has(name));
   }
   return available[Math.floor(random() * available.length)] ?? "sailor";
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** Day of week (0 = Sunday) and month (0-11) in the active zone. */
+export function greetingCalendar(now: Date, timeZone?: string): { day: number; month: number } {
+  if (timeZone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short", month: "numeric" }).formatToParts(now);
+      const day = WEEKDAYS.indexOf(parts.find((part) => part.type === "weekday")?.value ?? "");
+      const month = Number(parts.find((part) => part.type === "month")?.value) - 1;
+      if (day >= 0 && month >= 0 && month <= 11) return { day, month };
+    } catch { /* Use the device clock when a zone is unavailable. */ }
+  }
+  return { day: now.getDay(), month: now.getMonth() };
 }
 
 export function greetingHour(now: Date, timeZone?: string): number {

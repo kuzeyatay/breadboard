@@ -57,7 +57,7 @@ function cached<T>(cache: Map<string, Entry<T>>, key: string, read: () => Promis
 function policy(userId: number) {
   const settings = getHermesUserSettings(userId);
   const recall = getRecallSettings(userId);
-  return { enabled: settings.composerSwitches.personalize !== false, model: settings.defaultModel,
+  return { enabled: settings.composerSwitches.personalize !== false, model: settings.fallbackModel,
     key: JSON.stringify(['personal-suggestions-v4', settings.composerSwitches.personalize, recall, systemPromptRevision("personal-recommendations", userId)]) };
 }
 

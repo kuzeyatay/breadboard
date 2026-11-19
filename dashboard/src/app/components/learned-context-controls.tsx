@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Info } from "lucide-react";
 import type { SuggestionLesson } from "@/lib/personal-context/suggestions";
 import { RECOMMENDATION_REFRESH_EVENT } from "@/lib/recommendations/types";
 import { AUTH_CHANGED_EVENT } from "@/lib/auth-events";
@@ -14,66 +15,101 @@ export async function lessonAction(lesson: SuggestionLesson, action: string, val
   if (action !== "accept") window.dispatchEvent(new Event(RECOMMENDATION_REFRESH_EVENT));
   if (action === "apply") window.dispatchEvent(new Event("breadboard:calendar:changed"));
 }
-export function LessonControls({ lesson }: { lesson: SuggestionLesson }) {
-  const [editing, setEditing] = useState(false),
+// A small "i" button that opens the reason and controls in a popover beside
+// it, like the Intelligence menu. `className` places the trigger (the greeting
+// cards pin it inside the card's corner).
+export function LessonControls({ lesson, className = "relative inline-block" }: { lesson: SuggestionLesson; className?: string }) {
+  const [open, setOpen] = useState(false),
+    [editing, setEditing] = useState(false),
     [value, setValue] = useState(""),
     [error, setError] = useState("");
+  const button = useRef<HTMLButtonElement>(null);
+  const close = () => { setOpen(false); setEditing(false); button.current?.focus(); };
   async function run(action: string) {
     try {
       await lessonAction(lesson, action, value);
       setEditing(false);
       setError("");
+      if (action !== "correct") setOpen(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn’t save this change.");
     }
   }
+  const action = "rounded-lg px-2 py-1 text-[var(--ink)] transition hover:bg-[var(--paper-strong)]";
   return (
-    <details className="text-xs text-[var(--ink-muted)]">
-      <summary>Why this?</summary>
-      <p>{lesson.why}</p>
-      <ul>
-        {lesson.sources.map((ref) => (
-          <li key={ref}>{/^(https?:\/\/|\/(?!\/))/.test(ref) ? <a href={ref}>{ref}</a> : ref}</li>
-        ))}
-      </ul>
-      <div className="flex flex-wrap gap-3">
-        {lesson.eventId ? (
-          <button type="button" onClick={() => void run("apply")}>
-            Update event
-          </button>
-        ) : (
-          <button type="button" onClick={() => setEditing(true)}>
-            Correct
-          </button>
-        )}
-        <button type="button" onClick={() => void run("dismiss")}>
-          Dismiss suggestion
-        </button>
-        {!lesson.eventId && (
-          <button type="button" onClick={() => void run("forget")}>
-            Forget
-          </button>
-        )}
-      </div>
-      {editing && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void run("correct");
-          }}
-        >
-          <input
-            autoFocus
-            maxLength={300}
-            aria-label="Correction"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-          />
-          <button disabled={!value.trim()}>Save correction</button>
-        </form>
-      )}
-      {error && <p role="alert">{error}</p>}
-    </details>
+    <div className={className} onKeyDown={(e) => { if (open && e.key === "Escape") { e.stopPropagation(); close(); } }}>
+      <button
+        ref={button}
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label="Why this?"
+        title="Why this?"
+        onClick={() => (open ? close() : setOpen(true))}
+        className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink)]"
+      >
+        <Info aria-hidden className="h-3.5 w-3.5" />
+      </button>
+      {open ? (
+        <>
+          <button type="button" className="fixed inset-0 z-30 cursor-default" aria-label="Close" onClick={close} />
+          <div
+            role="dialog"
+            aria-label="Why this?"
+            className="neu-popover absolute right-0 top-full z-40 mt-1 w-72 max-w-[calc(100vw-2rem)] space-y-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-3 text-left text-xs text-[var(--ink-muted)]"
+          >
+            <div className="text-sm text-[var(--ink)]">Why this?</div>
+            <p>{lesson.why}</p>
+            {lesson.sources.length ? (
+              <ul className="space-y-0.5">
+                {[...new Set(lesson.sources)].map((ref) => (
+                  <li key={ref} className="truncate">{/^(https?:\/\/|\/(?!\/))/.test(ref) ? <a href={ref} className="underline">{ref}</a> : ref}</li>
+                ))}
+              </ul>
+            ) : null}
+            <div className="-mx-2 flex flex-wrap gap-1 border-t border-[var(--line)] pt-2">
+              {lesson.eventId ? (
+                <button type="button" className={action} onClick={() => void run("apply")}>
+                  Update event
+                </button>
+              ) : (
+                <button type="button" className={action} onClick={() => setEditing(true)}>
+                  Correct
+                </button>
+              )}
+              <button type="button" className={action} onClick={() => void run("dismiss")}>
+                Dismiss
+              </button>
+              {!lesson.eventId && (
+                <button type="button" className={action} onClick={() => void run("forget")}>
+                  Forget
+                </button>
+              )}
+            </div>
+            {editing && (
+              <form
+                className="flex gap-1.5"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void run("correct");
+                }}
+              >
+                <input
+                  autoFocus
+                  maxLength={300}
+                  aria-label="Correction"
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  className="min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-bg)] px-2 py-1 text-[var(--ink)]"
+                />
+                <button className={action} disabled={!value.trim()}>Save</button>
+              </form>
+            )}
+            {error && <p role="alert">{error}</p>}
+          </div>
+        </>
+      ) : null}
+    </div>
   );
 }
 export function LearnedContextSettings() {
@@ -107,7 +143,7 @@ export function LearnedContextSettings() {
     <section className="space-y-2">
       <h3>Learned from your work</h3>
       {rows.map((row) => (
-        <div key={row.lesson.key}>
+        <div key={row.lesson.key} className="flex items-center gap-1">
           {row.title}
           <LessonControls lesson={row.lesson} />
         </div>

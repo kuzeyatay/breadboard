@@ -3,7 +3,11 @@ const MAX_RECORDS = 64;
 const DEFAULT_RECOVERY_WAIT_MS = 30_000;
 const DEFAULT_RETRY_INTERVAL_MS = 250;
 const MAX_STORAGE_BYTES = 64 * 1024;
-const MAX_SSE_BUFFER_BYTES = 64 * 1024;
+// One SSE block carries a whole ingestion result, and a book's result (every
+// topic) runs to hundreds of KB. The server bounds a job output at ~1 MiB, so
+// a smaller cap here threw on every reattach and the row sat on
+// "Finishing document ingestion…" forever after a reload or app restart.
+const MAX_SSE_BUFFER_CHARS = 4 * 1024 * 1024;
 const TERMINAL_STATES = new Set([
   "cancelled",
   "succeeded",
@@ -377,7 +381,7 @@ export async function readRuntimeIngestEventStream(
         break;
       }
       buffer += decoder.decode(value, { stream: true });
-      if (new TextEncoder().encode(buffer).byteLength > MAX_SSE_BUFFER_BYTES) {
+      if (buffer.length > MAX_SSE_BUFFER_CHARS) {
         throw new Error("Runtime ingestion stream exceeded its bounded buffer.");
       }
       const blocks = buffer.split("\n\n");

@@ -16,20 +16,21 @@ export function useTerminalNotes(ownerKey: string) {
     setSelectedId(id);
     try { if (id) sessionStorage.setItem(key + ":selected", id); else sessionStorage.removeItem(key + ":selected"); } catch { /* Selection still works. */ }
   }, [key]);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<TerminalNoteSummary[] | null> => {
     const sequence = ++request.current;
     try {
       const response = await fetch(endpoint + "&list=1", {cache: "no-store", signal: AbortSignal.timeout(10_000)});
       const data = await response.json();
       if (!response.ok || !Array.isArray(data.notes) || !data.notes.every(validNoteSummary)) throw new Error("Couldn’t load your notes. Try again.");
-      if (!live.current || sequence !== request.current) return;
+      if (!live.current || sequence !== request.current) return null;
       setNotes(data.notes);
       if (!initialized.current) {
         initialized.current = true;
         if (!data.notes.some((note: TerminalNoteSummary) => note.id === active.current)) select(data.notes[0]?.id ?? null);
       }
       setLoaded(true);
-    } catch (failure) { if (live.current && sequence === request.current) setError((failure as Error).message); }
+      return data.notes;
+    } catch (failure) { if (live.current && sequence === request.current) setError((failure as Error).message); return null; }
   }, [endpoint, select]);
   const announce = () => {
     void refresh();

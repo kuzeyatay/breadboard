@@ -261,6 +261,27 @@ function failedJobCommitted(dataRoot: string, jobId: string): boolean {
 }
 
 /**
+ * The result a failed job left behind after its garden write committed. The
+ * worker commits the document before its "Finishing" tail (site publish,
+ * process exit, completion proof); a fault there fails the job although the
+ * document is in the garden, so the upload must report that result.
+ */
+export function committedFailedIngestionResult(
+  jobId: string,
+  dataRoot: string = dashboardDataDir(),
+): unknown {
+  if (!failedJobCommitted(dataRoot, jobId)) return null;
+  try {
+    const envelope = JSON.parse(
+      fs.readFileSync(path.join(dataRoot, "runtime", "jobs", jobId, "result.json"), "utf8"),
+    );
+    return envelope?.identity?.jobId === jobId ? envelope.result ?? null : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Every usable record for a garden, newest failure first. A record whose
  * manifest or retained bytes no longer validate, or that is older than the
  * retention window, is removed here rather than shown as something a person

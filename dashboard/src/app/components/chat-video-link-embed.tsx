@@ -15,7 +15,7 @@
 // and the Watch skill use to decide what counts as "a video link" — so this
 // card appears for exactly the links the runtime would act on.
 
-import { useMemo, useState, type ReactNode } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 import BreadboardVideoPlayer from "@/app/components/breadboard-video-player";
 import type { ChatMessageAttachment } from "@/lib/chat-attachments";
 import { paletteFromCover, type PlayerPalette } from "@/lib/spotify/player-palette";
@@ -186,7 +186,7 @@ function VideoLinkCard({ source, children }: { source: VideoSource; children: Re
   );
 }
 
-export default function ChatVideoLinkEmbeds({ text, attachments }: Props) {
+function ChatVideoLinkEmbeds({ text, attachments }: Props) {
   const sources = useMemo(() => {
     if (!text) return [];
     // The downloaded copy (an editing flow's attachment) already shows a
@@ -229,3 +229,6 @@ export default function ChatVideoLinkEmbeds({ text, attachments }: Props) {
     </div>
   );
 }
+
+// Rows re-render on every streamed token; this one only when its own props change.
+export default memo(ChatVideoLinkEmbeds);

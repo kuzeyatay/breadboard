@@ -26,7 +26,7 @@ async function fixture(t) {
     'server-only': '',
     '../db.ts': 'export default {prepare:()=>({get:()=>true})};',
     '../hermes/route-core.ts': 'export class ApiError extends Error {}',
-    '../hermes/runtime-store.ts': 'export const getHermesUserSettings=()=>({composerSwitches:{personalize:globalThis.voiceOpenerCacheFixture.personalize},defaultModel:"test"});',
+    '../hermes/runtime-store.ts': 'export const getHermesUserSettings=()=>({composerSwitches:{personalize:globalThis.voiceOpenerCacheFixture.personalize},defaultModel:"test",fallbackModel:"test"});',
     '../recall/settings.ts': 'export const getRecallSettings=()=>({agentAccess:globalThis.voiceOpenerCacheFixture.recall});',
     './sources.ts': `export const readRecommendationEvidence=async(user)=>{
       const s=globalThis.voiceOpenerCacheFixture;s.reads++;
