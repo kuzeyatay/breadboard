@@ -402,7 +402,7 @@ export async function POST(request: Request) {
         const presented = presentArtifact(artifact);
         result = artifactEditorMode(presented)
           ? await loadArtifactEditor(artifact, { signal: request.signal })
-          : { artifact: presented, content: readArtifactSource(artifact) };
+          : withProseReview({ artifact: presented, content: readArtifactSource(artifact) }, artifact);
       } else if (action === "artifact_update" || action === "artifact_append" || action === "artifact_fork") {
         const provenance = validateMcpProvenance(session.user_id, args.provenance, selectedMcpServers);
         const sourceSkill = validateSourceSkill(args.sourceSkill, selectedSkills);

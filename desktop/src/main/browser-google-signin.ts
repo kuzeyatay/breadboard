@@ -65,14 +65,31 @@ export function electronCookie(cookie: DevToolsCookie): CookiesSetDetails | null
   };
 }
 
+/** Google's own sites: the accounts a session holds live in these cookies. */
+export function isGoogleCookieDomain(domain: string): boolean {
+  return /(^|\.)(google\.[a-z]{2,3}(\.[a-z]{2})?|youtube\.com|gstatic\.com|googleusercontent\.com)$/.test(domain.replace(/^\./, ""));
+}
+
+/** One Electron cookie as a CDP CookieParam; host-only cookies are addressed by URL, not domain. */
+export function devToolsCookieParam(cookie: Electron.Cookie): Record<string, unknown> {
+  const host = (cookie.domain ?? "").replace(/^\./, "");
+  return {
+    name: cookie.name, value: cookie.value, path: cookie.path ?? "/",
+    ...(cookie.hostOnly ? { url: `${cookie.secure ? "https" : "http"}://${host}${cookie.path ?? "/"}` } : { domain: cookie.domain }),
+    secure: Boolean(cookie.secure), httpOnly: Boolean(cookie.httpOnly),
+    ...(cookie.expirationDate ? { expires: cookie.expirationDate } : {}),
+    ...(cookie.sameSite === "strict" ? { sameSite: "Strict" } : cookie.sameSite === "lax" ? { sameSite: "Lax" } : cookie.sameSite === "no_restriction" ? { sameSite: "None" } : {}),
+  };
+}
+
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function devTools<T>(socketUrl: string, method: string): Promise<T> {
+async function devTools<T>(socketUrl: string, method: string, params: Record<string, unknown> = {}): Promise<T> {
   const socket = new WebSocket(socketUrl, { handshakeTimeout: 5000 });
   try {
     return await new Promise<T>((resolve, reject) => {
       socket.once("error", reject);
-      socket.once("open", () => socket.send(JSON.stringify({ id: 1, method })));
+      socket.once("open", () => socket.send(JSON.stringify({ id: 1, method, params })));
       socket.on("message", data => {
         const message = JSON.parse(String(data)) as { id?: number; result?: T; error?: { message: string } };
         if (message.id !== 1) return;
@@ -106,26 +123,42 @@ async function signInWithInstalledBrowser(executable: string, startUrl: string, 
   // A concrete port: Chromium treats --remote-debugging-port=0 (and pipe) as automation and
   // sets navigator.webdriver, which Google rejects. The person signs in by hand either way.
   const port = await freeLoopbackPort();
-  // The profile persists, so a second sign-in is usually one click: Google remembers the account.
+  // Opens blank: the window first receives this session's Google accounts, so "Add another
+  // account" adds to them and the import below brings every account back, not just the new one.
   const child = spawn(executable, [
     `--user-data-dir=${profile}`, "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${port}`,
-    "--no-first-run", "--no-default-browser-check", "--new-window", startUrl,
+    "--no-first-run", "--no-default-browser-check", "--new-window", "about:blank",
   ], { stdio: "ignore", detached: false });
   let exited = false;
   child.once("exit", () => { exited = true; });
   child.once("error", () => { exited = true; });
   const deadline = Date.now() + 15 * 60_000;
+  let started = false;
   let raised = false;
+  let sawSignIn = false;
   while (!exited && Date.now() < deadline) {
-    await wait(1000);
+    await wait(started ? 1000 : 300);
     try {
       const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as Array<{ type: string; url: string; webSocketDebuggerUrl?: string }>;
+      if (!started) {
+        const blank = pages.find(page => page.type === "page" && page.url === "about:blank");
+        if (!blank?.webSocketDebuggerUrl) continue;
+        const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json() as { webSocketDebuggerUrl: string };
+        const accounts = (await target.cookies.get({})).filter(cookie => isGoogleCookieDomain(cookie.domain ?? ""));
+        if (accounts.length) await devTools(webSocketDebuggerUrl, "Storage.setCookies", { cookies: accounts.map(devToolsCookieParam) });
+        await devTools(blank.webSocketDebuggerUrl, "Page.navigate", { url: startUrl });
+        started = true;
+        continue;
+      }
       const signIn = pages.find(page => page.type === "page" && new URL(page.url).hostname === "accounts.google.com");
       if (signIn) {
+        sawSignIn = true;
         // Windows keeps focus on Breadboard, so the window opens behind it, unfocused.
         if (!raised && signIn.webSocketDebuggerUrl) raised = await devTools(signIn.webSocketDebuggerUrl, "Page.bringToFront").then(() => true, () => false);
         continue;
       }
+      // The copied accounts already include SID, so only a finished sign-in page counts.
+      if (!sawSignIn) continue;
       const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json() as { webSocketDebuggerUrl: string };
       const { cookies } = await devTools<{ cookies: DevToolsCookie[] }>(webSocketDebuggerUrl, "Storage.getCookies");
       if (!cookies.some(cookie => cookie.name === "SID" && /(^|\.)google\.com$/.test(cookie.domain))) continue;

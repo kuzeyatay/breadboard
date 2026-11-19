@@ -58,3 +58,9 @@ test("slide decks are checked for the generated look", () => {
     [],
   );
 });
+
+test("short posts can be reviewed with a lower word floor", () => {
+  const post = "Excited to announce our robust, seamless, cutting-edge platform that empowers teams to unlock synergies and elevate their journey in today's fast-paced landscape.";
+  assert.equal(reviewArtifactProse(post, "text", 1), null, "default floor skips short text");
+  assert.ok(reviewArtifactProse(post, "text", 1, 12));
+});

@@ -21,6 +21,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { dashboardDataDir } from "@/lib/runtime-paths";
+import { externalRuntimeReadUtf8 } from "@/lib/external-runtime-filesystem";
+import { externalRuntimePath } from "@/lib/external-runtime-path";
 import { isVlmOcrTask, type VlmOcrTask } from "@/lib/vlm-ocr/prompts";
 
 export const INGEST_RECOVERY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -273,7 +275,7 @@ export function committedFailedIngestionResult(
   if (!failedJobCommitted(dataRoot, jobId)) return null;
   try {
     const envelope = JSON.parse(
-      fs.readFileSync(path.join(dataRoot, "runtime", "jobs", jobId, "result.json"), "utf8"),
+      externalRuntimeReadUtf8(externalRuntimePath.join(dataRoot, "runtime", "jobs", jobId, "result.json")),
     );
     return envelope?.identity?.jobId === jobId ? envelope.result ?? null : null;
   } catch {

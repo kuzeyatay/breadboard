@@ -11,6 +11,7 @@ import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import { nowStamp, parseStamp } from "../calendar/wallclock.ts";
 import { findSocialsManagerProvider, type SocialsManagerProvider } from "./providers.ts";
 import { promptWithContext } from "../conversations/agent-context.ts";
+import { cleanArtifactTypography, reviewArtifactProse } from "../hermes/artifact-prose-review.ts";
 
 export interface DraftedPost {
   providerId: string;
@@ -143,7 +144,91 @@ function parseDrafts(
   return drafts;
 }
 
-/** Ask the model for one finished post per requested network. */
+/** One forced `publish_drafts` call; returns the raw tool arguments. */
+async function requestDrafts(
+  url: string,
+  request: DraftRequest,
+  messages: Array<{ role: string; content: string }>,
+  signal: AbortSignal,
+): Promise<string> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${chatmockApiKeyValue()}`,
+    },
+    body: JSON.stringify({
+      model: request.model,
+      messages,
+      tools: [toolDefinition(request.providers)],
+      tool_choice: {
+        type: "function",
+        function: { name: "publish_drafts" },
+      },
+    }),
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`ChatMock returned ${response.status}`);
+  }
+
+  const data = (await response.json()) as {
+    choices?: Array<{
+      message?: {
+        tool_calls?: Array<{ function?: { arguments?: string } }>;
+        content?: string;
+      };
+    }>;
+    usage?: unknown;
+  };
+
+  // Report before parsing: the tokens were spent even when the drafts that
+  // came back are unusable, and the card should say so.
+  if (data.usage) request.onUsage?.(data.usage);
+
+  const call = data.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+  if (!call) throw new Error("ChatMock returned no drafts");
+  return call;
+}
+
+function parseDraftArguments(
+  call: string,
+  request: DraftRequest,
+): DraftedPost[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(call);
+  } catch {
+    throw new Error("ChatMock returned malformed drafts");
+  }
+  return parseDrafts(parsed, request.providers, request.scheduleAt).map((draft) => {
+    const provider = findSocialsManagerProvider(draft.providerId);
+    return { ...draft, content: cleanArtifactTypography(draft.content, postRenderer(provider)) };
+  });
+}
+
+function postRenderer(provider: SocialsManagerProvider | null): string {
+  return provider?.editor === "markdown" ? "markdown" : provider?.editor === "html" ? "html" : "text";
+}
+
+/** What the anti-slop review found in each draft, as one revision request. */
+function draftReviewProblems(drafts: readonly DraftedPost[]): string[] {
+  return drafts.flatMap((draft) => {
+    const provider = findSocialsManagerProvider(draft.providerId);
+    const review = reviewArtifactProse(draft.content, postRenderer(provider), 1, 12);
+    if (!review?.needsRevision) return [];
+    const patterns = review.patterns.map((p) => p.note ?? p.id).join("; ");
+    const long = review.longSentences.length ? ` Long sentences: ${review.longSentences.join(" | ")}` : "";
+    return [`${provider?.name ?? draft.providerId}: reads machine-written (${patterns}).${long}`];
+  });
+}
+
+/**
+ * Ask the model for one finished post per requested network, then run the
+ * final anti-slop loop: every draft is reviewed, and the flagged ones go back
+ * for one revision. A failed revision keeps the first drafts.
+ */
 export async function draftPosts(request: DraftRequest): Promise<DraftedPost[]> {
   if (!request.providers.length) return [];
 
@@ -159,64 +244,44 @@ export async function draftPosts(request: DraftRequest): Promise<DraftedPost[]> 
   if (request.signal?.aborted) controller.abort();
 
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${chatmockApiKeyValue()}`,
+    const messages = [
+      {
+        role: "system",
+        content: systemPrompt(request.providers, request.scheduleAt, nowStamp(), request.userId),
       },
-      body: JSON.stringify({
-        model: request.model,
-        messages: [
-          {
-            role: "system",
-            content: systemPrompt(request.providers, request.scheduleAt, nowStamp(), request.userId),
-          },
+      {
+        role: "user",
+        content: promptWithContext(request.brief, request.conversationContext),
+      },
+    ];
+    const call = await requestDrafts(url, request, messages, controller.signal);
+    const drafts = parseDraftArguments(call, request);
+    if (!drafts.length) throw new Error("ChatMock returned no usable drafts");
+
+    const problems = draftReviewProblems(drafts);
+    if (!problems.length) return drafts;
+    try {
+      const revised = parseDraftArguments(
+        await requestDrafts(url, request, [
+          ...messages,
+          { role: "assistant", content: call },
           {
             role: "user",
-            content: promptWithContext(request.brief, request.conversationContext),
+            content: [
+              "These drafts read as machine-written:",
+              ...problems.map((problem) => `- ${problem}`),
+              "Rewrite them the way a person would post: plain words, short sentences, no filler, hype or tidy three-part lists, no em dashes. Keep every fact, link, hashtag the brief asked for, and the schedule. Call publish_drafts again with every post.",
+            ].join("\n"),
           },
-        ],
-        tools: [toolDefinition(request.providers)],
-        tool_choice: {
-          type: "function",
-          function: { name: "publish_drafts" },
-        },
-      }),
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      throw new Error(`ChatMock returned ${response.status}`);
+        ], controller.signal),
+        request,
+      );
+      const byProvider = new Map(revised.map((draft) => [draft.providerId, draft]));
+      return drafts.map((draft) => byProvider.get(draft.providerId) ?? draft);
+    } catch (error) {
+      if (controller.signal.aborted) throw error;
+      return drafts;
     }
-
-    const data = (await response.json()) as {
-      choices?: Array<{
-        message?: {
-          tool_calls?: Array<{ function?: { arguments?: string } }>;
-          content?: string;
-        };
-      }>;
-      usage?: unknown;
-    };
-
-    // Report before parsing: the tokens were spent even when the drafts that
-    // came back are unusable, and the card should say so.
-    if (data.usage) request.onUsage?.(data.usage);
-
-    const call = data.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
-    if (!call) throw new Error("ChatMock returned no drafts");
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(call);
-    } catch {
-      throw new Error("ChatMock returned malformed drafts");
-    }
-
-    const drafts = parseDrafts(parsed, request.providers, request.scheduleAt);
-    if (!drafts.length) throw new Error("ChatMock returned no usable drafts");
-    return drafts;
   } finally {
     clearTimeout(timer);
     request.signal?.removeEventListener("abort", onAbort);

@@ -1059,3 +1059,9 @@ test("the visible answer reports the whole delegated operation's duration", () =
     "every elapsed-time branch carries the preceding phase",
   );
 });
+
+test("a finished worker's written documents get the prose review before Bread presents them", async () => {
+  const { agentLaunchContinuationMessage } = await import("../src/lib/hermes/agent-launch.ts");
+  const message = agentLaunchContinuationMessage({ agentName: "Deer Flow", outcome: "completed", content: "Report ready: art_1" });
+  assert.match(JSON.stringify(message), /artifact_read[^"]*proseReview/);
+});

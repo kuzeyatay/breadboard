@@ -3351,8 +3351,38 @@ impl ServiceController {
             // to restart: the dashboard killed for exceeding its commit cap
             // sat at `failed, retry due in 1 s` for twenty minutes while the
             // desktop showed it as starting.
-            if self.registry.service(&service_id)?.startup_policy != ServiceStartupPolicy::Eager
-                || !(service_state_allows_automatic_eager_restart(snapshot.status.state)
+            if self.registry.service(&service_id)?.startup_policy != ServiceStartupPolicy::Eager {
+                continue;
+            }
+            // A memory denial is durable and never retried by the store, so a
+            // required eager service (the dashboard) turned away during a
+            // transient commit dip stayed down for the life of the runtime even
+            // after gigabytes came free (2026-11-19). Re-ask admission on a slow
+            // cadence instead of a one-second loop.
+            if snapshot.status.state == RuntimeServiceState::ResourceBlocked {
+                let due = self.next_eager_attempt_ms.get(&service_id).copied();
+                if !resource_blocked_eager_recheck_due(now_ms, due) {
+                    continue;
+                }
+                if self.require_dependencies_ready(&service_id).is_ok() {
+                    // A blocked `failed` generation can be out of restarts;
+                    // that lease verdict stands and must not stop the controller.
+                    match self.begin_eager_start(&service_id, false) {
+                        Err(ServiceEngineError::Store(DurableServiceStoreError::Lease(_))) | Ok(()) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                if self.store.durable_service_snapshot(&service_id)?.status.state
+                    == RuntimeServiceState::ResourceBlocked
+                {
+                    self.next_eager_attempt_ms.insert(
+                        service_id,
+                        now_ms.saturating_add(RESOURCE_BLOCKED_EAGER_RECHECK_MS),
+                    );
+                }
+                continue;
+            }
+            if !(service_state_allows_automatic_eager_restart(snapshot.status.state)
                     || snapshot_awaits_bounded_restart(snapshot))
             {
                 continue;
@@ -4256,6 +4286,12 @@ fn worker_cold_start_restart_fits_deadline(
     pending_deadline.is_some_and(|deadline| now.checked_add(wait).is_some_and(|due| due < deadline))
 }
 
+const RESOURCE_BLOCKED_EAGER_RECHECK_MS: u64 = 15_000;
+
+fn resource_blocked_eager_recheck_due(now_ms: u64, next_attempt_ms: Option<u64>) -> bool {
+    next_attempt_ms.is_none_or(|due| now_ms >= due)
+}
+
 fn service_state_allows_automatic_eager_restart(state: RuntimeServiceState) -> bool {
     state == RuntimeServiceState::Failed
 }
@@ -5034,6 +5070,19 @@ mod tests {
         ] {
             assert!(!service_state_allows_automatic_eager_restart(state));
         }
+    }
+
+    #[test]
+    fn resource_blocked_eager_service_is_rechecked_on_a_slow_cadence() {
+        assert!(resource_blocked_eager_recheck_due(1_000, None));
+        assert!(!resource_blocked_eager_recheck_due(
+            1_000,
+            Some(1_000 + RESOURCE_BLOCKED_EAGER_RECHECK_MS)
+        ));
+        assert!(resource_blocked_eager_recheck_due(
+            1_000 + RESOURCE_BLOCKED_EAGER_RECHECK_MS,
+            Some(1_000 + RESOURCE_BLOCKED_EAGER_RECHECK_MS)
+        ));
     }
 
     #[test]

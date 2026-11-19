@@ -90,10 +90,12 @@ export function reviewArtifactProse(
   content: string,
   rendererId: string,
   pass: number,
+  /** Shorter texts are left alone; social posts pass a lower floor. */
+  minWords = 60,
 ): ArtifactProseReview | null {
   if (!artifactProseRenderer(rendererId)) return null;
   const prose = proseOf(content, rendererId);
-  if (prose.trim().split(/\s+/).length < 60) return null;
+  if (prose.trim().split(/\s+/).length < minWords) return null;
   const scored = scoreProse(prose);
   const long = longSentences(prose);
   const flagged =

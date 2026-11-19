@@ -1,7 +1,9 @@
-import { execFileSync } from "node:child_process";
-import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
+// Runtime folders stay out of Next's build trace; plain fs/path/child_process here
+// made it trace the whole dashboard and fail the installer build.
+import { externalRuntimeFilesystem as fs } from "../external-runtime-filesystem.ts";
+import { externalRuntimePath as path } from "../external-runtime-path.ts";
+import { externalRuntimeSpawnSync } from "../external-runtime-process.ts";
 import db from "../db.ts";
 import { resolveConnectedRepository } from "../opencode/repository.ts";
 import { prepareGraftIndex } from "./garden.ts";
@@ -37,7 +39,12 @@ export async function createGardenRepository(input: { userId: number; clusterId:
   for (let n = 2; fs.existsSync(target); n += 1) target = path.join(root, `${base}-${n}`);
   fs.mkdirSync(target, { recursive: true });
 
-  const git = (...args: string[]) => execFileSync("git", args, { cwd: target, stdio: "pipe", windowsHide: true }).toString().trim();
+  const git = (...args: string[]) => {
+    const result = externalRuntimeSpawnSync("git", args, { cwd: target, encoding: "utf8", windowsHide: true });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(result.stderr.trim() || `git ${args[0]} failed`);
+    return result.stdout.trim();
+  };
   git("init", "-b", "main");
   fs.writeFileSync(path.join(target, "README.md"), `# ${input.name?.trim() || garden.name}\n\nCode for the ${garden.name} Garden.\n`);
   git("add", "README.md");
