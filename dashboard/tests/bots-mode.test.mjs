@@ -205,6 +205,34 @@ test("each bot keeps its own memory: bot_memory remembers, recalls, forgets, and
   assert.equal((await call({ action: "recall", bot: "sage" })).status, 403, "the turn's capability grant gates the tool");
 });
 
+test("a routine whose prompt names a bot runs as that bot (orgo/rakazo routines)", async () => {
+  const sent = [];
+  const runner = loadModule(new URL("../src/lib/schedules/runner.ts", import.meta.url), {
+    "../conversations/store.ts": conversations,
+    "../conversations/turn-service.ts": { startConversationTurn: async input => { sent.push(input); return { accepted: false, error: "stop here" }; } },
+    "../plan/agent-tracking.ts": { trackScheduledChatStarted: () => {}, trackScheduledChatFinished: () => {} },
+    "../hermes/event-stream.ts": { startSessionEventPump: () => {}, waitForSessionEventPump: async () => {} },
+    "../hermes/run-store.ts": { getRuntimeRun: () => null },
+    "../hermes/route-core.ts": { requireEnabled: () => {} },
+    "../hermes/session-service.ts": { authorizeGardenAccess: () => null, resolveConversationRuntime: async () => ({}) },
+    "./types.ts": await import("../src/lib/schedules/types.ts"),
+    "./conversation-policy.ts": await import("../src/lib/schedules/conversation-policy.ts"),
+  });
+  const { botTurnPersona } = await import("../src/lib/bots/team.ts");
+  const job = { id: 41, user_id: 1, surface: "dashboard_terminal", garden_slug: null, prompt: "@nova summarize this week's AI research news",
+    conversation_policy: "always", delivery_mode: "chat", delivery_channel: null, model: null, reasoning_effort: null };
+  await runner.runScheduledChatJob(job);
+  assert.equal(sent.length, 1, "the routine dispatched one ordinary turn");
+  const turn = sent[0];
+  assert.equal(turn.text, job.prompt, "the routine's prompt is the turn's text, mention included");
+  const persona = botTurnPersona({ userId: 1, conversationPublicId: turn.conversation.public_id, text: turn.text });
+  assert.match(persona, /your name is "Nova"/, "the routine runs as Nova");
+  assert.match(persona, /schedule_create with a prompt like "@nova/, "bots are told how to own a routine");
+  assert.match(persona, /computer and browser, the user's connected apps/, "bots know they share Bread's toolset");
+  const plain = botTurnPersona({ userId: 1, conversationPublicId: turn.conversation.public_id, text: "summarize the news" });
+  assert.doesNotMatch(plain, /your name is "Nova"/, "a routine with no handle runs as Bread");
+});
+
 test("Capabilities Bots editor, saved avatars, chat navigation and lifecycle work in Chromium", { timeout: 120_000 }, async () => {
   userId = 1;
   const root = fileURLToPath(new URL("../", import.meta.url));

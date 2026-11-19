@@ -43,6 +43,9 @@ function rosterSection(bots: readonly BotDefinition[], respondent: BotDefinition
   if (tools) {
     lines.push(
       `To hand a teammate part of the work, call delegate_task with the goal starting "[persona: ${BOT_PERSONA_PREFIX}<handle>]" (for example "[persona: ${BOT_PERSONA_PREFIX}${botHandle(bots[0]?.name ?? "sage")}] …"). It works with that bot's personality and your tools, and its result comes back to you; pass it on credited to that bot by name. Delegate when the user asks you to, or when a teammate's strength genuinely fits part of the job, never for a quick question you can answer yourself.`,
+      // orgo-teammates / rakazo: every bot has the computer, apps and routines; here they are Bread's own.
+      "Every bot works with Bread's full toolset: the computer and browser, the user's connected apps, files and the web. A personality changes the voice, never the tools.",
+      `A routine belongs to a bot when its prompt starts with that bot's handle: schedule_create with a prompt like "@${botHandle(respondent?.name ?? bots[0]?.name ?? "sage")} …" runs as that bot every time, and a prompt with no handle runs as Bread.`,
     );
   }
   return lines.join("\n");
