@@ -12,6 +12,8 @@ import { UserAvatar } from "@/app/buzz/ui/UserAvatar";
 import { BREAD_PERSONA, BREAD_SLUG } from "@/lib/buzz/bread.ts";
 
 import { ROOM_RUNTIME_AGENTS, runtimeSlug } from "@/lib/buzz/runtime-catalog.ts";
+import { loadCachedBots, peekCachedBots } from "@/lib/bots/client-cache";
+import { botHandle } from "@/lib/bots/mentions";
 
 import { requestJson } from "../lib/message-state";
 
@@ -68,11 +70,15 @@ export function MembersPanel({ members, personas, roomPublicId, rosterReady, sel
   const agents = members.filter(member => member.kind === "agent");
 
   const seated = useMemo(() => new Set(agents.map(member => member.personaSlug)), [agents]);
+  // Your own bots (Sage, Byte, …) join a room like any agent and answer when @mentioned.
+  const [bots, setBots] = useState(() => peekCachedBots() ?? []);
+  useEffect(() => { if (picker === "agents") void loadCachedBots().then(setBots).catch(() => {}); }, [picker]);
 
   const native = [
 
     { slug: BREAD_SLUG, name: BREAD_PERSONA.name, description: BREAD_PERSONA.description },
 
+    ...bots.map(bot => ({ slug: `bot-${botHandle(bot.name)}`, name: bot.name, description: bot.description })),
     ...ROOM_RUNTIME_AGENTS.map(agent => ({ slug: runtimeSlug(agent.id), name: agent.name, description: agent.command })),
 
   ];

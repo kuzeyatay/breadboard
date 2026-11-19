@@ -22,7 +22,8 @@ export async function createBuzzFixture() {
   const stubs = {
     auth: `export const authOptions = {}; export async function getServerSession() { const id = globalThis.__buzzQA.context.getStore(); return id ? { user: { id: String(id), name: ['','anna','ben','chloe'][id] } } : null; }`,
     serverAuth: `export class RouteError extends Error { constructor(status,message) { super(message); this.status=status; } } export async function requireUserId() { const id=globalThis.__buzzQA.context.getStore(); if(!id)throw new RouteError(401,'Sign in.'); return id; } export function routeErrorResponse(error) { return Response.json({message:error.message}, {status:error.status||500}); }`,
-    conversations: `import db from ${dbImport}; import {randomUUID} from 'node:crypto'; export function createConversation(input) { const id = db.prepare('INSERT INTO conversations(public_id,user_id,title,surface,scope_kind) VALUES (?,?,?,?,?)').run('conv_'+randomUUID(),input.userId,input.title,input.surface,input.scopeKind).lastInsertRowid; return db.prepare('SELECT * FROM conversations WHERE id=?').get(id); } export function cancelLatestConversationTurn(id) { globalThis.__buzzQA.settled.push(id); return null; }`,
+    // The real module behind every export the test does not control, so a new import elsewhere cannot break the build.
+    conversations: `export * from '${path.join(root, 'src/lib/conversations/store.ts').replaceAll('\\', '/')}'; import db from ${dbImport}; import {randomUUID} from 'node:crypto'; export function createConversation(input) { const id = db.prepare('INSERT INTO conversations(public_id,user_id,title,surface,scope_kind) VALUES (?,?,?,?,?)').run('conv_'+randomUUID(),input.userId,input.title,input.surface,input.scopeKind).lastInsertRowid; return db.prepare('SELECT * FROM conversations WHERE id=?').get(id); } export function cancelLatestConversationTurn(id) { globalThis.__buzzQA.settled.push(id); return null; }`,
     turns: `${save}
       export async function startConversationTurn(input) {
         globalThis.__buzzQA.calls.push(input);
@@ -38,7 +39,7 @@ export async function createBuzzFixture() {
     externalTurns: `${save}
       export function recordExternalAgentTurn(input) { save(input.conversation.id,input.clientMessageId,'user',input.userContent); save(input.conversation.id,input.clientMessageId,'assistant','', 'complete', {externalAgent:true,externalAgentRun:input.run,externalAgentOutcome:'running'}); }
       export function finishExternalAgentTurn(input) { save(input.conversationId,input.clientMessageId,'assistant',input.content,input.outcome==='completed'?'complete':input.outcome); }`,
-    runtimeStore: `export const listRuntimeSessionsForConversation = () => [];`,
+    runtimeStore: `export * from '${path.join(root, 'src/lib/hermes/runtime-store.ts').replaceAll('\\', '/')}'; export const listRuntimeSessionsForConversation = () => [];`,
     cancel: `export const cancelExternalAgentRun = async () => true; export const cancelRuntimeSessionWork = async () => {}; export const cancelRunningExternalAgentRuns = async (user,id) => { globalThis.__buzzQA.stopped.push({user,id}); return []; };`,
     agency: `export const loadAgencyAgentsCatalog = () => ({agents:[],available:true});`,
     empty: '',
@@ -62,7 +63,7 @@ export async function createBuzzFixture() {
   const outfile = path.join(scratch, 'routes.cjs');
   await esbuild.build({ absWorkingDir:root, stdin:{contents:entry,resolveDir:root,loader:'ts'}, bundle:true, platform:'node',format:'cjs',packages:'external',outfile,logLevel:'silent',
     plugins:[{ name:'qa-boundaries', setup(build) {
-      for(const [filter,key] of matches) build.onResolve({filter}, () => ({path:key,namespace:'stub'}));
+      for(const [filter,key] of matches) build.onResolve({filter}, args => args.namespace === 'stub' ? undefined : ({path:key,namespace:'stub'}));
       build.onLoad({filter:/.*/,namespace:'stub'},args => ({contents:stubs[args.path],loader:'ts',resolveDir:root}));
     }}],
   });

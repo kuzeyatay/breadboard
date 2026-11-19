@@ -33,6 +33,7 @@ import {
   WORKFLOW_AUTHORING_TOOLS,
   WORKFLOW_PROPOSAL_TOOLS,
   SKILL_LESSON_TOOLS,
+  BOT_MEMORY_TOOLS,
   MESSAGING_TOOLS,
   MANIM_TOOLS,
   TO_MARKDOWN_TOOLS,
@@ -243,6 +244,7 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...WORKFLOW_AUTHORING_TOOLS,
       ...WORKFLOW_PROPOSAL_TOOLS,
       ...SKILL_LESSON_TOOLS,
+      ...BOT_MEMORY_TOOLS,
       ...DOCUMENT_SKILL_TOOLS,
       ...PREMORTEM_TOOLS,
       ...FACTCHECK_TOOLS,
@@ -760,7 +762,7 @@ function buildToolMap(
   // here, which can happen on any kind of turn — the skill may have been in play
   // for a plain knowledge question. So this follows memory's scope rather than
   // the turn's capability class, and is likewise never given to anonymous Quartz.
-  for (const tool of SKILL_LESSON_TOOLS) {
+  for (const tool of [...SKILL_LESSON_TOOLS, ...BOT_MEMORY_TOOLS]) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
   // Reading a distilled document is how the model answers a question about a

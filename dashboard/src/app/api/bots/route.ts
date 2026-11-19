@@ -3,6 +3,7 @@ import { requireUserId } from "@/lib/server-auth";
 import { readJsonBody, apiErrorResponse } from "@/lib/hermes/route-helpers";
 import { botsStore } from "@/lib/bots/server";
 import { BotStoreError } from "@/lib/bots/store";
+import { BREAD_BOT_HANDLE } from "@/lib/bots/mentions";
 
 export const dynamic = "force-dynamic";
 function failure(error: unknown) {
@@ -28,6 +29,10 @@ export async function POST(request: Request) {
       if (typeof body.id !== "string") throw new BotStoreError(400, "Choose a bot.");
       // The roster and editor do not need the chat store's memory/agent graph.
       const { createConversation } = await import("@/lib/conversations/store");
+      // Bread is the primary bot: its chat is simply a new ordinary chat.
+      if (body.id === BREAD_BOT_HANDLE) {
+        return NextResponse.json({ conversationId: createConversation({ userId, title: "Bread", surface: "dashboard_terminal" }).public_id });
+      }
       const conversationId = botsStore().chat(userId, body.id, (name) => createConversation({ userId, title: name, surface: "dashboard_terminal", originLabel: "Bot" }));
       return NextResponse.json({ conversationId });
     }

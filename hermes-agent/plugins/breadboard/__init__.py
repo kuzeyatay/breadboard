@@ -2304,6 +2304,33 @@ _TOOLS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         ),
     ),
     (
+        "bot_memory",
+        "/api/hermes/tools/bot-memory",
+        "bot_memory",
+        _schema(
+            "bot_memory",
+            (
+                "A bot's own memory. Bots (Sage, Byte, the user's own) each keep "
+                "memories apart from the account's; Bread uses the account memory "
+                "instead. When you are answering as a bot and learn something "
+                "durable about the user or your job, remember it as one short, "
+                "self-contained sentence. recall searches that bot's memories; "
+                "forget removes one by the number shown beside it."
+            ),
+            {
+                "action": {"type": "string", "enum": ["remember", "recall", "forget"]},
+                "bot": {
+                    "type": "string",
+                    "description": "The bot's @handle, e.g. \"sage\" or \"math-tutor\".",
+                },
+                "text": {"type": "string", "maxLength": 500, "description": "For remember: the memory."},
+                "query": {"type": "string", "maxLength": 200, "description": "For recall: words to look for."},
+                "id": {"type": "integer", "description": "For forget: the memory's number."},
+            },
+            ["action", "bot"],
+        ),
+    ),
+    (
         "workflow_run",
         "/api/hermes/tools/workflow",
         "workflow",

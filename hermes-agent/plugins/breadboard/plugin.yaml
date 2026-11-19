@@ -152,6 +152,7 @@ provides_tools:
   - garden_delete_folder
   - save_memory
   - skill_lesson
+  - bot_memory
   - humanize_text
   - humanize_status
   - agent_loop_run

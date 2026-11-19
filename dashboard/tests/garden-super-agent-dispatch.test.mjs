@@ -154,7 +154,7 @@ async function dispatch(payload, { title = 'New chat', orderIndex = 0, commandRe
     failAssistantMessage: () => assert.fail("the dispatch must not fail"),
     hasReconstructableAttachment: () => false, hasAnalyzableAttachment: () => false,
     carriedExternalAgentsForContinuation: () => [{ agentId: "max-research", status: "completed" }],
-    externalAgentCallsForRun: () => [], botsStore: () => ({ forConversation: () => null }), conversationPersonalityPrompt: () => "", selectedModelForUser: () => ({ model: payload.model }), getLatestRuntimeRun: () => null,
+    externalAgentCallsForRun: () => [], botTurnPersona: () => "", personalTurnPrompt: async () => "", recallEarlierConversations: async () => "", selectedModelForUser: () => ({ model: payload.model }), getLatestRuntimeRun: () => null,
     deliverCompletedHyperframes: async () => { assert.equal(workflowContinuation, null, "workflow hand-backs must reach synthesis before direct delivery"); return null; },
   };
   const tree = ast("lib/hermes/garden-chat-adapter.ts");

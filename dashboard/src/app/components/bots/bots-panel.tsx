@@ -11,6 +11,7 @@ import BotAvatar from "./bot-avatar";
 import BotEditor from "./bot-editor";
 import LoadingRows from "../hermes/loading-rows";
 import { BOTS_CHANGED_EVENT, BOTS_AUTH_CHANGED_EVENT, loadCachedBots, peekCachedBots } from "@/lib/bots/client-cache";
+import { BREAD_BOT, botHandle } from "@/lib/bots/mentions";
 
 export { BOTS_CHANGED_EVENT } from "@/lib/bots/client-cache";
 const iconButton = "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)] disabled:opacity-40";
@@ -71,7 +72,7 @@ export default function BotsPanel({ onNavigate }: { onNavigate: () => void }) {
     catch (cause) { setError(cause instanceof Error ? cause.message : "The bot could not be saved."); }
     finally { setBusy(false); }
   }
-  async function chat(bot: BotDefinition) {
+  async function chat(bot: Pick<BotDefinition, "id">) {
     if (busy) return;
     setBusy(true); setError(null);
     try {
@@ -93,11 +94,17 @@ export default function BotsPanel({ onNavigate }: { onNavigate: () => void }) {
   if (editor) return <BotEditor initial={editor.initial} editing={Boolean(editor.id)} busy={busy} error={error} onSave={input => void save(input)} onCancel={closeEditor} />;
   const visible = bots.filter(bot => `${bot.name} ${bot.description}`.toLowerCase().includes(query.trim().toLowerCase()));
   return <section aria-label="Bots" className="space-y-4 p-1">
-    <div className="flex items-start justify-between gap-3"><div><h3 className="font-medium text-[var(--ink-heading)]">A familiar face for every conversation</h3><p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">Pick a personality or make your own. Each bot keeps a dedicated chat you can return to.</p></div>
+    <div className="flex items-start justify-between gap-3"><div><h3 className="font-medium text-[var(--ink-heading)]">Your team</h3><p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">Bread answers by default. @mention a bot in any chat to bring it in, and Bread can hand work to them. Each bot also keeps a dedicated chat.</p></div>
       <button ref={newButton} type="button" disabled={busy} onClick={() => { setEditor({}); setError(null); }} className="flex shrink-0 items-center gap-1 rounded-xl bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white"><Plus size={14} />New bot</button>
     </div>
     <input aria-label="Search bots" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search bots" className="w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--botanical)]" />
     {error ? <div role="alert" className="text-sm text-[var(--danger)]">{error} <button type="button" onClick={() => void load()} className="underline">Retry</button></div> : null}
+    {!query.trim() || `${BREAD_BOT.name} ${BREAD_BOT.description}`.toLowerCase().includes(query.trim().toLowerCase()) ? <div className="flex items-center gap-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-2" data-primary-bot="bread">
+      <button type="button" disabled={busy} onClick={() => void chat(BREAD_BOT)} className="flex min-w-0 flex-1 items-center gap-2 rounded-xl p-1 text-left focus-visible:outline-2 focus-visible:outline-[var(--botanical)]" aria-label={`Chat with ${BREAD_BOT.name}`}>
+        <BotAvatar avatar={BREAD_BOT.avatar} name={BREAD_BOT.name} size={52} />
+        <span className="min-w-0"><span className="flex items-center gap-2 text-sm font-medium text-[var(--ink-heading)]">{BREAD_BOT.name}<span className="rounded-full bg-[var(--paper-strong)] px-2 py-0.5 text-[10px] font-normal text-[var(--ink-muted)]">Primary · @{BREAD_BOT.handle}</span></span><span className="mt-0.5 block text-xs leading-5 text-[var(--ink-muted)]">{BREAD_BOT.description}</span></span>
+      </button>
+    </div> : null}
     {loading && !bots.length ? <LoadingRows label="Loading bots" /> : null}
     {([true, false] as const).map(prebuilt => {
       const group = visible.filter(bot => bot.prebuilt === prebuilt);
@@ -106,7 +113,7 @@ export default function BotsPanel({ onNavigate }: { onNavigate: () => void }) {
         <ul className="space-y-2">{group.map(bot => <li key={bot.id} className="rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-2">
           <div className="flex items-center gap-2"><button type="button" disabled={busy} onClick={() => void chat(bot)} className="flex min-w-0 flex-1 items-center gap-2 rounded-xl p-1 text-left focus-visible:outline-2 focus-visible:outline-[var(--botanical)]" aria-label={`Chat with ${bot.name}`}>
             <BotAvatar avatar={bot.avatar} name={bot.name} size={52} />
-            <span className="min-w-0"><span className="block truncate text-sm font-medium text-[var(--ink-heading)]">{bot.name}</span><span className="mt-0.5 block text-xs leading-5 text-[var(--ink-muted)]">{bot.description}</span></span>
+            <span className="min-w-0"><span className="block truncate text-sm font-medium text-[var(--ink-heading)]">{bot.name} <span className="font-normal text-[var(--ink-muted)]">@{botHandle(bot.name)}</span></span><span className="mt-0.5 block text-xs leading-5 text-[var(--ink-muted)]">{bot.description}</span></span>
           </button><button type="button" disabled={busy} aria-label={`Edit ${bot.name}`} title="Edit personality and avatar" className={iconButton} onClick={() => { setEditor({ id: bot.id, initial: bot }); setError(null); }}><Settings2 size={15} /></button></div>
           <div className="flex items-center justify-end gap-1"><button type="button" disabled={busy} aria-label={`Duplicate ${bot.name}`} title="Make your own copy" className={iconButton} onClick={() => { setEditor({ initial: { ...bot, name: duplicateBotName(bot.name, bots.map(item => item.name)) } }); setError(null); }}><Copy size={13} /></button>
             <button type="button" disabled={busy} aria-label={`Remove ${bot.name}`} title="Remove from Bots" className={iconButton} onClick={() => setRemoving(bot.id)}><Trash2 size={13} /></button>

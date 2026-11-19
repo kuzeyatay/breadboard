@@ -3,6 +3,8 @@ import type Database from "better-sqlite3";
 import { BOT_SHAPES, type BotDefinition, type BotInput } from "./types.ts";
 import { PREBUILT_BOTS } from "./presets.ts";
 
+export interface BotMemory { id: number; text: string }
+
 export class BotStoreError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -49,7 +51,40 @@ export class BotsStore {
       conversation_id INTEGER NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
       PRIMARY KEY (user_id, bot_id),
       FOREIGN KEY (user_id, bot_id) REFERENCES conversation_bots(user_id, id) ON DELETE CASCADE
-    );`);
+    );
+    CREATE TABLE IF NOT EXISTS bot_memories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      bot_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id, bot_id) REFERENCES conversation_bots(user_id, id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS bot_memories_bot ON bot_memories(user_id, bot_id, id);`);
+  }
+  // Each bot's own memory, as in orgo-teammates (remember / recall over a per-bot
+  // table): what Sage learns stays Sage's, apart from the account-wide memory Bread uses.
+  remember(userId: number, botId: string, text: string): BotMemory {
+    this.get(userId, botId);
+    const clean = text.replace(/\s+/g, " ").trim().slice(0, 500);
+    if (!clean) throw new BotStoreError(400, "A memory needs some text.");
+    const count = this.db.prepare("SELECT COUNT(*) AS n FROM bot_memories WHERE user_id=? AND bot_id=?").get(userId, botId) as { n: number };
+    // ponytail: oldest memory drops past 200; consolidate with a model pass if bots outgrow it.
+    if (count.n >= 200) this.db.prepare("DELETE FROM bot_memories WHERE id = (SELECT MIN(id) FROM bot_memories WHERE user_id=? AND bot_id=?)").run(userId, botId);
+    const id = Number(this.db.prepare("INSERT INTO bot_memories(user_id,bot_id,text) VALUES (?,?,?)").run(userId, botId, clean).lastInsertRowid);
+    return { id, text: clean };
+  }
+  forget(userId: number, botId: string, id: number): boolean {
+    return this.db.prepare("DELETE FROM bot_memories WHERE user_id=? AND bot_id=? AND id=?").run(userId, botId, id).changes > 0;
+  }
+  /** Newest first; with a query, those sharing a word with it come first (orgo's recall). */
+  recall(userId: number, botId: string, query = "", limit = 20): BotMemory[] {
+    const all = this.db.prepare("SELECT id, text FROM bot_memories WHERE user_id=? AND bot_id=? ORDER BY id DESC").all(userId, botId) as BotMemory[];
+    const words = query.toLowerCase().split(/\W+/).filter((word) => word.length > 2);
+    if (!words.length) return all.slice(0, limit);
+    const score = (memory: BotMemory) => words.filter((word) => memory.text.toLowerCase().includes(word)).length;
+    return all.map((memory) => [memory, score(memory)] as const)
+      .sort((a, b) => b[1] - a[1]).slice(0, limit).map(([memory]) => memory);
   }
   seed(userId: number): void {
     const insert = this.db.prepare(`INSERT OR IGNORE INTO conversation_bots

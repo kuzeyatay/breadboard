@@ -101,6 +101,16 @@ test('organization flow: invitations, permissions, delivery, agents, threads and
     assert.match(nativeReply.body,/Native agent answer for account 2/);
     assert.equal(nativeReply.metadata.externalAgentRun.kind,'deep_research');
 
+    // Your own bots join a room like any agent and answer when @mentioned (lib/bots, orgo/rakazo group chats).
+    assert.equal((await call(1,'members','POST',{personaSlug:'bot-nobody'},params)).status,404,'only bots on your own team can be seated');
+    const sage=await call(1,'members','POST',{personaSlug:'bot-sage'},params);
+    assert.equal(sage.status,201);
+    assert.equal(sage.body.member.handle,'sage');
+    assert.equal((await call(1,'members','POST',{personaSlug:'bot-sage'},params)).status,409);
+    await call(1,'messages','POST',{body:'@sage explain Gauss law in one line',clientMessageId:'bot-request'},params);
+    const botTurn=qa.calls.at(-1);
+    assert.match(botTurn.text,/You are Sage[\s\S]*Your brief:[\s\S]*patient teacher[\s\S]*Gauss law/,'the seated bot answers with its own personality');
+
     const bread=detail.members.find(member=>member.personaSlug==='bread');
     await call(1,'member','DELETE',undefined,{...params,memberId:String(bread.id)});
     assert.ok(!(await call(1,'messages','GET',undefined,params)).body.members.some(member=>member.personaSlug==='bread'),'removed Bread must stay removed after reads');

@@ -48,6 +48,8 @@ test('saved prompts fill the draft without sending, and settings edit the saved 
         const [value,onChange]=useState(''),[open,setOpen]=useState(false),[showSlashCommands,setShowSlashCommands]=useState(false);
         const internalTextareaRef=useRef(null),commandHubRef=useRef(null),slashCommandMenuRef=useRef(null);
         const codexAgent=false,onSelectTradingAgents=null,onSelectShorts=null,onSelectFormsmith=null;
+        // Composer state the copied handlers read; none of it is under test here.
+        const menuSearch=null,setMenuSearch=()=>{},setSkillHints=()=>{},attachments=[],menuDraftCaretRef={current:null};
         ${handlers}
         return <main style={{position:'absolute',left:20,bottom:20,width:'min(620px,calc(100vw - 40px))'}}>
           <form onSubmit={e=>{e.preventDefault();window.submissions++}}>

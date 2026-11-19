@@ -1,10 +1,9 @@
 import { codeWithoutRepositoryDirective, codexDriveDirective, isCodeWritingRequest } from "../hermes/codex-drive.ts";
 import { gardenHasRepository } from "../code-index/create-repository.ts";
 import { modelLaunchableRuntimeAgents } from "../hermes/capability-combinations.ts";
-import { botsStore } from "../bots/server.ts";
 import { telegramAttentionAlertsOn } from "../telegram/attention.ts";
 import { voiceReplyWithOpener } from "../speech/voice-opener-context.ts";
-import { conversationPersonalityPrompt } from "../bots/types.ts";
+import { botTurnPersona } from "../bots/team.ts";
 import { hermesPromptText } from "../agent-runtime/hermes-prompt.ts";
 import { agentPreferencesContext } from "../agent-preferences/store.ts";
 import {
@@ -1903,16 +1902,19 @@ export async function startConversationTurn(
       renderDeliveryChannel(context.deliveryChannel, approvalPolicy.yoloMode),
       attentionAlerts ? renderAttentionAlerts() : "",
     ].filter(Boolean).join("\n\n"),
-    persona: conversationPersonalityPrompt(
-      botsStore().forConversation(input.conversation.user_id, input.conversation.public_id),
-      activeAgencyAgent
+    persona: botTurnPersona({
+      userId: input.conversation.user_id,
+      conversationPublicId: input.conversation.public_id,
+      text: input.text,
+      inRoom: Boolean(input.conversation.buzz_room_id),
+      specialistPersona: activeAgencyAgent
       ? activeAgencyAgent.slug === CHIEF_OF_STAFF_SLUG
         ? `${renderAgencyAgentPersona(activeAgencyAgent, input.conversation.user_id)}\n\n${renderChiefOfStaffOrchestration(loadAgencyAgentsCatalog(), input.conversation.user_id)}`
         : activeAgencyAgent.slug === ARIS_AGENT_SLUG
           ? `${renderAgencyAgentPersona(activeAgencyAgent, input.conversation.user_id)}\n\n${renderArisTurnGuidance(resolved.userText || input.text)}`
           : renderAgencyAgentPersona(activeAgencyAgent, input.conversation.user_id)
       : undefined,
-    ),
+    }),
   });
   const locationRequest = resolved.userText || input.text;
   const currentLocationContext = input.internalAgentContinuation

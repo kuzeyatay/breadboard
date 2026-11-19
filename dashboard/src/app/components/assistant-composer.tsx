@@ -46,6 +46,8 @@ import SlashCommandMenu, {
 import SelectedSkills from '@/app/components/hermes/selected-skills';
 import { splitLeadingCommandTokens } from '@/app/components/hermes/command-text';
 import { slashQueryAt, slashQueryReplacementRange } from '@/lib/hermes/slash-query';
+import BotMentionMenu, { type BotMentionMenuHandle } from '@/app/components/bots/bot-mention-menu';
+import { mentionQueryAt } from '@/lib/bots/mentions';
 import {
   caretOnFirstLine,
   caretOnLastLine,
@@ -770,6 +772,8 @@ export default function AssistantComposer({
   // The token the caret was in when the picker opened — the picker's filter,
   // which is not the whole box once the sentence has a body after the token.
   const [slashQuery, setSlashQuery] = useState('');
+  // The "@" being typed, which opens the bot picker (lib/bots/mentions.ts).
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   // The TradingAgents request lives here rather than in the host: it is the
   // composer's input while that agent is selected, exactly as `value` is
   // otherwise, and no host needs to know its shape to route a send.
@@ -817,6 +821,7 @@ export default function AssistantComposer({
   const [skillHints, setSkillHints] = useState<CommandHubItem[]>([]);
   const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const slashCommandMenuRef = useRef<SlashCommandMenuHandle>(null);
+  const botMentionMenuRef = useRef<BotMentionMenuHandle>(null);
   const internalTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   useImperativeHandle(textareaRef, () => internalTextareaRef.current as HTMLTextAreaElement);
 
@@ -1678,6 +1683,25 @@ export default function AssistantComposer({
           textarea.focus({ preventScroll: true });
         }}
       >
+        <BotMentionMenu
+          ref={botMentionMenuRef}
+          open={mentionQuery !== null && !showSlashCommands}
+          query={mentionQuery ?? ''}
+          onClose={() => setMentionQuery(null)}
+          onSelect={(handle) => {
+            const node = internalTextareaRef.current;
+            const span = mentionQueryAt(value, node?.selectionStart);
+            setMentionQuery(null);
+            if (!span) return;
+            const token = `@${handle} `;
+            const end = span.end + (value[span.end] === ' ' ? 1 : 0);
+            onChange(`${value.slice(0, span.start)}${token}${value.slice(end)}`);
+            window.setTimeout(() => {
+              node?.focus();
+              node?.setSelectionRange(span.start + token.length, span.start + token.length);
+            }, 0);
+          }}
+        />
         <SlashCommandMenu
           ref={slashCommandMenuRef}
           open={showSlashCommands}
@@ -2705,6 +2729,7 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                       // a command down to "/" still does not reopen anything.
                       const { inputType } = event.nativeEvent as Partial<InputEvent>;
                       const slashQuery = slashQueryAt(next, event.target.selectionStart);
+                      setMentionQuery(mentionQueryAt(next, event.target.selectionStart)?.query ?? null);
                       if (
                         slashQuery &&
                         (showSlashCommands || !inputType?.startsWith('delete'))
@@ -2725,6 +2750,7 @@ onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMA
                       }
                       if (addMenuRef.current?.handleKeyDown(event)) return;
                       if (slashCommandMenuRef.current?.handleKeyDown(event)) return;
+                      if (botMentionMenuRef.current?.handleKeyDown(event)) return;
                       if (commandHubRef.current?.handleKeyDown(event)) return;
                       if (menuSearch) {
                         if (event.key === 'Enter') event.preventDefault();

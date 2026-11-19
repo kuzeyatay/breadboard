@@ -11,6 +11,9 @@ import {
   memberRole,
 } from "@/lib/organizations/store.ts";
 import { BREAD_NAME, isBreadSlug } from "@/lib/buzz/bread.ts";
+import { botsStore } from "@/lib/bots/server.ts";
+import { BOT_PERSONA_PREFIX, botByHandle } from "@/lib/bots/team.ts";
+import { botHandle } from "@/lib/bots/mentions.ts";
 import { addMember, ensureBreadMember, listMembers } from "@/lib/buzz/instance.ts";
 import { requireBuzzUser, requireRoom, requireRoomManager, requireString, withPhotos } from "@/lib/buzz/route-helpers.ts";
 
@@ -145,6 +148,14 @@ export async function POST(
       return NextResponse.json({ member: ensureBreadMember(room.id) }, { status: 201 });
     }
 
+    // One of the sender's own bots (lib/bots) joins as a member you @mention.
+    if (slug.startsWith(BOT_PERSONA_PREFIX)) {
+      const bot = botByHandle(botsStore().list(userId), slug.slice(BOT_PERSONA_PREFIX.length));
+      if (!bot) throw new ApiError(404, "bot_not_found", "That bot is not on your team.");
+      if (existing.some(member => member.personaSlug === slug)) throw new ApiError(409, "already_a_member", `${bot.name} is already here.`);
+      const member = addMember(room.id, { kind: "agent", personaSlug: slug, displayName: bot.name, handle: botHandle(bot.name), accent: bot.avatar.color, respondTo: "mention" });
+      return NextResponse.json({ member }, { status: 201 });
+    }
     const native = roomRuntime(slug);
     if (native) {
       if (existing.some(member => member.personaSlug === slug)) throw new ApiError(409, "already_a_member", `${native.name} is already here.`);

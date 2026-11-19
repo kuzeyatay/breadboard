@@ -31,6 +31,8 @@ import {
 import { startConversationTurn } from "@/lib/conversations/turn-service.ts";
 import { loadAgencyAgentsCatalog } from "@/lib/hermes/agency-agents.ts";
 import { BREAD_INSTRUCTIONS, isBreadSlug } from "./bread.ts";
+import { botsStore } from "../bots/server.ts";
+import { BOT_PERSONA_PREFIX, botByHandle } from "../bots/team.ts";
 import { roomLessons } from "../personal-context/room.ts";
 import {
   getMember,
@@ -73,11 +75,21 @@ export function ensureMemberConversation(
   })();
 }
 
-function personaInstructions(slug: string | null): string {
+function personaInstructions(slug: string | null, ownerIds: readonly (number | null | undefined)[] = []): string {
   if (!slug) return "";
   // Bread has no catalog file — being the un-narrowed runtime is the whole
   // point of it — so its brief is stated rather than loaded.
   if (isBreadSlug(slug)) return BREAD_INSTRUCTIONS;
+  // One of a person's own bots (lib/bots), seated as "bot-<handle>".
+  // ponytail: bots are per account, so the sender's roster is read first, then the room owner's; store the owner on the member if rooms share bots across accounts.
+  if (slug.startsWith(BOT_PERSONA_PREFIX)) {
+    for (const userId of ownerIds) {
+      if (!userId) continue;
+      const bot = botByHandle(botsStore().list(userId), slug.slice(BOT_PERSONA_PREFIX.length));
+      if (bot) return `${bot.description}\n${bot.personality}`.trim();
+    }
+    return "";
+  }
   const catalog = loadAgencyAgentsCatalog();
   const agent = catalog.agents.find((candidate) => candidate.slug === slug);
   return agent?.instructions ?? "";
@@ -111,6 +123,8 @@ export function buildRoomPrompt(input: {
   transcript: readonly BuzzMessage[];
   trigger: BuzzMessage;
   inThread: boolean;
+  /** Whose bots a "bot-<handle>" member is looked up in, besides the room owner's. */
+  actingUserId?: number;
 }): string {
   const { room, member, members, transcript, trigger, inThread } = input;
 
@@ -123,7 +137,7 @@ export function buildRoomPrompt(input: {
     )
     .join("\n");
 
-  const instructions = personaInstructions(member.personaSlug);
+  const instructions = personaInstructions(member.personaSlug, [input.actingUserId, room.createdByUserId]);
 
   return [
     `You are ${member.displayName}, a member of the shared Organization room #${room.slug}.`,
@@ -202,6 +216,7 @@ export async function startMemberReply(input: {
     transcript: transcript.filter((message) => message.id !== trigger.id),
     trigger,
     inThread,
+    actingUserId: input.actingUserId,
   });
 
   const originalPrompt = approvingMessage ? db.prepare("SELECT content FROM conversation_messages WHERE conversation_id = ? AND client_message_id = ? AND role = 'user'").get(conversation.id, clientMessageId) as { content: string } | undefined : undefined;

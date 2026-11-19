@@ -16,8 +16,7 @@ import { isBareProviderError } from "../provider-error.ts";
 // usage, and a marker saying which backend produced it.
 
 import "server-only";
-import { botsStore } from "../bots/server.ts";
-import { botPersonalityPrompt } from "../bots/types.ts";
+import { botTurnPersona } from "../bots/team.ts";
 import { persistAssistantProgress } from "./live-progress.ts";
 import { deliverCompletedHyperframes } from "./deliver-completed-hyperframes.ts";
 
@@ -664,7 +663,7 @@ export async function startDirectProviderTurn(
         explicitChatReference
           ? composeExplicitCrossConversationContext(explicitChatReference)
           : "",
-        botPersonalityPrompt(botsStore().forConversation(input.conversation.user_id, input.conversation.public_id)),
+        botTurnPersona({ userId: input.conversation.user_id, conversationPublicId: input.conversation.public_id, text: requestText, tools: false, inRoom: Boolean(input.conversation.buzz_room_id) }),
         input.conversation.user_id,
       )
         + (personalContext ? "\n\n"+personalContext+"\nThis turn can explain the supplied evidence. It cannot use tools or perform actions." : "")

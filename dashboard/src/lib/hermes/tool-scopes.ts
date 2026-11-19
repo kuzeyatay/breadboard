@@ -149,6 +149,10 @@ export const WORKFLOW_AUTHORING_TOOLS = ["workflow_create"] as const;
 // own reviewed directory (see lib/hermes/skill-lessons.ts).
 export const SKILL_LESSON_TOOLS = ["skill_lesson"] as const;
 
+// A bot's own memory (lib/bots, orgo-teammates' remember/recall). Scoped like
+// memory: authenticated conversational surfaces, the session user's own bots.
+export const BOT_MEMORY_TOOLS = ["bot_memory"] as const;
+
 // Conversation-scoped first-party Premortem workflow. The callback executes
 // only a bounded CLI allowlist inside the session's isolated runtime directory.
 export const PREMORTEM_TOOLS = ["premortem_run"] as const;

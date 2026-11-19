@@ -50,8 +50,7 @@ import {
   type ExternalAgentCall,
 } from "./evidence.ts";
 import { composeHermesSystemPrompt } from "./system-prompts.ts";
-import { botsStore } from "../bots/server.ts";
-import { conversationPersonalityPrompt } from "../bots/types.ts";
+import { botTurnPersona } from "../bots/team.ts";
 import { suppliedEvidenceText } from "./evidence-calibration.ts";
 import { adjudicateWebGrounding } from "./web-grounding-decider.ts";
 import { scheduleLoopxTickForConversation } from "../loopx/conversation-tick.ts";
@@ -1117,12 +1116,14 @@ export async function openGardenAgentChat(
       ]
         .filter(Boolean)
         .join("\n\n"),
-      persona: conversationPersonalityPrompt(
-        botsStore().forConversation(userId, conversation.public_id),
-        activeAgencyAgent
-        ? renderAgencyAgentPersona(activeAgencyAgent, userId)
-        : undefined,
-      ),
+      persona: botTurnPersona({
+        userId,
+        conversationPublicId: conversation.public_id,
+        text,
+        specialistPersona: activeAgencyAgent
+          ? renderAgencyAgentPersona(activeAgencyAgent, userId)
+          : undefined,
+      }),
     });
     // Garden Chat's copy of the capability ledger the Terminal keeps. Same rule:
     // only selections the resolver kept are recorded, so an automatic pick the

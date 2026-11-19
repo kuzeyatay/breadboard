@@ -52,6 +52,7 @@ const api = loadModule(new URL("../src/app/api/bots/route.ts", import.meta.url),
   get "@/lib/conversations/store"() { conversationStoreLoads++; return conversations; },
   "@/lib/bots/server": { botsStore },
   "@/lib/bots/store": botModule,
+  "@/lib/bots/mentions": await import("../src/lib/bots/mentions.ts"),
 });
 const input = { name: "Test Luna", description: "Astronomy companion", personality: "Speak warmly with astronomy analogies.", avatar: { shape: "star", color: "#dba92f", face: "mouth" } };
 function call(method, body, query = "") { return api[method](new Request(`http://localhost/api/bots${query}`, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })); }
@@ -91,12 +92,13 @@ test("the provider turn sends the saved personality, persists the reply and uses
   const replacements = {
     "server-only": {},
     "openai": class FakeProvider {
-      responses = { create: async body => {
+      responses = { create: body => {
         calls.push(body);
-        return (async function* () {
+        const data = (async function* () {
           yield { type: "response.output_text.delta", output_index: 0, delta: "Hello from your bot." };
           yield { type: "response.completed", response: { usage: { input_tokens: 12, output_tokens: 6, total_tokens: 18 } } };
         })();
+        return { withResponse: async () => ({ data, response: { headers: new Headers() } }) };
       } };
     },
     "./deliver-completed-hyperframes.ts": { deliverCompletedHyperframes: async () => null },
@@ -116,8 +118,8 @@ test("the provider turn sends the saved personality, persists the reply and uses
   const bot = botsStore().save(1,{...input,name:"Orbit",personality:"Be concise, playful, and use astronomy analogies."});
   const id = botsStore().chat(1,bot.id,name=>conversations.createConversation({userId:1,title:name,surface:"dashboard_terminal"}));
   const conversation = conversations.getConversationForUser(id,1);
-  const run = async (chat,clientMessageId) => {
-    const response = await startDirectProviderTurn({ request:new Request("http://localhost/test"),conversation:chat,surface:chat.surface,clientMessageId,text:"Introduce yourself.",model:"fixture-model",reasoningEffort:"none" });
+  const run = async (chat,clientMessageId,text="Introduce yourself.") => {
+    const response = await startDirectProviderTurn({ request:new Request("http://localhost/test"),conversation:chat,surface:chat.surface,clientMessageId,text,model:"fixture-model",reasoningEffort:"none" });
     assert.match(await response.text(),/Hello from your bot/);
   };
   await run(conversation,"bot-first");
@@ -132,7 +134,75 @@ test("the provider turn sends the saved personality, persists the reply and uses
   assert.equal(calls[1].input.some(item=>item.role==="assistant" && item.content==="Hello from your bot."),true);
   await run(conversations.createConversation({userId:1,title:"Ordinary",surface:"dashboard_terminal"}),"ordinary-first");
   assert.doesNotMatch(calls[2].instructions,/Selected conversation bot|your name is "Orbit"/);
+  assert.match(calls[2].instructions,/Bread \(@bread\) is the primary bot/);
+  // "@orbit" in an ordinary chat brings Orbit in for that message; "@bread" in Orbit's own chat reaches Bread.
+  await run(conversations.createConversation({userId:1,title:"Mention",surface:"dashboard_terminal"}),"mention-first","hey @orbit, what is a tide?");
+  assert.match(calls[3].instructions,/your name is "Orbit"/);
+  assert.match(calls[3].instructions,/@mentioned you, Orbit/);
+  await run(conversation,"bot-bread","@bread what's on my calendar?");
+  assert.doesNotMatch(calls[4].instructions,/your name is "Orbit"/);
   botsStore().archive(1,bot.id);
+});
+
+test("Bread delegates to a bot: [persona: bot-<handle>] resolves to that user's bot and nobody else's", async () => {
+  // The route Hermes' delegate_task calls (tools/agency_personas.py) for a persona tag.
+  const session = { id: 7, user_id: 1, conversation_id: 70 };
+  const route = loadModule(new URL("../src/app/api/hermes/tools/system-prompts/route.ts", import.meta.url), {
+    "next/server": { NextResponse: { json: Response.json } },
+    "@/lib/conversations/store.ts": { getConversationById: () => ({ id: 70, user_id: session.user_id }) },
+    "@/lib/hermes/tool-service-auth.ts": { capabilityForInternalToolRequest: () => "token" },
+    "@/lib/hermes/capability-token.ts": { verifyCapabilityToken: () => ({ ok: true, token: { breadboardSessionId: "7", userId: session.user_id, conversationId: 70, hermesSessionId: "h" } }) },
+    "@/lib/hermes/runtime-store.ts": { getRuntimeSessionById: () => session, runtimeExternalSessionId: () => "h" },
+    "@/lib/hermes/route-helpers.ts": { ...core, requireEnabled: () => {}, apiErrorResponse: error => { const { status, body } = core.describeError(error); return Response.json(body, { status }); } },
+    "@/lib/hermes/agency-agents.ts": { findAgencyAgent: () => null, renderAgencyAgentPersona: () => "" },
+    "@/lib/bots/server.ts": { botsStore },
+    "@/lib/bots/team.ts": await import("../src/lib/bots/team.ts"),
+    "@/lib/bots/types.ts": { botPersonalityPrompt },
+  });
+  const ask = async slug => (await (await route.POST(new Request("http://localhost/x", { method: "POST", body: JSON.stringify({ action: "system_prompt_persona", args: { slug } }) }))).json()).persona;
+  const tutor = botsStore().save(1, { ...input, name: "Math Tutor", personality: "Teach with worked examples." });
+  assert.match(await ask("bot-math-tutor"), /your name is "Math Tutor"[\s\S]*Teach with worked examples/);
+  assert.match(await ask("bot-sage"), /your name is "Sage"/, "prebuilt bots are delegable too");
+  assert.equal(await ask("bot-nobody"), null);
+  session.user_id = 2;
+  assert.equal(await ask("bot-math-tutor"), null, "another account's bot never resolves");
+  session.user_id = 1;
+  botsStore().archive(1, tutor.id);
+});
+
+test("each bot keeps its own memory: bot_memory remembers, recalls, forgets, and feeds the bot's prompt", async () => {
+  const session = { id: 8, user_id: 1, conversation_id: 80, surface: "dashboard_terminal" };
+  let allowed = true;
+  const route = loadModule(new URL("../src/app/api/hermes/tools/bot-memory/route.ts", import.meta.url), {
+    "next/server": { NextResponse: { json: Response.json } },
+    "@/lib/hermes/route-helpers.ts": { ...core, requireEnabled: () => {}, apiErrorResponse: error => { const { status, body } = core.describeError(error); return Response.json(body, { status }); } },
+    "@/lib/hermes/tool-service-auth.ts": { capabilityForInternalToolRequest: () => "token" },
+    "@/lib/hermes/capability-token.ts": { verifyCapabilityToken: () => ({ ok: true, token: { breadboardSessionId: "8", conversationId: 80, hermesSessionId: "h" } }), tokenAllows: () => allowed },
+    "@/lib/hermes/runtime-store.ts": { getRuntimeSessionById: () => session, runtimeExternalSessionId: () => "h" },
+    "@/lib/bots/server.ts": { botsStore },
+    "@/lib/bots/store.ts": botModule,
+    "@/lib/bots/mentions.ts": await import("../src/lib/bots/mentions.ts"),
+  });
+  const call = async args => { const response = await route.POST(new Request("http://localhost/x", { method: "POST", body: JSON.stringify({ action: "bot_memory", args }) })); return { status: response.status, body: await response.json() }; };
+  const saved = (await call({ action: "remember", bot: "@sage", text: "  Kuzey studies   electromagnetics at TU/e. " })).body.data.saved;
+  assert.equal(saved.text, "Kuzey studies electromagnetics at TU/e.");
+  await call({ action: "remember", bot: "sage", text: "Prefers worked examples over theory." });
+  assert.equal((await call({ action: "recall", bot: "sage", query: "electromagnetics" })).body.data.memories[0].id, saved.id, "recall ranks matching memories first");
+  assert.deepEqual(botsStore().recall(1, "byte"), [], "memories belong to one bot");
+  assert.equal((await call({ action: "remember", bot: "bread", text: "x" })).status, 400, "Bread keeps the account memory");
+  assert.equal((await call({ action: "remember", bot: "nobody", text: "x" })).status, 404);
+  session.user_id = 2;
+  assert.deepEqual((await call({ action: "recall", bot: "sage" })).body.data.memories, [], "another account's Sage remembers nothing of this one");
+  session.user_id = 1;
+  const { botTurnPersona } = await import("../src/lib/bots/team.ts");
+  const chat = conversations.createConversation({ userId: 1, title: "Memory", surface: "dashboard_terminal" });
+  const persona = botTurnPersona({ userId: 1, conversationPublicId: chat.public_id, text: "@sage help me with electromagnetics" });
+  assert.match(persona, /What Sage remembers[\s\S]*studies electromagnetics/);
+  assert.doesNotMatch(botTurnPersona({ userId: 1, conversationPublicId: chat.public_id, text: "hello" }), /What Sage remembers/, "Bread's turn carries no bot memory");
+  assert.equal((await call({ action: "forget", bot: "sage", id: saved.id })).body.data.forgotten, true);
+  assert.equal(botsStore().recall(1, "sage").some(memory => memory.id === saved.id), false);
+  allowed = false;
+  assert.equal((await call({ action: "recall", bot: "sage" })).status, 403, "the turn's capability grant gates the tool");
 });
 
 test("Capabilities Bots editor, saved avatars, chat navigation and lifecycle work in Chromium", { timeout: 120_000 }, async () => {
@@ -211,7 +281,7 @@ test("Capabilities Bots editor, saved avatars, chat navigation and lifecycle wor
     releaseRoster();
     await page.getByRole("button",{name:"Chat with Sage",exact:true}).waitFor();
     assert.equal(rosterRequests, 1, "mounting the tab reuses its pending preload");
-    assert.equal(await page.locator("section[aria-label=Bots] [data-bot-avatar]").count(),botsStore().list(1).length);
+    assert.equal(await page.locator("section[aria-label=Bots] [data-bot-avatar]").count(),botsStore().list(1).length + 1, "Bread, the primary bot, leads the roster");
     const avatar = page.getByRole("button", { name: "Chat with Sage", exact: true }).locator("canvas");
     const firstFrame = await avatar.evaluate(canvas => canvas.toDataURL());
     await page.waitForFunction(before => document.querySelector('[aria-label="Chat with Sage"] canvas')?.toDataURL() !== before, firstFrame);
