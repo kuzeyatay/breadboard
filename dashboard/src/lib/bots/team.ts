@@ -68,6 +68,20 @@ export function botMemorySection(userId: number, bot: BotDefinition, query: stri
 }
 
 /**
+ * The bot answering a message (null for Bread). save_memory uses it to keep a
+ * bot's "remember this" in that bot's own memory even when the model reaches
+ * for the account tool.
+ */
+export function turnRespondent(userId: number, conversationPublicId: string, text: string, inRoom = false): BotDefinition | null {
+  try {
+    const conversationBot = botsStore().forConversation(userId, conversationPublicId);
+    return inRoom ? conversationBot : routeTurn(text, botsStore().list(userId), conversationBot).respondent;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The persona slot for a turn: the answering bot's personality (none for
  * Bread), the team roster, and — when the message named several bots — the
  * instruction to coordinate them. `tools` is false on the provider-only

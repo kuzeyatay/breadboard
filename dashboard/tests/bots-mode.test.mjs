@@ -203,6 +203,29 @@ test("each bot keeps its own memory: bot_memory remembers, recalls, forgets, and
   const persona = botTurnPersona({ userId: 1, conversationPublicId: chat.public_id, text: "@sage help me with electromagnetics" });
   assert.match(persona, /What Sage remembers[\s\S]*studies electromagnetics/);
   assert.doesNotMatch(botTurnPersona({ userId: 1, conversationPublicId: chat.public_id, text: "hello" }), /What Sage remembers/, "Bread's turn carries no bot memory");
+
+  // Live, a bot told "remember this" called save_memory anyway: the route files it with the bot.
+  const accountSaves = [];
+  const run = { id: "run-1", instruction: "@sage please remember I like worked examples" };
+  const memoryRoute = loadModule(new URL("../src/app/api/hermes/tools/memory/route.ts", import.meta.url), {
+    "next/server": { NextResponse: { json: Response.json } },
+    "@/lib/hermes/route-helpers.ts": { ...core, requireEnabled: () => {}, apiErrorResponse: error => { const { status, body } = core.describeError(error); return Response.json(body, { status }); } },
+    "@/lib/hermes/tool-service-auth.ts": { capabilityForInternalToolRequest: () => "token" },
+    "@/lib/hermes/capability-token.ts": { verifyCapabilityToken: () => ({ ok: true, token: { breadboardSessionId: "8", conversationId: chat.id, hermesSessionId: "h" } }), tokenAllows: () => true },
+    "@/lib/hermes/runtime-store.ts": { getRuntimeSessionById: () => ({ ...session, conversation_id: chat.id }), runtimeExternalSessionId: () => "h", recordAuditEvent: () => {} },
+    "@/lib/hermes/run-store.ts": { getActiveRuntimeRun: () => run },
+    "@/lib/conversations/memory.ts": { durableMemoryExclusionReason: () => null, inferMemoryKind: () => "preference", saveDurableMemory: input => { accountSaves.push(input); return { id: 1 }; } },
+    "@/lib/conversations/store.ts": conversations,
+    "@/lib/bots/team.ts": await import("../src/lib/bots/team.ts"),
+    "@/lib/bots/server.ts": { botsStore },
+  });
+  const save = async () => (await memoryRoute.POST(new Request("http://localhost/x", { method: "POST", body: JSON.stringify({ args: { content: "Likes worked examples." } }) }))).json();
+  assert.match((await save()).data.note, /Sage's own memory/);
+  assert.ok(botsStore().recall(1, "sage").some(memory => memory.text === "Likes worked examples."));
+  assert.equal(accountSaves.length, 0, "the account memory is untouched");
+  run.instruction = "please remember I like worked examples";
+  await save();
+  assert.equal(accountSaves.length, 1, "Bread's turn still saves to the account");
   assert.equal((await call({ action: "forget", bot: "sage", id: saved.id })).body.data.forgotten, true);
   assert.equal(botsStore().recall(1, "sage").some(memory => memory.id === saved.id), false);
   allowed = false;

@@ -24,6 +24,8 @@ import {
   conversationIsTemporary,
   getConversationById,
 } from "@/lib/conversations/store.ts";
+import { turnRespondent } from "@/lib/bots/team.ts";
+import { botsStore } from "@/lib/bots/server.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -103,6 +105,23 @@ export async function POST(request: Request) {
       ? "temporary_chat"
       : durableMemoryExclusionReason(run.instruction) ??
         durableMemoryExclusionReason(content);
+    // A bot answering this message keeps what it is told in its own memory
+    // (bot_memory), not the account's, whichever memory tool the model chose.
+    const conversation = getConversationById(session.conversation_id);
+    const bot = !exclusionReason && conversation
+      ? turnRespondent(session.user_id, conversation.public_id, run.instruction, Boolean(conversation.buzz_room_id))
+      : null;
+    if (bot) {
+      const memory = botsStore().remember(session.user_id, bot.id, content);
+      recordAuditEvent({
+        eventType: "memory.tool.save_memory",
+        runtimeSessionId: session.id,
+        userId: session.user_id,
+        gardenId: session.garden_id,
+        payload: { runId: run.id, saved: true, botId: bot.id },
+      });
+      return NextResponse.json({ ok: true, data: { saved: true, botMemory: memory, note: `Saved to ${bot.name}'s own memory.` } });
+    }
     const saved = exclusionReason
       ? null
       : saveDurableMemory({
