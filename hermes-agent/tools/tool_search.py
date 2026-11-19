@@ -71,7 +71,9 @@ EVERYDAY_TOOLS: Tuple[str, ...] = (
     "calendar_update_event", "calendar_delete_event",
     "notifications_read", "breadboard_process_status", "breadboard_usage",
     "map_search", "map_route", "map_nearby", "map_place_details",
-    "save_memory", "memory_query", "agent_launch", "product_search",
+    # bot_memory sits beside save_memory: deferred, a bot answering "remember
+    # this" took the visible account memory instead of its own.
+    "save_memory", "bot_memory", "memory_query", "agent_launch", "product_search",
     "weather_forecast", "mcp_call",
 )
 

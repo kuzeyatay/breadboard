@@ -63,7 +63,7 @@ export function botMemorySection(userId: number, bot: BotDefinition, query: stri
     `## What ${bot.name} remembers`,
     ...(memories.length ? memories.map((memory) => `- [${memory.id}] ${memory.text}`) : ["Nothing yet."]),
   ];
-  if (tools) lines.push(`These are ${bot.name}'s own memories, separate from the account's. When you learn something durable about the user or your job as ${bot.name}, save it with bot_memory (action "remember", bot "${botHandle(bot.name)}"); "recall" searches, "forget" drops one by its number.`);
+  if (tools) lines.push(`These are ${bot.name}'s own memories, separate from the account's. When you learn something durable about the user or your job as ${bot.name}, save it with bot_memory (action "remember", bot "${botHandle(bot.name)}"), not save_memory, which is Bread's; "recall" searches, "forget" drops one by its number.`);
   return boundPromptContext(lines.join("\n"), 1_800);
 }
 

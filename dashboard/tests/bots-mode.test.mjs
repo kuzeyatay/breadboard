@@ -11,6 +11,7 @@ import { build } from "esbuild";
 import postcss from "postcss";
 import tailwind from "@tailwindcss/postcss";
 import { chromium } from "playwright-core";
+import { allowedToolsForSurface } from "../src/lib/hermes/tool-scopes.ts";
 
 // All writes go into this test's temporary database, never the running app.
 // Completion hooks can launch other agent runs; they are outside this test.
@@ -171,6 +172,9 @@ test("Bread delegates to a bot: [persona: bot-<handle>] resolves to that user's 
 });
 
 test("each bot keeps its own memory: bot_memory remembers, recalls, forgets, and feeds the bot's prompt", async () => {
+  // The real turn token must carry the tool, or the route refuses every call.
+  for (const surface of ["dashboard_terminal", "garden_chat"]) assert.ok(allowedToolsForSurface(surface).includes("bot_memory"), surface);
+  assert.ok(!allowedToolsForSurface("quartz_ai").includes("bot_memory"));
   const session = { id: 8, user_id: 1, conversation_id: 80, surface: "dashboard_terminal" };
   let allowed = true;
   const route = loadModule(new URL("../src/app/api/hermes/tools/bot-memory/route.ts", import.meta.url), {
