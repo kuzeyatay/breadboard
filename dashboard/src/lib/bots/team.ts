@@ -120,7 +120,7 @@ export function botTurnPersona(input: {
     const names = coordinate.map((bot) => bot.name).join(", ");
     notes.push(
       tools
-        ? `This message @mentions ${names}. You are Bread, coordinating: give each named bot its part with delegate_task ("[persona: ${BOT_PERSONA_PREFIX}<handle>] …"), in parallel where the parts are independent, then reply with each bot's answer under its name (**Name:** …), adding only what ties them together.`
+        ? `This message @mentions ${names}. You are Bread, coordinating: give each named bot its part with delegate_task ("[persona: ${BOT_PERSONA_PREFIX}<handle>] …"), in parallel where the parts are independent, then reply with each bot's answer under its name (**Name:** …). Do not open with your own summary of their answers; at most one closing line from you, and only if the parts need tying together.`
         : `This message @mentions ${names}. Answer as Bread, and answer each bot's part in turn under its name (**Name:** …), in that bot's voice as described below.`,
     );
   }
