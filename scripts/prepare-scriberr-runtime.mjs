@@ -70,18 +70,12 @@ async function downloadVerified(url, destination, expectedSha256) {
   }
 }
 
-function powershellQuote(value) {
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
 function extractZip(archive, destination) {
   fs.mkdirSync(destination, { recursive: true });
-  const command = `Expand-Archive -LiteralPath ${powershellQuote(archive)} -DestinationPath ${powershellQuote(destination)} -Force`;
-  const result = spawnSync(
-    "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", command],
-    { encoding: "utf8", windowsHide: true },
-  );
+  // Windows' bsdtar reads zips. Expand-Archive under powershell.exe, started from a
+  // pwsh 7 CI step, can fail to load its module yet still exit 0 with nothing extracted.
+  const tar = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
+  const result = spawnSync(tar, ["-xf", archive, "-C", destination], { encoding: "utf8", windowsHide: true });
   if (result.status !== 0) {
     throw new Error(
       `could not extract Scriberr: ${(result.stderr || result.stdout || "unknown error").trim()}`,
