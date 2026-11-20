@@ -397,6 +397,15 @@ async function requirePackagedServiceUv() {
   return uv;
 }
 
+// Windows' bsdtar reads zips. Expand-Archive under powershell.exe, started from a
+// pwsh 7 CI step, can fail to load its module yet still exit 0 with nothing extracted.
+function extractZip(zipPath, target) {
+  const tar = process.platform === "win32"
+    ? path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe")
+    : "tar";
+  return spawnSync(tar, ["-xf", zipPath, "-C", target], { encoding: "utf8", shell: false, windowsHide: true });
+}
+
 function download(url, destination, { expectedSize = null, redirects = 0 } = {}) {
   return new Promise((resolve, reject) => {
     const request = https.get(url, (response) => {
@@ -856,15 +865,7 @@ async function preparePackagedServiceRuntime(
   uvEnvironment.UV_COMPILE_BYTECODE = "false";
   uvEnvironment.UV_NO_PROGRESS = "1";
   const zipPath = await acquirePackagedServicePythonArchive(service);
-  const unzip = spawnSync(
-    "powershell.exe",
-    [
-      "-NoProfile",
-      "-Command",
-      `Expand-Archive -LiteralPath "${zipPath}" -DestinationPath "${target}" -Force`,
-    ],
-    { encoding: "utf8", shell: false },
-  );
+  const unzip = extractZip(zipPath, target);
   if (unzip.status !== 0) {
     fail(`${service.id} CPython archive extraction failed: ${unzip.stderr.trim()}.`);
   }
@@ -1098,11 +1099,7 @@ async function preparePython() {
     fail(`Bundled Python archive identity mismatch: ${archiveHash}.`);
   }
 
-  const unzip = spawnSync(
-    "powershell.exe",
-    ["-NoProfile", "-Command", `Expand-Archive -LiteralPath "${zipPath}" -DestinationPath "${target}" -Force`],
-    { encoding: "utf8" },
-  );
+  const unzip = extractZip(zipPath, target);
   if (unzip.status !== 0) fail(`Failed to extract ${zipPath}: ${unzip.stderr}`);
   const pythonExecutable = path.join(target, "python.exe");
   const executableHash = await sha256File(pythonExecutable);
