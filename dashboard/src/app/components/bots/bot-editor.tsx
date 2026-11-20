@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { BOT_SHAPES, DEFAULT_BOT_AVATAR, type BotInput } from "@/lib/bots/types";
+import { BOT_EFFORTS, BOT_SHAPES, DEFAULT_BOT_AVATAR, type BotEffort, type BotInput } from "@/lib/bots/types";
 import BotAvatar from "./bot-avatar";
 
 const control = "mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm text-[var(--ink)] outline-none focus:border-[var(--botanical)]";
@@ -36,6 +36,12 @@ export default function BotEditor({ initial, editing, busy, error, onSave, onCan
     <label className="block text-xs font-medium text-[var(--ink)]">Personality
       <textarea aria-label="Personality" className={`${control} min-h-36 resize-y leading-6`} required maxLength={6000} value={draft.personality} onChange={e => setDraft({ ...draft, personality: e.target.value })} placeholder="Describe their voice, interests, manner, and how they should help you." />
     </label>
+    <label className="block text-xs font-medium text-[var(--ink)]">Thinking effort
+      <select aria-label="Thinking effort" className={control} value={draft.effort ?? ""} onChange={e => setDraft({ ...draft, effort: (e.target.value || null) as BotEffort | null })}>
+        <option value="">Chat’s choice</option>
+        {BOT_EFFORTS.map(effort => <option key={effort} value={effort}>{effort === "xhigh" ? "Extra high" : effort[0].toUpperCase() + effort.slice(1)}</option>)}
+      </select>
+    </label>
     <fieldset><legend className="mb-2 text-xs font-medium text-[var(--ink)]">Avatar shape</legend>
       <div className="grid grid-cols-4 gap-1 sm:grid-cols-6">
         {BOT_SHAPES.map(shape => <button key={shape} type="button" aria-label={`${shape} avatar`} aria-pressed={draft.avatar.shape === shape}
@@ -50,7 +56,7 @@ export default function BotEditor({ initial, editing, busy, error, onSave, onCan
       <label className="text-xs font-medium text-[var(--ink)]">Face<select aria-label="Avatar face" className={control} value={draft.avatar.face} onChange={e => setDraft({ ...draft, avatar: { ...draft.avatar, face: e.target.value as "eyes" | "mouth" } })}><option value="eyes">Eyes</option><option value="mouth">Eyes and mouth</option></select></label>
     </div>
     {error ? <p role="alert" className="text-sm text-[var(--danger)]">{error}</p> : null}
-    <p className="text-xs leading-5 text-[var(--ink-muted)]">Personality changes apply to the next message. Your bot uses the chat’s selected model and existing tool permissions.</p>
+    <p className="text-xs leading-5 text-[var(--ink-muted)]">Personality changes apply to the next message. Your bot uses the chat’s selected model, its own thinking effort when set, and existing tool permissions.</p>
     <div className="flex justify-end gap-2"><button type="button" disabled={busy} onClick={onCancel} className="rounded-xl px-4 py-2 text-sm hover:bg-[var(--paper-strong)]">Cancel</button>
       <button type="submit" disabled={busy || !draft.name.trim() || !draft.personality.trim()} className="rounded-xl bg-[var(--botanical)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{busy ? "Saving…" : editing ? "Save changes" : "Create bot"}</button>
     </div>

@@ -73,6 +73,14 @@ test("Bots HTTP handlers persist to canonical chats, enforce ownership and rejec
   conversations.reserveConversationTurn({ conversation: chat, clientMessageId: "test-saved-message", surface: chat.surface, content: "Explain the Moon." });
   conversations.completeAssistantMessage({ conversationId: chat.id, clientMessageId: "test-saved-message", content: "A saved bot reply." });
   assert.equal((await call("PATCH", { ...input, id: bot.id, name: "Updated Luna" })).status, 200);
+  // A bot can think harder than the chat default (orgo-teammates' per-bot effort); empty follows the chat.
+  assert.equal(bot.effort, null);
+  assert.equal((await call("PATCH", { ...input, id: bot.id, name: "Updated Luna", effort: "max" })).status, 400);
+  assert.equal((await (await call("PATCH", { ...input, id: bot.id, name: "Updated Luna", effort: "xhigh" })).json()).bot.effort, "xhigh");
+  const { turnRespondent } = await import("../src/lib/bots/team.ts");
+  assert.equal(turnRespondent(1, chat.public_id, "@updated-luna how far is the Moon?")?.effort, "xhigh", "the answering bot's effort reaches the turn");
+  assert.equal(turnRespondent(1, chat.public_id, "@bread hi"), null);
+  assert.equal((await (await call("PATCH", { ...input, id: bot.id, name: "Updated Luna", effort: "" })).json()).bot.effort, null);
   assert.equal((await (await call("GET", undefined, `?conversationId=${conversationId}`)).json()).bot.name, "Updated Luna");
   userId = 2;
   for (const [method, body, query] of [["GET", undefined, `?conversationId=${conversationId}`], ["POST", { action: "chat", id: bot.id }], ["PATCH", { ...input, id: bot.id }], ["DELETE", { id: bot.id }]]) assert.equal((await call(method, body, query)).status, 404);

@@ -13,11 +13,15 @@ export interface BotDefinition {
   description: string;
   personality: string;
   avatar: BotAvatarConfig;
+  /** Thinking effort when this bot answers (orgo-teammates); null follows the chat's choice. */
+  effort?: BotEffort | null;
   prebuilt: boolean;
   archived: boolean;
   updatedAt: string;
 }
-export type BotInput = Pick<BotDefinition, "name" | "description" | "personality" | "avatar">;
+export const BOT_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+export type BotEffort = (typeof BOT_EFFORTS)[number];
+export type BotInput = Pick<BotDefinition, "name" | "description" | "personality" | "avatar" | "effort">;
 export const DEFAULT_BOT_AVATAR: BotAvatarConfig = { shape: "clover", color: "#48b9ef", face: "eyes" };
 
 export function botPersonalityPrompt(bot: BotDefinition | null): string {

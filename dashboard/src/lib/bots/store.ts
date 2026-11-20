@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { BOT_SHAPES, type BotDefinition, type BotInput } from "./types.ts";
+import { BOT_EFFORTS, BOT_SHAPES, type BotDefinition, type BotEffort, type BotInput } from "./types.ts";
 import { PREBUILT_BOTS } from "./presets.ts";
 
 export interface BotMemory { id: number; text: string }
@@ -25,12 +25,14 @@ export function validateBotInput(value: unknown): BotInput {
   if (!avatar || !BOT_SHAPES.includes(avatar.shape as never) ||
       typeof avatar.color !== "string" || !/^#[0-9a-f]{6}$/i.test(avatar.color) ||
       !["eyes", "mouth"].includes(String(avatar.face))) throw new BotStoreError(400, "Choose a valid avatar shape, color, and face.");
-  return { name: field("name", 60), description: field("description", 180, false), personality: field("personality", 6000), avatar: { shape: avatar.shape as BotInput["avatar"]["shape"], color: avatar.color, face: avatar.face as "eyes" | "mouth" } };
+  const effort = input.effort === undefined || input.effort === null || input.effort === "" ? null : input.effort;
+  if (effort !== null && !BOT_EFFORTS.includes(effort as BotEffort)) throw new BotStoreError(400, "Choose a valid thinking effort.");
+  return { name: field("name", 60), description: field("description", 180, false), personality: field("personality", 6000), avatar: { shape: avatar.shape as BotInput["avatar"]["shape"], color: avatar.color, face: avatar.face as "eyes" | "mouth" }, effort: effort as BotEffort | null };
 }
 
-interface BotRow { id: string; name: string; description: string; personality: string; avatar: string; prebuilt: number; archived: number; updated_at: string }
+interface BotRow { id: string; name: string; description: string; personality: string; avatar: string; effort: string | null; prebuilt: number; archived: number; updated_at: string }
 function present(row: BotRow): BotDefinition {
-  return { id: row.id, name: row.name, description: row.description, personality: row.personality, avatar: JSON.parse(row.avatar), prebuilt: Boolean(row.prebuilt), archived: Boolean(row.archived), updatedAt: row.updated_at };
+  return { id: row.id, name: row.name, description: row.description, personality: row.personality, avatar: JSON.parse(row.avatar), effort: (row.effort as BotEffort | null) ?? null, prebuilt: Boolean(row.prebuilt), archived: Boolean(row.archived), updatedAt: row.updated_at };
 }
 
 export class BotsStore {
@@ -61,6 +63,9 @@ export class BotsStore {
       FOREIGN KEY (user_id, bot_id) REFERENCES conversation_bots(user_id, id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS bot_memories_bot ON bot_memories(user_id, bot_id, id);`);
+    if (!(db.prepare("PRAGMA table_info(conversation_bots)").all() as { name: string }[]).some((column) => column.name === "effort")) {
+      db.exec("ALTER TABLE conversation_bots ADD COLUMN effort TEXT");
+    }
   }
   // Each bot's own memory, as in orgo-teammates (remember / recall over a per-bot
   // table): what Sage learns stays Sage's, apart from the account-wide memory Bread uses.
@@ -109,8 +114,8 @@ export class BotsStore {
       if (count.n >= 100) throw new BotStoreError(400, "You can keep up to 100 bots. Remove one before creating another.");
     }
     const botId = id ?? `bot_${randomUUID()}`;
-    if (id !== undefined) this.db.prepare(`UPDATE conversation_bots SET name=?,description=?,personality=?,avatar=?,updated_at=datetime('now') WHERE user_id=? AND id=?`).run(input.name, input.description, input.personality, JSON.stringify(input.avatar), userId, id);
-    else this.db.prepare(`INSERT INTO conversation_bots(user_id,id,name,description,personality,avatar) VALUES (?,?,?,?,?,?)`).run(userId, botId, input.name, input.description, input.personality, JSON.stringify(input.avatar));
+    if (id !== undefined) this.db.prepare(`UPDATE conversation_bots SET name=?,description=?,personality=?,avatar=?,effort=?,updated_at=datetime('now') WHERE user_id=? AND id=?`).run(input.name, input.description, input.personality, JSON.stringify(input.avatar), input.effort ?? null, userId, id);
+    else this.db.prepare(`INSERT INTO conversation_bots(user_id,id,name,description,personality,avatar,effort) VALUES (?,?,?,?,?,?,?)`).run(userId, botId, input.name, input.description, input.personality, JSON.stringify(input.avatar), input.effort ?? null);
     return this.get(userId, botId);
   }
   archive(userId: number, id: string): void {

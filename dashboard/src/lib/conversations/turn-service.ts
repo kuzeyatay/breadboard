@@ -3,7 +3,7 @@ import { gardenHasRepository } from "../code-index/create-repository.ts";
 import { modelLaunchableRuntimeAgents } from "../hermes/capability-combinations.ts";
 import { telegramAttentionAlertsOn } from "../telegram/attention.ts";
 import { voiceReplyWithOpener } from "../speech/voice-opener-context.ts";
-import { botTurnPersona } from "../bots/team.ts";
+import { botTurnPersona, turnRespondent } from "../bots/team.ts";
 import { hermesPromptText } from "../agent-runtime/hermes-prompt.ts";
 import { agentPreferencesContext } from "../agent-preferences/store.ts";
 import {
@@ -1481,7 +1481,9 @@ export async function startConversationTurn(
   // remain authoritative; typed conversations retain their own effort default.
   const voicePreferences = input.voice === true && (input.reasoningEffort === undefined || input.reasoningEffort === null || input.reasoningEffort === "")
     ? readVoiceAssistantPreferences(db, input.conversation.user_id) : null;
-  const reasoningEffort = voicePreferences ? voiceReasoningEffort(voicePreferences) : input.reasoningEffort;
+  // A bot with its own thinking effort (orgo-teammates) uses it when it answers.
+  const botEffort = voicePreferences ? null : turnRespondent(input.conversation.user_id, input.conversation.public_id, input.text, Boolean(input.conversation.buzz_room_id))?.effort;
+  const reasoningEffort = voicePreferences ? voiceReasoningEffort(voicePreferences) : botEffort ?? input.reasoningEffort;
   const engine = await resolveAvailableHermesEngine(input.model, reasoningEffort, selectedModelForUser(input.conversation.user_id));
   const runtime = getAgentRuntimeByKind(session.runtimeKind);
   const connectedApps =
